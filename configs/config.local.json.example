@@ -1,0 +1,14 @@
+{
+  "llm": {
+    "endpoint": "http://localhost:11434",
+    "model": "qwen3:8b"
+  },
+  "database": {
+    "host": "localhost",
+    "user": "cambrian",
+    "dbname": "cambrian_db"
+  },
+  "telemetry": {
+    "enable_stdout_exporter": true
+  }
+}

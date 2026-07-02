@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a capability or improvement for the OSS runtime
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For open-ended ideas or design discussion, consider **Discussions** first.
+        Significant design decisions are recorded as ADRs (`docs/adr/`).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and what's missing or hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This is for the OSS core (not a premium/commercial feature)

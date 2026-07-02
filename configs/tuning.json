@@ -1,0 +1,20 @@
+{
+  "_comment": "Power-user tuning starter. Copy to configs/tuning.local.json (gitignored) to customize per-machine. Any field you don't set falls through to the Go default in DefaultConfig(). The CAMBRIAN_* env-var convention (CAMBRIAN_EXECUTION__EWMA_ALPHA) overrides this file. See README 'Configuration Reference' for the full list of tunables. Curated, NOT a full mirror of all hyperparameters — new fields added to DefaultConfig() will just work because they are not pinned here.",
+
+  "execution": {
+    "step_timeout_multiplier": 2.0,
+    "plan_timeout_ms": 120000,
+    "ewma_alpha": 0.5,
+    "gatekeeper_max_candidates": 5,
+    "gatekeeper_w1": 0.4,
+    "gatekeeper_w2": 0.4,
+    "gatekeeper_w3": 0.2,
+    "cold_start_penalty_multiplier": 0.6,
+    "min_auction_confidence": 0.3,
+    "fallback_confidence_threshold": 0.4,
+    "memory_relevance_threshold": 0.70,
+    "tool_retrieval_floor": 0.0,
+    "kg2rag_enabled": true,
+    "kg_extractor_enabled": true
+  }
+}

@@ -1,0 +1,367 @@
+syntax = "proto3";
+
+package cambrian;
+
+option go_package = "github.com/cambrian-sh/cambrian-runtime/api/proto";
+
+import "google/protobuf/timestamp.proto";
+
+// OperatorConsole is the operator-plane service for the Cambrian UI (ADR-0047).
+// It is distinct from the agent-facing Orchestrator/AgentService: its audience
+// is a human Operator/Viewer, not an agent (no x-agent-id principal). This file
+// holds the sequenced event feed (issue 0047-01); snapshots, commands, and auth
+// are added by later slices.
+service OperatorConsole {
+  // Login authenticates a human operator (username/password) and returns a
+  // token bound to {principal, role}. The only unauthenticated RPC. ADR-0047 D13.
+  rpc Login(LoginRequest) returns (LoginResponse);
+
+  // StreamEvents drains the sequenced operator feed. The client resumes from
+  // last_seq; every OperatorEvent carries a global monotonic seq (the cursor).
+  rpc StreamEvents(SubscribeRequest) returns (stream OperatorEvent);
+
+  // Snapshot returns bounded live operational state (plans in flight, sessions)
+  // stamped with a lower-bound as_of_seq. The client resumes StreamEvents from
+  // as_of_seq+1; idempotent absolute-state events make the overlap harmless.
+  // Large/historical data is NOT here — paged read RPCs serve it. ADR-0047 D6/D8.
+  rpc Snapshot(SnapshotRequest) returns (SnapshotResponse);
+
+  // SetToolGrant grants or revokes a system tool for an agent (Operator-only).
+  // Idempotent (command_id), mandatory reason, audited. ADR-0047 D7/D15.
+  rpc SetToolGrant(SetToolGrantRequest) returns (CommandAck);
+
+  // QueryAudit reads the operator_audit log, filtered + paginated. Read RPC
+  // (any authenticated role). Never folded into Snapshot. ADR-0047 D8/0047-08.
+  rpc QueryAudit(QueryAuditRequest) returns (QueryAuditResponse);
+
+  // ResolveHITL approves/rejects a raised HITL intervention (Operator-only).
+  // Idempotent on the intervention id via command_id. ADR-0047 D11/0047-09.
+  rpc ResolveHITL(ResolveHITLRequest) returns (CommandAck);
+
+  // PauseSession / ResumeSession steer a live execution via the control hub.
+  rpc PauseSession(SessionCommandRequest) returns (CommandAck);
+  rpc ResumeSession(SessionCommandRequest) returns (CommandAck);
+
+  // Remaining mutations (Operator-only, idempotent, audited). ADR-0047 0047-07.
+  rpc TagMemory(TagMemoryRequest) returns (CommandAck);
+  rpc SetScope(SetScopeRequest) returns (CommandAck);
+  rpc RegisterSkill(RegisterSkillRequest) returns (CommandAck);
+  rpc RegisterMCP(RegisterMCPRequest) returns (CommandAck);
+  rpc TriggerConsolidation(TriggerConsolidationRequest) returns (CommandAck);
+
+  // SetRuntimeConfig hot-applies numeric runtime tunables (e.g. the Stage-A blend
+  // weights) to the live kernel WITHOUT a restart — the automated-tuning seam
+  // (ADR-0054). Idempotent (command_id), mandatory reason, audited, Operator-only.
+  // Ephemeral: edits live in memory; config.json stays the boot default.
+  rpc SetRuntimeConfig(SetRuntimeConfigRequest) returns (CommandAck);
+
+  // Chat & steer (Operator-only, audited). ADR-0047 0047-10.
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc SendMessage(SendMessageRequest) returns (CommandAck);
+  rpc InjectCorrection(InjectCorrectionRequest) returns (CommandAck);
+}
+
+message CreateSessionRequest {
+  string command_id = 1;
+  string reason = 2;
+  string goal = 3;
+  string parent_id = 4;
+}
+
+message CreateSessionResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  string session_id = 3;
+}
+
+message SendMessageRequest {
+  string command_id = 1;
+  string reason = 2;
+  string session_id = 3;
+  string text = 4;
+}
+
+message InjectCorrectionRequest {
+  string command_id = 1;
+  string reason = 2;
+  string session_id = 3;
+  string instruction = 4; // lands inside the running plan (pause→replan→hot-swap→resume)
+}
+
+message TagMemoryRequest {
+  string command_id = 1;
+  string reason = 2;
+  string doc_id = 3;
+  string tag = 4;
+  bool add = 5; // true = apply tag, false = remove
+}
+
+message SetScopeRequest {
+  string command_id = 1;
+  string reason = 2;
+  string agent_id = 3;
+  repeated string required_tags = 4;
+  repeated string any_of_tags = 5;
+  repeated string forbidden_tags = 6;
+}
+
+message RegisterSkillRequest {
+  string command_id = 1;
+  string reason = 2;
+  string name = 3;
+  string description = 4;
+  string instructions = 5;
+  repeated string tool_grants = 6;
+  repeated string scope_tags = 7;
+}
+
+message RegisterMCPRequest {
+  string command_id = 1;
+  string reason = 2;
+  string name = 3;
+  string command = 4; // stdio command, OR
+  string url = 5;     // streamable-http URL
+}
+
+message TriggerConsolidationRequest {
+  string command_id = 1;
+  string reason = 2;
+  string scope = 3; // optional scope hint; empty = full
+}
+
+message SetRuntimeConfigRequest {
+  string command_id = 1;
+  string reason = 2;
+  // params maps a numeric tunable name → value, e.g. "blend_weight_cosine": 0.4.
+  // Unknown keys are reported back in CommandAck-side logs and ignored; partial
+  // sets merge over the current live values.
+  map<string, double> params = 3;
+}
+
+message ResolveHITLRequest {
+  string command_id = 1;
+  string reason = 2;
+  string intervention_id = 3;
+  bool approve = 4;
+}
+
+message SessionCommandRequest {
+  string command_id = 1;
+  string reason = 2;
+  string session_id = 3;
+}
+
+message QueryAuditRequest {
+  string actor = 1;
+  string target_type = 2;
+  string target_id = 3;
+  string action_type = 4;
+  int32 limit = 5; // 0 ⇒ a server default
+}
+
+message QueryAuditResponse {
+  repeated AuditOp entries = 1;
+}
+
+// CommandAck is the result of a mutating command. deduped=true means the
+// command_id was already applied (idempotent retry) — no second mutation.
+message CommandAck {
+  string command_id = 1;
+  bool deduped = 2;
+}
+
+message SetToolGrantRequest {
+  string command_id = 1; // client-generated idempotency key (UUID)
+  string reason = 2;     // mandatory; recorded in the audit entry
+  string agent_id = 3;
+  string tool_name = 4;
+  bool granted = 5;      // true = grant, false = revoke
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  string token = 1; // present on every subsequent call as "authorization: Bearer <token>"
+  string role = 2;  // "operator" | "viewer"
+}
+
+message SnapshotRequest {}
+
+message SnapshotResponse {
+  uint64 as_of_seq = 1;             // lower-bound cursor; resume StreamEvents from as_of_seq+1
+  repeated PlanInFlightOp plans = 2;
+  repeated SessionSummaryOp sessions = 3;
+  // Capability + version handshake (ADR-0047 D14): lets the UI hide unsupported
+  // surfaces and surface version skew as a first-class state.
+  string kernel_version = 4;
+  string contract_version = 5;
+  repeated string capabilities = 6; // e.g. "commands", "steering", "watch", "daemon"
+}
+
+message PlanInFlightOp {
+  string session_id = 1;
+  string plan_id = 2;
+  int32 active_step = 3;
+  string status = 4;
+  string active_agent = 5;
+  double cost_so_far = 6;
+}
+
+message SessionSummaryOp {
+  string id = 1;
+  string goal = 2;
+  string status = 3;
+}
+
+message SubscribeRequest {
+  // last_seq is the resume cursor — the highest seq the client has already seen.
+  // 0 means "from the start of the retained window". ADR-0047 D9.
+  uint64 last_seq = 1;
+}
+
+// OperatorEvent is the sequenced envelope drained from the spool. seq is the
+// global monotonic cursor; ts is the sequencing time; session_id is empty for
+// system-global events. The payload is an absolute-state delta. ADR-0047 D3/D5.
+message OperatorEvent {
+  uint64 seq = 1;
+  google.protobuf.Timestamp ts = 2;
+  string session_id = 3;
+  oneof payload {
+    ResyncRequired resync = 9;
+    AuctionEventOp auction = 10;
+    AgentReadyOp agent_ready = 11;
+    SessionDormantOp session_dormant = 12;
+    SessionCompletedOp session_completed = 13;
+    MemoryPressureOp memory_pressure = 14;
+    DaemonCrashedOp daemon_crashed = 15;
+    WatchTriggeredOp watch_triggered = 16;
+    MemoryWrittenOp memory_written = 17;
+    HITLRaisedOp hitl_raised = 18;
+    VerifierRoundOp verifier_round = 19;
+    LLMHealthOp llm_health = 20;
+    PlanStateOp plan_state = 21;
+    AuditOp audit = 22;
+    TokenChunkOp token = 23; // live-only lane; seq is 0 and is never replayed
+  }
+}
+
+// ResyncRequired tells the client its cursor has fallen out of the retained
+// spool window: it must call Snapshot and resubscribe from the snapshot's
+// as_of_seq. ADR-0047 D6/D9 (issue 0047-02).
+message ResyncRequired {
+  uint64 latest_seq = 1; // the feed head at the time resync was signalled
+}
+
+message AuctionEventOp {
+  string task_id = 1;
+  string task_desc = 2;
+  string status = 3;
+  string winner_id = 4;
+  repeated BidEntryOp bids = 5;
+  string error_msg = 6;
+}
+
+message BidEntryOp {
+  string agent_id = 1;
+  float confidence = 2;
+  string rationale = 3;
+  int32 latency_ms = 4;
+}
+
+message AgentReadyOp {
+  string agent_id = 1;
+  string source_hash = 2;
+  double trust_score = 3;
+  repeated string capabilities = 4;
+  int64 interview_ms = 5;
+}
+
+message SessionDormantOp {
+  string session_id = 1;
+  int64 ttl_seconds = 2;
+}
+
+message SessionCompletedOp {
+  string session_id = 1;
+  int32 documents_merged = 2;
+}
+
+message MemoryPressureOp {
+  int32 total_documents = 1;
+  int64 index_size_bytes = 2;
+  string trigger = 3;
+}
+
+message DaemonCrashedOp {
+  string agent_id = 1;
+  string stream_id = 2;
+}
+
+message WatchTriggeredOp {
+  string watch_config_id = 1;
+  string stream_id = 2;
+  string action_target = 3;
+}
+
+message MemoryWrittenOp {
+  string doc_id = 1;
+  string doc_type = 2;
+  string session_id = 3;
+  string source = 4;
+  string summary = 5;
+}
+
+message HITLRaisedOp {
+  string intervention_id = 1;
+  string session_id = 2;
+  string agent_id = 3;
+  string description = 4;
+  bool is_destructive = 5;
+}
+
+message VerifierRoundOp {
+  string task_id = 1;
+  string winner_agent = 2;
+  double quality_score = 3;
+  double bid_confidence = 4;
+  string critique = 5;
+}
+
+message LLMHealthOp {
+  string model_id = 1;
+  string state = 2;
+  string reason = 3;
+}
+
+message PlanStateOp {
+  string session_id = 1;
+  string plan_id = 2;
+  int32 active_step = 3;
+  string status = 4;
+  string active_agent = 5;
+  double cost_so_far = 6;
+  bool terminal = 7;
+}
+
+message TokenChunkOp {
+  string session_id = 1;
+  int32 step_index = 2;
+  string text = 3;
+}
+
+message AuditOp {
+  string id = 1;
+  string command_id = 2;
+  string actor = 3;
+  string role = 4;
+  string action_type = 5;
+  string target_type = 6;
+  string target_id = 7;
+  string before = 8;
+  string after = 9;
+  string reason = 10;
+  string result = 11;
+}

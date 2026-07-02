@@ -1,0 +1,18 @@
+# gitleaks config (Phase 6.5.1). Uses the default ruleset plus an allowlist for
+# documented dev-DB defaults and example placeholders — these are NOT live secrets.
+# Real secrets live in .env / the gitignored configs/config.json and are never tracked.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Docs/examples + env-parameterized dev-DB defaults (not live secrets)."
+paths = [
+  '''.*\.md$''',                # documentation that references the former dev creds
+  '''configs/.*\.example.*''',  # config templates (placeholders only)
+  '''db/docker-compose\.yml''', # dev DB defaults, now ${CAMBRIAN_DB_*:-cambrian}
+  '''db/vector\.sh''',
+]
+# The local dev-DB password default (now env-parameterized everywhere functional).
+regexes = [
+  '''cambrian_password''',
+]

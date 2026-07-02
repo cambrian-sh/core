@@ -1,0 +1,29 @@
+{
+  "_comment": "LLM provider list (centralized model provisioning, ADR-0042). Copy to configs/providers.json (gitignored) and edit. The `default` field is the id of the global default generator. The `roles` map assigns a generator id to each system-organ role (planner/verifier/interview/router/memory). The `health` block tunes the per-id circuit-breaker. If both config.json and providers.json define an `llm_provider` block, providers.json wins. CAMBRIAN_LLM_PROVIDER__* env vars override this file. See ADR-0042 for the full schema.",
+
+  "llm_provider": {
+    "default": "primary",
+    "generators": [
+      {
+        "id": "primary",
+        "provider": "openai",
+        "model": "<model-name>",
+        "endpoint": "https://your-openai-compatible-endpoint/v1",
+        "api_key_env": "OPENAI_API_KEY",
+        "timeout_ms": 60000,
+        "capabilities": ["reasoning", "code"]
+      }
+    ],
+    "roles": {
+      "planner": "primary",
+      "verifier": "primary",
+      "interview": "primary",
+      "router": "primary",
+      "memory": "primary"
+    },
+    "health": {
+      "failure_threshold": 3,
+      "cooldown_ms": 30000
+    }
+  }
+}

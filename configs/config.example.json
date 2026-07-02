@@ -1,0 +1,26 @@
+{
+  "_comment": "User-facing infrastructure config. Copy to config.json (gitignored) and fill in. The embedder model lives in configs/embedder.json (gitignored; copy from embedder.json.example). The LLM provider list lives in configs/providers.json (gitignored; copy from providers.json.example). Hyperparameters (the `execution` block) ship as built-in defaults in DefaultConfig() and are NOT pinned here. To tune the big knobs, edit configs/tuning.json (committed) or copy it to configs/tuning.local.json (gitignored). External MCP server definitions live in configs/mcp.json (gitignored; copy from mcp.json.example). Secrets come from .env via api_key_env / CAMBRIAN_* env vars, never inline. Telemetry is OFF by default (see telemetry block).",
+  "metabolism": {
+    "python_executable": "./.venv/bin/python",
+    "agents_dir": "./agents"
+  },
+  "storage": {
+    "data_dir": "data",
+    "db_name": "agents.db"
+  },
+  "database": {
+    "host": "localhost",
+    "port": "5432",
+    "user": "cambrian",
+    "password": "",
+    "dbname": "cambrian_db"
+  },
+  "server": { "port": "50051" },
+  "telemetry": {
+    "otlp_endpoint": "",
+    "trace_sampling_rate": 1.0,
+    "metrics_export_interval_seconds": 10,
+    "enable_stdout_exporter": false,
+    "prometheus_port": 0
+  }
+}

@@ -1,0 +1,511 @@
+syntax = "proto3";
+
+package cambrian;
+
+option go_package = "github.com/cambrian-sh/cambrian-runtime/api/proto";
+
+import "google/protobuf/timestamp.proto";
+
+// Cambrian Object Model
+message Object {
+  string id = 1;
+  string type = 2;
+  bytes data = 3; // JSON veya binary veri
+  map<string, string> metadata = 4;
+}
+
+// ContextRef is a lightweight handle to a piece of content in the ContentStore.
+// ADR-0022 Phase 3: replaces the flat context map in Handoff.
+message ContextRef {
+  string cid = 1;               // SHA-256 hex, CAS key
+  string type = 2;              // "step_result", "ltm_doc", "verification"
+  repeated string labels = 3;   // searchable tags
+  float activation = 4;         // spreading activation energy (0-1) — structural relevance
+  string snippet = 5;           // first context_ref_snippet_chars of UTF-8 content
+  float precision = 6;          // cosine similarity (0-1), or -1.0 if not yet computed
+}
+
+// Handoff Protokolü
+message Handoff {
+  string id = 1;
+  string from_agent = 2;
+  string to_agent = 3;
+  Object payload = 4;
+  float confidence = 5;
+  repeated string uncertainties = 6;
+  // REMOVED: flat context map (was the O(N²) growing step-result dump). Field 7 reserved.
+  reserved 7;
+  // NEW (ADR-0022 Phase 3): capacity-limited Global Workspace (content).
+  // Populated when use_global_workspace=true. Carries CAS content refs, not raw strings.
+  repeated ContextRef working_memory = 8;
+  // NEW (ADR-0022 Phase 3): control/routing metadata (not content context).
+  // Carries small fixed metadata: _session_token_id, _step_index, _capability,
+  // HITL signals (signal=y/n/e), mode (direct_retrieval / task_orchestration).
+  // Separated from working_memory so metadata never inflates the token budget.
+  map<string, string> metadata = 9;
+}
+
+service Orchestrator {
+  // The main method where the agent receives and processes a task (if the Orchestrator also implements this service)
+  rpc Execute(Handoff) returns (Handoff);
+
+  // Auction / Qualified-Volunteering Model
+  rpc RequestProposal(AuctionTask) returns (AgentProposal);
+
+  // Shared LTM semantic query — proxied through Substrate with ACL enforcement
+  rpc QueryMemory(MemoryRequest) returns (MemoryResponse);
+
+  // Bi-directional TUI shell stream. Upstream: user commands (Handoff).
+  // Downstream: real-time telemetry envelope (SymbiosisEvent).
+  rpc ChatStream(stream Handoff) returns (stream SymbiosisEvent);
+
+  // Proactive neural signal stream. Upstream: agent signals (Handoff with _signal_type).
+  // Downstream: plan execution telemetry (SymbiosisEvent).
+  rpc SignalStream(stream Handoff) returns (stream SymbiosisEvent);
+
+  // Managed LLM call: the Substrate acts as a metered proxy, forwarding chunks
+  // from the allocated TraitModel to the agent with per-chunk token accounting.
+  // ADR-0018.
+  rpc GenerateViaModelStream(GenerateStreamRequest) returns (stream GenerateChunk);
+
+  // Resolve a CID from the ContentStore (step results) or LTM pgvector.
+  // Used by agents' assemble_context(fetch_fn=agent.substrate.get_context_node).
+  // Returns empty data when the CID is unknown. ADR-0022 Phase 3.
+  rpc GetContextNode(ContextNodeRequest) returns (ContextNodeResponse);
+
+  // Store a content blob in the ephemeral ContentStore and return its CID
+  // (ADR-0048 D4/R7). Used by an agent's working memory to offload a large block
+  // and carry a {gist + cid} pointer; the blob is owner-stamped with the caller's
+  // session so reads are gated (GetContextNode). Idempotent (content-addressed).
+  rpc PutContextNode(PutContextNodeRequest) returns (PutContextNodeResponse);
+
+  // WatchConfig CRUD — premium build only. ADR-0032.
+  // Create or replace a reactive rule. Returns the persisted config ID.
+  rpc RegisterWatch(RegisterWatchRequest) returns (RegisterWatchResponse);
+  // List all registered WatchConfigs.
+  rpc ListWatches(ListWatchesRequest) returns (ListWatchesResponse);
+  // Delete a WatchConfig by ID.
+  rpc DeleteWatch(DeleteWatchRequest) returns (DeleteWatchResponse);
+  // Enable or disable a WatchConfig without deleting it.
+  rpc SetWatchActive(SetWatchActiveRequest) returns (SetWatchActiveResponse);
+
+  // Artifact storage with ADR-0034 tag-based access scoping. REQ-SDK-007c.
+  // Upload validates classification tags against the writer's scope + controlled
+  // vocabulary and kernel-stamps provenance before persisting.
+  rpc UploadArtifact(UploadArtifactRequest) returns (UploadArtifactResponse);
+  // Get an artifact by content hash; returns empty when the caller's effective
+  // scope does not permit the artifact's tags (fail-closed).
+  rpc GetArtifact(GetArtifactRequest) returns (GetArtifactResponse);
+  // List artifacts produced by a session+step, scope-filtered for the caller.
+  rpc ListStepArtifacts(ListStepArtifactsRequest) returns (ListStepArtifactsResponse);
+
+  // memory.remember() write-back. The kernel DERIVES classification from the
+  // agent's DefaultWriteTags (ADR-0035 C2); req.tags is a narrow-only hint.
+  rpc IngestMemory(IngestMemoryRequest) returns (IngestMemoryResponse);
+
+  // ADR-0039: kernel-owned tool registry. A cognitive agent invokes a granted
+  // system tool with LLM-marshalled args; the kernel authorizes (grant +
+  // resource policy + data scope + approval) and runs it in a confined process.
+  // The principal is taken from x-agent-id gRPC metadata, never from the body.
+  rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);
+  // ADR-0039: the system tools the calling agent (x-agent-id) may invoke, for
+  // building the agent's closed ReAct tool menu. Advisory only — ExecuteTool
+  // still authorizes every call. Honors the unrestricted bypass.
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
+  // ADR-0046: the system skills the calling agent (x-agent-id) may load, for the
+  // agent's [skills] menu section. Tier-1 (summary) by default; Tier-2 (full
+  // instructions) for a named skill via use_skill. Scope-gated; agent-local
+  // skills are NOT served here (they are SDK-local, the @tools analog).
+  rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse);
+  // ADR-0041: embed text into a vector using the kernel's embedder, for the
+  // agent's Local Recurrent Workspace relevance ranking. Read-only; no auth impact.
+  rpc Embed(EmbedRequest) returns (EmbedResponse);
+  // Operator-plane: stream pending dangerous-tool approval requests (ADR-0039 D10).
+  rpc WatchApprovals(WatchApprovalsRequest) returns (stream ApprovalRequest);
+  // Operator-plane: submit an approve/deny decision for a pending request.
+  rpc SubmitApprovalDecision(ApprovalDecisionRequest) returns (ApprovalDecisionResponse);
+}
+
+// ADR-0039 tool-execution messages.
+message ExecuteToolRequest {
+  string tool_name = 1;
+  string args_json = 2;        // marshalled by the agent's think() loop
+  string session_token_id = 3;
+  int32 step_index = 4;
+}
+message ExecuteToolResponse {
+  string result_json = 1;
+  string result_cid = 2;       // set when the result was offloaded to the ContentStore
+  bool denied = 3;
+  string deny_reason = 4;
+  string error = 5;
+  string arg_hash = 6;
+  string result_hash = 7;
+}
+// ADR-0039 tool-discovery messages. The principal is taken from x-agent-id
+// metadata, never from the body.
+message ListToolsRequest {}
+message ToolDescriptor {
+  string name = 1;
+  string description = 2;
+  string schema_json = 3;   // JSON Schema for the LLM tool-calling menu
+  bool dangerous = 4;       // gates on operator approval at execute time
+}
+message ListToolsResponse {
+  repeated ToolDescriptor tools = 1;
+}
+
+// ADR-0046 skill-discovery messages. The principal is taken from x-agent-id
+// metadata; query/k/names/full ride x-skill-* metadata (mirroring x-tool-*).
+message ListSkillsRequest {}
+message SkillDescriptor {
+  string name = 1;
+  string description = 2;          // Tier-1 one-line summary (always served)
+  string instructions = 3;         // Tier-2 SKILL.md body (only when full=true / use_skill)
+  repeated string tool_grants = 4; // bundled tools activated run-scoped on load (Tier-2)
+}
+message ListSkillsResponse {
+  repeated SkillDescriptor skills = 1;
+}
+
+// ADR-0041 embedding messages (Local Recurrent Workspace relevance ranking).
+message EmbedRequest {
+  string text = 1;
+}
+message EmbedResponse {
+  repeated float vector = 1;
+}
+
+// ADR-0039 D10 approval-channel messages (operator plane).
+message WatchApprovalsRequest {}
+message ApprovalRequest {
+  string id = 1;
+  string agent_id = 2;
+  string tool_name = 3;
+  string args_preview = 4;
+}
+message ApprovalDecisionRequest {
+  string id = 1;
+  bool approve = 2;
+  string approver_id = 3;
+}
+message ApprovalDecisionResponse {
+  bool ok = 1;
+}
+
+// ADR-0035 memory write-back.
+message IngestMemoryRequest {
+  string text       = 1;
+  repeated string tags = 2; // narrow-only classification hint (can only restrict)
+  double importance = 3;
+  string source     = 4;
+  string session_id = 5;
+}
+message IngestMemoryResponse {
+  string doc_id = 1;
+}
+
+// ADR-0034 / REQ-SDK-007c artifact messages.
+message UploadArtifactRequest {
+  bytes content = 1;
+  string content_type = 2;
+  string session_id = 3;
+  int32 step_index = 4;
+  repeated string tags = 5; // requested classification tags (validated server-side)
+  string semantic_summary = 6;
+}
+message UploadArtifactResponse {
+  string hash = 1;
+  repeated string tags = 2; // effective tags after validation + provenance stamping
+}
+message GetArtifactRequest {
+  string hash = 1;
+}
+message GetArtifactResponse {
+  bytes content = 1;
+  string content_type = 2;
+  repeated string tags = 3;
+  bool found = 4; // false when absent OR scope-denied (fail-closed; indistinguishable by design)
+}
+message ListStepArtifactsRequest {
+  string session_id = 1;
+  int32 step_index = 2;
+}
+message ArtifactMeta {
+  string hash = 1;
+  string content_type = 2;
+  int64 size_bytes = 3;
+  repeated string tags = 4;
+  string semantic_summary = 5;
+}
+message ListStepArtifactsResponse {
+  repeated ArtifactMeta artifacts = 1;
+}
+
+// ContextNodeRequest is used to dereference a CID. ADR-0022 Phase 3.
+message ContextNodeRequest {
+  string cid = 1;
+}
+
+// ContextNodeResponse carries the resolved content for a given CID.
+// Returns empty data when the CID is unknown (caller falls back to snippet).
+message ContextNodeResponse {
+  string cid = 1;
+  string type = 2;
+  bytes data = 3;
+  repeated string labels = 4;
+}
+
+message PutContextNodeRequest {
+  bytes data = 1;
+  string node_type = 2; // optional content classification; defaults to "agent_offload"
+}
+message PutContextNodeResponse {
+  string cid = 1;
+}
+
+// StatusUpdate carries connection health to the TUI status bar.
+message StatusUpdate {
+  string status = 1; // "Connected" | "Reconnecting" | "Disconnected"
+  string detail = 2;
+}
+
+// ThoughtChunk streams a reasoning fragment from the Planner to the Cortex pane.
+message ThoughtChunk {
+  string text = 1;
+  bool   done = 2; // true on the final chunk; TUI collapses the node to a checkmark
+}
+
+// AgentLog streams a structured log line from an agent to the Execution pane.
+message AgentLog {
+  string timestamp = 1; // RFC3339
+  string level     = 2; // DEBUG | INFO | WARN | ERROR
+  string message   = 3;
+  string agent_id  = 4;
+}
+
+// StepType classifies a plan step for HITL routing.
+enum StepType {
+  STEP_TYPE_ACTION       = 0;
+  STEP_TYPE_THOUGHT      = 1;
+  STEP_TYPE_INTERVENTION = 2;
+}
+
+// InterventionRequest is streamed by the kernel when a DAG step requires
+// human-in-the-loop confirmation before execution can proceed.
+message InterventionRequest {
+  int32  step_index   = 1;
+  string description  = 2;
+  bool   is_destructive = 3;
+  StepType step_type  = 4;
+}
+
+// BidEntry represents a single agent's proposal in an auction.
+message BidEntry {
+  string agent_id      = 1;
+  float  confidence    = 2;
+  string rationale     = 3;
+  int32  latency_ms    = 4;
+  bool   is_tool       = 5; // true when the bid came from a TraitTool Static Bidder
+}
+
+// AuctionEvent streams structured auction results from the Auctioneer to the TUI.
+message AuctionEvent {
+  string              task_id       = 1;
+  string              task_desc     = 2;
+  string              status        = 3; // "started" | "completed" | "failed"
+  string              winner_id     = 4;
+  repeated BidEntry   bids          = 5;
+  string              error_msg     = 6;
+}
+
+// PlanStep describes a single step in the execution plan topology.
+message PlanStep {
+  int32  index       = 1;
+  string query       = 2;
+  repeated int32 depends_on = 3;
+  bool   is_thought  = 4;
+}
+
+// PlanTopology streams the full DAG structure before step execution begins.
+message PlanTopology {
+  repeated PlanStep steps = 1;
+  string            subject = 2;
+}
+
+// StepCacheHit is streamed when a DAG step result is served from the
+// StepCache without calling the agent (ADR-0026). TUI renders the step
+// node as greyed-out with a "↻ cached" badge.
+message StepCacheHit {
+  int32  step_index = 1;
+  string key        = 2;
+}
+
+// SymbiosisEvent is the oneof envelope streamed from Substrate to TUI.
+message SymbiosisEvent {
+  oneof payload {
+    StatusUpdate        status_update        = 1;
+    ThoughtChunk        thought_chunk        = 2;
+    AgentLog            agent_log            = 3;
+    InterventionRequest intervention_request = 4;
+    AuctionEvent        auction_event        = 5;
+    PlanTopology        plan_topology        = 6;
+    StepCacheHit        step_cache_hit       = 7;
+  }
+}
+
+// Service that agents register with, or that agents implement (AgentService)
+service AgentService {
+  rpc RequestProposal(ProposalRequest) returns (ProposalResponse);
+  rpc Execute(Handoff) returns (Handoff);
+  rpc VerifyOutput(VerifyRequest) returns (VerifyResponse);
+}
+
+message ProposalRequest {
+  string task_id = 1;
+  string description = 2;
+  string context = 3;
+  google.protobuf.Timestamp deadline = 4;
+  float confidence_hint = 5;
+}
+
+message ProposalResponse {
+  float confidence = 1;
+  string rationale = 2;
+  repeated string requirements = 3;
+  int32 estimated_latency_ms = 4;
+  map<string, string> metadata = 5;
+}
+
+// Auction request
+message AuctionTask {
+  string id = 1;
+  string description = 2;
+  string context = 3;
+}
+
+// Agent bid
+message AgentProposal {
+  string agent_id = 1;
+  string task_id = 2;
+  float confidence = 3;
+  string rationale = 4;
+  repeated string requirements = 5;
+  int32 latency_ms = 6;
+}
+
+// Verifier Pool: judicial scoring request
+message VerifyRequest {
+  string task_id = 1;
+  string original_query = 2;
+  string winner_output = 3;
+  string winner_agent_id = 4;
+  float bid_confidence = 5;
+}
+
+// Verifier Pool: judicial scoring response
+message VerifyResponse {
+  float quality_score = 1;
+  string critique = 2;
+}
+
+// LTM semantic query request
+message MemoryRequest {
+  string query = 1;
+  int32 top_k = 2;
+}
+
+// Single LTM search result
+message MemoryResult {
+  string text = 1;
+  float score = 2;
+  string metadata = 3;
+}
+
+// LTM semantic query response
+message MemoryResponse {
+  repeated MemoryResult results = 1;
+}
+
+// GenerateStreamRequest carries the agent's LLM call parameters for
+// the Substrate's GenerateViaModelStream streaming proxy (ADR-0018).
+message GenerateStreamRequest {
+  string session_token_id = 1;
+  string prompt = 2;
+  GenerateOptions options = 3;
+}
+
+// GenerateOptions mirrors domain.GenerateOptions for the streaming RPC.
+message GenerateOptions {
+  int32 max_tokens = 1;
+  float temperature = 2;
+  repeated string stop_sequences = 3;
+}
+
+// GenerateChunk carries one token group streamed from the Substrate to
+// the agent. is_final=true on the last chunk; token_count is the Substrate's
+// real-time per-chunk estimate (Pass 1 of dual-pass accounting, ADR-0018).
+message GenerateChunk {
+  string text = 1;
+  int32 token_count = 2;
+  bool is_final = 3;
+  int32 usage_tokens = 4; // populated only on final chunk when provider supplies usage
+}
+
+// ── WatchConfig CRUD — ADR-0032 (premium build only) ─────────────────────────
+
+// WatchActionProto mirrors domain.WatchAction.
+message WatchActionProto {
+  string type = 1;        // "dispatch_agent" | "emit_event" | "start_plan" | "ingest"
+  string target_type = 2; // "agent_id" | "capability" — required for dispatch_agent
+  string target = 3;
+  string payload = 4;
+}
+
+// WatchConfigProto mirrors domain.WatchConfig.
+message WatchConfigProto {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string source_type = 4;
+  string source_stream_id = 5;
+  string condition = 6;
+  string condition_type = 7;
+  WatchActionProto action = 8;
+  bool active = 9;
+  string response_mode = 10;
+  map<string, string> daemon_params = 11; // simplified: string values only
+  int32 max_concurrent_plans = 12;
+}
+
+message RegisterWatchRequest {
+  WatchConfigProto config = 1;
+}
+
+message RegisterWatchResponse {
+  string id = 1;
+}
+
+message ListWatchesRequest {}
+
+message ListWatchesResponse {
+  repeated WatchConfigProto configs = 1;
+}
+
+message DeleteWatchRequest {
+  string id = 1;
+}
+
+message DeleteWatchResponse {
+  string id = 1;
+}
+
+message SetWatchActiveRequest {
+  string id = 1;
+  bool active = 2;
+}
+
+message SetWatchActiveResponse {
+  string id = 1;
+  bool active = 2;
+}

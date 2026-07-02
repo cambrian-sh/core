@@ -1,0 +1,87 @@
+# Operating system / binary / build files
+*.exe
+*.db
+*.log
+*.pyc
+*.pptx
+*.test
+
+# Build / benchmark / test artifacts — scoped, NOT blanket extension bans
+# (the old *.txt/*.csv/*.html/*.ts bans silently dropped legitimate source/fixtures). ADR-0057.
+benchmarks/
+
+# Go workspace — local multi-module dev (lives in parent dir); never committed.
+go.work
+go.work.sum
+
+# Generated and workspace directories
+.agents/
+.tmp/
+.test-results/
+.claude/
+.omo/
+.opencode/
+graphify-out/
+plans/
+.wiki/
+.sisyphus/
+deliverables/
+venv/
+
+
+# Secrets — never commit (.env.example is the committed template)
+.env
+.env.*
+!.env.example
+
+# Operator/user config — holds real endpoints, paths & secrets. Ship the template
+# (config.example.json) instead; users copy it to config.json. ADR-0057.
+configs/config.json
+configs/config.local.json
+configs/config.dev.json
+# Per-machine tuning overrides (curated power-user starter lives in tuning.json,
+# committed; tune in tuning.local.json instead). Config split per `.omo/plans/config-split.md`.
+configs/tuning.local.json
+# Per-machine MCP server definitions (template lives in mcp.json.example, committed;
+# operators copy to mcp.json and add servers). Config split per `.omo/plans/config-split.md`.
+configs/mcp.json
+# Embedder model config (template lives in embedder.json.example, committed; operators
+# copy to embedder.json). Per-machine override: embedder.local.json. Config split per ADR-0024.
+configs/embedder.json
+configs/embedder.local.json
+# LLM provider list (template lives in providers.json.example, committed; operators copy
+# to providers.json). Per-machine override: providers.local.json. Config split per ADR-0024.
+configs/providers.json
+configs/providers.local.json
+
+# Project metadata and lock files
+skills-lock.json
+.generate_presentation.js
+
+# Graphify and related files
+.graphifyignore
+.graphify*
+.gf_python
+
+# Documentation and notes
+# AGENTS.md is now a published, curated contributor/AI guide (tracked).
+# CLAUDE.md / GEMINI.md stay local (tool-specific; symlink them to AGENTS.md if desired).
+CLAUDE.md
+CURRENT-PROBLEMS.md
+GEMINI.md
+SWOT_ANALYSIS.md
+TIERED_AWARENESS_FOR_CAMBRIAN.md
+codebase_exploration.md
+project_summary.md
+*ROAST.md
+# NOTE: `docs/` is intentionally NOT ignored — ADRs live there and must be tracked.
+# Snapshot curation (Phase 5c/6) decides which docs publish vs stay private.
+
+# Miscellaneous
+.gitnexus/
+
+
+# KG-extractor notebook sweep cache + jupyter checkpoints
+notebooks/.kg_sweep_cache_*.pkl
+notebooks/.ipynb_checkpoints/
+kg_extractors/eval_evidence.json

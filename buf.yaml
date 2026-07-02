@@ -1,0 +1,17 @@
+version: v2
+modules:
+  - path: api/proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # Existing agent-facing cambrian.proto predates buf lint; the operator plane
+    # (operator.proto) is the contract gated going forward.
+    - PACKAGE_VERSION_SUFFIX
+    - FIELD_LOWER_SNAKE_CASE
+breaking:
+  use:
+    # Wire+JSON compatibility: a backward-incompatible operator-contract change
+    # fails CI (ADR-0047 D14 / issue 0047-13). The separate UI repo vendors
+    # operator.proto pinned to a kernel version.
+    - WIRE_JSON

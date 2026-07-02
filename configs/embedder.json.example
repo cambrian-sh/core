@@ -1,0 +1,12 @@
+{
+  "_comment": "Embedder model config. Copy to configs/embedder.json (gitignored) and edit. If both config.json and embedder.json define an `embedder` block, embedder.json wins. CAMBRIAN_EMBEDDER__* env vars override this file.",
+
+  "embedder": {
+    "provider": "ollama",
+    "model": "bge-large",
+    "endpoint": "http://localhost:11434",
+    "dimensions": 1024,
+    "timeout_ms": 10000,
+    "query_prefix": "Represent this sentence for searching relevant passages: "
+  }
+}

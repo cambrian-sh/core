@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: cambrian
+      POSTGRES_USER: cambrian
+      POSTGRES_PASSWORD: cambrian
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # Ollama runs on the host machine (native GPU access). Connect at host.docker.internal.
+  # toxiproxy forwards :11434 → host ollama, enabling fault injection for chaos scenarios.
+
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "8474:8474"
+      - "5432:5432"
+      - "11434:11434"
+    entrypoint:
+      - /toxiproxy
+      - -config
+      - /config/toxiproxy.json
+    volumes:
+      - ./toxiproxy-config.json:/config/toxiproxy.json:ro
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:

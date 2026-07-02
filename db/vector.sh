@@ -1,0 +1,1 @@
+docker exec -it cambrian-db psql -U "${CAMBRIAN_DB_USER:-cambrian}" -d cambrian_db -c "CREATE EXTENSION IF NOT EXISTS vector;"

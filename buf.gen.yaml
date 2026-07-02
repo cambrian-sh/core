@@ -1,0 +1,19 @@
+# buf code generation (ADR-0047 0047-13). The kernel repo owns the protos and
+# generates + commits the Go bindings. The separate UI repo vendors
+# operator.proto pinned to a kernel version and generates Rust (tonic/prost) and
+# TS (ts-proto / tauri-specta) from its own buf.gen.yaml — those plugin blocks
+# are documented below but not emitted here (no Go-side coupling to the UI repo).
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/go
+    out: api/proto
+    opt: paths=source_relative
+  - remote: buf.build/grpc/go
+    out: api/proto
+    opt: paths=source_relative
+
+# UI repo (separate) — for reference, not generated here:
+#   - remote: buf.build/community/neoeinstein-prost   # Rust (tonic core)
+#     out: src/gen
+#   - remote: buf.build/community/stephenh-ts-proto    # TypeScript (webview)
+#     out: src/gen/ts

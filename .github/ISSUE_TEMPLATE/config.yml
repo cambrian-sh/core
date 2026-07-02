@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & design discussion
+    url: https://github.com/cambrian-sh/cambrian-runtime/discussions
+    about: Ask questions, share ideas, and discuss design in GitHub Discussions.
+  - name: Security vulnerability
+    url: https://github.com/cambrian-sh/cambrian-runtime/security/advisories/new
+    about: Report security issues privately — never in a public issue (see SECURITY.md).
