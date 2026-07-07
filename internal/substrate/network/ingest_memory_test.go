@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
+	"github.com/cambrian-sh/cambrian-runtime/domain"
 	"github.com/cambrian-sh/cambrian-runtime/internal/memory"
 	"github.com/cambrian-sh/cambrian-runtime/internal/scope"
 
@@ -22,12 +23,50 @@ type fakeMemoryWriter struct {
 	gotHint                                    []string
 }
 
+type fakeIngestionProcessor struct {
+	gotDoc domain.ExternalDocument
+	docID  string
+}
+
+func (f *fakeIngestionProcessor) ProcessSync(_ context.Context, doc domain.ExternalDocument) (string, error) {
+	f.gotDoc = doc
+	return f.docID, nil
+}
+
 func (f *fakeMemoryWriter) Remember(_ context.Context, agentID, text string, hint []string, source, sessionID string, _ float64) (string, error) {
 	f.gotAgentID, f.gotText, f.gotHint, f.gotSource, f.gotSession = agentID, text, hint, source, sessionID
 	if f.err != nil {
 		return "", f.err
 	}
 	return f.docID, nil
+}
+
+func TestIngestMemory_ChunkingPathThreadsTagsAndImportance(t *testing.T) {
+	p := &fakeIngestionProcessor{docID: "source_doc:doc"}
+	s := &Server{IngestionProcessor: p}
+
+	resp, err := s.IngestMemory(agentCtx("analyst"), &pb.IngestMemoryRequest{
+		Text:       "body",
+		Source:     "source-uri",
+		SessionId:  "sess-1",
+		Tags:       []string{"document-qa", "source_document", "doc"},
+		Importance: 1.0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetDocId() != "source_doc:doc" {
+		t.Fatalf("doc id = %q, want source_doc:doc", resp.GetDocId())
+	}
+	if p.gotDoc.SourceURI != "source-uri" || p.gotDoc.Body != "body" || p.gotDoc.Author != "analyst" || p.gotDoc.ThreadID != "sess-1" {
+		t.Fatalf("processor got doc = %+v", p.gotDoc)
+	}
+	if len(p.gotDoc.Tags) != 3 || p.gotDoc.Tags[2] != "doc" {
+		t.Fatalf("processor tags = %#v", p.gotDoc.Tags)
+	}
+	if p.gotDoc.Importance != 1.0 {
+		t.Fatalf("processor importance = %v, want 1.0", p.gotDoc.Importance)
+	}
 }
 
 // 0035-05: an unknown principal (no scope profile) maps to PermissionDenied (fail-closed).

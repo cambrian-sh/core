@@ -22,6 +22,7 @@ const (
 	DocTypeEpisodicMemory     = "episodic_memory" // ADR-0029: session narrative index (goal + decisions)
 	DocTypeTool               = "tool"            // ADR-0044: tool descriptor indexed for semantic retrieval
 	DocTypeSkill              = "skill"           // ADR-0046: system-skill descriptor indexed for semantic retrieval
+	DocTypeDocSection         = "doc_section"     // ADR-0060: a structural section node (chapter/section/subsection) of an ingested document; NOT embedded, excluded from fact recall
 )
 
 // SearchOptions carries all optional parameters for a VectorStore.Search call.

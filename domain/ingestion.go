@@ -23,6 +23,8 @@ type ExternalDocument struct {
 	Timestamp   time.Time
 	ThreadID    string
 	Attachments []Attachment
+	Tags        []string
+	Importance  float64
 }
 
 // Attachment is a binary or text file associated with an ExternalDocument.

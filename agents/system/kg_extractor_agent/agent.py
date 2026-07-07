@@ -24,6 +24,7 @@ from cambrian_agent_sdk import DeterministicAgent
 from cambrian_agent_sdk._logging import configure_logging
 
 from kg_extractors.common import Chunk
+from kg_extractors.anchor_extractor import AnchorExtractor
 from kg_extractors.metadata_extractor import MetadataExtractor
 from kg_extractors.spacy_pattern_extractor import SpaCyPatternExtractor
 
@@ -55,6 +56,7 @@ class KgExtractorAgent(DeterministicAgent):
         # Build the extractors ONCE — the spaCy model load is the expensive step;
         # amortise it across every handoff for the life of the process.
         self._metadata = MetadataExtractor()
+        self._anchor = AnchorExtractor()  # deterministic structural-anchor tier (ADR-0053 D2)
         self._patterns = SpaCyPatternExtractor()  # raises ExtractorUnavailable if spaCy missing
 
     def run(self, task):
@@ -100,7 +102,7 @@ class KgExtractorAgent(DeterministicAgent):
         # seen from >=2 tiers is high-confidence, else low.
         # merged[idx][(h,r,t)] = {"triplet": {...}, "sources": set()}
         merged: list[dict] = [dict() for _ in texts]
-        for name, ext in (("metadata", self._metadata), ("spacy_patterns", self._patterns)):
+        for name, ext in (("metadata", self._metadata), ("anchor", self._anchor), ("spacy_patterns", self._patterns)):
             try:
                 res = ext.extract(chunks)
             except Exception:

@@ -59,11 +59,20 @@ class RerankerAgent(DeterministicAgent):
 
     def __init__(self, agent_id: str = "reranker_agent", **kwargs) -> None:
         super().__init__(agent_id=agent_id, description=AGENT_DESCRIPTION, **kwargs)
-        # Load the cross-encoder ONCE — the model load is the expensive step;
-        # amortise it across every recall for the life of the process.
-        from sentence_transformers import CrossEncoder
+        # LAZY load: the cross-encoder load (~6s + heavy sentence_transformers
+        # import) must NOT run in __init__, because the kernel's agent boot waits
+        # only ~10s for serve()'s socket to appear — loading here delays the socket
+        # past the deadline, boot fails, and the kernel re-spawns (reloading the
+        # model) on every request. Instead we open the socket immediately and load
+        # the model on the FIRST score; it then stays warm for the process life.
+        self._model = None
 
-        self._model = CrossEncoder(RERANK_MODEL, max_length=RERANK_MAXLEN)
+    def _ensure_model(self):
+        if self._model is None:
+            from sentence_transformers import CrossEncoder
+
+            self._model = CrossEncoder(RERANK_MODEL, max_length=RERANK_MAXLEN)
+        return self._model
 
     def run(self, task):
         query, documents = self._parse_request(task)
@@ -95,7 +104,7 @@ class RerankerAgent(DeterministicAgent):
         # activation_fn=Identity ⇒ RAW logits (predict's default sigmoid for a
         # 1-logit head is exactly what we must NOT apply here; the Go side
         # min-max normalizes the raw logits across the candidate set).
-        logits = self._model.predict(
+        logits = self._ensure_model().predict(
             pairs,
             activation_fn=torch.nn.Identity(),
             convert_to_numpy=True,

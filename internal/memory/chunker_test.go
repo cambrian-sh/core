@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -136,5 +137,64 @@ func TestBuildBodyPreview_NoSeparator_FallbackTruncation(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "...") {
 		t.Errorf("expected '...' suffix, got %q", got)
+	}
+}
+
+// Cycle 8 (T-1.12) — the T-1.4 refactor moved the legacy ChunkDocument
+// body into OptionCChunker. ChunkDocument is now a shim that calls
+// OptionCChunker.Chunk(ctx, &doc). The registry routes any (sourceType,
+// ext) without a matching route to the configured default chunker, and
+// the spec default is "option_c". This test pins the equivalence: the
+// legacy ChunkDocument output must equal the registry-resolved
+// OptionCChunker output, element-wise on Body and on the six required
+// metadata keys. If anyone changes OptionC's behavior (e.g. adds a new
+// metadata key, drops a key, changes the chunk boundary logic), this
+// test fails — the regression bar for T-1.4 / T-1.8 / T-1.12.
+func TestChunkRegistry_OptionC_MatchesChunkDocument(t *testing.T) {
+	doc := testDoc("First paragraph.\n\nSecond paragraph.")
+
+	reg, err := NewRegistry(defaultChunkers(), ChunkerConfig{Default: "option_c"})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+
+	chunker, err := reg.Resolve("file_drop", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got, want := chunker.Name(), "option_c"; got != want {
+		t.Fatalf("resolved chunker name = %q, want %q", got, want)
+	}
+
+	ctx := context.Background()
+	newChunks, err := chunker.Chunk(ctx, &doc)
+	if err != nil {
+		t.Fatalf("chunker.Chunk: %v", err)
+	}
+	oldChunks := ChunkDocument(doc)
+
+	if len(newChunks) != len(oldChunks) {
+		t.Fatalf("chunk count: new=%d old=%d", len(newChunks), len(oldChunks))
+	}
+
+	requiredKeys := []string{
+		"chunk_index",
+		"total_chunks",
+		"source_uri",
+		"source_type",
+		"author",
+		"timestamp",
+	}
+
+	for i := range newChunks {
+		if newChunks[i].Body != oldChunks[i].Body {
+			t.Errorf("chunk %d: Body mismatch: new=%q old=%q", i, newChunks[i].Body, oldChunks[i].Body)
+		}
+		for _, k := range requiredKeys {
+			if newChunks[i].Metadata[k] != oldChunks[i].Metadata[k] {
+				t.Errorf("chunk %d: Metadata[%q] mismatch: new=%v old=%v",
+					i, k, newChunks[i].Metadata[k], oldChunks[i].Metadata[k])
+			}
+		}
 	}
 }

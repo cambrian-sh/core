@@ -342,6 +342,16 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 			extracted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (chunk_id, h, r, t)
 		);`, TableChunkTriplets),
+		// ADR-0060: document-structure graph. Sections live in the documents table
+		// (document_type=doc_section, no embedding) so document_edges FKs work; every
+		// leaf chunk inherits its section breadcrumb + an ltree ordinal path for
+		// subtree/prefix retrieval, plus its parent section id. Idempotent.
+		"CREATE EXTENSION IF NOT EXISTS ltree;",
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS section_path TEXT NOT NULL DEFAULT '';`, TableDocuments),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS parent_section_id TEXT NOT NULL DEFAULT '';`, TableDocuments),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS section_ltree LTREE;`, TableDocuments),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_doc_section_ltree ON %s USING GIST (section_ltree);`, TableDocuments),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_doc_parent_section ON %s (parent_section_id);`, TableDocuments),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_chunk_triplets_h ON %s (h);`, TableChunkTriplets),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_chunk_triplets_t ON %s (t);`, TableChunkTriplets),
 		// ADR-0053 D2 (revised 2026-06-25, migration 009): per-triple confidence

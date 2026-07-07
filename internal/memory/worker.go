@@ -142,6 +142,13 @@ func (a *Agent) consolidateCluster(ctx context.Context, cluster []domain.SearchR
 
 func (a *Agent) decayLoner(ctx context.Context, doc domain.Document, processedIDs map[string]bool, dryRun bool, deletedCount *int) {
 	processedIDs[doc.ID] = true
+	if doc.DocumentType == domain.DocTypeMnemonicEntity {
+		if kind, _ := doc.Metadata["kind"].(string); kind == "source_document" {
+			if cid, _ := doc.Metadata["content_cid"].(string); cid != "" {
+				return // source-doc entities are GC-exempt (ADR-0060 D8)
+			}
+		}
+	}
 	if doc.ActivationStrength < 0.3 && doc.AccessCount < 2 {
 		if dryRun {
 			slog.Info("MemoryWorker [dry-run] will delete loner memory", "doc_id", doc.ID)

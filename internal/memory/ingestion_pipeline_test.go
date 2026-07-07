@@ -163,12 +163,14 @@ func TestIngestionManager_Enqueue_ReturnsFalseWhenFull(t *testing.T) {
 	}
 }
 
-// ── Cycle 6 — end-to-end: enqueued doc flows through to Agent.pendingItems ───
-
-func TestIngestionManager_EndToEnd_DocFlowsToPendingItems(t *testing.T) {
+func TestIngestionManager_EndToEnd_DocFlowsToChunkFacts(t *testing.T) {
 	gen := &mockLLMGen{response: scenesJSON(5)}
 	emb := &mockEmbedder{vec: []float32{0.1, 0.2}}
-	ag := testAgent()
+	store := &captureAllStore{}
+	ag := &Agent{
+		Manager:    &MemoryManager{Store: store, Embedder: emb},
+		pendingCap: 256,
+	}
 
 	sg := NewSceneGenerator(gen)
 	im := NewIngestionManager(sg, emb, ag, IngestionConfig{
@@ -186,16 +188,12 @@ func TestIngestionManager_EndToEnd_DocFlowsToPendingItems(t *testing.T) {
 		t.Fatal("Enqueue returned false unexpectedly")
 	}
 
-	// Allow the pipeline to process.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		ag.pendingMu.RLock()
-		n := len(ag.pendingItems)
-		ag.pendingMu.RUnlock()
-		if n > 0 {
+		if len(store.facts()) > 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Error("timed out waiting for doc to appear in Agent.pendingItems")
+	t.Error("timed out waiting for doc chunk facts to be saved")
 }

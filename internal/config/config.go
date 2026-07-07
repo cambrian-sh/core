@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/cambrian-sh/cambrian-runtime/domain"
@@ -310,6 +311,31 @@ type ExecutionConfig struct {
 	// Needs KG2RAGEnabled. ADR-0053.
 	QueryEntitySeedingEnabled bool `json:"query_entity_seeding_enabled,omitempty"`
 
+	// AnchorConstraintEnabled turns on document-local ANCHOR promotion: the
+	// query is parsed for structural anchors (Chapter 1, scene 1 / decimal
+	// sections / explicit ids) normalized to the same tokens the deterministic
+	// anchor tier stored at ingest, and the chunks carrying them are lifted above
+	// the relevance floor so the reranker cannot bury them among template-identical
+	// siblings. LLM-free; needs KG2RAGEnabled (the chunk_triplets store). ADR-0053.
+	AnchorConstraintEnabled bool `json:"anchor_constraint_enabled,omitempty"`
+
+	// StructureGraphEnabled turns on ADR-0060 structure-aware ingestion: the
+	// docling_agent parses each document into its real hierarchy and the kernel
+	// persists a structure graph (section nodes + PART_OF/NEXT edges) with every
+	// chunk stamped with its inherited section path. Opt-in (default false).
+	StructureGraphEnabled bool `json:"structure_graph_enabled,omitempty"`
+
+	// SceneGenOnIngestEnabled turns the per-item episodic scene-generation LLM
+	// call back ON for the document-ingest path. Default OFF (ADR-0060): it is a
+	// synchronous per-item LLM call that stalls ingest when no LLM is reachable
+	// and is not needed for document/structure retrieval.
+	SceneGenOnIngestEnabled bool `json:"scene_gen_on_ingest_enabled,omitempty"`
+
+	// NeighborWindowEnabled expands each returned chunk with its document
+	// neighbors (preceding/following) for adjacent context (ADR-0060). Cheap id
+	// lookups, no model. Default off.
+	NeighborWindowEnabled bool `json:"neighbor_window_enabled,omitempty"`
+
 	// ADR-0022: Global Workspace capacity model.
 	// ActivationThreshold is the post-BFS selection floor for PrimeForStep.
 	ActivationThreshold    float64 `json:"activation_threshold"`      // default 0.1
@@ -598,6 +624,62 @@ type Config struct {
 	// ADR-0043: external MCP servers the kernel consumes tools from. Opt-in —
 	// absent/empty ⇒ no MCP behaviour.
 	MCP MCPConfig `json:"mcp,omitempty"`
+	Chunker ChunkerConfig `json:"chunker"`
+}
+
+type ChunkerConfig struct {
+	Default   string            `json:"default"`
+	Routes    map[string]string `json:"routes,omitempty"`
+	ExtRoutes map[string]string `json:"ext_routes,omitempty"`
+	Late      LateChunkerConfig  `json:"late"`
+}
+
+type LateChunkerConfig struct {
+	Enabled      bool `json:"enabled"`
+	MaxDocTokens int  `json:"max_doc_tokens"`
+}
+
+var KnownChunkerNames = map[string]struct{}{
+	"option_c":            {},
+	"recursive_character": {},
+	"ast_go":              {},
+	"markdown_header":     {},
+	"late":                {},
+}
+
+func (c ChunkerConfig) Validate() *ConfigError {
+	var errs []string
+	if c.Default == "" {
+		errs = append(errs, "chunker.default is required")
+	} else if _, ok := KnownChunkerNames[c.Default]; !ok {
+		errs = append(errs, fmt.Sprintf("chunker.default %q is not a known chunker (known: %s)", c.Default, knownChunkerNameList()))
+	}
+	if c.Late.Enabled && c.Late.MaxDocTokens <= 0 {
+		errs = append(errs, "chunker.late.max_doc_tokens must be > 0 when chunker.late.enabled is true")
+	}
+	for k, v := range c.Routes {
+		if _, ok := KnownChunkerNames[v]; !ok {
+			errs = append(errs, fmt.Sprintf("chunker.routes[%q] -> %q: %q is not a known chunker (known: %s)", k, v, v, knownChunkerNameList()))
+		}
+	}
+	for k, v := range c.ExtRoutes {
+		if _, ok := KnownChunkerNames[v]; !ok {
+			errs = append(errs, fmt.Sprintf("chunker.ext_routes[%q] -> %q: %q is not a known chunker (known: %s)", k, v, v, knownChunkerNameList()))
+		}
+	}
+	if len(errs) > 0 {
+		return &ConfigError{Field: "chunker", Message: strings.Join(errs, "; ")}
+	}
+	return nil
+}
+
+func knownChunkerNameList() string {
+	names := make([]string, 0, len(KnownChunkerNames))
+	for n := range KnownChunkerNames {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // MCPConfig lists the external MCP servers the kernel connects to (ADR-0043).
@@ -702,7 +784,7 @@ func DefaultConfig() *Config {
 			Tier2MaxIdleSeconds:              300,
 			Tier2LLMTimeout:                  30,
 			Tier2BatchSize:                   32,
-			Tier1ChannelCapacity:             256,
+			Tier1ChannelCapacity:             4096,
 			EdgeExtractionBatchSize:          16,
 			EdgeExtractionMaxIdleMs:          2000,
 			EdgeExtractionQueueSize:          4096,
@@ -726,6 +808,8 @@ func DefaultConfig() *Config {
 			HebbianDecayPerDay:               0.95,
 			HebbianBaseWeight:                0.2,
 			KG2RAGEnabled:                    true, // ADR-0053 D3: KG²RAG one-hop expansion; opt-out via config.json
+			AnchorConstraintEnabled:          true, // ADR-0053: document-local anchor promotion; opt-out via config.json
+			StructureGraphEnabled:            true, // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
 			KG2RAGMaxHops:                    1,    // one-hop, KG²RAG paper default
 			KG2RAGMaxExpanded:                20,   // cap on chunks added by expansion
 			KG2RAGMaxEntities:                30,   // cap on entities walked per hop
@@ -785,6 +869,15 @@ func DefaultConfig() *Config {
 		},
 		AgentPool: AgentPoolConfig{
 			DefaultAgentTimeoutMs: 30000,
+		},
+		Embedder: EmbedderConfig{
+			SupportsLongContext: false,
+		},
+		Chunker: ChunkerConfig{
+			Default:   "option_c",
+			Routes:    map[string]string{},
+			ExtRoutes: map[string]string{},
+			Late:      LateChunkerConfig{Enabled: false, MaxDocTokens: 8192},
 		},
 	}
 }

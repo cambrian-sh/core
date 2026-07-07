@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"golang.org/x/sync/errgroup"
+	"github.com/cambrian-sh/cambrian-runtime/domain"
 )
 
 type OllamaEmbedder struct {
@@ -21,6 +21,8 @@ type OllamaEmbedder struct {
 	// store side. Empty = symmetric (EmbedQuery == Embed).
 	QueryPrefix string
 }
+
+var _ domain.BatchEmbedder = (*OllamaEmbedder)(nil)
 
 // EmbedQuery embeds QUERY text, applying QueryPrefix when set. This is the recall
 // side of an asymmetric embedder; the store side uses the plain Embed. A nil/empty
@@ -80,23 +82,71 @@ func (e *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 	return vec, nil
 }
 
+type ollamaBatchEmbedRequest struct {
+	Model string   `json:"model"`
+	Input []string `json:"input"`
+}
+
+type ollamaBatchEmbedResponse struct {
+	Embeddings [][]float64 `json:"embeddings"`
+}
+
+// EmbedBatch vectorizes a slice of texts in a single Ollama /api/embed
+// call using the batched `input` field (supported since Ollama 0.1.32) and
+// returns the vectors in the same order as texts. TimeoutMs is applied to
+// the whole batch (one HTTP request); callers with large batches should
+// scale TimeoutMs accordingly.
 func (e *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
-	results := make([][]float32, len(texts))
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(10)
-	for i, text := range texts {
-		i, text := i, text
-		g.Go(func() error {
-			vec, err := e.Embed(ctx, text)
-			if err != nil {
-				return fmt.Errorf("embedding error for text %d: %w", i, err)
-			}
-			results[i] = vec
-			return nil
-		})
+	if len(texts) == 0 {
+		return [][]float32{}, nil
 	}
-	if err := g.Wait(); err != nil {
+
+	timeout := time.Duration(e.TimeoutMs) * time.Millisecond
+	httpClient := &http.Client{Timeout: timeout}
+
+	reqBody := ollamaBatchEmbedRequest{Model: e.Model, Input: texts}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(reqBody); err != nil {
 		return nil, err
 	}
-	return results, nil
+
+	// Ollama's BATCH endpoint is /api/embed (accepts `input` as an array and
+	// returns `embeddings`); /api/embeddings is the legacy SINGLE endpoint that
+	// only understands `prompt` and silently ignores `input` (returning 0
+	// embeddings) — using it here was the "got 0 embeddings" bug.
+	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/api/embed", e.BaseURL), &buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("embedder: HTTP %d", resp.StatusCode)
+	}
+
+	var ollamaResp ollamaBatchEmbedResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+		return nil, err
+	}
+
+	if len(ollamaResp.Embeddings) != len(texts) {
+		return nil, fmt.Errorf("embedder: batch dimension mismatch: got %d embeddings for %d inputs", len(ollamaResp.Embeddings), len(texts))
+	}
+
+	out := make([][]float32, len(ollamaResp.Embeddings))
+	for i, emb := range ollamaResp.Embeddings {
+		vec := make([]float32, len(emb))
+		for j, val := range emb {
+			vec[j] = float32(val)
+		}
+		out[i] = vec
+	}
+	return out, nil
 }

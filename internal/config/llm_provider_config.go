@@ -18,6 +18,7 @@ type EmbedderConfig struct {
 	// (e.g. nomic, which is symmetric in our setup). The document/store path uses
 	// the plain Embed; only the recall path applies this.
 	QueryPrefix string `json:"query_prefix,omitempty"`
+	SupportsLongContext bool `json:"supports_long_context,omitempty"`
 }
 
 // GeneratorConfig declares one LLM generator the Provider can hand out. ADR-0042:

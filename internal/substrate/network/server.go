@@ -157,6 +157,14 @@ type Server struct {
 	// IngestMemory returns Unimplemented.
 	MemoryWriter MemoryWriter
 
+	// IngestionProcessor is the new chunking-pipeline path the gRPC
+	// IngestMemory routes through (ADR-0060 D8 / D9). nil →
+	// IngestMemory falls back to MemoryWriter; non-nil →
+	// IngestMemory routes the body through the chunker registry +
+	// source-doc entity + chunk ingestion. Satisfied by
+	// *memory.IngestionManager.
+	IngestionProcessor IngestionProcessor
+
 	// ADR-0039: kernel-owned tool registry + executor. nil → ExecuteTool returns
 	// Unimplemented (default: no tools).
 	ToolExecutor *domain.ToolExecutor

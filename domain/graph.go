@@ -21,6 +21,9 @@ const (
 	EdgeCoActivated EdgeType = "co_activated" // ADR-0049 D10: Hebbian — memories co-retrieved together wire together
 	EdgeEngaged     EdgeType = "engaged"      // ADR-0049: a scene engaged an entity (world-model structure; both endpoints persisted, FK-safe)
 	EdgeExtracted   EdgeType = "extracted"    // ADR-0052: LLM-extracted entity/relation edge; free-form label in DocumentEdge.Label
+	EdgePartOf      EdgeType = "part_of"      // ADR-0060: structural child→parent (chunk/section belongs to its section)
+	EdgeContains    EdgeType = "contains"     // ADR-0060: structural parent→child (section contains chunk/section)
+	EdgeNext        EdgeType = "next"         // ADR-0060: structural sibling sequence (reading order within a parent)
 )
 
 // DocumentEdge represents a typed, weighted causal link between two LTM documents.

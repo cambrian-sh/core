@@ -456,6 +456,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			mem.QueryService.EnableQueryEntitySeeding()
 			slog.Info("ADR-0053: query-entity seeding ENABLED (LLM-free recall)")
 		}
+		// Document-local anchor promotion (companion to the deterministic anchor
+		// tier). Also needs the chunk_triplets store; LLM-free. ADR-0053.
+		if cfg.Execution.AnchorConstraintEnabled {
+			mem.QueryService.EnableAnchorConstraint()
+			slog.Info("ADR-0053: anchor constraint ENABLED (document-local anchor promotion)")
+		}
 	} else {
 		slog.Info("ADR-0053: KG²RAG expansion DISABLED via config (kg2rag_enabled=false)")
 	}
@@ -500,6 +506,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// the kg_extractor. Opt-in via execution.reranker_enabled. Fail-soft: a
 	// down/erroring agent leaves the Stage-A order intact. The model id is the
 	// agent's RERANK_MODEL env (large = ceiling, base/v2-m3 = CPU edge).
+	if cfg.Execution.NeighborWindowEnabled {
+		mem.QueryService.EnableNeighborWindow()
+		slog.Info("ADR-0060: neighbor-window expansion ENABLED")
+	}
 	if cfg.Execution.RerankerEnabled {
 		mem.QueryService.EnableReranker(
 			&subnetwork.RerankerDispatcher{Auctioneer: meta.Auctioneer, AgentID: "reranker_agent"},
@@ -674,6 +684,38 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		rememberSvc.SetChunkTripletsBatcher(mem.ChunkTripletsBatcher)
 	}
 	cambrianServer.MemoryWriter = rememberSvc
+
+	// ADR-0060 D8/D9: route the gRPC IngestMemory through the
+	// chunking pipeline. The IngestionManager (constructed by
+	// NewMemoryStack alongside the DirectoryWatcher, ADR-0028)
+	// chunks the body, mints a source-doc entity, and ingests each
+	// chunk with chunk_relations.parent_entity_id set. The
+	// SourceType/extension drives the chunker registry's
+	// Resolve(sourceType, ext) lookup; documents with no extension
+	// fall back to OptionC. The gRPC handler falls back to
+	// MemoryWriter when the IngestionManager is nil (legacy path).
+	if mem.IngestionManager != nil {
+		cambrianServer.IngestionProcessor = mem.IngestionManager
+		mem.IngestionManager.SetSceneGenEnabled(cfg.Execution.SceneGenOnIngestEnabled)
+		// ADR-0053: also feed the document-ingest path's chunks to the triplet/
+		// anchor extractor, so uploaded documents populate chunk_triplets (KG2RAG,
+		// query-entity seeding, anchor promotion). Without this the batcher only
+		// sees the RememberService path, and uploaded docs get zero triplets.
+		if mem.ChunkTripletsBatcher != nil {
+			mem.IngestionManager.SetChunkTripletsBatcher(mem.ChunkTripletsBatcher)
+		}
+		// ADR-0060: structure-aware ingestion — parse each document's real hierarchy
+		// via the docling_agent and persist a structure graph (sections + PART_OF/NEXT
+		// edges), stamping every chunk with its inherited section path. Opt-in.
+		if cfg.Execution.StructureGraphEnabled {
+			mem.IngestionManager.SetStructureGraph(
+				&subnetwork.DoclingDispatcher{Auctioneer: meta.Auctioneer},
+				vec.StructureGraphStore(),
+			)
+			mem.QueryService.EnableSectionScopedRetrieval(vec)
+			slog.Info("ADR-0060: structure-aware ingestion ENABLED (docling parse -> structure graph)")
+		}
+	}
 
 	// ADR-0041: expose the kernel embedder for the agent Local Recurrent Workspace
 	// relevance ranking (the Embed RPC). Read-only; no authorization impact.

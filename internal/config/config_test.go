@@ -903,3 +903,57 @@ func TestLoadConfig_ProvidersFileOverridesConfigJSON(t *testing.T) {
 		t.Errorf("Generators[0].ID: want from-file, got %+v", cfg.LLMProvider.Generators)
 	}
 }
+
+// TestChunkerConfig_Defaults verifies that DefaultConfig() populates the
+// chunker.* block (T-1.11) and embedder.supports_long_context (ADR-0060
+// D6) with the spec defaults: Default="option_c", empty Routes /
+// ExtRoutes, Late{Enabled:false, MaxDocTokens:8192}, and
+// Embedder.SupportsLongContext=false.
+func TestChunkerConfig_Defaults(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if cfg.Chunker.Default != "option_c" {
+		t.Errorf("Chunker.Default: want %q, got %q", "option_c", cfg.Chunker.Default)
+	}
+	if len(cfg.Chunker.Routes) != 0 {
+		t.Errorf("Chunker.Routes: want empty, got %d entries: %v", len(cfg.Chunker.Routes), cfg.Chunker.Routes)
+	}
+	if len(cfg.Chunker.ExtRoutes) != 0 {
+		t.Errorf("Chunker.ExtRoutes: want empty, got %d entries: %v", len(cfg.Chunker.ExtRoutes), cfg.Chunker.ExtRoutes)
+	}
+	if cfg.Chunker.Late.Enabled != false {
+		t.Errorf("Chunker.Late.Enabled: want false, got %v", cfg.Chunker.Late.Enabled)
+	}
+	if cfg.Chunker.Late.MaxDocTokens != 8192 {
+		t.Errorf("Chunker.Late.MaxDocTokens: want 8192, got %d", cfg.Chunker.Late.MaxDocTokens)
+	}
+	if cfg.Embedder.SupportsLongContext != false {
+		t.Errorf("Embedder.SupportsLongContext: want false, got %v", cfg.Embedder.SupportsLongContext)
+	}
+}
+
+// TestChunkerConfig_InvalidRoute verifies that ChunkerConfig.Validate()
+// rejects an unknown chunker name in Routes (T-1.11 happy QA). The error
+// must be a *ConfigError and must name the offending value so the
+// operator can find the misconfigured route.
+func TestChunkerConfig_InvalidRoute(t *testing.T) {
+	cfg := config.ChunkerConfig{
+		Default: "option_c",
+		Routes: map[string]string{
+			"file_drop": "nonexistent_chunker",
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate: want *ConfigError for unknown chunker name in Routes, got nil")
+	}
+	var cfgErr *config.ConfigError
+	if !errors.As(err, &cfgErr) {
+		t.Fatalf("Validate: want *config.ConfigError, got %T: %v", err, err)
+	}
+	if !strings.Contains(cfgErr.Error(), "nonexistent_chunker") {
+		t.Errorf("ConfigError message: want to mention %q, got %q", "nonexistent_chunker", cfgErr.Error())
+	}
+	if cfgErr.Field != "chunker" {
+		t.Errorf("ConfigError.Field: want %q, got %q", "chunker", cfgErr.Field)
+	}
+}

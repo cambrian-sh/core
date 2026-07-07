@@ -62,6 +62,9 @@ type QueryService struct {
 	kgMaxEntities   int                  // ADR-0053 Phase 0: max entities considered per hop; default 30
 	kgPerEntity     int                  // ADR-0053 Phase 0: max chunks pulled per entity; default 5
 	queryEntitySeed bool                 // recall: seed kgExpand from entities extracted from the QUERY text (LLM-free)
+	anchorConstraint bool               // recall: promote chunks carrying the query's document-local anchors (companion to the anchor tier)
+	sectionStore     SectionScopedStore  // ADR-0060: structure-graph section-scoped retrieval; nil = disabled
+	neighborWindow   bool                // ADR-0060: expand each returned chunk with its document neighbors
 	blender         atomic.Pointer[Blender] // ADR-0054 Stage A: nil = no blend re-rank; hot-swappable at runtime (SetBlendWeights ← operator SetRuntimeConfig)
 	rankSignals     RankSignalStore      // ADR-0054 Stage A: pagerank + per-chunk confidence source
 	recallTopK      int                  // ADR-0054: results returned to caller; 0 ⇒ defaultRecallTopK
@@ -847,6 +850,19 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 		results = q.applyStageBRerank(ctx, query, results)
 	}
 
+	// Document-local anchor promotion: when the query names a structural anchor
+	// (Chapter 1, scene 1 / an explicit id), lift the chunks that carry it above
+	// the floor so the reranker can't bury them among template-identical siblings.
+	if q.anchorConstraint && q.chunkTriplets != nil {
+		results = q.applyAnchorConstraint(ctx, results, query, vec)
+	}
+
+	// ADR-0060: structure-graph section scoping — promote chunks under a section
+	// the query names, resolved via the parser-derived hierarchy + ltree subtree.
+	if q.sectionStore != nil {
+		results = q.applySectionConstraint(ctx, results, query, vec)
+	}
+
 	sid, _ := domain.SessionIDFromContext(ctx)
 
 	filtered := results[:0]
@@ -879,6 +895,11 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	// off the read path so recall latency is untouched. Off for the action lane.
 	if spread && q.heb.enabled && len(filtered) >= 2 {
 		go q.reinforceCoActivation(filtered)
+	}
+	// ADR-0060: neighbor-window — append each returned chunk's document neighbors
+	// (preceding/following) for adjacent context. Runs last so ranking is untouched.
+	if q.neighborWindow {
+		filtered = q.applyNeighborWindow(ctx, filtered)
 	}
 	return filtered, nil
 }

@@ -48,6 +48,7 @@ the 5 surface tokens used by the F-verifiers. The runtime is at
 | Grounded planner: pre-plan discovery Scout (privileged `run_think` agent over `ToolExecutor.RestrictedTools`) | 0051 | Implemented (issues 001-006 closed 2026-06-23; the Go `awareness.Scout` organ detour was reversed; agent-side path is the authority) |
 | KG²RAG retrieval: chunks + per-chunk triplets + tiered extraction (frozen `kg_extractors/` pipeline, Tier-1 metadata + Tier-2 spaCy patterns, LLM demoted to opt-in Tier-3) | 0053 | Implemented (D2 revised + wired 2026-06-25: vector seed + one-hop `kgExpand` shipped; `kg_extractor_agent` is a privileged system organ, behind `execution.kg_extractor_enabled`) |
 | Multi-signal ranking: stage-A blend weights (cosine / lexical / coherence / confidence / pagerank / recency / activation) | 0054 | Implemented (LoCoMo recall@10 0.673/0.662 → 0.763/0.766; `SetRuntimeConfig` hot-swap; reranker deferred) |
+| Multi-strategy chunking pipeline (pluggable `domain.Chunker` port; 5 chunkers `option_c` / `recursive_character` / `ast_go` / `markdown_header` / `late`; data-driven registry with `SourceType → ext → default` precedence; `chunk_relations` 512B budget; `source_document` entity via `DocTypeMnemonicEntity`, GC-exempt; `ChunkDocument` back-compat shim) | 0060 | Implemented (the `option_c` arm is the back-compat floor; `late` is gated on `chunker.late.enabled` + `embedder.supports_long_context` + `chunker.late.max_doc_tokens=8192`; over-budget docs fall back to `option_c` with a `late_fallback` log) |
 | Semantic tool retrieval (embed-rank, `find_tools`, hybrid push+pull) | 0044 | Implemented (residual: HITL benchmark + floor/k tuning deferred) |
 | Global Workspace context (ContentStore push/pull, `ContextRef` cid offload) | 0022 | Accepted (design) (the prime/pull surface is wired; full-derivation rollout follows ADR-0048 follow-ups) |
 | Kernel-derived write classification (DefaultWriteTags, agent may only narrow) | 0035 | Accepted (design) |
@@ -116,7 +117,7 @@ inside `domain/`'s ports.
 | `internal/kernel/` | Subsystem assembly: four stacks (`MemoryStack` / `AwarenessStack` / `MetabolismStack` / `SupervisionStack`) and `ProvideServer`. The only cross-subsystem wirer. |
 | `internal/awareness/` | Planner / Cortex. Produces `ExecutionPlan`; owns the Zero-Hardcode rule at the LLM layer; `ReplanHandler`, `ConsolidatorAgent`, `XMLParser`. |
 | `internal/metabolism/` | Auctioneer, AgentManager, Gatekeeper, verifier pool, interview worker, DAG executor, A2A connector. The bidding and selection machinery. |
-| `internal/memory/` | LTM: pgvector store adapter, hippocampus (procedural templates), KG²RAG retrieval (`kgExpand`), scene/edge writers, `WorkspaceStage`, `SpreadingEngine`, `ProfileStore`, `ArtifactVault` (CAS), `MemoryManager` / `MemoryAgent` / `MemoryWorker`. |
+| `internal/memory/` | LTM: pgvector store adapter, hippocampus (procedural templates), KG²RAG retrieval (`kgExpand`), scene/edge writers, `WorkspaceStage`, `SpreadingEngine`, `ProfileStore`, `ArtifactVault` (CAS), `MemoryManager` / `MemoryAgent` / `MemoryWorker`. **Chunking pipeline (ADR-0060):** `chunker_registry` (data-driven `SourceType → ext → default` routing, Zero-Hardcode clean), `chunk_relations` (per-chunk 512B parent+linear+sibling metadata), `chunkers/` subpackage (the 5 implementations: `option_c` / `recursive_character` / `ast_go` / `markdown_header` / `late`), `OptionCChunker` (the 115-line back-compat floor), `ChunkDocument` shim over `OptionCChunker`. **Structure-aware pipeline (ADR-0060 default):** `structure_graph.go` (leaves-as-chunks + `BuildStructureGraph`), `structure_retrieval.go` (`applySectionConstraint`), `neighbor_window.go` (off by default), `anchor_query.go` (document-local anchor constraint), plus the `docling_agent` parse RPC and `postgres/structure_store.go` writer. |
 | `internal/supervision/` | Gatekeeper, verifier pool, `ProfileAggregator`, `SynapticWatcher`, `Watcher` (signal-to-inspiration), `MemoryLifecycleManager` (event-driven session lifecycle, replaces `CircadianRhythm`). |
 | `internal/substrate/` | gRPC server (`network`), session, OperatorConsole plane (`operator/`), synaptic event log, knowledge-graph extractor dispatch. |
 | `internal/scope/` | Access control (ADR-0034/0035). `ScopedVectorStore` (fail-closed read chokepoint), `ScopedStoreWriter`, `ScopeResolver` (Postgres `agent_scopes` + LISTEN/NOTIFY), controlled vocabulary. Compiled into every build; security primitive, not paywalled. |
@@ -133,7 +134,7 @@ inside `domain/`'s ports.
 | `internal/service/` | Cross-cutting services (PII masker, audit ledger, scope resolution glue). |
 | `internal/benchmarks/`, `internal/testing/` | Internal benchmark and test fixtures (kernel-side; the public harness is `cambrian-benchmarks`). |
 | `api/proto/` | The gRPC/protobuf contract: `cambrian.proto` (legacy Orchestrator), `operator.proto` (OperatorConsole, the held-stable UI surface per ADR-0047). Generated Go stubs sit alongside. |
-| `agents/` | Production Python agents auto-discovered by BBolt (`*agent.py` + `AGENT_DESCRIPTION`/`AGENT_MANIFEST`): `code_generator`, `code_executor`, `terminal`, `summariser`, `analyst`, plus the system organs `scout_agent` (ADR-0051) and `kg_extractor_agent` (ADR-0053 D2 revised). |
+| `agents/` | Production Python agents auto-discovered by BBolt (`*agent.py` + `AGENT_DESCRIPTION`/`AGENT_MANIFEST`): `code_generator`, `code_executor`, `terminal`, `summariser`, `analyst`, plus the system organs `scout_agent` (ADR-0051), `kg_extractor_agent` (ADR-0053 D2 revised), `docling_agent` (ADR-0060 structure-aware ingestion; lazy Docling backend), and `reranker_agent` (ADR-0054, built + deferred, lazy model load). |
 | `pkg/` | Reusable internal packages with stable enough semantics to import across the `internal/` wall (currently `util/`). |
 | `scripts/` | Build, test, CI helpers: `check-no-premium.sh` (premium-leak audit), `check-separability.ps1` (hexagonal boundary), `run-tests.ps1` / `run-all-tests.ps1`, `setup-python-runtime.{ps1,sh}`, `chaos-compose.yml`, `toxiproxy-config.json`. |
 | `configs/` | Committed starter config: `tuning.json` (curated power-user starter, 13 fields), `*.example.json` templates for config/embedder/providers/mcp. The real `*.json` files are gitignored (live secrets). |
@@ -148,7 +149,7 @@ Memory is an **Engram engine**, not a flat vector store. The kernel reads
 typed documents by `DocType*` (Fact / Action / Scene / Entity / Episodic /
 AgentProfile / ProceduralTemplate / NegativeEdge / Tool / Skill), writes
 through a two-tier pipeline, and primes the agent with a bounded,
-relevance-ranked bundle. Six decisions are load-bearing:
+relevance-ranked bundle. Eight decisions are load-bearing:
 
 - **SCENE + FACT pairing (ADR-0015).** A completed step writes up to two
   coupled documents: a `DocTypeMnemonicFact` (the structured result) and a
@@ -206,6 +207,107 @@ relevance-ranked bundle. Six decisions are load-bearing:
   `sources[]` columns per migration 009). The `kg_extractor_agent` is a
   privileged system organ, exactly like the Scout, so it bypasses
   auction/Gatekeeper/interview by construction.
+
+- **Multi-strategy chunking pipeline (ADR-0060).** External knowledge ingest
+  is no longer a single Go function. A pluggable `domain.Chunker` port
+  (`cambrian-core/domain/chunker.go`) declares
+  `Name() / Supports() / Chunk()`; the `Chunk` value carries `Body` + a
+  free-form `Metadata` map (the `chunk_relations` subkey is reserved
+  for the IngestionManager and is set after `Chunk()` returns). Five
+  implementations live in `internal/memory/chunkers/`: `OptionCChunker`
+  (the 115-line paragraph-or-sentence back-compat split; the floor;
+  the `ChunkDocument` shim in `internal/memory/chunker.go` delegates
+  to it), `RecursiveCharacterChunker` (LangChain-style recursive
+  separator with `["\n\n", "\n", " ", ""]`, default `chunk_size=200`
+  per Chroma 2024), `ASTGoChunker` (pure-Go `go/ast` decl-level
+  splitter for `.go` files; no cgo, no tree-sitter dependency),
+  `MarkdownHeaderChunker` (heading-based split; retains
+  `section_path` in metadata), and `LateChunker` (Günther et al.
+  long-context encoder + per-chunk mean-pool over masked token
+  embeddings, gated — see below). The `chunker_registry`
+  (`internal/memory/chunker_registry.go`) routes `(sourceType, ext)`
+  in strict precedence
+  `match(SourceType) → match(ext) → default("option_c")`; the default
+  name is a config value, not a Go constant — `Resolve` is a pure map
+  lookup with no `switch sourceType` / `switch ext` (the
+  **Zero-Hardcode Rule**). Each ingested document is materialised as
+  one `DocTypeMnemonicEntity` row (ADR-0049 D8) with discriminator
+  `kind: "source_document"`, carrying `SourceURI`, `SourceType`,
+  `Title`, `Author`, `Timestamp`, and the offloaded `ContentCID`
+  (the byte-oriented `domain.ContentStore.Put` offloads the full body
+  once per document, not once per chunk). Source-document entities
+  are **GC-exempt** (ADR-0060 D8) because they are the drill-down
+  targets for chunk recall, not the chunk-level recall targets
+  themselves — the `parent_entity_id` in `chunk_relations` resolves
+  to them. `IngestMemory` forwards the authenticated author, session,
+  tags, and importance into this path; `ProcessSync` returns only after
+  the chunk bodies have been embedded as a batch, then saved as durable
+  `DocTypeMnemonicFact` rows in one store batch, using deterministic
+  `{document_id}-chunk-N` IDs and raw chunk text. Each chunk's
+  `Metadata["chunk_relations"]` carries the
+  JSON-marshaled
+  `ChunkRelations { ParentEntityID, PrecedingChunkID, FollowingChunkID,
+  SiblingContext { ParentTitle(80B), ParentSummary(120B),
+  ParentScene(120B), PrecedingSnippet(96B), FollowingSnippet(96B) } }`
+  with a strict 512B total budget (`SiblingContext.MarshalJSON`
+  enforces it; over-budget fields are trimmed at the right, never
+  mid-rune). The retriever follows
+  `chunk_relations.parent_entity_id` → source-doc entity →
+  `content_cid` → full body via `ContentStore.Get`, so drill-down
+  from a recalled chunk to the source document is deterministic.
+  `LateChunker` is **opt-in**, not the default: it is selected only
+  when `chunker.late.enabled = true` AND
+  `embedder.supports_long_context = true` (default `false` until the
+  embedder-selection ADR resolves) AND the body is within
+  `chunker.late.max_doc_tokens` (default `8192`, matching
+  `nomic-embed-text`); over-budget docs fall back to
+  `OptionCChunker` with a `late_fallback` log + run-manifest metric.
+  `domain.Embedder` gains an additive
+  `EmbedBatch(ctx, []string) ([][]float32, error)` so the late
+  chunker drives the vectorized Ollama `/api/embed`
+  `input: texts` endpoint in one request rather than N (the batch embedder
+  was fixed 2026-07-06 to use `/api/embed`; the legacy single-vector
+  `/api/embeddings` ignored the `input` array and silently fell back to a
+  slow per-chunk loop).
+
+- **Structure-aware ingestion pipeline (ADR-0060 deferred items, now the
+  default).** This implements three items ADR-0060 v1 explicitly deferred —
+  *PDF structure-aware parsing*, *hierarchical chunk relations (`section_id`)*,
+  and *chunk-level graph edges in `document_edges`* — as the **default**
+  chunking path (`execution.structure_graph_enabled`, default **true** in
+  `internal/config/config.go` + `configs/tuning.json`; opt-out). On ingest the
+  `IngestionManager` RPCs the `docling_agent` sidecar
+  (`agents/system/docling_agent/`) to recover the document's real hierarchy:
+  a dependency-free Markdown/text parser for born-digital text, and a guarded
+  **Docling** backend (RT-DETR layout + TableFormer) for PDF bytes
+  (`docling_backend.py`; OCR off by default, `DOCLING_OCR=1` forces it for
+  scanned pages). The parse returns a normalized `StructuredDocument`
+  (`structure.py`) of `StructNode`s, with an **OCR-junk filter**
+  (`is_junk_leaf`) that drops image placeholders, config-echo, and low-alpha
+  fragments at parse time. On the Go side (`internal/memory/structure_graph.go`)
+  the parser's **leaves *are* the chunk set** (`ChunksFromLeaves`, with
+  size-controlled merging of consecutive same-section leaves toward ~500 chars),
+  so `section_path` stamps are correct by construction. Sections are persisted
+  as `documents` rows with `document_type='doc_section'` (no embedding, so the
+  `document_edges` FK holds); every leaf chunk is stamped with `section_path` /
+  `section_ltree` (Postgres `ltree`, GiST-indexed for `<@` subtree queries) /
+  `parent_section_id`; typed structural edges (`part_of`, `next`) are written
+  to `document_edges` (`internal/infrastructure/postgres/structure_store.go`,
+  wired through `DoclingDispatcher`). Retrieval adds a **section-scoped
+  promotion** stage (`internal/memory/structure_retrieval.go`):
+  `applySectionConstraint` in `searchByType` promotes chunks in the
+  `section_ltree` subtree of a section the query names (`extractSectionTerms`
+  prefers hierarchical numbers like `3.2` over topic words). When a document has
+  no heading hierarchy (flat plain text, or a broken PDF text layer) the section
+  graph is empty and the pipeline falls back cleanly to the flat chunker. Two
+  adjacent levers ship built but **off by default**:
+  `execution.neighbor_window_enabled` (`internal/memory/neighbor_window.go`,
+  append-after context expansion over `chunk_relations` neighbors) and the
+  Stage-B `reranker_enabled` (see Known gaps). Ingest perf was fixed alongside:
+  per-item scene generation on the ingest path is gated by
+  `execution.scene_gen_on_ingest_enabled` (default **false**) — with the batch
+  embedder fix this cut a 2-PDF / 236-chunk ingest from ~37 s (RPC-deadline
+  timeouts) to ~6.7 s.
 
 ---
 
@@ -294,10 +396,14 @@ unwired, or guarded. Each entry cites the file or ADR where the work lives.
 | `caller_scope` Phase-2 wiring (ADR-0034) | Mechanism is implemented; live wiring (persist at `StartConversation`, re-derive per-RPC, `ScopeSystem` for system reads, artifact RPCs, promotion event-bus) is HITL-gated. |
 | `embedder` 768→1024 dim migration | Resolved for recall (`bge-large`@1024 + query prefix, LoCoMo recall@100 0.47→0.94). Residual: the ADR-0044 tool menu is not re-embedded; `tool_retrieval_floor>0` would let the tool path benefit too. Stays sub-1B so it co-resides with `qwen3:8b` on 12 GB. |
 | Stage-A blend weights (ADR-0054) | Tuned and adopted in `config.json` (cosine 0.40, lexical 0.20, coherence 0.05, confidence 0.10, pagerank/recency/activation 0.0). Coordinate-descent sweep over the operator plane (`SetRuntimeConfig` hot-swap), conv-split train/test: baseline @10 0.673/0.662 → 0.763/0.766. Takes effect on restart. |
-| Stage-B reranker (ADR-0054) | Built and DEFERRED (`reranker_enabled=false`). bge cross-encoder as a warm system organ (`reranker_agent`, mirrors `kg_extractor`) regressed recall on LoCoMo (recall@1 0.168→0.089): the Stage-A blend already orders the top-50 well. Ollama can't serve cross-encoders; GPU revisit = CUDA torch + `bge-reranker-v2-m3`. |
+| Stage-B reranker (ADR-0054) | Built and DEFERRED (`reranker_enabled=false`). bge cross-encoder as a warm system organ (`reranker_agent`, mirrors `kg_extractor`) regressed recall on LoCoMo (recall@1 0.168→0.089): the Stage-A blend already orders the top-50 well. Ollama can't serve cross-encoders; GPU revisit = CUDA torch + `bge-reranker-v2-m3`. Re-tested 2026-07-06 on a 2-PDF corpus: still net-negative (specific-fact top-5 0.50→0.30, the cross-encoder disagreeing with the correct chunk) and ~8 s/query on CPU. Two latent bugs were fixed while there and kept: `sentence-transformers` was uninstalled (agent crashed → silent fail-soft, never ran), and the model loaded in `__init__` blew the 10 s agent-boot socket timeout (`instance_manager.go`) → re-spawn per query; now **lazy-loaded** (`_ensure_model`), so it boots instantly and stays warm. Enable only with a GPU. |
 | pgvector dim-migration is destructive | An embedding-dimension change recreates `documents` (drop+recreate; pgvector can't `ALTER` a VECTOR dim). The boot path now refuses to start if memory docs are present unless `ALLOW_DESTRUCTIVE_DIM_MIGRATION=1` is set. The guard only protects inside the running binary; rebuild before launch. |
 | Model-failover requires ≥2 generators | Automatic model failover via `selectModelCandidates` only fills `Fallbacks` when `FindModelCandidates` returns ≥2. A single-generator config has one candidate and no rung to fall back to. |
 | MCP tool OAuth / per-tenant budget | `mcp` tool price in the menu and per-tenant OAuth/budget are deferred. The `mcp:<server>/<tool>` shape is wired and injection-scanned. |
+| Re-chunking backfill (ADR-0060) | When the operator changes the `chunker.*` config, existing documents are not re-chunked in v1. A backfill path is future work; operators re-ingest the affected sources to apply a new strategy. |
+| Source-document entity size (ADR-0060) | Source-doc entities are GC-exempt (ADR-0060 D8) and accumulate; operators must size the `ContentStore` (CAS) and the entity table accordingly. A dedicated size-cap / tiered-storage ADR is a follow-up. |
+| Late-chunker gate is implicit (ADR-0060) | Setting only one of `chunker.late.enabled` / `embedder.supports_long_context` silently routes to `OptionCChunker` (logged warn at resolve time, not a hard error). Intent is "fail to the known-good default," but it means the gate is *implicit* for any operator who only sets one of the two flags. |
+| Future chunkers (ADR-0060) | **Implemented 2026-07-06 (default on) — see *Structure-aware ingestion pipeline* above:** PDF structure-aware parsing (via **Docling**, not Marker/LayoutLMv3), hierarchical chunk relations (`section_path` / `section_ltree` / `parent_section_id`), and chunk-level graph edges in `document_edges` (`part_of` / `next`). Still deferred: tree-sitter multi-language AST chunker (cgo-blocked; the v1 AST path is `go/ast`-only), `sibling_index` chunk relations, LLM-driven chunkers (Contextual Retrieval / Propositions / Small-to-big — explicitly rejected: no per-chunk LLM call), auto-router (LLM picks chunker per document), and re-chunking backfill when `chunker.*` config changes. |
 | `go.mod` module rename | `cambrian-core/go.mod` still declares `module github.com/cambrian-sh/cambrian-runtime` even though the directory is `cambrian-core/`. The rename cascades through every internal Go import, the premium `go.mod` `require` block, and `go.work`. Follow-up ticket, not part of this docs plan. |
 
 ---
@@ -336,6 +442,12 @@ The kernel's domain language. Bold terms are the canonical names used in
 - **LTMEnrichment**, the typed `PrimeForPlanning` result: `Facts` + `Negatives` + `Episodes`; carries `<PrecedentLTM>` from ADR-0049 and `<DiscoveryLTM>` from the Scout (ADR-0051).
 - **Tier-1 / Tier-2**, the in-memory channel immediately queryable in-run, and the background LLM-as-Judge that commits FULL / FACT_ONLY / DROP with a heuristic fallback on timeout (ADR-0015).
 - **failure_kind**, the typed result of a failed step (`retryable` / `non_retryable` / `verification_failed` / `partial` / `replan_needed`); consumed by the DAGExecutor's tiered recovery (ADR-0005/0010/0013).
+- **Chunker**, the `domain.Chunker` hexagonal port (`Name() / Supports() / Chunk()`); the `Chunk` value carries `Body` and a free-form `Metadata` map. Five implementations live in `internal/memory/chunkers/` (`option_c` / `recursive_character` / `ast_go` / `markdown_header` / `late`); routing is data-driven via the `chunker_registry` (Zero-Hardcode Rule, ADR-0060).
+- **chunker_registry**, the data-driven switchboard at `internal/memory/chunker_registry.go` that routes `(sourceType, ext)` to a registered `Chunker` in strict precedence `match(SourceType) → match(ext) → default`; the default name is a config value, not a Go constant. An unknown route or default is a startup error, not a silent fallback.
+- **chunk_relations**, the per-chunk JSON-marshaled metadata payload (set by the IngestionManager in `Chunk.Metadata["chunk_relations"]`): a `ChunkRelations` value carrying `ParentEntityID`, `PrecedingChunkID`, `FollowingChunkID`, and a `SiblingContext`. The retriever follows `parent_entity_id` to drill down to the source document (ADR-0060).
+- **SiblingContext**, the content half of `chunk_relations`: parent title, parent summary, parent scene, preceding snippet, following snippet. Per-field caps 80 / 120 / 120 / 96 / 96 bytes; strict 512B total budget enforced by `SiblingContext.MarshalJSON` (over-budget fields are trimmed at the right, never mid-rune). JSON keys and identifier fields are not in scope.
+- **source_document**, the `DocTypeMnemonicEntity` discriminator used for ingested external documents (ADR-0060 D1). The entity row carries `SourceURI`, `SourceType`, `Title`, `Author`, `Timestamp`, and `ContentCID` (the CAS handle returned by `domain.ContentStore.Put`). **GC-exempt** (ADR-0060 D8) because source-doc entities are drill-down targets for chunk recall, not chunk-level recall targets themselves.
+- **LateChunker**, the gated long-context encoder chunker (Günther et al., arXiv:2409.04701). Selected only when `chunker.late.enabled = true` AND `embedder.supports_long_context = true` (default `false` until the embedder-selection ADR resolves) AND the body is within `chunker.late.max_doc_tokens` (default `8192`, matching `nomic-embed-text`); over-budget docs fall back to `OptionCChunker` with a `late_fallback` log + run-manifest metric.
 
 **Scope and access (ADR-0034/0035)**
 
@@ -377,6 +489,7 @@ invariants, and the open-core boundary live one level up.
 - Open-core boundary ADR: [../../0057-open-core-boundary.md](../../0057-open-core-boundary.md)
 - Operator transport plane (the UI surface): [docs/adr/0047-operator-transport-plane.md](docs/adr/0047-operator-transport-plane.md)
 - Multi-signal ranking (the bench-driven ranking ADR): [docs/adr/0054-multi-signal-ranking.md](docs/adr/0054-multi-signal-ranking.md)
+- Chunking pipeline (pluggable Chunker port + 5 chunkers + `chunk_relations` + `source_document` entity): [docs/adr/0060-chunking-pipeline.md](docs/adr/0060-chunking-pipeline.md)
 - Kernel agent guide (the rule book, complementary to this manual): [AGENTS.md](AGENTS.md)
 - Kernel architecture orientation: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - ADR index and status vocabulary: [docs/adr/README.md](docs/adr/README.md)
