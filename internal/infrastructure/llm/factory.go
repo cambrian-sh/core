@@ -20,10 +20,11 @@ func NewClient(cfg config.ModelConfig) (domain.Generator, TokenUsageExtractor, e
 		return c, &ollamaExtractor{}, nil
 	case "openai":
 		c := &OpenAIClient{
-			Endpoint:  cfg.Endpoint,
-			Model:     cfg.Model,
-			APIKeyEnv: cfg.APIKeyEnv,
-			TimeoutMs: cfg.TimeoutMs,
+			Endpoint:        cfg.Endpoint,
+			Model:           cfg.Model,
+			APIKeyEnv:       cfg.APIKeyEnv,
+			TimeoutMs:       cfg.TimeoutMs,
+			DisableThinking: cfg.DisableThinking,
 		}
 		return c, &openaiExtractor{}, nil
 	case "anthropic":

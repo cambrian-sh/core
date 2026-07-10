@@ -10,4 +10,7 @@ type ModelConfig struct {
 	CostPer1MOutput float64  `json:"cost_per_1m_output"`
 	TimeoutMs       int      `json:"timeout_ms"`
 	Capabilities    []string `json:"capabilities,omitempty"`
+	// DisableThinking sends thinking:{"type":"disabled"} for OpenAI-compat
+	// reasoning models (e.g. deepseek-v4-flash), suppressing reasoning tokens.
+	DisableThinking bool `json:"disable_thinking,omitempty"`
 }

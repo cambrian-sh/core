@@ -494,7 +494,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if cfg.Execution.HybridSearchEnabled {
 		if lex, ok := any(vec).(memory.LexicalSearcher); ok {
 			mem.QueryService.EnableHybrid(lex, cfg.Execution.HybridRRFK)
-			slog.Info("ADR-0054: hybrid dense+lexical retrieval ENABLED", "rrf_k", cfg.Execution.HybridRRFK)
+			mem.QueryService.SetLexicalWeight(cfg.Execution.HybridLexicalWeight)
+			slog.Info("ADR-0054: hybrid dense+lexical retrieval ENABLED", "rrf_k", cfg.Execution.HybridRRFK, "lexical_weight", cfg.Execution.HybridLexicalWeight)
 		} else {
 			slog.Warn("ADR-0054: hybrid_search_enabled but vector store has no LexicalSearch; vector-only")
 		}
@@ -914,6 +915,24 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			cambrianServer.ToolExecutor.RestrictedTools = map[string]map[string]bool{"scout_agent": safe}
 		}
 		slog.Info("ADR-0051: pre-plan Scout ENABLED (Python run_think discovery agent)")
+	}
+
+	// AGENTIC_RETRIEVAL_SPEC Phase 2a: wire the LLM query-planner (retrieval_agent)
+	// as the QueryService's Planner — invoked directly via the Auctioneer (no
+	// auction) with a managed LLM session, the same privileged-organ + session
+	// pattern as the Scout. Default off; fail-open to the single pass when the
+	// agent is unreachable or the config flag is unset.
+	if cfg.Execution.AgenticRetrievalEnabled {
+		mem.QueryService.EnableAgenticRetrieval(&subnetwork.RetrievalDispatcher{
+			Auctioneer: meta.Auctioneer,
+			AgentID:    "retrieval_agent",
+			Gateway:    llmGateway,
+			Model:      cfg.Execution.AgenticPlannerModel, // "" ⇒ gateway default; a FAST model matters on the hot path
+		}, cfg.Execution.AgenticMaxHops)
+		mem.QueryService.SetHydeEnabled(cfg.Execution.HydeEnabled)
+		mem.QueryService.SetIrcotEnabled(cfg.Execution.AgenticIrcotEnabled)
+		mem.QueryService.SetDecomposeEnabled(cfg.Execution.AgenticDecomposeEnabled)
+		slog.Info("AGENTIC_RETRIEVAL_SPEC: agentic retrieval query-planner ENABLED (retrieval_agent)", "hyde", cfg.Execution.HydeEnabled, "ircot", cfg.Execution.AgenticIrcotEnabled, "decompose", cfg.Execution.AgenticDecomposeEnabled)
 	}
 
 	// ADR-0053 D2 (revised): route write-time chunk-triplet extraction through the

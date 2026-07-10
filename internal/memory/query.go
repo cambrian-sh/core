@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -71,9 +72,140 @@ type QueryService struct {
 	recallOverFetch int                  // ADR-0054: seed/ANN fetch size; 0 ⇒ defaultRecallOverFetch
 	lexical         LexicalSearcher      // ADR-0054 hybrid: nil = vector-only recall
 	rrfK            int                  // ADR-0054 hybrid: RRF constant; 0 ⇒ 60
+	lexicalWeight   float64              // hybrid: multiplier on the lexical lane's RRF contribution (entity-anchoring); ≤0 ⇒ 1.0
+	hydeEnabled     bool                 // HyDE: embed a hypothetical answer passage for hop-1 dense retrieval
+	ircotEnabled    bool                 // IRCoT: reason-then-retrieve loop (generate CoT step, retrieve on it)
+	decompEnabled   bool                 // up-front grounded decomposition: decompose the whole question, retrieve+answer each sub-question
 	reranker        Reranker             // ADR-0054 Stage B: nil = no cross-encoder rerank (Stage-A order kept)
 	rerankTopK      int                  // ADR-0054 Stage B: candidates rescored by the cross-encoder; 0 ⇒ defaultRerankTopK
 	rerankWeight    float64              // ADR-0054 Stage B: w_bge in FinalScore; ≤0 ⇒ 0.5
+	agenticEnabled  bool                 // AGENTIC_RETRIEVAL_SPEC: run the LLM query-planner before the single pass
+	planner         Planner              // agentic: query-planner (Go→retrieval_agent dispatcher); nil = fail-open identity
+	agenticMaxHops  int                  // agentic: loop iteration bound; Phase 2a = 1
+}
+
+// Planner is the agentic retrieval loop's LLM step surface
+// (AGENTIC_RETRIEVAL_SPEC §2.1), dispatched to the retrieval_agent (Go→Python).
+//
+//   - PlanQuery: the lexical query-planner. Given the question (and, on later
+//     hops, a `scratchpad` bridge entity), return a rewritten search string.
+//   - DecideContinue: the multi-hop stop/iterate decision. Given the question +
+//     the chunk texts retrieved so far, return stop=true (the answer is
+//     retrievable) or stop=false + the `bridge` entity to look up next.
+//
+// Every method fails open (nil planner / error / empty result), so the loop is
+// never worse than the single pass.
+type Planner interface {
+	PlanQuery(ctx context.Context, query, scratchpad string, history []string, hop int) (string, error)
+	DecideContinue(ctx context.Context, query string, history, chunks []string) (stop bool, bridge string, err error)
+	// Synthesize is the final typed three-way output (spec §2.5): given the
+	// question + accumulated chunks, return status ∈ {answer, abstention,
+	// clarification} and the composed text. Fail-open = "answer".
+	Synthesize(ctx context.Context, query string, chunks []string) (status, text string, err error)
+}
+
+// HydePlanner is an OPTIONAL planner capability: generate a hypothetical answer
+// passage to embed for hop-1 dense retrieval (HyDE). The loop type-asserts for it
+// and only uses it when hyde is enabled; absence ⇒ embed the real query (no-op).
+type HydePlanner interface {
+	PlanHyde(ctx context.Context, query string) (string, error)
+}
+
+// ReasoningPlanner is an OPTIONAL planner capability for IRCoT (interleave
+// retrieval with chain-of-thought): given the query, the CoT so far, and the
+// retrieved chunks, emit the next reasoning sentence (which may NAME an
+// intermediate entity from reasoning), whether the answer is reached, and the
+// next search query. The loop type-asserts for it and uses it only when IRCoT is
+// enabled; absence ⇒ the legacy bridge-extraction loop.
+type ReasoningPlanner interface {
+	ReasonStep(ctx context.Context, query string, cot, chunks []string) (thought string, done bool, nextQuery string, err error)
+}
+
+// DecomposePlanner is an OPTIONAL planner capability for UP-FRONT GROUNDED
+// decomposition: split a multi-hop question into ordered sub-questions (with {n}
+// placeholders for earlier answers), then extract each sub-answer from the chunks
+// retrieved for that sub-question (grounded — never parametric). The loop
+// type-asserts for it and uses it only when decomposition is enabled; absence ⇒
+// the greedy bridge loop. Robust to the greedy loop's derail-on-one-bad-hop
+// failure: each sub-question is retrieved independently.
+type DecomposePlanner interface {
+	// Decompose returns the ordered sub-questions AND a parallel list of "refs"
+	// (noun phrases naming each sub-question's answer). When a sub-answer can't be
+	// found, the ref is substituted for the placeholder instead of an empty string,
+	// so the downstream sub-question stays coherent rather than becoming "… over ?".
+	Decompose(ctx context.Context, question string) (subqs []string, refs []string, err error)
+	AnswerSubQuestion(ctx context.Context, subq string, chunks []string) (string, error)
+}
+
+// AgenticControlID is the id of the synthetic control result agenticSearch
+// prepends to carry the typed status (spec §2.5) through QueryMemory without a
+// proto change. Its Metadata["_agentic_status"] is answer|abstention|
+// clarification; it resolves to no artifact, so it never counts as evidence.
+const AgenticControlID = "_agentic_control"
+
+// AgenticStatusKey is the metadata key on the control result carrying the
+// typed status; AgenticTextKey carries the composed answer / clarification;
+// AgenticTraceKey carries the full per-query loop trace (every hop's planned
+// query, retrieved docs, and the stop/continue decision) so misses are
+// inspectable per-question independently of langfuse.
+const (
+	AgenticStatusKey = "_agentic_status"
+	AgenticTextKey   = "_agentic_text"
+	AgenticTraceKey  = "_agentic_trace"
+)
+
+// traceDoc is one retrieved chunk as recorded in the loop trace (bounded).
+type traceDoc struct {
+	DocID   string  `json:"docid"`
+	Source  string  `json:"source,omitempty"` // session_id (e.g. musique:<qid>::p<idx>) when present
+	Score   float64 `json:"score"`
+	Snippet string  `json:"snippet"`
+}
+
+// hopTrace records one iteration of the agentic loop.
+type hopTrace struct {
+	Hop          int        `json:"hop"`
+	PlannedQuery string     `json:"planned_query"`
+	Retrieved    []traceDoc `json:"retrieved"`
+	Decision     string     `json:"decision"` // continue | stop | stop_repeat_bridge | max_hops | reason_continue | reason_done
+	Bridge       string     `json:"bridge,omitempty"`
+	Thought      string     `json:"thought,omitempty"` // IRCoT: the CoT sentence generated at this hop
+}
+
+// agenticTrace is the full per-query record attached to the control result.
+type agenticTrace struct {
+	Query       string     `json:"query"`
+	Hops        []hopTrace `json:"hops"`
+	HopsUsed    int        `json:"hops_used"`
+	FinalStatus string     `json:"final_status"`
+	FinalAnswer string     `json:"final_answer"`
+}
+
+// traceDocs snapshots the top retrieved chunks of a hop for the loop trace.
+func traceDocs(hits []domain.SearchResult) []traceDoc {
+	const maxTraceDocs = 10
+	out := make([]traceDoc, 0, maxTraceDocs)
+	for i, h := range hits {
+		if i >= maxTraceDocs {
+			break
+		}
+		d := traceDoc{DocID: h.Document.ID, Score: h.Score, Snippet: traceSnippet(h.Document.Text, 160)}
+		if sid, ok := h.Document.Metadata["session_id"].(string); ok && sid != "" {
+			d.Source = sid
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// traceSnippet collapses whitespace and truncates to n runes for the trace.
+func traceSnippet(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }
 
 // SetRecallSizes overrides the seed-search fetch size and the returned window
@@ -155,6 +287,32 @@ type LexicalSearcher interface {
 func (q *QueryService) EnableHybrid(lex LexicalSearcher, rrfK int) {
 	q.lexical = lex
 	q.rrfK = rrfK
+}
+
+// SetLexicalWeight scales the lexical lane's contribution in the RRF fusion.
+// >1 leans retrieval toward exact-term (entity/name) matches over dense cosine
+// — the "entity-anchored" lever for surfacing the specific gold paragraph from a
+// large noisy store. ≤0 or 1 ⇒ the symmetric default.
+func (q *QueryService) SetLexicalWeight(w float64) { q.lexicalWeight = w }
+
+// SetHydeEnabled toggles HyDE hop-1 retrieval (embed a hypothetical answer
+// passage instead of the raw question for the dense lane). Requires the planner
+// to implement HydePlanner; otherwise it silently no-ops.
+func (q *QueryService) SetHydeEnabled(on bool) { q.hydeEnabled = on }
+
+// SetIrcotEnabled toggles the IRCoT reason-then-retrieve loop. Requires the
+// planner to implement ReasoningPlanner; otherwise it silently no-ops (legacy loop).
+func (q *QueryService) SetIrcotEnabled(on bool) { q.ircotEnabled = on }
+
+// SetDecomposeEnabled toggles up-front grounded decomposition (needs a planner
+// that implements DecomposePlanner; absence ⇒ falls back to the greedy loop).
+func (q *QueryService) SetDecomposeEnabled(on bool) { q.decompEnabled = on }
+
+func (q *QueryService) effLexicalWeight() float64 {
+	if q.lexicalWeight > 0 {
+		return q.lexicalWeight
+	}
+	return 1.0
 }
 
 // hebbianParams holds the HITL-tuned Hebbian co-activation constants (ADR-0049 D10).
@@ -266,6 +424,356 @@ func (q *QueryService) EnableKG2RAG(store ChunkTripletsStore, hops, maxExpanded,
 // when the embedder ranks the right chunk far down, the query's entities reach it
 // through the graph. Needs EnableKG2RAG (the chunk_triplets store). ADR-0053.
 func (q *QueryService) EnableQueryEntitySeeding() { q.queryEntitySeed = true }
+
+// EnableAgenticRetrieval wires the agentic retrieval loop's query-planner
+// (AGENTIC_RETRIEVAL_SPEC). maxHops < 1 is clamped to 1 (Phase 2a). A nil
+// planner leaves the flag on but every plan falls open to the original query,
+// so enabling without a wired dispatcher is a safe no-op.
+func (q *QueryService) EnableAgenticRetrieval(p Planner, maxHops int) {
+	q.agenticEnabled = true
+	q.planner = p
+	if maxHops < 1 {
+		maxHops = 1
+	}
+	q.agenticMaxHops = maxHops
+}
+
+// planQuery is the lexical planner hook: rewrite the query into a discriminative
+// search string for this hop. FAIL-OPEN — a nil planner, an error, or an empty
+// rewrite returns the fallback: the raw query on hop 1 (empty scratchpad), or
+// the bridge entity on later hops (so hop-2 still searches FOR the bridge even
+// if the LLM step fails).
+func (q *QueryService) planQuery(ctx context.Context, query, scratchpad string, history []string, hop int) string {
+	fallback := query
+	if strings.TrimSpace(scratchpad) != "" {
+		fallback = scratchpad
+	}
+	if !q.agenticEnabled || q.planner == nil {
+		return fallback
+	}
+	planned, err := q.planner.PlanQuery(ctx, query, scratchpad, history, hop)
+	if err != nil {
+		slog.WarnContext(ctx, "agentic: planner failed; using fallback query (fail-open)", "err", err)
+		return fallback
+	}
+	if strings.TrimSpace(planned) == "" {
+		return fallback
+	}
+	return planned
+}
+
+// agenticSearch is the multi-hop retrieval loop (AGENTIC_RETRIEVAL_SPEC Phase 3):
+// plan → retrieve → decide_continue → (re-plan for the bridge) → …, up to
+// agenticMaxHops. Each hop is a full searchByType on a freshly-planned query;
+// the per-hop result lists are INTERLEAVED (round-robin) so the top hit of every
+// hop survives the caller's top-k truncation — critical for multi-hop, where the
+// answer chunk comes from hop 2 and must not be buried under hop 1's pool.
+// FAIL-OPEN: a hop error returns whatever was accumulated; hops=1 degenerates to
+// exactly the single pass (plan once, retrieve once).
+func (q *QueryService) agenticSearch(ctx context.Context, query, callerID, docType string, spread bool) ([]domain.SearchResult, error) {
+	// Up-front grounded decomposition (an alternative loop mode) when enabled and
+	// the planner supports it; else the greedy bridge loop below.
+	if q.decompEnabled {
+		if _, ok := q.planner.(DecomposePlanner); ok {
+			return q.decompSearch(ctx, query, callerID, docType, spread)
+		}
+	}
+	maxHops := q.agenticMaxHops
+	if maxHops < 1 {
+		maxHops = 1
+	}
+	scratchpad := ""
+	visited := map[string]bool{} // bridges already searched — guard against loops
+	history := make([]string, 0, maxHops) // ReAct trace: entities resolved so far (fed to decide_continue)
+	cot := make([]string, 0, maxHops)     // IRCoT: accumulated chain-of-thought sentences
+	hopResults := make([][]domain.SearchResult, 0, maxHops)
+	trace := make([]hopTrace, 0, maxHops)
+	for hop := 0; hop < maxHops; hop++ {
+		// hop-1 always plans (decomposition). IRCoT later hops retrieve on the
+		// CoT-derived query directly (natural language, no lexical re-planning);
+		// the legacy loop re-plans FOR the bridge entity.
+		var planned string
+		if q.ircotEnabled && hop > 0 {
+			planned = scratchpad
+		} else {
+			planned = q.planQuery(ctx, query, scratchpad, history, hop)
+		}
+		// HyDE (hop-1 only): embed a hypothetical answer passage for the dense lane.
+		// Later hops look up a known bridge entity where exact match already works,
+		// and a hypothetical would just add drift. Fail-open: empty ⇒ embed query.
+		embedText := ""
+		if hop == 0 && q.hydeEnabled {
+			if hp, ok := q.planner.(HydePlanner); ok {
+				if passage, herr := hp.PlanHyde(ctx, query); herr == nil {
+					embedText = passage
+				}
+			}
+		}
+		hits, err := q.searchByType(ctx, planned, embedText, callerID, docType, spread)
+		if err != nil {
+			if len(hopResults) > 0 {
+				return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), trace, cot), nil // fail-open to what we have
+			}
+			return nil, err
+		}
+		hopResults = append(hopResults, hits)
+		ht := hopTrace{Hop: hop, PlannedQuery: planned, Retrieved: traceDocs(hits)}
+		if hop == maxHops-1 {
+			ht.Decision = "max_hops"
+			trace = append(trace, ht)
+			break
+		}
+		// IRCoT: generate the next CoT step and retrieve on it; else legacy bridge extraction.
+		if q.ircotEnabled {
+			thought, done, nextQuery := q.reasonStep(ctx, query, cot, interleaveDedup(hopResults))
+			nextQuery = strings.TrimSpace(nextQuery)
+			ht.Thought = thought
+			if done || nextQuery == "" || visited[strings.ToLower(nextQuery)] {
+				ht.Decision = "reason_done"
+				trace = append(trace, ht)
+				break
+			}
+			ht.Decision = "reason_continue"
+			trace = append(trace, ht)
+			visited[strings.ToLower(nextQuery)] = true
+			if thought != "" {
+				cot = append(cot, thought)
+			}
+			scratchpad = nextQuery
+			continue
+		}
+		stop, bridge := q.decideContinue(ctx, query, history, interleaveDedup(hopResults))
+		bridge = strings.TrimSpace(bridge)
+		// Stop on: explicit stop, empty bridge, or a bridge we already searched
+		// (re-searching the same entity is a spin, not a new hop).
+		switch {
+		case stop || bridge == "":
+			ht.Decision = "stop"
+		case visited[strings.ToLower(bridge)]:
+			ht.Decision = "stop_repeat_bridge"
+		default:
+			ht.Decision = "continue"
+		}
+		ht.Bridge = bridge
+		trace = append(trace, ht)
+		if ht.Decision != "continue" {
+			break
+		}
+		visited[strings.ToLower(bridge)] = true
+		history = append(history, bridge) // ReAct: record the resolved entity for later hops
+		scratchpad = bridge
+	}
+	return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), trace, cot), nil
+}
+
+// decompSearch is the UP-FRONT GROUNDED decomposition loop: decompose the whole
+// question into ordered sub-questions, then for each one substitute earlier
+// grounded answers into its {n} placeholders, retrieve, and extract THIS
+// sub-question's answer from ITS OWN retrieved chunks (grounded, never
+// parametric). More robust than the greedy bridge loop — a single bad greedy hop
+// derails the chain, whereas each sub-question here is retrieved independently
+// (the direct-retrieval probe showed each is individually retrievable).
+// FAIL-OPEN to a single pass on any planner failure.
+func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docType string, spread bool) ([]domain.SearchResult, error) {
+	dp, ok := q.planner.(DecomposePlanner)
+	if !ok {
+		return q.searchByType(ctx, query, "", callerID, docType, spread)
+	}
+	subqs, refs, err := dp.Decompose(ctx, query)
+	if err != nil || len(subqs) == 0 {
+		if err != nil {
+			slog.WarnContext(ctx, "decomp: decompose failed; single pass (fail-open)", "err", err)
+		}
+		return q.searchByType(ctx, query, "", callerID, docType, spread)
+	}
+	const maxContextChunks = 16
+	// subst[n-1] is what placeholder {n} resolves to downstream: the grounded
+	// answer when found, else the sub-question's descriptive ref (so an unfound
+	// sub-answer does NOT blank out later queries — the don't-break-on-empty fix).
+	subst := make([]string, 0, len(subqs))
+	hopResults := make([][]domain.SearchResult, 0, len(subqs))
+	trace := make([]hopTrace, 0, len(subqs))
+	for i, subq := range subqs {
+		resolved := substituteAnswers(subq, subst)
+		// NOTE: an experiment that lexically "tightened" this into a quoted-entity
+		// keyword query (`"Benevento Calcio" league`) REGRESSED results (answer
+		// 0.78→0.65) — forcing exact-phrase quoting hurts the dense lane, which
+		// retrieves the natural-language sub-question better. Kept the NL query.
+		hits, serr := q.searchByType(ctx, resolved, "", callerID, docType, spread)
+		if serr != nil {
+			if len(hopResults) > 0 {
+				break // fail-open to what we have
+			}
+			return nil, serr
+		}
+		hopResults = append(hopResults, hits)
+		texts := make([]string, 0, maxContextChunks)
+		for j, h := range hits {
+			if j >= maxContextChunks {
+				break
+			}
+			texts = append(texts, h.Document.Text)
+		}
+		ans, aerr := dp.AnswerSubQuestion(ctx, resolved, texts)
+		if aerr != nil {
+			ans = ""
+		}
+		ans = strings.TrimSpace(ans)
+		// Downstream substitution for {i+1}: the grounded answer, or — if empty —
+		// the descriptive ref (its own earlier placeholders resolved) so the chain
+		// stays coherent instead of collapsing to "… over ?".
+		resolution := ans
+		if resolution == "" && i < len(refs) {
+			resolution = substituteAnswers(refs[i], subst)
+		}
+		subst = append(subst, resolution)
+		dec := "subq"
+		if ans == "" {
+			dec = "subq_ref_fallback"
+		}
+		trace = append(trace, hopTrace{Hop: i, PlannedQuery: resolved, Retrieved: traceDocs(hits), Bridge: ans, Decision: dec})
+	}
+	return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), trace, nil), nil
+}
+
+// substituteAnswers replaces {1},{2},... in a sub-question with the matching
+// earlier resolutions (1-indexed — a grounded answer, or a descriptive ref
+// fallback). Any still-unresolved placeholder is dropped so the sub-question
+// degrades to its literal anchors.
+func substituteAnswers(subq string, subst []string) string {
+	out := subq
+	for n := 1; n <= len(subst); n++ {
+		out = strings.ReplaceAll(out, "{"+strconv.Itoa(n)+"}", strings.TrimSpace(subst[n-1]))
+	}
+	for n := 1; n <= 9; n++ { // strip any unresolved placeholders
+		out = strings.ReplaceAll(out, "{"+strconv.Itoa(n)+"}", "")
+	}
+	return strings.Join(strings.Fields(out), " ")
+}
+
+// finalizeAgentic runs the final synthesis step and prepends a control result
+// carrying the typed status (answer|abstention|clarification, spec §2.5). The
+// control's Text is the composed answer (helping answer matching) and its
+// Metadata carries the status for the caller. FAIL-OPEN: nil planner or a
+// synthesis error returns the chunks unchanged (implicitly "answer").
+func (q *QueryService) finalizeAgentic(ctx context.Context, query string, acc []domain.SearchResult, hops []hopTrace, cot []string) []domain.SearchResult {
+	if q.planner == nil {
+		return acc
+	}
+	const maxContextChunks = 16
+	texts := make([]string, 0, maxContextChunks+1)
+	// IRCoT: put the reasoning chain (which often already NAMES the answer) FIRST,
+	// so synthesis can use its conclusion instead of re-deriving from noisy chunks.
+	if len(cot) > 0 {
+		texts = append(texts, "REASONING CHAIN (prefer its conclusion when the passages support it):\n- "+strings.Join(cot, "\n- "))
+	}
+	for i, h := range acc {
+		if i >= maxContextChunks {
+			break
+		}
+		texts = append(texts, h.Document.Text)
+	}
+	status, text, err := q.planner.Synthesize(ctx, query, texts)
+	if err != nil {
+		// FAIL-OPEN: keep the accumulated chunks (implicitly "answer"), but still
+		// emit the control result so the loop trace is never lost on a synth error.
+		slog.WarnContext(ctx, "agentic: synthesize failed; emitting trace only (fail-open)", "err", err)
+		status, text = "answer", ""
+	}
+	tr := agenticTrace{Query: query, Hops: hops, HopsUsed: len(hops), FinalStatus: status, FinalAnswer: text}
+	control := domain.SearchResult{
+		Score: 2.0, // above cosine [0,1] + floor, so it stays result[0] after truncation
+		Document: domain.Document{
+			ID:   AgenticControlID,
+			Text: text,
+			Metadata: map[string]interface{}{
+				AgenticStatusKey: status,
+				AgenticTextKey:   text,
+				AgenticTraceKey:  tr,
+			},
+		},
+	}
+	return append([]domain.SearchResult{control}, acc...)
+}
+
+// decideContinue asks the planner whether to stop or iterate, given the chunk
+// texts accumulated so far (bounded). FAIL-OPEN: nil planner or an error stops
+// the loop (returns the accumulated single-/multi-pass result).
+func (q *QueryService) decideContinue(ctx context.Context, query string, history []string, acc []domain.SearchResult) (bool, string) {
+	if q.planner == nil {
+		return true, ""
+	}
+	const maxContextChunks = 16
+	texts := make([]string, 0, maxContextChunks)
+	for i, h := range acc {
+		if i >= maxContextChunks {
+			break
+		}
+		texts = append(texts, h.Document.Text)
+	}
+	stop, bridge, err := q.planner.DecideContinue(ctx, query, history, texts)
+	if err != nil {
+		slog.WarnContext(ctx, "agentic: decide_continue failed; stopping (fail-open)", "err", err)
+		return true, ""
+	}
+	return stop, bridge
+}
+
+// reasonStep (IRCoT) generates the next CoT sentence + done + next search query
+// from the accumulated chunks. FAIL-OPEN = done: a planner that isn't a
+// ReasoningPlanner, or any error, ⇒ stop with what's accumulated.
+func (q *QueryService) reasonStep(ctx context.Context, query string, cot []string, acc []domain.SearchResult) (string, bool, string) {
+	rp, ok := q.planner.(ReasoningPlanner)
+	if !ok {
+		return "", true, ""
+	}
+	const maxContextChunks = 16
+	texts := make([]string, 0, maxContextChunks)
+	for i, h := range acc {
+		if i >= maxContextChunks {
+			break
+		}
+		texts = append(texts, h.Document.Text)
+	}
+	thought, done, nextQuery, err := rp.ReasonStep(ctx, query, cot, texts)
+	if err != nil {
+		slog.WarnContext(ctx, "agentic: reason_step failed; stopping (fail-open)", "err", err)
+		return "", true, ""
+	}
+	return thought, done, nextQuery
+}
+
+// interleaveDedup round-robins across the per-hop result lists, deduping by
+// document ID and preserving each hop's internal rank order. Position 0 is
+// hop-1 rank-1, position 1 is hop-2 rank-1, etc. — so every hop's best hit is
+// near the front and survives top-k truncation.
+func interleaveDedup(hops [][]domain.SearchResult) []domain.SearchResult {
+	if len(hops) == 1 {
+		return hops[0]
+	}
+	seen := make(map[string]bool)
+	out := make([]domain.SearchResult, 0)
+	maxLen := 0
+	for _, h := range hops {
+		if len(h) > maxLen {
+			maxLen = len(h)
+		}
+	}
+	for i := 0; i < maxLen; i++ {
+		for _, h := range hops {
+			if i >= len(h) {
+				continue
+			}
+			id := h[i].Document.ID
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, h[i])
+		}
+	}
+	return out
+}
 
 // applyStageABlend re-scores every candidate by the Stage-A multi-signal blend
 // (ADR-0054) and re-sorts descending. Cosine comes from the chunk's embedding vs
@@ -649,7 +1157,13 @@ func (q *QueryService) injectQueryEntitySeeds(ctx context.Context, results []dom
 // Search embeds query, searches the vector store (memory docs only), and filters by ACL.
 // callerID is the agent requesting access; documents owned by other agents are excluded.
 func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicFact, true)
+	// AGENTIC_RETRIEVAL_SPEC: the fact lane runs the agentic loop (plan → retrieve
+	// → decide_continue → iterate) when enabled; otherwise the single pass. Only
+	// the fact lane loops — action/scene recall stay single-pass.
+	if q.agenticEnabled {
+		return q.agenticSearch(ctx, query, callerID, domain.DocTypeMnemonicFact, true)
+	}
+	return q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicFact, true)
 }
 
 // SearchActions is the "what did I do" lane (ADR-0049 D4). It retrieves
@@ -657,7 +1171,7 @@ func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]do
 // never re-bloat fact grounding. Same ACL/scope/relevance-floor gating; no graph
 // spreading (actions are events, not associatively-expanded knowledge).
 func (q *QueryService) SearchActions(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicAction, false)
+	return q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicAction, false)
 }
 
 // SearchScenes is the situational-retrieval lane (ADR-0049 D7): find scenes whose
@@ -665,7 +1179,7 @@ func (q *QueryService) SearchActions(ctx context.Context, query, callerID string
 // situation like this?". Below the relevance floor → empty ("no precedent"); no
 // graph spreading.
 func (q *QueryService) SearchScenes(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicScene, false)
+	return q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicScene, false)
 }
 
 // SearchEntities is the EXACT-lookup access path (ADR-0049 D8/Issue 012): the query is a
@@ -753,7 +1267,14 @@ func (q *QueryService) SearchPrecedents(ctx context.Context, query, callerID str
 // searchByType embeds the query, searches one document type, and applies ACL +
 // same-session step-record exclusion (D1) + relevance floor (#1), optionally
 // spreading. Shared by the fact and action lanes (ADR-0049 D4).
-func (q *QueryService) searchByType(ctx context.Context, query, callerID, docType string, spread bool) ([]domain.SearchResult, error) {
+func (q *QueryService) searchByType(ctx context.Context, query, embedText, callerID, docType string, spread bool) ([]domain.SearchResult, error) {
+	// HyDE: embed a hypothetical answer passage for the DENSE lane when provided,
+	// while the lexical lane stays on the real query (so a misleading hypothetical
+	// can't strand retrieval). Empty ⇒ embed the query as usual (no-op).
+	embedInput := query
+	if strings.TrimSpace(embedText) != "" {
+		embedInput = embedText
+	}
 	// Recall side of an asymmetric embedder: if the embedder distinguishes query
 	// from document (ADR-0048, e.g. bge-large's query instruction), use EmbedQuery
 	// so the query carries the right prefix while stored docs stay bare. Embedders
@@ -763,9 +1284,9 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	if qe, ok := q.embedder.(interface {
 		EmbedQuery(context.Context, string) ([]float32, error)
 	}); ok {
-		vec, err = qe.EmbedQuery(ctx, query)
+		vec, err = qe.EmbedQuery(ctx, embedInput)
 	} else {
-		vec, err = q.embedder.Embed(ctx, query)
+		vec, err = q.embedder.Embed(ctx, embedInput)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("memory query: embed: %w", err)
@@ -799,8 +1320,23 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 		if lex, lerr := q.lexical.LexicalSearch(ctx, query, opts); lerr != nil {
 			slog.WarnContext(ctx, "hybrid: lexical search failed; vector-only", "err", lerr)
 		} else if len(lex) > 0 {
-			results = rrfFuse(results, lex, q.rrfK, q.effRecallOverFetch())
+			results = rrfFuse(results, lex, q.rrfK, q.effRecallOverFetch(), q.effLexicalWeight())
 		}
+	}
+
+	// Capture the genuine dense+lexical hits BEFORE any associative injection
+	// (ADR-0052 entity seeds / ADR-0053 query-entity seeds / kgExpand). On a large
+	// noisy store these injectors flood the candidate pool with entity-associated
+	// chunks scored at the expandedScore 0.5 floor, which DISPLACE genuine dense
+	// gold out of top-k — measured: kgExpand nearly halved MuSiQue support-recall
+	// on a 47k-paragraph store (0.285→0.158). The final truncation uses this set to
+	// make injections NON-DISPLACING: an injected chunk may only fill a top-k slot
+	// the primary hits leave empty, never evict a primary hit. When nothing is
+	// injected (or dense underfills top-k) it is a no-op, so the graph can still
+	// help on sparse stores; it just can't hurt on dense/noisy ones.
+	primaryIDs := make(map[string]bool, len(results))
+	for _, r := range results {
+		primaryIDs[r.Document.ID] = true
 	}
 
 	// ADR-0052: entity-aware seeding. If the EntityIndex is wired and has
@@ -865,24 +1401,44 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 
 	sid, _ := domain.SessionIDFromContext(ctx)
 
-	filtered := results[:0]
-	for _, r := range results {
+	topK := q.effRecallTopK()
+	admit := func(r domain.SearchResult) bool {
 		if !aclAllows(r.Document.Metadata, callerID) {
-			continue
+			return false
 		}
 		// ADR-0048 D1: exclude the run's own auto-recorded System step records (the
 		// feedback loop). A no-op for the action lane (actions are source ToolOutput).
 		if isSameSessionStepRecord(r.Document, sid) {
-			continue
+			return false
 		}
 		// ADR-0048 #1: drop seeds below the relevance floor so an all-irrelevant query
 		// returns EMPTY rather than padding the top-k with noise.
 		if q.floor > 0 && r.Score < q.floor {
-			continue
+			return false
 		}
-		filtered = append(filtered, r)
-		if len(filtered) >= q.effRecallTopK() {
+		return true
+	}
+	// Non-displacing assembly (see primaryIDs above): genuine dense+lexical hits
+	// claim top-k slots first, in blended-score order; associatively-injected
+	// chunks (entity seeds / kgExpand) only fill whatever slots remain. This lets
+	// the graph help (fill empty slots on a sparse store) but never hurt (evict a
+	// dense hit on a noisy one). results is sorted by blended score, so each pass
+	// takes the highest-scored members of its group first.
+	filtered := make([]domain.SearchResult, 0, topK)
+	for _, r := range results { // pass 1: primary hits only
+		if len(filtered) >= topK {
 			break
+		}
+		if primaryIDs[r.Document.ID] && admit(r) {
+			filtered = append(filtered, r)
+		}
+	}
+	for _, r := range results { // pass 2: injected chunks fill the remainder
+		if len(filtered) >= topK {
+			break
+		}
+		if !primaryIDs[r.Document.ID] && admit(r) {
+			filtered = append(filtered, r)
 		}
 	}
 
@@ -913,9 +1469,12 @@ type docPair struct{ a, b string }
 // SearchResult is kept (the vector list is passed first, so its RawScore=cosine
 // is preserved for the downstream blend); lexical-only docs keep RawScore=0 and
 // the blend recomputes cosine from their embedding. k<=0 defaults to 60.
-func rrfFuse(vectorList, lexicalList []domain.SearchResult, k, limit int) []domain.SearchResult {
+func rrfFuse(vectorList, lexicalList []domain.SearchResult, k, limit int, lexWeight float64) []domain.SearchResult {
 	if k <= 0 {
 		k = 60
+	}
+	if lexWeight <= 0 {
+		lexWeight = 1.0
 	}
 	type acc struct {
 		res   domain.SearchResult
@@ -924,7 +1483,7 @@ func rrfFuse(vectorList, lexicalList []domain.SearchResult, k, limit int) []doma
 	}
 	byID := make(map[string]*acc, len(vectorList)+len(lexicalList))
 	order := make([]string, 0, len(vectorList)+len(lexicalList))
-	add := func(list []domain.SearchResult, lexical bool) {
+	add := func(list []domain.SearchResult, lexical bool, weight float64) {
 		for rank, r := range list {
 			id := r.Document.ID
 			if id == "" {
@@ -936,14 +1495,14 @@ func rrfFuse(vectorList, lexicalList []domain.SearchResult, k, limit int) []doma
 				byID[id] = a
 				order = append(order, id)
 			}
-			a.score += 1.0 / float64(k+rank+1)
+			a.score += weight * (1.0 / float64(k+rank+1))
 			if lexical {
 				a.lex = 1.0 / float64(rank+1) // top lexical hit ⇒ 1.0, decays by rank
 			}
 		}
 	}
-	add(vectorList, false) // first ⇒ keeps cosine RawScore for docs in both lists
-	add(lexicalList, true)
+	add(vectorList, false, 1.0)      // first ⇒ keeps cosine RawScore for docs in both lists
+	add(lexicalList, true, lexWeight) // lexWeight>1 leans toward exact-term/entity matches
 
 	out := make([]domain.SearchResult, 0, len(order))
 	for _, id := range order {

@@ -16,11 +16,28 @@ type OpenAIClient struct {
 	Model     string
 	APIKeyEnv string
 	TimeoutMs int
+	// DisableThinking sends thinking:{"type":"disabled"} to suppress server-side
+	// reasoning on OpenAI-compat reasoning models (deepseek-v4-flash on opencode).
+	DisableThinking bool
+}
+
+// openAIThinking is the opencode/deepseek reasoning toggle. Type "disabled"
+// suppresses reasoning-token generation (faster; no empty-content-from-budget).
+type openAIThinking struct {
+	Type string `json:"type"`
+}
+
+func disabledThinking(disable bool) *openAIThinking {
+	if !disable {
+		return nil
+	}
+	return &openAIThinking{Type: "disabled"}
 }
 
 type openAIChatRequest struct {
 	Model    string          `json:"model"`
 	Messages []openAIChatMsg `json:"messages"`
+	Thinking *openAIThinking `json:"thinking,omitempty"`
 }
 
 type openAIChatMsg struct {
@@ -45,6 +62,7 @@ func (c *OpenAIClient) Generate(ctx context.Context, prompt string) (string, err
 		Messages: []openAIChatMsg{
 			{Role: "user", Content: prompt},
 		},
+		Thinking: disabledThinking(c.DisableThinking),
 	}
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {

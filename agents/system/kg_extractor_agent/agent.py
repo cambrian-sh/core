@@ -18,6 +18,7 @@ Each triplet carries ``sources`` (which tiers produced it) and ``confidence``
 from __future__ import annotations
 
 import json
+import os
 import re
 
 from cambrian_agent_sdk import DeterministicAgent
@@ -27,6 +28,13 @@ from kg_extractors.common import Chunk
 from kg_extractors.anchor_extractor import AnchorExtractor
 from kg_extractors.metadata_extractor import MetadataExtractor
 from kg_extractors.spacy_pattern_extractor import SpaCyPatternExtractor
+from kg_extractors.ner_entity_extractor import NEREntityExtractor
+
+# Graph-node extractor selection (2026-07-09 experiment). "ner" builds the
+# retrieval graph from NER+coref full-entity co-occurrence (kgExpand/coherence
+# recall); "svo" is the legacy verb-relation SVO tier. Env-toggled so the A/B
+# needs no code edit between arms.
+_GRAPH_TIER = os.environ.get("CAMBRIAN_KG_GRAPH_TIER", "svo").strip().lower()
 
 AGENT_DESCRIPTION = (
     "Deterministic, no-LLM knowledge-graph extractor: turns a batch of chunk texts into "
@@ -57,7 +65,14 @@ class KgExtractorAgent(DeterministicAgent):
         # amortise it across every handoff for the life of the process.
         self._metadata = MetadataExtractor()
         self._anchor = AnchorExtractor()  # deterministic structural-anchor tier (ADR-0053 D2)
-        self._patterns = SpaCyPatternExtractor()  # raises ExtractorUnavailable if spaCy missing
+        # Graph-node tier: NER+coref co-occurrence (recall) or legacy SVO. The
+        # metadata + anchor tiers are unaffected either way (temporal + anchors).
+        if _GRAPH_TIER == "ner":
+            self._graph = NEREntityExtractor()
+            self._graph_name = "ner_coref"
+        else:
+            self._graph = SpaCyPatternExtractor()  # raises ExtractorUnavailable if spaCy missing
+            self._graph_name = "spacy_patterns"
 
     def run(self, task):
         texts, ids = self._parse_request(task)
@@ -102,7 +117,7 @@ class KgExtractorAgent(DeterministicAgent):
         # seen from >=2 tiers is high-confidence, else low.
         # merged[idx][(h,r,t)] = {"triplet": {...}, "sources": set()}
         merged: list[dict] = [dict() for _ in texts]
-        for name, ext in (("metadata", self._metadata), ("anchor", self._anchor), ("spacy_patterns", self._patterns)):
+        for name, ext in (("metadata", self._metadata), ("anchor", self._anchor), (self._graph_name, self._graph)):
             try:
                 res = ext.extract(chunks)
             except Exception:

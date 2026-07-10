@@ -325,6 +325,25 @@ type ExecutionConfig struct {
 	// chunk stamped with its inherited section path. Opt-in (default false).
 	StructureGraphEnabled bool `json:"structure_graph_enabled,omitempty"`
 
+	// AgenticRetrievalEnabled turns on the agentic retrieval loop
+	// (AGENTIC_RETRIEVAL_SPEC): an LLM query-planner rewrites the query before
+	// the single pass (Phase 2a, hops=1), growing into the full plan/iterate/
+	// synthesize loop. Default OFF — the query path is unchanged when disabled or
+	// when the retrieval_agent is unreachable (fail-open to searchByType), so the
+	// benchmark baseline arm measures the true single pass. A/B via config.
+	AgenticRetrievalEnabled bool `json:"agentic_retrieval_enabled,omitempty"`
+
+	// AgenticMaxHops bounds the retrieval loop's iterations (per-query LLM cost
+	// = O(max_hops)). Phase 2a runs hops=1 (plan once, retrieve once).
+	AgenticMaxHops int `json:"agentic_max_hops,omitempty"`
+
+	// AgenticPlannerModel is the model id the retrieval planner reasons with
+	// (e.g. "llm:gemini-flash"). "" ⇒ the gateway default. The planner is on the
+	// hot recall path, so a FAST model matters — a slow default (e.g. a remote
+	// deepseek) blows the query deadline and every plan fails open to the raw
+	// query. Pick a fast/local model here.
+	AgenticPlannerModel string `json:"agentic_planner_model,omitempty"`
+
 	// SceneGenOnIngestEnabled turns the per-item episodic scene-generation LLM
 	// call back ON for the document-ingest path. Default OFF (ADR-0060): it is a
 	// synchronous per-item LLM call that stalls ingest when no LLM is reachable
@@ -517,8 +536,12 @@ type ExecutionConfig struct {
 	// (Postgres full-text) via Reciprocal Rank Fusion, so exact-token chunks the
 	// embedder misses (names, titles, places) still enter the candidate pool.
 	// false ⇒ vector-only (legacy). HybridRRFK is the RRF constant (default 60).
-	HybridSearchEnabled bool `json:"hybrid_search_enabled,omitempty"`
-	HybridRRFK          int  `json:"hybrid_rrf_k,omitempty"`
+	HybridSearchEnabled bool    `json:"hybrid_search_enabled,omitempty"`
+	HybridRRFK          int     `json:"hybrid_rrf_k,omitempty"`
+	HybridLexicalWeight float64 `json:"hybrid_lexical_weight,omitempty"` // >1 leans RRF toward exact-term/entity matches; ≤0 ⇒ 1.0
+	HydeEnabled         bool    `json:"hyde_enabled,omitempty"`          // HyDE: embed a hypothetical answer passage for hop-1 dense retrieval
+	AgenticIrcotEnabled bool    `json:"agentic_ircot_enabled,omitempty"` // IRCoT: reason-then-retrieve loop (CoT step drives next retrieval)
+	AgenticDecomposeEnabled bool `json:"agentic_decompose_enabled,omitempty"` // up-front grounded decomposition: decompose whole question, retrieve+answer each sub-question
 
 	// BlendEnabled (ADR-0054 Stage A) re-ranks recall candidates by the
 	// multi-signal blend (cosine + recency + confidence + pagerank + activation)
@@ -810,6 +833,8 @@ func DefaultConfig() *Config {
 			KG2RAGEnabled:                    true, // ADR-0053 D3: KG²RAG one-hop expansion; opt-out via config.json
 			AnchorConstraintEnabled:          true, // ADR-0053: document-local anchor promotion; opt-out via config.json
 			StructureGraphEnabled:            true, // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
+			AgenticRetrievalEnabled:          false, // AGENTIC_RETRIEVAL_SPEC: opt-in agentic retrieval loop; A/B via config
+			AgenticMaxHops:                   1,     // Phase 2a: plan once, retrieve once
 			KG2RAGMaxHops:                    1,    // one-hop, KG²RAG paper default
 			KG2RAGMaxExpanded:                20,   // cap on chunks added by expansion
 			KG2RAGMaxEntities:                30,   // cap on entities walked per hop

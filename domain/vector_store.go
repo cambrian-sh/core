@@ -32,7 +32,11 @@ type SearchOptions struct {
 	Filter          string    // Optional: Additional SQL filter
 	RetrievalFloor  float64   // ADR-0015: α in floor-multiplier formula; 0 disables re-ranking
 	ExplorationRate float64   // ADR-0015: fraction of returned slots reserved for random exploration
-	Since           time.Time // ADR-0017: temporal filter; zero = no filter
+	Since           time.Time // ADR-0017: temporal filter (lower bound); zero = no filter
+	// Until is the upper temporal bound (exclusive) — the companion to Since so a
+	// bounded range [Since, Until) can be expressed (AGENTIC_RETRIEVAL_SPEC
+	// filter-first enumeration: "what happened in June"). Zero = no upper bound.
+	Until time.Time
 	// DecayLambda is the temporal decay rate λ (per hour) applied at query time:
 	// effective_activation = activation_strength × e^(-λ × age_hours).
 	// Zero means no temporal decay (uses raw activation_strength). ADR-0030.

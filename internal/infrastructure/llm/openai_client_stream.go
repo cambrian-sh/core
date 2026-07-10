@@ -22,6 +22,7 @@ type openaiStreamReq struct {
 	StreamOptions *struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options,omitempty"`
+	Thinking *openAIThinking `json:"thinking,omitempty"`
 }
 
 // openaiStreamDelta is the JSON shape per streaming SSE data line.
@@ -55,6 +56,7 @@ func (c *OpenAIClient) GenerateStream(ctx context.Context, prompt string) (<-cha
 		StreamOptions: &struct {
 			IncludeUsage bool `json:"include_usage"`
 		}{IncludeUsage: true},
+		Thinking: disabledThinking(c.DisableThinking),
 	}
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {

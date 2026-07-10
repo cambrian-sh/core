@@ -51,6 +51,12 @@ var systemAgentIDs = map[string]bool{
 	// via the LLM broker: recall + LLM call, same shape as the system organs
 	// above. Never auctioned/interviewed.
 	"operator_agent": true,
+	// retrieval_agent (AGENTIC_RETRIEVAL_SPEC §2.1): the LLM steps of the agentic
+	// retrieval loop (plan_step / decide_continue / synthesize). The kernel calls
+	// it DIRECTLY via the Auctioneer on the recall path with a managed LLM session
+	// (RetrievalDispatcher), never auctioned/interviewed — same privileged-organ
+	// class as the Scout. CognitiveAgent: makes managed generate() calls.
+	"retrieval_agent": true,
 }
 
 // IsSystemAgent reports whether agentID is a privileged kernel organ that bypasses the

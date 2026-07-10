@@ -34,6 +34,12 @@ type GeneratorConfig struct {
 	CostPer1MOutput float64  `json:"cost_per_1m_output"`
 	TimeoutMs       int      `json:"timeout_ms"`
 	Capabilities    []string `json:"capabilities,omitempty"`
+	// DisableThinking turns off server-side reasoning for OpenAI-compat reasoning
+	// models (e.g. deepseek-v4-flash on opencode) by sending
+	// thinking:{"type":"disabled"} in the request. Reasoning tokens are generated
+	// BEFORE the answer, so leaving them on adds latency and can consume the whole
+	// max_tokens budget (empty content). No effect on models that ignore the field.
+	DisableThinking bool `json:"disable_thinking,omitempty"`
 }
 
 // HealthConfig tunes the per-id circuit-breaker (ADR-0042 D4). Zero values are

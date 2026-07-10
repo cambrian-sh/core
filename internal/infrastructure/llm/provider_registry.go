@@ -42,6 +42,7 @@ func NewProviderRegistryFromGenerators(generators []config.GeneratorConfig) (*Pr
 			CostPer1MOutput: g.CostPer1MOutput,
 			TimeoutMs:       g.TimeoutMs,
 			Capabilities:    g.Capabilities,
+			DisableThinking: g.DisableThinking,
 		}
 	}
 	return NewProviderRegistry(models)
@@ -66,7 +67,7 @@ func NewStreamersFromGenerators(generators []config.GeneratorConfig) (map[string
 		case "ollama":
 			s = &OllamaClient{BaseURL: g.Endpoint, Model: g.Model, TimeoutMs: g.TimeoutMs}
 		case "openai":
-			s = &OpenAIClient{Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs}
+			s = &OpenAIClient{Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs, DisableThinking: g.DisableThinking}
 		case "anthropic":
 			s = &AnthropicClient{Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs}
 		case "gemini":
@@ -105,10 +106,11 @@ func NewProviderRegistry(models []config.ModelConfig) (*ProviderRegistry, error)
 			}
 		case "openai":
 			reg.OpenAI = &OpenAIClient{
-				Endpoint:  mc.Endpoint,
-				Model:     mc.Model,
-				APIKeyEnv: mc.APIKeyEnv,
-				TimeoutMs: mc.TimeoutMs,
+				Endpoint:        mc.Endpoint,
+				Model:           mc.Model,
+				APIKeyEnv:       mc.APIKeyEnv,
+				TimeoutMs:       mc.TimeoutMs,
+				DisableThinking: mc.DisableThinking,
 			}
 		case "anthropic":
 			reg.Anthropic = &AnthropicClient{
