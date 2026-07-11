@@ -1,0 +1,75 @@
+# Git
+.git
+.gitignore
+
+# Secrets and operator config (gitignored; mounted at runtime)
+.env
+.env.*
+configs/config.json
+configs/*.local.json
+configs/config.dev.json
+configs/embedder.json
+configs/providers.json
+configs/mcp.json
+
+# Data and databases
+data/
+*.db
+
+# Node and Python artifacts
+node_modules
+__pycache__
+*.pyc
+.venv
+venv/
+
+# Documentation (keep ADRs in docs/ out of the build context too)
+*.md
+docs/
+
+# IDE and OS files
+.idea
+.vscode
+.DS_Store
+
+# Build artifacts and generated directories
+bin/
+dist/
+benchmarks/
+*.exe
+*.log
+*.test
+
+# Go workspace (local multi-module dev)
+go.work
+go.work.sum
+
+# Generated and workspace directories
+.agents/
+.tmp/
+.test-results/
+.claude/
+.omo/
+.opencode/
+graphify-out/
+plans/
+.wiki/
+.sisyphus/
+deliverables/
+
+# Project metadata and lock files
+skills-lock.json
+.generate_presentation.js
+
+# Graphify and related files
+.graphifyignore
+.graphify*
+.gf_python
+
+# Miscellaneous
+.gitnexus/
+
+# KG-extractor notebook sweep cache + jupyter checkpoints
+notebooks/.kg_sweep_cache_*.pkl
+notebooks/.ipynb_checkpoints/
+kg_extractors/eval_evidence.json

@@ -633,9 +633,11 @@ type Config struct {
 		User     string `json:"user"`
 		Password string `json:"password"`
 		DBName   string `json:"dbname"`
+		SSLMode  string `json:"sslmode"` // default "disable"; prod should use "require"
 	} `json:"database"`
 	Server struct {
-		Port string `json:"port"`
+		Port       string `json:"port"`
+		HealthPort int    `json:"health_port"` // HTTP health probe port; default 8080
 	} `json:"server"`
 	// ADR-0042: new model-provisioning spine. Additive for now — the legacy LLM
 	// block and Models array above remain until the cutover (slice 0042-07).
@@ -894,6 +896,22 @@ func DefaultConfig() *Config {
 		},
 		AgentPool: AgentPoolConfig{
 			DefaultAgentTimeoutMs: 30000,
+		},
+		Database: struct {
+			Host     string `json:"host"`
+			Port     string `json:"port"`
+			User     string `json:"user"`
+			Password string `json:"password"`
+			DBName   string `json:"dbname"`
+			SSLMode  string `json:"sslmode"`
+		}{
+			SSLMode: "disable",
+		},
+		Server: struct {
+			Port       string `json:"port"`
+			HealthPort int    `json:"health_port"`
+		}{
+			HealthPort: 8080,
 		},
 		Embedder: EmbedderConfig{
 			SupportsLongContext: false,

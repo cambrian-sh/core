@@ -1,0 +1,99 @@
+# Cambrian single-host Docker Compose (no registry push — build only).
+# Usage:
+#   1. Copy and fill config templates:
+#      cp configs/config.example.json configs/config.json
+#      cp configs/embedder.json.example configs/embedder.json
+#      cp configs/providers.json.example configs/providers.json
+#      # Optional: cp configs/mcp.json.example configs/mcp.json
+#   2. Edit configs/config.json to set database.password (or rely on env).
+#   3. Create .env with OPENCODE_API_KEY and GEMINI_API_KEY.
+#   4. docker compose up --build
+#
+# The orchestrator mounts ./configs:/etc/cambrian:ro — place ALL runtime config
+# files (config.json, embedder.json, providers.json, tuning.local.json, mcp.json)
+# in that directory. The .env file can live there too, or secrets can be exported
+# in the shell before invoking docker compose.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: cambrian-postgres
+    environment:
+      POSTGRES_USER: ${CAMBRIAN_DB_USER:-cambrian}
+      POSTGRES_PASSWORD: ${CAMBRIAN_DB_PASSWORD:-cambrian}
+      POSTGRES_DB: cambrian_db
+    volumes:
+      - cambrian_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CAMBRIAN_DB_USER:-cambrian} -d cambrian_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  pagerank-recompute:
+    build:
+      context: .
+      dockerfile: cmd/pagerank-recompute/Dockerfile
+    container_name: cambrian-pagerank
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8088:8088"
+    environment:
+      PAGERANK_HTTP_ADDR: ":8088"
+      # Point the worker at the DB service (overrides configs/config.json via koanf env).
+      CAMBRIAN_DATABASE__HOST: postgres
+      CAMBRIAN_DATABASE__PORT: "5432"
+      CAMBRIAN_DATABASE__USER: ${CAMBRIAN_DB_USER:-cambrian}
+      CAMBRIAN_DATABASE__PASSWORD: ${CAMBRIAN_DB_PASSWORD:-cambrian}
+      CAMBRIAN_DATABASE__DBNAME: cambrian_db
+      # Recompute cadence + algorithm knobs (see cmd/pagerank-recompute/main.go).
+      PAGERANK_INTERVAL_SEC: "3600"
+      PAGERANK_MAX_AGE_HOURS: "24"
+      PAGERANK_DELTA_PCT: "5"
+      PAGERANK_DF_CAP: "2000"
+    restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: cmd/orchestrator/Dockerfile
+    container_name: cambrian-orchestrator
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "50051:50051"
+      - "8080:8080"
+    volumes:
+      # Operator must place config.json, embedder.json, providers.json, and
+      # optionally mcp.json / tuning.local.json in ./configs. The .env file can
+      # live here too, or secrets can be set inline below or exported in the shell.
+      - ./configs:/etc/cambrian:ro
+      - cambrian_app_data:/app/data
+    environment:
+      CAMBRIAN_CONFIG: /etc/cambrian/config.json
+      # Database wiring — exact env var names from the koanf pipeline.
+      CAMBRIAN_DATABASE__HOST: postgres
+      CAMBRIAN_DATABASE__PORT: "5432"
+      CAMBRIAN_DATABASE__USER: ${CAMBRIAN_DB_USER:-cambrian}
+      CAMBRIAN_DATABASE__PASSWORD: ${CAMBRIAN_DB_PASSWORD:-cambrian}
+      CAMBRIAN_DATABASE__DBNAME: cambrian_db
+      # Pass through API keys from the host environment (set in .env or shell).
+      OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    # The runtime image is distroless (no shell, no curl), so the health probe
+    # uses python3's urllib in exec form — matching the Dockerfile HEALTHCHECK.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz').read()"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  cambrian_pg_data:
+  cambrian_app_data:

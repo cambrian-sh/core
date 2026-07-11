@@ -3,6 +3,7 @@
 # All targets assume `go`, `benchstat`, `pytest`, and `docker` are in PATH.
 
 .PHONY: help \
+        build docker-build docker-push migrate \
         test integration chaos chaos-real \
         leak leak-integration \
         bench-micro bench-macro bench-compare \
@@ -181,3 +182,23 @@ proto-breaking:
 
 proto-lint:
 	buf lint
+
+# ─── Build & Deploy ──────────────────────────────────────────────────────────
+
+build:
+	go build \
+		-ldflags "-X main.version=$(shell git describe --tags --always 2>/dev/null || echo dev)" \
+		-o ./bin/orchestrator \
+		./cmd/orchestrator
+
+docker-build:
+	docker build \
+		-f cmd/orchestrator/Dockerfile \
+		-t cambrian-runtime:$(shell git describe --tags --always 2>/dev/null || echo latest) \
+		.
+
+docker-push:
+	@echo "Registry push disabled — build only. Configure a registry in CI to enable."
+
+migrate:
+	@echo "TODO: migrate subcommand not yet implemented. See DB schema-version workstream."
