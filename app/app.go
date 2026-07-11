@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -46,11 +47,20 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
+	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health"
+	grpchealthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/cambrian-sh/cambrian-runtime/internal/version"
 )
 
 // Kernel acts as the centralized container for the Orchestrator's life support systems.
@@ -66,9 +76,13 @@ type Kernel struct {
 	Awareness   *kernel.AwarenessStack
 	Metabolism  *kernel.MetabolismStack
 	Supervision *kernel.SupervisionStack
-	Server      *subnetwork.Server
-	Listener    net.Listener
-	GRPC        *grpc.Server
+	Server       *subnetwork.Server
+	Listener     net.Listener
+	GRPC         *grpc.Server
+	VectorDB     *postgres.PgVectorAdapter
+	HealthServer *health.Server
+	MetricsServer *http.Server
+	serving      atomic.Bool
 
 	// ADR-0047 0047-16: operator command effects bound to kernel surfaces.
 	OperatorEffects operator.CommandEffects
@@ -102,18 +116,30 @@ type Kernel struct {
 func (k *Kernel) Shutdown(ctx context.Context) {
 	slog.Info("🧬 Kernel: Initiating graceful shutdown sequence...")
 
-	// 1. Stop accepting new gRPC requests
+	// 1. Signal health probes that we are going down
+	if k.HealthServer != nil {
+		k.HealthServer.SetServingStatus("", grpchealthpb.HealthCheckResponse_NOT_SERVING)
+	}
+	k.serving.Store(false)
+
+	// 2. Stop metrics server
+	if k.MetricsServer != nil {
+		slog.Info("📊 Stopping metrics server...")
+		_ = k.MetricsServer.Shutdown(ctx)
+	}
+
+	// 3. Stop accepting new gRPC requests
 	if k.GRPC != nil {
 		slog.Info("🔌 Stopping gRPC Server (GracefulStop)...")
 		k.GRPC.GracefulStop()
 	}
 
-	// 2. Close network listener
+	// 4. Close network listener
 	if k.Listener != nil {
 		_ = k.Listener.Close()
 	}
 
-	// 3. Stop domain stacks (reverse order of dependency)
+	// 5. Stop domain stacks (reverse order of dependency)
 	if k.Supervision != nil {
 		k.Supervision.Shutdown(ctx)
 	}
@@ -166,7 +192,11 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("load .env: %w", err)
 	}
 
-	cfg, err := config.LoadConfig("configs/config.json")
+	configPath := os.Getenv("CAMBRIAN_CONFIG")
+	if configPath == "" {
+		configPath = "configs/config.json"
+	}
+	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return err // ConfigError is already structured; wrapping breaks errors.As in main()
 	}
@@ -233,7 +263,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	os.MkdirAll(cfg.Storage.DataDir, 0755)
 
 	// 0. Bootstrap OTel from config (before any stack construction).
-	tp, mp := initTelemetry(cfg)
+	tp, mp, metricsSrv := initTelemetry(cfg)
 	tpShutdown := func(ctx context.Context) error {
 		if tp != nil {
 			return tp.Shutdown(ctx)
@@ -259,6 +289,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if err != nil {
 		storeHandle.Close()
 		return nil, err
+	}
+	if err := vec.RecordSchemaVersion(ctx, version.Version()); err != nil {
+		slog.Warn("Substrate: failed to record schema version", "err", err)
 	}
 
 	// ADR-0034: agent scope store + resolver. Authoritative scope lives in the
@@ -1094,6 +1127,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Supervision:        sup,
 		Server:             cambrianServer,
 		Listener:           lis,
+		VectorDB:           vec,
 		SessionMgr:         sessionMgr,
 		EventLogger:        eventLogger,
 		SynapticWatcher:    synapticWatcher,
@@ -1107,6 +1141,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		MCPConnector:       mcpConnector,
 		MCPSink:            mcpSink,
 		MCPServers:         mcpServers,
+		MetricsServer:      metricsSrv,
 	}, nil
 }
 
@@ -1172,9 +1207,14 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// backend swaps in behind the OperatorIdentity port.
 		operatorIDP := operatorBootstrapIdentity()
 		k.GRPC = grpc.NewServer(
-			grpc.ChainUnaryInterceptor(operator.UnaryAuthInterceptor(operatorIDP)),
-			grpc.ChainStreamInterceptor(operator.StreamAuthInterceptor(operatorIDP)),
+			grpc.ChainUnaryInterceptor(recoveryUnaryInterceptor, operator.UnaryAuthInterceptor(operatorIDP)),
+			grpc.ChainStreamInterceptor(recoveryStreamInterceptor, operator.StreamAuthInterceptor(operatorIDP)),
 		)
+		healthSrv := health.NewServer()
+		grpchealthpb.RegisterHealthServer(k.GRPC, healthSrv)
+		k.HealthServer = healthSrv
+		k.HealthServer.SetServingStatus("", grpchealthpb.HealthCheckResponse_SERVING)
+		k.serving.Store(true)
 		pb.RegisterOrchestratorServer(k.GRPC, k.Server)
 		// The sequenced operator feed for the Cambrian UI. The spool decouples the
 		// synchronous EventBus from network clients; SubscribeBridge fans the
@@ -1237,7 +1277,62 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		return k.GRPC.Serve(k.Listener)
 	})
 
-	// D. Ingestion HTTP server (ADR-0028) — opt-in via IngestionHTTPPort > 0.
+	// D. Health HTTP server — liveness + readiness probes.
+	if port := k.Config.Server.HealthPort; port > 0 {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+			if !k.serving.Load() {
+				http.Error(w, "not serving", http.StatusServiceUnavailable)
+				return
+			}
+			if k.VectorDB != nil {
+				ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+				defer cancel()
+				if err := k.VectorDB.Pool().Ping(ctx); err != nil {
+					slog.Warn("readyz: postgres ping failed", "err", err)
+					http.Error(w, "db unavailable", http.StatusServiceUnavailable)
+					return
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+		})
+		srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux}
+		g.Go(func() error {
+			slog.Info("🩺 Health HTTP server starting", "port", port)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				return err
+			}
+			return nil
+		})
+		g.Go(func() error {
+			<-ctx.Done()
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return srv.Shutdown(shutCtx)
+		})
+	}
+
+	// E. Metrics HTTP server — opt-in via Telemetry.PrometheusPort > 0.
+	if k.MetricsServer != nil {
+		g.Go(func() error {
+			slog.Info("📊 Prometheus metrics server starting", "port", k.Config.Telemetry.PrometheusPort)
+			if err := k.MetricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				return err
+			}
+			return nil
+		})
+		g.Go(func() error {
+			<-ctx.Done()
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return k.MetricsServer.Shutdown(shutCtx)
+		})
+	}
+
+	// F. Ingestion HTTP server (ADR-0028) — opt-in via IngestionHTTPPort > 0.
 	if port := k.Config.Execution.IngestionHTTPPort; port > 0 {
 		mux := http.NewServeMux()
 		mux.Handle("/v1/ingest", memory.NewWebhookReceiver(
@@ -1581,6 +1676,32 @@ func reconcileIndex(ctx context.Context, lister docTypeLister, remover docRemove
 	}
 }
 
+// recoveryUnaryInterceptor recovers from panics in unary RPC handlers, logs them,
+// and returns a gRPC codes.Internal error so the process never crashes.
+func recoveryUnaryInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("gRPC unary panic recovered", "method", info.FullMethod, "panic", r)
+			err = status.Errorf(codes.Internal, "internal server error")
+		}
+	}()
+	resp, err = handler(ctx, req)
+	return
+}
+
+// recoveryStreamInterceptor recovers from panics in stream RPC handlers, logs them,
+// and returns a gRPC codes.Internal error so the process never crashes.
+func recoveryStreamInterceptor(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("gRPC stream panic recovered", "method", info.FullMethod, "panic", r)
+			err = status.Errorf(codes.Internal, "internal server error")
+		}
+	}()
+	err = handler(srv, ss)
+	return
+}
+
 // episodicConsolidator adapts the EpisodicExtractor to the circadian.SessionConsolidator interface.
 // It applies the consolidation delay (giving Tier-2 time to drain) and loads narrative events
 // before running episodic extraction. ADR-0029 + ADR-0030.
@@ -1605,9 +1726,9 @@ func (c *episodicConsolidator) Consolidate(ctx context.Context, sess domain.Sess
 	})
 }
 
-func initTelemetry(cfg *config.Config) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider) {
+func initTelemetry(cfg *config.Config) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, *http.Server) {
 	if cfg.Telemetry.OTLPEndpoint == "" && cfg.Telemetry.PrometheusPort == 0 && !cfg.Telemetry.EnableStdoutExporter {
-		return nil, nil // ADR-0057 (D11): telemetry off by default — stay silent.
+		return nil, nil, nil // ADR-0057 (D11): telemetry off by default — stay silent.
 	}
 	// ADR-0057 (D11): announce telemetry activation for transparency (only when enabled).
 	slog.Info("telemetry enabled — the runtime will export traces/metrics as configured",
@@ -1620,6 +1741,7 @@ func initTelemetry(cfg *config.Config) (*sdktrace.TracerProvider, *sdkmetric.Met
 	otel.SetTracerProvider(tp)
 
 	var mpOpts []sdkmetric.Option
+	var metricsSrv *http.Server
 	if cfg.Telemetry.EnableStdoutExporter {
 		stdoutExp, err := stdoutmetric.New(stdoutmetric.WithPrettyPrint())
 		if err != nil {
@@ -1630,9 +1752,20 @@ func initTelemetry(cfg *config.Config) (*sdktrace.TracerProvider, *sdkmetric.Met
 			))
 		}
 	}
+	if cfg.Telemetry.PrometheusPort > 0 {
+		promExp, err := otelprom.New()
+		if err != nil {
+			slog.Warn("telemetry: failed to create prometheus exporter", "err", err)
+		} else {
+			mpOpts = append(mpOpts, sdkmetric.WithReader(promExp))
+			mux := http.NewServeMux()
+			mux.Handle("/metrics", promhttp.Handler())
+			metricsSrv = &http.Server{Addr: fmt.Sprintf(":%d", cfg.Telemetry.PrometheusPort), Handler: mux}
+		}
+	}
 	mp := sdkmetric.NewMeterProvider(mpOpts...)
 	otel.SetMeterProvider(mp)
-	return tp, mp
+	return tp, mp, metricsSrv
 }
 
 // operatorBootstrapIdentity builds the V1 operator-plane identity (ADR-0047 D13).

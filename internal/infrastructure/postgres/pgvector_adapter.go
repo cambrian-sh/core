@@ -94,8 +94,8 @@ func scanDocument(row pgx.Row, includeDistance bool) (domain.Document, float64, 
 
 // NewPgVectorAdapter establishes a connection pool to the PostgreSQL database.
 func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (*PgVectorAdapter, error) {
-	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName,
+	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName, cfg.Database.SSLMode,
 	)
 
 	pgxCfg, err := pgxpool.ParseConfig(connStr)
@@ -184,6 +184,8 @@ func (p *PgVectorAdapter) Close() {
 }
 
 func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
+	slog.Warn("Substrate: boot-time schema auto-migration is running. For production, use the controlled 'migrate' CLI.")
+
 	// REDEMPTION: uses p.dim instead of a hardcoded dimension.
 
 	// ADR-0021: Detect dimension mismatch (e.g. switching from 1536 to 768).
@@ -374,6 +376,11 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 			chunk_count   INT NOT NULL DEFAULT 0,
 			triplet_count INT NOT NULL DEFAULT 0
 		);`, TableChunkPagerankMeta),
+		`CREATE TABLE IF NOT EXISTS cambrian_schema_version (
+			id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			version TEXT NOT NULL,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);`,
 	}
 
 	for _, q := range queries {
@@ -382,6 +389,18 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// RecordSchemaVersion upserts the current application version into the
+// cambrian_schema_version table. Idempotent — safe to call on every boot.
+func (p *PgVectorAdapter) RecordSchemaVersion(ctx context.Context, version string) error {
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO cambrian_schema_version (id, version, applied_at)
+		 VALUES (1, $1, NOW())
+		 ON CONFLICT (id) DO UPDATE SET version = $1, applied_at = NOW();`,
+		version,
+	)
+	return mapError("RecordSchemaVersion", err)
 }
 
 // getUpsertBuilder: Hem Save hem SaveBatch için tek bir kaynak (Audit 3)

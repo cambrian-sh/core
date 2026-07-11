@@ -1,0 +1,114 @@
+# .goreleaser.yaml — cambrian-runtime
+# Build-only configuration (no publish). Run with:
+#   goreleaser build --snapshot --clean
+# or
+#   goreleaser release --snapshot --clean
+#
+# Version injection: -ldflags "-X main.version={{.Version}}"
+# Only cmd/orchestrator declares `var version`, but the flag is harmless for
+# the other binaries (Go silently ignores an -X on a missing symbol).
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: orchestrator
+    main: ./cmd/orchestrator
+    binary: cambrian-runtime
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+
+  - id: chunk-fill
+    main: ./cmd/chunk-fill
+    binary: chunk-fill
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+
+  - id: pagerank-recompute
+    main: ./cmd/pagerank-recompute
+    binary: pagerank-recompute
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+
+  - id: readbolt
+    main: ./cmd/readbolt
+    binary: readbolt
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+
+  - id: reference-fs-mcp
+    main: ./cmd/reference-fs-mcp
+    binary: reference-fs-mcp
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{ .Version }}_
+      {{ .Os }}_
+      {{ .Arch }}
+    builds:
+      - orchestrator
+      - chunk-fill
+      - pagerank-recompute
+      - readbolt
+      - reference-fs-mcp
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  disable: true
+
+changelog:
+  disable: true

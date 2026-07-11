@@ -38,6 +38,7 @@ the 5 surface tokens used by the F-verifiers. The runtime is at
 | Working-memory context hygiene (recall same-session filter, `summary` column, tool-card offload, trajectory cards, cid hydration) | 0048 | Implemented (residual: D2 spreading off by default, no `resolve` for `content_cid`, truncation heuristic, embed-summary-vs-full a flagged choice) |
 | Verbal self-reflection (SDK-side, gated on the LRW recurrence gate) | 0052 | Implemented |
 | Agent trait classification (Cognitive / Model; retired TraitTool) | 0058 | Implemented |
+| Deployment artifacts (Dockerfile, docker-compose.yml, health endpoints, schema versioning, backup scripts, build-only goreleaser) | — | Implemented (undocumented ADR — operational addition) |
 | Centralized LLM provider (health-guarded broker, circuit breaker, price ledger, failover ladder) | 0042 | Implemented (residual: model-failover requires ≥2 generators in config, see Known Gaps) |
 | MCP tool provider (MCP server discovery, agent-unreachable approval, injection-scanned responses) | 0043 | Implemented (residual: tool price in menu + per-tenant budget + OAuth deferred) |
 | Local Recurrent Workspace (typed working memory + recurrence gate in the SDK) | 0041 | Implemented (typed working memory + gate live in the Python SDK; ADR-0048 amends the prompt-condensation half) |
@@ -405,6 +406,10 @@ unwired, or guarded. Each entry cites the file or ADR where the work lives.
 | Late-chunker gate is implicit (ADR-0060) | Setting only one of `chunker.late.enabled` / `embedder.supports_long_context` silently routes to `OptionCChunker` (logged warn at resolve time, not a hard error). Intent is "fail to the known-good default," but it means the gate is *implicit* for any operator who only sets one of the two flags. |
 | Future chunkers (ADR-0060) | **Implemented 2026-07-06 (default on) — see *Structure-aware ingestion pipeline* above:** PDF structure-aware parsing (via **Docling**, not Marker/LayoutLMv3), hierarchical chunk relations (`section_path` / `section_ltree` / `parent_section_id`), and chunk-level graph edges in `document_edges` (`part_of` / `next`). Still deferred: tree-sitter multi-language AST chunker (cgo-blocked; the v1 AST path is `go/ast`-only), `sibling_index` chunk relations, LLM-driven chunkers (Contextual Retrieval / Propositions / Small-to-big — explicitly rejected: no per-chunk LLM call), auto-router (LLM picks chunker per document), and re-chunking backfill when `chunker.*` config changes. |
 | `go.mod` module rename | `cambrian-core/go.mod` still declares `module github.com/cambrian-sh/cambrian-runtime` even though the directory is `cambrian-core/`. The rename cascades through every internal Go import, the premium `go.mod` `require` block, and `go.work`. Follow-up ticket, not part of this docs plan. |
+| Single-host only (no HA) | The Docker Compose stack targets a single node. There is no clustering, no leader election, and no replicated state. Multi-node is future work. |
+| No secret manager | Secrets live in `.env` and `CAMBRIAN_*` env vars. There is no integration with Vault, AWS Secrets Manager, or similar. |
+| Backups are operator-run | `scripts/backup-postgres.sh` and `scripts/backup-bbolt.sh` exist but must be scheduled by the operator (e.g. cron). There is no built-in backup scheduler or automatic restore path. |
+| Build-only release pipeline | `.goreleaser.yaml` is configured to build only (`release.disable: true`). There is no automated registry push, signed release, or package distribution. |
 
 ---
 
@@ -476,6 +481,11 @@ The kernel's domain language. Bold terms are the canonical names used in
 
 - **OperatorConsole**, the kernel gRPC service the `cambrian-ui` console speaks to. The only UI→kernel API. Carries the sequenced feed+spool, cursor resume / RESYNC, projection + snapshot, auth + role gate, audit + idempotent commands, control hub / HITL, chat/inject, token lane, and capability handshake.
 - **AgentManager** (reused), the internal lifecycle owner that the OperatorConsole projects, not a separate component.
+
+**Deployment and runtime**
+
+- **HealthPort**, the HTTP port (default `8080`) that exposes `/healthz` (liveness) and `/readyz` (readiness). Wired by the core-wiring workstream alongside the gRPC recovery interceptor.
+- **CAMBRIAN_CONFIG**, the environment variable that tells the orchestrator and CLI tools where the base `config.json` lives (e.g. `/etc/cambrian/config.json`). All secondary config paths (`tuning.json`, `embedder.json`, `providers.json`, `mcp.json`) are derived from `filepath.Dir(CAMBRIAN_CONFIG)`.
 
 ---
 
