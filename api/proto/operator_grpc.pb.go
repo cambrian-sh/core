@@ -36,6 +36,17 @@ const (
 	OperatorConsole_CreateSession_FullMethodName        = "/cambrian.OperatorConsole/CreateSession"
 	OperatorConsole_SendMessage_FullMethodName          = "/cambrian.OperatorConsole/SendMessage"
 	OperatorConsole_InjectCorrection_FullMethodName     = "/cambrian.OperatorConsole/InjectCorrection"
+	OperatorConsole_ListTools_FullMethodName            = "/cambrian.OperatorConsole/ListTools"
+	OperatorConsole_ListSkills_FullMethodName           = "/cambrian.OperatorConsole/ListSkills"
+	OperatorConsole_QueryMemory_FullMethodName          = "/cambrian.OperatorConsole/QueryMemory"
+	OperatorConsole_SetToolPolicy_FullMethodName        = "/cambrian.OperatorConsole/SetToolPolicy"
+	OperatorConsole_ExecuteTool_FullMethodName          = "/cambrian.OperatorConsole/ExecuteTool"
+	OperatorConsole_IngestMemory_FullMethodName         = "/cambrian.OperatorConsole/IngestMemory"
+	OperatorConsole_WatchToolApprovals_FullMethodName   = "/cambrian.OperatorConsole/WatchToolApprovals"
+	OperatorConsole_ListWatches_FullMethodName          = "/cambrian.OperatorConsole/ListWatches"
+	OperatorConsole_RegisterWatch_FullMethodName        = "/cambrian.OperatorConsole/RegisterWatch"
+	OperatorConsole_DeleteWatch_FullMethodName          = "/cambrian.OperatorConsole/DeleteWatch"
+	OperatorConsole_SetWatchActive_FullMethodName       = "/cambrian.OperatorConsole/SetWatchActive"
 )
 
 // OperatorConsoleClient is the client API for OperatorConsole service.
@@ -86,6 +97,30 @@ type OperatorConsoleClient interface {
 	CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error)
 	SendMessage(ctx context.Context, in *SendMessageRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	InjectCorrection(ctx context.Context, in *InjectCorrectionRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// Paged reads (any authenticated role; never folded into Snapshot). A2.1/D8.
+	ListTools(ctx context.Context, in *ListToolsOpRequest, opts ...grpc.CallOption) (*ListToolsOpResponse, error)
+	ListSkills(ctx context.Context, in *ListSkillsOpRequest, opts ...grpc.CallOption) (*ListSkillsOpResponse, error)
+	QueryMemory(ctx context.Context, in *QueryMemoryRequest, opts ...grpc.CallOption) (*QueryMemoryResponse, error)
+	// Tool permission management: bound an existing grant with a resource policy
+	// (Operator-only, idempotent, audited). A2.3.
+	SetToolPolicy(ctx context.Context, in *SetToolPolicyRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// Operator-triggered tool execution at ScopeSystem — a deliberate grant
+	// bypass, audited, dangerous tools also emit a feed event (Operator-only). A2.2.
+	ExecuteTool(ctx context.Context, in *ExecuteToolOpRequest, opts ...grpc.CallOption) (*ExecuteToolOpResponse, error)
+	// Memory ingest through the kernel ingest path (operator as Author; never a
+	// raw store write). Idempotent on command_id (Operator-only, audited). A2.4.
+	IngestMemory(ctx context.Context, in *IngestMemoryOpRequest, opts ...grpc.CallOption) (*IngestMemoryOpResponse, error)
+	// Tool-approval stream mirroring the ADR-0039 dangerous-tool approval request
+	// (Operator-only). Resolve reuses ResolveHITL over the shared ApprovalHub
+	// id-space. A2.5.
+	WatchToolApprovals(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ApprovalOp], error)
+	// ── Watch surfaces — PREMIUM capability-gated (D14/A2.6). The proto lives in
+	// OSS in full (defining ≠ implementing); OSS handlers return Unimplemented and
+	// the WatchTriggered class never publishes. Advertised only on premium builds.
+	ListWatches(ctx context.Context, in *ListWatchesOpRequest, opts ...grpc.CallOption) (*ListWatchesOpResponse, error)
+	RegisterWatch(ctx context.Context, in *RegisterWatchOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	DeleteWatch(ctx context.Context, in *DeleteWatchOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	SetWatchActive(ctx context.Context, in *SetWatchActiveOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 }
 
 type operatorConsoleClient struct {
@@ -275,6 +310,125 @@ func (c *operatorConsoleClient) InjectCorrection(ctx context.Context, in *Inject
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListTools(ctx context.Context, in *ListToolsOpRequest, opts ...grpc.CallOption) (*ListToolsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListToolsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListTools_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListSkills(ctx context.Context, in *ListSkillsOpRequest, opts ...grpc.CallOption) (*ListSkillsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSkillsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListSkills_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) QueryMemory(ctx context.Context, in *QueryMemoryRequest, opts ...grpc.CallOption) (*QueryMemoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QueryMemoryResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_QueryMemory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SetToolPolicy(ctx context.Context, in *SetToolPolicyRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetToolPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ExecuteTool(ctx context.Context, in *ExecuteToolOpRequest, opts ...grpc.CallOption) (*ExecuteToolOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExecuteToolOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ExecuteTool_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) IngestMemory(ctx context.Context, in *IngestMemoryOpRequest, opts ...grpc.CallOption) (*IngestMemoryOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IngestMemoryOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_IngestMemory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) WatchToolApprovals(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ApprovalOp], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &OperatorConsole_ServiceDesc.Streams[1], OperatorConsole_WatchToolApprovals_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SubscribeRequest, ApprovalOp]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type OperatorConsole_WatchToolApprovalsClient = grpc.ServerStreamingClient[ApprovalOp]
+
+func (c *operatorConsoleClient) ListWatches(ctx context.Context, in *ListWatchesOpRequest, opts ...grpc.CallOption) (*ListWatchesOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListWatchesOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListWatches_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RegisterWatch(ctx context.Context, in *RegisterWatchOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_RegisterWatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) DeleteWatch(ctx context.Context, in *DeleteWatchOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_DeleteWatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SetWatchActive(ctx context.Context, in *SetWatchActiveOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetWatchActive_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OperatorConsoleServer is the server API for OperatorConsole service.
 // All implementations must embed UnimplementedOperatorConsoleServer
 // for forward compatibility.
@@ -323,6 +477,30 @@ type OperatorConsoleServer interface {
 	CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error)
 	SendMessage(context.Context, *SendMessageRequest) (*CommandAck, error)
 	InjectCorrection(context.Context, *InjectCorrectionRequest) (*CommandAck, error)
+	// Paged reads (any authenticated role; never folded into Snapshot). A2.1/D8.
+	ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error)
+	ListSkills(context.Context, *ListSkillsOpRequest) (*ListSkillsOpResponse, error)
+	QueryMemory(context.Context, *QueryMemoryRequest) (*QueryMemoryResponse, error)
+	// Tool permission management: bound an existing grant with a resource policy
+	// (Operator-only, idempotent, audited). A2.3.
+	SetToolPolicy(context.Context, *SetToolPolicyRequest) (*CommandAck, error)
+	// Operator-triggered tool execution at ScopeSystem — a deliberate grant
+	// bypass, audited, dangerous tools also emit a feed event (Operator-only). A2.2.
+	ExecuteTool(context.Context, *ExecuteToolOpRequest) (*ExecuteToolOpResponse, error)
+	// Memory ingest through the kernel ingest path (operator as Author; never a
+	// raw store write). Idempotent on command_id (Operator-only, audited). A2.4.
+	IngestMemory(context.Context, *IngestMemoryOpRequest) (*IngestMemoryOpResponse, error)
+	// Tool-approval stream mirroring the ADR-0039 dangerous-tool approval request
+	// (Operator-only). Resolve reuses ResolveHITL over the shared ApprovalHub
+	// id-space. A2.5.
+	WatchToolApprovals(*SubscribeRequest, grpc.ServerStreamingServer[ApprovalOp]) error
+	// ── Watch surfaces — PREMIUM capability-gated (D14/A2.6). The proto lives in
+	// OSS in full (defining ≠ implementing); OSS handlers return Unimplemented and
+	// the WatchTriggered class never publishes. Advertised only on premium builds.
+	ListWatches(context.Context, *ListWatchesOpRequest) (*ListWatchesOpResponse, error)
+	RegisterWatch(context.Context, *RegisterWatchOpRequest) (*CommandAck, error)
+	DeleteWatch(context.Context, *DeleteWatchOpRequest) (*CommandAck, error)
+	SetWatchActive(context.Context, *SetWatchActiveOpRequest) (*CommandAck, error)
 	mustEmbedUnimplementedOperatorConsoleServer()
 }
 
@@ -383,6 +561,39 @@ func (UnimplementedOperatorConsoleServer) SendMessage(context.Context, *SendMess
 }
 func (UnimplementedOperatorConsoleServer) InjectCorrection(context.Context, *InjectCorrectionRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method InjectCorrection not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTools not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListSkills(context.Context, *ListSkillsOpRequest) (*ListSkillsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSkills not implemented")
+}
+func (UnimplementedOperatorConsoleServer) QueryMemory(context.Context, *QueryMemoryRequest) (*QueryMemoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method QueryMemory not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetToolPolicy(context.Context, *SetToolPolicyRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetToolPolicy not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ExecuteTool(context.Context, *ExecuteToolOpRequest) (*ExecuteToolOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExecuteTool not implemented")
+}
+func (UnimplementedOperatorConsoleServer) IngestMemory(context.Context, *IngestMemoryOpRequest) (*IngestMemoryOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IngestMemory not implemented")
+}
+func (UnimplementedOperatorConsoleServer) WatchToolApprovals(*SubscribeRequest, grpc.ServerStreamingServer[ApprovalOp]) error {
+	return status.Error(codes.Unimplemented, "method WatchToolApprovals not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListWatches(context.Context, *ListWatchesOpRequest) (*ListWatchesOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListWatches not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RegisterWatch(context.Context, *RegisterWatchOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterWatch not implemented")
+}
+func (UnimplementedOperatorConsoleServer) DeleteWatch(context.Context, *DeleteWatchOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteWatch not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetWatchActive(context.Context, *SetWatchActiveOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetWatchActive not implemented")
 }
 func (UnimplementedOperatorConsoleServer) mustEmbedUnimplementedOperatorConsoleServer() {}
 func (UnimplementedOperatorConsoleServer) testEmbeddedByValue()                         {}
@@ -704,6 +915,197 @@ func _OperatorConsole_InjectCorrection_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListTools_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListToolsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListTools(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListTools_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListTools(ctx, req.(*ListToolsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListSkills_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSkillsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListSkills(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListSkills_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListSkills(ctx, req.(*ListSkillsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_QueryMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryMemoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).QueryMemory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_QueryMemory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).QueryMemory(ctx, req.(*QueryMemoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SetToolPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetToolPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetToolPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetToolPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetToolPolicy(ctx, req.(*SetToolPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ExecuteTool_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExecuteToolOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ExecuteTool(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ExecuteTool_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ExecuteTool(ctx, req.(*ExecuteToolOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_IngestMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IngestMemoryOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).IngestMemory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_IngestMemory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).IngestMemory(ctx, req.(*IngestMemoryOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_WatchToolApprovals_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SubscribeRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(OperatorConsoleServer).WatchToolApprovals(m, &grpc.GenericServerStream[SubscribeRequest, ApprovalOp]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type OperatorConsole_WatchToolApprovalsServer = grpc.ServerStreamingServer[ApprovalOp]
+
+func _OperatorConsole_ListWatches_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListWatchesOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListWatches(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListWatches_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListWatches(ctx, req.(*ListWatchesOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RegisterWatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterWatchOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RegisterWatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RegisterWatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RegisterWatch(ctx, req.(*RegisterWatchOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_DeleteWatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteWatchOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).DeleteWatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_DeleteWatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).DeleteWatch(ctx, req.(*DeleteWatchOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SetWatchActive_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetWatchActiveOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetWatchActive(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetWatchActive_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetWatchActive(ctx, req.(*SetWatchActiveOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OperatorConsole_ServiceDesc is the grpc.ServiceDesc for OperatorConsole service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -775,11 +1177,56 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "InjectCorrection",
 			Handler:    _OperatorConsole_InjectCorrection_Handler,
 		},
+		{
+			MethodName: "ListTools",
+			Handler:    _OperatorConsole_ListTools_Handler,
+		},
+		{
+			MethodName: "ListSkills",
+			Handler:    _OperatorConsole_ListSkills_Handler,
+		},
+		{
+			MethodName: "QueryMemory",
+			Handler:    _OperatorConsole_QueryMemory_Handler,
+		},
+		{
+			MethodName: "SetToolPolicy",
+			Handler:    _OperatorConsole_SetToolPolicy_Handler,
+		},
+		{
+			MethodName: "ExecuteTool",
+			Handler:    _OperatorConsole_ExecuteTool_Handler,
+		},
+		{
+			MethodName: "IngestMemory",
+			Handler:    _OperatorConsole_IngestMemory_Handler,
+		},
+		{
+			MethodName: "ListWatches",
+			Handler:    _OperatorConsole_ListWatches_Handler,
+		},
+		{
+			MethodName: "RegisterWatch",
+			Handler:    _OperatorConsole_RegisterWatch_Handler,
+		},
+		{
+			MethodName: "DeleteWatch",
+			Handler:    _OperatorConsole_DeleteWatch_Handler,
+		},
+		{
+			MethodName: "SetWatchActive",
+			Handler:    _OperatorConsole_SetWatchActive_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "StreamEvents",
 			Handler:       _OperatorConsole_StreamEvents_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "WatchToolApprovals",
+			Handler:       _OperatorConsole_WatchToolApprovals_Handler,
 			ServerStreams: true,
 		},
 	},

@@ -1202,9 +1202,62 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// RegisterMCP/TriggerConsolidation are bound to real kernel surfaces;
 		// TagMemory is gated on the 0047-20 decision (Unimplemented for now).
 		operatorSvc.SetCommandEffects(k.OperatorEffects)
+		// ADR-0047 Amendment A2 (CORE-OPS-1): operator-plane paged reads. The tool
+		// catalog (whole registry, not a per-agent menu), the system-skill registry,
+		// and ScopeSystem memory recall (operator sees all data, D13).
+		operatorSvc.SetReadSources(k.Server.ToolExecutor, k.Server.SkillRegistry, k.Memory.QueryService)
+		// ADR-0047 A2.2: operator-triggered tool execution at ScopeSystem (audited,
+		// idempotent). Reuses the kernel tool reference monitor with the System bypass.
+		operatorSvc.SetToolExec(k.Server.ToolExecutor)
+		// ADR-0047 A2.4: operator memory ingest requests a KERNEL document ingest —
+		// the same chunking-pipeline / write-back path the agent plane and benchmarks
+		// use — never a raw store write. The operator principal is stamped as Author;
+		// the kernel derives classification (tags are a narrow-only hint).
+		operatorSvc.SetMemoryIngestor(operator.MemoryIngestorFunc(func(ctx context.Context, req operator.IngestRequest) (string, error) {
+			if k.Server.IngestionProcessor != nil {
+				sourceURI := req.Source
+				if sourceURI == "" {
+					sourceURI = "operator_ingest://" + req.SessionID
+				}
+				title := []rune(req.Text)
+				if len(title) > 80 {
+					title = title[:80]
+				}
+				return k.Server.IngestionProcessor.ProcessSync(ctx, domain.ExternalDocument{
+					SourceURI:  sourceURI,
+					SourceType: "operator_ingest",
+					Title:      string(title),
+					Body:       req.Text,
+					Author:     req.Author,
+					Timestamp:  time.Now().UTC(),
+					ThreadID:   req.SessionID,
+					Tags:       req.Tags,
+					Importance: req.Importance,
+				})
+			}
+			if k.Server.MemoryWriter != nil {
+				return k.Server.MemoryWriter.Remember(ctx, req.Author, req.Text, req.Tags, req.Source, req.SessionID, req.Importance)
+			}
+			return "", fmt.Errorf("memory ingest not configured")
+		}))
+		// ADR-0047 A2.6: watch CRUD is premium capability-gated. k.Server.WatchHandler
+		// is nil in an OSS build (⇒ Unimplemented, WatchTriggered never publishes) and
+		// the premium binary injects a real handler via Options.NewSignalReceiver.
+		operatorSvc.SetWatchHandler(k.Server.WatchHandler)
 		// ADR-0047 D14: capability + version handshake. The UI hides surfaces this
 		// build does not advertise and warns on contract-version skew.
-		operatorSvc.SetHandshake("0.6.9-alpha", "0047", []string{"feed", "snapshot", "commands", "steering", "audit"})
+		// ADR-0047 Amendment A2: contract bumped 0047→0048 for the CORE-OPS-1 read/
+		// exec/approval surface. watches-* are advertised ONLY when the premium watch
+		// handler is wired (D14) — an OSS kernel hides the Watches screen.
+		operatorCaps := []string{
+			"feed", "snapshot", "commands", "steering", "audit",
+			"tools-read", "tools-manage", "skills-read",
+			"memory-read", "memory-ingest", "tool-exec", "tool-approvals",
+		}
+		if k.Server.WatchHandler != nil {
+			operatorCaps = append(operatorCaps, "watches-read", "watches-crud")
+		}
+		operatorSvc.SetHandshake("0.6.9-alpha", "0048", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).

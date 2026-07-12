@@ -186,6 +186,13 @@ type ToolCallRequest struct {
 	// read from x-task-id metadata. Stamps action records so a step's actions can be
 	// counted at step-end for the prose-synthesis dedup. "" leaves dedup off.
 	TaskID string
+	// System marks an operator ScopeSystem execution (ADR-0047 Amendment A2.2). It
+	// bypasses the per-agent grant (allow-all policy), the data-store scope, and the
+	// dangerous-tool approval gate — the operator is above the scope plane (D13).
+	// The resource-arg policy and process confinement STILL apply. Never set from an
+	// agent-facing path: the operator command handler is the only producer, and it
+	// audits the call + emits a dangerous-tool feed event.
+	System bool
 }
 
 // ToolCallResponse is the structured outcome of an ExecuteTool call. It never
@@ -327,10 +334,18 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 		return denied("unknown tool", argHash)
 	}
 
-	// Grant (fail-closed on unknown principal / no grant).
-	grant, ok := e.grantFor(ctx, req.AgentID, req.ToolName, req.SessionTokenID)
-	if !ok {
-		return denied("tool not granted to agent", argHash)
+	// Grant (fail-closed on unknown principal / no grant). A2.2: an operator
+	// ScopeSystem execution (req.System) bypasses the per-agent grant with an
+	// allow-all policy — the operator is above the scope plane (D13).
+	var grant ToolGrant
+	if req.System {
+		grant = ToolGrant{Tool: req.ToolName, Policy: ToolResourcePolicy{AllowAll: true}}
+	} else {
+		g, granted := e.grantFor(ctx, req.AgentID, req.ToolName, req.SessionTokenID)
+		if !granted {
+			return denied("tool not granted to agent", argHash)
+		}
+		grant = g
 	}
 
 	// ADR-0048 #3: resolve {"$cid":"…"} reference args to their stored content before
@@ -344,8 +359,10 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 		return denied("resource policy: "+reason, argHash)
 	}
 
-	// Regime 1 — data-store scope, when the tool touches tagged stores.
-	if len(tool.DataReadKinds) > 0 || len(tool.DataWriteKinds) > 0 {
+	// Regime 1 — data-store scope, when the tool touches tagged stores. A2.2: an
+	// operator ScopeSystem execution reads/writes at ScopeSystem (D13), so it is
+	// not scope-gated here.
+	if !req.System && (len(tool.DataReadKinds) > 0 || len(tool.DataWriteKinds) > 0) {
 		if !e.scopeAllows(ctx, req.AgentID, tool) {
 			return denied("scope", argHash)
 		}
@@ -358,7 +375,12 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 	// dangerous-tool capability scores as "failed" and corrupts the capability
 	// profile that EFE/Gatekeeper priors are built on.
 	approver := ""
-	if tool.Dangerous {
+	if tool.Dangerous && req.System {
+		// A2.2: an operator ScopeSystem execution carries its own authority — no
+		// per-agent HITL gate. The operator command handler audits the call and
+		// emits a dangerous-tool feed event so the privileged action stays visible.
+		approver = "operator:system"
+	} else if tool.Dangerous {
 		if e.EvalSessions != nil && e.EvalSessions.IsEvaluation(req.SessionTokenID) {
 			approver = "evaluation-sandbox"
 		} else {
@@ -559,6 +581,17 @@ func contentTypeFor(path string) string {
 // agent sees every registered tool; otherwise the agent sees exactly the tools
 // named by its grants. This is an advisory menu only — Execute still authorizes
 // (grant + resource policy + scope + approval) every call (A1.4).
+// AllTools returns the whole registered tool catalog, independent of any agent's
+// grants. The operator plane governs the catalog at ScopeSystem (ADR-0047
+// Amendment A2.3) — distinct from AvailableTools, which is a per-agent
+// grant-filtered advisory menu. nil registry ⇒ empty catalog.
+func (e *ToolExecutor) AllTools() []SystemTool {
+	if e.Registry == nil {
+		return nil
+	}
+	return e.Registry.All()
+}
+
 func (e *ToolExecutor) AvailableTools(ctx context.Context, agentID string) []SystemTool {
 	if agentID == "" {
 		return nil // anonymous principal: no menu, same as fail-closed grantFor

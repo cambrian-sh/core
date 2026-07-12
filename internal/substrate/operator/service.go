@@ -32,6 +32,14 @@ type Service struct {
 	hitl       domain.ApprovalHub
 	effects    CommandEffects
 
+	// ADR-0047 Amendment A2 read sources (CORE-OPS-1).
+	tools      ToolCatalog
+	skills     SkillLister
+	memory     MemoryQuerier
+	toolRunner ToolRunner
+	ingestor   MemoryIngestor
+	watches    domain.WatchConfigHandler
+
 	sessionOps SessionOps
 
 	kernelVersion   string

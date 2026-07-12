@@ -170,10 +170,25 @@ release-gate: bench-macro chaos-real contract-release fuzz-release leak-integrat
 	@echo ""
 	@echo "=== Release gate pipeline complete ==="
 
-# ─── Protobuf (ADR-0047 0047-13) ──────────────────────────────────────────────
-# Generate + commit Go bindings via buf (falls back to protoc if buf absent).
+# ─── Protobuf (ADR-0047 0047-13 / Amendment A2) ───────────────────────────────
+# Generate + commit Go bindings via buf, falling back to protoc when buf is
+# absent (offline contributors). Both must reproduce the committed bindings — the
+# proto files pin `option go_package = "cambrian-runtime/api/proto"` so the
+# embedded descriptor is toolchain-independent. `proto-check` guards drift.
 proto:
-	buf generate
+	@if command -v buf >/dev/null 2>&1; then \
+		buf generate; \
+	else \
+		echo "buf not found — falling back to protoc"; \
+		protoc -I api/proto \
+			--go_out=api/proto --go_opt=paths=source_relative \
+			--go-grpc_out=api/proto --go-grpc_opt=paths=source_relative \
+			api/proto/operator.proto api/proto/cambrian.proto; \
+	fi
+
+# CI drift gate: regenerating must not change the committed bindings (ADR-0047 A2.7).
+proto-check: proto
+	@git diff --exit-code -- api/proto || (echo "generated bindings are stale: run 'make proto' and commit"; exit 1)
 
 # Fail on a backward-incompatible operator-contract change (CI gate).
 proto-breaking:

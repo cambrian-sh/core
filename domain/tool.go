@@ -142,6 +142,21 @@ func (s *InMemoryGrantsStore) Set(agentID string, grants []ToolGrant) {
 	s.grants[agentID] = grants
 }
 
+// All returns a snapshot of every agent's grants — the operator plane's
+// tool→agents reverse index (ADR-0047 Amendment A2.3). The map and its slices
+// are copies; mutating them does not touch the store.
+func (s *InMemoryGrantsStore) All() map[string][]ToolGrant {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string][]ToolGrant, len(s.grants))
+	for agent, grants := range s.grants {
+		cp := make([]ToolGrant, len(grants))
+		copy(cp, grants)
+		out[agent] = cp
+	}
+	return out
+}
+
 // GrantsFor returns an agent's grants. An empty agentID yields none (fail-closed).
 func (s *InMemoryGrantsStore) GrantsFor(_ context.Context, agentID string) ([]ToolGrant, error) {
 	if agentID == "" {

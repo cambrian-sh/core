@@ -78,6 +78,7 @@ func (s *PgAuditStore) Query(ctx context.Context, f domain.AuditFilter) ([]domai
 	add("target_type", f.TargetType)
 	add("target_id", f.TargetID)
 	add("action_type", f.ActionType)
+	add("command_id", f.CommandID)
 
 	q := `SELECT id, command_id, ts, actor, role, action_type, target_type, target_id, before_json, after_json, reason, result FROM operator_audit`
 	if len(conds) > 0 {

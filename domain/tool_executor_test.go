@@ -61,6 +61,38 @@ func (f *fakeArgCS) Get(_ context.Context, cid CID) (*ContextNode, error) {
 func (f *fakeArgCS) Has(context.Context, CID) (bool, error) { return false, nil }
 func (f *fakeArgCS) GC(context.Context, []CID) error        { return nil }
 
+// ADR-0047 A2.2: an operator ScopeSystem execution (System:true) runs a tool with
+// NO per-agent grant and NO approval controller — the grant, scope, and
+// dangerous-tool approval gates are all bypassed — while the handler still runs.
+func TestExecute_SystemBypassesGrantScopeAndApproval(t *testing.T) {
+	reg := NewInMemoryToolRegistry()
+	// A dangerous, data-writing tool: without System this needs a grant, a scope
+	// pass, AND an approval controller (nil ⇒ fail-closed deny).
+	reg.Register(SystemTool{Name: "shell_exec", Dangerous: true, DataWriteKinds: []string{"fs"}})
+	h := &fakeHandler{result: []byte(`{"ran":true}`)}
+	e := &ToolExecutor{Registry: reg, Grants: NewInMemoryGrantsStore(), Handler: h, InlineThreshold: 1 << 20}
+
+	// Sanity: a normal agent call is denied (no grant / no approval).
+	if got := e.Execute(context.Background(), ToolCallRequest{AgentID: "a", ToolName: "shell_exec", ArgsJSON: []byte(`{}`)}); !got.Denied {
+		t.Fatalf("expected agent call denied, got %+v", got)
+	}
+	if h.called {
+		t.Fatal("handler must not run for a denied call")
+	}
+
+	// System execution runs it.
+	got := e.Execute(context.Background(), ToolCallRequest{System: true, ToolName: "shell_exec", ArgsJSON: []byte(`{}`)})
+	if got.Denied || got.Error != "" {
+		t.Fatalf("system exec should succeed, got %+v", got)
+	}
+	if !h.called {
+		t.Fatal("handler must run for a system execution")
+	}
+	if string(got.ResultJSON) != `{"ran":true}` {
+		t.Fatalf("unexpected result: %s", got.ResultJSON)
+	}
+}
+
 // ADR-0048 #3: a {"$cid":"…"} arg is resolved to the stored content before dispatch;
 // non-reference args pass through untouched.
 func TestExecute_HydratesPublicCIDArg(t *testing.T) {

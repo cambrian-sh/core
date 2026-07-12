@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package cambrian;
 
-option go_package = "github.com/cambrian-sh/cambrian-runtime/api/proto";
+option go_package = "cambrian-runtime/api/proto";
 
 import "google/protobuf/timestamp.proto";
 
@@ -59,6 +59,40 @@ service OperatorConsole {
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
   rpc SendMessage(SendMessageRequest) returns (CommandAck);
   rpc InjectCorrection(InjectCorrectionRequest) returns (CommandAck);
+
+  // ── ADR-0047 Amendment A2 (CORE-OPS-1): operator-plane read/exec/approval
+  // surface. Distinct messages from the agent-plane equivalents (D1): the CLI
+  // must never carry an x-agent-id principal.
+
+  // Paged reads (any authenticated role; never folded into Snapshot). A2.1/D8.
+  rpc ListTools(ListToolsOpRequest)     returns (ListToolsOpResponse);
+  rpc ListSkills(ListSkillsOpRequest)   returns (ListSkillsOpResponse);
+  rpc QueryMemory(QueryMemoryRequest) returns (QueryMemoryResponse);
+
+  // Tool permission management: bound an existing grant with a resource policy
+  // (Operator-only, idempotent, audited). A2.3.
+  rpc SetToolPolicy(SetToolPolicyRequest) returns (CommandAck);
+
+  // Operator-triggered tool execution at ScopeSystem — a deliberate grant
+  // bypass, audited, dangerous tools also emit a feed event (Operator-only). A2.2.
+  rpc ExecuteTool(ExecuteToolOpRequest) returns (ExecuteToolOpResponse);
+
+  // Memory ingest through the kernel ingest path (operator as Author; never a
+  // raw store write). Idempotent on command_id (Operator-only, audited). A2.4.
+  rpc IngestMemory(IngestMemoryOpRequest) returns (IngestMemoryOpResponse);
+
+  // Tool-approval stream mirroring the ADR-0039 dangerous-tool approval request
+  // (Operator-only). Resolve reuses ResolveHITL over the shared ApprovalHub
+  // id-space. A2.5.
+  rpc WatchToolApprovals(SubscribeRequest) returns (stream ApprovalOp);
+
+  // ── Watch surfaces — PREMIUM capability-gated (D14/A2.6). The proto lives in
+  // OSS in full (defining ≠ implementing); OSS handlers return Unimplemented and
+  // the WatchTriggered class never publishes. Advertised only on premium builds.
+  rpc ListWatches(ListWatchesOpRequest)       returns (ListWatchesOpResponse);
+  rpc RegisterWatch(RegisterWatchOpRequest)   returns (CommandAck);
+  rpc DeleteWatch(DeleteWatchOpRequest)       returns (CommandAck);
+  rpc SetWatchActive(SetWatchActiveOpRequest) returns (CommandAck);
 }
 
 message CreateSessionRequest {
@@ -198,7 +232,11 @@ message SnapshotResponse {
   // surfaces and surface version skew as a first-class state.
   string kernel_version = 4;
   string contract_version = 5;
-  repeated string capabilities = 6; // e.g. "commands", "steering", "watch", "daemon"
+  // capabilities enumerates the surfaces this build supports so the UI hides the
+  // rest (ADR-0047 D14). OSS: feed, snapshot, commands, steering, audit,
+  // tools-read, tools-manage, skills-read, memory-read, memory-ingest, tool-exec,
+  // tool-approvals. Premium adds: watches-read, watches-crud (A2). contract 0048.
+  repeated string capabilities = 6;
 }
 
 message PlanInFlightOp {
@@ -364,4 +402,196 @@ message AuditOp {
   string after = 9;
   string reason = 10;
   string result = 11;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-0047 Amendment A2 (CORE-OPS-1) messages.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ToolPolicyOp mirrors domain.ToolResourcePolicy (A1.5): the allowed resource
+// surface a grant bounds a tool to. Empty lists ⇒ the tool declares no resource
+// args of that kind.
+message ToolPolicyOp {
+  repeated string allowed_paths    = 1;
+  repeated string allowed_urls     = 2;
+  repeated string allowed_commands = 3;
+}
+
+// ToolGrantOp is one agent's grant of a tool, with the policy bounding it — the
+// reverse index ListTools builds by scanning per-agent grant sets. A2.3.
+message ToolGrantOp {
+  string agent_id = 1;
+  ToolPolicyOp policy = 2;
+}
+
+// ToolOp is a system tool as the operator governs it (the whole catalog, not a
+// per-agent menu). source is "builtin" or "mcp:<serverID>", derived from the
+// tool name prefix. A2.3.
+message ToolOp {
+  string name = 1;
+  string description = 2;
+  bool dangerous = 3;
+  string source = 4;                     // "builtin" | "mcp:<serverID>"
+  repeated string data_read_kinds = 5;   // ADR-0039 D8 data regime
+  repeated string data_write_kinds = 6;
+  repeated ToolGrantOp grants = 7;        // which agents hold it, with what policy
+}
+
+message ListToolsOpRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+  string query = 3;         // substring filter over name/description
+  bool dangerous_only = 4;
+  string source = 5;        // "" = all; "builtin"; "mcp:<serverID>" prefix match
+}
+message ListToolsOpResponse {
+  repeated ToolOp tools = 1;
+  int32 total = 2;
+  int32 page = 3;
+}
+
+message ListSkillsOpRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+  string query = 3;
+}
+message SkillOp {
+  string name = 1;
+  string description = 2;
+  repeated string tool_grants = 3;
+  repeated string scope_tags = 4;
+}
+message ListSkillsOpResponse {
+  repeated SkillOp skills = 1;
+  int32 total = 2;
+  int32 page = 3;
+}
+
+// Reconciled with the CLI's existing memory types (A2.4): query/top_k mirror the
+// agent-plane MemoryRequest; source/session/min_importance are operator filters.
+message QueryMemoryRequest {
+  string query = 1;
+  int32 top_k = 2;
+  string source = 3;
+  string session = 4;
+  double min_importance = 5;
+}
+message MemoryOp {
+  string doc_id = 1;
+  string summary = 2;
+  double score = 3;
+  string source = 4;
+  double importance = 5;
+  repeated string tags = 6;
+}
+message QueryMemoryResponse {
+  repeated MemoryOp results = 1;
+}
+
+// SetToolPolicy binds an existing grant with a resource policy (A2.3). Setting a
+// policy on an agent that lacks the grant is an InvalidArgument (grant first).
+message SetToolPolicyRequest {
+  string command_id = 1;
+  string reason = 2;
+  string agent_id = 3;
+  string tool_name = 4;
+  ToolPolicyOp policy = 5;
+}
+
+// ExecuteTool runs a tool at ScopeSystem (A2.2). deduped=true returns the
+// original result_json without re-running (result captured in the audit row).
+message ExecuteToolOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string tool_name = 3;
+  string args_json = 4;
+  string session_id = 5;
+}
+message ExecuteToolOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  string result_json = 3;
+  bool denied = 4;
+  string deny_reason = 5;
+  string error = 6;
+}
+
+// IngestMemory requests a kernel document ingest (A2.4) — never a raw store
+// write. tags are a narrow-only hint (kernel derives classification); the
+// operator principal is stamped as Author. Idempotent on command_id.
+message IngestMemoryOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string text = 3;
+  repeated string tags = 4;
+  double importance = 5;
+  string source = 6;
+  string session_id = 7;
+}
+message IngestMemoryOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  string doc_id = 3;
+}
+
+// ApprovalOp mirrors the ADR-0039 dangerous-tool ApprovalRequest (A2.5): the
+// shipping ApprovalsPane renders tool_name/agent_id/args_preview.
+message ApprovalOp {
+  string id = 1;
+  string agent_id = 2;
+  string tool_name = 3;
+  string args_preview = 4;
+  bool is_destructive = 5;
+}
+
+// ── Watch CRUD (premium capability-gated; proto in OSS). A2.6. ────────────────
+// WatchConfigOp/WatchActionOp are the operator-plane watch shapes. Field names
+// mirror the agent-plane WatchConfigProto/WatchActionProto so a CLI reuses its
+// hand-written types, but they are DISTINCT messages (D1/A2.1): the operator
+// plane never shares a contract with the agent plane.
+message WatchActionOp {
+  string type = 1;        // "dispatch_agent" | "emit_event" | "start_plan" | "ingest"
+  string target_type = 2; // "agent_id" | "capability" — required for dispatch_agent
+  string target = 3;
+  string payload = 4;
+}
+message WatchConfigOp {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string source_type = 4;
+  string source_stream_id = 5;
+  string condition = 6;
+  string condition_type = 7;
+  WatchActionOp action = 8;
+  bool active = 9;
+  string response_mode = 10;
+  map<string, string> daemon_params = 11;
+  int32 max_concurrent_plans = 12;
+}
+message ListWatchesOpRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+  bool active_only = 3;
+}
+message ListWatchesOpResponse {
+  repeated WatchConfigOp configs = 1;
+  int32 total = 2;
+  int32 page = 3;
+}
+message RegisterWatchOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  WatchConfigOp config = 3;
+}
+message DeleteWatchOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string watch_id = 3;
+}
+message SetWatchActiveOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string watch_id = 3;
+  bool active = 4;
 }

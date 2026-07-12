@@ -1217,6 +1217,16 @@ func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]do
 	return q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicFact, true)
 }
 
+// SearchSystem is the operator-plane fact recall at ScopeSystem (ADR-0047 D13 /
+// Amendment A2). It seeds domain.ScopeSystem into ctx server-side, so the read
+// bypasses both scope filtering and the per-caller ACL — the operator sees all
+// data. Single-pass (never the agentic loop): the operator memory explorer is a
+// direct query, not an agent's grounding retrieval.
+func (q *QueryService) SearchSystem(ctx context.Context, query string) ([]domain.SearchResult, error) {
+	ctx = domain.WithScope(ctx, domain.ScopeSystem)
+	return q.searchByType(ctx, query, "", "operator:system", domain.DocTypeMnemonicFact, true)
+}
+
 // SearchActions is the "what did I do" lane (ADR-0049 D4). It retrieves
 // `mnemonic_action` records, kept SEPARATE from fact recall so action breadcrumbs
 // never re-bloat fact grounding. Same ACL/scope/relevance-floor gating; no graph
@@ -1348,6 +1358,9 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 	opts := domain.SearchOptions{DocumentType: docType, TopK: q.effRecallOverFetch()}
 	// ADR-0034: enforce the caller's effective read scope. An unknown principal is
 	// denied (fail-closed): empty result set.
+	// systemRead (ADR-0047 D13/A2): a ScopeSystem read also bypasses the per-caller
+	// ACL below — the operator sees all data, including agent-private documents.
+	var systemRead bool
 	if q.scopes != nil {
 		eff, ok := q.resolveScope(ctx, callerID)
 		if !ok {
@@ -1356,6 +1369,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 			return []domain.SearchResult{}, nil
 		}
 		opts.Scope = eff
+		systemRead = eff != nil && eff.System
 	}
 
 	results, err := q.vectorStore.Search(ctx, vec, opts)
@@ -1457,7 +1471,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 
 	topK := q.effRecallTopK()
 	admit := func(r domain.SearchResult) bool {
-		if !aclAllows(r.Document.Metadata, callerID) {
+		if !systemRead && !aclAllows(r.Document.Metadata, callerID) {
 			return false
 		}
 		// ADR-0048 D1: exclude the run's own auto-recorded System step records (the
@@ -1886,6 +1900,13 @@ func excludeSameSessionStepRecords(results []domain.SearchResult, sid string) []
 // from the session record, never from Handoff.Context). Otherwise Phase 1:
 // agent_scope only. ADR-0034 (D4/D13).
 func (q *QueryService) resolveScope(ctx context.Context, callerID string) (*domain.EffectiveScope, bool) {
+	// ADR-0047 D13 (Amendment A2): a kernel-internal reader (the operator plane at
+	// ScopeSystem) seeds domain.ScopeSystem SERVER-SIDE via ctx — never from the
+	// wire, so an agent's x-agent-id can't forge it. Honor it above per-caller
+	// resolution. SearchSystem is the sole entry that seeds it.
+	if s, ok := domain.ScopeFromContext(ctx); ok && s.System {
+		return s, true
+	}
 	if q.callerScopes != nil && q.sessions != nil {
 		if sid, ok := domain.SessionIDFromContext(ctx); ok {
 			if caller := q.sessions.CallerScope(ctx, sid); !caller.IsZero() {

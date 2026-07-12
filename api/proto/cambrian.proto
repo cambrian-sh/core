@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package cambrian;
 
-option go_package = "github.com/cambrian-sh/cambrian-runtime/api/proto";
+option go_package = "cambrian-runtime/api/proto";
 
 import "google/protobuf/timestamp.proto";
 

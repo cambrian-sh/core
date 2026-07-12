@@ -11,7 +11,10 @@ type AuditFilter struct {
 	TargetType string
 	TargetID   string
 	ActionType string
-	Limit      int
+	// CommandID looks up the single row for an idempotency key — used by the
+	// operator ExecuteTool dedup-replay to return the original result (A2.2).
+	CommandID string
+	Limit     int
 }
 
 // AuditStore persists operator-mutating actions (ADR-0047 D15). Record is the

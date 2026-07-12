@@ -58,6 +58,9 @@ func (s *InMemoryAuditStore) Query(_ context.Context, f AuditFilter) ([]domain.A
 		if f.ActionType != "" && e.ActionType != f.ActionType {
 			continue
 		}
+		if f.CommandID != "" && e.CommandID != f.CommandID {
+			continue
+		}
 		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
