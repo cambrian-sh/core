@@ -591,15 +591,40 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 	// answer when found, else the sub-question's descriptive ref (so an unfound
 	// sub-answer does NOT blank out later queries — the don't-break-on-empty fix).
 	subst := make([]string, 0, len(subqs))
-	hopResults := make([][]domain.SearchResult, 0, len(subqs))
-	trace := make([]hopTrace, 0, len(subqs))
+	hopResults := make([][]domain.SearchResult, 0, len(subqs)+1)
+	trace := make([]hopTrace, 0, len(subqs)+1)
+	// LEVER A (coverage floor): always retrieve the FULL original question as a
+	// guaranteed pass, placed FIRST, so decomposition can only ADD coverage — it
+	// can never retrieve more narrowly than a plain single-pass search. Round-robin
+	// interleave then gives this pass's top hit position 0, so the direct best match
+	// always survives top-k truncation. Diagnosed lever: 24/100 TechQA golds were
+	// never retrieved because decomposition narrowed the query away from them.
+	// + HyDE: when enabled, embed a hypothetical answer passage (doc-vocabulary)
+	// instead of the raw question, bridging the question↔document vocabulary gap
+	// that leaves coverage golds unretrieved. Grounded-safe: HyDE shapes only the
+	// query embedding, never the answer.
+	origEmbed := ""
+	if q.hydeEnabled {
+		if hp, ok := q.planner.(HydePlanner); ok {
+			if passage, herr := hp.PlanHyde(ctx, query); herr == nil {
+				origEmbed = passage
+			}
+		}
+	}
+	// Per-hop rerank is suppressed for the retrieval passes (sctx): the reranker
+	// runs ONCE on the fused union below, against the original question.
+	sctx := withSkipPerHopRerank(ctx)
+	if origHits, oerr := q.searchByType(sctx, query, origEmbed, callerID, docType, spread); oerr == nil && len(origHits) > 0 {
+		hopResults = append(hopResults, origHits)
+		trace = append(trace, hopTrace{Hop: -1, PlannedQuery: query, Retrieved: traceDocs(origHits), Decision: "orig_query"})
+	}
 	for i, subq := range subqs {
 		resolved := substituteAnswers(subq, subst)
 		// NOTE: an experiment that lexically "tightened" this into a quoted-entity
 		// keyword query (`"Benevento Calcio" league`) REGRESSED results (answer
 		// 0.78→0.65) — forcing exact-phrase quoting hurts the dense lane, which
 		// retrieves the natural-language sub-question better. Kept the NL query.
-		hits, serr := q.searchByType(ctx, resolved, "", callerID, docType, spread)
+		hits, serr := q.searchByType(sctx, resolved, "", callerID, docType, spread)
 		if serr != nil {
 			if len(hopResults) > 0 {
 				break // fail-open to what we have
@@ -633,7 +658,19 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 		}
 		trace = append(trace, hopTrace{Hop: i, PlannedQuery: resolved, Retrieved: traceDocs(hits), Bridge: ans, Decision: dec})
 	}
-	return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), trace, nil), nil
+	// Round-robin interleave: RRF fusion was tried here and REGRESSED the ceiling
+	// (recall@100 0.83→0.79) — pure-rank RRF discards cosine magnitude and demotes
+	// strong single-list golds. Round-robin keeps each hop's best hit near the front.
+	union := interleaveDedup(hopResults)
+	// GLOBAL union rerank (ranking lever): a cross-encoder rescores the whole fused
+	// pool against the ORIGINAL question, pulling golds that are retrieved but
+	// stranded past the top-k window (recall@30 0.70 vs recall@100 0.83 = the
+	// ranking gap) up toward the front. One rerank over the union — the per-hop
+	// passes were suppressed above. Fail-soft: nil/unreachable reranker keeps order.
+	if q.reranker != nil && len(union) > 0 {
+		union = q.applyStageBRerank(ctx, query, union)
+	}
+	return q.finalizeAgentic(ctx, query, union, trace, nil), nil
 }
 
 // substituteAnswers replaces {1},{2},... in a sub-question with the matching
@@ -741,6 +778,20 @@ func (q *QueryService) reasonStep(ctx context.Context, query string, cot []strin
 		return "", true, ""
 	}
 	return thought, done, nextQuery
+}
+
+// ctxKeySkipRerank suppresses the per-hop Stage-B rerank inside searchByType so
+// the decomposition loop can rerank the fused union ONCE (against the original
+// question) instead of N times (once per sub-question). See decompSearch.
+type ctxKeySkipRerank struct{}
+
+func withSkipPerHopRerank(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeySkipRerank{}, true)
+}
+
+func skipPerHopRerank(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeySkipRerank{}).(bool)
+	return v
 }
 
 // interleaveDedup round-robins across the per-hop result lists, deduping by
@@ -1382,7 +1433,10 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 	// reranker (or an unreachable one) leaves the Stage-A order intact. Runs
 	// BEFORE the ACL/floor filter + truncation so the oracle reorders the full
 	// recoverable pool, then the top recallTopK is returned.
-	if q.reranker != nil && len(results) > 0 {
+	// SKIP under decomposition: decompSearch reranks the fused UNION once against
+	// the ORIGINAL question (a per-hop rerank against each sub-question was flat and
+	// N× the cost); the ctx flag suppresses the per-hop pass so we pay for one.
+	if q.reranker != nil && len(results) > 0 && !skipPerHopRerank(ctx) {
 		results = q.applyStageBRerank(ctx, query, results)
 	}
 

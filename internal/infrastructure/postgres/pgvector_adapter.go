@@ -153,9 +153,17 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (*PgVectorAdapt
 	}
 
 	// Dynamic Dimension (Audit 1): ADR-0042 — embedder owns its dimensions.
+	// SAFETY (post-incident): a zero/missing embedder dimension used to silently
+	// default to 1536. On a crash-boot where the embedder config fails to load,
+	// that guessed dim can mismatch the real documents table and trigger a
+	// DESTRUCTIVE recreate (the vector-store wipe we saw). Refuse to boot rather
+	// than guess, so a config hiccup can never silently wipe the corpus.
 	dims := cfg.Embedder.Dimensions
 	if dims == 0 {
-		dims = 1536 // Default (OpenAI/Llama-compat)
+		return nil, fmt.Errorf(
+			"embedder dimensions not configured (embedder.dimensions==0): refusing to boot with a " +
+				"guessed default to avoid a destructive documents-table recreate on a dimension mismatch; " +
+				"set embedder.dimensions explicitly (e.g. 1024 for bge-large)")
 	}
 
 	p := &PgVectorAdapter{pool: pool, dim: dims}
@@ -211,10 +219,20 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 		// Count documents that a drop would DESTROY — exclude system-seeded types
 		// (tool/skill/agent_profile), which are recreated on every boot regardless.
 		var memDocs int
-		_ = p.pool.QueryRow(ctx, fmt.Sprintf(
+		// SAFETY: if the count itself fails (e.g. a degraded DB right after a
+		// disk-full crash), do NOT treat that as "empty" and wipe — refuse. A
+		// swallowed error here is exactly how a crash could silently drop a
+		// populated corpus.
+		if err := p.pool.QueryRow(ctx, fmt.Sprintf(
 			`SELECT count(*) FROM %s WHERE document_type NOT IN ('tool','skill','agent_profile')`,
 			TableDocuments,
-		)).Scan(&memDocs)
+		)).Scan(&memDocs); err != nil {
+			return fmt.Errorf(
+				"REFUSING to recreate %s: embedding dimension mismatch (table=%d, configured=%d) and "+
+					"could not verify the document count (%w) — refusing a destructive recreate that could "+
+					"wipe the corpus; retry once the database is healthy",
+				TableDocuments, existingDim, p.dim, err)
+		}
 
 		allowDestructive := os.Getenv("ALLOW_DESTRUCTIVE_DIM_MIGRATION") == "1"
 		if memDocs > 0 && !allowDestructive {

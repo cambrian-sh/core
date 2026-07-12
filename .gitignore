@@ -85,3 +85,4 @@ project_summary.md
 notebooks/.kg_sweep_cache_*.pkl
 notebooks/.ipynb_checkpoints/
 kg_extractors/eval_evidence.json
+data/content_store_blobs/*

@@ -231,10 +231,13 @@ def plan_step(query: str, llm: LLM, scratchpad: str = "",
 # --------------------------------------------------------------------------
 
 HYDE_PROMPT = """\
-Write a single short factual passage (1-2 sentences) that would DIRECTLY answer
-the question below, as if copied from an encyclopedia article. Invent plausible
-specific names/places/dates if needed — this text is only used to search for the
-real passage by similarity, so concrete specifics help. No preamble, passage only.
+Write a single short factual passage (1-3 sentences) that would DIRECTLY answer
+the question below, worded as if copied from the reference document that answers
+it — an encyclopedia article, a technical/support note, a policy, whatever the
+question's domain implies. Use the domain's own terminology (product names, error
+codes, field names, procedure steps) and invent plausible specifics if needed —
+this text is only used to search for the real passage by similarity, so concrete,
+domain-matched specifics help. No preamble, passage only.
 
 Question: {query}"""
 
@@ -416,8 +419,12 @@ SYNTHESIZE_PROMPT = """\
 Given the QUESTION and the CONTEXT retrieved from memory, produce a TYPED answer.
 Decide among three cases, in this order:
 
-1. ANSWER — the CONTEXT contains the answer to the QUESTION. Respond:
-     {{"status": "answer", "text": "<the concise answer, grounded in the context>"}}
+1. ANSWER — the CONTEXT contains the answer to the QUESTION. The "text" is the
+   answer, grounded in the context: lead with the direct answer (the name, value,
+   or yes/no), as concisely as the question allows — a short factual question wants
+   a short span; a "how do I / what should I do" question may need the key step or
+   two. Do NOT pad or restate the question. Respond:
+     {{"status": "answer", "text": "<the answer, grounded in the context>"}}
 2. ABSTENTION — the QUESTION is specific but the CONTEXT does NOT contain the
    answer; the information is simply not present. Do NOT guess. Respond:
      {{"status": "abstention", "text": "not found in memory"}}
