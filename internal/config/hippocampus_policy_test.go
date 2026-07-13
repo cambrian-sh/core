@@ -3,8 +3,8 @@ package config_test
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Cycle 1 — GetPolicy returns (policy, true) for a known name.

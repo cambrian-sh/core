@@ -3,7 +3,7 @@ package proto_test
 import (
 	"testing"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
+	pb "github.com/cambrian-sh/core/api/proto"
 
 	"google.golang.org/protobuf/proto"
 )

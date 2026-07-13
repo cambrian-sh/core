@@ -6,7 +6,7 @@ package memory
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ChunkDocument is the legacy back-compat entry point. It delegates

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // The breaker publishes an LLMHealthEvent on each open↔closed transition and

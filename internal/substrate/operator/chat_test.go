@@ -7,8 +7,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/internal/substrate/operator"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
 // CreateSession creates exactly one session and is idempotent on command_id.

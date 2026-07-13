@@ -3,7 +3,7 @@ package memory
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 func TestExternalDocumentID_ExplicitTagPreserved(t *testing.T) {

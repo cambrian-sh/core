@@ -3,7 +3,7 @@ package centralexec
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ModelSelector binds a model (TraitModel) to a generation call via the same

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/router"
-	"github.com/cambrian-sh/cambrian-runtime/internal/testing/harness"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/router"
+	"github.com/cambrian-sh/core/internal/testing/harness"
 )
 
 func defaultExecConfig() config.ExecutionConfig {

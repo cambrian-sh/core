@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/infrastructure/llm"
-	agentmgr "github.com/cambrian-sh/cambrian-runtime/internal/metabolism/agentmgr"
-	metabolism "github.com/cambrian-sh/cambrian-runtime/internal/metabolism"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
+	agentmgr "github.com/cambrian-sh/core/internal/metabolism/agentmgr"
+	metabolism "github.com/cambrian-sh/core/internal/metabolism"
 )
 
 // capturingGateway implements LLMGateway and records Acquire/Complete calls.

@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // EpisodicSaver is the narrow persistence port used by EpisodicExtractor.

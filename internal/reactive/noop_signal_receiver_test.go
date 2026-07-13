@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/reactive"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/reactive"
 )
 
 // Cycle 48 — NoOpSignalReceiver.OnSignal returns nil (no error).

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // defaultKAnonymityFloor is the minimum distinct source sessions a cluster must

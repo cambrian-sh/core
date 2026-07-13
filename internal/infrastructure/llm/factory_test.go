@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/internal/infrastructure/llm"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
 
 func TestNewClient_Ollama(t *testing.T) {

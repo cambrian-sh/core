@@ -3,8 +3,8 @@ package app
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	subnetwork "github.com/cambrian-sh/cambrian-runtime/internal/substrate/network"
+	"github.com/cambrian-sh/core/domain"
+	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 )
 
 // Options carries the injection hooks the composition root (Run / bootstrapKernel)

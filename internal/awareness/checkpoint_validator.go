@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // LLMCheckpointValidator is the H1 coherence gate (ADR-0013) implemented as a

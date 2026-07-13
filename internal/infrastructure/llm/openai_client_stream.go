@@ -11,7 +11,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // openaiStreamReq includes stream=true in the body.

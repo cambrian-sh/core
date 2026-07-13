@@ -27,9 +27,9 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/interview"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/metabolism/interview"
 
 	"golang.org/x/sync/errgroup"
 )

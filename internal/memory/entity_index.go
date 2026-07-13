@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // IndexedDoc is a single doc-to-entity association tracked by the in-memory

@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/infrastructure/llm"
-	"github.com/cambrian-sh/cambrian-runtime/internal/scope"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
+	"github.com/cambrian-sh/core/internal/scope"
 )
 
 // ArtifactStepLister lists artifacts produced by a session+step (ADR-0034). Used to

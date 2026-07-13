@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // sr is a minimal SearchResult: an id and a relevance (cosine) score. RawScore>0

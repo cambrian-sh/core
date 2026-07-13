@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/infrastructure/llm"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
 
 // fakeCaller records the handoff Context it receives so we can assert the session

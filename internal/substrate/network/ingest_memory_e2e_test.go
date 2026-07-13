@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/memory"
-	"github.com/cambrian-sh/cambrian-runtime/internal/scope"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/memory"
+	"github.com/cambrian-sh/core/internal/scope"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

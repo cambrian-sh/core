@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/centralexec"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/internal/centralexec"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // auctioneerYieldCaller adapts the Auctioneer to centralexec.YieldCaller.

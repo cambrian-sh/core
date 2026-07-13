@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/connector"
-	"github.com/cambrian-sh/cambrian-runtime/internal/substrate/harness"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/metabolism/connector"
+	"github.com/cambrian-sh/core/internal/substrate/harness"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

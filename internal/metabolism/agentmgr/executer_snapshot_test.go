@@ -3,7 +3,7 @@ package agentmgr
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Cycle 1: AgentManager has snapshotMu and snapshots fields

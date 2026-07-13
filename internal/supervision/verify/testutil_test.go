@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ── mockAgentSource implements VerifierRegistry ───────────────────────────────

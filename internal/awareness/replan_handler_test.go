@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // capturingGenerator captures the last prompt passed to Generate and returns

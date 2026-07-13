@@ -3,7 +3,7 @@ package scope
 import (
 	"math"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // CosineThemeClusterer groups Tier-0 documents into theme clusters by embedding

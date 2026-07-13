@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // capturePlanGen records the prompt it was handed and returns a scripted plan JSON, so a

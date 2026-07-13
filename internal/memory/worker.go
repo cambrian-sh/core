@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // StartMemoryWorker begins background tasks for Memory Consolidation and Forgetfulness (Decay).

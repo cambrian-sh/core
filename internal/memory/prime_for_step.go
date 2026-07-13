@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"sort"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // initCaches initialises the LRU caches with the given capacity.

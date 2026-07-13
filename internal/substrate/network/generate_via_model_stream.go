@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/infrastructure/llm"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"

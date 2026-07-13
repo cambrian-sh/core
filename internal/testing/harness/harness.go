@@ -3,9 +3,9 @@ package harness
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/executer"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/metabolism/executer"
 )
 
 // Config holds optional overrides for the SystemHarness.

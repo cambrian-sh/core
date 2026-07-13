@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/memory"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/memory"
 )
 
 // ------------------------------------------------------------

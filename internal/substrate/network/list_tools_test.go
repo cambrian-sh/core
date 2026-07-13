@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // The ListTools RPC surfaces an agent's granted system tools (its prompt menu)

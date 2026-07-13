@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ADR-0049 D7: refKind abstracts an engaged ref's prefix to an entity CATEGORY so the

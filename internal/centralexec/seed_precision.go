@@ -3,7 +3,7 @@ package centralexec
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // SeedPrecisionProvider is the cold-start PrecisionProvider used by the

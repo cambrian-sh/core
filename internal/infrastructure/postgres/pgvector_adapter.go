@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/memory"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/memory"
 
 	"github.com/doug-martin/goqu/v9"
 	_ "github.com/doug-martin/goqu/v9/dialect/postgres"

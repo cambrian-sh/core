@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ─── Cycle 1: requestProposalFromAgent sets ConfidenceHint from profile ──────

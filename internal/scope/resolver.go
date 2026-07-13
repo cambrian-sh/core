@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // AgentScopeStore is the persistence port for agent scope profiles. It is the

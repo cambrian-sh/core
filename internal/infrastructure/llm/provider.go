@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Provider is the concrete LLMProvider (ADR-0042). It composes the id-keyed

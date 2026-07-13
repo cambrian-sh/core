@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // lateChunkerStub is a stand-in for the LateChunker that T-2.4 will

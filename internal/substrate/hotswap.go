@@ -1,6 +1,6 @@
 package substrate
 
-import "github.com/cambrian-sh/cambrian-runtime/domain"
+import "github.com/cambrian-sh/core/domain"
 
 // HotSwapPlan constructs a merged ExecutionPlan for Ctrl+I replanning.
 // It preserves the first `completedCount` steps from the original plan

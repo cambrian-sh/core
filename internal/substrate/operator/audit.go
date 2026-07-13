@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // AuditStore / AuditFilter are the domain port (ADR-0047 D15/0047-24); aliased

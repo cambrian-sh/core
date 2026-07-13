@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/scope"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/scope"
 )
 
 // capturingSaveStore records Save calls and implements domain.VectorStore.

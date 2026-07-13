@@ -4,7 +4,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
+	pb "github.com/cambrian-sh/core/api/proto"
 )
 
 // WatchToolApprovals streams pending dangerous-tool approval requests to an

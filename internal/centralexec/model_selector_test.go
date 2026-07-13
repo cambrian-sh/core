@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/centralexec/belief"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/internal/centralexec/belief"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Model selection minimizes EFE with cost as a first-class term (ADR-0037 D16):

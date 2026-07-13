@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ADR-0049 D10: co-activated pairs are the combinations of the top-N results above

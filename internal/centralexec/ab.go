@@ -4,7 +4,7 @@ import (
 	"context"
 	"hash/fnv"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // AuctionSelector is the A/B control arm (PRD-0037 coexistence): it adapts the

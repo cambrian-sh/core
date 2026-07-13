@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 type OllamaEmbedder struct {

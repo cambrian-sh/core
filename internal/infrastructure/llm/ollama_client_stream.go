@@ -9,7 +9,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ollamaStreamChunk is the JSON shape Ollama returns for each streaming line.

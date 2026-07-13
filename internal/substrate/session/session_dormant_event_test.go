@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/substrate/session"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/substrate/session"
 )
 
 // captureEventBus records events published to it.

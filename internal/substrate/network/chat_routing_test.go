@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/reactive"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/reactive"
 )
 
 // stubChatRouter always returns DecisionChat.

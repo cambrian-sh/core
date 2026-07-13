@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Test 16: processAgent for a TraitTool agent must call Store.SaveProfile exactly

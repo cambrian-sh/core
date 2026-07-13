@@ -3,8 +3,8 @@ package llm_test
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/infrastructure/llm"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
 
 func TestStreamChunk_New(t *testing.T) {

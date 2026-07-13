@@ -4,7 +4,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // PlanInFlight is the projected live state of one executing plan. It is the

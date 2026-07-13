@@ -3,7 +3,7 @@
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ReplanHandler is called by DAGExecutor when a step exhausts all

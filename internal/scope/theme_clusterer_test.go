@@ -3,8 +3,8 @@ package scope_test
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/scope"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/scope"
 )
 
 func embDoc(id string, vec ...float32) domain.Document {

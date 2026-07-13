@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // The examiner turns the Provisional→Active interview into a real capability

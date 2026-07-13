@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ReRankWithAssociative re-ranks a candidate set using the T-Mem two-trigger

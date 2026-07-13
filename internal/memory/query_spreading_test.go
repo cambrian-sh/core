@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // fakeSpreader echoes the seeds and appends fixed graph-discovered expansions.

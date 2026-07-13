@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // testRegistry is a simple in-memory implementation of domain.AgentRegistry

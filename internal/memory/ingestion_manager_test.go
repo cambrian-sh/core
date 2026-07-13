@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // captureAllStore is a VectorStore that records EVERY Save call so a test

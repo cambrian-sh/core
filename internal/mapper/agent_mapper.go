@@ -6,8 +6,8 @@ package mapper
 import (
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/storage"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/storage"
 )
 
 // AgentMapper converts between storage.AgentRecord and domain.AgentDefinition.

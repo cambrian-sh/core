@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // FakeGenerator returns scripted responses with configurable token counts.

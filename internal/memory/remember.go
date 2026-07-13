@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/scope"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/scope"
 
 	"github.com/google/uuid"
 )

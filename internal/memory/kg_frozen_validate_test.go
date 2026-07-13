@@ -25,7 +25,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )

@@ -173,7 +173,7 @@ release-gate: bench-macro chaos-real contract-release fuzz-release leak-integrat
 # ─── Protobuf (ADR-0047 0047-13 / Amendment A2) ───────────────────────────────
 # Generate + commit Go bindings via buf, falling back to protoc when buf is
 # absent (offline contributors). Both must reproduce the committed bindings — the
-# proto files pin `option go_package = "cambrian-runtime/api/proto"` so the
+# proto files pin `option go_package = "core/api/proto"` so the
 # embedded descriptor is toolchain-independent. `proto-check` guards drift.
 proto:
 	@if command -v buf >/dev/null 2>&1; then \

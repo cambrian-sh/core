@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // The store satisfies domain.PrecisionProvider: it resolves a candidate set to

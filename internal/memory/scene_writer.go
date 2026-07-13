@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // PgSceneWriter writes shallow DocTypeMnemonicScene documents to pgvector after

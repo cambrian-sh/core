@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/tool/discovery"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/tool/discovery"
 )
 
 // fakeContentStore is a minimal in-memory domain.ContentStore for the jail-sweep

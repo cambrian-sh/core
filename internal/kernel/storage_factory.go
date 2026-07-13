@@ -4,9 +4,9 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/storage"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/storage"
 )
 
 // contentStoreFSDir returns the filesystem directory for large blobs

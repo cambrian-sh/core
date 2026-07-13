@@ -3,7 +3,7 @@ package domain_test
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 var _ domain.TelemetryObserver = domain.NoopTelemetryObserver{}

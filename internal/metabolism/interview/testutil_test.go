@@ -3,7 +3,7 @@ package interview
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // testRegistry implements ManifestReader for interview tests.

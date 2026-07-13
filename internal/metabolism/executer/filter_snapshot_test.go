@@ -9,7 +9,7 @@ package executer
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // master is a helper that builds a realistic masterContext map for tests.

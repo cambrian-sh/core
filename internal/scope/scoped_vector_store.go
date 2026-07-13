@@ -10,7 +10,7 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ErrScopeMissing is returned by the read chokepoint when a Search reaches it

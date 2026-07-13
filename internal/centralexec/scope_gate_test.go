@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // A delegated child receives ONLY the explicitly-passed {intent, payload},

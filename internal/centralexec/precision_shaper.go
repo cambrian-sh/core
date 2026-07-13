@@ -3,7 +3,7 @@ package centralexec
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // PrecisionShaper modulates precision weights for an intent (ADR-0037 D7). It

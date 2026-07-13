@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // TestCreatedAtDefaultNow verifies REQ-DATA-1: when a Document is saved with a

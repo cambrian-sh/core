@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 
 	"google.golang.org/grpc/metadata"
 )

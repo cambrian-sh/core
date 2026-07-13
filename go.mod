@@ -1,4 +1,4 @@
-module github.com/cambrian-sh/cambrian-runtime
+module github.com/cambrian-sh/core
 
 go 1.25.5
 

@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // fakeModelReg is a minimal in-memory registry satisfying modelReconciler. Its

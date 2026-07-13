@@ -1,6 +1,6 @@
 package memory
 
-import "github.com/cambrian-sh/cambrian-runtime/domain"
+import "github.com/cambrian-sh/core/domain"
 
 // ErrorKind and IsErrorOutput are defined in domain/error_signal.go.
 // Re-exported here so callers inside the memory package can use the short name.

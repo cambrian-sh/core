@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/agentmgr"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 
 	"google.golang.org/grpc/metadata"
 )

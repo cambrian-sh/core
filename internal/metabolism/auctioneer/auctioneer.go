@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
 
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"

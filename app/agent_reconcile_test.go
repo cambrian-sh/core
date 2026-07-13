@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // reconcileFilesystemAgents evicts a filesystem agent whose source file is gone,

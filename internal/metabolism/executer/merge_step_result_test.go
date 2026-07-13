@@ -6,8 +6,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/storage"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/storage"
 )
 
 var bg = context.Background()

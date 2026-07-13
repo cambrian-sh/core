@@ -15,7 +15,7 @@ import (
 	"context"
 	"regexp"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // markdownHeaderRe matches lines starting with one to six '#'

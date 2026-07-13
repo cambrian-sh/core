@@ -3,7 +3,7 @@ package harness
 import (
 	"sync"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // CapturingTelemetryObserver records all TelemetryObserver calls for test assertions.

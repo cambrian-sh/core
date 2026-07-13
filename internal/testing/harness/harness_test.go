@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/testing/harness"
+	"github.com/cambrian-sh/core/internal/testing/harness"
 )
 
 func TestSystemHarness_ExecutePlan_PassesObserver(t *testing.T) {

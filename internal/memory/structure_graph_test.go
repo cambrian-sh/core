@@ -3,7 +3,7 @@ package memory
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // A small parsed document: doc root → Chapter 3 (sec) → Section 3.2 (sec) with

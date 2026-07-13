@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // An operator injection mid-run pauses the coordinator, folds the instruction

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // The managed Ollama path forces JSON, so the primary contract is a JSON object.

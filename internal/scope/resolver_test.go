@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/scope"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/scope"
 )
 
 // memScopeStore is an in-memory AgentScopeStore shared by resolvers in a test.

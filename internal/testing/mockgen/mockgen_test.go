@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/testing/mockgen"
+	"github.com/cambrian-sh/core/internal/testing/mockgen"
 )
 
 func TestGenerateTelemetryCorpus_Baseline(t *testing.T) {

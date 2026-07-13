@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ── Planner prompt constants ─────────────────────────────────────────────────

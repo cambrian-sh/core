@@ -3,7 +3,7 @@ package gatekeeper
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 func TestPassesDeclaration_ExactFormatMatch(t *testing.T) {

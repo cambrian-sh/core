@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Cycle 1: all-empty inputs → empty string (tracer bullet).

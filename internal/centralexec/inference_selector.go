@@ -7,7 +7,7 @@ package centralexec
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // InferenceSelector is the EFE-minimizing ResourceSelector (ADR-0037 D9). It is

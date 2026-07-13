@@ -4276,7 +4276,7 @@ const file_cambrian_proto_rawDesc = "" +
 	"\fAgentService\x12H\n" +
 	"\x0fRequestProposal\x12\x19.cambrian.ProposalRequest\x1a\x1a.cambrian.ProposalResponse\x12/\n" +
 	"\aExecute\x12\x11.cambrian.Handoff\x1a\x11.cambrian.Handoff\x12A\n" +
-	"\fVerifyOutput\x12\x17.cambrian.VerifyRequest\x1a\x18.cambrian.VerifyResponseB\x1cZ\x1acambrian-runtime/api/protob\x06proto3"
+	"\fVerifyOutput\x12\x17.cambrian.VerifyRequest\x1a\x18.cambrian.VerifyResponseB\x10Z\x0ecore/api/protob\x06proto3"
 
 var (
 	file_cambrian_proto_rawDescOnce sync.Once

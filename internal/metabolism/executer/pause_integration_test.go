@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/executer"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/metabolism/executer"
 )
 
 func TestDAGExecutor_PauseController_AbortStopsExecution(t *testing.T) {

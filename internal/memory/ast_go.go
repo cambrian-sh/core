@@ -25,7 +25,7 @@ import (
 	"go/token"
 	"strings"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ErrUnsupportedExtension is returned by ASTGoChunker.Chunk when

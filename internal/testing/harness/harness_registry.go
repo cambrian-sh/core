@@ -3,7 +3,7 @@ package harness
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // HarnessRegistry is an in-memory agent registry for test harness use.

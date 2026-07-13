@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // SessionRepository is the persistence interface for Sessions.

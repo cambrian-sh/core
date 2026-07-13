@@ -3,8 +3,8 @@ package kernel
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/awareness"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/internal/awareness"
+	"github.com/cambrian-sh/core/domain"
 )
 
 

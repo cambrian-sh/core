@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // mockWorkspaceStage implements domain.WorkspaceStage with a configurable

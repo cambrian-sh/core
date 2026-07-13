@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	memstore "github.com/cambrian-sh/cambrian-runtime/internal/memory/store"
-	"github.com/cambrian-sh/cambrian-runtime/internal/supervision/aggregator"
-	"github.com/cambrian-sh/cambrian-runtime/internal/supervision/clusterer"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
+	memstore "github.com/cambrian-sh/core/internal/memory/store"
+	"github.com/cambrian-sh/core/internal/supervision/aggregator"
+	"github.com/cambrian-sh/core/internal/supervision/clusterer"
 
 	"golang.org/x/sync/errgroup"
 )

@@ -1,6 +1,6 @@
 package scope
 
-import "github.com/cambrian-sh/cambrian-runtime/domain"
+import "github.com/cambrian-sh/core/domain"
 
 // AuthorizeArtifactWrite derives an artifact's kernel-authoritative classification
 // from the writer's DefaultWriteTags (optionally narrowed by the agent hint), and

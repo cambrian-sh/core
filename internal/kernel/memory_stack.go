@@ -5,12 +5,12 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/memory"
-	memstore "github.com/cambrian-sh/cambrian-runtime/internal/memory/store"
-	"github.com/cambrian-sh/cambrian-runtime/internal/reactive"
-	"github.com/cambrian-sh/cambrian-runtime/internal/scope"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/memory"
+	memstore "github.com/cambrian-sh/core/internal/memory/store"
+	"github.com/cambrian-sh/core/internal/reactive"
+	"github.com/cambrian-sh/core/internal/scope"
 )
 
 // MemoryStack is the memory substrate of the system. It owns everything that

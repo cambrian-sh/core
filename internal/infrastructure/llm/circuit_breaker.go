@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // CircuitBreaker is the per-id health authority for the LLM Provider (ADR-0042

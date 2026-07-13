@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/scope"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/scope"
 )
 
 // LLMGeneralizer is a scope.Generalizer that asks an LLM to distill one anonymized,

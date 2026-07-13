@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // recordingGraphStore returns a fixed set of edges; weight assertions confirm

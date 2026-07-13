@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 func sceneResult(id, projection, outcome string, score float64) domain.SearchResult {

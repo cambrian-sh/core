@@ -13,7 +13,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 var toolManifestRegex = regexp.MustCompile(`(?s)TOOL_MANIFEST\s*=\s*'''([\s\S]*?)'''`)

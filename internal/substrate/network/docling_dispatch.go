@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/memory"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/memory"
 )
 
 // DoclingDispatcher implements memory.StructureParser by invoking the privileged,

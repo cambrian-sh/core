@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 func mkDoc(id string, activation float64, lastAccessed time.Time) domain.Document {

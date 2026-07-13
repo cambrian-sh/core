@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ConsolidatorConfig holds the parameters for session consolidation.

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/router"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/router"
 )
 
 // ── Layer 2 — Word-boundary keyword heuristics ────────────────────────────────

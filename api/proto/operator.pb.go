@@ -5149,7 +5149,7 @@ const file_operator_proto_rawDesc = "" +
 	"\vListWatches\x12\x1e.cambrian.ListWatchesOpRequest\x1a\x1f.cambrian.ListWatchesOpResponse\x12G\n" +
 	"\rRegisterWatch\x12 .cambrian.RegisterWatchOpRequest\x1a\x14.cambrian.CommandAck\x12C\n" +
 	"\vDeleteWatch\x12\x1e.cambrian.DeleteWatchOpRequest\x1a\x14.cambrian.CommandAck\x12I\n" +
-	"\x0eSetWatchActive\x12!.cambrian.SetWatchActiveOpRequest\x1a\x14.cambrian.CommandAckB\x1cZ\x1acambrian-runtime/api/protob\x06proto3"
+	"\x0eSetWatchActive\x12!.cambrian.SetWatchActiveOpRequest\x1a\x14.cambrian.CommandAckB\x10Z\x0ecore/api/protob\x06proto3"
 
 var (
 	file_operator_proto_rawDescOnce sync.Once

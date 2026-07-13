@@ -3,8 +3,8 @@ package operator_test
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/executer"
-	"github.com/cambrian-sh/cambrian-runtime/internal/substrate/operator"
+	"github.com/cambrian-sh/core/internal/metabolism/executer"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
 // A live DAGExecutor satisfies operator.ExecutionControls and can be registered

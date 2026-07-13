@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Cycle 1 — Zero age: TemporalDecay returns baseStrength unchanged.

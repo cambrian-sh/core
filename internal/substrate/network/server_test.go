@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism"
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/agentmgr"
-	metauc "github.com/cambrian-sh/cambrian-runtime/internal/metabolism/auctioneer"
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/executer"
-	supgk "github.com/cambrian-sh/cambrian-runtime/internal/supervision/gatekeeper"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/metabolism"
+	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
+	metauc "github.com/cambrian-sh/core/internal/metabolism/auctioneer"
+	"github.com/cambrian-sh/core/internal/metabolism/executer"
+	supgk "github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 )
 
 // mockPlanner records every prompt it receives and returns preset plans in order.

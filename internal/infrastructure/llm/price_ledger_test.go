@@ -3,7 +3,7 @@ package llm
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 func TestPriceLedger_SeedAndRead(t *testing.T) {

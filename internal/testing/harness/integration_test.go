@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/testing/harness"
+	"github.com/cambrian-sh/core/internal/testing/harness"
 )
 
 func TestE2E_TokenBudgetEnforced(t *testing.T) {

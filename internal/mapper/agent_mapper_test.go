@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/storage"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/storage"
 )
 
 // Cycle 0033-01: "daemon" trait string round-trips through DTO → mapper → domain.

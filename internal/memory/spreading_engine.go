@@ -7,7 +7,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // SpreadingEngine performs bounded BFS over the document_edges graph.

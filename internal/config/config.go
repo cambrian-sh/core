@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 
 	"github.com/go-viper/mapstructure/v2"
 	kjson "github.com/knadh/koanf/parsers/json"

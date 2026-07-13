@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ADR-0049 D8: equivalent spellings of one real path must canonicalize to one id —

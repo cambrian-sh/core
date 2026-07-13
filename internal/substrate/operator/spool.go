@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Spool is a bounded, globally-sequenced in-memory event buffer implementing

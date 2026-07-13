@@ -1,7 +1,7 @@
 package llm
 
 import (
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ReconcileTokens applies dual-pass token accounting (ADR-0018).

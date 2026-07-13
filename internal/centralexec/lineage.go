@@ -1,6 +1,6 @@
 package centralexec
 
-import "github.com/cambrian-sh/cambrian-runtime/domain"
+import "github.com/cambrian-sh/core/domain"
 
 // Credit is a precision signal attributed to one resource on one channel.
 type Credit struct {

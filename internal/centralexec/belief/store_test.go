@@ -3,7 +3,7 @@ package belief
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 func testRegions() []domain.CapabilityRegion {

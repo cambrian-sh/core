@@ -3,7 +3,7 @@ package network
 import (
 	"context"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
+	pb "github.com/cambrian-sh/core/api/proto"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

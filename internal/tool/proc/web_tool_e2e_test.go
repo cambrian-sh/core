@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/tool/discovery"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/tool/discovery"
 )
 
 // Fail-closed (DoD: no fabricated data): with no provider configured, web_search

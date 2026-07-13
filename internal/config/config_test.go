@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 func TestModelConfig_Unmarshal(t *testing.T) {

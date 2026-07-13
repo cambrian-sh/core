@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Spreader expands a seed result set associatively over the memory graph (ADR-0017

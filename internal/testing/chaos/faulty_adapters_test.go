@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/testing/chaos"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/testing/chaos"
 )
 
 func TestFaultyGenerator_DelegatesBeforeFail(t *testing.T) {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -38,7 +38,7 @@ func NewBridge(cfg config.TelemetryConfig) domain.TelemetryObserver {
 // NewBridgeWithProvider constructs a Bridge with the given MeterProvider.
 // For testing with in-memory readers.
 func NewBridgeWithProvider(_ config.TelemetryConfig, mp metric.MeterProvider) domain.TelemetryObserver {
-	meter := mp.Meter("cambrian-runtime")
+	meter := mp.Meter("cambrian-core")
 	b := &Bridge{}
 	b.budgetOverrunCounter, _ = meter.Int64Counter("cambrian_budget_overrun_total",
 		metric.WithDescription("Number of step completions where token budget was exceeded"))

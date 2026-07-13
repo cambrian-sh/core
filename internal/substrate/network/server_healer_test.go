@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/executer"
-	"github.com/cambrian-sh/cambrian-runtime/internal/substrate/harness"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/metabolism/executer"
+	"github.com/cambrian-sh/core/internal/substrate/harness"
 )
 
 // noopRestorer satisfies harness.Restorer with a no-op Restore.

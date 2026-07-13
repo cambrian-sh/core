@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // GeminiClient is the native Google Gemini client. It uses the standard

@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/substrate/operator"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
 func seedTwoGrants(t *testing.T, svc *operator.Service) {

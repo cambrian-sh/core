@@ -3,7 +3,7 @@ package memory
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // TripletExtractor is the port the ChunkTripletsBatcher depends on to turn a

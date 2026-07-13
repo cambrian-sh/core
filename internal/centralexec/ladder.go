@@ -3,7 +3,7 @@ package centralexec
 import (
 	"sort"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ForwardOnlyReplanScope returns the steps a re-plan must revise: the failed

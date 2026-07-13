@@ -3,7 +3,7 @@ package executer
 import (
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // BenchmarkStepCache_KeyComputation measures SHA-256 key hashing cost.

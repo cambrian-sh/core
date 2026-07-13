@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/cambrian-sh/cambrian-runtime/app"
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
+	"github.com/cambrian-sh/core/app"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // version is set at build time: -ldflags "-X main.version=$(git describe --tags --always)".
@@ -20,7 +20,7 @@ var version = "dev"
 // inject proprietary components via app.Options. ADR-0057 (Model C).
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version" || os.Args[1] == "version") {
-		fmt.Println("cambrian-runtime", version)
+		fmt.Println("cambrian-core", version)
 		return
 	}
 	if err := app.Run(context.Background(), app.DefaultOptions()); err != nil {

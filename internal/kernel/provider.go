@@ -4,15 +4,15 @@
 package kernel
 
 import (
-	"github.com/cambrian-sh/cambrian-runtime/internal/centralexec"
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/infrastructure/llm"
-	"github.com/cambrian-sh/cambrian-runtime/internal/router"
-	subnetwork "github.com/cambrian-sh/cambrian-runtime/internal/substrate/network"
-	session "github.com/cambrian-sh/cambrian-runtime/internal/substrate/session"
-	subsynaptic "github.com/cambrian-sh/cambrian-runtime/internal/substrate/synaptic"
-	supwatcher "github.com/cambrian-sh/cambrian-runtime/internal/supervision/watcher"
+	"github.com/cambrian-sh/core/internal/centralexec"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
+	"github.com/cambrian-sh/core/internal/router"
+	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
+	session "github.com/cambrian-sh/core/internal/substrate/session"
+	subsynaptic "github.com/cambrian-sh/core/internal/substrate/synaptic"
+	supwatcher "github.com/cambrian-sh/core/internal/supervision/watcher"
 )
 
 // ProvideServer assembles the gRPC server from the four domain stacks.

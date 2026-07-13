@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // testPolicyProvider is a simple PolicyProvider for hippocampus tests.

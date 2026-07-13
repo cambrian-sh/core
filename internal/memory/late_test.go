@@ -16,7 +16,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // lateMockEmbedder satisfies PerTokenBatchEmbedder for tests. It

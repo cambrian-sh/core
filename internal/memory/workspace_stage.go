@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // WorkspaceStageImpl enriches the Planner and DAGExecutor with cross-session LTM facts.

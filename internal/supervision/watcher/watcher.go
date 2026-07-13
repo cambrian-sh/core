@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/supervision/signal"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/supervision/signal"
 )
 
 // ErrInvalidSignal is returned when a Handoff is not a valid signal.

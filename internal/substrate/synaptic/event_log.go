@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // EventStore is the persistence interface for session events.

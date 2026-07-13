@@ -3,7 +3,7 @@ package centralexec
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // CandidateSource is the narrow Gatekeeper view the EFE arm needs: discover the

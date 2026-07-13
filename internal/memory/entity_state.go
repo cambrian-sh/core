@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ADR-0049 D9 — the entity record as a deterministic, rebuildable cache.

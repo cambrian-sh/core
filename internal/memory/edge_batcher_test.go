@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // batchGen is a fakeGen that returns a JSON array of N extractorOutput items.

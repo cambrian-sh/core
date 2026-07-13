@@ -3,7 +3,7 @@ package llm
 import (
 	"sync"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // PriceReader is the read-only port over the price ledger (ADR-0042 D6).

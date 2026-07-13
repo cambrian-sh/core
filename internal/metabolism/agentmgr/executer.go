@@ -11,9 +11,9 @@ import (
 	"sort"
 	"strings"
 
-	pb "github.com/cambrian-sh/cambrian-runtime/api/proto"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/substrate/harness"
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/substrate/harness"
 )
 
 // CallAgent routes a handoff from the Substrate (Server) to the named agent.

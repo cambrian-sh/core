@@ -4,13 +4,13 @@ import (
 	"context"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/mapper"
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/executer"
-	"github.com/cambrian-sh/cambrian-runtime/internal/storage"
-	"github.com/cambrian-sh/cambrian-runtime/internal/supervision/aggregator"
-	session "github.com/cambrian-sh/cambrian-runtime/internal/substrate/session"
-	subsynaptic "github.com/cambrian-sh/cambrian-runtime/internal/substrate/synaptic"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/mapper"
+	"github.com/cambrian-sh/core/internal/metabolism/executer"
+	"github.com/cambrian-sh/core/internal/storage"
+	"github.com/cambrian-sh/core/internal/supervision/aggregator"
+	session "github.com/cambrian-sh/core/internal/substrate/session"
+	subsynaptic "github.com/cambrian-sh/core/internal/substrate/synaptic"
 )
 
 // Compile-time interface assertions.

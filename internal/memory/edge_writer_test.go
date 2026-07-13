@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // stubGraphStore is an in-memory domain.GraphStore for EdgeWriter tests.

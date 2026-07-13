@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/executer"
+	"github.com/cambrian-sh/core/internal/metabolism/executer"
 )
 
 func TestPauseController_ResumeUnblocks(t *testing.T) {

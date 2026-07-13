@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ChunkTripletsStore is the storage interface for the per-chunk triplets that

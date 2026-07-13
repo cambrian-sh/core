@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/supervision/aggregator"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/supervision/aggregator"
 )
 
 // ─── shouldSample pure function tests ────────────────────────────────────────

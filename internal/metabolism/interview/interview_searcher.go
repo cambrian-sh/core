@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // pgvectorInterviewSearcher wraps a domain.VectorStore and implements

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 func collectPlanState(bus *domain.InMemoryEventBus) *[]domain.PlanStateChanged {

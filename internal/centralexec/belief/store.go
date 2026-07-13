@@ -18,7 +18,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Config holds the CLS tuning knobs. The prior↔posterior weighting and region

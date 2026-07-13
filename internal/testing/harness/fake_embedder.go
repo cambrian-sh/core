@@ -3,7 +3,7 @@ package harness
 import (
 	"context"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // FakeEmbedder returns fixed similarity vectors for testing.

@@ -1,6 +1,6 @@
 package gatekeeper
 
-import "github.com/cambrian-sh/cambrian-runtime/domain"
+import "github.com/cambrian-sh/core/domain"
 
 // PassesDeclaration performs the Layer 1 (Declaration) hard compatibility check.
 // Rules:

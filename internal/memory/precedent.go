@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // planIDFromSceneID inverts the scene id convention "scene-{planID}" (ADR-0049 D5).

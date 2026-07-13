@@ -3,7 +3,7 @@ package centralexec
 import (
 	"errors"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ChildBuffer is the least-privilege episodic buffer a delegated child receives

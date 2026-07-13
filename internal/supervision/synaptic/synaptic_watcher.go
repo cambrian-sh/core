@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // EventStore is the consumer-side interface SynapticWatcher needs for event access.

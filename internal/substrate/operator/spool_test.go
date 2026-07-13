@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/substrate/operator"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
 // Cycle 1 (tracer) — Emit assigns sequence numbers 1,2,3… and ReadFrom(0)

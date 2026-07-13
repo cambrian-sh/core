@@ -1,6 +1,6 @@
 package config
 
-import "github.com/cambrian-sh/cambrian-runtime/domain"
+import "github.com/cambrian-sh/core/domain"
 
 // StaticPolicyProvider implements domain.PolicyProvider by reading from a
 // pre-built map of HippocampusPolicy values (ADR-0027).

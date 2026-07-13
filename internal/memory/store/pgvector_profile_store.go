@@ -7,7 +7,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ProfileStore combines domain.ProfileStore and domain.JudicialStore.

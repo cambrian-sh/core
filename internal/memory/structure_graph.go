@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Document-structure graph (ADR-0060). The docling_agent parses a document into a

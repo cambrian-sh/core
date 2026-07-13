@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // programmableStore lets a test script GetByID / Search / QueryByMetadata independently.

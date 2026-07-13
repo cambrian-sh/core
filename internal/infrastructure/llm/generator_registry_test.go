@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // fakeGen is a scriptable domain.Generator for decorator tests.

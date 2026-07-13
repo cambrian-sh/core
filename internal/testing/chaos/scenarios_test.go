@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/supervision/gatekeeper"
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/internal/testing/chaos"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/supervision/gatekeeper"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/testing/chaos"
 )
 
 func TestChaos_GatekeeperFallsBackOnDbTimeout(t *testing.T) {

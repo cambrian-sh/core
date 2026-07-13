@@ -3,8 +3,8 @@ package llm
 import (
 	"fmt"
 
-	"github.com/cambrian-sh/cambrian-runtime/internal/config"
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ProviderRegistry holds initialized LLM provider clients and extractors,

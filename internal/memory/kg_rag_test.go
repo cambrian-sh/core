@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // fakeChunkTripletsStore is an in-memory ChunkTripletsStore for unit tests.

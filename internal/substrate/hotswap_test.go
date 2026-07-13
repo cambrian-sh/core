@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/cambrian-runtime/domain"
-	"github.com/cambrian-sh/cambrian-runtime/internal/metabolism/executer"
-	"github.com/cambrian-sh/cambrian-runtime/internal/substrate"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/metabolism/executer"
+	"github.com/cambrian-sh/core/internal/substrate"
 )
 
 func TestHotSwapPlan_PreservesCompletedSteps(t *testing.T) {
