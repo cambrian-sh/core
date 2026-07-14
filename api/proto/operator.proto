@@ -235,7 +235,8 @@ message SnapshotResponse {
   // capabilities enumerates the surfaces this build supports so the UI hides the
   // rest (ADR-0047 D14). OSS: feed, snapshot, commands, steering, audit,
   // tools-read, tools-manage, skills-read, memory-read, memory-ingest, tool-exec,
-  // tool-approvals. Premium adds: watches-read, watches-crud (A2). contract 0048.
+  // tool-approvals, routing-trace (ROUTE-02 auction funnel). Premium adds:
+  // watches-read, watches-crud (A2). contract 0049.
   repeated string capabilities = 6;
 }
 
@@ -300,6 +301,13 @@ message AuctionEventOp {
   string winner_id = 4;
   repeated BidEntryOp bids = 5;
   string error_msg = 6;
+  // winner_margin is the winning bid's confidence minus the best losing bid
+  // (0 when no runner-up). ROUTE-02: a near-zero margin flags a coin-flip.
+  float winner_margin = 7;
+  // funnel is the Gatekeeper's Declaration->Interview->Merit candidate trace for
+  // this auction (ROUTE-02). Absent when routing tracing is disabled or on the
+  // 'started' event.
+  GatekeeperFunnelOp funnel = 8;
 }
 
 message BidEntryOp {
@@ -307,6 +315,44 @@ message BidEntryOp {
   float confidence = 2;
   string rationale = 3;
   int32 latency_ms = 4;
+  // requirements are dependencies the agent declared it needs satisfied before
+  // executing (ROUTE-02 auction-proposal record).
+  repeated string requirements = 5;
+}
+
+// GatekeeperFunnelOp is the per-auction candidate funnel: every agent the
+// Gatekeeper considered and the layer that admitted or eliminated it (ROUTE-02).
+// It lets a benchmark row reconstruct why a step routed the way it did, from the
+// persisted event alone.
+message GatekeeperFunnelOp {
+  repeated DeclarationResultOp l1 = 1; // Layer 1: Declaration pass-set
+  repeated InterviewResultOp l2 = 2;   // Layer 2: Interview (semantic) survivors/eliminated
+  double l2_threshold = 3;             // similarity floor applied in Layer 2 (0 if L2 skipped)
+  repeated MeritResultOp l3 = 4;       // Layer 3: Merit ranking, highest-first (as presented to the auction)
+  int32 max_candidates = 5;            // GatekeeperMaxCandidates cap applied after ranking (0 = uncapped)
+}
+
+message DeclarationResultOp {
+  string agent_id = 1;
+  bool passed = 2;
+  string reason = 3; // why it failed (empty when passed)
+}
+
+message InterviewResultOp {
+  string agent_id = 1;
+  double similarity = 2;          // best profile->task similarity; 0 when below threshold (not returned by the searcher)
+  bool survived = 3;
+  bool provisional_bypass = 4;    // cold-start agent that skipped the semantic gate
+}
+
+message MeritResultOp {
+  string agent_id = 1;
+  double score = 2;
+  double success_rate = 3;
+  double trust_score = 4;
+  double latency_term = 5; // w3 * (1/normLatency) contribution
+  double cost_term = 6;    // w4 * normalizedCost contribution (subtracted)
+  bool provisional = 7;    // cold-start penalty applied
 }
 
 message AgentReadyOp {

@@ -223,3 +223,58 @@ func TestConductAuction_TraitTool_BeatsLowerConfidence(t *testing.T) {
 		t.Errorf("expected winning Confidence=1.0, got %f", winner.Confidence)
 	}
 }
+
+// ROUTE-02: the completed AuctionEvent carries the winner margin (winner conf
+// minus best losing bid) and passes the Gatekeeper funnel through from the task.
+func TestConductAuction_EmitsWinnerMarginAndFunnel(t *testing.T) {
+	winnerAgent := domain.AgentDefinition{ID: "win-agent"}
+	loserAgent := domain.AgentDefinition{ID: "lose-agent"}
+
+	task := &domain.AuctionTask{
+		ID:       "task-margin-1",
+		Deadline: time.Now().Add(5 * time.Second),
+		// Funnel is normally written by the Gatekeeper; set it directly here to
+		// assert ConductAuction reads it off the same task pointer.
+		Funnel: &domain.GatekeeperFunnel{
+			L1: []domain.DeclarationResult{{AgentID: "win-agent", Passed: true}},
+			L3: []domain.MeritResult{{AgentID: "win-agent", Score: 0.9}},
+		},
+	}
+
+	winMock := &mockAgentClient{proposal: &pb.ProposalResponse{Confidence: 0.9, Rationale: "win"}}
+	loseMock := &mockAgentClient{proposal: &pb.ProposalResponse{Confidence: 0.6, Rationale: "lose"}}
+
+	bus := &capturingEventBus{}
+	a := &Auctioneer{
+		agentClients:         make(map[string]pb.AgentServiceClient),
+		MinAuctionConfidence: 0.3,
+		EventBus:             bus,
+	}
+	a.agentClients[winnerAgent.ID] = &pbClientWrapper{m: winMock}
+	a.agentClients[loserAgent.ID] = &pbClientWrapper{m: loseMock}
+
+	if _, err := a.ConductAuction(context.Background(), task, []domain.AgentDefinition{winnerAgent, loserAgent}); err != nil {
+		t.Fatalf("ConductAuction failed: %v", err)
+	}
+
+	var completedEv *domain.AuctionEventPayload
+	for i := range bus.events {
+		if bus.events[i].Status == "completed" {
+			completedEv = &bus.events[i]
+			break
+		}
+	}
+	if completedEv == nil {
+		t.Fatal("no 'completed' AuctionEvent was emitted")
+	}
+	// 0.9 winner minus 0.6 runner-up = 0.3 (float32 tolerance).
+	if diff := completedEv.WinnerMargin - 0.3; diff > 1e-6 || diff < -1e-6 {
+		t.Errorf("expected winner margin ~0.3, got %f", completedEv.WinnerMargin)
+	}
+	if completedEv.Funnel == nil {
+		t.Fatal("expected the Gatekeeper funnel to pass through to the completed event")
+	}
+	if len(completedEv.Funnel.L3) != 1 || completedEv.Funnel.L3[0].AgentID != "win-agent" {
+		t.Errorf("funnel L3 not carried through: %+v", completedEv.Funnel.L3)
+	}
+}

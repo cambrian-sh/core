@@ -301,6 +301,14 @@ func planWithValidation(ctx context.Context, planner Planner, userInput string, 
 func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, error) {
 	rawInput := string(in.Payload.Data)
 
+	// ADR-0050 D1: benchmark React-baseline arm. Skips Router classification,
+	// Scout discovery, Planner, Auctioneer, and DAGExecutor — the input goes
+	// verbatim to one configured agent through the same CallAgent seam a
+	// winning bidder would use (same priming, grants, scope, telemetry).
+	if s.ExecCfg.BypassAuction {
+		return s.executeBypassAuction(ctx, in, rawInput)
+	}
+
 	// ADR-0031: Route through InputRouter when configured.
 	// The Router classifies raw input before any enrichment (mood, LTM, etc.).
 	if s.Router != nil {
@@ -927,6 +935,60 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 			_ = s.SignalReceiver.OnSignal(ctx, sig)
 		}
 	}
+}
+
+// executeBypassAuction is the ADR-0050 D1 React-baseline path: the user's
+// input is dispatched verbatim to execution.single_agent_id, skipping
+// planner/auction/DAG. Everything downstream of agent selection is identical
+// to a won auction step (CallAgent seam: priming, grants, scope, telemetry).
+// The "/plan " slash-prefix is stripped for parity with the auction arm,
+// where the InputRouter consumes it as a Layer-1 command, not task content.
+func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawInput string) (*pb.Handoff, error) {
+	agentID := s.ExecCfg.SingleAgentID
+	if agentID == "" {
+		return nil, status.Error(codes.FailedPrecondition,
+			"bypass_auction: execution.single_agent_id is required")
+	}
+	userInput := strings.TrimSpace(rawInput)
+	if rest, ok := strings.CutPrefix(userInput, "/plan "); ok {
+		userInput = strings.TrimSpace(rest)
+	}
+
+	handoff := &domain.Handoff{
+		Payload: &domain.Payload{Type: "task", Data: []byte(userInput)},
+		Context: make(map[string]string),
+	}
+	for k, v := range in.GetMetadata() {
+		handoff.Context[k] = v
+	}
+	handoff.Context["task_id"] = "task-0"
+	handoff.Context["_step_index"] = "0"
+	handoff.Context["original_prompt"] = userInput
+
+	// Mirror stepFn's session-token acquisition so cognitive agents can call
+	// GenerateViaModelStream on the bypass arm exactly as on the auction arm.
+	if s.LLMGateway != nil {
+		sa := domain.StepAllocation{}
+		if s.ModelRouter != nil && s.ModelRouter.Ollama != nil {
+			sa.Winner = domain.AgentDefinition{ID: "llm:ollama:qwen3:8b"}
+		}
+		tokenID, _ := s.LLMGateway.Acquire(ctx, sa, 4096, 30*time.Second)
+		handoff.Context["_session_token_id"] = tokenID
+		defer func() { _, _ = s.LLMGateway.Complete(ctx, tokenID) }()
+	}
+
+	slog.Info("⚡ BYPASS AUCTION (ADR-0050 D1)", "agent", agentID)
+	resp, err := s.Auctioneer.CallAgent(ctx, agentID, handoff, "")
+	if err != nil {
+		return nil, fmt.Errorf("bypass_auction: agent %q: %w", agentID, err)
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("bypass_auction: agent %q returned no handoff", agentID)
+	}
+	if resp.FromAgent == "" {
+		resp.FromAgent = agentID
+	}
+	return handoffToProto(resp), nil
 }
 
 func loadOrCreateSession(ctx context.Context, mgr *session.SessionManager, goal string) *domain.Session {

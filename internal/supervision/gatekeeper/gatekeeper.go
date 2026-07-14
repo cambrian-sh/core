@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"sort"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 const (
@@ -87,6 +87,20 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 		return m
 	}
 
+	// ROUTE-02 routing trace: record the Declaration→Interview→Merit funnel so a
+	// mis-routed step is explainable from the persisted auction event alone. The
+	// funnel only captures values the layers already compute; it is nil (zero
+	// cost beyond the flag check) when tracing is off.
+	trace := g.ExecCfg.RoutingTraceEnabled && task != nil
+	var funnel *domain.GatekeeperFunnel
+	if trace {
+		funnel = &domain.GatekeeperFunnel{MaxCandidates: g.ExecCfg.GatekeeperMaxCandidates}
+	}
+	var meritByAgent map[string]meritBreakdown
+	if trace {
+		meritByAgent = make(map[string]meritBreakdown)
+	}
+
 	var candidates []domain.ScoredCandidate
 	for _, agent := range agents {
 		// Daemon agents are signal producers, not task executors; they never
@@ -104,12 +118,26 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 
 		if !PassesDeclaration(manifest, task) {
 			slog.Info("Gatekeeper: agent filtered by declaration", "agent_id", agent.ID)
+			if trace {
+				funnel.L1 = append(funnel.L1, domain.DeclarationResult{
+					AgentID: agent.ID,
+					Passed:  false,
+					Reason:  "required-format/declaration mismatch",
+				})
+			}
 			continue
+		}
+		if trace {
+			funnel.L1 = append(funnel.L1, domain.DeclarationResult{AgentID: agent.ID, Passed: true})
 		}
 
 		score := DefaultProvisionalScore
 		if !agent.Provisional {
-			score = g.computeMeritScore(ctx, agent)
+			mb := g.computeMeritBreakdown(ctx, agent)
+			score = mb.Score
+			if trace {
+				meritByAgent[agent.ID] = mb
+			}
 		}
 		candidates = append(candidates, domain.ScoredCandidate{Agent: agent, Score: score})
 	}
@@ -135,19 +163,46 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 				slog.Warn("Gatekeeper: InterviewSearcher failed, skipping Layer 2", "err", searchErr)
 			} else {
 				qualifyingAgents := make(map[string]struct{}, len(results))
+				simByAgent := make(map[string]float64, len(results))
 				for _, r := range results {
 					qualifyingAgents[r.AgentID] = struct{}{}
+					// The searcher returns only above-threshold matches; keep the
+					// best similarity seen per agent for the funnel.
+					if s, ok := simByAgent[r.AgentID]; !ok || r.Similarity > s {
+						simByAgent[r.AgentID] = r.Similarity
+					}
 				}
-		var filtered []domain.ScoredCandidate
-		for _, c := range candidates {
-			if c.Agent.Provisional {
-				filtered = append(filtered, c)
-			} else if _, ok := qualifyingAgents[c.Agent.ID]; ok {
-				filtered = append(filtered, c)
-			} else {
-				slog.Info("Gatekeeper: Layer 2 semantic gate eliminated agent", "agent_id", c.Agent.ID)
-			}
-		}
+				if trace {
+					funnel.L2Threshold = DefaultSimilarityThreshold
+				}
+				var filtered []domain.ScoredCandidate
+				for _, c := range candidates {
+					if c.Agent.Provisional {
+						filtered = append(filtered, c)
+						if trace {
+							funnel.L2 = append(funnel.L2, domain.InterviewResult{
+								AgentID: c.Agent.ID, Survived: true, ProvisionalBypass: true,
+							})
+						}
+					} else if _, ok := qualifyingAgents[c.Agent.ID]; ok {
+						filtered = append(filtered, c)
+						if trace {
+							funnel.L2 = append(funnel.L2, domain.InterviewResult{
+								AgentID: c.Agent.ID, Similarity: simByAgent[c.Agent.ID], Survived: true,
+							})
+						}
+					} else {
+						slog.Info("Gatekeeper: Layer 2 semantic gate eliminated agent", "agent_id", c.Agent.ID)
+						if trace {
+							// Below-threshold agents are not returned by the searcher, so
+							// similarity is unknown (recorded as 0) — Survived=false is the
+							// load-bearing signal.
+							funnel.L2 = append(funnel.L2, domain.InterviewResult{
+								AgentID: c.Agent.ID, Similarity: simByAgent[c.Agent.ID], Survived: false,
+							})
+						}
+					}
+				}
 				candidates = filtered
 			}
 		}
@@ -160,6 +215,27 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 	maxK := g.ExecCfg.GatekeeperMaxCandidates
 	if maxK > 0 && len(candidates) > maxK {
 		candidates = candidates[:maxK]
+	}
+
+	// Record the final Merit slate (post-sort, post-cap) in presentation order.
+	if trace {
+		for _, c := range candidates {
+			mb, ok := meritByAgent[c.Agent.ID]
+			if !ok {
+				// Provisional agent: no merit breakdown, carries the flat score.
+				mb = meritBreakdown{Score: c.Score, Provisional: true}
+			}
+			funnel.L3 = append(funnel.L3, domain.MeritResult{
+				AgentID:     c.Agent.ID,
+				Score:       mb.Score,
+				SuccessRate: mb.SuccessRate,
+				TrustScore:  mb.TrustScore,
+				LatencyTerm: mb.LatencyTerm,
+				CostTerm:    mb.CostTerm,
+				Provisional: mb.Provisional,
+			})
+		}
+		task.Funnel = funnel
 	}
 
 	return candidates, nil
@@ -235,7 +311,22 @@ func (g *Gatekeeper) FindModelCandidates(ctx context.Context, requiredCapabiliti
 	return candidates, nil
 }
 
+// meritBreakdown is the GatekeeperScore and the individual terms that produced
+// it, so the ROUTE-02 funnel can show which component drove a candidate's rank.
+type meritBreakdown struct {
+	Score       float64
+	SuccessRate float64
+	TrustScore  float64
+	LatencyTerm float64 // w3 * (1/normLatency) contribution
+	CostTerm    float64 // w4 * normalizedCost contribution (subtracted from Score)
+	Provisional bool
+}
+
 func (g *Gatekeeper) computeMeritScore(ctx context.Context, agent domain.AgentDefinition) float64 {
+	return g.computeMeritBreakdown(ctx, agent).Score
+}
+
+func (g *Gatekeeper) computeMeritBreakdown(ctx context.Context, agent domain.AgentDefinition) meritBreakdown {
 	w1 := g.ExecCfg.GatekeeperW1
 	w2 := g.ExecCfg.GatekeeperW2
 	w3 := g.ExecCfg.GatekeeperW3
@@ -279,11 +370,16 @@ func (g *Gatekeeper) computeMeritScore(ctx context.Context, agent domain.AgentDe
 		normLatency = 1.0
 	}
 
+	latencyTerm := w3 * (1.0 / normLatency)
+	costTerm := w4 * normalizedCost
+
 	var score float64
 	if agent.Trait == domain.TraitModel {
-		score = successRate + trustScore - w4*normalizedCost
+		// TraitModel scoring omits the latency term (ADR-0018 sub-selection).
+		score = successRate + trustScore - costTerm
+		latencyTerm = 0
 	} else {
-		score = w1*successRate + w2*trustScore + w3*(1.0/normLatency) - w4*normalizedCost
+		score = w1*successRate + w2*trustScore + latencyTerm - costTerm
 	}
 
 	if profileProvisional {
@@ -294,5 +390,12 @@ func (g *Gatekeeper) computeMeritScore(ctx context.Context, agent domain.AgentDe
 		score *= penalty
 	}
 
-	return score
+	return meritBreakdown{
+		Score:       score,
+		SuccessRate: successRate,
+		TrustScore:  trustScore,
+		LatencyTerm: latencyTerm,
+		CostTerm:    costTerm,
+		Provisional: profileProvisional,
+	}
 }

@@ -1253,11 +1253,14 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			"feed", "snapshot", "commands", "steering", "audit",
 			"tools-read", "tools-manage", "skills-read",
 			"memory-read", "memory-ingest", "tool-exec", "tool-approvals",
+			// routing-trace: AuctionEventOp carries the Gatekeeper L1/L2/L3
+			// candidate funnel + winner margin + bid requirements (backlog ROUTE-02).
+			"routing-trace",
 		}
 		if k.Server.WatchHandler != nil {
 			operatorCaps = append(operatorCaps, "watches-read", "watches-crud")
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0048", operatorCaps)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0049", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).

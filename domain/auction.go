@@ -47,14 +47,14 @@ type Auctioneer interface {
 // AgentProposal represents a bid from an agent to execute a specific task.
 // As defined in AGENT_COORDINATION_MECHANISM.md
 type AgentProposal struct {
-	AgentID      string            `json:"agent_id"`
-	TaskID       string            `json:"task_id"`
-	Confidence   float64           `json:"confidence"`   // 0.0 - 1.0 (Based on LTM and Tool capability)
-	Rationale    string            `json:"rationale"`    // Reasoning for the confidence score
-	Requirements []string          `json:"requirements"` // Dependencies, e.g., "BrowserAgent's 'search_results'"
-	Latency      int               `json:"latency_ms"`   // Estimated processing time
+	AgentID      string   `json:"agent_id"`
+	TaskID       string   `json:"task_id"`
+	Confidence   float64  `json:"confidence"`   // 0.0 - 1.0 (Based on LTM and Tool capability)
+	Rationale    string   `json:"rationale"`    // Reasoning for the confidence score
+	Requirements []string `json:"requirements"` // Dependencies, e.g., "BrowserAgent's 'search_results'"
+	Latency      int      `json:"latency_ms"`   // Estimated processing time
 	Metadata     map[string]string
-	IsTool       bool              `json:"is_tool,omitempty"` // true when produced by the Static Bidder path
+	IsTool       bool `json:"is_tool,omitempty"` // true when produced by the Static Bidder path
 }
 
 // AuctionTask represents a task/RFP (Request For Proposal) broadcast to agents.
@@ -64,4 +64,11 @@ type AuctionTask struct {
 	Context         string    `json:"context"`
 	Deadline        time.Time `json:"deadline"`
 	RequiredFormats []string  `json:"required_formats,omitempty"`
+
+	// Funnel is a ROUTE-02 diagnostic OUTPUT written by Gatekeeper.FindCandidates
+	// (not part of the RFP broadcast, hence json:"-"). The Auctioneer reads it
+	// back off the same task pointer when emitting the AuctionEventPayload so the
+	// candidate funnel travels with the auction result. Nil when routing tracing
+	// is disabled.
+	Funnel *GatekeeperFunnel `json:"-"`
 }

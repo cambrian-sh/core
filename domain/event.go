@@ -49,6 +49,12 @@ type DomainEvent interface {
 
 // AuctionEventPayload reports bidding lifecycle (started / completed / failed).
 // Emitted by Auctioneer via EventBus.
+//
+// WinnerMargin and Funnel are ROUTE-02 routing-trace fields: they make a
+// mis-routed step explainable from the persisted event alone (the candidate
+// funnel that produced the slate, and how decisively the winner beat the
+// runner-up). Both are best-effort — Funnel is nil when routing tracing is
+// disabled (config execution.routing_trace_enabled) or on the "started" event.
 type AuctionEventPayload struct {
 	TaskID   string
 	TaskDesc string
@@ -56,6 +62,13 @@ type AuctionEventPayload struct {
 	WinnerID string
 	Bids     []BidEntry
 	ErrorMsg string
+	// WinnerMargin is the winning bid's confidence minus the highest-confidence
+	// losing bid (0 when there is no runner-up). A near-zero margin flags a
+	// coin-flip auction; a wide margin, a decisive one.
+	WinnerMargin float32
+	// Funnel is the Gatekeeper's per-agent Declaration→Interview→Merit trace for
+	// this auction (ROUTE-02). Nil when tracing is off or not applicable.
+	Funnel *GatekeeperFunnel
 }
 
 // BidEntry is a single agent's bid inside an AuctionEventPayload.
@@ -65,6 +78,63 @@ type BidEntry struct {
 	Rationale  string
 	LatencyMs  int32
 	IsTool     bool
+	// Requirements are the dependencies the agent declared it needs satisfied
+	// before it can execute (ROUTE-02 — part of the auction proposal record).
+	Requirements []string
+}
+
+// GatekeeperFunnel is the per-auction candidate funnel: every agent the
+// Gatekeeper considered and the layer that admitted or eliminated it
+// (ROUTE-02). Produced by Gatekeeper.FindCandidates and carried to the
+// AuctionEventPayload so a suite row can reconstruct why a step routed the way
+// it did. Pure domain — no proto, no infrastructure.
+type GatekeeperFunnel struct {
+	// L1 is the Declaration pass-set: one entry per agent considered, with the
+	// pass/fail verdict and reason.
+	L1 []DeclarationResult
+	// L2 is the Interview (semantic) layer: survivors and eliminated agents with
+	// their similarity scores. Empty when Layer 2 did not run (e.g. no embedder,
+	// or only provisional candidates).
+	L2 []InterviewResult
+	// L2Threshold is the similarity floor applied in Layer 2 (0 when L2 skipped).
+	L2Threshold float64
+	// L3 is the Merit ranking: the surviving candidates with their score and its
+	// components, in the order presented to the Auctioneer (highest first).
+	L3 []MeritResult
+	// MaxCandidates is the GatekeeperMaxCandidates cap applied after ranking
+	// (0 when uncapped).
+	MaxCandidates int
+}
+
+// DeclarationResult records one agent's Layer-1 (Declaration) verdict.
+type DeclarationResult struct {
+	AgentID string
+	Passed  bool
+	Reason  string // why it failed (empty when Passed)
+}
+
+// InterviewResult records one agent's Layer-2 (Interview) verdict. Similarity
+// is the best embedding similarity of the agent's profile to the task; Survived
+// reflects whether it cleared the threshold. ProvisionalBypass is true when the
+// agent skipped the semantic gate because it is provisional (cold-start pass).
+type InterviewResult struct {
+	AgentID           string
+	Similarity        float64
+	Survived          bool
+	ProvisionalBypass bool
+}
+
+// MeritResult records one candidate's Layer-3 (Merit) score and its components,
+// mirroring the GatekeeperScore formula so a reviewer can see which term drove
+// the ranking.
+type MeritResult struct {
+	AgentID     string
+	Score       float64
+	SuccessRate float64
+	TrustScore  float64
+	LatencyTerm float64 // w3 * (1 / normLatency) contribution
+	CostTerm    float64 // w4 * normalizedCost contribution (subtracted)
+	Provisional bool    // provisional cold-start penalty applied
 }
 
 // AgentReadyEvent is emitted by InterviewWorker after every Provisional→Active
@@ -233,11 +303,11 @@ func (MemoryPressureEvent) domainEvent()   {}
 func (WatchTriggeredEvent) domainEvent()   {}
 func (DaemonCrashedEvent) domainEvent()    {}
 
-func (AuctionEventPayload) EventType() string  { return EventTypeAuctionEvent }
-func (AgentReadyEvent) EventType() string      { return EventTypeAgentReady }
-func (SessionDormantEvent) EventType() string  { return EventTypeSessionDormant }
+func (AuctionEventPayload) EventType() string   { return EventTypeAuctionEvent }
+func (AgentReadyEvent) EventType() string       { return EventTypeAgentReady }
+func (SessionDormantEvent) EventType() string   { return EventTypeSessionDormant }
 func (SessionCompletedEvent) EventType() string { return EventTypeSessionCompleted }
-func (MemoryPressureEvent) EventType() string  { return EventTypeMemoryPressure }
+func (MemoryPressureEvent) EventType() string   { return EventTypeMemoryPressure }
 
 func (DaemonCrashedEvent) EventType() string { return EventTypeDaemonCrashed }
 

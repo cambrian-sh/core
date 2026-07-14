@@ -22,19 +22,22 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 		bids := make([]*pb.BidEntryOp, len(e.Bids))
 		for i, b := range e.Bids {
 			bids[i] = &pb.BidEntryOp{
-				AgentId:    b.AgentID,
-				Confidence: b.Confidence,
-				Rationale:  b.Rationale,
-				LatencyMs:  b.LatencyMs,
+				AgentId:      b.AgentID,
+				Confidence:   b.Confidence,
+				Rationale:    b.Rationale,
+				LatencyMs:    b.LatencyMs,
+				Requirements: b.Requirements,
 			}
 		}
 		out.Payload = &pb.OperatorEvent_Auction{Auction: &pb.AuctionEventOp{
-			TaskId:   e.TaskID,
-			TaskDesc: e.TaskDesc,
-			Status:   e.Status,
-			WinnerId: e.WinnerID,
-			Bids:     bids,
-			ErrorMsg: e.ErrorMsg,
+			TaskId:       e.TaskID,
+			TaskDesc:     e.TaskDesc,
+			Status:       e.Status,
+			WinnerId:     e.WinnerID,
+			Bids:         bids,
+			ErrorMsg:     e.ErrorMsg,
+			WinnerMargin: e.WinnerMargin,
+			Funnel:       gatekeeperFunnelToOp(e.Funnel),
 		}}
 
 	case domain.AgentReadyEvent:
@@ -142,6 +145,47 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 	}
 
 	return out
+}
+
+// gatekeeperFunnelToOp maps the ROUTE-02 routing-trace funnel to its wire form.
+// Returns nil for a nil funnel (tracing disabled), keeping the wire event
+// absent-field-clean.
+func gatekeeperFunnelToOp(f *domain.GatekeeperFunnel) *pb.GatekeeperFunnelOp {
+	if f == nil {
+		return nil
+	}
+	l1 := make([]*pb.DeclarationResultOp, len(f.L1))
+	for i, d := range f.L1 {
+		l1[i] = &pb.DeclarationResultOp{AgentId: d.AgentID, Passed: d.Passed, Reason: d.Reason}
+	}
+	l2 := make([]*pb.InterviewResultOp, len(f.L2))
+	for i, v := range f.L2 {
+		l2[i] = &pb.InterviewResultOp{
+			AgentId:           v.AgentID,
+			Similarity:        v.Similarity,
+			Survived:          v.Survived,
+			ProvisionalBypass: v.ProvisionalBypass,
+		}
+	}
+	l3 := make([]*pb.MeritResultOp, len(f.L3))
+	for i, m := range f.L3 {
+		l3[i] = &pb.MeritResultOp{
+			AgentId:     m.AgentID,
+			Score:       m.Score,
+			SuccessRate: m.SuccessRate,
+			TrustScore:  m.TrustScore,
+			LatencyTerm: m.LatencyTerm,
+			CostTerm:    m.CostTerm,
+			Provisional: m.Provisional,
+		}
+	}
+	return &pb.GatekeeperFunnelOp{
+		L1:            l1,
+		L2:            l2,
+		L2Threshold:   f.L2Threshold,
+		L3:            l3,
+		MaxCandidates: int32(f.MaxCandidates),
+	}
 }
 
 // auditEntryToOp maps a domain.AuditEntry to its wire form. Shared by the feed

@@ -42,6 +42,13 @@ type ExecutionConfig struct {
 	// Gatekeeper Merit ranking settings.
 	// GatekeeperMaxCandidates is the maximum number of candidates returned after Merit ranking.
 	GatekeeperMaxCandidates int `json:"gatekeeper_max_candidates"`
+	// RoutingTraceEnabled turns on the ROUTE-02 gatekeeper candidate-funnel trace
+	// (Declaration→Interview→Merit per-agent verdicts + winner margin) carried on
+	// the auction event. Default true: the funnel only records values the
+	// Gatekeeper already computes, so the cost is a per-auction slice allocation.
+	// Toggle it off to measure that overhead as an A/B arm (acceptance: zero
+	// auction-latency regression).
+	RoutingTraceEnabled bool `json:"routing_trace_enabled"`
 	// GatekeeperW1 is the weight for SuccessRate in the GatekeeperScore formula.
 	GatekeeperW1 float64 `json:"gatekeeper_w1"`
 	// GatekeeperW2 is the weight for TrustScore in the GatekeeperScore formula.
@@ -344,6 +351,17 @@ type ExecutionConfig struct {
 	// query. Pick a fast/local model here.
 	AgenticPlannerModel string `json:"agentic_planner_model,omitempty"`
 
+	// BypassAuction (ADR-0050 D1) short-circuits Server.Execute past the
+	// planner/auction/DAG path and dispatches the user's input verbatim to
+	// SingleAgentID — the within-substrate no-orchestration control arm the
+	// benchmark harness uses for routing A/Bs (ROUTE-01 baselines). Default
+	// OFF; production behavior is unchanged when false.
+	BypassAuction bool `json:"bypass_auction,omitempty"`
+
+	// SingleAgentID is the agent the bypass path dispatches to. Required when
+	// BypassAuction is true; Execute fails loud when it is empty or unknown.
+	SingleAgentID string `json:"single_agent_id,omitempty"`
+
 	// SceneGenOnIngestEnabled turns the per-item episodic scene-generation LLM
 	// call back ON for the document-ingest path. Default OFF (ADR-0060): it is a
 	// synchronous per-item LLM call that stalls ingest when no LLM is reachable
@@ -536,12 +554,12 @@ type ExecutionConfig struct {
 	// (Postgres full-text) via Reciprocal Rank Fusion, so exact-token chunks the
 	// embedder misses (names, titles, places) still enter the candidate pool.
 	// false ⇒ vector-only (legacy). HybridRRFK is the RRF constant (default 60).
-	HybridSearchEnabled bool    `json:"hybrid_search_enabled,omitempty"`
-	HybridRRFK          int     `json:"hybrid_rrf_k,omitempty"`
-	HybridLexicalWeight float64 `json:"hybrid_lexical_weight,omitempty"` // >1 leans RRF toward exact-term/entity matches; ≤0 ⇒ 1.0
-	HydeEnabled         bool    `json:"hyde_enabled,omitempty"`          // HyDE: embed a hypothetical answer passage for hop-1 dense retrieval
-	AgenticIrcotEnabled bool    `json:"agentic_ircot_enabled,omitempty"` // IRCoT: reason-then-retrieve loop (CoT step drives next retrieval)
-	AgenticDecomposeEnabled bool `json:"agentic_decompose_enabled,omitempty"` // up-front grounded decomposition: decompose whole question, retrieve+answer each sub-question
+	HybridSearchEnabled     bool    `json:"hybrid_search_enabled,omitempty"`
+	HybridRRFK              int     `json:"hybrid_rrf_k,omitempty"`
+	HybridLexicalWeight     float64 `json:"hybrid_lexical_weight,omitempty"`     // >1 leans RRF toward exact-term/entity matches; ≤0 ⇒ 1.0
+	HydeEnabled             bool    `json:"hyde_enabled,omitempty"`              // HyDE: embed a hypothetical answer passage for hop-1 dense retrieval
+	AgenticIrcotEnabled     bool    `json:"agentic_ircot_enabled,omitempty"`     // IRCoT: reason-then-retrieve loop (CoT step drives next retrieval)
+	AgenticDecomposeEnabled bool    `json:"agentic_decompose_enabled,omitempty"` // up-front grounded decomposition: decompose whole question, retrieve+answer each sub-question
 
 	// BlendEnabled (ADR-0054 Stage A) re-ranks recall candidates by the
 	// multi-signal blend (cosine + recency + confidence + pagerank + activation)
@@ -646,7 +664,7 @@ type Config struct {
 	AgentPool   AgentPoolConfig   `json:"agent_pool"`
 	// ADR-0043: external MCP servers the kernel consumes tools from. Opt-in —
 	// absent/empty ⇒ no MCP behaviour.
-	MCP MCPConfig `json:"mcp,omitempty"`
+	MCP     MCPConfig     `json:"mcp,omitempty"`
 	Chunker ChunkerConfig `json:"chunker"`
 }
 
@@ -654,7 +672,7 @@ type ChunkerConfig struct {
 	Default   string            `json:"default"`
 	Routes    map[string]string `json:"routes,omitempty"`
 	ExtRoutes map[string]string `json:"ext_routes,omitempty"`
-	Late      LateChunkerConfig  `json:"late"`
+	Late      LateChunkerConfig `json:"late"`
 }
 
 type LateChunkerConfig struct {
@@ -771,6 +789,7 @@ func DefaultConfig() *Config {
 			EWMAAlpha:                        0.5,
 			LatencyWindowSize:                50,
 			GatekeeperMaxCandidates:          5,
+			RoutingTraceEnabled:              true,
 			GatekeeperW1:                     0.4,
 			GatekeeperW2:                     0.4,
 			GatekeeperW3:                     0.2,
@@ -830,15 +849,15 @@ func DefaultConfig() *Config {
 			HebbianTopN:                      5,
 			HebbianDecayPerDay:               0.95,
 			HebbianBaseWeight:                0.2,
-			KG2RAGEnabled:                    true, // ADR-0053 D3: KG²RAG one-hop expansion; opt-out via config.json
-			AnchorConstraintEnabled:          true, // ADR-0053: document-local anchor promotion; opt-out via config.json
-			StructureGraphEnabled:            true, // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
+			KG2RAGEnabled:                    true,  // ADR-0053 D3: KG²RAG one-hop expansion; opt-out via config.json
+			AnchorConstraintEnabled:          true,  // ADR-0053: document-local anchor promotion; opt-out via config.json
+			StructureGraphEnabled:            true,  // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
 			AgenticRetrievalEnabled:          false, // AGENTIC_RETRIEVAL_SPEC: opt-in agentic retrieval loop; A/B via config
 			AgenticMaxHops:                   1,     // Phase 2a: plan once, retrieve once
-			KG2RAGMaxHops:                    1,    // one-hop, KG²RAG paper default
-			KG2RAGMaxExpanded:                20,   // cap on chunks added by expansion
-			KG2RAGMaxEntities:                30,   // cap on entities walked per hop
-			KG2RAGPerEntity:                  5,    // cap on chunks pulled per entity
+			KG2RAGMaxHops:                    1,     // one-hop, KG²RAG paper default
+			KG2RAGMaxExpanded:                20,    // cap on chunks added by expansion
+			KG2RAGMaxEntities:                30,    // cap on entities walked per hop
+			KG2RAGPerEntity:                  5,     // cap on chunks pulled per entity
 			ActivationThreshold:              0.1,
 			MaxContextSlots:                  20,
 			ContextRefSnippetChars:           500,
@@ -926,6 +945,7 @@ func DefaultConfig() *Config {
 //  7. configs/embedder.local.json (gitignored, per-machine embedder override)
 //  8. configs/providers.json (gitignored, LLM provider list)
 //  9. configs/providers.local.json (gitignored, per-machine LLM provider override)
+//
 // 10. configs/mcp.json (gitignored, MCP server definitions; absent ⇒ no MCP)
 // 11. CAMBRIAN_* env vars (highest priority, full override of any field)
 //

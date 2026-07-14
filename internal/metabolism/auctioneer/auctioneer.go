@@ -9,8 +9,8 @@ import (
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
@@ -42,9 +42,9 @@ type Auctioneer struct {
 	// cache-misses share ONE connection instead of each dialing a fresh conn and
 	// racing RegisterAgentClient's oldConn.Close() (which fails the loser's
 	// in-flight RPC with "the client connection is closing"). Zero value is ready.
-	dialGroup singleflight.Group
-	Manager   AgentDialer
-	Gatekeeper   domain.Gatekeeper
+	dialGroup  singleflight.Group
+	Manager    AgentDialer
+	Gatekeeper domain.Gatekeeper
 
 	// Profiles is an optional profile reader used to compute ConfidenceHint.
 	// When nil, all hints default to 0.0 (cold-start).
@@ -74,7 +74,6 @@ func New(manager AgentDialer, gatekeeper domain.Gatekeeper, execCfg config.Execu
 		ExecCfg:              execCfg,
 	}
 }
-
 
 // computeConfidenceHint looks up the agent's TrustScore from the profile reader
 // and returns a float32 clamped to [0.0, 1.0].
@@ -231,11 +230,12 @@ func (a *Auctioneer) ConductAuction(ctx context.Context, task *domain.AuctionTas
 
 	for prop := range proposalCh {
 		allBids = append(allBids, domain.BidEntry{
-			AgentID:    prop.AgentID,
-			Confidence: float32(prop.Confidence),
-			Rationale:  prop.Rationale,
-			LatencyMs:  int32(prop.Latency),
-			IsTool:     prop.IsTool,
+			AgentID:      prop.AgentID,
+			Confidence:   float32(prop.Confidence),
+			Rationale:    prop.Rationale,
+			LatencyMs:    int32(prop.Latency),
+			IsTool:       prop.IsTool,
+			Requirements: prop.Requirements,
 		})
 
 		if prop.Confidence < a.MinAuctionConfidence {
@@ -258,6 +258,7 @@ func (a *Auctioneer) ConductAuction(ctx context.Context, task *domain.AuctionTas
 			Status:   "failed",
 			Bids:     allBids,
 			ErrorMsg: "no valid proposals received",
+			Funnel:   task.Funnel, // ROUTE-02: candidate funnel explains the no-winner
 		})
 		if a.Observer != nil {
 			a.Observer.OnAuctionNoWinner(task.ID)
@@ -266,14 +267,41 @@ func (a *Auctioneer) ConductAuction(ctx context.Context, task *domain.AuctionTas
 	}
 
 	a.emitAuctionEvent(domain.AuctionEventPayload{
-		TaskID:   task.ID,
-		TaskDesc: task.Description,
-		Status:   "completed",
-		WinnerID: bestProposal.AgentID,
-		Bids:     allBids,
+		TaskID:       task.ID,
+		TaskDesc:     task.Description,
+		Status:       "completed",
+		WinnerID:     bestProposal.AgentID,
+		Bids:         allBids,
+		WinnerMargin: winnerMargin(allBids, bestProposal.AgentID, float32(bestProposal.Confidence)),
+		Funnel:       task.Funnel, // ROUTE-02
 	})
 
 	return bestProposal, nil
+}
+
+// winnerMargin is the winner's confidence minus the highest-confidence losing
+// bid (ROUTE-02). Returns 0 when there is no runner-up. A near-zero margin flags
+// a coin-flip auction where the merit signal barely separated the field.
+func winnerMargin(bids []domain.BidEntry, winnerID string, winnerConf float32) float32 {
+	var runnerUp float32
+	found := false
+	for _, b := range bids {
+		if b.AgentID == winnerID {
+			continue
+		}
+		if !found || b.Confidence > runnerUp {
+			runnerUp = b.Confidence
+			found = true
+		}
+	}
+	if !found {
+		return 0
+	}
+	margin := winnerConf - runnerUp
+	if margin < 0 {
+		return 0
+	}
+	return margin
 }
 
 // VerifyOutput calls the VerifyOutput RPC on a verifier agent.

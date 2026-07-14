@@ -1,0 +1,2 @@
+PID	USER	PR	NI	VIRT	RES	SHR	S	%CPU	%MEM	TIME+ COMMAND
+$(ps aux --sort=-%mem | awk '$6 > 512000 || $6+0 > 512000 {print}' | head -20)
