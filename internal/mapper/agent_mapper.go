@@ -62,6 +62,7 @@ func (m *AgentMapper) ManifestToDomain(rec storage.ManifestRecord) domain.AgentM
 		Tools:            rec.Tools,
 		Capabilities:     rec.Capabilities,  // ROUTE-03
 		MemoryLimitMB:    rec.MemoryLimitMB, // SEC-01
+		PythonDeps:       rec.PythonDeps,    // PLAT-01
 		SupportedFormats: rec.SupportedFormats,
 		InputSchema:      rec.InputSchema,
 		OutputSchema:     rec.OutputSchema,

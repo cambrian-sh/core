@@ -28,6 +28,7 @@ type ManifestRecord struct {
 	Tools            []string       `json:"tools,omitempty"`
 	Capabilities     []string       `json:"capabilities,omitempty"`   // ROUTE-03: declared capability tags (manifest source of truth)
 	MemoryLimitMB    int            `json:"memory_limit_mb,omitempty"` // SEC-01: per-agent memory cap (0 = global default)
+	PythonDeps       []string       `json:"python_deps,omitempty"`     // PLAT-01: import names verified before spawn
 	SupportedFormats []string       `json:"supported_formats,omitempty"`
 	InputSchema      map[string]any `json:"input_schema,omitempty"`
 	OutputSchema     map[string]any `json:"output_schema,omitempty"`

@@ -128,6 +128,20 @@ func (b *BBoltAdapter) Seed(agentsDir string, isSystemAgent func(id string) bool
 			return err
 		}
 
+		// REACT-01 (ADR-0061): durable reactive-execution buckets.
+		if _, err := tx.CreateBucketIfNotExists(reactiveJournalBucket); err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucketIfNotExists(reactiveCursorBucket); err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucketIfNotExists(reactiveIdempotencyBucket); err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucketIfNotExists(reactiveDeadLetterBucket); err != nil {
+			return err
+		}
+
 		walkErr := filepath.WalkDir(agentsDir, func(walkPath string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				slog.Warn("DB (BBOLT): agents walk error, skipping", "path", walkPath, "err", walkErr)

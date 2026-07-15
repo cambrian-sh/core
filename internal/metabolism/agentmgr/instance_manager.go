@@ -355,6 +355,11 @@ func (im *InstanceManager) KillAllAgents(ctx context.Context) error {
 func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefinition) error {
 	inst := domain.NewInstance(def.ID)
 
+	// PLAT-01: fail fast with the missing dep named, not a silent spawn crash.
+	if err := im.verifyPythonDeps(ctx, def); err != nil {
+		return err
+	}
+
 	cmd, err := im.buildAgentCmd(def, inst, "") // streamID "" for non-daemon boot path
 	if err != nil {
 		return err
@@ -442,6 +447,11 @@ func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefin
 func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.AgentDefinition, streamID string, params map[string]any) (*domain.Instance, error) {
 	inst := domain.NewInstance(def.ID)
 	inst.Mode = domain.ModeDaemon
+
+	// PLAT-01: fail fast with the missing dep named, not a silent spawn crash.
+	if err := im.verifyPythonDeps(ctx, def); err != nil {
+		return nil, err
+	}
 
 	cmd, err := im.buildAgentCmd(def, inst, streamID)
 	if err != nil {

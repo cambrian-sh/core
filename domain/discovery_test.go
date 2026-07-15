@@ -7,6 +7,49 @@ import (
 )
 
 // ADR-0051 D9: an empty/nil report renders nothing — the degrade-to-one-shot signal.
+func TestDiscoveryReferencedByPlan(t *testing.T) {
+	report := &DiscoveryReport{
+		Entities: []DiscoveredEntity{
+			{Kind: "file", ID: "internal/memory/chunker.go", Summary: "10 funcs"},
+		},
+		Unobserved:  []string{"service:vectordb"},
+		Environment: &EnvFacts{OS: "windows", Cwd: `C:\proj`},
+	}
+	plan := func(qs ...string) *ExecutionPlan {
+		p := &ExecutionPlan{}
+		for _, q := range qs {
+			p.Steps = append(p.Steps, Step{Query: q})
+		}
+		return p
+	}
+
+	// A plan that names a discovered entity ⇒ referenced.
+	if !DiscoveryReferencedByPlan(report, plan("Read internal/memory/chunker.go and summarise")) {
+		t.Error("plan naming a discovered entity id must count as referenced")
+	}
+	// A plan that names an unobserved entity (told to scan it) ⇒ referenced.
+	if !DiscoveryReferencedByPlan(report, plan("Scan service:vectordb before planning")) {
+		t.Error("plan naming an unobserved entity must count as referenced")
+	}
+	// A plan that only echoes the cwd path ⇒ NOT referenced (env is boilerplate).
+	if DiscoveryReferencedByPlan(report, plan(`Create a report in C:\proj`)) {
+		t.Error("environment-path echo must NOT count as referenced (noise)")
+	}
+	// A plan referencing nothing discovered ⇒ not referenced.
+	if DiscoveryReferencedByPlan(report, plan("Write a poem about the sea")) {
+		t.Error("unrelated plan must not count as referenced")
+	}
+	// Env-only report (no concrete entity) ⇒ never referenced.
+	envOnly := &DiscoveryReport{Environment: &EnvFacts{OS: "windows", Cwd: `C:\proj`}}
+	if DiscoveryReferencedByPlan(envOnly, plan(`work in C:\proj`)) {
+		t.Error("env-only report carries no entity to reference")
+	}
+	// Nil-safety.
+	if DiscoveryReferencedByPlan(nil, plan("x")) || DiscoveryReferencedByPlan(report, nil) {
+		t.Error("nil report/plan must be safe and false")
+	}
+}
+
 func TestRenderDiscoveryBlock_EmptyIsDegradeSignal(t *testing.T) {
 	if got := RenderDiscoveryBlock(nil); got != "" {
 		t.Errorf("nil report must render empty; got %q", got)

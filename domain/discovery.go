@@ -41,6 +41,43 @@ type DiscoveredEntity struct {
 	ContentCID string // reference to the raw observation in the ContentStore (never inlined)
 }
 
+// DiscoveryReferencedByPlan reports whether the emitted plan textually references
+// the Scout's discovery (ROUTE-08 phase A) — the proxy for "the discovery changed
+// the plan". It matches discovered and unobserved *entity ids* against the plan's
+// step queries (case-insensitive substring). Environment facts are deliberately
+// excluded: the Planner is instructed to echo the cwd/desktop paths in almost
+// every plan, so matching them would trivially return true and destroy the
+// signal. A report with only environment/interpretation (no concrete entity)
+// therefore counts as not-referenced. Generous by design — a false negative is
+// safer than over-crediting the Scout.
+func DiscoveryReferencedByPlan(r *DiscoveryReport, plan *ExecutionPlan) bool {
+	if r == nil || r.IsEmpty() || plan == nil || len(plan.Steps) == 0 {
+		return false
+	}
+	ids := make([]string, 0, len(r.Entities)+len(r.Unobserved))
+	for _, e := range r.Entities {
+		if e.ID != "" {
+			ids = append(ids, e.ID)
+		}
+	}
+	ids = append(ids, r.Unobserved...)
+	if len(ids) == 0 {
+		return false
+	}
+	var b strings.Builder
+	for _, s := range plan.Steps {
+		b.WriteString(s.Query)
+		b.WriteByte('\n')
+	}
+	haystack := strings.ToLower(b.String())
+	for _, id := range ids {
+		if id != "" && strings.Contains(haystack, strings.ToLower(id)) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsEmpty reports whether the report carries nothing worth injecting — Scout observed
 // no entities and produced no interpretation. An empty report means "degrade to one-shot":
 // the Planner sees no `<DiscoveryLTM>` block and behaves exactly as before Scout existed.

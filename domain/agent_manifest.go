@@ -22,4 +22,9 @@ type AgentManifest struct {
 	// default (execution.agent_memory_limit_mb); the effective cap is the agent's
 	// own declared need, not one blunt number for the whole fleet.
 	MemoryLimitMB int `json:"memory_limit_mb,omitempty"`
+	// PythonDeps lists the top-level import names this agent needs (PLAT-01), e.g.
+	// ["docling", "torch"]. The kernel verifies they resolve in the target Python
+	// before spawning, so a missing package is an install-time error naming the
+	// dep — not a silent ImportError crash after boot. Empty ⇒ no self-check.
+	PythonDeps []string `json:"python_deps,omitempty"`
 }

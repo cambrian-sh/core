@@ -196,3 +196,13 @@ proto-breaking:
 
 proto-lint:
 	buf lint
+
+# PLAT-01: regenerate per-agent requirements.txt + the union lockfile from the
+# installed agent Python (importlib.metadata — no pip-tools needed).
+PYTHON ?= python
+agent-reqs:
+	$(PYTHON) scripts/gen_agent_requirements.py
+
+# CI drift gate: the committed requirements must match a fresh generation.
+agent-reqs-check:
+	$(PYTHON) scripts/gen_agent_requirements.py --check

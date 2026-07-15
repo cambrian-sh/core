@@ -142,6 +142,19 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			StepIndex: int32(e.StepIndex),
 			Text:      e.Text,
 		}}
+
+	case domain.ScoutUsefulnessEvent:
+		out.SessionId = e.SessionID
+		out.Payload = &pb.OperatorEvent_ScoutUsefulness{ScoutUsefulness: &pb.ScoutUsefulnessOp{
+			SessionId:           e.SessionID,
+			ScoutRan:            e.ScoutRan,
+			ScoutLatencyMs:      e.ScoutLatencyMs,
+			DiscoveryEntities:   int32(e.DiscoveryEntities),
+			DiscoveryReferenced: e.DiscoveryReferenced,
+			PlanSteps:           int32(e.PlanSteps),
+			ReplanCount:         int32(e.ReplanCount),
+			Replanned:           e.Replanned,
+		}}
 	}
 
 	return out

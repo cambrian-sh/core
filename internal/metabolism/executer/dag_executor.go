@@ -172,6 +172,11 @@ type DAGExecutor struct {
 	errorPause       bool // true when pause was triggered by step error (auto-replan)
 }
 
+// ReplanCount returns how many times this execution replanned. Read after
+// ExecuteFrom returns; used by ROUTE-08 phase-A scout-usefulness logging (a plan
+// that ran without replan is the "discovery was sufficient" signal).
+func (d *DAGExecutor) ReplanCount() int { return d.replanCount }
+
 // InjectPlanner composes the new forward plan for an operator InjectCorrection
 // from the instruction plus the live execution state (ADR-0047 A1.1). Optional:
 // when nil, the executor uses a deterministic default — a single-step forward

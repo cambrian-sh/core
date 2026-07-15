@@ -235,8 +235,8 @@ message SnapshotResponse {
   // capabilities enumerates the surfaces this build supports so the UI hides the
   // rest (ADR-0047 D14). OSS: feed, snapshot, commands, steering, audit,
   // tools-read, tools-manage, skills-read, memory-read, memory-ingest, tool-exec,
-  // tool-approvals, routing-trace (ROUTE-02 auction funnel). Premium adds:
-  // watches-read, watches-crud (A2). contract 0049.
+  // tool-approvals, routing-trace (ROUTE-02 auction funnel), scout-usefulness
+  // (ROUTE-08 A). Premium adds: watches-read, watches-crud (A2). contract 0050.
   repeated string capabilities = 6;
 }
 
@@ -284,7 +284,23 @@ message OperatorEvent {
     PlanStateOp plan_state = 21;
     AuditOp audit = 22;
     TokenChunkOp token = 23; // live-only lane; seq is 0 and is never replayed
+    ScoutUsefulnessOp scout_usefulness = 24; // ROUTE-08 phase A
   }
+}
+
+// ScoutUsefulnessOp is the ROUTE-08 phase-A per-session signal: did the always-on
+// Scout's pre-plan discovery earn its cost (referenced by the plan? ran without
+// replan? what did it cost)? Logging only — training material for a later
+// invoke/skip policy.
+message ScoutUsefulnessOp {
+  string session_id = 1;
+  bool scout_ran = 2;
+  int64 scout_latency_ms = 3;
+  int32 discovery_entities = 4;
+  bool discovery_referenced = 5;
+  int32 plan_steps = 6;
+  int32 replan_count = 7;
+  bool replanned = 8;
 }
 
 // ResyncRequired tells the client its cursor has fallen out of the retained

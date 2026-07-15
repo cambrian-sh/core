@@ -383,8 +383,19 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	// and attaches its report to ctx; the Planner (via DiscoveryFromContext) shapes the plan
 	// to it. An empty report (no Scout, nothing to observe, or any degrade) leaves ctx
 	// untouched ⇒ one-shot planning exactly as before.
+	// ROUTE-08 phase A: capture whether the Scout ran, its latency, and the report
+	// (for the discovery↔plan reference check below). Logging only — behavior
+	// unchanged.
+	var scoutReport *domain.DiscoveryReport
+	var scoutRan bool
+	var scoutLatencyMs int64
 	if s.Scout != nil && !s.ExecCfg.DisableScout {
-		if report := s.Scout.Discover(ctx, userInput); !report.IsEmpty() {
+		scoutStart := time.Now()
+		report := s.Scout.Discover(ctx, userInput)
+		scoutLatencyMs = time.Since(scoutStart).Milliseconds()
+		scoutRan = true
+		if !report.IsEmpty() {
+			scoutReport = report
 			ctx = domain.WithDiscovery(ctx, report)
 		}
 	}
@@ -634,6 +645,29 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	}
 
 	masterCtx, err := executor.ExecuteFrom(planCtx, plan, initialCtx, executer.StepFunc(stepFn), startFromStep)
+
+	// ROUTE-08 phase A: log whether the always-on Scout earned its cost this
+	// session (referenced by the plan? ran without replan? what did it cost?).
+	// Emitted for both success and partial-plan outcomes — the plan ran either
+	// way. Logging only; the raw material for a later invoke/skip policy.
+	if s.EventBus != nil {
+		entities := 0
+		if scoutReport != nil {
+			entities = len(scoutReport.Entities)
+		}
+		replans := executor.ReplanCount()
+		_ = s.EventBus.Publish(domain.ScoutUsefulnessEvent{
+			SessionID:           sessionID,
+			ScoutRan:            scoutRan,
+			ScoutLatencyMs:      scoutLatencyMs,
+			DiscoveryEntities:   entities,
+			DiscoveryReferenced: domain.DiscoveryReferencedByPlan(scoutReport, plan),
+			PlanSteps:           len(plan.Steps),
+			ReplanCount:         replans,
+			Replanned:           replans > 0,
+		})
+	}
+
 	if err != nil {
 		var partialErr *executer.PartialPlanError
 		if errors.As(err, &partialErr) {

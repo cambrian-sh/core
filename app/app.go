@@ -629,6 +629,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			LLM:        aw.LLM,
 			WatchStore: reg,
 			EventBus:   eventBus,
+			Journal:    reg, // REACT-01 / ADR-0061: durable reactive execution (bbolt).
 		})
 	}
 	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, providers, llmProvider, sessionMgr, eventLogger, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
@@ -1260,11 +1261,13 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			// routing-trace: AuctionEventOp carries the Gatekeeper L1/L2/L3
 			// candidate funnel + winner margin + bid requirements (backlog ROUTE-02).
 			"routing-trace",
+			// scout-usefulness: per-session ScoutUsefulnessOp on the feed (ROUTE-08 A).
+			"scout-usefulness",
 		}
 		if k.Server.WatchHandler != nil {
 			operatorCaps = append(operatorCaps, "watches-read", "watches-crud")
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0049", operatorCaps)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0050", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).

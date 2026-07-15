@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
@@ -43,6 +44,37 @@ type ReactiveServices struct {
 	LLM        domain.Generator        // LLM condition evaluation
 	WatchStore ReactiveWatchStore      // WatchConfig persistence (BBolt)
 	EventBus   domain.EventBus         // daemon-crash subscription, emit_event
+	// Journal is the durable-execution surface (REACT-01 / ADR-0061): signal
+	// journal + per-watch ack cursor + exactly-once idempotency + dead-letter.
+	// May be nil — a nil journal leaves the engine in its pure in-memory mode
+	// (today's behavior), so OSS builds and existing tests are unaffected.
+	Journal ReactiveJournal
+}
+
+// ReactiveJournal is the durable-execution surface for the reactive lane
+// (REACT-01 / ADR-0061). Implemented by the OSS bbolt-backed decorator and injected
+// into the premium ReactiveEngine, which stays free of kernel internals. The engine
+// treats a nil ReactiveJournal as "durability off" (pure in-memory fan-out).
+type ReactiveJournal interface {
+	// AppendSignal durably records a signal BEFORE condition evaluation and returns
+	// its monotonic sequence number. ttl bounds how long the record is replay-eligible.
+	AppendSignal(sig domain.Signal, ttl time.Duration) (seq uint64, err error)
+	// ReplayFrom returns journaled signals with seq strictly greater than afterSeq.
+	ReplayFrom(afterSeq uint64) ([]domain.JournaledSignal, error)
+	// GetCursor returns the last-acked journal seq for a watch (0 if none).
+	GetCursor(watchID string) (uint64, error)
+	// SetCursor advances a watch's ack cursor.
+	SetCursor(watchID string, seq uint64) error
+	// MarkExecutedOnce is the exactly-once primitive: it returns true only the first
+	// time key is seen (atomic check-and-set), false on every replay/retry thereafter.
+	MarkExecutedOnce(key string) (firstTime bool, err error)
+	// RecordDeadLetter persists an undeliverable action or an expired signal.
+	RecordDeadLetter(dl domain.ReactiveDeadLetter) error
+	// ListDeadLetters returns dead-letter entries newest-first (limit <= 0 ⇒ all).
+	ListDeadLetters(limit int) ([]domain.ReactiveDeadLetter, error)
+	// Prune drops journal records at/below minAcked whose TTL has expired. Returns
+	// the count removed.
+	Prune(minAcked uint64) (removed int, err error)
 }
 
 // ReactiveAgentDispatcher is the agent-manager surface reactive needs:
