@@ -219,4 +219,10 @@ var feedEventTypes = []string{
 	domain.EventTypeVerifierRound,
 	domain.EventTypeLLMHealth,
 	domain.EventTypePlanState,
+	// ROUTE-08.A: ScoutUsefulnessEvent is Published to the EventBus (server.Execute)
+	// and has a mapper case, but was missing from this bridge list — so it never
+	// reached the feed. Added here so the per-session scout signal is actually visible.
+	domain.EventTypeScoutUsefulness,
+	// REACT-02 / ADR-0062: reactive backpressure shed events.
+	domain.EventTypeReactiveBudget,
 }

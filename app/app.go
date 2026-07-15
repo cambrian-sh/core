@@ -1280,11 +1280,14 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		}
 		// REACT-01 / ADR-0061: reactive dead-letter read surface, advertised when the
 		// premium reactive engine (and thus the journal writer) is active — same signal
-		// as watch CRUD.
+		// as watch CRUD. REACT-02 / ADR-0062: backpressure adds `debounce_seconds` on
+		// WatchConfigOp + the ReactiveBudgetOp shed event, gated on the same signal.
 		if k.Server.WatchHandler != nil {
-			operatorCaps = append(operatorCaps, "watch-deadletter")
+			// REACT-03 / ADR-0063: watch-condition-guard advertises the llm-condition
+			// injection hardening (payload allowlist + registration risk gate).
+			operatorCaps = append(operatorCaps, "watch-deadletter", "reactive-backpressure", "watch-condition-guard")
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0051", operatorCaps)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0053", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).

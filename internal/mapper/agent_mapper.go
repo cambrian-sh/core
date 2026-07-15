@@ -441,8 +441,11 @@ func (m *AgentMapper) WatchConfigToRecord(cfg domain.WatchConfig) storage.WatchC
 		ActionPayload:      cfg.Action.Payload,
 		Active:             cfg.Active,
 		ResponseMode:       cfg.ResponseMode,
-		DaemonParams:       cfg.DaemonParams,
-		MaxConcurrentPlans: cfg.MaxConcurrentPlans,
+		DaemonParams:         cfg.DaemonParams,
+		MaxConcurrentPlans:   cfg.MaxConcurrentPlans,
+		DebounceSeconds:      cfg.DebounceSeconds,
+		ConditionPayloadKeys: cfg.ConditionPayloadKeys,
+		Approved:             cfg.Approved,
 	}
 }
 
@@ -466,8 +469,11 @@ func (m *AgentMapper) WatchConfigFromRecord(rec storage.WatchConfigRecord) domai
 		},
 		Active:             rec.Active,
 		ResponseMode:       rec.ResponseMode,
-		DaemonParams:       rec.DaemonParams,
-		MaxConcurrentPlans: rec.MaxConcurrentPlans,
+		DaemonParams:         rec.DaemonParams,
+		MaxConcurrentPlans:   rec.MaxConcurrentPlans,
+		DebounceSeconds:      rec.DebounceSeconds,
+		ConditionPayloadKeys: rec.ConditionPayloadKeys,
+		Approved:             rec.Approved,
 	}
 }
 

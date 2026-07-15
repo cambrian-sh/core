@@ -42,6 +42,9 @@ const (
 	// what did the Scout cost. Logging only — the raw material to later learn a
 	// self-regulation (invoke/skip) policy (phase B).
 	EventTypeScoutUsefulness = "scout.usefulness"
+	// EventTypeReactiveBudget reports that a reactive backpressure budget was
+	// exhausted and load is being shed. REACT-02 / ADR-0062.
+	EventTypeReactiveBudget = "reactive.budget"
 )
 
 // DomainEvent is the sealed interface for all internal system events.
@@ -354,3 +357,22 @@ type ScoutUsefulnessEvent struct {
 
 func (ScoutUsefulnessEvent) domainEvent()      {}
 func (ScoutUsefulnessEvent) EventType() string { return EventTypeScoutUsefulness }
+
+// ReactiveBudgetEvent is emitted when a reactive backpressure budget is exhausted
+// and the engine sheds load (skips + dead-letters the shed unit) — so budget
+// exhaustion is operator-visible, not a silent stall. Throttled to at most once per
+// minute per resource. REACT-02 / ADR-0062.
+type ReactiveBudgetEvent struct {
+	// Resource is the exhausted budget: "llm_condition", "start_plan", or "stream_rate".
+	Resource string
+	// Reason is the dead-letter reason applied to shed units
+	// ("budget_exhausted", "plan_budget_exhausted", "rate_limited").
+	Reason string
+	// StreamID is the affected stream ("" for plane-wide budgets).
+	StreamID string
+	// SheddingSince is when shedding for this resource began (this window).
+	SheddingSince time.Time
+}
+
+func (ReactiveBudgetEvent) domainEvent()      {}
+func (ReactiveBudgetEvent) EventType() string { return EventTypeReactiveBudget }

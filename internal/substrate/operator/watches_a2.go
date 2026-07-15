@@ -90,6 +90,14 @@ func (s *Service) RegisterWatch(ctx context.Context, req *pb.RegisterWatchOpRequ
 	if cfg.Action.Type == "dispatch_agent" && cfg.Action.TargetType == "" {
 		return nil, status.Error(codes.InvalidArgument, "action.target_type is required for a dispatch_agent watch")
 	}
+	// REACT-03 / ADR-0063: risk gate. An `llm` condition driving a high-risk,
+	// unattended action (start_plan / dispatch_agent) lets untrusted signal content
+	// decide a consequential action — it must carry the operator's explicit
+	// acknowledgement. This is a deterministic security gate (ADR-0034), not routing.
+	if isHighRiskLLMWatch(cfg) && !cfg.Approved {
+		return nil, status.Error(codes.InvalidArgument,
+			"a high-risk llm-condition watch (start_plan/dispatch_agent action) requires approved=true")
+	}
 	if s.audit == nil {
 		return nil, status.Error(codes.Unimplemented, "operator audit store not configured")
 	}
@@ -142,6 +150,16 @@ func (s *Service) SetWatchActive(ctx context.Context, req *pb.SetWatchActiveOpRe
 		boolStr(req.GetActive()), func() error { return s.watches.SetWatchActive(req.GetWatchId(), req.GetActive()) })
 }
 
+// isHighRiskLLMWatch reports whether a watch is the dangerous combination REACT-03
+// gates: an `llm` condition (untrusted signal content decides the fire) driving a
+// consequential, unattended action (`start_plan` / `dispatch_agent`).
+func isHighRiskLLMWatch(cfg domain.WatchConfig) bool {
+	if cfg.ConditionType != domain.ConditionTypeLLM {
+		return false
+	}
+	return cfg.Action.Type == "start_plan" || cfg.Action.Type == "dispatch_agent"
+}
+
 // ── mapping ───────────────────────────────────────────────────────────────────
 
 func fromWatchConfigOp(c *pb.WatchConfigOp) domain.WatchConfig {
@@ -161,9 +179,12 @@ func fromWatchConfigOp(c *pb.WatchConfigOp) domain.WatchConfig {
 		ConditionType:      c.GetConditionType(),
 		Action:             action,
 		Active:             c.GetActive(),
-		ResponseMode:       c.GetResponseMode(),
-		DaemonParams:       stringMapToAny(c.GetDaemonParams()),
-		MaxConcurrentPlans: int(c.GetMaxConcurrentPlans()),
+		ResponseMode:         c.GetResponseMode(),
+		DaemonParams:         stringMapToAny(c.GetDaemonParams()),
+		MaxConcurrentPlans:   int(c.GetMaxConcurrentPlans()),
+		DebounceSeconds:      int(c.GetDebounceSeconds()),
+		ConditionPayloadKeys: c.GetConditionPayloadKeys(),
+		Approved:             c.GetApproved(),
 	}
 }
 
@@ -179,10 +200,13 @@ func toWatchConfigOp(c domain.WatchConfig) *pb.WatchConfigOp {
 		Action: &pb.WatchActionOp{
 			Type: c.Action.Type, TargetType: c.Action.TargetType, Target: c.Action.Target, Payload: c.Action.Payload,
 		},
-		Active:             c.Active,
-		ResponseMode:       c.ResponseMode,
-		DaemonParams:       anyMapToString(c.DaemonParams),
-		MaxConcurrentPlans: int32(c.MaxConcurrentPlans),
+		Active:               c.Active,
+		ResponseMode:         c.ResponseMode,
+		DaemonParams:         anyMapToString(c.DaemonParams),
+		MaxConcurrentPlans:   int32(c.MaxConcurrentPlans),
+		DebounceSeconds:      int32(c.DebounceSeconds),
+		ConditionPayloadKeys: c.ConditionPayloadKeys,
+		Approved:             c.Approved,
 	}
 }
 

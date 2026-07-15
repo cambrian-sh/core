@@ -291,6 +291,7 @@ message OperatorEvent {
     AuditOp audit = 22;
     TokenChunkOp token = 23; // live-only lane; seq is 0 and is never replayed
     ScoutUsefulnessOp scout_usefulness = 24; // ROUTE-08 phase A
+    ReactiveBudgetOp reactive_budget = 25;   // REACT-02 / ADR-0062: backpressure shed event
   }
 }
 
@@ -636,6 +637,9 @@ message WatchConfigOp {
   string response_mode = 10;
   map<string, string> daemon_params = 11;
   int32 max_concurrent_plans = 12;
+  int32 debounce_seconds = 13; // REACT-02 / ADR-0062: coalesce at most once per T seconds (0 = off)
+  repeated string condition_payload_keys = 14; // REACT-03 / ADR-0063: llm-condition payload-key allowlist
+  bool approved = 15;                           // REACT-03 / ADR-0063: operator ack for a high-risk llm-condition watch
 }
 message ListWatchesOpRequest {
   int32 page = 1;
@@ -680,4 +684,12 @@ message WatchDeadLetterOp {
   string signal_stream_id = 6;
   string signal_raw_text = 7;
   int64 failed_at_unix_ms = 8;
+}
+
+// REACT-02 / ADR-0062: backpressure shed event on the feed.
+message ReactiveBudgetOp {
+  string resource = 1;             // "llm_condition" | "start_plan" | "stream_rate"
+  string reason = 2;               // dead-letter reason applied to shed units
+  string stream_id = 3;            // affected stream ("" for plane-wide budgets)
+  int64 shedding_since_unix_ms = 4;
 }

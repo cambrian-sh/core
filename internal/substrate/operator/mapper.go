@@ -155,6 +155,14 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			ReplanCount:         int32(e.ReplanCount),
 			Replanned:           e.Replanned,
 		}}
+
+	case domain.ReactiveBudgetEvent:
+		out.Payload = &pb.OperatorEvent_ReactiveBudget{ReactiveBudget: &pb.ReactiveBudgetOp{
+			Resource:            e.Resource,
+			Reason:              e.Reason,
+			StreamId:            e.StreamID,
+			SheddingSinceUnixMs: e.SheddingSince.UnixMilli(),
+		}}
 	}
 
 	return out

@@ -92,4 +92,19 @@ type WatchConfig struct {
 	DaemonParams map[string]any `json:"daemon_params,omitempty"`
 	// MaxConcurrentPlans limits simultaneous start_plan executions. Default 1.
 	MaxConcurrentPlans int `json:"max_concurrent_plans,omitempty"`
+	// DebounceSeconds coalesces a signal storm: when > 0, the watch fires at most
+	// once per this many seconds, carrying the coalesced batch in the fired signal's
+	// Payload. 0 disables debounce (fire on every signal). REACT-02 / ADR-0062.
+	DebounceSeconds int `json:"debounce_seconds,omitempty"`
+	// ConditionPayloadKeys is the allowlist of payload keys an `llm` condition may
+	// read. When non-empty, the engine strips every other key from a copy of the
+	// payload before it reaches the evaluator — shrinking the prompt-injection
+	// surface to exactly the operator-intended fields. Empty ⇒ no filtering.
+	// REACT-03 / ADR-0063.
+	ConditionPayloadKeys []string `json:"condition_payload_keys,omitempty"`
+	// Approved is the operator's explicit acknowledgement that a high-risk watch — an
+	// `llm` condition driving a `start_plan`/`dispatch_agent` action, i.e. untrusted
+	// content deciding an unattended consequential action — has been reviewed.
+	// RegisterWatch rejects such a watch unless this is true. REACT-03 / ADR-0063.
+	Approved bool `json:"approved,omitempty"`
 }

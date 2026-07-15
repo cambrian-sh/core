@@ -179,8 +179,11 @@ type WatchConfigRecord struct {
 	ActionPayload      string         `json:"action_payload,omitempty"`
 	Active             bool           `json:"active"`
 	ResponseMode       string         `json:"response_mode,omitempty"`
-	DaemonParams       map[string]any `json:"daemon_params,omitempty"`
-	MaxConcurrentPlans int            `json:"max_concurrent_plans,omitempty"`
+	DaemonParams         map[string]any `json:"daemon_params,omitempty"`
+	MaxConcurrentPlans   int            `json:"max_concurrent_plans,omitempty"`
+	DebounceSeconds      int            `json:"debounce_seconds,omitempty"`       // REACT-02 / ADR-0062
+	ConditionPayloadKeys []string       `json:"condition_payload_keys,omitempty"` // REACT-03 / ADR-0063
+	Approved             bool           `json:"approved,omitempty"`               // REACT-03 / ADR-0063
 }
 
 // ContradictionResolutionRecord is the raw JSON shape stored in the bbolt contradiction_resolutions bucket.
