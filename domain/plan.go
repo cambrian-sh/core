@@ -9,15 +9,22 @@ type Step struct {
 	CheckpointAfter  bool    `json:"checkpoint_after,omitempty"`
 	CheckpointQuery  string  `json:"checkpoint_query,omitempty"`
 	CacheTTLSeconds  int     `json:"cache_ttl_seconds,omitempty"`
+	// RequiredCapabilities is the ROUTE-03 capability contract: the capability
+	// tags a step needs its executor to declare, emitted by the planner from the
+	// live capability-cluster vocabulary. When non-empty AND the capability
+	// contract is enabled, L1 Declaration hard-gates candidates on
+	// required ⊆ manifest.Capabilities. Empty ⇒ today's behavior (backward
+	// compatible). Populated only under the capability_contract arm.
+	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 }
 
 // ExecutionPlan carries the structured plan produced by the Planner.
 type ExecutionPlan struct {
 	Steps                []Step         `json:"steps"`
 	Subject              string         `json:"subject"`
-	CachePolicy          string         `json:"cache_policy,omitempty"`  // ADR-0027: LLM-classified policy name for Hippocampus retrieval thresholds
-	PlanningFacts        []SearchResult `json:"-"` // AGENTCONTEXTREQ: planning-time LTM facts forwarded to agents; not serialised in JSON prompt.
-	PlannerPromptVersion string         `json:"-"` // PROMPTREQ: hash of the static prompt template that produced this plan; written to PlanEvent.
+	CachePolicy          string         `json:"cache_policy,omitempty"` // ADR-0027: LLM-classified policy name for Hippocampus retrieval thresholds
+	PlanningFacts        []SearchResult `json:"-"`                      // AGENTCONTEXTREQ: planning-time LTM facts forwarded to agents; not serialised in JSON prompt.
+	PlannerPromptVersion string         `json:"-"`                      // PROMPTREQ: hash of the static prompt template that produced this plan; written to PlanEvent.
 }
 
 // Clone returns a deep copy of the ExecutionPlan.
@@ -47,6 +54,10 @@ func (e *ExecutionPlan) Clone() *ExecutionPlan {
 			if len(s.DependsOn) > 0 {
 				cloned.Steps[i].DependsOn = make([]int, len(s.DependsOn))
 				copy(cloned.Steps[i].DependsOn, s.DependsOn)
+			}
+			if len(s.RequiredCapabilities) > 0 {
+				cloned.Steps[i].RequiredCapabilities = make([]string, len(s.RequiredCapabilities))
+				copy(cloned.Steps[i].RequiredCapabilities, s.RequiredCapabilities)
 			}
 		}
 	}

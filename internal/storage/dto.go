@@ -3,15 +3,15 @@ package storage
 // AgentRecord is the raw JSON shape stored in the bbolt agents bucket.
 // It intentionally has no domain semantics — just flat fields.
 type AgentRecord struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Description     string `json:"description"`
-	Runtime         string `json:"runtime"` // plain string, NOT domain.AgentRuntime
-	ExecPath        string `json:"exec_path"`
-	Dir             string `json:"dir"`
-	A2AEndpoint     string `json:"a2a_endpoint,omitempty"`
-	SourceHash      string `json:"source_hash,omitempty"`
-	ManifestVersion string `json:"manifest_version,omitempty"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Description     string   `json:"description"`
+	Runtime         string   `json:"runtime"` // plain string, NOT domain.AgentRuntime
+	ExecPath        string   `json:"exec_path"`
+	Dir             string   `json:"dir"`
+	A2AEndpoint     string   `json:"a2a_endpoint,omitempty"`
+	SourceHash      string   `json:"source_hash,omitempty"`
+	ManifestVersion string   `json:"manifest_version,omitempty"`
 	Provisional     bool     `json:"provisional,omitempty"`
 	Trait           string   `json:"trait,omitempty"`
 	Capabilities    []string `json:"capabilities,omitempty"`
@@ -26,6 +26,8 @@ type ManifestRecord struct {
 	Version          string         `json:"version,omitempty"`
 	Trait            string         `json:"trait,omitempty"`
 	Tools            []string       `json:"tools,omitempty"`
+	Capabilities     []string       `json:"capabilities,omitempty"`   // ROUTE-03: declared capability tags (manifest source of truth)
+	MemoryLimitMB    int            `json:"memory_limit_mb,omitempty"` // SEC-01: per-agent memory cap (0 = global default)
 	SupportedFormats []string       `json:"supported_formats,omitempty"`
 	InputSchema      map[string]any `json:"input_schema,omitempty"`
 	OutputSchema     map[string]any `json:"output_schema,omitempty"`
@@ -56,16 +58,16 @@ type TaskEventRecord struct {
 
 // SessionRecord is the raw JSON shape stored in the bbolt sessions bucket.
 type SessionRecord struct {
-	ID            string `json:"id"`
-	ParentID      string `json:"parent_id,omitempty"`
-	Goal          string `json:"goal"`
-	Status        string `json:"status"`
-	Summary       string `json:"summary,omitempty"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
-	CompletedAt   string `json:"completed_at,omitempty"`
-	CriticalData  []string `json:"critical_data,omitempty"`
-	CallerScope   *ScopeConfigRecord `json:"caller_scope,omitempty"` // ADR-0034 (D13): non-forgeable caller_scope
+	ID           string             `json:"id"`
+	ParentID     string             `json:"parent_id,omitempty"`
+	Goal         string             `json:"goal"`
+	Status       string             `json:"status"`
+	Summary      string             `json:"summary,omitempty"`
+	CreatedAt    string             `json:"created_at"`
+	UpdatedAt    string             `json:"updated_at"`
+	CompletedAt  string             `json:"completed_at,omitempty"`
+	CriticalData []string           `json:"critical_data,omitempty"`
+	CallerScope  *ScopeConfigRecord `json:"caller_scope,omitempty"` // ADR-0034 (D13): non-forgeable caller_scope
 }
 
 // ScopeConfigRecord is the storage mirror of domain.ScopeConfig (storage holds no

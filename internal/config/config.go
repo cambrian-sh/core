@@ -42,6 +42,43 @@ type ExecutionConfig struct {
 	// Gatekeeper Merit ranking settings.
 	// GatekeeperMaxCandidates is the maximum number of candidates returned after Merit ranking.
 	GatekeeperMaxCandidates int `json:"gatekeeper_max_candidates"`
+	// AgentMemoryLimitMB caps the resident memory of each spawned agent process
+	// (SEC-01 resource caps): Windows Job Object ProcessMemoryLimit; Unix
+	// RLIMIT_AS. A runaway agent (e.g. a torch/docling OOM) is killed at its cap
+	// instead of taking down the kernel host. 0 = disabled (default) — opt-in so
+	// legitimately memory-heavy agents are not capped by surprise.
+	AgentMemoryLimitMB int `json:"agent_memory_limit_mb,omitempty"`
+	// AgentEnvPassthrough lists extra NON-SECRET environment variable names that
+	// spawned agents may inherit beyond the OS base allowlist (SEC-01). Secret-
+	// looking names (*_API_KEY, CAMBRIAN_*, provider prefixes, …) are stripped
+	// regardless. Empty by default: agents get only OS essentials + the substrate
+	// socket/addr (passed as flags), never the kernel's credentials.
+	AgentEnvPassthrough []string `json:"agent_env_passthrough,omitempty"`
+	// DisableScout skips the ADR-0051 pre-plan discovery Scout. Benchmark/eval-
+	// only: the Scout spends an LLM discovery pass per request to shape the plan
+	// to the observed world, which the offline routing eval does not need and
+	// which serialises ahead of every planner call. Default false ⇒ Scout runs.
+	DisableScout bool `json:"disable_scout"`
+	// DisableInterviews skips the ADR-0037 graded LLM interview (Examiner) at
+	// registration. Benchmark/eval-only: the graded interview spends an LLM Q&A
+	// per agent to seed cold-start trust priors, which the offline routing eval
+	// does not need (it reads manifest capabilities directly) and which otherwise
+	// starves the planner for LLM throughput. Default false. Merit falls back to
+	// the neutral cold-start prior.
+	DisableInterviews bool `json:"disable_interviews"`
+	// PlanPreviewOnly makes Execute return the generated plan as JSON and skip
+	// DAG execution (ROUTE-03 offline routing eval). It lets an eval score the
+	// planner's required_capabilities emission + deterministic L1 gating without
+	// the cost/noise of full agentic execution. Benchmark/eval-only; never
+	// production. Default false.
+	PlanPreviewOnly bool `json:"plan_preview_only"`
+	// CapabilityContract turns on the ROUTE-03 capability contract: the planner
+	// emits per-step required_capabilities from the live capability-cluster
+	// vocabulary, those flow into the AuctionTask, and L1 Declaration hard-gates
+	// candidates on required ⊆ manifest.Capabilities. Default false (arm toggle):
+	// OFF is byte-identical to the pre-ROUTE-03 kernel — the planner uses its
+	// original prompt/hash and no capability requirements are threaded.
+	CapabilityContract bool `json:"capability_contract"`
 	// RoutingTraceEnabled turns on the ROUTE-02 gatekeeper candidate-funnel trace
 	// (Declaration→Interview→Merit per-agent verdicts + winner margin) carried on
 	// the auction event. Default true: the funnel only records values the
@@ -789,6 +826,7 @@ func DefaultConfig() *Config {
 			EWMAAlpha:                        0.5,
 			LatencyWindowSize:                50,
 			GatekeeperMaxCandidates:          5,
+			CapabilityContract:               false, // ROUTE-03 arm toggle; OFF = pre-ROUTE-03 behavior
 			RoutingTraceEnabled:              true,
 			GatekeeperW1:                     0.4,
 			GatekeeperW2:                     0.4,

@@ -60,6 +60,8 @@ func (m *AgentMapper) ManifestToDomain(rec storage.ManifestRecord) domain.AgentM
 		Version:          rec.Version,
 		Trait:            domain.AgentTrait(rec.Trait),
 		Tools:            rec.Tools,
+		Capabilities:     rec.Capabilities,  // ROUTE-03
+		MemoryLimitMB:    rec.MemoryLimitMB, // SEC-01
 		SupportedFormats: rec.SupportedFormats,
 		InputSchema:      rec.InputSchema,
 		OutputSchema:     rec.OutputSchema,
@@ -335,14 +337,14 @@ func (m *AgentMapper) RetrievalSessionToDomain(rec storage.RetrievalSessionRecor
 	return domain.RetrievalSession{
 		SessionID:       rec.SessionID,
 		Query:           rec.Query,
-		QueryEmbedding:    rec.QueryEmbedding,
+		QueryEmbedding:  rec.QueryEmbedding,
 		Caller:          rec.Caller,
 		SceneHits:       rec.SceneHits,
 		FactHits:        rec.FactHits,
 		RetrievedDocs:   docs,
 		Truncated:       rec.Truncated,
 		PlanID:          rec.PlanID,
-		PlanOutcome:       domain.PlanOutcome(rec.PlanOutcome),
+		PlanOutcome:     domain.PlanOutcome(rec.PlanOutcome),
 		ExplorationSlot: rec.ExplorationSlot,
 		Timestamp:       parseTime(rec.Timestamp),
 	}

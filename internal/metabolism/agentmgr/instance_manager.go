@@ -25,10 +25,65 @@ import (
 type InstanceManager struct {
 	mu            sync.Mutex
 	instances     map[string]*domain.Instance
-	agentIndex    map[string][]string // agentID → []instanceID
+	agentIndex    map[string][]string  // agentID → []instanceID
 	cmds          map[string]*exec.Cmd // instanceID → cmd
 	pythonPath    string
 	substrateAddr string
+	// envPassthrough names extra non-secret environment variables an operator
+	// wants agents to inherit beyond the OS base allowlist (SEC-01). Secrets are
+	// stripped regardless. Empty by default.
+	envPassthrough []string
+	// agentMemLimitMB is the GLOBAL default memory cap (SEC-01), used for agents
+	// that don't declare their own. 0 = no default.
+	agentMemLimitMB int
+	// manifestFor resolves an agent's manifest so its per-agent memory_limit_mb
+	// can override the global default (SEC-01). nil ⇒ only the global default is
+	// used. Set by NewAgentManager (which holds the registry).
+	manifestFor func(agentID string) *domain.AgentManifest
+	// capCleanups holds the per-instance resource-cap teardown (Windows: closes
+	// the Job Object handle, which reaps the whole process tree via
+	// kill-on-close). Keyed by instance ID; invoked on eviction.
+	capCleanups map[string]func()
+}
+
+// SetEnvPassthrough configures the operator-declared agent env allowlist extras
+// (SEC-01). Secret-looking names are ignored even if listed.
+func (im *InstanceManager) SetEnvPassthrough(names []string) {
+	im.envPassthrough = names
+}
+
+// SetAgentMemoryLimitMB configures the GLOBAL default memory cap (SEC-01). 0
+// disables the default; per-agent manifest limits still apply.
+func (im *InstanceManager) SetAgentMemoryLimitMB(mb int) {
+	im.agentMemLimitMB = mb
+}
+
+// SetManifestResolver wires the per-agent manifest lookup used to honor an
+// agent's declared memory_limit_mb over the global default (SEC-01).
+func (im *InstanceManager) SetManifestResolver(f func(agentID string) *domain.AgentManifest) {
+	im.manifestFor = f
+}
+
+// effectiveMemLimitMB returns the memory cap to apply to an agent (SEC-01):
+//   - a per-agent declared manifest limit (> 0) always wins;
+//   - privileged system organs (docling/reranker/kg_extractor/scout, …) are
+//     trusted kernel infrastructure and are typically the memory-heavy ones
+//     (Docling/torch/spaCy) — a fleet-wide default must NOT kill them, so they
+//     are capped ONLY by their own declared limit (0 ⇒ uncapped);
+//   - every other (user/untrusted) agent gets the global default.
+//
+// So enabling a global cap contains a runaway user agent without endangering the
+// heavy system agents.
+func (im *InstanceManager) effectiveMemLimitMB(agentID string) int {
+	if im.manifestFor != nil {
+		if m := im.manifestFor(agentID); m != nil && m.MemoryLimitMB > 0 {
+			return m.MemoryLimitMB
+		}
+	}
+	if domain.IsSystemAgent(agentID) {
+		return 0 // trusted organ — never capped by the fleet-wide default
+	}
+	return im.agentMemLimitMB
 }
 
 // NewInstanceManager creates an InstanceManager with empty maps.
@@ -37,6 +92,7 @@ func NewInstanceManager(pythonPath, substrateAddr string) *InstanceManager {
 		instances:     make(map[string]*domain.Instance),
 		agentIndex:    make(map[string][]string),
 		cmds:          make(map[string]*exec.Cmd),
+		capCleanups:   make(map[string]func()),
 		pythonPath:    pythonPath,
 		substrateAddr: substrateAddr,
 	}
@@ -85,6 +141,12 @@ func (im *InstanceManager) EvictInstance(instanceID string) {
 		_ = cmd.Process.Kill()
 	}
 	delete(im.cmds, instanceID)
+	// SEC-01: close the Job Object (Windows kill-on-close reaps grandchildren the
+	// bare Process.Kill above cannot reach) / release the rlimit handle.
+	if cleanup, ok := im.capCleanups[instanceID]; ok {
+		cleanup()
+		delete(im.capCleanups, instanceID)
+	}
 	if inst.SocketPath != "" {
 		_ = os.Remove(inst.SocketPath)
 	}
@@ -108,6 +170,10 @@ func (im *InstanceManager) killAllInstances() {
 	for id, inst := range im.instances {
 		if cmd, hasCMD := im.cmds[id]; hasCMD && cmd.Process != nil {
 			_ = cmd.Process.Kill()
+		}
+		if cleanup, ok := im.capCleanups[id]; ok {
+			cleanup()
+			delete(im.capCleanups, id)
 		}
 		if inst.SocketPath != "" {
 			_ = os.Remove(inst.SocketPath)
@@ -133,7 +199,8 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 		cmd = exec.Command(im.pythonPath, def.ExecPath,
 			"--socket", sockPath,
 			"--substrate-addr", im.substrateAddr)
-		cmd.Env = append(os.Environ(),
+		// SEC-01: deny-by-default env — never inherit the kernel's secrets.
+		cmd.Env = append(allowlistedAgentEnv(im.envPassthrough),
 			"PYTHONIOENCODING=utf-8",
 			"PYTHONUTF8=1",
 		)
@@ -141,6 +208,9 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 		cmd = exec.Command(def.ExecPath,
 			"--socket", sockPath,
 			"--substrate-addr", im.substrateAddr)
+		// SEC-01: a nil cmd.Env would inherit os.Environ() (all secrets) — set
+		// the allowlisted environment explicitly for native agents too.
+		cmd.Env = allowlistedAgentEnv(im.envPassthrough)
 	default:
 		return nil, fmt.Errorf("desteklenmeyen runtime: %s", def.Runtime)
 	}
@@ -312,6 +382,16 @@ func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefin
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	// SEC-01: cap the agent's memory after start (Windows Job Object / Unix
+	// RLIMIT_AS). A failure here is non-fatal — the agent still runs uncapped and
+	// the error is logged rather than aborting boot.
+	if cleanup, capErr := applyResourceCaps(cmd, im.effectiveMemLimitMB(def.ID)); capErr != nil {
+		slog.Warn("SEC-01: failed to apply agent resource caps", "agent_id", def.ID, "err", capErr)
+	} else if cleanup != nil {
+		im.mu.Lock()
+		im.capCleanups[inst.ID] = cleanup
+		im.mu.Unlock()
+	}
 	go forwardPipe(ctx, stdout, def.ID, false)
 	go forwardPipe(ctx, stderr, def.ID, true)
 
@@ -398,6 +478,14 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
+	}
+	// SEC-01: daemons are the longest-lived, most-exposed agents — cap first.
+	if cleanup, capErr := applyResourceCaps(cmd, im.effectiveMemLimitMB(def.ID)); capErr != nil {
+		slog.Warn("SEC-01: failed to apply daemon resource caps", "agent_id", def.ID, "err", capErr)
+	} else if cleanup != nil {
+		im.mu.Lock()
+		im.capCleanups[inst.ID] = cleanup
+		im.mu.Unlock()
 	}
 	go forwardPipe(ctx, stdout, def.ID, false)
 	go forwardPipe(ctx, stderr, def.ID, true)

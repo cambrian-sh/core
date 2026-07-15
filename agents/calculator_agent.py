@@ -21,6 +21,7 @@ AGENT_MANIFEST = '''
 {
   "version": "1.0.0",
   "trait": "cognitive",
+  "capabilities": ["general_purpose"],
   "supported_formats": ["text"],
   "tools": ["calculation", "arithmetic", "math"],
   "release_notes": "SDK v2 demo: @tool registry + think() ReAct loop.",

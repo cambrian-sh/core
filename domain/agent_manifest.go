@@ -16,4 +16,10 @@ type AgentManifest struct {
 	CostPer1MTokens           float64        `json:"cost_per_1m_tokens,omitempty"`
 	Capabilities              []string       `json:"capabilities,omitempty"`
 	RequiredModelCapabilities []string       `json:"required_model_capabilities,omitempty"` // hard floor for TraitModel selection (ADR-0018)
+	// MemoryLimitMB is the per-agent memory cap this agent needs (SEC-01). Heavy
+	// agents (docling/reranker/torch) declare a generous value; lightweight agents
+	// omit it and inherit the operator's global default. 0 = use the global
+	// default (execution.agent_memory_limit_mb); the effective cap is the agent's
+	// own declared need, not one blunt number for the whole fleet.
+	MemoryLimitMB int `json:"memory_limit_mb,omitempty"`
 }

@@ -63,6 +63,15 @@ STRUCTURED REASONING (OPTIONAL):
 - The Substrate will extract and discard thought blocks; only the JSON plan is processed.
 - Never include thought blocks INSIDE the JSON structure.`
 
+// plannerCapabilityRules is the ROUTE-03 capability-contract instruction block,
+// injected into <Constraints> ONLY under the capability_contract arm. It tells
+// the planner to tag each step with the capability strings its executor must
+// declare, drawn from the live CAPABILITY CLUSTERS vocabulary (no invented tags).
+const plannerCapabilityRules = `CAPABILITY REQUIREMENTS:
+- For each step, add a "required_capabilities" array: the capability tags the executing agent MUST declare. Choose ONLY from the tags shown in CAPABILITY CLUSTERS above (the label before each ":"), using the exact tag strings.
+- Pick the minimal set a correct executor needs (usually 1-2 tags). For a pure reasoning/thought step that needs no special capability, use an empty array [].
+- NEVER invent a capability tag that is not listed in CAPABILITY CLUSTERS. If none fits, use [].`
+
 // PlanOutputSchema is the shared JSON Schema + format example for plans produced
 // by both the Planner and the ReplanHandler. Shared so both registry entries
 // reference an identical contract.
@@ -103,6 +112,52 @@ Example:
 // planOutputSchema is an alias used inside this package.
 const planOutputSchema = PlanOutputSchema
 
+// planOutputSchemaCap is the ROUTE-03 variant: identical to PlanOutputSchema but
+// with the per-step "required_capabilities" array in the contract + example.
+// Used only under the capability_contract arm.
+const planOutputSchemaCap = `{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "query":                 { "type": "string", "minLength": 1 },
+          "depends_on":            { "type": "array", "items": { "type": "integer" } },
+          "required_capabilities": { "type": "array", "items": { "type": "string" } },
+          "is_thought":            { "type": "boolean" },
+          "checkpoint_after":      { "type": "boolean" },
+          "checkpoint_query":      { "type": "string" }
+        },
+        "required": ["query", "depends_on", "required_capabilities"]
+      }
+    },
+    "subject":      { "type": "string" },
+    "cache_policy": { "type": "string" }
+  },
+  "required": ["steps", "subject"]
+}
+
+Set cache_policy based on the dominant capability of the request:
+- "codegen" — when the plan involves writing, generating, or refactoring code
+- "cognitive" — when the plan involves analysis, summarisation, comparison, or reasoning
+- "tool" — when the plan involves file reads, data transforms, or deterministic operations
+- "research" — when the plan involves web search, paper reading, or information gathering
+- "default" — when none of the above clearly applies
+
+Example:
+{"steps":[{"query":"full natural-language instruction","depends_on":[],"required_capabilities":["file_read"]},{"query":"Synthesize results from step 0","depends_on":[0],"required_capabilities":[],"is_thought":true}],"subject":"The primary entity or goal","cache_policy":"cognitive"}`
+
+// plannerStaticTextCap / plannerPromptHashCap are the capability_contract-arm
+// counterparts of plannerStaticText / plannerPromptHash. The added capability
+// rules + schema field change the hash, so PlanEvent provenance distinguishes the
+// two arms for free.
+const plannerStaticTextCap = plannerRole + plannerLTMRules + plannerDecisionRules + plannerCapabilityRules + plannerDependencyRules + plannerUsageRules + planOutputSchemaCap
+
+var plannerPromptHashCap = domain.PromptHashOf(plannerStaticTextCap)
+
 // plannerStaticText is the concatenation of all static planner prompt parts.
 // Only this text is hashed — dynamic injections are excluded so the hash
 // remains stable across requests.
@@ -118,6 +173,13 @@ func init() {
 		Version: "1.0.0",
 		Hash:    plannerPromptHash,
 		Schema:  PlanOutputSchema,
+	}
+	// ROUTE-03 capability_contract arm variant.
+	domain.PromptRegistry[plannerPromptHashCap] = domain.PromptEntry{
+		ID:      "planner.plan.capability_contract",
+		Version: "1.0.0",
+		Hash:    plannerPromptHashCap,
+		Schema:  planOutputSchemaCap,
 	}
 }
 
@@ -148,11 +210,15 @@ type TokenUsageAdvisor interface {
 type Planner struct {
 	client         Generator
 	provider       AgentProvider
-	hippocampus    domain.ProceduralMemory  // nil means no procedural memory
-	policyProvider domain.PolicyProvider    // ADR-0027: nil skips cache_policy validation
+	hippocampus    domain.ProceduralMemory // nil means no procedural memory
+	policyProvider domain.PolicyProvider   // ADR-0027: nil skips cache_policy validation
 	WorkspaceStage domain.WorkspaceStage   // ADR-0016: may be nil; nil disables enrichment
-	advisor        TokenUsageAdvisor      // nil means no adaptive energy tuning
-	spcAlarm       *SPCAlarm              // nil means no PLAN_BUDGET_INSUFFICIENT alarm
+	advisor        TokenUsageAdvisor       // nil means no adaptive energy tuning
+	spcAlarm       *SPCAlarm               // nil means no PLAN_BUDGET_INSUFFICIENT alarm
+	// capabilityContract enables the ROUTE-03 arm: the planner emits per-step
+	// required_capabilities (extended prompt + schema, distinct prompt hash).
+	// Default false ⇒ byte-identical to the pre-ROUTE-03 planner.
+	capabilityContract bool
 }
 
 // NewPlanner creates a Planner. Pass nil for hippocampus to disable procedural
@@ -176,6 +242,13 @@ func (p *Planner) SetAdvisor(a TokenUsageAdvisor) {
 // SetSPCAlarm wires a PLAN_BUDGET_INSUFFICIENT alarm (nil clears it).
 func (p *Planner) SetSPCAlarm(a *SPCAlarm) {
 	p.spcAlarm = a
+}
+
+// SetCapabilityContract toggles the ROUTE-03 capability contract (arm toggle;
+// wired from execution.capability_contract). When true the planner emits per-step
+// required_capabilities and stamps the capability-arm prompt hash.
+func (p *Planner) SetCapabilityContract(on bool) {
+	p.capabilityContract = on
 }
 
 // Generate delegates to the underlying LLM client.
@@ -275,19 +348,40 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	if report, ok := domain.DiscoveryFromContext(ctx); ok {
 		ltmBlock += domain.RenderDiscoveryBlock(report)
 	}
-	fullPrompt := domain.PromptBuild(
-		domain.PromptSystem(
-			plannerRole,
-			buildCapabilityCluster(agents), // dynamic — excluded from hash
-			modelSection,                   // dynamic — excluded from hash
+	// ROUTE-03: under the capability_contract arm, inject the capability rules
+	// (after the decision rules) and the capability-schema variant. When off, the
+	// section list, schema, and prompt hash are exactly the pre-ROUTE-03 values,
+	// so the control arm is byte-identical.
+	constraints := []string{
+		buildCapabilityCluster(agents), // dynamic — excluded from hash
+		modelSection,                   // dynamic — excluded from hash
+		plannerLTMRules,
+		plannerDecisionRules,
+		plannerDependencyRules,
+		plannerUsageRules,
+	}
+	schema := planOutputSchema
+	promptVersion := plannerPromptHash
+	if p.capabilityContract {
+		constraints = []string{
+			// manifest-derived vocabulary so the emitted required_capabilities
+			// match what L1 Declaration enforces (NOT the clusterer's labels).
+			buildCapabilityClusterFromManifests(ctx, agents, p.provider),
+			modelSection,
 			plannerLTMRules,
 			plannerDecisionRules,
+			plannerCapabilityRules,
 			plannerDependencyRules,
 			plannerUsageRules,
-		),
+		}
+		schema = planOutputSchemaCap
+		promptVersion = plannerPromptHashCap
+	}
+	fullPrompt := domain.PromptBuild(
+		domain.PromptSystem(plannerRole, constraints...),
 		domain.PromptContext(ltmBlock),
 		domain.PromptTask("User Request: "+userInput),
-		domain.PromptOutputSchemaJSON(planOutputSchema),
+		domain.PromptOutputSchemaJSON(schema),
 	)
 	slog.Debug("Sending full prompt to LLM", "full_prompt", fullPrompt)
 
@@ -317,8 +411,9 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	// AGENTCONTEXTREQ REQ1: forward planning-time facts to DAGExecutor so agents
 	// execute with the same background knowledge that informed the Planner.
 	plan.PlanningFacts = ltmEnrichment.Facts
-	// PROMPTREQ: record which static prompt template produced this plan.
-	plan.PlannerPromptVersion = plannerPromptHash
+	// PROMPTREQ: record which static prompt template produced this plan
+	// (capability-arm hash when the contract is on — free provenance).
+	plan.PlannerPromptVersion = promptVersion
 
 	// ADR-0027: validate LLM-emitted cache_policy against the configured policy set.
 	// Unknown names are normalised to "" so the Hippocampus falls back to default.
@@ -479,6 +574,51 @@ func extractEpisodicMemory(r domain.SearchResult) (domain.EpisodicMemory, bool) 
 	return em, true
 }
 
+// buildCapabilityClusterFromManifests groups agents by their MANIFEST-declared
+// Capabilities (ROUTE-03). This is deliberately distinct from
+// buildCapabilityCluster, which groups by the CapabilityClusterer's
+// embedding-derived AgentDefinition.Capabilities (a single LLM cluster name).
+// Under the capability_contract arm the planner must see the exact capability
+// vocabulary that L1 Declaration enforces (manifest.Capabilities), or the
+// emitted required_capabilities would never match. Agents with no declared
+// capabilities are listed as (uncategorized) so the planner can still route them
+// with an empty requirement set.
+func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.AgentDefinition, provider AgentProvider) string {
+	clusters := make(map[string][]string)
+	var uncategorized []domain.AgentDefinition
+	for _, a := range agents {
+		if a.Trait == domain.TraitModel {
+			continue
+		}
+		var caps []string
+		if m, err := provider.GetManifest(ctx, a.ID); err == nil && m != nil {
+			caps = m.Capabilities
+		}
+		if len(caps) == 0 {
+			uncategorized = append(uncategorized, a)
+			continue
+		}
+		for _, cap := range caps {
+			clusters[cap] = append(clusters[cap], a.ID)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("CAPABILITY CLUSTERS (active agents grouped by declared capability):\n")
+	keys := make([]string, 0, len(clusters))
+	for k := range clusters {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(&sb, "- %s: %s\n", k, strings.Join(clusters[k], ", "))
+	}
+	for _, a := range uncategorized {
+		fmt.Fprintf(&sb, "- (uncategorized): %s — %q\n", a.ID, a.Description)
+	}
+	return sb.String()
+}
+
 func buildCapabilityCluster(agents []domain.AgentDefinition) string {
 	clusters := make(map[string][]string)
 	var uncategorized []domain.AgentDefinition
@@ -559,10 +699,10 @@ func extractStepType(query string) string {
 // SPCAlarm tracks budget exhaustion signals per plan and fires a
 // PLAN_BUDGET_INSUFFICIENT alarm when the threshold is crossed.
 type SPCAlarm struct {
-	mu           sync.Mutex
-	rate         float64 // threshold rate (e.g. 0.05 for 5%)
-	planCounts   map[string]int
-	planFired    map[string]bool
+	mu         sync.Mutex
+	rate       float64 // threshold rate (e.g. 0.05 for 5%)
+	planCounts map[string]int
+	planFired  map[string]bool
 }
 
 // NewSPCAlarm creates an SPCAlarm with the given alarm rate (e.g. 0.05).

@@ -139,4 +139,32 @@ func TestStep_OptionalFields_OmittedWhenZero(t *testing.T) {
 	if _, ok := raw["checkpoint_query"]; ok {
 		t.Error("checkpoint_query should be omitted when empty")
 	}
+	// ROUTE-03: required_capabilities is omitted when empty (backward compatible).
+	if _, ok := raw["required_capabilities"]; ok {
+		t.Error("required_capabilities should be omitted when empty")
+	}
+}
+
+// ROUTE-03: required_capabilities round-trips and Clone deep-copies it.
+func TestStep_RequiredCapabilities_RoundTripAndClone(t *testing.T) {
+	s := Step{Query: "read file", DependsOn: []int{0}, RequiredCapabilities: []string{"file_read", "code_search"}}
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got Step
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.RequiredCapabilities) != 2 || got.RequiredCapabilities[0] != "file_read" {
+		t.Errorf("RequiredCapabilities round-trip failed: got %v", got.RequiredCapabilities)
+	}
+
+	plan := &ExecutionPlan{Subject: "s", Steps: []Step{s}}
+	clone := plan.Clone()
+	// Mutating the clone must not affect the original (deep copy).
+	clone.Steps[0].RequiredCapabilities[0] = "MUTATED"
+	if plan.Steps[0].RequiredCapabilities[0] != "file_read" {
+		t.Error("Clone did not deep-copy RequiredCapabilities (aliasing detected)")
+	}
 }

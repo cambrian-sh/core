@@ -5,14 +5,14 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
-	metauc "github.com/cambrian-sh/core/internal/metabolism/auctioneer"
+	memstore "github.com/cambrian-sh/core/internal/memory/store"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
+	metauc "github.com/cambrian-sh/core/internal/metabolism/auctioneer"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	"github.com/cambrian-sh/core/internal/metabolism/interview"
-	memstore "github.com/cambrian-sh/core/internal/memory/store"
 	supgk "github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 	"github.com/cambrian-sh/core/internal/supervision/verify"
 
@@ -55,6 +55,12 @@ func NewMetabolismStack(
 	interviewGen domain.Generator,
 ) *MetabolismStack {
 	manager := agentmgr.NewAgentManager(reg, cfg.Metabolism.PythonExecutable, "localhost:"+cfg.Server.Port, memoryAgent)
+	// SEC-01: spawned agents get a deny-by-default environment (OS essentials +
+	// the operator's non-secret passthrough); the kernel's API keys never leak.
+	manager.SetEnvPassthrough(cfg.Execution.AgentEnvPassthrough)
+	// SEC-01: cap agent memory (0 = disabled) so a runaway agent is killed at its
+	// cap instead of OOMing the kernel host.
+	manager.SetAgentMemoryLimitMB(cfg.Execution.AgentMemoryLimitMB)
 	// Wire default model pricing for token cost estimation. ADR-0042: the default
 	// generator's cost is the single source of truth (was cfg.Models[0]).
 	if def := cfg.LLMProvider.DefaultGenerator(); def != nil {
@@ -93,7 +99,10 @@ func NewMetabolismStack(
 	// LLM judge (bootstrap-safe). The mean grade seeds the agent's cold-start
 	// routing prior. Wired only when an LLM generator is available.
 	var iRunner *scenarioRunner
-	if interviewGen != nil {
+	// DisableInterviews (benchmark/eval-only) skips the graded LLM interview so
+	// the planner is not starved for LLM throughput; agents keep the neutral
+	// cold-start prior. Manifest capabilities (L1 + planner vocab) are unaffected.
+	if interviewGen != nil && !cfg.Execution.DisableInterviews {
 		iRunner = &scenarioRunner{caller: auctioneer}
 		iWorker.Examiner = &interview.Examiner{
 			Questions: interview.LLMQuestionGenerator{Gen: interviewGen},

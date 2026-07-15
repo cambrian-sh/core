@@ -4,14 +4,40 @@ import "github.com/cambrian-sh/core/domain"
 
 // PassesDeclaration performs the Layer 1 (Declaration) hard compatibility check.
 // Rules:
+//   - ROUTE-03 capability contract: if the task declares RequiredCapabilities,
+//     they are a HARD gate — required ⊆ manifest.Capabilities, and a nil/empty
+//     manifest can satisfy no capability, so the free pass below does NOT apply.
+//     The task only carries RequiredCapabilities when the capability_contract
+//     arm is on (populated at the Step→AuctionTask boundary), so the control arm
+//     never reaches this branch and keeps byte-identical behavior.
 //   - If manifest is nil → passes unconditionally (Provisional).
 //   - If manifest is empty (no tools, no formats) → passes unconditionally.
 //   - Every entry in task.RequiredFormats must appear in manifest.SupportedFormats.
 func PassesDeclaration(manifest *domain.AgentManifest, task *domain.AuctionTask) bool {
+	// ROUTE-03: capability gate first — it is stricter than the free passes and
+	// must veto an agent that cannot satisfy a declared capability requirement.
+	if len(task.RequiredCapabilities) > 0 {
+		if manifest == nil {
+			return false
+		}
+		capSet := make(map[string]struct{}, len(manifest.Capabilities))
+		for _, c := range manifest.Capabilities {
+			capSet[c] = struct{}{}
+		}
+		for _, required := range task.RequiredCapabilities {
+			if _, ok := capSet[required]; !ok {
+				return false
+			}
+		}
+		// Capabilities satisfied; still apply the format gate below (if any).
+	}
+
 	if manifest == nil {
 		return true
 	}
 	if len(manifest.Tools) == 0 && len(manifest.SupportedFormats) == 0 {
+		// No format/tool declarations to check. Capability requirements (if any)
+		// were already enforced above.
 		return true
 	}
 

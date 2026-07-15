@@ -21,6 +21,7 @@ AGENT_MANIFEST = '''
 {
   "version": "1.0.0",
   "trait": "cognitive",
+  "capabilities": ["planning", "general_purpose"],
   "supported_formats": ["text"],
   "tools": ["summarisation", "text_summary", "synthesis"],
   "release_notes": "LLM-powered bullet-point summariser via Substrate managed gateway.",

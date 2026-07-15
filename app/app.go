@@ -600,6 +600,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0018: Wire adaptive token sizing to the Planner via ProfileAggregator.
 	aw.Planner.SetAdvisor(sup.ProfileAggregator)
 
+	// ROUTE-03: enable the capability contract on the planner when the arm is on
+	// (execution.capability_contract). Off ⇒ pre-ROUTE-03 planner prompt/hash.
+	aw.Planner.SetCapabilityContract(cfg.Execution.CapabilityContract)
+
 	// 9. ArtifactVault — content-addressable storage for agent outputs
 	vaultPath := filepath.Join(cfg.Storage.DataDir, "vault")
 	artifactVault := vault.NewArtifactVault(vaultPath)

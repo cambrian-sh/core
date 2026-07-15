@@ -13,22 +13,22 @@ import (
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/awareness"
 	"github.com/cambrian-sh/core/internal/centralexec"
 	"github.com/cambrian-sh/core/internal/config"
-	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
-	"github.com/cambrian-sh/core/internal/substrate/operator"
 	"github.com/cambrian-sh/core/internal/scope"
+	"github.com/cambrian-sh/core/internal/substrate/operator"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"github.com/cambrian-sh/core/internal/substrate/harness"
 	session "github.com/cambrian-sh/core/internal/substrate/session"
 	subsynaptic "github.com/cambrian-sh/core/internal/substrate/synaptic"
 	supwatcher "github.com/cambrian-sh/core/internal/supervision/watcher"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -88,8 +88,8 @@ type Server struct {
 	pb.UnimplementedOrchestratorServer
 	// Router is the universal input classifier (ADR-0031). When nil, Execute
 	// falls back to the legacy PLAN-only path for backward compatibility.
-	Router              domain.InputRouter
-	Planner             Planner
+	Router  domain.InputRouter
+	Planner Planner
 	// Scout is the ADR-0051 pre-plan discovery organ. nil ⇒ one-shot planning.
 	Scout               WorldScout
 	Manager             *agentmgr.AgentManager
@@ -383,7 +383,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	// and attaches its report to ctx; the Planner (via DiscoveryFromContext) shapes the plan
 	// to it. An empty report (no Scout, nothing to observe, or any degrade) leaves ctx
 	// untouched ⇒ one-shot planning exactly as before.
-	if s.Scout != nil {
+	if s.Scout != nil && !s.ExecCfg.DisableScout {
 		if report := s.Scout.Discover(ctx, userInput); !report.IsEmpty() {
 			ctx = domain.WithDiscovery(ctx, report)
 		}
@@ -392,6 +392,18 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	plan, err := planWithValidation(ctx, s.Planner, userInput, nil)
 	if err != nil {
 		return nil, err
+	}
+
+	// ROUTE-03 offline routing eval: return the generated plan as JSON and skip
+	// DAG execution when plan_preview_only is set. An eval can then score the
+	// planner's required_capabilities emission + deterministic L1 gating without
+	// paying for full agentic execution (benchmark/eval-only path).
+	if s.ExecCfg.PlanPreviewOnly {
+		planJSON, mErr := json.Marshal(plan)
+		if mErr != nil {
+			return nil, fmt.Errorf("plan_preview_only: marshal plan: %w", mErr)
+		}
+		return &pb.Handoff{Payload: &pb.Object{Type: "plan_preview", Data: planJSON}}, nil
 	}
 
 	// Logging plan summary
@@ -469,6 +481,12 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 				Description: step.Query,
 				Context:     fmt.Sprintf("Subject: %s", plan.Subject),
 				Deadline:    time.Now().Add(20 * time.Second),
+			}
+			// ROUTE-03: thread the step's declared capabilities into the
+			// auction ONLY under the capability_contract arm, so the control
+			// arm leaves RequiredCapabilities empty (byte-identical L1).
+			if s.ExecCfg.CapabilityContract {
+				auctionTask.RequiredCapabilities = step.RequiredCapabilities
 			}
 
 			// ADR-0037: when the session's variant is "efe", bind via the

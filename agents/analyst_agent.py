@@ -23,6 +23,7 @@ AGENT_MANIFEST = '''
 {
   "version": "1.0.0",
   "trait": "cognitive",
+  "capabilities": ["planning", "run_inspection", "general_purpose"],
   "supported_formats": ["text"],
   "tools": ["analysis", "comparison", "evaluation", "reasoning"],
   "release_notes": "LLM-powered chain-of-thought analyst via Substrate managed gateway.",

@@ -64,6 +64,12 @@ type AuctionTask struct {
 	Context         string    `json:"context"`
 	Deadline        time.Time `json:"deadline"`
 	RequiredFormats []string  `json:"required_formats,omitempty"`
+	// RequiredCapabilities is the ROUTE-03 capability contract carried from the
+	// Step into the auction. When non-empty, L1 Declaration hard-gates candidates
+	// on required ⊆ manifest.Capabilities. It is populated at the Step→AuctionTask
+	// boundary ONLY when the capability_contract arm is on, so an empty slice is
+	// the byte-identical control-arm behavior.
+	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 
 	// Funnel is a ROUTE-02 diagnostic OUTPUT written by Gatekeeper.FindCandidates
 	// (not part of the RFP broadcast, hence json:"-"). The Auctioneer reads it

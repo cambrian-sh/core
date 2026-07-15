@@ -75,16 +75,16 @@ type InterviewWorker struct {
 	Requester    domain.ProposalRequester // optional — nil disables scenario RPC calls
 	CardFetcher  CardFetcher              // optional — required for RuntimeA2A agents
 	EventWriter  InterviewTaskWriter      // optional — nil disables interview TaskEvent recording
-	SweepTrigger SweepTrigger            // optional — nil disables capability cluster signalling
+	SweepTrigger SweepTrigger             // optional — nil disables capability cluster signalling
 	// EventBus receives AgentReadyEvent after every Provisional→Active transition.
 	// ADR-0023 D6A / ADR-0030. nil-safe.
-	EventBus     domain.EventBus
+	EventBus domain.EventBus
 	// Examiner, when set, upgrades the cognitive-agent interview from a self-assessed
 	// bid into a graded capability probe: an LLM asks questions, the agent answers
 	// them for real, and the answers are graded. The mean grade seeds the agent's
 	// cold-start TrustScore/SuccessRate — the routing prior EFE was missing. nil ⇒
 	// the legacy bid-only path (backward compatible). ADR-0037 interview grading.
-	Examiner     *Examiner
+	Examiner *Examiner
 	// BeliefSeeder, when set, also seeds the EFE CapabilityBelief from the interview
 	// grade. Optional — the belief store is not yet live (ADR-0037 deferred), so this
 	// is a ready seam, nil today.
@@ -143,6 +143,17 @@ func WaitForAgentReadiness(w *InterviewWorker, agentIDs []string, timeout time.D
 		}
 	}
 	return nil
+}
+
+// preferCaps returns manifest-declared capabilities as the single source of an
+// agent's advertised capabilities (ROUTE-03), falling back to the tool list only
+// for legacy agents that predate the capabilities field. Replaces the previous
+// tool-derived + CapabilityClusterer-overwritten scheme.
+func preferCaps(capabilities, tools []string) []string {
+	if len(capabilities) > 0 {
+		return capabilities
+	}
+	return tools
 }
 
 // emitReady publishes AgentReadyEvent on EventBus and notifies ReadyChan.
@@ -219,8 +230,8 @@ func (w *InterviewWorker) processAgent(ctx context.Context, agent domain.AgentDe
 		profile := domain.AgentProfile{
 			AgentID:                agent.ID,
 			SourceHash:             agent.SourceHash,
-		Provisional:            false,
-		TrustScore:             1.0,
+			Provisional:            false,
+			TrustScore:             1.0,
 			SuccessRate:            1.0,
 			NetworkLatencyMedianMs: 5,
 		}
@@ -235,7 +246,7 @@ func (w *InterviewWorker) processAgent(ctx context.Context, agent domain.AgentDe
 		}
 		caps := []string{}
 		if m, mErr := w.Registry.GetManifest(ctx, agent.ID); mErr == nil && m != nil {
-			caps = m.Tools
+			caps = preferCaps(m.Capabilities, m.Tools)
 		}
 		w.emitReady(agent, caps, 1.0, 0)
 		return nil
@@ -336,7 +347,7 @@ func (w *InterviewWorker) processAgent(ctx context.Context, agent domain.AgentDe
 	if w.SweepTrigger != nil {
 		w.SweepTrigger.TriggerSweep()
 	}
-	w.emitReady(agent, manifest.Tools, seededTrustScore, 0)
+	w.emitReady(agent, preferCaps(manifest.Capabilities, manifest.Tools), seededTrustScore, 0)
 
 	return nil
 }
@@ -413,7 +424,7 @@ func (w *InterviewWorker) processGradedInterview(ctx context.Context, agent doma
 	}
 	slog.Info("interview_worker: graded interview complete",
 		"agent_id", agent.ID, "mean_score", score, "questions", len(result.Questions))
-	w.emitReady(agent, manifest.Tools, seededTrustScore, 0)
+	w.emitReady(agent, preferCaps(manifest.Capabilities, manifest.Tools), seededTrustScore, 0)
 	return nil
 }
 

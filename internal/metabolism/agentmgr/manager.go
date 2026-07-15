@@ -35,9 +35,16 @@ func (am *AgentManager) GetManifest(ctx context.Context, agentID string) (*domai
 
 // NewAgentManager creates a wired AgentManager.
 func NewAgentManager(reg domain.AgentRegistry, pyPath string, substrateAddr string, memoryAgent domain.MemoryAgent) *AgentManager {
+	im := NewInstanceManager(pyPath, substrateAddr)
+	// SEC-01: let the InstanceManager honor each agent's declared memory_limit_mb
+	// over the global default at spawn time.
+	im.SetManifestResolver(func(agentID string) *domain.AgentManifest {
+		m, _ := reg.GetManifest(context.Background(), agentID)
+		return m
+	})
 	return &AgentManager{
 		Registry:        reg,
-		InstanceManager: NewInstanceManager(pyPath, substrateAddr),
+		InstanceManager: im,
 		AgentConnector:  NewAgentConnector(),
 		MemoryAgent:     memoryAgent,
 		daemons:         newDaemonRegistry(),
