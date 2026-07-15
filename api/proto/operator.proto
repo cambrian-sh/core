@@ -93,6 +93,12 @@ service OperatorConsole {
   rpc RegisterWatch(RegisterWatchOpRequest)   returns (CommandAck);
   rpc DeleteWatch(DeleteWatchOpRequest)       returns (CommandAck);
   rpc SetWatchActive(SetWatchActiveOpRequest) returns (CommandAck);
+
+  // ListWatchDeadLetters reads reactive actions that could not be delivered — a
+  // failed action or a journal signal that expired before it ran (REACT-01 /
+  // ADR-0061). Read RPC (no command_id). Capability "watch-deadletter", advertised
+  // on premium builds; OSS returns an empty list (no reactive engine writes them).
+  rpc ListWatchDeadLetters(ListWatchDeadLettersOpRequest) returns (ListWatchDeadLettersOpResponse);
 }
 
 message CreateSessionRequest {
@@ -656,4 +662,22 @@ message SetWatchActiveOpRequest {
   string reason = 2;
   string watch_id = 3;
   bool active = 4;
+}
+
+// REACT-01 / ADR-0061: reactive dead-letter read surface.
+message ListWatchDeadLettersOpRequest {
+  int32 limit = 1; // 0 ⇒ all
+}
+message ListWatchDeadLettersOpResponse {
+  repeated WatchDeadLetterOp entries = 1;
+}
+message WatchDeadLetterOp {
+  string id = 1;
+  string watch_id = 2;
+  string action_type = 3;
+  string key = 4;           // idempotency key (empty for queue-full/expired drops)
+  string reason = 5;        // failure reason: action error text, "queue_full", "expired_before_replay"
+  string signal_stream_id = 6;
+  string signal_raw_text = 7;
+  int64 failed_at_unix_ms = 8;
 }

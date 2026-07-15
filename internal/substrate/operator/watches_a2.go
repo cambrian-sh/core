@@ -24,6 +24,37 @@ import (
 // RPCs return Unimplemented; the capability handshake omits "watches-*".
 func (s *Service) SetWatchHandler(h domain.WatchConfigHandler) { s.watches = h }
 
+// SetDeadLetterReader wires the reactive dead-letter read surface (REACT-01 /
+// ADR-0061). nil ⇒ ListWatchDeadLetters returns Unimplemented.
+func (s *Service) SetDeadLetterReader(r domain.WatchDeadLetterReader) { s.deadletters = r }
+
+// ListWatchDeadLetters returns reactive actions that could not be delivered
+// (REACT-01 / ADR-0061). Read RPC (any authenticated role). The reader is the OSS
+// bbolt journal; an OSS-only kernel never writes entries, so the list is empty.
+func (s *Service) ListWatchDeadLetters(_ context.Context, req *pb.ListWatchDeadLettersOpRequest) (*pb.ListWatchDeadLettersOpResponse, error) {
+	if s.deadletters == nil {
+		return nil, status.Error(codes.Unimplemented, "reactive dead-letter surface is not configured")
+	}
+	entries, err := s.deadletters.ListDeadLetters(int(req.GetLimit()))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list dead-letters: %v", err)
+	}
+	out := make([]*pb.WatchDeadLetterOp, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, &pb.WatchDeadLetterOp{
+			Id:             e.ID,
+			WatchId:        e.WatchID,
+			ActionType:     e.ActionType,
+			Key:            e.Key,
+			Reason:         e.Reason,
+			SignalStreamId: e.Signal.StreamID,
+			SignalRawText:  e.Signal.RawText,
+			FailedAtUnixMs: e.FailedAt.UnixMilli(),
+		})
+	}
+	return &pb.ListWatchDeadLettersOpResponse{Entries: out}, nil
+}
+
 // ListWatches returns the registered reactive watches, filtered + paged. Premium
 // (Unimplemented in OSS). Read RPC (any authenticated role). A2.6.
 func (s *Service) ListWatches(_ context.Context, req *pb.ListWatchesOpRequest) (*pb.ListWatchesOpResponse, error) {

@@ -74,6 +74,9 @@ type Kernel struct {
 	OperatorEffects operator.CommandEffects
 	// ADR-0047 0047-24: durable operator audit store (Postgres, in-memory fallback).
 	OperatorAudit domain.AuditStore
+	// REACT-01 / ADR-0061: reactive dead-letter read source (the bbolt journal
+	// decorator). Backs the OperatorConsole ListWatchDeadLetters RPC.
+	WatchDeadLetters domain.WatchDeadLetterReader
 
 	// ADR-0012: Synaptic Bridge components.
 	SessionMgr         *session.SessionManager
@@ -1092,6 +1095,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		OperatorAudit:      operatorAudit,
 		Config:             cfg,
 		Registry:           reg,
+		WatchDeadLetters:   reg, // REACT-01 / ADR-0061
 		Store:              storeHandle,
 		Memory:             mem,
 		Awareness:          aw,
@@ -1249,6 +1253,13 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// is nil in an OSS build (⇒ Unimplemented, WatchTriggered never publishes) and
 		// the premium binary injects a real handler via Options.NewSignalReceiver.
 		operatorSvc.SetWatchHandler(k.Server.WatchHandler)
+		// REACT-01 / ADR-0061: the reactive dead-letter read surface reads the OSS
+		// bbolt journal. Wired only when the premium reactive engine is active — the
+		// same signal as watch CRUD (k.Server.WatchHandler) — since that engine is what
+		// writes dead-letters; an OSS build leaves it nil → Unimplemented.
+		if k.Server.WatchHandler != nil && k.WatchDeadLetters != nil {
+			operatorSvc.SetDeadLetterReader(k.WatchDeadLetters)
+		}
 		// ADR-0047 D14: capability + version handshake. The UI hides surfaces this
 		// build does not advertise and warns on contract-version skew.
 		// ADR-0047 Amendment A2: contract bumped 0047→0048 for the CORE-OPS-1 read/
@@ -1267,7 +1278,13 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Server.WatchHandler != nil {
 			operatorCaps = append(operatorCaps, "watches-read", "watches-crud")
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0050", operatorCaps)
+		// REACT-01 / ADR-0061: reactive dead-letter read surface, advertised when the
+		// premium reactive engine (and thus the journal writer) is active — same signal
+		// as watch CRUD.
+		if k.Server.WatchHandler != nil {
+			operatorCaps = append(operatorCaps, "watch-deadletter")
+		}
+		operatorSvc.SetHandshake("0.6.9-alpha", "0051", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).

@@ -37,8 +37,9 @@ type Service struct {
 	skills     SkillLister
 	memory     MemoryQuerier
 	toolRunner ToolRunner
-	ingestor   MemoryIngestor
-	watches    domain.WatchConfigHandler
+	ingestor    MemoryIngestor
+	watches     domain.WatchConfigHandler
+	deadletters domain.WatchDeadLetterReader // REACT-01 / ADR-0061
 
 	sessionOps SessionOps
 

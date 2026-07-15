@@ -47,6 +47,7 @@ const (
 	OperatorConsole_RegisterWatch_FullMethodName        = "/cambrian.OperatorConsole/RegisterWatch"
 	OperatorConsole_DeleteWatch_FullMethodName          = "/cambrian.OperatorConsole/DeleteWatch"
 	OperatorConsole_SetWatchActive_FullMethodName       = "/cambrian.OperatorConsole/SetWatchActive"
+	OperatorConsole_ListWatchDeadLetters_FullMethodName = "/cambrian.OperatorConsole/ListWatchDeadLetters"
 )
 
 // OperatorConsoleClient is the client API for OperatorConsole service.
@@ -121,6 +122,11 @@ type OperatorConsoleClient interface {
 	RegisterWatch(ctx context.Context, in *RegisterWatchOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	DeleteWatch(ctx context.Context, in *DeleteWatchOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	SetWatchActive(ctx context.Context, in *SetWatchActiveOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// ListWatchDeadLetters reads reactive actions that could not be delivered — a
+	// failed action or a journal signal that expired before it ran (REACT-01 /
+	// ADR-0061). Read RPC (no command_id). Capability "watch-deadletter", advertised
+	// on premium builds; OSS returns an empty list (no reactive engine writes them).
+	ListWatchDeadLetters(ctx context.Context, in *ListWatchDeadLettersOpRequest, opts ...grpc.CallOption) (*ListWatchDeadLettersOpResponse, error)
 }
 
 type operatorConsoleClient struct {
@@ -429,6 +435,16 @@ func (c *operatorConsoleClient) SetWatchActive(ctx context.Context, in *SetWatch
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListWatchDeadLetters(ctx context.Context, in *ListWatchDeadLettersOpRequest, opts ...grpc.CallOption) (*ListWatchDeadLettersOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListWatchDeadLettersOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListWatchDeadLetters_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OperatorConsoleServer is the server API for OperatorConsole service.
 // All implementations must embed UnimplementedOperatorConsoleServer
 // for forward compatibility.
@@ -501,6 +517,11 @@ type OperatorConsoleServer interface {
 	RegisterWatch(context.Context, *RegisterWatchOpRequest) (*CommandAck, error)
 	DeleteWatch(context.Context, *DeleteWatchOpRequest) (*CommandAck, error)
 	SetWatchActive(context.Context, *SetWatchActiveOpRequest) (*CommandAck, error)
+	// ListWatchDeadLetters reads reactive actions that could not be delivered — a
+	// failed action or a journal signal that expired before it ran (REACT-01 /
+	// ADR-0061). Read RPC (no command_id). Capability "watch-deadletter", advertised
+	// on premium builds; OSS returns an empty list (no reactive engine writes them).
+	ListWatchDeadLetters(context.Context, *ListWatchDeadLettersOpRequest) (*ListWatchDeadLettersOpResponse, error)
 	mustEmbedUnimplementedOperatorConsoleServer()
 }
 
@@ -594,6 +615,9 @@ func (UnimplementedOperatorConsoleServer) DeleteWatch(context.Context, *DeleteWa
 }
 func (UnimplementedOperatorConsoleServer) SetWatchActive(context.Context, *SetWatchActiveOpRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetWatchActive not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListWatchDeadLetters(context.Context, *ListWatchDeadLettersOpRequest) (*ListWatchDeadLettersOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListWatchDeadLetters not implemented")
 }
 func (UnimplementedOperatorConsoleServer) mustEmbedUnimplementedOperatorConsoleServer() {}
 func (UnimplementedOperatorConsoleServer) testEmbeddedByValue()                         {}
@@ -1106,6 +1130,24 @@ func _OperatorConsole_SetWatchActive_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListWatchDeadLetters_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListWatchDeadLettersOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListWatchDeadLetters(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListWatchDeadLetters_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListWatchDeadLetters(ctx, req.(*ListWatchDeadLettersOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OperatorConsole_ServiceDesc is the grpc.ServiceDesc for OperatorConsole service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1216,6 +1258,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetWatchActive",
 			Handler:    _OperatorConsole_SetWatchActive_Handler,
+		},
+		{
+			MethodName: "ListWatchDeadLetters",
+			Handler:    _OperatorConsole_ListWatchDeadLetters_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

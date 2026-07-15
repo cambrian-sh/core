@@ -10,6 +10,13 @@ type JournaledSignal struct {
 	Signal Signal
 }
 
+// WatchDeadLetterReader is the read port backing the OperatorConsole
+// ListWatchDeadLetters RPC. Satisfied by the OSS bbolt journal decorator; nil in
+// builds that never wire the reactive journal. REACT-01 / ADR-0061.
+type WatchDeadLetterReader interface {
+	ListDeadLetters(limit int) ([]ReactiveDeadLetter, error)
+}
+
 // ReactiveDeadLetter records a reactive action that could not be delivered — an
 // action that failed, or a journal signal that expired past its TTL before it ran.
 // Surfaced to operators via the OperatorConsole ListWatchDeadLetters read RPC so a
