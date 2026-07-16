@@ -180,8 +180,17 @@ type ExecutionConfig struct {
 	CapabilityClusterEpsilon float64 `json:"capability_cluster_epsilon"`
 	// CapabilityClusterMinAgents is the minimum registry size before a sweep runs.
 	CapabilityClusterMinAgents int `json:"capability_cluster_min_agents"`
-	// CapabilityClusterIntervalSeconds is the defensive reconciliation ticker interval.
+	// CapabilityClusterIntervalSeconds is the defensive reconciliation ticker interval
+	// (reused by the ROUTE-04 canonicalizer sweep).
 	CapabilityClusterIntervalSeconds int `json:"capability_cluster_interval_seconds"`
+	// CanonicalVocab (ROUTE-04 / ADR-0067) applies DETERMINISTIC normalization to
+	// capability tags (lowercase, trim, collapse `-`/`_`/space to a single form) on both
+	// sides of ROUTE-03's hard L1 match and in the planner vocabulary, so format/typo
+	// variance (`Web-Navigation` ≡ `web_navigation`) matches. It deliberately does NOT do
+	// fuzzy/embedding synonym merges — those risk wrong merges (e.g. `file-read` ↔
+	// `file-write`) and worse misroutes. OFF ⇒ declared strings verbatim (pre-ROUTE-04).
+	// The LLM CapabilityClusterer is retired regardless of this flag.
+	CanonicalVocab bool `json:"canonical_vocab"`
 
 	// AuctionBidTimeoutMs is the total duration (ms) for all agents to submit bids in an auction.
 	// Default: 2000.
@@ -915,6 +924,7 @@ func DefaultConfig() *Config {
 			CapabilityClusterEpsilon:         0.02,
 			CapabilityClusterMinAgents:       3,
 			CapabilityClusterIntervalSeconds: 3600,
+			CanonicalVocab:                   false, // ROUTE-04 arm toggle; OFF = declared strings verbatim
 			LLMGatewayMaxConcurrency:         20,
 			LLMGatewayRetryBackoffMs:         100,
 			SessionTokenSweepIntervalSeconds: 30,

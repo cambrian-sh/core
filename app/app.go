@@ -380,9 +380,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// 3. Wire storage callback so newly-registered agents are enqueued for interview.
 	storeHandle.WireInterviewEnqueuer(meta.InterviewEnqueuer())
 
-	// 3b. Wire CapabilityClusterer as the SweepTrigger for the InterviewWorker.
-	// Runs after both stacks are constructed — no stack-to-stack import needed.
-	meta.InterviewWorker.SweepTrigger = sup.Clusterer
+	// ROUTE-04 / ADR-0067: the CapabilityClusterer (and its InterviewWorker SweepTrigger)
+	// were retired — capabilities are the ones agents declare, folded by deterministic
+	// normalization (execution.canonical_vocab). SweepTrigger stays nil (optional).
 
 	// 3c. Wire EventBus (ADR-0030). Both InterviewWorker and Auctioneer publish to it;
 	// other subsystems subscribe. A log handler makes AgentReadyEvent observable in
@@ -625,6 +625,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ROUTE-03: enable the capability contract on the planner when the arm is on
 	// (execution.capability_contract). Off ⇒ pre-ROUTE-03 planner prompt/hash.
 	aw.Planner.SetCapabilityContract(cfg.Execution.CapabilityContract)
+	// ROUTE-04 / ADR-0067: deterministic capability-vocabulary normalization arm.
+	aw.Planner.SetCanonicalVocab(cfg.Execution.CanonicalVocab)
 
 	// 9. ArtifactVault — content-addressable storage for agent outputs
 	vaultPath := filepath.Join(cfg.Storage.DataDir, "vault")

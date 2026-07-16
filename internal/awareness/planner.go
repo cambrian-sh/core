@@ -219,6 +219,9 @@ type Planner struct {
 	// required_capabilities (extended prompt + schema, distinct prompt hash).
 	// Default false ⇒ byte-identical to the pre-ROUTE-03 planner.
 	capabilityContract bool
+	// canonicalVocab (ROUTE-04 / ADR-0067) normalizes the displayed capability
+	// vocabulary deterministically (format/typo folding). Default false.
+	canonicalVocab bool
 }
 
 // NewPlanner creates a Planner. Pass nil for hippocampus to disable procedural
@@ -249,6 +252,13 @@ func (p *Planner) SetSPCAlarm(a *SPCAlarm) {
 // required_capabilities and stamps the capability-arm prompt hash.
 func (p *Planner) SetCapabilityContract(on bool) {
 	p.capabilityContract = on
+}
+
+// SetCanonicalVocab toggles ROUTE-04 / ADR-0067 deterministic capability normalization
+// in the planner's displayed vocabulary (wired from execution.canonical_vocab), so
+// format-variant declared caps group under one normalized tag the planner emits.
+func (p *Planner) SetCanonicalVocab(on bool) {
+	p.canonicalVocab = on
 }
 
 // Generate delegates to the underlying LLM client.
@@ -366,7 +376,7 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 		constraints = []string{
 			// manifest-derived vocabulary so the emitted required_capabilities
 			// match what L1 Declaration enforces (NOT the clusterer's labels).
-			buildCapabilityClusterFromManifests(ctx, agents, p.provider),
+			buildCapabilityClusterFromManifests(ctx, agents, p.provider, p.canonicalVocab),
 			modelSection,
 			plannerLTMRules,
 			plannerDecisionRules,
@@ -583,7 +593,7 @@ func extractEpisodicMemory(r domain.SearchResult) (domain.EpisodicMemory, bool) 
 // emitted required_capabilities would never match. Agents with no declared
 // capabilities are listed as (uncategorized) so the planner can still route them
 // with an empty requirement set.
-func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.AgentDefinition, provider AgentProvider) string {
+func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.AgentDefinition, provider AgentProvider, canonical bool) string {
 	clusters := make(map[string][]string)
 	var uncategorized []domain.AgentDefinition
 	for _, a := range agents {
@@ -593,6 +603,11 @@ func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.Ag
 		var caps []string
 		if m, err := provider.GetManifest(ctx, a.ID); err == nil && m != nil {
 			caps = m.Capabilities
+		}
+		// ROUTE-04 / ADR-0067: fold format/typo-variant declared caps under one
+		// normalized tag so the planner emits a tag L1 (also normalizing) will match.
+		if canonical {
+			caps = domain.NormalizeCapabilities(caps)
 		}
 		if len(caps) == 0 {
 			uncategorized = append(uncategorized, a)

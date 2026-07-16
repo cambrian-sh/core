@@ -116,7 +116,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 
 		manifest := getManifest(agent.ID)
 
-		if !PassesDeclaration(manifest, task) {
+		if !PassesDeclaration(manifest, task, g.ExecCfg.CanonicalVocab) {
 			slog.Info("Gatekeeper: agent filtered by declaration", "agent_id", agent.ID)
 			if trace {
 				funnel.L1 = append(funnel.L1, domain.DeclarationResult{

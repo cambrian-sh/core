@@ -13,7 +13,17 @@ import "github.com/cambrian-sh/core/domain"
 //   - If manifest is nil → passes unconditionally (Provisional).
 //   - If manifest is empty (no tools, no formats) → passes unconditionally.
 //   - Every entry in task.RequiredFormats must appear in manifest.SupportedFormats.
-func PassesDeclaration(manifest *domain.AgentManifest, task *domain.AuctionTask) bool {
+// The canonical flag (ROUTE-04 / ADR-0067) applies deterministic capability
+// normalization to BOTH sides of the subset check, so format/typo variance
+// (`Web-Navigation` ≡ `web_navigation`) matches. It is byte-identical to the
+// pre-ROUTE-04 verbatim check when false.
+func PassesDeclaration(manifest *domain.AgentManifest, task *domain.AuctionTask, canonical bool) bool {
+	norm := func(s string) string {
+		if canonical {
+			return domain.NormalizeCapability(s)
+		}
+		return s
+	}
 	// ROUTE-03: capability gate first — it is stricter than the free passes and
 	// must veto an agent that cannot satisfy a declared capability requirement.
 	if len(task.RequiredCapabilities) > 0 {
@@ -22,10 +32,10 @@ func PassesDeclaration(manifest *domain.AgentManifest, task *domain.AuctionTask)
 		}
 		capSet := make(map[string]struct{}, len(manifest.Capabilities))
 		for _, c := range manifest.Capabilities {
-			capSet[c] = struct{}{}
+			capSet[norm(c)] = struct{}{}
 		}
 		for _, required := range task.RequiredCapabilities {
-			if _, ok := capSet[required]; !ok {
+			if _, ok := capSet[norm(required)]; !ok {
 				return false
 			}
 		}

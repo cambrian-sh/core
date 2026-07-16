@@ -2,41 +2,39 @@ package kernel
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
 	memstore "github.com/cambrian-sh/core/internal/memory/store"
 	"github.com/cambrian-sh/core/internal/supervision/aggregator"
-	"github.com/cambrian-sh/core/internal/supervision/clusterer"
 
 	"golang.org/x/sync/errgroup"
 )
 
 // SupervisionStack is the trust + metrics layer. It owns the ProfileAggregator
-// (Merit recomputation) and the CapabilityClusterer (autonomous capability discovery).
+// (Merit recomputation).
+//
+// ROUTE-04 / ADR-0067: the LLM CapabilityClusterer was RETIRED — it overwrote each
+// agent's declared capabilities with an invented cluster name unrelated to the
+// manifest vocabulary that ROUTE-03's L1 and the planner actually enforce, so it was
+// redundant work at best and a source of vocabulary divergence at worst. Capabilities
+// are now the ones agents DECLARE (manifest.Capabilities), optionally folded by
+// deterministic normalization (execution.canonical_vocab) — no clustering.
 //
 // Biologically: this is the immune system's memory — remembering which cells
-// (agents) are trustworthy, and the thalamus — gating information by domain.
+// (agents) are trustworthy.
 type SupervisionStack struct {
-	ProfileAggregator  *aggregator.ProfileAggregator
-	Clusterer          *clusterer.CapabilityClusterer
+	ProfileAggregator *aggregator.ProfileAggregator
 }
 
-// NewSupervisionStack constructs the trust layer.
-//
-// Parameters:
-//   - reg:          the domain decorator (implements TaskEventReader + ClusterStore)
-//   - profileStore: agent cognitive fingerprints (from MemoryStack)
-//   - vecStore:     vector DB used to retrieve agent profile embeddings
-//   - gen:          LLM generator for cluster naming (from AwarenessStack via kernel)
-//   - cfg:          aggregator + clusterer tuning parameters
+// NewSupervisionStack constructs the trust layer. vecStore and gen are retained in the
+// signature (no caller change) but no longer used since the clusterer's retirement.
 func NewSupervisionStack(
 	reg *AgentRepoDecorator,
 	profileStore memstore.ProfileStore,
-	vecStore domain.VectorStore,
-	gen domain.Generator,
+	_ domain.VectorStore,
+	_ domain.Generator,
 	cfg *config.Config,
 	observer domain.TelemetryObserver,
 ) *SupervisionStack {
@@ -50,79 +48,17 @@ func NewSupervisionStack(
 	})
 	agg.Observer = observer
 
-	src := &clusterAgentSource{reg: reg, vecStore: vecStore}
-	c := clusterer.New(src, reg, gen,
-		cfg.Execution.CapabilityClusterThreshold,
-		cfg.Execution.CapabilityClusterEpsilon,
-		cfg.Execution.CapabilityClusterMinAgents,
-	)
-	c.IntervalSeconds = cfg.Execution.CapabilityClusterIntervalSeconds
-
-	return &SupervisionStack{
-		ProfileAggregator: agg,
-		Clusterer:         c,
-	}
+	return &SupervisionStack{ProfileAggregator: agg}
 }
 
-// Start launches both background workers concurrently.
+// Start launches the background workers.
 func (s *SupervisionStack) Start(ctx context.Context) error {
 	g, gCtx := errgroup.WithContext(ctx)
 	g.Go(func() error { return s.ProfileAggregator.Start(gCtx) })
-	g.Go(func() error { return s.Clusterer.Start(gCtx) })
 	return g.Wait()
 }
 
 // Shutdown stops the supervision workers.
 func (s *SupervisionStack) Shutdown(_ context.Context) {
 	slog.Info("🛡️ SupervisionStack: shutdown complete")
-}
-
-// ── clusterAgentSource ────────────────────────────────────────────────────────
-
-// clusterAgentSource is a kernel-layer adapter that satisfies clusterer.AgentSource
-// by combining the agent registry (for Description/Trait/SourceHash) with the
-// vector store (for embedding vectors stored alongside profiles).
-type clusterAgentSource struct {
-	reg      *AgentRepoDecorator
-	vecStore domain.VectorStore
-}
-
-func (s *clusterAgentSource) GetAllAgentEmbeddings(ctx context.Context) ([]clusterer.AgentEmbedding, error) {
-	agents, err := s.reg.GetAllAgents(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("clusterAgentSource: list agents: %w", err)
-	}
-
-	// Build document IDs for a single-batch retrieval from pgvector.
-	docIDs := make([]string, 0, len(agents))
-	for _, a := range agents {
-		docIDs = append(docIDs, fmt.Sprintf("profile:%s:%s", a.ID, a.SourceHash))
-	}
-
-	docs, err := s.vecStore.GetBatch(ctx, docIDs)
-	if err != nil {
-		return nil, fmt.Errorf("clusterAgentSource: GetBatch profiles: %w", err)
-	}
-
-	embByDocID := make(map[string][]float32, len(docs))
-	for _, doc := range docs {
-		embByDocID[doc.ID] = doc.Embedding.Vector
-	}
-
-	out := make([]clusterer.AgentEmbedding, 0, len(agents))
-	for _, a := range agents {
-		docID := fmt.Sprintf("profile:%s:%s", a.ID, a.SourceHash)
-		emb := embByDocID[docID]
-		if len(emb) == 0 {
-			continue // not yet profiled — skip until Interview completes
-		}
-		out = append(out, clusterer.AgentEmbedding{
-			AgentID:     a.ID,
-			SourceHash:  a.SourceHash,
-			Embedding:   emb,
-			Description: a.Description,
-			Trait:       string(a.Trait),
-		})
-	}
-	return out, nil
 }
