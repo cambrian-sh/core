@@ -1397,7 +1397,14 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.WatchMetrics != nil {
 			operatorCaps = append(operatorCaps, "watch-observability")
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0054", operatorCaps)
+		// REACT-06 / ADR-0072: "schedule"-source watches (cron-driven synthetic signals +
+		// missed-fire policy). WatchConfigOp gains source_cron/source_timezone/
+		// missed_fire_policy; the scheduler lives in the premium engine, so this advertises
+		// on the same watch-handler signal.
+		if k.Server.WatchHandler != nil {
+			operatorCaps = append(operatorCaps, "watch-schedule")
+		}
+		operatorSvc.SetHandshake("0.6.9-alpha", "0055", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).

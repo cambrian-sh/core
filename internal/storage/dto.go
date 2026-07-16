@@ -172,6 +172,9 @@ type WatchConfigRecord struct {
 	Description        string         `json:"description,omitempty"`
 	SourceType         string         `json:"source_type,omitempty"`
 	SourceStreamID     string         `json:"source_stream_id,omitempty"`
+	SourceCron         string         `json:"source_cron,omitempty"`     // REACT-06 / ADR-0072
+	SourceTimezone     string         `json:"source_timezone,omitempty"` // REACT-06 / ADR-0072
+	MissedFirePolicy   string         `json:"missed_fire_policy,omitempty"` // REACT-06 / ADR-0072
 	Condition          string         `json:"condition,omitempty"`
 	ConditionType      string         `json:"condition_type,omitempty"`
 	ActionType         string         `json:"action_type,omitempty"`

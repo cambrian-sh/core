@@ -435,6 +435,9 @@ func (m *AgentMapper) WatchConfigToRecord(cfg domain.WatchConfig) storage.WatchC
 		Description:        cfg.Description,
 		SourceType:         cfg.Source.Type,
 		SourceStreamID:     cfg.Source.StreamID,
+		SourceCron:         cfg.Source.Cron,
+		SourceTimezone:     cfg.Source.Timezone,
+		MissedFirePolicy:   cfg.MissedFirePolicy,
 		Condition:          cfg.Condition,
 		ConditionType:      cfg.ConditionType,
 		ActionType:         cfg.Action.Type,
@@ -461,7 +464,10 @@ func (m *AgentMapper) WatchConfigFromRecord(rec storage.WatchConfigRecord) domai
 		Source: domain.WatchSource{
 			Type:     rec.SourceType,
 			StreamID: rec.SourceStreamID,
+			Cron:     rec.SourceCron,
+			Timezone: rec.SourceTimezone,
 		},
+		MissedFirePolicy: rec.MissedFirePolicy,
 		Condition:     rec.Condition,
 		ConditionType: rec.ConditionType,
 		Action: domain.WatchAction{

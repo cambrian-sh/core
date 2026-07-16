@@ -225,7 +225,12 @@ func fromWatchConfigOp(c *pb.WatchConfigOp) domain.WatchConfig {
 		ID:                 c.GetId(),
 		Name:               c.GetName(),
 		Description:        c.GetDescription(),
-		Source:             domain.WatchSource{Type: c.GetSourceType(), StreamID: c.GetSourceStreamId()},
+		Source: domain.WatchSource{
+			Type:     c.GetSourceType(),
+			StreamID: c.GetSourceStreamId(),
+			Cron:     c.GetSourceCron(),
+			Timezone: c.GetSourceTimezone(),
+		},
 		Condition:          c.GetCondition(),
 		ConditionType:      c.GetConditionType(),
 		Action:             action,
@@ -237,6 +242,7 @@ func fromWatchConfigOp(c *pb.WatchConfigOp) domain.WatchConfig {
 		ConditionPayloadKeys: c.GetConditionPayloadKeys(),
 		Approved:             c.GetApproved(),
 		DryRun:               c.GetDryRun(),
+		MissedFirePolicy:     c.GetMissedFirePolicy(),
 	}
 }
 
@@ -247,6 +253,8 @@ func toWatchConfigOp(c domain.WatchConfig) *pb.WatchConfigOp {
 		Description:   c.Description,
 		SourceType:    c.Source.Type,
 		SourceStreamId: c.Source.StreamID,
+		SourceCron:     c.Source.Cron,
+		SourceTimezone: c.Source.Timezone,
 		Condition:     c.Condition,
 		ConditionType: c.ConditionType,
 		Action: &pb.WatchActionOp{

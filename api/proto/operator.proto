@@ -249,7 +249,9 @@ message SnapshotResponse {
   // rest (ADR-0047 D14). OSS: feed, snapshot, commands, steering, audit,
   // tools-read, tools-manage, skills-read, memory-read, memory-ingest, tool-exec,
   // tool-approvals, routing-trace (ROUTE-02 auction funnel), scout-usefulness
-  // (ROUTE-08 A). Premium adds: watches-read, watches-crud (A2). contract 0050.
+  // (ROUTE-08 A). Premium adds: watches-read, watches-crud (A2), watch-deadletter,
+  // reactive-backpressure, watch-condition-guard, watch-observability, watch-schedule
+  // (REACT-06 cron-driven watches). contract 0055.
   repeated string capabilities = 6;
 }
 
@@ -648,6 +650,9 @@ message WatchConfigOp {
   repeated string condition_payload_keys = 14; // REACT-03 / ADR-0063: llm-condition payload-key allowlist
   bool approved = 15;                           // REACT-03 / ADR-0063: operator ack for a high-risk llm-condition watch
   bool dry_run = 16;                            // REACT-05 / ADR-0071: evaluate + record, never act
+  string source_cron = 17;                      // REACT-06 / ADR-0072: 5-field cron (or @shortcut) for a "schedule" source
+  string source_timezone = 18;                  // REACT-06 / ADR-0072: IANA tz the cron is evaluated in (empty = UTC)
+  string missed_fire_policy = 19;               // REACT-06 / ADR-0072: "fire_once" | "skip" (default) across restart
 }
 message ListWatchesOpRequest {
   int32 page = 1;

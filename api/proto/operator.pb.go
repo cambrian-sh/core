@@ -1268,7 +1268,9 @@ type SnapshotResponse struct {
 	// rest (ADR-0047 D14). OSS: feed, snapshot, commands, steering, audit,
 	// tools-read, tools-manage, skills-read, memory-read, memory-ingest, tool-exec,
 	// tool-approvals, routing-trace (ROUTE-02 auction funnel), scout-usefulness
-	// (ROUTE-08 A). Premium adds: watches-read, watches-crud (A2). contract 0050.
+	// (ROUTE-08 A). Premium adds: watches-read, watches-crud (A2), watch-deadletter,
+	// reactive-backpressure, watch-condition-guard, watch-observability, watch-schedule
+	// (REACT-06 cron-driven watches). contract 0055.
 	Capabilities  []string `protobuf:"bytes,6,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4741,6 +4743,9 @@ type WatchConfigOp struct {
 	ConditionPayloadKeys []string               `protobuf:"bytes,14,rep,name=condition_payload_keys,json=conditionPayloadKeys,proto3" json:"condition_payload_keys,omitempty"` // REACT-03 / ADR-0063: llm-condition payload-key allowlist
 	Approved             bool                   `protobuf:"varint,15,opt,name=approved,proto3" json:"approved,omitempty"`                                                      // REACT-03 / ADR-0063: operator ack for a high-risk llm-condition watch
 	DryRun               bool                   `protobuf:"varint,16,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`                                            // REACT-05 / ADR-0071: evaluate + record, never act
+	SourceCron           string                 `protobuf:"bytes,17,opt,name=source_cron,json=sourceCron,proto3" json:"source_cron,omitempty"`                                 // REACT-06 / ADR-0072: 5-field cron (or @shortcut) for a "schedule" source
+	SourceTimezone       string                 `protobuf:"bytes,18,opt,name=source_timezone,json=sourceTimezone,proto3" json:"source_timezone,omitempty"`                     // REACT-06 / ADR-0072: IANA tz the cron is evaluated in (empty = UTC)
+	MissedFirePolicy     string                 `protobuf:"bytes,19,opt,name=missed_fire_policy,json=missedFirePolicy,proto3" json:"missed_fire_policy,omitempty"`             // REACT-06 / ADR-0072: "fire_once" | "skip" (default) across restart
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -4885,6 +4890,27 @@ func (x *WatchConfigOp) GetDryRun() bool {
 		return x.DryRun
 	}
 	return false
+}
+
+func (x *WatchConfigOp) GetSourceCron() string {
+	if x != nil {
+		return x.SourceCron
+	}
+	return ""
+}
+
+func (x *WatchConfigOp) GetSourceTimezone() string {
+	if x != nil {
+		return x.SourceTimezone
+	}
+	return ""
+}
+
+func (x *WatchConfigOp) GetMissedFirePolicy() string {
+	if x != nil {
+		return x.MissedFirePolicy
+	}
+	return ""
 }
 
 type ListWatchesOpRequest struct {
@@ -6228,7 +6254,7 @@ const file_operator_proto_rawDesc = "" +
 	"\vtarget_type\x18\x02 \x01(\tR\n" +
 	"targetType\x12\x16\n" +
 	"\x06target\x18\x03 \x01(\tR\x06target\x12\x18\n" +
-	"\apayload\x18\x04 \x01(\tR\apayload\"\xac\x05\n" +
+	"\apayload\x18\x04 \x01(\tR\apayload\"\xa4\x06\n" +
 	"\rWatchConfigOp\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
@@ -6247,7 +6273,11 @@ const file_operator_proto_rawDesc = "" +
 	"\x10debounce_seconds\x18\r \x01(\x05R\x0fdebounceSeconds\x124\n" +
 	"\x16condition_payload_keys\x18\x0e \x03(\tR\x14conditionPayloadKeys\x12\x1a\n" +
 	"\bapproved\x18\x0f \x01(\bR\bapproved\x12\x17\n" +
-	"\adry_run\x18\x10 \x01(\bR\x06dryRun\x1a?\n" +
+	"\adry_run\x18\x10 \x01(\bR\x06dryRun\x12\x1f\n" +
+	"\vsource_cron\x18\x11 \x01(\tR\n" +
+	"sourceCron\x12'\n" +
+	"\x0fsource_timezone\x18\x12 \x01(\tR\x0esourceTimezone\x12,\n" +
+	"\x12missed_fire_policy\x18\x13 \x01(\tR\x10missedFirePolicy\x1a?\n" +
 	"\x11DaemonParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"h\n" +

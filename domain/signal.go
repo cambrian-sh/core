@@ -54,11 +54,18 @@ type WatchBacktester interface {
 
 // WatchSource identifies the origin of signals for a WatchConfig.
 type WatchSource struct {
-	// Type is "daemon", "filesystem", "webhook", or "signal_stream".
+	// Type is "daemon", "filesystem", "webhook", "signal_stream", or "schedule". ADR-0072.
 	Type string
 	// StreamID is the identifier that arriving signals must carry to match
 	// this WatchConfig. For filesystem sources, it is the watched directory path.
 	StreamID string
+	// Cron is the 5-field cron expression (or @-shortcut) for a "schedule" source
+	// (REACT-06 / ADR-0072): the kernel emits a synthetic signal on StreamID at each
+	// scheduled time, flowing through the normal condition/action pipeline.
+	Cron string
+	// Timezone is the IANA tz name the cron is evaluated in (e.g. "America/New_York").
+	// Empty ⇒ UTC.
+	Timezone string
 }
 
 // ConditionType constants for WatchConfig.ConditionType.
@@ -123,6 +130,10 @@ type WatchConfig struct {
 	// WOULD do, but never executes the action — so an operator can arm a watch in
 	// observation mode ("would have fired 3× today") before letting it act.
 	DryRun bool `json:"dry_run,omitempty"`
+	// MissedFirePolicy (REACT-06 / ADR-0072) governs a "schedule" watch across a kernel
+	// restart: "fire_once" fires a single catch-up if a scheduled time was missed while
+	// down; "skip" (default) resumes at the next future time.
+	MissedFirePolicy string `json:"missed_fire_policy,omitempty"`
 }
 
 // WatchMetrics is the per-watch observability snapshot (REACT-05 / ADR-0071): how many
