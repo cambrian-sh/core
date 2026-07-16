@@ -28,6 +28,57 @@ func (s *Service) SetWatchHandler(h domain.WatchConfigHandler) { s.watches = h }
 // ADR-0061). nil ⇒ ListWatchDeadLetters returns Unimplemented.
 func (s *Service) SetDeadLetterReader(r domain.WatchDeadLetterReader) { s.deadletters = r }
 
+// SetWatchObservability wires the REACT-05 watch-metrics reader + backtester. nil ⇒ the
+// GetWatchMetrics / BacktestWatch RPCs return Unimplemented.
+func (s *Service) SetWatchObservability(m domain.WatchMetricsReader, b domain.WatchBacktester) {
+	s.watchMetrics = m
+	s.watchBacktest = b
+}
+
+// GetWatchMetrics returns per-watch observability counters (REACT-05 / ADR-0071). Read
+// RPC (any authenticated role).
+func (s *Service) GetWatchMetrics(_ context.Context, _ *pb.GetWatchMetricsOpRequest) (*pb.GetWatchMetricsOpResponse, error) {
+	if s.watchMetrics == nil {
+		return nil, status.Error(codes.Unimplemented, "watch observability is a premium capability")
+	}
+	ms := s.watchMetrics.WatchMetrics()
+	out := make([]*pb.WatchMetricsOp, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, &pb.WatchMetricsOp{
+			WatchId:                m.WatchID,
+			SignalsSeen:            m.SignalsSeen,
+			ConditionFired:         m.ConditionFired,
+			ConditionSuppressed:    m.ConditionSuppressed,
+			DryRunWouldFire:        m.DryRunWouldFire,
+			ActionFailed:           m.ActionFailed,
+			DeadLettered:           m.DeadLettered,
+			MeanConditionLatencyMs: m.MeanConditionLatencyMs(),
+		})
+	}
+	return &pb.GetWatchMetricsOpResponse{Metrics: out}, nil
+}
+
+// BacktestWatch replays a candidate watch over the signal journal and reports would-fires
+// without acting (REACT-05 / ADR-0071). Read RPC.
+func (s *Service) BacktestWatch(ctx context.Context, req *pb.BacktestWatchOpRequest) (*pb.BacktestWatchOpResponse, error) {
+	if s.watchBacktest == nil {
+		return nil, status.Error(codes.Unimplemented, "watch backtesting is a premium capability")
+	}
+	cfg := fromWatchConfigOp(req.GetConfig())
+	verdicts, err := s.watchBacktest.Backtest(ctx, cfg, req.GetAfterSeq())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "backtest: %v", err)
+	}
+	out := make([]*pb.WatchBacktestVerdictOp, 0, len(verdicts))
+	for _, v := range verdicts {
+		out = append(out, &pb.WatchBacktestVerdictOp{
+			Seq: v.Seq, StreamId: v.StreamID, RawText: v.RawText,
+			WouldFire: v.WouldFire, EvalError: v.EvalError,
+		})
+	}
+	return &pb.BacktestWatchOpResponse{Verdicts: out}, nil
+}
+
 // ListWatchDeadLetters returns reactive actions that could not be delivered
 // (REACT-01 / ADR-0061). Read RPC (any authenticated role). The reader is the OSS
 // bbolt journal; an OSS-only kernel never writes entries, so the list is empty.
@@ -185,6 +236,7 @@ func fromWatchConfigOp(c *pb.WatchConfigOp) domain.WatchConfig {
 		DebounceSeconds:      int(c.GetDebounceSeconds()),
 		ConditionPayloadKeys: c.GetConditionPayloadKeys(),
 		Approved:             c.GetApproved(),
+		DryRun:               c.GetDryRun(),
 	}
 }
 
@@ -207,6 +259,7 @@ func toWatchConfigOp(c domain.WatchConfig) *pb.WatchConfigOp {
 		DebounceSeconds:      int32(c.DebounceSeconds),
 		ConditionPayloadKeys: c.ConditionPayloadKeys,
 		Approved:             c.Approved,
+		DryRun:               c.DryRun,
 	}
 }
 

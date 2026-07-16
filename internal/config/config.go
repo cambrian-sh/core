@@ -211,6 +211,18 @@ type ExecutionConfig struct {
 	// ProvisionalExplorationWindowSeconds is the sliding window for that budget. Default 3600.
 	ProvisionalExplorationWindowSeconds int `json:"provisional_exploration_window_seconds"`
 
+	// ── REACT-04 / ADR-0070: daemon supervision ──
+	// DaemonRestartMaxAttempts is the max automatic restarts of a crashed daemon per
+	// window before it is quarantined (crash-loop guard). 0 disables auto-restart
+	// (pre-REACT-04 behavior: a crashed daemon stays down). Default 5.
+	DaemonRestartMaxAttempts int `json:"daemon_restart_max_attempts"`
+	// DaemonRestartWindowSeconds is the flap window for the attempt count. Default 300.
+	DaemonRestartWindowSeconds int `json:"daemon_restart_window_seconds"`
+	// DaemonRestartBaseBackoffMs / DaemonRestartMaxBackoffMs bound the exponential
+	// (full-jitter) restart backoff. Defaults 1000 / 30000.
+	DaemonRestartBaseBackoffMs int `json:"daemon_restart_base_backoff_ms"`
+	DaemonRestartMaxBackoffMs  int `json:"daemon_restart_max_backoff_ms"`
+
 	// AuctionBidTimeoutMs is the total duration (ms) for all agents to submit bids in an auction.
 	// Default: 2000.
 	AuctionBidTimeoutMs int `json:"auction_bid_timeout_ms"`
@@ -949,6 +961,10 @@ func DefaultConfig() *Config {
 			PerCapabilityMerit:                  false, // ROUTE-06 arm toggle; OFF = global merit + unconditional bypass
 			ProvisionalExplorationBudget:        3,
 			ProvisionalExplorationWindowSeconds: 3600,
+			DaemonRestartMaxAttempts:            5, // REACT-04: auto-restart on, crash-loop → quarantine
+			DaemonRestartWindowSeconds:          300,
+			DaemonRestartBaseBackoffMs:          1000,
+			DaemonRestartMaxBackoffMs:           30000,
 			LLMGatewayMaxConcurrency:         20,
 			LLMGatewayRetryBackoffMs:         100,
 			SessionTokenSweepIntervalSeconds: 30,

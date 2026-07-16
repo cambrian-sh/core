@@ -3,6 +3,7 @@ package agentmgr
 import (
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -57,22 +58,55 @@ func (m *AgentManager) handleDaemonExit(inst *domain.Instance, streamID string, 
 		return
 	}
 
-	// Mark stream unavailable in the daemon registry.
-	m.SetDaemonStatus(streamID, "unavailable")
-	// Reset ref count to 0 so SpawnDaemon can restart.
+	// Mark stream unavailable and capture the original spawn params (needed to restart)
+	// before clearing the registry entry so SpawnDaemon can boot a fresh process.
 	m.daemons.mu.Lock()
+	var params map[string]any
+	if s, ok := m.daemons.byStream[streamID]; ok {
+		params = s.params
+	}
 	delete(m.daemons.byStream, streamID)
 	m.daemons.mu.Unlock()
+	m.SetDaemonStatus(streamID, "unavailable")
 
-	// Publish DaemonCrashedEvent.
-	if m.EventBus != nil {
-		evt := domain.DaemonCrashedEvent{
-			AgentID:  inst.AgentID,
-			StreamID: streamID,
+	m.publishEvent(domain.DaemonCrashedEvent{AgentID: inst.AgentID, StreamID: streamID})
+
+	// REACT-04 / ADR-0070: auto-restart with backoff, or quarantine a crash-loop.
+	if m.RestartPolicy == nil {
+		return // no restart policy → pre-REACT-04 behavior (stays down)
+	}
+	delay, quarantine := m.RestartPolicy.Register(streamID)
+	if quarantine {
+		m.SetDaemonStatus(streamID, "quarantined")
+		slog.Warn("daemon quarantined (crash-loop) — auto-restart withdrawn",
+			"agent_id", inst.AgentID, "stream_id", streamID, "attempts", m.RestartPolicy.MaxAttempts)
+		m.publishEvent(domain.DaemonQuarantinedEvent{
+			AgentID: inst.AgentID, StreamID: streamID,
+			Reason: "crash-loop", Attempts: m.RestartPolicy.MaxAttempts,
+		})
+		return
+	}
+
+	agentID := inst.AgentID
+	slog.Info("daemon scheduled for restart", "agent_id", agentID, "stream_id", streamID, "delay", delay)
+	go func() {
+		time.Sleep(delay)
+		if _, err := m.SpawnDaemon(agentID, streamID, params); err != nil {
+			slog.Warn("daemon auto-restart failed", "agent_id", agentID, "stream_id", streamID, "err", err)
+			return
 		}
-		if err := m.EventBus.Publish(evt); err != nil {
-			slog.Error("crash_detection: publish DaemonCrashedEvent failed",
-				"agent_id", inst.AgentID, "stream_id", streamID, "err", err)
-		}
+		m.SetDaemonStatus(streamID, "running")
+		slog.Info("daemon recovered via auto-restart", "agent_id", agentID, "stream_id", streamID)
+		m.publishEvent(domain.DaemonRecoveredEvent{AgentID: agentID, StreamID: streamID})
+	}()
+}
+
+// publishEvent publishes a domain event on the EventBus (nil-safe), logging on failure.
+func (m *AgentManager) publishEvent(evt domain.DomainEvent) {
+	if m.EventBus == nil {
+		return
+	}
+	if err := m.EventBus.Publish(evt); err != nil {
+		slog.Error("crash_detection: publish event failed", "type", evt.EventType(), "err", err)
 	}
 }

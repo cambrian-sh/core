@@ -185,6 +185,7 @@ type WatchConfigRecord struct {
 	DebounceSeconds      int            `json:"debounce_seconds,omitempty"`       // REACT-02 / ADR-0062
 	ConditionPayloadKeys []string       `json:"condition_payload_keys,omitempty"` // REACT-03 / ADR-0063
 	Approved             bool           `json:"approved,omitempty"`               // REACT-03 / ADR-0063
+	DryRun               bool           `json:"dry_run,omitempty"`                // REACT-05 / ADR-0071
 }
 
 // ContradictionResolutionRecord is the raw JSON shape stored in the bbolt contradiction_resolutions bucket.

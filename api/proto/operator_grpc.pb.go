@@ -48,6 +48,8 @@ const (
 	OperatorConsole_DeleteWatch_FullMethodName          = "/cambrian.OperatorConsole/DeleteWatch"
 	OperatorConsole_SetWatchActive_FullMethodName       = "/cambrian.OperatorConsole/SetWatchActive"
 	OperatorConsole_ListWatchDeadLetters_FullMethodName = "/cambrian.OperatorConsole/ListWatchDeadLetters"
+	OperatorConsole_GetWatchMetrics_FullMethodName      = "/cambrian.OperatorConsole/GetWatchMetrics"
+	OperatorConsole_BacktestWatch_FullMethodName        = "/cambrian.OperatorConsole/BacktestWatch"
 )
 
 // OperatorConsoleClient is the client API for OperatorConsole service.
@@ -127,6 +129,12 @@ type OperatorConsoleClient interface {
 	// ADR-0061). Read RPC (no command_id). Capability "watch-deadletter", advertised
 	// on premium builds; OSS returns an empty list (no reactive engine writes them).
 	ListWatchDeadLetters(ctx context.Context, in *ListWatchDeadLettersOpRequest, opts ...grpc.CallOption) (*ListWatchDeadLettersOpResponse, error)
+	// REACT-05 / ADR-0071: watch observability. GetWatchMetrics returns per-watch fire/
+	// suppression/dry-run/dead-letter counters + mean condition latency. BacktestWatch
+	// replays the signal journal through a candidate watch config and reports would-fires
+	// WITHOUT acting. Capability "watch-observability"; premium (OSS ⇒ Unimplemented).
+	GetWatchMetrics(ctx context.Context, in *GetWatchMetricsOpRequest, opts ...grpc.CallOption) (*GetWatchMetricsOpResponse, error)
+	BacktestWatch(ctx context.Context, in *BacktestWatchOpRequest, opts ...grpc.CallOption) (*BacktestWatchOpResponse, error)
 }
 
 type operatorConsoleClient struct {
@@ -445,6 +453,26 @@ func (c *operatorConsoleClient) ListWatchDeadLetters(ctx context.Context, in *Li
 	return out, nil
 }
 
+func (c *operatorConsoleClient) GetWatchMetrics(ctx context.Context, in *GetWatchMetricsOpRequest, opts ...grpc.CallOption) (*GetWatchMetricsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetWatchMetricsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetWatchMetrics_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) BacktestWatch(ctx context.Context, in *BacktestWatchOpRequest, opts ...grpc.CallOption) (*BacktestWatchOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BacktestWatchOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_BacktestWatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OperatorConsoleServer is the server API for OperatorConsole service.
 // All implementations must embed UnimplementedOperatorConsoleServer
 // for forward compatibility.
@@ -522,6 +550,12 @@ type OperatorConsoleServer interface {
 	// ADR-0061). Read RPC (no command_id). Capability "watch-deadletter", advertised
 	// on premium builds; OSS returns an empty list (no reactive engine writes them).
 	ListWatchDeadLetters(context.Context, *ListWatchDeadLettersOpRequest) (*ListWatchDeadLettersOpResponse, error)
+	// REACT-05 / ADR-0071: watch observability. GetWatchMetrics returns per-watch fire/
+	// suppression/dry-run/dead-letter counters + mean condition latency. BacktestWatch
+	// replays the signal journal through a candidate watch config and reports would-fires
+	// WITHOUT acting. Capability "watch-observability"; premium (OSS ⇒ Unimplemented).
+	GetWatchMetrics(context.Context, *GetWatchMetricsOpRequest) (*GetWatchMetricsOpResponse, error)
+	BacktestWatch(context.Context, *BacktestWatchOpRequest) (*BacktestWatchOpResponse, error)
 	mustEmbedUnimplementedOperatorConsoleServer()
 }
 
@@ -618,6 +652,12 @@ func (UnimplementedOperatorConsoleServer) SetWatchActive(context.Context, *SetWa
 }
 func (UnimplementedOperatorConsoleServer) ListWatchDeadLetters(context.Context, *ListWatchDeadLettersOpRequest) (*ListWatchDeadLettersOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWatchDeadLetters not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetWatchMetrics(context.Context, *GetWatchMetricsOpRequest) (*GetWatchMetricsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetWatchMetrics not implemented")
+}
+func (UnimplementedOperatorConsoleServer) BacktestWatch(context.Context, *BacktestWatchOpRequest) (*BacktestWatchOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BacktestWatch not implemented")
 }
 func (UnimplementedOperatorConsoleServer) mustEmbedUnimplementedOperatorConsoleServer() {}
 func (UnimplementedOperatorConsoleServer) testEmbeddedByValue()                         {}
@@ -1148,6 +1188,42 @@ func _OperatorConsole_ListWatchDeadLetters_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_GetWatchMetrics_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetWatchMetricsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetWatchMetrics(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetWatchMetrics_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetWatchMetrics(ctx, req.(*GetWatchMetricsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_BacktestWatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BacktestWatchOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).BacktestWatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_BacktestWatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).BacktestWatch(ctx, req.(*BacktestWatchOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OperatorConsole_ServiceDesc is the grpc.ServiceDesc for OperatorConsole service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1262,6 +1338,14 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListWatchDeadLetters",
 			Handler:    _OperatorConsole_ListWatchDeadLetters_Handler,
+		},
+		{
+			MethodName: "GetWatchMetrics",
+			Handler:    _OperatorConsole_GetWatchMetrics_Handler,
+		},
+		{
+			MethodName: "BacktestWatch",
+			Handler:    _OperatorConsole_BacktestWatch_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

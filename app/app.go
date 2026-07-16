@@ -27,6 +27,7 @@ import (
 	"github.com/cambrian-sh/core/internal/health"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/kernel"
+	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/calibration"
 	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/memory/vault"
@@ -83,6 +84,10 @@ type Kernel struct {
 	// REACT-01 / ADR-0061: reactive dead-letter read source (the bbolt journal
 	// decorator). Backs the OperatorConsole ListWatchDeadLetters RPC.
 	WatchDeadLetters domain.WatchDeadLetterReader
+	// REACT-05 / ADR-0071: watch observability ports (the premium ReactiveEngine, when
+	// wired). Back GetWatchMetrics / BacktestWatch. nil in OSS.
+	WatchMetrics    domain.WatchMetricsReader
+	WatchBacktester domain.WatchBacktester
 
 	// ADR-0012: Synaptic Bridge components.
 	SessionMgr         *session.SessionManager
@@ -433,6 +438,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	meta.VerificationWorker.EventBus = eventBus // ADR-0047 D3: VerifierRoundEvent → operator feed
 	// ADR-0033: crash detection publishes DaemonCrashedEvent to this bus.
 	meta.Manager.EventBus = eventBus
+	// REACT-04 / ADR-0070: daemon auto-restart with backoff + flap quarantine. Disabled
+	// when daemon_restart_max_attempts is 0 (a crashed daemon then stays down).
+	if cfg.Execution.DaemonRestartMaxAttempts > 0 {
+		meta.Manager.RestartPolicy = agentmgr.NewDaemonRestartPolicy(
+			cfg.Execution.DaemonRestartMaxAttempts,
+			time.Duration(cfg.Execution.DaemonRestartWindowSeconds)*time.Second,
+			time.Duration(cfg.Execution.DaemonRestartBaseBackoffMs)*time.Millisecond,
+			time.Duration(cfg.Execution.DaemonRestartMaxBackoffMs)*time.Millisecond,
+		)
+	}
 	// ADR-0049 §A1.2: the MemoryAgent publishes passive world_delta drift signals when a
 	// read observes an entity field changed from its cached value (consumed by ADR-0051
 	// Scout staleness + deferred ADR-0037 adaptive trust).
@@ -697,6 +712,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			EventBus:   eventBus,
 			Journal:    reg, // REACT-01 / ADR-0061: durable reactive execution (bbolt).
 		})
+	}
+	// REACT-05 / ADR-0071: the premium ReactiveEngine (signalRcv) also implements the
+	// watch-observability ports; capture them (nil for the OSS receiver) so the operator
+	// plane can wire GetWatchMetrics / BacktestWatch.
+	var watchMetricsReader domain.WatchMetricsReader
+	var watchBacktester domain.WatchBacktester
+	if mr, ok := signalRcv.(domain.WatchMetricsReader); ok {
+		watchMetricsReader = mr
+	}
+	if bt, ok := signalRcv.(domain.WatchBacktester); ok {
+		watchBacktester = bt
 	}
 	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, providers, llmProvider, sessionMgr, eventLogger, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
 
@@ -1159,6 +1185,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Config:             cfg,
 		Registry:           reg,
 		WatchDeadLetters:   reg, // REACT-01 / ADR-0061
+		WatchMetrics:       watchMetricsReader, // REACT-05 / ADR-0071
+		WatchBacktester:    watchBacktester,    // REACT-05 / ADR-0071
 		Health:             healthChecker, // PLAT-03 / ADR-0065
 		Store:              storeHandle,
 		Memory:             mem,
@@ -1333,6 +1361,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Server.WatchHandler != nil && k.WatchDeadLetters != nil {
 			operatorSvc.SetDeadLetterReader(k.WatchDeadLetters)
 		}
+		// REACT-05 / ADR-0071: watch observability (metrics + backtest), from the premium
+		// ReactiveEngine.
+		if k.WatchMetrics != nil {
+			operatorSvc.SetWatchObservability(k.WatchMetrics, k.WatchBacktester)
+		}
 		// ADR-0047 D14: capability + version handshake. The UI hides surfaces this
 		// build does not advertise and warns on contract-version skew.
 		// ADR-0047 Amendment A2: contract bumped 0047→0048 for the CORE-OPS-1 read/
@@ -1360,7 +1393,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			// injection hardening (payload allowlist + registration risk gate).
 			operatorCaps = append(operatorCaps, "watch-deadletter", "reactive-backpressure", "watch-condition-guard")
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0053", operatorCaps)
+		// REACT-05 / ADR-0071: watch observability (metrics + backtest), from the premium engine.
+		if k.WatchMetrics != nil {
+			operatorCaps = append(operatorCaps, "watch-observability")
+		}
+		operatorSvc.SetHandshake("0.6.9-alpha", "0054", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).

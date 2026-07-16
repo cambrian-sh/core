@@ -40,6 +40,18 @@ type WatchConfigHandler interface {
 	SetWatchActive(id string, active bool) error
 }
 
+// WatchMetricsReader surfaces per-watch observability counters (REACT-05 / ADR-0071).
+// Satisfied by the premium ReactiveEngine; nil in OSS (the RPC returns Unimplemented).
+type WatchMetricsReader interface {
+	WatchMetrics() []WatchMetrics
+}
+
+// WatchBacktester replays a candidate WatchConfig over the signal journal without acting
+// (REACT-05 / ADR-0071). Satisfied by the premium ReactiveEngine.
+type WatchBacktester interface {
+	Backtest(ctx context.Context, cfg WatchConfig, afterSeq uint64) ([]WatchBacktestVerdict, error)
+}
+
 // WatchSource identifies the origin of signals for a WatchConfig.
 type WatchSource struct {
 	// Type is "daemon", "filesystem", "webhook", or "signal_stream".
@@ -107,4 +119,41 @@ type WatchConfig struct {
 	// content deciding an unattended consequential action — has been reviewed.
 	// RegisterWatch rejects such a watch unless this is true. REACT-03 / ADR-0063.
 	Approved bool `json:"approved,omitempty"`
+	// DryRun (REACT-05 / ADR-0071) evaluates the condition and records what the watch
+	// WOULD do, but never executes the action — so an operator can arm a watch in
+	// observation mode ("would have fired 3× today") before letting it act.
+	DryRun bool `json:"dry_run,omitempty"`
+}
+
+// WatchMetrics is the per-watch observability snapshot (REACT-05 / ADR-0071): how many
+// signals a watch saw, how often its condition fired vs was suppressed, dry-run
+// would-fires, action failures/dead-letters, and mean condition-evaluation latency.
+type WatchMetrics struct {
+	WatchID              string
+	SignalsSeen          int64
+	ConditionFired       int64 // condition true → action attempted (or would-fire in dry-run)
+	ConditionSuppressed  int64 // condition false
+	DryRunWouldFire      int64
+	ActionFailed         int64
+	DeadLettered         int64
+	ConditionEvalCount   int64
+	ConditionLatencyMsTot int64
+}
+
+// MeanConditionLatencyMs returns the average condition-evaluation latency, 0 if none.
+func (m WatchMetrics) MeanConditionLatencyMs() float64 {
+	if m.ConditionEvalCount == 0 {
+		return 0
+	}
+	return float64(m.ConditionLatencyMsTot) / float64(m.ConditionEvalCount)
+}
+
+// WatchBacktestVerdict is one signal's outcome when a candidate WatchConfig is replayed
+// over the journal (REACT-05 / ADR-0071): would the condition have fired?
+type WatchBacktestVerdict struct {
+	Seq        uint64
+	StreamID   string
+	RawText    string
+	WouldFire  bool
+	EvalError  string
 }

@@ -448,6 +448,7 @@ func (m *AgentMapper) WatchConfigToRecord(cfg domain.WatchConfig) storage.WatchC
 		DebounceSeconds:      cfg.DebounceSeconds,
 		ConditionPayloadKeys: cfg.ConditionPayloadKeys,
 		Approved:             cfg.Approved,
+		DryRun:               cfg.DryRun,
 	}
 }
 
@@ -476,6 +477,7 @@ func (m *AgentMapper) WatchConfigFromRecord(rec storage.WatchConfigRecord) domai
 		DebounceSeconds:      rec.DebounceSeconds,
 		ConditionPayloadKeys: rec.ConditionPayloadKeys,
 		Approved:             rec.Approved,
+		DryRun:               rec.DryRun,
 	}
 }
 

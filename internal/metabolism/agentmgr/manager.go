@@ -1,8 +1,10 @@
 package agentmgr
 
 import (
-	"github.com/cambrian-sh/core/domain"
 	"context"
+	"os/exec"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // AgentManager is the thin facade over InstanceManager (process lifecycle)
@@ -26,6 +28,13 @@ type AgentManager struct {
 	stopped *stoppedSet
 	// EventBus receives DaemonCrashedEvent on unexpected daemon exits. ADR-0033. nil-safe.
 	EventBus EventPublisher
+	// RestartPolicy drives auto-restart-with-backoff + flap quarantine on an unexpected
+	// daemon exit (REACT-04 / ADR-0070). nil ⇒ no auto-restart (pre-REACT-04 behavior).
+	RestartPolicy *DaemonRestartPolicy
+	// DaemonBootHook, when non-nil, replaces the real bootDaemonAgent path in SpawnDaemon
+	// (returning an instance id + the launched process). It exists so the chaos/kill test
+	// can drive the real crash-watcher → restart loop with controllable OS processes.
+	DaemonBootHook func(agentID, streamID string, params map[string]any) (instanceID string, cmd *exec.Cmd, err error)
 }
 
 // GetManifest delegates to the agent registry's ManifestReader.

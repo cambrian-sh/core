@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"sync"
 
 	"github.com/cambrian-sh/core/domain"
@@ -28,9 +29,10 @@ type DaemonSpawner interface {
 // daemonState holds the ref-count and instance mapping for a single daemon stream.
 type daemonState struct {
 	refCount   int
-	agentID    string // for EvictAgent lookup
-	instanceID string // for markExpectedStop and telemetry
-	status     string // "running" | "unavailable"
+	agentID    string         // for EvictAgent lookup
+	instanceID string         // for markExpectedStop and telemetry
+	status     string         // "running" | "unavailable" | "quarantined"
+	params     map[string]any // REACT-04: original spawn params, replayed on auto-restart
 }
 
 // daemonRegistry is the ref-count tracker embedded in AgentManager. ADR-0033.
@@ -58,16 +60,26 @@ func (m *AgentManager) SpawnDaemon(agentID, streamID string, params map[string]a
 	}
 	m.daemons.mu.Unlock()
 
-	// Look up the agent definition.
-	def, err := m.Registry.GetAgentByName(context.Background(), agentID)
-	if err != nil || def == nil {
-		return "", fmt.Errorf("SpawnDaemon: agent %q not found: %w", agentID, err)
-	}
-
-	// Boot the daemon process.
-	inst, bootErr := m.InstanceManager.bootDaemonAgent(context.Background(), def, streamID, params)
-	if bootErr != nil {
-		return "", fmt.Errorf("SpawnDaemon: boot failed for %q: %w", agentID, bootErr)
+	// Boot the daemon process (via the test hook when set, else the real boot path).
+	var instanceID string
+	var cmd *exec.Cmd
+	if m.DaemonBootHook != nil {
+		var hookErr error
+		instanceID, cmd, hookErr = m.DaemonBootHook(agentID, streamID, params)
+		if hookErr != nil {
+			return "", fmt.Errorf("SpawnDaemon: boot hook failed for %q: %w", agentID, hookErr)
+		}
+	} else {
+		def, err := m.Registry.GetAgentByName(context.Background(), agentID)
+		if err != nil || def == nil {
+			return "", fmt.Errorf("SpawnDaemon: agent %q not found: %w", agentID, err)
+		}
+		inst, bootErr := m.InstanceManager.bootDaemonAgent(context.Background(), def, streamID, params)
+		if bootErr != nil {
+			return "", fmt.Errorf("SpawnDaemon: boot failed for %q: %w", agentID, bootErr)
+		}
+		instanceID = inst.ID
+		cmd = m.InstanceManager.GetCmd(inst.ID)
 	}
 
 	// Register in daemon registry.
@@ -75,27 +87,26 @@ func (m *AgentManager) SpawnDaemon(agentID, streamID string, params map[string]a
 	m.daemons.byStream[streamID] = &daemonState{
 		refCount:   1,
 		agentID:    agentID,
-		instanceID: inst.ID,
+		instanceID: instanceID,
 		status:     "running",
+		params:     params,
 	}
 	m.daemons.mu.Unlock()
 
 	// Launch crash-watcher goroutine. ADR-0033.
-	cmd := m.InstanceManager.GetCmd(inst.ID)
 	if cmd != nil {
 		go func() {
 			_ = cmd.Wait()
-			// Check whether this exit was expected (StopDaemon called).
-			unexpected := !m.isExpectedStop(inst.ID)
+			unexpected := !m.isExpectedStop(instanceID)
 			if unexpected {
 				slog.Warn("daemon crashed unexpectedly",
-					"agent_id", agentID, "stream_id", streamID, "instance_id", inst.ID)
+					"agent_id", agentID, "stream_id", streamID, "instance_id", instanceID)
 			}
-			m.handleDaemonExit(inst, streamID, unexpected)
+			m.handleDaemonExit(&domain.Instance{AgentID: agentID, ID: instanceID}, streamID, unexpected)
 		}()
 	}
 
-	return inst.ID, nil
+	return instanceID, nil
 }
 
 // StopDaemon marks the exit as expected and evicts the daemon instance. ADR-0033.

@@ -99,6 +99,13 @@ service OperatorConsole {
   // ADR-0061). Read RPC (no command_id). Capability "watch-deadletter", advertised
   // on premium builds; OSS returns an empty list (no reactive engine writes them).
   rpc ListWatchDeadLetters(ListWatchDeadLettersOpRequest) returns (ListWatchDeadLettersOpResponse);
+
+  // REACT-05 / ADR-0071: watch observability. GetWatchMetrics returns per-watch fire/
+  // suppression/dry-run/dead-letter counters + mean condition latency. BacktestWatch
+  // replays the signal journal through a candidate watch config and reports would-fires
+  // WITHOUT acting. Capability "watch-observability"; premium (OSS ⇒ Unimplemented).
+  rpc GetWatchMetrics(GetWatchMetricsOpRequest) returns (GetWatchMetricsOpResponse);
+  rpc BacktestWatch(BacktestWatchOpRequest) returns (BacktestWatchOpResponse);
 }
 
 message CreateSessionRequest {
@@ -640,6 +647,7 @@ message WatchConfigOp {
   int32 debounce_seconds = 13; // REACT-02 / ADR-0062: coalesce at most once per T seconds (0 = off)
   repeated string condition_payload_keys = 14; // REACT-03 / ADR-0063: llm-condition payload-key allowlist
   bool approved = 15;                           // REACT-03 / ADR-0063: operator ack for a high-risk llm-condition watch
+  bool dry_run = 16;                            // REACT-05 / ADR-0071: evaluate + record, never act
 }
 message ListWatchesOpRequest {
   int32 page = 1;
@@ -684,6 +692,36 @@ message WatchDeadLetterOp {
   string signal_stream_id = 6;
   string signal_raw_text = 7;
   int64 failed_at_unix_ms = 8;
+}
+
+// REACT-05 / ADR-0071: watch observability.
+message GetWatchMetricsOpRequest {}
+message GetWatchMetricsOpResponse {
+  repeated WatchMetricsOp metrics = 1;
+}
+message WatchMetricsOp {
+  string watch_id = 1;
+  int64 signals_seen = 2;
+  int64 condition_fired = 3;
+  int64 condition_suppressed = 4;
+  int64 dry_run_would_fire = 5;
+  int64 action_failed = 6;
+  int64 dead_lettered = 7;
+  double mean_condition_latency_ms = 8;
+}
+message BacktestWatchOpRequest {
+  WatchConfigOp config = 1; // candidate watch to replay over the journal
+  uint64 after_seq = 2;     // replay journaled signals with seq > after_seq (0 = all)
+}
+message BacktestWatchOpResponse {
+  repeated WatchBacktestVerdictOp verdicts = 1;
+}
+message WatchBacktestVerdictOp {
+  uint64 seq = 1;
+  string stream_id = 2;
+  string raw_text = 3;
+  bool would_fire = 4;
+  string eval_error = 5;
 }
 
 // REACT-02 / ADR-0062: backpressure shed event on the feed.

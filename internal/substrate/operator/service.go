@@ -38,8 +38,10 @@ type Service struct {
 	memory     MemoryQuerier
 	toolRunner ToolRunner
 	ingestor    MemoryIngestor
-	watches     domain.WatchConfigHandler
-	deadletters domain.WatchDeadLetterReader // REACT-01 / ADR-0061
+	watches       domain.WatchConfigHandler
+	deadletters   domain.WatchDeadLetterReader // REACT-01 / ADR-0061
+	watchMetrics  domain.WatchMetricsReader    // REACT-05 / ADR-0071
+	watchBacktest domain.WatchBacktester       // REACT-05 / ADR-0071
 
 	sessionOps SessionOps
 

@@ -14,6 +14,12 @@ const (
 	EventTypeWatchTriggered = "watch.triggered"
 	// EventTypeDaemonCrashed is published when a daemon process exits unexpectedly. ADR-0033.
 	EventTypeDaemonCrashed = "daemon.crashed"
+	// EventTypeDaemonQuarantined is published when a crash-looping daemon is quarantined
+	// (auto-restart withdrawn until manual intervention). REACT-04 / ADR-0070.
+	EventTypeDaemonQuarantined = "daemon.quarantined"
+	// EventTypeDaemonRecovered is published when a crashed daemon is successfully
+	// auto-restarted; ReactiveEngine re-marks its stream available. REACT-04 / ADR-0070.
+	EventTypeDaemonRecovered = "daemon.recovered"
 	// ADR-0047 operator-feed events. Producers publish these on the EventBus;
 	// the operator plane is a pure consumer. Payloads are absolute-state (D6).
 	EventTypeMemoryWritten = "memory.written"
@@ -193,6 +199,28 @@ type DaemonCrashedEvent struct {
 	AgentID  string
 	StreamID string
 }
+
+// DaemonQuarantinedEvent is published when a crash-looping daemon exceeds its restart
+// budget and is quarantined — no further auto-restart, its watches are degraded until an
+// operator intervenes. REACT-04 / ADR-0070.
+type DaemonQuarantinedEvent struct {
+	AgentID  string
+	StreamID string
+	Reason   string
+	Attempts int
+}
+
+// DaemonRecoveredEvent is published when a crashed daemon is successfully auto-restarted.
+// REACT-04 / ADR-0070.
+type DaemonRecoveredEvent struct {
+	AgentID  string
+	StreamID string
+}
+
+func (DaemonQuarantinedEvent) domainEvent()      {}
+func (DaemonQuarantinedEvent) EventType() string { return EventTypeDaemonQuarantined }
+func (DaemonRecoveredEvent) domainEvent()        {}
+func (DaemonRecoveredEvent) EventType() string   { return EventTypeDaemonRecovered }
 
 // WatchTriggeredEvent is emitted by the ReactiveEngine when a WatchConfig
 // condition evaluates to true and the action is executed. SynapticWatcher
