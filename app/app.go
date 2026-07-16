@@ -24,6 +24,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	mcp "github.com/cambrian-sh/core/internal/infrastructure/mcp"
+	"github.com/cambrian-sh/core/internal/health"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/kernel"
 	"github.com/cambrian-sh/core/internal/memory"
@@ -50,6 +51,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -69,6 +71,9 @@ type Kernel struct {
 	Server      *subnetwork.Server
 	Listener    net.Listener
 	GRPC        *grpc.Server
+	// Health is the grpc.health.v1 checker (PLAT-03 / ADR-0065): SERVING once the DB is
+	// reachable, NOT_SERVING while draining. Registered on the main listener.
+	Health *health.Checker
 
 	// ADR-0047 0047-16: operator command effects bound to kernel surfaces.
 	OperatorEffects operator.CommandEffects
@@ -104,6 +109,12 @@ type Kernel struct {
 // Shutdown initiates the graceful teardown of all kernel resources.
 func (k *Kernel) Shutdown(ctx context.Context) {
 	slog.Info("🧬 Kernel: Initiating graceful shutdown sequence...")
+
+	// 0. PLAT-03 / ADR-0065: flip health to NOT_SERVING first, so probes and load
+	// balancers stop routing to this kernel before it drops in-flight requests.
+	if k.Health != nil {
+		k.Health.Shutdown()
+	}
 
 	// 1. Stop accepting new gRPC requests
 	if k.GRPC != nil {
@@ -263,6 +274,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		storeHandle.Close()
 		return nil, err
 	}
+
+	// PLAT-03 / ADR-0065: readiness = the database is reachable. Ping the pgvector pool.
+	healthChecker := health.New(func(pctx context.Context) error {
+		if vec == nil || vec.Pool() == nil {
+			return fmt.Errorf("db pool unavailable")
+		}
+		return vec.Pool().Ping(pctx)
+	})
 
 	// ADR-0034: agent scope store + resolver. Authoritative scope lives in the
 	// PostgreSQL agent_scopes table (shared with pgvector — reuse its pool); the
@@ -1096,6 +1115,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Config:             cfg,
 		Registry:           reg,
 		WatchDeadLetters:   reg, // REACT-01 / ADR-0061
+		Health:             healthChecker, // PLAT-03 / ADR-0065
 		Store:              storeHandle,
 		Memory:             mem,
 		Awareness:          aw,
@@ -1185,6 +1205,15 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			grpc.ChainStreamInterceptor(operator.StreamAuthInterceptor(operatorIDP)),
 		)
 		pb.RegisterOrchestratorServer(k.GRPC, k.Server)
+		// PLAT-03 / ADR-0065: standard grpc.health.v1 on the main listener. Starts the
+		// readiness probe loop (DB ping) and, if configured, the /healthz HTTP shim.
+		if k.Health != nil {
+			healthpb.RegisterHealthServer(k.GRPC, k.Health.Server())
+			k.Health.Start(ctx, time.Duration(k.Config.Server.HealthCheckIntervalSeconds)*time.Second)
+			if hp := k.Config.Server.HealthzPort; hp > 0 {
+				g.Go(func() error { return k.Health.ServeHealthz(ctx, hp) })
+			}
+		}
 		// The sequenced operator feed for the Cambrian UI. The spool decouples the
 		// synchronous EventBus from network clients; SubscribeBridge fans the
 		// existing domain events into it; the projection folds plan state.

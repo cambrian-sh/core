@@ -681,6 +681,11 @@ type Config struct {
 	Storage struct {
 		DataDir string `json:"data_dir"`
 		DBName  string `json:"db_name"`
+		// AutoMigrate runs the DB migration runner at boot (PLAT-02 / ADR-0064:
+		// stamp baseline + apply pending forward-delta migrations + refuse if the DB
+		// is ahead of the binary). Default true — set false to manage migrations only
+		// via the `migrate` CLI / external tooling.
+		AutoMigrate bool `json:"auto_migrate"`
 	} `json:"storage"`
 	Database struct {
 		Host     string `json:"host"`
@@ -691,6 +696,13 @@ type Config struct {
 	} `json:"database"`
 	Server struct {
 		Port string `json:"port"`
+		// HealthzPort, when > 0, starts an HTTP /healthz shim on that port for dumb
+		// probes (PLAT-03 / ADR-0065). Off by default; the gRPC grpc.health.v1 service
+		// is always on the main listener.
+		HealthzPort int `json:"healthz_port"`
+		// HealthCheckIntervalSeconds is how often the readiness probe (DB ping) runs.
+		// Default 10.
+		HealthCheckIntervalSeconds int `json:"health_check_interval_seconds"`
 	} `json:"server"`
 	// ADR-0042: new model-provisioning spine. Additive for now — the legacy LLM
 	// block and Models array above remain until the cutover (slice 0042-07).
@@ -816,7 +828,7 @@ func (e *ConfigError) Error() string {
 // documented default value. It is the authoritative source of defaults and is used
 // as the lowest-priority layer in the Koanf loading pipeline.
 func DefaultConfig() *Config {
-	return &Config{
+	cfg := &Config{
 		Execution: ExecutionConfig{
 			StepTimeoutMultiplier:            2.0,
 			StepTimeoutBaseBufferMs:          5000,
@@ -962,6 +974,10 @@ func DefaultConfig() *Config {
 			Late:      LateChunkerConfig{Enabled: false, MaxDocTokens: 8192},
 		},
 	}
+	// PLAT-02 / ADR-0064: migrate-on-boot is on by default (matches the historical
+	// always-run ensureSchema behavior); set storage.auto_migrate=false to opt out.
+	cfg.Storage.AutoMigrate = true
+	return cfg
 }
 
 // LoadConfig reads configuration from an 11-layer pipeline (lowest → highest

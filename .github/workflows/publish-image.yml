@@ -1,0 +1,81 @@
+# PLAT-04 / ADR-0066 — publish the kernel image to GHCR on a version tag.
+# Builds the CPU image and the `-cuda` variant (GPU support is a wheel swap: the runtime
+# stage pulls CUDA torch wheels via TORCH_INDEX_URL, no code change). The build context
+# is the MONOREPO ROOT, so the sibling sdk/ repo is checked out alongside cambrian-core.
+name: publish-image
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write # for provenance/SBOM attestation
+
+env:
+  IMAGE: ghcr.io/cambrian-sh/core
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - variant: cpu
+            tag_suffix: ""
+            torch_index_url: ""
+          - variant: cuda
+            tag_suffix: "-cuda"
+            # CUDA torch wheels — swapped in with zero Dockerfile change.
+            torch_index_url: "https://download.pytorch.org/whl/cu124"
+    steps:
+      # The build context is the monorepo root; lay out cambrian-core/ + sdk/ under it.
+      - name: Checkout cambrian-core
+        uses: actions/checkout@v4
+        with:
+          path: cambrian-core
+      - name: Checkout sdk (sibling repo the agents import)
+        uses: actions/checkout@v4
+        with:
+          repository: cambrian-sh/sdk
+          path: sdk
+          token: ${{ secrets.SDK_CHECKOUT_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (tags + OCI labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            suffix=${{ matrix.tag_suffix }},onlatest=true
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/tags/{0}', github.ref_name) }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: cambrian-core/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            PREFETCH_MODELS=1
+            TORCH_INDEX_URL=${{ matrix.torch_index_url }}
+          provenance: true
+          sbom: true

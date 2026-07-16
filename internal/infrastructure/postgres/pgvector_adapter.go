@@ -16,6 +16,7 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/memory"
+	"github.com/cambrian-sh/core/internal/migrate"
 
 	"github.com/doug-martin/goqu/v9"
 	_ "github.com/doug-martin/goqu/v9/dialect/postgres"
@@ -51,8 +52,9 @@ func mapError(op string, err error) error {
 }
 
 type PgVectorAdapter struct {
-	pool *pgxpool.Pool
-	dim  int // Dynamic dimension support (ADR-0012)
+	pool        *pgxpool.Pool
+	dim         int  // Dynamic dimension support (ADR-0012)
+	autoMigrate bool // PLAT-02 / ADR-0064: run the migration runner at boot (default true)
 }
 
 // scanDocument is the central data-integrity gate.
@@ -166,7 +168,7 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (*PgVectorAdapt
 				"set embedder.dimensions explicitly (e.g. 1024 for bge-large)")
 	}
 
-	p := &PgVectorAdapter{pool: pool, dim: dims}
+	p := &PgVectorAdapter{pool: pool, dim: dims, autoMigrate: cfg.Storage.AutoMigrate}
 
 	// REDEMPTION: migration is no longer a side effect but a controlled startup step.
 	// In production, do this with an external 'migrate' tool.
@@ -254,152 +256,61 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 		if _, err := p.pool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE;", TableDocuments)); err != nil {
 			return fmt.Errorf("drop documents table for dimension migration: %w", err)
 		}
-	}
-
-	queries := []string{
-		"CREATE EXTENSION IF NOT EXISTS vector;",
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-			id TEXT PRIMARY KEY,
-			text TEXT NOT NULL,
-			embedding VECTOR(%d),
-			metadata JSONB,
-			access_count INT DEFAULT 0,
-			activation_strength DOUBLE PRECISION NOT NULL DEFAULT 0.1,
-			scoring_prompt_version VARCHAR(8) NOT NULL DEFAULT '',
-			last_accessed_at TIMESTAMP,
-			created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-			document_type VARCHAR(32) NOT NULL DEFAULT 'memory',
-			version INT DEFAULT 1,
-			summary TEXT NOT NULL DEFAULT ''
-		);`, TableDocuments, p.dim),
-		// ADR-0015: Migration columns for existing tables (idempotent via IF NOT EXISTS / IF EXISTS).
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;`, TableDocuments),
-		// ADR-0048 #1: one-line descriptor column (recall surface + embedded gist).
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '';`, TableDocuments),
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS activation_strength DOUBLE PRECISION NOT NULL DEFAULT 0.1;`, TableDocuments),
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS scoring_prompt_version VARCHAR(8) NOT NULL DEFAULT '';`, TableDocuments),
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW();`, TableDocuments),
-		fmt.Sprintf(`ALTER TABLE %s DROP COLUMN IF EXISTS importance_score;`, TableDocuments),
-		// ADR-0015: Rebuild HNSW index for cosine distance (drop old L2-based index if exists).
-		"DROP INDEX IF EXISTS idx_doc_embedding;",
-		// ADR-0015: retrieve_and_update_memories stored procedure — bumps activation_strength on retrieval.
-		fmt.Sprintf(`
-			CREATE OR REPLACE FUNCTION update_activation_strength(doc_id TEXT, delta DOUBLE PRECISION)
-			RETURNS VOID AS $$
-			BEGIN
-				UPDATE %s
-				SET activation_strength = LEAST(0.8, GREATEST(0.0, activation_strength + delta))
-				WHERE id = doc_id;
-			END;
-			$$ LANGUAGE plpgsql;`, TableDocuments),
-		// ADR-0015: apply_ebbinghaus_decay — nightly decay + GC (default min_gc_age_days=30).
-		fmt.Sprintf(`
-			CREATE OR REPLACE FUNCTION apply_ebbinghaus_decay(min_gc_age_days INT DEFAULT 30)
-			RETURNS VOID AS $$
-			DECLARE
-				lambda  CONSTANT DOUBLE PRECISION := 0.001;
-				epsilon CONSTANT DOUBLE PRECISION := 0.02;
-				eta     CONSTANT DOUBLE PRECISION := 0.005;
-			BEGIN
-				UPDATE %s
-				SET activation_strength = GREATEST(0.0, LEAST(1.0,
-					(activation_strength + eta * access_count) * EXP(-1 * lambda) * (1 - epsilon)
-				));
-
-				DELETE FROM %s
-				WHERE activation_strength <= 0.05
-				  AND access_count = 0
-				  AND created_at < NOW() - (min_gc_age_days || ' days')::INTERVAL;
-			END;
-			$$ LANGUAGE plpgsql;`, TableDocuments, TableDocuments),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_doc_metadata ON %s USING gin (metadata jsonb_path_ops);", TableDocuments),
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_doc_embedding_cosine ON %s USING hnsw (embedding vector_cosine_ops) WITH (m = 24, ef_construction = 100);", TableDocuments),
-		// ADR-0054 hybrid retrieval: GIN full-text index for the lexical (BM25-ish)
-		// half of hybrid search. Expression index so no stored column / backfill.
-		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_doc_fts ON %s USING gin (to_tsvector('english', text));", TableDocuments),
-		// ADR-0052: target_id is polymorphic — either a document ID (FK-style
-		// cascade not enforced; the kernel checks doc existence on read) or
-		// an entity canonical key like 'named:caroline'. The previous FK to
-		// documents(id) made LLM-extracted entity edges fail with SQLSTATE 23503.
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-			source_id TEXT NOT NULL REFERENCES %s(id) ON DELETE CASCADE,
-			target_id TEXT NOT NULL,
-			edge_type VARCHAR(50) NOT NULL,
-			label TEXT,
-			weight REAL NOT NULL DEFAULT 0.5,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (source_id, target_id, edge_type)
-		);`, TableEdges, TableDocuments),
-		// ADR-0052: Drop the legacy target_id FK if it exists from a prior
-		// install. Idempotent — IF EXISTS is a no-op when the constraint is
-		// already gone. Also adds the `label` column (free-form verb phrase
-		// for EdgeExtracted edges) when missing.
-		fmt.Sprintf(`ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s_target_id_fkey;`, TableEdges, TableEdges),
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS label TEXT;`, TableEdges),
-		// ADR-0017: Migration for existing document_edges table (pre-weight/edge_type).
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS edge_type VARCHAR(50) NOT NULL DEFAULT '';`, TableEdges),
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS weight REAL NOT NULL DEFAULT 0.5;`, TableEdges),
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`, TableEdges),
-		// REQ-DATA-3: Backfill rows that received Go's zero-value time (0001-01-01)
-		// before the REQ-DATA-1 conditional-insert fix was applied.
-		fmt.Sprintf(`UPDATE %s SET created_at = NOW() WHERE created_at < '1900-01-01';`, TableDocuments),
-		fmt.Sprintf(`UPDATE %s SET created_at = NOW() WHERE created_at < '1900-01-01';`, TableEdges),
-		// ADR-0053 Phase 0: chunk_triplets table — per-chunk (h, r, t) extracted by
-		// the LLM at write time. The KG²RAG model: the KG is at the chunk level;
-		// each row is one triplet that the LLM observed in the chunk's text. The
-		// retrieval path uses these for one-hop chunk expansion. The h/t are
-		// free-form strings (canonicalized to lowercase on insert); no FK to
-		// documents because entities are derived views over chunks, not stored
-		// rows. Idempotent migration.
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-			chunk_id  TEXT NOT NULL,
-			h         TEXT NOT NULL,
-			r         TEXT NOT NULL,
-			t         TEXT NOT NULL,
-			weight    REAL NOT NULL DEFAULT 1.0,
-			extracted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (chunk_id, h, r, t)
-		);`, TableChunkTriplets),
-		// ADR-0060: document-structure graph. Sections live in the documents table
-		// (document_type=doc_section, no embedding) so document_edges FKs work; every
-		// leaf chunk inherits its section breadcrumb + an ltree ordinal path for
-		// subtree/prefix retrieval, plus its parent section id. Idempotent.
-		"CREATE EXTENSION IF NOT EXISTS ltree;",
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS section_path TEXT NOT NULL DEFAULT '';`, TableDocuments),
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS parent_section_id TEXT NOT NULL DEFAULT '';`, TableDocuments),
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS section_ltree LTREE;`, TableDocuments),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_doc_section_ltree ON %s USING GIST (section_ltree);`, TableDocuments),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_doc_parent_section ON %s (parent_section_id);`, TableDocuments),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_chunk_triplets_h ON %s (h);`, TableChunkTriplets),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_chunk_triplets_t ON %s (t);`, TableChunkTriplets),
-		// ADR-0053 D2 (revised 2026-06-25, migration 009): per-triple confidence
-		// + provenance for the tiered extractor (metadata + spacy_patterns +
-		// LLM-residue). confidence: 2=high / 1=low / 0=filler / NULL=legacy.
-		// sources: subset of {metadata, spacy_patterns, llm}. Idempotent.
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS confidence SMALLINT;`, TableChunkTriplets),
-		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS sources TEXT[];`, TableChunkTriplets),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_chunk_triplets_sources ON %s USING GIN (sources);`, TableChunkTriplets),
-		// ADR-0054 D2 (migration 010): PageRank structural prior + its freshness
-		// meta. Populated by the always-up recompute worker; the kernel reads only.
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-			chunk_id    TEXT PRIMARY KEY,
-			score       REAL NOT NULL DEFAULT 0,
-			computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);`, TableChunkPagerank),
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-			id            INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-			computed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			chunk_count   INT NOT NULL DEFAULT 0,
-			triplet_count INT NOT NULL DEFAULT 0
-		);`, TableChunkPagerankMeta),
-	}
-
-	for _, q := range queries {
-		if _, err := p.pool.Exec(ctx, q); err != nil {
-			return err
+		// PLAT-02 / ADR-0064: the corpus tables were just dropped for a dimension
+		// change; forget the recorded migrations so the runner re-applies the baseline
+		// (0001) — and any deltas — to recreate them at the new dimension. The
+		// migrations are idempotent, so the re-apply is safe.
+		if _, err := p.pool.Exec(ctx, "DROP TABLE IF EXISTS schema_migrations;"); err != nil {
+			return fmt.Errorf("reset schema_migrations for dimension migration: %w", err)
 		}
 	}
-	return nil
+
+	return p.runMigrations(ctx)
+}
+
+// runMigrations creates the schema by applying the migration runner (baseline 0001 +
+// pending deltas) after the dimension guard has run (PLAT-02 / ADR-0064). Gated by
+// storage.auto_migrate (default true); when off, boot skips schema creation entirely
+// and the operator must run `migrate up` / manage migrations externally.
+func (p *PgVectorAdapter) runMigrations(ctx context.Context) error {
+	if !p.autoMigrate {
+		return nil
+	}
+	return migrate.Migrate(ctx, p.pool, p.dim)
+}
+
+// migrationPool opens a plain pool for the CLI migration paths (no vector-type
+// registration needed to run DDL).
+func migrationPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
+	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName)
+	return pgxpool.New(ctx, connStr)
+}
+
+// RunMigrations applies every pending migration (baseline 0001 + forward deltas) via the
+// runner, then closes the pool. It is the `migrate up` CLI path — the runner every
+// downstream consumer (installer, K8s init, benchmark reset) can call. PLAT-02 / ADR-0064.
+func RunMigrations(ctx context.Context, cfg *config.Config) error {
+	dim := cfg.Embedder.Dimensions
+	if dim == 0 {
+		return fmt.Errorf("embedder.dimensions must be set (non-zero) to run migrations")
+	}
+	pool, err := migrationPool(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("migrate: connect: %w", err)
+	}
+	defer pool.Close()
+	return migrate.Migrate(ctx, pool, dim)
+}
+
+// MigrationStatus returns the applied/pending migration list for the `migrate status` CLI.
+func MigrationStatus(ctx context.Context, cfg *config.Config) ([]migrate.Record, error) {
+	pool, err := migrationPool(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("migrate: connect: %w", err)
+	}
+	defer pool.Close()
+	return migrate.Status(ctx, pool)
 }
 
 // getUpsertBuilder: Hem Save hem SaveBatch için tek bir kaynak (Audit 3)

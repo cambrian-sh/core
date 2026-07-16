@@ -1,0 +1,32 @@
+# PLAT-04 / ADR-0066 — the build context is the monorepo root; keep it lean.
+# Go build artifacts and local state
+**/.git
+**/.codegraph
+**/.claude
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/node_modules
+cambrian-core/data
+cambrian-core/tmp
+cambrian-core/.claude
+**/*.db
+**/*.log
+
+# Local, gitignored configs & secrets must never enter the image (compose mounts them)
+cambrian-core/configs/config.json
+cambrian-core/configs/config.local.json
+cambrian-core/configs/embedder.json
+cambrian-core/configs/embedder.local.json
+cambrian-core/configs/providers.json
+cambrian-core/configs/providers.local.json
+cambrian-core/configs/tuning.local.json
+cambrian-core/configs/mcp.json
+**/.env
+
+# Other repos in the monorepo not needed by the kernel image
+ui
+cli
+cambrian-premium
+cambrian-benchmarks

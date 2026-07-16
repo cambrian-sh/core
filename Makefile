@@ -206,3 +206,12 @@ agent-reqs:
 # CI drift gate: the committed requirements must match a fresh generation.
 agent-reqs-check:
 	$(PYTHON) scripts/gen_agent_requirements.py --check
+
+# PLAT-02 / ADR-0064: DB migration runner. `migrate` applies the baseline head schema
+# + pending forward deltas; `migrate-status` prints the version table. Reads the same
+# configs/config.json the kernel boots with.
+migrate:
+	go run ./cmd/orchestrator migrate up
+
+migrate-status:
+	go run ./cmd/orchestrator migrate status

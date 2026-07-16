@@ -1,0 +1,3 @@
+# Forward-delta migrations live here as NNNN_name.sql (version > 1).
+# Version 1 is the baseline (postgres.BaselineStatements), stamped by the runner.
+# ${EMBEDDING_DIM} in a delta file is substituted from config at apply time.
