@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/cambrian-sh/core/domain"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 )
@@ -30,6 +32,27 @@ type Options struct {
 	// used (LTM enrichment + Planner dispatch). The premium binary injects a function
 	// that constructs the ReactiveEngine. ADR-0032 / ADR-0057.
 	NewSignalReceiver func(ReactiveServices) (domain.SignalReceiver, domain.WatchConfigHandler)
+
+	// ResourceSelector, when non-nil, replaces the config-driven (auction/EFE) routing
+	// selector (ADR-0037) with a caller/plugin-supplied one — the Tier-1 replace-one
+	// extension point for the selection mechanism (ADR-0074). OSS default: nil (config
+	// decides). A plugin sets this via Registry.SetResourceSelector.
+	ResourceSelector domain.ResourceSelector
+
+	// Plugins is the compile-time plugin set (ADR-0074). Each plugin's Register declares
+	// its contributions (signal receiver, extra gRPC services, trace wrapper, lifecycle
+	// hooks…) which are folded into the effective Options at boot. Plugins coexist with
+	// the directly-set fields above. OSS default: empty (no plugins).
+	Plugins []Plugin
+
+	// ExtraServices, when non-nil, is invoked with the kernel's gRPC server AFTER the
+	// core services (Orchestrator, Health, OperatorConsole) are registered and BEFORE
+	// Serve, letting a downstream (premium) binary mount ADDITIONAL gRPC services that
+	// it defines in its OWN proto — so the OSS operator contract stays untouched
+	// (ADR-0073). Any service mounted here inherits the server-level operator auth
+	// interceptors, so it is authenticated exactly like the OperatorConsole plane, not
+	// a bypass. OSS default: nil (no extra services). ADR-0057 (Model C) / ADR-0073.
+	ExtraServices func(*grpc.Server)
 }
 
 // ReactiveServices is the OSS-provided capability bundle handed to the premium

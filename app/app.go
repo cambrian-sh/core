@@ -88,6 +88,13 @@ type Kernel struct {
 	// wired). Back GetWatchMetrics / BacktestWatch. nil in OSS.
 	WatchMetrics    domain.WatchMetricsReader
 	WatchBacktester domain.WatchBacktester
+	// ExtraServices (ADR-0073) mounts downstream (premium) gRPC services on the kernel
+	// server before Serve. nil in OSS. Carried from Options through bootstrapKernel.
+	ExtraServices func(*grpc.Server)
+	// Lifecycles are plugin-contributed background components (ADR-0074) started at boot
+	// and drained on shutdown — e.g. the reactive engine's worker pools + REACT-06
+	// scheduler. Empty in OSS (no plugins).
+	Lifecycles []Lifecycle
 
 	// ADR-0012: Synaptic Bridge components.
 	SessionMgr         *session.SessionManager
@@ -131,6 +138,16 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 	// 2. Close network listener
 	if k.Listener != nil {
 		_ = k.Listener.Close()
+	}
+
+	// 2b. ADR-0074: drain plugin lifecycles (e.g. the reactive engine's schedule timers +
+	// worker pools) in reverse order, before their dependencies go away. No-op in OSS.
+	for i := len(k.Lifecycles) - 1; i >= 0; i-- {
+		lc := k.Lifecycles[i]
+		if lc.Stop != nil {
+			slog.Info("🛑 Stopping plugin lifecycle...", "name", lc.Name)
+			lc.Stop()
+		}
 	}
 
 	// 3. Stop domain stacks (reverse order of dependency)
@@ -250,6 +267,14 @@ func Run(ctx context.Context, opts Options) error {
 }
 
 func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, opts Options) (*Kernel, error) {
+	// ADR-0074: fold the compile-time plugin set into the effective Options (signal
+	// receiver, extra gRPC services, trace wrappers) + the lifecycle set consumed at
+	// boot/shutdown. No-op when Options.Plugins is empty (OSS default).
+	opts, lifecycles, err := applyPlugins(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	os.MkdirAll(cfg.Storage.DataDir, 0755)
 
 	// 0. Bootstrap OTel from config (before any stack construction).
@@ -734,7 +759,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// AssignVariant(SelectorMode, EFETrafficPercent, sessionID).
 	cambrianServer.SelectorMode = cfg.Execution.ResourceSelector
 	cambrianServer.EFETrafficPercent = cfg.Execution.EFETrafficPercent
-	if (cfg.Execution.ResourceSelector == "efe" || cfg.Execution.ResourceSelector == "auto") &&
+	if opts.ResourceSelector != nil {
+		// ADR-0074 Tier-1 replace-one: a plugin-supplied selector overrides the
+		// config-driven (auction/EFE) default.
+		cambrianServer.ResourceSelector = opts.ResourceSelector
+		slog.Info("ADR-0074: resource selector provided by plugin (overrides config)",
+			"mode", cfg.Execution.ResourceSelector)
+	} else if (cfg.Execution.ResourceSelector == "efe" || cfg.Execution.ResourceSelector == "auto") &&
 		meta.Auctioneer != nil && meta.Auctioneer.Gatekeeper != nil {
 		cambrianServer.ResourceSelector = centralexec.NewGatekeeperEFESelector(
 			meta.Auctioneer.Gatekeeper, cfg.Execution.EFEExplorationBonus)
@@ -1187,6 +1218,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		WatchDeadLetters:   reg, // REACT-01 / ADR-0061
 		WatchMetrics:       watchMetricsReader, // REACT-05 / ADR-0071
 		WatchBacktester:    watchBacktester,    // REACT-05 / ADR-0071
+		ExtraServices:      opts.ExtraServices, // ADR-0073
+		Lifecycles:         lifecycles,         // ADR-0074 (empty in OSS)
 		Health:             healthChecker, // PLAT-03 / ADR-0065
 		Store:              storeHandle,
 		Memory:             mem,
@@ -1228,6 +1261,17 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	g.Go(func() error { return k.Memory.Start(ctx) })
 	g.Go(func() error { return k.Metabolism.Start(ctx) })
 	g.Go(func() error { return k.Supervision.Start(ctx) })
+
+	// ADR-0074: start plugin lifecycles (e.g. the reactive engine's worker pools +
+	// REACT-06 scheduler). Start is non-blocking (launches goroutines and returns) — the
+	// reactive engine replays its REACT-01 journal and arms schedule watches here. Empty
+	// in OSS (no plugins).
+	for _, lc := range k.Lifecycles {
+		if lc.Start != nil {
+			lc.Start(ctx)
+			slog.Info("ADR-0074: plugin lifecycle started", "name", lc.Name)
+		}
+	}
 
 	// B. Synaptic Bridge background workers (ADR-0012)
 	g.Go(func() error {
@@ -1433,6 +1477,13 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			},
 		})
 		pb.RegisterOperatorConsoleServer(k.GRPC, operatorSvc)
+		// ADR-0073: let a downstream (premium) binary mount ADDITIONAL gRPC services it
+		// defines in its own proto (e.g. the reactive control plane the benchmark harness
+		// drives). Registered after the core services and before Serve; inherits the
+		// server-level operator auth interceptors. nil in OSS ⇒ no extra services.
+		if k.ExtraServices != nil {
+			k.ExtraServices(k.GRPC)
+		}
 		slog.Info("🧬 Cambrian Substrate Active", "port", k.Config.Server.Port)
 		return k.GRPC.Serve(k.Listener)
 	})
