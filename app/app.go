@@ -18,20 +18,20 @@ import (
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/awareness"
 	"github.com/cambrian-sh/core/internal/centralexec"
 	"github.com/cambrian-sh/core/internal/config"
-	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/health"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	mcp "github.com/cambrian-sh/core/internal/infrastructure/mcp"
-	"github.com/cambrian-sh/core/internal/health"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/kernel"
-	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
-	"github.com/cambrian-sh/core/internal/metabolism/calibration"
 	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/memory/vault"
+	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/backfill"
+	"github.com/cambrian-sh/core/internal/metabolism/calibration"
 	ossreactive "github.com/cambrian-sh/core/internal/reactive"
 	"github.com/cambrian-sh/core/internal/scope"
 	skilldiscovery "github.com/cambrian-sh/core/internal/skill/discovery"
@@ -189,7 +189,6 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 	slog.Info("✅ Kernel: Shutdown complete. System at rest.")
 }
 
-
 // Run is the composition root. It loads configuration from the 7-layer
 // pipeline (configs/config.json + tuning/mcp/local layers, see ADR-0024),
 // wires every subsystem from opts + cfg, and starts the gRPC server.
@@ -270,10 +269,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0074: fold the compile-time plugin set into the effective Options (signal
 	// receiver, extra gRPC services, trace wrappers) + the lifecycle set consumed at
 	// boot/shutdown. No-op when Options.Plugins is empty (OSS default).
-	opts, lifecycles, err := applyPlugins(opts)
+	composed, err := applyPlugins(opts)
 	if err != nil {
 		return nil, err
 	}
+	opts = composed.opts
+	lifecycles := composed.lifecycles
 
 	os.MkdirAll(cfg.Storage.DataDir, 0755)
 
@@ -388,6 +389,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// an agent whose source file was deleted lingers in the registry. Evict those
 	// whose ExecPath no longer exists on disk; A2A/dynamic agents are spared.
 	reconcileFilesystemAgents(ctx, reg, func(p string) bool { _, err := os.Stat(p); return err == nil })
+	// ADR-0075: register agents contributed by plugin AgentSources, alongside the
+	// built-in filesystem + model-config sources. Additive (upsert); a source error is
+	// logged, never fatal.
+	registerPluginAgents(ctx, reg, composed.agentSources)
 
 	// 2. Domain stacks — sequential construction (dependency order)
 	mem := kernel.NewMemoryStack(vec, memoryGen, embedder, cfg.Execution)
@@ -1215,12 +1220,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		OperatorAudit:      operatorAudit,
 		Config:             cfg,
 		Registry:           reg,
-		WatchDeadLetters:   reg, // REACT-01 / ADR-0061
+		WatchDeadLetters:   reg,                // REACT-01 / ADR-0061
 		WatchMetrics:       watchMetricsReader, // REACT-05 / ADR-0071
 		WatchBacktester:    watchBacktester,    // REACT-05 / ADR-0071
 		ExtraServices:      opts.ExtraServices, // ADR-0073
 		Lifecycles:         lifecycles,         // ADR-0074 (empty in OSS)
-		Health:             healthChecker, // PLAT-03 / ADR-0065
+		Health:             healthChecker,      // PLAT-03 / ADR-0065
 		Store:              storeHandle,
 		Memory:             mem,
 		Awareness:          aw,
@@ -1673,6 +1678,32 @@ var _ mcp.ToolSink = (*mcpToolSink)(nil)
 // it participates in the auction. ADR-0042: sourced from llm_provider.generators,
 // agent ID = "llm:<id>" (id-keyed end to end; the server strips "llm:" to the
 // generator id when Acquiring an agent-step model).
+// registerPluginAgents discovers and upserts agent definitions from plugin AgentSources
+// (ADR-0075). Parallel to registerModelAgents: each definition goes through the same
+// reg.SetAgent path as any other agent, so it participates in the auction/scope/merit
+// machinery normally. A System=true definition (from Registry.AddSystemAgent) is logged
+// as an explicit privilege grant — the grant is visible, not inferred.
+func registerPluginAgents(ctx context.Context, reg *kernel.AgentRepoDecorator, sources []AgentSource) {
+	for _, src := range sources {
+		defs, err := src.DiscoverAgents(ctx)
+		if err != nil {
+			slog.Warn("registerPluginAgents: source discovery failed", "source", src.Name(), "err", err)
+			continue
+		}
+		for _, def := range defs {
+			if def.System {
+				slog.Warn("ADR-0075: registering PRIVILEGED system agent from plugin (explicit grant)",
+					"source", src.Name(), "id", def.ID)
+			}
+			if err := reg.SetAgent(def); err != nil {
+				slog.Warn("registerPluginAgents: failed to register agent", "source", src.Name(), "id", def.ID, "err", err)
+				continue
+			}
+			slog.Info("ADR-0075: registered plugin agent", "source", src.Name(), "id", def.ID, "system", def.System)
+		}
+	}
+}
+
 func registerModelAgents(reg *kernel.AgentRepoDecorator, generators []config.GeneratorConfig) {
 	for _, g := range generators {
 		agentID := "llm:" + g.ID

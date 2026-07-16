@@ -16,9 +16,11 @@ func (s stubSelector) Select(_ context.Context, _ domain.Intent, _ []domain.Agen
 
 // testPlugin registers whatever its fields tell it to.
 type testPlugin struct {
-	name     string
-	selector domain.ResourceSelector
-	lifecycle *Lifecycle
+	name        string
+	selector    domain.ResourceSelector
+	lifecycle   *Lifecycle
+	agent       *domain.AgentDefinition
+	systemAgent *domain.AgentDefinition
 }
 
 func (p *testPlugin) Name() string { return p.name }
@@ -31,6 +33,12 @@ func (p *testPlugin) Register(r *Registry) error {
 	if p.lifecycle != nil {
 		r.AddLifecycle(*p.lifecycle)
 	}
+	if p.agent != nil {
+		r.AddAgent(*p.agent)
+	}
+	if p.systemAgent != nil {
+		r.AddSystemAgent(*p.systemAgent)
+	}
 	return nil
 }
 
@@ -38,12 +46,12 @@ func (p *testPlugin) Register(r *Registry) error {
 func TestApplyPlugins_FoldsResourceSelector(t *testing.T) {
 	sel := stubSelector{id: "custom"}
 	opts := Options{Plugins: []Plugin{&testPlugin{name: "p1", selector: sel}}}
-	got, _, err := applyPlugins(opts)
+	c, err := applyPlugins(opts)
 	if err != nil {
 		t.Fatalf("applyPlugins: %v", err)
 	}
-	if got.ResourceSelector != domain.ResourceSelector(sel) {
-		t.Fatalf("ResourceSelector not folded from plugin: %#v", got.ResourceSelector)
+	if c.opts.ResourceSelector != domain.ResourceSelector(sel) {
+		t.Fatalf("ResourceSelector not folded from plugin: %#v", c.opts.ResourceSelector)
 	}
 }
 
@@ -55,12 +63,12 @@ func TestApplyPlugins_DirectSelectorWins(t *testing.T) {
 		ResourceSelector: direct,
 		Plugins:          []Plugin{&testPlugin{name: "p1", selector: plugin}},
 	}
-	got, _, err := applyPlugins(opts)
+	c, err := applyPlugins(opts)
 	if err != nil {
 		t.Fatalf("applyPlugins: %v", err)
 	}
-	if got.ResourceSelector != domain.ResourceSelector(direct) {
-		t.Fatalf("direct selector should win, got %#v", got.ResourceSelector)
+	if c.opts.ResourceSelector != domain.ResourceSelector(direct) {
+		t.Fatalf("direct selector should win, got %#v", c.opts.ResourceSelector)
 	}
 }
 
@@ -70,7 +78,7 @@ func TestApplyPlugins_SelectorConflictErrors(t *testing.T) {
 		&testPlugin{name: "p1", selector: stubSelector{id: "a"}},
 		&testPlugin{name: "p2", selector: stubSelector{id: "b"}},
 	}}
-	if _, _, err := applyPlugins(opts); err == nil {
+	if _, err := applyPlugins(opts); err == nil {
 		t.Fatal("expected a conflict error when two plugins register a ResourceSelector")
 	}
 }
@@ -80,23 +88,53 @@ func TestApplyPlugins_CollectsLifecycles(t *testing.T) {
 	started := ""
 	lc := Lifecycle{Name: "lc1", Start: func(context.Context) { started = "yes" }}
 	opts := Options{Plugins: []Plugin{&testPlugin{name: "p1", lifecycle: &lc}}}
-	_, lifecycles, err := applyPlugins(opts)
+	c, err := applyPlugins(opts)
 	if err != nil {
 		t.Fatalf("applyPlugins: %v", err)
 	}
-	if len(lifecycles) != 1 || lifecycles[0].Name != "lc1" {
-		t.Fatalf("expected 1 lifecycle 'lc1', got %v", lifecycles)
+	if len(c.lifecycles) != 1 || c.lifecycles[0].Name != "lc1" {
+		t.Fatalf("expected 1 lifecycle 'lc1', got %v", c.lifecycles)
 	}
-	lifecycles[0].Start(context.Background())
+	c.lifecycles[0].Start(context.Background())
 	if started != "yes" {
 		t.Fatal("lifecycle Start not wired through")
 	}
 }
 
-// No plugins ⇒ Options unchanged, no lifecycles (OSS default path).
+// AddAgent contributes a regular agent source; AddSystemAgent forces System=true and
+// AddAgent forces System=false (the privilege boundary is enforced at the API).
+func TestApplyPlugins_AgentSources(t *testing.T) {
+	opts := Options{Plugins: []Plugin{&testPlugin{
+		name:        "p1",
+		agent:       &domain.AgentDefinition{ID: "regular", System: true}, // AddAgent must strip this
+		systemAgent: &domain.AgentDefinition{ID: "privileged"},
+	}}}
+	c, err := applyPlugins(opts)
+	if err != nil {
+		t.Fatalf("applyPlugins: %v", err)
+	}
+	if len(c.agentSources) != 2 {
+		t.Fatalf("expected 2 agent sources, got %d", len(c.agentSources))
+	}
+	got := map[string]bool{}
+	for _, src := range c.agentSources {
+		defs, _ := src.DiscoverAgents(context.Background())
+		for _, d := range defs {
+			got[d.ID] = d.System
+		}
+	}
+	if got["regular"] != false {
+		t.Errorf("AddAgent must force System=false, got true for 'regular'")
+	}
+	if got["privileged"] != true {
+		t.Errorf("AddSystemAgent must set System=true, got false for 'privileged'")
+	}
+}
+
+// No plugins ⇒ Options unchanged, no lifecycles/sources (OSS default path).
 func TestApplyPlugins_Empty(t *testing.T) {
-	got, lifecycles, err := applyPlugins(Options{})
-	if err != nil || lifecycles != nil || got.ResourceSelector != nil {
-		t.Fatalf("empty plugins should be a no-op, got err=%v lifecycles=%v", err, lifecycles)
+	c, err := applyPlugins(Options{})
+	if err != nil || c.lifecycles != nil || c.agentSources != nil || c.opts.ResourceSelector != nil {
+		t.Fatalf("empty plugins should be a no-op, got err=%v lifecycles=%v sources=%v", err, c.lifecycles, c.agentSources)
 	}
 }

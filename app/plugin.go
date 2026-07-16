@@ -40,6 +40,30 @@ type Lifecycle struct {
 	Stop  func()
 }
 
+// AgentSource discovers agent definitions to register at boot (ADR-0075). It is the
+// unifying seam over the ways agents enter the registry — today the built-in filesystem
+// scan and model-config registration are the two implicit sources; a plugin contributes
+// another via Registry.AddAgentSource / AddAgent (regular, Tier-2 add-many) or
+// AddSystemAgent (privileged, an explicit + logged grant). The composition root
+// discovers each source and registers its definitions alongside the built-in ones.
+type AgentSource interface {
+	// Name identifies the source (logging / attribution).
+	Name() string
+	// DiscoverAgents returns the agent definitions this source contributes.
+	DiscoverAgents(context.Context) ([]domain.AgentDefinition, error)
+}
+
+// staticAgentSource wraps a fixed set of definitions (Registry.AddAgent/AddSystemAgent).
+type staticAgentSource struct {
+	name string
+	defs []domain.AgentDefinition
+}
+
+func (s staticAgentSource) Name() string { return s.name }
+func (s staticAgentSource) DiscoverAgents(context.Context) ([]domain.AgentDefinition, error) {
+	return s.defs, nil
+}
+
 // Registry collects plugin contributions to the kernel's extension points. A plugin
 // mutates it in Register; the composition root folds the result into the effective
 // Options + lifecycle set. Not safe for concurrent use — Register is called serially.
@@ -52,6 +76,7 @@ type Registry struct {
 	lifecycles       []Lifecycle
 	resourceSelector domain.ResourceSelector
 	selectorOwner    string
+	agentSources     []AgentSource
 }
 
 // AddTraceWrapper contributes a generator trace wrapper (composed over any others).
@@ -102,14 +127,50 @@ func (r *Registry) SetResourceSelector(owner string, sel domain.ResourceSelector
 	return nil
 }
 
+// AddAgentSource contributes an agent discovery source (ADR-0075). Tier-2 add-many:
+// its definitions are registered alongside the built-in filesystem + model sources.
+func (r *Registry) AddAgentSource(src AgentSource) {
+	if src != nil {
+		r.agentSources = append(r.agentSources, src)
+	}
+}
+
+// AddAgent contributes a single REGULAR agent definition. System privilege is forced
+// off here — a regular-agent registration can never confer system status (that must go
+// through AddSystemAgent). Tier-2 add-many.
+func (r *Registry) AddAgent(def domain.AgentDefinition) {
+	def.System = false
+	r.agentSources = append(r.agentSources, staticAgentSource{name: "agent:" + def.ID, defs: []domain.AgentDefinition{def}})
+}
+
+// AddSystemAgent contributes a PRIVILEGED system agent (bypasses auction/Gatekeeper by
+// construction). System status is a policy decision, so this is an EXPLICIT, auditable
+// grant: it stamps System=true and the composition root logs the grant at registration.
+// Only a compiled-in (trusted) plugin can reach this; an untrusted plugin must never get
+// system status. ADR-0074 Tier-3 boundary made visible.
+func (r *Registry) AddSystemAgent(def domain.AgentDefinition) {
+	def.System = true
+	r.agentSources = append(r.agentSources, staticAgentSource{name: "system-agent:" + def.ID, defs: []domain.AgentDefinition{def}})
+}
+
+// composedPlugins is the resolved output of applyPlugins: the merged Options plus the
+// contributions the composition root consumes at specific points (lifecycles at
+// boot/shutdown, agent sources at registry-seed time). A struct keeps the seam
+// extensible as more Tier-2 add-many points arrive (MCP sources, etc.).
+type composedPlugins struct {
+	opts         Options
+	lifecycles   []Lifecycle
+	agentSources []AgentSource
+}
+
 // applyPlugins runs every plugin's Register and folds the collected contributions into
-// the effective Options (composing with any directly-set fields), returning the merged
-// Options and the ordered lifecycle set. Direct Options fields and plugin contributions
-// coexist: e.g. premium may set TraceWrapper directly (Langfuse) while a reactive plugin
-// contributes the signal receiver + control service + lifecycle. ADR-0074.
-func applyPlugins(opts Options) (Options, []Lifecycle, error) {
+// the effective Options (composing with any directly-set fields). Direct Options fields
+// and plugin contributions coexist: e.g. premium may set TraceWrapper directly (Langfuse)
+// while a reactive plugin contributes the signal receiver + control service + lifecycle.
+// ADR-0074 / ADR-0075.
+func applyPlugins(opts Options) (composedPlugins, error) {
 	if len(opts.Plugins) == 0 {
-		return opts, nil, nil
+		return composedPlugins{opts: opts}, nil
 	}
 	reg := &Registry{}
 	for _, p := range opts.Plugins {
@@ -117,7 +178,7 @@ func applyPlugins(opts Options) (Options, []Lifecycle, error) {
 			continue
 		}
 		if err := p.Register(reg); err != nil {
-			return opts, nil, fmt.Errorf("plugin %q register: %w", p.Name(), err)
+			return composedPlugins{opts: opts}, fmt.Errorf("plugin %q register: %w", p.Name(), err)
 		}
 		slog.Info("ADR-0074: plugin registered", "name", p.Name())
 	}
@@ -161,5 +222,5 @@ func applyPlugins(opts Options) (Options, []Lifecycle, error) {
 			}
 		}
 	}
-	return opts, reg.lifecycles, nil
+	return composedPlugins{opts: opts, lifecycles: reg.lifecycles, agentSources: reg.agentSources}, nil
 }
