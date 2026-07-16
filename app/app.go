@@ -27,6 +27,7 @@ import (
 	"github.com/cambrian-sh/core/internal/health"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/kernel"
+	"github.com/cambrian-sh/core/internal/metabolism/calibration"
 	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/memory/vault"
 	"github.com/cambrian-sh/core/internal/metabolism/backfill"
@@ -627,6 +628,47 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	aw.Planner.SetCapabilityContract(cfg.Execution.CapabilityContract)
 	// ROUTE-04 / ADR-0067: deterministic capability-vocabulary normalization arm.
 	aw.Planner.SetCanonicalVocab(cfg.Execution.CanonicalVocab)
+
+	// ROUTE-05 / ADR-0068: bid calibration. Offline-first — the arm is off by default;
+	// when on, fit a per-agent calibration map from the verified events already in the
+	// log and select auction winners by expected quality instead of raw self-report.
+	if cfg.Execution.CalibratedBids && meta.Auctioneer != nil {
+		if samples, err := reg.BidCalibrationSamples(); err != nil {
+			slog.Warn("ROUTE-05: could not read calibration samples — using raw confidence", "err", err)
+		} else if len(samples) == 0 {
+			slog.Warn("ROUTE-05: calibrated_bids on but no verified events yet — using raw confidence")
+		} else {
+			model := calibration.Fit(samples, cfg.Execution.BidCalibrationMinSamples)
+			meta.Auctioneer.Calibrator = model
+			slog.Info("ROUTE-05: bid calibration active",
+				"samples", len(samples), "agents", model.AgentCount())
+		}
+	}
+
+	// ROUTE-06 / ADR-0069: per-capability merit is read directly from ExecCfg by the
+	// Gatekeeper; here we wire the shared per-capability exploration budget that bounds
+	// the provisional L2 bypass (Gatekeeper reads Allowed; Auctioneer records wins).
+	if cfg.Execution.PerCapabilityMerit {
+		budget := domain.NewExplorationBudget(
+			cfg.Execution.ProvisionalExplorationBudget,
+			time.Duration(cfg.Execution.ProvisionalExplorationWindowSeconds)*time.Second,
+		)
+		budget.OnExhausted = func(capability string) {
+			slog.Info("ROUTE-06: provisional exploration budget exhausted", "capability", capability)
+			if eventBus != nil {
+				_ = eventBus.Publish(domain.ExplorationBudgetExhaustedEvent{Capability: capability, At: time.Now().UTC()})
+			}
+		}
+		if meta.Gatekeeper != nil {
+			meta.Gatekeeper.ExplorationBudget = budget
+		}
+		if meta.Auctioneer != nil {
+			meta.Auctioneer.ExplorationBudget = budget
+		}
+		slog.Info("ROUTE-06: per-capability merit + bounded provisional exploration active",
+			"budget", cfg.Execution.ProvisionalExplorationBudget,
+			"window_s", cfg.Execution.ProvisionalExplorationWindowSeconds)
+	}
 
 	// 9. ArtifactVault — content-addressable storage for agent outputs
 	vaultPath := filepath.Join(cfg.Storage.DataDir, "vault")

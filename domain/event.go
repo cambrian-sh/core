@@ -45,6 +45,9 @@ const (
 	// EventTypeReactiveBudget reports that a reactive backpressure budget was
 	// exhausted and load is being shed. REACT-02 / ADR-0062.
 	EventTypeReactiveBudget = "reactive.budget"
+	// EventTypeExplorationBudget reports that a capability's provisional-exploration
+	// budget was exhausted (the free L2 bypass is withdrawn). ROUTE-06 / ADR-0069.
+	EventTypeExplorationBudget = "exploration.budget"
 )
 
 // DomainEvent is the sealed interface for all internal system events.
@@ -376,3 +379,15 @@ type ReactiveBudgetEvent struct {
 
 func (ReactiveBudgetEvent) domainEvent()      {}
 func (ReactiveBudgetEvent) EventType() string { return EventTypeReactiveBudget }
+
+// ExplorationBudgetExhaustedEvent is emitted when a capability's provisional-exploration
+// budget is exhausted — provisional agents for that capability no longer get the free
+// Layer-2 bypass until the window rolls over. ROUTE-06 / ADR-0069. Observable so the
+// guard metric (provisional time-to-first-win) can tell exploration from starvation.
+type ExplorationBudgetExhaustedEvent struct {
+	Capability string
+	At         time.Time
+}
+
+func (ExplorationBudgetExhaustedEvent) domainEvent()      {}
+func (ExplorationBudgetExhaustedEvent) EventType() string { return EventTypeExplorationBudget }

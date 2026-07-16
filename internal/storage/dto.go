@@ -48,6 +48,7 @@ type TaskEventRecord struct {
 	ContextGrowthBytes   int     `json:"context_growth_bytes,omitempty"`
 	Timestamp            string  `json:"timestamp,omitempty"`
 	Verified             bool    `json:"verified,omitempty"`
+	Capability           string  `json:"capability,omitempty"` // ROUTE-06 / ADR-0069
 	PromptTokens         int     `json:"prompt_tokens,omitempty"`
 	CompletionTokens     int     `json:"completion_tokens,omitempty"`
 	TotalTokens          int     `json:"total_tokens,omitempty"`

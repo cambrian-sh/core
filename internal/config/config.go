@@ -191,6 +191,25 @@ type ExecutionConfig struct {
 	// `file-write`) and worse misroutes. OFF ⇒ declared strings verbatim (pre-ROUTE-04).
 	// The LLM CapabilityClusterer is retired regardless of this flag.
 	CanonicalVocab bool `json:"canonical_vocab"`
+	// CalibratedBids (ROUTE-05 / ADR-0068) selects the auction winner by a CALIBRATED
+	// bid confidence (expected verified quality, learned per-agent from the event log)
+	// instead of the raw LLM self-report. OFF ⇒ raw confidence (byte-identical).
+	// Offline-first: enable only after an offline replay shows lift.
+	CalibratedBids bool `json:"calibrated_bids"`
+	// BidCalibrationMinSamples is the shrinkage threshold — an agent with fewer verified
+	// observations is blended toward the fleet-global calibration curve. Default 10.
+	BidCalibrationMinSamples int `json:"bid_calibration_min_samples"`
+	// PerCapabilityMerit (ROUTE-06 / ADR-0069) makes L3 merit read the agent's
+	// capability-scoped success/trust for the step's required capability (fallback to
+	// the global profile when the tag has no history), and bounds the provisional L2
+	// bypass with a per-capability exploration budget. OFF ⇒ global merit + unconditional
+	// provisional bypass (byte-identical to pre-ROUTE-06).
+	PerCapabilityMerit bool `json:"per_capability_merit"`
+	// ProvisionalExplorationBudget is the max provisional WINS allowed per capability per
+	// window before the free L2 bypass is withdrawn. Default 3.
+	ProvisionalExplorationBudget int `json:"provisional_exploration_budget"`
+	// ProvisionalExplorationWindowSeconds is the sliding window for that budget. Default 3600.
+	ProvisionalExplorationWindowSeconds int `json:"provisional_exploration_window_seconds"`
 
 	// AuctionBidTimeoutMs is the total duration (ms) for all agents to submit bids in an auction.
 	// Default: 2000.
@@ -925,6 +944,11 @@ func DefaultConfig() *Config {
 			CapabilityClusterMinAgents:       3,
 			CapabilityClusterIntervalSeconds: 3600,
 			CanonicalVocab:                   false, // ROUTE-04 arm toggle; OFF = declared strings verbatim
+			CalibratedBids:                   false, // ROUTE-05 arm toggle; OFF = raw self-reported confidence
+			BidCalibrationMinSamples:         10,
+			PerCapabilityMerit:                  false, // ROUTE-06 arm toggle; OFF = global merit + unconditional bypass
+			ProvisionalExplorationBudget:        3,
+			ProvisionalExplorationWindowSeconds: 3600,
 			LLMGatewayMaxConcurrency:         20,
 			LLMGatewayRetryBackoffMs:         100,
 			SessionTokenSweepIntervalSeconds: 30,

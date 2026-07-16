@@ -36,6 +36,10 @@ type Gatekeeper struct {
 	Embedder domain.Embedder
 	Searcher domain.InterviewSearcher
 	ExecCfg  config.ExecutionConfig
+	// ExplorationBudget bounds the provisional L2 bypass per capability (ROUTE-06 /
+	// ADR-0069). nil (or arm off) ⇒ unbounded bypass, the pre-ROUTE-06 behavior. Shared
+	// with the Auctioneer, which records provisional wins into it.
+	ExplorationBudget *domain.ExplorationBudget
 }
 
 // GatekeeperOption configures a Gatekeeper via functional options.
@@ -133,7 +137,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 
 		score := DefaultProvisionalScore
 		if !agent.Provisional {
-			mb := g.computeMeritBreakdown(ctx, agent)
+			mb := g.computeMeritBreakdown(ctx, agent, task.RequiredCapabilities)
 			score = mb.Score
 			if trace {
 				meritByAgent[agent.ID] = mb
@@ -175,9 +179,20 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 				if trace {
 					funnel.L2Threshold = DefaultSimilarityThreshold
 				}
+				// ROUTE-06 / ADR-0069: the provisional L2 bypass is bounded by the
+				// per-capability exploration budget. A provisional agent bypasses only
+				// while budget remains for the step's capability; once exhausted it must
+				// pass the semantic gate like everyone else (exploration granted, not
+				// unbounded). Arm off / nil budget ⇒ always allowed (unchanged).
+				budgetCap := ""
+				if len(task.RequiredCapabilities) > 0 {
+					budgetCap = task.RequiredCapabilities[0]
+				}
 				var filtered []domain.ScoredCandidate
 				for _, c := range candidates {
-					if c.Agent.Provisional {
+					bypass := c.Agent.Provisional &&
+						(!g.ExecCfg.PerCapabilityMerit || g.ExplorationBudget.Allowed(budgetCap))
+					if bypass {
 						filtered = append(filtered, c)
 						if trace {
 							funnel.L2 = append(funnel.L2, domain.InterviewResult{
@@ -300,7 +315,7 @@ func (g *Gatekeeper) FindModelCandidates(ctx context.Context, requiredCapabiliti
 		if !capabilityFilter(getManifest(a.ID)) {
 			continue
 		}
-		score := g.computeMeritScore(ctx, a)
+		score := g.computeMeritScore(ctx, a, nil) // TraitModel path: no capability scoping
 		candidates = append(candidates, domain.ScoredCandidate{Agent: a, Score: score})
 	}
 
@@ -322,11 +337,16 @@ type meritBreakdown struct {
 	Provisional bool
 }
 
-func (g *Gatekeeper) computeMeritScore(ctx context.Context, agent domain.AgentDefinition) float64 {
-	return g.computeMeritBreakdown(ctx, agent).Score
+func (g *Gatekeeper) computeMeritScore(ctx context.Context, agent domain.AgentDefinition, requiredCaps []string) float64 {
+	return g.computeMeritBreakdown(ctx, agent, requiredCaps).Score
 }
 
-func (g *Gatekeeper) computeMeritBreakdown(ctx context.Context, agent domain.AgentDefinition) meritBreakdown {
+// computeMeritBreakdown scores an agent. requiredCaps carries the step's required
+// capabilities (ROUTE-06 / ADR-0069): when execution.per_capability_merit is on and the
+// agent has capability-scoped history for one of them, that tag-scoped success/trust is
+// used instead of the global profile — an agent's PDF-parsing merit no longer inflates
+// its browser-auction score. Empty caps or no tag history ⇒ global (byte-identical).
+func (g *Gatekeeper) computeMeritBreakdown(ctx context.Context, agent domain.AgentDefinition, requiredCaps []string) meritBreakdown {
 	w1 := g.ExecCfg.GatekeeperW1
 	w2 := g.ExecCfg.GatekeeperW2
 	w3 := g.ExecCfg.GatekeeperW3
@@ -354,6 +374,17 @@ func (g *Gatekeeper) computeMeritBreakdown(ctx context.Context, agent domain.Age
 		if profile != nil {
 			successRate = profile.SuccessRate
 			trustScore = profile.TrustScore
+			// ROUTE-06: prefer capability-scoped success/trust for the step's required
+			// capability when that tag has history; otherwise keep the global values.
+			if g.ExecCfg.PerCapabilityMerit && len(requiredCaps) > 0 && len(profile.CapabilityStats) > 0 {
+				for _, rc := range requiredCaps {
+					if st, ok := profile.CapabilityStats[rc]; ok && st.SampleCount > 0 {
+						successRate = st.SuccessRate
+						trustScore = st.TrustScore
+						break
+					}
+				}
+			}
 			normLatency = float64(profile.NetworkLatencyMedianMs+profile.ComputationLatencyMedianMs) +
 				domain.ContextGrowthPenalty(profile.ContextGrowthBytesMedian, g.ExecCfg.ContextGrowthK)
 			profileProvisional = profile.Provisional

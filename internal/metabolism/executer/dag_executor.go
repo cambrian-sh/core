@@ -306,6 +306,12 @@ func (d *DAGExecutor) executeStep(
 		d.DefaultInputCostPer1M, d.DefaultOutputCostPer1M)
 
 	if d.EventWriter != nil || d.Observer != nil {
+		// ROUTE-06 / ADR-0069: stamp the step's (first) required capability so the
+		// aggregator can compute capability-scoped merit.
+		var stepCap string
+		if rc := plan.Steps[stepIndex].RequiredCapabilities; len(rc) > 0 {
+			stepCap = rc[0]
+		}
 		event := domain.TaskEvent{
 			TaskID:             taskID,
 			AgentID:            agentID,
@@ -315,6 +321,7 @@ func (d *DAGExecutor) executeStep(
 			CompletionTokens:   responseTokens,
 			TotalTokens:        promptTokens + responseTokens,
 			EstimatedCost:      estimatedCost,
+			Capability:         stepCap,
 		}
 		if d.EventWriter != nil {
 			if err := d.EventWriter.WriteTaskEvent(event); err != nil {

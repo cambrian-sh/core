@@ -596,6 +596,26 @@ func (b *BBoltAdapter) ReadTaskEventRecords(agentID, sourceHash string) ([]TaskE
 	return recs, err
 }
 
+// ReadAllTaskEventRecords returns every TaskEventRecord in the task_events bucket.
+// Backs the ROUTE-05 bid-calibration extraction (agent, bid_confidence, verifier_score).
+func (b *BBoltAdapter) ReadAllTaskEventRecords() ([]TaskEventRecord, error) {
+	var recs []TaskEventRecord
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(taskEventBucket)
+		if bucket == nil {
+			return nil
+		}
+		return bucket.ForEach(func(_, v []byte) error {
+			var e TaskEventRecord
+			if json.Unmarshal(v, &e) == nil {
+				recs = append(recs, e)
+			}
+			return nil
+		})
+	})
+	return recs, err
+}
+
 // ReadAllAgentIDs returns distinct "agentID:sourceHash" strings from the
 // task_events bucket.
 func (b *BBoltAdapter) ReadAllAgentIDs() ([]string, error) {

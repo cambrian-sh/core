@@ -22,6 +22,19 @@ type AgentProfile struct {
 	RecentVerifierIDs []string `json:"recent_verifier_ids,omitempty"`
 	// ModelMetrics holds per-model token and cost tracking for TraitModel agents.
 	ModelMetrics *ModelMetrics `json:"model_metrics,omitempty"`
+	// CapabilityStats holds capability-scoped success/trust (ROUTE-06 / ADR-0069),
+	// keyed by canonical capability tag. Merit reads the tag-scoped record for a step's
+	// required capability, falling back to the global SuccessRate/TrustScore above when
+	// the tag has no history.
+	CapabilityStats map[string]CapabilityStat `json:"capability_stats,omitempty"`
+}
+
+// CapabilityStat is an agent's success/trust for a single capability tag (ROUTE-06).
+type CapabilityStat struct {
+	SuccessRate float64 `json:"success_rate"`
+	TrustScore  float64 `json:"trust_score"`
+	// SampleCount is the number of verified events behind this stat (for shrinkage/fallback).
+	SampleCount int `json:"sample_count"`
 }
 
 // ModelMetrics tracks token usage and cost for LLM inference providers.

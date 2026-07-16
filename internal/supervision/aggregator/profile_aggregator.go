@@ -238,9 +238,50 @@ func (a *ProfileAggregator) aggregateOne(ctx context.Context, agentID, sourceHas
 		Provisional:                newProvisional,
 		RecentVerifierIDs:          recentVerifierIDs,
 		ModelMetrics:               modelMetrics,
+		// ROUTE-06 / ADR-0069: capability-scoped success/trust for tag-scoped merit.
+		CapabilityStats: computeCapabilityStats(verified, a.Config, calWeight, absWeight),
 	}
 
 	return a.Store.SaveProfile(ctx, agentID, sourceHash, nil, profile)
+}
+
+// computeCapabilityStats groups verified events by their stamped capability tag and
+// computes a per-tag success/trust with the same EWMA the global profile uses
+// (ROUTE-06 / ADR-0069). Events without a capability are skipped. Returns nil when no
+// tagged verified events exist.
+func computeCapabilityStats(verified []domain.TaskEvent, cfg AggregatorConfig, calWeight, absWeight float64) map[string]domain.CapabilityStat {
+	byCap := make(map[string][]domain.TaskEvent)
+	for _, e := range verified {
+		if e.Capability == "" {
+			continue
+		}
+		byCap[e.Capability] = append(byCap[e.Capability], e)
+	}
+	if len(byCap) == 0 {
+		return nil
+	}
+	out := make(map[string]domain.CapabilityStat, len(byCap))
+	for capTag, evs := range byCap {
+		succ := make([]float64, len(evs))
+		trust := make([]float64, len(evs))
+		for i, e := range evs {
+			if e.VerifierScore > 0.5 {
+				succ[i] = 1.0
+			}
+			calPart := 0.0
+			if e.BidConfidence > 0 {
+				calPart = clamp(e.VerifierScore/e.BidConfidence, 0, 2) / 2.0
+			}
+			absPart := clamp(e.VerifierScore, 0, 1)
+			trust[i] = calWeight*calPart + absWeight*absPart
+		}
+		out[capTag] = domain.CapabilityStat{
+			SuccessRate: EWMA(succ, cfg.EWMAAlpha),
+			TrustScore:  EWMA(trust, cfg.EWMAAlpha),
+			SampleCount: len(evs),
+		}
+	}
+	return out
 }
 
 // EWMA computes an exponentially weighted moving average over values in order.

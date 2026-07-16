@@ -32,6 +32,12 @@ type GatekeeperProfileReader interface {
 	GetProfile(ctx context.Context, agentID, sourceHash string) (*domain.AgentProfile, error)
 }
 
+// Calibrator corrects a raw self-reported bid confidence toward expected verified
+// quality for an agent (ROUTE-05 / ADR-0068). Satisfied by *calibration.Model.
+type Calibrator interface {
+	Calibrate(agentID string, conf float64) float64
+}
+
 // Auctioneer manages the bidding process for a specific task.
 // It collects proposals from candidate agents and selects the best one.
 type Auctioneer struct {
@@ -55,6 +61,16 @@ type Auctioneer struct {
 	ExecCfg              config.ExecutionConfig
 	EventBus             domain.EventBus          // may be nil; emits auction events internally
 	Observer             domain.TelemetryObserver // ADR-0019: may be nil
+
+	// Calibrator, when non-nil AND execution.calibrated_bids is on, corrects each raw
+	// bid confidence toward expected verified quality for winner selection (ROUTE-05 /
+	// ADR-0068). nil ⇒ raw self-reported confidence (byte-identical to pre-ROUTE-05).
+	Calibrator Calibrator
+
+	// ExplorationBudget, when non-nil (execution.per_capability_merit on), records a
+	// provisional agent's auction WIN against the per-capability exploration budget so
+	// the Gatekeeper can withdraw its unbounded L2 bypass (ROUTE-06 / ADR-0069).
+	ExplorationBudget *domain.ExplorationBudget
 
 	// CallAgentHook, when non-nil, replaces callAgent for testing.
 	CallAgentHook func(ctx context.Context, agentID string, handoff *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error)
@@ -226,6 +242,7 @@ func (a *Auctioneer) ConductAuction(ctx context.Context, task *domain.AuctionTas
 	}()
 
 	var bestProposal *domain.AgentProposal
+	var bestScore float64
 	var allBids []domain.BidEntry
 
 	for prop := range proposalCh {
@@ -238,6 +255,7 @@ func (a *Auctioneer) ConductAuction(ctx context.Context, task *domain.AuctionTas
 			Requirements: prop.Requirements,
 		})
 
+		// The MinAuctionConfidence floor gates on the RAW self-report (unchanged).
 		if prop.Confidence < a.MinAuctionConfidence {
 			slog.Warn("bid below minimum confidence threshold, discarding",
 				"agent_id", prop.AgentID,
@@ -246,8 +264,15 @@ func (a *Auctioneer) ConductAuction(ctx context.Context, task *domain.AuctionTas
 			)
 			continue
 		}
-		if bestProposal == nil || prop.Confidence > bestProposal.Confidence {
+		// ROUTE-05 / ADR-0068: select on the CALIBRATED confidence (expected verified
+		// quality) when a calibrator is wired; identity otherwise.
+		score := prop.Confidence
+		if a.Calibrator != nil {
+			score = a.Calibrator.Calibrate(prop.AgentID, prop.Confidence)
+		}
+		if bestProposal == nil || score > bestScore {
 			bestProposal = prop
+			bestScore = score
 		}
 	}
 
@@ -275,6 +300,17 @@ func (a *Auctioneer) ConductAuction(ctx context.Context, task *domain.AuctionTas
 		WinnerMargin: winnerMargin(allBids, bestProposal.AgentID, float32(bestProposal.Confidence)),
 		Funnel:       task.Funnel, // ROUTE-02
 	})
+
+	// ROUTE-06 / ADR-0069: a provisional agent winning consumes exploration budget for
+	// this capability; once exhausted the Gatekeeper stops granting its free L2 bypass.
+	if a.ExplorationBudget != nil && len(task.RequiredCapabilities) > 0 {
+		for _, c := range candidates {
+			if c.ID == bestProposal.AgentID && c.Provisional {
+				a.ExplorationBudget.RecordWin(task.RequiredCapabilities[0])
+				break
+			}
+		}
+	}
 
 	return bestProposal, nil
 }
