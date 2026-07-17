@@ -45,7 +45,7 @@ type ollamaEmbedResponse struct {
 
 func (e *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	timeout := time.Duration(e.TimeoutMs) * time.Millisecond
-	httpClient := &http.Client{Timeout: timeout}
+	httpClient := &http.Client{Timeout: timeout, Transport: sharedLLMTransport}
 
 	reqBody := ollamaEmbedRequest{Model: e.Model, Prompt: text}
 
@@ -102,7 +102,7 @@ func (e *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 	}
 
 	timeout := time.Duration(e.TimeoutMs) * time.Millisecond
-	httpClient := &http.Client{Timeout: timeout}
+	httpClient := &http.Client{Timeout: timeout, Transport: sharedLLMTransport}
 
 	reqBody := ollamaBatchEmbedRequest{Model: e.Model, Input: texts}
 

@@ -45,7 +45,7 @@ func (c *OpenAIClient) GenerateStream(ctx context.Context, prompt string) (<-cha
 	// exceeded (Client.Timeout...)". Cancellation is governed by ctx (via
 	// NewRequestWithContext + the ctx.Done() check in the read loop), mirroring the
 	// Ollama streamer. The non-streaming OpenAIClient.Generate keeps its timeout.
-	httpClient := &http.Client{}
+	httpClient := &http.Client{Transport: sharedLLMTransport}
 
 	reqBody := openaiStreamReq{
 		Model: c.Model,

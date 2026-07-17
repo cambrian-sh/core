@@ -205,6 +205,14 @@ type ExecutionConfig struct {
 	// bypass with a per-capability exploration budget. OFF ⇒ global merit + unconditional
 	// provisional bypass (byte-identical to pre-ROUTE-06).
 	PerCapabilityMerit bool `json:"per_capability_merit"`
+	// LearnedScorer (ROUTE-07 / ADR-0076) replaces the hand-weighted GatekeeperScore with
+	// a model learned offline from orchestration artifacts (routescorer.Model loaded from
+	// LearnedScorerModelPath). OFF ⇒ hand weights (byte-identical). Adopt online only on a
+	// published offline win over the calibrated hand-weights arm (offline-before-online).
+	LearnedScorer bool `json:"learned_scorer"`
+	// LearnedScorerModelPath points to the JSON model the learned scorer loads at boot.
+	// Empty ⇒ no model wired (the arm stays inert even if the flag is on).
+	LearnedScorerModelPath string `json:"learned_scorer_model_path,omitempty"`
 	// ProvisionalExplorationBudget is the max provisional WINS allowed per capability per
 	// window before the free L2 bypass is withdrawn. Default 3.
 	ProvisionalExplorationBudget int `json:"provisional_exploration_budget"`
@@ -602,10 +610,30 @@ type ExecutionConfig struct {
 	// run the comparison; the promote/don't-promote decision stays a human call.
 	ScoutEnabled bool `json:"scout_enabled,omitempty"`
 
-	// ScoutModel (ADR-0051) is the model id the pre-plan Scout reasons with. A cheap/fast
-	// model is ideal — discovery is light perception on the hot path. "" ⇒ the gateway's
-	// default model (but still via a properly-allocated managed session).
+	// ScoutModel (ADR-0051) is the model id the pre-plan Scout reasons with. Under the
+	// ADR-0078 deterministic-first design this is only the FALLBACK model for the opt-in
+	// LLM tier (ScoutLLMTierEnabled) — a cheap/fast variant (e.g. llm:mimo) is ideal.
+	// "" ⇒ the gateway's default model (still via a properly-allocated managed session).
 	ScoutModel string `json:"scout_model,omitempty"`
+
+	// ScoutLLMTierEnabled (ADR-0078 D1) turns on the opt-in LLM discovery tier (the
+	// ADR-0051 run_think scout) layered ON TOP of the deterministic probe registry. Off
+	// (default) ⇒ deterministic probes only, zero LLM on the discovery hot path.
+	ScoutLLMTierEnabled bool `json:"scout_llm_tier_enabled,omitempty"`
+
+	// ScoutHTTPProbeEnabled (ADR-0078 D2) registers the http/openapi discovery source.
+	// Off (default) because probing a URL from an untrusted request is an SSRF surface;
+	// when on, the source's guard refuses loopback/private/link-local hosts unless
+	// ScoutHTTPAllowPrivate is also set.
+	ScoutHTTPProbeEnabled bool `json:"scout_http_probe_enabled,omitempty"`
+
+	// ScoutHTTPAllowPrivate (ADR-0078 D2) permits the http source to reach loopback/private
+	// hosts (dev only — e.g. a localhost API). Default false (fail-closed).
+	ScoutHTTPAllowPrivate bool `json:"scout_http_allow_private,omitempty"`
+
+	// ScoutDiscoveryRoots (ADR-0078 D2/D6) are the directories the deterministic filesystem
+	// source may read. Empty ⇒ the kernel's working directory only (fail-closed-ish).
+	ScoutDiscoveryRoots []string `json:"scout_discovery_roots,omitempty"`
 
 	// KgExtractorEnabled (ADR-0053 D2 revised) routes write-time chunk-triplet
 	// extraction through the deterministic, NO-LLM kg_extractor system agent
@@ -959,6 +987,7 @@ func DefaultConfig() *Config {
 			CalibratedBids:                   false, // ROUTE-05 arm toggle; OFF = raw self-reported confidence
 			BidCalibrationMinSamples:         10,
 			PerCapabilityMerit:                  false, // ROUTE-06 arm toggle; OFF = global merit + unconditional bypass
+			LearnedScorer:                       false, // ROUTE-07 arm toggle; OFF = hand-weighted GatekeeperScore
 			ProvisionalExplorationBudget:        3,
 			ProvisionalExplorationWindowSeconds: 3600,
 			DaemonRestartMaxAttempts:            5, // REACT-04: auto-restart on, crash-loop → quarantine
@@ -1055,6 +1084,40 @@ func DefaultConfig() *Config {
 //
 // ADR-0024 (amended). The CAMBRIAN_* env-var convention (`__` separator,
 // ToLower) is unchanged and now also applies to fields in every layer.
+// ResolveBaseDir returns the directory the kernel should resolve its config bundle
+// (configs/ + .env) against, so boot works regardless of the process working
+// directory. This matters because a benchmark supervisor (or systemd, or an IDE)
+// spawns the binary from an arbitrary cwd; when that cwd lacked configs/, every
+// layered override — including execution.scout_enabled in tuning.local.json —
+// silently fell back to DefaultConfig(), disabling the Scout without a trace.
+//
+// Resolution order:
+//  1. CWD, when it already holds configs/tuning.json (committed sentinel) — this
+//     preserves the historical behavior byte-for-byte for the normal launch.
+//  2. Otherwise, walk up from the executable's own directory (bounded) looking for
+//     the same sentinel — a binary under <repo>/bin finds <repo>/configs.
+//  3. Fall back to "." so a genuinely absent bundle surfaces exactly as before.
+func ResolveBaseDir() string {
+	const sentinel = "configs/tuning.json" // committed; uniquely marks the kernel config bundle
+	if _, err := os.Stat(sentinel); err == nil {
+		return "."
+	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		for range 8 {
+			if _, err := os.Stat(filepath.Join(dir, sentinel)); err == nil {
+				return dir
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break // reached the filesystem root
+			}
+			dir = parent
+		}
+	}
+	return "."
+}
+
 func LoadConfig(path string) (*Config, error) {
 	// All secondary paths are derived from the directory of the primary `path`,
 	// not from the process CWD. This keeps the layering deterministic across

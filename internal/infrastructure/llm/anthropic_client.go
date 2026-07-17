@@ -37,7 +37,7 @@ type anthropicMessageResp struct {
 
 func (c *AnthropicClient) Generate(ctx context.Context, prompt string) (string, error) {
 	timeout := time.Duration(c.TimeoutMs) * time.Millisecond
-	httpClient := &http.Client{Timeout: timeout}
+	httpClient := &http.Client{Timeout: timeout, Transport: sharedLLMTransport}
 
 	reqBody := anthropicMessageReq{
 		Model:     c.Model,

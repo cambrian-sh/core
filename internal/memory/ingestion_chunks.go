@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -33,8 +34,18 @@ func (im *IngestionManager) persistChunks(
 	var structuredDoc *StructuredDocument
 	var structuredReps []StructNode
 	if im.structureParser != nil && im.structureStore != nil {
+		// A binary document (doc.Data non-empty) travels to the sidecar as base64 so
+		// the docling_agent runs its Docling backend on the ORIGINAL bytes. Text
+		// documents keep the Text path (no sidecar decode, no backend). The agent
+		// gates on this: want_docling = bool(data_b64) and (...), so leaving DataB64
+		// unset makes the Docling backend unreachable regardless of source type.
+		dataB64 := ""
+		if len(doc.Data) > 0 {
+			dataB64 = base64.StdEncoding.EncodeToString(doc.Data)
+		}
 		if parsed, perr := im.structureParser.Parse(ctx, StructureParseRequest{
-			DocID: documentID, Title: doc.Title, SourceType: doc.SourceType, Text: doc.Body,
+			DocID: documentID, Title: doc.Title, SourceType: doc.SourceType,
+			Text: doc.Body, DataB64: dataB64,
 		}); perr != nil {
 			slog.WarnContext(ctx, "IngestionManager: structure parse failed; flat chunking", "doc", documentID, "err", perr)
 		} else if parsed != nil {

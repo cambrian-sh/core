@@ -31,7 +31,7 @@ func (c *OllamaClient) GenerateStream(ctx context.Context, prompt string) (<-cha
 	// step/RPC deadline) via http.NewRequestWithContext + the ctx.Done() check in the
 	// read loop below. For the interview path ctx carries no deadline, so the agent's
 	// LLM call runs to completion ("remove the timeout for agents' llm calls").
-	httpClient := &http.Client{}
+	httpClient := &http.Client{Transport: sharedLLMTransport}
 
 	reqBody := ollamaRequest{Model: c.Model, Prompt: prompt, Stream: true, Options: ollamaOptions{Temperature: 0}}
 	jsonData, err := json.Marshal(reqBody)

@@ -21,6 +21,17 @@ type IngestRequest struct {
 	Source     string
 	SessionID  string
 	Author     string
+	// Content is the raw bytes of a binary upload (PDF/DOCX/...). Mutually exclusive
+	// with Text. Routed to the ADR-0060 structure parser's Docling backend.
+	Content []byte
+	// Filename is the original name; its extension drives chunker routing. Required
+	// when Content is set.
+	Filename string
+	// ContentType is an advisory MIME hint; the extension wins for routing.
+	ContentType string
+	// Context is the operator's note about this document, folded into the body at
+	// ingest so it is chunked and embedded with the content.
+	Context string
 }
 
 // MemoryIngestor requests a kernel document ingest and returns the assigned
@@ -50,8 +61,17 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 	if req.GetCommandId() == "" || req.GetReason() == "" {
 		return nil, status.Error(codes.InvalidArgument, "command_id and reason are required")
 	}
-	if req.GetText() == "" {
-		return nil, status.Error(codes.InvalidArgument, "text is required")
+	// Exactly one body lane: text OR bytes. Both set is ambiguous (which one is the
+	// document?); neither is empty. Bytes with no filename cannot be chunker-routed,
+	// so the extension is mandatory on the binary lane.
+	hasText, hasContent := req.GetText() != "", len(req.GetContent()) > 0
+	switch {
+	case !hasText && !hasContent:
+		return nil, status.Error(codes.InvalidArgument, "one of text or content is required")
+	case hasText && hasContent:
+		return nil, status.Error(codes.InvalidArgument, "text and content are mutually exclusive")
+	case hasContent && req.GetFilename() == "":
+		return nil, status.Error(codes.InvalidArgument, "filename is required when content is set")
 	}
 	if s.audit == nil {
 		return nil, status.Error(codes.Unimplemented, "operator audit store not configured")
@@ -71,12 +91,16 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 
 	actor, role, _ := PrincipalFromContext(ctx)
 	docID, err := s.ingestor.Ingest(ctx, IngestRequest{
-		Text:       req.GetText(),
-		Tags:       req.GetTags(),
-		Importance: req.GetImportance(),
-		Source:     req.GetSource(),
-		SessionID:  req.GetSessionId(),
-		Author:     actor,
+		Text:        req.GetText(),
+		Tags:        req.GetTags(),
+		Importance:  req.GetImportance(),
+		Source:      req.GetSource(),
+		SessionID:   req.GetSessionId(),
+		Author:      actor,
+		Content:     req.GetContent(),
+		Filename:    req.GetFilename(),
+		ContentType: req.GetContentType(),
+		Context:     req.GetContext(),
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "ingest memory: %v", err)

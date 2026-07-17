@@ -43,7 +43,7 @@ func (c *AnthropicClient) GenerateStream(ctx context.Context, prompt string) (<-
 	// No total-duration timeout on a STREAMING call: http.Client.Timeout caps the
 	// ENTIRE request including body reads, killing a slow model mid-stream. Governed
 	// by ctx instead, mirroring the Ollama/OpenAI streamers.
-	httpClient := &http.Client{}
+	httpClient := &http.Client{Transport: sharedLLMTransport}
 
 	reqBody := anthropicStreamReq{
 		Model:     c.Model,

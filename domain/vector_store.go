@@ -77,6 +77,11 @@ type Document struct {
 	// 🛡️ REDEMPTION: Concurrency Control
 	// Matches the 'version' column in the database.
 	Version int `json:"version"`
+	// SectionPath is the ADR-0060 structural breadcrumb inherited from the document
+	// hierarchy at ingest ("Ops Review > 3.2 Incidents"). Empty for flat documents
+	// and for any row ingested before structure-aware chunking. Read-only on the
+	// recall path: it is stamped by the structure store, never by a writer here.
+	SectionPath string `json:"section_path,omitempty"`
 }
 
 // SearchResult holds the search hit containing the document and its similarity score.

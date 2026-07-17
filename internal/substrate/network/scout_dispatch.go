@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/discovery"
 )
 
 const (
@@ -31,19 +33,55 @@ type AgentScoutDispatcher struct {
 	// CallAgent path does not pre-allocate a model the way the normal step path does. nil ⇒
 	// no session acquired (Scout falls back to the gateway default, as before).
 	Gateway LLMGateway
-	// ScoutModel is the model id Scout reasons with (a cheap/fast model is ideal — discovery
-	// is light perception on the hot path). "" ⇒ empty allocation ⇒ the gateway default.
+	// ScoutModel is the fallback model the opt-in LLM tier reasons with (a cheap/fast model
+	// is ideal). "" ⇒ empty allocation ⇒ the gateway default.
 	ScoutModel string
+
+	// Registry is the deterministic-first discovery engine (ADR-0078 D1/D2) — the PRIMARY
+	// path. nil/empty ⇒ no deterministic probes (env-only + optional LLM tier).
+	Registry *discovery.Registry
+	// LLMTierEnabled turns on the opt-in ADR-0051 run_think scout LAYERED on top of the
+	// deterministic probes (ADR-0078 D1). false (default) ⇒ zero LLM on the discovery path.
+	LLMTierEnabled bool
+
+	// sessionCache holds the last discovery report per session id (ADR-0078 D5 — session
+	// memory). In-process, session-scoped; cleared at session end via ClearSession.
+	mu           sync.Mutex
+	sessionCache map[string]*domain.DiscoveryReport
 }
 
-// Discover invokes the Scout agent and returns its report merged with deterministic env
-// facts. Never errors: a dispatch failure yields an env-only report (still grounds paths).
+// Discover produces the pre-plan DiscoveryReport (ADR-0078). Order: deterministic env
+// grounding (always) → deterministic probe registry (D1/D2, the primary path, no LLM) →
+// the opt-in LLM tier (D1, only when enabled) → session-memory persistence (D5). Never
+// errors: with nothing wired it returns an env-only report (still grounds paths).
 func (d *AgentScoutDispatcher) Discover(ctx context.Context, userInput string) *domain.DiscoveryReport {
 	env := computeScoutEnv() // deterministic OS/path grounding — ALWAYS provided
 	report := &domain.DiscoveryReport{Environment: env}
-	if d == nil || d.Auctioneer == nil {
+	if d == nil {
 		return report
 	}
+
+	// Deterministic-first (ADR-0078 D1/D2): structured, trusted, no LLM on the hot path.
+	if d.Registry != nil && !d.Registry.Empty() {
+		ents, unobserved := d.Registry.Discover(ctx, userInput)
+		report.Entities = append(report.Entities, ents...)
+		report.Unobserved = append(report.Unobserved, unobserved...)
+	}
+
+	// Opt-in LLM tier (ADR-0078 D1): the ADR-0051 run_think scout, layered on top. Only
+	// when explicitly enabled AND an auctioneer is wired — off ⇒ zero LLM discovery cost.
+	if d.LLMTierEnabled && d.Auctioneer != nil {
+		d.runLLMTier(ctx, userInput, report)
+	}
+
+	// Session memory (ADR-0078 D5): keep findings for later steps/replans in this session.
+	d.persistToSession(ctx, report)
+	return report
+}
+
+// runLLMTier invokes the opt-in run_think scout and MERGES its findings into the (already
+// deterministic) report. Best-effort: any failure leaves the deterministic findings intact.
+func (d *AgentScoutDispatcher) runLLMTier(ctx context.Context, userInput string, report *domain.DiscoveryReport) {
 	agentID := d.ScoutAgentID
 	if agentID == "" {
 		agentID = "scout_agent"
@@ -54,9 +92,9 @@ func (d *AgentScoutDispatcher) Discover(ctx context.Context, userInput string) *
 		Payload:   &domain.Payload{Type: "discovery_request", Data: []byte(userInput)},
 		Context:   map[string]string{"task_id": "scout-discovery"},
 	}
-	// Deliberately allocate Scout's model via a managed session (mirroring the normal step
-	// path, server.go) so its generate calls don't silently ride the gateway default. Empty
-	// ScoutModel ⇒ empty allocation ⇒ the gateway default, but now via a metered session.
+	// Allocate the tier's model via a managed session (mirroring the normal step path) so
+	// its generate calls don't silently ride the gateway default. Empty ScoutModel ⇒ the
+	// gateway default, but still via a metered session.
 	if d.Gateway != nil {
 		sa := domain.StepAllocation{}
 		if d.ScoutModel != "" {
@@ -69,11 +107,47 @@ func (d *AgentScoutDispatcher) Discover(ctx context.Context, userInput string) *
 	}
 	resp, err := d.Auctioneer.CallAgent(ctx, agentID, h, "")
 	if err != nil || resp == nil || resp.Payload == nil || len(resp.Payload.Data) == 0 {
-		slog.Debug("scout dispatch: no report; env grounding only", "err", err)
-		return report // dispatch failure ⇒ env-only report (degraded but still grounded)
+		slog.Debug("scout LLM tier: no report; deterministic findings only", "err", err)
+		return
 	}
 	parseScoutReportInto(report, resp.Payload.Data)
-	return report
+}
+
+// persistToSession stores the report under the ctx session id (ADR-0078 D5). No session
+// id or empty report ⇒ no-op.
+func (d *AgentScoutDispatcher) persistToSession(ctx context.Context, report *domain.DiscoveryReport) {
+	sid, ok := domain.SessionIDFromContext(ctx)
+	if !ok || sid == "" || report.IsEmpty() {
+		return
+	}
+	d.mu.Lock()
+	if d.sessionCache == nil {
+		d.sessionCache = make(map[string]*domain.DiscoveryReport)
+	}
+	d.sessionCache[sid] = report
+	d.mu.Unlock()
+}
+
+// SessionDiscovery returns the last discovery report cached for a session (ADR-0078 D5),
+// so later steps/replans can reuse it instead of re-probing.
+func (d *AgentScoutDispatcher) SessionDiscovery(sessionID string) (*domain.DiscoveryReport, bool) {
+	if d == nil || sessionID == "" {
+		return nil, false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	r, ok := d.sessionCache[sessionID]
+	return r, ok
+}
+
+// ClearSession drops a session's cached discoveries (ADR-0078 D5 — dropped at session end).
+func (d *AgentScoutDispatcher) ClearSession(sessionID string) {
+	if d == nil || sessionID == "" {
+		return
+	}
+	d.mu.Lock()
+	delete(d.sessionCache, sessionID)
+	d.mu.Unlock()
 }
 
 // parseScoutReportInto extracts the Scout agent's structured report from its answer (which
@@ -97,7 +171,7 @@ func parseScoutReportInto(report *domain.DiscoveryReport, data []byte) {
 		return
 	}
 	report.Interpretation = strings.TrimSpace(parsed.Interpretation)
-	report.Unobserved = parsed.Unobserved
+	report.Unobserved = append(report.Unobserved, parsed.Unobserved...)
 	for _, e := range parsed.Entities {
 		report.Entities = append(report.Entities, domain.DiscoveredEntity{
 			Kind: e.Kind, ID: e.ID, Exists: e.Exists, Summary: strings.TrimSpace(e.Summary),

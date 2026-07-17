@@ -19,6 +19,12 @@ type ExternalDocument struct {
 	SourceType  string // "slack", "email", "web", "jira", "pdf", "file_drop"
 	Title       string
 	Body        string
+	// Data carries the ORIGINAL bytes for binary documents (PDF, DOCX, ...) so the
+	// ADR-0060 structure parser can hand them to the docling_agent's Docling backend
+	// instead of a flattened text approximation. Empty for text documents, which
+	// travel in Body. When set, Body may be empty — the parser's leaves become the
+	// chunk set.
+	Data        []byte
 	Author      string
 	Timestamp   time.Time
 	ThreadID    string

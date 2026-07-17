@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/cambrian-sh/core/internal/awareness"
 	"github.com/cambrian-sh/core/internal/centralexec"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/discovery"
 	"github.com/cambrian-sh/core/internal/health"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	mcp "github.com/cambrian-sh/core/internal/infrastructure/mcp"
@@ -32,6 +34,8 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/backfill"
 	"github.com/cambrian-sh/core/internal/metabolism/calibration"
+	"github.com/cambrian-sh/core/internal/metabolism/routescorer"
+	"github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 	ossreactive "github.com/cambrian-sh/core/internal/reactive"
 	"github.com/cambrian-sh/core/internal/scope"
 	skilldiscovery "github.com/cambrian-sh/core/internal/skill/discovery"
@@ -195,16 +199,34 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 func Run(ctx context.Context, opts Options) error {
 	flag.Parse()
 
+	// Resolve the config bundle against the binary, not just the cwd, so a kernel
+	// spawned from another directory (benchmark supervisor, systemd, IDE) still
+	// loads configs/ + .env — otherwise every layered override, including
+	// execution.scout_enabled, silently falls back to defaults (see ResolveBaseDir).
+	baseDir := config.ResolveBaseDir()
+
 	// Load .env into the process environment before anything reads it, so API
 	// keys (os.Getenv via api_key_env) and CAMBRIAN_* overrides resolve from a
 	// local gitignored file. Missing file is a no-op; real env vars take priority.
-	if err := config.LoadDotEnv(".env"); err != nil {
+	if err := config.LoadDotEnv(filepath.Join(baseDir, ".env")); err != nil {
 		return fmt.Errorf("load .env: %w", err)
 	}
 
-	cfg, err := config.LoadConfig("configs/config.json")
+	cfg, err := config.LoadConfig(filepath.Join(baseDir, "configs", "config.json"))
 	if err != nil {
 		return err // ConfigError is already structured; wrapping breaks errors.As in main()
+	}
+
+	// Anchor the remaining relative boot paths to the same base as the config
+	// bundle. Otherwise a kernel spawned from another cwd loads its config but
+	// then can't find agents_dir (no scout_agent → Scout dispatch degrades to
+	// env-only) or writes data_dir under the wrong directory. When baseDir is "."
+	// (the normal in-tree launch) these are byte-for-byte no-ops.
+	if cfg.Metabolism.AgentsDir != "" && !filepath.IsAbs(cfg.Metabolism.AgentsDir) {
+		cfg.Metabolism.AgentsDir = filepath.Join(baseDir, cfg.Metabolism.AgentsDir)
+	}
+	if cfg.Storage.DataDir != "" && !filepath.IsAbs(cfg.Storage.DataDir) {
+		cfg.Storage.DataDir = filepath.Join(baseDir, cfg.Storage.DataDir)
 	}
 
 	// Capture the store handle so the force-quit signal handler can close it
@@ -717,6 +739,27 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			"window_s", cfg.Execution.ProvisionalExplorationWindowSeconds)
 	}
 
+	// ROUTE-07 / ADR-0076: load the learned gatekeeper scorer when the arm is on and a
+	// model path is configured. Offline-trained (cmd/route07-scorer); adopted online only
+	// after a published offline win. A missing/invalid model leaves the hand weights in
+	// place (the arm stays inert) — never a silent zero-score.
+	if cfg.Execution.LearnedScorer && cfg.Execution.LearnedScorerModelPath != "" && meta.Gatekeeper != nil {
+		if f, err := os.Open(cfg.Execution.LearnedScorerModelPath); err != nil {
+			slog.Warn("ROUTE-07: learned_scorer on but model unreadable — using hand weights",
+				"path", cfg.Execution.LearnedScorerModelPath, "err", err)
+		} else {
+			model, lerr := routescorer.Load(f)
+			f.Close()
+			if lerr != nil {
+				slog.Warn("ROUTE-07: learned scorer model load failed — using hand weights", "err", lerr)
+			} else {
+				meta.Gatekeeper.RouteScorer = model
+				slog.Info("ROUTE-07: learned gatekeeper scorer active", "n_train", model.N,
+					"weights", model.Weights)
+			}
+		}
+	}
+
 	// 9. ArtifactVault — content-addressable storage for agent outputs
 	vaultPath := filepath.Join(cfg.Storage.DataDir, "vault")
 	artifactVault := vault.NewArtifactVault(vaultPath)
@@ -1037,19 +1080,33 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Store: vec, Embedder: embedder, Floor: cfg.Execution.ToolRetrievalFloor,
 	}
 
-	// ADR-0051: the pre-plan Scout is the privileged Python `run_think` discovery agent
-	// (`agents/system/scout_agent/` package; entry point `agent.py`), invoked directly via
-	// the Auctioneer (no auction). Its
-	// discovery LOOP — find_tools, memory_query, multi-modal read-only tool calls — lives in
-	// the agent; this kernel side is a thin dispatcher + env grounding. Wired only when
-	// scout_enabled is set (default off ⇒ one-shot baseline; the A/B falsification switch,
-	// issue-008). Off ⇒ cambrianServer.Scout stays nil ⇒ Execute plans one-shot.
+	// ADR-0078: the pre-plan Scout is DETERMINISTIC-FIRST — a registry of read-only probes
+	// (filesystem/system, plus opt-in http) runs on the hot path with NO LLM; the ADR-0051
+	// Python `run_think` scout is demoted to an opt-in tier (scout_llm_tier_enabled) layered
+	// on top. Wired only when scout_enabled is set (Off ⇒ Scout stays nil ⇒ one-shot planning).
 	if cfg.Execution.ScoutEnabled {
+		// ADR-0078 D2/D6: confine deterministic filesystem reads to an allowlist of roots
+		// (config, else the working directory). system source is local-only (no egress).
+		roots := cfg.Execution.ScoutDiscoveryRoots
+		if len(roots) == 0 {
+			if cwd, werr := os.Getwd(); werr == nil {
+				roots = []string{cwd}
+			}
+		}
+		discoverySources := []domain.DiscoverySource{
+			discovery.NewFilesystemSource(roots...),
+			&discovery.SystemSource{},
+		}
+		if cfg.Execution.ScoutHTTPProbeEnabled { // SSRF surface — opt-in (ADR-0078 D2)
+			discoverySources = append(discoverySources, discovery.NewHTTPSource(cfg.Execution.ScoutHTTPAllowPrivate))
+		}
 		cambrianServer.Scout = &subnetwork.AgentScoutDispatcher{
-			Auctioneer:   meta.Auctioneer,
-			ScoutAgentID: "scout_agent",
-			Gateway:      llmGateway, // deliberate model allocation (not the default fallback)
-			ScoutModel:   cfg.Execution.ScoutModel,
+			Auctioneer:     meta.Auctioneer,
+			ScoutAgentID:   "scout_agent",
+			Gateway:        llmGateway, // fallback-model allocation for the opt-in LLM tier
+			ScoutModel:     cfg.Execution.ScoutModel,
+			Registry:       discovery.NewRegistry(discoverySources...),
+			LLMTierEnabled: cfg.Execution.ScoutLLMTierEnabled,
 		}
 		// ADR-0051 D6: confine the scout_agent principal to the operator's `discovery-safe`
 		// tools — a hard ceiling that overrides tools_unrestricted (Scout fires unattended at
@@ -1062,7 +1119,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			}
 			cambrianServer.ToolExecutor.RestrictedTools = map[string]map[string]bool{"scout_agent": safe}
 		}
-		slog.Info("ADR-0051: pre-plan Scout ENABLED (Python run_think discovery agent)")
+		slog.Info("ADR-0078: pre-plan Scout ENABLED (deterministic-first discovery)",
+			"deterministic_sources", len(discoverySources), "llm_tier", cfg.Execution.ScoutLLMTierEnabled)
 	}
 
 	// AGENTIC_RETRIEVAL_SPEC Phase 2a: wire the LLM query-planner (retrieval_agent)
@@ -1389,25 +1447,8 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// the kernel derives classification (tags are a narrow-only hint).
 		operatorSvc.SetMemoryIngestor(operator.MemoryIngestorFunc(func(ctx context.Context, req operator.IngestRequest) (string, error) {
 			if k.Server.IngestionProcessor != nil {
-				sourceURI := req.Source
-				if sourceURI == "" {
-					sourceURI = "operator_ingest://" + req.SessionID
-				}
-				title := []rune(req.Text)
-				if len(title) > 80 {
-					title = title[:80]
-				}
-				return k.Server.IngestionProcessor.ProcessSync(ctx, domain.ExternalDocument{
-					SourceURI:  sourceURI,
-					SourceType: "operator_ingest",
-					Title:      string(title),
-					Body:       req.Text,
-					Author:     req.Author,
-					Timestamp:  time.Now().UTC(),
-					ThreadID:   req.SessionID,
-					Tags:       req.Tags,
-					Importance: req.Importance,
-				})
+				doc := operatorIngestDoc(req)
+				return k.Server.IngestionProcessor.ProcessSync(ctx, doc)
 			}
 			if k.Server.MemoryWriter != nil {
 				return k.Server.MemoryWriter.Remember(ctx, req.Author, req.Text, req.Tags, req.Source, req.SessionID, req.Importance)
@@ -1430,6 +1471,14 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.WatchMetrics != nil {
 			operatorSvc.SetWatchObservability(k.WatchMetrics, k.WatchBacktester)
 		}
+		// ROUTE-07 / ADR-0077: gatekeeper route-preview (deterministic merit scoring over
+		// inline candidates, under the active scorer arm). Always available in core.
+		if k.Metabolism != nil && k.Metabolism.Gatekeeper != nil {
+			operatorSvc.SetRoutePreviewer(routePreviewAdapter{
+				cfg:    k.Config.Execution,
+				scorer: k.Metabolism.Gatekeeper.RouteScorer,
+			})
+		}
 		// ADR-0047 D14: capability + version handshake. The UI hides surfaces this
 		// build does not advertise and warns on contract-version skew.
 		// ADR-0047 Amendment A2: contract bumped 0047→0048 for the CORE-OPS-1 read/
@@ -1439,11 +1488,18 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			"feed", "snapshot", "commands", "steering", "audit",
 			"tools-read", "tools-manage", "skills-read",
 			"memory-read", "memory-ingest", "tool-exec", "tool-approvals",
+			// memory-ingest-binary: IngestMemoryOpRequest carries `content`/`filename`
+			// (raw bytes -> docling_agent structure parse) + `context`, and MemoryOp
+			// carries `section_path`/`text` for citations. A UI gates its file-upload
+			// affordance on this — an older kernel silently text-only-ingests.
+			"memory-ingest-binary",
 			// routing-trace: AuctionEventOp carries the Gatekeeper L1/L2/L3
 			// candidate funnel + winner margin + bid requirements (backlog ROUTE-02).
 			"routing-trace",
 			// scout-usefulness: per-session ScoutUsefulnessOp on the feed (ROUTE-08 A).
 			"scout-usefulness",
+			// route-preview: PreviewRoute deterministic gatekeeper merit scoring (ROUTE-07).
+			"route-preview",
 		}
 		if k.Server.WatchHandler != nil {
 			operatorCaps = append(operatorCaps, "watches-read", "watches-crud")
@@ -1468,7 +1524,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Server.WatchHandler != nil {
 			operatorCaps = append(operatorCaps, "watch-schedule")
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0055", operatorCaps)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0057", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).
@@ -1720,6 +1776,34 @@ func registerAgentSources(ctx context.Context, reg *kernel.AgentRepoDecorator, s
 			slog.Info("ADR-0075: registered agent from source", "source", src.Name(), "id", def.ID, "system", def.System, "manifest", da.Manifest != nil)
 		}
 	}
+}
+
+// routePreviewAdapter implements operator.RoutePreviewer (ROUTE-07 / ADR-0077) by scoring
+// each inline candidate through gatekeeper.ScoreMerit under the ACTIVE arm (hand weights,
+// or the ROUTE-07 learned scorer when armed), then ranking by score. It is the
+// gatekeeper-benchmark's deterministic routing entry point — no planner, auction, or agents.
+type routePreviewAdapter struct {
+	cfg    config.ExecutionConfig
+	scorer gatekeeper.RouteScorer
+}
+
+func (r routePreviewAdapter) PreviewRoute(requiredCaps []string, cands []operator.RouteCandidate) ([]domain.MeritResult, string) {
+	arm := "hand_weights"
+	if r.cfg.LearnedScorer && r.scorer != nil {
+		arm = "learned_scorer"
+	}
+	out := make([]domain.MeritResult, len(cands))
+	for i, c := range cands {
+		p := c.Profile
+		mb := gatekeeper.ScoreMerit(&p, c.Trait, requiredCaps, r.cfg, r.scorer)
+		out[i] = domain.MeritResult{
+			AgentID: c.Profile.AgentID, Score: mb.Score, SuccessRate: mb.SuccessRate,
+			TrustScore: mb.TrustScore, LatencyTerm: mb.LatencyTerm, CostTerm: mb.CostTerm,
+			Provisional: mb.Provisional,
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	return out, arm
 }
 
 func registerModelAgents(reg *kernel.AgentRepoDecorator, generators []config.GeneratorConfig) {

@@ -69,6 +69,7 @@ func scanDocument(row pgx.Row, includeDistance bool) (domain.Document, float64, 
 		&doc.ID, &doc.Text, &metadataBytes, &doc.AccessCount,
 		&doc.ActivationStrength, &doc.ScoringPromptVersion, &lastAccessedAt, &doc.CreatedAt, &doc.DocumentType, &doc.Version,
 		&embeddingVec, &doc.Summary, // ADR-0048 #1: summary is the 12th SELECT column (before the appended distance)
+		&doc.SectionPath, // ADR-0060: 13th column; NOT NULL DEFAULT '' in the baseline, so no null guard
 	}
 
 	if includeDistance {
@@ -503,7 +504,7 @@ func scopeExpressions(eff *domain.EffectiveScope) []goqu.Expression {
 
 func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32, opts domain.SearchOptions, limit int) ([]domain.SearchResult, error) {
 	ds := dialect.From(TableDocuments).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary")
+		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path")
 
 	if vector != nil {
 		vec := pgvector.NewVector(vector)
@@ -573,7 +574,7 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 	// OR-tsquery: plainto -> text (' & ' joined lexemes) -> swap & for | -> tsquery.
 	orQuery := goqu.L("replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery", queryText)
 	ds := dialect.From(TableDocuments).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary").
+		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
 		SelectAppend(goqu.L("ts_rank_cd(to_tsvector('english', text), replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery)", queryText).As("distance")).
 		Where(goqu.L("to_tsvector('english', text) @@ ?", orQuery)).
 		Order(goqu.C("distance").Desc())
@@ -616,7 +617,7 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 func (p *PgVectorAdapter) GetByID(ctx context.Context, id string) (*domain.Document, error) {
 	// 1. Fetch the document
 	sql, args, _ := dialect.From(TableDocuments).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary").
+		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
 		Where(goqu.Ex{"id": id}).ToSQL()
 
 	doc, _, err := scanDocument(p.pool.QueryRow(ctx, sql, args...), false)
@@ -685,7 +686,7 @@ func (p *PgVectorAdapter) GetBatch(ctx context.Context, ids []string) ([]domain.
 	// goqu.Ex{"id": ids} maps to Postgres 'id = ANY($1)' or 'IN ($1, $2...)'
 	// logic automatically.
 	sql, args, err := dialect.From(TableDocuments).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary").
+		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
 		Where(goqu.Ex{"id": ids}).ToSQL()
 
 	if err != nil {
@@ -719,7 +720,7 @@ func (p *PgVectorAdapter) GetBatch(ctx context.Context, ids []string) ([]domain.
 func (p *PgVectorAdapter) GetStaleMemories(ctx context.Context, limit int) ([]domain.Document, error) {
 	// Fetches the lowest-activation, least-accessed/oldest memories
 	sql, args, _ := dialect.From(TableDocuments).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary").
+		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
 		Where(goqu.Ex{"activation_strength": goqu.Op{"lt": 0.5}}).
 		Order(goqu.I("access_count").Asc(), goqu.I("last_accessed_at").Asc().NullsFirst()).
 		Limit(uint(limit)).ToSQL()
@@ -782,7 +783,7 @@ func (p *PgVectorAdapter) QueryByMetadata(ctx context.Context, filter map[string
 	}
 
 	q := dialect.From(TableDocuments).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary").
+		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
 		Where(goqu.L("metadata @> ?::jsonb", string(filterBytes))).
 		Order(goqu.I("created_at").Asc())
 	if limit > 0 {

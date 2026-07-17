@@ -128,7 +128,7 @@ func (c *GeminiClient) Generate(ctx context.Context, prompt string) (string, err
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	httpClient := &http.Client{Timeout: timeout}
+	httpClient := &http.Client{Timeout: timeout, Transport: sharedLLMTransport}
 
 	body := geminiGenerateRequest{
 		Contents: []geminiContent{
@@ -184,7 +184,7 @@ func (c *GeminiClient) Generate(ctx context.Context, prompt string) (string, err
 func (c *GeminiClient) GenerateStream(ctx context.Context, prompt string) (<-chan domain.StreamChunk, error) {
 	// No total-duration timeout on a STREAMING call: http.Client.Timeout caps
 	// the ENTIRE request including body reads. Cancellation is via ctx.
-	httpClient := &http.Client{}
+	httpClient := &http.Client{Transport: sharedLLMTransport}
 
 	body := geminiGenerateRequest{
 		Contents: []geminiContent{

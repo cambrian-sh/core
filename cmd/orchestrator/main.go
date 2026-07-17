@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/cambrian-sh/core/app"
 	"github.com/cambrian-sh/core/internal/config"
@@ -51,7 +52,8 @@ func runMigrateCmd(ctx context.Context, args []string) error {
 	if len(args) > 0 {
 		sub = args[0]
 	}
-	cfg, err := config.LoadConfig("configs/config.json")
+	base := config.ResolveBaseDir()
+	cfg, err := config.LoadConfig(filepath.Join(base, "configs", "config.json"))
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

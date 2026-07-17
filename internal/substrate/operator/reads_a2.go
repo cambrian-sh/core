@@ -168,6 +168,11 @@ func (s *Service) QueryMemory(ctx context.Context, req *pb.QueryMemoryRequest) (
 			Source:     src,
 			Importance: imp,
 			Tags:       metaStringSlice(r.Document.Metadata, "tags"),
+			// ADR-0060 citation surface: the structural breadcrumb and the verbatim
+			// chunk body. `summary` is a <=200-char preview — a citation UI needs the
+			// passage itself to quote, and the breadcrumb to name where it came from.
+			SectionPath: r.Document.SectionPath,
+			Text:        r.Document.Text,
 		})
 		if topK > 0 && len(resp.Results) >= topK {
 			break

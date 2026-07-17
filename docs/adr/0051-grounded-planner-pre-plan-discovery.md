@@ -1,5 +1,7 @@
 # ADR-0051: Grounded Planner — Pre-Plan Discovery via a Scout Agent
 
+> **Amended-by (pending): [ADR-0078](0078-scout-deterministic-discovery-organ.md)** — Scout is inverted from LLM-`run_think`-first to **deterministic-probe-first** (LLM demoted to opt-in): D1/D4 rewritten, D3/D9 world-model write-back replaced by **session-memory** persistence, D13 reinforced. D2/D5/D6/D8/D11 kept. Decisions here remain live until ADR-0078 ships.
+
 **Status:** Proposed (2026-06-22) — design recorded via a grilling session; not implemented. Gated on the falsification spike in §Falsification (inherits ADR-0038's A/B discipline, amended).
 **Date:** 2026-06-22
 **Author:** Afsin

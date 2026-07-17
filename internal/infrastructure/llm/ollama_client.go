@@ -35,7 +35,7 @@ type ollamaResponse struct {
 
 func (c *OllamaClient) Generate(ctx context.Context, prompt string) (string, error) {
 	timeout := time.Duration(c.TimeoutMs) * time.Millisecond
-	httpClient := &http.Client{Timeout: timeout}
+	httpClient := &http.Client{Timeout: timeout, Transport: sharedLLMTransport}
 
 	reqBody := ollamaRequest{Model: c.Model, Prompt: prompt, Stream: false, Format: "json", Options: ollamaOptions{Temperature: 0}}
 	jsonData, err := json.Marshal(reqBody)

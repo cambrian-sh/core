@@ -50,6 +50,7 @@ const (
 	OperatorConsole_ListWatchDeadLetters_FullMethodName = "/cambrian.OperatorConsole/ListWatchDeadLetters"
 	OperatorConsole_GetWatchMetrics_FullMethodName      = "/cambrian.OperatorConsole/GetWatchMetrics"
 	OperatorConsole_BacktestWatch_FullMethodName        = "/cambrian.OperatorConsole/BacktestWatch"
+	OperatorConsole_PreviewRoute_FullMethodName         = "/cambrian.OperatorConsole/PreviewRoute"
 )
 
 // OperatorConsoleClient is the client API for OperatorConsole service.
@@ -135,6 +136,13 @@ type OperatorConsoleClient interface {
 	// WITHOUT acting. Capability "watch-observability"; premium (OSS ⇒ Unimplemented).
 	GetWatchMetrics(ctx context.Context, in *GetWatchMetricsOpRequest, opts ...grpc.CallOption) (*GetWatchMetricsOpResponse, error)
 	BacktestWatch(ctx context.Context, in *BacktestWatchOpRequest, opts ...grpc.CallOption) (*BacktestWatchOpResponse, error)
+	// PreviewRoute (ROUTE-07 / ADR-0077) runs the Gatekeeper's L3 merit scoring over a
+	// caller-supplied candidate set (inline synthetic profiles) for a step's required
+	// capabilities, and returns the ranked funnel — WITHOUT the planner, an auction, or
+	// agent execution. It is the gatekeeper-benchmark entry point: deterministic routing
+	// data-generation + evaluation, under the active scorer arm (hand weights or the
+	// ROUTE-07 learned scorer). Capability "route-preview"; nil-in-OSS ⇒ Unimplemented.
+	PreviewRoute(ctx context.Context, in *PreviewRouteOpRequest, opts ...grpc.CallOption) (*PreviewRouteOpResponse, error)
 }
 
 type operatorConsoleClient struct {
@@ -473,6 +481,16 @@ func (c *operatorConsoleClient) BacktestWatch(ctx context.Context, in *BacktestW
 	return out, nil
 }
 
+func (c *operatorConsoleClient) PreviewRoute(ctx context.Context, in *PreviewRouteOpRequest, opts ...grpc.CallOption) (*PreviewRouteOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreviewRouteOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_PreviewRoute_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OperatorConsoleServer is the server API for OperatorConsole service.
 // All implementations must embed UnimplementedOperatorConsoleServer
 // for forward compatibility.
@@ -556,6 +574,13 @@ type OperatorConsoleServer interface {
 	// WITHOUT acting. Capability "watch-observability"; premium (OSS ⇒ Unimplemented).
 	GetWatchMetrics(context.Context, *GetWatchMetricsOpRequest) (*GetWatchMetricsOpResponse, error)
 	BacktestWatch(context.Context, *BacktestWatchOpRequest) (*BacktestWatchOpResponse, error)
+	// PreviewRoute (ROUTE-07 / ADR-0077) runs the Gatekeeper's L3 merit scoring over a
+	// caller-supplied candidate set (inline synthetic profiles) for a step's required
+	// capabilities, and returns the ranked funnel — WITHOUT the planner, an auction, or
+	// agent execution. It is the gatekeeper-benchmark entry point: deterministic routing
+	// data-generation + evaluation, under the active scorer arm (hand weights or the
+	// ROUTE-07 learned scorer). Capability "route-preview"; nil-in-OSS ⇒ Unimplemented.
+	PreviewRoute(context.Context, *PreviewRouteOpRequest) (*PreviewRouteOpResponse, error)
 	mustEmbedUnimplementedOperatorConsoleServer()
 }
 
@@ -658,6 +683,9 @@ func (UnimplementedOperatorConsoleServer) GetWatchMetrics(context.Context, *GetW
 }
 func (UnimplementedOperatorConsoleServer) BacktestWatch(context.Context, *BacktestWatchOpRequest) (*BacktestWatchOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BacktestWatch not implemented")
+}
+func (UnimplementedOperatorConsoleServer) PreviewRoute(context.Context, *PreviewRouteOpRequest) (*PreviewRouteOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreviewRoute not implemented")
 }
 func (UnimplementedOperatorConsoleServer) mustEmbedUnimplementedOperatorConsoleServer() {}
 func (UnimplementedOperatorConsoleServer) testEmbeddedByValue()                         {}
@@ -1224,6 +1252,24 @@ func _OperatorConsole_BacktestWatch_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_PreviewRoute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreviewRouteOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).PreviewRoute(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_PreviewRoute_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).PreviewRoute(ctx, req.(*PreviewRouteOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OperatorConsole_ServiceDesc is the grpc.ServiceDesc for OperatorConsole service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1346,6 +1392,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "BacktestWatch",
 			Handler:    _OperatorConsole_BacktestWatch_Handler,
+		},
+		{
+			MethodName: "PreviewRoute",
+			Handler:    _OperatorConsole_PreviewRoute_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

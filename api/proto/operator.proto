@@ -106,6 +106,14 @@ service OperatorConsole {
   // WITHOUT acting. Capability "watch-observability"; premium (OSS ⇒ Unimplemented).
   rpc GetWatchMetrics(GetWatchMetricsOpRequest) returns (GetWatchMetricsOpResponse);
   rpc BacktestWatch(BacktestWatchOpRequest) returns (BacktestWatchOpResponse);
+
+  // PreviewRoute (ROUTE-07 / ADR-0077) runs the Gatekeeper's L3 merit scoring over a
+  // caller-supplied candidate set (inline synthetic profiles) for a step's required
+  // capabilities, and returns the ranked funnel — WITHOUT the planner, an auction, or
+  // agent execution. It is the gatekeeper-benchmark entry point: deterministic routing
+  // data-generation + evaluation, under the active scorer arm (hand weights or the
+  // ROUTE-07 learned scorer). Capability "route-preview"; nil-in-OSS ⇒ Unimplemented.
+  rpc PreviewRoute(PreviewRouteOpRequest) returns (PreviewRouteOpResponse);
 }
 
 message CreateSessionRequest {
@@ -251,7 +259,8 @@ message SnapshotResponse {
   // tool-approvals, routing-trace (ROUTE-02 auction funnel), scout-usefulness
   // (ROUTE-08 A). Premium adds: watches-read, watches-crud (A2), watch-deadletter,
   // reactive-backpressure, watch-condition-guard, watch-observability, watch-schedule
-  // (REACT-06 cron-driven watches). contract 0055.
+  // (REACT-06 cron-driven watches). route-preview (ROUTE-07 gatekeeper scoring) is core.
+  // contract 0056.
   repeated string capabilities = 6;
 }
 
@@ -561,6 +570,13 @@ message MemoryOp {
   string source = 4;
   double importance = 5;
   repeated string tags = 6;
+  // ADR-0060 structural location of the hit ("Ops Review > 3.2 Incidents"), stamped
+  // on the chunk at ingest. Empty for flat documents. Citation UIs render this as the
+  // source breadcrumb — without it a source card can only show an opaque doc_id.
+  string section_path = 7;
+  // The retrieved chunk body verbatim. `summary` is a <=200-char first-line preview
+  // and is NOT quotable; a grounded citation needs the passage the answer came from.
+  string text = 8;
 }
 message QueryMemoryResponse {
   repeated MemoryOp results = 1;
@@ -600,11 +616,27 @@ message ExecuteToolOpResponse {
 message IngestMemoryOpRequest {
   string command_id = 1;
   string reason = 2;
+  // Text body. Exactly one of `text` or `content` must be set.
   string text = 3;
   repeated string tags = 4;
   double importance = 5;
   string source = 6;
   string session_id = 7;
+  // ADR-0060 binary upload lane: raw file bytes handed to the docling_agent
+  // (RT-DETR/TableFormer) for structure-aware parsing. Exactly one of `text` or
+  // `content` must be set. Prefer `text` for markdown/plain — it skips the sidecar.
+  bytes content = 8;
+  // Original filename, e.g. "2026-W29-ops-review.pdf". Drives chunker routing: the
+  // extension resolves the chunker via chunker_registry(source_type, ext). Required
+  // when `content` is set — bytes with no extension cannot be routed.
+  string filename = 9;
+  // Optional MIME hint. Advisory only; the extension wins for routing.
+  string content_type = 10;
+  // Operator-supplied context for this document ("Q3 board pack, figures are
+  // provisional"). Prepended to the body as a titled section so it is chunked,
+  // embedded, and retrievable/citable like any other content — a metadata-only
+  // field would never reach the index and so could never affect an answer.
+  string context = 11;
 }
 message IngestMemoryOpResponse {
   string command_id = 1;
@@ -727,6 +759,36 @@ message WatchBacktestVerdictOp {
   string raw_text = 3;
   bool would_fire = 4;
   string eval_error = 5;
+}
+
+// ROUTE-07 / ADR-0077: PreviewRoute request — a step's required capabilities plus the
+// inline candidate profiles to score. The caller supplies synthetic profiles so the
+// preview is deterministic and needs no live fleet.
+message PreviewRouteOpRequest {
+  string task_desc = 1;                       // informational (logging); scoring is profile-driven
+  repeated string required_capabilities = 2;  // the step's required caps (ROUTE-06 tag scoping)
+  repeated PreviewCandidateOp candidates = 3;
+}
+message PreviewCandidateOp {
+  string agent_id = 1;
+  string trait = 2; // "cognitive" | "model" | ... (model omits the latency term, ADR-0018)
+  double success_rate = 3;
+  double trust_score = 4;
+  int32 network_latency_ms = 5;
+  int32 computation_latency_ms = 6;
+  int32 context_growth_bytes = 7;
+  bool provisional = 8;
+  double avg_cost_per_task = 9; // TraitModel cost normalization
+  map<string, PreviewCapStatOp> capability_stats = 10; // per-capability success/trust (ROUTE-06)
+}
+message PreviewCapStatOp {
+  double success_rate = 1;
+  double trust_score = 2;
+  int32 sample_count = 3;
+}
+message PreviewRouteOpResponse {
+  repeated MeritResultOp ranked = 1; // merit breakdowns, highest score first
+  string arm = 2;                    // "hand_weights" | "learned_scorer" (the active scorer)
 }
 
 // REACT-02 / ADR-0062: backpressure shed event on the feed.

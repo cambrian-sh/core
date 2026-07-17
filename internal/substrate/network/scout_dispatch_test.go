@@ -52,7 +52,7 @@ func (g *fakeScoutGateway) StreamChunks(_ context.Context, _, _ string, _ domain
 func TestAgentScoutDispatcher_AllocatesModelSession(t *testing.T) {
 	gw := &fakeScoutGateway{tokenID: "sess-scout-1"}
 	f := &fakeScoutAuctioneer{resp: &domain.Handoff{Payload: &domain.Payload{Data: []byte(`{"entities":[]}`)}}}
-	d := &AgentScoutDispatcher{Auctioneer: f, ScoutAgentID: "scout_agent", Gateway: gw, ScoutModel: "llm:cheap"}
+	d := &AgentScoutDispatcher{Auctioneer: f, ScoutAgentID: "scout_agent", Gateway: gw, ScoutModel: "llm:cheap", LLMTierEnabled: true}
 
 	d.Discover(context.Background(), "continue the helicopter folder")
 
@@ -72,7 +72,7 @@ func TestAgentScoutDispatcher_AllocatesModelSession(t *testing.T) {
 func TestAgentScoutDispatcher_ParsesReportAndGroundsEnv(t *testing.T) {
 	reportJSON := `{"entities":[{"kind":"dir","id":"helicopter","exists":true,"summary":"7 missing"}],"interpretation":"7 remain","unobserved":["api:x.com"]}`
 	f := &fakeScoutAuctioneer{resp: &domain.Handoff{Payload: &domain.Payload{Data: []byte(reportJSON)}}}
-	d := &AgentScoutDispatcher{Auctioneer: f, ScoutAgentID: "scout_agent"}
+	d := &AgentScoutDispatcher{Auctioneer: f, ScoutAgentID: "scout_agent", LLMTierEnabled: true}
 
 	rep := d.Discover(context.Background(), "continue the helicopter folder")
 	if f.calledAgent != "scout_agent" {
@@ -92,7 +92,7 @@ func TestAgentScoutDispatcher_ParsesReportAndGroundsEnv(t *testing.T) {
 // A dispatch failure must still ground the environment (an env-only report is non-empty, so
 // the kernel attaches it and the Planner still gets correct host paths).
 func TestAgentScoutDispatcher_DispatchFailureStillGroundsEnv(t *testing.T) {
-	d := &AgentScoutDispatcher{Auctioneer: &fakeScoutAuctioneer{err: errors.New("agent down")}, ScoutAgentID: "scout_agent"}
+	d := &AgentScoutDispatcher{Auctioneer: &fakeScoutAuctioneer{err: errors.New("agent down")}, ScoutAgentID: "scout_agent", LLMTierEnabled: true}
 	rep := d.Discover(context.Background(), "anything")
 	if len(rep.Entities) != 0 {
 		t.Error("a failed dispatch must yield no entities")

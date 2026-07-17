@@ -40,6 +40,18 @@ type Gatekeeper struct {
 	// ADR-0069). nil (or arm off) ⇒ unbounded bypass, the pre-ROUTE-06 behavior. Shared
 	// with the Auctioneer, which records provisional wins into it.
 	ExplorationBudget *domain.ExplorationBudget
+	// RouteScorer is the ROUTE-07 learned gatekeeper scorer (ADR-0076). When set AND
+	// execution.learned_scorer is on, it replaces the hand-weighted GatekeeperScore with
+	// a model learned from orchestration artifacts. nil (or arm off) ⇒ hand weights
+	// (byte-identical). Structural interface — satisfied by *routescorer.Model.
+	RouteScorer RouteScorer
+}
+
+// RouteScorer scores a candidate from its merit feature vector (ROUTE-07 / ADR-0076). The
+// feature order matches routescorer.FeatureNames: success_rate, trust_score, inv_latency,
+// normalized_cost, provisional. Satisfied by *routescorer.Model.
+type RouteScorer interface {
+	Score(features [5]float64) float64
 }
 
 // GatekeeperOption configures a Gatekeeper via functional options.
@@ -100,9 +112,9 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 	if trace {
 		funnel = &domain.GatekeeperFunnel{MaxCandidates: g.ExecCfg.GatekeeperMaxCandidates}
 	}
-	var meritByAgent map[string]meritBreakdown
+	var meritByAgent map[string]MeritBreakdown
 	if trace {
-		meritByAgent = make(map[string]meritBreakdown)
+		meritByAgent = make(map[string]MeritBreakdown)
 	}
 
 	var candidates []domain.ScoredCandidate
@@ -238,7 +250,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 			mb, ok := meritByAgent[c.Agent.ID]
 			if !ok {
 				// Provisional agent: no merit breakdown, carries the flat score.
-				mb = meritBreakdown{Score: c.Score, Provisional: true}
+				mb = MeritBreakdown{Score: c.Score, Provisional: true}
 			}
 			funnel.L3 = append(funnel.L3, domain.MeritResult{
 				AgentID:     c.Agent.ID,
@@ -326,9 +338,9 @@ func (g *Gatekeeper) FindModelCandidates(ctx context.Context, requiredCapabiliti
 	return candidates, nil
 }
 
-// meritBreakdown is the GatekeeperScore and the individual terms that produced
+// MeritBreakdown is the GatekeeperScore and the individual terms that produced
 // it, so the ROUTE-02 funnel can show which component drove a candidate's rank.
-type meritBreakdown struct {
+type MeritBreakdown struct {
 	Score       float64
 	SuccessRate float64
 	TrustScore  float64
@@ -346,53 +358,60 @@ func (g *Gatekeeper) computeMeritScore(ctx context.Context, agent domain.AgentDe
 // agent has capability-scoped history for one of them, that tag-scoped success/trust is
 // used instead of the global profile — an agent's PDF-parsing merit no longer inflates
 // its browser-auction score. Empty caps or no tag history ⇒ global (byte-identical).
-func (g *Gatekeeper) computeMeritBreakdown(ctx context.Context, agent domain.AgentDefinition, requiredCaps []string) meritBreakdown {
-	w1 := g.ExecCfg.GatekeeperW1
-	w2 := g.ExecCfg.GatekeeperW2
-	w3 := g.ExecCfg.GatekeeperW3
-	w4 := g.ExecCfg.GatekeeperW4
+func (g *Gatekeeper) computeMeritBreakdown(ctx context.Context, agent domain.AgentDefinition, requiredCaps []string) MeritBreakdown {
+	var profile *domain.AgentProfile
+	if g.Profiles != nil {
+		p, err := g.Profiles.GetProfile(ctx, agent.ID, agent.SourceHash)
+		if err != nil {
+			slog.Warn("Gatekeeper: profile fetch error, using neutral score",
+				"agent_id", agent.ID, "err", err)
+		}
+		profile = p
+	}
+	return ScoreMerit(profile, agent.Trait, requiredCaps, g.ExecCfg, g.RouteScorer)
+}
+
+// ScoreMerit is the PURE merit-scoring core (ADR-0077): given a resolved profile (nil ⇒
+// neutral cold-start priors), the agent trait, the step's required capabilities, the
+// execution config (hand weights + arm flags) and an optional learned scorer, it produces
+// the GatekeeperScore + its component terms. Decoupled from profile FETCHING so both the
+// live Gatekeeper path and the PreviewRoute RPC (the gatekeeper benchmark, ADR-0077) score
+// candidates identically — the benchmark supplies synthetic profiles inline, no live fleet.
+func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredCaps []string, cfg config.ExecutionConfig, scorer RouteScorer) MeritBreakdown {
+	w1, w2, w3, w4 := cfg.GatekeeperW1, cfg.GatekeeperW2, cfg.GatekeeperW3, cfg.GatekeeperW4
 
 	const (
 		neutralSuccessRate = 0.5
 		neutralTrustScore  = 0.5
 	)
-
+	successRate, trustScore := neutralSuccessRate, neutralTrustScore
 	var (
-		successRate        float64 = neutralSuccessRate
-		trustScore         float64 = neutralTrustScore
 		normLatency        float64
 		profileProvisional bool
 		normalizedCost     float64
 	)
 
-	if g.Profiles != nil {
-		profile, err := g.Profiles.GetProfile(ctx, agent.ID, agent.SourceHash)
-		if err != nil {
-			slog.Warn("Gatekeeper: profile fetch error, using neutral score",
-				"agent_id", agent.ID, "err", err)
-		}
-		if profile != nil {
-			successRate = profile.SuccessRate
-			trustScore = profile.TrustScore
-			// ROUTE-06: prefer capability-scoped success/trust for the step's required
-			// capability when that tag has history; otherwise keep the global values.
-			if g.ExecCfg.PerCapabilityMerit && len(requiredCaps) > 0 && len(profile.CapabilityStats) > 0 {
-				for _, rc := range requiredCaps {
-					if st, ok := profile.CapabilityStats[rc]; ok && st.SampleCount > 0 {
-						successRate = st.SuccessRate
-						trustScore = st.TrustScore
-						break
-					}
+	if profile != nil {
+		successRate = profile.SuccessRate
+		trustScore = profile.TrustScore
+		// ROUTE-06: prefer capability-scoped success/trust for the step's required
+		// capability when that tag has history; otherwise keep the global values.
+		if cfg.PerCapabilityMerit && len(requiredCaps) > 0 && len(profile.CapabilityStats) > 0 {
+			for _, rc := range requiredCaps {
+				if st, ok := profile.CapabilityStats[rc]; ok && st.SampleCount > 0 {
+					successRate = st.SuccessRate
+					trustScore = st.TrustScore
+					break
 				}
 			}
-			normLatency = float64(profile.NetworkLatencyMedianMs+profile.ComputationLatencyMedianMs) +
-				domain.ContextGrowthPenalty(profile.ContextGrowthBytesMedian, g.ExecCfg.ContextGrowthK)
-			profileProvisional = profile.Provisional
-			if profile.ModelMetrics != nil && profile.ModelMetrics.AvgCostPerTask > 0 {
-				normalizedCost = profile.ModelMetrics.AvgCostPerTask / 0.01
-				if normalizedCost > 1.0 {
-					normalizedCost = 1.0
-				}
+		}
+		normLatency = float64(profile.NetworkLatencyMedianMs+profile.ComputationLatencyMedianMs) +
+			domain.ContextGrowthPenalty(profile.ContextGrowthBytesMedian, cfg.ContextGrowthK)
+		profileProvisional = profile.Provisional
+		if profile.ModelMetrics != nil && profile.ModelMetrics.AvgCostPerTask > 0 {
+			normalizedCost = profile.ModelMetrics.AvgCostPerTask / 0.01
+			if normalizedCost > 1.0 {
+				normalizedCost = 1.0
 			}
 		}
 	}
@@ -405,7 +424,7 @@ func (g *Gatekeeper) computeMeritBreakdown(ctx context.Context, agent domain.Age
 	costTerm := w4 * normalizedCost
 
 	var score float64
-	if agent.Trait == domain.TraitModel {
+	if trait == domain.TraitModel {
 		// TraitModel scoring omits the latency term (ADR-0018 sub-selection).
 		score = successRate + trustScore - costTerm
 		latencyTerm = 0
@@ -413,20 +432,26 @@ func (g *Gatekeeper) computeMeritBreakdown(ctx context.Context, agent domain.Age
 		score = w1*successRate + w2*trustScore + latencyTerm - costTerm
 	}
 
+	// ROUTE-07 / ADR-0076: when the learned-scorer arm is on and a model is loaded, the
+	// model's score REPLACES the hand-weighted score (and the cold-start penalty — the
+	// provisional flag is a model feature, so it must not be double-applied). The merit
+	// terms are still returned for the ROUTE-02 funnel. Byte-identical when the arm is off.
+	if cfg.LearnedScorer && scorer != nil {
+		provFloat := 0.0
+		if profileProvisional {
+			provFloat = 1.0
+		}
+		score = scorer.Score([5]float64{successRate, trustScore, latencyTerm, costTerm, provFloat})
+		return MeritBreakdown{Score: score, SuccessRate: successRate, TrustScore: trustScore, LatencyTerm: latencyTerm, CostTerm: costTerm, Provisional: profileProvisional}
+	}
+
 	if profileProvisional {
-		penalty := g.ExecCfg.ColdStartPenaltyMultiplier
+		penalty := cfg.ColdStartPenaltyMultiplier
 		if penalty == 0 {
 			penalty = 0.6
 		}
 		score *= penalty
 	}
 
-	return meritBreakdown{
-		Score:       score,
-		SuccessRate: successRate,
-		TrustScore:  trustScore,
-		LatencyTerm: latencyTerm,
-		CostTerm:    costTerm,
-		Provisional: profileProvisional,
-	}
+	return MeritBreakdown{Score: score, SuccessRate: successRate, TrustScore: trustScore, LatencyTerm: latencyTerm, CostTerm: costTerm, Provisional: profileProvisional}
 }

@@ -1270,7 +1270,8 @@ type SnapshotResponse struct {
 	// tool-approvals, routing-trace (ROUTE-02 auction funnel), scout-usefulness
 	// (ROUTE-08 A). Premium adds: watches-read, watches-crud (A2), watch-deadletter,
 	// reactive-backpressure, watch-condition-guard, watch-observability, watch-schedule
-	// (REACT-06 cron-driven watches). contract 0055.
+	// (REACT-06 cron-driven watches). route-preview (ROUTE-07 gatekeeper scoring) is core.
+	// contract 0056.
 	Capabilities  []string `protobuf:"bytes,6,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4052,13 +4053,20 @@ func (x *QueryMemoryRequest) GetMinImportance() float64 {
 }
 
 type MemoryOp struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DocId         string                 `protobuf:"bytes,1,opt,name=doc_id,json=docId,proto3" json:"doc_id,omitempty"`
-	Summary       string                 `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
-	Score         float64                `protobuf:"fixed64,3,opt,name=score,proto3" json:"score,omitempty"`
-	Source        string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
-	Importance    float64                `protobuf:"fixed64,5,opt,name=importance,proto3" json:"importance,omitempty"`
-	Tags          []string               `protobuf:"bytes,6,rep,name=tags,proto3" json:"tags,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	DocId      string                 `protobuf:"bytes,1,opt,name=doc_id,json=docId,proto3" json:"doc_id,omitempty"`
+	Summary    string                 `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
+	Score      float64                `protobuf:"fixed64,3,opt,name=score,proto3" json:"score,omitempty"`
+	Source     string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	Importance float64                `protobuf:"fixed64,5,opt,name=importance,proto3" json:"importance,omitempty"`
+	Tags       []string               `protobuf:"bytes,6,rep,name=tags,proto3" json:"tags,omitempty"`
+	// ADR-0060 structural location of the hit ("Ops Review > 3.2 Incidents"), stamped
+	// on the chunk at ingest. Empty for flat documents. Citation UIs render this as the
+	// source breadcrumb — without it a source card can only show an opaque doc_id.
+	SectionPath string `protobuf:"bytes,7,opt,name=section_path,json=sectionPath,proto3" json:"section_path,omitempty"`
+	// The retrieved chunk body verbatim. `summary` is a <=200-char first-line preview
+	// and is NOT quotable; a grounded citation needs the passage the answer came from.
+	Text          string `protobuf:"bytes,8,opt,name=text,proto3" json:"text,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4133,6 +4141,20 @@ func (x *MemoryOp) GetTags() []string {
 		return x.Tags
 	}
 	return nil
+}
+
+func (x *MemoryOp) GetSectionPath() string {
+	if x != nil {
+		return x.SectionPath
+	}
+	return ""
+}
+
+func (x *MemoryOp) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
 }
 
 type QueryMemoryResponse struct {
@@ -4423,14 +4445,30 @@ func (x *ExecuteToolOpResponse) GetError() string {
 // write. tags are a narrow-only hint (kernel derives classification); the
 // operator principal is stamped as Author. Idempotent on command_id.
 type IngestMemoryOpRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
-	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
-	Text          string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
-	Tags          []string               `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`
-	Importance    float64                `protobuf:"fixed64,5,opt,name=importance,proto3" json:"importance,omitempty"`
-	Source        string                 `protobuf:"bytes,6,opt,name=source,proto3" json:"source,omitempty"`
-	SessionId     string                 `protobuf:"bytes,7,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason    string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	// Text body. Exactly one of `text` or `content` must be set.
+	Text       string   `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
+	Tags       []string `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`
+	Importance float64  `protobuf:"fixed64,5,opt,name=importance,proto3" json:"importance,omitempty"`
+	Source     string   `protobuf:"bytes,6,opt,name=source,proto3" json:"source,omitempty"`
+	SessionId  string   `protobuf:"bytes,7,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// ADR-0060 binary upload lane: raw file bytes handed to the docling_agent
+	// (RT-DETR/TableFormer) for structure-aware parsing. Exactly one of `text` or
+	// `content` must be set. Prefer `text` for markdown/plain — it skips the sidecar.
+	Content []byte `protobuf:"bytes,8,opt,name=content,proto3" json:"content,omitempty"`
+	// Original filename, e.g. "2026-W29-ops-review.pdf". Drives chunker routing: the
+	// extension resolves the chunker via chunker_registry(source_type, ext). Required
+	// when `content` is set — bytes with no extension cannot be routed.
+	Filename string `protobuf:"bytes,9,opt,name=filename,proto3" json:"filename,omitempty"`
+	// Optional MIME hint. Advisory only; the extension wins for routing.
+	ContentType string `protobuf:"bytes,10,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
+	// Operator-supplied context for this document ("Q3 board pack, figures are
+	// provisional"). Prepended to the body as a titled section so it is chunked,
+	// embedded, and retrievable/citable like any other content — a metadata-only
+	// field would never reach the index and so could never affect an answer.
+	Context       string `protobuf:"bytes,11,opt,name=context,proto3" json:"context,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4510,6 +4548,34 @@ func (x *IngestMemoryOpRequest) GetSource() string {
 func (x *IngestMemoryOpRequest) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
+	}
+	return ""
+}
+
+func (x *IngestMemoryOpRequest) GetContent() []byte {
+	if x != nil {
+		return x.Content
+	}
+	return nil
+}
+
+func (x *IngestMemoryOpRequest) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
+}
+
+func (x *IngestMemoryOpRequest) GetContentType() string {
+	if x != nil {
+		return x.ContentType
+	}
+	return ""
+}
+
+func (x *IngestMemoryOpRequest) GetContext() string {
+	if x != nil {
+		return x.Context
 	}
 	return ""
 }
@@ -5763,6 +5829,297 @@ func (x *WatchBacktestVerdictOp) GetEvalError() string {
 	return ""
 }
 
+// ROUTE-07 / ADR-0077: PreviewRoute request — a step's required capabilities plus the
+// inline candidate profiles to score. The caller supplies synthetic profiles so the
+// preview is deterministic and needs no live fleet.
+type PreviewRouteOpRequest struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	TaskDesc             string                 `protobuf:"bytes,1,opt,name=task_desc,json=taskDesc,proto3" json:"task_desc,omitempty"`                                     // informational (logging); scoring is profile-driven
+	RequiredCapabilities []string               `protobuf:"bytes,2,rep,name=required_capabilities,json=requiredCapabilities,proto3" json:"required_capabilities,omitempty"` // the step's required caps (ROUTE-06 tag scoping)
+	Candidates           []*PreviewCandidateOp  `protobuf:"bytes,3,rep,name=candidates,proto3" json:"candidates,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *PreviewRouteOpRequest) Reset() {
+	*x = PreviewRouteOpRequest{}
+	mi := &file_operator_proto_msgTypes[78]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreviewRouteOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreviewRouteOpRequest) ProtoMessage() {}
+
+func (x *PreviewRouteOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[78]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreviewRouteOpRequest.ProtoReflect.Descriptor instead.
+func (*PreviewRouteOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{78}
+}
+
+func (x *PreviewRouteOpRequest) GetTaskDesc() string {
+	if x != nil {
+		return x.TaskDesc
+	}
+	return ""
+}
+
+func (x *PreviewRouteOpRequest) GetRequiredCapabilities() []string {
+	if x != nil {
+		return x.RequiredCapabilities
+	}
+	return nil
+}
+
+func (x *PreviewRouteOpRequest) GetCandidates() []*PreviewCandidateOp {
+	if x != nil {
+		return x.Candidates
+	}
+	return nil
+}
+
+type PreviewCandidateOp struct {
+	state                protoimpl.MessageState       `protogen:"open.v1"`
+	AgentId              string                       `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	Trait                string                       `protobuf:"bytes,2,opt,name=trait,proto3" json:"trait,omitempty"` // "cognitive" | "model" | ... (model omits the latency term, ADR-0018)
+	SuccessRate          float64                      `protobuf:"fixed64,3,opt,name=success_rate,json=successRate,proto3" json:"success_rate,omitempty"`
+	TrustScore           float64                      `protobuf:"fixed64,4,opt,name=trust_score,json=trustScore,proto3" json:"trust_score,omitempty"`
+	NetworkLatencyMs     int32                        `protobuf:"varint,5,opt,name=network_latency_ms,json=networkLatencyMs,proto3" json:"network_latency_ms,omitempty"`
+	ComputationLatencyMs int32                        `protobuf:"varint,6,opt,name=computation_latency_ms,json=computationLatencyMs,proto3" json:"computation_latency_ms,omitempty"`
+	ContextGrowthBytes   int32                        `protobuf:"varint,7,opt,name=context_growth_bytes,json=contextGrowthBytes,proto3" json:"context_growth_bytes,omitempty"`
+	Provisional          bool                         `protobuf:"varint,8,opt,name=provisional,proto3" json:"provisional,omitempty"`
+	AvgCostPerTask       float64                      `protobuf:"fixed64,9,opt,name=avg_cost_per_task,json=avgCostPerTask,proto3" json:"avg_cost_per_task,omitempty"`                                                                         // TraitModel cost normalization
+	CapabilityStats      map[string]*PreviewCapStatOp `protobuf:"bytes,10,rep,name=capability_stats,json=capabilityStats,proto3" json:"capability_stats,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // per-capability success/trust (ROUTE-06)
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *PreviewCandidateOp) Reset() {
+	*x = PreviewCandidateOp{}
+	mi := &file_operator_proto_msgTypes[79]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreviewCandidateOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreviewCandidateOp) ProtoMessage() {}
+
+func (x *PreviewCandidateOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[79]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreviewCandidateOp.ProtoReflect.Descriptor instead.
+func (*PreviewCandidateOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{79}
+}
+
+func (x *PreviewCandidateOp) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *PreviewCandidateOp) GetTrait() string {
+	if x != nil {
+		return x.Trait
+	}
+	return ""
+}
+
+func (x *PreviewCandidateOp) GetSuccessRate() float64 {
+	if x != nil {
+		return x.SuccessRate
+	}
+	return 0
+}
+
+func (x *PreviewCandidateOp) GetTrustScore() float64 {
+	if x != nil {
+		return x.TrustScore
+	}
+	return 0
+}
+
+func (x *PreviewCandidateOp) GetNetworkLatencyMs() int32 {
+	if x != nil {
+		return x.NetworkLatencyMs
+	}
+	return 0
+}
+
+func (x *PreviewCandidateOp) GetComputationLatencyMs() int32 {
+	if x != nil {
+		return x.ComputationLatencyMs
+	}
+	return 0
+}
+
+func (x *PreviewCandidateOp) GetContextGrowthBytes() int32 {
+	if x != nil {
+		return x.ContextGrowthBytes
+	}
+	return 0
+}
+
+func (x *PreviewCandidateOp) GetProvisional() bool {
+	if x != nil {
+		return x.Provisional
+	}
+	return false
+}
+
+func (x *PreviewCandidateOp) GetAvgCostPerTask() float64 {
+	if x != nil {
+		return x.AvgCostPerTask
+	}
+	return 0
+}
+
+func (x *PreviewCandidateOp) GetCapabilityStats() map[string]*PreviewCapStatOp {
+	if x != nil {
+		return x.CapabilityStats
+	}
+	return nil
+}
+
+type PreviewCapStatOp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SuccessRate   float64                `protobuf:"fixed64,1,opt,name=success_rate,json=successRate,proto3" json:"success_rate,omitempty"`
+	TrustScore    float64                `protobuf:"fixed64,2,opt,name=trust_score,json=trustScore,proto3" json:"trust_score,omitempty"`
+	SampleCount   int32                  `protobuf:"varint,3,opt,name=sample_count,json=sampleCount,proto3" json:"sample_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PreviewCapStatOp) Reset() {
+	*x = PreviewCapStatOp{}
+	mi := &file_operator_proto_msgTypes[80]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreviewCapStatOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreviewCapStatOp) ProtoMessage() {}
+
+func (x *PreviewCapStatOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[80]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreviewCapStatOp.ProtoReflect.Descriptor instead.
+func (*PreviewCapStatOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{80}
+}
+
+func (x *PreviewCapStatOp) GetSuccessRate() float64 {
+	if x != nil {
+		return x.SuccessRate
+	}
+	return 0
+}
+
+func (x *PreviewCapStatOp) GetTrustScore() float64 {
+	if x != nil {
+		return x.TrustScore
+	}
+	return 0
+}
+
+func (x *PreviewCapStatOp) GetSampleCount() int32 {
+	if x != nil {
+		return x.SampleCount
+	}
+	return 0
+}
+
+type PreviewRouteOpResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ranked        []*MeritResultOp       `protobuf:"bytes,1,rep,name=ranked,proto3" json:"ranked,omitempty"` // merit breakdowns, highest score first
+	Arm           string                 `protobuf:"bytes,2,opt,name=arm,proto3" json:"arm,omitempty"`       // "hand_weights" | "learned_scorer" (the active scorer)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PreviewRouteOpResponse) Reset() {
+	*x = PreviewRouteOpResponse{}
+	mi := &file_operator_proto_msgTypes[81]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreviewRouteOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreviewRouteOpResponse) ProtoMessage() {}
+
+func (x *PreviewRouteOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[81]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreviewRouteOpResponse.ProtoReflect.Descriptor instead.
+func (*PreviewRouteOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{81}
+}
+
+func (x *PreviewRouteOpResponse) GetRanked() []*MeritResultOp {
+	if x != nil {
+		return x.Ranked
+	}
+	return nil
+}
+
+func (x *PreviewRouteOpResponse) GetArm() string {
+	if x != nil {
+		return x.Arm
+	}
+	return ""
+}
+
 // REACT-02 / ADR-0062: backpressure shed event on the feed.
 type ReactiveBudgetOp struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
@@ -5776,7 +6133,7 @@ type ReactiveBudgetOp struct {
 
 func (x *ReactiveBudgetOp) Reset() {
 	*x = ReactiveBudgetOp{}
-	mi := &file_operator_proto_msgTypes[78]
+	mi := &file_operator_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5788,7 +6145,7 @@ func (x *ReactiveBudgetOp) String() string {
 func (*ReactiveBudgetOp) ProtoMessage() {}
 
 func (x *ReactiveBudgetOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[78]
+	mi := &file_operator_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5801,7 +6158,7 @@ func (x *ReactiveBudgetOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactiveBudgetOp.ProtoReflect.Descriptor instead.
 func (*ReactiveBudgetOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{78}
+	return file_operator_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *ReactiveBudgetOp) GetResource() string {
@@ -6188,7 +6545,7 @@ const file_operator_proto_rawDesc = "" +
 	"\x05top_k\x18\x02 \x01(\x05R\x04topK\x12\x16\n" +
 	"\x06source\x18\x03 \x01(\tR\x06source\x12\x18\n" +
 	"\asession\x18\x04 \x01(\tR\asession\x12%\n" +
-	"\x0emin_importance\x18\x05 \x01(\x01R\rminImportance\"\x9d\x01\n" +
+	"\x0emin_importance\x18\x05 \x01(\x01R\rminImportance\"\xd4\x01\n" +
 	"\bMemoryOp\x12\x15\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x05docId\x12\x18\n" +
 	"\asummary\x18\x02 \x01(\tR\asummary\x12\x14\n" +
@@ -6197,7 +6554,9 @@ const file_operator_proto_rawDesc = "" +
 	"\n" +
 	"importance\x18\x05 \x01(\x01R\n" +
 	"importance\x12\x12\n" +
-	"\x04tags\x18\x06 \x03(\tR\x04tags\"C\n" +
+	"\x04tags\x18\x06 \x03(\tR\x04tags\x12!\n" +
+	"\fsection_path\x18\a \x01(\tR\vsectionPath\x12\x12\n" +
+	"\x04text\x18\b \x01(\tR\x04text\"C\n" +
 	"\x13QueryMemoryResponse\x12,\n" +
 	"\aresults\x18\x01 \x03(\v2\x12.cambrian.MemoryOpR\aresults\"\xb5\x01\n" +
 	"\x14SetToolPolicyRequest\x12\x1d\n" +
@@ -6224,7 +6583,7 @@ const file_operator_proto_rawDesc = "" +
 	"\x06denied\x18\x04 \x01(\bR\x06denied\x12\x1f\n" +
 	"\vdeny_reason\x18\x05 \x01(\tR\n" +
 	"denyReason\x12\x14\n" +
-	"\x05error\x18\x06 \x01(\tR\x05error\"\xcd\x01\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\"\xc0\x02\n" +
 	"\x15IngestMemoryOpRequest\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
@@ -6236,7 +6595,12 @@ const file_operator_proto_rawDesc = "" +
 	"importance\x12\x16\n" +
 	"\x06source\x18\x06 \x01(\tR\x06source\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\a \x01(\tR\tsessionId\"h\n" +
+	"session_id\x18\a \x01(\tR\tsessionId\x12\x18\n" +
+	"\acontent\x18\b \x01(\fR\acontent\x12\x1a\n" +
+	"\bfilename\x18\t \x01(\tR\bfilename\x12!\n" +
+	"\fcontent_type\x18\n" +
+	" \x01(\tR\vcontentType\x12\x18\n" +
+	"\acontext\x18\v \x01(\tR\acontext\"h\n" +
 	"\x16IngestMemoryOpResponse\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x18\n" +
@@ -6344,12 +6708,42 @@ const file_operator_proto_rawDesc = "" +
 	"\n" +
 	"would_fire\x18\x04 \x01(\bR\twouldFire\x12\x1d\n" +
 	"\n" +
-	"eval_error\x18\x05 \x01(\tR\tevalError\"\x98\x01\n" +
+	"eval_error\x18\x05 \x01(\tR\tevalError\"\xa7\x01\n" +
+	"\x15PreviewRouteOpRequest\x12\x1b\n" +
+	"\ttask_desc\x18\x01 \x01(\tR\btaskDesc\x123\n" +
+	"\x15required_capabilities\x18\x02 \x03(\tR\x14requiredCapabilities\x12<\n" +
+	"\n" +
+	"candidates\x18\x03 \x03(\v2\x1c.cambrian.PreviewCandidateOpR\n" +
+	"candidates\"\xaa\x04\n" +
+	"\x12PreviewCandidateOp\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x14\n" +
+	"\x05trait\x18\x02 \x01(\tR\x05trait\x12!\n" +
+	"\fsuccess_rate\x18\x03 \x01(\x01R\vsuccessRate\x12\x1f\n" +
+	"\vtrust_score\x18\x04 \x01(\x01R\n" +
+	"trustScore\x12,\n" +
+	"\x12network_latency_ms\x18\x05 \x01(\x05R\x10networkLatencyMs\x124\n" +
+	"\x16computation_latency_ms\x18\x06 \x01(\x05R\x14computationLatencyMs\x120\n" +
+	"\x14context_growth_bytes\x18\a \x01(\x05R\x12contextGrowthBytes\x12 \n" +
+	"\vprovisional\x18\b \x01(\bR\vprovisional\x12)\n" +
+	"\x11avg_cost_per_task\x18\t \x01(\x01R\x0eavgCostPerTask\x12\\\n" +
+	"\x10capability_stats\x18\n" +
+	" \x03(\v21.cambrian.PreviewCandidateOp.CapabilityStatsEntryR\x0fcapabilityStats\x1a^\n" +
+	"\x14CapabilityStatsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
+	"\x05value\x18\x02 \x01(\v2\x1a.cambrian.PreviewCapStatOpR\x05value:\x028\x01\"y\n" +
+	"\x10PreviewCapStatOp\x12!\n" +
+	"\fsuccess_rate\x18\x01 \x01(\x01R\vsuccessRate\x12\x1f\n" +
+	"\vtrust_score\x18\x02 \x01(\x01R\n" +
+	"trustScore\x12!\n" +
+	"\fsample_count\x18\x03 \x01(\x05R\vsampleCount\"[\n" +
+	"\x16PreviewRouteOpResponse\x12/\n" +
+	"\x06ranked\x18\x01 \x03(\v2\x17.cambrian.MeritResultOpR\x06ranked\x12\x10\n" +
+	"\x03arm\x18\x02 \x01(\tR\x03arm\"\x98\x01\n" +
 	"\x10ReactiveBudgetOp\x12\x1a\n" +
 	"\bresource\x18\x01 \x01(\tR\bresource\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x1b\n" +
 	"\tstream_id\x18\x03 \x01(\tR\bstreamId\x123\n" +
-	"\x16shedding_since_unix_ms\x18\x04 \x01(\x03R\x13sheddingSinceUnixMs2\x9c\x12\n" +
+	"\x16shedding_since_unix_ms\x18\x04 \x01(\x03R\x13sheddingSinceUnixMs2\xef\x12\n" +
 	"\x0fOperatorConsole\x128\n" +
 	"\x05Login\x12\x16.cambrian.LoginRequest\x1a\x17.cambrian.LoginResponse\x12E\n" +
 	"\fStreamEvents\x12\x1a.cambrian.SubscribeRequest\x1a\x17.cambrian.OperatorEvent0\x01\x12A\n" +
@@ -6383,7 +6777,8 @@ const file_operator_proto_rawDesc = "" +
 	"\x0eSetWatchActive\x12!.cambrian.SetWatchActiveOpRequest\x1a\x14.cambrian.CommandAck\x12i\n" +
 	"\x14ListWatchDeadLetters\x12'.cambrian.ListWatchDeadLettersOpRequest\x1a(.cambrian.ListWatchDeadLettersOpResponse\x12Z\n" +
 	"\x0fGetWatchMetrics\x12\".cambrian.GetWatchMetricsOpRequest\x1a#.cambrian.GetWatchMetricsOpResponse\x12T\n" +
-	"\rBacktestWatch\x12 .cambrian.BacktestWatchOpRequest\x1a!.cambrian.BacktestWatchOpResponseB\x10Z\x0ecore/api/protob\x06proto3"
+	"\rBacktestWatch\x12 .cambrian.BacktestWatchOpRequest\x1a!.cambrian.BacktestWatchOpResponse\x12Q\n" +
+	"\fPreviewRoute\x12\x1f.cambrian.PreviewRouteOpRequest\x1a .cambrian.PreviewRouteOpResponseB\x10Z\x0ecore/api/protob\x06proto3"
 
 var (
 	file_operator_proto_rawDescOnce sync.Once
@@ -6397,7 +6792,7 @@ func file_operator_proto_rawDescGZIP() []byte {
 	return file_operator_proto_rawDescData
 }
 
-var file_operator_proto_msgTypes = make([]protoimpl.MessageInfo, 81)
+var file_operator_proto_msgTypes = make([]protoimpl.MessageInfo, 86)
 var file_operator_proto_goTypes = []any{
 	(*CreateSessionRequest)(nil),           // 0: cambrian.CreateSessionRequest
 	(*CreateSessionResponse)(nil),          // 1: cambrian.CreateSessionResponse
@@ -6477,17 +6872,22 @@ var file_operator_proto_goTypes = []any{
 	(*BacktestWatchOpRequest)(nil),         // 75: cambrian.BacktestWatchOpRequest
 	(*BacktestWatchOpResponse)(nil),        // 76: cambrian.BacktestWatchOpResponse
 	(*WatchBacktestVerdictOp)(nil),         // 77: cambrian.WatchBacktestVerdictOp
-	(*ReactiveBudgetOp)(nil),               // 78: cambrian.ReactiveBudgetOp
-	nil,                                    // 79: cambrian.SetRuntimeConfigRequest.ParamsEntry
-	nil,                                    // 80: cambrian.WatchConfigOp.DaemonParamsEntry
-	(*timestamppb.Timestamp)(nil),          // 81: google.protobuf.Timestamp
+	(*PreviewRouteOpRequest)(nil),          // 78: cambrian.PreviewRouteOpRequest
+	(*PreviewCandidateOp)(nil),             // 79: cambrian.PreviewCandidateOp
+	(*PreviewCapStatOp)(nil),               // 80: cambrian.PreviewCapStatOp
+	(*PreviewRouteOpResponse)(nil),         // 81: cambrian.PreviewRouteOpResponse
+	(*ReactiveBudgetOp)(nil),               // 82: cambrian.ReactiveBudgetOp
+	nil,                                    // 83: cambrian.SetRuntimeConfigRequest.ParamsEntry
+	nil,                                    // 84: cambrian.WatchConfigOp.DaemonParamsEntry
+	nil,                                    // 85: cambrian.PreviewCandidateOp.CapabilityStatsEntry
+	(*timestamppb.Timestamp)(nil),          // 86: google.protobuf.Timestamp
 }
 var file_operator_proto_depIdxs = []int32{
-	79, // 0: cambrian.SetRuntimeConfigRequest.params:type_name -> cambrian.SetRuntimeConfigRequest.ParamsEntry
+	83, // 0: cambrian.SetRuntimeConfigRequest.params:type_name -> cambrian.SetRuntimeConfigRequest.ParamsEntry
 	44, // 1: cambrian.QueryAuditResponse.entries:type_name -> cambrian.AuditOp
 	20, // 2: cambrian.SnapshotResponse.plans:type_name -> cambrian.PlanInFlightOp
 	21, // 3: cambrian.SnapshotResponse.sessions:type_name -> cambrian.SessionSummaryOp
-	81, // 4: cambrian.OperatorEvent.ts:type_name -> google.protobuf.Timestamp
+	86, // 4: cambrian.OperatorEvent.ts:type_name -> google.protobuf.Timestamp
 	25, // 5: cambrian.OperatorEvent.resync:type_name -> cambrian.ResyncRequired
 	26, // 6: cambrian.OperatorEvent.auction:type_name -> cambrian.AuctionEventOp
 	32, // 7: cambrian.OperatorEvent.agent_ready:type_name -> cambrian.AgentReadyOp
@@ -6504,7 +6904,7 @@ var file_operator_proto_depIdxs = []int32{
 	44, // 18: cambrian.OperatorEvent.audit:type_name -> cambrian.AuditOp
 	43, // 19: cambrian.OperatorEvent.token:type_name -> cambrian.TokenChunkOp
 	24, // 20: cambrian.OperatorEvent.scout_usefulness:type_name -> cambrian.ScoutUsefulnessOp
-	78, // 21: cambrian.OperatorEvent.reactive_budget:type_name -> cambrian.ReactiveBudgetOp
+	82, // 21: cambrian.OperatorEvent.reactive_budget:type_name -> cambrian.ReactiveBudgetOp
 	27, // 22: cambrian.AuctionEventOp.bids:type_name -> cambrian.BidEntryOp
 	28, // 23: cambrian.AuctionEventOp.funnel:type_name -> cambrian.GatekeeperFunnelOp
 	29, // 24: cambrian.GatekeeperFunnelOp.l1:type_name -> cambrian.DeclarationResultOp
@@ -6517,80 +6917,86 @@ var file_operator_proto_depIdxs = []int32{
 	54, // 31: cambrian.QueryMemoryResponse.results:type_name -> cambrian.MemoryOp
 	45, // 32: cambrian.SetToolPolicyRequest.policy:type_name -> cambrian.ToolPolicyOp
 	62, // 33: cambrian.WatchConfigOp.action:type_name -> cambrian.WatchActionOp
-	80, // 34: cambrian.WatchConfigOp.daemon_params:type_name -> cambrian.WatchConfigOp.DaemonParamsEntry
+	84, // 34: cambrian.WatchConfigOp.daemon_params:type_name -> cambrian.WatchConfigOp.DaemonParamsEntry
 	63, // 35: cambrian.ListWatchesOpResponse.configs:type_name -> cambrian.WatchConfigOp
 	63, // 36: cambrian.RegisterWatchOpRequest.config:type_name -> cambrian.WatchConfigOp
 	71, // 37: cambrian.ListWatchDeadLettersOpResponse.entries:type_name -> cambrian.WatchDeadLetterOp
 	74, // 38: cambrian.GetWatchMetricsOpResponse.metrics:type_name -> cambrian.WatchMetricsOp
 	63, // 39: cambrian.BacktestWatchOpRequest.config:type_name -> cambrian.WatchConfigOp
 	77, // 40: cambrian.BacktestWatchOpResponse.verdicts:type_name -> cambrian.WatchBacktestVerdictOp
-	16, // 41: cambrian.OperatorConsole.Login:input_type -> cambrian.LoginRequest
-	22, // 42: cambrian.OperatorConsole.StreamEvents:input_type -> cambrian.SubscribeRequest
-	18, // 43: cambrian.OperatorConsole.Snapshot:input_type -> cambrian.SnapshotRequest
-	15, // 44: cambrian.OperatorConsole.SetToolGrant:input_type -> cambrian.SetToolGrantRequest
-	12, // 45: cambrian.OperatorConsole.QueryAudit:input_type -> cambrian.QueryAuditRequest
-	10, // 46: cambrian.OperatorConsole.ResolveHITL:input_type -> cambrian.ResolveHITLRequest
-	11, // 47: cambrian.OperatorConsole.PauseSession:input_type -> cambrian.SessionCommandRequest
-	11, // 48: cambrian.OperatorConsole.ResumeSession:input_type -> cambrian.SessionCommandRequest
-	4,  // 49: cambrian.OperatorConsole.TagMemory:input_type -> cambrian.TagMemoryRequest
-	5,  // 50: cambrian.OperatorConsole.SetScope:input_type -> cambrian.SetScopeRequest
-	6,  // 51: cambrian.OperatorConsole.RegisterSkill:input_type -> cambrian.RegisterSkillRequest
-	7,  // 52: cambrian.OperatorConsole.RegisterMCP:input_type -> cambrian.RegisterMCPRequest
-	8,  // 53: cambrian.OperatorConsole.TriggerConsolidation:input_type -> cambrian.TriggerConsolidationRequest
-	9,  // 54: cambrian.OperatorConsole.SetRuntimeConfig:input_type -> cambrian.SetRuntimeConfigRequest
-	0,  // 55: cambrian.OperatorConsole.CreateSession:input_type -> cambrian.CreateSessionRequest
-	2,  // 56: cambrian.OperatorConsole.SendMessage:input_type -> cambrian.SendMessageRequest
-	3,  // 57: cambrian.OperatorConsole.InjectCorrection:input_type -> cambrian.InjectCorrectionRequest
-	48, // 58: cambrian.OperatorConsole.ListTools:input_type -> cambrian.ListToolsOpRequest
-	50, // 59: cambrian.OperatorConsole.ListSkills:input_type -> cambrian.ListSkillsOpRequest
-	53, // 60: cambrian.OperatorConsole.QueryMemory:input_type -> cambrian.QueryMemoryRequest
-	56, // 61: cambrian.OperatorConsole.SetToolPolicy:input_type -> cambrian.SetToolPolicyRequest
-	57, // 62: cambrian.OperatorConsole.ExecuteTool:input_type -> cambrian.ExecuteToolOpRequest
-	59, // 63: cambrian.OperatorConsole.IngestMemory:input_type -> cambrian.IngestMemoryOpRequest
-	22, // 64: cambrian.OperatorConsole.WatchToolApprovals:input_type -> cambrian.SubscribeRequest
-	64, // 65: cambrian.OperatorConsole.ListWatches:input_type -> cambrian.ListWatchesOpRequest
-	66, // 66: cambrian.OperatorConsole.RegisterWatch:input_type -> cambrian.RegisterWatchOpRequest
-	67, // 67: cambrian.OperatorConsole.DeleteWatch:input_type -> cambrian.DeleteWatchOpRequest
-	68, // 68: cambrian.OperatorConsole.SetWatchActive:input_type -> cambrian.SetWatchActiveOpRequest
-	69, // 69: cambrian.OperatorConsole.ListWatchDeadLetters:input_type -> cambrian.ListWatchDeadLettersOpRequest
-	72, // 70: cambrian.OperatorConsole.GetWatchMetrics:input_type -> cambrian.GetWatchMetricsOpRequest
-	75, // 71: cambrian.OperatorConsole.BacktestWatch:input_type -> cambrian.BacktestWatchOpRequest
-	17, // 72: cambrian.OperatorConsole.Login:output_type -> cambrian.LoginResponse
-	23, // 73: cambrian.OperatorConsole.StreamEvents:output_type -> cambrian.OperatorEvent
-	19, // 74: cambrian.OperatorConsole.Snapshot:output_type -> cambrian.SnapshotResponse
-	14, // 75: cambrian.OperatorConsole.SetToolGrant:output_type -> cambrian.CommandAck
-	13, // 76: cambrian.OperatorConsole.QueryAudit:output_type -> cambrian.QueryAuditResponse
-	14, // 77: cambrian.OperatorConsole.ResolveHITL:output_type -> cambrian.CommandAck
-	14, // 78: cambrian.OperatorConsole.PauseSession:output_type -> cambrian.CommandAck
-	14, // 79: cambrian.OperatorConsole.ResumeSession:output_type -> cambrian.CommandAck
-	14, // 80: cambrian.OperatorConsole.TagMemory:output_type -> cambrian.CommandAck
-	14, // 81: cambrian.OperatorConsole.SetScope:output_type -> cambrian.CommandAck
-	14, // 82: cambrian.OperatorConsole.RegisterSkill:output_type -> cambrian.CommandAck
-	14, // 83: cambrian.OperatorConsole.RegisterMCP:output_type -> cambrian.CommandAck
-	14, // 84: cambrian.OperatorConsole.TriggerConsolidation:output_type -> cambrian.CommandAck
-	14, // 85: cambrian.OperatorConsole.SetRuntimeConfig:output_type -> cambrian.CommandAck
-	1,  // 86: cambrian.OperatorConsole.CreateSession:output_type -> cambrian.CreateSessionResponse
-	14, // 87: cambrian.OperatorConsole.SendMessage:output_type -> cambrian.CommandAck
-	14, // 88: cambrian.OperatorConsole.InjectCorrection:output_type -> cambrian.CommandAck
-	49, // 89: cambrian.OperatorConsole.ListTools:output_type -> cambrian.ListToolsOpResponse
-	52, // 90: cambrian.OperatorConsole.ListSkills:output_type -> cambrian.ListSkillsOpResponse
-	55, // 91: cambrian.OperatorConsole.QueryMemory:output_type -> cambrian.QueryMemoryResponse
-	14, // 92: cambrian.OperatorConsole.SetToolPolicy:output_type -> cambrian.CommandAck
-	58, // 93: cambrian.OperatorConsole.ExecuteTool:output_type -> cambrian.ExecuteToolOpResponse
-	60, // 94: cambrian.OperatorConsole.IngestMemory:output_type -> cambrian.IngestMemoryOpResponse
-	61, // 95: cambrian.OperatorConsole.WatchToolApprovals:output_type -> cambrian.ApprovalOp
-	65, // 96: cambrian.OperatorConsole.ListWatches:output_type -> cambrian.ListWatchesOpResponse
-	14, // 97: cambrian.OperatorConsole.RegisterWatch:output_type -> cambrian.CommandAck
-	14, // 98: cambrian.OperatorConsole.DeleteWatch:output_type -> cambrian.CommandAck
-	14, // 99: cambrian.OperatorConsole.SetWatchActive:output_type -> cambrian.CommandAck
-	70, // 100: cambrian.OperatorConsole.ListWatchDeadLetters:output_type -> cambrian.ListWatchDeadLettersOpResponse
-	73, // 101: cambrian.OperatorConsole.GetWatchMetrics:output_type -> cambrian.GetWatchMetricsOpResponse
-	76, // 102: cambrian.OperatorConsole.BacktestWatch:output_type -> cambrian.BacktestWatchOpResponse
-	72, // [72:103] is the sub-list for method output_type
-	41, // [41:72] is the sub-list for method input_type
-	41, // [41:41] is the sub-list for extension type_name
-	41, // [41:41] is the sub-list for extension extendee
-	0,  // [0:41] is the sub-list for field type_name
+	79, // 41: cambrian.PreviewRouteOpRequest.candidates:type_name -> cambrian.PreviewCandidateOp
+	85, // 42: cambrian.PreviewCandidateOp.capability_stats:type_name -> cambrian.PreviewCandidateOp.CapabilityStatsEntry
+	31, // 43: cambrian.PreviewRouteOpResponse.ranked:type_name -> cambrian.MeritResultOp
+	80, // 44: cambrian.PreviewCandidateOp.CapabilityStatsEntry.value:type_name -> cambrian.PreviewCapStatOp
+	16, // 45: cambrian.OperatorConsole.Login:input_type -> cambrian.LoginRequest
+	22, // 46: cambrian.OperatorConsole.StreamEvents:input_type -> cambrian.SubscribeRequest
+	18, // 47: cambrian.OperatorConsole.Snapshot:input_type -> cambrian.SnapshotRequest
+	15, // 48: cambrian.OperatorConsole.SetToolGrant:input_type -> cambrian.SetToolGrantRequest
+	12, // 49: cambrian.OperatorConsole.QueryAudit:input_type -> cambrian.QueryAuditRequest
+	10, // 50: cambrian.OperatorConsole.ResolveHITL:input_type -> cambrian.ResolveHITLRequest
+	11, // 51: cambrian.OperatorConsole.PauseSession:input_type -> cambrian.SessionCommandRequest
+	11, // 52: cambrian.OperatorConsole.ResumeSession:input_type -> cambrian.SessionCommandRequest
+	4,  // 53: cambrian.OperatorConsole.TagMemory:input_type -> cambrian.TagMemoryRequest
+	5,  // 54: cambrian.OperatorConsole.SetScope:input_type -> cambrian.SetScopeRequest
+	6,  // 55: cambrian.OperatorConsole.RegisterSkill:input_type -> cambrian.RegisterSkillRequest
+	7,  // 56: cambrian.OperatorConsole.RegisterMCP:input_type -> cambrian.RegisterMCPRequest
+	8,  // 57: cambrian.OperatorConsole.TriggerConsolidation:input_type -> cambrian.TriggerConsolidationRequest
+	9,  // 58: cambrian.OperatorConsole.SetRuntimeConfig:input_type -> cambrian.SetRuntimeConfigRequest
+	0,  // 59: cambrian.OperatorConsole.CreateSession:input_type -> cambrian.CreateSessionRequest
+	2,  // 60: cambrian.OperatorConsole.SendMessage:input_type -> cambrian.SendMessageRequest
+	3,  // 61: cambrian.OperatorConsole.InjectCorrection:input_type -> cambrian.InjectCorrectionRequest
+	48, // 62: cambrian.OperatorConsole.ListTools:input_type -> cambrian.ListToolsOpRequest
+	50, // 63: cambrian.OperatorConsole.ListSkills:input_type -> cambrian.ListSkillsOpRequest
+	53, // 64: cambrian.OperatorConsole.QueryMemory:input_type -> cambrian.QueryMemoryRequest
+	56, // 65: cambrian.OperatorConsole.SetToolPolicy:input_type -> cambrian.SetToolPolicyRequest
+	57, // 66: cambrian.OperatorConsole.ExecuteTool:input_type -> cambrian.ExecuteToolOpRequest
+	59, // 67: cambrian.OperatorConsole.IngestMemory:input_type -> cambrian.IngestMemoryOpRequest
+	22, // 68: cambrian.OperatorConsole.WatchToolApprovals:input_type -> cambrian.SubscribeRequest
+	64, // 69: cambrian.OperatorConsole.ListWatches:input_type -> cambrian.ListWatchesOpRequest
+	66, // 70: cambrian.OperatorConsole.RegisterWatch:input_type -> cambrian.RegisterWatchOpRequest
+	67, // 71: cambrian.OperatorConsole.DeleteWatch:input_type -> cambrian.DeleteWatchOpRequest
+	68, // 72: cambrian.OperatorConsole.SetWatchActive:input_type -> cambrian.SetWatchActiveOpRequest
+	69, // 73: cambrian.OperatorConsole.ListWatchDeadLetters:input_type -> cambrian.ListWatchDeadLettersOpRequest
+	72, // 74: cambrian.OperatorConsole.GetWatchMetrics:input_type -> cambrian.GetWatchMetricsOpRequest
+	75, // 75: cambrian.OperatorConsole.BacktestWatch:input_type -> cambrian.BacktestWatchOpRequest
+	78, // 76: cambrian.OperatorConsole.PreviewRoute:input_type -> cambrian.PreviewRouteOpRequest
+	17, // 77: cambrian.OperatorConsole.Login:output_type -> cambrian.LoginResponse
+	23, // 78: cambrian.OperatorConsole.StreamEvents:output_type -> cambrian.OperatorEvent
+	19, // 79: cambrian.OperatorConsole.Snapshot:output_type -> cambrian.SnapshotResponse
+	14, // 80: cambrian.OperatorConsole.SetToolGrant:output_type -> cambrian.CommandAck
+	13, // 81: cambrian.OperatorConsole.QueryAudit:output_type -> cambrian.QueryAuditResponse
+	14, // 82: cambrian.OperatorConsole.ResolveHITL:output_type -> cambrian.CommandAck
+	14, // 83: cambrian.OperatorConsole.PauseSession:output_type -> cambrian.CommandAck
+	14, // 84: cambrian.OperatorConsole.ResumeSession:output_type -> cambrian.CommandAck
+	14, // 85: cambrian.OperatorConsole.TagMemory:output_type -> cambrian.CommandAck
+	14, // 86: cambrian.OperatorConsole.SetScope:output_type -> cambrian.CommandAck
+	14, // 87: cambrian.OperatorConsole.RegisterSkill:output_type -> cambrian.CommandAck
+	14, // 88: cambrian.OperatorConsole.RegisterMCP:output_type -> cambrian.CommandAck
+	14, // 89: cambrian.OperatorConsole.TriggerConsolidation:output_type -> cambrian.CommandAck
+	14, // 90: cambrian.OperatorConsole.SetRuntimeConfig:output_type -> cambrian.CommandAck
+	1,  // 91: cambrian.OperatorConsole.CreateSession:output_type -> cambrian.CreateSessionResponse
+	14, // 92: cambrian.OperatorConsole.SendMessage:output_type -> cambrian.CommandAck
+	14, // 93: cambrian.OperatorConsole.InjectCorrection:output_type -> cambrian.CommandAck
+	49, // 94: cambrian.OperatorConsole.ListTools:output_type -> cambrian.ListToolsOpResponse
+	52, // 95: cambrian.OperatorConsole.ListSkills:output_type -> cambrian.ListSkillsOpResponse
+	55, // 96: cambrian.OperatorConsole.QueryMemory:output_type -> cambrian.QueryMemoryResponse
+	14, // 97: cambrian.OperatorConsole.SetToolPolicy:output_type -> cambrian.CommandAck
+	58, // 98: cambrian.OperatorConsole.ExecuteTool:output_type -> cambrian.ExecuteToolOpResponse
+	60, // 99: cambrian.OperatorConsole.IngestMemory:output_type -> cambrian.IngestMemoryOpResponse
+	61, // 100: cambrian.OperatorConsole.WatchToolApprovals:output_type -> cambrian.ApprovalOp
+	65, // 101: cambrian.OperatorConsole.ListWatches:output_type -> cambrian.ListWatchesOpResponse
+	14, // 102: cambrian.OperatorConsole.RegisterWatch:output_type -> cambrian.CommandAck
+	14, // 103: cambrian.OperatorConsole.DeleteWatch:output_type -> cambrian.CommandAck
+	14, // 104: cambrian.OperatorConsole.SetWatchActive:output_type -> cambrian.CommandAck
+	70, // 105: cambrian.OperatorConsole.ListWatchDeadLetters:output_type -> cambrian.ListWatchDeadLettersOpResponse
+	73, // 106: cambrian.OperatorConsole.GetWatchMetrics:output_type -> cambrian.GetWatchMetricsOpResponse
+	76, // 107: cambrian.OperatorConsole.BacktestWatch:output_type -> cambrian.BacktestWatchOpResponse
+	81, // 108: cambrian.OperatorConsole.PreviewRoute:output_type -> cambrian.PreviewRouteOpResponse
+	77, // [77:109] is the sub-list for method output_type
+	45, // [45:77] is the sub-list for method input_type
+	45, // [45:45] is the sub-list for extension type_name
+	45, // [45:45] is the sub-list for extension extendee
+	0,  // [0:45] is the sub-list for field type_name
 }
 
 func init() { file_operator_proto_init() }
@@ -6623,7 +7029,7 @@ func file_operator_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_operator_proto_rawDesc), len(file_operator_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   81,
+			NumMessages:   86,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

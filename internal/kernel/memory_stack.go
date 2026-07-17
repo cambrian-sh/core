@@ -9,7 +9,6 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/memory"
 	memstore "github.com/cambrian-sh/core/internal/memory/store"
-	"github.com/cambrian-sh/core/internal/reactive"
 	"github.com/cambrian-sh/core/internal/scope"
 )
 
@@ -30,7 +29,6 @@ type MemoryStack struct {
 	WorkspaceStage       domain.WorkspaceStage        // ADR-0016: may be nil
 	GraphStore           domain.GraphStore            // ADR-0025: may be nil; used to construct PgSceneWriter
 	IngestionManager     *memory.IngestionManager     // ADR-0028: may be nil when IngestionQueueSize=0
-	DirectoryWatcher     *memory.DirectoryWatcher     // ADR-0028: may be nil when InboxDir is empty
 	EntityIndex          *memory.EntityIndex          // ADR-0052: in-memory entity→docs index; nil = surface-only recall
 	EdgeWriter           *memory.EdgeWriter           // ADR-0052: per-doc LLM-driven edge populator (sync mode, kept for tests)
 	EdgeBatcher          *memory.EdgeBatcher          // ADR-0052: batched LLM-driven edge populator; production path
@@ -187,12 +185,10 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		BatchWait: time.Duration(execCfg.IngestionBatchWaitMs) * time.Millisecond,
 	}
 	ingestionMgr := memory.NewIngestionManager(sceneGen, embed, memoryAgent, ingestionCfg)
-	// ADR-0031: DirectoryWatcher sends signals to SignalReceiver (not direct enqueue).
-	// NoOpSignalReceiver is the stub until ADR-0032 (ReactiveEngine) ships.
-	// The default catch-all WatchConfig (Source:"data/inbox/", Condition:"true", Action:"ingest")
-	// will be registered by the ReactiveEngine at startup in ADR-0032.
-	dirWatcher := memory.NewDirectoryWatcher(execCfg.InboxDir, ingestionMgr.Enqueue)
-	dirWatcher.SignalReceiver = &reactive.NoOpSignalReceiver{}
+	// NOTE: the legacy single-directory DirectoryWatcher (ADR-0028/0031) was removed
+	// from the boot path — it delivered file events to a NoOpSignalReceiver (dead
+	// weight) and its fixed-dir fsnotify watch errored at startup when InboxDir was
+	// absent. On-demand + reactive watch sources (ADR-0032/REACT-06) supersede it.
 
 	return &MemoryStack{
 		VecDB:                vec,
@@ -205,7 +201,6 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		WorkspaceStage:       ws,
 		GraphStore:           gs,
 		IngestionManager:     ingestionMgr,
-		DirectoryWatcher:     dirWatcher,
 		EntityIndex:          entityIdx,
 		EdgeWriter:           edgeWriter,
 		EdgeBatcher:          edgeBatcher,
@@ -225,12 +220,10 @@ func (s *MemoryStack) Start(ctx context.Context) error {
 	if s.ChunkTripletsBatcher != nil {
 		s.ChunkTripletsBatcher.Start(ctx)
 	}
-	// ADR-0028: start ingestion pipeline and file watcher.
+	// ADR-0028: start the ingestion pipeline. (The legacy DirectoryWatcher that
+	// used to start here was removed — see NewMemoryStack.)
 	if s.IngestionManager != nil {
 		s.IngestionManager.Start(ctx)
-	}
-	if s.DirectoryWatcher != nil {
-		s.DirectoryWatcher.Start(ctx)
 	}
 	return s.Agent.StartMemoryWorker(ctx, false)
 }

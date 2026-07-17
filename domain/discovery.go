@@ -41,6 +41,25 @@ type DiscoveredEntity struct {
 	ContentCID string // reference to the raw observation in the ContentStore (never inlined)
 }
 
+// DiscoveryTarget is one deterministic probe request: which source Kind to use and the
+// concrete reference to observe — a path, URL, host:port, DSN, etc. (ADR-0078 D2/D3).
+// Targets are selected deterministically from the request, no LLM.
+type DiscoveryTarget struct {
+	Kind string // must match a DiscoverySource.Kind()
+	Ref  string // path | url | host:port | ...
+}
+
+// DiscoverySource is a deterministic, read-only, bounded probe over one class of foreign
+// state (ADR-0078 D1/D2 — the deterministic-first replacement for the LLM discovery loop).
+// Contract: Probe MUST NOT mutate anything, MUST respect ctx cancellation/timeout, and
+// returns STRUCTURED entities (the trusted side of the ADR-0051 D13 boundary — a structured
+// probe result cannot carry a prompt injection). A probe error is non-fatal to the organ:
+// the caller logs it and stamps the target Unobserved (ADR-0051 D8 kept — never discard).
+type DiscoverySource interface {
+	Kind() string
+	Probe(ctx context.Context, target DiscoveryTarget) ([]DiscoveredEntity, error)
+}
+
 // DiscoveryReferencedByPlan reports whether the emitted plan textually references
 // the Scout's discovery (ROUTE-08 phase A) — the proxy for "the discovery changed
 // the plan". It matches discovered and unobserved *entity ids* against the plan's
