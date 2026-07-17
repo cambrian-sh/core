@@ -40,17 +40,50 @@ type Lifecycle struct {
 	Stop  func()
 }
 
-// AgentSource discovers agent definitions to register at boot (ADR-0075). It is the
-// unifying seam over the ways agents enter the registry — today the built-in filesystem
-// scan and model-config registration are the two implicit sources; a plugin contributes
-// another via Registry.AddAgentSource / AddAgent (regular, Tier-2 add-many) or
-// AddSystemAgent (privileged, an explicit + logged grant). The composition root
-// discovers each source and registers its definitions alongside the built-in ones.
+// DiscoveredAgent is one agent an AgentSource contributes: its definition plus an
+// OPTIONAL manifest (ADR-0075). Carrying the manifest lets a source persist the extras
+// (PythonDeps/MemoryLimitMB/schemas) a plain definition drops — so a source can fully
+// replace the built-in filesystem scan, not just approximate it. A nil Manifest degrades
+// to a record-only registration (the model-agent path).
+type DiscoveredAgent struct {
+	Definition domain.AgentDefinition
+	Manifest   *domain.AgentManifest
+}
+
+// AgentSource discovers agents to register at boot (ADR-0075). It is the unifying seam
+// over the ways agents enter the registry — the built-in filesystem scan is itself a
+// FilesystemAgentSource, model-config is another, and a plugin contributes more via
+// Registry.AddAgentSource / AddAgent (regular, Tier-2 add-many) or AddSystemAgent
+// (privileged, an explicit + logged grant). The composition root discovers each source
+// and registers its agents (with manifests) uniformly.
 type AgentSource interface {
 	// Name identifies the source (logging / attribution).
 	Name() string
-	// DiscoverAgents returns the agent definitions this source contributes.
-	DiscoverAgents(context.Context) ([]domain.AgentDefinition, error)
+	// DiscoverAgents returns the agents this source contributes.
+	DiscoverAgents(context.Context) ([]DiscoveredAgent, error)
+}
+
+// MCPServerSpec is the plugin-facing, boundary-safe description of an external MCP tool
+// server (ADR-0075 / ADR-0043). It deliberately mirrors only the fields a plugin needs
+// so plugins never import a core-internal `mcp.ServerConfig` — the composition root maps
+// it. A plugin contributes one via Registry.AddMCPServer (Tier-2 add-many); its tools are
+// connected + registered as `mcp:<id>/<tool>` alongside the config-declared servers.
+type MCPServerSpec struct {
+	ID           string
+	Transport    string // "stdio" | "streamable-http"
+	Endpoint     string // command (stdio) or URL (http)
+	Args         []string
+	AuthType     string
+	AuthHeader   string
+	AuthTokenEnv string
+	Tools        []MCPToolSpec
+}
+
+// MCPToolSpec is a per-tool policy carried on an MCPServerSpec.
+type MCPToolSpec struct {
+	Name           string
+	Dangerous      bool
+	DataWriteKinds []string
 }
 
 // staticAgentSource wraps a fixed set of definitions (Registry.AddAgent/AddSystemAgent).
@@ -60,8 +93,12 @@ type staticAgentSource struct {
 }
 
 func (s staticAgentSource) Name() string { return s.name }
-func (s staticAgentSource) DiscoverAgents(context.Context) ([]domain.AgentDefinition, error) {
-	return s.defs, nil
+func (s staticAgentSource) DiscoverAgents(context.Context) ([]DiscoveredAgent, error) {
+	out := make([]DiscoveredAgent, len(s.defs))
+	for i, d := range s.defs {
+		out[i] = DiscoveredAgent{Definition: d}
+	}
+	return out, nil
 }
 
 // Registry collects plugin contributions to the kernel's extension points. A plugin
@@ -77,6 +114,7 @@ type Registry struct {
 	resourceSelector domain.ResourceSelector
 	selectorOwner    string
 	agentSources     []AgentSource
+	mcpServers       []MCPServerSpec
 }
 
 // AddTraceWrapper contributes a generator trace wrapper (composed over any others).
@@ -143,6 +181,14 @@ func (r *Registry) AddAgent(def domain.AgentDefinition) {
 	r.agentSources = append(r.agentSources, staticAgentSource{name: "agent:" + def.ID, defs: []domain.AgentDefinition{def}})
 }
 
+// AddMCPServer contributes an external MCP tool server (ADR-0075 / ADR-0043). Tier-2
+// add-many: connected + tool-registered alongside the config-declared servers.
+func (r *Registry) AddMCPServer(spec MCPServerSpec) {
+	if spec.ID != "" {
+		r.mcpServers = append(r.mcpServers, spec)
+	}
+}
+
 // AddSystemAgent contributes a PRIVILEGED system agent (bypasses auction/Gatekeeper by
 // construction). System status is a policy decision, so this is an EXPLICIT, auditable
 // grant: it stamps System=true and the composition root logs the grant at registration.
@@ -161,6 +207,7 @@ type composedPlugins struct {
 	opts         Options
 	lifecycles   []Lifecycle
 	agentSources []AgentSource
+	mcpServers   []MCPServerSpec
 }
 
 // applyPlugins runs every plugin's Register and folds the collected contributions into
@@ -222,5 +269,5 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 			}
 		}
 	}
-	return composedPlugins{opts: opts, lifecycles: reg.lifecycles, agentSources: reg.agentSources}, nil
+	return composedPlugins{opts: opts, lifecycles: reg.lifecycles, agentSources: reg.agentSources, mcpServers: reg.mcpServers}, nil
 }

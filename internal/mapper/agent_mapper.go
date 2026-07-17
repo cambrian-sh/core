@@ -71,6 +71,25 @@ func (m *AgentMapper) ManifestToDomain(rec storage.ManifestRecord) domain.AgentM
 	}
 }
 
+// ManifestToRecord converts a domain manifest to its storage DTO — the reverse of
+// ManifestToDomain, used by the SetAgentWithManifest persist path (ADR-0075) so an
+// AgentSource can carry the manifest EXTRAS (PythonDeps/MemoryLimitMB/schemas).
+func (m *AgentMapper) ManifestToRecord(man domain.AgentManifest) storage.ManifestRecord {
+	return storage.ManifestRecord{
+		Version:          man.Version,
+		Trait:            string(man.Trait),
+		Tools:            man.Tools,
+		Capabilities:     man.Capabilities,  // ROUTE-03
+		MemoryLimitMB:    man.MemoryLimitMB, // SEC-01
+		PythonDeps:       man.PythonDeps,    // PLAT-01
+		SupportedFormats: man.SupportedFormats,
+		InputSchema:      man.InputSchema,
+		OutputSchema:     man.OutputSchema,
+		ReleaseNotes:     man.ReleaseNotes,
+		Dependencies:     man.Dependencies,
+	}
+}
+
 // TaskEventToDomain converts a storage task event DTO to a domain task event.
 func (m *AgentMapper) TaskEventToDomain(rec storage.TaskEventRecord) domain.TaskEvent {
 	ts, _ := time.Parse(time.RFC3339Nano, rec.Timestamp)

@@ -177,6 +177,22 @@ func (d *AgentRepoDecorator) SetAgent(def domain.AgentDefinition) error {
 	return d.store.WriteAgentRecord(rec)
 }
 
+// SetAgentWithManifest registers an agent AND persists its manifest (ADR-0075) — the
+// persist path an AgentSource uses to carry the manifest EXTRAS (PythonDeps for PLAT-01,
+// MemoryLimitMB for SEC-01, schemas) that plain SetAgent drops. It is **idempotent by
+// SourceHash**: an unchanged agent keeps its existing record (and its post-interview
+// Provisional state) — so registering the built-in filesystem agents through a source
+// behaves exactly like the old in-Seed scan, not a blind re-provisioning on every boot.
+// A nil manifest carries an empty manifest record (matching the built-in scan, which
+// always wrote one).
+func (d *AgentRepoDecorator) SetAgentWithManifest(def domain.AgentDefinition, manifest *domain.AgentManifest) error {
+	da := storage.DiscoveredAgent{Agent: d.mapper.ToRecord(def)}
+	if manifest != nil {
+		da.Manifest = d.mapper.ManifestToRecord(*manifest)
+	}
+	return d.store.UpsertDiscoveredAgent(da)
+}
+
 // DeleteAgent removes an agent (and its manifest) from the registry. It is the
 // eviction half of the startup reconcile (domain.AgentPruner): an orphan that
 // is no longer declared by its source must stop appearing as an auction

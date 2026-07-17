@@ -120,7 +120,7 @@ func TestApplyPlugins_AgentSources(t *testing.T) {
 	for _, src := range c.agentSources {
 		defs, _ := src.DiscoverAgents(context.Background())
 		for _, d := range defs {
-			got[d.ID] = d.System
+			got[d.Definition.ID] = d.Definition.System
 		}
 	}
 	if got["regular"] != false {

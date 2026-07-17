@@ -17,7 +17,7 @@ func (s *sinkFakeStore) Save(_ context.Context, d *domain.Document) error {
 	s.saved[d.ID] = true
 	return nil
 }
-func (s *sinkFakeStore) Delete(_ context.Context, id string) error { delete(s.saved, id); return nil }
+func (s *sinkFakeStore) Delete(_ context.Context, id string) error           { delete(s.saved, id); return nil }
 func (s *sinkFakeStore) SaveBatch(context.Context, []*domain.Document) error { return nil }
 func (s *sinkFakeStore) Search(context.Context, []float32, domain.SearchOptions) ([]domain.SearchResult, error) {
 	return nil, nil
@@ -26,7 +26,7 @@ func (s *sinkFakeStore) GetByID(context.Context, string) (*domain.Document, erro
 func (s *sinkFakeStore) GetBatch(context.Context, []string) ([]domain.Document, error) {
 	return nil, nil
 }
-func (s *sinkFakeStore) DeleteBatch(context.Context, []string) error  { return nil }
+func (s *sinkFakeStore) DeleteBatch(context.Context, []string) error   { return nil }
 func (s *sinkFakeStore) IncrementAccess(context.Context, string) error { return nil }
 func (s *sinkFakeStore) GetStaleMemories(context.Context, int) ([]domain.Document, error) {
 	return nil, nil

@@ -4,8 +4,8 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/storage"
 )
 
@@ -19,9 +19,9 @@ func contentStoreFSDir(cfg *config.Config) string {
 // Callers may Close() it but cannot access storage internals.
 type StorageHandle struct {
 	closer       io.Closer
-	raw          *storage.BBoltAdapter    // only accessible within kernel package
-	ContentStore domain.ContentStore      // ADR-0022: plan-trace CAS (separate file from agent registry)
-	StepCache    domain.StepCache         // ADR-0026: step-level memoization (same BBolt file as agent registry)
+	raw          *storage.BBoltAdapter // only accessible within kernel package
+	ContentStore domain.ContentStore   // ADR-0022: plan-trace CAS (separate file from agent registry)
+	StepCache    domain.StepCache      // ADR-0026: step-level memoization (same BBolt file as agent registry)
 }
 
 // Close implements io.Closer.
@@ -40,7 +40,10 @@ func (s *StorageHandle) Close() error {
 // so it doesn't contend with the agent-registry bbolt file lock.
 func BootstrapStorage(cfg *config.Config) (*StorageHandle, *AgentRepoDecorator, error) {
 	dbPath := filepath.Join(cfg.Storage.DataDir, cfg.Storage.DBName)
-	store, err := storage.NewBBoltAdapter(dbPath, cfg.Metabolism.AgentsDir, domain.IsSystemAgent)
+	// ADR-0075: the store no longer scans the agents directory itself — the composition
+	// root registers the filesystem agents through a FilesystemAgentSource (with manifests)
+	// so the built-in scan is one AgentSource among many, uniform with plugin sources.
+	store, err := storage.NewBBoltAdapterNoScan(dbPath)
 	if err != nil {
 		return nil, nil, err
 	}

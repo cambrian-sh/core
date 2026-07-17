@@ -15,11 +15,19 @@ depends_on:
 
 ## Status
 
-Accepted (the `AgentSource` interface + registry `AddAgentSource`/`AddAgent`/
-`AddSystemAgent` + boot-time registration delivered and unit-tested; plugins can now
-contribute agents. Folding the built-in filesystem scan into a literal
-`FilesystemAgentSource`, preferring the declared/sidecar manifest over the source-regex,
-health-gated activation, and MCP sources are phased follow-ups — see Consequences).
+Accepted — fully unified. Phase 1: the `AgentSource` interface + registry
+`AddAgentSource`/`AddAgent`/`AddSystemAgent`. Phase 2: `Seed` inverted into
+discover-then-persist (`storage.DiscoverFilesystemAgents` + `upsertDiscovered`),
+`FilesystemAgentSource`, sidecar-preference, health-gate, plugin MCP servers
+(`AddMCPServer`). Phase 3 (this revision): the seam carries the **manifest** —
+`DiscoveredAgent{Definition, Manifest}` + an idempotent `SetAgentWithManifest` /
+`UpsertDiscoveredAgent` persist path — so the built-in filesystem scan is now **literally
+one `AgentSource`**: `BootstrapStorage` opens the store with `NewBBoltAdapterNoScan` and
+the composition root registers the agents dir through a system-aware
+`FilesystemAgentSource`. Live-validated: a fresh boot registers all 12 filesystem agents
+through the source with `manifest=true` and the correct system flags
+(scout/kg_extractor/reranker/retrieval = system), no wrongful prune; SourceHash
+idempotency (no re-interview on reboot) is unit-proven.
 
 ## Context
 
@@ -82,22 +90,17 @@ mechanism. So:
 - The privilege grant is explicit + logged, tightening the ambient-authority weakness.
 - Zero change to the working bbolt seeder / reconcile — bounded blast radius.
 
-**Negative / deferred (the honest follow-ups).**
-- The **built-in filesystem scan is not YET literally a `FilesystemAgentSource`** — it
-  still runs inside `BBoltAdapter.Seed`. Folding it behind the interface (so *all*
-  registration is uniform, and an external/plugin agents-directory is just another
-  `FilesystemAgentSource{dir}`) is the next step; it means inverting `Seed` into
-  discover-then-persist.
-- **Manifest-from-regex remains** for the Python path. Preferring the declared
-  `AgentDefinition` (from a source) or the `*.manifest.json` sidecar over the
-  `AGENT_MANIFEST='''…'''` regex is a robustness follow-up.
-- **Health-gated activation** — separating "discovered" from "auction-eligible" so a
-  present-but-broken agent can't be injected — is not part of this seam.
-- **MCP servers** follow the SAME pattern (`AddMCPServer` / an `MCPSource`, Tier-2
-  add-many) but wire deeper — into the MCP manager's boot-time connect (ADR-0043) — so
-  they are a separate phase.
-- No plugin ships an agent yet, so the path is unit-tested (`app/plugin_test.go`
-  `TestApplyPlugins_AgentSources`), not live-exercised.
+**Negative / costs.**
+- `BBoltAdapter.Seed` still exists (for tests + the calibration-report cmd) even though
+  the kernel boot path now uses `NewBBoltAdapterNoScan` + the source. Two ways to seed a
+  store is mild redundancy; Seed could later be expressed in terms of the source too.
+- The persist path is idempotent by `SourceHash` — a real subtlety: routing through a
+  blind `WriteAgentRecord` re-provisioned (re-interviewed) every filesystem agent on every
+  boot; `UpsertDiscoveredAgent` restores the in-Seed idempotency (unit-proven,
+  `TestUpsertDiscoveredAgent_PreservesProvisionalOnUnchangedHash`).
+- No plugin ships an agent or MCP server yet, so the *plugin* paths are unit-tested
+  (`app/plugin_test.go`, `app/agent_source_test.go`), not live-exercised. The built-in
+  source path IS live-validated (12 agents + manifests + system flags on a fresh boot).
 
 ## References
 

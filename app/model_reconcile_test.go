@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // fakeModelReg is a minimal in-memory registry satisfying modelReconciler. Its
@@ -42,10 +42,10 @@ func contains(ss []string, s string) bool { return slices.Contains(ss, s) }
 // and every non-model agent untouched.
 func TestReconcileModelAgents_PrunesOrphanModelOnly(t *testing.T) {
 	reg := &fakeModelReg{agents: []domain.AgentDefinition{
-		{ID: "llm:deepseek", Trait: domain.TraitModel},          // still in config
-		{ID: "llm:ollama:qwen3:8b", Trait: domain.TraitModel},   // orphan (legacy id scheme)
-		{ID: "llm:qwen3-local", Trait: domain.TraitModel},       // orphan (old generator id)
-		{ID: "analyst_agent", Trait: domain.TraitCognitive},     // filesystem agent — must survive
+		{ID: "llm:deepseek", Trait: domain.TraitModel},                              // still in config
+		{ID: "llm:ollama:qwen3:8b", Trait: domain.TraitModel},                       // orphan (legacy id scheme)
+		{ID: "llm:qwen3-local", Trait: domain.TraitModel},                           // orphan (old generator id)
+		{ID: "analyst_agent", Trait: domain.TraitCognitive},                         // filesystem agent — must survive
 		{ID: "net_agent", Trait: domain.TraitCognitive, Runtime: domain.RuntimeA2A}, // dynamic — must survive
 	}}
 

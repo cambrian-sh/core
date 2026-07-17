@@ -63,125 +63,198 @@ func NewBBoltAdapter(dbPath string, agentsDir string, isSystemAgent func(id stri
 	return adapter, nil
 }
 
-// Seed creates buckets if they don't exist and populates the database by scanning
-// agentsDir recursively. Three shapes are supported: single-file `*_agent.py`,
-// a Python package (directory with `__init__.py` + `agent.py`), and `*.manifest.json`
-// sidecars. The recursive scan reaches nested subdirectories such as agents/system/,
-// which is required for the privileged system organs. isSystemAgent (nil-safe)
-// stamps AgentRecord.System at registration; nil ⇒ no agent is classified. Safe
-// to call multiple times — existing agents are only updated when SourceHash changes.
+// NewBBoltAdapterNoScan opens the DB and ensures all buckets exist WITHOUT scanning any
+// agents directory (ADR-0075). The composition root uses this when it registers the
+// filesystem agents through an app-layer FilesystemAgentSource instead — so the built-in
+// scan is just one AgentSource among many, not a hardcoded step inside the store.
+func NewBBoltAdapterNoScan(dbPath string) (*BBoltAdapter, error) {
+	db, err := bbolt.Open(dbPath, 0600, &bbolt.Options{Timeout: 1 * time.Second})
+	if err != nil {
+		return nil, fmt.Errorf("bbolt database open failed: %w", err)
+	}
+	adapter := &BBoltAdapter{db: db}
+	if err := db.Update(createBuckets); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("bbolt bucket init failed: %w", err)
+	}
+	return adapter, nil
+}
+
+// DiscoveredAgent bundles an agent record with its manifest, as produced by the
+// filesystem discovery pass BEFORE persistence (ADR-0075). Separating discovery (pure
+// file I/O) from persistence (the idempotent bbolt write) is the "invert Seed →
+// discover-then-persist" refactor: the same discovery is reusable by an app-layer
+// AgentSource so a plugin can contribute its OWN agents directory.
+type DiscoveredAgent struct {
+	Agent    AgentRecord
+	Manifest ManifestRecord
+}
+
+// Seed creates buckets if they don't exist and populates the database from agentsDir.
+// It now runs in two phases: DiscoverFilesystemAgents does all file I/O and record
+// building outside the write transaction, then upsertDiscovered persists each record
+// idempotently (existing agents update only when SourceHash changes). Three shapes are
+// supported: single-file `*_agent.py`, a Python package (`__init__.py` + `agent.py`),
+// and `*.manifest.json` tool sidecars. isSystemAgent (nil-safe) stamps AgentRecord.System.
 //
-// Separated from NewBBoltAdapter so callers that only need a DB handle (e.g. tests)
-// can construct without running a full filesystem scan.
+// Separated from NewBBoltAdapter so callers that only need a DB handle (e.g. tests) can
+// construct without a filesystem scan.
 func (b *BBoltAdapter) Seed(agentsDir string, isSystemAgent func(id string) bool) error {
-	systemID := isSystemAgent
-	if systemID == nil {
-		systemID = func(string) bool { return false }
+	// Phase 0: ensure all buckets exist.
+	if err := b.db.Update(createBuckets); err != nil {
+		return err
 	}
 
+	// Phase 1: discover (file I/O; no write tx held).
+	discovered, walkErr := DiscoverFilesystemAgents(agentsDir, isSystemAgent)
+	if walkErr != nil {
+		slog.Warn("DB (BBOLT): agents dir unreadable, skipping seed", "dir", agentsDir, "err", walkErr)
+	}
+
+	// Phase 2: persist idempotently.
 	if err := b.db.Update(func(tx *bbolt.Tx) error {
-		if _, err := tx.CreateBucketIfNotExists(agentBucket); err != nil {
-			return err
-		}
-		if _, err := tx.CreateBucketIfNotExists(manifestBucket); err != nil {
-			return err
-		}
-
-		if _, err := tx.CreateBucketIfNotExists(taskEventBucket); err != nil {
-			return err
-		}
-
-		if _, err := tx.CreateBucketIfNotExists(checkpointBucket); err != nil {
-			return err
-		}
-
-		if _, err := tx.CreateBucketIfNotExists(sessionBucket); err != nil {
-			return err
-		}
-
-		if _, err := tx.CreateBucketIfNotExists(eventBucket); err != nil {
-			return err
-		}
-
-		if _, err := tx.CreateBucketIfNotExists(artifactBucket); err != nil {
-			return err
-		}
-
-		if _, err := tx.CreateBucketIfNotExists(clusterBucket); err != nil {
-			return err
-		}
-
-		if _, err := tx.CreateBucketIfNotExists(planEventBucket); err != nil {
-			return err
-		}
-		if _, err := tx.CreateBucketIfNotExists(retrievalSessionBucket); err != nil {
-			return err
-		}
-		if _, err := tx.CreateBucketIfNotExists(traversalLogBucket); err != nil {
-			return err
-		}
-		if _, err := tx.CreateBucketIfNotExists(contradictionResolutionBucket); err != nil {
-			return err
-		}
-
-		if _, err := tx.CreateBucketIfNotExists(watchConfigBucket); err != nil {
-			return err
-		}
-
-		// REACT-01 (ADR-0061): durable reactive-execution buckets.
-		if _, err := tx.CreateBucketIfNotExists(reactiveJournalBucket); err != nil {
-			return err
-		}
-		if _, err := tx.CreateBucketIfNotExists(reactiveCursorBucket); err != nil {
-			return err
-		}
-		if _, err := tx.CreateBucketIfNotExists(reactiveIdempotencyBucket); err != nil {
-			return err
-		}
-		if _, err := tx.CreateBucketIfNotExists(reactiveDeadLetterBucket); err != nil {
-			return err
-		}
-
-		walkErr := filepath.WalkDir(agentsDir, func(walkPath string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				slog.Warn("DB (BBOLT): agents walk error, skipping", "path", walkPath, "err", walkErr)
-				return nil
+		for _, da := range discovered {
+			if err := upsertDiscovered(tx, da); err != nil {
+				return err
 			}
-			if d.IsDir() {
-				if walkPath == agentsDir {
-					return nil
-				}
-				if isAgentPackage(walkPath) {
-					id := d.Name()
-					entry := filepath.Join(walkPath, "agent.py")
-					if err := seedPythonAgent(tx, agentsDir, entry, id, systemID); err != nil {
-						return err
-					}
-					return fs.SkipDir
-				}
-				return nil
-			}
-			name := d.Name()
-			switch {
-			case strings.HasSuffix(name, "agent.py"):
-				id := strings.TrimSuffix(name, ".py")
-				return seedPythonAgent(tx, agentsDir, walkPath, id, systemID)
-			case strings.HasSuffix(name, ".manifest.json"):
-				id := strings.TrimSuffix(name, ".manifest.json")
-				return seedSidecarAgent(tx, agentsDir, walkPath, id, systemID)
-			}
-			return nil
-		})
-		if walkErr != nil {
-			slog.Warn("DB (BBOLT): agents dir unreadable, skipping seed", "dir", agentsDir, "err", walkErr)
 		}
-
 		return nil
 	}); err != nil {
 		return err
 	}
 
 	return b.checkSystemAgentLayout(agentsDir)
+}
+
+// createBuckets creates every bbolt bucket the store uses if absent.
+func createBuckets(tx *bbolt.Tx) error {
+	for _, name := range [][]byte{
+		agentBucket, manifestBucket, taskEventBucket, checkpointBucket, sessionBucket,
+		eventBucket, artifactBucket, clusterBucket, planEventBucket, retrievalSessionBucket,
+		traversalLogBucket, contradictionResolutionBucket, watchConfigBucket,
+		// REACT-01 (ADR-0061): durable reactive-execution buckets.
+		reactiveJournalBucket, reactiveCursorBucket, reactiveIdempotencyBucket, reactiveDeadLetterBucket,
+	} {
+		if _, err := tx.CreateBucketIfNotExists(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DiscoverFilesystemAgents walks agentsDir and returns the agent records it finds,
+// WITHOUT touching the database (ADR-0075). It reaches nested subdirectories such as
+// agents/system/ (the privileged organs). A record whose source is unreadable or a
+// sidecar whose trait/binary is invalid is skipped. isSystemAgent (nil-safe) stamps
+// AgentRecord.System. This is the single discovery implementation used both by Seed
+// (which then persists with manifests) and by the app-layer FilesystemAgentSource.
+func DiscoverFilesystemAgents(agentsDir string, isSystemAgent func(id string) bool) ([]DiscoveredAgent, error) {
+	systemID := isSystemAgent
+	if systemID == nil {
+		systemID = func(string) bool { return false }
+	}
+	var out []DiscoveredAgent
+	walkErr := filepath.WalkDir(agentsDir, func(walkPath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			slog.Warn("DB (BBOLT): agents walk error, skipping", "path", walkPath, "err", walkErr)
+			return nil
+		}
+		if d.IsDir() {
+			if walkPath == agentsDir {
+				return nil
+			}
+			if isAgentPackage(walkPath) {
+				id := d.Name()
+				entry := filepath.Join(walkPath, "agent.py")
+				if da, ok := pythonAgentRecord(agentsDir, entry, id, systemID); ok {
+					out = append(out, da)
+				}
+				return fs.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		switch {
+		case strings.HasSuffix(name, "agent.py"):
+			id := strings.TrimSuffix(name, ".py")
+			if da, ok := pythonAgentRecord(agentsDir, walkPath, id, systemID); ok {
+				out = append(out, da)
+			}
+		case strings.HasSuffix(name, ".manifest.json"):
+			id := strings.TrimSuffix(name, ".manifest.json")
+			if da, ok := sidecarAgentRecord(agentsDir, walkPath, id, systemID); ok {
+				out = append(out, da)
+			}
+		}
+		return nil
+	})
+	return out, walkErr
+}
+
+// UpsertDiscoveredAgent persists one DiscoveredAgent idempotently in its own transaction
+// (ADR-0075). It is the exported, source-facing form of the built-in seeder's per-agent
+// write: an unchanged agent (same SourceHash) is left untouched — crucially preserving
+// its post-interview Provisional=false state across reboots — so registering the built-in
+// filesystem agents through an AgentSource behaves exactly like the old in-Seed scan.
+func (b *BBoltAdapter) UpsertDiscoveredAgent(da DiscoveredAgent) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		return upsertDiscovered(tx, da)
+	})
+}
+
+// upsertDiscovered persists one DiscoveredAgent idempotently: the manifest is always
+// written; a brand-new agent is inserted Provisional; an existing agent is updated only
+// when its SourceHash changed (then re-marked Provisional). Mirrors the pre-inversion
+// per-agent seed semantics exactly.
+func upsertDiscovered(tx *bbolt.Tx, da DiscoveredAgent) error {
+	agentsBucket := tx.Bucket(agentBucket)
+	manifestsBucket := tx.Bucket(manifestBucket)
+	if agentsBucket == nil || manifestsBucket == nil {
+		return fmt.Errorf("upsertDiscovered: required buckets missing")
+	}
+	id := da.Agent.ID
+	manifestData, err := json.Marshal(da.Manifest)
+	if err != nil {
+		return fmt.Errorf("marshal manifest for %s: %w", id, err)
+	}
+	if err := manifestsBucket.Put([]byte(id), manifestData); err != nil {
+		return fmt.Errorf("put manifest for %s: %w", id, err)
+	}
+
+	existingData := agentsBucket.Get([]byte(id))
+	if existingData == nil {
+		slog.Info("DB (BBOLT): seeding new agent...", "id", id)
+		data, err := json.Marshal(da.Agent)
+		if err != nil {
+			return fmt.Errorf("marshal new agent %s: %w", id, err)
+		}
+		return agentsBucket.Put([]byte(id), data)
+	}
+
+	var existing AgentRecord
+	if json.Unmarshal(existingData, &existing) != nil {
+		return nil // malformed existing record — leave as-is
+	}
+	if existing.SourceHash == da.Agent.SourceHash {
+		return nil // unchanged
+	}
+	slog.Info("DB (BBOLT): agent source changed, marking Provisional", "id", id)
+	// Preserve the record identity; refresh the source-derived fields + Provisional.
+	existing.SourceHash = da.Agent.SourceHash
+	existing.ManifestVersion = da.Agent.ManifestVersion
+	existing.Provisional = true
+	existing.Description = da.Agent.Description
+	existing.System = da.Agent.System
+	if da.Agent.Trait == "tool" {
+		// Sidecar tool-agents also refresh exec/runtime on change (pre-inversion behavior).
+		existing.ExecPath = da.Agent.ExecPath
+		existing.Runtime = da.Agent.Runtime
+	}
+	data, err := json.Marshal(existing)
+	if err != nil {
+		return fmt.Errorf("marshal updated agent %s: %w", id, err)
+	}
+	return agentsBucket.Put([]byte(id), data)
 }
 
 // isAgentPackage reports whether dir is a Python package that also ships the
@@ -222,28 +295,38 @@ func (b *BBoltAdapter) checkSystemAgentLayout(agentsDir string) error {
 	})
 }
 
-func seedPythonAgent(tx *bbolt.Tx, agentsDir, fullPath, id string, isSystemAgent func(string) bool) error {
-	agentsBucket := tx.Bucket(agentBucket)
-	manifestsBucket := tx.Bucket(manifestBucket)
-	if agentsBucket == nil || manifestsBucket == nil {
-		return fmt.Errorf("seedPythonAgent: required buckets missing")
-	}
-
+// pythonAgentRecord builds the DiscoveredAgent for a `*_agent.py` entry (no DB access).
+// Manifest resolution prefers a sibling `<id>.manifest.json` (a non-"tool" ManifestRecord)
+// over the embedded `AGENT_MANIFEST='''…'''` regex (ADR-0075 sidecar-preference) — the
+// declared JSON is less brittle than parsing a manifest out of source text. ok is always
+// true (an unreadable entry still registers with defaults, preserving pre-inversion
+// behavior; availability health-gating is applied by the app-layer source, not here).
+func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bool) (DiscoveredAgent, bool) {
 	content, readErr := os.ReadFile(fullPath)
 
 	description := "General-purpose agent."
 	if readErr == nil {
-		matches := descRegex.FindSubmatch(content)
-		if len(matches) > 1 {
-			description = string(matches[1])
+		if m := descRegex.FindSubmatch(content); len(m) > 1 {
+			description = string(m[1])
 		}
 	}
 
 	var manifest ManifestRecord
-	if readErr == nil {
-		mMatches := manifestRegex.FindSubmatch(content)
-		if len(mMatches) > 1 {
-			if jsonErr := json.Unmarshal(mMatches[1], &manifest); jsonErr != nil {
+	sidecarUsed := false
+	// Prefer a sibling declared manifest (non-tool) over the source regex.
+	sibling := filepath.Join(filepath.Dir(fullPath), id+".manifest.json")
+	if mb, e := os.ReadFile(sibling); e == nil {
+		var sm ManifestRecord
+		if json.Unmarshal(mb, &sm) == nil && sm.Trait != "tool" {
+			manifest = sm
+			sidecarUsed = true
+		} else {
+			slog.Warn("DB (BBOLT): sibling manifest ignored (parse error or trait=tool)", "id", id, "file", sibling)
+		}
+	}
+	if !sidecarUsed && readErr == nil {
+		if m := manifestRegex.FindSubmatch(content); len(m) > 1 {
+			if jsonErr := json.Unmarshal(m[1], &manifest); jsonErr != nil {
 				slog.Warn("DB (BBOLT): agent manifest JSON parse error", "id", id, "err", jsonErr)
 				manifest = ManifestRecord{}
 			}
@@ -256,14 +339,6 @@ func seedPythonAgent(tx *bbolt.Tx, agentsDir, fullPath, id string, isSystemAgent
 	}
 	sourceHash := ComputeSourceHash(manifest.Version, fileContent)
 
-	manifestData, err := json.Marshal(manifest)
-	if err != nil {
-		return fmt.Errorf("marshal manifest for %s: %w", id, err)
-	}
-	if err := manifestsBucket.Put([]byte(id), manifestData); err != nil {
-		return fmt.Errorf("put manifest for %s: %w", id, err)
-	}
-
 	execPath := filepath.ToSlash(fullPath)
 	// ExecPath must be relative to Dir — buildAgentCmd resolves it under cmd.Dir=def.Dir,
 	// so a full path produces a doubled 'agents/agents/...' and python can't open the file.
@@ -271,10 +346,8 @@ func seedPythonAgent(tx *bbolt.Tx, agentsDir, fullPath, id string, isSystemAgent
 		execPath = filepath.ToSlash(rel)
 	}
 
-	existingData := agentsBucket.Get([]byte(id))
-	if existingData == nil {
-		slog.Info("DB (BBOLT): seeding new agent...", "id", id)
-		agent := AgentRecord{
+	return DiscoveredAgent{
+		Agent: AgentRecord{
 			ID:              id,
 			Name:            strings.ReplaceAll(strings.Title(strings.ReplaceAll(id, "_", " ")), " Agent", " Agent"),
 			Description:     description,
@@ -286,147 +359,57 @@ func seedPythonAgent(tx *bbolt.Tx, agentsDir, fullPath, id string, isSystemAgent
 			Provisional:     true,
 			Trait:           manifest.Trait,
 			System:          isSystemAgent(id),
-		}
-		data, err := json.Marshal(agent)
-		if err != nil {
-			return fmt.Errorf("marshal new sidecar agent %s: %w", id, err)
-		}
-		if err := agentsBucket.Put([]byte(id), data); err != nil {
-			return fmt.Errorf("put new sidecar agent %s: %w", id, err)
-		}
-	} else {
-		var existing AgentRecord
-		if jsonErr := json.Unmarshal(existingData, &existing); jsonErr == nil {
-			if existing.SourceHash != sourceHash {
-				slog.Info("DB (BBOLT): agent source changed, marking Provisional", "id", id)
-				existing.SourceHash = sourceHash
-				existing.ManifestVersion = manifest.Version
-				existing.Provisional = true
-				existing.Description = description
-				existing.System = isSystemAgent(id)
-				data, err := json.Marshal(existing)
-				if err != nil {
-					return fmt.Errorf("marshal updated sidecar agent %s: %w", id, err)
-				}
-				if err := agentsBucket.Put([]byte(id), data); err != nil {
-					return fmt.Errorf("put updated sidecar agent %s: %w", id, err)
-				}
-			}
-		}
-	}
-	return nil
+		},
+		Manifest: manifest,
+	}, true
 }
 
-func seedSidecarAgent(tx *bbolt.Tx, agentsDir, manifestPath, id string, isSystemAgent func(string) bool) error {
-	agentsBucket := tx.Bucket(agentBucket)
-	manifestsBucket := tx.Bucket(manifestBucket)
-	if agentsBucket == nil || manifestsBucket == nil {
-		return fmt.Errorf("seedSidecarAgent: required buckets missing")
-	}
-
+// sidecarAgentRecord builds the DiscoveredAgent for a `*.manifest.json` tool sidecar (no
+// DB access). Returns ok=false (skips) when the manifest is unreadable/unparseable, its
+// trait is not "tool", or its binary does not exist — a health gate at discovery time.
+func sidecarAgentRecord(agentsDir, manifestPath, id string, isSystemAgent func(string) bool) (DiscoveredAgent, bool) {
 	manifestBytes, readErr := os.ReadFile(manifestPath)
 	if readErr != nil {
-		slog.Warn("DB (BBOLT): sidecar manifest unreadable, skipping",
-			"file", manifestPath, "err", readErr)
-		return nil
+		slog.Warn("DB (BBOLT): sidecar manifest unreadable, skipping", "file", manifestPath, "err", readErr)
+		return DiscoveredAgent{}, false
 	}
-
 	var sm sidecarManifest
 	if jsonErr := json.Unmarshal(manifestBytes, &sm); jsonErr != nil {
-		slog.Warn("DB (BBOLT): sidecar manifest JSON parse error, skipping",
-			"file", manifestPath, "err", jsonErr)
-		return nil
+		slog.Warn("DB (BBOLT): sidecar manifest JSON parse error, skipping", "file", manifestPath, "err", jsonErr)
+		return DiscoveredAgent{}, false
 	}
-
-	// trait field must be "tool" — anything else (absent, "cognitive", etc.) is skipped.
 	if sm.Trait != "tool" {
-		slog.Warn("DB (BBOLT): sidecar manifest trait is not 'tool', skipping",
-			"file", manifestPath, "trait", sm.Trait)
-		return nil
+		slog.Warn("DB (BBOLT): sidecar manifest trait is not 'tool', skipping", "file", manifestPath, "trait", sm.Trait)
+		return DiscoveredAgent{}, false
 	}
-
-	// Resolve exec_path relative to the manifest's own directory.
 	manifestDir := filepath.Dir(manifestPath)
-	resolvedExecPath := filepath.ToSlash(
-		filepath.Join(manifestDir, filepath.FromSlash(sm.ExecPath)))
-
-	// Binary must exist; if not, log WARN and skip (do not crash).
+	resolvedExecPath := filepath.ToSlash(filepath.Join(manifestDir, filepath.FromSlash(sm.ExecPath)))
 	binaryBytes, binErr := os.ReadFile(resolvedExecPath)
 	if binErr != nil {
-		slog.Warn("DB (BBOLT): sidecar binary not found, skipping",
-			"exec_path", resolvedExecPath, "err", binErr)
-		return nil
+		slog.Warn("DB (BBOLT): sidecar binary not found, skipping", "exec_path", resolvedExecPath, "err", binErr)
+		return DiscoveredAgent{}, false
 	}
-
-	// Default runtime to "binary" when absent.
 	runtime := "binary"
 	if sm.Runtime != "" {
 		runtime = sm.Runtime
 	}
-
-	sourceHash := ComputeSidecarSourceHash(sm.Version, manifestBytes, binaryBytes)
-
-	agentManifest := ManifestRecord{
-		Version:          sm.Version,
-		SupportedFormats: sm.SupportedFormats,
-		Trait:            "tool",
-	}
-	manifestData, err := json.Marshal(agentManifest)
-	if err != nil {
-		return fmt.Errorf("marshal sidecar manifest for %s: %w", id, err)
-	}
-	if err := manifestsBucket.Put([]byte(id), manifestData); err != nil {
-		return fmt.Errorf("put sidecar manifest for %s: %w", id, err)
-	}
-
-	existingData := agentsBucket.Get([]byte(id))
-	if existingData == nil {
-		slog.Info("DB (BBOLT): seeding sidecar tool-agent", "id", id)
-		agentsDirSlash := strings.TrimRight(filepath.ToSlash(agentsDir), "/") + "/"
-		sidecarExecPath := strings.TrimPrefix(resolvedExecPath, agentsDirSlash)
-		agent := AgentRecord{
+	agentsDirSlash := strings.TrimRight(filepath.ToSlash(agentsDir), "/") + "/"
+	return DiscoveredAgent{
+		Agent: AgentRecord{
 			ID:              id,
 			Name:            id,
 			Description:     sm.Description,
 			Runtime:         runtime,
-			ExecPath:        sidecarExecPath,
+			ExecPath:        strings.TrimPrefix(resolvedExecPath, agentsDirSlash),
 			Dir:             filepath.ToSlash(agentsDir),
-			SourceHash:      sourceHash,
+			SourceHash:      ComputeSidecarSourceHash(sm.Version, manifestBytes, binaryBytes),
 			ManifestVersion: sm.Version,
 			Provisional:     true,
 			Trait:           "tool",
 			System:          isSystemAgent(id),
-		}
-		data, err := json.Marshal(agent)
-		if err != nil {
-			return fmt.Errorf("marshal new agent %s: %w", id, err)
-		}
-		if err := agentsBucket.Put([]byte(id), data); err != nil {
-			return fmt.Errorf("put new agent %s: %w", id, err)
-		}
-	} else {
-		var existing AgentRecord
-		if jsonErr := json.Unmarshal(existingData, &existing); jsonErr == nil {
-			if existing.SourceHash != sourceHash {
-				slog.Info("DB (BBOLT): sidecar tool-agent changed, marking Provisional", "id", id)
-				existing.SourceHash = sourceHash
-				existing.ManifestVersion = sm.Version
-				existing.Provisional = true
-				existing.Description = sm.Description
-				existing.ExecPath = resolvedExecPath
-				existing.Runtime = runtime
-				existing.System = isSystemAgent(id)
-				data, err := json.Marshal(existing)
-				if err != nil {
-					return fmt.Errorf("marshal updated agent %s: %w", id, err)
-				}
-				if err := agentsBucket.Put([]byte(id), data); err != nil {
-					return fmt.Errorf("put updated agent %s: %w", id, err)
-				}
-			}
-		}
-	}
-	return nil
+		},
+		Manifest: ManifestRecord{Version: sm.Version, SupportedFormats: sm.SupportedFormats, Trait: "tool"},
+	}, true
 }
 
 // GetAgentRecord returns the raw AgentRecord for the given name or ID.
@@ -487,6 +470,23 @@ func (b *BBoltAdapter) GetAllAgentRecords() ([]AgentRecord, error) {
 		return nil, err
 	}
 	return recs, nil
+}
+
+// WriteManifestRecord persists a ManifestRecord for the given agent ID (ADR-0075). It is
+// the manifest half of SetAgentWithManifest, so an AgentSource can carry the manifest
+// EXTRAS (PythonDeps/MemoryLimitMB/schemas) the plain WriteAgentRecord path does not.
+func (b *BBoltAdapter) WriteManifestRecord(agentID string, rec ManifestRecord) error {
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("manifest marshal for %s: %w", agentID, err)
+	}
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(manifestBucket)
+		if bucket == nil {
+			return fmt.Errorf("manifests bucket not found")
+		}
+		return bucket.Put([]byte(agentID), data)
+	})
 }
 
 // GetManifestRecord retrieves the persisted ManifestRecord for the given agent ID.

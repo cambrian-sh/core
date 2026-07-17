@@ -380,19 +380,21 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	// Register LLM models as TraitModel agents so they participate in the auction.
 	registerModelAgents(reg, cfg.LLMProvider.Generators)
+	// ADR-0075: register agents from all AgentSources — the built-in filesystem scan
+	// (now a system-aware FilesystemAgentSource carrying manifests) FIRST, then any
+	// plugin-contributed sources. This runs BEFORE the reconciles so the orphan-eviction
+	// pass sees the freshly-registered filesystem population.
+	builtinSource := newBuiltinFilesystemAgentSource(cfg.Metabolism.AgentsDir)
+	registerAgentSources(ctx, reg, append([]AgentSource{builtinSource}, composed.agentSources...))
 	// ADR-0042: config is the source of truth for the model population. Eviction
 	// of models dropped from config — registration above is upsert-only, so a
 	// removed model would otherwise survive in the registry and keep winning the
 	// auction after a restart (the qwen-after-removal orphan bug).
 	reconcileModelAgents(ctx, reg, cfg.LLMProvider.Generators)
-	// Same orphan class for filesystem agents: the bbolt seeder is upsert-only, so
-	// an agent whose source file was deleted lingers in the registry. Evict those
-	// whose ExecPath no longer exists on disk; A2A/dynamic agents are spared.
+	// Same orphan class for filesystem agents: sources are upsert-only, so an agent whose
+	// source file was deleted lingers in the registry. Evict those whose ExecPath no
+	// longer exists on disk; A2A/dynamic agents are spared.
 	reconcileFilesystemAgents(ctx, reg, func(p string) bool { _, err := os.Stat(p); return err == nil })
-	// ADR-0075: register agents contributed by plugin AgentSources, alongside the
-	// built-in filesystem + model-config sources. Additive (upsert); a source error is
-	// logged, never fatal.
-	registerPluginAgents(ctx, reg, composed.agentSources)
 
 	// 2. Domain stacks — sequential construction (dependency order)
 	mem := kernel.NewMemoryStack(vec, memoryGen, embedder, cfg.Execution)
@@ -882,10 +884,23 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	var mcpBudget *domain.BudgetLedger
 	var mcpAuditor domain.EgressAuditor
 	var mcpServers []mcp.ServerConfig
-	if len(cfg.MCP.Servers) > 0 {
+	if len(cfg.MCP.Servers) > 0 || len(composed.mcpServers) > 0 {
 		mcpConnector = mcp.NewConnector()
-		servers := make([]mcp.ServerConfig, 0, len(cfg.MCP.Servers))
+		servers := make([]mcp.ServerConfig, 0, len(cfg.MCP.Servers)+len(composed.mcpServers))
 		pricing := domain.MapPricingSource{}
+		// ADR-0075: plugin-contributed MCP servers connect alongside the config ones.
+		for _, s := range composed.mcpServers {
+			toolPolicy := make(map[string]mcp.ToolPolicy, len(s.Tools))
+			for _, tc := range s.Tools {
+				toolPolicy[tc.Name] = mcp.ToolPolicy{Dangerous: tc.Dangerous, DataWriteKinds: tc.DataWriteKinds}
+			}
+			servers = append(servers, mcp.ServerConfig{
+				ID: s.ID, Transport: s.Transport, Endpoint: s.Endpoint, Args: s.Args,
+				AuthType: s.AuthType, AuthHeader: s.AuthHeader, AuthTokenEnv: s.AuthTokenEnv,
+				Tools: toolPolicy,
+			})
+			slog.Info("ADR-0075: registering plugin MCP server", "id", s.ID, "transport", s.Transport)
+		}
 		for _, s := range cfg.MCP.Servers {
 			toolPolicy := make(map[string]mcp.ToolPolicy, len(s.Tools))
 			for _, tc := range s.Tools {
@@ -1683,23 +1698,26 @@ var _ mcp.ToolSink = (*mcpToolSink)(nil)
 // reg.SetAgent path as any other agent, so it participates in the auction/scope/merit
 // machinery normally. A System=true definition (from Registry.AddSystemAgent) is logged
 // as an explicit privilege grant — the grant is visible, not inferred.
-func registerPluginAgents(ctx context.Context, reg *kernel.AgentRepoDecorator, sources []AgentSource) {
+func registerAgentSources(ctx context.Context, reg *kernel.AgentRepoDecorator, sources []AgentSource) {
 	for _, src := range sources {
-		defs, err := src.DiscoverAgents(ctx)
+		discovered, err := src.DiscoverAgents(ctx)
 		if err != nil {
-			slog.Warn("registerPluginAgents: source discovery failed", "source", src.Name(), "err", err)
+			slog.Warn("registerAgentSources: source discovery failed", "source", src.Name(), "err", err)
 			continue
 		}
-		for _, def := range defs {
+		for _, da := range discovered {
+			def := da.Definition
 			if def.System {
-				slog.Warn("ADR-0075: registering PRIVILEGED system agent from plugin (explicit grant)",
+				slog.Warn("ADR-0075: registering PRIVILEGED system agent (explicit grant)",
 					"source", src.Name(), "id", def.ID)
 			}
-			if err := reg.SetAgent(def); err != nil {
-				slog.Warn("registerPluginAgents: failed to register agent", "source", src.Name(), "id", def.ID, "err", err)
+			// SetAgentWithManifest carries the manifest EXTRAS (PythonDeps/MemoryLimitMB/
+			// schemas); a nil manifest degrades to a record-only write.
+			if err := reg.SetAgentWithManifest(def, da.Manifest); err != nil {
+				slog.Warn("registerAgentSources: failed to register agent", "source", src.Name(), "id", def.ID, "err", err)
 				continue
 			}
-			slog.Info("ADR-0075: registered plugin agent", "source", src.Name(), "id", def.ID, "system", def.System)
+			slog.Info("ADR-0075: registered agent from source", "source", src.Name(), "id", def.ID, "system", def.System, "manifest", da.Manifest != nil)
 		}
 	}
 }
