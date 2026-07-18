@@ -310,6 +310,7 @@ message OperatorEvent {
     TokenChunkOp token = 23; // live-only lane; seq is 0 and is never replayed
     ScoutUsefulnessOp scout_usefulness = 24; // ROUTE-08 phase A
     ReactiveBudgetOp reactive_budget = 25;   // REACT-02 / ADR-0062: backpressure shed event
+    AgentStepOp agent_step = 26;             // agent-loop observability (query-thrash + poisoning)
   }
 }
 
@@ -326,6 +327,20 @@ message ScoutUsefulnessOp {
   int32 plan_steps = 6;
   int32 replan_count = 7;
   bool replanned = 8;
+}
+
+// AgentStepOp reports one in-loop agent action (a memory_query today) so the harness can
+// diagnose agent-internal failure modes the orchestration trace hides: query-thrash (count
+// + near-duplicate queries per session) and context poisoning (self_hits = retrievals the
+// caller itself authored; cross_session_hits = retrievals from a different session).
+message AgentStepOp {
+  string session_id = 1;
+  string agent_id = 2;
+  string action = 3; // "memory_query" (extensible)
+  string query = 4;
+  int32 hits = 5;
+  int32 self_hits = 6;
+  int32 cross_session_hits = 7;
 }
 
 // ResyncRequired tells the client its cursor has fallen out of the retained

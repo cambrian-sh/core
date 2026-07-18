@@ -539,11 +539,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 						"attempts", healErr.AttemptCount,
 						"loop", healErr.LoopDetected,
 						"err", healErr.LastError)
-					lastOut := ""
-					if healErr.LastError != nil {
-						lastOut = healErr.LastError.Error()
-					}
-					_ = s.MemoryAgent.IngestNegativeEdge(stepCtx, healErr.LastError.Error(), lastOut, fmt.Sprintf("step-%d", i))
+					// Experiential memory removed: no negative-edge (failure) write-back.
 				}
 
 				// Inter-step fallback: try runner-up candidates when winner fails.
@@ -612,7 +608,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	executor := &executer.DAGExecutor{
 		EventWriter:            eventWriter,
 		EnqueueVerification:    s.EnqueueVerification,
-		MemoryRecorder:         s.MemoryAgent,
+		// Experiential memory removed: no step-result / plan-scene write-back (nil recorder).
 		WorkspaceStage:         s.WorkspaceStage,
 		ArtifactLister:         s.ArtifactMeta,     // ADR-0034: surface prior-step artifacts (scope-filtered)
 		SessionScopes:          s.ArtifactSessions, // ADR-0034 Phase 2: caller_scope filter (may be nil)
@@ -628,6 +624,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		CheckpointValidator:    awareness.NewLLMCheckpointValidator(s.Planner),
 		ReplanHandler:          s.replanHandler(),
 		MaxReplanAttempts:      s.ExecCfg.MaxReplanAttempts,
+		MaxFanOutWidth:         s.ExecCfg.MaxFanOutWidth,
 		MaxPlanCost:            s.ExecCfg.MaxPlanCost,
 		DefaultInputCostPer1M:  s.Manager.DefaultInputCostPer1M,
 		DefaultOutputCostPer1M: s.Manager.DefaultOutputCostPer1M,
@@ -684,11 +681,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		return nil, err
 	}
 
-	// Proprioceptive confidence recording
-	if s.Hippocampus != nil && len(confValues) > 0 {
-		mean := meanConfidence(confValues)
-		_ = s.Hippocampus.Store(ctx, plan, mean)
-	}
+	// Experiential memory removed: no procedural-memory (Hippocampus) plan write-back.
 
 	finalResult := masterCtx[finalResultKey]
 	delete(masterCtx, finalResultKey)

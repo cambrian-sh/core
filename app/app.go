@@ -20,7 +20,6 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/awareness"
 	"github.com/cambrian-sh/core/internal/centralexec"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/discovery"
@@ -105,7 +104,6 @@ type Kernel struct {
 	EventLogger        *subsynaptic.EventLogger
 	SynapticWatcher    *supsynaptic.SynapticWatcher
 	CircadianRhythm    *circadian.CircadianRhythm
-	MemoryLifecycleMgr *circadian.MemoryLifecycleManager
 	ArtifactVault      *vault.ArtifactVault
 	EventBus           *domain.InMemoryEventBus
 
@@ -463,30 +461,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		}
 	})
 
-	// ADR-0034 (D11): scope promotion pipeline. The ConsolidatorAgent reads raw
-	// Tier-0 docs under ScopeConsolidator (secrets/PII excluded), clusters by theme,
-	// and writes k-anonymized, regex-scrubbed insights to broader scope through the
-	// ScopedStoreWriter. Triggered on MemoryPressureEvent (cross-session batch, never
-	// per-session — one session can't satisfy the anonymity floor). Safety rests on
-	// deterministic gates (scope + counted k-floor + masker), never on the LLM.
-	promoter := scope.NewPromoter(
-		memory.NewConsolidatorReader(vec, 0),
-		scope.NewCosineThemeClusterer(cfg.Execution.WorkspaceDriftThreshold),
-		memory.NewLLMGeneralizer(memoryGen),
-		domain.NewRegexPIIMasker(),
-		memory.NewConsolidatorWriter(mem.WriteStore, embedder),
-		scope.NewInMemoryLedger(),
-		cfg.Execution.KAnonymityFloor,
-		slog.Default(),
-	)
-	eventBus.Subscribe(domain.EventTypeMemoryPressure, func(_ domain.DomainEvent) {
-		// Lookback floor = full history minus already-promoted clusters (ledger).
-		go func() {
-			if err := promoter.PromoteBatch(context.Background(), time.Time{}); err != nil {
-				slog.Warn("ADR-0034: scope promotion batch failed", "err", err)
-			}
-		}()
-	})
+	// Experiential memory removed: the ADR-0034 scope-promotion pipeline (clustered
+	// insight write-back) is no longer wired. Document ingestion (the corpus) is unaffected.
 	meta.InterviewWorker.EventBus = eventBus
 	meta.Auctioneer.EventBus = eventBus
 	meta.VerificationWorker.EventBus = eventBus // ADR-0047 D3: VerifierRoundEvent → operator feed
@@ -619,16 +595,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// 7. SynapticWatcher — background observer ingesting high-priority events to LTM
 	synapticWatcher := supsynaptic.New(reg, mem.Agent)
 
-	// 8. EpisodicExtractor + MemoryLifecycleManager (ADR-0029 + ADR-0030).
-	episodicExtractor := awareness.NewEpisodicExtractor(awarenessGen, vec, domain.NewRegexPIIMasker())
-	consolidationDelay := time.Duration(cfg.Execution.EpisodicConsolidationDelayMs) * time.Millisecond
-	consolidator := &episodicConsolidator{
-		extractor:          episodicExtractor,
-		eventLogger:        eventLogger,
-		consolidationDelay: consolidationDelay,
-	}
+	// Experiential memory removed: the EpisodicExtractor + MemoryLifecycleManager
+	// (ADR-0029/0030 episodic-narrative consolidation) are no longer wired. Session
+	// token eviction stays on the CircadianRhythm below; ttl still drives dormancy.
 	ttl := time.Duration(cfg.Execution.SessionTTLDays) * 24 * time.Hour
-	mlm := circadian.NewMemoryLifecycleManager(sessionMgr, consolidator, eventBus, ttl)
 
 	// Wire SessionManager so it publishes SessionDormantEvent on state transition.
 	sessionMgr.SetEventBus(eventBus)
@@ -1310,7 +1280,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		EventLogger:        eventLogger,
 		SynapticWatcher:    synapticWatcher,
 		CircadianRhythm:    circadianRhythm,
-		MemoryLifecycleMgr: mlm,
 		ArtifactVault:      artifactVault,
 		EventBus:           eventBus,
 		ScopeResolver:      scopeResolver,
@@ -1358,10 +1327,6 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	})
 	g.Go(func() error {
 		k.CircadianRhythm.Start(ctx)
-		return nil
-	})
-	g.Go(func() error {
-		k.MemoryLifecycleMgr.Start(ctx)
 		return nil
 	})
 
@@ -1413,6 +1378,14 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// existing domain events into it; the projection folds plan state.
 		operatorFeed := operator.NewSpool(operator.SpoolConfig{})
 		operator.SubscribeBridge(k.EventBus, operatorFeed)
+		// Latch + heartbeat the agent roster so a feed consumer that connects AFTER boot
+		// (e.g. the benchmark harness in --no-supervise) reliably receives the current
+		// agent→capabilities roster instead of racing spool eviction of the one-time boot
+		// AgentReadyOp events — the empty-capabilities routing-measurement bug.
+		rosterLatch := operator.NewRosterLatch(operatorFeed)
+		k.EventBus.Subscribe(domain.EventTypeAgentReady, rosterLatch.Observe)
+		rosterLatch.Seed(ctx, k.Registry) // manifest baseline — survives disable_interviews (no ready events)
+		rosterLatch.Start(ctx, 0)
 		operatorProjection := operator.NewProjection()
 		operator.SubscribeProjection(k.EventBus, operatorProjection)
 		// ADR-0047 0047-23: fork managed-proxy generation chunks onto the feed's
@@ -1500,6 +1473,9 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			"scout-usefulness",
 			// route-preview: PreviewRoute deterministic gatekeeper merit scoring (ROUTE-07).
 			"route-preview",
+			// agent-steps: per-memory_query AgentStepOp on the feed — agent-loop
+			// observability (query-thrash + retrieval-provenance poisoning signals).
+			"agent-steps",
 		}
 		if k.Server.WatchHandler != nil {
 			operatorCaps = append(operatorCaps, "watches-read", "watches-crud")
@@ -1524,7 +1500,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Server.WatchHandler != nil {
 			operatorCaps = append(operatorCaps, "watch-schedule")
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0057", operatorCaps)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0058", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).
@@ -1965,29 +1941,6 @@ func reconcileIndex(ctx context.Context, lister docTypeLister, remover docRemove
 	}
 }
 
-// episodicConsolidator adapts the EpisodicExtractor to the circadian.SessionConsolidator interface.
-// It applies the consolidation delay (giving Tier-2 time to drain) and loads narrative events
-// before running episodic extraction. ADR-0029 + ADR-0030.
-type episodicConsolidator struct {
-	extractor          *awareness.EpisodicExtractor
-	eventLogger        *subsynaptic.EventLogger
-	consolidationDelay time.Duration
-}
-
-func (c *episodicConsolidator) Consolidate(ctx context.Context, sess domain.Session) error {
-	if c.consolidationDelay > 0 {
-		select {
-		case <-time.After(c.consolidationDelay):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	events, _ := c.eventLogger.GetRecentEvents(ctx, sess.ID, 200)
-	return c.extractor.ExtractAndSave(ctx, awareness.EpisodicExtractionInput{
-		Session: sess,
-		Events:  events,
-	})
-}
 
 func initTelemetry(cfg *config.Config) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider) {
 	if cfg.Telemetry.OTLPEndpoint == "" && cfg.Telemetry.PrometheusPort == 0 && !cfg.Telemetry.EnableStdoutExporter {

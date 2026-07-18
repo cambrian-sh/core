@@ -143,6 +143,7 @@ type DAGExecutor struct {
 	MaxContextSlots    int // ADR-0022: hard ceiling for PrimeForStep; 0 defaults to 20
 	StepFactCosineThreshold float64 // AGENTCONTEXTREQ REQ2: min cosine for forwarding a planning fact to a step (default 0.55)
 	MaxReplanAttempts   int                 // max replan attempts; 0 disables replan
+	MaxFanOutWidth        int                 // ADR-0078 R2: cap on parametric fan-out expansion; 0 disables the cap
 	MaxPlanCost           float64             // total plan budget; 0 disables budget enforcement
 	DefaultInputCostPer1M float64             // cost per 1M input tokens for cost estimation
 	DefaultOutputCostPer1M float64            // cost per 1M output tokens for cost estimation
@@ -443,6 +444,24 @@ func (d *DAGExecutor) applyReplannedPlan(newPlan *domain.ExecutionPlan, plan **d
 	return nil
 }
 
+// applyExpandedPlan swaps in a fan-out-expanded plan (ADR-0078 R2). Expansion APPENDS
+// children at fresh indices and leaves every existing index intact, so — unlike
+// applyReplannedPlan — the completed and alreadyDispatched maps and all masterContext
+// step_N keys stay valid and are NOT cleared. The inert parametric node is marked completed
+// so it is fully accounted (the dispatch guard already prevents it from ever running).
+// Runs in the coordinator goroutine.
+func (d *DAGExecutor) applyExpandedPlan(expanded *domain.ExecutionPlan, plan **domain.ExecutionPlan, n *int, completed map[int]bool, topoOrder *[]int, fanIdx int) error {
+	order, err := TopologicalSort(expanded.Steps)
+	if err != nil {
+		return err
+	}
+	*plan = expanded
+	*n = len(expanded.Steps)
+	*topoOrder = order
+	completed[fanIdx] = true
+	return nil
+}
+
 // Pause stops dispatching new steps. In-flight goroutines complete normally.
 // Safe to call from any goroutine concurrently with Execute.
 func (d *DAGExecutor) Pause() {
@@ -671,6 +690,13 @@ func (d *DAGExecutor) ExecuteFrom(
 		}
 		for _, i := range topoOrder {
 			if alreadyDispatched[i] {
+				continue
+			}
+			// ADR-0078 R2: never dispatch a parametric fan-out node as-is — it is
+			// replaced by concrete children when its source step completes (the
+			// expansion hook below). Skipping it here prevents a race where the
+			// node runs before expansion.
+			if plan.Steps[i].FanOutOver != nil {
 				continue
 			}
 			ready := true
@@ -975,6 +1001,37 @@ func (d *DAGExecutor) ExecuteFrom(
 					d.paused = true
 					d.errorPause = true
 					d.pausedMu.Unlock()
+				}
+			}
+		}
+
+		// ADR-0078 R2: if a parametric fan-out node is waiting on the step that just
+		// completed, expand it now — a deterministic plan rewrite over the step's output,
+		// so "discover N → do N" adapts the plan with no planner round-trip. On over-width
+		// it is routed to replan (no silent truncation); on any other extraction issue the
+		// node simply expands to whatever items were found.
+		if firstErr == nil {
+			if fanIdx := domain.PendingFanOut(plan, r.index); fanIdx >= 0 {
+				srcOut := masterContext[fmt.Sprintf("step_%d_result", r.index)]
+				items := domain.ExtractFanOutItems(srcOut)
+				expanded, expErr := domain.ExpandFanOut(plan, fanIdx, items, d.MaxFanOutWidth)
+				if expErr != nil {
+					slog.Info("DAGExecutor: fan-out over-width; routing to replan",
+						"src", r.index, "fan_step", fanIdx, "items", len(items), "err", expErr)
+					firstErr = expErr
+					failedStepIdx = fanIdx
+					if d.ReplanHandler != nil && d.MaxReplanAttempts != 0 {
+						d.pausedMu.Lock()
+						d.paused = true
+						d.errorPause = true
+						d.pausedMu.Unlock()
+					}
+				} else if err := d.applyExpandedPlan(expanded, &plan, &n, completed, &topoOrder, fanIdx); err != nil {
+					slog.Warn("DAGExecutor: fan-out expansion produced an invalid plan", "err", err)
+					firstErr = err
+					failedStepIdx = fanIdx
+				} else {
+					slog.Info("DAGExecutor: fan-out expanded", "src", r.index, "fan_step", fanIdx, "children", len(items))
 				}
 			}
 		}

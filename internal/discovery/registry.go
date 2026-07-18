@@ -61,6 +61,31 @@ func (r *Registry) WithGovernors(maxProbes int, probeTimeout time.Duration) *Reg
 // path is a no-op and the caller degrades to one-shot / env-only).
 func (r *Registry) Empty() bool { return r == nil || len(r.sources) == 0 }
 
+// KnownNamer is a source that can enumerate the real names under its scope, so bare words
+// in a request can be matched against what actually exists (Aider-style, ADR-0078 D3).
+type KnownNamer interface {
+	KnownNames() map[string]string
+}
+
+// knownNames merges the name indexes of every KnownNamer source (currently the filesystem
+// source). Later sources win on a key collision; callers only read membership.
+func (r *Registry) knownNames() map[string]string {
+	var merged map[string]string
+	for _, s := range r.sources {
+		kn, ok := s.(KnownNamer)
+		if !ok {
+			continue
+		}
+		for k, v := range kn.KnownNames() {
+			if merged == nil {
+				merged = make(map[string]string)
+			}
+			merged[k] = v
+		}
+	}
+	return merged
+}
+
 // Discover runs the deterministic probes selected from userInput and returns the observed
 // entities plus the canonical kind:ref of any target left unobserved (over the scan cap,
 // no matching source, or a probe error). No LLM (ADR-0078 D1). Never returns an error: a
@@ -69,7 +94,7 @@ func (r *Registry) Discover(ctx context.Context, userInput string) (entities []d
 	if r.Empty() {
 		return nil, nil
 	}
-	targets := SelectTargets(userInput)
+	targets := SelectTargets(userInput, r.knownNames())
 	scans := 0
 	for _, t := range targets {
 		src, ok := r.sources[t.Kind]

@@ -20,14 +20,14 @@ func kinds(ts []domain.DiscoveryTarget) map[string][]string {
 }
 
 func TestSelectTargets(t *testing.T) {
+	// `known` = the names that actually exist under the discovery roots.
+	known := map[string]string{"helicopter": "helicopter"}
 	got := kinds(SelectTargets(
 		"continue the helicopter folder and update internal/x/y.go, then GET https://api.example.com/openapi.json; also list network interfaces",
+		known,
 	))
-	if refs := got["filesystem"]; len(refs) < 2 {
-		t.Errorf("want filesystem path + folder-name, got %v", refs)
-	}
 	if !contains(got["filesystem"], "helicopter") {
-		t.Errorf("folder-name phrasing not captured: %v", got["filesystem"])
+		t.Errorf("known bare name not matched: %v", got["filesystem"])
 	}
 	if !contains(got["filesystem"], "internal/x/y.go") {
 		t.Errorf("path token not captured: %v", got["filesystem"])
@@ -40,8 +40,37 @@ func TestSelectTargets(t *testing.T) {
 	}
 }
 
+// The bug this replaces: "the folder <name>" must resolve <name>, never capture "the".
+// With known-set matching there is no grammar to get wrong — only real names match.
+func TestSelectTargets_FolderAfterKeyword_NoDeterminerCapture(t *testing.T) {
+	known := map[string]string{"scratch_sections": "scratch_sections"}
+	got := kinds(SelectTargets("list every .md file in the folder scratch_sections", known))
+	if !contains(got["filesystem"], "scratch_sections") {
+		t.Errorf("real folder after keyword not matched: %v", got["filesystem"])
+	}
+	if contains(got["filesystem"], "the") || contains(got["filesystem"], "folder") {
+		t.Errorf("determiner/keyword wrongly captured as a target: %v", got["filesystem"])
+	}
+}
+
+// A bare word that does NOT name anything real must not become a target.
+func TestSelectTargets_UnknownBareWordIgnored(t *testing.T) {
+	got := kinds(SelectTargets("please summarize the helicopter documentation", map[string]string{}))
+	if len(got["filesystem"]) != 0 {
+		t.Errorf("no known names ⇒ no bare-word targets, got %v", got["filesystem"])
+	}
+}
+
+// An ambiguous basename (mapped to "") is skipped rather than probing the wrong path.
+func TestSelectTargets_AmbiguousSkipped(t *testing.T) {
+	got := kinds(SelectTargets("open config please", map[string]string{"config": ""}))
+	if contains(got["filesystem"], "config") || len(got["filesystem"]) != 0 {
+		t.Errorf("ambiguous name must be skipped, got %v", got["filesystem"])
+	}
+}
+
 func TestSelectTargets_URLNotReCapturedAsPath(t *testing.T) {
-	got := kinds(SelectTargets("check https://example.com/a/b/c for status"))
+	got := kinds(SelectTargets("check https://example.com/a/b/c for status", nil))
 	if len(got["http"]) != 1 {
 		t.Fatalf("want 1 http target, got %v", got["http"])
 	}
@@ -53,7 +82,7 @@ func TestSelectTargets_URLNotReCapturedAsPath(t *testing.T) {
 }
 
 func TestSelectTargets_Dedup(t *testing.T) {
-	got := SelectTargets("a/b and a/b again")
+	got := SelectTargets("a/b and a/b again", nil)
 	n := 0
 	for _, tt := range got {
 		if tt.Kind == "filesystem" && tt.Ref == "a/b" {
@@ -62,6 +91,36 @@ func TestSelectTargets_Dedup(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("duplicate targets not collapsed: %d", n)
+	}
+}
+
+// KnownNames indexes real files/dirs (full name + stem) and skips ambiguous basenames.
+func TestFilesystemSource_KnownNames(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "scratch_sections"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "scratch_sections", "intro.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// duplicate basename in two places ⇒ ambiguous.
+	for _, d := range []string{"a", "b"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, d, "dup.md"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx := NewFilesystemSource(root).KnownNames()
+	if idx["scratch_sections"] != "scratch_sections" {
+		t.Errorf("dir not indexed: %q", idx["scratch_sections"])
+	}
+	if idx["intro"] != "scratch_sections/intro.md" { // extension-stripped stem maps to the file
+		t.Errorf("stem index wrong: %q", idx["intro"])
+	}
+	if v, ok := idx["dup"]; !ok || v != "" {
+		t.Errorf("ambiguous basename should map to \"\" (skip), got %q ok=%v", v, ok)
 	}
 }
 

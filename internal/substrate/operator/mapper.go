@@ -156,6 +156,18 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			Replanned:           e.Replanned,
 		}}
 
+	case domain.AgentStepEvent:
+		out.SessionId = e.SessionID
+		out.Payload = &pb.OperatorEvent_AgentStep{AgentStep: &pb.AgentStepOp{
+			SessionId:        e.SessionID,
+			AgentId:          e.AgentID,
+			Action:           e.Action,
+			Query:            e.Query,
+			Hits:             int32(e.Hits),
+			SelfHits:         int32(e.SelfHits),
+			CrossSessionHits: int32(e.CrossSessionHits),
+		}}
+
 	case domain.ReactiveBudgetEvent:
 		out.Payload = &pb.OperatorEvent_ReactiveBudget{ReactiveBudget: &pb.ReactiveBudgetOp{
 			Resource:            e.Resource,

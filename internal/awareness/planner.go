@@ -61,7 +61,13 @@ STRUCTURED REASONING (OPTIONAL):
 - You may emit <thought>...</thought> blocks BEFORE the JSON plan to reason through the problem.
 - Example: <thought>The user wants X. I should use agent Y for step 1...</thought>{"steps":[...]}
 - The Substrate will extract and discard thought blocks; only the JSON plan is processed.
-- Never include thought blocks INSIDE the JSON structure.`
+- Never include thought blocks INSIDE the JSON structure.
+
+FAN-OUT (PARAMETRIC) STEPS:
+- When a step must run ONCE PER ITEM of a set whose SIZE is only known after an earlier step observes it (e.g. "for each missing section, write it" after a step scans the folder), emit ONE parametric step — do NOT guess the count and do NOT enumerate the items yourself.
+- Set "fan_out_over" to the zero-based index of the earlier step whose output is that set, and write the query with a "{item}" placeholder (or set "fan_out_var":"x" to use "{x}"). The runtime expands it into one concrete step per discovered item at execution time.
+- A step that must run AFTER all items (a summary/reduce) should "depends_on" the parametric step's index.
+- Example: {"query":"write the file for {item}","depends_on":[0],"fan_out_over":0}`
 
 // plannerCapabilityRules is the ROUTE-03 capability-contract instruction block,
 // injected into <Constraints> ONLY under the capability_contract arm. It tells
@@ -88,7 +94,9 @@ const PlanOutputSchema = `{
           "depends_on":       { "type": "array", "items": { "type": "integer" } },
           "is_thought":       { "type": "boolean" },
           "checkpoint_after": { "type": "boolean" },
-          "checkpoint_query": { "type": "string" }
+          "checkpoint_query": { "type": "string" },
+          "fan_out_over":     { "type": "integer" },
+          "fan_out_var":      { "type": "string" }
         },
         "required": ["query", "depends_on"]
       }
@@ -129,7 +137,9 @@ const planOutputSchemaCap = `{
           "required_capabilities": { "type": "array", "items": { "type": "string" } },
           "is_thought":            { "type": "boolean" },
           "checkpoint_after":      { "type": "boolean" },
-          "checkpoint_query":      { "type": "string" }
+          "checkpoint_query":      { "type": "string" },
+          "fan_out_over":          { "type": "integer" },
+          "fan_out_var":           { "type": "string" }
         },
         "required": ["query", "depends_on", "required_capabilities"]
       }
@@ -434,7 +444,11 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	}
 
 	for i, step := range plan.Steps {
-		slog.Info("planner_step_generated", "index", i, "query", step.Query, "is_thought", step.IsThought, "depends_on", step.DependsOn, "subject", plan.Subject)
+		fanOut := -1
+		if step.FanOutOver != nil {
+			fanOut = *step.FanOutOver
+		}
+		slog.Info("planner_step_generated", "index", i, "query", step.Query, "is_thought", step.IsThought, "depends_on", step.DependsOn, "fan_out_over", fanOut, "subject", plan.Subject)
 	}
 
 	if p.advisor != nil {

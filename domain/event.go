@@ -51,6 +51,12 @@ const (
 	// EventTypeReactiveBudget reports that a reactive backpressure budget was
 	// exhausted and load is being shed. REACT-02 / ADR-0062.
 	EventTypeReactiveBudget = "reactive.budget"
+	// EventTypeAgentStep reports one action inside an agent's ReAct loop (a
+	// memory_query today) so the harness can diagnose agent-internal failure modes
+	// the orchestration trace hides: query-thrash (loop length + near-duplicate
+	// queries) and context poisoning (retrievals authored by the agent itself, or
+	// pulled from a different session). Diagnostic only — zero behavior change.
+	EventTypeAgentStep = "agent.step"
 	// EventTypeExplorationBudget reports that a capability's provisional-exploration
 	// budget was exhausted (the free L2 bypass is withdrawn). ROUTE-06 / ADR-0069.
 	EventTypeExplorationBudget = "exploration.budget"
@@ -388,6 +394,25 @@ type ScoutUsefulnessEvent struct {
 
 func (ScoutUsefulnessEvent) domainEvent()      {}
 func (ScoutUsefulnessEvent) EventType() string { return EventTypeScoutUsefulness }
+
+// AgentStepEvent is one observed step of an agent's in-loop activity (a memory_query
+// today), emitted so the benchmark harness can measure what the final Handoff hides:
+// query-thrash (how many queries an agent fires, and how similar they are — the
+// budget-exhaustion failure mode) and context poisoning (SelfHits: results the agent
+// itself authored, a self-referential feedback loop; CrossSessionHits: results written
+// in a different session bleeding in). Diagnostic only — zero behavior change.
+type AgentStepEvent struct {
+	SessionID        string
+	AgentID          string
+	Action           string // "memory_query" (extensible to tool_call, find_tools, ...)
+	Query            string // query text (or tool name) — for thrash/near-duplicate detection
+	Hits             int    // number of results returned
+	SelfHits         int    // results authored by AgentID (self-referential poisoning)
+	CrossSessionHits int    // results written in a DIFFERENT session (cross-session bleed)
+}
+
+func (AgentStepEvent) domainEvent()      {}
+func (AgentStepEvent) EventType() string { return EventTypeAgentStep }
 
 // ReactiveBudgetEvent is emitted when a reactive backpressure budget is exhausted
 // and the engine sheds load (skips + dead-letters the shed unit) — so budget

@@ -45,6 +45,87 @@ func NewFilesystemSource(roots ...string) *FilesystemSource {
 
 func (s *FilesystemSource) Kind() string { return "filesystem" }
 
+// knownWalk bounds the KnownNames index build so it stays cheap on the discovery hot path.
+const (
+	knownMaxEntries = 4000
+	knownMaxDepth   = 4
+)
+
+// knownSkipDirs are never descended into when building the index (noise + cost).
+var knownSkipDirs = map[string]bool{
+	".git": true, "node_modules": true, "vendor": true, ".venv": true,
+	"__pycache__": true, "bin": true, "obj": true, "dist": true, "build": true,
+}
+
+// KnownNames returns a lowercased-basename → real-relative-path index of the files and
+// dirs under the source's roots (Aider's get_ident_mentions approach: a request word is a
+// filesystem target only if it names something that actually exists). Both the full name
+// and its extension-stripped stem are indexed, so "intro" matches "intro.md". Ambiguous
+// basenames (the same name in more than one place) map to "" so the caller skips them —
+// probing the wrong one is worse than not probing. Bounded (depth + entry caps) and
+// read-only. The map is fresh per call; discovery is infrequent enough not to cache.
+func (s *FilesystemSource) KnownNames() map[string]string {
+	idx := make(map[string]string)
+	ambiguous := make(map[string]bool)
+	count := 0
+
+	record := func(name, rel string) {
+		keys := []string{strings.ToLower(name)}
+		if stem := strings.TrimSuffix(name, filepath.Ext(name)); stem != "" && stem != name {
+			keys = append(keys, strings.ToLower(stem))
+		}
+		for _, k := range keys {
+			if k == "" {
+				continue
+			}
+			if _, exists := idx[k]; exists {
+				ambiguous[k] = true // seen elsewhere ⇒ don't guess which one
+				continue
+			}
+			idx[k] = rel
+		}
+	}
+
+	var walk func(absDir, rel string, depth int)
+	walk = func(absDir, rel string, depth int) {
+		if depth > knownMaxDepth || count >= knownMaxEntries {
+			return
+		}
+		entries, err := os.ReadDir(absDir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if count >= knownMaxEntries {
+				return
+			}
+			name := e.Name()
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			childRel := name
+			if rel != "" {
+				childRel = rel + "/" + name
+			}
+			count++
+			record(name, childRel)
+			if e.IsDir() {
+				if knownSkipDirs[strings.ToLower(name)] {
+					continue
+				}
+				walk(filepath.Join(absDir, name), childRel, depth+1)
+			}
+		}
+	}
+	for _, root := range s.Roots {
+		walk(root, "", 0)
+	}
+	for k := range ambiguous {
+		idx[k] = "" // caller treats "" as skip
+	}
+	return idx
+}
+
 // withinRoots reports whether abs is inside one of the allowlisted roots (or is a root).
 func (s *FilesystemSource) withinRoots(abs string) bool {
 	for _, root := range s.Roots {

@@ -150,6 +150,12 @@ type ExecutionConfig struct {
 	// MaxReplanAttempts is the maximum number of replan cycles allowed when
 	// all intra-step retries and inter-step fallbacks are exhausted. Default: 2.
 	MaxReplanAttempts int `json:"max_replan_attempts"`
+	// MaxFanOutWidth caps how many concrete children a parametric fan-out step
+	// (ADR-0078 R2) may expand into from a discovered set. Exceeding it is a hard,
+	// structured error routed to replan — never a silent truncation. Default: 64;
+	// 0 disables the cap.
+	MaxFanOutWidth int `json:"max_fanout_width"`
+
 	// MaxPartialContextBytes caps the size of partial context returned in
 	// PartialPlanError to bound memory usage. Default: 51200 (50 KB).
 	MaxPartialContextBytes int `json:"max_partial_context_bytes"`
@@ -929,6 +935,7 @@ func DefaultConfig() *Config {
 			FallbackConfidenceThreshold:      0.4,
 			FallbackEnabled:                  true,
 			MaxReplanAttempts:                2,
+			MaxFanOutWidth:                   64,
 			MaxPartialContextBytes:           51200,
 			SignalNoiseThreshold:             3,
 			SignalNoiseWindowSecs:            10,

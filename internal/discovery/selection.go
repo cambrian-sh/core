@@ -16,15 +16,13 @@ var (
 	urlRe = regexp.MustCompile(`https?://[^\s"'<>)]+`)
 
 	// pathRe matches path-like tokens with a separator: a/b, ./x, internal/x/y,
-	// C:\Users\x, dir\file. Routed to the "filesystem" source. Deliberately requires
-	// a separator so a bare word ("helicopter") is not mistaken for a path — the
-	// "<name> folder" phrasing is handled by folderRe below.
+	// C:\Users\x, dir\file. These are UNAMBIGUOUS filesystem references (a slash/backslash
+	// is not English), so they are emitted directly without validation.
 	pathRe = regexp.MustCompile(`(?:[A-Za-z]:)?(?:\.{0,2}[\\/])?[\w.\-]+(?:[\\/][\w.\-]+)+[\\/]?`)
 
-	// folderRe catches the natural-language "<name> folder|directory|dir" pattern that
-	// the motivating helicopter case uses ("continue the helicopter folder"). Captures
-	// the bare name and (optionally) a `backtick`/'quote'/"quote" wrapping.
-	folderRe = regexp.MustCompile("(?i)[`'\"]?([\\w.\\-]+)[`'\"]?\\s+(?:folder|directory|dir)\\b")
+	// wordRe tokenizes bare identifiers (no separator) so they can be matched against the
+	// set of names that ACTUALLY exist under the discovery roots (see SelectTargets).
+	wordRe = regexp.MustCompile(`[\w.\-]+`)
 
 	// systemRe fires a single "system" probe when the request references host/network
 	// state (deterministic keyword gate — the system source is local-only, ref is unused).
@@ -34,11 +32,20 @@ var (
 	trimPunct = ".,;:!?)]}"
 )
 
+// minBarewordLen filters short tokens before matching them against real names, mirroring
+// Aider's get_ident_mentions (identifiers below ~5 chars are too noisy). Set to 4 so
+// common short folders still match while function words ("the", "and", "for") are excluded.
+const minBarewordLen = 4
+
 // SelectTargets deterministically extracts probe targets from the request text — no LLM
-// (ADR-0078 D3). URLs → http; path-like tokens and "<name> folder" phrases → filesystem.
-// Order is preserved and duplicates (by kind+ref) are dropped so the scan cap (Registry)
-// binds on distinct observations.
-func SelectTargets(userInput string) []domain.DiscoveryTarget {
+// (ADR-0078 D3). Following Aider's mention-detection approach, a bare word becomes a
+// filesystem target ONLY if it names something that ACTUALLY EXISTS under the discovery
+// roots — `known` maps a lowercased basename (and its extension-stripped stem) to the real
+// relative path. This replaces brittle "<name> folder" grammar guessing: "the folder
+// scratch_sections" resolves because `scratch_sections` is a real directory, while "the",
+// "folder", and "list" are not. Explicit path tokens and URLs need no validation (a
+// separator/scheme is unambiguous). Empty `known` ⇒ only explicit paths + URLs + system.
+func SelectTargets(userInput string, known map[string]string) []domain.DiscoveryTarget {
 	var targets []domain.DiscoveryTarget
 	seen := map[string]bool{}
 
@@ -55,7 +62,7 @@ func SelectTargets(userInput string) []domain.DiscoveryTarget {
 		targets = append(targets, domain.DiscoveryTarget{Kind: kind, Ref: ref})
 	}
 
-	// URLs first, and remember their spans so pathRe does not re-capture the host/path.
+	// URLs first, and blank out their spans so pathRe/wordRe do not re-capture the host.
 	urls := urlRe.FindAllString(userInput, -1)
 	for _, u := range urls {
 		add("http", u)
@@ -65,16 +72,29 @@ func SelectTargets(userInput string) []domain.DiscoveryTarget {
 		masked = strings.Replace(masked, u, strings.Repeat(" ", len(u)), 1)
 	}
 
-	for _, p := range pathRe.FindAllString(masked, -1) {
+	// Explicit path-like tokens (contain a separator) are unambiguous references.
+	pathSpans := pathRe.FindAllString(masked, -1)
+	for _, p := range pathSpans {
 		if strings.Contains(p, "://") {
 			continue
 		}
 		add("filesystem", p)
 	}
 
-	for _, m := range folderRe.FindAllStringSubmatch(masked, -1) {
-		if len(m) > 1 {
-			add("filesystem", m[1])
+	// Bare words: emit only those that match a real name under the discovery roots.
+	if len(known) > 0 {
+		masked2 := masked
+		for _, p := range pathSpans { // don't re-tokenize inside an already-matched path
+			masked2 = strings.Replace(masked2, p, strings.Repeat(" ", len(p)), 1)
+		}
+		for _, w := range wordRe.FindAllString(masked2, -1) {
+			tok := strings.TrimRight(w, trimPunct)
+			if len([]rune(tok)) < minBarewordLen {
+				continue
+			}
+			if rel, ok := known[strings.ToLower(tok)]; ok && rel != "" {
+				add("filesystem", rel) // emit the REAL relative path, not the raw word
+			}
 		}
 	}
 

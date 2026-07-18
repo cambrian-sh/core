@@ -228,4 +228,6 @@ var feedEventTypes = []string{
 	domain.EventTypeScoutUsefulness,
 	// REACT-02 / ADR-0062: reactive backpressure shed events.
 	domain.EventTypeReactiveBudget,
+	// Agent-loop observability: per-memory_query thrash + poisoning-provenance events.
+	domain.EventTypeAgentStep,
 }

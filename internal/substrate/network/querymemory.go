@@ -66,6 +66,35 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 		return nil, fmt.Errorf("querymemory: %w", err)
 	}
 
+	// Step-2 observability (diagnostic, zero behavior change): emit an AgentStepEvent so
+	// the harness can measure query-thrash (how many/how similar an agent's queries are)
+	// and context poisoning from retrieval provenance — SelfHits are results the caller
+	// itself authored (self-referential feedback), CrossSessionHits are results written in
+	// another session bleeding in. Only for agent callers (callerID set).
+	if s.EventBus != nil && callerID != "" {
+		self, cross := 0, 0
+		for _, r := range results {
+			if r.Document.Metadata == nil {
+				continue
+			}
+			if r.Document.Metadata["source_agent"] == callerID {
+				self++
+			}
+			if sid := r.Document.Metadata["session_id"]; sid != "" && sid != sessionID {
+				cross++
+			}
+		}
+		_ = s.EventBus.Publish(domain.AgentStepEvent{
+			SessionID:        sessionID,
+			AgentID:          callerID,
+			Action:           "memory_query",
+			Query:            req.GetQuery(),
+			Hits:             len(results),
+			SelfHits:         self,
+			CrossSessionHits: cross,
+		})
+	}
+
 	pbResults := make([]*pb.MemoryResult, 0, len(results))
 	for _, r := range results {
 		// ADR-0048 A1 (D10): fold the provenance/freshness facts the SDK renders into
