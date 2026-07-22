@@ -472,6 +472,14 @@ type ExecutionConfig struct {
 	// behavior change — emission is fire-and-forget and never affects the agent stream.
 	CaptureLLMExchanges bool `json:"capture_llm_exchanges,omitempty"`
 
+	// ChatManagerAddr enables and binds the ADR-0080 Chat Manager HTTP ingress (e.g.
+	// ":8890") that owns customer-facing conversations and dispatches each turn to the
+	// chat_session_agent — bypassing the planner. Empty (default) ⇒ the manager is NOT
+	// started. Read at kernel startup and handed to the premium chat plugin via
+	// ReactiveServices, so the manager is brought up from CONFIG at boot, not a manual
+	// trigger. A premium-only feature; OSS builds ignore it (no chat plugin wired).
+	ChatManagerAddr string `json:"chat_manager_addr,omitempty"`
+
 	// ADR-0022: Global Workspace capacity model.
 	// ActivationThreshold is the post-BFS selection floor for PrimeForStep.
 	ActivationThreshold    float64 `json:"activation_threshold"`      // default 0.1

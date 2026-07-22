@@ -753,9 +753,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			Memory:     mem.Agent,
 			Planner:    aw.Planner,
 			LLM:        aw.LLM,
-			WatchStore: reg,
-			EventBus:   eventBus,
-			Journal:    reg, // REACT-01 / ADR-0061: durable reactive execution (bbolt).
+			WatchStore:      reg,
+			EventBus:        eventBus,
+			Journal:         reg, // REACT-01 / ADR-0061: durable reactive execution (bbolt).
+			ChatManagerAddr: cfg.Execution.ChatManagerAddr, // ADR-0080: config-driven at startup.
 			// ADR-0080: let a direct-dispatch consumer (chat manager) provision a managed-LLM
 			// session token, the way the planner path does at server.go:493. Nil gateway ⇒ no-op.
 			AcquireLLMToken: func(ctx context.Context, tokenLimit int, ttl time.Duration) (string, func(), error) {
