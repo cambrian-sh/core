@@ -182,6 +182,12 @@ type Server struct {
 	// operator feed's live-only token lane (ADR-0047 D12/0047-23). Best-effort.
 	TokenSink func(sessionID string, stepIndex int, text string)
 
+	// LLMExchangeSink, when set, receives the full prompt+completion of each managed-proxy
+	// agent generation (ADR-0079) for the operator feed's live-only exchange lane — the
+	// same tap that feeds Langfuse, forked to a benchmark-observable event. Best-effort,
+	// fire-and-forget; nil unless execution.capture_llm_exchanges is on.
+	LLMExchangeSink func(sessionID, agentID, modelID string, stepIndex int, prompt, completion string)
+
 	// ADR-0046: the system-skill plane backing ListSkills. SkillRegistry holds the
 	// discovered SKILL.md skills; SkillRetriever ranks them by relevance within the
 	// agent's effective scope; SkillScope resolves that scope for gating. All nil →
@@ -449,7 +455,23 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	var confValues []float64
 
 	stepFn := func(stepCtx context.Context, i int, handoff *domain.Handoff) (*domain.Handoff, error) {
-		step := plan.Steps[i]
+		// The DAGExecutor may replan (ADR-0005) or fan-out expand (ADR-0078) its plan
+		// mid-run, growing it beyond the `plan` this closure captured, and then dispatch
+		// a step whose index is out of range HERE. The executor builds the handoff from
+		// its CURRENT plan's step, so trust the handoff's query and reconstruct a minimal
+		// step rather than index a stale slice — an out-of-range index must never panic
+		// and crash the whole kernel. (RequiredCapabilities is unavailable for a
+		// replanned step; routing falls back to query-only selection.)
+		var step domain.Step
+		if i >= 0 && i < len(plan.Steps) {
+			step = plan.Steps[i]
+		} else {
+			q := ""
+			if handoff != nil && handoff.Payload != nil {
+				q = string(handoff.Payload.Data)
+			}
+			step = domain.Step{Query: q}
+		}
 		prePwd, _ := os.Getwd()
 
 		// Stamp task_id so AgentManager.CallAgent builds a consistent snapshot key.

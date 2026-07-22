@@ -36,8 +36,20 @@ type Provider struct {
 	// per-call-site wrapping to forget (ADR-0042 + ADR-0019).
 	traceWrapper func(gen domain.Generator, subsystem string) domain.Generator
 
+	// sem bounds the number of concurrent in-flight LLM calls across EVERY call path
+	// (agents + planner + verifier + agentic-retrieval + consolidator). Nil ⇒ no cap.
+	// It composes with the LLMGateway CONWIP semaphore (which only gates agent calls);
+	// this is the global backstop that stops direct system-organ calls from flooding a
+	// rate-limited provider (HTTP 429). ADR-0042 chokepoint.
+	sem chan struct{}
+
 	log *slog.Logger
 }
+
+// defaultLLMMaxConcurrency bounds total in-flight LLM calls when the config leaves
+// max_concurrency at 0. Chosen to stay under typical hosted-endpoint rate limits while
+// preserving useful parallelism for the fan-out (planner + agents + agentic sub-queries).
+const defaultLLMMaxConcurrency = 8
 
 // NewProvider builds the Provider from the llm_provider config block.
 func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger) (*Provider, error) {
@@ -49,6 +61,15 @@ func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger) (*Provider, err
 		log = slog.Default()
 	}
 	cooldown := time.Duration(cfg.Health.CooldownMs) * time.Millisecond
+	// Global concurrency cap: 0 ⇒ default, negative ⇒ disabled (unbounded).
+	maxConc := cfg.MaxConcurrency
+	if maxConc == 0 {
+		maxConc = defaultLLMMaxConcurrency
+	}
+	var sem chan struct{}
+	if maxConc > 0 {
+		sem = make(chan struct{}, maxConc)
+	}
 	return &Provider{
 		registry:  reg,
 		breaker:   NewCircuitBreaker(cfg.Health.FailureThreshold, cooldown),
@@ -57,6 +78,7 @@ func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger) (*Provider, err
 		defaultID: cfg.Default,
 		allIDs:    reg.IDs(),
 		capIndex:  reg.CapabilityIndex(),
+		sem:       sem,
 		log:       log,
 	}, nil
 }
@@ -108,7 +130,62 @@ func (p *Provider) Acquire(ctx context.Context, req domain.LLMRequest) (domain.G
 	if p.traceWrapper != nil {
 		gen = p.traceWrapper(gen, string(req.Purpose))
 	}
+	// Outermost: the global concurrency cap gates the entire (traced, health-recorded)
+	// call, so a burst of direct system-organ calls cannot flood the provider.
+	if p.sem != nil {
+		gen = &concurrencyGenerator{inner: gen, sem: p.sem}
+	}
 	return gen, nil
+}
+
+// concurrencyGenerator bounds concurrent in-flight LLM calls via a shared semaphore.
+// Generate holds a slot for the call; GenerateStream holds a slot until the returned
+// channel closes (the whole stream). Acquisition respects the request's context deadline,
+// so a saturated cap surfaces as a context error, not a hang.
+type concurrencyGenerator struct {
+	inner domain.Generator
+	sem   chan struct{}
+}
+
+func (c *concurrencyGenerator) acquire(ctx context.Context) error {
+	select {
+	case c.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *concurrencyGenerator) Generate(ctx context.Context, prompt string) (string, error) {
+	if err := c.acquire(ctx); err != nil {
+		return "", err
+	}
+	defer func() { <-c.sem }()
+	return c.inner.Generate(ctx, prompt)
+}
+
+func (c *concurrencyGenerator) GenerateStream(ctx context.Context, prompt string) (<-chan domain.StreamChunk, error) {
+	sg, ok := c.inner.(streamingInner)
+	if !ok {
+		return nil, fmt.Errorf("llm provider: concurrency-wrapped %T does not implement streaming", c.inner)
+	}
+	if err := c.acquire(ctx); err != nil {
+		return nil, err
+	}
+	in, err := sg.GenerateStream(ctx, prompt)
+	if err != nil {
+		<-c.sem
+		return nil, err
+	}
+	out := make(chan domain.StreamChunk, 64)
+	go func() {
+		defer func() { <-c.sem }() // release only when the whole stream is drained
+		defer close(out)
+		for chunk := range in {
+			out <- chunk
+		}
+	}()
+	return out, nil
 }
 
 // resolve picks the generator id via the failover ladder, sourcing preference by

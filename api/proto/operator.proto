@@ -311,6 +311,7 @@ message OperatorEvent {
     ScoutUsefulnessOp scout_usefulness = 24; // ROUTE-08 phase A
     ReactiveBudgetOp reactive_budget = 25;   // REACT-02 / ADR-0062: backpressure shed event
     AgentStepOp agent_step = 26;             // agent-loop observability (query-thrash + poisoning)
+    AgentLLMExchangeOp llm_exchange = 27;    // provider-tap: full prompt+completion of every agent reasoning turn (live-only)
   }
 }
 
@@ -341,6 +342,29 @@ message AgentStepOp {
   int32 hits = 5;
   int32 self_hits = 6;
   int32 cross_session_hits = 7;
+}
+
+// AgentLLMExchangeOp is one agent reasoning turn captured at the managed LLM
+// provider chokepoint (the same tap that feeds Langfuse): the full request prompt and
+// completion for a single GenerateViaModelStream call, attributed to the agent and its
+// step. Because every SDK ReAct round is one such call — the prompt embeds the running
+// trajectory and the completion is one action (memory_query/tool_call/final_answer) —
+// the ordered sequence of these per session reconstructs an agent's entire internal
+// loop, so a benchmark can review every agent output AND every loop step without any
+// SDK change. Live-only/never-replayed (like TokenChunkOp) and gated behind
+// execution.capture_llm_exchanges (default off): prompts are large and may be
+// sensitive, so this is a benchmark/diagnostic lane, not a production default. request
+// and response are truncated to a bounded size by the emitter.
+message AgentLLMExchangeOp {
+  string session_id = 1;
+  string agent_id = 2;
+  int32 step_index = 3;
+  string purpose = 4;        // "agent_llm" today (extensible: planner, verifier, ...)
+  string model_id = 5;
+  string request = 6;        // the full prompt sent to the provider (truncated)
+  string response = 7;       // the completion returned (truncated)
+  int32 request_chars = 8;   // untruncated request length (so truncation is visible)
+  int32 response_chars = 9;  // untruncated response length
 }
 
 // ResyncRequired tells the client its cursor has fallen out of the retained

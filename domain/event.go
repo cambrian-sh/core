@@ -60,6 +60,12 @@ const (
 	// EventTypeExplorationBudget reports that a capability's provisional-exploration
 	// budget was exhausted (the free L2 bypass is withdrawn). ROUTE-06 / ADR-0069.
 	EventTypeExplorationBudget = "exploration.budget"
+	// EventTypeAgentLLMExchange is one agent reasoning turn captured at the managed LLM
+	// provider chokepoint: the full prompt+completion of a GenerateViaModelStream call.
+	// The ordered sequence per session reconstructs an agent's whole internal ReAct loop
+	// (every output + every loop step) with no SDK instrumentation. Best-effort, live-only,
+	// never replayed; gated behind execution.capture_llm_exchanges. Diagnostic only.
+	EventTypeAgentLLMExchange = "agent.llm_exchange"
 )
 
 // DomainEvent is the sealed interface for all internal system events.
@@ -316,6 +322,25 @@ type TokenChunkEvent struct {
 
 func (TokenChunkEvent) domainEvent()      {}
 func (TokenChunkEvent) EventType() string { return EventTypeTokenChunk }
+
+// AgentLLMExchangeEvent carries the full prompt+completion of one agent reasoning
+// turn, captured at the managed LLM provider chokepoint (the Langfuse tap). Best-effort,
+// live-only, never replayed; the emitter truncates Prompt/Completion and records the
+// untruncated lengths. Gated behind execution.capture_llm_exchanges. ADR-0079.
+type AgentLLMExchangeEvent struct {
+	SessionID     string
+	AgentID       string
+	StepIndex     int
+	Purpose       string
+	ModelID       string
+	Prompt        string
+	Completion    string
+	PromptChars   int
+	ResponseChars int
+}
+
+func (AgentLLMExchangeEvent) domainEvent()      {}
+func (AgentLLMExchangeEvent) EventType() string { return EventTypeAgentLLMExchange }
 
 // WorldDeltaEvent reports a single entity field whose value a READ observation found
 // changed from its cached state (ADR-0049 §A1.2). Absolute-state: it names the entity,

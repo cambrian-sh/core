@@ -143,6 +143,20 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			Text:      e.Text,
 		}}
 
+	case domain.AgentLLMExchangeEvent:
+		out.SessionId = e.SessionID
+		out.Payload = &pb.OperatorEvent_LlmExchange{LlmExchange: &pb.AgentLLMExchangeOp{
+			SessionId:     e.SessionID,
+			AgentId:       e.AgentID,
+			StepIndex:     int32(e.StepIndex),
+			Purpose:       e.Purpose,
+			ModelId:       e.ModelID,
+			Request:       e.Prompt,
+			Response:      e.Completion,
+			RequestChars:  int32(e.PromptChars),
+			ResponseChars: int32(e.ResponseChars),
+		}}
+
 	case domain.ScoutUsefulnessEvent:
 		out.SessionId = e.SessionID
 		out.Payload = &pb.OperatorEvent_ScoutUsefulness{ScoutUsefulness: &pb.ScoutUsefulnessOp{

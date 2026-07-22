@@ -76,10 +76,12 @@ func TestNewClient_Anthropic(t *testing.T) {
 }
 
 func TestNewClient_UnknownProvider(t *testing.T) {
+	// NOTE: "gemini" used to stand in for "unknown" here, but it is a supported
+	// provider in the factory — use a provider that genuinely has no case.
 	cfg := config.ModelConfig{
-		Provider:  "gemini",
-		Model:     "gemini-2.5-flash",
-		Endpoint:  "https://api.google.com",
+		Provider:  "no-such-provider",
+		Model:     "whatever",
+		Endpoint:  "https://example.invalid",
 		TimeoutMs: 30000,
 	}
 	_, _, err := llm.NewClient(cfg)

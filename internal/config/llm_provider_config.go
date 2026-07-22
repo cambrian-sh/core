@@ -63,6 +63,13 @@ type LLMProviderConfig struct {
 	Roles map[string]string `json:"roles"`
 	// Health tunes the circuit-breaker.
 	Health HealthConfig `json:"health"`
+	// MaxConcurrency caps the number of in-flight LLM calls across ALL call paths
+	// (agents, planner, verifier, agentic-retrieval sub-queries, consolidator) via a
+	// global semaphore at the Provider's Acquire chokepoint. The LLMGateway CONWIP
+	// semaphore only bounds agent calls; the direct system-organ calls bypass it, so
+	// without this Cambrian can flood a rate-limited endpoint (HTTP 429). 0 ⇒ default
+	// (defaultLLMMaxConcurrency); a negative value disables the cap (unbounded).
+	MaxConcurrency int `json:"max_concurrency"`
 }
 
 // DefaultGenerator returns the generator marked as the global default, or nil

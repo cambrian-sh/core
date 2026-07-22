@@ -1050,12 +1050,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Store: vec, Embedder: embedder, Floor: cfg.Execution.ToolRetrievalFloor,
 	}
 
-	// ADR-0078: the pre-plan Scout is DETERMINISTIC-FIRST — a registry of read-only probes
+	// ADR-0079: the pre-plan Scout is DETERMINISTIC-FIRST — a registry of read-only probes
 	// (filesystem/system, plus opt-in http) runs on the hot path with NO LLM; the ADR-0051
 	// Python `run_think` scout is demoted to an opt-in tier (scout_llm_tier_enabled) layered
 	// on top. Wired only when scout_enabled is set (Off ⇒ Scout stays nil ⇒ one-shot planning).
 	if cfg.Execution.ScoutEnabled {
-		// ADR-0078 D2/D6: confine deterministic filesystem reads to an allowlist of roots
+		// ADR-0079 D2/D6: confine deterministic filesystem reads to an allowlist of roots
 		// (config, else the working directory). system source is local-only (no egress).
 		roots := cfg.Execution.ScoutDiscoveryRoots
 		if len(roots) == 0 {
@@ -1067,7 +1067,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			discovery.NewFilesystemSource(roots...),
 			&discovery.SystemSource{},
 		}
-		if cfg.Execution.ScoutHTTPProbeEnabled { // SSRF surface — opt-in (ADR-0078 D2)
+		if cfg.Execution.ScoutHTTPProbeEnabled { // SSRF surface — opt-in (ADR-0079 D2)
 			discoverySources = append(discoverySources, discovery.NewHTTPSource(cfg.Execution.ScoutHTTPAllowPrivate))
 		}
 		cambrianServer.Scout = &subnetwork.AgentScoutDispatcher{
@@ -1089,7 +1089,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			}
 			cambrianServer.ToolExecutor.RestrictedTools = map[string]map[string]bool{"scout_agent": safe}
 		}
-		slog.Info("ADR-0078: pre-plan Scout ENABLED (deterministic-first discovery)",
+		slog.Info("ADR-0079: pre-plan Scout ENABLED (deterministic-first discovery)",
 			"deterministic_sources", len(discoverySources), "llm_tier", cfg.Execution.ScoutLLMTierEnabled)
 	}
 
@@ -1291,6 +1291,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}, nil
 }
 
+// truncateRunes returns s bounded to at most n runes, appending an ellipsis marker
+// when it had to cut. Rune-safe so a multi-byte prompt is never split mid-character.
+// Used for the ADR-0079 exchange lane, where prompts can be many KB.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…[truncated]"
+}
+
 func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	// ADR-0034: subscribe to cross-replica scope invalidations (LISTEN/NOTIFY).
 	if k.ScopeStore != nil && k.ScopeResolver != nil {
@@ -1393,6 +1404,27 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		k.Server.TokenSink = func(sessionID string, stepIndex int, text string) {
 			operatorFeed.EmitEphemeral(domain.TokenChunkEvent{SessionID: sessionID, StepIndex: stepIndex, Text: text})
 		}
+		// ADR-0079: fork the full prompt+completion of every managed-proxy agent turn
+		// onto the feed's live-only exchange lane so a benchmark can review every agent
+		// output and reconstruct the internal ReAct loop. Gated (default off) because
+		// prompts are large/sensitive; the sink truncates to a bounded size and records
+		// the untruncated lengths so truncation is visible downstream.
+		if k.Config.Execution.CaptureLLMExchanges {
+			const maxExchangeChars = 8192
+			k.Server.LLMExchangeSink = func(sessionID, agentID, modelID string, stepIndex int, prompt, completion string) {
+				operatorFeed.EmitEphemeral(domain.AgentLLMExchangeEvent{
+					SessionID:     sessionID,
+					AgentID:       agentID,
+					StepIndex:     stepIndex,
+					Purpose:       "agent_llm",
+					ModelID:       modelID,
+					Prompt:        truncateRunes(prompt, maxExchangeChars),
+					Completion:    truncateRunes(completion, maxExchangeChars),
+					PromptChars:   len(prompt),
+					ResponseChars: len(completion),
+				})
+			}
+		}
 		operatorSvc := operator.NewService(operatorFeed)
 		operatorSvc.SetSnapshotSources(operatorProjection, k.SessionMgr)
 		operatorSvc.SetIdentity(operatorIDP)
@@ -1477,6 +1509,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			// observability (query-thrash + retrieval-provenance poisoning signals).
 			"agent-steps",
 		}
+		// llm-exchange: full prompt+completion of every agent reasoning turn on the feed
+		// (ADR-0079), advertised only when execution.capture_llm_exchanges is on so a
+		// benchmark knows the exchange lane will actually emit for this kernel.
+		if k.Config.Execution.CaptureLLMExchanges {
+			operatorCaps = append(operatorCaps, "llm-exchange")
+		}
 		if k.Server.WatchHandler != nil {
 			operatorCaps = append(operatorCaps, "watches-read", "watches-crud")
 		}
@@ -1500,7 +1538,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Server.WatchHandler != nil {
 			operatorCaps = append(operatorCaps, "watch-schedule")
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0058", operatorCaps)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0059", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).
