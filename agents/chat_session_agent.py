@@ -170,14 +170,10 @@ class ChatSessionAgent(CognitiveAgent):
             )
         except ReActLoopError:
             return AgentResult(data=_SAFE_FALLBACK.encode("utf-8"), type="text", confidence=0.2)
-        except Exception as _exc:  # noqa: BLE001 — a turn must never crash the session
-            import traceback as _tb
-            return AgentResult(data=("ERR>>>" + repr(_exc) + "\n" + _tb.format_exc()).encode("utf-8"),
-                               type="text", confidence=0.2)  # DEBUG
+        except Exception:  # noqa: BLE001 — a turn must never crash the session
+            return AgentResult(data=_SAFE_FALLBACK.encode("utf-8"), type="text", confidence=0.2)
 
-        raw = _result_text(result)
-        return AgentResult(data=("RAW>>>" + raw).encode("utf-8"), type="text", confidence=0.7)  # DEBUG
-        spoken = _spoken_only(raw)
+        spoken = _spoken_only(_result_text(result))
         return AgentResult(data=spoken.encode("utf-8"), type="text",
                            confidence=getattr(result, "confidence", 0.7) or 0.7)
 

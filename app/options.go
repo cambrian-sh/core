@@ -72,6 +72,13 @@ type ReactiveServices struct {
 	// May be nil — a nil journal leaves the engine in its pure in-memory mode
 	// (today's behavior), so OSS builds and existing tests are unaffected.
 	Journal ReactiveJournal
+	// AcquireLLMToken provisions a managed-LLM session token (ADR-0018) for a
+	// direct-dispatch consumer that dispatches an agent OUTSIDE the planner/DAG path —
+	// where tokens are normally issued (server.go:493). The ADR-0080 chat manager needs
+	// this: without a `_session_token_id` on the handoff Context, the dispatched agent's
+	// GenerateViaModelStream call is rejected UNAUTHENTICATED. Returns the token id and a
+	// release func to call when the turn completes. Nil when no gateway is configured.
+	AcquireLLMToken func(ctx context.Context, tokenLimit int, ttl time.Duration) (tokenID string, release func(), err error)
 }
 
 // ReactiveJournal is the durable-execution surface for the reactive lane
