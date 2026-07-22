@@ -173,7 +173,9 @@ class ChatSessionAgent(CognitiveAgent):
         except Exception:  # noqa: BLE001 — a turn must never crash the session
             return AgentResult(data=_SAFE_FALLBACK.encode("utf-8"), type="text", confidence=0.2)
 
-        spoken = _spoken_only(_result_text(result))
+        raw = _result_text(result)
+        return AgentResult(data=("RAW>>>" + raw).encode("utf-8"), type="text", confidence=0.7)  # DEBUG
+        spoken = _spoken_only(raw)
         return AgentResult(data=spoken.encode("utf-8"), type="text",
                            confidence=getattr(result, "confidence", 0.7) or 0.7)
 
