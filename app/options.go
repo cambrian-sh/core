@@ -79,6 +79,10 @@ type ReactiveServices struct {
 	// GenerateViaModelStream call is rejected UNAUTHENTICATED. Returns the token id and a
 	// release func to call when the turn completes. Nil when no gateway is configured.
 	AcquireLLMToken func(ctx context.Context, tokenLimit int, ttl time.Duration) (tokenID string, release func(), err error)
+	// ChatManagerAddr is the configured ADR-0080 Chat Manager HTTP ingress bind address
+	// (execution.chat_manager_addr), read from the kernel config at startup. Empty ⇒ the
+	// premium chat plugin does not start the manager. Config-driven, not env/manual.
+	ChatManagerAddr string
 }
 
 // ReactiveJournal is the durable-execution surface for the reactive lane
