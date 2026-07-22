@@ -131,19 +131,26 @@ class ChatSessionAgent(CognitiveAgent):
         return task.metadata.get("transcript") or task.context.get("transcript") or ""
 
     def run(self, task: "AgentTask"):
+        from cambrian_agent_sdk.react import run_think, ReActLoopError
+
         policy = self._policy(task)
         transcript = self._transcript(task)
         user_msg = (task.text or "").strip()
 
-        preamble = []
+        # Compose the policy + running transcript into the per-turn ROLE (the <Role> prompt
+        # section). Deliberately NOT into task.text: the ReAct seed uses task.text verbatim as
+        # the x-tool-query gRPC metadata header, and a multi-line value is an illegal header.
+        # Keeping task.text = the single-line user message keeps that header valid.
+        role_parts = [self.role]
         if policy:
-            preamble.append(f"<policy>\n{policy}\n</policy>")
+            role_parts.append(f"Follow this policy strictly; refuse anything it forbids:\n"
+                              f"<policy>\n{policy}\n</policy>")
         if transcript:
-            preamble.append(f"Conversation so far:\n{transcript}")
-        preamble.append(f'The customer just said: "{user_msg}"')
-        # Re-point the ReAct loop at the conversational turn while keeping class role/schema.
+            role_parts.append(f"The conversation so far:\n{transcript}")
+        composed_role = "\n\n".join(role_parts)
+
         turn = AgentTask(
-            text="\n\n".join(preamble),
+            text=user_msg,
             type="text",
             metadata=task.metadata,
             context=task.context,
@@ -151,9 +158,19 @@ class ChatSessionAgent(CognitiveAgent):
             deadline_remaining_ms=task.deadline_remaining_ms,
         )
         try:
-            result = self.think(turn)
-        except Exception as exc:  # noqa: BLE001 — a turn must never crash the session
-            configure_logging  # keep import used; real logging is wired by serve()
+            result = run_think(
+                self, turn,
+                role=composed_role,
+                output_schema=self.output_schema,
+                constraints=list(self.constraints) if self.constraints else None,
+                result_type=None,
+                seed_recall=self.seed_recall,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+            )
+        except ReActLoopError:
+            return AgentResult(data=_SAFE_FALLBACK.encode("utf-8"), type="text", confidence=0.2)
+        except Exception:  # noqa: BLE001 — a turn must never crash the session
             return AgentResult(data=_SAFE_FALLBACK.encode("utf-8"), type="text", confidence=0.2)
 
         spoken = _spoken_only(_result_text(result))
