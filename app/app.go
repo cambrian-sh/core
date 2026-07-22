@@ -756,6 +756,18 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			WatchStore: reg,
 			EventBus:   eventBus,
 			Journal:    reg, // REACT-01 / ADR-0061: durable reactive execution (bbolt).
+			// ADR-0080: let a direct-dispatch consumer (chat manager) provision a managed-LLM
+			// session token, the way the planner path does at server.go:493. Nil gateway ⇒ no-op.
+			AcquireLLMToken: func(ctx context.Context, tokenLimit int, ttl time.Duration) (string, func(), error) {
+				if llmGateway == nil {
+					return "", func() {}, nil
+				}
+				tok, err := llmGateway.Acquire(ctx, domain.StepAllocation{}, tokenLimit, ttl)
+				if err != nil {
+					return "", func() {}, err
+				}
+				return tok, func() { _, _ = llmGateway.Complete(context.Background(), tok) }, nil
+			},
 		})
 	}
 	// REACT-05 / ADR-0071: the premium ReactiveEngine (signalRcv) also implements the
