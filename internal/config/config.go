@@ -151,7 +151,7 @@ type ExecutionConfig struct {
 	// all intra-step retries and inter-step fallbacks are exhausted. Default: 2.
 	MaxReplanAttempts int `json:"max_replan_attempts"`
 	// MaxFanOutWidth caps how many concrete children a parametric fan-out step
-	// (ADR-0078 R2) may expand into from a discovered set. Exceeding it is a hard,
+	// (ADR-0079 R2) may expand into from a discovered set. Exceeding it is a hard,
 	// structured error routed to replan — never a silent truncation. Default: 64;
 	// 0 disables the cap.
 	MaxFanOutWidth int `json:"max_fanout_width"`
@@ -464,6 +464,14 @@ type ExecutionConfig struct {
 	// lookups, no model. Default off.
 	NeighborWindowEnabled bool `json:"neighbor_window_enabled,omitempty"`
 
+	// CaptureLLMExchanges forks the full prompt+completion of every managed-proxy
+	// agent generation to the operator feed as a live-only AgentLLMExchangeOp, so a
+	// benchmark can review every agent output and reconstruct its internal ReAct loop
+	// without SDK instrumentation (ADR-0079). Default OFF: prompts are large and may be
+	// sensitive, so this is a benchmark/diagnostic lane, not a production default. Zero
+	// behavior change — emission is fire-and-forget and never affects the agent stream.
+	CaptureLLMExchanges bool `json:"capture_llm_exchanges,omitempty"`
+
 	// ADR-0022: Global Workspace capacity model.
 	// ActivationThreshold is the post-BFS selection floor for PrimeForStep.
 	ActivationThreshold    float64 `json:"activation_threshold"`      // default 0.1
@@ -617,27 +625,27 @@ type ExecutionConfig struct {
 	ScoutEnabled bool `json:"scout_enabled,omitempty"`
 
 	// ScoutModel (ADR-0051) is the model id the pre-plan Scout reasons with. Under the
-	// ADR-0078 deterministic-first design this is only the FALLBACK model for the opt-in
+	// ADR-0079 deterministic-first design this is only the FALLBACK model for the opt-in
 	// LLM tier (ScoutLLMTierEnabled) — a cheap/fast variant (e.g. llm:mimo) is ideal.
 	// "" ⇒ the gateway's default model (still via a properly-allocated managed session).
 	ScoutModel string `json:"scout_model,omitempty"`
 
-	// ScoutLLMTierEnabled (ADR-0078 D1) turns on the opt-in LLM discovery tier (the
+	// ScoutLLMTierEnabled (ADR-0079 D1) turns on the opt-in LLM discovery tier (the
 	// ADR-0051 run_think scout) layered ON TOP of the deterministic probe registry. Off
 	// (default) ⇒ deterministic probes only, zero LLM on the discovery hot path.
 	ScoutLLMTierEnabled bool `json:"scout_llm_tier_enabled,omitempty"`
 
-	// ScoutHTTPProbeEnabled (ADR-0078 D2) registers the http/openapi discovery source.
+	// ScoutHTTPProbeEnabled (ADR-0079 D2) registers the http/openapi discovery source.
 	// Off (default) because probing a URL from an untrusted request is an SSRF surface;
 	// when on, the source's guard refuses loopback/private/link-local hosts unless
 	// ScoutHTTPAllowPrivate is also set.
 	ScoutHTTPProbeEnabled bool `json:"scout_http_probe_enabled,omitempty"`
 
-	// ScoutHTTPAllowPrivate (ADR-0078 D2) permits the http source to reach loopback/private
+	// ScoutHTTPAllowPrivate (ADR-0079 D2) permits the http source to reach loopback/private
 	// hosts (dev only — e.g. a localhost API). Default false (fail-closed).
 	ScoutHTTPAllowPrivate bool `json:"scout_http_allow_private,omitempty"`
 
-	// ScoutDiscoveryRoots (ADR-0078 D2/D6) are the directories the deterministic filesystem
+	// ScoutDiscoveryRoots (ADR-0079 D2/D6) are the directories the deterministic filesystem
 	// source may read. Empty ⇒ the kernel's working directory only (fail-closed-ish).
 	ScoutDiscoveryRoots []string `json:"scout_discovery_roots,omitempty"`
 

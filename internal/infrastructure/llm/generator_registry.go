@@ -40,6 +40,7 @@ func NewGeneratorRegistry(generators []config.GeneratorConfig) (*GeneratorRegist
 			CostPer1MOutput: g.CostPer1MOutput,
 			TimeoutMs:       g.TimeoutMs,
 			Capabilities:    g.Capabilities,
+			DisableThinking: g.DisableThinking,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("generator %q: %w", g.ID, err)

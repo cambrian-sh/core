@@ -96,6 +96,14 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 		s.AgentCallLogger.Log(stream.Context(), "agent_llm", req.Prompt, completion, modelID, agentID, stepIndex)
 	}
 
+	// ADR-0079: fork the same prompt+completion to the operator feed's live-only
+	// exchange lane so a benchmark can review every agent output and reconstruct the
+	// internal ReAct loop. Gated (nil unless execution.capture_llm_exchanges); the sink
+	// truncates. Fire-and-forget — never affects the agent stream.
+	if s.LLMExchangeSink != nil && completion != "" {
+		s.LLMExchangeSink(req.SessionTokenId, agentID, modelID, stepIndex, req.Prompt, completion)
+	}
+
 	err := <-errCh
 	if err != nil {
 		switch err.Error() {
