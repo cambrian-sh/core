@@ -19,9 +19,35 @@ depends_on:
 
 ## Status
 
-Proposed. Motivated by the τ²-bench airline benchmark (July 2026), which exposed that
-multi-turn conversation currently has **no home of its own** and falls through to the task
-planner, where it dead-loops.
+Accepted — MVP implemented and validated live on the τ²-bench airline benchmark (2026-07-22).
+The same task that produced a *hollow* pass under the old planner path (all replies were
+leaked `plan partially failed` errors, 0 tool calls) is now a **competent** solve under the
+chat-daemon system: real `get_user_details` / `get_reservation_details` tool calls, correct
+policy-compliant refund refusal, 0 leaked errors, reward 1.0.
+
+**Implemented (MVP):**
+- `cambrian-core/agents/chat_session_agent.py` — the Session agent (D2): per-turn ReAct loop
+  (`final_answer`/`tool_call`/`yield_subgoal`) with the D5 spoken-only guardrail.
+- `cambrian-premium/chat/manager.go` — the Chat Manager (D1) as a synchronous HTTP ingress
+  (`/open`, `/turn`, `/close`); owns the per-conversation transcript (threaded via handoff
+  metadata), dispatches via `CallAgent` (**planner bypassed**), provisions the per-turn
+  managed-LLM token.
+- **Config-driven startup:** `execution.chat_manager_addr` (kernel config) enables + binds the
+  manager; the kernel brings it up at boot via the premium plugin lifecycle — not an env flag
+  or manual spawn.
+- **Seam addition (only core change):** `app.ReactiveServices.AcquireLLMToken`, wired from the
+  LLMGateway, so a direct-dispatch consumer can provision the ADR-0018 managed-LLM budget the
+  planner path issues at `server.go:493`. Without it the dispatched agent's
+  `GenerateViaModelStream` is rejected `UNAUTHENTICATED: session_token_id is required` — a gap
+  that means the pre-existing reactive `dispatch_agent` path never worked for LLM-calling
+  daemons (consistent with `ConversationEngine` having been unwired).
+
+**MVP simplifications vs the full design (follow-ups):** the Session agent runs as a shared
+stateless-per-call `cognitive` instance with the manager threading the transcript, rather than
+one supervised per-conversation daemon owning its own in-process state; and the ingress is HTTP
+rather than the SDK-writable manager + agent-plane `SendTurn` RPC.
+
+Original motivation retained below.
 
 ## Context
 

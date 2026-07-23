@@ -463,6 +463,78 @@ _SYNTH_CONTEXT_MAXCHARS = 16000
 _VALID_STATUS = ("answer", "abstention", "clarification")
 
 
+def build_labeled_context(chunks: object, max_chars: int) -> str:
+    """Number retrieved chunks [1], [2], ... in the ORDER GIVEN, for citation.
+
+    Unlike ``build_context`` this does NOT content-dedup: the caller (AnswerSystem,
+    ADR-0081) resolves citation marker n against evidence[n-1] on the kernel side,
+    so the label→chunk mapping here must stay 1:1 with the order it was handed.
+    """
+    items = chunks if isinstance(chunks, list) else []
+    parts: list[str] = []
+    for i, c in enumerate(items, start=1):
+        t = str(c).strip()
+        if not t:
+            continue
+        parts.append(f"[{i}] {t}")
+    return "\n---\n".join(parts)[:max_chars]
+
+
+SYNTHESIZE_CITED_PROMPT = """\
+Given the QUESTION and the numbered CONTEXT sources retrieved from memory, produce
+a TYPED, CITED answer. Follow the SAME three-way decision as an uncited answer
+(answer / abstention / clarification), with ONE addition: in the "answer" case,
+cite EVERY grounded claim inline with the bracketed number(s) of the source(s) it
+came from, placed at the END of the sentence or clause it supports.
+
+Rules for citations:
+- Cite ONLY from the numbered sources. A claim you cannot ground in a source must
+  be dropped, not cited — never invent a citation or use outside knowledge.
+- A sentence may cite multiple sources: "... within SLA [1][3]."
+- Do not cite the abstention or clarification text.
+
+  {{"status": "answer", "text": "<grounded answer with inline [n] citations>"}}
+  {{"status": "abstention", "text": "not found in memory"}}
+  {{"status": "clarification", "text": "which <thing> do you mean?"}}
+
+A described or multi-hop question is FULLY SPECIFIED — return answer or abstention,
+NEVER clarification (a bare generic reference with no defining clause is the only
+clarification case).
+
+Example:
+QUESTION: Where did the little prince come from, and who did he meet?
+CONTEXT:
+[1] I have serious reason to believe that the planet from which the little prince
+    came is the asteroid known as B612.
+[2] "What is that big book?" said the little prince ... "I am a geographer," said
+    the old gentleman.
+-> {{"status": "answer", "text": "The little prince came from the asteroid B612 [1]. He met a geographer [2]."}}
+
+Return ONLY JSON.
+
+QUESTION: {query}
+
+CONTEXT:
+{context}"""
+
+
+def synthesize_cited(state: dict, llm: LLM) -> dict:
+    """Grounded synthesis with inline [n] citations (ADR-0081).
+
+    ``state = {query, chunks: [text, ...]}`` — chunks are numbered [1..N] in order
+    and the answer cites them inline. Same fail-safe as ``synthesize``: an unknown
+    status defaults to ``answer``.
+    """
+    query = str(state.get("query", ""))
+    context = build_labeled_context(state.get("chunks"), _SYNTH_CONTEXT_MAXCHARS) or "(nothing retrieved)"
+    raw = llm(SYNTHESIZE_CITED_PROMPT.format(query=query, context=context))
+    obj = extract_json(raw) or {}
+    status = str(obj.get("status", "")).strip().lower()
+    if status not in _VALID_STATUS:
+        status = "answer"
+    return {"status": status, "text": str(obj.get("text", ""))}
+
+
 def synthesize(state: dict, llm: LLM) -> dict:
     """Produce the final typed three-way output for the loop's result.
 

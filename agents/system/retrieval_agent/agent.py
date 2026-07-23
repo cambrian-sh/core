@@ -73,6 +73,14 @@ class RetrievalAgent(CognitiveAgent):
             chunks = obj.get("chunks") if isinstance(obj.get("chunks"), list) else []
             state = {"query": str(obj.get("query", "")), "chunks": chunks}
             return self._ok(planner.synthesize(state, llm))
+        if op == "synthesize_cited":
+            # ADR-0081: grounded answer with inline [n] citations. Distinct op so
+            # the benchmark synthesize (whose answer text the scorer substring-matches)
+            # is never polluted with citation markers.
+            llm = self._make_llm(task, _SYNTH_MAX_TOKENS)
+            chunks = obj.get("chunks") if isinstance(obj.get("chunks"), list) else []
+            state = {"query": str(obj.get("query", "")), "chunks": chunks}
+            return self._ok(planner.synthesize_cited(state, llm))
         if op == "reason_step":
             llm = self._make_llm(task, _PLAN_MAX_TOKENS)
             chunks = obj.get("chunks") if isinstance(obj.get("chunks"), list) else []

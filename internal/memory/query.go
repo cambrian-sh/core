@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -102,6 +103,14 @@ type Planner interface {
 	// question + accumulated chunks, return status ∈ {answer, abstention,
 	// clarification} and the composed text. Fail-open = "answer".
 	Synthesize(ctx context.Context, query string, chunks []string) (status, text string, err error)
+}
+
+// CitedSynthesizer is an OPTIONAL planner capability (ADR-0081): synthesize with
+// inline [n] citations over the chunk order given (marker n → chunks[n-1]). Used
+// only by AnswerSystem (the operator answer lane); the benchmark path never calls
+// it, so its answer text stays citation-marker-free.
+type CitedSynthesizer interface {
+	SynthesizeCited(ctx context.Context, query string, chunks []string) (status, text string, err error)
 }
 
 // HydePlanner is an OPTIONAL planner capability: generate a hypothetical answer
@@ -1225,6 +1234,58 @@ func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]do
 func (q *QueryService) SearchSystem(ctx context.Context, query string) ([]domain.SearchResult, error) {
 	ctx = domain.WithScope(ctx, domain.ScopeSystem)
 	return q.searchByType(ctx, query, "", "operator:system", domain.DocTypeMnemonicFact, true)
+}
+
+// errAgenticDisabled is returned by AnswerSystem when the agentic path is not
+// available (no planner wired). The operator handler maps it to Unimplemented.
+var errAgenticDisabled = errors.New("agentic answer path disabled")
+
+// AnswerSystem (ADR-0081) is the operator-plane answer lane: it runs the agentic
+// retrieval loop and returns a GROUNDED composed answer (with inline [n] citation
+// markers) plus the ordered evidence each marker resolves to. It reuses
+// agenticSearch — whose control result already carries the synthesized answer and
+// typed status — and strips that synthetic result to hand back the real evidence.
+//
+// Marker alignment: the synthesizer labels each chunk [1..N] and cites by that
+// label, so marker n maps to evidence[n-1] regardless of any reasoning-chain
+// prefix the loop may prepend. Returns Unavailable if the agentic path is off (no
+// planner) — the operator handler maps that to Unimplemented behind the
+// "memory-answer" capability.
+func (q *QueryService) AnswerSystem(ctx context.Context, query string) (status, answer string, evidence []domain.SearchResult, err error) {
+	cs, ok := q.planner.(CitedSynthesizer)
+	if !ok {
+		return "", "", nil, errAgenticDisabled
+	}
+	ctx = domain.WithScope(ctx, domain.ScopeSystem)
+	// SINGLE-PASS retrieval for the evidence, then exactly ONE cited synthesis.
+	// The operator answer lane deliberately does NOT run the multi-hop agentic
+	// loop (decompose + per-hop planning + a thrown-away synthesize): that spends
+	// several LLM calls plus a reranker pass, exhausting the step deadline before
+	// synthesis — the DEADLINE_EXCEEDED failure mode. Multi-hop bridge questions
+	// are a later addition; corpus Q&A is well served by one retrieval + one
+	// grounded, cited synthesis. Marker n aligns to evidence[n-1].
+	evidence, err = q.searchByType(ctx, query, "", "operator:system", domain.DocTypeMnemonicFact, true)
+	if err != nil {
+		return "", "", nil, err
+	}
+	const maxAnswerChunks = 16
+	texts := make([]string, 0, maxAnswerChunks)
+	for i, h := range evidence {
+		if i >= maxAnswerChunks {
+			break
+		}
+		texts = append(texts, h.Document.Text)
+	}
+	if len(texts) == 0 {
+		return "abstention", "not found in memory", evidence, nil
+	}
+	status, answer, err = cs.SynthesizeCited(ctx, query, texts)
+	if err != nil {
+		// Fail-open: return the evidence with a neutral status so the UI can still
+		// show sources even when synthesis itself failed.
+		return "answer", "", evidence, nil
+	}
+	return status, answer, evidence, nil
 }
 
 // SearchActions is the "what did I do" lane (ADR-0049 D4). It retrieves

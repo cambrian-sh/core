@@ -180,6 +180,19 @@ func (m *AgentManager) DecrementDaemonRef(streamID string) (stopped bool, err er
 	return true, nil
 }
 
+// DaemonInstanceID returns the running instance id for a daemon stream, if one is registered.
+// ADR-0080: lets CallDaemon route a turn to the specific per-conversation daemon spawned for
+// this streamID (conversation_id), rather than any instance of the agent.
+func (m *AgentManager) DaemonInstanceID(streamID string) (string, bool) {
+	m.daemons.mu.Lock()
+	defer m.daemons.mu.Unlock()
+	s, ok := m.daemons.byStream[streamID]
+	if !ok || s.instanceID == "" {
+		return "", false
+	}
+	return s.instanceID, true
+}
+
 // DaemonRefCount returns the current reference count for streamID. Zero means no daemon.
 func (m *AgentManager) DaemonRefCount(streamID string) int {
 	m.daemons.mu.Lock()

@@ -39,6 +39,7 @@ const (
 	OperatorConsole_ListTools_FullMethodName            = "/cambrian.OperatorConsole/ListTools"
 	OperatorConsole_ListSkills_FullMethodName           = "/cambrian.OperatorConsole/ListSkills"
 	OperatorConsole_QueryMemory_FullMethodName          = "/cambrian.OperatorConsole/QueryMemory"
+	OperatorConsole_AnswerMemory_FullMethodName         = "/cambrian.OperatorConsole/AnswerMemory"
 	OperatorConsole_SetToolPolicy_FullMethodName        = "/cambrian.OperatorConsole/SetToolPolicy"
 	OperatorConsole_ExecuteTool_FullMethodName          = "/cambrian.OperatorConsole/ExecuteTool"
 	OperatorConsole_IngestMemory_FullMethodName         = "/cambrian.OperatorConsole/IngestMemory"
@@ -105,6 +106,13 @@ type OperatorConsoleClient interface {
 	ListTools(ctx context.Context, in *ListToolsOpRequest, opts ...grpc.CallOption) (*ListToolsOpResponse, error)
 	ListSkills(ctx context.Context, in *ListSkillsOpRequest, opts ...grpc.CallOption) (*ListSkillsOpResponse, error)
 	QueryMemory(ctx context.Context, in *QueryMemoryRequest, opts ...grpc.CallOption) (*QueryMemoryResponse, error)
+	// AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
+	// composed answer with inline [n] citation markers, plus the evidence each marker
+	// resolves to. Distinct from QueryMemory's single-pass evidence lane: this is a
+	// read that synthesizes (no auction, no mutation, no x-agent-id principal). Gated
+	// on the "memory-answer" capability; OSS / agentic-disabled builds return
+	// Unimplemented.
+	AnswerMemory(ctx context.Context, in *AnswerMemoryRequest, opts ...grpc.CallOption) (*AnswerMemoryResponse, error)
 	// Tool permission management: bound an existing grant with a resource policy
 	// (Operator-only, idempotent, audited). A2.3.
 	SetToolPolicy(ctx context.Context, in *SetToolPolicyRequest, opts ...grpc.CallOption) (*CommandAck, error)
@@ -362,6 +370,16 @@ func (c *operatorConsoleClient) QueryMemory(ctx context.Context, in *QueryMemory
 	return out, nil
 }
 
+func (c *operatorConsoleClient) AnswerMemory(ctx context.Context, in *AnswerMemoryRequest, opts ...grpc.CallOption) (*AnswerMemoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AnswerMemoryResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_AnswerMemory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) SetToolPolicy(ctx context.Context, in *SetToolPolicyRequest, opts ...grpc.CallOption) (*CommandAck, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CommandAck)
@@ -543,6 +561,13 @@ type OperatorConsoleServer interface {
 	ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error)
 	ListSkills(context.Context, *ListSkillsOpRequest) (*ListSkillsOpResponse, error)
 	QueryMemory(context.Context, *QueryMemoryRequest) (*QueryMemoryResponse, error)
+	// AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
+	// composed answer with inline [n] citation markers, plus the evidence each marker
+	// resolves to. Distinct from QueryMemory's single-pass evidence lane: this is a
+	// read that synthesizes (no auction, no mutation, no x-agent-id principal). Gated
+	// on the "memory-answer" capability; OSS / agentic-disabled builds return
+	// Unimplemented.
+	AnswerMemory(context.Context, *AnswerMemoryRequest) (*AnswerMemoryResponse, error)
 	// Tool permission management: bound an existing grant with a resource policy
 	// (Operator-only, idempotent, audited). A2.3.
 	SetToolPolicy(context.Context, *SetToolPolicyRequest) (*CommandAck, error)
@@ -650,6 +675,9 @@ func (UnimplementedOperatorConsoleServer) ListSkills(context.Context, *ListSkill
 }
 func (UnimplementedOperatorConsoleServer) QueryMemory(context.Context, *QueryMemoryRequest) (*QueryMemoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryMemory not implemented")
+}
+func (UnimplementedOperatorConsoleServer) AnswerMemory(context.Context, *AnswerMemoryRequest) (*AnswerMemoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AnswerMemory not implemented")
 }
 func (UnimplementedOperatorConsoleServer) SetToolPolicy(context.Context, *SetToolPolicyRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetToolPolicy not implemented")
@@ -1061,6 +1089,24 @@ func _OperatorConsole_QueryMemory_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_AnswerMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AnswerMemoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).AnswerMemory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_AnswerMemory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).AnswerMemory(ctx, req.(*AnswerMemoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_SetToolPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetToolPolicyRequest)
 	if err := dec(in); err != nil {
@@ -1352,6 +1398,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryMemory",
 			Handler:    _OperatorConsole_QueryMemory_Handler,
+		},
+		{
+			MethodName: "AnswerMemory",
+			Handler:    _OperatorConsole_AnswerMemory_Handler,
 		},
 		{
 			MethodName: "SetToolPolicy",

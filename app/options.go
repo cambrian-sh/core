@@ -117,6 +117,10 @@ type ReactiveAgentDispatcher interface {
 	CallAgent(ctx context.Context, agentID string, h *domain.Handoff) (*domain.Handoff, error)
 	SpawnDaemon(agentID, streamID string, params map[string]any) (instanceID string, err error)
 	StopDaemon(streamID string) error
+	// CallDaemon routes a handoff to the specific per-stream daemon instance spawned for
+	// streamID (ADR-0080), not any instance of the agent. Used by the chat manager to deliver
+	// a turn to that conversation's own supervised session daemon.
+	CallDaemon(ctx context.Context, streamID string, h *domain.Handoff) (*domain.Handoff, error)
 }
 
 // ReactiveMemoryWriter ingests signal content into LTM asynchronously.
