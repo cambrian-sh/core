@@ -132,6 +132,26 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 	return resp, nil
 }
 
+// CallDaemon routes a handoff to the SPECIFIC per-stream daemon instance the kernel spawned
+// for streamID (ADR-0080), rather than any instance of the agent (which CallAgent picks). The
+// manager uses this to deliver each conversation turn to that conversation's own supervised
+// session daemon. Returns an error if no daemon is registered/running for streamID.
+func (m *AgentManager) CallDaemon(ctx context.Context, streamID string, handoff *domain.Handoff) (*domain.Handoff, error) {
+	instanceID, ok := m.DaemonInstanceID(streamID)
+	if !ok {
+		return nil, fmt.Errorf("CallDaemon: no daemon registered for stream %q", streamID)
+	}
+	inst, ok := m.InstanceManager.GetInstanceByID(instanceID)
+	if !ok || inst.SocketPath == "" {
+		return nil, fmt.Errorf("CallDaemon: daemon instance %q for stream %q not live", instanceID, streamID)
+	}
+	protoResp, err := m.executeHandoff(ctx, "unix:"+inst.SocketPath, domainToProtoHandoff(handoff))
+	if err != nil {
+		return nil, err
+	}
+	return protoToDomainHandoff(protoResp), nil
+}
+
 // domainToProtoHandoff converts a domain Handoff to proto for gRPC calls.
 // ADR-0022 Phase 3: WorkingMemory is copied into proto working_memory so
 // cognitive agents receive prior-step ContextRefs via the Python SDK.

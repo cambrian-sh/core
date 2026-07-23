@@ -18,8 +18,10 @@ Outputs:
   * ``agents/requirements.lock`` — the transitive closure of ALL agents' deps,
     each pinned ``==`` to the installed version (the reproducible union lock).
 
-The SDK is emitted as ``cambrian-agent-sdk>=0.1,<0.2`` (a released range, not a
-local pin) so a clean install resolves it from PyPI / a local wheel.
+The SDK resolves from PyPI (``cambrian-agent-sdk``, published — PLAT-06). Per-agent
+``requirements.txt`` carry the loose ``SDK_REQ`` range (``>=0.1,<0.2``); the union
+``requirements.lock`` exact-pins it (``==<installed version>``) like every other dep for a
+reproducible install, falling back to the range only when the SDK isn't installed.
 
 Usage:
   python scripts/gen_agent_requirements.py [--check]   # --check = fail on drift
@@ -191,7 +193,10 @@ def generate() -> dict[Path, str]:
         if pin:
             lock_lines.append(pin)
     lock = HEADER + "# Union lockfile: transitive closure of every agent's deps.\n"
-    lock += SDK_REQ + "\n"
+    # The lock exact-pins the SDK to the installed (published) version like every other dep,
+    # for a reproducible install (PLAT-06). The per-agent requirements.txt keep the loose
+    # `SDK_REQ` range. Falls back to the range when the SDK isn't installed (e.g. pre-publish).
+    lock += (_pin("cambrian-agent-sdk") or SDK_REQ) + "\n"
     lock += "".join(l + "\n" for l in sorted(lock_lines, key=str.lower))
     files[AGENTS / "requirements.lock"] = lock
     return files

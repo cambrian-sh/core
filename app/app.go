@@ -60,6 +60,17 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+// maxGRPCMessageBytes caps a single unary gRPC message on the main listener. It
+// exists for the operator binary-ingest lane (IngestMemory), which carries an
+// entire file in one request; gRPC's 4 MiB default rejects real documents. Set to
+// 512 MiB to support large uploads (~500 MB).
+//
+// NOTE: a message this size is buffered whole in memory on both peers — this is a
+// ceiling for occasional large ingests, not a licence for routine half-gig
+// payloads. The scalable path for very large files is a client-streaming (chunked)
+// ingest RPC; this constant unblocks the single-message lane in the meantime.
+const maxGRPCMessageBytes = 512 * 1024 * 1024
+
 // Kernel acts as the centralized container for the Orchestrator's life support systems.
 // After the stack refactor (2026-05-11c), it holds only:
 //   - infrastructure primitives (Config, Registry, Store, Listener)
@@ -1386,6 +1397,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		k.GRPC = grpc.NewServer(
 			grpc.ChainUnaryInterceptor(operator.UnaryAuthInterceptor(operatorIDP)),
 			grpc.ChainStreamInterceptor(operator.StreamAuthInterceptor(operatorIDP)),
+			// The operator binary-ingest lane (IngestMemory) carries raw file bytes;
+			// gRPC's 4 MiB default rejects any PDF above it server-side before docling
+			// ever runs, so the documented upload path is unusable for real documents.
+			// Raise both directions to 64 MiB (matches the UI client's tonic limits).
+			grpc.MaxRecvMsgSize(maxGRPCMessageBytes),
+			grpc.MaxSendMsgSize(maxGRPCMessageBytes),
 		)
 		pb.RegisterOrchestratorServer(k.GRPC, k.Server)
 		// PLAT-03 / ADR-0065: standard grpc.health.v1 on the main listener. Starts the
@@ -1456,6 +1473,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// catalog (whole registry, not a per-agent menu), the system-skill registry,
 		// and ScopeSystem memory recall (operator sees all data, D13).
 		operatorSvc.SetReadSources(k.Server.ToolExecutor, k.Server.SkillRegistry, k.Memory.QueryService)
+		// ADR-0081: the answer lane is only meaningful when the agentic retrieval
+		// loop is wired (it synthesizes over multi-hop evidence). Gate on the same
+		// flag; the "memory-answer" capability is advertised iff this is set.
+		if k.Config.Execution.AgenticRetrievalEnabled {
+			operatorSvc.SetMemoryAnswerer(k.Memory.QueryService)
+		}
 		// ADR-0047 A2.2: operator-triggered tool execution at ScopeSystem (audited,
 		// idempotent). Reuses the kernel tool reference monitor with the System bypass.
 		operatorSvc.SetToolExec(k.Server.ToolExecutor)
@@ -1528,6 +1551,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Config.Execution.CaptureLLMExchanges {
 			operatorCaps = append(operatorCaps, "llm-exchange")
 		}
+		// memory-answer: AnswerMemory (ADR-0081) grounded, [n]-cited answer lane,
+		// advertised only when the agentic retrieval path backs it.
+		if operatorSvc.HasMemoryAnswerer() {
+			operatorCaps = append(operatorCaps, "memory-answer")
+		}
 		if k.Server.WatchHandler != nil {
 			operatorCaps = append(operatorCaps, "watches-read", "watches-crud")
 		}
@@ -1551,7 +1579,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Server.WatchHandler != nil {
 			operatorCaps = append(operatorCaps, "watch-schedule")
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0059", operatorCaps)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0060", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).

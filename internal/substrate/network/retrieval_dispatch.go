@@ -270,6 +270,38 @@ func (d *RetrievalDispatcher) Synthesize(ctx context.Context, query string, chun
 	return status, sr.Text, nil
 }
 
+// SynthesizeCited (ADR-0081) is Synthesize with inline [n] citations: the chunks
+// are numbered [1..N] in the order given and the answer cites them. Same envelope
+// and fail-open as Synthesize. Distinct op so the benchmark synthesize is never
+// polluted with markers.
+func (d *RetrievalDispatcher) SynthesizeCited(ctx context.Context, query string, chunks []string) (string, string, error) {
+	reqData, err := json.Marshal(synthRequest{Op: "synthesize_cited", Query: query, Chunks: chunks})
+	if err != nil {
+		return "answer", "", err
+	}
+	data, err := d.call(ctx, reqData)
+	if err != nil || len(data) == 0 {
+		return "answer", "", err
+	}
+	obj := domain.ExtractJSONObject(string(data))
+	if obj == "" {
+		return "answer", "", nil
+	}
+	var sr struct {
+		Status string `json:"status"`
+		Text   string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(obj), &sr); err != nil {
+		slog.WarnContext(ctx, "retrieval dispatch: bad cited-synth JSON; fail-open (answer)", "err", err)
+		return "answer", "", err
+	}
+	status := sr.Status
+	if status != "abstention" && status != "clarification" {
+		status = "answer"
+	}
+	return status, sr.Text, nil
+}
+
 // Decompose asks the retrieval_agent to split a multi-hop question into ordered
 // sub-questions (with {n} placeholders for earlier answers). Returns nil (⇒ the
 // loop falls back to a single pass) on any failure.

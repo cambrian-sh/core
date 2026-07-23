@@ -19,6 +19,7 @@ the 5 surface tokens used by the F-verifiers. The runtime is at
 
 | Area | ADR | Status |
 |---|---|---|
+| Operator answer lane: grounded, `[n]`-cited answers (`AnswerMemory`) | 0081 | Implemented (proto contract `0060`; capability `memory-answer`). New RPC runs the agentic retrieval loop on the operator plane — a deliberate, capability-gated exception to the single-pass invariant (read-only, no auction, no `x-agent-id`). `QueryService.AnswerSystem` reuses `agenticSearch` for evidence then re-synthesizes over the evidence-only order via the optional `CitedSynthesizer` (`RetrievalDispatcher.SynthesizeCited` → Python `synthesize_cited`, which numbers chunks `[1..N]` and cites inline) so marker `n` aligns to `evidence[n-1]`. Distinct Python op keeps the benchmark synthesize (whose answer text the scorer substring-matches) marker-free. `operator.Service.AnswerMemory` maps evidence → `MemoryCitation[]`. Wired + capability advertised only when `execution.agentic_retrieval_enabled`. Builds + operator/network unit tests green. Residual: benchmark gate (operator-answer coverage on the `agentic-retrieval` suite) + live end-to-end run |
 | DAG parallel execution, value-copy plan freeze | 0001 | Implemented |
 | Self-healing, replan, negative edges, loop detection | 0005, 0010 | Implemented |
 | Mid-execution semantic checkpoint (H1 gate) | 0013 | Implemented |

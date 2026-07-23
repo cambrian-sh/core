@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -35,6 +36,15 @@ type MemoryQuerier interface {
 	SearchSystem(ctx context.Context, query string) ([]domain.SearchResult, error)
 }
 
+// MemoryAnswerer is the optional operator answer lane (ADR-0081): the agentic
+// retrieval loop producing a grounded, [n]-cited answer plus the evidence each
+// marker resolves to. Satisfied by *memory.QueryService (AnswerSystem) only when
+// the agentic path is wired; nil ⇒ AnswerMemory returns Unimplemented and the
+// "memory-answer" capability is not advertised.
+type MemoryAnswerer interface {
+	AnswerSystem(ctx context.Context, query string) (status, answer string, evidence []domain.SearchResult, err error)
+}
+
 // grantsEnumerator is the optional reverse-index source for ListTools.grants
 // (tool → which agents hold it). Satisfied by *domain.InMemoryGrantsStore (All).
 // When s.grants does not implement it, ToolOp.grants is left empty (best-effort).
@@ -52,6 +62,15 @@ func (s *Service) SetReadSources(tools ToolCatalog, skills SkillLister, memory M
 	s.skills = skills
 	s.memory = memory
 }
+
+// SetMemoryAnswerer wires the ADR-0081 answer lane. nil (the default) leaves
+// AnswerMemory returning Unimplemented and withholds the "memory-answer"
+// capability.
+func (s *Service) SetMemoryAnswerer(a MemoryAnswerer) { s.answerer = a }
+
+// HasMemoryAnswerer reports whether the answer lane is wired, so app.go can gate
+// the "memory-answer" capability on it.
+func (s *Service) HasMemoryAnswerer() bool { return s.answerer != nil }
 
 // ListTools returns the whole tool catalog the operator governs, with per-tool
 // grant reverse-index and MCP-vs-builtin source labelling (A2.3). Paged.
@@ -175,6 +194,62 @@ func (s *Service) QueryMemory(ctx context.Context, req *pb.QueryMemoryRequest) (
 			Text:        r.Document.Text,
 		})
 		if topK > 0 && len(resp.Results) >= topK {
+			break
+		}
+	}
+	return resp, nil
+}
+
+// AnswerMemory (ADR-0081) runs the agentic answer lane and returns a grounded,
+// [n]-cited answer plus the evidence each marker resolves to. Evidence marker n is
+// 1-based over the (filtered) evidence order, matching the synthesizer's labels.
+func (s *Service) AnswerMemory(ctx context.Context, req *pb.AnswerMemoryRequest) (*pb.AnswerMemoryResponse, error) {
+	if s.answerer == nil {
+		return nil, status.Error(codes.Unimplemented, "operator answer lane not configured (memory-answer)")
+	}
+	// The synthesis LLM call reads its timeout from the remaining ctx deadline. An
+	// operator answer runs retrieval + one grounded synthesis, so give it a
+	// generous, well-defined budget: an unbounded inbound ctx would otherwise leave
+	// the agent's deadline ill-defined and the LLM stream could be cut short
+	// (DEADLINE_EXCEEDED). Only shortens if the caller already imposed something
+	// tighter.
+	const answerBudget = 90 * time.Second
+	if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > answerBudget {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, answerBudget)
+		defer cancel()
+	}
+	st, answer, evidence, err := s.answerer.AnswerSystem(ctx, req.GetQuery())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "answer memory: %v", err)
+	}
+	resp := &pb.AnswerMemoryResponse{Status: st, Answer: answer}
+	topK := int(req.GetTopK())
+	marker := int32(0)
+	for _, r := range evidence {
+		imp := docImportance(r.Document)
+		if req.GetMinImportance() > 0 && imp < req.GetMinImportance() {
+			continue
+		}
+		src := metaString(r.Document.Metadata, "source")
+		if f := req.GetSource(); f != "" && src != f {
+			continue
+		}
+		if f := req.GetSession(); f != "" && metaString(r.Document.Metadata, "session_id") != f {
+			continue
+		}
+		marker++
+		resp.Citations = append(resp.Citations, &pb.MemoryCitation{
+			Marker:      marker,
+			DocId:       r.Document.ID,
+			Text:        r.Document.Text,
+			SectionPath: r.Document.SectionPath,
+			Source:      src,
+			Score:       r.Score,
+			Importance:  imp,
+			Tags:        metaStringSlice(r.Document.Metadata, "tags"),
+		})
+		if topK > 0 && int(marker) >= topK {
 			break
 		}
 	}

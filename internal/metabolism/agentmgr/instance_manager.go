@@ -128,6 +128,15 @@ func (im *InstanceManager) GetInstance(agentID string) (*domain.Instance, bool) 
 	return nil, false
 }
 
+// GetInstanceByID returns the instance with the given UUID, if live. Used by CallDaemon
+// (ADR-0080) to route a turn to the specific per-conversation daemon the kernel spawned.
+func (im *InstanceManager) GetInstanceByID(instanceID string) (*domain.Instance, bool) {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	inst, ok := im.instances[instanceID]
+	return inst, ok
+}
+
 // EvictInstance removes a single instance by UUID.
 func (im *InstanceManager) EvictInstance(instanceID string) {
 	im.mu.Lock()

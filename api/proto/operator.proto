@@ -69,6 +69,14 @@ service OperatorConsole {
   rpc ListSkills(ListSkillsOpRequest)   returns (ListSkillsOpResponse);
   rpc QueryMemory(QueryMemoryRequest) returns (QueryMemoryResponse);
 
+  // AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
+  // composed answer with inline [n] citation markers, plus the evidence each marker
+  // resolves to. Distinct from QueryMemory's single-pass evidence lane: this is a
+  // read that synthesizes (no auction, no mutation, no x-agent-id principal). Gated
+  // on the "memory-answer" capability; OSS / agentic-disabled builds return
+  // Unimplemented.
+  rpc AnswerMemory(AnswerMemoryRequest) returns (AnswerMemoryResponse);
+
   // Tool permission management: bound an existing grant with a resource policy
   // (Operator-only, idempotent, audited). A2.3.
   rpc SetToolPolicy(SetToolPolicyRequest) returns (CommandAck);
@@ -619,6 +627,34 @@ message MemoryOp {
 }
 message QueryMemoryResponse {
   repeated MemoryOp results = 1;
+}
+
+// AnswerMemory (ADR-0081): grounded, span-cited answer.
+message AnswerMemoryRequest {
+  string query = 1;
+  int32 top_k = 2;          // evidence-pool cap (0 = kernel default)
+  string source = 3;        // optional filter on the evidence pool
+  string session = 4;       // optional filter
+  double min_importance = 5;// optional filter
+}
+// MemoryCitation is one piece of evidence the answer's [n] markers point to.
+message MemoryCitation {
+  int32 marker = 1;         // the [n] used inline in `answer`
+  string doc_id = 2;
+  string text = 3;          // the verbatim chunk — what a citation quotes
+  string section_path = 4;  // ADR-0060 breadcrumb; empty for flat docs
+  string source = 5;
+  double score = 6;
+  double importance = 7;
+  repeated string tags = 8;
+}
+message AnswerMemoryResponse {
+  // answer | abstention | clarification. Abstention means the evidence does not
+  // answer the question — a UI must render it as such, never as an empty answer.
+  string status = 1;
+  // Grounded prose with inline 1-based [n] markers resolving to `citations`.
+  string answer = 2;
+  repeated MemoryCitation citations = 3;
 }
 
 // SetToolPolicy binds an existing grant with a resource policy (A2.3). Setting a

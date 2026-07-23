@@ -36,6 +36,7 @@ type Service struct {
 	tools      ToolCatalog
 	skills     SkillLister
 	memory     MemoryQuerier
+	answerer   MemoryAnswerer // ADR-0081; nil ⇒ AnswerMemory Unimplemented
 	toolRunner ToolRunner
 	ingestor    MemoryIngestor
 	watches       domain.WatchConfigHandler

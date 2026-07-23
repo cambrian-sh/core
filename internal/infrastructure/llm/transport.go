@@ -41,6 +41,23 @@ const (
 	llmRetryMaxBackoff     = 20 * time.Second
 )
 
+// isRetryableStatus reports whether a provider HTTP status is a transient failure worth
+// retrying: 429 (rate limit) plus the 5xx the shared hosted endpoint intermittently emits
+// under sustained load (500/502/503/504). A transient 500 must not surface as a hard agent
+// failure — it is endpoint weather, not a wrong answer.
+func isRetryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, // 429
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503
+		http.StatusGatewayTimeout:      // 504
+		return true
+	default:
+		return false
+	}
+}
+
 // rateLimitRetryTransport retries provider 429/503 responses with capped exponential
 // backoff (honoring a Retry-After header when present), rewinding the request body via
 // GetBody. It gives up after llmMaxRateLimitRetries and hands the last 429 back to the
@@ -66,7 +83,7 @@ func (rt *rateLimitRetryTransport) RoundTrip(req *http.Request) (*http.Response,
 		if err != nil {
 			return resp, err
 		}
-		if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable {
+		if !isRetryableStatus(resp.StatusCode) {
 			return resp, nil
 		}
 		// Cannot safely replay a body-less-rewind request, or retries exhausted:

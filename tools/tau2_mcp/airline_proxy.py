@@ -17,7 +17,10 @@ import os
 import sys
 import urllib.request
 
-_HUB = os.environ.get("AIRLINE_HUB_URL", "http://127.0.0.1:8899").rstrip("/")
+# Generic across τ²-bench conversational domains: TAU2_HUB_URL + TAU2_MCP_NAME select the
+# hub + the advertised MCP server name; AIRLINE_HUB_URL is kept as the back-compat default.
+_HUB = (os.environ.get("TAU2_HUB_URL") or os.environ.get("AIRLINE_HUB_URL", "http://127.0.0.1:8899")).rstrip("/")
+_MCP_NAME = os.environ.get("TAU2_MCP_NAME", "tau2-airline")
 
 
 def _hub(path: str, payload: dict | None = None, method: str = "POST") -> dict:
@@ -59,7 +62,7 @@ def _handle(msg: dict) -> dict | None:
     if method == "initialize":
         proto = (msg.get("params") or {}).get("protocolVersion") or "2025-06-18"
         return _ok(mid, {"protocolVersion": proto, "capabilities": {"tools": {}},
-                         "serverInfo": {"name": "tau2-airline", "version": "0.1.0"}})
+                         "serverInfo": {"name": _MCP_NAME, "version": "0.1.0"}})
     if method in ("notifications/initialized", "initialized"):
         return None
     if method == "tools/list":
