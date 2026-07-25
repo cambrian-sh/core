@@ -11,9 +11,9 @@ import (
 // --- fakes ---
 
 type fakeHandler struct {
-	result []byte
-	err    error
-	called bool
+	result  []byte
+	err     error
+	called  bool
 	gotArgs []byte
 }
 

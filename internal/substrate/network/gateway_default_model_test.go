@@ -28,7 +28,7 @@ func TestStreamChunks_EmptyAllocation_UsesDefaultModel(t *testing.T) {
 	gw.RegisterModelClient("llm:deepseek", def)
 	gw.SetDefaultModelID("llm:deepseek")
 
-	gw.AddSession("s1", &domain.SessionState{
+	gw.AddSession("s1", &domain.BudgetLeaseState{
 		StepAllocation: domain.StepAllocation{}, // Winner.ID == "" (no model allocated)
 		TokenLimit:     4096,
 		ExpiresAt:      time.Now().Add(time.Hour),
@@ -48,7 +48,7 @@ func TestStreamChunks_EmptyAllocation_UsesDefaultModel(t *testing.T) {
 // "no model allocated" error — not a misleading health/degradation message.
 func TestStreamChunks_EmptyAllocation_NoDefault_FailsClearly(t *testing.T) {
 	gw := newTestGateway(5)
-	gw.AddSession("s2", &domain.SessionState{
+	gw.AddSession("s2", &domain.BudgetLeaseState{
 		StepAllocation: domain.StepAllocation{},
 		TokenLimit:     4096,
 		ExpiresAt:      time.Now().Add(time.Hour),

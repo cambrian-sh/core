@@ -15,6 +15,10 @@ import (
 type ProfileStore interface {
 	domain.ProfileStore
 	domain.JudicialStore
+	// HasInterviewVector reports whether a non-empty interview embedding is stored for
+	// (agentID, sourceHash) — lets the startup backfill re-interview agents whose vector
+	// is missing (e.g. written while the embedder was down).
+	HasInterviewVector(ctx context.Context, agentID, sourceHash string) (bool, error)
 }
 
 // PgVectorProfileStore implements domain.ProfileStore and domain.JudicialStore
@@ -87,6 +91,24 @@ func (p *PgVectorProfileStore) GetProfile(ctx context.Context, agentID, sourceHa
 		return nil, fmt.Errorf("pgVectorProfileStore: unmarshal profile for agent %s: %w", agentID, err)
 	}
 	return &profile, nil
+}
+
+// HasInterviewVector reports whether a non-empty interview embedding is stored for
+// (agentID, sourceHash). A profile row can exist with a NULL/empty vector — e.g. it was
+// written while the embedder was failing — which makes the agent invisible to the
+// Gatekeeper's Layer-2 semantic gate (it is never returned by the interview searcher, so
+// it is eliminated from every task). The backfill uses this to re-interview such agents
+// once the embedder is healthy, instead of trusting the mere existence of a profile.
+func (p *PgVectorProfileStore) HasInterviewVector(ctx context.Context, agentID, sourceHash string) (bool, error) {
+	id := fmt.Sprintf("profile:%s:%s", agentID, sourceHash)
+	doc, err := p.store.GetByID(ctx, id)
+	if err != nil {
+		return false, fmt.Errorf("pgVectorProfileStore: get profile vector for agent %s: %w", agentID, err)
+	}
+	if doc == nil {
+		return false, nil
+	}
+	return len(doc.Embedding.Vector) > 0, nil
 }
 
 // GetJudicialRecords returns the top-K critique texts stored as judicial_record

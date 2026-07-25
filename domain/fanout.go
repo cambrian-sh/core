@@ -197,7 +197,7 @@ func ExpandFanOut(plan *ExecutionPlan, fanIdx int, items []string, maxWidth int)
 		return out
 	}
 
-	out := plan.Clone()             // deep copy — existing indices preserved
+	out := plan.Clone()                    // deep copy — existing indices preserved
 	out.PlanningFacts = plan.PlanningFacts // Clone drops these (json:"-"); keep them mid-run
 	for i := range out.Steps {
 		out.Steps[i].DependsOn = rewriteDeps(out.Steps[i].DependsOn)

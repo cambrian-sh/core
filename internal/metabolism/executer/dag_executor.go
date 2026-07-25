@@ -1,4 +1,4 @@
-﻿package executer
+package executer
 
 import (
 	"context"
@@ -116,39 +116,39 @@ type CheckpointMeta struct {
 // MemoryRecorder, if non-nil, is called after each successful step merge to
 // feed the Tier-1 pending channel (ADR-0015). Write is non-blocking.
 type DAGExecutor struct {
-	EventWriter         TaskEventWriter        // may be nil
-	EnqueueVerification EnqueueVerification    // may be nil
-	MemoryRecorder      domain.MemoryRecorder // ADR-0015: may be nil
-	WorkspaceStage      domain.WorkspaceStage // ADR-0016: may be nil; nil disables GWS enrichment
-	LLMGateway          LLMGateway            // ADR-0018: may be nil
-	Observer            domain.TelemetryObserver // ADR-0019: may be nil
-	PlanEventWriter     domain.PlanEventWriter // ADR-0021: may be nil; nil disables plan-level telemetry
-	EventBus            domain.EventBus        // ADR-0047 D7/0047-17: may be nil; publishes PlanStateChanged for the operator feed
-	InjectPlanner       InjectPlanner          // ADR-0047 A1.1: may be nil; nil ⇒ deterministic instruction-as-step default
-	ThoughtFn           StepFunc              // used for IsThought=true steps; may be nil
-	CheckpointValidator domain.CheckpointValidator // ADR-0013 H1 gate; may be nil (nil disables checkpoints)
-	PauseController     *PauseController    // optional; nil disables HITL pausing
-	ReplanHandler       ReplanHandler       // optional; nil disables plan-level replan
-	CheckpointStore     CheckpointStore     // optional; nil disables checkpointing
-	ContentStore        domain.ContentStore // ADR-0022 Phase 1: may be nil; nil disables CAS
-	SceneWriter         domain.SceneWriter  // ADR-0025: may be nil; nil disables scene writing
-	StepCache           domain.StepCache        // ADR-0026: may be nil; nil disables step-level memoization
-	StepCachePolicies   map[string]int          // ADR-0026: operator TTL overrides; nil = use heuristic defaults
-	ContextRefSnippetChars int              // ADR-0022: snippet length; 0 defaults to 500
+	EventWriter            TaskEventWriter            // may be nil
+	EnqueueVerification    EnqueueVerification        // may be nil
+	MemoryRecorder         domain.MemoryRecorder      // ADR-0015: may be nil
+	WorkspaceStage         domain.WorkspaceStage      // ADR-0016: may be nil; nil disables GWS enrichment
+	LLMGateway             LLMGateway                 // ADR-0018: may be nil
+	Observer               domain.TelemetryObserver   // ADR-0019: may be nil
+	PlanEventWriter        domain.PlanEventWriter     // ADR-0021: may be nil; nil disables plan-level telemetry
+	EventBus               domain.EventBus            // ADR-0047 D7/0047-17: may be nil; publishes PlanStateChanged for the operator feed
+	InjectPlanner          InjectPlanner              // ADR-0047 A1.1: may be nil; nil ⇒ deterministic instruction-as-step default
+	ThoughtFn              StepFunc                   // used for IsThought=true steps; may be nil
+	CheckpointValidator    domain.CheckpointValidator // ADR-0013 H1 gate; may be nil (nil disables checkpoints)
+	PauseController        *PauseController           // optional; nil disables HITL pausing
+	ReplanHandler          ReplanHandler              // optional; nil disables plan-level replan
+	CheckpointStore        CheckpointStore            // optional; nil disables checkpointing
+	ContentStore           domain.ContentStore        // ADR-0022 Phase 1: may be nil; nil disables CAS
+	SceneWriter            domain.SceneWriter         // ADR-0025: may be nil; nil disables scene writing
+	StepCache              domain.StepCache           // ADR-0026: may be nil; nil disables step-level memoization
+	StepCachePolicies      map[string]int             // ADR-0026: operator TTL overrides; nil = use heuristic defaults
+	ContextRefSnippetChars int                        // ADR-0022: snippet length; 0 defaults to 500
 	// ADR-0022 Phase 3: circuit-breaker flag.
 	// true  → PrimeForStep called per step; Handoff.WorkingMemory populated; Handoff.Context empty.
 	// false → filterSnapshotForStep into Handoff.Context; PrimeForStep NOT called (Phase 0 behavior).
 	// Default false for backward compat; set true after Phase 3 validation passes.
-	UseGlobalWorkspace bool
-	MaxContextSlots    int // ADR-0022: hard ceiling for PrimeForStep; 0 defaults to 20
+	UseGlobalWorkspace      bool
+	MaxContextSlots         int     // ADR-0022: hard ceiling for PrimeForStep; 0 defaults to 20
 	StepFactCosineThreshold float64 // AGENTCONTEXTREQ REQ2: min cosine for forwarding a planning fact to a step (default 0.55)
-	MaxReplanAttempts   int                 // max replan attempts; 0 disables replan
-	MaxFanOutWidth        int                 // ADR-0078 R2: cap on parametric fan-out expansion; 0 disables the cap
-	MaxPlanCost           float64             // total plan budget; 0 disables budget enforcement
-	DefaultInputCostPer1M float64             // cost per 1M input tokens for cost estimation
-	DefaultOutputCostPer1M float64            // cost per 1M output tokens for cost estimation
-	CurrentSessionID      string              // session scope for checkpoints; empty = no session
-	CheckpointFlushSecs   int                 // periodic flush interval in seconds (0 = only on pause)
+	MaxReplanAttempts       int     // max replan attempts; 0 disables replan
+	MaxFanOutWidth          int     // ADR-0078 R2: cap on parametric fan-out expansion; 0 disables the cap
+	MaxPlanCost             float64 // total plan budget; 0 disables budget enforcement
+	DefaultInputCostPer1M   float64 // cost per 1M input tokens for cost estimation
+	DefaultOutputCostPer1M  float64 // cost per 1M output tokens for cost estimation
+	CurrentSessionID        string  // session scope for checkpoints; empty = no session
+	CheckpointFlushSecs     int     // periodic flush interval in seconds (0 = only on pause)
 
 	// ADR-0034 / REQ-SDK-007b: optional artifact discovery in working_memory.
 	// When both are set, prior-step artifacts are surfaced (scope-filtered) into
@@ -160,8 +160,8 @@ type DAGExecutor struct {
 	// replanSuppressor is notified when replanning starts/ends to suppress
 	// duplicate signals (usually set to the Watcher).
 	replanSuppressor interface{ SetReplanning(bool) }
-	completedMu       sync.Mutex
-	completedIdx      []int
+	completedMu      sync.Mutex
+	completedIdx     []int
 
 	// Per-execution pause state (set during Execute, accessed by Pause/Resume/HotSwap).
 	pausedMu         sync.Mutex
@@ -242,7 +242,7 @@ func (d *DAGExecutor) executeStep(
 		if cached, ok, getErr := d.StepCache.Get(ctx, cacheKey); getErr != nil {
 			slog.Warn("StepCache.Get failed, falling through to live execution", "step", stepIndex, "err", getErr)
 		} else if ok && cached != nil {
-			cached.SessionToken = nil // stale session tokens must not be restored from cache
+			cached.BudgetLease = nil // stale session tokens must not be restored from cache
 			slog.Info("⚡ Step served from cache", "index", stepIndex)
 			return stepResult{index: stepIndex, resp: cached}
 		}
@@ -354,14 +354,14 @@ func (d *DAGExecutor) executeStep(
 	}
 
 	return stepResult{
-		index:             stepIndex,
-		resp:              resp,
-		err:               nil,
-		estimatedCost:     estimatedCost,
-		promptTokens:      promptTokens,
-		completionTokens:  responseTokens,
-		totalTokens:       promptTokens + responseTokens,
-		snapshot:          snapshot,
+		index:            stepIndex,
+		resp:             resp,
+		err:              nil,
+		estimatedCost:    estimatedCost,
+		promptTokens:     promptTokens,
+		completionTokens: responseTokens,
+		totalTokens:      promptTokens + responseTokens,
+		snapshot:         snapshot,
 	}
 }
 
@@ -490,7 +490,7 @@ func (d *DAGExecutor) Resume() {
 // D7/0047-17). Best-effort and nil-safe. MUST be called only from the Execute
 // coordinator goroutine so the global feed order preserves this plan's causal
 // order (one-timeline-one-publisher, D4).
-func (d *DAGExecutor) publishPlanState(planID, status string, activeStep int, cost float64, terminal bool) {
+func (d *DAGExecutor) publishPlanState(planID, status string, activeStep int, cost float64, terminal bool, steps []domain.PlanStepState) {
 	if d.EventBus == nil {
 		return
 	}
@@ -501,7 +501,46 @@ func (d *DAGExecutor) publishPlanState(planID, status string, activeStep int, co
 		Status:     status,
 		CostSoFar:  cost,
 		Terminal:   terminal,
+		Steps:      steps,
 	})
+}
+
+// planStepLabelMax caps a step's query when used as a DAG node label so the operator
+// feed carries a glanceable title, not the full multi-KB instruction.
+const planStepLabelMax = 120
+
+// buildStepStates snapshots the plan's DAG for the operator feed: one node per step with
+// its dependency edges and current status derived from the coordinator's tracking maps.
+// Coordinator-goroutine only (reads the same maps publishPlanState's callers own).
+func buildStepStates(plan *domain.ExecutionPlan, completed, dispatched map[int]bool, agentByStep map[int]string, failedIdx int, hasErr bool) []domain.PlanStepState {
+	if plan == nil {
+		return nil
+	}
+	out := make([]domain.PlanStepState, len(plan.Steps))
+	for i, s := range plan.Steps {
+		status := "pending"
+		switch {
+		case hasErr && i == failedIdx:
+			status = "failed"
+		case completed[i]:
+			status = "done"
+		case dispatched[i]:
+			status = "running"
+		}
+		label := s.Query
+		if len(label) > planStepLabelMax {
+			label = label[:planStepLabelMax]
+		}
+		out[i] = domain.PlanStepState{
+			Index:     i,
+			Label:     label,
+			DependsOn: s.DependsOn,
+			IsThought: s.IsThought,
+			Status:    status,
+			Agent:     agentByStep[i],
+		}
+	}
+	return out
 }
 
 // buildInjectionPlan composes the new forward plan for an operator injection.
@@ -648,27 +687,11 @@ func (d *DAGExecutor) ExecuteFrom(
 	masterContext := cloneMap(initialContext)
 	runningCost := 0.0
 
-	// ADR-0047 0047-17: operator-feed plan state. Emitted only from this
-	// coordinator goroutine (one-timeline-one-publisher, D4); absolute-state so
-	// re-delivery folds idempotently. The plan enters "Plans in Flight" now and a
-	// single deferred terminal removes it on any return path.
-	lastActiveStep := startFromStepIndex
-	d.publishPlanState(planID, "running", lastActiveStep, runningCost, false)
-	defer func() {
-		status := "completed"
-		if retErr != nil {
-			status = "failed"
-		}
-		d.publishPlanState(planID, status, lastActiveStep, runningCost, true)
-	}()
-
-	// ADR-0021: Plan-level telemetry accumulator.
-	planStartTime := time.Now()
-	var totalPromptTokens, totalCompletionTokens, totalTokens int
-	var fallbackCount, budgetOverrunCount int
-
+	// Coordinator-owned step tracking. Declared before the first publishPlanState so the
+	// DAG snapshot (buildSteps below) reflects resume state on the very first emit.
 	completed := make(map[int]bool, n)
 	alreadyDispatched := make(map[int]bool, n)
+	agentByStep := make(map[int]string, n) // ADR-0047: executor agent id per step, for the DAG view
 	inFlight := 0
 	var firstErr error
 	var failedStepIdx int
@@ -677,6 +700,32 @@ func (d *DAGExecutor) ExecuteFrom(
 	for idx := 0; idx < startFromStepIndex && idx < n; idx++ {
 		completed[idx] = true
 	}
+
+	// buildSteps snapshots the current DAG for the operator feed. Closes over the
+	// coordinator's tracking maps + failure state, so each emit reflects live per-node
+	// status. plan is reassigned on replan, so it is read fresh each call.
+	buildSteps := func() []domain.PlanStepState {
+		return buildStepStates(plan, completed, alreadyDispatched, agentByStep, failedStepIdx, firstErr != nil)
+	}
+
+	// ADR-0047 0047-17: operator-feed plan state. Emitted only from this
+	// coordinator goroutine (one-timeline-one-publisher, D4); absolute-state so
+	// re-delivery folds idempotently. The plan enters "Plans in Flight" now and a
+	// single deferred terminal removes it on any return path.
+	lastActiveStep := startFromStepIndex
+	d.publishPlanState(planID, "running", lastActiveStep, runningCost, false, buildSteps())
+	defer func() {
+		status := "completed"
+		if retErr != nil {
+			status = "failed"
+		}
+		d.publishPlanState(planID, status, lastActiveStep, runningCost, true, buildSteps())
+	}()
+
+	// ADR-0021: Plan-level telemetry accumulator.
+	planStartTime := time.Now()
+	var totalPromptTokens, totalCompletionTokens, totalTokens int
+	var fallbackCount, budgetOverrunCount int
 
 	// dispatch launches all steps whose DependsOn indices are all in completed.
 	// Only called from the coordinator goroutine — no concurrent access to
@@ -869,7 +918,7 @@ func (d *DAGExecutor) ExecuteFrom(
 				// forward plan (prior results stay in masterContext). The Planner
 				// routes the injected NL step (Zero-Hardcode).
 				if injection != "" {
-					d.publishPlanState(planID, "replanning", lastActiveStep, runningCost, false)
+					d.publishPlanState(planID, "replanning", lastActiveStep, runningCost, false, buildSteps())
 					completedIdx := make([]int, 0, len(completed))
 					for idx := range completed {
 						completedIdx = append(completedIdx, idx)
@@ -945,12 +994,12 @@ func (d *DAGExecutor) ExecuteFrom(
 		// SceneID forwarded so Tier-2 drain can write the discussed_in edge (ADR-0025).
 		if d.MemoryRecorder != nil && r.resp != nil && r.resp.Payload != nil {
 			_ = d.MemoryRecorder.RecordExecution(ctx, domain.StepResult{
-				Index:     r.index,
-				Output:    string(r.resp.Payload.Data),
-				Snapshot:  r.snapshot,
-				SceneID:   sceneID,
-				SessionID: d.CurrentSessionID, // ADR-0029: tags Tier-2 commits with session_id for KeyFacts
-				TaskID:    formatTaskID(r.index, planID), // ADR-0049 D3: per-step dedup correlation key
+				Index:            r.index,
+				Output:           string(r.resp.Payload.Data),
+				Snapshot:         r.snapshot,
+				SceneID:          sceneID,
+				SessionID:        d.CurrentSessionID,                                      // ADR-0029: tags Tier-2 commits with session_id for KeyFacts
+				TaskID:           formatTaskID(r.index, planID),                           // ADR-0049 D3: per-step dedup correlation key
 				DependsOnTaskIDs: dependsOnTaskIDs(plan.Steps[r.index].DependsOn, planID), // ADR-0049 D10: follows edges
 			})
 		}
@@ -958,7 +1007,7 @@ func (d *DAGExecutor) ExecuteFrom(
 		runningCost += r.estimatedCost
 		completed[r.index] = true
 		lastActiveStep = r.index
-		d.publishPlanState(planID, "running", r.index, runningCost, false) // ADR-0047 0047-17: step completed
+		d.publishPlanState(planID, "running", r.index, runningCost, false, buildSteps()) // ADR-0047 0047-17: step completed
 
 		// Budget check: if plan cost exceeds limit, pause for replan or operator approval.
 		if d.MaxPlanCost > 0 && runningCost > d.MaxPlanCost {

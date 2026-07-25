@@ -73,11 +73,11 @@ func TestThresholdConsolidator_ExplicitTrigger_AlwaysTrue(t *testing.T) {
 // Cycle 6 — MemoryMetrics is correctly populated from field values.
 func TestMemoryMetrics_Fields(t *testing.T) {
 	m := domain.MemoryMetrics{
-		TotalDocuments:    500,
-		IndexSizeBytes:    1024,
-		OrphanedDocuments: 10,
-		StaleDocuments:    5,
-		AvgQueryLatencyMs: 12.5,
+		TotalDocuments:      500,
+		IndexSizeBytes:      1024,
+		OrphanedDocuments:   10,
+		StaleDocuments:      5,
+		AvgQueryLatencyMs:   12.5,
 		LastConsolidationAt: time.Now(),
 	}
 	if m.TotalDocuments != 500 {

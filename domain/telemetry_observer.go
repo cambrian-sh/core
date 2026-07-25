@@ -18,14 +18,13 @@ type TelemetryObserver interface {
 // Wire this when telemetry is unconfigured or in tests that do not assert metrics.
 type NoopTelemetryObserver struct{}
 
-func (NoopTelemetryObserver) OnTaskCompleted(_ TaskEvent)                  {}
-func (NoopTelemetryObserver) OnSessionEvicted(_ string)                    {}
-func (NoopTelemetryObserver) OnConwipWait(_ int64)                         {}
-func (NoopTelemetryObserver) OnAuctionNoWinner(_ string)                  {}
-func (NoopTelemetryObserver) OnSchemaMismatch(_, _ string)               {}
-func (NoopTelemetryObserver) OnPlanCompleted(_ PlanEvent)                 {}
-func (NoopTelemetryObserver) OnRetrievalCompleted(_ RetrievalSession)       {}
+func (NoopTelemetryObserver) OnTaskCompleted(_ TaskEvent)                       {}
+func (NoopTelemetryObserver) OnSessionEvicted(_ string)                         {}
+func (NoopTelemetryObserver) OnConwipWait(_ int64)                              {}
+func (NoopTelemetryObserver) OnAuctionNoWinner(_ string)                        {}
+func (NoopTelemetryObserver) OnSchemaMismatch(_, _ string)                      {}
+func (NoopTelemetryObserver) OnPlanCompleted(_ PlanEvent)                       {}
+func (NoopTelemetryObserver) OnRetrievalCompleted(_ RetrievalSession)           {}
 func (NoopTelemetryObserver) OnContradictionResolved(_ ContradictionResolution) {}
 
 var _ TelemetryObserver = NoopTelemetryObserver{}
-

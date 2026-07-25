@@ -32,15 +32,17 @@ func (f *fakeVecStore) GetByID(_ context.Context, id string) (*domain.Document, 
 	}
 	return nil, nil
 }
-func (f *fakeVecStore) Save(context.Context, *domain.Document) error            { return nil }
-func (f *fakeVecStore) SaveBatch(context.Context, []*domain.Document) error     { return nil }
+func (f *fakeVecStore) Save(context.Context, *domain.Document) error        { return nil }
+func (f *fakeVecStore) SaveBatch(context.Context, []*domain.Document) error { return nil }
 func (f *fakeVecStore) Search(context.Context, []float32, domain.SearchOptions) ([]domain.SearchResult, error) {
 	return nil, nil
 }
-func (f *fakeVecStore) GetBatch(context.Context, []string) ([]domain.Document, error) { return nil, nil }
-func (f *fakeVecStore) Delete(context.Context, string) error                          { return nil }
-func (f *fakeVecStore) DeleteBatch(context.Context, []string) error                   { return nil }
-func (f *fakeVecStore) IncrementAccess(context.Context, string) error                 { return nil }
+func (f *fakeVecStore) GetBatch(context.Context, []string) ([]domain.Document, error) {
+	return nil, nil
+}
+func (f *fakeVecStore) Delete(context.Context, string) error          { return nil }
+func (f *fakeVecStore) DeleteBatch(context.Context, []string) error   { return nil }
+func (f *fakeVecStore) IncrementAccess(context.Context, string) error { return nil }
 func (f *fakeVecStore) GetStaleMemories(context.Context, int) ([]domain.Document, error) {
 	return nil, nil
 }

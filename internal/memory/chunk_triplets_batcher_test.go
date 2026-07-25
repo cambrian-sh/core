@@ -104,7 +104,7 @@ func TestChunkTripletsBatcher_PersistsAfterDrain(t *testing.T) {
 Triplets 2: <bob##works at##ibm>`,
 	}
 	b := NewChunkTripletsBatcher(gen, store, ChunkTripletsBatcherConfig{
-		QueueSize:  8, BatchSize: 2, MaxIdle: 50 * time.Millisecond, LLMTimeout: 5 * time.Second,
+		QueueSize: 8, BatchSize: 2, MaxIdle: 50 * time.Millisecond, LLMTimeout: 5 * time.Second,
 	})
 	b.Start(context.Background())
 	defer b.Stop()
@@ -152,7 +152,7 @@ func TestChunkTripletsBatcher_UsesStreaming(t *testing.T) {
 		resp: `Triplets 1: <caroline##researched##quantum>`,
 	}
 	b := NewChunkTripletsBatcher(gen, store, ChunkTripletsBatcherConfig{
-		QueueSize:  8, BatchSize: 1, MaxIdle: 50 * time.Millisecond, LLMTimeout: 5 * time.Second,
+		QueueSize: 8, BatchSize: 1, MaxIdle: 50 * time.Millisecond, LLMTimeout: 5 * time.Second,
 	})
 	b.Start(context.Background())
 	b.Enqueue(&domain.Document{ID: "c1", Text: "caroline researched quantum."})
@@ -174,7 +174,7 @@ func TestChunkTripletsBatcher_DropsOnQueueFull(t *testing.T) {
 	store := &testBatcherStore{fakeChunkTripletsStore: newFakeChunkTripletsStore()}
 	blocking := &blockingGen{}
 	b := NewChunkTripletsBatcher(blocking, store, ChunkTripletsBatcherConfig{
-		QueueSize:  2, BatchSize: 1, MaxIdle: 50 * time.Millisecond, LLMTimeout: 100 * time.Millisecond,
+		QueueSize: 2, BatchSize: 1, MaxIdle: 50 * time.Millisecond, LLMTimeout: 100 * time.Millisecond,
 	})
 	b.Start(context.Background())
 	defer b.Stop()
@@ -232,7 +232,7 @@ func TestChunkTripletsBatcher_RespectsBatchSize(t *testing.T) {
 	// gen returns one triplet per chunk (positional).
 	gen := &countingBatchGen{respTriplets: 1}
 	b := NewChunkTripletsBatcher(gen, store, ChunkTripletsBatcherConfig{
-		QueueSize:  64, BatchSize: 4, MaxIdle: 20 * time.Millisecond, LLMTimeout: 5 * time.Second,
+		QueueSize: 64, BatchSize: 4, MaxIdle: 20 * time.Millisecond, LLMTimeout: 5 * time.Second,
 	})
 	b.Start(context.Background())
 
@@ -280,8 +280,8 @@ func TestChunkTripletsBatcher_RespectsBatchSize(t *testing.T) {
 // countingBatchGen is a fakeGen that records the size of each prompt it
 // receives. The response is N triplets (one per chunk, positional).
 type countingBatchGen struct {
-	mu          sync.Mutex
-	batchSizes  []int
+	mu           sync.Mutex
+	batchSizes   []int
 	respTriplets int
 }
 

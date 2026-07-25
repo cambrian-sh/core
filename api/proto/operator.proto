@@ -60,6 +60,22 @@ service OperatorConsole {
   rpc SendMessage(SendMessageRequest) returns (CommandAck);
   rpc InjectCorrection(InjectCorrectionRequest) returns (CommandAck);
 
+  // ── Conversations — the OSS chat lane (ADR-0084 D9). Distinct from CreateSession/
+  // SendMessage above, which drive the TASK planner: a conversational turn is owned by a
+  // single agent loop on the kernel's chat worker pool and is NEVER decomposed into a plan
+  // (ADR-0080). SendTurn is synchronous — it returns the agent's reply message. The owner
+  // of a conversation is the resolved operator principal, never the request body.
+  // Capability "chat", advertised only when the chat lane is wired
+  // (execution.chat_pool_size > 0 + a conversation store); OSS otherwise ⇒ Unimplemented.
+  rpc OpenConversation(OpenConversationOpRequest) returns (OpenConversationOpResponse);
+  rpc SendTurn(SendTurnOpRequest) returns (SendTurnOpResponse);
+  rpc CloseConversation(CloseConversationOpRequest) returns (CommandAck);
+  // Read RPCs (no command_id). ListConversations enumerates the calling operator's own
+  // conversations (most recently updated first) for a ChatGPT-style sidebar;
+  // ListConversationMessages returns one conversation's transcript, ordered, after a seq.
+  rpc ListConversations(ListConversationsOpRequest) returns (ListConversationsOpResponse);
+  rpc ListConversationMessages(ListConversationMessagesOpRequest) returns (ListConversationMessagesOpResponse);
+
   // ── ADR-0047 Amendment A2 (CORE-OPS-1): operator-plane read/exec/approval
   // surface. Distinct messages from the agent-plane equivalents (D1): the CLI
   // must never carry an x-agent-id principal.
@@ -149,6 +165,82 @@ message InjectCorrectionRequest {
   string reason = 2;
   string session_id = 3;
   string instruction = 4; // lands inside the running plan (pause→replan→hot-swap→resume)
+}
+
+// ── Conversations (ADR-0084 D9). conversation_id is CLIENT-supplied (the natural key that
+// makes OpenConversation idempotent and keys every later turn), mirroring the chat manager.
+message OpenConversationOpRequest {
+  string command_id = 1;     // idempotency key for the audit entry
+  string reason = 2;         // mandatory; recorded in the audit entry
+  string conversation_id = 3; // client-chosen stable id
+  string title = 4;
+  // profile selects the recall + scope posture (ADR-0084 D7): "operator" | "employee" |
+  // "customer". Empty defaults to "operator" (full recall) on this plane.
+  string profile = 5;
+  // policy is an optional system/policy prompt threaded into every turn of this conversation.
+  string policy = 6;
+}
+
+message OpenConversationOpResponse {
+  string command_id = 1;
+  bool deduped = 2;          // true when the conversation already existed (a retry)
+  string conversation_id = 3;
+}
+
+message SendTurnOpRequest {
+  string command_id = 1;     // idempotency key; a retry returns the original reply, no re-run
+  string reason = 2;
+  string conversation_id = 3;
+  string text = 4;           // the user's message
+}
+
+message SendTurnOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  MessageOp reply = 3;       // the agent's reply, already persisted
+}
+
+message CloseConversationOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string conversation_id = 3;
+}
+
+message ListConversationsOpRequest {
+  int32 limit = 1;           // <= 0 means a server default
+}
+
+message ListConversationsOpResponse {
+  repeated ConversationOp conversations = 1;
+}
+
+// ConversationOp is a conversation summary for the sidebar (no messages).
+message ConversationOp {
+  string id = 1;
+  string title = 2;
+  string status = 3;         // "open" | "closed"
+  string profile = 4;        // "operator" | "employee" | "customer"
+  string updated_at = 5;     // RFC3339
+}
+
+message ListConversationMessagesOpRequest {
+  string conversation_id = 1;
+  int64 after_seq = 2;       // return messages with seq strictly greater than this (0 = all)
+  int32 limit = 3;           // <= 0 means no limit
+}
+
+message ListConversationMessagesOpResponse {
+  repeated MessageOp messages = 1;
+}
+
+// MessageOp is one persisted conversation turn.
+message MessageOp {
+  string id = 1;
+  string conversation_id = 2;
+  int64 seq = 3;             // monotonic per-conversation ordering key
+  string role = 4;           // "user" | "agent" | "system"
+  string content = 5;
+  string created_at = 6;     // RFC3339
 }
 
 message TagMemoryRequest {
@@ -265,10 +357,11 @@ message SnapshotResponse {
   // rest (ADR-0047 D14). OSS: feed, snapshot, commands, steering, audit,
   // tools-read, tools-manage, skills-read, memory-read, memory-ingest, tool-exec,
   // tool-approvals, routing-trace (ROUTE-02 auction funnel), scout-usefulness
-  // (ROUTE-08 A). Premium adds: watches-read, watches-crud (A2), watch-deadletter,
-  // reactive-backpressure, watch-condition-guard, watch-observability, watch-schedule
-  // (REACT-06 cron-driven watches). route-preview (ROUTE-07 gatekeeper scoring) is core.
-  // contract 0056.
+  // (ROUTE-08 A), chat (ADR-0084 D9 conversation lane — advertised only when the chat
+  // worker pool is enabled, execution.chat_pool_size > 0). Premium adds: watches-read,
+  // watches-crud (A2), watch-deadletter, reactive-backpressure, watch-condition-guard,
+  // watch-observability, watch-schedule (REACT-06 cron-driven watches). route-preview
+  // (ROUTE-07 gatekeeper scoring) is core. contract 0062 (ADR-0084 + ListConversations sidebar).
   repeated string capabilities = 6;
 }
 
@@ -516,6 +609,20 @@ message PlanStateOp {
   string active_agent = 5;
   double cost_so_far = 6;
   bool terminal = 7;
+  // steps is the plan's DAG for live rendering: one node per step with its dependency
+  // edges and current status. Absolute-state (full set re-sent each update); empty on
+  // emitters with no plan structure. Backward compatible — older UIs ignore it.
+  repeated PlanStepOp steps = 8;
+}
+
+// PlanStepOp is one node of a plan's DAG on the operator feed.
+message PlanStepOp {
+  int32 index = 1;
+  string label = 2;              // short human title (the step's query, truncated)
+  repeated int32 depends_on = 3; // zero-based indices this step waits on
+  bool is_thought = 4;           // reasoning/synthesis step (no external action)
+  string status = 5;             // "pending" | "running" | "done" | "failed"
+  string agent = 6;              // executor agent id, once dispatched (may be empty)
 }
 
 message TokenChunkOp {

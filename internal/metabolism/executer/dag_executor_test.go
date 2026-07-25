@@ -1,4 +1,4 @@
-﻿package executer
+package executer
 
 import (
 	"context"
@@ -1107,9 +1107,9 @@ func TestDAGExecutor_AgentThoughtAgentFlow(t *testing.T) {
 
 	plan := &domain.ExecutionPlan{
 		Steps: []domain.Step{
-			{Query: "find A"},                         // Step 0
+			{Query: "find A"}, // Step 0
 			{Query: "synthesize", IsThought: true, DependsOn: []int{0}}, // Step 1
-			{Query: "final step", DependsOn: []int{1}}, // Step 2
+			{Query: "final step", DependsOn: []int{1}},                  // Step 2
 		},
 	}
 
@@ -1363,8 +1363,8 @@ func TestDAGExecutor_CheckpointGate_Incoherence_CallsReplanHandler(t *testing.T)
 
 // mockCheckpointStore records which step indices were saved.
 type mockCheckpointStore struct {
-	mu      sync.Mutex
-	saved   []int
+	mu    sync.Mutex
+	saved []int
 }
 
 func (m *mockCheckpointStore) SaveCheckpoint(_ string, _ string, stepIndex int, _ map[string]string) error {
@@ -1527,13 +1527,13 @@ type testObserver struct {
 	onTaskCompleted func(domain.TaskEvent)
 }
 
-func (o *testObserver) OnTaskCompleted(evt domain.TaskEvent) { o.onTaskCompleted(evt) }
-func (o *testObserver) OnSessionEvicted(_ string)             {}
-func (o *testObserver) OnConwipWait(_ int64)                  {}
-func (o *testObserver) OnAuctionNoWinner(_ string)            {}
-func (o *testObserver) OnSchemaMismatch(_, _ string)          {}
-func (o *testObserver) OnPlanCompleted(_ domain.PlanEvent)                 {}
-func (o *testObserver) OnRetrievalCompleted(_ domain.RetrievalSession)       {}
+func (o *testObserver) OnTaskCompleted(evt domain.TaskEvent)                     { o.onTaskCompleted(evt) }
+func (o *testObserver) OnSessionEvicted(_ string)                                {}
+func (o *testObserver) OnConwipWait(_ int64)                                     {}
+func (o *testObserver) OnAuctionNoWinner(_ string)                               {}
+func (o *testObserver) OnSchemaMismatch(_, _ string)                             {}
+func (o *testObserver) OnPlanCompleted(_ domain.PlanEvent)                       {}
+func (o *testObserver) OnRetrievalCompleted(_ domain.RetrievalSession)           {}
 func (o *testObserver) OnContradictionResolved(_ domain.ContradictionResolution) {}
 
 func TestDAGExecutor_ObserverOnTaskCompletedCalled(t *testing.T) {

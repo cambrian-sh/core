@@ -17,7 +17,7 @@ func newIDP() *operator.StaticIdentity {
 		Password string
 		Role     operator.Role
 	}{
-		"op":  {Password: "pw", Role: operator.RoleOperator},
+		"op":     {Password: "pw", Role: operator.RoleOperator},
 		"viewer": {Password: "pw", Role: operator.RoleViewer},
 	})
 }

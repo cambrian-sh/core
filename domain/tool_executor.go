@@ -215,15 +215,15 @@ type ToolCallResponse struct {
 type ToolExecutor struct {
 	Registry        ToolRegistry
 	Grants          GrantsProvider
-	Handler         ToolHandler           // the confined Python tool-process invoker (A1.2)
-	MCPHandler      ToolHandler           // ADR-0043: invokes external MCP tools (mcp:<server>/<tool>); nil ⇒ none
-	Approval        ApprovalController    // nil ⇒ dangerous tools are denied (fail-closed)
-	EvalSessions    EvaluationSessionSet  // nil ⇒ no session is an evaluation (operator approval applies)
-	EgressAuditor   EgressAuditor         // ADR-0043: records remote-tool data egress; nil ⇒ no auditing
-	Retriever       ToolRetriever         // ADR-0044: relevance-ranks the granted menu; nil ⇒ full menu
-	Scope           ToolScopeResolver     // nil ⇒ data-regime tools are denied (fail-closed)
-	ContentStore    ContentStore          // nil ⇒ results returned inline
-	InlineThreshold int                   // results larger than this go to the ContentStore
+	Handler         ToolHandler          // the confined Python tool-process invoker (A1.2)
+	MCPHandler      ToolHandler          // ADR-0043: invokes external MCP tools (mcp:<server>/<tool>); nil ⇒ none
+	Approval        ApprovalController   // nil ⇒ dangerous tools are denied (fail-closed)
+	EvalSessions    EvaluationSessionSet // nil ⇒ no session is an evaluation (operator approval applies)
+	EgressAuditor   EgressAuditor        // ADR-0043: records remote-tool data egress; nil ⇒ no auditing
+	Retriever       ToolRetriever        // ADR-0044: relevance-ranks the granted menu; nil ⇒ full menu
+	Scope           ToolScopeResolver    // nil ⇒ data-regime tools are denied (fail-closed)
+	ContentStore    ContentStore         // nil ⇒ results returned inline
+	InlineThreshold int                  // results larger than this go to the ContentStore
 	// ADR-0043 budget regime: when both are set, a priced tool call is reserved
 	// against the session budget before dispatch and reconciled to actual after.
 	// nil ⇒ tool calls are unmetered (no behaviour change).
@@ -251,10 +251,10 @@ type ToolExecutor struct {
 	// result "_artifacts"; without promotion they are unretrievable and eventually
 	// evicted. When wired, each is also stored in the durable vault + metadata
 	// (retrievable via GetArtifact, scope-governed) and materialized to disk.
-	ArtifactBytes     ArtifactByteWriter                       // nil ⇒ no durable vault promotion
-	ArtifactMeta      ArtifactRecorder                         // nil ⇒ no durable metadata record
+	ArtifactBytes     ArtifactByteWriter                                 // nil ⇒ no durable vault promotion
+	ArtifactMeta      ArtifactRecorder                                   // nil ⇒ no durable metadata record
 	ArtifactTags      func(ctx context.Context, agentID string) []string // kernel-derived write tags; nil ⇒ none
-	ArtifactOutputDir string                                   // "" ⇒ no on-disk materialization
+	ArtifactOutputDir string                                             // "" ⇒ no on-disk materialization
 	// ADR-0048 D6: tool-output promotion to LTM. When wired, a successful tool
 	// output that clears the cost pre-filter is fed to Tier-1/Tier-2 curation, where
 	// the LLM scorer decides keep/drop. nil ⇒ no promotion.

@@ -17,6 +17,23 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
+// maxFactRunes bounds a Tier-1 memory fact (a tool output or step result). A fact is a
+// FOCUSED snippet, not a document: a whole tool output (a directory listing, a file's
+// contents) is both what overflows the embedder's context window and a poor single
+// embedding. Content that is genuinely a knowledge source belongs in the chunked ingest
+// pipeline (ADR-0060), not stored whole as one fact. Kept a little under the embedder's
+// prose-safe budget so the common case embeds in one request.
+const maxFactRunes = 1500
+
+// boundFactText caps a fact's text on a rune boundary.
+func boundFactText(text string) string {
+	r := []rune(text)
+	if len(r) <= maxFactRunes {
+		return text
+	}
+	return string(r[:maxFactRunes])
+}
+
 // scoringPromptTemplate is the Tier-2 LLM-as-Judge prompt (ADR-0015).
 // The hash of this template is written as scoring_prompt_version at commit time.
 // After PROMPTREQ migration the canonical prompt is built via domain.PromptBuild;
@@ -96,6 +113,13 @@ type Agent struct {
 	RelevanceThreshold   float64
 	MaxResults           int
 	MaxNeighborExpansion int
+
+	// RecordExperiential gates the passive experiential write path (ADR-0048/0049): step
+	// results (RecordExecution) and tool outputs (RecordToolOutput). Default false — the
+	// kernel leaves it off so no auto-captured tool output / step synthesis is embedded
+	// into long-term memory. Explicit ingestion and recall are unaffected; only the
+	// automatic capture is gated. Set from execution.experiential_memory_enabled.
+	RecordExperiential bool
 
 	// Tier-1 bounded channel (ADR-0015): pre-embedded step results before Tier-2 pgvector commit.
 	pendingItems []pendingItem
@@ -315,6 +339,11 @@ func (a *Agent) FetchContext(ctx context.Context, userInput string) string {
 // Non-blocking: if the channel is full, the item is silently dropped.
 // ADR-0015: items in the channel are immediately searchable by Query via linear cosine scan.
 func (a *Agent) RecordExecution(ctx context.Context, result domain.StepResult) error {
+	// Experiential capture is off by default (execution.experiential_memory_enabled): no
+	// auto-embedded step synthesis into long-term memory.
+	if !a.RecordExperiential {
+		return nil
+	}
 	// ADR-0049 D3: a single-action step's prose output merely restates its one action
 	// record — drop it (structural, by action count; no text comparison, no LLM).
 	// Multi-action and uncorrelated/zero-action steps keep the synthesis.
@@ -323,7 +352,7 @@ func (a *Agent) RecordExecution(ctx context.Context, result domain.StepResult) e
 		return nil
 	}
 
-	text := fmt.Sprintf("step_%d: %s", result.Index, result.Output)
+	text := boundFactText(fmt.Sprintf("step_%d: %s", result.Index, result.Output))
 
 	vec, err := a.Manager.Embedder.Embed(ctx, text)
 	if err != nil {
@@ -378,6 +407,11 @@ func (a *Agent) RecordExecution(ctx context.Context, result domain.StepResult) e
 // D1), a tool output carries source_agent="ToolOutput" so it stays recallable. The
 // kernel only feeds it here — the keep/drop value judgment is the Tier-2 LLM's.
 func (a *Agent) RecordToolOutput(ctx context.Context, rec domain.ToolOutputRecord) error {
+	// Experiential capture is off by default (execution.experiential_memory_enabled): tool
+	// outputs (reads and mutation action-events alike) are not auto-embedded into LTM.
+	if !a.RecordExperiential {
+		return nil
+	}
 	if rec.IsMutation {
 		// A mutation additionally writes an action EVENT ("what I did"); entity
 		// engagement happens inside, stamped with the action's docID as provenance.
@@ -929,7 +963,7 @@ func (a *Agent) commitFollows(ctx context.Context, docID string) {
 // recordReadFact feeds a READ tool's payload into the Tier-1 → Tier-2 fact pipeline
 // (ADR-0048 D6): its payload is knowledge, scored/curated like any other fact.
 func (a *Agent) recordReadFact(ctx context.Context, rec domain.ToolOutputRecord) error {
-	text := fmt.Sprintf("tool[%s]: %s", rec.ToolName, string(rec.Output))
+	text := boundFactText(fmt.Sprintf("tool[%s]: %s", rec.ToolName, string(rec.Output)))
 
 	vec, err := a.Manager.Embedder.Embed(ctx, text)
 	if err != nil {

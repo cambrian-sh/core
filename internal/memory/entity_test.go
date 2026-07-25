@@ -159,6 +159,7 @@ func (s *getByIDStore) GetByID(_ context.Context, id string) (*domain.Document, 
 func TestRecordToolOutput_ReadDriftEmitsWorldDelta(t *testing.T) {
 	store := &getByIDStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
+	agent.RecordExperiential = true
 	bus := domain.NewInMemoryEventBus()
 	var mu sync.Mutex
 	var deltas []domain.WorldDeltaEvent
@@ -201,6 +202,7 @@ func TestRecordToolOutput_ReadDriftEmitsWorldDelta(t *testing.T) {
 func TestUpsertEntity_StampsLastObservedAt(t *testing.T) {
 	store := &getByIDStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
+	agent.RecordExperiential = true
 	_ = agent.RecordToolOutput(context.Background(), domain.ToolOutputRecord{ToolName: "read_file", ArgsJSON: []byte(`{"path":"docs/a.md"}`), Output: []byte("x"), IsMutation: false, TaskID: "step-0-p1"})
 	for _, d := range store.entityDocs() {
 		if _, ok := d.Metadata["last_observed_at"].(string); !ok || d.Metadata["last_observed_at"] == "" {
@@ -214,6 +216,7 @@ func TestUpsertEntity_StampsLastObservedAt(t *testing.T) {
 func TestRecordToolOutput_MutationMintsEntities(t *testing.T) {
 	store := &collectStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
+	agent.RecordExperiential = true
 	ctx := context.Background()
 
 	rec := domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"docs/a.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "step-0-p1"}
@@ -238,6 +241,7 @@ func TestRecordToolOutput_MutationMintsEntities(t *testing.T) {
 func TestRecordToolOutput_ReadMintsEntityWithBaseline(t *testing.T) {
 	store := &collectStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
+	agent.RecordExperiential = true
 	agent.ContentStore = &fakeContentStore{} // offloads the read content → cid-abc
 	ctx := context.Background()
 

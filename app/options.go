@@ -31,13 +31,22 @@ type Options struct {
 	// CRUD handler) from the OSS capability bundle. OSS default: nil → the Watcher is
 	// used (LTM enrichment + Planner dispatch). The premium binary injects a function
 	// that constructs the ReactiveEngine. ADR-0032 / ADR-0057.
-	NewSignalReceiver func(ReactiveServices) (domain.SignalReceiver, domain.WatchConfigHandler)
+	NewSignalReceiver func(KernelServices) (domain.SignalReceiver, domain.WatchConfigHandler)
 
 	// ResourceSelector, when non-nil, replaces the config-driven (auction/EFE) routing
 	// selector (ADR-0037) with a caller/plugin-supplied one — the Tier-1 replace-one
 	// extension point for the selection mechanism (ADR-0074). OSS default: nil (config
 	// decides). A plugin sets this via Registry.SetResourceSelector.
 	ResourceSelector domain.ResourceSelector
+
+	// Entitlements decides which plugins may activate (ADR-0082 D3). It is consulted at
+	// the single chokepoint in applyPlugins, BEFORE a plugin registers, so an unentitled
+	// plugin contributes nothing at all. nil ⇒ every declared plugin activates: the OSS
+	// default, since the OSS build ships no paid plugins and so gates nothing. A premium
+	// binary supplies a licence-backed provider once billing launches.
+	//
+	// Tier-3 never-pluggable: a plugin must NOT be able to set this (self-granting).
+	Entitlements EntitlementProvider
 
 	// Plugins is the compile-time plugin set (ADR-0074). Each plugin's Register declares
 	// its contributions (signal receiver, extra gRPC services, trace wrapper, lifecycle
@@ -55,11 +64,16 @@ type Options struct {
 	ExtraServices func(*grpc.Server)
 }
 
-// ReactiveServices is the OSS-provided capability bundle handed to the premium
-// reactive hook. Every field is an interface — premium depends on these, never on
-// the kernel stacks. This is the spike-validated seam (ADR-0057 D14): the reactive
-// engine + executors + watch handler are buildable from this bundle alone.
-type ReactiveServices struct {
+// KernelServices is the OSS-provided capability bundle handed to every plugin's Build phase
+// (ADR-0082 D7/D12). Every field is an interface — a plugin depends on these, never on the
+// kernel stacks. This is the spike-validated seam (ADR-0057 D14).
+//
+// It is deliberately GENERIC: nothing here is reactive-specific except two leftovers.
+// WatchStore and Journal still carry reactive vocabulary because replacing them with the
+// namespaced PluginStore (ADR-0082 D7) requires domain.WatchConfig to leave the OSS domain
+// package — which is blocked until the watch RPCs move to a premium-owned proto (D8).
+// Until then they remain, documented as debt rather than silently tolerated.
+type KernelServices struct {
 	Manager    ReactiveAgentDispatcher // direct dispatch + daemon lifecycle
 	Auctioneer domain.Auctioneer       // full Gatekeeper → Auction
 	Memory     ReactiveMemoryWriter    // async LTM ingest
@@ -79,11 +93,13 @@ type ReactiveServices struct {
 	// GenerateViaModelStream call is rejected UNAUTHENTICATED. Returns the token id and a
 	// release func to call when the turn completes. Nil when no gateway is configured.
 	AcquireLLMToken func(ctx context.Context, tokenLimit int, ttl time.Duration) (tokenID string, release func(), err error)
-	// ChatManagerAddr is the configured ADR-0080 Chat Manager HTTP ingress bind address
-	// (execution.chat_manager_addr), read from the kernel config at startup. Empty ⇒ the
-	// premium chat plugin does not start the manager. Config-driven, not env/manual.
-	ChatManagerAddr string
 }
+
+// ReactiveServices is the former name of KernelServices, kept as an alias so the rename is
+// not a breaking change for downstream code mid-migration.
+//
+// Deprecated: use KernelServices. The bundle is handed to every plugin, not only reactive.
+type ReactiveServices = KernelServices
 
 // ReactiveJournal is the durable-execution surface for the reactive lane
 // (REACT-01 / ADR-0061). Implemented by the OSS bbolt-backed decorator and injected

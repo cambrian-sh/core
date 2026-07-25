@@ -21,12 +21,17 @@ func (m *mockAgentLister) GetAllAgents(_ context.Context) ([]domain.AgentDefinit
 }
 
 type mockProfileChecker struct {
-	profile *domain.AgentProfile
-	err     error
+	profile       *domain.AgentProfile
+	err           error
+	missingVector bool // when true, HasInterviewVector reports false
 }
 
 func (m *mockProfileChecker) GetProfile(_ context.Context, _, _ string) (*domain.AgentProfile, error) {
 	return m.profile, m.err
+}
+
+func (m *mockProfileChecker) HasInterviewVector(_ context.Context, _, _ string) (bool, error) {
+	return !m.missingVector, nil
 }
 
 type mockBackfillEnqueuer struct {
@@ -82,13 +87,45 @@ func TestRunInterviewBackfill_EnqueuesProvisionalAgents(t *testing.T) {
 	}
 }
 
+// A non-provisional ("ready") agent whose stored interview vector is missing must be
+// re-enqueued — this is the self-heal for agents interviewed while the embedder was down
+// (their profile was saved with a NULL vector, making them invisible to the Layer-2 gate).
+func TestRunInterviewBackfill_HealsReadyAgentWithMissingVector(t *testing.T) {
+	agents := &mockAgentLister{
+		agents: []domain.AgentDefinition{
+			{ID: "ready-ok", SourceHash: "h1", Provisional: false},    // has vector → skip
+			{ID: "ready-novec", SourceHash: "h2", Provisional: false}, // missing vector → heal
+		},
+	}
+	profiles := &perAgentProfileChecker{
+		profiles:      map[string]*domain.AgentProfile{},
+		missingVector: map[string]bool{"ready-novec": true},
+	}
+	enqueuer := &mockBackfillEnqueuer{}
+	embedder := &alwaysAvailableEmbedder{}
+
+	if err := RunInterviewBackfill(context.Background(), agents, profiles, enqueuer, embedder, BackfillConfig{TimeoutMs: 5000}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ids := enqueuerIDs(enqueuer.enqueued)
+	if len(ids) != 1 || ids[0] != "ready-novec" {
+		t.Fatalf("expected only the vector-less ready agent re-enqueued, got %v", ids)
+	}
+}
+
 // perAgentProfileChecker returns different profiles per agentID.
 type perAgentProfileChecker struct {
-	profiles map[string]*domain.AgentProfile
+	profiles      map[string]*domain.AgentProfile
+	missingVector map[string]bool // agentID → true means "no interview vector"
 }
 
 func (p *perAgentProfileChecker) GetProfile(_ context.Context, agentID, _ string) (*domain.AgentProfile, error) {
 	return p.profiles[agentID], nil
+}
+
+func (p *perAgentProfileChecker) HasInterviewVector(_ context.Context, agentID, _ string) (bool, error) {
+	// Default: a ready agent has its vector; only agents flagged missing report false.
+	return !p.missingVector[agentID], nil
 }
 
 func enqueuerIDs(agents []domain.AgentDefinition) []string {

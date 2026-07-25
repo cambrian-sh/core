@@ -60,7 +60,7 @@ func PrincipalFromContext(ctx context.Context) (principal string, role Role, ok 
 // behind the OperatorIdentity port with no interceptor change.
 type StaticIdentity struct {
 	mu     sync.Mutex
-	users  map[string]staticUser   // username → {password, role}
+	users  map[string]staticUser    // username → {password, role}
 	tokens map[string]principalInfo // token → {principal, role}
 }
 

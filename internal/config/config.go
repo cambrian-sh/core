@@ -244,6 +244,24 @@ type ExecutionConfig struct {
 	// Default: 2000.
 	ProposalTimeoutMs int `json:"proposal_timeout_ms"`
 
+	// ExperientialMemoryEnabled turns on the passive "experiential" write path: every
+	// completed planner step result (RecordExecution) and every tool output
+	// (RecordToolOutput) is embedded and stored to long-term memory as a fact. Default
+	// FALSE — the design stores whole, unfocused tool outputs (a directory listing, a
+	// file's contents) as single embeddings, which both overflows the embedder's context
+	// window and pollutes recall with low-signal auto-captured junk. Knowledge that is
+	// genuinely a memory source belongs in the explicit chunked ingest pipeline, not this
+	// auto-capture. Off by default; benchmark rigs that measure experiential recall can
+	// re-enable it via tuning.local.json.
+	ExperientialMemoryEnabled bool `json:"experiential_memory_enabled"`
+	// ScopeEnforcementEnabled turns on the ADR-0034 tag-based memory access control (scoped
+	// reads/writes, per-agent/per-tenant isolation). Default FALSE: OSS core is single-tenant
+	// and UNSCOPED — every agent and the operator see all memory, so operator-ingested
+	// documents are visible to the chat/worker agents without any tagging. Multi-tenant scope
+	// isolation is a PREMIUM concern: the scope plugin flips this on and swaps in the enforcing
+	// gate. Left off, none of the scope wiring (EnableScoping/EnablePhase2, ScopedVectorStore,
+	// caller/session scope) is installed and reads carry no tag predicate.
+	ScopeEnforcementEnabled bool `json:"scope_enforcement_enabled"`
 	// MemoryRelevanceThreshold is the minimum similarity score to include a memory result
 	// in FetchContext. Default: 0.70.
 	MemoryRelevanceThreshold float64 `json:"memory_relevance_threshold"`
@@ -472,13 +490,25 @@ type ExecutionConfig struct {
 	// behavior change — emission is fire-and-forget and never affects the agent stream.
 	CaptureLLMExchanges bool `json:"capture_llm_exchanges,omitempty"`
 
-	// ChatManagerAddr enables and binds the ADR-0080 Chat Manager HTTP ingress (e.g.
-	// ":8890") that owns customer-facing conversations and dispatches each turn to the
-	// chat_session_agent — bypassing the planner. Empty (default) ⇒ the manager is NOT
-	// started. Read at kernel startup and handed to the premium chat plugin via
-	// ReactiveServices, so the manager is brought up from CONFIG at boot, not a manual
-	// trigger. A premium-only feature; OSS builds ignore it (no chat plugin wired).
-	ChatManagerAddr string `json:"chat_manager_addr,omitempty"`
+	// ADR-0084 D4: the OSS chat lane runs conversational turns on a BOUNDED POOL of
+	// stateless session workers rather than one process per conversation. Chat is an OSS
+	// capability (a premium manager adds auth/tenanting in front of it), so these keys name
+	// no premium feature.
+	//
+	// ChatPoolSize is the worker count and therefore the maximum number of turns executing
+	// at once. 0 (default) disables the chat lane — nothing is spawned.
+	ChatPoolSize int `json:"chat_pool_size,omitempty"`
+	// ChatPoolAgentID is the agent each worker runs. Defaults to "chat_agent" (the OSS
+	// conversational worker in agents/chat_agent.py). Premium ships a customer-service
+	// specialisation, "chat_session_agent"; select it by setting this key.
+	ChatPoolAgentID string `json:"chat_pool_agent_id,omitempty"`
+	// ChatPoolQueueSize bounds how many turns may WAIT for a free worker before new turns
+	// are shed. An unbounded queue in front of a bounded pool is just a slower crash, so 0
+	// (shed as soon as every worker is busy) is a safe setting.
+	ChatPoolQueueSize int `json:"chat_pool_queue_size,omitempty"`
+	// ChatPoolAcquireTimeoutSeconds bounds how long an admitted turn waits for a worker
+	// before being shed. 0 means wait for the caller's context.
+	ChatPoolAcquireTimeoutSeconds int `json:"chat_pool_acquire_timeout_seconds,omitempty"`
 
 	// ADR-0022: Global Workspace capacity model.
 	// ActivationThreshold is the post-BFS selection floor for PrimeForStep.
@@ -920,95 +950,95 @@ func (e *ConfigError) Error() string {
 func DefaultConfig() *Config {
 	cfg := &Config{
 		Execution: ExecutionConfig{
-			StepTimeoutMultiplier:            2.0,
-			StepTimeoutBaseBufferMs:          5000,
-			PlanTimeoutMs:                    120000,
-			ContextGrowthK:                   0.001,
-			ProfileAggregatorIntervalSeconds: 300,
-			EWMAAlpha:                        0.5,
-			LatencyWindowSize:                50,
-			GatekeeperMaxCandidates:          5,
-			CapabilityContract:               false, // ROUTE-03 arm toggle; OFF = pre-ROUTE-03 behavior
-			RoutingTraceEnabled:              true,
-			GatekeeperW1:                     0.4,
-			GatekeeperW2:                     0.4,
-			GatekeeperW3:                     0.2,
-			GatekeeperW4:                     0.15,
-			ColdStartPenaltyMultiplier:       0.6,
-			VerifierPoolThreshold:            0.8,
-			TrustBoostThreshold:              0.4,
-			VerificationQueueCapacity:        256,
-			MinVerifiedEvents:                3,
-			VerifierRecencyWindow:            3,
-			TrustScoreCalWeight:              0.6,
-			TrustScoreAbsWeight:              0.4,
-			VerifierPoolMinSize:              2,
-			VerifierPoolThresholdStep:        0.05,
-			VerifierPoolThresholdFloor:       0.6,
-			CrossVerifyRate:                  0.05,
-			MinAuctionConfidence:             0.3,
-			MaxRecursionDepth:                3,
-			FallbackConfidenceThreshold:      0.4,
-			FallbackEnabled:                  true,
-			MaxReplanAttempts:                2,
-			MaxFanOutWidth:                   64,
-			MaxPartialContextBytes:           51200,
-			SignalNoiseThreshold:             3,
-			SignalNoiseWindowSecs:            10,
-			ExplorationRate:                  0.05,
-			SessionTTLDays:                   7,
-			PlanDriftDays:                    7,
-			AuctionBidTimeoutMs:              2000,
-			ProposalTimeoutMs:                2000,
-			MemoryRelevanceThreshold:         0.70,
-			MaxMemoryResults:                 5,
-			MaxNeighborExpansion:             3,
-			MinGCAgeDays:                     30,
-			Tier2MaxIdleSeconds:              300,
-			Tier2LLMTimeout:                  30,
-			Tier2BatchSize:                   32,
-			Tier1ChannelCapacity:             4096,
-			EdgeExtractionBatchSize:          16,
-			EdgeExtractionMaxIdleMs:          2000,
-			EdgeExtractionQueueSize:          4096,
-			EdgeExtractionLLMTimeoutMs:       300000,
-			CircadianStaleDocWarnThreshold:   50,
-			RetrievalFloor:                   0.2,
-			WorkspaceMinFactCosine:           0.60,
-			WorkspacePlanningSlots:           5,
-			WorkspaceExecutionSlots:          5,
-			WorkspaceDriftThreshold:          0.7,
-			WorkspaceLRUCacheCapacity:        256,
-			UseGlobalWorkspace:               true,
-			RecallSpreadingEnabled:           true, // ADR-0049 D10: spreading reads the Hebbian co_activated edges
-			RecallSimilarityFloor:            0.25,
-			RememberDefaultActivation:        0.5,
-			HebbianEnabled:                   true,
-			HebbianLearningRate:              0.05,
-			HebbianMaxWeight:                 0.9,
-			HebbianCoActivationFloor:         0.5,
-			HebbianTopN:                      5,
-			HebbianDecayPerDay:               0.95,
-			HebbianBaseWeight:                0.2,
-			KG2RAGEnabled:                    true,  // ADR-0053 D3: KG²RAG one-hop expansion; opt-out via config.json
-			AnchorConstraintEnabled:          true,  // ADR-0053: document-local anchor promotion; opt-out via config.json
-			StructureGraphEnabled:            true,  // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
-			AgenticRetrievalEnabled:          false, // AGENTIC_RETRIEVAL_SPEC: opt-in agentic retrieval loop; A/B via config
-			AgenticMaxHops:                   1,     // Phase 2a: plan once, retrieve once
-			KG2RAGMaxHops:                    1,     // one-hop, KG²RAG paper default
-			KG2RAGMaxExpanded:                20,    // cap on chunks added by expansion
-			KG2RAGMaxEntities:                30,    // cap on entities walked per hop
-			KG2RAGPerEntity:                  5,     // cap on chunks pulled per entity
-			ActivationThreshold:              0.1,
-			MaxContextSlots:                  20,
-			ContextRefSnippetChars:           500,
-			CapabilityClusterThreshold:       0.80,
-			CapabilityClusterEpsilon:         0.02,
-			CapabilityClusterMinAgents:       3,
-			CapabilityClusterIntervalSeconds: 3600,
-			CanonicalVocab:                   false, // ROUTE-04 arm toggle; OFF = declared strings verbatim
-			CalibratedBids:                   false, // ROUTE-05 arm toggle; OFF = raw self-reported confidence
-			BidCalibrationMinSamples:         10,
+			StepTimeoutMultiplier:               2.0,
+			StepTimeoutBaseBufferMs:             5000,
+			PlanTimeoutMs:                       120000,
+			ContextGrowthK:                      0.001,
+			ProfileAggregatorIntervalSeconds:    300,
+			EWMAAlpha:                           0.5,
+			LatencyWindowSize:                   50,
+			GatekeeperMaxCandidates:             5,
+			CapabilityContract:                  false, // ROUTE-03 arm toggle; OFF = pre-ROUTE-03 behavior
+			RoutingTraceEnabled:                 true,
+			GatekeeperW1:                        0.4,
+			GatekeeperW2:                        0.4,
+			GatekeeperW3:                        0.2,
+			GatekeeperW4:                        0.15,
+			ColdStartPenaltyMultiplier:          0.6,
+			VerifierPoolThreshold:               0.8,
+			TrustBoostThreshold:                 0.4,
+			VerificationQueueCapacity:           256,
+			MinVerifiedEvents:                   3,
+			VerifierRecencyWindow:               3,
+			TrustScoreCalWeight:                 0.6,
+			TrustScoreAbsWeight:                 0.4,
+			VerifierPoolMinSize:                 2,
+			VerifierPoolThresholdStep:           0.05,
+			VerifierPoolThresholdFloor:          0.6,
+			CrossVerifyRate:                     0.05,
+			MinAuctionConfidence:                0.3,
+			MaxRecursionDepth:                   3,
+			FallbackConfidenceThreshold:         0.4,
+			FallbackEnabled:                     true,
+			MaxReplanAttempts:                   2,
+			MaxFanOutWidth:                      64,
+			MaxPartialContextBytes:              51200,
+			SignalNoiseThreshold:                3,
+			SignalNoiseWindowSecs:               10,
+			ExplorationRate:                     0.05,
+			SessionTTLDays:                      7,
+			PlanDriftDays:                       7,
+			AuctionBidTimeoutMs:                 2000,
+			ProposalTimeoutMs:                   2000,
+			MemoryRelevanceThreshold:            0.70,
+			MaxMemoryResults:                    5,
+			MaxNeighborExpansion:                3,
+			MinGCAgeDays:                        30,
+			Tier2MaxIdleSeconds:                 300,
+			Tier2LLMTimeout:                     30,
+			Tier2BatchSize:                      32,
+			Tier1ChannelCapacity:                4096,
+			EdgeExtractionBatchSize:             16,
+			EdgeExtractionMaxIdleMs:             2000,
+			EdgeExtractionQueueSize:             4096,
+			EdgeExtractionLLMTimeoutMs:          300000,
+			CircadianStaleDocWarnThreshold:      50,
+			RetrievalFloor:                      0.2,
+			WorkspaceMinFactCosine:              0.60,
+			WorkspacePlanningSlots:              5,
+			WorkspaceExecutionSlots:             5,
+			WorkspaceDriftThreshold:             0.7,
+			WorkspaceLRUCacheCapacity:           256,
+			UseGlobalWorkspace:                  true,
+			RecallSpreadingEnabled:              true, // ADR-0049 D10: spreading reads the Hebbian co_activated edges
+			RecallSimilarityFloor:               0.25,
+			RememberDefaultActivation:           0.5,
+			HebbianEnabled:                      true,
+			HebbianLearningRate:                 0.05,
+			HebbianMaxWeight:                    0.9,
+			HebbianCoActivationFloor:            0.5,
+			HebbianTopN:                         5,
+			HebbianDecayPerDay:                  0.95,
+			HebbianBaseWeight:                   0.2,
+			KG2RAGEnabled:                       true,  // ADR-0053 D3: KG²RAG one-hop expansion; opt-out via config.json
+			AnchorConstraintEnabled:             true,  // ADR-0053: document-local anchor promotion; opt-out via config.json
+			StructureGraphEnabled:               true,  // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
+			AgenticRetrievalEnabled:             false, // AGENTIC_RETRIEVAL_SPEC: opt-in agentic retrieval loop; A/B via config
+			AgenticMaxHops:                      1,     // Phase 2a: plan once, retrieve once
+			KG2RAGMaxHops:                       1,     // one-hop, KG²RAG paper default
+			KG2RAGMaxExpanded:                   20,    // cap on chunks added by expansion
+			KG2RAGMaxEntities:                   30,    // cap on entities walked per hop
+			KG2RAGPerEntity:                     5,     // cap on chunks pulled per entity
+			ActivationThreshold:                 0.1,
+			MaxContextSlots:                     20,
+			ContextRefSnippetChars:              500,
+			CapabilityClusterThreshold:          0.80,
+			CapabilityClusterEpsilon:            0.02,
+			CapabilityClusterMinAgents:          3,
+			CapabilityClusterIntervalSeconds:    3600,
+			CanonicalVocab:                      false, // ROUTE-04 arm toggle; OFF = declared strings verbatim
+			CalibratedBids:                      false, // ROUTE-05 arm toggle; OFF = raw self-reported confidence
+			BidCalibrationMinSamples:            10,
 			PerCapabilityMerit:                  false, // ROUTE-06 arm toggle; OFF = global merit + unconditional bypass
 			LearnedScorer:                       false, // ROUTE-07 arm toggle; OFF = hand-weighted GatekeeperScore
 			ProvisionalExplorationBudget:        3,
@@ -1017,21 +1047,21 @@ func DefaultConfig() *Config {
 			DaemonRestartWindowSeconds:          300,
 			DaemonRestartBaseBackoffMs:          1000,
 			DaemonRestartMaxBackoffMs:           30000,
-			LLMGatewayMaxConcurrency:         20,
-			LLMGatewayRetryBackoffMs:         100,
-			SessionTokenSweepIntervalSeconds: 30,
-			SessionTokenTTLMultiplier:        5.0,
-			BudgetExhaustionAlarmRate:        0.05,
-			MinStepEnergy:                    256,
-			MaxStepEnergy:                    32768,
-			HistogramMinSamples:              20,
-			HistogramAlpha:                   0.2,
-			IngestionHTTPPort:                0, // disabled by default; set to e.g. 8080 to enable
-			InboxDir:                         "data/inbox",
-			IngestionQueueSize:               1000,
-			IngestionBatchSize:               5,
-			IngestionWorkers:                 5,
-			IngestionBatchWaitMs:             1000,
+			LLMGatewayMaxConcurrency:            20,
+			LLMGatewayRetryBackoffMs:            100,
+			SessionTokenSweepIntervalSeconds:    30,
+			SessionTokenTTLMultiplier:           5.0,
+			BudgetExhaustionAlarmRate:           0.05,
+			MinStepEnergy:                       256,
+			MaxStepEnergy:                       32768,
+			HistogramMinSamples:                 20,
+			HistogramAlpha:                      0.2,
+			IngestionHTTPPort:                   0, // disabled by default; set to e.g. 8080 to enable
+			InboxDir:                            "data/inbox",
+			IngestionQueueSize:                  1000,
+			IngestionBatchSize:                  5,
+			IngestionWorkers:                    5,
+			IngestionBatchWaitMs:                1000,
 			HippocampusPolicies: map[string]domain.HippocampusPolicy{
 				"codegen":   {SimilarityThreshold: 0.92, ConfidenceFloor: 0.85, MaxAgeHours: 24},
 				"cognitive": {SimilarityThreshold: 0.85, ConfidenceFloor: 0.70, MaxAgeHours: 168},

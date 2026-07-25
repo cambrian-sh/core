@@ -24,8 +24,8 @@ func (c *captureParser) Parse(_ context.Context, req StructureParseRequest) (*St
 
 type noopStructStore struct{}
 
-func (noopStructStore) SaveSections(context.Context, []SectionRow) error          { return nil }
-func (noopStructStore) StampChunks(context.Context, []ChunkStamp) error           { return nil }
+func (noopStructStore) SaveSections(context.Context, []SectionRow) error            { return nil }
+func (noopStructStore) StampChunks(context.Context, []ChunkStamp) error             { return nil }
 func (noopStructStore) SaveStructuralEdges(context.Context, []StructuralEdge) error { return nil }
 
 func newCaptureIngestManager(t *testing.T, p StructureParser) *IngestionManager {

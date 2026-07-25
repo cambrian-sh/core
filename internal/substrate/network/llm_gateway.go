@@ -9,15 +9,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
 
 type modelHealthState int
 
 const (
-	healthHealthy     modelHealthState = iota
+	healthHealthy modelHealthState = iota
 	healthUnhealthy
 	healthRateLimited
 )
@@ -39,14 +39,14 @@ type LLMGateway interface {
 
 // SubstrateLLMGateway implements LLMGateway.
 type SubstrateLLMGateway struct {
-	mu             sync.RWMutex
-	sessions       map[string]*domain.SessionState
-	semaphore      chan struct{}
-	healthCache    map[string]*modelHealthEntry
-	modelClients   map[string]domain.LLMStreamer // model agent ID → streaming client
-	cfg            config.ExecutionConfig
-	clientFactory  func(agentID string) (domain.LLMStreamer, error)
-	Observer       domain.TelemetryObserver // ADR-0019: may be nil (no op)
+	mu            sync.RWMutex
+	sessions      map[string]*domain.BudgetLeaseState
+	semaphore     chan struct{}
+	healthCache   map[string]*modelHealthEntry
+	modelClients  map[string]domain.LLMStreamer // model agent ID → streaming client
+	cfg           config.ExecutionConfig
+	clientFactory func(agentID string) (domain.LLMStreamer, error)
+	Observer      domain.TelemetryObserver // ADR-0019: may be nil (no op)
 	// defaultModelID is the streaming model used when a step's StepAllocation has
 	// no model winner (the auction returned no TraitModel candidate). It is the
 	// streaming-path analogue of the broker's default generator that serves the
@@ -66,11 +66,11 @@ func (g *SubstrateLLMGateway) SetDefaultModelID(modelID string) {
 // NewLLMGateway creates a wired SubstrateLLMGateway.
 func NewLLMGateway(cfg config.ExecutionConfig) *SubstrateLLMGateway {
 	gw := &SubstrateLLMGateway{
-		sessions:    make(map[string]*domain.SessionState),
-		semaphore:   make(chan struct{}, cfg.LLMGatewayMaxConcurrency),
-		healthCache: make(map[string]*modelHealthEntry),
+		sessions:     make(map[string]*domain.BudgetLeaseState),
+		semaphore:    make(chan struct{}, cfg.LLMGatewayMaxConcurrency),
+		healthCache:  make(map[string]*modelHealthEntry),
 		modelClients: make(map[string]domain.LLMStreamer),
-		cfg:         cfg,
+		cfg:          cfg,
 	}
 	_ = gw // caller injects clientFactory and modelClients after construction
 	return gw
@@ -107,7 +107,7 @@ func (g *SubstrateLLMGateway) Acquire(_ context.Context, sa domain.StepAllocatio
 		ttl = minSessionTTL
 	}
 	g.mu.Lock()
-	g.sessions[sessionID] = &domain.SessionState{
+	g.sessions[sessionID] = &domain.BudgetLeaseState{
 		StepAllocation: sa,
 		TokenLimit:     tokenLimit,
 		ExpiresAt:      now.Add(ttl),
@@ -146,7 +146,7 @@ func (g *SubstrateLLMGateway) EvictExpired() {
 }
 
 // AddSession adds a pre-existing session state (for testing/setup).
-func (g *SubstrateLLMGateway) AddSession(id string, ss *domain.SessionState) {
+func (g *SubstrateLLMGateway) AddSession(id string, ss *domain.BudgetLeaseState) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.sessions[id] = ss
@@ -159,9 +159,9 @@ func (g *SubstrateLLMGateway) SessionCount() int {
 	return len(g.sessions)
 }
 
-// GetSessionState returns a copy of the session state for the given token ID,
+// GetBudgetLeaseState returns a copy of the budget-lease state for the given lease ID,
 // or nil if not found. Used by GenerateViaModelStream for trace attribution.
-func (g *SubstrateLLMGateway) GetSessionState(id string) *domain.SessionState {
+func (g *SubstrateLLMGateway) GetBudgetLeaseState(id string) *domain.BudgetLeaseState {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	ss, ok := g.sessions[id]

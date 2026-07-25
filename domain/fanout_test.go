@@ -47,9 +47,9 @@ func TestExtractFanOutItems_AmbiguousObjectFallsBack(t *testing.T) {
 // indices; the parametric node stays inert; the dependent barriers over all children.
 func TestExpandFanOut_ExpandsAndRemaps(t *testing.T) {
 	plan := &ExecutionPlan{Steps: []Step{
-		{Query: "scan the helicopter folder"},                                    // 0
+		{Query: "scan the helicopter folder"},                                          // 0
 		{Query: "write the file for {item}", FanOutOver: iptr(0), DependsOn: []int{0}}, // 1 (parametric)
-		{Query: "summarize what was written", DependsOn: []int{1}},               // 2 (reduce)
+		{Query: "summarize what was written", DependsOn: []int{1}},                     // 2 (reduce)
 	}}
 	got, err := ExpandFanOut(plan, 1, []string{"intro", "rotor", "tail"}, 0)
 	if err != nil {

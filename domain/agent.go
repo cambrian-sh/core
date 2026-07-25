@@ -57,6 +57,15 @@ var systemAgentIDs = map[string]bool{
 	// (RetrievalDispatcher), never auctioned/interviewed — same privileged-organ
 	// class as the Scout. CognitiveAgent: makes managed generate() calls.
 	"retrieval_agent": true,
+	// chat_agent (ADR-0084): the conversational front desk. The kernel's chat worker
+	// pool dispatches it DIRECTLY (CallDaemon) to own one conversation turn; it never
+	// executes planner steps and has no work tools — it only converses and delegates
+	// whole tasks to the planner. It must be excluded from the auction/interview for
+	// two reasons: (a) it is incapable of doing task work, so routing a step to it dead-
+	// loops on empty memory queries; (b) letting the planner route back to it creates a
+	// chat→planner→chat recursion. Same privileged-organ class as the Scout — the
+	// configured ChatPoolAgentID defaults to this ID.
+	"chat_agent": true,
 }
 
 // IsSystemAgent reports whether agentID is a privileged kernel organ that bypasses the
@@ -78,7 +87,7 @@ type AgentDefinition struct {
 	Provisional     bool         `json:"provisional,omitempty"`
 	Trait           AgentTrait   `json:"trait,omitempty"`
 	Capabilities    []string     `json:"capabilities,omitempty"`
-	System bool `json:"system,omitempty"`
+	System          bool         `json:"system,omitempty"`
 	// ScopeProfile is the agent's intrinsic genotype-level access boundary
 	// (ADR-0034 D9). It is set by the operator at registration, NOT self-declared.
 	// AUTHORITATIVE storage is the PostgreSQL agent_scopes table resolved via

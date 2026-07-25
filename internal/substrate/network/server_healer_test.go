@@ -156,7 +156,7 @@ func TestHealedStep_ExhaustedError_CancelsSiblings(t *testing.T) {
 
 	plan := &domain.ExecutionPlan{
 		Steps: []domain.Step{
-			{Query: "exhaust"},  // step 0 — no deps
+			{Query: "exhaust"}, // step 0 — no deps
 			{Query: "sibling"}, // step 1 — no deps (parallel)
 		},
 	}

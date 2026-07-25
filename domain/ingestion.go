@@ -15,10 +15,10 @@ type IngestionAdapter interface {
 
 // ExternalDocument is a unit of external knowledge ready for ingestion.
 type ExternalDocument struct {
-	SourceURI   string
-	SourceType  string // "slack", "email", "web", "jira", "pdf", "file_drop"
-	Title       string
-	Body        string
+	SourceURI  string
+	SourceType string // "slack", "email", "web", "jira", "pdf", "file_drop"
+	Title      string
+	Body       string
 	// Data carries the ORIGINAL bytes for binary documents (PDF, DOCX, ...) so the
 	// ADR-0060 structure parser can hand them to the docling_agent's Docling backend
 	// instead of a flattened text approximation. Empty for text documents, which

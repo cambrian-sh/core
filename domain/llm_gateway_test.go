@@ -8,22 +8,22 @@ import (
 )
 
 func TestSessionToken_ZeroValue(t *testing.T) {
-	var st domain.SessionToken
+	var st domain.BudgetLease
 	if st.ID != "" {
-		t.Errorf("SessionToken.ID zero value = %q, want empty string", st.ID)
+		t.Errorf("BudgetLease.ID zero value = %q, want empty string", st.ID)
 	}
 }
 
 func TestSessionToken_New(t *testing.T) {
-	st := domain.SessionToken{ID: "abc-123"}
+	st := domain.BudgetLease{ID: "abc-123"}
 	if st.ID != "abc-123" {
-		t.Errorf("SessionToken.ID = %q, want %q", st.ID, "abc-123")
+		t.Errorf("BudgetLease.ID = %q, want %q", st.ID, "abc-123")
 	}
 }
 
 func TestSessionState_New(t *testing.T) {
 	now := time.Now()
-	ss := domain.SessionState{
+	ss := domain.BudgetLeaseState{
 		StepAllocation:   domain.StepAllocation{},
 		ConsumedTokens:   0,
 		ActualTokensUsed: 75,
@@ -31,10 +31,10 @@ func TestSessionState_New(t *testing.T) {
 		LastActivityAt:   now,
 	}
 	if ss.ActualTokensUsed != 75 {
-		t.Errorf("SessionState.ActualTokensUsed = %d, want 75", ss.ActualTokensUsed)
+		t.Errorf("BudgetLeaseState.ActualTokensUsed = %d, want 75", ss.ActualTokensUsed)
 	}
 	if ss.ExpiresAt != now {
-		t.Errorf("SessionState.ExpiresAt = %v, want %v", ss.ExpiresAt, now)
+		t.Errorf("BudgetLeaseState.ExpiresAt = %v, want %v", ss.ExpiresAt, now)
 	}
 }
 
@@ -61,9 +61,9 @@ func TestStepAllocation_New(t *testing.T) {
 
 func TestGenerateOptions_New(t *testing.T) {
 	opts := domain.GenerateOptions{
-		MaxTokens:      512,
-		Temperature:    0.7,
-		StopSequences:  []string{"END", "STOP"},
+		MaxTokens:     512,
+		Temperature:   0.7,
+		StopSequences: []string{"END", "STOP"},
 	}
 
 	if opts.MaxTokens != 512 {
@@ -79,13 +79,13 @@ func TestGenerateOptions_New(t *testing.T) {
 
 func TestHandoff_SessionToken_NilSafe(t *testing.T) {
 	h := domain.Handoff{}
-	if h.SessionToken != nil {
-		t.Errorf("Handoff.SessionToken zero value = %v, want nil", h.SessionToken)
+	if h.BudgetLease != nil {
+		t.Errorf("Handoff.BudgetLease zero value = %v, want nil", h.BudgetLease)
 	}
-	st := domain.SessionToken{ID: "tok-001"}
-	h.SessionToken = &st
-	if h.SessionToken.ID != "tok-001" {
-		t.Errorf("Handoff.SessionToken.ID = %q, want %q", h.SessionToken.ID, "tok-001")
+	st := domain.BudgetLease{ID: "tok-001"}
+	h.BudgetLease = &st
+	if h.BudgetLease.ID != "tok-001" {
+		t.Errorf("Handoff.BudgetLease.ID = %q, want %q", h.BudgetLease.ID, "tok-001")
 	}
 }
 

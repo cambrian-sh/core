@@ -51,18 +51,21 @@ func (m *lateMockEmbedder) isPerToken() {}
 // TestLateChunker_PoolingMath (F1 regression bar, T-2.2).
 // Body "aaaaaaaa\n\nbbbbbbbb" = 18 chars → 4 tokens at 4 chars/token.
 // OptionC split: 2 paragraphs → 2 chunks.
-//   chunk 0: "aaaaaaaa" (chars [0,8))  → tokens [0,1]
-//   chunk 1: "bbbbbbbb" (chars [10,18)) → tokens [2,3]
+//
+//	chunk 0: "aaaaaaaa" (chars [0,8))  → tokens [0,1]
+//	chunk 1: "bbbbbbbb" (chars [10,18)) → tokens [2,3]
 //
 // Per-token vectors:
-//   token 0 = [1,1,1,1]
-//   token 1 = [2,2,2,2]
-//   token 2 = [3,3,3,3]
-//   token 3 = [4,4,4,4]
+//
+//	token 0 = [1,1,1,1]
+//	token 1 = [2,2,2,2]
+//	token 2 = [3,3,3,3]
+//	token 3 = [4,4,4,4]
 //
 // Mean-pool per chunk:
-//   chunk 0 = mean([1,1,1,1], [2,2,2,2]) = [1.5, 1.5, 1.5, 1.5]
-//   chunk 1 = mean([3,3,3,3], [4,4,4,4]) = [3.5, 3.5, 3.5, 3.5]
+//
+//	chunk 0 = mean([1,1,1,1], [2,2,2,2]) = [1.5, 1.5, 1.5, 1.5]
+//	chunk 1 = mean([3,3,3,3], [4,4,4,4]) = [3.5, 3.5, 3.5, 3.5]
 func TestLateChunker_PoolingMath(t *testing.T) {
 	body := "aaaaaaaa\n\nbbbbbbbb"
 	doc := &domain.ExternalDocument{

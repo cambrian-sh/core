@@ -3,8 +3,8 @@ package harness
 import (
 	"context"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 )
 
@@ -15,12 +15,12 @@ type Config struct {
 
 // SystemHarness wires all subsystems with deterministic fakes for E2E testing.
 type SystemHarness struct {
-	Generator  *FakeGenerator
-	Embedder   *FakeEmbedder
-	Gateway    *FakeLLMGateway
-	Registry   *HarnessRegistry
-	Observer   *CapturingTelemetryObserver
-	ExecCfg    config.ExecutionConfig
+	Generator *FakeGenerator
+	Embedder  *FakeEmbedder
+	Gateway   *FakeLLMGateway
+	Registry  *HarnessRegistry
+	Observer  *CapturingTelemetryObserver
+	ExecCfg   config.ExecutionConfig
 }
 
 func New(cfg Config) *SystemHarness {
@@ -28,13 +28,13 @@ func New(cfg Config) *SystemHarness {
 		cfg.MaxConcurrentSessions = 10
 	}
 	return &SystemHarness{
-		Generator:  NewFakeGenerator(),
-		Embedder:   NewFakeEmbedder(),
-		Gateway:    NewFakeLLMGateway(cfg.MaxConcurrentSessions),
-		Registry:   NewHarnessRegistry(),
-		Observer:   &CapturingTelemetryObserver{},
+		Generator: NewFakeGenerator(),
+		Embedder:  NewFakeEmbedder(),
+		Gateway:   NewFakeLLMGateway(cfg.MaxConcurrentSessions),
+		Registry:  NewHarnessRegistry(),
+		Observer:  &CapturingTelemetryObserver{},
 		ExecCfg: config.ExecutionConfig{
-			PlanTimeoutMs:       120000,
+			PlanTimeoutMs:        120000,
 			MinAuctionConfidence: 0.3,
 		},
 	}
@@ -57,9 +57,9 @@ func (h *SystemHarness) ExecutePlan(ctx context.Context) (*domain.Handoff, []dom
 	})
 
 	dag := &executer.DAGExecutor{
-		EventWriter:      fakeWriter,
-		Observer:         h.Observer,
-		ThoughtFn:        stepFn,
+		EventWriter:       fakeWriter,
+		Observer:          h.Observer,
+		ThoughtFn:         stepFn,
 		MaxReplanAttempts: 2,
 	}
 

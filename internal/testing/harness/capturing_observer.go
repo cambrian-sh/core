@@ -8,14 +8,14 @@ import (
 
 // CapturingTelemetryObserver records all TelemetryObserver calls for test assertions.
 type CapturingTelemetryObserver struct {
-	mu                      sync.Mutex
-	TaskCompletedEvents     []domain.TaskEvent
-	EvictedAgentIDs         []string
-	ConwipWaits             []int64
-	AuctionNoWinners        []string
-	SchemaMismatches        []struct{ AgentID, Kind string }
-	PlanCompletedEvents     []domain.PlanEvent
-	RetrievalSessions       []domain.RetrievalSession
+	mu                       sync.Mutex
+	TaskCompletedEvents      []domain.TaskEvent
+	EvictedAgentIDs          []string
+	ConwipWaits              []int64
+	AuctionNoWinners         []string
+	SchemaMismatches         []struct{ AgentID, Kind string }
+	PlanCompletedEvents      []domain.PlanEvent
+	RetrievalSessions        []domain.RetrievalSession
 	ContradictionResolutions []domain.ContradictionResolution
 }
 

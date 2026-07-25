@@ -23,7 +23,7 @@ type Handoff struct {
 	Confidence    float32
 	Uncertainties []string
 	Context       map[string]string // Phase 0/1/2 and circuit-breaker fallback
-	SessionToken  *SessionToken     // per-step managed LLM session (ADR-0018); nil-safe
+	BudgetLease   *BudgetLease      // per-step managed LLM session (ADR-0018); nil-safe
 	// WorkingMemory is populated in Phase 3 (use_global_workspace=true).
 	// When non-nil, Context is empty — the two fields are mutually exclusive.
 	// Use assemble_context() in the Python SDK to consume this field.

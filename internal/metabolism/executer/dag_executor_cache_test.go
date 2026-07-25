@@ -16,8 +16,8 @@ type mockStepCache struct {
 	getErr    error
 	putErr    error
 
-	getCalls int
-	putCalls int
+	getCalls   int
+	putCalls   int
 	lastPutKey string
 	lastPutTTL time.Duration
 }

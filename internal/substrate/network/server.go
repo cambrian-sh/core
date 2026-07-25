@@ -628,8 +628,8 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		sceneWriter = s.SceneWriterFactory()
 	}
 	executor := &executer.DAGExecutor{
-		EventWriter:            eventWriter,
-		EnqueueVerification:    s.EnqueueVerification,
+		EventWriter:         eventWriter,
+		EnqueueVerification: s.EnqueueVerification,
 		// Experiential memory removed: no step-result / plan-scene write-back (nil recorder).
 		WorkspaceStage:         s.WorkspaceStage,
 		ArtifactLister:         s.ArtifactMeta,     // ADR-0034: surface prior-step artifacts (scope-filtered)

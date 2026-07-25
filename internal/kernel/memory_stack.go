@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/memory"
 	memstore "github.com/cambrian-sh/core/internal/memory/store"
 	"github.com/cambrian-sh/core/internal/scope"
@@ -69,6 +69,9 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	memoryAgent := memory.NewAgent(memoryManager, gen,
 		execCfg.MemoryRelevanceThreshold, execCfg.MaxMemoryResults, execCfg.MaxNeighborExpansion,
 		execCfg.Tier1ChannelCapacity, execCfg.Tier2BatchSize, execCfg.Tier2MaxIdleSeconds, execCfg.Tier2LLMTimeout)
+	// Passive experiential capture (auto-embedding step results + tool outputs into LTM) is
+	// off unless explicitly enabled. See execution.experiential_memory_enabled.
+	memoryAgent.RecordExperiential = execCfg.ExperientialMemoryEnabled
 	hippocampus := memory.NewHippocampus(scopedRead, embed,
 		config.NewStaticPolicyProvider(execCfg.HippocampusPolicies, execCfg.HippocampusDefaultPolicy))
 	queryService := memory.NewQueryService(embed, vec)

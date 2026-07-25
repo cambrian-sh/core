@@ -71,7 +71,7 @@ func stepCacheKey(planSubject, planID string, step domain.Step, snapshot map[str
 	isRoot := len(step.DependsOn) == 0
 	if isRoot {
 		io.WriteString(h, planID) //nolint:errcheck
-		io.WriteString(h, "|")   //nolint:errcheck
+		io.WriteString(h, "|")    //nolint:errcheck
 	}
 
 	io.WriteString(h, planSubject) //nolint:errcheck

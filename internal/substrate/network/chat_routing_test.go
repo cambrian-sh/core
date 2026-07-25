@@ -39,8 +39,8 @@ func TestServer_Execute_ChatDecision_CallsProcessSync(t *testing.T) {
 	proc := &stubSyncProcessor{response: wantHandoff}
 
 	s := &Server{
-		Router:          &stubChatRouter{},
-		SignalReceiver:  proc,
+		Router:         &stubChatRouter{},
+		SignalReceiver: proc,
 	}
 
 	req := &pb.Handoff{
