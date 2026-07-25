@@ -45,44 +45,44 @@ type SessionScopeProvider interface {
 // QueryService implements domain.MemorySearcher: it embeds the query, searches the
 // vector store for memory documents, and applies ACL filtering before returning results.
 type QueryService struct {
-	embedder        domain.Embedder
-	vectorStore     domain.VectorStore
-	scopes          ScopeProvider        // ADR-0034: nil = scope enforcement disabled (legacy)
-	callerScopes    CallerScopeProvider  // ADR-0034 Phase 2: nil = caller_scope not enforced
-	sessions        SessionScopeProvider // ADR-0034 Phase 2: source of non-forgeable caller_scope
-	spreader        Spreader             // ADR-0048 D2: nil = no associative expansion (flag-gated at wiring)
-	floor           float64              // ADR-0048 #1: min cosine to return a recalled fact; 0 = disabled
-	graphWriter     domain.GraphStore    // ADR-0049 D10: Hebbian co-activation edge writes; nil = disabled
-	heb             hebbianParams        // ADR-0049 D10: Hebbian tuning (off unless EnableHebbian wired)
-	entityIdx       *EntityIndex         // ADR-0052: in-memory entity reverse index; nil = surface-only recall
-	assocWeight     float64              // ADR-0052: β in the re-rank formula; default 0.2
-	assocLambda     float64              // ADR-0052: λ for the temporal-decay term in the re-rank; default 0.005
-	assocTopK       int                  // ADR-0052: top-K entity keys to seed from; default 3
-	chunkTriplets   ChunkTripletsStore   // ADR-0053 Phase 0: per-chunk KG; nil = no KG expansion (legacy)
-	kgHops          int                  // ADR-0053 Phase 0: KG expansion depth; default 1
-	kgMaxExpanded   int                  // ADR-0053 Phase 0: max new chunks added by KG expansion; default 20
-	kgMaxEntities   int                  // ADR-0053 Phase 0: max entities considered per hop; default 30
-	kgPerEntity     int                  // ADR-0053 Phase 0: max chunks pulled per entity; default 5
-	queryEntitySeed bool                 // recall: seed kgExpand from entities extracted from the QUERY text (LLM-free)
-	anchorConstraint bool               // recall: promote chunks carrying the query's document-local anchors (companion to the anchor tier)
-	sectionStore     SectionScopedStore  // ADR-0060: structure-graph section-scoped retrieval; nil = disabled
-	neighborWindow   bool                // ADR-0060: expand each returned chunk with its document neighbors
-	blender         atomic.Pointer[Blender] // ADR-0054 Stage A: nil = no blend re-rank; hot-swappable at runtime (SetBlendWeights ← operator SetRuntimeConfig)
-	rankSignals     RankSignalStore      // ADR-0054 Stage A: pagerank + per-chunk confidence source
-	recallTopK      int                  // ADR-0054: results returned to caller; 0 ⇒ defaultRecallTopK
-	recallOverFetch int                  // ADR-0054: seed/ANN fetch size; 0 ⇒ defaultRecallOverFetch
-	lexical         LexicalSearcher      // ADR-0054 hybrid: nil = vector-only recall
-	rrfK            int                  // ADR-0054 hybrid: RRF constant; 0 ⇒ 60
-	lexicalWeight   float64              // hybrid: multiplier on the lexical lane's RRF contribution (entity-anchoring); ≤0 ⇒ 1.0
-	hydeEnabled     bool                 // HyDE: embed a hypothetical answer passage for hop-1 dense retrieval
-	ircotEnabled    bool                 // IRCoT: reason-then-retrieve loop (generate CoT step, retrieve on it)
-	decompEnabled   bool                 // up-front grounded decomposition: decompose the whole question, retrieve+answer each sub-question
-	reranker        Reranker             // ADR-0054 Stage B: nil = no cross-encoder rerank (Stage-A order kept)
-	rerankTopK      int                  // ADR-0054 Stage B: candidates rescored by the cross-encoder; 0 ⇒ defaultRerankTopK
-	rerankWeight    float64              // ADR-0054 Stage B: w_bge in FinalScore; ≤0 ⇒ 0.5
-	agenticEnabled  bool                 // AGENTIC_RETRIEVAL_SPEC: run the LLM query-planner before the single pass
-	planner         Planner              // agentic: query-planner (Go→retrieval_agent dispatcher); nil = fail-open identity
-	agenticMaxHops  int                  // agentic: loop iteration bound; Phase 2a = 1
+	embedder         domain.Embedder
+	vectorStore      domain.VectorStore
+	scopes           ScopeProvider           // ADR-0034: nil = scope enforcement disabled (legacy)
+	callerScopes     CallerScopeProvider     // ADR-0034 Phase 2: nil = caller_scope not enforced
+	sessions         SessionScopeProvider    // ADR-0034 Phase 2: source of non-forgeable caller_scope
+	spreader         Spreader                // ADR-0048 D2: nil = no associative expansion (flag-gated at wiring)
+	floor            float64                 // ADR-0048 #1: min cosine to return a recalled fact; 0 = disabled
+	graphWriter      domain.GraphStore       // ADR-0049 D10: Hebbian co-activation edge writes; nil = disabled
+	heb              hebbianParams           // ADR-0049 D10: Hebbian tuning (off unless EnableHebbian wired)
+	entityIdx        *EntityIndex            // ADR-0052: in-memory entity reverse index; nil = surface-only recall
+	assocWeight      float64                 // ADR-0052: β in the re-rank formula; default 0.2
+	assocLambda      float64                 // ADR-0052: λ for the temporal-decay term in the re-rank; default 0.005
+	assocTopK        int                     // ADR-0052: top-K entity keys to seed from; default 3
+	chunkTriplets    ChunkTripletsStore      // ADR-0053 Phase 0: per-chunk KG; nil = no KG expansion (legacy)
+	kgHops           int                     // ADR-0053 Phase 0: KG expansion depth; default 1
+	kgMaxExpanded    int                     // ADR-0053 Phase 0: max new chunks added by KG expansion; default 20
+	kgMaxEntities    int                     // ADR-0053 Phase 0: max entities considered per hop; default 30
+	kgPerEntity      int                     // ADR-0053 Phase 0: max chunks pulled per entity; default 5
+	queryEntitySeed  bool                    // recall: seed kgExpand from entities extracted from the QUERY text (LLM-free)
+	anchorConstraint bool                    // recall: promote chunks carrying the query's document-local anchors (companion to the anchor tier)
+	sectionStore     SectionScopedStore      // ADR-0060: structure-graph section-scoped retrieval; nil = disabled
+	neighborWindow   bool                    // ADR-0060: expand each returned chunk with its document neighbors
+	blender          atomic.Pointer[Blender] // ADR-0054 Stage A: nil = no blend re-rank; hot-swappable at runtime (SetBlendWeights ← operator SetRuntimeConfig)
+	rankSignals      RankSignalStore         // ADR-0054 Stage A: pagerank + per-chunk confidence source
+	recallTopK       int                     // ADR-0054: results returned to caller; 0 ⇒ defaultRecallTopK
+	recallOverFetch  int                     // ADR-0054: seed/ANN fetch size; 0 ⇒ defaultRecallOverFetch
+	lexical          LexicalSearcher         // ADR-0054 hybrid: nil = vector-only recall
+	rrfK             int                     // ADR-0054 hybrid: RRF constant; 0 ⇒ 60
+	lexicalWeight    float64                 // hybrid: multiplier on the lexical lane's RRF contribution (entity-anchoring); ≤0 ⇒ 1.0
+	hydeEnabled      bool                    // HyDE: embed a hypothetical answer passage for hop-1 dense retrieval
+	ircotEnabled     bool                    // IRCoT: reason-then-retrieve loop (generate CoT step, retrieve on it)
+	decompEnabled    bool                    // up-front grounded decomposition: decompose the whole question, retrieve+answer each sub-question
+	reranker         Reranker                // ADR-0054 Stage B: nil = no cross-encoder rerank (Stage-A order kept)
+	rerankTopK       int                     // ADR-0054 Stage B: candidates rescored by the cross-encoder; 0 ⇒ defaultRerankTopK
+	rerankWeight     float64                 // ADR-0054 Stage B: w_bge in FinalScore; ≤0 ⇒ 0.5
+	agenticEnabled   bool                    // AGENTIC_RETRIEVAL_SPEC: run the LLM query-planner before the single pass
+	planner          Planner                 // agentic: query-planner (Go→retrieval_agent dispatcher); nil = fail-open identity
+	agenticMaxHops   int                     // agentic: loop iteration bound; Phase 2a = 1
 }
 
 // Planner is the agentic retrieval loop's LLM step surface
@@ -492,7 +492,7 @@ func (q *QueryService) agenticSearch(ctx context.Context, query, callerID, docTy
 		maxHops = 1
 	}
 	scratchpad := ""
-	visited := map[string]bool{} // bridges already searched — guard against loops
+	visited := map[string]bool{}          // bridges already searched — guard against loops
 	history := make([]string, 0, maxHops) // ReAct trace: entities resolved so far (fed to decide_continue)
 	cot := make([]string, 0, maxHops)     // IRCoT: accumulated chain-of-thought sentences
 	hopResults := make([][]domain.SearchResult, 0, maxHops)
@@ -1257,17 +1257,58 @@ func (q *QueryService) AnswerSystem(ctx context.Context, query string) (status, 
 		return "", "", nil, errAgenticDisabled
 	}
 	ctx = domain.WithScope(ctx, domain.ScopeSystem)
-	// SINGLE-PASS retrieval for the evidence, then exactly ONE cited synthesis.
-	// The operator answer lane deliberately does NOT run the multi-hop agentic
-	// loop (decompose + per-hop planning + a thrown-away synthesize): that spends
-	// several LLM calls plus a reranker pass, exhausting the step deadline before
-	// synthesis — the DEADLINE_EXCEEDED failure mode. Multi-hop bridge questions
-	// are a later addition; corpus Q&A is well served by one retrieval + one
-	// grounded, cited synthesis. Marker n aligns to evidence[n-1].
-	evidence, err = q.searchByType(ctx, query, "", "operator:system", domain.DocTypeMnemonicFact, true)
-	if err != nil {
-		return "", "", nil, err
+
+	// FULL MULTI-HOP AGENTIC (decompose → per-hop plan/retrieve → synthesize). The operator
+	// memory-asking panel runs the same agentic loop agents do, so a bridge question ("who
+	// directed the film that won X") is answered across hops, not from a single pass. The
+	// loop's control result already carries the synthesized answer + typed status; when the
+	// agentic path is off (no planner / flag) agenticSearch degenerates to the single pass,
+	// and we fall back to one cited synthesis so the panel still answers.
+	//
+	// NOTE: full agentic spends several LLM calls; it depends on the retrieval_agent's LLM
+	// timeout floor (agents/system/retrieval_agent/agent.py) so an eroded inbound deadline
+	// does not strangle a hop into DEADLINE_EXCEEDED.
+	if q.agenticEnabled {
+		results, aerr := q.agenticSearch(ctx, query, "operator:system", domain.DocTypeMnemonicFact, true)
+		if aerr != nil {
+			return "", "", nil, aerr
+		}
+		// Split the synthetic control result (carrying the answer/status) from the evidence.
+		agAnswer, agStatus, hasControl := "", "", false
+		evidence = make([]domain.SearchResult, 0, len(results))
+		for _, r := range results {
+			if r.Document.ID == AgenticControlID {
+				hasControl = true
+				if md := r.Document.Metadata; md != nil {
+					if s, ok := md[AgenticStatusKey].(string); ok {
+						agStatus = s
+					}
+					if t, ok := md[AgenticTextKey].(string); ok {
+						agAnswer = t
+					}
+				}
+				continue
+			}
+			evidence = append(evidence, r)
+		}
+		if hasControl && agAnswer != "" {
+			if agStatus == "" {
+				agStatus = "answer"
+			}
+			return agStatus, agAnswer, evidence, nil
+		}
+		if len(evidence) == 0 {
+			return "abstention", "not found in memory", evidence, nil
+		}
+		// Control present but no synthesized text (synth failed / degenerate): fall through
+		// to one cited synthesis over the evidence so the panel still answers.
+	} else {
+		evidence, err = q.searchByType(ctx, query, "", "operator:system", domain.DocTypeMnemonicFact, true)
+		if err != nil {
+			return "", "", nil, err
+		}
 	}
+
 	const maxAnswerChunks = 16
 	texts := make([]string, 0, maxAnswerChunks)
 	for i, h := range evidence {
@@ -1326,7 +1367,7 @@ func (q *QueryService) SearchEntities(ctx context.Context, query, callerID strin
 	if err != nil || doc == nil {
 		return []domain.SearchResult{}, nil // unknown entity → "no record", not an error
 	}
-	if !aclAllows(doc.Metadata, callerID) {
+	if q.scopes != nil && !aclAllows(doc.Metadata, callerID) {
 		return []domain.SearchResult{}, nil
 	}
 	doc.Text = reconstructEntityState(doc)
@@ -1421,7 +1462,12 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 	// denied (fail-closed): empty result set.
 	// systemRead (ADR-0047 D13/A2): a ScopeSystem read also bypasses the per-caller
 	// ACL below — the operator sees all data, including agent-private documents.
-	var systemRead bool
+	// Scope enforcement disabled (OSS single-tenant, unscoped, q.scopes == nil): no tag
+	// predicate AND no per-owner admit filter — every caller reads all memory. Treating it
+	// as a system read bypasses aclAllows below, so an agent can read facts authored by the
+	// operator or any other agent (the ownership ACL is part of the scope system, ADR-0034,
+	// which is a premium concern). When enforcement is on, systemRead comes from the scope.
+	systemRead := q.scopes == nil
 	if q.scopes != nil {
 		eff, ok := q.resolveScope(ctx, callerID)
 		if !ok {
@@ -1630,7 +1676,7 @@ func rrfFuse(vectorList, lexicalList []domain.SearchResult, k, limit int, lexWei
 			}
 		}
 	}
-	add(vectorList, false, 1.0)      // first ⇒ keeps cosine RawScore for docs in both lists
+	add(vectorList, false, 1.0)       // first ⇒ keeps cosine RawScore for docs in both lists
 	add(lexicalList, true, lexWeight) // lexWeight>1 leans toward exact-term/entity matches
 
 	out := make([]domain.SearchResult, 0, len(order))
@@ -1878,7 +1924,7 @@ func (q *QueryService) injectEntitySeeds(
 		if docType != "" && string(doc.DocumentType) != docType {
 			continue
 		}
-		if !aclAllows(doc.Metadata, callerID) {
+		if q.scopes != nil && !aclAllows(doc.Metadata, callerID) {
 			continue
 		}
 		// Scale the seed's base score so it sits in the same band as the

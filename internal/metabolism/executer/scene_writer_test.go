@@ -9,10 +9,10 @@ import (
 
 // captureSceneWriter records WriteScene calls for assertion.
 type captureSceneWriter struct {
-	calls      []domain.StepResult
-	returnID   string
-	returnErr  error
-	edgeCalls  []specifyEdgeCall
+	calls     []domain.StepResult
+	returnID  string
+	returnErr error
+	edgeCalls []specifyEdgeCall
 }
 
 type specifyEdgeCall struct {

@@ -16,7 +16,7 @@ import (
 // sessionStore is the narrow interface GenerateViaModelStream needs to look up
 // step metadata (agent_id, plan_id, step_index) stored at Acquire time.
 type sessionStore interface {
-	GetSessionState(id string) *domain.SessionState
+	GetBudgetLeaseState(id string) *domain.BudgetLeaseState
 }
 
 // GenerateViaModelStream is a streaming server-side RPC that acts as a metered
@@ -77,7 +77,7 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 		}
 	}
 	if ss, ok := s.LLMGateway.(sessionStore); ok {
-		if state := ss.GetSessionState(req.SessionTokenId); state != nil {
+		if state := ss.GetBudgetLeaseState(req.SessionTokenId); state != nil {
 			// Winner is the TraitModel agent allocated for this step.
 			modelID = state.StepAllocation.Winner.ID
 		}

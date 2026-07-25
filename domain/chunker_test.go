@@ -16,9 +16,9 @@ type supportsCall struct {
 // tests below. It records every call so the runtime test can assert the
 // contract at the call boundary, not just at the type level.
 type mockChunker struct {
-	name    string
+	name     string
 	supports func(sourceType, ext string) bool
-	chunk   func(ctx context.Context, doc *ExternalDocument) ([]Chunk, error)
+	chunk    func(ctx context.Context, doc *ExternalDocument) ([]Chunk, error)
 
 	nameCalls    int
 	supportsHits []supportsCall
@@ -133,9 +133,9 @@ func TestChunkerInterface_RuntimeContract(t *testing.T) {
 func TestChunkerInterface_ChunkErrorPropagates(t *testing.T) {
 	sentinel := errors.New("chunking failed")
 	m := &mockChunker{
-		name:    "broken",
+		name:     "broken",
 		supports: func(string, string) bool { return true },
-		chunk:   func(context.Context, *ExternalDocument) ([]Chunk, error) { return nil, sentinel },
+		chunk:    func(context.Context, *ExternalDocument) ([]Chunk, error) { return nil, sentinel },
 	}
 	if _, err := m.Chunk(context.Background(), &ExternalDocument{}); !errors.Is(err, sentinel) {
 		t.Errorf("err = %v, want %v", err, sentinel)
@@ -148,7 +148,7 @@ func TestChunkerInterface_ChunkErrorPropagates(t *testing.T) {
 // and reading a missing key from such a chunk must not panic.
 func TestChunkerInterface_ChunkMetadataRequired(t *testing.T) {
 	m := &mockChunker{
-		name:    "sparse",
+		name:     "sparse",
 		supports: func(string, string) bool { return true },
 		chunk: func(context.Context, *ExternalDocument) ([]Chunk, error) {
 			return []Chunk{{Body: "hello", Metadata: nil}}, nil
@@ -182,7 +182,7 @@ func TestChunkerInterface_ChunkMetadataRequired(t *testing.T) {
 // error" so the caller can route the result through the normal pipeline.
 func TestChunkerInterface_EmptyBody(t *testing.T) {
 	m := &mockChunker{
-		name:    "noop",
+		name:     "noop",
 		supports: func(string, string) bool { return true },
 		chunk: func(context.Context, *ExternalDocument) ([]Chunk, error) {
 			return []Chunk{{Body: ""}}, nil

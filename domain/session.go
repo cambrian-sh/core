@@ -12,9 +12,14 @@ const (
 	SessionCompleted SessionStatus = "completed"
 )
 
-// Session is a persistent conversation container (UUID). Each Session
-// holds multiple plan executions over time. Checkpoints are keyed by
-// SessionID:PlanID:StepIndex. See ADR-0012.
+// Session is a persistent TASK container (UUID): goal-scoped work that holds multiple plan
+// executions over time and completes. Checkpoints are keyed by SessionID:PlanID:StepIndex.
+// See ADR-0012.
+//
+// It is NOT a chat conversation — that is domain.Conversation (ADR-0084), a long-lived,
+// message-ordered, owned exchange. A conversational turn that orders work references a
+// Session; it is not itself one. (The doc previously called this a "conversation container",
+// which predated the Conversation model and caused exactly the overload ADR-0084 untangles.)
 type Session struct {
 	ID          string        `json:"id"`
 	ParentID    string        `json:"parent_id,omitempty"`
@@ -30,5 +35,5 @@ type Session struct {
 	// field (looked up via session token) — NEVER from the forgeable Handoff.Context.
 	// This is the non-forgeable transport that unlocks Phase-2 caller-scoped
 	// enforcement. ADR-0034 (D13/R2).
-	CallerScope ScopeConfig   `json:"caller_scope,omitempty"`
+	CallerScope ScopeConfig `json:"caller_scope,omitempty"`
 }

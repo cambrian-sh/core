@@ -108,8 +108,8 @@ func TestFilterSnapshot_MultipleDependencies(t *testing.T) {
 func TestFilterSnapshot_AgentMetadataStripped(t *testing.T) {
 	m := master(
 		"step_0_result", "main output",
-		"step_0_confidence", "0.92",   // agent-added metadata
-		"step_0_model", "qwen3:8b",    // agent-added metadata
+		"step_0_confidence", "0.92", // agent-added metadata
+		"step_0_model", "qwen3:8b", // agent-added metadata
 		"step_0_checkpoint", "passed", // checkpoint key — also stripped
 	)
 	s := domain.Step{Query: "q", DependsOn: []int{0}}

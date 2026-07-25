@@ -410,7 +410,7 @@ func TestEdgeBatcher_OneLLMCallPerBatch(t *testing.T) {
 	defer b.Stop()
 
 	for i := 0; i < N; i++ {
-		b.Enqueue(&domain.Document{ID: string(rune('a' + i%26)) + "_" + string(rune('a'+i/26)), Text: "x"})
+		b.Enqueue(&domain.Document{ID: string(rune('a'+i%26)) + "_" + string(rune('a'+i/26)), Text: "x"})
 	}
 	// Wait for all drains to settle.
 	deadline := time.Now().Add(3 * time.Second)

@@ -78,4 +78,3 @@ func handoffToProto(d *domain.Handoff) *pb.Handoff {
 	}
 	return h
 }
-

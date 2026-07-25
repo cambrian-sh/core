@@ -44,6 +44,7 @@ func (c *capturingStore) Search(_ context.Context, _ []float32, _ domain.SearchO
 func testAgentWithMocks(gen domain.Generator) *Agent {
 	mgr := NewMemoryManager(&capturingStore{fakeVectorStore: fakeVectorStore{docs: []domain.SearchResult{}}}, &fakeEmbedder{})
 	a := NewAgent(mgr, gen, 0.70, 5, 3, 64, 32, 300, 30)
+	a.RecordExperiential = true
 	return a
 }
 
@@ -360,6 +361,7 @@ func TestRecordExecution_EmbedsAndPlacesInChannel(t *testing.T) {
 	store := &capturingStore{fakeVectorStore: fakeVectorStore{docs: []domain.SearchResult{}}}
 	mgr := NewMemoryManager(store, &fakeEmbedder{})
 	agent := NewAgent(mgr, nil, 0.70, 5, 3, 64, 0, 0, 0)
+	agent.RecordExperiential = true
 
 	err := agent.RecordExecution(context.Background(), domain.StepResult{
 		Index:    0,
@@ -404,6 +406,7 @@ func TestQuery_MergesPendingAndStore(t *testing.T) {
 	}}
 	mgr := NewMemoryManager(store, &fakeEmbedder{})
 	agent := NewAgent(mgr, nil, 0.70, 5, 3, 64, 0, 0, 0)
+	agent.RecordExperiential = true
 
 	// Pre-populate Tier-1 channel with one item
 	agent.pendingMu.Lock()

@@ -33,13 +33,13 @@ type CommandEffects interface {
 // where the kernel surface is not yet wired).
 type NoopEffects struct{}
 
-func (NoopEffects) TagMemory(context.Context, string, string, bool) error             { return nil }
+func (NoopEffects) TagMemory(context.Context, string, string, bool) error                { return nil }
 func (NoopEffects) SetScope(context.Context, string, []string, []string, []string) error { return nil }
 func (NoopEffects) RegisterSkill(context.Context, string, string, string, []string, []string) error {
 	return nil
 }
-func (NoopEffects) RegisterMCP(context.Context, string, string, string) error { return nil }
-func (NoopEffects) TriggerConsolidation(context.Context, string) error        { return nil }
+func (NoopEffects) RegisterMCP(context.Context, string, string, string) error  { return nil }
+func (NoopEffects) TriggerConsolidation(context.Context, string) error         { return nil }
 func (NoopEffects) SetRuntimeConfig(context.Context, map[string]float64) error { return nil }
 
 // EventBusEffects implements the effects that can be driven purely off the
@@ -64,9 +64,9 @@ func (e EventBusEffects) TriggerConsolidation(_ context.Context, scope string) e
 // function yields Unimplemented (honest where a surface is not yet wired).
 type CommandEffectsFuncs struct {
 	TagMemoryFn            func(ctx context.Context, docID, tag string, add bool) error
-	SetScopeFn            func(ctx context.Context, agentID string, required, anyOf, forbidden []string) error
-	RegisterSkillFn       func(ctx context.Context, name, description, instructions string, toolGrants, scopeTags []string) error
-	RegisterMCPFn         func(ctx context.Context, name, command, url string) error
+	SetScopeFn             func(ctx context.Context, agentID string, required, anyOf, forbidden []string) error
+	RegisterSkillFn        func(ctx context.Context, name, description, instructions string, toolGrants, scopeTags []string) error
+	RegisterMCPFn          func(ctx context.Context, name, command, url string) error
 	TriggerConsolidationFn func(ctx context.Context, scope string) error
 	SetRuntimeConfigFn     func(ctx context.Context, params map[string]float64) error
 }

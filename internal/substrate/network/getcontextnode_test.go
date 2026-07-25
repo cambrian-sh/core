@@ -12,7 +12,9 @@ import (
 )
 
 // fakeCS is a ContentStore holding a fixed node set.
-type fakeCS struct{ nodes map[domain.CID]*domain.ContextNode }
+type fakeCS struct {
+	nodes map[domain.CID]*domain.ContextNode
+}
 
 func (f *fakeCS) Put(context.Context, []byte, string, []string, string) (domain.CID, error) {
 	return "", nil

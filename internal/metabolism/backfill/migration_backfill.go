@@ -14,9 +14,13 @@ type AgentLister interface {
 	GetAllAgents(ctx context.Context) ([]domain.AgentDefinition, error)
 }
 
-// ProfileChecker checks whether an AgentProfile exists for (agentID, sourceHash).
+// ProfileChecker checks an agent's stored interview state for (agentID, sourceHash).
 type ProfileChecker interface {
 	GetProfile(ctx context.Context, agentID, sourceHash string) (*domain.AgentProfile, error)
+	// HasInterviewVector reports whether a NON-EMPTY interview embedding is stored. A
+	// profile row can exist with a null/empty vector (e.g. written while the embedder was
+	// down), which makes the agent invisible to the Gatekeeper's Layer-2 semantic gate.
+	HasInterviewVector(ctx context.Context, agentID, sourceHash string) (bool, error)
 }
 
 // BackfillEnqueuer enqueues an agent for Interview processing.
@@ -83,19 +87,39 @@ func RunInterviewBackfill(
 		return fmt.Errorf("interview backfill: list agents: %w", err)
 	}
 
-	var enqueued, skipped int
+	var enqueued, skipped, healed int
 	for _, agent := range allAgents {
 		// The registry (bbolt) is the source of truth for whether an agent
 		// needs interviewing. A profile in pgvector from a previous run does
 		// not mean the agent is ready if the registry says it is still
 		// provisional (e.g. after a data-dir wipe). ADR-0023.
-		if !agent.Provisional {
+		if agent.Provisional {
+			enqueuer.Enqueue(agent)
+			enqueued++
+			continue
+		}
+		// Self-heal: a "ready" (non-provisional) agent whose stored interview vector is
+		// missing/empty is invisible to the Layer-2 semantic gate and can never be routed
+		// a task (this is what stranded every worker interviewed while the embedder was
+		// down). The embedder is confirmed healthy above, so re-interview it now.
+		hasVec, vErr := profiles.HasInterviewVector(ctx, agent.ID, agent.SourceHash)
+		if vErr != nil {
+			slog.Warn("interview backfill: interview-vector check failed; leaving agent as-is",
+				"agent_id", agent.ID, "err", vErr)
 			skipped++
 			continue
 		}
-		enqueuer.Enqueue(agent)
-		enqueued++
+		if !hasVec {
+			slog.Warn("interview backfill: re-interviewing ready agent with missing interview vector",
+				"agent_id", agent.ID)
+			enqueuer.Enqueue(agent)
+			healed++
+			continue
+		}
+		skipped++
 	}
+	slog.Info("interview backfill: enqueue pass complete",
+		"enqueued", enqueued, "healed_missing_vector", healed, "skipped", skipped)
 
 	slog.Info("interview backfill complete", "enqueued", enqueued, "skipped", skipped)
 	return nil

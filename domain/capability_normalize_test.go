@@ -4,16 +4,16 @@ import "testing"
 
 func TestNormalizeCapability(t *testing.T) {
 	cases := map[string]string{
-		"web-navigation":   "web-navigation",
-		"Web-Navigation":   "web-navigation",
-		"web_navigation":   "web-navigation",
-		"web navigation":   "web-navigation",
+		"web-navigation":     "web-navigation",
+		"Web-Navigation":     "web-navigation",
+		"web_navigation":     "web-navigation",
+		"web navigation":     "web-navigation",
 		"  Web  Navigation ": "web-navigation",
-		"FILE_READ":        "file-read",
-		"file-read":        "file-read",
-		"-leading-":        "leading",
-		"":                 "",
-		"   ":              "",
+		"FILE_READ":          "file-read",
+		"file-read":          "file-read",
+		"-leading-":          "leading",
+		"":                   "",
+		"   ":                "",
 	}
 	for in, want := range cases {
 		if got := NormalizeCapability(in); got != want {

@@ -78,6 +78,7 @@ func TestWritePlanScene_EmbedsProjectionAndRecordsOutcome(t *testing.T) {
 	store := &captureSaveStore{}
 	emb := &recordingEmbedder{}
 	agent := NewAgent(NewMemoryManager(store, emb), nil, 0.70, 5, 3, 64, 0, 0, 0)
+	agent.RecordExperiential = true
 	ctx := context.Background()
 
 	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "step-0-pf"})

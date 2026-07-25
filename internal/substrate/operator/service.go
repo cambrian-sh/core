@@ -33,12 +33,12 @@ type Service struct {
 	effects    CommandEffects
 
 	// ADR-0047 Amendment A2 read sources (CORE-OPS-1).
-	tools      ToolCatalog
-	skills     SkillLister
-	memory     MemoryQuerier
-	answerer   MemoryAnswerer // ADR-0081; nil ⇒ AnswerMemory Unimplemented
-	toolRunner ToolRunner
-	ingestor    MemoryIngestor
+	tools         ToolCatalog
+	skills        SkillLister
+	memory        MemoryQuerier
+	answerer      MemoryAnswerer // ADR-0081; nil ⇒ AnswerMemory Unimplemented
+	toolRunner    ToolRunner
+	ingestor      MemoryIngestor
 	watches       domain.WatchConfigHandler
 	deadletters   domain.WatchDeadLetterReader // REACT-01 / ADR-0061
 	watchMetrics  domain.WatchMetricsReader    // REACT-05 / ADR-0071
@@ -46,6 +46,7 @@ type Service struct {
 	routePreview  RoutePreviewer               // ROUTE-07 / ADR-0077
 
 	sessionOps SessionOps
+	convOps    ConversationOps // ADR-0084 D9: OSS chat lane
 
 	kernelVersion   string
 	contractVersion string

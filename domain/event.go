@@ -295,6 +295,23 @@ type PlanStateChanged struct {
 	ActiveAgent string
 	CostSoFar   float64
 	Terminal    bool
+	// Steps is the plan's DAG for live rendering (operator UI): one node per step with
+	// its dependency edges and current execution status. Absolute-state like the rest of
+	// this event — the full node set is re-sent on each update so re-delivery folds
+	// idempotently and a late subscriber gets the whole graph. Empty on legacy/synthetic
+	// emitters that have no plan structure (backward compatible).
+	Steps []PlanStepState
+}
+
+// PlanStepState is one node of a plan's DAG on the operator feed: its position in the
+// plan, a short label, its dependency edges, and its live execution status.
+type PlanStepState struct {
+	Index     int
+	Label     string // short human label (the step's query, truncated for display)
+	DependsOn []int  // zero-based indices of steps that must finish before this one
+	IsThought bool   // a reasoning/synthesis step (no external action)
+	Status    string // "pending" | "running" | "done" | "failed"
+	Agent     string // the executor agent id, once the step has been dispatched
 }
 
 // AuditEvent carries an operator-mutating action onto the feed in realtime

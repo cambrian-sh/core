@@ -7,11 +7,11 @@ import (
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
-	agentmgr "github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	metabolism "github.com/cambrian-sh/core/internal/metabolism"
+	agentmgr "github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 )
 
 // capturingGateway implements LLMGateway and records Acquire/Complete calls.
@@ -69,12 +69,11 @@ func (a *capturingAuctioneer) CallAgent(ctx context.Context, agentID string, h *
 	return &domain.Handoff{Payload: &domain.Payload{Data: []byte("ok")}}, nil
 }
 
-
 func tokenTestExecCfg() config.ExecutionConfig {
 	return config.ExecutionConfig{
-		PlanTimeoutMs:     30000,
+		PlanTimeoutMs:           30000,
 		StepTimeoutBaseBufferMs: 5000,
-		StepTimeoutMultiplier: 2.0,
+		StepTimeoutMultiplier:   2.0,
 	}
 }
 

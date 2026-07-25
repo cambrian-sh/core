@@ -222,19 +222,19 @@ func fromWatchConfigOp(c *pb.WatchConfigOp) domain.WatchConfig {
 		action = domain.WatchAction{Type: a.GetType(), TargetType: a.GetTargetType(), Target: a.GetTarget(), Payload: a.GetPayload()}
 	}
 	return domain.WatchConfig{
-		ID:                 c.GetId(),
-		Name:               c.GetName(),
-		Description:        c.GetDescription(),
+		ID:          c.GetId(),
+		Name:        c.GetName(),
+		Description: c.GetDescription(),
 		Source: domain.WatchSource{
 			Type:     c.GetSourceType(),
 			StreamID: c.GetSourceStreamId(),
 			Cron:     c.GetSourceCron(),
 			Timezone: c.GetSourceTimezone(),
 		},
-		Condition:          c.GetCondition(),
-		ConditionType:      c.GetConditionType(),
-		Action:             action,
-		Active:             c.GetActive(),
+		Condition:            c.GetCondition(),
+		ConditionType:        c.GetConditionType(),
+		Action:               action,
+		Active:               c.GetActive(),
 		ResponseMode:         c.GetResponseMode(),
 		DaemonParams:         stringMapToAny(c.GetDaemonParams()),
 		MaxConcurrentPlans:   int(c.GetMaxConcurrentPlans()),
@@ -248,15 +248,15 @@ func fromWatchConfigOp(c *pb.WatchConfigOp) domain.WatchConfig {
 
 func toWatchConfigOp(c domain.WatchConfig) *pb.WatchConfigOp {
 	return &pb.WatchConfigOp{
-		Id:            c.ID,
-		Name:          c.Name,
-		Description:   c.Description,
-		SourceType:    c.Source.Type,
+		Id:             c.ID,
+		Name:           c.Name,
+		Description:    c.Description,
+		SourceType:     c.Source.Type,
 		SourceStreamId: c.Source.StreamID,
 		SourceCron:     c.Source.Cron,
 		SourceTimezone: c.Source.Timezone,
-		Condition:     c.Condition,
-		ConditionType: c.ConditionType,
+		Condition:      c.Condition,
+		ConditionType:  c.ConditionType,
 		Action: &pb.WatchActionOp{
 			Type: c.Action.Type, TargetType: c.Action.TargetType, Target: c.Action.Target, Payload: c.Action.Payload,
 		},

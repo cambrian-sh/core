@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 func newTestGateway(concurrency int) *SubstrateLLMGateway {
@@ -214,7 +214,7 @@ func TestSessionStore_Acquire_FloorsShortTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
-	ss := gw.GetSessionState(sid)
+	ss := gw.GetBudgetLeaseState(sid)
 	if ss == nil {
 		t.Fatal("session not found after Acquire")
 	}
@@ -264,7 +264,7 @@ func TestSessionStore_EvictExpired_RemovesStale(t *testing.T) {
 	}
 
 	// expired session
-	expiredSS := &domain.SessionState{
+	expiredSS := &domain.BudgetLeaseState{
 		StepAllocation: sa,
 		TokenLimit:     4096,
 		ExpiresAt:      time.Now().Add(-1 * time.Hour),

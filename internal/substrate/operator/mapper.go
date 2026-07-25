@@ -130,6 +130,7 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			ActiveAgent: e.ActiveAgent,
 			CostSoFar:   e.CostSoFar,
 			Terminal:    e.Terminal,
+			Steps:       planStepsToOp(e.Steps),
 		}}
 
 	case domain.AuditEvent:
@@ -191,6 +192,29 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 		}}
 	}
 
+	return out
+}
+
+// planStepsToOp maps a plan's DAG nodes to their wire form for the operator feed.
+func planStepsToOp(steps []domain.PlanStepState) []*pb.PlanStepOp {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]*pb.PlanStepOp, len(steps))
+	for i, s := range steps {
+		deps := make([]int32, len(s.DependsOn))
+		for j, d := range s.DependsOn {
+			deps[j] = int32(d)
+		}
+		out[i] = &pb.PlanStepOp{
+			Index:     int32(s.Index),
+			Label:     s.Label,
+			DependsOn: deps,
+			IsThought: s.IsThought,
+			Status:    s.Status,
+			Agent:     s.Agent,
+		}
+	}
 	return out
 }
 

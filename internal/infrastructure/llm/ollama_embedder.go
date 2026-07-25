@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -20,6 +21,32 @@ type OllamaEmbedder struct {
 	// gets the right instruction on the query side and a bare document on the
 	// store side. Empty = symmetric (EmbedQuery == Embed).
 	QueryPrefix string
+	// MaxInputRunes caps the input length before it is sent to Ollama. A BERT embedder
+	// (bge-large: ~512-token window) returns HTTP 500 — "the input length exceeds the
+	// context length" — when handed anything longer, which is exactly what happened when
+	// whole tool outputs / large documents were embedded un-chunked. Truncating here is the
+	// safety net: an embedding of the first N runes is still useful, and it can never crash
+	// the memory write/recall path. 0 ⇒ defaultMaxEmbedRunes.
+	MaxInputRunes int
+}
+
+// defaultMaxEmbedRunes is a generous first-pass cap for a 512-token model (bge-large accepts
+// ~500 tokens ≈ 3000 chars of prose). It is deliberately not conservative: a too-long input
+// is caught and retried shorter by Embed's overflow loop, so this only needs to make the
+// common case a single request.
+const defaultMaxEmbedRunes = 2000
+
+// truncateForEmbed caps text at the embedder's rune budget, on a rune boundary.
+func (e *OllamaEmbedder) truncateForEmbed(text string) string {
+	limit := e.MaxInputRunes
+	if limit <= 0 {
+		limit = defaultMaxEmbedRunes
+	}
+	r := []rune(text)
+	if len(r) <= limit {
+		return text
+	}
+	return string(r[:limit])
 }
 
 var _ domain.BatchEmbedder = (*OllamaEmbedder)(nil)
@@ -44,42 +71,72 @@ type ollamaEmbedResponse struct {
 }
 
 func (e *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	// A rune cap alone is not enough: a BERT tokenizer turns dense/degenerate input (long
+	// runs, code, non-English) into far more tokens per rune, so a cap safe for prose still
+	// overflows the 512-token window. So: cap first (cheap), then on a context-overflow 500
+	// halve and retry down to a floor. Natural text embeds on the first try; pathological
+	// input shrinks until it fits, instead of failing the whole memory write/recall.
+	runes := []rune(e.truncateForEmbed(text))
+	for {
+		vec, overflow, err := e.embedOnce(ctx, string(runes))
+		if err == nil {
+			return vec, nil
+		}
+		if !overflow || len(runes) <= minEmbedRunes {
+			return nil, err
+		}
+		runes = runes[:len(runes)/2]
+	}
+}
+
+// minEmbedRunes is the floor the retry-halving stops at; below this the input is small
+// enough that a persistent overflow is some other problem, so we surface the error.
+const minEmbedRunes = 256
+
+// embedOnce does one embed request. overflow is true when Ollama rejected the input for
+// exceeding the model's context window (so the caller can retry with a shorter input).
+func (e *OllamaEmbedder) embedOnce(ctx context.Context, text string) (vec []float32, overflow bool, err error) {
 	timeout := time.Duration(e.TimeoutMs) * time.Millisecond
 	httpClient := &http.Client{Timeout: timeout, Transport: sharedLLMTransport}
 
-	reqBody := ollamaEmbedRequest{Model: e.Model, Prompt: text}
-
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(reqBody); err != nil {
-		return nil, err
+	if err := json.NewEncoder(&buf).Encode(ollamaEmbedRequest{Model: e.Model, Prompt: text}); err != nil {
+		return nil, false, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/api/embeddings", e.BaseURL), &buf)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("embedder: HTTP %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, isContextOverflow(body), fmt.Errorf("embedder: HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(body))
 	}
 
 	var ollamaResp ollamaEmbedResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-
-	vec := make([]float32, len(ollamaResp.Embedding))
+	vec = make([]float32, len(ollamaResp.Embedding))
 	for i, val := range ollamaResp.Embedding {
 		vec[i] = float32(val)
 	}
-	return vec, nil
+	return vec, false, nil
+}
+
+// isContextOverflow detects Ollama's "the input length exceeds the context length" 500 so a
+// too-long embed can be retried shorter rather than dropped.
+func isContextOverflow(body []byte) bool {
+	b := bytes.ToLower(body)
+	return bytes.Contains(b, []byte("context length")) || bytes.Contains(b, []byte("exceeds the context")) || bytes.Contains(b, []byte("input length"))
 }
 
 type ollamaBatchEmbedRequest struct {
@@ -101,14 +158,42 @@ func (e *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 		return [][]float32{}, nil
 	}
 
+	// Cap every input, then retry the whole batch with a shorter per-input cap if Ollama
+	// rejects it for context overflow (one oversized member 500s the batch). Same reasoning
+	// as Embed: a rune cap alone can't guarantee a token count under the window.
+	cap := e.MaxInputRunes
+	if cap <= 0 {
+		cap = defaultMaxEmbedRunes
+	}
+	for {
+		vecs, overflow, err := e.embedBatchOnce(ctx, texts, cap)
+		if err == nil {
+			return vecs, nil
+		}
+		if !overflow || cap <= minEmbedRunes {
+			return nil, err
+		}
+		cap /= 2
+	}
+}
+
+// embedBatchOnce does one batch embed with each input capped to maxRunes.
+func (e *OllamaEmbedder) embedBatchOnce(ctx context.Context, texts []string, maxRunes int) (vecs [][]float32, overflow bool, err error) {
 	timeout := time.Duration(e.TimeoutMs) * time.Millisecond
 	httpClient := &http.Client{Timeout: timeout, Transport: sharedLLMTransport}
 
-	reqBody := ollamaBatchEmbedRequest{Model: e.Model, Input: texts}
+	capped := make([]string, len(texts))
+	for i, t := range texts {
+		r := []rune(t)
+		if len(r) > maxRunes {
+			r = r[:maxRunes]
+		}
+		capped[i] = string(r)
+	}
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(reqBody); err != nil {
-		return nil, err
+	if err := json.NewEncoder(&buf).Encode(ollamaBatchEmbedRequest{Model: e.Model, Input: capped}); err != nil {
+		return nil, false, err
 	}
 
 	// Ollama's BATCH endpoint is /api/embed (accepts `input` as an array and
@@ -117,27 +202,27 @@ func (e *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 	// embeddings) — using it here was the "got 0 embeddings" bug.
 	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/api/embed", e.BaseURL), &buf)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("embedder: HTTP %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, isContextOverflow(body), fmt.Errorf("embedder: HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(body))
 	}
 
 	var ollamaResp ollamaBatchEmbedResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-
 	if len(ollamaResp.Embeddings) != len(texts) {
-		return nil, fmt.Errorf("embedder: batch dimension mismatch: got %d embeddings for %d inputs", len(ollamaResp.Embeddings), len(texts))
+		return nil, false, fmt.Errorf("embedder: batch dimension mismatch: got %d embeddings for %d inputs", len(ollamaResp.Embeddings), len(texts))
 	}
 
 	out := make([][]float32, len(ollamaResp.Embeddings))
@@ -148,5 +233,5 @@ func (e *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 		}
 		out[i] = vec
 	}
-	return out, nil
+	return out, false, nil
 }

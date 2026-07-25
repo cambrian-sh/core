@@ -19,39 +19,44 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	OperatorConsole_Login_FullMethodName                = "/cambrian.OperatorConsole/Login"
-	OperatorConsole_StreamEvents_FullMethodName         = "/cambrian.OperatorConsole/StreamEvents"
-	OperatorConsole_Snapshot_FullMethodName             = "/cambrian.OperatorConsole/Snapshot"
-	OperatorConsole_SetToolGrant_FullMethodName         = "/cambrian.OperatorConsole/SetToolGrant"
-	OperatorConsole_QueryAudit_FullMethodName           = "/cambrian.OperatorConsole/QueryAudit"
-	OperatorConsole_ResolveHITL_FullMethodName          = "/cambrian.OperatorConsole/ResolveHITL"
-	OperatorConsole_PauseSession_FullMethodName         = "/cambrian.OperatorConsole/PauseSession"
-	OperatorConsole_ResumeSession_FullMethodName        = "/cambrian.OperatorConsole/ResumeSession"
-	OperatorConsole_TagMemory_FullMethodName            = "/cambrian.OperatorConsole/TagMemory"
-	OperatorConsole_SetScope_FullMethodName             = "/cambrian.OperatorConsole/SetScope"
-	OperatorConsole_RegisterSkill_FullMethodName        = "/cambrian.OperatorConsole/RegisterSkill"
-	OperatorConsole_RegisterMCP_FullMethodName          = "/cambrian.OperatorConsole/RegisterMCP"
-	OperatorConsole_TriggerConsolidation_FullMethodName = "/cambrian.OperatorConsole/TriggerConsolidation"
-	OperatorConsole_SetRuntimeConfig_FullMethodName     = "/cambrian.OperatorConsole/SetRuntimeConfig"
-	OperatorConsole_CreateSession_FullMethodName        = "/cambrian.OperatorConsole/CreateSession"
-	OperatorConsole_SendMessage_FullMethodName          = "/cambrian.OperatorConsole/SendMessage"
-	OperatorConsole_InjectCorrection_FullMethodName     = "/cambrian.OperatorConsole/InjectCorrection"
-	OperatorConsole_ListTools_FullMethodName            = "/cambrian.OperatorConsole/ListTools"
-	OperatorConsole_ListSkills_FullMethodName           = "/cambrian.OperatorConsole/ListSkills"
-	OperatorConsole_QueryMemory_FullMethodName          = "/cambrian.OperatorConsole/QueryMemory"
-	OperatorConsole_AnswerMemory_FullMethodName         = "/cambrian.OperatorConsole/AnswerMemory"
-	OperatorConsole_SetToolPolicy_FullMethodName        = "/cambrian.OperatorConsole/SetToolPolicy"
-	OperatorConsole_ExecuteTool_FullMethodName          = "/cambrian.OperatorConsole/ExecuteTool"
-	OperatorConsole_IngestMemory_FullMethodName         = "/cambrian.OperatorConsole/IngestMemory"
-	OperatorConsole_WatchToolApprovals_FullMethodName   = "/cambrian.OperatorConsole/WatchToolApprovals"
-	OperatorConsole_ListWatches_FullMethodName          = "/cambrian.OperatorConsole/ListWatches"
-	OperatorConsole_RegisterWatch_FullMethodName        = "/cambrian.OperatorConsole/RegisterWatch"
-	OperatorConsole_DeleteWatch_FullMethodName          = "/cambrian.OperatorConsole/DeleteWatch"
-	OperatorConsole_SetWatchActive_FullMethodName       = "/cambrian.OperatorConsole/SetWatchActive"
-	OperatorConsole_ListWatchDeadLetters_FullMethodName = "/cambrian.OperatorConsole/ListWatchDeadLetters"
-	OperatorConsole_GetWatchMetrics_FullMethodName      = "/cambrian.OperatorConsole/GetWatchMetrics"
-	OperatorConsole_BacktestWatch_FullMethodName        = "/cambrian.OperatorConsole/BacktestWatch"
-	OperatorConsole_PreviewRoute_FullMethodName         = "/cambrian.OperatorConsole/PreviewRoute"
+	OperatorConsole_Login_FullMethodName                    = "/cambrian.OperatorConsole/Login"
+	OperatorConsole_StreamEvents_FullMethodName             = "/cambrian.OperatorConsole/StreamEvents"
+	OperatorConsole_Snapshot_FullMethodName                 = "/cambrian.OperatorConsole/Snapshot"
+	OperatorConsole_SetToolGrant_FullMethodName             = "/cambrian.OperatorConsole/SetToolGrant"
+	OperatorConsole_QueryAudit_FullMethodName               = "/cambrian.OperatorConsole/QueryAudit"
+	OperatorConsole_ResolveHITL_FullMethodName              = "/cambrian.OperatorConsole/ResolveHITL"
+	OperatorConsole_PauseSession_FullMethodName             = "/cambrian.OperatorConsole/PauseSession"
+	OperatorConsole_ResumeSession_FullMethodName            = "/cambrian.OperatorConsole/ResumeSession"
+	OperatorConsole_TagMemory_FullMethodName                = "/cambrian.OperatorConsole/TagMemory"
+	OperatorConsole_SetScope_FullMethodName                 = "/cambrian.OperatorConsole/SetScope"
+	OperatorConsole_RegisterSkill_FullMethodName            = "/cambrian.OperatorConsole/RegisterSkill"
+	OperatorConsole_RegisterMCP_FullMethodName              = "/cambrian.OperatorConsole/RegisterMCP"
+	OperatorConsole_TriggerConsolidation_FullMethodName     = "/cambrian.OperatorConsole/TriggerConsolidation"
+	OperatorConsole_SetRuntimeConfig_FullMethodName         = "/cambrian.OperatorConsole/SetRuntimeConfig"
+	OperatorConsole_CreateSession_FullMethodName            = "/cambrian.OperatorConsole/CreateSession"
+	OperatorConsole_SendMessage_FullMethodName              = "/cambrian.OperatorConsole/SendMessage"
+	OperatorConsole_InjectCorrection_FullMethodName         = "/cambrian.OperatorConsole/InjectCorrection"
+	OperatorConsole_OpenConversation_FullMethodName         = "/cambrian.OperatorConsole/OpenConversation"
+	OperatorConsole_SendTurn_FullMethodName                 = "/cambrian.OperatorConsole/SendTurn"
+	OperatorConsole_CloseConversation_FullMethodName        = "/cambrian.OperatorConsole/CloseConversation"
+	OperatorConsole_ListConversations_FullMethodName        = "/cambrian.OperatorConsole/ListConversations"
+	OperatorConsole_ListConversationMessages_FullMethodName = "/cambrian.OperatorConsole/ListConversationMessages"
+	OperatorConsole_ListTools_FullMethodName                = "/cambrian.OperatorConsole/ListTools"
+	OperatorConsole_ListSkills_FullMethodName               = "/cambrian.OperatorConsole/ListSkills"
+	OperatorConsole_QueryMemory_FullMethodName              = "/cambrian.OperatorConsole/QueryMemory"
+	OperatorConsole_AnswerMemory_FullMethodName             = "/cambrian.OperatorConsole/AnswerMemory"
+	OperatorConsole_SetToolPolicy_FullMethodName            = "/cambrian.OperatorConsole/SetToolPolicy"
+	OperatorConsole_ExecuteTool_FullMethodName              = "/cambrian.OperatorConsole/ExecuteTool"
+	OperatorConsole_IngestMemory_FullMethodName             = "/cambrian.OperatorConsole/IngestMemory"
+	OperatorConsole_WatchToolApprovals_FullMethodName       = "/cambrian.OperatorConsole/WatchToolApprovals"
+	OperatorConsole_ListWatches_FullMethodName              = "/cambrian.OperatorConsole/ListWatches"
+	OperatorConsole_RegisterWatch_FullMethodName            = "/cambrian.OperatorConsole/RegisterWatch"
+	OperatorConsole_DeleteWatch_FullMethodName              = "/cambrian.OperatorConsole/DeleteWatch"
+	OperatorConsole_SetWatchActive_FullMethodName           = "/cambrian.OperatorConsole/SetWatchActive"
+	OperatorConsole_ListWatchDeadLetters_FullMethodName     = "/cambrian.OperatorConsole/ListWatchDeadLetters"
+	OperatorConsole_GetWatchMetrics_FullMethodName          = "/cambrian.OperatorConsole/GetWatchMetrics"
+	OperatorConsole_BacktestWatch_FullMethodName            = "/cambrian.OperatorConsole/BacktestWatch"
+	OperatorConsole_PreviewRoute_FullMethodName             = "/cambrian.OperatorConsole/PreviewRoute"
 )
 
 // OperatorConsoleClient is the client API for OperatorConsole service.
@@ -102,6 +107,21 @@ type OperatorConsoleClient interface {
 	CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error)
 	SendMessage(ctx context.Context, in *SendMessageRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	InjectCorrection(ctx context.Context, in *InjectCorrectionRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// ── Conversations — the OSS chat lane (ADR-0084 D9). Distinct from CreateSession/
+	// SendMessage above, which drive the TASK planner: a conversational turn is owned by a
+	// single agent loop on the kernel's chat worker pool and is NEVER decomposed into a plan
+	// (ADR-0080). SendTurn is synchronous — it returns the agent's reply message. The owner
+	// of a conversation is the resolved operator principal, never the request body.
+	// Capability "chat", advertised only when the chat lane is wired
+	// (execution.chat_pool_size > 0 + a conversation store); OSS otherwise ⇒ Unimplemented.
+	OpenConversation(ctx context.Context, in *OpenConversationOpRequest, opts ...grpc.CallOption) (*OpenConversationOpResponse, error)
+	SendTurn(ctx context.Context, in *SendTurnOpRequest, opts ...grpc.CallOption) (*SendTurnOpResponse, error)
+	CloseConversation(ctx context.Context, in *CloseConversationOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// Read RPCs (no command_id). ListConversations enumerates the calling operator's own
+	// conversations (most recently updated first) for a ChatGPT-style sidebar;
+	// ListConversationMessages returns one conversation's transcript, ordered, after a seq.
+	ListConversations(ctx context.Context, in *ListConversationsOpRequest, opts ...grpc.CallOption) (*ListConversationsOpResponse, error)
+	ListConversationMessages(ctx context.Context, in *ListConversationMessagesOpRequest, opts ...grpc.CallOption) (*ListConversationMessagesOpResponse, error)
 	// Paged reads (any authenticated role; never folded into Snapshot). A2.1/D8.
 	ListTools(ctx context.Context, in *ListToolsOpRequest, opts ...grpc.CallOption) (*ListToolsOpResponse, error)
 	ListSkills(ctx context.Context, in *ListSkillsOpRequest, opts ...grpc.CallOption) (*ListSkillsOpResponse, error)
@@ -340,6 +360,56 @@ func (c *operatorConsoleClient) InjectCorrection(ctx context.Context, in *Inject
 	return out, nil
 }
 
+func (c *operatorConsoleClient) OpenConversation(ctx context.Context, in *OpenConversationOpRequest, opts ...grpc.CallOption) (*OpenConversationOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OpenConversationOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_OpenConversation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SendTurn(ctx context.Context, in *SendTurnOpRequest, opts ...grpc.CallOption) (*SendTurnOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SendTurnOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SendTurn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) CloseConversation(ctx context.Context, in *CloseConversationOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_CloseConversation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListConversations(ctx context.Context, in *ListConversationsOpRequest, opts ...grpc.CallOption) (*ListConversationsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListConversationsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListConversations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListConversationMessages(ctx context.Context, in *ListConversationMessagesOpRequest, opts ...grpc.CallOption) (*ListConversationMessagesOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListConversationMessagesOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListConversationMessages_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) ListTools(ctx context.Context, in *ListToolsOpRequest, opts ...grpc.CallOption) (*ListToolsOpResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListToolsOpResponse)
@@ -557,6 +627,21 @@ type OperatorConsoleServer interface {
 	CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error)
 	SendMessage(context.Context, *SendMessageRequest) (*CommandAck, error)
 	InjectCorrection(context.Context, *InjectCorrectionRequest) (*CommandAck, error)
+	// ── Conversations — the OSS chat lane (ADR-0084 D9). Distinct from CreateSession/
+	// SendMessage above, which drive the TASK planner: a conversational turn is owned by a
+	// single agent loop on the kernel's chat worker pool and is NEVER decomposed into a plan
+	// (ADR-0080). SendTurn is synchronous — it returns the agent's reply message. The owner
+	// of a conversation is the resolved operator principal, never the request body.
+	// Capability "chat", advertised only when the chat lane is wired
+	// (execution.chat_pool_size > 0 + a conversation store); OSS otherwise ⇒ Unimplemented.
+	OpenConversation(context.Context, *OpenConversationOpRequest) (*OpenConversationOpResponse, error)
+	SendTurn(context.Context, *SendTurnOpRequest) (*SendTurnOpResponse, error)
+	CloseConversation(context.Context, *CloseConversationOpRequest) (*CommandAck, error)
+	// Read RPCs (no command_id). ListConversations enumerates the calling operator's own
+	// conversations (most recently updated first) for a ChatGPT-style sidebar;
+	// ListConversationMessages returns one conversation's transcript, ordered, after a seq.
+	ListConversations(context.Context, *ListConversationsOpRequest) (*ListConversationsOpResponse, error)
+	ListConversationMessages(context.Context, *ListConversationMessagesOpRequest) (*ListConversationMessagesOpResponse, error)
 	// Paged reads (any authenticated role; never folded into Snapshot). A2.1/D8.
 	ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error)
 	ListSkills(context.Context, *ListSkillsOpRequest) (*ListSkillsOpResponse, error)
@@ -666,6 +751,21 @@ func (UnimplementedOperatorConsoleServer) SendMessage(context.Context, *SendMess
 }
 func (UnimplementedOperatorConsoleServer) InjectCorrection(context.Context, *InjectCorrectionRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method InjectCorrection not implemented")
+}
+func (UnimplementedOperatorConsoleServer) OpenConversation(context.Context, *OpenConversationOpRequest) (*OpenConversationOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method OpenConversation not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SendTurn(context.Context, *SendTurnOpRequest) (*SendTurnOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SendTurn not implemented")
+}
+func (UnimplementedOperatorConsoleServer) CloseConversation(context.Context, *CloseConversationOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method CloseConversation not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListConversations(context.Context, *ListConversationsOpRequest) (*ListConversationsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListConversations not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListConversationMessages(context.Context, *ListConversationMessagesOpRequest) (*ListConversationMessagesOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListConversationMessages not implemented")
 }
 func (UnimplementedOperatorConsoleServer) ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListTools not implemented")
@@ -1035,6 +1135,96 @@ func _OperatorConsole_InjectCorrection_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_OpenConversation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OpenConversationOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).OpenConversation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_OpenConversation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).OpenConversation(ctx, req.(*OpenConversationOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SendTurn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SendTurnOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SendTurn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SendTurn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SendTurn(ctx, req.(*SendTurnOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_CloseConversation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CloseConversationOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).CloseConversation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_CloseConversation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).CloseConversation(ctx, req.(*CloseConversationOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListConversations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListConversationsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListConversations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListConversations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListConversations(ctx, req.(*ListConversationsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListConversationMessages_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListConversationMessagesOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListConversationMessages(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListConversationMessages_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListConversationMessages(ctx, req.(*ListConversationMessagesOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_ListTools_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListToolsOpRequest)
 	if err := dec(in); err != nil {
@@ -1386,6 +1576,26 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "InjectCorrection",
 			Handler:    _OperatorConsole_InjectCorrection_Handler,
+		},
+		{
+			MethodName: "OpenConversation",
+			Handler:    _OperatorConsole_OpenConversation_Handler,
+		},
+		{
+			MethodName: "SendTurn",
+			Handler:    _OperatorConsole_SendTurn_Handler,
+		},
+		{
+			MethodName: "CloseConversation",
+			Handler:    _OperatorConsole_CloseConversation_Handler,
+		},
+		{
+			MethodName: "ListConversations",
+			Handler:    _OperatorConsole_ListConversations_Handler,
+		},
+		{
+			MethodName: "ListConversationMessages",
+			Handler:    _OperatorConsole_ListConversationMessages_Handler,
 		},
 		{
 			MethodName: "ListTools",

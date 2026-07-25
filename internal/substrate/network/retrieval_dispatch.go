@@ -108,7 +108,7 @@ func (d *RetrievalDispatcher) call(ctx context.Context, reqData []byte) ([]byte,
 }
 
 // PlanQuery asks the retrieval_agent to rewrite the query into a discriminative
-// lexical search string for this hop. ``scratchpad`` carries the bridge entity
+// lexical search string for this hop. “scratchpad“ carries the bridge entity
 // on later hops (empty on hop 1). Returns "" (fail open) on any failure.
 func (d *RetrievalDispatcher) PlanQuery(ctx context.Context, query, scratchpad string, history []string, hop int) (string, error) {
 	reqData, err := json.Marshal(planStepRequest{Op: "plan_step", Query: query, Scratchpad: scratchpad, History: history, Hop: hop})

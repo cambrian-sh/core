@@ -37,10 +37,10 @@ type TaskEvent struct {
 	// Capability is the (first) required capability tag this step was routed for
 	// (ROUTE-06 / ADR-0069). Empty when the step declared none. Powers per-capability
 	// merit aggregation.
-	Capability string `json:"capability,omitempty"`
-	BudgetOverrun        bool      `json:"budget_overrun,omitempty"`      // server-authoritative: ActualTokensUsed > TokenLimit (ADR-0018)
-	FallbackModelUsed    bool      `json:"fallback_model_used,omitempty"` // health cache circuit breaker engaged (ADR-0018)
-	ActualModelID        string    `json:"actual_model_id,omitempty"`     // the TraitModel that actually served the call (ADR-0018)
+	Capability        string `json:"capability,omitempty"`
+	BudgetOverrun     bool   `json:"budget_overrun,omitempty"`      // server-authoritative: ActualTokensUsed > TokenLimit (ADR-0018)
+	FallbackModelUsed bool   `json:"fallback_model_used,omitempty"` // health cache circuit breaker engaged (ADR-0018)
+	ActualModelID     string `json:"actual_model_id,omitempty"`     // the TraitModel that actually served the call (ADR-0018)
 	// Mechanism records which resource-selection mechanism bound this step:
 	// "auction" or "efe" (ADR-0037). The A/B benchmark harness partitions all
 	// falsification metrics by this field without external bookkeeping.

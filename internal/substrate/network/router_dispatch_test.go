@@ -55,9 +55,9 @@ func (p *stubPlanner) Generate(_ context.Context, _ string) (string, error) {
 
 func serverWithRouter(r domain.InputRouter) *Server {
 	s := &Server{
-		Router:  r,
-		Planner: &stubPlanner{},
-		ExecCfg: tokenTestExecCfg(),
+		Router:     r,
+		Planner:    &stubPlanner{},
+		ExecCfg:    tokenTestExecCfg(),
 		Auctioneer: &capturingAuctioneer{},
 	}
 	return s
@@ -147,4 +147,3 @@ func TestServer_RouterClarification_RecommendedFlagPresent(t *testing.T) {
 		t.Fatal("expected at least one option with recommended=true")
 	}
 }
-

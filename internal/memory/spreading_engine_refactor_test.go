@@ -58,16 +58,30 @@ func (v *vecStoreWithDocs) GetBatch(_ context.Context, ids []string) ([]domain.D
 	}
 	return out, nil
 }
-func (v *vecStoreWithDocs) Save(_ context.Context, _ *domain.Document) error    { panic("Save not used in test") }
-func (v *vecStoreWithDocs) SaveBatch(_ context.Context, _ []*domain.Document) error { panic("SaveBatch not used in test") }
+func (v *vecStoreWithDocs) Save(_ context.Context, _ *domain.Document) error {
+	panic("Save not used in test")
+}
+func (v *vecStoreWithDocs) SaveBatch(_ context.Context, _ []*domain.Document) error {
+	panic("SaveBatch not used in test")
+}
 func (v *vecStoreWithDocs) Search(_ context.Context, _ []float32, _ domain.SearchOptions) ([]domain.SearchResult, error) {
 	panic("Search not used in test")
 }
-func (v *vecStoreWithDocs) Delete(_ context.Context, _ string) error             { panic("Delete not used in test") }
-func (v *vecStoreWithDocs) DeleteBatch(_ context.Context, _ []string) error     { panic("DeleteBatch not used in test") }
-func (v *vecStoreWithDocs) IncrementAccess(_ context.Context, _ string) error  { panic("IncrementAccess not used in test") }
-func (v *vecStoreWithDocs) GetStaleMemories(_ context.Context, _ int) ([]domain.Document, error) { panic("unused") }
-func (v *vecStoreWithDocs) QueryByMetadata(_ context.Context, _ map[string]string, _ int) ([]domain.Document, error) { panic("unused") }
+func (v *vecStoreWithDocs) Delete(_ context.Context, _ string) error {
+	panic("Delete not used in test")
+}
+func (v *vecStoreWithDocs) DeleteBatch(_ context.Context, _ []string) error {
+	panic("DeleteBatch not used in test")
+}
+func (v *vecStoreWithDocs) IncrementAccess(_ context.Context, _ string) error {
+	panic("IncrementAccess not used in test")
+}
+func (v *vecStoreWithDocs) GetStaleMemories(_ context.Context, _ int) ([]domain.Document, error) {
+	panic("unused")
+}
+func (v *vecStoreWithDocs) QueryByMetadata(_ context.Context, _ map[string]string, _ int) ([]domain.Document, error) {
+	panic("unused")
+}
 
 func TestSpreadingEngine_UsesEdgeWeightDirectly(t *testing.T) {
 	gs := &recordingGraphStore{

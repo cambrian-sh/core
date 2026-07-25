@@ -18,9 +18,9 @@ func TestDAGExecutor_FanOut_ExpandsAndRunsChildren(t *testing.T) {
 	dag := &executer.DAGExecutor{MaxFanOutWidth: 10}
 
 	plan := &domain.ExecutionPlan{Steps: []domain.Step{
-		{Query: "scan"},                                                       // 0 — discovery
-		{Query: "write {item}", FanOutOver: ptr(0), DependsOn: []int{0}},      // 1 — parametric
-		{Query: "reduce", DependsOn: []int{1}},                               // 2 — barrier
+		{Query: "scan"}, // 0 — discovery
+		{Query: "write {item}", FanOutOver: ptr(0), DependsOn: []int{0}}, // 1 — parametric
+		{Query: "reduce", DependsOn: []int{1}},                           // 2 — barrier
 	}}
 
 	var mu sync.Mutex

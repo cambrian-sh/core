@@ -8,8 +8,8 @@ import (
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/metabolism"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	metauc "github.com/cambrian-sh/core/internal/metabolism/auctioneer"
@@ -194,10 +194,10 @@ func TestPlanWithValidation_HardFailAfterTwoCyclicPlans(t *testing.T) {
 
 func TestStepTimeout_Formula(t *testing.T) {
 	cases := []struct {
-		latency  int
-		mult     float64
-		base     int
-		wantMs   int
+		latency int
+		mult    float64
+		base    int
+		wantMs  int
 	}{
 		{100, 2.0, 5000, 5200}, // 100*2 + 5000
 		{500, 1.5, 1000, 1750}, // 500*1.5 + 1000

@@ -10,24 +10,24 @@ import (
 
 // FakeLLMGateway simulates the LLM Gateway for testing.
 type FakeLLMGateway struct {
-	sessions          map[string]*domain.SessionState
-	maxConcurrent     int
-	activeCount       int
-	chunkCount        int
-	chunkContent      string
+	sessions      map[string]*domain.BudgetLeaseState
+	maxConcurrent int
+	activeCount   int
+	chunkCount    int
+	chunkContent  string
 }
 
 func NewFakeLLMGateway(maxConcurrent int) *FakeLLMGateway {
 	return &FakeLLMGateway{
-		sessions:      make(map[string]*domain.SessionState),
+		sessions:      make(map[string]*domain.BudgetLeaseState),
 		maxConcurrent: maxConcurrent,
 		chunkCount:    3,
 		chunkContent:  "response chunk",
 	}
 }
 
-func (g *FakeLLMGateway) SetChunkCount(n int)          { g.chunkCount = n }
-func (g *FakeLLMGateway) SetChunkContent(s string)     { g.chunkContent = s }
+func (g *FakeLLMGateway) SetChunkCount(n int)      { g.chunkCount = n }
+func (g *FakeLLMGateway) SetChunkContent(s string) { g.chunkContent = s }
 func (g *FakeLLMGateway) SetTokenLimit(sessionID string, limit int) {
 	if ss, ok := g.sessions[sessionID]; ok {
 		ss.TokenLimit = limit
@@ -40,7 +40,7 @@ func (g *FakeLLMGateway) Acquire(_ context.Context, _ domain.StepAllocation, tok
 	}
 	g.activeCount++
 	sessionID := fmt.Sprintf("sess-%d", len(g.sessions))
-	g.sessions[sessionID] = &domain.SessionState{TokenLimit: tokenLimit}
+	g.sessions[sessionID] = &domain.BudgetLeaseState{TokenLimit: tokenLimit}
 	return sessionID, nil
 }
 

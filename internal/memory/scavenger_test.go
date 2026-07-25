@@ -35,6 +35,7 @@ func (s *scavengerRecordingStore) Delete(_ context.Context, id string) error {
 func newScavengerTestAgent() (*Agent, *scavengerRecordingStore) {
 	store := &scavengerRecordingStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
+	agent.RecordExperiential = true
 	return agent, store
 }
 

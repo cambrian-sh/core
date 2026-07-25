@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sort"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,7 +20,9 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/agentpool"
 	"github.com/cambrian-sh/core/internal/centralexec"
+	corechat "github.com/cambrian-sh/core/internal/chat"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/discovery"
 	"github.com/cambrian-sh/core/internal/health"
@@ -34,7 +36,6 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/backfill"
 	"github.com/cambrian-sh/core/internal/metabolism/calibration"
 	"github.com/cambrian-sh/core/internal/metabolism/routescorer"
-	"github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 	ossreactive "github.com/cambrian-sh/core/internal/reactive"
 	"github.com/cambrian-sh/core/internal/scope"
 	skilldiscovery "github.com/cambrian-sh/core/internal/skill/discovery"
@@ -43,6 +44,7 @@ import (
 	session "github.com/cambrian-sh/core/internal/substrate/session"
 	subsynaptic "github.com/cambrian-sh/core/internal/substrate/synaptic"
 	"github.com/cambrian-sh/core/internal/supervision/circadian"
+	"github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 	supsynaptic "github.com/cambrian-sh/core/internal/supervision/synaptic"
 	supwatcher "github.com/cambrian-sh/core/internal/supervision/watcher"
 	"github.com/cambrian-sh/core/internal/telemetry"
@@ -105,18 +107,35 @@ type Kernel struct {
 	// ExtraServices (ADR-0073) mounts downstream (premium) gRPC services on the kernel
 	// server before Serve. nil in OSS. Carried from Options through bootstrapKernel.
 	ExtraServices func(*grpc.Server)
-	// Lifecycles are plugin-contributed background components (ADR-0074) started at boot
-	// and drained on shutdown — e.g. the reactive engine's worker pools + REACT-06
-	// scheduler. Empty in OSS (no plugins).
+	// Lifecycles are background components started at boot and drained in reverse on
+	// shutdown (ADR-0074) — plugin-contributed (the reactive engine's worker pools +
+	// REACT-06 scheduler) and kernel-contributed (the ADR-0084 chat worker pool). In OSS
+	// this holds the chat pool when the chat lane is enabled, and is otherwise empty.
 	Lifecycles []Lifecycle
+	// PluginCapabilities are operator capability strings contributed by plugins (ADR-0082
+	// D2). The kernel appends them to its own base set at handshake time WITHOUT
+	// interpreting any of them — this is what keeps premium vocabulary (watch-*, etc.)
+	// out of the OSS core. Empty in OSS.
+	PluginCapabilities []string
+	// PluginStatuses records each declared plugin and whether it registered. Backs the
+	// future ListPlugins RPC (ADR-0082 D9). Empty in OSS.
+	PluginStatuses []PluginStatus
+
+	// Conversations is the durable Conversation/Message store (ADR-0084 D1). nil when the
+	// schema has not been migrated — chat surfaces are then unavailable, but the rest of the
+	// kernel runs normally.
+	Conversations domain.ConversationStore
+	// ChatTurns executes conversational turns on the ADR-0084 D4 worker pool. nil when the
+	// chat lane is disabled (execution.chat_pool_size = 0) or unmigrated.
+	ChatTurns *corechat.TurnService
 
 	// ADR-0012: Synaptic Bridge components.
-	SessionMgr         *session.SessionManager
-	EventLogger        *subsynaptic.EventLogger
-	SynapticWatcher    *supsynaptic.SynapticWatcher
-	CircadianRhythm    *circadian.CircadianRhythm
-	ArtifactVault      *vault.ArtifactVault
-	EventBus           *domain.InMemoryEventBus
+	SessionMgr      *session.SessionManager
+	EventLogger     *subsynaptic.EventLogger
+	SynapticWatcher *supsynaptic.SynapticWatcher
+	CircadianRhythm *circadian.CircadianRhythm
+	ArtifactVault   *vault.ArtifactVault
+	EventBus        *domain.InMemoryEventBus
 
 	// ADR-0034: Tag-Based Data Access Scoping.
 	ScopeResolver *scope.ScopeResolver
@@ -365,6 +384,18 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	} else {
 		operatorAudit = pgAudit
 	}
+	// ADR-0084 D1: the durable Conversation/Message store, reusing the pgvector pool.
+	// Schema is owned by migration 0002 (ADR-0064), so an unmigrated DB yields a nil store
+	// and chat surfaces stay unavailable rather than the kernel failing to boot — the same
+	// fail-soft posture the audit store uses. Retrieval and orchestration do not depend on
+	// conversations, so a missing chat store must not take the whole kernel down.
+	var conversations domain.ConversationStore
+	if convStore, convErr := postgres.NewPgConversationStore(ctx, vec.Pool()); convErr != nil {
+		slog.Warn("ADR-0084: conversation store unavailable; chat surfaces disabled", "err", convErr)
+	} else {
+		conversations = convStore
+	}
+
 	if err := scopeResolver.Warm(ctx); err != nil {
 		slog.Warn("ADR-0034: scope resolver warm failed (continuing with cold cache)", "err", err)
 	}
@@ -439,7 +470,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// rewired with a fail-closed ScopedVectorStore. Only agent_scope (non-forgeable)
 	// is enforced; caller-supplied Handoff.Context tags carry no weight until Phase 2.
 	scopeResolver.SetExister(reg)
-	mem.QueryService.EnableScoping(scopeResolver, scope.NewScopedVectorStore(vec, slog.Default()))
+	// ADR-0034 scope enforcement is a PREMIUM concern (extraction to a scope plugin
+	// pending). In OSS core it is OFF by default: memory is single-tenant and UNSCOPED, so
+	// the query path is left with no resolver (q.scopes == nil ⇒ no tag predicate ⇒ every
+	// caller reads all memory, including operator-ingested documents). Only the premium
+	// scope plugin flips execution.scope_enforcement_enabled on to install the enforcing gate.
+	if cfg.Execution.ScopeEnforcementEnabled {
+		mem.QueryService.EnableScoping(scopeResolver, scope.NewScopedVectorStore(vec, slog.Default()))
+	}
 
 	pp := config.NewStaticPolicyProvider(cfg.Execution.HippocampusPolicies, cfg.Execution.HippocampusDefaultPolicy)
 	aw := kernel.NewAwarenessStack(awarenessGen, reg, mem.Hippocampus, mem.WorkspaceStage, pp)
@@ -508,11 +546,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// 5. SessionManager — episodic memory lifecycle (ADR-0012)
 	sessionMgr := session.New(reg)
 
-	// ADR-0034 Phase 2: caller_scope re-derivation. When a session carries a
-	// non-forgeable caller_scope (persisted server-side), agent reads enforce
-	// effective = caller_scope ∩ agent_scope, sourced from the session record —
-	// never from Handoff.Context. Falls back to Phase-1 agent_scope when absent.
-	mem.QueryService.EnablePhase2(scopeResolver, sessionMgr)
+	// ADR-0034 Phase 2: caller_scope re-derivation. Gated with Phase-1 scoping above —
+	// when scope enforcement is off (OSS default) the session/caller scope is not wired,
+	// so a conversation's recall posture never narrows what the worker can read.
+	if cfg.Execution.ScopeEnforcementEnabled {
+		mem.QueryService.EnablePhase2(scopeResolver, sessionMgr)
+	}
 
 	// ADR-0053 Phase 0: KG²RAG one-hop chunk expansion (config-gated). The
 	// pgvector adapter doubles as the ChunkTripletsStore (per-chunk h, r, t
@@ -749,38 +788,81 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0032: ReactiveEngineArgs wires the premium ReactiveEngine with real deps.
 	// ADR-0057: reactive signal receiver via injection (no build tags). OSS default
 	// is the Watcher (LTM enrichment + Planner dispatch); the premium binary injects
-	// a ReactiveEngine built from the ReactiveServices bundle.
+	// a ReactiveEngine built from the KernelServices bundle.
 	var signalRcv domain.SignalReceiver
 	if watcher != nil {
 		signalRcv = watcher
 	} else {
 		signalRcv = &ossreactive.NoOpSignalReceiver{}
 	}
+	// The capability bundle handed to plugins. Built once so the ADR-0082 D12 Build phase
+	// and the ADR-0057 NewSignalReceiver hook see exactly the same services.
+	kernelSvc := KernelServices{
+		Manager:    meta.Manager,
+		Auctioneer: meta.Auctioneer,
+		Memory:     mem.Agent,
+		Planner:    aw.Planner,
+		LLM:        aw.LLM,
+		WatchStore: reg,
+		EventBus:   eventBus,
+		Journal:    reg, // REACT-01 / ADR-0061: durable reactive execution (bbolt).
+		// ADR-0080: let a direct-dispatch consumer (chat manager) provision a managed-LLM
+		// session token, the way the planner path does at server.go:493. Nil gateway ⇒ no-op.
+		AcquireLLMToken: func(ctx context.Context, tokenLimit int, ttl time.Duration) (string, func(), error) {
+			if llmGateway == nil {
+				return "", func() {}, nil
+			}
+			tok, err := llmGateway.Acquire(ctx, domain.StepAllocation{}, tokenLimit, ttl)
+			if err != nil {
+				return "", func() {}, err
+			}
+			return tok, func() { _, _ = llmGateway.Complete(context.Background(), tok) }, nil
+		},
+	}
+
+	// ADR-0082 D12: the Build phase — plugins construct their runtime objects now that the
+	// stacks exist and before anything is served. Runs in dependency order; a plugin that
+	// implements no Builder is skipped.
+	if err := buildPlugins(composed.built, kernelSvc); err != nil {
+		return nil, err
+	}
+
+	// ADR-0084 D4: the OSS chat lane. A bounded pool of stateless session workers replaces
+	// one process per conversation: process count becomes a configured constant instead of a
+	// consequence of how many people are talking. Disabled by default (chat_pool_size = 0),
+	// and skipped when the conversation store is unavailable — a chat lane with nowhere to
+	// persist transcripts would lose them on restart, which is the failure this design exists
+	// to remove.
+	var chatTurns *corechat.TurnService
+	if cfg.Execution.ChatPoolSize > 0 && conversations != nil {
+		agentID := cfg.Execution.ChatPoolAgentID
+		if agentID == "" {
+			agentID = "chat_agent"
+		}
+		pool := agentpool.New(meta.Manager, agentpool.Config{
+			AgentID:        agentID,
+			Size:           cfg.Execution.ChatPoolSize,
+			QueueSize:      cfg.Execution.ChatPoolQueueSize,
+			AcquireTimeout: time.Duration(cfg.Execution.ChatPoolAcquireTimeoutSeconds) * time.Second,
+			StreamPrefix:   "chat",
+		})
+		chatTurns = corechat.NewTurnService(conversations, pool, kernelSvc.AcquireLLMToken)
+		lifecycles = append(lifecycles, Lifecycle{
+			Name: "chat-pool",
+			Start: func(ctx context.Context) {
+				if err := pool.Start(ctx); err != nil {
+					slog.Error("ADR-0084: chat pool failed to start; chat lane unavailable", "err", err)
+				}
+			},
+			Stop: pool.Stop,
+		})
+	} else if cfg.Execution.ChatPoolSize > 0 {
+		slog.Warn("ADR-0084: chat pool configured but the conversation store is unavailable; chat lane disabled")
+	}
+
 	var watchHandler domain.WatchConfigHandler
 	if opts.NewSignalReceiver != nil {
-		signalRcv, watchHandler = opts.NewSignalReceiver(ReactiveServices{
-			Manager:    meta.Manager,
-			Auctioneer: meta.Auctioneer,
-			Memory:     mem.Agent,
-			Planner:    aw.Planner,
-			LLM:        aw.LLM,
-			WatchStore:      reg,
-			EventBus:        eventBus,
-			Journal:         reg, // REACT-01 / ADR-0061: durable reactive execution (bbolt).
-			ChatManagerAddr: cfg.Execution.ChatManagerAddr, // ADR-0080: config-driven at startup.
-			// ADR-0080: let a direct-dispatch consumer (chat manager) provision a managed-LLM
-			// session token, the way the planner path does at server.go:493. Nil gateway ⇒ no-op.
-			AcquireLLMToken: func(ctx context.Context, tokenLimit int, ttl time.Duration) (string, func(), error) {
-				if llmGateway == nil {
-					return "", func() {}, nil
-				}
-				tok, err := llmGateway.Acquire(ctx, domain.StepAllocation{}, tokenLimit, ttl)
-				if err != nil {
-					return "", func() {}, err
-				}
-				return tok, func() { _, _ = llmGateway.Complete(context.Background(), tok) }, nil
-			},
-		})
+		signalRcv, watchHandler = opts.NewSignalReceiver(kernelSvc)
 	}
 	// REACT-05 / ADR-0071: the premium ReactiveEngine (signalRcv) also implements the
 	// watch-observability ports; capture them (nil for the OSS receiver) so the operator
@@ -1287,12 +1369,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		OperatorAudit:      operatorAudit,
 		Config:             cfg,
 		Registry:           reg,
-		WatchDeadLetters:   reg,                // REACT-01 / ADR-0061
-		WatchMetrics:       watchMetricsReader, // REACT-05 / ADR-0071
-		WatchBacktester:    watchBacktester,    // REACT-05 / ADR-0071
-		ExtraServices:      opts.ExtraServices, // ADR-0073
-		Lifecycles:         lifecycles,         // ADR-0074 (empty in OSS)
-		Health:             healthChecker,      // PLAT-03 / ADR-0065
+		WatchDeadLetters:   reg,                   // REACT-01 / ADR-0061
+		WatchMetrics:       watchMetricsReader,    // REACT-05 / ADR-0071
+		WatchBacktester:    watchBacktester,       // REACT-05 / ADR-0071
+		ExtraServices:      opts.ExtraServices,    // ADR-0073
+		Lifecycles:         lifecycles,            // ADR-0074 (empty in OSS)
+		PluginCapabilities: composed.capabilities, // ADR-0082 D2 (empty in OSS)
+		Conversations:      conversations,         // ADR-0084 D1 (nil until migrated)
+		ChatTurns:          chatTurns,             // ADR-0084 D4 (nil when disabled)
+		PluginStatuses:     composed.statuses,     // ADR-0082 D9 (empty in OSS)
+		Health:             healthChecker,         // PLAT-03 / ADR-0065
 		Store:              storeHandle,
 		Memory:             mem,
 		Awareness:          aw,
@@ -1556,30 +1642,21 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if operatorSvc.HasMemoryAnswerer() {
 			operatorCaps = append(operatorCaps, "memory-answer")
 		}
-		if k.Server.WatchHandler != nil {
-			operatorCaps = append(operatorCaps, "watches-read", "watches-crud")
+		// ADR-0082 D2: plugin-contributed capabilities. Each plugin declares the operator
+		// surfaces it implements in its own manifest; the kernel collects them here and
+		// advertises them WITHOUT interpreting any of them — which is what keeps downstream
+		// (premium) vocabulary out of the open-source core. An absent or unentitled plugin
+		// declares nothing, so its capabilities never appear and the UI hides those surfaces
+		// exactly as it does on an OSS build.
+		// chat: the ADR-0084 D9 conversation lane (OpenConversation/SendTurn/
+		// CloseConversation/ListConversationMessages). Advertised only when the chat
+		// worker pool is running (execution.chat_pool_size > 0) and a conversation
+		// store exists; an OSS build with chat off returns Unimplemented and hides it.
+		if k.ChatTurns != nil && k.Conversations != nil {
+			operatorCaps = append(operatorCaps, "chat")
 		}
-		// REACT-01 / ADR-0061: reactive dead-letter read surface, advertised when the
-		// premium reactive engine (and thus the journal writer) is active — same signal
-		// as watch CRUD. REACT-02 / ADR-0062: backpressure adds `debounce_seconds` on
-		// WatchConfigOp + the ReactiveBudgetOp shed event, gated on the same signal.
-		if k.Server.WatchHandler != nil {
-			// REACT-03 / ADR-0063: watch-condition-guard advertises the llm-condition
-			// injection hardening (payload allowlist + registration risk gate).
-			operatorCaps = append(operatorCaps, "watch-deadletter", "reactive-backpressure", "watch-condition-guard")
-		}
-		// REACT-05 / ADR-0071: watch observability (metrics + backtest), from the premium engine.
-		if k.WatchMetrics != nil {
-			operatorCaps = append(operatorCaps, "watch-observability")
-		}
-		// REACT-06 / ADR-0072: "schedule"-source watches (cron-driven synthetic signals +
-		// missed-fire policy). WatchConfigOp gains source_cron/source_timezone/
-		// missed_fire_policy; the scheduler lives in the premium engine, so this advertises
-		// on the same watch-handler signal.
-		if k.Server.WatchHandler != nil {
-			operatorCaps = append(operatorCaps, "watch-schedule")
-		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0060", operatorCaps)
+		operatorCaps = append(operatorCaps, k.PluginCapabilities...)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0063", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).
@@ -1607,6 +1684,13 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				return nil
 			},
 		})
+		// ADR-0084 D9: the OSS chat lane on the operator plane. Wired only when the chat
+		// TurnService exists (execution.chat_pool_size > 0 + a conversation store), so an
+		// OSS build with chat off honestly reports SendTurn/OpenConversation as Unimplemented
+		// and the "chat" capability is not advertised.
+		if k.ChatTurns != nil && k.Conversations != nil {
+			operatorSvc.SetConversationOps(&conversationOps{store: k.Conversations, turns: k.ChatTurns})
+		}
 		pb.RegisterOperatorConsoleServer(k.GRPC, operatorSvc)
 		// ADR-0073: let a downstream (premium) binary mount ADDITIONAL gRPC services it
 		// defines in its own proto (e.g. the reactive control plane the benchmark harness
@@ -2019,7 +2103,6 @@ func reconcileIndex(ctx context.Context, lister docTypeLister, remover docRemove
 			"doc_type", docType, "id", id)
 	}
 }
-
 
 func initTelemetry(cfg *config.Config) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider) {
 	if cfg.Telemetry.OTLPEndpoint == "" && cfg.Telemetry.PrometheusPort == 0 && !cfg.Telemetry.EnableStdoutExporter {

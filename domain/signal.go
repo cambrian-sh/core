@@ -101,7 +101,7 @@ type WatchConfig struct {
 	Name          string      `json:"name,omitempty"`
 	Description   string      `json:"description,omitempty"`
 	Source        WatchSource `json:"source"`
-	Condition     string      `json:"condition,omitempty"` // e.g. "price > 5000" or "true"
+	Condition     string      `json:"condition,omitempty"`      // e.g. "price > 5000" or "true"
 	ConditionType string      `json:"condition_type,omitempty"` // see ConditionType* constants
 	Action        WatchAction `json:"action"`
 	Active        bool        `json:"active"`
@@ -140,14 +140,14 @@ type WatchConfig struct {
 // signals a watch saw, how often its condition fired vs was suppressed, dry-run
 // would-fires, action failures/dead-letters, and mean condition-evaluation latency.
 type WatchMetrics struct {
-	WatchID              string
-	SignalsSeen          int64
-	ConditionFired       int64 // condition true → action attempted (or would-fire in dry-run)
-	ConditionSuppressed  int64 // condition false
-	DryRunWouldFire      int64
-	ActionFailed         int64
-	DeadLettered         int64
-	ConditionEvalCount   int64
+	WatchID               string
+	SignalsSeen           int64
+	ConditionFired        int64 // condition true → action attempted (or would-fire in dry-run)
+	ConditionSuppressed   int64 // condition false
+	DryRunWouldFire       int64
+	ActionFailed          int64
+	DeadLettered          int64
+	ConditionEvalCount    int64
 	ConditionLatencyMsTot int64
 }
 
@@ -162,9 +162,9 @@ func (m WatchMetrics) MeanConditionLatencyMs() float64 {
 // WatchBacktestVerdict is one signal's outcome when a candidate WatchConfig is replayed
 // over the journal (REACT-05 / ADR-0071): would the condition have fired?
 type WatchBacktestVerdict struct {
-	Seq        uint64
-	StreamID   string
-	RawText    string
-	WouldFire  bool
-	EvalError  string
+	Seq       uint64
+	StreamID  string
+	RawText   string
+	WouldFire bool
+	EvalError string
 }

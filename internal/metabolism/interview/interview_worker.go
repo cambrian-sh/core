@@ -224,8 +224,12 @@ func (w *InterviewWorker) processAgent(ctx context.Context, agent domain.AgentDe
 	// agent is kernel-invoked directly, so it is VERIFIED BY DEFAULT (no interview).
 	if agent.Trait == domain.TraitTool || agent.Trait == domain.TraitDaemon || domain.IsSystemAgent(agent.ID) {
 		toolEmbedding, embedErr := w.Embedder.Embed(ctx, agent.Description)
-		if embedErr != nil {
-			toolEmbedding = []float32{}
+		if embedErr != nil || len(toolEmbedding) == 0 {
+			// A profile with no interview vector is invisible to the Gatekeeper's Layer-2
+			// semantic gate — the agent can never be routed a task. Do NOT mark it ready:
+			// leave it provisional and fail so the backfill re-interviews it once the
+			// embedder is healthy, rather than persisting a permanently-unroutable agent.
+			return fmt.Errorf("interview_worker: empty embedding for agent %s (embedder down?): %w", agent.ID, embedErr)
 		}
 		profile := domain.AgentProfile{
 			AgentID:                agent.ID,
@@ -371,8 +375,11 @@ func (w *InterviewWorker) processGradedInterview(ctx context.Context, agent doma
 		embedSource = agent.Description
 	}
 	embedding, embErr := w.Embedder.Embed(ctx, embedSource)
-	if embErr != nil {
-		return fmt.Errorf("interview_worker: embed transcript for agent %s: %w", agent.ID, embErr)
+	if embErr != nil || len(embedding) == 0 {
+		// See the tool-path rationale: never persist a ready agent with no interview
+		// vector — it becomes invisible to the Layer-2 semantic gate. Fail so the agent
+		// stays provisional and the backfill re-interviews it when the embedder recovers.
+		return fmt.Errorf("interview_worker: empty transcript embedding for agent %s (embedder down?): %w", agent.ID, embErr)
 	}
 
 	// Cold-start prior = graded performance, blended with prior-version decay when

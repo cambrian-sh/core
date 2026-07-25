@@ -60,7 +60,7 @@ type RetrievalSession struct {
 	FactHits        int            `json:"fact_hits"`
 	RetrievedDocs   []RetrievedDoc `json:"retrieved_docs"`
 	Truncated       bool           `json:"truncated"`
-	PlanID          string         `json:"plan_id,omitempty"`     // linked post-execution
+	PlanID          string         `json:"plan_id,omitempty"`      // linked post-execution
 	PlanOutcome     PlanOutcome    `json:"plan_outcome,omitempty"` // retroactively updated
 	ExplorationSlot bool           `json:"exploration_slot"`
 	Timestamp       time.Time      `json:"timestamp"`

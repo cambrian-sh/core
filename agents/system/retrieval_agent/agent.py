@@ -115,15 +115,20 @@ class RetrievalAgent(CognitiveAgent):
         token + remaining deadline (so a slow model can't leak a thread past
         the Go step deadline)."""
         token = str(getattr(task, "session_token_id", "") or "")
-        timeout_ms = int(getattr(task, "deadline_remaining_ms", 0) or 0)
-
+        # Pass NO client-side gRPC deadline (timeout_ms=0 ⇒ None), matching react.py's
+        # deliberate choice for an agent's own LLM call. The former code used
+        # task.deadline_remaining_ms as the timeout, but the SDK computes that from
+        # context.time_remaining(); with no inbound deadline that returns ~infinity and
+        # int(remaining*1000) overflows to a nonsense value (observed 9.2e21), which the gRPC
+        # client turns into an INSTANT DEADLINE_EXCEEDED — the exact failure that killed every
+        # decompose. The kernel's provider timeout + the session-token TTL still bound the call.
         def _llm(prompt: str) -> str:
             return self.substrate.generate(
                 session_token_id=token,
                 prompt=prompt,
                 max_tokens=max_tokens,
                 temperature=_TEMPERATURE,
-                timeout_ms=timeout_ms,
+                timeout_ms=0,
             )
 
         return _llm

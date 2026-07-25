@@ -14,8 +14,8 @@ type AgentProfile struct {
 	TrustScore                 float64 `json:"trust_score,omitempty"`
 	NetworkLatencyMedianMs     int     `json:"network_latency_median_ms,omitempty"`
 	ComputationLatencyMedianMs int     `json:"computation_latency_median_ms,omitempty"`
-	ContextGrowthBytesMedian   int      `json:"context_growth_bytes_median,omitempty"`
-	Provisional                bool     `json:"provisional,omitempty"`
+	ContextGrowthBytesMedian   int     `json:"context_growth_bytes_median,omitempty"`
+	Provisional                bool    `json:"provisional,omitempty"`
 	// RecentVerifierIDs holds the last VerifierRecencyWindow verifier agent IDs
 	// that verified this agent's outputs. Used by VerifierPool.Select to enforce
 	// verifier diversity (D4).

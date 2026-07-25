@@ -71,7 +71,7 @@ func TestRosterLatch_SeedFromManifests(t *testing.T) {
 		manifests: map[string]*domain.AgentManifest{
 			"code_generator_agent": {Capabilities: []string{"code_search", "file_read"}},
 			"toolsonly_agent":      {Tools: []string{"fs_read"}}, // falls back to tools
-			"bare_agent":           {},                            // no caps/tools ⇒ skipped
+			"bare_agent":           {},                           // no caps/tools ⇒ skipped
 		},
 	}
 	latch.Seed(context.Background(), src)
@@ -88,7 +88,7 @@ func TestRosterLatch_SeedFromManifests(t *testing.T) {
 
 func TestRosterLatch_ObserveIgnoresNonReady(t *testing.T) {
 	latch := NewRosterLatch(NewSpool(SpoolConfig{}))
-	latch.Observe(domain.ScoutUsefulnessEvent{}) // wrong type — ignored
+	latch.Observe(domain.ScoutUsefulnessEvent{})       // wrong type — ignored
 	latch.Observe(domain.AgentReadyEvent{AgentID: ""}) // empty id — ignored
 	if len(latch.roster) != 0 {
 		t.Errorf("latch cached an invalid event: %v", latch.roster)

@@ -42,7 +42,9 @@ func TestProjection_TerminalRemovesPlan(t *testing.T) {
 }
 
 // fakeSessions is a SessionLister returning canned active/paused sessions.
-type fakeSessions struct{ byStatus map[domain.SessionStatus][]domain.Session }
+type fakeSessions struct {
+	byStatus map[domain.SessionStatus][]domain.Session
+}
 
 func (f fakeSessions) ListSessions(_ context.Context, s domain.SessionStatus) ([]domain.Session, error) {
 	return f.byStatus[s], nil

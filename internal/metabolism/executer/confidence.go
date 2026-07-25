@@ -1,4 +1,4 @@
-﻿package executer
+package executer
 
 // meanConfidence returns the arithmetic mean of values.
 // It returns 0 for an empty slice.

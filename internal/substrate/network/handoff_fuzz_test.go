@@ -3,8 +3,8 @@ package network
 import (
 	"testing"
 
-	"github.com/cambrian-sh/core/domain"
 	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
 	"google.golang.org/protobuf/proto"
 )
 

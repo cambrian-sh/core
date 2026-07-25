@@ -18,5 +18,5 @@ type Artifact struct {
 	// Tags are the artifact's classification tags, validated on write against the
 	// writer's scope + controlled vocabulary and filtered on read by the reader's
 	// effective scope. Includes kernel-stamped provenance. ADR-0034 (D8).
-	Tags            []string          `json:"tags,omitempty"`
+	Tags []string `json:"tags,omitempty"`
 }

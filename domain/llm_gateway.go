@@ -5,17 +5,22 @@ import (
 	"time"
 )
 
-// SessionToken is a per-step credential issued by the Substrate at step dispatch,
-// encoding (planID, stepIndex, allocatedTraitModelID, tokenLimit).
-// The token is opaque to the cognitive agent — it cannot be forged, transferred, or reused.
-// The mutable accounting state lives server-side in SessionState.
-type SessionToken struct {
+// BudgetLease is a per-STEP LLM-budget credential issued by the Substrate at step dispatch,
+// encoding (planID, stepIndex, allocatedTraitModelID, tokenLimit). ADR-0018.
+//
+// Named BudgetLease, not SessionToken (its historical name), because it is neither a
+// conversation Session (ADR-0084) nor a login session — it is a short-lived spend lease on
+// one step's model call. The lease is opaque to the cognitive agent — it cannot be forged,
+// transferred, or reused. The mutable accounting state lives server-side in BudgetLeaseState.
+// (The wire key `_session_token_id` and the proto field `session_token_id` keep their names
+// for contract stability; only the Go domain vocabulary is corrected.)
+type BudgetLease struct {
 	ID string
 }
 
-// SessionState holds the server-side mutable accounting state for a single session token.
-// Keyed by the session token's opaque UUID in a server-side map.
-type SessionState struct {
+// BudgetLeaseState holds the server-side mutable accounting state for a single BudgetLease.
+// Keyed by the lease's opaque UUID in a server-side map.
+type BudgetLeaseState struct {
 	StepAllocation   StepAllocation
 	TokenLimit       int       // maps to Step.MaxEnergy (ADR-0011)
 	ConsumedTokens   int       // running real-time estimate from Pass 1
@@ -45,8 +50,8 @@ type GenerateOptions struct {
 // When the provider omits usage (Ollama streaming), usage fields remain zero
 // and ReconcileTokens falls back to EstimateTokens(fullResponseText).
 type StreamChunk struct {
-	Text                 string
-	IsFinal              bool
+	Text                  string
+	IsFinal               bool
 	UsagePromptTokens     int // non-zero only on final chunk with provider usage
 	UsageCompletionTokens int // non-zero only on final chunk with provider usage
 	UsageTotalTokens      int // non-zero only on final chunk with provider usage

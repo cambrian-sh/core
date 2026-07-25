@@ -133,8 +133,8 @@ func (s *fakeToolStore) Save(_ context.Context, d *Document) error {
 	s.saved[d.ID] = d // upsert by ID
 	return nil
 }
-func (s *fakeToolStore) SaveBatch(context.Context, []*Document) error          { return nil }
-func (s *fakeToolStore) GetByID(context.Context, string) (*Document, error)    { return nil, nil }
+func (s *fakeToolStore) SaveBatch(context.Context, []*Document) error           { return nil }
+func (s *fakeToolStore) GetByID(context.Context, string) (*Document, error)     { return nil, nil }
 func (s *fakeToolStore) GetBatch(context.Context, []string) ([]Document, error) { return nil, nil }
 func (s *fakeToolStore) Delete(_ context.Context, id string) error {
 	s.deleted = append(s.deleted, id)
@@ -143,8 +143,8 @@ func (s *fakeToolStore) Delete(_ context.Context, id string) error {
 	}
 	return nil
 }
-func (s *fakeToolStore) DeleteBatch(context.Context, []string) error           { return nil }
-func (s *fakeToolStore) IncrementAccess(context.Context, string) error         { return nil }
+func (s *fakeToolStore) DeleteBatch(context.Context, []string) error   { return nil }
+func (s *fakeToolStore) IncrementAccess(context.Context, string) error { return nil }
 func (s *fakeToolStore) GetStaleMemories(context.Context, int) ([]Document, error) {
 	return nil, nil
 }

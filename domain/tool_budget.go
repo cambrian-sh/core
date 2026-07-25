@@ -123,7 +123,7 @@ func (e *BudgetExhaustedError) Error() string {
 // (e.g. a per-step MaxEnergy account and a per-session account). A reservation
 // must fit in EVERY named account that has a cap set; accounts without a cap are
 // unconstrained (enforcement is opt-in per account). No I/O — the ToolExecutor
-// supplies the caps from MaxEnergy / SessionState and attributes by session token.
+// supplies the caps from MaxEnergy / BudgetLeaseState and attributes by session token.
 type BudgetLedger struct {
 	// DefaultCap, when > 0, is the cap applied to an account auto-created on its
 	// first Reserve — so every managed session is metered with this per-session
