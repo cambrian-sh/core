@@ -1273,35 +1273,29 @@ func (q *QueryService) AnswerSystem(ctx context.Context, query string) (status, 
 		if aerr != nil {
 			return "", "", nil, aerr
 		}
-		// Split the synthetic control result (carrying the answer/status) from the evidence.
-		agAnswer, agStatus, hasControl := "", "", false
+		// Use the agentic loop for multi-hop EVIDENCE gathering + abstention detection, but
+		// NOT for the final answer text: its inner synthesis is the plain (uncited) Synthesize,
+		// so returning it here would give the operator pane an answer with no [n] markers and
+		// thus no clickable highlights. Drop the control result, keep its status only to honour
+		// a genuine abstention, and fall through to ONE cited synthesis over the gathered
+		// evidence so the answer carries [1..N] citations aligned to evidence[n-1] (ADR-0081).
+		agStatus := ""
 		evidence = make([]domain.SearchResult, 0, len(results))
 		for _, r := range results {
 			if r.Document.ID == AgenticControlID {
-				hasControl = true
 				if md := r.Document.Metadata; md != nil {
 					if s, ok := md[AgenticStatusKey].(string); ok {
 						agStatus = s
-					}
-					if t, ok := md[AgenticTextKey].(string); ok {
-						agAnswer = t
 					}
 				}
 				continue
 			}
 			evidence = append(evidence, r)
 		}
-		if hasControl && agAnswer != "" {
-			if agStatus == "" {
-				agStatus = "answer"
-			}
-			return agStatus, agAnswer, evidence, nil
-		}
-		if len(evidence) == 0 {
+		if agStatus == "abstention" || len(evidence) == 0 {
 			return "abstention", "not found in memory", evidence, nil
 		}
-		// Control present but no synthesized text (synth failed / degenerate): fall through
-		// to one cited synthesis over the evidence so the panel still answers.
+		// fall through to cited synthesis over the agentic evidence.
 	} else {
 		evidence, err = q.searchByType(ctx, query, "", "operator:system", domain.DocTypeMnemonicFact, true)
 		if err != nil {
