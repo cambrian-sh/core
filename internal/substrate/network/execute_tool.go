@@ -76,11 +76,18 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 	if s.ToolExecutor == nil {
 		return nil, status.Error(codes.Unimplemented, "tool registry not configured")
 	}
+	// Resolve the caller's TASK SESSION from its lease and thread it into ctx. Tool calls
+	// read content nodes (owner-gated by session) and write artifacts (stamped with a
+	// session), and without this the executor saw no session at all: node reads fell back to
+	// ownerless-only, and artifacts were stamped with the per-step lease instead — so
+	// ListStepArtifacts(sessionID) could never find them.
+	ctx = s.withCallerSession(ctx)
 	resp := s.ToolExecutor.Execute(ctx, domain.ToolCallRequest{
 		AgentID:        agentIDFromMetadata(ctx),
 		ToolName:       req.GetToolName(),
 		ArgsJSON:       []byte(req.GetArgsJson()),
-		SessionTokenID: req.GetSessionTokenId(),
+		// Phase 1: lease_id wins; the deprecated session_token_id is the fallback.
+		SessionTokenID: leaseIDOf(req.GetLeaseId(), req.GetSessionTokenId()),
 		TaskID:         mdValue(ctx, "x-task-id"), // ADR-0049 D3: per-step correlation key
 	})
 	return &pb.ExecuteToolResponse{

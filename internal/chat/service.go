@@ -63,12 +63,19 @@ type TurnService struct {
 	store        domain.ConversationStore
 	pool         Dispatcher
 	acquireToken TokenAcquirer
+	// leases binds the turn's conversation onto its BudgetLease so that work the turn
+	// delegates to the planner can be attributed back to the conversation server-side
+	// (ADR-0084 D2). Optional; without it a delegated run simply carries no conversation.
+	leases domain.LeaseResolver
 
 	TurnTimeout  time.Duration
 	HistoryLimit int
 }
 
 // NewTurnService wires the service. store and pool are required.
+// SetLeaseBinder wires the lease registry so each turn's lease carries its conversation.
+func (s *TurnService) SetLeaseBinder(r domain.LeaseResolver) { s.leases = r }
+
 func NewTurnService(store domain.ConversationStore, pool Dispatcher, acquire TokenAcquirer) *TurnService {
 	return &TurnService{
 		store:        store,
@@ -143,6 +150,15 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (domain.Message
 		if tok, release, terr := s.acquireToken(turnCtx, tokenLimit, ttl); terr == nil && tok != "" {
 			sessionToken = tok
 			defer release()
+			// Stamp the conversation and the ordering turn onto the lease. If the worker
+			// delegates to the planner, Execute resolves this lease and links the session
+			// it opens back to this exchange — without the agent naming it.
+			if s.leases != nil {
+				s.leases.BindLease(domain.LeaseID(tok), domain.LeaseBinding{
+					ConversationID:  conv.ID,
+					OriginMessageID: userMsg.ID,
+				})
+			}
 		}
 	}
 

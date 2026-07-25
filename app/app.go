@@ -42,10 +42,8 @@ import (
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 	session "github.com/cambrian-sh/core/internal/substrate/session"
-	subsynaptic "github.com/cambrian-sh/core/internal/substrate/synaptic"
 	"github.com/cambrian-sh/core/internal/supervision/circadian"
 	"github.com/cambrian-sh/core/internal/supervision/gatekeeper"
-	supsynaptic "github.com/cambrian-sh/core/internal/supervision/synaptic"
 	supwatcher "github.com/cambrian-sh/core/internal/supervision/watcher"
 	"github.com/cambrian-sh/core/internal/telemetry"
 	tooldiscovery "github.com/cambrian-sh/core/internal/tool/discovery"
@@ -131,8 +129,6 @@ type Kernel struct {
 
 	// ADR-0012: Synaptic Bridge components.
 	SessionMgr      *session.SessionManager
-	EventLogger     *subsynaptic.EventLogger
-	SynapticWatcher *supsynaptic.SynapticWatcher
 	CircadianRhythm *circadian.CircadianRhythm
 	ArtifactVault   *vault.ArtifactVault
 	EventBus        *domain.InMemoryEventBus
@@ -200,14 +196,8 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 	if k.MCPConnector != nil {
 		k.MCPConnector.Close() // ADR-0043: close live MCP sessions
 	}
-	if k.SynapticWatcher != nil {
-		k.SynapticWatcher.Stop()
-	}
 	if k.CircadianRhythm != nil {
 		k.CircadianRhythm.Stop()
-	}
-	if k.EventLogger != nil {
-		_ = k.EventLogger.Close()
 	}
 	if k.ArtifactVault != nil {
 		_ = k.ArtifactVault.Close()
@@ -544,7 +534,24 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	)
 
 	// 5. SessionManager — episodic memory lifecycle (ADR-0012)
-	sessionMgr := session.New(reg)
+	//
+	// Phase 4: sessions, runs and checkpoints live in Postgres. bbolt had no indexes, no
+	// foreign keys and no retention, so the operator plane full-scanned a bucket that only
+	// ever grew — every Execute minted a session and nothing ever reclaimed one. Postgres is
+	// already a hard boot dependency (the pgvector adapter above is fatal on failure), so
+	// this adds no new operational requirement.
+	//
+	// The bbolt implementation stays as the other adapter behind the same ports: it is what
+	// the store-level tests run against, and what a future embedded build would use.
+	var sessionRepo session.SessionRepository = reg
+	pgSessions, sessErr := postgres.NewPgSessionStore(ctx, vec.Pool())
+	if sessErr != nil {
+		slog.Warn("Phase 4: Postgres session store unavailable; falling back to bbolt "+
+			"(no retention, no indexed queries)", "err", sessErr)
+	} else {
+		sessionRepo = pgSessions
+	}
+	sessionMgr := session.New(sessionRepo)
 
 	// ADR-0034 Phase 2: caller_scope re-derivation. Gated with Phase-1 scoping above —
 	// when scope enforcement is off (OSS default) the session/caller scope is not wired,
@@ -639,11 +646,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			"top_k", cfg.Execution.RerankerTopK, "w_bge", cfg.Execution.RerankerWeight)
 	}
 
-	// 6. EventLogger — unified event stream for session narrative
-	eventLogger := subsynaptic.New(reg)
 
-	// 7. SynapticWatcher — background observer ingesting high-priority events to LTM
-	synapticWatcher := supsynaptic.New(reg, mem.Agent)
 
 	// Experiential memory removed: the EpisodicExtractor + MemoryLifecycleManager
 	// (ADR-0029/0030 episodic-narrative consolidation) are no longer wired. Session
@@ -696,6 +699,20 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	llmGateway.SetDefaultModelID("llm:" + cfg.LLMProvider.Default)
 	circadianRhythm.SessionEvictor = llmGateway
 	circadianRhythm.SessionSweepInterval = time.Duration(cfg.Execution.SessionTokenSweepIntervalSeconds) * time.Second
+	// Phase 2: the ACTIVE→DORMANT driver. Distinct from the token sweep above — that one
+	// evicts expired per-step BudgetLeases (ADR-0018), this one ages out idle task
+	// SESSIONS. Conflating the two is how the lifecycle ended up with no driver at all.
+	circadianRhythm.SessionIdleTimeout = time.Duration(cfg.Execution.SessionIdleTimeoutMinutes) * time.Minute
+	circadianRhythm.SessionIdleSweepInterval = time.Duration(cfg.Execution.SessionIdleSweepIntervalSeconds) * time.Second
+	circadianRhythm.IdleSweeper = sessionMgr
+	// Phase 4: retention closes the lifecycle. Only wired with the Postgres store — the
+	// cascade that makes reclaiming a session reclaim its runs and checkpoints is a
+	// property of the schema, not something to reimplement as three bbolt sweeps.
+	if pgSessions != nil {
+		circadianRhythm.RetentionPurger = pgSessions
+		circadianRhythm.SessionRetention = time.Duration(cfg.Execution.SessionRetentionDays) * 24 * time.Hour
+		circadianRhythm.RetentionSweepInterval = time.Duration(cfg.Execution.SessionRetentionSweepIntervalSeconds) * time.Second
+	}
 
 	// ADR-0039: sandboxed-evaluation session set. The interview runner Marks each
 	// minted scenario session here; the ToolExecutor consults it to auto-approve
@@ -816,7 +833,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			if err != nil {
 				return "", func() {}, err
 			}
-			return tok, func() { _, _ = llmGateway.Complete(context.Background(), tok) }, nil
+			// chat.TokenAcquirer speaks the wire type; the lease is cast at this seam.
+			return string(tok), func() { _, _ = llmGateway.Complete(context.Background(), tok) }, nil
 		},
 	}
 
@@ -847,6 +865,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			StreamPrefix:   "chat",
 		})
 		chatTurns = corechat.NewTurnService(conversations, pool, kernelSvc.AcquireLLMToken)
+		// ADR-0084 D2: stamp each turn's conversation onto its lease, so work the turn
+		// delegates to the planner opens a session linked back to the exchange that
+		// ordered it — resolved server-side, never named by the agent.
+		chatTurns.SetLeaseBinder(llmGateway)
 		lifecycles = append(lifecycles, Lifecycle{
 			Name: "chat-pool",
 			Start: func(ctx context.Context) {
@@ -875,7 +897,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if bt, ok := signalRcv.(domain.WatchBacktester); ok {
 		watchBacktester = bt
 	}
-	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, providers, llmProvider, sessionMgr, eventLogger, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
+	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, providers, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
+
+	// Phase 4: runs and checkpoints follow sessions into Postgres. ProvideServer wires the
+	// bbolt registry by default; override here when the Postgres store is available so a
+	// run, its plan and its checkpoints all live in one place under one cascade.
+	if pgSessions != nil {
+		cambrianServer.Runs = pgSessions
+		cambrianServer.Checkpoints = pgSessions
+	}
 
 	// ADR-0037: honor the resource_selector flag. Until now the Central-Executive
 	// EFE arm was implemented + unit-tested but never composed, so useEFE() was
@@ -1387,8 +1417,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Server:             cambrianServer,
 		Listener:           lis,
 		SessionMgr:         sessionMgr,
-		EventLogger:        eventLogger,
-		SynapticWatcher:    synapticWatcher,
 		CircadianRhythm:    circadianRhythm,
 		ArtifactVault:      artifactVault,
 		EventBus:           eventBus,
@@ -1443,7 +1471,6 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 
 	// B. Synaptic Bridge background workers (ADR-0012)
 	g.Go(func() error {
-		k.SynapticWatcher.Start(ctx)
 		return nil
 	})
 	g.Go(func() error {
@@ -1655,22 +1682,31 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.ChatTurns != nil && k.Conversations != nil {
 			operatorCaps = append(operatorCaps, "chat")
 		}
+		operatorCaps = append(operatorCaps, "session-lifecycle")
 		operatorCaps = append(operatorCaps, k.PluginCapabilities...)
-		operatorSvc.SetHandshake("0.6.9-alpha", "0063", operatorCaps)
+		// Contract 0064 (Phase 2): adds SessionStateOp to the feed and the CloseSession
+		// RPC. The "session-lifecycle" capability lets a console detect whether the kernel
+		// can actually report pause/created transitions before it renders controls for them.
+		operatorSvc.SetHandshake("0.6.9-alpha", "0065", operatorCaps)
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).
 		operatorSvc.SetSessionOps(operator.SessionOpsFuncs{
 			CreateFn: func(ctx context.Context, goal, parentID string) (string, error) {
-				ses, err := k.SessionMgr.CreateSession(ctx, goal, parentID)
+				ses, err := k.SessionMgr.CreateSession(ctx, goal, domain.SessionID(parentID))
 				if err != nil {
 					return "", err
 				}
-				return ses.ID, nil
+				return string(ses.ID), nil
 			},
 			// ADR-0047 0047-21: dispatch the message through the kernel Execute path
 			// (session threaded via x-session-id, the loadOrCreateSession key) and
 			// return immediately — the operator watches progress on the feed.
+			// Phase 2: the steering commands persist the lifecycle status through here,
+			// so a paused session actually reads as paused and can be resumed.
+			SetStatusFn: func(ctx context.Context, sessionID string, st domain.SessionStatus, reason string) error {
+				return k.SessionMgr.TransitionStatusReason(ctx, domain.SessionID(sessionID), st, reason)
+			},
 			SendFn: func(_ context.Context, sessionID, text string) error {
 				go func() {
 					mdCtx := metadata.NewIncomingContext(

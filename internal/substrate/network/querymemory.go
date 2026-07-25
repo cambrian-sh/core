@@ -18,18 +18,20 @@ import (
 // owns embedding, ACL filtering, and vector search) and translates results to proto.
 func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.MemoryResponse, error) {
 	callerID := ""
-	sessionID := ""
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		if vals := md.Get("x-agent-id"); len(vals) > 0 {
 			callerID = vals[0]
 		}
-		// ADR-0034 (D13): the session ID lets the MemorySearcher look up the
-		// non-forgeable caller_scope from the session record server-side. It is
-		// taken from authenticated gRPC metadata, never from request payload.
-		if vals := md.Get("x-session-id"); len(vals) > 0 {
-			sessionID = vals[0]
-		}
 	}
+	// ADR-0034 (D13): the session ID lets the MemorySearcher look up the
+	// non-forgeable caller_scope from the session record server-side.
+	//
+	// Phase 0: it is RESOLVED from the caller's opaque BudgetLease rather than read
+	// straight off the header. The header used to carry the lease (agents) or a session
+	// ID (operator) interchangeably, so this lookup was handed a lease, missed, and fell
+	// through to agent-only scope — Phase-2 caller-scope enforcement never engaged. See
+	// resolveCallerSession.
+	sessionID := s.resolveCallerSession(ctx)
 	if sessionID != "" {
 		ctx = domain.WithSessionID(ctx, sessionID)
 	}
@@ -80,12 +82,12 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 			if r.Document.Metadata["source_agent"] == callerID {
 				self++
 			}
-			if sid := r.Document.Metadata["session_id"]; sid != "" && sid != sessionID {
+			if sid := domain.DocSessionID(r.Document.Metadata); sid != "" && domain.SessionID(sid) != sessionID {
 				cross++
 			}
 		}
 		_ = s.EventBus.Publish(domain.AgentStepEvent{
-			SessionID:        sessionID,
+			SessionID:        string(sessionID),
 			AgentID:          callerID,
 			Action:           "memory_query",
 			Query:            req.GetQuery(),

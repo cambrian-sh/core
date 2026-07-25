@@ -190,7 +190,7 @@ type pendingItem struct {
 	Embedding []float32
 	Doc       *domain.Document
 	SceneID   string // ADR-0025: scene doc ID for this step; drives discussed_in edge
-	SessionID string // ADR-0029: session scope; written to Doc.Metadata["session_id"] at commit time
+	SessionID domain.SessionID // ADR-0029: session scope; written to Doc.Metadata["session_id"] at commit time
 }
 
 // NewAgent creates a memory Agent.
@@ -491,7 +491,9 @@ func (a *Agent) recordActionRecord(ctx context.Context, rec domain.ToolOutputRec
 		},
 	}
 	if sid != "" {
-		doc.Metadata["session_id"] = sid
+		// Metadata is an untyped, JSON-serialized edge: store the plain string, or
+		// every reader's .(string) assertion silently misses.
+		doc.Metadata[domain.MetaSessionID] = string(sid)
 	}
 	if rec.TaskID != "" {
 		doc.Metadata["task_id"] = rec.TaskID
@@ -568,7 +570,7 @@ func (a *Agent) upsertEntity(ctx context.Context, ent canonicalEntity, obs entit
 	// can tell "we engaged this entity THIS session" (trusted for controlled kinds) from a
 	// stale prior-session observation.
 	if sid, ok := domain.SessionIDFromContext(ctx); ok && sid != "" {
-		meta["session_id"] = sid
+		meta[domain.MetaSessionID] = string(sid)
 	}
 	if planID := planIDFromTaskID(taskID); planID != "" {
 		meta["last_scene"] = "scene-" + planID // most-recent engaging scene (Issue 012 access path)
@@ -1407,7 +1409,7 @@ func (a *Agent) commitBatch(ctx context.Context, scored []scoredItem, channelDep
 
 func (a *Agent) commitItem(ctx context.Context, s scoredItem) {
 	if s.Item.SessionID != "" && s.Item.Doc.Metadata != nil {
-		s.Item.Doc.Metadata["session_id"] = s.Item.SessionID
+		s.Item.Doc.Metadata[domain.MetaSessionID] = string(s.Item.SessionID)
 	}
 	// ADR-0048 #1: EVERY promoted memory carries a one-line Summary. The Tier-2 judge
 	// emits a descriptor for each item, so a step record, an external chunk, and a
@@ -1525,7 +1527,7 @@ func (a *Agent) createSceneDoc(ctx context.Context, s scoredItem) error {
 		"timestamp":     time.Now().Format(time.RFC3339),
 	}
 	if s.Item.SessionID != "" {
-		sceneMeta["session_id"] = s.Item.SessionID
+		sceneMeta[domain.MetaSessionID] = string(s.Item.SessionID)
 	}
 	sceneDoc := &domain.Document{
 		ID:                   s.Item.Doc.ID + "-scene",

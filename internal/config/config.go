@@ -179,6 +179,38 @@ type ExecutionConfig struct {
 	SessionTTLDays  int     `json:"session_ttl_days"`
 	PlanDriftDays   int     `json:"plan_drift_days"`
 
+	// SessionIdleTimeoutMinutes is how long an ACTIVE session may sit untouched before
+	// the kernel transitions it to DORMANT (Phase 2). It is the driver the lifecycle
+	// never had: without it every session ever created stayed "active" forever, so the
+	// dormant→completed half of ADR-0012/0030 was unreachable and the session store grew
+	// without bound.
+	//
+	// Dormancy is non-destructive and reversible — a dormant session is still resumed by
+	// a later Execute — which is why this defaults ON. 0 disables the sweep.
+	SessionIdleTimeoutMinutes int `json:"session_idle_timeout_minutes"`
+	// SessionIdleSweepIntervalSeconds is how often the idle sweep runs. 0 ⇒ 300s.
+	SessionIdleSweepIntervalSeconds int `json:"session_idle_sweep_interval_seconds"`
+
+	// SessionRetentionDays is how long a COMPLETED session is kept before it (and its runs
+	// and checkpoints, by cascade) is reclaimed. This is what actually bounds growth: a
+	// session store with a lifecycle but no retention still only ever grows. 0 disables it.
+	SessionRetentionDays int `json:"session_retention_days"`
+	// SessionRetentionSweepIntervalSeconds is how often retention runs. 0 ⇒ disabled.
+	SessionRetentionSweepIntervalSeconds int `json:"session_retention_sweep_interval_seconds"`
+
+	// RequireExplicitSession makes Execute REJECT a request that names no known session,
+	// instead of silently opening one (Phase 2).
+	//
+	// Implicit creation cannot distinguish "new work" from "a continuation" from "a
+	// replay", so it is wrong for at least one of them — and it is why every Execute
+	// minted a session that nothing ever closed. Strict mode forces the caller to say
+	// which it means via CreateSession.
+	//
+	// Default OFF: turning it on is a breaking change for any client that has never
+	// opened a session (benchmarks, ad-hoc dispatch), so it is an opt-in arm until those
+	// callers are migrated.
+	RequireExplicitSession bool `json:"require_explicit_session"`
+
 	// CapabilityClusterer settings (ADR-0014).
 	// CapabilityClusterThreshold is the minimum cosine similarity for cluster membership.
 	CapabilityClusterThreshold float64 `json:"capability_cluster_threshold"`
@@ -577,11 +609,6 @@ type ExecutionConfig struct {
 	// or unknown. Must be a key in HippocampusPolicies.
 	HippocampusDefaultPolicy string `json:"hippocampus_default_policy,omitempty"`
 
-	// EpisodicConsolidationDelayMs is the wait (ms) between SessionCompletedEvent and
-	// ConsolidatorAgent episodic extraction. Gives Tier-2 async commits time to drain
-	// before KeyFacts is populated. Default: 300_000 (5 minutes). ADR-0029.
-	EpisodicConsolidationDelayMs int `json:"episodic_consolidation_delay_ms,omitempty"`
-
 	// ADR-0030: Lazy consolidation thresholds.
 	// ConsolidationThresholdDocCount triggers global consolidation when the document
 	// store exceeds this count. 0 disables count-based triggering.
@@ -950,118 +977,124 @@ func (e *ConfigError) Error() string {
 func DefaultConfig() *Config {
 	cfg := &Config{
 		Execution: ExecutionConfig{
-			StepTimeoutMultiplier:               2.0,
-			StepTimeoutBaseBufferMs:             5000,
-			PlanTimeoutMs:                       120000,
-			ContextGrowthK:                      0.001,
-			ProfileAggregatorIntervalSeconds:    300,
-			EWMAAlpha:                           0.5,
-			LatencyWindowSize:                   50,
-			GatekeeperMaxCandidates:             5,
-			CapabilityContract:                  false, // ROUTE-03 arm toggle; OFF = pre-ROUTE-03 behavior
-			RoutingTraceEnabled:                 true,
-			GatekeeperW1:                        0.4,
-			GatekeeperW2:                        0.4,
-			GatekeeperW3:                        0.2,
-			GatekeeperW4:                        0.15,
-			ColdStartPenaltyMultiplier:          0.6,
-			VerifierPoolThreshold:               0.8,
-			TrustBoostThreshold:                 0.4,
-			VerificationQueueCapacity:           256,
-			MinVerifiedEvents:                   3,
-			VerifierRecencyWindow:               3,
-			TrustScoreCalWeight:                 0.6,
-			TrustScoreAbsWeight:                 0.4,
-			VerifierPoolMinSize:                 2,
-			VerifierPoolThresholdStep:           0.05,
-			VerifierPoolThresholdFloor:          0.6,
-			CrossVerifyRate:                     0.05,
-			MinAuctionConfidence:                0.3,
-			MaxRecursionDepth:                   3,
-			FallbackConfidenceThreshold:         0.4,
-			FallbackEnabled:                     true,
-			MaxReplanAttempts:                   2,
-			MaxFanOutWidth:                      64,
-			MaxPartialContextBytes:              51200,
-			SignalNoiseThreshold:                3,
-			SignalNoiseWindowSecs:               10,
-			ExplorationRate:                     0.05,
-			SessionTTLDays:                      7,
-			PlanDriftDays:                       7,
-			AuctionBidTimeoutMs:                 2000,
-			ProposalTimeoutMs:                   2000,
-			MemoryRelevanceThreshold:            0.70,
-			MaxMemoryResults:                    5,
-			MaxNeighborExpansion:                3,
-			MinGCAgeDays:                        30,
-			Tier2MaxIdleSeconds:                 300,
-			Tier2LLMTimeout:                     30,
-			Tier2BatchSize:                      32,
-			Tier1ChannelCapacity:                4096,
-			EdgeExtractionBatchSize:             16,
-			EdgeExtractionMaxIdleMs:             2000,
-			EdgeExtractionQueueSize:             4096,
-			EdgeExtractionLLMTimeoutMs:          300000,
-			CircadianStaleDocWarnThreshold:      50,
-			RetrievalFloor:                      0.2,
-			WorkspaceMinFactCosine:              0.60,
-			WorkspacePlanningSlots:              5,
-			WorkspaceExecutionSlots:             5,
-			WorkspaceDriftThreshold:             0.7,
-			WorkspaceLRUCacheCapacity:           256,
-			UseGlobalWorkspace:                  true,
-			RecallSpreadingEnabled:              true, // ADR-0049 D10: spreading reads the Hebbian co_activated edges
-			RecallSimilarityFloor:               0.25,
-			RememberDefaultActivation:           0.5,
-			HebbianEnabled:                      true,
-			HebbianLearningRate:                 0.05,
-			HebbianMaxWeight:                    0.9,
-			HebbianCoActivationFloor:            0.5,
-			HebbianTopN:                         5,
-			HebbianDecayPerDay:                  0.95,
-			HebbianBaseWeight:                   0.2,
-			KG2RAGEnabled:                       true,  // ADR-0053 D3: KG²RAG one-hop expansion; opt-out via config.json
-			AnchorConstraintEnabled:             true,  // ADR-0053: document-local anchor promotion; opt-out via config.json
-			StructureGraphEnabled:               true,  // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
-			AgenticRetrievalEnabled:             false, // AGENTIC_RETRIEVAL_SPEC: opt-in agentic retrieval loop; A/B via config
-			AgenticMaxHops:                      1,     // Phase 2a: plan once, retrieve once
-			KG2RAGMaxHops:                       1,     // one-hop, KG²RAG paper default
-			KG2RAGMaxExpanded:                   20,    // cap on chunks added by expansion
-			KG2RAGMaxEntities:                   30,    // cap on entities walked per hop
-			KG2RAGPerEntity:                     5,     // cap on chunks pulled per entity
-			ActivationThreshold:                 0.1,
-			MaxContextSlots:                     20,
-			ContextRefSnippetChars:              500,
-			CapabilityClusterThreshold:          0.80,
-			CapabilityClusterEpsilon:            0.02,
-			CapabilityClusterMinAgents:          3,
-			CapabilityClusterIntervalSeconds:    3600,
-			CanonicalVocab:                      false, // ROUTE-04 arm toggle; OFF = declared strings verbatim
-			CalibratedBids:                      false, // ROUTE-05 arm toggle; OFF = raw self-reported confidence
-			BidCalibrationMinSamples:            10,
-			PerCapabilityMerit:                  false, // ROUTE-06 arm toggle; OFF = global merit + unconditional bypass
-			LearnedScorer:                       false, // ROUTE-07 arm toggle; OFF = hand-weighted GatekeeperScore
-			ProvisionalExplorationBudget:        3,
-			ProvisionalExplorationWindowSeconds: 3600,
-			DaemonRestartMaxAttempts:            5, // REACT-04: auto-restart on, crash-loop → quarantine
-			DaemonRestartWindowSeconds:          300,
-			DaemonRestartBaseBackoffMs:          1000,
-			DaemonRestartMaxBackoffMs:           30000,
-			LLMGatewayMaxConcurrency:            20,
-			LLMGatewayRetryBackoffMs:            100,
-			SessionTokenSweepIntervalSeconds:    30,
-			SessionTokenTTLMultiplier:           5.0,
-			BudgetExhaustionAlarmRate:           0.05,
-			MinStepEnergy:                       256,
-			MaxStepEnergy:                       32768,
-			HistogramMinSamples:                 20,
-			HistogramAlpha:                      0.2,
-			IngestionHTTPPort:                   0, // disabled by default; set to e.g. 8080 to enable
-			InboxDir:                            "data/inbox",
-			IngestionQueueSize:                  1000,
-			IngestionBatchSize:                  5,
-			IngestionWorkers:                    5,
-			IngestionBatchWaitMs:                1000,
+			StepTimeoutMultiplier:            2.0,
+			StepTimeoutBaseBufferMs:          5000,
+			PlanTimeoutMs:                    120000,
+			ContextGrowthK:                   0.001,
+			ProfileAggregatorIntervalSeconds: 300,
+			EWMAAlpha:                        0.5,
+			LatencyWindowSize:                50,
+			GatekeeperMaxCandidates:          5,
+			CapabilityContract:               false, // ROUTE-03 arm toggle; OFF = pre-ROUTE-03 behavior
+			RoutingTraceEnabled:              true,
+			GatekeeperW1:                     0.4,
+			GatekeeperW2:                     0.4,
+			GatekeeperW3:                     0.2,
+			GatekeeperW4:                     0.15,
+			ColdStartPenaltyMultiplier:       0.6,
+			VerifierPoolThreshold:            0.8,
+			TrustBoostThreshold:              0.4,
+			VerificationQueueCapacity:        256,
+			MinVerifiedEvents:                3,
+			VerifierRecencyWindow:            3,
+			TrustScoreCalWeight:              0.6,
+			TrustScoreAbsWeight:              0.4,
+			VerifierPoolMinSize:              2,
+			VerifierPoolThresholdStep:        0.05,
+			VerifierPoolThresholdFloor:       0.6,
+			CrossVerifyRate:                  0.05,
+			MinAuctionConfidence:             0.3,
+			MaxRecursionDepth:                3,
+			FallbackConfidenceThreshold:      0.4,
+			FallbackEnabled:                  true,
+			MaxReplanAttempts:                2,
+			MaxFanOutWidth:                   64,
+			MaxPartialContextBytes:           51200,
+			SignalNoiseThreshold:             3,
+			SignalNoiseWindowSecs:            10,
+			ExplorationRate:                  0.05,
+			SessionTTLDays:                   7,
+			PlanDriftDays:                    7,
+			SessionIdleTimeoutMinutes:        1440, // 24h idle ⇒ dormant
+			SessionIdleSweepIntervalSeconds:  300,
+			// 30 days of completed history is generous for debugging and audit while
+			// still bounding the table. Retention only ever touches COMPLETED sessions.
+			SessionRetentionDays:                 30,
+			SessionRetentionSweepIntervalSeconds: 3600,
+			AuctionBidTimeoutMs:                  2000,
+			ProposalTimeoutMs:                    2000,
+			MemoryRelevanceThreshold:             0.70,
+			MaxMemoryResults:                     5,
+			MaxNeighborExpansion:                 3,
+			MinGCAgeDays:                         30,
+			Tier2MaxIdleSeconds:                  300,
+			Tier2LLMTimeout:                      30,
+			Tier2BatchSize:                       32,
+			Tier1ChannelCapacity:                 4096,
+			EdgeExtractionBatchSize:              16,
+			EdgeExtractionMaxIdleMs:              2000,
+			EdgeExtractionQueueSize:              4096,
+			EdgeExtractionLLMTimeoutMs:           300000,
+			CircadianStaleDocWarnThreshold:       50,
+			RetrievalFloor:                       0.2,
+			WorkspaceMinFactCosine:               0.60,
+			WorkspacePlanningSlots:               5,
+			WorkspaceExecutionSlots:              5,
+			WorkspaceDriftThreshold:              0.7,
+			WorkspaceLRUCacheCapacity:            256,
+			UseGlobalWorkspace:                   true,
+			RecallSpreadingEnabled:               true, // ADR-0049 D10: spreading reads the Hebbian co_activated edges
+			RecallSimilarityFloor:                0.25,
+			RememberDefaultActivation:            0.5,
+			HebbianEnabled:                       true,
+			HebbianLearningRate:                  0.05,
+			HebbianMaxWeight:                     0.9,
+			HebbianCoActivationFloor:             0.5,
+			HebbianTopN:                          5,
+			HebbianDecayPerDay:                   0.95,
+			HebbianBaseWeight:                    0.2,
+			KG2RAGEnabled:                        true,  // ADR-0053 D3: KG²RAG one-hop expansion; opt-out via config.json
+			AnchorConstraintEnabled:              true,  // ADR-0053: document-local anchor promotion; opt-out via config.json
+			StructureGraphEnabled:                true,  // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
+			AgenticRetrievalEnabled:              false, // AGENTIC_RETRIEVAL_SPEC: opt-in agentic retrieval loop; A/B via config
+			AgenticMaxHops:                       1,     // Phase 2a: plan once, retrieve once
+			KG2RAGMaxHops:                        1,     // one-hop, KG²RAG paper default
+			KG2RAGMaxExpanded:                    20,    // cap on chunks added by expansion
+			KG2RAGMaxEntities:                    30,    // cap on entities walked per hop
+			KG2RAGPerEntity:                      5,     // cap on chunks pulled per entity
+			ActivationThreshold:                  0.1,
+			MaxContextSlots:                      20,
+			ContextRefSnippetChars:               500,
+			CapabilityClusterThreshold:           0.80,
+			CapabilityClusterEpsilon:             0.02,
+			CapabilityClusterMinAgents:           3,
+			CapabilityClusterIntervalSeconds:     3600,
+			CanonicalVocab:                       false, // ROUTE-04 arm toggle; OFF = declared strings verbatim
+			CalibratedBids:                       false, // ROUTE-05 arm toggle; OFF = raw self-reported confidence
+			BidCalibrationMinSamples:             10,
+			PerCapabilityMerit:                   false, // ROUTE-06 arm toggle; OFF = global merit + unconditional bypass
+			LearnedScorer:                        false, // ROUTE-07 arm toggle; OFF = hand-weighted GatekeeperScore
+			ProvisionalExplorationBudget:         3,
+			ProvisionalExplorationWindowSeconds:  3600,
+			DaemonRestartMaxAttempts:             5, // REACT-04: auto-restart on, crash-loop → quarantine
+			DaemonRestartWindowSeconds:           300,
+			DaemonRestartBaseBackoffMs:           1000,
+			DaemonRestartMaxBackoffMs:            30000,
+			LLMGatewayMaxConcurrency:             20,
+			LLMGatewayRetryBackoffMs:             100,
+			SessionTokenSweepIntervalSeconds:     30,
+			SessionTokenTTLMultiplier:            5.0,
+			BudgetExhaustionAlarmRate:            0.05,
+			MinStepEnergy:                        256,
+			MaxStepEnergy:                        32768,
+			HistogramMinSamples:                  20,
+			HistogramAlpha:                       0.2,
+			IngestionHTTPPort:                    0, // disabled by default; set to e.g. 8080 to enable
+			InboxDir:                             "data/inbox",
+			IngestionQueueSize:                   1000,
+			IngestionBatchSize:                   5,
+			IngestionWorkers:                     5,
+			IngestionBatchWaitMs:                 1000,
 			HippocampusPolicies: map[string]domain.HippocampusPolicy{
 				"codegen":   {SimilarityThreshold: 0.92, ConfidenceFloor: 0.85, MaxAgeHours: 24},
 				"cognitive": {SimilarityThreshold: 0.85, ConfidenceFloor: 0.70, MaxAgeHours: 168},
@@ -1072,7 +1105,6 @@ func DefaultConfig() *Config {
 				"episodic": {SimilarityThreshold: 0.65, ConfidenceFloor: 0.0, MaxAgeHours: 8760},
 			},
 			HippocampusDefaultPolicy:          "default",
-			EpisodicConsolidationDelayMs:      300_000,
 			RouterMinClassificationConfidence: 0.5,
 			RouterClassificationBodyChars:     500,
 			ResourceSelector:                  "auction",

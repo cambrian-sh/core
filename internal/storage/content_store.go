@@ -102,7 +102,7 @@ func (cs *BBoltContentStore) Put(ctx context.Context, data []byte, nodeType stri
 	// session ⇒ empty owner ⇒ readable by anyone; an agent's offload under a managed
 	// session is owned and read-gated.
 	owner, _ := domain.SessionIDFromContext(ctx)
-	rec := nodeRecord{Type: nodeType, Labels: labels, Snippet: snippet, OwnerSession: owner}
+	rec := nodeRecord{Type: nodeType, Labels: labels, Snippet: snippet, OwnerSession: string(owner)}
 
 	if len(data) >= fsSizeThreshold {
 		blobPath := filepath.Join(cs.FsDir, string(cid))
@@ -175,7 +175,7 @@ func (cs *BBoltContentStore) Get(_ context.Context, cid domain.CID) (*domain.Con
 		Data:         data,
 		Labels:       rec.Labels,
 		Snippet:      rec.Snippet,
-		OwnerSession: rec.OwnerSession,
+		OwnerSession: domain.SessionID(rec.OwnerSession),
 	}, nil
 }
 

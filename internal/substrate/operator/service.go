@@ -126,7 +126,7 @@ func (s *Service) Snapshot(ctx context.Context, _ *pb.SnapshotRequest) (*pb.Snap
 			}
 			for _, se := range list {
 				resp.Sessions = append(resp.Sessions, &pb.SessionSummaryOp{
-					Id:     se.ID,
+					Id:     string(se.ID),
 					Goal:   se.Goal,
 					Status: string(se.Status),
 				})
@@ -214,8 +214,10 @@ func SubscribeProjection(bus domain.EventBus, projection *Projection) {
 var feedEventTypes = []string{
 	domain.EventTypeAuctionEvent,
 	domain.EventTypeAgentReady,
+	// Phase 2: the absolute lifecycle state, covering all five transitions. The two
+	// below remain for consumers that predate it.
+	domain.EventTypeSessionState,
 	domain.EventTypeSessionDormant,
-	domain.EventTypeSessionCompleted,
 	domain.EventTypeMemoryPressure,
 	domain.EventTypeDaemonCrashed,
 	domain.EventTypeWatchTriggered,

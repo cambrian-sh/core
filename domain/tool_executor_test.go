@@ -54,7 +54,7 @@ func (f *fakeArgCS) Put(context.Context, []byte, string, []string, string) (CID,
 }
 func (f *fakeArgCS) Get(_ context.Context, cid CID) (*ContextNode, error) {
 	if cid == "cid-1" {
-		return &ContextNode{CID: cid, Data: f.data, OwnerSession: f.owner}, nil
+		return &ContextNode{CID: cid, Data: f.data, OwnerSession: SessionID(f.owner)}, nil
 	}
 	return nil, errors.New("not found")
 }

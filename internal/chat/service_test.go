@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
+	"time"
 )
 
 // memStore is an in-memory domain.ConversationStore with the same Seq/idempotency semantics
@@ -284,5 +285,65 @@ func TestTurn_RejectsEmptyText(t *testing.T) {
 	svc, _, _ := setup(t, domain.ProfileEmployee)
 	if _, err := svc.Turn(context.Background(), TurnRequest{ConversationID: "c1", Text: "  "}); err == nil {
 		t.Fatal("expected an error for empty turn text")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0084 D2 — a turn's conversation travels on its LEASE.
+//
+// Work the turn delegates to the planner must be attributable back to the exchange that
+// ordered it. Putting the conversation on the lease (rather than in agent-supplied metadata)
+// means the kernel resolves it from something it issued, so an agent cannot claim a
+// conversation it was not dispatched under.
+// ---------------------------------------------------------------------------
+
+type recordingBinder struct {
+	bound map[domain.LeaseID]domain.LeaseBinding
+}
+
+func (r *recordingBinder) BindLease(id domain.LeaseID, b domain.LeaseBinding) {
+	if r.bound == nil {
+		r.bound = map[domain.LeaseID]domain.LeaseBinding{}
+	}
+	r.bound[id] = b
+}
+
+func (r *recordingBinder) ResolveLease(id domain.LeaseID) (domain.LeaseBinding, bool) {
+	b, ok := r.bound[id]
+	return b, ok
+}
+
+func TestTurn_BindsConversationOntoTheLease(t *testing.T) {
+	svc, _, _ := setup(t, domain.ProfileOperator)
+	binder := &recordingBinder{}
+	svc.SetLeaseBinder(binder)
+	svc.acquireToken = func(context.Context, int, time.Duration) (string, func(), error) {
+		return "lease-1", func() {}, nil
+	}
+
+	if _, err := svc.Turn(context.Background(), TurnRequest{ConversationID: "c1", Text: "book a flight"}); err != nil {
+		t.Fatalf("turn: %v", err)
+	}
+
+	b, ok := binder.bound["lease-1"]
+	if !ok {
+		t.Fatal("the turn's lease was never bound — delegated work could not be attributed")
+	}
+	if b.ConversationID != "c1" {
+		t.Errorf("ConversationID = %q, want c1", b.ConversationID)
+	}
+	if b.OriginMessageID == "" {
+		t.Error("OriginMessageID must name the ordering turn — that is the causation half")
+	}
+}
+
+// No binder wired ⇒ the turn still works; attribution is optional, not load-bearing.
+func TestTurn_WithoutBinderStillSucceeds(t *testing.T) {
+	svc, _, _ := setup(t, domain.ProfileOperator)
+	svc.acquireToken = func(context.Context, int, time.Duration) (string, func(), error) {
+		return "lease-1", func() {}, nil
+	}
+	if _, err := svc.Turn(context.Background(), TurnRequest{ConversationID: "c1", Text: "hi"}); err != nil {
+		t.Fatalf("turn without binder: %v", err)
 	}
 }

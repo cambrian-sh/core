@@ -18,14 +18,20 @@ import (
 type SessionOps interface {
 	Create(ctx context.Context, goal, parentID string) (sessionID string, err error)
 	SendMessage(ctx context.Context, sessionID, text string) error
+	// SetStatus persists a session lifecycle transition (Phase 2). The steering commands
+	// call it so the durable status matches the command the operator issued — previously
+	// they only nudged an in-memory executor, leaving the persisted status permanently
+	// "active" and the console's Resume button permanently unreachable.
+	SetStatus(ctx context.Context, sessionID string, status domain.SessionStatus, reason string) error
 }
 
 // SessionOpsFuncs adapts plain functions to SessionOps so the composition root
 // can bind kernel handles without the operator package importing them. A nil
 // function yields Unimplemented.
 type SessionOpsFuncs struct {
-	CreateFn func(ctx context.Context, goal, parentID string) (string, error)
-	SendFn   func(ctx context.Context, sessionID, text string) error
+	CreateFn    func(ctx context.Context, goal, parentID string) (string, error)
+	SendFn      func(ctx context.Context, sessionID, text string) error
+	SetStatusFn func(ctx context.Context, sessionID string, status domain.SessionStatus, reason string) error
 }
 
 func (f SessionOpsFuncs) Create(ctx context.Context, goal, parentID string) (string, error) {
@@ -40,6 +46,13 @@ func (f SessionOpsFuncs) SendMessage(ctx context.Context, sessionID, text string
 		return status.Error(codes.Unimplemented, "send message not wired")
 	}
 	return f.SendFn(ctx, sessionID, text)
+}
+
+func (f SessionOpsFuncs) SetStatus(ctx context.Context, sessionID string, st domain.SessionStatus, reason string) error {
+	if f.SetStatusFn == nil {
+		return status.Error(codes.Unimplemented, "session status transitions not wired")
+	}
+	return f.SetStatusFn(ctx, sessionID, st, reason)
 }
 
 // SetSessionOps wires the chat-and-steer adapter.

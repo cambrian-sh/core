@@ -113,14 +113,6 @@ func TestDefaultConfig_EpisodicPolicy_Present(t *testing.T) {
 	}
 }
 
-// Cycle 4c — DefaultConfig.EpisodicConsolidationDelayMs defaults to 300_000 (5 min).
-func TestDefaultConfig_EpisodicConsolidationDelayMs_Default(t *testing.T) {
-	cfg := config.DefaultConfig()
-	if cfg.Execution.EpisodicConsolidationDelayMs != 300_000 {
-		t.Errorf("EpisodicConsolidationDelayMs: want 300000 got %d", cfg.Execution.EpisodicConsolidationDelayMs)
-	}
-}
-
 // Cycle 5 — Validate rejects a config where HippocampusDefaultPolicy is not in the map.
 func TestExecutionConfig_Validate_RejectsMissingDefaultPolicy(t *testing.T) {
 	cfg := config.DefaultConfig()

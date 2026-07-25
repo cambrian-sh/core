@@ -27,6 +27,7 @@ const (
 	OperatorConsole_ResolveHITL_FullMethodName              = "/cambrian.OperatorConsole/ResolveHITL"
 	OperatorConsole_PauseSession_FullMethodName             = "/cambrian.OperatorConsole/PauseSession"
 	OperatorConsole_ResumeSession_FullMethodName            = "/cambrian.OperatorConsole/ResumeSession"
+	OperatorConsole_CloseSession_FullMethodName             = "/cambrian.OperatorConsole/CloseSession"
 	OperatorConsole_TagMemory_FullMethodName                = "/cambrian.OperatorConsole/TagMemory"
 	OperatorConsole_SetScope_FullMethodName                 = "/cambrian.OperatorConsole/SetScope"
 	OperatorConsole_RegisterSkill_FullMethodName            = "/cambrian.OperatorConsole/RegisterSkill"
@@ -89,9 +90,16 @@ type OperatorConsoleClient interface {
 	// ResolveHITL approves/rejects a raised HITL intervention (Operator-only).
 	// Idempotent on the intervention id via command_id. ADR-0047 D11/0047-09.
 	ResolveHITL(ctx context.Context, in *ResolveHITLRequest, opts ...grpc.CallOption) (*CommandAck, error)
-	// PauseSession / ResumeSession steer a live execution via the control hub.
+	// PauseSession / ResumeSession steer a live execution via the control hub AND persist
+	// the session's lifecycle status, so the operator console's state reflects the command
+	// (Phase 2). Before this they only signalled an in-memory executor, so a paused session
+	// still reported "active" and could never be resumed from the console.
 	PauseSession(ctx context.Context, in *SessionCommandRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	ResumeSession(ctx context.Context, in *SessionCommandRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// CloseSession seals a session (→ completed). It is the terminator the lifecycle never
+	// had: without it nothing ever left "active", so episodic consolidation (ADR-0012/0030)
+	// was gated on a state no code could reach. Idempotent via command_id; audited.
+	CloseSession(ctx context.Context, in *SessionCommandRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	// Remaining mutations (Operator-only, idempotent, audited). ADR-0047 0047-07.
 	TagMemory(ctx context.Context, in *TagMemoryRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	SetScope(ctx context.Context, in *SetScopeRequest, opts ...grpc.CallOption) (*CommandAck, error)
@@ -264,6 +272,16 @@ func (c *operatorConsoleClient) ResumeSession(ctx context.Context, in *SessionCo
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CommandAck)
 	err := c.cc.Invoke(ctx, OperatorConsole_ResumeSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) CloseSession(ctx context.Context, in *SessionCommandRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_CloseSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -609,9 +627,16 @@ type OperatorConsoleServer interface {
 	// ResolveHITL approves/rejects a raised HITL intervention (Operator-only).
 	// Idempotent on the intervention id via command_id. ADR-0047 D11/0047-09.
 	ResolveHITL(context.Context, *ResolveHITLRequest) (*CommandAck, error)
-	// PauseSession / ResumeSession steer a live execution via the control hub.
+	// PauseSession / ResumeSession steer a live execution via the control hub AND persist
+	// the session's lifecycle status, so the operator console's state reflects the command
+	// (Phase 2). Before this they only signalled an in-memory executor, so a paused session
+	// still reported "active" and could never be resumed from the console.
 	PauseSession(context.Context, *SessionCommandRequest) (*CommandAck, error)
 	ResumeSession(context.Context, *SessionCommandRequest) (*CommandAck, error)
+	// CloseSession seals a session (→ completed). It is the terminator the lifecycle never
+	// had: without it nothing ever left "active", so episodic consolidation (ADR-0012/0030)
+	// was gated on a state no code could reach. Idempotent via command_id; audited.
+	CloseSession(context.Context, *SessionCommandRequest) (*CommandAck, error)
 	// Remaining mutations (Operator-only, idempotent, audited). ADR-0047 0047-07.
 	TagMemory(context.Context, *TagMemoryRequest) (*CommandAck, error)
 	SetScope(context.Context, *SetScopeRequest) (*CommandAck, error)
@@ -724,6 +749,9 @@ func (UnimplementedOperatorConsoleServer) PauseSession(context.Context, *Session
 }
 func (UnimplementedOperatorConsoleServer) ResumeSession(context.Context, *SessionCommandRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResumeSession not implemented")
+}
+func (UnimplementedOperatorConsoleServer) CloseSession(context.Context, *SessionCommandRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method CloseSession not implemented")
 }
 func (UnimplementedOperatorConsoleServer) TagMemory(context.Context, *TagMemoryRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method TagMemory not implemented")
@@ -969,6 +997,24 @@ func _OperatorConsole_ResumeSession_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OperatorConsoleServer).ResumeSession(ctx, req.(*SessionCommandRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_CloseSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SessionCommandRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).CloseSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_CloseSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).CloseSession(ctx, req.(*SessionCommandRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1540,6 +1586,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResumeSession",
 			Handler:    _OperatorConsole_ResumeSession_Handler,
+		},
+		{
+			MethodName: "CloseSession",
+			Handler:    _OperatorConsole_CloseSession_Handler,
 		},
 		{
 			MethodName: "TagMemory",

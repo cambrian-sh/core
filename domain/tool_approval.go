@@ -48,14 +48,15 @@ func (AlwaysApproveController) Request(_ context.Context, _ ApprovalRequest) (Ap
 	return ApprovalDecision{Approved: true, ApproverID: "auto-approve"}, nil
 }
 
-// EvaluationSessionSet reports whether a session token belongs to a sandboxed
-// evaluation (the graded interview, ADR-0037). Dangerous-tool calls made under
+// EvaluationSessionSet reports whether a per-step BudgetLease belongs to a sandboxed
+// evaluation (the graded interview, ADR-0037). Despite the name it has never held task
+// sessions — its members are leases, which is now enforced by the type. Dangerous-tool calls made under
 // such a session auto-approve regardless of the global approval policy: an
 // unattended interview has no operator, and the process sandbox — not a human —
 // is the containment boundary for a synthetic evaluation. An empty token or a
 // nil set is never an evaluation (fail-closed to operator approval).
 type EvaluationSessionSet interface {
-	IsEvaluation(sessionTokenID string) bool
+	IsEvaluation(leaseID LeaseID) bool
 }
 
 // EvaluationSessionMarker is the write side of the evaluation-session set, used
@@ -64,8 +65,8 @@ type EvaluationSessionSet interface {
 // ToolExecutor depends only on the read side. InMemoryEvaluationSessions
 // satisfies both.
 type EvaluationSessionMarker interface {
-	Mark(sessionTokenID string)
-	Unmark(sessionTokenID string)
+	Mark(leaseID LeaseID)
+	Unmark(leaseID LeaseID)
 }
 
 // EgressAuditor records that data left the trust boundary via a remote tool call

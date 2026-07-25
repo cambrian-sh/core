@@ -49,18 +49,23 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			InterviewMs:  e.InterviewMs,
 		}}
 
-	case domain.SessionDormantEvent:
-		out.SessionId = e.SessionID
-		out.Payload = &pb.OperatorEvent_SessionDormant{SessionDormant: &pb.SessionDormantOp{
-			SessionId:  e.SessionID,
-			TtlSeconds: int64(e.TTLDuration.Seconds()),
+	case domain.SessionStateEvent:
+		out.SessionId = string(e.SessionID)
+		out.Payload = &pb.OperatorEvent_SessionState{SessionState: &pb.SessionStateOp{
+			SessionId: string(e.SessionID),
+			Status:    string(e.Status),
+			Goal:      e.Goal,
+			ParentId:  string(e.ParentID),
+			CreatedAt: timestamppb.New(e.CreatedAt),
+			UpdatedAt: timestamppb.New(e.UpdatedAt),
+			Reason:    e.Reason,
 		}}
 
-	case domain.SessionCompletedEvent:
-		out.SessionId = e.SessionID
-		out.Payload = &pb.OperatorEvent_SessionCompleted{SessionCompleted: &pb.SessionCompletedOp{
-			SessionId:       e.SessionID,
-			DocumentsMerged: int32(e.DocumentsMerged),
+	case domain.SessionDormantEvent:
+		out.SessionId = string(e.SessionID)
+		out.Payload = &pb.OperatorEvent_SessionDormant{SessionDormant: &pb.SessionDormantOp{
+			SessionId:  string(e.SessionID),
+			TtlSeconds: int64(e.TTLDuration.Seconds()),
 		}}
 
 	case domain.MemoryPressureEvent:

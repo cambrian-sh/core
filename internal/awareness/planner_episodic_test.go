@@ -35,11 +35,11 @@ func episodicSearchResult(sessionID, goal string, decisions []string) domain.Sea
 		decisionObjs[i] = domain.Decision{
 			Text:            d,
 			MadeAt:          now,
-			SourceEventType: domain.EventUserMessage,
+			SourceEventType: "user_message",
 		}
 	}
 	em := domain.EpisodicMemory{
-		SessionID:   sessionID,
+		SessionID:   domain.SessionID(sessionID),
 		Goal:        goal,
 		StartedAt:   now.Add(-time.Hour),
 		CompletedAt: now,
@@ -196,7 +196,7 @@ func TestBuildLTMBlock_EpisodicMemory_RendersCorrectXML(t *testing.T) {
 		Goal:        "xml test",
 		CompletedAt: now,
 		Decisions: []domain.Decision{
-			{Text: "use XML", SourceEventType: domain.EventUserMessage},
+			{Text: "use XML", SourceEventType: "user_message"},
 		},
 	}
 	result := episodicSearchResult("sess-xml", "xml test", []string{"use XML"})

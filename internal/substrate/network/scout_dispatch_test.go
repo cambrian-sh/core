@@ -30,20 +30,20 @@ func (f *fakeScoutAuctioneer) CallAgent(_ context.Context, agentID string, h *do
 // fakeScoutGateway captures the StepAllocation it was asked to acquire.
 type fakeScoutGateway struct {
 	acquiredSA domain.StepAllocation
-	tokenID    string
-	completed  string
+	tokenID    domain.LeaseID
+	completed  domain.LeaseID
 }
 
-func (g *fakeScoutGateway) Acquire(_ context.Context, sa domain.StepAllocation, _ int, _ time.Duration) (string, error) {
+func (g *fakeScoutGateway) Acquire(_ context.Context, sa domain.StepAllocation, _ int, _ time.Duration) (domain.LeaseID, error) {
 	g.acquiredSA = sa
 	return g.tokenID, nil
 }
-func (g *fakeScoutGateway) Complete(_ context.Context, id string) (llm.TokenUsage, error) {
+func (g *fakeScoutGateway) Complete(_ context.Context, id domain.LeaseID) (llm.TokenUsage, error) {
 	g.completed = id
 	return llm.TokenUsage{}, nil
 }
 func (g *fakeScoutGateway) EvictExpired() {}
-func (g *fakeScoutGateway) StreamChunks(_ context.Context, _, _ string, _ domain.GenerateOptions, _ chan<- domain.StreamChunk) error {
+func (g *fakeScoutGateway) StreamChunks(_ context.Context, _ domain.LeaseID, _ string, _ domain.GenerateOptions, _ chan<- domain.StreamChunk) error {
 	return nil
 }
 

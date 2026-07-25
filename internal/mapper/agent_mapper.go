@@ -156,8 +156,8 @@ func toDomainRuntime(r string) domain.AgentRuntime {
 // SessionToRecord converts a domain Session to a storage SessionRecord.
 func (m *AgentMapper) SessionToRecord(s domain.Session) storage.SessionRecord {
 	return storage.SessionRecord{
-		ID:          s.ID,
-		ParentID:    s.ParentID,
+		ID:          string(s.ID),
+		ParentID:    string(s.ParentID),
 		Goal:        s.Goal,
 		Status:      string(s.Status),
 		Summary:     s.Summary,
@@ -196,8 +196,8 @@ func scopeFromRecord(r *storage.ScopeConfigRecord) domain.ScopeConfig {
 // SessionToDomain converts a storage SessionRecord to a domain Session.
 func (m *AgentMapper) SessionToDomain(rec storage.SessionRecord) domain.Session {
 	return domain.Session{
-		ID:          rec.ID,
-		ParentID:    rec.ParentID,
+		ID:          domain.SessionID(rec.ID),
+		ParentID:    domain.SessionID(rec.ParentID),
 		Goal:        rec.Goal,
 		Status:      domain.SessionStatus(rec.Status),
 		Summary:     rec.Summary,
@@ -205,32 +205,6 @@ func (m *AgentMapper) SessionToDomain(rec storage.SessionRecord) domain.Session 
 		UpdatedAt:   parseTime(rec.UpdatedAt),
 		CompletedAt: parseTime(rec.CompletedAt),
 		CallerScope: scopeFromRecord(rec.CallerScope),
-	}
-}
-
-// SessionEventToRecord converts a domain SessionEvent to a storage EventRecord.
-func (m *AgentMapper) SessionEventToRecord(e domain.SessionEvent) storage.EventRecord {
-	artifactIDs := e.ArtifactIDs
-	if artifactIDs == nil {
-		artifactIDs = []string{}
-	}
-	return storage.EventRecord{
-		SessionID:   e.SessionID,
-		Type:        string(e.Type),
-		Timestamp:   e.Timestamp.Format(time.RFC3339Nano),
-		Payload:     e.Payload,
-		ArtifactIDs: artifactIDs,
-	}
-}
-
-// SessionEventToDomain converts a storage EventRecord to a domain SessionEvent.
-func (m *AgentMapper) SessionEventToDomain(rec storage.EventRecord) domain.SessionEvent {
-	return domain.SessionEvent{
-		SessionID:   rec.SessionID,
-		Type:        domain.SessionEventType(rec.Type),
-		Timestamp:   parseTime(rec.Timestamp),
-		Payload:     rec.Payload,
-		ArtifactIDs: rec.ArtifactIDs,
 	}
 }
 
@@ -449,22 +423,22 @@ func (m *AgentMapper) ContradictionResolutionToDomain(rec storage.ContradictionR
 // WatchConfigToRecord converts a domain WatchConfig to a storage WatchConfigRecord. ADR-0032.
 func (m *AgentMapper) WatchConfigToRecord(cfg domain.WatchConfig) storage.WatchConfigRecord {
 	return storage.WatchConfigRecord{
-		ID:                 cfg.ID,
-		Name:               cfg.Name,
-		Description:        cfg.Description,
-		SourceType:         cfg.Source.Type,
-		SourceStreamID:     cfg.Source.StreamID,
-		SourceCron:         cfg.Source.Cron,
-		SourceTimezone:     cfg.Source.Timezone,
-		MissedFirePolicy:   cfg.MissedFirePolicy,
-		Condition:          cfg.Condition,
-		ConditionType:      cfg.ConditionType,
-		ActionType:         cfg.Action.Type,
-		ActionTargetType:   cfg.Action.TargetType,
-		ActionTarget:       cfg.Action.Target,
-		ActionPayload:      cfg.Action.Payload,
-		Active:             cfg.Active,
-		ResponseMode:       cfg.ResponseMode,
+		ID:                   cfg.ID,
+		Name:                 cfg.Name,
+		Description:          cfg.Description,
+		SourceType:           cfg.Source.Type,
+		SourceStreamID:       cfg.Source.StreamID,
+		SourceCron:           cfg.Source.Cron,
+		SourceTimezone:       cfg.Source.Timezone,
+		MissedFirePolicy:     cfg.MissedFirePolicy,
+		Condition:            cfg.Condition,
+		ConditionType:        cfg.ConditionType,
+		ActionType:           cfg.Action.Type,
+		ActionTargetType:     cfg.Action.TargetType,
+		ActionTarget:         cfg.Action.Target,
+		ActionPayload:        cfg.Action.Payload,
+		Active:               cfg.Active,
+		ResponseMode:         cfg.ResponseMode,
 		DaemonParams:         cfg.DaemonParams,
 		MaxConcurrentPlans:   cfg.MaxConcurrentPlans,
 		DebounceSeconds:      cfg.DebounceSeconds,
@@ -487,16 +461,16 @@ func (m *AgentMapper) WatchConfigFromRecord(rec storage.WatchConfigRecord) domai
 			Timezone: rec.SourceTimezone,
 		},
 		MissedFirePolicy: rec.MissedFirePolicy,
-		Condition:     rec.Condition,
-		ConditionType: rec.ConditionType,
+		Condition:        rec.Condition,
+		ConditionType:    rec.ConditionType,
 		Action: domain.WatchAction{
 			Type:       rec.ActionType,
 			TargetType: rec.ActionTargetType,
 			Target:     rec.ActionTarget,
 			Payload:    rec.ActionPayload,
 		},
-		Active:             rec.Active,
-		ResponseMode:       rec.ResponseMode,
+		Active:               rec.Active,
+		ResponseMode:         rec.ResponseMode,
 		DaemonParams:         rec.DaemonParams,
 		MaxConcurrentPlans:   rec.MaxConcurrentPlans,
 		DebounceSeconds:      rec.DebounceSeconds,

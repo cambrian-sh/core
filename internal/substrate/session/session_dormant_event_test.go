@@ -20,18 +20,31 @@ func (b *captureEventBus) Publish(e domain.DomainEvent) error {
 	return nil
 }
 
-// inmemSessionRepo is a minimal in-memory SessionRepository for tests.
-type inmemSessionRepo struct {
-	sessions map[string]domain.Session
+// dormantEvents returns only the SessionDormantEvents. These tests are about the dormant
+// event specifically; asserting on the bus's TOTAL length made them brittle to any new
+// event on the same bus (Phase 2 added the absolute SessionStateEvent).
+func (b *captureEventBus) dormantEvents() []domain.SessionDormantEvent {
+	var out []domain.SessionDormantEvent
+	for _, e := range b.events {
+		if de, ok := e.(domain.SessionDormantEvent); ok {
+			out = append(out, de)
+		}
+	}
+	return out
 }
 
-func newInmem() *inmemSessionRepo { return &inmemSessionRepo{sessions: make(map[string]domain.Session)} }
+// inmemSessionRepo is a minimal in-memory SessionRepository for tests.
+type inmemSessionRepo struct {
+	sessions map[domain.SessionID]domain.Session
+}
+
+func newInmem() *inmemSessionRepo { return &inmemSessionRepo{sessions: make(map[domain.SessionID]domain.Session)} }
 
 func (r *inmemSessionRepo) SaveSession(_ context.Context, s domain.Session) error {
 	r.sessions[s.ID] = s
 	return nil
 }
-func (r *inmemSessionRepo) GetSession(_ context.Context, id string) (*domain.Session, error) {
+func (r *inmemSessionRepo) GetSession(_ context.Context, id domain.SessionID) (*domain.Session, error) {
 	s, ok := r.sessions[id]
 	if !ok {
 		return nil, nil
@@ -63,13 +76,11 @@ func TestSessionManager_TransitionToDormant_PublishesEvent(t *testing.T) {
 		t.Fatalf("TransitionStatus: %v", err)
 	}
 
-	if len(bus.events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(bus.events))
+	dormant := bus.dormantEvents()
+	if len(dormant) != 1 {
+		t.Fatalf("expected 1 SessionDormantEvent, got %d", len(dormant))
 	}
-	ev, ok := bus.events[0].(domain.SessionDormantEvent)
-	if !ok {
-		t.Fatalf("expected SessionDormantEvent, got %T", bus.events[0])
-	}
+	ev := dormant[0]
 	if ev.SessionID != sess.ID {
 		t.Errorf("expected SessionID %q, got %q", sess.ID, ev.SessionID)
 	}
@@ -127,7 +138,11 @@ func TestSessionManager_DormantEvent_IncludesTTL(t *testing.T) {
 	sess, _ := mgr.CreateSession(ctx, "goal", "")
 	_ = mgr.TransitionStatus(ctx, sess.ID, domain.SessionDormant)
 
-	ev := bus.events[0].(domain.SessionDormantEvent)
+	dormant := bus.dormantEvents()
+	if len(dormant) != 1 {
+		t.Fatalf("expected 1 SessionDormantEvent, got %d", len(dormant))
+	}
+	ev := dormant[0]
 	if ev.TTLDuration != ttl {
 		t.Errorf("expected TTL %v, got %v", ttl, ev.TTLDuration)
 	}

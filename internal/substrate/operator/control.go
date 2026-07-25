@@ -1,6 +1,10 @@
 package operator
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/cambrian-sh/core/domain"
+)
 
 // ExecutionControls is the control handle a live DAGExecutor registers for its
 // session so operator commands can steer it (ADR-0047 D11 / Amendment A1.1). It
@@ -19,23 +23,23 @@ type ExecutionControls interface {
 // command to an unregistered session fails cleanly ("no live execution").
 type ExecutionControlHub struct {
 	mu sync.Mutex
-	m  map[string]ExecutionControls
+	m  map[domain.SessionID]ExecutionControls
 }
 
 // NewExecutionControlHub constructs an empty hub.
 func NewExecutionControlHub() *ExecutionControlHub {
-	return &ExecutionControlHub{m: make(map[string]ExecutionControls)}
+	return &ExecutionControlHub{m: make(map[domain.SessionID]ExecutionControls)}
 }
 
 // Register binds a session id to its live execution's controls.
-func (h *ExecutionControlHub) Register(sessionID string, c ExecutionControls) {
+func (h *ExecutionControlHub) Register(sessionID domain.SessionID, c ExecutionControls) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.m[sessionID] = c
 }
 
 // Deregister removes a session's controls (call on Execute completion).
-func (h *ExecutionControlHub) Deregister(sessionID string) {
+func (h *ExecutionControlHub) Deregister(sessionID domain.SessionID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.m, sessionID)
@@ -45,6 +49,8 @@ func (h *ExecutionControlHub) Deregister(sessionID string) {
 func (h *ExecutionControlHub) Lookup(sessionID string) (ExecutionControls, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	c, ok := h.m[sessionID]
+	// The operator plane hands us a raw proto string; converting here keeps the wire
+	// edge explicit and the hub's key typed.
+	c, ok := h.m[domain.SessionID(sessionID)]
 	return c, ok
 }

@@ -8,10 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"go.etcd.io/bbolt"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // sidecarManifest is the JSON shape of a *.manifest.json sidecar file.
@@ -29,7 +32,7 @@ var manifestBucket = []byte("manifests")
 var taskEventBucket = []byte("task_events")
 var checkpointBucket = []byte("checkpoints")
 var sessionBucket = []byte("sessions")
-var eventBucket = []byte("events")
+var runBucket = []byte("runs")
 var artifactBucket = []byte("artifacts")
 var clusterBucket = []byte("capability_clusters")
 var watchConfigBucket = []byte("watch_configs")
@@ -129,8 +132,8 @@ func (b *BBoltAdapter) Seed(agentsDir string, isSystemAgent func(id string) bool
 // createBuckets creates every bbolt bucket the store uses if absent.
 func createBuckets(tx *bbolt.Tx) error {
 	for _, name := range [][]byte{
-		agentBucket, manifestBucket, taskEventBucket, checkpointBucket, sessionBucket,
-		eventBucket, artifactBucket, clusterBucket, planEventBucket, retrievalSessionBucket,
+		agentBucket, manifestBucket, taskEventBucket, checkpointBucket, sessionBucket, runBucket,
+		artifactBucket, clusterBucket, planEventBucket, retrievalSessionBucket,
 		traversalLogBucket, contradictionResolutionBucket, watchConfigBucket,
 		// REACT-01 (ADR-0061): durable reactive-execution buckets.
 		reactiveJournalBucket, reactiveCursorBucket, reactiveIdempotencyBucket, reactiveDeadLetterBucket,
@@ -721,49 +724,56 @@ func (b *BBoltAdapter) GetClusterName(representativeAgentID string) (string, err
 	return name, err
 }
 
-// SaveCheckpoint persists a context checkpoint to the checkpoints bucket.
-// Implements substrate.CheckpointStore.
-func (b *BBoltAdapter) SaveCheckpoint(sessionID, planID string, stepIndex int, ctx map[string]string) error {
-	rec := struct {
-		SessionID string            `json:"session_id"`
-		PlanID    string            `json:"plan_id"`
-		StepIndex int               `json:"step_index"`
-		Context   map[string]string `json:"context"`
-		Timestamp time.Time         `json:"timestamp"`
-	}{
-		SessionID: sessionID,
-		PlanID:    planID,
+// checkpointKey renders the (run, step) key.
+//
+// The step index is ZERO-PADDED because bbolt cursors are lexicographic: with an unpadded
+// decimal, step "10" sorts before step "2", so "the latest checkpoint" was whichever step
+// happened to sort last. Nine digits is far more steps than any plan will ever have and
+// keeps the key fixed-width.
+func checkpointKey(runID domain.RunID, stepIndex int) []byte {
+	return []byte(fmt.Sprintf("%s:%09d", runID, stepIndex))
+}
+
+type checkpointRecord struct {
+	RunID     domain.RunID      `json:"run_id"`
+	SessionID domain.SessionID  `json:"session_id"`
+	PlanID    string            `json:"plan_id"`
+	StepIndex int               `json:"step_index"`
+	Context   map[string]string `json:"context"`
+	Timestamp time.Time         `json:"timestamp"`
+}
+
+// SaveCheckpoint persists a context checkpoint under its RUN.
+func (b *BBoltAdapter) SaveCheckpoint(runID domain.RunID, stepIndex int, ctx map[string]string) error {
+	rec := checkpointRecord{
+		RunID:     runID,
 		StepIndex: stepIndex,
 		Context:   ctx,
 		Timestamp: time.Now(),
 	}
 	return b.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(checkpointBucket)
-		key := []byte(fmt.Sprintf("%s:%s:%d", sessionID, planID, stepIndex))
 		data, err := json.Marshal(rec)
 		if err != nil {
 			return err
 		}
-		return bucket.Put(key, data)
+		return bucket.Put(checkpointKey(runID, stepIndex), data)
 	})
 }
 
-// LoadCheckpoint loads a specific checkpoint from BBolt.
-func (b *BBoltAdapter) LoadCheckpoint(sessionID, planID string, stepIndex int) (map[string]string, error) {
-	key := []byte(fmt.Sprintf("%s:%s:%d", sessionID, planID, stepIndex))
+// LoadCheckpoint loads one checkpoint of a run.
+func (b *BBoltAdapter) LoadCheckpoint(runID domain.RunID, stepIndex int) (map[string]string, error) {
 	var ctx map[string]string
 	err := b.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(checkpointBucket)
 		if bucket == nil {
 			return nil
 		}
-		data := bucket.Get(key)
+		data := bucket.Get(checkpointKey(runID, stepIndex))
 		if data == nil {
 			return nil
 		}
-		var rec struct {
-			Context map[string]string `json:"context"`
-		}
+		var rec checkpointRecord
 		if err := json.Unmarshal(data, &rec); err != nil {
 			return err
 		}
@@ -773,21 +783,11 @@ func (b *BBoltAdapter) LoadCheckpoint(sessionID, planID string, stepIndex int) (
 	return ctx, err
 }
 
-// ListCheckpoints returns all checkpoint metadata for a session.
-func (b *BBoltAdapter) ListCheckpoints(sessionID string) ([]struct {
-	SessionID string
-	PlanID    string
-	StepIndex int
-	Timestamp time.Time
-}, error) {
-	prefix := []byte(sessionID + ":")
-	type cpMeta struct {
-		SessionID string    `json:"session_id"`
-		PlanID    string    `json:"plan_id"`
-		StepIndex int       `json:"step_index"`
-		Timestamp time.Time `json:"timestamp"`
-	}
-	var out []cpMeta
+// ListCheckpoints returns a run's checkpoints in ascending step order. The zero-padded key
+// makes the cursor's lexicographic order the numeric order, so no post-sort is needed.
+func (b *BBoltAdapter) ListCheckpoints(runID domain.RunID) ([]domain.CheckpointMeta, error) {
+	prefix := []byte(string(runID) + ":")
+	var out []domain.CheckpointMeta
 	err := b.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(checkpointBucket)
 		if bucket == nil {
@@ -795,32 +795,95 @@ func (b *BBoltAdapter) ListCheckpoints(sessionID string) ([]struct {
 		}
 		c := bucket.Cursor()
 		for k, v := c.Seek(prefix); k != nil && strings.HasPrefix(string(k), string(prefix)); k, v = c.Next() {
-			var rec cpMeta
+			var rec checkpointRecord
 			if json.Unmarshal(v, &rec) != nil {
 				continue
 			}
-			out = append(out, rec)
+			out = append(out, domain.CheckpointMeta{
+				RunID:     rec.RunID,
+				SessionID: rec.SessionID,
+				PlanID:    rec.PlanID,
+				StepIndex: rec.StepIndex,
+				Timestamp: rec.Timestamp,
+			})
 		}
 		return nil
+	})
+	return out, err
+}
+
+// Compile-time proof that this adapter satisfies the checkpoint and run ports.
+//
+// These exist because the wiring is resolved by a RUNTIME type assertion
+// (Server.executorCheckpointStore). When the interface changed and this implementation did
+// not, the assertion simply stopped matching: checkpoints silently stopped being written,
+// with no build error, no runtime error, and no failing test. A compile-time assertion turns
+// that class of drift back into a build failure.
+var (
+	_ domain.CheckpointStore = (*BBoltAdapter)(nil)
+	_ domain.RunStore        = (*BBoltAdapter)(nil)
+)
+
+// ── domain.RunStore ──────────────────────────────────────────────────────────
+
+// SaveRun persists a run (including its plan, so a resume replays the same steps).
+func (b *BBoltAdapter) SaveRun(run domain.Run) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(runBucket)
+		data, err := json.Marshal(run)
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(run.ID), data)
+	})
+}
+
+// GetRun reads a run by id; (nil, nil) when unknown.
+func (b *BBoltAdapter) GetRun(runID domain.RunID) (*domain.Run, error) {
+	var run *domain.Run
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(runBucket)
+		if bucket == nil {
+			return nil
+		}
+		data := bucket.Get([]byte(runID))
+		if data == nil {
+			return nil
+		}
+		var r domain.Run
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		run = &r
+		return nil
+	})
+	return run, err
+}
+
+// ListRunsForSession returns every run of a session, oldest first.
+func (b *BBoltAdapter) ListRunsForSession(sessionID domain.SessionID) ([]domain.Run, error) {
+	var out []domain.Run
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(runBucket)
+		if bucket == nil {
+			return nil
+		}
+		return bucket.ForEach(func(_, v []byte) error {
+			var r domain.Run
+			if json.Unmarshal(v, &r) != nil {
+				return nil
+			}
+			if r.SessionID == sessionID {
+				out = append(out, r)
+			}
+			return nil
+		})
 	})
 	if err != nil {
 		return nil, err
 	}
-	result := make([]struct {
-		SessionID string
-		PlanID    string
-		StepIndex int
-		Timestamp time.Time
-	}, len(out))
-	for i, m := range out {
-		result[i] = struct {
-			SessionID string
-			PlanID    string
-			StepIndex int
-			Timestamp time.Time
-		}{m.SessionID, m.PlanID, m.StepIndex, m.Timestamp}
-	}
-	return result, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
+	return out, nil
 }
 
 // WriteAgentRecord persists an AgentRecord to the agents bucket.
@@ -971,102 +1034,6 @@ func (b *BBoltAdapter) ListSessionRecords(status string) ([]SessionRecord, error
 			return nil
 		})
 	})
-	return recs, err
-}
-
-// WriteEventRecord persists an EventRecord to the events bucket.
-func (b *BBoltAdapter) WriteEventRecord(rec EventRecord) error {
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("event marshal: %w", err)
-	}
-	key := []byte(fmt.Sprintf("%s:%s", rec.SessionID, rec.Timestamp))
-	return b.db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(eventBucket)
-		if bucket == nil {
-			return fmt.Errorf("events bucket not found")
-		}
-		return bucket.Put(key, data)
-	})
-}
-
-// ListEventRecords returns up to limit events for a session (newest first).
-func (b *BBoltAdapter) ListEventRecords(sessionID string, limit int) ([]EventRecord, error) {
-	var recs []EventRecord
-	prefix := []byte(sessionID + ":")
-	err := b.db.View(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(eventBucket)
-		if bucket == nil {
-			return nil
-		}
-		c := bucket.Cursor()
-		for k, v := c.Seek(prefix); k != nil && strings.HasPrefix(string(k), string(prefix)); k, v = c.Next() {
-			var rec EventRecord
-			if json.Unmarshal(v, &rec) != nil {
-				continue
-			}
-			recs = append(recs, rec)
-		}
-		return nil
-	})
-	if limit > 0 && len(recs) > limit {
-		recs = recs[len(recs)-limit:]
-	}
-	return recs, err
-}
-
-// ListEventRecordsByType returns events of specified types for a session.
-func (b *BBoltAdapter) ListEventRecordsByType(sessionID string, types []string) ([]EventRecord, error) {
-	typeSet := make(map[string]bool, len(types))
-	for _, t := range types {
-		typeSet[t] = true
-	}
-	var recs []EventRecord
-	prefix := []byte(sessionID + ":")
-	err := b.db.View(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(eventBucket)
-		if bucket == nil {
-			return nil
-		}
-		c := bucket.Cursor()
-		for k, v := c.Seek(prefix); k != nil && strings.HasPrefix(string(k), string(prefix)); k, v = c.Next() {
-			var rec EventRecord
-			if json.Unmarshal(v, &rec) != nil {
-				continue
-			}
-			if typeSet[rec.Type] {
-				recs = append(recs, rec)
-			}
-		}
-		return nil
-	})
-	return recs, err
-}
-
-// ListAllEventRecordsSince returns all events stored after the given time, up to limit.
-// It does a full scan of the events bucket since keys are not globally time-ordered.
-func (b *BBoltAdapter) ListAllEventRecordsSince(since time.Time, limit int) ([]EventRecord, error) {
-	sinceStr := since.Format(time.RFC3339Nano)
-	var recs []EventRecord
-	err := b.db.View(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(eventBucket)
-		if bucket == nil {
-			return nil
-		}
-		return bucket.ForEach(func(_, v []byte) error {
-			var rec EventRecord
-			if json.Unmarshal(v, &rec) != nil {
-				return nil
-			}
-			if rec.Timestamp >= sinceStr {
-				recs = append(recs, rec)
-			}
-			return nil
-		})
-	})
-	if limit > 0 && len(recs) > limit {
-		recs = recs[len(recs)-limit:]
-	}
 	return recs, err
 }
 

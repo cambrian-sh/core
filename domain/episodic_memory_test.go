@@ -14,7 +14,7 @@ func TestEpisodicMemory_JSONRoundTrip(t *testing.T) {
 		StartedAt:    now,
 		CompletedAt:  now.Add(time.Hour),
 		Goal:         "Implement auth flow",
-		Decisions:    []Decision{{Text: "Use JWT", MadeAt: now, SourceEventType: EventUserMessage}},
+		Decisions:    []Decision{{Text: "Use JWT", MadeAt: now, SourceEventType: "user_message"}},
 		ActionItems:  []ActionItem{{Text: "Write JWT middleware"}},
 		Participants: []string{"analyst_agent", "code_generator_agent"},
 		KeyFacts:     []string{"doc-1", "doc-2"},
@@ -38,8 +38,8 @@ func TestEpisodicMemory_JSONRoundTrip(t *testing.T) {
 	if len(got.Decisions) != 1 || got.Decisions[0].Text != "Use JWT" {
 		t.Errorf("Decisions: want 1 with text 'Use JWT', got %+v", got.Decisions)
 	}
-	if got.Decisions[0].SourceEventType != EventUserMessage {
-		t.Errorf("Decision.SourceEventType: want %q got %q", EventUserMessage, got.Decisions[0].SourceEventType)
+	if got.Decisions[0].SourceEventType != "user_message" {
+		t.Errorf("Decision.SourceEventType: want %q got %q", "user_message", got.Decisions[0].SourceEventType)
 	}
 	if len(got.ActionItems) != 1 || got.ActionItems[0].Text != "Write JWT middleware" {
 		t.Errorf("ActionItems: got %+v", got.ActionItems)

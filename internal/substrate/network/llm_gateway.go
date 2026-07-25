@@ -31,16 +31,16 @@ type modelHealthEntry struct {
 // LLMGateway is the central control point for ADR-0018 managed LLM calls.
 // It owns the session store, CONWIP semaphore, and health cache circuit breaker.
 type LLMGateway interface {
-	Acquire(ctx context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (string, error)
-	Complete(ctx context.Context, sessionID string) (llm.TokenUsage, error)
+	Acquire(ctx context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (domain.LeaseID, error)
+	Complete(ctx context.Context, leaseID domain.LeaseID) (llm.TokenUsage, error)
 	EvictExpired()
-	StreamChunks(ctx context.Context, sessionID string, prompt string, opts domain.GenerateOptions, out chan<- domain.StreamChunk) error
+	StreamChunks(ctx context.Context, leaseID domain.LeaseID, prompt string, opts domain.GenerateOptions, out chan<- domain.StreamChunk) error
 }
 
 // SubstrateLLMGateway implements LLMGateway.
 type SubstrateLLMGateway struct {
 	mu            sync.RWMutex
-	sessions      map[string]*domain.BudgetLeaseState
+	sessions      map[domain.LeaseID]*domain.BudgetLeaseState
 	semaphore     chan struct{}
 	healthCache   map[string]*modelHealthEntry
 	modelClients  map[string]domain.LLMStreamer // model agent ID → streaming client
@@ -66,7 +66,7 @@ func (g *SubstrateLLMGateway) SetDefaultModelID(modelID string) {
 // NewLLMGateway creates a wired SubstrateLLMGateway.
 func NewLLMGateway(cfg config.ExecutionConfig) *SubstrateLLMGateway {
 	gw := &SubstrateLLMGateway{
-		sessions:     make(map[string]*domain.BudgetLeaseState),
+		sessions:     make(map[domain.LeaseID]*domain.BudgetLeaseState),
 		semaphore:    make(chan struct{}, cfg.LLMGatewayMaxConcurrency),
 		healthCache:  make(map[string]*modelHealthEntry),
 		modelClients: make(map[string]domain.LLMStreamer),
@@ -99,8 +99,8 @@ func (g *SubstrateLLMGateway) RegisterModelClient(agentID string, client domain.
 const minSessionTTL = 10 * time.Minute
 
 // Acquire creates a new session for a step, allocating a session token UUID.
-func (g *SubstrateLLMGateway) Acquire(_ context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (string, error) {
-	sessionID := fmt.Sprintf("sess-%d-%d", time.Now().UnixNano(), rand.Int63()%10000)
+func (g *SubstrateLLMGateway) Acquire(_ context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (domain.LeaseID, error) {
+	sessionID := domain.LeaseID(fmt.Sprintf("lease-%d-%d", time.Now().UnixNano(), rand.Int63()%10000))
 	now := time.Now()
 	ttl := time.Duration(float64(estimatedDuration) * g.cfg.SessionTokenTTLMultiplier)
 	if ttl < minSessionTTL {
@@ -117,8 +117,47 @@ func (g *SubstrateLLMGateway) Acquire(_ context.Context, sa domain.StepAllocatio
 	return sessionID, nil
 }
 
+// BindLease attaches execution identity to an already-issued lease (domain.LeaseResolver).
+//
+// Called by the kernel at dispatch, immediately after Acquire. It is the write half of the
+// Phase-0 identity fix: because the kernel — not the agent — records which session a lease
+// belongs to, an agent presenting that lease can be resolved to its session without the
+// kernel ever trusting an agent-supplied session ID.
+//
+// A no-op for an unknown or already-completed lease: binding is best-effort metadata, and a
+// lease that has been swept must not be resurrected as a map entry.
+func (g *SubstrateLLMGateway) BindLease(leaseID domain.LeaseID, b domain.LeaseBinding) {
+	if g == nil || leaseID == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if st, ok := g.sessions[leaseID]; ok {
+		st.Binding = b
+	}
+}
+
+// ResolveLease returns the identity bound to leaseID (domain.LeaseResolver).
+//
+// The bool reports whether the lease is KNOWN, not whether it carries a binding — a live
+// but unbound lease returns (zero, true). Transports rely on that distinction: "known
+// lease" means the caller is an agent and its header must not be read as a session ID,
+// even when no session was bound.
+func (g *SubstrateLLMGateway) ResolveLease(leaseID domain.LeaseID) (domain.LeaseBinding, bool) {
+	if g == nil || leaseID == "" {
+		return domain.LeaseBinding{}, false
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	st, ok := g.sessions[leaseID]
+	if !ok {
+		return domain.LeaseBinding{}, false
+	}
+	return st.Binding, true
+}
+
 // Complete reads the final reconciled token usage and removes the session.
-func (g *SubstrateLLMGateway) Complete(_ context.Context, sessionID string) (llm.TokenUsage, error) {
+func (g *SubstrateLLMGateway) Complete(_ context.Context, sessionID domain.LeaseID) (llm.TokenUsage, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	ss, ok := g.sessions[sessionID]
@@ -146,7 +185,7 @@ func (g *SubstrateLLMGateway) EvictExpired() {
 }
 
 // AddSession adds a pre-existing session state (for testing/setup).
-func (g *SubstrateLLMGateway) AddSession(id string, ss *domain.BudgetLeaseState) {
+func (g *SubstrateLLMGateway) AddSession(id domain.LeaseID, ss *domain.BudgetLeaseState) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.sessions[id] = ss
@@ -161,7 +200,7 @@ func (g *SubstrateLLMGateway) SessionCount() int {
 
 // GetBudgetLeaseState returns a copy of the budget-lease state for the given lease ID,
 // or nil if not found. Used by GenerateViaModelStream for trace attribution.
-func (g *SubstrateLLMGateway) GetBudgetLeaseState(id string) *domain.BudgetLeaseState {
+func (g *SubstrateLLMGateway) GetBudgetLeaseState(id domain.LeaseID) *domain.BudgetLeaseState {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	ss, ok := g.sessions[id]
@@ -176,7 +215,7 @@ func (g *SubstrateLLMGateway) GetBudgetLeaseState(id string) *domain.BudgetLease
 // StreamChunks opens a managed stream to the allocated TraitModel.
 // It applies CONWIP, health cache routing, Pass 1 budget enforcement,
 // and Pass 2 reconciliation.
-func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID string, prompt string, opts domain.GenerateOptions, out chan<- domain.StreamChunk) error {
+func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain.LeaseID, prompt string, opts domain.GenerateOptions, out chan<- domain.StreamChunk) error {
 	start := time.Now()
 	select {
 	case g.semaphore <- struct{}{}:

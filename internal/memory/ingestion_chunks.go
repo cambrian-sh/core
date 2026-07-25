@@ -182,7 +182,10 @@ func chunkMetadata(
 		meta["source_agent_id"] = doc.Author
 	}
 	if doc.ThreadID != "" {
-		meta["session_id"] = doc.ThreadID
+		// Phase 1: an ingestion thread is NOT a task session. This used to be written to
+		// "session_id", which made every ingested corpus chunk look like the output of a
+		// run to anything that filtered, counted or scoped by session.
+		meta[domain.MetaIngestThreadID] = doc.ThreadID
 	}
 	if len(doc.Tags) > 0 {
 		meta["tags"] = append([]string(nil), doc.Tags...)

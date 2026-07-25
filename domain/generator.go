@@ -14,7 +14,7 @@ type StepResult struct {
 	Output    string            // step output payload text
 	Snapshot  map[string]string // masterContext clone at step dispatch time
 	SceneID   string            // ADR-0025: ID of the MnemonicScene written for this step; "" if none
-	SessionID string            // ADR-0029: session scope for Tier-2 session_id metadata tag; "" = unscoped
+	SessionID SessionID         // ADR-0029: session scope for Tier-2 session_id metadata tag; "" = unscoped
 	TaskID    string            // ADR-0049 D3: per-step correlation key (step-{index}-{planID}); "" disables dedup
 	// DependsOnTaskIDs are the TaskIDs of this step's dependency steps (ADR-0049 D10),
 	// so RecordExecution can write `follows` edges from this step's record to theirs.

@@ -25,13 +25,11 @@ import (
 
 	"github.com/cambrian-sh/core/internal/substrate/harness"
 	session "github.com/cambrian-sh/core/internal/substrate/session"
-	subsynaptic "github.com/cambrian-sh/core/internal/substrate/synaptic"
 	supwatcher "github.com/cambrian-sh/core/internal/supervision/watcher"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 )
 
 // storeNeuralTrace persists an agent thought trace asynchronously to the vector
@@ -99,13 +97,20 @@ type Server struct {
 	EnqueueVerification executer.EnqueueVerification
 	Watcher             *supwatcher.Watcher
 
-	VectorStore       domain.VectorStore
-	MemorySearcher    domain.MemorySearcher
-	Hippocampus       domain.ProceduralMemory
-	ModelRouter       *llm.ProviderRegistry
-	Provider          domain.LLMProvider // ADR-0042: agent-step model provisioning (health-guarded)
-	SessionMgr        *session.SessionManager
-	EventLog          *subsynaptic.EventLogger
+	VectorStore    domain.VectorStore
+	MemorySearcher domain.MemorySearcher
+	Hippocampus    domain.ProceduralMemory
+	ModelRouter    *llm.ProviderRegistry
+	Provider       domain.LLMProvider // ADR-0042: agent-step model provisioning (health-guarded)
+	SessionMgr     *session.SessionManager
+	// Runs persists plan executions so a resume can replay against the run's OWN plan.
+	Runs domain.RunStore
+	// Checkpoints persists mid-run state. Wired EXPLICITLY at the composition root rather
+	// than discovered by a runtime type assertion on the registry — that assertion silently
+	// returned nil for the whole life of the feature (the registry held the store in a named
+	// field, so its methods were never promoted), and checkpointing simply never happened.
+	// An explicit field turns "not wired" into something you can see at the wiring site.
+	Checkpoints       executer.CheckpointStore
 	WorkspaceStage    domain.WorkspaceStage    // ADR-0016: may be nil
 	LLMGateway        LLMGateway               // ADR-0018: may be nil; wired by kernel provider
 	TelemetryObserver domain.TelemetryObserver // ADR-0019: may be nil
@@ -237,7 +242,6 @@ func NewServer(
 	watcher *supwatcher.Watcher,
 	modelRouter *llm.ProviderRegistry,
 	sessionMgr *session.SessionManager,
-	eventLog *subsynaptic.EventLogger,
 	workspaceStage domain.WorkspaceStage,
 	llmGateway LLMGateway,
 	observer domain.TelemetryObserver,
@@ -256,7 +260,6 @@ func NewServer(
 		Watcher:             watcher,
 		ModelRouter:         modelRouter,
 		SessionMgr:          sessionMgr,
-		EventLog:            eventLog,
 		WorkspaceStage:      workspaceStage,
 		LLMGateway:          llmGateway,
 		TelemetryObserver:   observer,
@@ -368,11 +371,48 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 
 	userInput := rawInput
 
-	var sessionID string
+	var sessionID domain.SessionID
 	if s.SessionMgr != nil {
-		ses := loadOrCreateSession(ctx, s.SessionMgr, userInput)
-		if ses != nil {
+		// Phase 2 strict mode: refuse to invent a session. The caller must have opened one
+		// (CreateSession) and must present it, so "new work" and "continuation" are the
+		// caller's decision rather than a guess made from whether a header happens to be set.
+		if s.ExecCfg.RequireExplicitSession {
+			resolved := s.resolveCallerSession(ctx)
+			if resolved == "" {
+				return nil, status.Error(codes.InvalidArgument,
+					"execution.require_explicit_session is on: open a session (CreateSession) and present it as x-session-id, or a lease bound to one as x-lease-id")
+			}
+			ses, err := s.SessionMgr.GetSession(ctx, resolved)
+			if err != nil || ses == nil {
+				return nil, status.Errorf(codes.NotFound, "unknown session %q", resolved)
+			}
+			if ses.Status == domain.SessionCompleted {
+				return nil, status.Errorf(codes.FailedPrecondition, "session %q is completed", resolved)
+			}
 			sessionID = ses.ID
+			ctx = domain.WithSessionID(ctx, sessionID)
+		} else if ses := s.loadOrCreateSession(ctx, userInput); ses != nil {
+			// ADR-0084 D2: when this work was ordered by a chat turn, link the session
+			// back to the conversation. Resolved from the caller's lease, never from a
+			// client-supplied field, and persisted only on a session we just opened —
+			// re-linking an existing session would rewrite its origin.
+			if b, known := s.resolveCallerBinding(ctx); known && b.ConversationID != "" && ses.ConversationID == "" {
+				ses.ConversationID = b.ConversationID
+				ses.OriginMessageID = b.OriginMessageID
+				if serr := s.SessionMgr.SaveConversationLink(ctx, ses.ID, b.ConversationID, b.OriginMessageID); serr != nil {
+					slog.Warn("could not link session to its conversation", "session", ses.ID, "err", serr)
+				}
+			}
+			sessionID = ses.ID
+			// Phase 0: carry the session through the whole execution context.
+			//
+			// Until now WithSessionID was called ONLY on inbound agent RPCs, so the
+			// executor goroutine — which writes step records, tool-output records and
+			// content nodes — ran with no session in ctx. Those writes were stamped
+			// with an empty session_id, which is why the ADR-0048 D1 same-session
+			// filter could never match on the read side: writer wrote "", reader
+			// compared a lease. Both sides now speak the same identifier.
+			ctx = domain.WithSessionID(ctx, sessionID)
 		}
 	}
 
@@ -406,9 +446,28 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		}
 	}
 
-	plan, err := planWithValidation(ctx, s.Planner, userInput, nil)
-	if err != nil {
-		return nil, err
+	// Phase 3: either CONTINUE a named run (explicit, replaying its persisted plan) or
+	// start a new one. There is deliberately no middle path — an unrequested resume is what
+	// used to apply a stale step index to a freshly generated plan.
+	var resumed *ResumedRun
+	if rid := in.GetMetadata()[ResumeMetadataKey]; rid != "" {
+		r, rerr := s.ResumeRun(ctx, domain.RunID(rid), sessionID)
+		if rerr != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "%v", rerr)
+		}
+		resumed = r
+	}
+
+	var plan *domain.ExecutionPlan
+	if resumed != nil {
+		plan = resumed.Plan
+		slog.Info("↩️ RESUMING RUN", "run", resumed.Run.ID, "from_step", resumed.StartFrom)
+	} else {
+		p, perr := planWithValidation(ctx, s.Planner, userInput, nil)
+		if perr != nil {
+			return nil, perr
+		}
+		plan = p
 	}
 
 	// ROUTE-03 offline routing eval: return the generated plan as JSON and skip
@@ -432,19 +491,43 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	}
 	initialCtx["original_prompt"] = userInput
 
-	// Resume: hydrate checkpoint context for existing sessions.
+	// Resume seeds the checkpointed context and start position — but ONLY when the caller
+	// explicitly asked for it, and only from the run's own plan.
 	var startFromStep int
-	if sessionID != "" && s.SessionMgr != nil {
-		if cp, _, nextIdx, err := s.HydrateSession(ctx, sessionID); err == nil && cp != nil {
-			for k, v := range cp {
-				initialCtx[k] = v
-			}
-			startFromStep = nextIdx
+	if resumed != nil {
+		for k, v := range resumed.Context {
+			initialCtx[k] = v
 		}
+		startFromStep = resumed.StartFrom
 	}
 
-	// executionID scopes all neural traces produced by this Execute call.
-	executionID := newPlanID()
+	// executionID scopes all neural traces produced by this Execute call — and, since
+	// Phase 3, IS the run id: the same identifier the run is persisted under.
+	executionID := domain.RunID(newPlanID())
+	if resumed != nil {
+		executionID = resumed.Run.ID
+	}
+
+	// Persist the run (with its plan) so it can be resumed later. ADR-0012 §3 always
+	// specified storing "the associated ExecutionPlan (for replay)"; without it a step
+	// index has no steps to index into, which is why resume could never be made sound.
+	if s.Runs != nil {
+		run := domain.Run{
+			ID:        executionID,
+			SessionID: sessionID,
+			PlanID:    string(executionID),
+			Subject:   plan.Subject,
+			Status:    domain.RunRunning,
+			Plan:      plan,
+			StartedAt: time.Now(),
+		}
+		if resumed != nil {
+			run.StartedAt = resumed.Run.StartedAt
+		}
+		if serr := s.Runs.SaveRun(run); serr != nil {
+			slog.Warn("run persist failed; this execution will not be resumable", "run", executionID, "err", serr)
+		}
+	}
 
 	// Memory Ingestion tracking for DAG Lineage
 	var ingestedIDsMu sync.Mutex
@@ -491,7 +574,21 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 				sa.Winner = domain.AgentDefinition{ID: "llm:ollama:qwen3:8b"}
 			}
 			tokenID, _ := s.LLMGateway.Acquire(stepCtx, sa, 4096, 30*time.Second)
-			handoff.Context["_session_token_id"] = tokenID
+			// Phase 0: record WHICH session/run/step this lease belongs to, so an agent
+			// presenting it can be resolved back to its session server-side. Without
+			// this the kernel has no way to answer "whose lease is this?" and has to
+			// trust whatever the agent puts in a header.
+			if r := s.leaseResolver(); r != nil {
+				// AgentID is intentionally left empty: the lease is acquired at step
+				// DISPATCH, before the auction picks a winner, so the executing agent
+				// is not yet known here.
+				r.BindLease(tokenID, domain.LeaseBinding{
+					SessionID: sessionID,
+					RunID:     executionID,
+					StepIndex: i,
+				})
+			}
+			handoff.Context["_session_token_id"] = string(tokenID)
 			defer func() { _, _ = s.LLMGateway.Complete(stepCtx, tokenID) }()
 		}
 
@@ -585,7 +682,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 					healAttempt = n
 				}
 			}
-			storeNeuralTrace(ctx, s.VectorStore, trace, newPlanID(), executionID, i, healAttempt, resp.FromAgent)
+			storeNeuralTrace(ctx, s.VectorStore, trace, newPlanID(), string(executionID), i, healAttempt, resp.FromAgent)
 		}
 
 		// Confidence tracking
@@ -651,6 +748,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		DefaultInputCostPer1M:  s.Manager.DefaultInputCostPer1M,
 		DefaultOutputCostPer1M: s.Manager.DefaultOutputCostPer1M,
 		CurrentSessionID:       sessionID,
+		CurrentRunID:           executionID,
 		CheckpointStore:        s.executorCheckpointStore(),
 		StepCachePolicies:      s.ExecCfg.StepCachePolicies,
 		EventBus:               s.EventBus, // ADR-0047 0047-17: PlanStateChanged → operator feed
@@ -676,7 +774,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		}
 		replans := executor.ReplanCount()
 		_ = s.EventBus.Publish(domain.ScoutUsefulnessEvent{
-			SessionID:           sessionID,
+			SessionID:           string(sessionID),
 			ScoutRan:            scoutRan,
 			ScoutLatencyMs:      scoutLatencyMs,
 			DiscoveryEntities:   entities,
@@ -708,7 +806,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	finalResult := masterCtx[finalResultKey]
 	delete(masterCtx, finalResultKey)
 	if sessionID != "" {
-		masterCtx["_session_id"] = sessionID
+		masterCtx["_session_id"] = string(sessionID)
 	}
 
 	return &pb.Handoff{
@@ -730,13 +828,12 @@ func (s *Server) GetContextNode(ctx context.Context, req *pb.ContextNodeRequest)
 	}
 	cid := domain.CID(req.Cid)
 
-	// ADR-0048 D4: thread the caller's session from gRPC metadata into ctx so the
-	// read-gate below can identify the caller against the node's owner.
-	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		if vals := md.Get("x-session-id"); len(vals) > 0 && vals[0] != "" {
-			ctx = domain.WithSessionID(ctx, vals[0])
-		}
-	}
+	// ADR-0048 D4: thread the caller's session into ctx so the read-gate below can
+	// identify the caller against the node's owner. Phase 0: RESOLVED from the caller's
+	// opaque BudgetLease, not read off the header — the header carried a per-STEP lease,
+	// so the "owned by its session" gate was really "owned by its step" and an agent
+	// could not read back its own offload from an earlier step.
+	ctx = s.withCallerSession(ctx)
 
 	// ADR-0048 D5: drill-down serves ONLY ContentStore CIDs (transient working-memory
 	// / tool-result blobs). The former pgvector fallback returned raw LTM document
@@ -775,13 +872,12 @@ func (s *Server) PutContextNode(ctx context.Context, req *pb.PutContextNodeReque
 	if s.ContentStore == nil {
 		return nil, status.Error(codes.Unimplemented, "content store not configured")
 	}
-	// ADR-0048 D4: take the owning session from authenticated gRPC metadata (never
-	// the payload) and thread it into ctx so the ContentStore stamps it as owner.
-	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		if vals := md.Get("x-session-id"); len(vals) > 0 && vals[0] != "" {
-			ctx = domain.WithSessionID(ctx, vals[0])
-		}
-	}
+	// ADR-0048 D4: take the owning session from the caller's lease (never the payload,
+	// and never a caller-chosen header) and thread it into ctx so the ContentStore stamps
+	// it as owner. Phase 0: resolving through the lease registry means the owner is the
+	// SESSION the kernel dispatched under, so the node stays readable for the whole
+	// session instead of only the step that wrote it.
+	ctx = s.withCallerSession(ctx)
 	nodeType := req.NodeType
 	if nodeType == "" {
 		nodeType = "agent_offload"
@@ -809,11 +905,11 @@ func (s *Server) wrapGen(g domain.Generator) domain.Generator {
 // useEFE reports whether this session's assigned variant is the EFE arm
 // (ADR-0037). Returns false unless a selector is wired and the flag/traffic
 // resolve to "efe" — so the default "auction" rollout never takes the new path.
-func (s *Server) useEFE(sessionID string) bool {
+func (s *Server) useEFE(sessionID domain.SessionID) bool {
 	if s.ResourceSelector == nil {
 		return false
 	}
-	return centralexec.AssignVariant(s.SelectorMode, s.EFETrafficPercent, sessionID) == domain.MechanismEFE
+	return centralexec.AssignVariant(s.SelectorMode, s.EFETrafficPercent, string(sessionID)) == domain.MechanismEFE
 }
 
 // selectViaEFE binds a step via the Central-Executive selector and dispatches it
@@ -1040,7 +1136,14 @@ func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawIn
 			sa.Winner = domain.AgentDefinition{ID: "llm:ollama:qwen3:8b"}
 		}
 		tokenID, _ := s.LLMGateway.Acquire(ctx, sa, 4096, 30*time.Second)
-		handoff.Context["_session_token_id"] = tokenID
+		// The bypass arm runs outside a task session, so the binding carries only the
+		// agent. Registering it still matters: a KNOWN-but-unbound lease is how the
+		// transport tells "an agent sent its lease" from "the operator sent a session
+		// ID", and answers the former with no session rather than with the lease ID.
+		if r := s.leaseResolver(); r != nil {
+			r.BindLease(tokenID, domain.LeaseBinding{StepIndex: 0, AgentID: agentID})
+		}
+		handoff.Context["_session_token_id"] = string(tokenID)
 		defer func() { _, _ = s.LLMGateway.Complete(ctx, tokenID) }()
 	}
 
@@ -1058,15 +1161,22 @@ func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawIn
 	return handoffToProto(resp), nil
 }
 
-func loadOrCreateSession(ctx context.Context, mgr *session.SessionManager, goal string) *domain.Session {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if ok {
-		ids := md.Get("x-session-id")
-		if len(ids) > 0 && ids[0] != "" {
-			ses, err := mgr.GetSession(ctx, ids[0])
-			if err == nil && ses != nil && ses.Status != domain.SessionCompleted {
-				return ses
-			}
+// loadOrCreateSession resumes the caller's session, or opens a new one under goal.
+//
+// Phase 0: the caller's session is RESOLVED (resolveCallerSession) rather than read
+// straight off x-session-id. The operator plane sends a real session ID and is unchanged;
+// a caller that presents a lease now resumes the session that lease was bound to, instead
+// of missing the lookup and silently minting a second session for the same work.
+//
+// Identity is still INFERRED here — "header present ⇒ continue, absent ⇒ create" cannot
+// distinguish new work from a continuation from a replay, which is the resume defect. That
+// is Phase 2's explicit OpenSession/CloseSession verbs, not this change.
+func (s *Server) loadOrCreateSession(ctx context.Context, goal string) *domain.Session {
+	mgr := s.SessionMgr
+	if sid := s.resolveCallerSession(ctx); sid != "" {
+		ses, err := mgr.GetSession(ctx, sid)
+		if err == nil && ses != nil && ses.Status != domain.SessionCompleted {
+			return ses
 		}
 	}
 	ses, err := mgr.CreateSession(ctx, goal, "")
@@ -1189,7 +1299,7 @@ func (s *Server) handleMemoryBarrier(
 }
 
 // injectMoodContext appends recent session events as mood context to userInput.
-func injectMoodContext(ctx context.Context, s *Server, sessionID, userInput string) string {
+func injectMoodContext(ctx context.Context, s *Server, sessionID domain.SessionID, userInput string) string {
 	// Plan Drift: warn if session was completed long ago.
 	if s.SessionMgr != nil {
 		ses, err := s.SessionMgr.GetSession(ctx, sessionID)

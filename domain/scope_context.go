@@ -32,12 +32,12 @@ func ScopeFromContext(ctx context.Context) (*EffectiveScope, bool) {
 type sessionIDCtxKey struct{}
 
 // WithSessionID returns a child context carrying the session ID.
-func WithSessionID(ctx context.Context, sessionID string) context.Context {
+func WithSessionID(ctx context.Context, sessionID SessionID) context.Context {
 	return context.WithValue(ctx, sessionIDCtxKey{}, sessionID)
 }
 
 // SessionIDFromContext returns the session ID carried by ctx, if any.
-func SessionIDFromContext(ctx context.Context) (string, bool) {
-	v, ok := ctx.Value(sessionIDCtxKey{}).(string)
+func SessionIDFromContext(ctx context.Context) (SessionID, bool) {
+	v, ok := ctx.Value(sessionIDCtxKey{}).(SessionID)
 	return v, ok && v != ""
 }
