@@ -38,9 +38,17 @@ service OperatorConsole {
   // Idempotent on the intervention id via command_id. ADR-0047 D11/0047-09.
   rpc ResolveHITL(ResolveHITLRequest) returns (CommandAck);
 
-  // PauseSession / ResumeSession steer a live execution via the control hub.
+  // PauseSession / ResumeSession steer a live execution via the control hub AND persist
+  // the session's lifecycle status, so the operator console's state reflects the command
+  // (Phase 2). Before this they only signalled an in-memory executor, so a paused session
+  // still reported "active" and could never be resumed from the console.
   rpc PauseSession(SessionCommandRequest) returns (CommandAck);
   rpc ResumeSession(SessionCommandRequest) returns (CommandAck);
+
+  // CloseSession seals a session (→ completed). It is the terminator the lifecycle never
+  // had: without it nothing ever left "active", so episodic consolidation (ADR-0012/0030)
+  // was gated on a state no code could reach. Idempotent via command_id; audited.
+  rpc CloseSession(SessionCommandRequest) returns (CommandAck);
 
   // Remaining mutations (Operator-only, idempotent, audited). ADR-0047 0047-07.
   rpc TagMemory(TagMemoryRequest) returns (CommandAck);
@@ -398,7 +406,7 @@ message OperatorEvent {
     AuctionEventOp auction = 10;
     AgentReadyOp agent_ready = 11;
     SessionDormantOp session_dormant = 12;
-    SessionCompletedOp session_completed = 13;
+    SessionCompletedOp session_completed = 13 [deprecated = true]; // no producer since consolidation was removed
     MemoryPressureOp memory_pressure = 14;
     DaemonCrashedOp daemon_crashed = 15;
     WatchTriggeredOp watch_triggered = 16;
@@ -413,6 +421,7 @@ message OperatorEvent {
     ReactiveBudgetOp reactive_budget = 25;   // REACT-02 / ADR-0062: backpressure shed event
     AgentStepOp agent_step = 26;             // agent-loop observability (query-thrash + poisoning)
     AgentLLMExchangeOp llm_exchange = 27;    // provider-tap: full prompt+completion of every agent reasoning turn (live-only)
+    SessionStateOp session_state = 28;       // Phase 2: absolute session lifecycle state
   }
 }
 
@@ -544,12 +553,42 @@ message AgentReadyOp {
   int64 interview_ms = 5;
 }
 
+// SessionStateOp is the ABSOLUTE lifecycle state of one session, emitted on every
+// transition — open, pause, resume, dormant, complete (Phase 2).
+//
+// It replaces the per-transition ops as the primary signal. SessionDormantOp and
+// SessionCompletedOp still fire alongside it so an older console keeps working, but they
+// only ever covered two of the five transitions: a console folding just those could never
+// observe a session being CREATED or PAUSED, so newly-opened sessions were invisible until
+// the next snapshot and the "paused" state was unreachable paint.
+//
+// Absolute-state (ADR-0047 D6): a consumer upserts by session_id and needs no history.
+message SessionStateOp {
+  string session_id = 1;
+  string status = 2;      // active | paused | dormant | completed
+  string goal = 3;
+  string parent_id = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  // reason is the operator-supplied justification when the transition came from a
+  // steering command; empty for kernel-driven transitions (idle sweep, consolidation).
+  string reason = 7;
+}
+
 message SessionDormantOp {
   string session_id = 1;
   int64 ttl_seconds = 2;
 }
 
+// DEPRECATED: nothing emits this. It reported the end of a memory-consolidation run, and
+// the consolidation pipeline has been removed (it was never wired — the consumer was never
+// constructed and the state it waited on was never produced). A session reaching "completed"
+// is reported by SessionStateOp, which covers all five transitions.
+//
+// The message and field number are retained for wire compatibility with consoles pinned to
+// an earlier contract; do not reuse field 13.
 message SessionCompletedOp {
+  option deprecated = true;
   string session_id = 1;
   int32 documents_merged = 2;
 }

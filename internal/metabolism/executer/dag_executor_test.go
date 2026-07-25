@@ -1367,18 +1367,18 @@ type mockCheckpointStore struct {
 	saved []int
 }
 
-func (m *mockCheckpointStore) SaveCheckpoint(_ string, _ string, stepIndex int, _ map[string]string) error {
+func (m *mockCheckpointStore) SaveCheckpoint(_ domain.RunID, stepIndex int, _ map[string]string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.saved = append(m.saved, stepIndex)
 	return nil
 }
 
-func (m *mockCheckpointStore) LoadCheckpoint(_ string, _ string, _ int) (map[string]string, error) {
+func (m *mockCheckpointStore) LoadCheckpoint(_ domain.RunID, _ int) (map[string]string, error) {
 	return nil, nil
 }
 
-func (m *mockCheckpointStore) ListCheckpoints(_ string) ([]CheckpointMeta, error) {
+func (m *mockCheckpointStore) ListCheckpoints(_ domain.RunID) ([]CheckpointMeta, error) {
 	return nil, nil
 }
 

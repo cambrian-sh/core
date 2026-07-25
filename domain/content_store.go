@@ -32,7 +32,7 @@ type ContextNode struct {
 	Labels       []string
 	Parents      []CID  // provenance edges — NOT part of CID computation
 	Snippet      string // inline resilience snippet (see ContextRef.Snippet)
-	OwnerSession string // ADR-0048 D4: session that wrote this node; "" = system/ownerless
+	OwnerSession SessionID // ADR-0048 D4: session that wrote this node; "" = system/ownerless
 }
 
 // CanReadContentNode is the ContentStore read-gate (ADR-0048 D4). An ownerless
@@ -40,7 +40,7 @@ type ContextNode struct {
 // readable by anyone (fail-open). An owned node (an agent's offloaded working
 // memory) is readable only by its owning session (fail-closed on mismatch), so
 // one agent cannot read another's offload by observing a cid.
-func CanReadContentNode(ownerSession, callerSession string) bool {
+func CanReadContentNode(ownerSession, callerSession SessionID) bool {
 	return ownerSession == "" || ownerSession == callerSession
 }
 

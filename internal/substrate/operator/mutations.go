@@ -43,7 +43,8 @@ func (NoopEffects) TriggerConsolidation(context.Context, string) error         {
 func (NoopEffects) SetRuntimeConfig(context.Context, map[string]float64) error { return nil }
 
 // EventBusEffects implements the effects that can be driven purely off the
-// EventBus today — TriggerConsolidation publishes a MemoryPressureEvent. The
+// EventBus today — TriggerConsolidation publishes a MemoryPressureEvent (which now has no
+// consumer beyond the operator feed; see TriggerConsolidation). The
 // remaining effects fall through to NoopEffects until their surfaces are wired.
 type EventBusEffects struct {
 	NoopEffects
@@ -168,7 +169,12 @@ func (s *Service) RegisterMCP(ctx context.Context, req *pb.RegisterMCPRequest) (
 		req.GetName(), func() error { return s.effects.RegisterMCP(ctx, req.GetName(), req.GetCommand(), req.GetUrl()) })
 }
 
-// TriggerConsolidation drives a manual memory-pressure consolidation.
+// TriggerConsolidation publishes a memory-pressure signal to the operator feed.
+//
+// It no longer drives a consolidation run: the consolidation pipeline has been removed
+// because nothing was wired to it. The RPC is retained because the signal itself is still
+// useful operator-visible state, but it is a REPORT, not an action — the name is kept only
+// for contract stability.
 func (s *Service) TriggerConsolidation(ctx context.Context, req *pb.TriggerConsolidationRequest) (*pb.CommandAck, error) {
 	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(), "trigger_consolidation", "lifecycle", req.GetScope(),
 		req.GetScope(), func() error { return s.effects.TriggerConsolidation(ctx, req.GetScope()) })

@@ -30,9 +30,9 @@ func (p *fakeCallerProvider) EffectiveForCaller(_ context.Context, id string, ca
 }
 
 // fakeSessions returns a fixed caller_scope per session ID.
-type fakeSessions struct{ byID map[string]domain.ScopeConfig }
+type fakeSessions struct{ byID map[domain.SessionID]domain.ScopeConfig }
 
-func (s fakeSessions) CallerScope(_ context.Context, sid string) domain.ScopeConfig {
+func (s fakeSessions) CallerScope(_ context.Context, sid domain.SessionID) domain.ScopeConfig {
 	return s.byID[sid]
 }
 
@@ -49,7 +49,7 @@ func TestQueryService_Phase2_SessionCallerScopeNarrows(t *testing.T) {
 	}
 	q.EnableScoping(prov, store)
 	// Session caller_scope forbids secrets — even though the agent is unrestricted.
-	q.EnablePhase2(prov, fakeSessions{byID: map[string]domain.ScopeConfig{
+	q.EnablePhase2(prov, fakeSessions{byID: map[domain.SessionID]domain.ScopeConfig{
 		"sess-1": {ForbiddenTags: []string{"secrets"}},
 	}})
 
@@ -80,7 +80,7 @@ func TestQueryService_Phase2_UnknownSessionFallsBackToAgent(t *testing.T) {
 		agent: map[string]domain.ScopeConfig{"support": {ForbiddenTags: []string{"secrets"}}},
 	}
 	q.EnableScoping(prov, store)
-	q.EnablePhase2(prov, fakeSessions{byID: map[string]domain.ScopeConfig{}}) // no session scopes
+	q.EnablePhase2(prov, fakeSessions{byID: map[domain.SessionID]domain.ScopeConfig{}}) // no session scopes
 
 	ctx := domain.WithSessionID(context.Background(), "ghost-session")
 	res, _ := q.Search(ctx, "anything", "support")

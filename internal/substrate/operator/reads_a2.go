@@ -177,7 +177,7 @@ func (s *Service) QueryMemory(ctx context.Context, req *pb.QueryMemoryRequest) (
 		if f := req.GetSource(); f != "" && src != f {
 			continue
 		}
-		if f := req.GetSession(); f != "" && metaString(r.Document.Metadata, "session_id") != f {
+		if f := req.GetSession(); f != "" && domain.DocSessionID(r.Document.Metadata) != f {
 			continue
 		}
 		resp.Results = append(resp.Results, &pb.MemoryOp{

@@ -49,11 +49,21 @@ func (c ThemeCluster) SourceHashes() []string {
 	return out
 }
 
+// sessionOf returns the contributing SOURCE of a document for the k-anonymity denominator.
+//
+// It considers the ingest thread as well as the task session: both are distinct
+// contributors, and before Phase 1's key split an ingest thread was written into
+// "session_id" and counted here. Keeping it counted preserves the promotion threshold
+// exactly across the rename — a change in the denominator would silently move the
+// re-identification floor.
 func sessionOf(d domain.Document) string {
 	if s := metaString(d, "source_session"); s != "" {
 		return s
 	}
-	return metaString(d, "session_id")
+	if s := metaString(d, domain.MetaSessionID); s != "" {
+		return s
+	}
+	return metaString(d, domain.MetaIngestThreadID)
 }
 
 func metaString(d domain.Document, key string) string {

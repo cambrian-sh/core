@@ -27,6 +27,11 @@ type BudgetLeaseState struct {
 	ActualTokensUsed int       // reconciled at stream close via Pass 2
 	ExpiresAt        time.Time // keepalive TTL — refreshed on each chunk
 	LastActivityAt   time.Time
+	// Binding is the execution identity the kernel attached at dispatch (session, run,
+	// step, agent). It is what lets a transport resolve an agent's opaque lease back to
+	// the session that owns it, instead of trusting the agent's own header. Written
+	// server-side only; the zero value means "never bound". See LeaseBinding.
+	Binding LeaseBinding
 }
 
 // StepAllocation records the top-3 TraitModel candidates (winner + 2 fallbacks)

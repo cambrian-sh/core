@@ -8,11 +8,11 @@ import (
 )
 
 type stubSessionStore struct {
-	sessions map[string]domain.Session
+	sessions map[domain.SessionID]domain.Session
 }
 
 func newStubSessionStore() *stubSessionStore {
-	return &stubSessionStore{sessions: make(map[string]domain.Session)}
+	return &stubSessionStore{sessions: make(map[domain.SessionID]domain.Session)}
 }
 
 func (s *stubSessionStore) SaveSession(_ context.Context, ses domain.Session) error {
@@ -20,7 +20,7 @@ func (s *stubSessionStore) SaveSession(_ context.Context, ses domain.Session) er
 	return nil
 }
 
-func (s *stubSessionStore) GetSession(_ context.Context, id string) (*domain.Session, error) {
+func (s *stubSessionStore) GetSession(_ context.Context, id domain.SessionID) (*domain.Session, error) {
 	ses, ok := s.sessions[id]
 	if !ok {
 		return nil, nil

@@ -16,7 +16,7 @@ func TestCanReadContentNode(t *testing.T) {
 		{"s1", "", false},    // a caller with no session cannot read an owned node
 	}
 	for _, c := range cases {
-		if got := CanReadContentNode(c.owner, c.caller); got != c.want {
+		if got := CanReadContentNode(SessionID(c.owner), SessionID(c.caller)); got != c.want {
 			t.Errorf("CanReadContentNode(%q, %q) = %v, want %v", c.owner, c.caller, got, c.want)
 		}
 	}

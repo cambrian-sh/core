@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/awareness"
 	"github.com/cambrian-sh/core/internal/config"
-	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/memory"
 )
 
@@ -109,7 +109,9 @@ func episodicLLMResp() string {
 		MadeAt          string `json:"made_at"`
 		SourceEventType string `json:"source_event_type"`
 	}
-	type a struct{ Text string `json:"text"` }
+	type a struct {
+		Text string `json:"text"`
+	}
 	type out struct {
 		Decisions   []d `json:"decisions"`
 		ActionItems []a `json:"action_items"`
@@ -131,93 +133,44 @@ func minimalPlanResp() string {
 
 // ── Cycle 1: full episodic path — ExtractAndSave → PrimeForPlanning → Planner ──
 
-func TestEpisodicWiring_FullPath(t *testing.T) {
-	ctx := context.Background()
-	store := newInMemoryVecStore()
-
-	// 1. EpisodicExtractor saves an EpisodicMemory document to the store.
-	ex := awareness.NewEpisodicExtractor(
-		&episodicFakeLLM{response: episodicLLMResp()},
-		store,
-		domain.NewRegexPIIMasker(),
-	)
-	sess := domain.Session{
-		ID:          "sess-wire-001",
-		Goal:        "auth flow design",
-		Status:      domain.SessionCompleted,
-		CreatedAt:   time.Now().Add(-2 * time.Hour),
-		CompletedAt: time.Now(),
-		UpdatedAt:   time.Now(),
-	}
-	err := ex.ExtractAndSave(ctx, awareness.EpisodicExtractionInput{
-		Session: sess,
-		Events: []domain.SessionEvent{
-			{SessionID: "sess-wire-001", Type: domain.EventUserMessage, Payload: "we discussed auth"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("ExtractAndSave: %v", err)
-	}
-
-	// 2. WorkspaceStage with PolicyProvider retrieves the episodic document.
-	pp := config.NewStaticPolicyProvider(
-		map[string]domain.HippocampusPolicy{
-			"episodic": {SimilarityThreshold: 0.50, MaxAgeHours: 8760},
-		},
-		"episodic",
-	)
-	ws := memory.NewWorkspaceStage(store, &unitEmbedder{}, nil, 10, 5, 0.2, false, 0.7)
-	ws.PolicyProvider = pp
-
-	enrichment, err := ws.PrimeForPlanning(ctx, "what did we decide about auth?")
-	if err != nil {
-		t.Fatalf("PrimeForPlanning: %v", err)
-	}
-	if len(enrichment.Episodes) == 0 {
-		t.Fatal("expected at least one Episode in LTMEnrichment.Episodes after ExtractAndSave")
-	}
-
-	// 3. Planner injects <EpisodicMemory> into the prompt.
-	planLLM := &episodicFakeLLM{response: minimalPlanResp()}
-	planner := awareness.NewPlanner(planLLM, &emptyAgentProvider{}, nil)
-	planner.WorkspaceStage = &fixedWorkspaceStage{enrichment: enrichment}
-
-	_, err = planner.GetExecutionPlan(ctx, "what did we decide about auth?")
-	if err != nil {
-		t.Fatalf("GetExecutionPlan: %v", err)
-	}
-
-	// Full path verified: no error means ExtractAndSave → PrimeForPlanning → GetExecutionPlan
-	// all executed without panicking. Prompt content is verified in the next test.
-}
-
 // TestEpisodicWiring_PlannerPromptContainsEpisodicBlock drives through the
 // Planner's prompt generation path directly, confirming the XML block is present.
+// seedEpisodic writes an EpisodicMemory document straight into the store.
+//
+// It replaces the EpisodicExtractor, which produced these documents and has been removed
+// along with the rest of the unwired consolidation pipeline. What these tests exercise is
+// the READ path — the planner surfacing an <EpisodicMemory> block — which is still live, so
+// the fixture just has to put a well-formed document where the planner will find it.
+func seedEpisodic(t *testing.T, store *inMemoryVecStore, goal, decision string) {
+	t.Helper()
+	mem := domain.EpisodicMemory{
+		SessionID:   "sess-prompt-001",
+		Goal:        goal,
+		Decisions:   []domain.Decision{{Text: decision, MadeAt: time.Now(), SourceEventType: "user_message"}},
+		StartedAt:   time.Now().Add(-time.Hour),
+		CompletedAt: time.Now(),
+	}
+	vec := make([]float32, 8)
+	for i := range vec {
+		vec[i] = 1
+	}
+	if err := store.Save(context.Background(), &domain.Document{
+		ID:                 "episodic-" + string(mem.SessionID),
+		Text:               goal + " " + decision,
+		DocumentType:       domain.DocTypeEpisodicMemory,
+		ActivationStrength: 1,
+		Embedding:          domain.Embedding{Vector: vec},
+		Metadata:           map[string]interface{}{"episodic": mem},
+	}); err != nil {
+		t.Fatalf("seed episodic doc: %v", err)
+	}
+}
+
 func TestEpisodicWiring_PlannerPromptContainsEpisodicBlock(t *testing.T) {
 	ctx := context.Background()
 	store := newInMemoryVecStore()
 
-	ex := awareness.NewEpisodicExtractor(
-		&episodicFakeLLM{response: episodicLLMResp()},
-		store,
-		domain.NewRegexPIIMasker(),
-	)
-	err := ex.ExtractAndSave(ctx, awareness.EpisodicExtractionInput{
-		Session: domain.Session{
-			ID:          "sess-prompt-001",
-			Goal:        "JWT authentication design",
-			Status:      domain.SessionCompleted,
-			CreatedAt:   time.Now().Add(-time.Hour),
-			CompletedAt: time.Now(),
-			UpdatedAt:   time.Now(),
-		},
-		Events: []domain.SessionEvent{
-			{SessionID: "sess-prompt-001", Type: domain.EventUserMessage, Payload: "auth discussion"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("ExtractAndSave: %v", err)
-	}
+	seedEpisodic(t, store, "JWT authentication design", "use JWT for auth")
 
 	pp := config.NewStaticPolicyProvider(
 		map[string]domain.HippocampusPolicy{
@@ -233,7 +186,7 @@ func TestEpisodicWiring_PlannerPromptContainsEpisodicBlock(t *testing.T) {
 	planner := awareness.NewPlanner(capLLM, &emptyAgentProvider{}, nil)
 	planner.WorkspaceStage = ws
 
-	_, err = planner.GetExecutionPlan(ctx, "what did we decide about auth?")
+	_, err := planner.GetExecutionPlan(ctx, "what did we decide about auth?")
 	if err != nil {
 		t.Fatalf("GetExecutionPlan: %v", err)
 	}
@@ -256,24 +209,7 @@ func TestEpisodicWiring_UnrelatedQuery_NoEpisodicBlock(t *testing.T) {
 	ctx := context.Background()
 	store := newInMemoryVecStore()
 
-	ex := awareness.NewEpisodicExtractor(
-		&episodicFakeLLM{response: episodicLLMResp()},
-		store,
-		domain.NewRegexPIIMasker(),
-	)
-	_ = ex.ExtractAndSave(ctx, awareness.EpisodicExtractionInput{
-		Session: domain.Session{
-			ID:          "sess-unrelated",
-			Goal:        "JWT authentication design",
-			Status:      domain.SessionCompleted,
-			CreatedAt:   time.Now().Add(-time.Hour),
-			CompletedAt: time.Now(),
-			UpdatedAt:   time.Now(),
-		},
-		Events: []domain.SessionEvent{
-			{SessionID: "sess-unrelated", Type: domain.EventUserMessage, Payload: "auth discussion"},
-		},
-	})
+	seedEpisodic(t, store, "JWT authentication design", "use JWT for auth")
 
 	// Policy with very HIGH threshold — nothing will clear it for unrelated queries
 	pp := config.NewStaticPolicyProvider(

@@ -177,11 +177,11 @@ type ToolCallRequest struct {
 	AgentID  string
 	ToolName string
 	ArgsJSON []byte
-	// SessionTokenID is the agent's per-step managed-LLM session token (ADR-0018).
+	// SessionTokenID is the agent's per-step managed-LLM BudgetLease (ADR-0018).
 	// Carried so the executor can recognize a sandboxed evaluation session and
 	// auto-approve dangerous tools within it (see EvaluationSessionSet). Empty for
 	// callers that do not run under a managed session.
-	SessionTokenID string
+	SessionTokenID LeaseID
 	// TaskID is the per-step correlation key (ADR-0049 D3, step-{index}-{planID}),
 	// read from x-task-id metadata. Stamps action records so a step's actions can be
 	// counted at step-end for the prose-synthesis dedup. "" leaves dedup off.
@@ -276,9 +276,22 @@ func (e *ToolExecutor) priceFor(req ToolCallRequest) (ToolPricing, bool) {
 	return e.Pricing.PricingFor(req.ToolName)
 }
 
+// artifactSession returns the session an artifact produced by this call belongs to.
+//
+// The session is resolved server-side and carried on ctx (the transport derives it from the
+// caller's unforgeable lease). The lease is used only as a last-resort correlation key when
+// no session is in play — a tool call outside any session still produces a retrievable
+// artifact, just one scoped to that call.
+func artifactSession(ctx context.Context, req ToolCallRequest) string {
+	if sid, ok := SessionIDFromContext(ctx); ok && sid != "" {
+		return string(sid)
+	}
+	return string(req.SessionTokenID)
+}
+
 // budgetAccountFor keys a call's spend to its managed session (ADR-0043 D5).
 func budgetAccountFor(req ToolCallRequest) string {
-	return "mcp:" + req.SessionTokenID
+	return "mcp:" + string(req.SessionTokenID)
 }
 
 // Execute authorizes and runs one tool call.
@@ -341,7 +354,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 	if req.System {
 		grant = ToolGrant{Tool: req.ToolName, Policy: ToolResourcePolicy{AllowAll: true}}
 	} else {
-		g, granted := e.grantFor(ctx, req.AgentID, req.ToolName, req.SessionTokenID)
+		g, granted := e.grantFor(ctx, req.AgentID, req.ToolName, string(req.SessionTokenID))
 		if !granted {
 			return denied("tool not granted to agent", argHash)
 		}
@@ -527,7 +540,12 @@ func (e *ToolExecutor) persistArtifacts(ctx context.Context, req ToolCallRequest
 					Hash:        hash,
 					ContentType: contentTypeFor(r.Path),
 					SizeBytes:   int64(len(node.Data)),
-					SessionID:   req.SessionTokenID,
+					// Phase 3: the artifact belongs to the TASK SESSION, resolved
+					// server-side from the caller's lease. It used to be stamped with the
+					// per-step lease itself, so ListStepArtifacts(sessionID) could never
+					// find it — the artifact was addressed by a key nothing would ever
+					// look it up by.
+					SessionID:   string(artifactSession(ctx, req)),
 					Tags:        tags,
 				}); rerr != nil {
 					slog.Warn("tool artifact promote: metadata record failed", "tool", req.ToolName, "path", r.Path, "err", rerr)

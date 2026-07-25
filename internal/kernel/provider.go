@@ -4,15 +4,16 @@
 package kernel
 
 import (
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/centralexec"
 	"github.com/cambrian-sh/core/internal/config"
-	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
+	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	"github.com/cambrian-sh/core/internal/router"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	session "github.com/cambrian-sh/core/internal/substrate/session"
-	subsynaptic "github.com/cambrian-sh/core/internal/substrate/synaptic"
 	supwatcher "github.com/cambrian-sh/core/internal/supervision/watcher"
+	"log/slog"
 )
 
 // ProvideServer assembles the gRPC server from the four domain stacks.
@@ -26,7 +27,6 @@ func ProvideServer(
 	modelRouter *llm.ProviderRegistry,
 	llmProvider *llm.Provider, // ADR-0042: availability authority; the router Acquires from it
 	sessionMgr *session.SessionManager,
-	eventLog *subsynaptic.EventLogger,
 	llmGateway subnetwork.LLMGateway,
 	observer domain.TelemetryObserver,
 	contentStore domain.ContentStore, // ADR-0022 Phase 1
@@ -50,12 +50,25 @@ func ProvideServer(
 		watcher,
 		modelRouter,
 		sessionMgr,
-		eventLog,
 		mem.WorkspaceStage,
 		llmGateway,
 		observer,
 		contentStore,
 	)
+
+	// Phase 3: the run store. The registry (AgentRepoDecorator) satisfies domain.RunStore;
+	// the compile-time assertion in repository_decorator.go is what keeps this assertion
+	// from silently going false the way the checkpoint one did.
+	if cs, ok := meta.Manager.Registry.(executer.CheckpointStore); ok {
+		srv.Checkpoints = cs
+	} else {
+		slog.Warn("Phase 3: registry does not implement CheckpointStore — checkpoints will not persist")
+	}
+	if rs, ok := meta.Manager.Registry.(domain.RunStore); ok {
+		srv.Runs = rs
+	} else {
+		slog.Warn("Phase 3: registry does not implement domain.RunStore — runs will not persist and resume is unavailable")
+	}
 
 	// ADR-0025: SceneWriterFactory produces a fresh PgSceneWriter per Execute call.
 	// The factory is nil-safe — if NewPgSceneWriter returns nil (no VecDB or embedder),

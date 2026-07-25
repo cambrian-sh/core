@@ -37,7 +37,7 @@ type ArtifactScopeResolver interface {
 // ArtifactSessionScopes returns the non-forgeable caller_scope persisted on a
 // session, for Phase-2 re-derivation parity with QueryMemory. Optional.
 type ArtifactSessionScopes interface {
-	CallerScope(ctx context.Context, sessionID string) domain.ScopeConfig
+	CallerScope(ctx context.Context, sessionID domain.SessionID) domain.ScopeConfig
 }
 
 // effectiveReadScope resolves the caller's effective READ scope, honoring Phase-2

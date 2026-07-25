@@ -28,11 +28,11 @@ func (f *fakeCaller) CallAgent(_ context.Context, _ string, h *domain.Handoff, _
 
 type fakeGateway struct{ acquired, completed bool }
 
-func (g *fakeGateway) Acquire(context.Context, domain.StepAllocation, int, time.Duration) (string, error) {
+func (g *fakeGateway) Acquire(context.Context, domain.StepAllocation, int, time.Duration) (domain.LeaseID, error) {
 	g.acquired = true
 	return "sess-test-1", nil
 }
-func (g *fakeGateway) Complete(context.Context, string) (llm.TokenUsage, error) {
+func (g *fakeGateway) Complete(context.Context, domain.LeaseID) (llm.TokenUsage, error) {
 	g.completed = true
 	return llm.TokenUsage{}, nil
 }

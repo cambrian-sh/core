@@ -95,7 +95,7 @@ func (d *RetrievalDispatcher) call(ctx context.Context, reqData []byte) ([]byte,
 			sa.Winner = domain.AgentDefinition{ID: d.Model}
 		}
 		if tokenID, aerr := d.Gateway.Acquire(ctx, sa, retrievalPlanTokenLimit, retrievalSessionTTL); aerr == nil && tokenID != "" {
-			h.Context["_session_token_id"] = tokenID
+			h.Context["_session_token_id"] = string(tokenID)
 			defer func() { _, _ = d.Gateway.Complete(ctx, tokenID) }()
 		}
 	}

@@ -4,11 +4,15 @@ import "time"
 
 // Event type constants used with EventBus.Subscribe / EventBus.Publish.
 const (
-	EventTypeAgentReady       = "agent.ready"
-	EventTypeAuctionEvent     = "auction.event"
-	EventTypeSessionDormant   = "session.dormant"
-	EventTypeSessionCompleted = "session.completed"
-	EventTypeMemoryPressure   = "memory.pressure"
+	EventTypeAgentReady     = "agent.ready"
+	EventTypeAuctionEvent   = "auction.event"
+	EventTypeSessionDormant = "session.dormant"
+	// EventTypeSessionState reports the ABSOLUTE lifecycle state of a session after any
+	// transition (open, pause, resume, dormant, complete). Phase 2 — it exists because
+	// the two events above cover only two of the five transitions, so a consumer folding
+	// just those can never see a session be created or paused.
+	EventTypeSessionState   = "session.state"
+	EventTypeMemoryPressure = "memory.pressure"
 	// EventTypeWatchTriggered is the default routing key for WatchTriggeredEvent.
 	// WatchAction.Target can override it on a per-rule basis. ADR-0032.
 	EventTypeWatchTriggered = "watch.triggered"
@@ -182,18 +186,27 @@ type AgentReadyEvent struct {
 // to the Dormant state. MemoryLifecycleManager subscribes to schedule
 // per-session consolidation. ADR-0030.
 type SessionDormantEvent struct {
-	SessionID   string
+	SessionID   SessionID
 	DormantAt   time.Time
 	TTLDuration time.Duration
 }
 
-// SessionCompletedEvent is emitted by MemoryLifecycleManager after consolidation
-// finishes for a dormant session. ADR-0030.
-type SessionCompletedEvent struct {
-	SessionID       string
-	ConsolidatedAt  time.Time
-	DocumentsMerged int
+// SessionStateEvent is the absolute lifecycle state of a session, published by
+// SessionManager on every transition INCLUDING creation. Phase 2.
+//
+// Consumers upsert by SessionID; there is no history to replay and no ordering requirement
+// beyond the feed's own sequence. Reason is set only for operator-driven transitions.
+type SessionStateEvent struct {
+	SessionID SessionID
+	Status    SessionStatus
+	Goal      string
+	ParentID  SessionID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Reason    string
 }
+
+func (SessionStateEvent) EventType() string { return EventTypeSessionState }
 
 // MemoryPressureEvent is emitted when document count or index size exceeds a
 // configured threshold. Subscribers (MemoryLifecycleManager, Scavenger) trigger
@@ -383,19 +396,18 @@ func (VerifierRoundEvent) EventType() string { return EventTypeVerifierRound }
 func (LLMHealthEvent) EventType() string     { return EventTypeLLMHealth }
 func (PlanStateChanged) EventType() string   { return EventTypePlanState }
 
-func (AuctionEventPayload) domainEvent()   {}
-func (AgentReadyEvent) domainEvent()       {}
-func (SessionDormantEvent) domainEvent()   {}
-func (SessionCompletedEvent) domainEvent() {}
-func (MemoryPressureEvent) domainEvent()   {}
-func (WatchTriggeredEvent) domainEvent()   {}
-func (DaemonCrashedEvent) domainEvent()    {}
+func (AuctionEventPayload) domainEvent() {}
+func (AgentReadyEvent) domainEvent()     {}
+func (SessionStateEvent) domainEvent()   {}
+func (SessionDormantEvent) domainEvent() {}
+func (MemoryPressureEvent) domainEvent() {}
+func (WatchTriggeredEvent) domainEvent() {}
+func (DaemonCrashedEvent) domainEvent()  {}
 
-func (AuctionEventPayload) EventType() string   { return EventTypeAuctionEvent }
-func (AgentReadyEvent) EventType() string       { return EventTypeAgentReady }
-func (SessionDormantEvent) EventType() string   { return EventTypeSessionDormant }
-func (SessionCompletedEvent) EventType() string { return EventTypeSessionCompleted }
-func (MemoryPressureEvent) EventType() string   { return EventTypeMemoryPressure }
+func (AuctionEventPayload) EventType() string { return EventTypeAuctionEvent }
+func (AgentReadyEvent) EventType() string     { return EventTypeAgentReady }
+func (SessionDormantEvent) EventType() string { return EventTypeSessionDormant }
+func (MemoryPressureEvent) EventType() string { return EventTypeMemoryPressure }
 
 func (DaemonCrashedEvent) EventType() string { return EventTypeDaemonCrashed }
 

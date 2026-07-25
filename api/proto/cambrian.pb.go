@@ -336,13 +336,22 @@ func (x *Handoff) GetMetadata() map[string]string {
 
 // ADR-0039 tool-execution messages.
 type ExecuteToolRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	ToolName       string                 `protobuf:"bytes,1,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
-	ArgsJson       string                 `protobuf:"bytes,2,opt,name=args_json,json=argsJson,proto3" json:"args_json,omitempty"` // marshalled by the agent's think() loop
-	SessionTokenId string                 `protobuf:"bytes,3,opt,name=session_token_id,json=sessionTokenId,proto3" json:"session_token_id,omitempty"`
-	StepIndex      int32                  `protobuf:"varint,4,opt,name=step_index,json=stepIndex,proto3" json:"step_index,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	ToolName string                 `protobuf:"bytes,1,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
+	ArgsJson string                 `protobuf:"bytes,2,opt,name=args_json,json=argsJson,proto3" json:"args_json,omitempty"` // marshalled by the agent's think() loop
+	// DEPRECATED: use lease_id. This field never carried a "session" — it carries the
+	// per-step BudgetLease (ADR-0018). The name is what let the lease be read as a durable
+	// task session downstream. Kept for wire compatibility; readers prefer lease_id.
+	//
+	// Deprecated: Marked as deprecated in cambrian.proto.
+	SessionTokenId string `protobuf:"bytes,3,opt,name=session_token_id,json=sessionTokenId,proto3" json:"session_token_id,omitempty"`
+	StepIndex      int32  `protobuf:"varint,4,opt,name=step_index,json=stepIndex,proto3" json:"step_index,omitempty"`
+	// lease_id is the opaque per-step BudgetLease the kernel issued at dispatch. It is a
+	// CREDENTIAL: the kernel resolves it to the session/run/step it bound, so an agent
+	// never names its own session.
+	LeaseId       string `protobuf:"bytes,5,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExecuteToolRequest) Reset() {
@@ -389,6 +398,7 @@ func (x *ExecuteToolRequest) GetArgsJson() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in cambrian.proto.
 func (x *ExecuteToolRequest) GetSessionTokenId() string {
 	if x != nil {
 		return x.SessionTokenId
@@ -401,6 +411,13 @@ func (x *ExecuteToolRequest) GetStepIndex() int32 {
 		return x.StepIndex
 	}
 	return 0
+}
+
+func (x *ExecuteToolRequest) GetLeaseId() string {
+	if x != nil {
+		return x.LeaseId
+	}
+	return ""
 }
 
 type ExecuteToolResponse struct {
@@ -3183,12 +3200,17 @@ func (x *MemoryResponse) GetResults() []*MemoryResult {
 // GenerateStreamRequest carries the agent's LLM call parameters for
 // the Substrate's GenerateViaModelStream streaming proxy (ADR-0018).
 type GenerateStreamRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	SessionTokenId string                 `protobuf:"bytes,1,opt,name=session_token_id,json=sessionTokenId,proto3" json:"session_token_id,omitempty"`
-	Prompt         string                 `protobuf:"bytes,2,opt,name=prompt,proto3" json:"prompt,omitempty"`
-	Options        *GenerateOptions       `protobuf:"bytes,3,opt,name=options,proto3" json:"options,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// DEPRECATED: use lease_id. See ExecuteToolRequest.session_token_id.
+	//
+	// Deprecated: Marked as deprecated in cambrian.proto.
+	SessionTokenId string           `protobuf:"bytes,1,opt,name=session_token_id,json=sessionTokenId,proto3" json:"session_token_id,omitempty"`
+	Prompt         string           `protobuf:"bytes,2,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	Options        *GenerateOptions `protobuf:"bytes,3,opt,name=options,proto3" json:"options,omitempty"`
+	// lease_id is the opaque per-step BudgetLease (ADR-0018).
+	LeaseId       string `protobuf:"bytes,4,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GenerateStreamRequest) Reset() {
@@ -3221,6 +3243,7 @@ func (*GenerateStreamRequest) Descriptor() ([]byte, []int) {
 	return file_cambrian_proto_rawDescGZIP(), []int{49}
 }
 
+// Deprecated: Marked as deprecated in cambrian.proto.
 func (x *GenerateStreamRequest) GetSessionTokenId() string {
 	if x != nil {
 		return x.SessionTokenId
@@ -3240,6 +3263,13 @@ func (x *GenerateStreamRequest) GetOptions() *GenerateOptions {
 		return x.Options
 	}
 	return nil
+}
+
+func (x *GenerateStreamRequest) GetLeaseId() string {
+	if x != nil {
+		return x.LeaseId
+	}
+	return ""
 }
 
 // GenerateOptions mirrors domain.GenerateOptions for the streaming RPC.
@@ -3973,13 +4003,14 @@ const file_cambrian_proto_rawDesc = "" +
 	"\bmetadata\x18\t \x03(\v2\x1f.cambrian.Handoff.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\a\x10\b\"\x97\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\a\x10\b\"\xb6\x01\n" +
 	"\x12ExecuteToolRequest\x12\x1b\n" +
 	"\ttool_name\x18\x01 \x01(\tR\btoolName\x12\x1b\n" +
-	"\targs_json\x18\x02 \x01(\tR\bargsJson\x12(\n" +
-	"\x10session_token_id\x18\x03 \x01(\tR\x0esessionTokenId\x12\x1d\n" +
+	"\targs_json\x18\x02 \x01(\tR\bargsJson\x12,\n" +
+	"\x10session_token_id\x18\x03 \x01(\tB\x02\x18\x01R\x0esessionTokenId\x12\x1d\n" +
 	"\n" +
-	"step_index\x18\x04 \x01(\x05R\tstepIndex\"\xe0\x01\n" +
+	"step_index\x18\x04 \x01(\x05R\tstepIndex\x12\x19\n" +
+	"\blease_id\x18\x05 \x01(\tR\aleaseId\"\xe0\x01\n" +
 	"\x13ExecuteToolResponse\x12\x1f\n" +
 	"\vresult_json\x18\x01 \x01(\tR\n" +
 	"resultJson\x12\x1d\n" +
@@ -4187,11 +4218,12 @@ const file_cambrian_proto_rawDesc = "" +
 	"\x05score\x18\x02 \x01(\x02R\x05score\x12\x1a\n" +
 	"\bmetadata\x18\x03 \x01(\tR\bmetadata\"B\n" +
 	"\x0eMemoryResponse\x120\n" +
-	"\aresults\x18\x01 \x03(\v2\x16.cambrian.MemoryResultR\aresults\"\x8e\x01\n" +
-	"\x15GenerateStreamRequest\x12(\n" +
-	"\x10session_token_id\x18\x01 \x01(\tR\x0esessionTokenId\x12\x16\n" +
+	"\aresults\x18\x01 \x03(\v2\x16.cambrian.MemoryResultR\aresults\"\xad\x01\n" +
+	"\x15GenerateStreamRequest\x12,\n" +
+	"\x10session_token_id\x18\x01 \x01(\tB\x02\x18\x01R\x0esessionTokenId\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x123\n" +
-	"\aoptions\x18\x03 \x01(\v2\x19.cambrian.GenerateOptionsR\aoptions\"y\n" +
+	"\aoptions\x18\x03 \x01(\v2\x19.cambrian.GenerateOptionsR\aoptions\x12\x19\n" +
+	"\blease_id\x18\x04 \x01(\tR\aleaseId\"y\n" +
 	"\x0fGenerateOptions\x12\x1d\n" +
 	"\n" +
 	"max_tokens\x18\x01 \x01(\x05R\tmaxTokens\x12 \n" +

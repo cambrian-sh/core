@@ -26,7 +26,7 @@ type ArtifactStepLister interface {
 // SessionCallerScopes returns the non-forgeable caller_scope for a session, used to
 // scope-filter surfaced artifacts (ADR-0034 Phase 2). Optional.
 type SessionCallerScopes interface {
-	CallerScope(ctx context.Context, sessionID string) domain.ScopeConfig
+	CallerScope(ctx context.Context, sessionID domain.SessionID) domain.ScopeConfig
 }
 
 // TaskEventWriter is the interface that BBoltAdapter (and test mocks) implement
@@ -39,8 +39,8 @@ type TaskEventWriter interface {
 // LLMGateway is the narrow consumer-side interface DAGExecutor needs for
 // session-token lifecycle management (ADR-0018). Nil = zero behaviour change.
 type LLMGateway interface {
-	Acquire(ctx context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (string, error)
-	Complete(ctx context.Context, sessionID string) (llm.TokenUsage, error)
+	Acquire(ctx context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (domain.LeaseID, error)
+	Complete(ctx context.Context, leaseID domain.LeaseID) (llm.TokenUsage, error)
 }
 
 // ContextGrowthPenalty returns k * growthBytes as a float64 penalty value.
@@ -89,19 +89,14 @@ type ContextCheckpoint struct {
 
 // CheckpointStore persists context checkpoints for crash recovery.
 // The substrate calls SaveCheckpoint after each successful step merge.
-type CheckpointStore interface {
-	SaveCheckpoint(sessionID, planID string, stepIndex int, ctx map[string]string) error
-	LoadCheckpoint(sessionID, planID string, stepIndex int) (map[string]string, error)
-	ListCheckpoints(sessionID string) ([]CheckpointMeta, error)
-}
+// CheckpointStore is domain.CheckpointStore. It is an ALIAS, not a second declaration:
+// having two structurally-identical ports meant an implementation could satisfy one and not
+// the other, and the mismatch only ever surfaced at a distant assignment.
+type CheckpointStore = domain.CheckpointStore
 
 // CheckpointMeta describes a persisted checkpoint.
-type CheckpointMeta struct {
-	SessionID string
-	PlanID    string
-	StepIndex int
-	Timestamp time.Time
-}
+// CheckpointMeta is domain.CheckpointMeta (alias — see CheckpointStore).
+type CheckpointMeta = domain.CheckpointMeta
 
 // DAGExecutor traverses an ExecutionPlan as a DAG, dispatching independent
 // steps concurrently and accumulating results into a shared context map.
@@ -140,15 +135,19 @@ type DAGExecutor struct {
 	// false → filterSnapshotForStep into Handoff.Context; PrimeForStep NOT called (Phase 0 behavior).
 	// Default false for backward compat; set true after Phase 3 validation passes.
 	UseGlobalWorkspace      bool
-	MaxContextSlots         int     // ADR-0022: hard ceiling for PrimeForStep; 0 defaults to 20
-	StepFactCosineThreshold float64 // AGENTCONTEXTREQ REQ2: min cosine for forwarding a planning fact to a step (default 0.55)
-	MaxReplanAttempts       int     // max replan attempts; 0 disables replan
-	MaxFanOutWidth          int     // ADR-0078 R2: cap on parametric fan-out expansion; 0 disables the cap
-	MaxPlanCost             float64 // total plan budget; 0 disables budget enforcement
-	DefaultInputCostPer1M   float64 // cost per 1M input tokens for cost estimation
-	DefaultOutputCostPer1M  float64 // cost per 1M output tokens for cost estimation
-	CurrentSessionID        string  // session scope for checkpoints; empty = no session
-	CheckpointFlushSecs     int     // periodic flush interval in seconds (0 = only on pause)
+	MaxContextSlots         int              // ADR-0022: hard ceiling for PrimeForStep; 0 defaults to 20
+	StepFactCosineThreshold float64          // AGENTCONTEXTREQ REQ2: min cosine for forwarding a planning fact to a step (default 0.55)
+	MaxReplanAttempts       int              // max replan attempts; 0 disables replan
+	MaxFanOutWidth          int              // ADR-0078 R2: cap on parametric fan-out expansion; 0 disables the cap
+	MaxPlanCost             float64          // total plan budget; 0 disables budget enforcement
+	DefaultInputCostPer1M   float64          // cost per 1M input tokens for cost estimation
+	DefaultOutputCostPer1M  float64          // cost per 1M output tokens for cost estimation
+	CurrentSessionID        domain.SessionID // session the run belongs to; empty = no session
+	// CurrentRunID is the execution checkpoints are written under. Checkpoints are keyed by
+	// RUN because a step index only means something relative to the plan of the run it was
+	// taken against. Empty ⇒ no checkpointing.
+	CurrentRunID        domain.RunID
+	CheckpointFlushSecs int // periodic flush interval in seconds (0 = only on pause)
 
 	// ADR-0034 / REQ-SDK-007b: optional artifact discovery in working_memory.
 	// When both are set, prior-step artifacts are surfaced (scope-filtered) into
@@ -223,7 +222,7 @@ func (d *DAGExecutor) executeStep(
 		if d.EventBus != nil {
 			_ = d.EventBus.Publish(domain.HITLRaisedEvent{
 				InterventionID: fmt.Sprintf("%s:%d", planID, stepIndex),
-				SessionID:      d.CurrentSessionID,
+				SessionID:      string(d.CurrentSessionID),
 				Description:    plan.Steps[stepIndex].Query,
 				IsDestructive:  true,
 			})
@@ -495,7 +494,7 @@ func (d *DAGExecutor) publishPlanState(planID, status string, activeStep int, co
 		return
 	}
 	_ = d.EventBus.Publish(domain.PlanStateChanged{
-		SessionID:  d.CurrentSessionID,
+		SessionID:  string(d.CurrentSessionID),
 		PlanID:     planID,
 		ActiveStep: activeStep,
 		Status:     status,
@@ -805,7 +804,7 @@ func (d *DAGExecutor) ExecuteFrom(
 						}
 					}
 					for _, dep := range plan.Steps[i].DependsOn {
-						arts, lerr := d.ArtifactLister.ListStepArtifacts(d.CurrentSessionID, dep)
+						arts, lerr := d.ArtifactLister.ListStepArtifacts(string(d.CurrentSessionID), dep)
 						if lerr == nil && len(arts) > 0 {
 							workingMemory = append(workingMemory,
 								scope.ArtifactContextRefs(eff, arts, fmt.Sprintf("step_%d", dep))...)
@@ -1027,8 +1026,8 @@ func (d *DAGExecutor) ExecuteFrom(
 
 		// Checkpoint: record snapshot after successful merge.
 		if d.CheckpointStore != nil {
-			if err := d.CheckpointStore.SaveCheckpoint(d.CurrentSessionID, planID, r.index, cloneMap(masterContext)); err != nil {
-				slog.Warn("checkpoint write failed", "session", d.CurrentSessionID, "step", r.index, "err", err)
+			if err := d.CheckpointStore.SaveCheckpoint(d.CurrentRunID, r.index, cloneMap(masterContext)); err != nil {
+				slog.Warn("checkpoint write failed", "run", d.CurrentRunID, "step", r.index, "err", err)
 			}
 		}
 

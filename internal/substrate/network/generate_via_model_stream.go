@@ -16,14 +16,18 @@ import (
 // sessionStore is the narrow interface GenerateViaModelStream needs to look up
 // step metadata (agent_id, plan_id, step_index) stored at Acquire time.
 type sessionStore interface {
-	GetBudgetLeaseState(id string) *domain.BudgetLeaseState
+	GetBudgetLeaseState(id domain.LeaseID) *domain.BudgetLeaseState
 }
 
 // GenerateViaModelStream is a streaming server-side RPC that acts as a metered
 // proxy between a cognitive agent and the LLM provider allocated for its step.
 func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb.Orchestrator_GenerateViaModelStreamServer) error {
-	if req.SessionTokenId == "" {
-		return status.Error(codes.Unauthenticated, "session_token_id is required")
+	// Phase 1: prefer the correctly-named lease_id, accept the deprecated
+	// session_token_id so an un-upgraded agent keeps working. Both carry the same thing —
+	// a per-step BudgetLease — which is exactly why the old name had to go.
+	leaseID := leaseIDOf(req.GetLeaseId(), req.GetSessionTokenId())
+	if leaseID == "" {
+		return status.Error(codes.Unauthenticated, "lease_id is required")
 	}
 	if s.LLMGateway == nil {
 		return status.Error(codes.Unimplemented, "GenerateViaModelStream: LLMGateway not wired")
@@ -41,7 +45,7 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 
 	go func() {
 		defer close(out)
-		errCh <- s.LLMGateway.StreamChunks(stream.Context(), req.SessionTokenId, req.Prompt, opts, out)
+		errCh <- s.LLMGateway.StreamChunks(stream.Context(), leaseID, req.Prompt, opts, out)
 	}()
 
 	var responseBuilder strings.Builder
@@ -63,7 +67,7 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 		// ADR-0047 0047-23: fork the chunk to the operator feed's live-only token
 		// lane (best-effort; never affects the agent stream).
 		if s.TokenSink != nil && chunk.Text != "" {
-			s.TokenSink(req.SessionTokenId, 0, chunk.Text)
+			s.TokenSink(string(leaseID), 0, chunk.Text)
 		}
 	}
 
@@ -77,7 +81,7 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 		}
 	}
 	if ss, ok := s.LLMGateway.(sessionStore); ok {
-		if state := ss.GetBudgetLeaseState(req.SessionTokenId); state != nil {
+		if state := ss.GetBudgetLeaseState(leaseID); state != nil {
 			// Winner is the TraitModel agent allocated for this step.
 			modelID = state.StepAllocation.Winner.ID
 		}
@@ -88,7 +92,7 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 	// Persist full prompt+response as a neural trace in pgvector.
 	neuralTrace := fmt.Sprintf("PROMPT:\n%s\n\nRESPONSE:\n%s", req.Prompt, completion)
 	if s.VectorStore != nil && neuralTrace != "" {
-		storeNeuralTrace(stream.Context(), s.VectorStore, neuralTrace, req.SessionTokenId, "", stepIndex, 0, agentID)
+		storeNeuralTrace(stream.Context(), s.VectorStore, neuralTrace, string(leaseID), "", stepIndex, 0, agentID)
 	}
 
 	// OBSERVABILITYREQ REQ1: Log agent LLM call to Langfuse (fire-and-forget).
@@ -101,7 +105,7 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 	// internal ReAct loop. Gated (nil unless execution.capture_llm_exchanges); the sink
 	// truncates. Fire-and-forget — never affects the agent stream.
 	if s.LLMExchangeSink != nil && completion != "" {
-		s.LLMExchangeSink(req.SessionTokenId, agentID, modelID, stepIndex, req.Prompt, completion)
+		s.LLMExchangeSink(string(leaseID), agentID, modelID, stepIndex, req.Prompt, completion)
 	}
 
 	err := <-errCh

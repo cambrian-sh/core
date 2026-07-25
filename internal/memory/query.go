@@ -39,7 +39,7 @@ type CallerScopeProvider interface {
 // SessionScopeProvider returns the non-forgeable caller_scope persisted on a
 // session record. The SessionManager satisfies it. ADR-0034 (D13).
 type SessionScopeProvider interface {
-	CallerScope(ctx context.Context, sessionID string) domain.ScopeConfig
+	CallerScope(ctx context.Context, sessionID domain.SessionID) domain.ScopeConfig
 }
 
 // QueryService implements domain.MemorySearcher: it embeds the query, searches the
@@ -166,7 +166,7 @@ const (
 // traceDoc is one retrieved chunk as recorded in the loop trace (bounded).
 type traceDoc struct {
 	DocID   string  `json:"docid"`
-	Source  string  `json:"source,omitempty"` // session_id (e.g. musique:<qid>::p<idx>) when present
+	Source  string  `json:"source,omitempty"` // ingest thread of the source doc, when present
 	Score   float64 `json:"score"`
 	Snippet string  `json:"snippet"`
 }
@@ -199,8 +199,11 @@ func traceDocs(hits []domain.SearchResult) []traceDoc {
 			break
 		}
 		d := traceDoc{DocID: h.Document.ID, Score: h.Score, Snippet: traceSnippet(h.Document.Text, 160)}
-		if sid, ok := h.Document.Metadata["session_id"].(string); ok && sid != "" {
-			d.Source = sid
+		// The trace's "source" is where the CHUNK came from (its ingestion thread), not
+		// which run retrieved it. domain.DocIngestThreadID still understands rows written
+		// before the key split.
+		if src := domain.DocIngestThreadID(h.Document.Metadata); src != "" {
+			d.Source = src
 		}
 		out = append(out, d)
 	}
@@ -1783,7 +1786,7 @@ func (q *QueryService) reinforceCoActivation(results []domain.SearchResult) {
 // own step records (D1) and duplicates, then re-ranks using the T-Mem
 // two-trigger formula (cosine × (α + (1-α) × effective) + β × reachability)
 // and caps to recallTopK. ADR-0048 D2 + ADR-0052.
-func (q *QueryService) spreadAndRank(ctx context.Context, seeds []domain.SearchResult, sid string) []domain.SearchResult {
+func (q *QueryService) spreadAndRank(ctx context.Context, seeds []domain.SearchResult, sid domain.SessionID) []domain.SearchResult {
 	expansions := q.spreader.Spread(ctx, seeds)
 	seen := make(map[string]bool, len(expansions))
 	out := make([]domain.SearchResult, 0, len(expansions))
@@ -1970,19 +1973,19 @@ const (
 // larger copy of the context each step (ADR-0048 D1). A deliberate remember()
 // fact carries the agent's own id as source, not "System", so it is NOT excluded
 // — the exclusion is narrow to the auto-recorded step records.
-func isSameSessionStepRecord(doc domain.Document, sid string) bool {
+func isSameSessionStepRecord(doc domain.Document, sid domain.SessionID) bool {
 	if sid == "" || doc.Metadata == nil {
 		return false
 	}
 	src, _ := doc.Metadata["source_agent"].(string)
-	docSid, _ := doc.Metadata["session_id"].(string)
+	docSid := domain.SessionID(domain.DocSessionID(doc.Metadata))
 	return src == "System" && docSid == sid
 }
 
 // excludeSameSessionStepRecords drops the current session's own step records from
 // a mnemonic_fact result set (ADR-0048 D1). Shared so any FACT search — the agent
 // recall above and PrimeForStep's seed (D3, defensive) — gets the same exclusion.
-func excludeSameSessionStepRecords(results []domain.SearchResult, sid string) []domain.SearchResult {
+func excludeSameSessionStepRecords(results []domain.SearchResult, sid domain.SessionID) []domain.SearchResult {
 	if sid == "" {
 		return results
 	}

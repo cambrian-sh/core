@@ -99,7 +99,7 @@ type capturingCS struct {
 
 func (c *capturingCS) Put(ctx context.Context, data []byte, nodeType string, _ []string, _ string) (domain.CID, error) {
 	sid, _ := domain.SessionIDFromContext(ctx)
-	c.putOwner = sid
+	c.putOwner = string(sid)
 	if c.nodes == nil {
 		c.nodes = map[domain.CID]*domain.ContextNode{}
 	}

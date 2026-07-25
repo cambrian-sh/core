@@ -79,16 +79,6 @@ type ScopeConfigRecord struct {
 	AnyOfTags     []string `json:"any_of_tags,omitempty"`
 	ForbiddenTags []string `json:"forbidden_tags,omitempty"`
 }
-
-// EventRecord is the raw JSON shape stored in the bbolt events bucket.
-type EventRecord struct {
-	SessionID   string   `json:"session_id"`
-	Type        string   `json:"type"`
-	Timestamp   string   `json:"timestamp"`
-	Payload     string   `json:"payload"`
-	ArtifactIDs []string `json:"artifact_ids,omitempty"`
-}
-
 // ArtifactRecord is the raw JSON shape stored in the bbolt artifacts bucket.
 type ArtifactRecord struct {
 	Hash            string            `json:"hash"`

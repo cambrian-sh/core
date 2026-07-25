@@ -19,10 +19,10 @@ type capturingGateway struct {
 	mu            sync.Mutex
 	acquireCount  int
 	completeCount int
-	tokenToReturn string
+	tokenToReturn domain.LeaseID
 }
 
-func (g *capturingGateway) Acquire(_ context.Context, _ domain.StepAllocation, _ int, _ time.Duration) (string, error) {
+func (g *capturingGateway) Acquire(_ context.Context, _ domain.StepAllocation, _ int, _ time.Duration) (domain.LeaseID, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.acquireCount++
@@ -32,14 +32,14 @@ func (g *capturingGateway) Acquire(_ context.Context, _ domain.StepAllocation, _
 	return g.tokenToReturn, nil
 }
 
-func (g *capturingGateway) Complete(_ context.Context, _ string) (llm.TokenUsage, error) {
+func (g *capturingGateway) Complete(_ context.Context, _ domain.LeaseID) (llm.TokenUsage, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.completeCount++
 	return llm.TokenUsage{}, nil
 }
 
-func (g *capturingGateway) StreamChunks(_ context.Context, _ string, _ string, _ domain.GenerateOptions, _ chan<- domain.StreamChunk) error {
+func (g *capturingGateway) StreamChunks(_ context.Context, _ domain.LeaseID, _ string, _ domain.GenerateOptions, _ chan<- domain.StreamChunk) error {
 	return nil
 }
 

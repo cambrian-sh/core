@@ -101,7 +101,7 @@ func (d *AgentScoutDispatcher) runLLMTier(ctx context.Context, userInput string,
 			sa.Winner = domain.AgentDefinition{ID: d.ScoutModel}
 		}
 		if tokenID, aerr := d.Gateway.Acquire(ctx, sa, scoutTokenLimit, scoutSessionTTL); aerr == nil && tokenID != "" {
-			h.Context["_session_token_id"] = tokenID
+			h.Context["_session_token_id"] = string(tokenID)
 			defer func() { _, _ = d.Gateway.Complete(ctx, tokenID) }()
 		}
 	}
@@ -124,7 +124,7 @@ func (d *AgentScoutDispatcher) persistToSession(ctx context.Context, report *dom
 	if d.sessionCache == nil {
 		d.sessionCache = make(map[string]*domain.DiscoveryReport)
 	}
-	d.sessionCache[sid] = report
+	d.sessionCache[string(sid)] = report
 	d.mu.Unlock()
 }
 

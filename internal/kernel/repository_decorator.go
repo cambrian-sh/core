@@ -2,30 +2,27 @@ package kernel
 
 import (
 	"context"
-	"time"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/mapper"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	"github.com/cambrian-sh/core/internal/storage"
-	"github.com/cambrian-sh/core/internal/supervision/aggregator"
 	session "github.com/cambrian-sh/core/internal/substrate/session"
-	subsynaptic "github.com/cambrian-sh/core/internal/substrate/synaptic"
+	"github.com/cambrian-sh/core/internal/supervision/aggregator"
 )
 
 // Compile-time interface assertions.
 var (
-	_ domain.AgentRegistry              = (*AgentRepoDecorator)(nil)
-	_ domain.AgentUpdater               = (*AgentRepoDecorator)(nil)
-	_ domain.AgentPruner                = (*AgentRepoDecorator)(nil)
-	_ aggregator.TaskEventReader        = (*AgentRepoDecorator)(nil)
-	_ executer.TaskEventWriter          = (*AgentRepoDecorator)(nil)
-	_ session.SessionRepository         = (*AgentRepoDecorator)(nil)
-	_ subsynaptic.EventStore            = (*AgentRepoDecorator)(nil)
-	_ domain.PlanEventWriter            = (*AgentRepoDecorator)(nil)
-	_ domain.RetrievalSessionLogger     = (*AgentRepoDecorator)(nil)
-	_ domain.TraversalLogger            = (*AgentRepoDecorator)(nil)
-	_ domain.ContradictionLogger        = (*AgentRepoDecorator)(nil)
+	_ domain.AgentRegistry          = (*AgentRepoDecorator)(nil)
+	_ domain.AgentUpdater           = (*AgentRepoDecorator)(nil)
+	_ domain.AgentPruner            = (*AgentRepoDecorator)(nil)
+	_ aggregator.TaskEventReader    = (*AgentRepoDecorator)(nil)
+	_ executer.TaskEventWriter      = (*AgentRepoDecorator)(nil)
+	_ session.SessionRepository     = (*AgentRepoDecorator)(nil)
+	_ domain.PlanEventWriter        = (*AgentRepoDecorator)(nil)
+	_ domain.RetrievalSessionLogger = (*AgentRepoDecorator)(nil)
+	_ domain.TraversalLogger        = (*AgentRepoDecorator)(nil)
+	_ domain.ContradictionLogger    = (*AgentRepoDecorator)(nil)
 )
 
 // AgentRepoDecorator wraps storage.BBoltAdapter and maps DTOs to domain entities.
@@ -227,8 +224,9 @@ func (d *AgentRepoDecorator) SaveSession(_ context.Context, ses domain.Session) 
 	return d.store.SaveSessionRecord(rec)
 }
 
-func (d *AgentRepoDecorator) GetSession(_ context.Context, id string) (*domain.Session, error) {
-	rec, err := d.store.GetSessionRecord(id)
+func (d *AgentRepoDecorator) GetSession(_ context.Context, id domain.SessionID) (*domain.Session, error) {
+	// bbolt keys are plain strings; the cast marks the persistence edge.
+	rec, err := d.store.GetSessionRecord(string(id))
 	if err != nil {
 		return nil, err
 	}
@@ -251,51 +249,39 @@ func (d *AgentRepoDecorator) ListSessions(_ context.Context, status domain.Sessi
 	return sessions, nil
 }
 
-// ── subsynaptic.EventStore ───────────────────────────────────────────────────
+// ── domain.CheckpointStore / domain.RunStore ─────────────────────────────────
+//
+// These forwards are what finally WIRE checkpointing. The kernel resolves the checkpoint
+// store with a runtime type assertion on the registry (Server.executorCheckpointStore), and
+// the registry is this decorator — which held the bbolt adapter in a NAMED FIELD rather than
+// embedding it, so none of the adapter's checkpoint methods were promoted onto it. The
+// assertion therefore always failed, executorCheckpointStore always returned nil, and every
+// checkpoint write was skipped by the `if d.CheckpointStore != nil` guard.
+//
+// That also means the unsound-resume path could never actually fire: HydrateSession bailed
+// out on the nil store before it could apply a stale step index. The bug was real in code
+// and unreachable in practice — which is exactly why it survived so long unnoticed.
 
-func (d *AgentRepoDecorator) LogEvent(_ context.Context, ev domain.SessionEvent) error {
-	rec := d.mapper.SessionEventToRecord(ev)
-	return d.store.WriteEventRecord(rec)
+func (d *AgentRepoDecorator) SaveCheckpoint(runID domain.RunID, stepIndex int, ctx map[string]string) error {
+	return d.store.SaveCheckpoint(runID, stepIndex, ctx)
 }
 
-func (d *AgentRepoDecorator) GetEvents(_ context.Context, sessionID string, limit int) ([]domain.SessionEvent, error) {
-	recs, err := d.store.ListEventRecords(sessionID, limit)
-	if err != nil {
-		return nil, err
-	}
-	events := make([]domain.SessionEvent, 0, len(recs))
-	for _, rec := range recs {
-		events = append(events, d.mapper.SessionEventToDomain(rec))
-	}
-	return events, nil
+func (d *AgentRepoDecorator) LoadCheckpoint(runID domain.RunID, stepIndex int) (map[string]string, error) {
+	return d.store.LoadCheckpoint(runID, stepIndex)
 }
 
-func (d *AgentRepoDecorator) GetEventsByType(_ context.Context, sessionID string, types ...domain.SessionEventType) ([]domain.SessionEvent, error) {
-	typeStrs := make([]string, len(types))
-	for i, t := range types {
-		typeStrs[i] = string(t)
-	}
-	recs, err := d.store.ListEventRecordsByType(sessionID, typeStrs)
-	if err != nil {
-		return nil, err
-	}
-	events := make([]domain.SessionEvent, 0, len(recs))
-	for _, rec := range recs {
-		events = append(events, d.mapper.SessionEventToDomain(rec))
-	}
-	return events, nil
+func (d *AgentRepoDecorator) ListCheckpoints(runID domain.RunID) ([]domain.CheckpointMeta, error) {
+	return d.store.ListCheckpoints(runID)
 }
 
-func (d *AgentRepoDecorator) GetAllRecentEvents(_ context.Context, since time.Time, limit int) ([]domain.SessionEvent, error) {
-	recs, err := d.store.ListAllEventRecordsSince(since, limit)
-	if err != nil {
-		return nil, err
-	}
-	events := make([]domain.SessionEvent, 0, len(recs))
-	for _, rec := range recs {
-		events = append(events, d.mapper.SessionEventToDomain(rec))
-	}
-	return events, nil
+func (d *AgentRepoDecorator) SaveRun(run domain.Run) error { return d.store.SaveRun(run) }
+
+func (d *AgentRepoDecorator) GetRun(runID domain.RunID) (*domain.Run, error) {
+	return d.store.GetRun(runID)
+}
+
+func (d *AgentRepoDecorator) ListRunsForSession(sessionID domain.SessionID) ([]domain.Run, error) {
+	return d.store.ListRunsForSession(sessionID)
 }
 
 // ── domain.PlanEventWriter ───────────────────────────────────────────────────
@@ -375,3 +361,10 @@ func (d *AgentRepoDecorator) DeleteWatchConfig(id string) error {
 func (d *AgentRepoDecorator) SetWatchConfigActive(id string, active bool) error {
 	return d.store.SetWatchConfigActive(id, active)
 }
+
+// The registry is resolved to these ports by a runtime type assertion; assert at compile
+// time so a signature change can never silently unwire them again.
+var (
+	_ domain.CheckpointStore = (*AgentRepoDecorator)(nil)
+	_ domain.RunStore        = (*AgentRepoDecorator)(nil)
+)

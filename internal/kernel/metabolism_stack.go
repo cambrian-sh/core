@@ -178,8 +178,8 @@ func (s *MetabolismStack) InterviewEnqueuer() func(domain.AgentDefinition) {
 // a model StepAllocation; Complete frees it. Mirrors the per-step minting the
 // Server does for normal dispatch (server.go).
 type interviewSessionGateway interface {
-	Acquire(ctx context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (string, error)
-	Complete(ctx context.Context, sessionID string) (llm.TokenUsage, error)
+	Acquire(ctx context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (domain.LeaseID, error)
+	Complete(ctx context.Context, leaseID domain.LeaseID) (llm.TokenUsage, error)
 }
 
 // scenarioRunner adapts the Auctioneer's CallAgent to interview.ScenarioRunner:
@@ -216,7 +216,7 @@ func (r *scenarioRunner) RunScenario(ctx context.Context, agent domain.AgentDefi
 		// Generous TTL so a slow/uncapped interview LLM call is not evicted mid-stream
 		// (the session is freed promptly by the deferred Complete on return anyway).
 		if tokenID, err := r.gw.Acquire(cctx, sa, 4096, 1*time.Hour); err == nil {
-			h.Context["_session_token_id"] = tokenID
+			h.Context["_session_token_id"] = string(tokenID)
 			// Flag the session as a sandboxed evaluation so dangerous tools the
 			// agent calls during this scenario auto-approve (no operator is present
 			// in an unattended interview). Unmarked on completion alongside Complete.
