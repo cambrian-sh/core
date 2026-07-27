@@ -8,7 +8,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/memory"
-	"github.com/cambrian-sh/core/internal/scope"
+	"github.com/cambrian-sh/core/internal/authz"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -78,7 +78,7 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 		switch {
 		case errors.Is(err, memory.ErrUnknownPrincipal):
 			return nil, status.Error(codes.PermissionDenied, "unknown principal: "+agentID)
-		case errors.Is(err, scope.ErrUnknownClassification):
+		case errors.Is(err, authz.ErrWriteDenied):
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		default:
 			return nil, status.Error(codes.Internal, err.Error())

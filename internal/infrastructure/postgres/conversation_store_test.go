@@ -35,7 +35,7 @@ func newConvStore(t *testing.T) (*PgConversationStore, *pgxpool.Pool, context.Co
 
 	// Apply the REAL migration files, in order, so the test schema cannot drift from what
 	// ships (0002 base + 0003 policy column; ADR-0064).
-	for _, name := range []string{"0002_conversations.sql", "0003_conversation_policy.sql"} {
+	for _, name := range []string{"0002_conversations.sql", "0003_conversation_policy.sql", "0006_conversation_delivery.sql"} {
 		path := filepath.Join("..", "..", "migrate", "migrations", name)
 		ddl, err := os.ReadFile(path)
 		if err != nil {

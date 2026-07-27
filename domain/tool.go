@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 )
 
@@ -26,6 +27,27 @@ type SystemTool struct {
 	// writes, when it touches the tagged stores. Empty ⇒ not a data tool.
 	DataReadKinds  []string
 	DataWriteKinds []string
+
+	// ClassificationTags describe WHAT DOMAIN this tool touches — `crm`,
+	// `filesystem`, `payments`, `email` (ADR-0085 D2). They are the tool's side of
+	// the same tag algebra memory and skills use; they say nothing about what the
+	// invocation does, which is what Effects is for.
+	ClassificationTags []string
+
+	// Effects are the closed-set verb classes this invocation exercises
+	// (ADR-0086). A tool invocation is permitted only if the tag predicate passes
+	// AND every declared effect is granted.
+	//
+	// `egress` is the one a sovereign-deployment customer cares most about: "no
+	// tool may transmit outside this network" becomes a single checkable policy
+	// statement rather than an audit of every tool.
+	Effects []ToolEffect
+
+	// EffectsInferred marks a tool whose effects were DERIVED from its other
+	// manifest fields rather than declared (see InferEffects). It is surfaced to
+	// operators so the un-migrated tools are enumerable, and it is what strict
+	// mode refuses to produce.
+	EffectsInferred bool
 }
 
 // ToolGrant authorizes one agent to call one tool, bounded by a resource policy
@@ -79,10 +101,25 @@ func NewInMemoryToolRegistry() *InMemoryToolRegistry {
 	return &InMemoryToolRegistry{tools: map[string]SystemTool{}}
 }
 
+// Register normalizes a tool's effect classes and stores it. This is the single
+// registration chokepoint, so no path can put an unclassified tool in front of
+// the executor: a tool arriving with no effects has them inferred (ADR-0086), and
+// one declaring an effect OUTSIDE the closed set is refused outright.
+//
+// Refusal, not silent repair, is the right failure here: an unrecognised effect
+// is a manifest a policy cannot reason about, and a downstream "unknown tool" is
+// an honest answer. Strict mode (which also refuses ABSENT effects) is applied by
+// the caller before it gets here — see discovery.LoadRegistry.
 func (r *InMemoryToolRegistry) Register(t SystemTool) {
+	normalized, err := ValidateRegistration(t, false)
+	if err != nil {
+		slog.Error("ADR-0086: refusing to register a tool with an invalid effect declaration",
+			"tool", t.Name, "err", err)
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.tools[t.Name] = t
+	r.tools[normalized.Name] = normalized
 }
 
 // Remove deletes a tool from the registry (ADR-0043/0044: an MCP server that

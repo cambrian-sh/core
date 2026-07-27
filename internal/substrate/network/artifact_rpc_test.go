@@ -6,7 +6,6 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/scope"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -48,51 +47,71 @@ func (f *fakeMetaStore) ListStepArtifacts(session string, step int) ([]domain.Ar
 	return out, nil
 }
 
-type fakeArtScopes struct {
-	scopes    map[string]domain.ScopeConfig
+// fakeArtAuthz is a stand-in decision point for the artifact plane: a fixed
+// predicate per principal plus a write ceiling, with the narrow-only and
+// controlled-vocabulary rules the real one enforces. It exists so these tests
+// assert the KERNEL's behaviour (does the RPC ask, and does it honour the
+// answer) without importing the premium implementation.
+type fakeArtAuthz struct {
+	domain.AllowAllAuthorizer
+	preds     map[string]*domain.TagPredicate
 	writeTags map[string][]string
+	vocab     map[string]bool
 }
 
-func (f fakeArtScopes) EffectiveForAgent(_ context.Context, id string) (*domain.EffectiveScope, bool) {
-	cfg, ok := f.scopes[id]
+func (f fakeArtAuthz) ReadFilter(_ context.Context, p domain.PrincipalRef, s domain.SurfaceRef) (*domain.TagPredicate, domain.AccessDecision) {
+	pred, ok := f.preds[p.ID]
 	if !ok {
-		return nil, false
+		return nil, domain.AccessDecision{Principal: p, Surface: s, Reason: domain.ReasonNoPrincipal}
 	}
-	eff := domain.NewEffectiveScope(domain.ScopeConfig{}, cfg)
-	return &eff, true
+	return pred, domain.AccessDecision{Allowed: true, Principal: p, Reason: domain.ReasonAllowed}
 }
 
-func (f fakeArtScopes) EffectiveForCaller(_ context.Context, id string, caller domain.ScopeConfig) (*domain.EffectiveScope, bool) {
-	cfg, ok := f.scopes[id]
-	if !ok {
-		return nil, false
+func (f fakeArtAuthz) ClassifyWrite(_ context.Context, p domain.PrincipalRef, hint []string) ([]string, domain.AccessDecision) {
+	for _, h := range hint {
+		if len(f.vocab) > 0 && !f.vocab[h] {
+			return nil, domain.AccessDecision{Principal: p, Reason: domain.ReasonForbiddenTag, Detail: h}
+		}
 	}
-	eff := domain.NewEffectiveScope(caller, cfg)
-	return &eff, true
-}
-
-func (f fakeArtScopes) DefaultWriteTags(_ context.Context, id string) []string {
-	return f.writeTags[id]
+	ceiling := f.writeTags[p.ID]
+	out := []string{}
+	if len(hint) == 0 {
+		out = append(out, ceiling...)
+	} else {
+		want := map[string]bool{}
+		for _, h := range hint {
+			want[h] = true
+		}
+		for _, c := range ceiling { // narrow-only: the hint may remove, never add
+			if want[c] {
+				out = append(out, c)
+			}
+		}
+	}
+	return append(out, "provenance:source="+p.ID), domain.AccessDecision{Allowed: true, Principal: p, Reason: domain.ReasonAllowed}
 }
 
 func agentCtx(id string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-agent-id", id))
 }
 
-func newArtifactServer(scopes map[string]domain.ScopeConfig, writeTags map[string][]string, vocab []string) (*Server, *fakeMetaStore) {
+func newArtifactServer(preds map[string]*domain.TagPredicate, writeTags map[string][]string, vocab []string) (*Server, *fakeMetaStore) {
 	meta := newFakeMeta()
+	vset := map[string]bool{}
+	for _, v := range vocab {
+		vset[v] = true
+	}
 	return &Server{
-		ArtifactBytes:  newFakeVault(),
-		ArtifactMeta:   meta,
-		ArtifactScopes: fakeArtScopes{scopes: scopes, writeTags: writeTags},
-		ArtifactVocab:  scope.NewVocabulary(vocab),
+		ArtifactBytes: newFakeVault(),
+		ArtifactMeta:  meta,
+		Authz:         fakeArtAuthz{preds: preds, writeTags: writeTags, vocab: vset},
 	}, meta
 }
 
 // C2: an agent cannot classify an upload as anything outside its DefaultWriteTags.
 func TestUploadArtifact_CannotBroaden(t *testing.T) {
 	s, meta := newArtifactServer(
-		map[string]domain.ScopeConfig{"support": {}},
+		map[string]*domain.TagPredicate{"support": {}},
 		map[string][]string{"support": {"public_kb"}},
 		[]string{"secrets", "public_kb"})
 
@@ -111,7 +130,7 @@ func TestUploadArtifact_CannotBroaden(t *testing.T) {
 
 func TestUploadArtifact_RejectsCoinage(t *testing.T) {
 	s, _ := newArtifactServer(
-		map[string]domain.ScopeConfig{"a": {}},
+		map[string]*domain.TagPredicate{"a": {}},
 		map[string][]string{"a": {"public_kb"}},
 		[]string{"public_kb"})
 	_, err := s.UploadArtifact(agentCtx("a"), &pb.UploadArtifactRequest{
@@ -124,7 +143,7 @@ func TestUploadArtifact_RejectsCoinage(t *testing.T) {
 
 func TestUploadArtifact_DerivesClassificationAndStampsProvenance(t *testing.T) {
 	s, meta := newArtifactServer(
-		map[string]domain.ScopeConfig{"a": {}},
+		map[string]*domain.TagPredicate{"a": {}},
 		map[string][]string{"a": {"public_kb"}},
 		[]string{"public_kb"})
 	resp, err := s.UploadArtifact(agentCtx("a"), &pb.UploadArtifactRequest{
@@ -149,7 +168,7 @@ func TestUploadArtifact_DerivesClassificationAndStampsProvenance(t *testing.T) {
 }
 
 func TestGetArtifact_ScopeDeniedReportsNotFound(t *testing.T) {
-	s, meta := newArtifactServer(map[string]domain.ScopeConfig{
+	s, meta := newArtifactServer(map[string]*domain.TagPredicate{
 		"support": {ForbiddenTags: []string{"secrets"}},
 	}, nil, []string{"secrets"})
 	meta.recs["h0"] = domain.Artifact{Hash: "h0", Tags: []string{"secrets"}}
@@ -159,12 +178,12 @@ func TestGetArtifact_ScopeDeniedReportsNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp.Found {
-		t.Errorf("a scope-denied artifact must report found=false (no existence leak)")
+		t.Errorf("a denied artifact must report found=false (no existence leak)")
 	}
 }
 
 func TestListStepArtifacts_FiltersByScope(t *testing.T) {
-	s, meta := newArtifactServer(map[string]domain.ScopeConfig{
+	s, meta := newArtifactServer(map[string]*domain.TagPredicate{
 		"support": {ForbiddenTags: []string{"secrets"}},
 	}, nil, []string{"secrets", "public_kb"})
 	meta.recs["h0"] = domain.Artifact{Hash: "h0", SessionID: "s", StepIndex: 1, Tags: []string{"public_kb"}}

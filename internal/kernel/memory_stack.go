@@ -9,7 +9,7 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/memory"
 	memstore "github.com/cambrian-sh/core/internal/memory/store"
-	"github.com/cambrian-sh/core/internal/scope"
+	"github.com/cambrian-sh/core/internal/authz"
 )
 
 // MemoryStack is the memory substrate of the system. It owns everything that
@@ -20,7 +20,11 @@ import (
 // Biologically: this is the hippocampus + long-term memory cortex.
 type MemoryStack struct {
 	VecDB                domain.VectorStore
-	WriteStore           domain.VectorStore // ADR-0034: ScopedStoreWriter over ScopedVectorStore (read+write gated)
+	// ReadStore is the fail-closed read chokepoint over VecDB. Every principal-facing
+	// read goes through it; the raw VecDB is reserved for kernel-internal components
+	// that need the concrete adapter (graph store, spreader, profile store).
+	ReadStore            domain.VectorStore
+	WriteStore           domain.VectorStore // ADR-0085: write classification over ReadStore
 	ProfileStore         memstore.ProfileStore
 	Agent                *memory.Agent
 	Hippocampus          *memory.Hippocampus
@@ -51,20 +55,23 @@ func (s *MemoryStack) NewPgSceneWriter() *memory.PgSceneWriter {
 
 // NewMemoryStack constructs the memory layer from infrastructure primitives.
 // It does not start background workers — call Start() for that.
-func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.Embedder, execCfg config.ExecutionConfig) *MemoryStack {
+//
+// authorizer is the decision point consulted by the write chokepoint. A nil
+// authorizer means the OSS default (unrestricted): writes keep their authored
+// classification. The kernel always ASKS; what the answer is depends on whether a
+// policy plugin is installed (ADR-0085 §4.1).
+func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.Embedder, execCfg config.ExecutionConfig, authorizer domain.Authorizer) *MemoryStack {
 	profileStore := memstore.NewProfileStore(vec)
-	// ADR-0034 (D8/R3): route memory writes through the ScopedStoreWriter so every
-	// write — including the LLM-driven ConsolidatorAgent — is validated against the
-	// controlled vocabulary + writer ForbiddenTags and has provenance kernel-stamped.
-	// Enforcement activates per-write when a WriterScope is seeded (scope.WithWriterScope);
-	// kernel curation writes without a writer scope pass through unchanged.
-	// ADR-0034 (D5): scopedRead is the fail-closed read chokepoint; writeStore layers
-	// write-side validation on top. Agent reads (QueryService) carry the agent's
-	// effective scope; all kernel-internal reads carry domain.ScopeSystem explicitly.
+	// ADR-0085: every read passes the fail-closed read chokepoint and every write
+	// passes the classification chokepoint — including LLM-driven writes. There is
+	// no "trusted in-process" carve-out: process membership does not constrain a
+	// model's output. Agent reads (QueryService) carry the principal's resolved
+	// predicate; kernel-internal reads carry domain.ScopeSystem explicitly.
+	//
 	// Raw vec is retained ONLY for the GraphStore assertions + spreading engine +
 	// profile store (system components that need the concrete adapter).
-	scopedRead := scope.NewScopedVectorStore(vec, slog.Default())
-	writeStore := scope.NewScopedStoreWriter(scopedRead, scope.NewVocabulary(execCfg.ClassificationVocabulary), slog.Default())
+	scopedRead := authz.NewEnforcingVectorStore(vec, slog.Default())
+	writeStore := authz.NewEnforcingStoreWriter(scopedRead, authorizer, slog.Default())
 	memoryManager := memory.NewMemoryManager(writeStore, embed)
 	memoryAgent := memory.NewAgent(memoryManager, gen,
 		execCfg.MemoryRelevanceThreshold, execCfg.MaxMemoryResults, execCfg.MaxNeighborExpansion,
@@ -195,6 +202,7 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 
 	return &MemoryStack{
 		VecDB:                vec,
+		ReadStore:            scopedRead,
 		WriteStore:           writeStore,
 		ProfileStore:         profileStore,
 		Agent:                memoryAgent,

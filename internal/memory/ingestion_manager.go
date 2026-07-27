@@ -34,6 +34,8 @@ type IngestionManager struct {
 	// its section path. Both nil = structure graph disabled.
 	structureParser StructureParser
 	structureStore  StructureGraphStore
+	// documentStore records the source-document entity (ADR-0093). Optional.
+	documentStore DocumentStore
 	// sceneGenEnabled gates the per-item scene-generation LLM call on the ingest
 	// hot path (ADR-0049 episodic scenes). Default OFF: it stalls ingest when no
 	// LLM is reachable and is not needed for document/structure retrieval.

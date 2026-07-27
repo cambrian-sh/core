@@ -55,9 +55,11 @@ func (s *PgConversationStore) CreateConversation(ctx context.Context, c domain.C
 		c.UpdatedAt = c.CreatedAt
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO conversations (id, owner_id, title, status, profile, policy, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		c.ID, c.OwnerID, c.Title, string(c.Status), string(c.Profile), c.Policy, c.CreatedAt, c.UpdatedAt)
+		INSERT INTO conversations (id, owner_id, title, status, profile, policy, created_at, updated_at,
+		                           delivery_ingress, delivery_external)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		c.ID, c.OwnerID, c.Title, string(c.Status), string(c.Profile), c.Policy, c.CreatedAt, c.UpdatedAt,
+		c.Delivery.IngressAgentID, c.Delivery.ExternalID)
 	if err != nil {
 		return fmt.Errorf("create conversation: %w", err)
 	}
@@ -72,9 +74,11 @@ func (s *PgConversationStore) GetConversation(ctx context.Context, id string) (*
 		prof   string
 	)
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, owner_id, title, status, profile, policy, created_at, updated_at
+		SELECT id, owner_id, title, status, profile, policy, created_at, updated_at,
+		       delivery_ingress, delivery_external
 		FROM conversations WHERE id = $1`, id).
-		Scan(&c.ID, &c.OwnerID, &c.Title, &status, &prof, &c.Policy, &c.CreatedAt, &c.UpdatedAt)
+		Scan(&c.ID, &c.OwnerID, &c.Title, &status, &prof, &c.Policy, &c.CreatedAt, &c.UpdatedAt,
+			&c.Delivery.IngressAgentID, &c.Delivery.ExternalID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrConversationNotFound
 	}
@@ -253,4 +257,73 @@ func scanMessage(row pgx.Row) (domain.Message, error) {
 	}
 	m.Role = domain.MessageRole(role)
 	return m, nil
+}
+
+// BindDelivery records where replies to this conversation go (ADR-0090).
+//
+// Write-once, and enforced in the UPDATE's WHERE clause rather than by reading
+// first and writing after: a check-then-set would let two inbound messages racing
+// on first contact each see "unbound" and the second silently redirect the first.
+// Here the second UPDATE simply matches no rows.
+func (s *PgConversationStore) BindDelivery(ctx context.Context, conversationID string, addr domain.DeliveryAddress) error {
+	if addr.IsZero() {
+		return domain.ErrDeliveryAddressInvalid
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE conversations
+		   SET delivery_ingress = $2, delivery_external = $3, updated_at = now()
+		 WHERE id = $1 AND delivery_ingress = ''`,
+		conversationID, addr.IngressAgentID, addr.ExternalID)
+	if err != nil {
+		return fmt.Errorf("bind delivery: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+
+	// No row moved: either the conversation is gone, or it was already bound. Those
+	// are different problems for the caller, so tell them apart rather than
+	// returning one vague error.
+	var existing string
+	err = s.pool.QueryRow(ctx, `SELECT delivery_ingress FROM conversations WHERE id = $1`, conversationID).Scan(&existing)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrConversationNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("bind delivery: %w", err)
+	}
+	return domain.ErrDeliveryAlreadyBound
+}
+
+// FindByDelivery returns the conversation bound to addr, or ErrConversationNotFound.
+//
+// An unbound address matches nothing by construction: the index is partial on
+// delivery_ingress <> '', and a zero address is refused before the query, so an
+// empty external id can never collide with the empty defaults of unbound rows.
+func (s *PgConversationStore) FindByDelivery(ctx context.Context, addr domain.DeliveryAddress) (*domain.Conversation, error) {
+	if addr.IsZero() {
+		return nil, domain.ErrConversationNotFound
+	}
+	var (
+		c            domain.Conversation
+		status, prof string
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, owner_id, title, status, profile, policy, created_at, updated_at,
+		       delivery_ingress, delivery_external
+		FROM conversations
+		WHERE delivery_ingress = $1 AND delivery_external = $2
+		ORDER BY created_at DESC
+		LIMIT 1`, addr.IngressAgentID, addr.ExternalID).
+		Scan(&c.ID, &c.OwnerID, &c.Title, &status, &prof, &c.Policy, &c.CreatedAt, &c.UpdatedAt,
+			&c.Delivery.IngressAgentID, &c.Delivery.ExternalID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrConversationNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find conversation by delivery: %w", err)
+	}
+	c.Status = domain.ConversationStatus(status)
+	c.Profile = domain.ConversationProfile(prof)
+	return &c, nil
 }

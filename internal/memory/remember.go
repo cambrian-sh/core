@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/scope"
 
 	"github.com/google/uuid"
 )
@@ -15,12 +14,10 @@ import (
 // profile — a write by an unknown principal is fail-closed. ADR-0034 (D8).
 var ErrUnknownPrincipal = errors.New("memory: unknown principal (fail-closed)")
 
-// WriteScopeResolver resolves the writer's known-principal status and its
-// operator-configured DefaultWriteTags. The ScopeResolver satisfies it.
-type WriteScopeResolver interface {
-	EffectiveForAgent(ctx context.Context, agentID string) (*domain.EffectiveScope, bool)
-	DefaultWriteTags(ctx context.Context, agentID string) []string
-}
+// The writer's known-principal check and its write classification both come from
+// the decision point (domain.Authorizer): ReadFilter tells us whether the
+// principal resolves at all, and the write chokepoint derives the classification
+// from the principal stamped on the context. ADR-0085.
 
 // RememberService implements agent memory write-back (memory.remember() /
 // IngestMemory). Classification is KERNEL-DERIVED (ADR-0035 C2): the doc is
@@ -30,7 +27,7 @@ type WriteScopeResolver interface {
 type RememberService struct {
 	store    domain.VectorStore // the ScopedStoreWriter (read+write gated)
 	embedder domain.Embedder
-	scopes   WriteScopeResolver
+	authz    domain.Authorizer
 	// bus is optional (ADR-0047 D3): when set, a successful write publishes a
 	// MemoryWrittenEvent for the operator feed. nil ⇒ no-op.
 	bus domain.EventBus
@@ -73,20 +70,26 @@ func (s *RememberService) SetChunkTripletsBatcher(b *ChunkTripletsBatcher) {
 // (config RememberDefaultActivation). Bootstrap-time; a LoCoMo-tunable hyperparameter.
 func (s *RememberService) SetDefaultActivation(a float64) { s.defaultActivation = a }
 
-// NewRememberService builds the service over the scoped store, embedder, and resolver.
-func NewRememberService(store domain.VectorStore, embedder domain.Embedder, scopes WriteScopeResolver) *RememberService {
-	return &RememberService{store: store, embedder: embedder, scopes: scopes, defaultActivation: 0.5}
+// NewRememberService builds the service over the enforcing store, the embedder,
+// and the decision point. A nil authorizer means the OSS default (every principal
+// resolves; writes keep their authored tags).
+func NewRememberService(store domain.VectorStore, embedder domain.Embedder, a domain.Authorizer) *RememberService {
+	if a == nil {
+		a = domain.AllowAllAuthorizer{}
+	}
+	return &RememberService{store: store, embedder: embedder, authz: a, defaultActivation: 0.5}
 }
 
 // Remember embeds text and writes a mnemonic-fact document for the agent. hint is a
 // narrow-only classification hint (can only restrict the kernel-derived tags).
 // Returns the new document ID. An unknown principal is rejected (ErrUnknownPrincipal);
-// a coined hint tag is rejected (scope.ErrUnknownClassification).
+// a hint the decision point refuses is rejected (authz.ErrWriteDenied).
 func (s *RememberService) Remember(ctx context.Context, agentID, text string, hint []string, source, sessionID string, importance float64) (string, error) {
 	if agentID == "" {
 		return "", ErrUnknownPrincipal
 	}
-	if _, ok := s.scopes.EffectiveForAgent(ctx, agentID); !ok {
+	principal := domain.AgentPrincipal(agentID)
+	if pred, _ := s.authz.ReadFilter(ctx, principal, domain.SurfaceFromContext(ctx)); pred == nil {
 		return "", ErrUnknownPrincipal
 	}
 	vec, err := s.embedder.Embed(ctx, text)
@@ -119,12 +122,10 @@ func (s *RememberService) Remember(ctx context.Context, agentID, text string, hi
 			"session_id":      sessionID,
 		},
 	}
-	// Seed the writer scope so the ScopedStoreWriter derives classification (C2) and
-	// stamps provenance. DefaultWriteTags is the operator-configured ceiling.
-	wctx := scope.WithWriterScope(ctx, scope.WriterScope{
-		WriterID:         agentID,
-		DefaultWriteTags: s.scopes.DefaultWriteTags(ctx, agentID),
-	})
+	// Stamp the authenticated principal so the write chokepoint can derive the
+	// authoritative classification (ADR-0035 C2) and stamp provenance. The tags on
+	// the document above are a narrow-only REQUEST, never the answer.
+	wctx := domain.WithPrincipal(ctx, principal)
 	if err := s.store.Save(wctx, doc); err != nil {
 		return "", err
 	}

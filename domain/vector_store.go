@@ -46,7 +46,7 @@ type SearchOptions struct {
 	// ScopedVectorStore decorator seeds it (from ctx or an explicit value) and
 	// fails closed when it is nil; the pgvector adapter translates it into the
 	// three-set/CNF jsonb containment predicate. ScopeSystem bypasses filtering.
-	Scope *EffectiveScope
+	Scope *TagPredicate
 }
 
 // Embedding represents the vector data and its associated metadata.

@@ -367,7 +367,7 @@ measurement that does not exist yet (N concurrent conversations against a fixed 
 
 - **ADR-0080**: frontmatter status drift (`Proposed` vs body `Accepted`); the
   `execution.chat_manager_addr` reference; add the amendment pointer to this ADR.
-- **`docs/design/chat-manager-session-contract.md`**: Legs A/B become the agent-plane contract.
+- **`docs/design/chat-ingress-session-contract.md`**: Legs A/B become the agent-plane contract.
 - **`docs/future/chat-session-architecture.md`**: superseded by D4/D5 once built; its §3.4
   (manager owns durable state) is reversed by D1 (kernel owns it).
 
@@ -379,6 +379,6 @@ measurement that does not exist yet (N concurrent conversations against a fixed 
   D6), ADR-0018 (managed LLM budget — D3), ADR-0062 (REACT-02 backpressure — D5), ADR-0029
   (episodic memory — D2), ADR-0060 (structure graph — referenced by the deferred authorization
   work in D8).
-- `docs/future/chat-session-architecture.md` (Options A/B/C analysis), `docs/design/chat-manager-session-contract.md`,
+- `docs/future/chat-session-architecture.md` (Options A/B/C analysis), `docs/design/chat-ingress-session-contract.md`,
   `cambrian-premium/chat/manager.go`, `agents/chat_session_agent.py`,
   `internal/substrate/operator/chat.go`.

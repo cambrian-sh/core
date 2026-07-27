@@ -23,33 +23,18 @@ type Spreader interface {
 	Spread(ctx context.Context, seeds []domain.SearchResult) []domain.GraphNodeExpansion
 }
 
-// ScopeProvider resolves an agent's Phase-1 effective READ scope (ADR-0034). The
-// ScopeResolver satisfies it. found=false means an unknown principal (fail-closed).
-type ScopeProvider interface {
-	EffectiveForAgent(ctx context.Context, agentID string) (*domain.EffectiveScope, bool)
-}
-
-// CallerScopeProvider re-derives the Phase-2 effective scope (caller_scope ∩
-// agent_scope) given a caller_scope sourced server-side from the session record.
-// The ScopeResolver satisfies it. ADR-0034 (D13 Phase 2).
-type CallerScopeProvider interface {
-	EffectiveForCaller(ctx context.Context, agentID string, caller domain.ScopeConfig) (*domain.EffectiveScope, bool)
-}
-
-// SessionScopeProvider returns the non-forgeable caller_scope persisted on a
-// session record. The SessionManager satisfies it. ADR-0034 (D13).
-type SessionScopeProvider interface {
-	CallerScope(ctx context.Context, sessionID domain.SessionID) domain.ScopeConfig
-}
+// The read gate is a single question to the decision point: what predicate
+// applies to this principal on this surface. Everything the old ScopeProvider /
+// CallerScopeProvider / SessionScopeProvider trio did — agent scope, session
+// caller scope, and their intersection — now happens INSIDE the Authorizer, where
+// composition belongs. ADR-0085.
 
 // QueryService implements domain.MemorySearcher: it embeds the query, searches the
 // vector store for memory documents, and applies ACL filtering before returning results.
 type QueryService struct {
 	embedder         domain.Embedder
 	vectorStore      domain.VectorStore
-	scopes           ScopeProvider           // ADR-0034: nil = scope enforcement disabled (legacy)
-	callerScopes     CallerScopeProvider     // ADR-0034 Phase 2: nil = caller_scope not enforced
-	sessions         SessionScopeProvider    // ADR-0034 Phase 2: source of non-forgeable caller_scope
+	authz            domain.Authorizer       // ADR-0085: decision point; nil ⇒ OSS allow-all
 	spreader         Spreader                // ADR-0048 D2: nil = no associative expansion (flag-gated at wiring)
 	floor            float64                 // ADR-0048 #1: min cosine to return a recalled fact; 0 = disabled
 	graphWriter      domain.GraphStore       // ADR-0049 D10: Hebbian co-activation edge writes; nil = disabled
@@ -395,25 +380,19 @@ func NewQueryService(embedder domain.Embedder, vectorStore domain.VectorStore) *
 	return &QueryService{embedder: embedder, vectorStore: vectorStore}
 }
 
-// EnableScoping turns on ADR-0034 Phase-1 agent_scope enforcement. The provider
-// resolves each caller's effective read scope; scopedStore is the fail-closed
-// ScopedVectorStore wrapping the same base store. After this call every agent
-// query is scope-filtered by the caller's non-forgeable genotype agent_scope.
-func (q *QueryService) EnableScoping(provider ScopeProvider, scopedStore domain.VectorStore) {
-	q.scopes = provider
-	if scopedStore != nil {
-		q.vectorStore = scopedStore
+// EnableAuthorization wires the decision point and routes every query through the
+// fail-closed read chokepoint. It is called UNCONDITIONALLY at boot: the kernel
+// always asks, and in OSS the answer is always yes (ADR-0085 §4.1).
+// enforcingStore is the chokepoint decorator over the same base store; a nil
+// authorizer degrades to the OSS allow-all default, never to an unguarded read.
+func (q *QueryService) EnableAuthorization(a domain.Authorizer, enforcingStore domain.VectorStore) {
+	if a == nil {
+		a = domain.AllowAllAuthorizer{}
 	}
-}
-
-// EnablePhase2 turns on ADR-0034 Phase-2 caller_scope enforcement. When a session
-// ID is present in the request context, the QueryService re-derives the effective
-// scope as caller_scope ∩ agent_scope, taking caller_scope from the SESSION record
-// (sessions.CallerScope) — never from the forgeable Handoff.Context. When no
-// session caller_scope is resolvable it falls back to Phase-1 agent_scope-only.
-func (q *QueryService) EnablePhase2(caller CallerScopeProvider, sessions SessionScopeProvider) {
-	q.callerScopes = caller
-	q.sessions = sessions
+	q.authz = a
+	if enforcingStore != nil {
+		q.vectorStore = enforcingStore
+	}
 }
 
 // EnableKG2RAG turns on ADR-0053 Phase-0 KG²RAG chunk expansion. The store is
@@ -1353,18 +1332,19 @@ func (q *QueryService) SearchEntities(ctx context.Context, query, callerID strin
 	if key == "" {
 		return []domain.SearchResult{}, nil
 	}
-	if q.scopes != nil {
-		if _, ok := q.resolveScope(ctx, callerID); !ok {
-			slog.WarnContext(ctx, "memory entity-lookup: denied unknown principal (fail-closed)",
-				slog.String("event", "scope_deny"), slog.String("agent_id", callerID))
-			return []domain.SearchResult{}, nil
-		}
+	eff, dec := q.readFilter(ctx, callerID)
+	if eff == nil {
+		slog.WarnContext(ctx, "memory entity-lookup: "+dec.Explain(),
+			slog.String("event", "authz_deny"), slog.String("agent_id", callerID))
+		return []domain.SearchResult{}, nil
 	}
 	doc, err := q.vectorStore.GetByID(ctx, key)
 	if err != nil || doc == nil {
 		return []domain.SearchResult{}, nil // unknown entity → "no record", not an error
 	}
-	if q.scopes != nil && !aclAllows(doc.Metadata, callerID) {
+	// A point lookup cannot push the predicate into SQL, so it is applied here.
+	// Same predicate, same answer.
+	if !eff.Allows(docTags(doc.Metadata)) {
 		return []domain.SearchResult{}, nil
 	}
 	doc.Text = reconstructEntityState(doc)
@@ -1455,26 +1435,17 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 	// Over-fetch (ADR-0048 D1) so dropping the run's own step records does not shrink
 	// the returned window short of recallTopK.
 	opts := domain.SearchOptions{DocumentType: docType, TopK: q.effRecallOverFetch()}
-	// ADR-0034: enforce the caller's effective read scope. An unknown principal is
-	// denied (fail-closed): empty result set.
-	// systemRead (ADR-0047 D13/A2): a ScopeSystem read also bypasses the per-caller
-	// ACL below — the operator sees all data, including agent-private documents.
-	// Scope enforcement disabled (OSS single-tenant, unscoped, q.scopes == nil): no tag
-	// predicate AND no per-owner admit filter — every caller reads all memory. Treating it
-	// as a system read bypasses aclAllows below, so an agent can read facts authored by the
-	// operator or any other agent (the ownership ACL is part of the scope system, ADR-0034,
-	// which is a premium concern). When enforcement is on, systemRead comes from the scope.
-	systemRead := q.scopes == nil
-	if q.scopes != nil {
-		eff, ok := q.resolveScope(ctx, callerID)
-		if !ok {
-			slog.WarnContext(ctx, "memory query: denied unknown principal (fail-closed)",
-				slog.String("event", "scope_deny"), slog.String("agent_id", callerID))
-			return []domain.SearchResult{}, nil
-		}
-		opts.Scope = eff
-		systemRead = eff != nil && eff.System
+	// ADR-0085: ask the decision point for this principal's read predicate. A nil
+	// predicate means no read is authorized at all (the decision point could not
+	// resolve the principal); the result set is empty AND the reason is logged, so a
+	// policy-caused zero-row result is never silent (INV-3).
+	eff, dec := q.readFilter(ctx, callerID)
+	if eff == nil {
+		slog.WarnContext(ctx, "memory query: "+dec.Explain(),
+			slog.String("event", "authz_deny"), slog.String("agent_id", callerID))
+		return []domain.SearchResult{}, nil
 	}
+	opts.Scope = eff
 
 	results, err := q.vectorStore.Search(ctx, vec, opts)
 	if err != nil {
@@ -1575,9 +1546,6 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 
 	topK := q.effRecallTopK()
 	admit := func(r domain.SearchResult) bool {
-		if !systemRead && !aclAllows(r.Document.Metadata, callerID) {
-			return false
-		}
 		// ADR-0048 D1: exclude the run's own auto-recorded System step records (the
 		// feedback loop). A no-op for the action lane (actions are source ToolOutput).
 		if isSameSessionStepRecord(r.Document, sid) {
@@ -1911,7 +1879,10 @@ func (q *QueryService) injectEntitySeeds(
 	}
 
 	// Materialize the seeds. We use VectorStore.GetByID; for the LoCoMo
-	// benchmark the vector store is pgvector with a fast PK lookup.
+	// benchmark the vector store is pgvector with a fast PK lookup. GetByID is a
+	// point lookup, so the caller's predicate is applied per row here — the
+	// entity-seed lane must not become a way around the read gate.
+	eff, _ := q.readFilter(ctx, callerID)
 	out := results
 	for _, id := range docIDs {
 		doc, err := q.vectorStore.GetByID(ctx, id)
@@ -1921,7 +1892,7 @@ func (q *QueryService) injectEntitySeeds(
 		if docType != "" && string(doc.DocumentType) != docType {
 			continue
 		}
-		if q.scopes != nil && !aclAllows(doc.Metadata, callerID) {
+		if !eff.Allows(docTags(doc.Metadata)) {
 			continue
 		}
 		// Scale the seed's base score so it sits in the same band as the
@@ -1998,41 +1969,44 @@ func excludeSameSessionStepRecords(results []domain.SearchResult, sid domain.Ses
 	return out
 }
 
-// resolveScope returns the effective read scope for callerID. Phase 2: when a
-// session ID is in ctx and the session carries a non-empty caller_scope, the
-// effective scope is caller_scope ∩ agent_scope (caller_scope read SERVER-SIDE
-// from the session record, never from Handoff.Context). Otherwise Phase 1:
-// agent_scope only. ADR-0034 (D4/D13).
-func (q *QueryService) resolveScope(ctx context.Context, callerID string) (*domain.EffectiveScope, bool) {
+// readFilter returns the effective read predicate for callerID, plus the decision
+// that produced it. A nil predicate means the read is not authorized at all, and
+// the decision explains why.
+//
+// The session's caller term, the agent's own scope, and any policy terms are
+// composed INSIDE the decision point — this method only asks (ADR-0085).
+func (q *QueryService) readFilter(ctx context.Context, callerID string) (*domain.TagPredicate, domain.AccessDecision) {
 	// ADR-0047 D13 (Amendment A2): a kernel-internal reader (the operator plane at
 	// ScopeSystem) seeds domain.ScopeSystem SERVER-SIDE via ctx — never from the
-	// wire, so an agent's x-agent-id can't forge it. Honor it above per-caller
+	// wire, so an agent's x-agent-id cannot forge it. Honour it above per-caller
 	// resolution. SearchSystem is the sole entry that seeds it.
-	if s, ok := domain.ScopeFromContext(ctx); ok && s.System {
-		return s, true
+	if s, ok := domain.ScopeFromContext(ctx); ok && s != nil && s.Bypass {
+		return s, domain.AccessDecision{Allowed: true, Reason: domain.ReasonBypass}
 	}
-	if q.callerScopes != nil && q.sessions != nil {
-		if sid, ok := domain.SessionIDFromContext(ctx); ok {
-			if caller := q.sessions.CallerScope(ctx, sid); !caller.IsZero() {
-				return q.callerScopes.EffectiveForCaller(ctx, callerID, caller)
-			}
-		}
+	a := q.authz
+	if a == nil {
+		a = domain.AllowAllAuthorizer{}
 	}
-	return q.scopes.EffectiveForAgent(ctx, callerID)
+	return a.ReadFilter(ctx, domain.AgentPrincipal(callerID), domain.SurfaceFromContext(ctx))
 }
 
-// aclAllows returns true when the document is visible to callerID.
-//   - No "source_agent_id" key → shared/public document → visible to all.
-//   - "source_agent_id" == callerID → owned by caller → visible.
-//   - "source_agent_id" != callerID → another agent's doc → hidden.
-func aclAllows(meta map[string]interface{}, callerID string) bool {
-	val, exists := meta["source_agent_id"]
-	if !exists {
-		return true
+// docTags extracts a document's classification tags from its metadata, handling
+// both the []string and (JSON round-tripped) []interface{} encodings.
+func docTags(meta map[string]interface{}) []string {
+	if meta == nil {
+		return nil
 	}
-	ownerID, ok := val.(string)
-	if !ok {
-		return true
+	switch v := meta["tags"].(type) {
+	case []string:
+		return v
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, x := range v {
+			if s, ok := x.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
 	}
-	return ownerID == callerID
+	return nil
 }

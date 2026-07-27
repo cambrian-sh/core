@@ -88,16 +88,17 @@ type AgentDefinition struct {
 	Trait           AgentTrait   `json:"trait,omitempty"`
 	Capabilities    []string     `json:"capabilities,omitempty"`
 	System          bool         `json:"system,omitempty"`
-	// ScopeProfile is the agent's intrinsic genotype-level access boundary
-	// (ADR-0034 D9). It is set by the operator at registration, NOT self-declared.
-	// AUTHORITATIVE storage is the PostgreSQL agent_scopes table resolved via
-	// ScopeResolver (BBolt deliberately does not hold scope — R1); this in-memory
-	// field carries it when an AgentDefinition is assembled with its scope.
-	ScopeProfile ScopeConfig `json:"scope_profile,omitempty"`
-	// DefaultWriteTags is the operator-configured classification stamped on this
-	// agent's writes (ADR-0035 C2). Distinct from ScopeProfile (the READ predicate):
-	// this is the flat WRITE classification. The agent cannot choose its own tags —
-	// it may only narrow within this set. Authoritative store is PostgreSQL
-	// agent_scopes (resolved via ScopeResolver), like ScopeProfile.
-	DefaultWriteTags []string `json:"default_write_tags,omitempty"`
+	// ClassificationTags describe what this agent IS, so a policy can permit or
+	// deny INVOKING it (ADR-0085 D2). They are deliberately NOT the agent's own
+	// read boundary: that is the agent's access profile, which now lives entirely
+	// in the policy plugin (the former ScopeProfile / DefaultWriteTags fields were
+	// carried here but read by nothing, and their authoritative home was always
+	// the agent_scopes table). Operator-set at registration, never self-declared.
+	ClassificationTags []string `json:"classification_tags,omitempty"`
 }
+
+// AuthzRef identifies an agent to the decision point (Taggable).
+func (a AgentDefinition) AuthzRef() ResourceRef { return ResourceRef{Kind: KindAgent, ID: a.ID} }
+
+// AuthzTags presents the agent's invocation classification (Taggable).
+func (a AgentDefinition) AuthzTags() []string { return a.ClassificationTags }

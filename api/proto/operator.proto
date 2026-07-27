@@ -146,6 +146,24 @@ service OperatorConsole {
   // data-generation + evaluation, under the active scorer arm (hand weights or the
   // ROUTE-07 learned scorer). Capability "route-preview"; nil-in-OSS ⇒ Unimplemented.
   rpc PreviewRoute(PreviewRouteOpRequest) returns (PreviewRouteOpResponse);
+
+  // ExplainAccess (ADR-0085 D8) answers "why can / can't this principal reach this
+  // resource?" WITHOUT performing the access. It is the gpresult / Azure "Check
+  // access" analogue: the reply names the reason, the specific tag or effect
+  // responsible, and which policy — linked where — contributed it.
+  //
+  // Explainability is not a debugging aid here. A fail-closed access model with
+  // policy composition multiplies the ways to reach an empty result set by
+  // accident, and an unexplained empty result is indistinguishable from "there is
+  // no data". Capability "access-policy"; nil-in-OSS ⇒ Unimplemented, because an
+  // unscoped deployment has no policy to explain.
+  rpc ExplainAccess(ExplainAccessOpRequest) returns (ExplainAccessOpResponse);
+
+  // ListClassificationTags (ADR-0085 D11) returns the controlled classification
+  // vocabulary, so a policy UI offers SELECTION rather than free text. A free-text
+  // tag field is a defect: a typo is the primary route to a scope that silently
+  // matches nothing. Capability "access-policy"; nil-in-OSS ⇒ Unimplemented.
+  rpc ListClassificationTags(ListClassificationTagsOpRequest) returns (ListClassificationTagsOpResponse);
 }
 
 message CreateSessionRequest {
@@ -371,6 +389,44 @@ message SnapshotResponse {
   // watch-observability, watch-schedule (REACT-06 cron-driven watches). route-preview
   // (ROUTE-07 gatekeeper scoring) is core. contract 0062 (ADR-0084 + ListConversations sidebar).
   repeated string capabilities = 6;
+  // plugins enumerates every plugin this build DECLARED, registered or not, with
+  // its own version line (ADR-0089). Capabilities tell the UI which surfaces
+  // exist; this tells it which build produced them, so a console can detect
+  // plugin-level skew the way it already detects contract skew. A plugin that
+  // failed entitlement or has unmet dependencies still appears here — silence
+  // about a plugin the operator paid for is the failure mode this closes.
+  repeated PluginInfoOp plugins = 7;
+}
+
+// PluginInfoOp is one declared plugin as the kernel sees it (ADR-0082 D9 status,
+// ADR-0089 on the wire). The kernel does not interpret capabilities or panels; it
+// reports what the plugin declared.
+message PluginInfoOp {
+  string id = 1;                    // stable plugin key ("reactive", "authz")
+  string display_name = 2;
+  // version is the plugin's OWN version line, unrelated to contract_version.
+  // A console pins what it was built against and warns when this differs.
+  string version = 3;
+  // state is one of: active, deps_unmet, not_entitled, expired (ADR-0082 D9).
+  // "expired" still serves — an entitlement inside its grace window.
+  string state = 4;
+  // capabilities this plugin contributes to the handshake above.
+  repeated string capabilities = 5;
+  // panels this plugin contributes, so a console can enumerate surfaces it may
+  // not have components for yet.
+  repeated PluginPanelOp panels = 6;
+  // reason is operator-facing detail when the plugin is not registered.
+  string reason = 7;
+  // missing lists required plugin ids unavailable in this deployment.
+  repeated string missing = 8;
+  // expires_at is the entitlement expiry (RFC3339), empty when not applicable.
+  string expires_at = 9;
+}
+
+message PluginPanelOp {
+  string id = 1;
+  string title = 2;
+  string capability = 3;
 }
 
 message PlanInFlightOp {
@@ -715,6 +771,18 @@ message ToolOp {
   repeated string data_read_kinds = 5;   // ADR-0039 D8 data regime
   repeated string data_write_kinds = 6;
   repeated ToolGrantOp grants = 7;        // which agents hold it, with what policy
+
+  // ADR-0085 D2: what DOMAIN this tool touches (`crm`, `filesystem`, `payments`).
+  repeated string classification_tags = 8;
+  // ADR-0086: the closed-set verb classes it exercises —
+  // read | write | egress | spend | admin. A tag says what a tool is about; an
+  // effect says what the invocation does to it, and policy checks both.
+  repeated string effects = 9;
+  // effects_inferred marks a tool whose effects were DERIVED from its other
+  // manifest fields rather than declared. It is the migration checklist: an
+  // operator flips execution.tool_effects_strict once this is false everywhere,
+  // after which an unclassified tool cannot register at all.
+  bool effects_inferred = 10;
 }
 
 message ListToolsOpRequest {
@@ -773,6 +841,11 @@ message MemoryOp {
 }
 message QueryMemoryResponse {
   repeated MemoryOp results = 1;
+  // policy_note explains a result set that is empty or narrowed BECAUSE of access
+  // policy, rather than because the corpus has nothing to say (ADR-0085 INV-3). It
+  // is empty when policy played no part. Without this, a fail-closed model's most
+  // common failure — zero rows and no error — is indistinguishable from "no data".
+  AccessDecisionOp policy_note = 2;
 }
 
 // AnswerMemory (ADR-0081): grounded, span-cited answer.
@@ -801,6 +874,14 @@ message AnswerMemoryResponse {
   // Grounded prose with inline 1-based [n] markers resolving to `citations`.
   string answer = 2;
   repeated MemoryCitation citations = 3;
+  // policy_note explains an abstention that access policy CAUSED, rather than one
+  // the corpus caused (ADR-0085 INV-3). Empty when policy played no part.
+  //
+  // This is the surface where the distinction actually bites: "the corpus does
+  // not answer that" and "you are not permitted to see the answer" are very
+  // different statements, and a fail-closed model renders them identically
+  // unless the reason travels with the abstention.
+  AccessDecisionOp policy_note = 4;
 }
 
 // SetToolPolicy binds an existing grant with a resource policy (A2.3). Setting a
@@ -1018,4 +1099,56 @@ message ReactiveBudgetOp {
   string reason = 2;               // dead-letter reason applied to shed units
   string stream_id = 3;            // affected stream ("" for plane-wide budgets)
   int64 shedding_since_unix_ms = 4;
+}
+
+
+// ─── ADR-0085 access policy ────────────────────────────────────────────────────
+
+// ExplainAccessOpRequest asks a hypothetical question. Nothing is read, written,
+// or journalled as a real access.
+message ExplainAccessOpRequest {
+  string principal_id = 1;   // the principal being asked about
+  string principal_kind = 2; // "agent" | "user" | "daemon" (default "agent")
+  string surface_kind = 3;   // "operator" | "agent" | "chat" | "reactive" ("" = none)
+  string surface_id = 4;     // the specific surface instance ("" = any)
+  string resource_kind = 5;  // "memory" | "skill" | "agent" | "tool" | "artifact"
+  string resource_id = 6;    // the specific resource ("" = a class-level question)
+  repeated string tags = 7;  // the resource's classification tags
+  repeated string effects = 8; // declared effect classes (tools): read|write|egress|spend|admin
+}
+
+// PolicyContributionOp records that a named policy, linked at a named container,
+// contributed a specific term. This is what turns a denial from "no" into
+// "because policy P, linked at L, contributed tag T".
+message PolicyContributionOp {
+  string policy_id = 1;
+  string policy_name = 2;
+  string linked_at = 3;   // "organisation" | "group:<id>" | "principal:<id>" | "surface:<id>"
+  string term = 4;        // "required" | "any_of" | "forbidden" | "effect"
+  repeated string values = 5;
+  bool enforced = 6;      // the link's Enforced flag (a downstream block does not apply)
+}
+
+// AccessDecisionOp is one structured, explainable decision.
+message AccessDecisionOp {
+  bool allowed = 1;
+  string reason = 2;   // DecisionReason: allowed|bypass|forbidden_tag|missing_required_tag|
+                       // anyof_unsatisfied|effect_not_permitted|unsatisfiable_policy|
+                       // no_principal|skill_grant_clipped|not_authorized
+  string detail = 3;   // the SPECIFIC tag, clause, or effect responsible
+  repeated PolicyContributionOp decided_by = 4;
+  string policy_version = 5; // the snapshot this was computed against (reproducibility)
+  bool report_only = 6;      // evaluated but not enforced (ADR-0085 D9)
+  bool would_have_denied = 7;// what enforcement would have done, under report-only
+  string explain = 8;        // one administrator-readable sentence
+}
+
+message ExplainAccessOpResponse {
+  AccessDecisionOp decision = 1;
+}
+
+message ListClassificationTagsOpRequest {}
+
+message ListClassificationTagsOpResponse {
+  repeated string tags = 1;
 }

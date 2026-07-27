@@ -32,8 +32,13 @@ type SessionRepository interface {
 // SessionManager manages the lifecycle of Sessions.
 type SessionManager struct {
 	store    SessionRepository
-	eventBus domain.EventBus  // may be nil; publishes lifecycle events
-	ttl      time.Duration    // published in SessionDormantEvent; 0 = unset
+	eventBus domain.EventBus // may be nil; publishes lifecycle events
+	ttl      time.Duration   // published in SessionDormantEvent; 0 = unset
+	// ingress resolves whether the caller opening a session is a registered
+	// ingress, so its surface can be stamped onto the record (ADR-0090 D3).
+	// nil ⇒ no registry ⇒ nothing is an ingress and surfaces come from the
+	// transport, which is exactly today's behaviour.
+	ingress domain.IngressResolver
 }
 
 func New(store SessionRepository) *SessionManager {
@@ -47,6 +52,24 @@ func (m *SessionManager) SetEventBus(bus domain.EventBus) { m.eventBus = bus }
 // SetTTL sets the TTL duration included in SessionDormantEvent. ADR-0030.
 func (m *SessionManager) SetTTL(ttl time.Duration) { m.ttl = ttl }
 
+// SetIngressResolver wires the registry that says which principals are ingresses
+// (ADR-0090 D2). Call before serving. nil leaves surfaces transport-derived.
+func (m *SessionManager) SetIngressResolver(r domain.IngressResolver) { m.ingress = r }
+
+// surfaceForCaller returns the surface to persist on a session being opened.
+//
+// It is deliberately NOT "whatever surface this request arrived on". A session
+// stamped with its opening surface wins over the transport surface for every
+// later turn (authz.ResolveSurface), and that is only safe when the stored one is
+// the narrower fact. It is narrower for an outsider-facing ingress; it is WIDER
+// for an operator-created session, whose surface is the most privileged there is.
+// So only a registered ingress stamps, and everything else keeps falling through
+// to the transport — no behaviour change for any existing path.
+func (m *SessionManager) surfaceForCaller(ctx context.Context) domain.SurfaceRef {
+	surface, _ := domain.IngressSurface(ctx, m.ingress, domain.PrincipalFromContext(ctx))
+	return surface
+}
+
 // CreateSession creates a new Active session with a unique ID.
 func (m *SessionManager) CreateSession(ctx context.Context, goal string, parentID domain.SessionID) (*domain.Session, error) {
 	now := time.Now()
@@ -57,6 +80,7 @@ func (m *SessionManager) CreateSession(ctx context.Context, goal string, parentI
 		Status:    domain.SessionActive,
 		CreatedAt: now,
 		UpdatedAt: now,
+		Surface:   m.surfaceForCaller(ctx),
 	}
 	if err := m.store.SaveSession(ctx, ses); err != nil {
 		return nil, err
@@ -69,7 +93,7 @@ func (m *SessionManager) CreateSession(ctx context.Context, goal string, parentI
 // server-side (ADR-0034 D13 Phase 2). The caller_scope is supplied by the
 // integrating application at conversation start, NOT by the agent — and it is read
 // back per-RPC from the session record, never from the forgeable Handoff.Context.
-func (m *SessionManager) CreateScopedSession(ctx context.Context, goal string, parentID domain.SessionID, caller domain.ScopeConfig) (*domain.Session, error) {
+func (m *SessionManager) CreateScopedSession(ctx context.Context, goal string, parentID domain.SessionID, caller domain.TagSet) (*domain.Session, error) {
 	now := time.Now()
 	ses := domain.Session{
 		ID:          newSessionID(),
@@ -79,6 +103,7 @@ func (m *SessionManager) CreateScopedSession(ctx context.Context, goal string, p
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		CallerScope: caller,
+		Surface:     m.surfaceForCaller(ctx),
 	}
 	if err := m.store.SaveSession(ctx, ses); err != nil {
 		return nil, err
@@ -88,7 +113,7 @@ func (m *SessionManager) CreateScopedSession(ctx context.Context, goal string, p
 }
 
 // SetCallerScope persists (or updates) a session's caller_scope. ADR-0034 (D13).
-func (m *SessionManager) SetCallerScope(ctx context.Context, sessionID domain.SessionID, caller domain.ScopeConfig) error {
+func (m *SessionManager) SetCallerScope(ctx context.Context, sessionID domain.SessionID, caller domain.TagSet) error {
 	ses, err := m.store.GetSession(ctx, sessionID)
 	if err != nil {
 		return err
@@ -101,15 +126,33 @@ func (m *SessionManager) SetCallerScope(ctx context.Context, sessionID domain.Se
 // CallerScope returns the persisted caller_scope for a session (zero/unrestricted
 // when the session is unknown or carries none). It is the server-side, non-forgeable
 // source of caller_scope for Phase-2 effective-scope re-derivation. ADR-0034 (D13).
-func (m *SessionManager) CallerScope(ctx context.Context, sessionID domain.SessionID) domain.ScopeConfig {
+func (m *SessionManager) CallerScope(ctx context.Context, sessionID domain.SessionID) domain.TagSet {
 	if sessionID == "" {
-		return domain.ScopeConfig{}
+		return domain.TagSet{}
 	}
 	ses, err := m.store.GetSession(ctx, sessionID)
 	if err != nil || ses == nil {
-		return domain.ScopeConfig{}
+		return domain.TagSet{}
 	}
 	return ses.CallerScope
+}
+
+// SessionSurface returns the entry point a session was OPENED on (ADR-0085 D7).
+// Like CallerScope it is read SERVER-SIDE from the persisted record — a daemon
+// delivering a turn cannot restate which surface it is on, which is the whole
+// point of the clamp (INV-5).
+func (m *SessionManager) SessionSurface(ctx context.Context, sessionID domain.SessionID) (domain.SurfaceRef, bool) {
+	if sessionID == "" {
+		return domain.SurfaceRef{}, false
+	}
+	ses, err := m.store.GetSession(ctx, sessionID)
+	if err != nil || ses == nil {
+		return domain.SurfaceRef{}, false
+	}
+	if ses.Surface.Kind == "" && ses.Surface.ID == "" {
+		return domain.SurfaceRef{}, false
+	}
+	return ses.Surface, true
 }
 
 // SaveConversationLink records which conversation turn ordered this session's work

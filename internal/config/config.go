@@ -286,14 +286,11 @@ type ExecutionConfig struct {
 	// auto-capture. Off by default; benchmark rigs that measure experiential recall can
 	// re-enable it via tuning.local.json.
 	ExperientialMemoryEnabled bool `json:"experiential_memory_enabled"`
-	// ScopeEnforcementEnabled turns on the ADR-0034 tag-based memory access control (scoped
-	// reads/writes, per-agent/per-tenant isolation). Default FALSE: OSS core is single-tenant
-	// and UNSCOPED — every agent and the operator see all memory, so operator-ingested
-	// documents are visible to the chat/worker agents without any tagging. Multi-tenant scope
-	// isolation is a PREMIUM concern: the scope plugin flips this on and swaps in the enforcing
-	// gate. Left off, none of the scope wiring (EnableScoping/EnablePhase2, ScopedVectorStore,
-	// caller/session scope) is installed and reads carry no tag predicate.
-	ScopeEnforcementEnabled bool `json:"scope_enforcement_enabled"`
+	// (execution.scope_enforcement_enabled is GONE — ADR-0085. Access control is no
+	// longer a flag: the enforcement points always run, and whether they restrict
+	// anything depends on whether a policy plugin is installed. A flag that turned
+	// the CHOKEPOINT off, rather than the POLICY, meant an unscoped deployment had
+	// no gate at all instead of a permissive one.)
 	// MemoryRelevanceThreshold is the minimum similarity score to include a memory result
 	// in FetchContext. Default: 0.70.
 	MemoryRelevanceThreshold float64 `json:"memory_relevance_threshold"`
@@ -532,7 +529,7 @@ type ExecutionConfig struct {
 	ChatPoolSize int `json:"chat_pool_size,omitempty"`
 	// ChatPoolAgentID is the agent each worker runs. Defaults to "chat_agent" (the OSS
 	// conversational worker in agents/chat_agent.py). Premium ships a customer-service
-	// specialisation, "chat_session_agent"; select it by setting this key.
+	// specialisation for the airline domain, "airline_chat_agent"; select it by setting this key.
 	ChatPoolAgentID string `json:"chat_pool_agent_id,omitempty"`
 	// ChatPoolQueueSize bounds how many turns may WAIT for a free worker before new turns
 	// are shed. An unbounded queue in front of a bounded pool is just a slower crash, so 0
@@ -662,6 +659,17 @@ type ExecutionConfig struct {
 	// EFE pick (ADR-0037 D9). A deferred estimator tuned within the spike.
 	EFEExplorationBonus float64 `json:"efe_exploration_bonus,omitempty"`
 
+	// ToolEffectsStrict (ADR-0086) makes an undeclared effect set a REGISTRATION
+	// ERROR instead of inferring effects from the tool's other manifest fields. A
+	// tool that declares no effects is a registration error, not an unrestricted
+	// tool — but flipping that on before the manifests carry `effects` would refuse
+	// every tool in an existing install, so the default is false and inference
+	// covers the migration. Turn it on once `cambrian tools` reports no inferred
+	// tools; after that, a new tool cannot ship unclassified.
+	//
+	// An effect OUTSIDE the closed set is fatal in both modes — this flag governs
+	// absence, never validity.
+	ToolEffectsStrict bool `json:"tool_effects_strict,omitempty"`
 	// ToolsUnrestricted (ADR-0039) is the operator-chosen bypass of the tool-grant
 	// system: when true, every named agent may call every registered tool with an
 	// allow-all resource policy. Approval for dangerous tools STILL applies. For
@@ -944,6 +952,17 @@ type MCPServerConfig struct {
 		TokenEnv string `json:"token_env"` // env var holding the credential
 	} `json:"auth"`
 	Tools []MCPToolConfig `json:"tools,omitempty"`
+
+	// ClassificationTags apply to EVERY tool this server advertises (ADR-0085 D2 /
+	// ADR-0090). A remote server's tools are discovered dynamically, so without a
+	// server-level default they arrive UNTAGGED — and an untagged resource has no
+	// tags for a policy to forbid, which means "only this path may use these tools"
+	// cannot be expressed at all.
+	//
+	// Set on the server rather than per tool because a domain boundary is a property
+	// of the whole integration: every tau2-airline tool touches airline data. A
+	// per-tool list, when present, is used INSTEAD of this for that tool.
+	ClassificationTags []string `json:"classification_tags,omitempty"`
 }
 
 // MCPToolConfig is operator policy for one tool the server advertises (ADR-0043).
@@ -951,7 +970,11 @@ type MCPToolConfig struct {
 	Name           string   `json:"name"`
 	Dangerous      bool     `json:"dangerous,omitempty"`
 	DataWriteKinds []string `json:"data_write_kinds,omitempty"`
-	Pricing        struct {
+	// ClassificationTags name the domain this tool touches. Overrides the server's
+	// default when set, so one tool in an otherwise-domain-bound server can be
+	// classified differently.
+	ClassificationTags []string `json:"classification_tags,omitempty"`
+	Pricing            struct {
 		Kind            string  `json:"kind"`                         // "flat" | "per_unit" | "token"
 		UnitCost        float64 `json:"unit_cost"`                    // $ per unit / per call
 		MaxUnitsPerCall int     `json:"max_units_per_call,omitempty"` // reservation cap

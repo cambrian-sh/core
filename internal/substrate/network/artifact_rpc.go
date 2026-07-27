@@ -6,7 +6,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/scope"
+	"github.com/cambrian-sh/core/internal/authz"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -26,31 +26,23 @@ type ArtifactMetaStore interface {
 	ListStepArtifacts(sessionID string, stepIndex int) ([]domain.Artifact, error)
 }
 
-// ArtifactScopeResolver resolves an agent's effective READ scope and its
-// operator-configured write classification (ADR-0035 C2) for artifact access.
-type ArtifactScopeResolver interface {
-	EffectiveForAgent(ctx context.Context, agentID string) (*domain.EffectiveScope, bool)
-	EffectiveForCaller(ctx context.Context, agentID string, caller domain.ScopeConfig) (*domain.EffectiveScope, bool)
-	DefaultWriteTags(ctx context.Context, agentID string) []string
+// artifactPrincipal is the identity the artifact plane acts as. It comes from the
+// authenticated gRPC metadata, never from the request body (INV-5).
+func artifactPrincipal(ctx context.Context) domain.PrincipalRef {
+	return domain.AgentPrincipal(callerAgentID(ctx))
 }
 
-// ArtifactSessionScopes returns the non-forgeable caller_scope persisted on a
-// session, for Phase-2 re-derivation parity with QueryMemory. Optional.
-type ArtifactSessionScopes interface {
-	CallerScope(ctx context.Context, sessionID domain.SessionID) domain.ScopeConfig
-}
+// artifactSurface is the surface the artifact plane presents to the decision
+// point: the agent-facing gRPC plane.
+var artifactSurface = domain.SurfaceRef{Kind: domain.SurfaceAgent}
 
-// effectiveReadScope resolves the caller's effective READ scope, honoring Phase-2
-// session caller_scope when present (mirrors QueryService.resolveScope).
-func (s *Server) effectiveReadScope(ctx context.Context, agentID string) (*domain.EffectiveScope, bool) {
-	if s.ArtifactSessions != nil {
-		if sid, ok := domain.SessionIDFromContext(ctx); ok {
-			if caller := s.ArtifactSessions.CallerScope(ctx, sid); !caller.IsZero() {
-				return s.ArtifactScopes.EffectiveForCaller(ctx, agentID, caller)
-			}
-		}
+// authorizer returns the server's decision point, defaulting to the OSS allow-all.
+// The kernel always asks; only the answer differs.
+func (s *Server) authorizer() domain.Authorizer {
+	if s.Authz == nil {
+		return domain.AllowAllAuthorizer{}
 	}
-	return s.ArtifactScopes.EffectiveForAgent(ctx, agentID)
+	return s.Authz
 }
 
 func callerAgentID(ctx context.Context) string {
@@ -62,25 +54,19 @@ func callerAgentID(ctx context.Context) string {
 	return ""
 }
 
-// UploadArtifact derives the artifact's kernel-authoritative classification from
-// the agent's operator-configured DefaultWriteTags (narrowed only by req.Tags),
-// kernel-stamps provenance, and stores bytes (CAS) + metadata. The agent cannot
-// choose its own classification — only narrow. ADR-0035 (C2) / REQ-SDK-007c.
+// UploadArtifact derives the artifact's authoritative classification from the
+// decision point (the agent's operator-configured write classification, narrowed
+// only by req.Tags), stamps provenance, and stores bytes (CAS) + metadata. The
+// agent cannot choose its own classification — only narrow. ADR-0035 (C2) /
+// REQ-SDK-007c.
 func (s *Server) UploadArtifact(ctx context.Context, req *pb.UploadArtifactRequest) (*pb.UploadArtifactResponse, error) {
-	if s.ArtifactBytes == nil || s.ArtifactMeta == nil || s.ArtifactScopes == nil {
+	if s.ArtifactBytes == nil || s.ArtifactMeta == nil {
 		return nil, status.Error(codes.Unimplemented, "artifact storage not configured")
 	}
-	agentID := callerAgentID(ctx)
-	if _, ok := s.ArtifactScopes.EffectiveForAgent(ctx, agentID); !ok {
-		return nil, status.Error(codes.PermissionDenied, "unknown principal: "+agentID)
-	}
-
-	// Kernel-derived classification: DefaultWriteTags narrowed by req.Tags (hint).
-	defaultWriteTags := s.ArtifactScopes.DefaultWriteTags(ctx, agentID)
-	tags, err := scope.AuthorizeArtifactWrite(
-		scope.WriterScope{WriterID: agentID, DefaultWriteTags: defaultWriteTags}, s.ArtifactVocab, req.GetTags())
+	principal := artifactPrincipal(ctx)
+	tags, err := authz.ClassifyArtifactWrite(ctx, s.authorizer(), principal, req.GetTags())
 	if err != nil {
-		if errors.Is(err, scope.ErrUnknownClassification) {
+		if errors.Is(err, authz.ErrWriteDenied) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		return nil, status.Error(codes.Internal, err.Error())
@@ -105,24 +91,23 @@ func (s *Server) UploadArtifact(ctx context.Context, req *pb.UploadArtifactReque
 	return &pb.UploadArtifactResponse{Hash: hash, Tags: tags}, nil
 }
 
-// GetArtifact returns artifact bytes only when the caller's effective scope permits
-// the artifact's tags. A scope-denied artifact is reported as found=false —
-// indistinguishable from absent, so the existence of out-of-scope data does not
-// leak. ADR-0034 (D12).
+// GetArtifact returns artifact bytes only when the caller's predicate permits the
+// artifact's tags. A denied artifact is reported as found=false — indistinguishable
+// from absent, so the existence of out-of-reach data does not leak.
 func (s *Server) GetArtifact(ctx context.Context, req *pb.GetArtifactRequest) (*pb.GetArtifactResponse, error) {
-	if s.ArtifactBytes == nil || s.ArtifactMeta == nil || s.ArtifactScopes == nil {
+	if s.ArtifactBytes == nil || s.ArtifactMeta == nil {
 		return nil, status.Error(codes.Unimplemented, "artifact storage not configured")
 	}
-	agentID := callerAgentID(ctx)
-	eff, ok := s.effectiveReadScope(ctx, agentID)
-	if !ok {
-		return nil, status.Error(codes.PermissionDenied, "unknown principal: "+agentID)
+	principal := artifactPrincipal(ctx)
+	eff, dec := s.authorizer().ReadFilter(ctx, principal, artifactSurface)
+	if eff == nil {
+		return nil, status.Error(codes.PermissionDenied, dec.Explain())
 	}
 	art, err := s.ArtifactMeta.GetArtifact(req.GetHash())
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	if art == nil || !scope.ArtifactReadable(eff, *art) {
+	if art == nil || !authz.ArtifactReadable(eff, *art) {
 		return &pb.GetArtifactResponse{Found: false}, nil // fail-closed / not found
 	}
 	content, err := s.ArtifactBytes.Load(art.Hash)
@@ -137,22 +122,22 @@ func (s *Server) GetArtifact(ctx context.Context, req *pb.GetArtifactRequest) (*
 	}, nil
 }
 
-// ListStepArtifacts returns the scope-filtered metadata of artifacts for a
-// session+step. Out-of-scope artifacts are silently omitted. ADR-0034 (D12).
+// ListStepArtifacts returns the filtered metadata of artifacts for a session+step.
+// Out-of-reach artifacts are silently omitted.
 func (s *Server) ListStepArtifacts(ctx context.Context, req *pb.ListStepArtifactsRequest) (*pb.ListStepArtifactsResponse, error) {
-	if s.ArtifactMeta == nil || s.ArtifactScopes == nil {
+	if s.ArtifactMeta == nil {
 		return nil, status.Error(codes.Unimplemented, "artifact storage not configured")
 	}
-	agentID := callerAgentID(ctx)
-	eff, ok := s.effectiveReadScope(ctx, agentID)
-	if !ok {
-		return nil, status.Error(codes.PermissionDenied, "unknown principal: "+agentID)
+	principal := artifactPrincipal(ctx)
+	eff, dec := s.authorizer().ReadFilter(ctx, principal, artifactSurface)
+	if eff == nil {
+		return nil, status.Error(codes.PermissionDenied, dec.Explain())
 	}
 	arts, err := s.ArtifactMeta.ListStepArtifacts(req.GetSessionId(), int(req.GetStepIndex()))
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	visible := scope.FilterArtifactsByScope(eff, arts)
+	visible := authz.FilterArtifacts(eff, arts)
 	out := make([]*pb.ArtifactMeta, 0, len(visible))
 	for _, a := range visible {
 		out = append(out, &pb.ArtifactMeta{

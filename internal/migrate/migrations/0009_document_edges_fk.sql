@@ -1,0 +1,27 @@
+-- 0009_document_edges_fk.sql — an edge no longer has one table to point at (ADR-0093).
+--
+-- `document_edges.source_id` carried `REFERENCES documents(id)` from the baseline. When 0007
+-- renamed `documents` to `documents_legacy`, PostgreSQL moved the constraint with the table,
+-- so the FK ended up pointing at the FROZEN legacy copy. Every structural edge written after
+-- the split then failed:
+--
+--   insert or update on table "document_edges" violates foreign key constraint
+--   "document_edges_source_id_fkey" (SQLSTATE 23503)
+--
+-- It surfaced as ~700 warnings during a benchmark ingest. Non-fatal by luck rather than
+-- design — `SaveStructuralEdges` is best-effort, so chunks were saved and only the ADR-0060
+-- structure graph was silently lost.
+--
+-- The constraint cannot be repointed, because after the split an edge endpoint may be a CHUNK
+-- or a SECTION, which now live in two different tables. No single foreign key can express
+-- "one of these two", and that is not a new problem: the baseline had already dropped the
+-- matching `target_id` FK for exactly this reason, leaving the asymmetry that made this easy
+-- to miss.
+--
+-- So the source-side constraint goes the same way its target-side twin did. Referential
+-- integrity for edges is the writer's job, and orphaned edges were already possible on the
+-- target side.
+--
+-- Append-only per ADR-0064; idempotent.
+
+ALTER TABLE document_edges DROP CONSTRAINT IF EXISTS document_edges_source_id_fkey;

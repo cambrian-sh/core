@@ -26,7 +26,7 @@ var ErrPayloadUnreadable = errors.New("delegation: payload outside child's effec
 // tags are kernel-derived (deterministic provenance, ADR-0034/0035), passed in —
 // no LLM in the scope boundary. A nil scope is fail-closed. If the payload is
 // not readable under the child's scope, the binding fails.
-func InheritBuffer(sg SubGoal, payloadTags []string, childScope *domain.EffectiveScope) (ChildBuffer, error) {
+func InheritBuffer(sg SubGoal, payloadTags []string, childScope *domain.TagPredicate) (ChildBuffer, error) {
 	if !childScope.Allows(payloadTags) {
 		return ChildBuffer{}, ErrPayloadUnreadable
 	}

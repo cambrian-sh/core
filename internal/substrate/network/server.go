@@ -18,9 +18,9 @@ import (
 	"github.com/cambrian-sh/core/internal/centralexec"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
+	"github.com/cambrian-sh/core/internal/ingress"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
-	"github.com/cambrian-sh/core/internal/scope"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 
 	"github.com/cambrian-sh/core/internal/substrate/harness"
@@ -145,18 +145,30 @@ type Server struct {
 	// nil → signals are logged and discarded.
 	SignalReceiver domain.SignalReceiver
 
+	// IngressInbound routes a signal from a REGISTERED ingress into the chat lane
+	// instead of the signal pipeline (ADR-0090). nil ⇒ no ingress is registered and
+	// every signal takes the ordinary path, which is the OSS default.
+	//
+	// It is checked BEFORE the Watcher because an ingress message is a
+	// conversational turn, and ADR-0080 D4 exists because turns that reach the
+	// planner get decomposed into steps like "ask the customer for their booking
+	// reference" — unexecutable, and the failure was emitted as spoken dialogue.
+	IngressInbound IngressAccepter
+
 	// WatchHandler provides the 4 WatchConfig CRUD RPCs. Injected by the premium
 	// binary via the app.Options reactive hook; nil in OSS — RPC shells guard against
 	// nil and return Unimplemented. ADR-0032 / ADR-0057.
 	WatchHandler domain.WatchConfigHandler
 
-	// ADR-0034 / REQ-SDK-007c: scope-enforced artifact storage. All nil → the
+	// REQ-SDK-007c: artifact storage, gated by the decision point. Both nil → the
 	// artifact RPCs return Unimplemented.
-	ArtifactBytes    ArtifactByteStore     // CAS byte store (ArtifactVault)
-	ArtifactMeta     ArtifactMetaStore     // metadata + tags persistence
-	ArtifactScopes   ArtifactScopeResolver // effective-scope resolution for access decisions
-	ArtifactSessions ArtifactSessionScopes // ADR-0034 Phase 2: session caller_scope (may be nil)
-	ArtifactVocab    *scope.Vocabulary     // controlled classification vocabulary
+	ArtifactBytes ArtifactByteStore // CAS byte store (ArtifactVault)
+	ArtifactMeta  ArtifactMetaStore // metadata + tags persistence
+
+	// Authz is the access-control decision point (ADR-0085). nil ⇒ the OSS
+	// allow-all default: the server still ASKS at every enforcement point, and in
+	// an unscoped deployment the answer is always yes.
+	Authz domain.Authorizer
 
 	// MemoryWriter backs memory.remember() / IngestMemory (ADR-0035 C2). nil →
 	// IngestMemory returns Unimplemented.
@@ -195,11 +207,10 @@ type Server struct {
 
 	// ADR-0046: the system-skill plane backing ListSkills. SkillRegistry holds the
 	// discovered SKILL.md skills; SkillRetriever ranks them by relevance within the
-	// agent's effective scope; SkillScope resolves that scope for gating. All nil →
-	// ListSkills returns an empty menu (agents simply see no system skills).
+	// principal's predicate, which Authz resolves. Both nil → ListSkills returns an
+	// empty menu (agents simply see no system skills).
 	SkillRegistry  domain.SkillRegistry
 	SkillRetriever domain.SkillRetriever
-	SkillScope     domain.ToolScopeResolver
 
 	// Embedder backs the Embed RPC (ADR-0041) used by an agent's Local Recurrent
 	// Workspace for relevance ranking. nil → Embed returns Unimplemented.
@@ -215,6 +226,13 @@ type Server struct {
 // Substrate streaming proxy. Implemented by the Langfuse logger shim.
 type AgentCallLogger interface {
 	Log(ctx context.Context, subsystem, prompt, completion, model, agentID string, stepIndex int)
+}
+
+// IngressAccepter handles a message from a registered ingress. Implemented by
+// internal/ingress.InboundService; returns ErrNotAnIngress when the sender is an
+// ordinary agent, which is the signal to fall through.
+type IngressAccepter interface {
+	Accept(ctx context.Context, m ingress.InboundMessage) error
 }
 
 // SyncProcessor extends domain.SignalReceiver with synchronous request/response
@@ -729,8 +747,8 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		EnqueueVerification: s.EnqueueVerification,
 		// Experiential memory removed: no step-result / plan-scene write-back (nil recorder).
 		WorkspaceStage:         s.WorkspaceStage,
-		ArtifactLister:         s.ArtifactMeta,     // ADR-0034: surface prior-step artifacts (scope-filtered)
-		SessionScopes:          s.ArtifactSessions, // ADR-0034 Phase 2: caller_scope filter (may be nil)
+		ArtifactLister:         s.ArtifactMeta, // ADR-0034: surface prior-step artifacts (scope-filtered)
+		Authz:                  s.Authz,        // ADR-0085: artifact discovery filter (may be nil)
 		LLMGateway:             s.LLMGateway,
 		Observer:               s.TelemetryObserver,
 		ContentStore:           s.ContentStore,
@@ -1025,6 +1043,27 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 
 		dHandoff := protoToHandoff(protoHandoff, s.TelemetryObserver)
 
+		// ADR-0090: a signal from a registered ingress is a conversational turn, not a
+		// trigger. It is routed to the chat lane and this iteration ends — the planner
+		// never sees it, which is ADR-0080 D4 enforced for external traffic.
+		if s.IngressInbound != nil && dHandoff.FromAgent != "" {
+			msg := ingressFields(dHandoff)
+			msg.Sender = domain.AgentPrincipal(dHandoff.FromAgent)
+			err := s.IngressInbound.Accept(ctx, msg)
+			if err == nil {
+				continue
+			}
+			if !errors.Is(err, ingress.ErrNotAnIngress) {
+				// A REGISTERED ingress whose message was refused — outside its namespace,
+				// unopenable conversation. Dropping it silently would make a namespace
+				// misconfiguration look like the bot simply not answering.
+				slog.Warn("ADR-0090: inbound ingress message refused",
+					"ingress", dHandoff.FromAgent, "err", err)
+				continue
+			}
+			// ErrNotAnIngress: an ordinary agent signal, so fall through untouched.
+		}
+
 		if s.Watcher != nil {
 			// OSS path: Watcher validates, enriches with LTM, and presents to Planner.
 
@@ -1317,4 +1356,25 @@ func injectMoodContext(ctx context.Context, s *Server, sessionID domain.SessionI
 		}
 	}
 	return userInput
+}
+
+// ingressFields pulls the sender and the text out of an ingress signal.
+//
+// The SDK sends {"external_id": ..., "text": ...} as the payload. The external id
+// is read from the PAYLOAD rather than from metadata deliberately: it is a claim
+// about who wrote the message, not about who is connected, and it is checked
+// against the ingress's namespace before it is trusted for anything.
+func ingressFields(h *domain.Handoff) ingress.InboundMessage {
+	if h == nil || h.Payload == nil {
+		return ingress.InboundMessage{}
+	}
+	var body struct {
+		ExternalID string `json:"external_id"`
+		Text       string `json:"text"`
+		Policy     string `json:"policy"`
+	}
+	if err := json.Unmarshal(h.Payload.Data, &body); err != nil {
+		return ingress.InboundMessage{}
+	}
+	return ingress.InboundMessage{ExternalID: body.ExternalID, Text: body.Text, Policy: body.Policy}
 }

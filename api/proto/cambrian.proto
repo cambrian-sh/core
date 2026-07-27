@@ -432,6 +432,15 @@ message MemoryResult {
 // LTM semantic query response
 message MemoryResponse {
   repeated MemoryResult results = 1;
+  // policy_note explains a result set that was emptied or narrowed BECAUSE of
+  // access policy, rather than because the corpus had nothing to say (ADR-0085
+  // INV-3). Empty when policy played no part.
+  //
+  // This exists so an agent can answer "I am not permitted to see that" instead of
+  // "I found nothing" — two very different statements that a fail-closed model
+  // otherwise renders identical. Additive and optional: a client that ignores it
+  // behaves exactly as before.
+  string policy_note = 2;
 }
 
 // GenerateStreamRequest carries the agent's LLM call parameters for

@@ -20,7 +20,7 @@ func loadRealTools(t *testing.T) (*ProcessHandler, string) {
 		t.Skip("repo root not found")
 	}
 	reg := domain.NewInMemoryToolRegistry()
-	files, err := discovery.LoadRegistry(filepath.Join(root, "tools"), reg)
+	files, err := discovery.LoadRegistry(filepath.Join(root, "tools"), reg, false)
 	if err != nil {
 		t.Fatalf("discover tools: %v", err)
 	}

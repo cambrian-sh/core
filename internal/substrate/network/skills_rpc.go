@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -56,14 +57,12 @@ func (s *Server) ListSkills(ctx context.Context, _ *pb.ListSkillsRequest) (*pb.L
 	}
 	agentID := agentIDFromMetadata(ctx)
 
-	// Resolve the agent's effective scope (fail-closed on an unknown principal).
-	var eff *domain.EffectiveScope
-	if s.SkillScope != nil {
-		e, ok := s.SkillScope.EffectiveForAgent(ctx, agentID)
-		if !ok {
-			return &pb.ListSkillsResponse{}, nil // unknown principal → empty menu
-		}
-		eff = e
+	// Resolve the agent's read predicate. A nil predicate means the decision point
+	// could not resolve the principal → empty menu (fail-closed in the plugin;
+	// never reached in OSS, where every principal resolves).
+	eff, _ := s.authorizer().ReadFilter(ctx, domain.AgentPrincipal(agentID), domain.SurfaceRef{Kind: domain.SurfaceAgent})
+	if eff == nil {
+		return &pb.ListSkillsResponse{}, nil
 	}
 
 	full := skillFullFromMetadata(ctx)
@@ -77,10 +76,23 @@ func (s *Server) ListSkills(ctx context.Context, _ *pb.ListSkillsRequest) (*pb.L
 		session := mdValue(ctx, "x-session-token")
 		for _, n := range skillNamesFromMetadata(ctx) {
 			if sk, ok := s.SkillRegistry.Get(n); ok && domain.SkillVisible(eff, sk) {
-				skills = append(skills, sk)
+				// ADR-0085 D4: the skill's grants are INTERSECTED with what policy
+				// permits this principal, never unioned. The skill still loads; the
+				// tools it may not confer are clipped and reported, so the agent is
+				// told what it actually has rather than what the skill wished for.
 				if full && session != "" && s.ToolExecutor != nil {
-					s.ToolExecutor.ConferSkillGrants(session, sk.ToolGrants)
+					granted, clipped := s.ToolExecutor.ConferSkillGrants(ctx, session, agentID, sk.ToolGrants)
+					sk.ToolGrants = granted
+					for _, c := range clipped {
+						slog.WarnContext(ctx, "ADR-0085 D4: skill grant clipped",
+							slog.String("event", "skill_grant_clipped"),
+							slog.String("skill", sk.Name),
+							slog.String("agent_id", agentID),
+							slog.String("tool", c.Resource.ID),
+							slog.String("detail", c.Detail))
+					}
 				}
+				skills = append(skills, sk)
 			}
 		}
 	case skillQueryFromMetadata(ctx) != "" && s.SkillRetriever != nil:

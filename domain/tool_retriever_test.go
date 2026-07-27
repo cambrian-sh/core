@@ -114,7 +114,7 @@ func (f *fakeEmbedder) Embed(_ context.Context, text string) ([]float32, error) 
 type fakeToolStore struct {
 	lastFilter  string
 	lastDocType string
-	lastScope   *EffectiveScope
+	lastScope   *TagPredicate
 	results     []SearchResult
 	saved       map[string]*Document // by ID — tracks upserts
 	deleted     []string

@@ -25,18 +25,26 @@ func (p *PgVectorAdapter) SaveSections(ctx context.Context, sections []memory.Se
 			"kind": "section", "level": s.Level, "order": s.Order, "title": s.Title,
 			"document_id": s.DocumentID,
 		})
+		// ADR-0093: sections live in their own table. They carry no embedding and are
+		// excluded from fact recall by design, so keeping them in the vector table made
+		// every recall search traverse rows it could never return.
+		//
+		// document_id is written through a lookup rather than directly: a section whose
+		// document row does not exist yet would fail the foreign key and abort an ingest
+		// over bookkeeping, so an unresolvable parent stores NULL and the section is still
+		// usable for structural navigation.
 		_, err := p.pool.Exec(ctx, `
-			INSERT INTO `+TableDocuments+`
-				(id, text, document_type, metadata, section_path, parent_section_id, section_ltree, activation_strength)
-			VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7,'')::ltree, 0.1)
+			INSERT INTO `+TableSections+`
+				(id, document_id, title, metadata, section_path, parent_section_id, section_ltree)
+			VALUES ($1, (SELECT id FROM `+TableDocuments+` WHERE id = $2), $3, $4, $5, $6, NULLIF($7,'')::ltree)
 			ON CONFLICT (id) DO UPDATE SET
-				text = EXCLUDED.text,
-				document_type = EXCLUDED.document_type,
+				document_id = EXCLUDED.document_id,
+				title = EXCLUDED.title,
 				metadata = EXCLUDED.metadata,
 				section_path = EXCLUDED.section_path,
 				parent_section_id = EXCLUDED.parent_section_id,
 				section_ltree = EXCLUDED.section_ltree`,
-			s.ID, s.Title, domain.DocTypeDocSection, meta, s.SectionPath, s.ParentSectionID, s.SectionLtree)
+			s.ID, s.DocumentID, s.Title, meta, s.SectionPath, s.ParentSectionID, s.SectionLtree)
 		if err != nil {
 			return mapError("SaveSections", err)
 		}
@@ -48,7 +56,7 @@ func (p *PgVectorAdapter) SaveSections(ctx context.Context, sections []memory.Se
 func (p *PgVectorAdapter) StampChunks(ctx context.Context, stamps []memory.ChunkStamp) error {
 	for _, s := range stamps {
 		_, err := p.pool.Exec(ctx, `
-			UPDATE `+TableDocuments+`
+			UPDATE `+TableChunks+`
 			SET section_path = $2, parent_section_id = $3, section_ltree = NULLIF($4,'')::ltree
 			WHERE id = $1`,
 			s.ChunkID, s.SectionPath, s.ParentSectionID, s.SectionLtree)
@@ -98,18 +106,22 @@ func (p *PgVectorAdapter) ChunksInMatchingSections(ctx context.Context, terms []
 	if len(patterns) == 0 {
 		return nil, nil
 	}
+	// ADR-0093: what used to be a self-join filtered by document_type is now a join
+	// between two tables that mean different things — sections and chunks. The shape of
+	// the answer is unchanged; the query just stopped pretending they were the same kind
+	// of row. `title` replaces `text` because that is what a section row now calls it.
 	rows, err := p.pool.Query(ctx, `
 		WITH matched AS (
-			SELECT section_ltree FROM `+TableDocuments+`
-			WHERE document_type = $1 AND section_ltree IS NOT NULL
-			  AND (lower(text) ILIKE ANY($2) OR lower(section_path) ILIKE ANY($2))
+			SELECT section_ltree FROM `+TableSections+`
+			WHERE section_ltree IS NOT NULL
+			  AND (lower(title) ILIKE ANY($1) OR lower(section_path) ILIKE ANY($1))
 		)
-		SELECT DISTINCT d.id
-		FROM `+TableDocuments+` d
-		JOIN matched m ON d.section_ltree <@ m.section_ltree
-		WHERE d.document_type = $3
-		LIMIT $4`,
-		domain.DocTypeDocSection, patterns, domain.DocTypeMnemonicFact, limit)
+		SELECT DISTINCT c.id
+		FROM `+TableChunks+` c
+		JOIN matched m ON c.section_ltree <@ m.section_ltree
+		WHERE c.document_type = $2
+		LIMIT $3`,
+		patterns, domain.DocTypeMnemonicFact, limit)
 	if err != nil {
 		return nil, mapError("ChunksInMatchingSections", err)
 	}

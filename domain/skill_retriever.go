@@ -8,7 +8,7 @@ import "context"
 // rather than grant-filtering — an agent only sees system skills its effective
 // scope permits.
 type SkillRetriever interface {
-	Rank(ctx context.Context, query string, scope *EffectiveScope, k int) ([]string, error)
+	Rank(ctx context.Context, query string, scope *TagPredicate, k int) ([]string, error)
 }
 
 // VectorSkillRetriever is the pgvector-backed SkillRetriever. It embeds the query
@@ -24,7 +24,7 @@ type VectorSkillRetriever struct {
 }
 
 // Rank implements SkillRetriever.
-func (r VectorSkillRetriever) Rank(ctx context.Context, query string, scope *EffectiveScope, k int) ([]string, error) {
+func (r VectorSkillRetriever) Rank(ctx context.Context, query string, scope *TagPredicate, k int) ([]string, error) {
 	vec, err := r.Embedder.Embed(ctx, "search_query: "+query)
 	if err != nil {
 		return nil, err

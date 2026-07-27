@@ -100,7 +100,14 @@ func (s *Service) ListTools(_ context.Context, req *pb.ListToolsOpRequest) (*pb.
 			Source:         src,
 			DataReadKinds:  t.DataReadKinds,
 			DataWriteKinds: t.DataWriteKinds,
-			Grants:         rev[t.Name],
+			// ADR-0085/0086: what the tool is about, and what it does. Surfacing
+			// effects_inferred is what makes the strict-mode migration actionable —
+			// otherwise an operator has no way to know which manifests still need
+			// classifying before flipping the flag.
+			ClassificationTags: t.ClassificationTags,
+			Effects:            effectNames(t.Effects),
+			EffectsInferred:    t.EffectsInferred,
+			Grants:             rev[t.Name],
 		})
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Name < filtered[j].Name })
@@ -167,6 +174,17 @@ func (s *Service) QueryMemory(ctx context.Context, req *pb.QueryMemoryRequest) (
 		return nil, status.Errorf(codes.Internal, "query memory: %v", err)
 	}
 	resp := &pb.QueryMemoryResponse{}
+	// INV-3: an empty operator result must be attributable. The operator reads at
+	// ScopeSystem, so policy normally plays no part and the note stays absent —
+	// but if it ever does (a misconfigured bypass, an unsatisfiable clamp), the
+	// operator learns it here rather than concluding the corpus is empty.
+	if s.policy != nil && len(results) == 0 {
+		resp.PolicyNote = policyNote(s.policy.ExplainAccess(ctx, domain.AccessRequest{
+			Principal: domain.SystemPrincipal,
+			Surface:   domain.SurfaceRef{Kind: domain.SurfaceOperator},
+			Resource:  domain.ResourceRef{Kind: domain.KindMemory},
+		}))
+	}
 	topK := int(req.GetTopK())
 	for _, r := range results {
 		imp := docImportance(r.Document)
@@ -224,6 +242,16 @@ func (s *Service) AnswerMemory(ctx context.Context, req *pb.AnswerMemoryRequest)
 		return nil, status.Errorf(codes.Internal, "answer memory: %v", err)
 	}
 	resp := &pb.AnswerMemoryResponse{Status: st, Answer: answer}
+	// INV-3: an abstention that access policy CAUSED must say so. "The corpus does
+	// not answer that" and "you are not permitted to see the answer" are very
+	// different statements, and without this they render identically.
+	if s.policy != nil && len(evidence) == 0 {
+		resp.PolicyNote = policyNote(s.policy.ExplainAccess(ctx, domain.AccessRequest{
+			Principal: domain.SystemPrincipal,
+			Surface:   domain.SurfaceRef{Kind: domain.SurfaceOperator},
+			Resource:  domain.ResourceRef{Kind: domain.KindMemory},
+		}))
+	}
 	topK := int(req.GetTopK())
 	marker := int32(0)
 	for _, r := range evidence {
@@ -367,4 +395,16 @@ func paginate(n int, page, pageSize int32) (normPage int32, lo, hi int) {
 		hi = n
 	}
 	return normPage, lo, hi
+}
+
+// effectNames renders a tool's effect classes for the wire.
+func effectNames(es []domain.ToolEffect) []string {
+	if len(es) == 0 {
+		return nil
+	}
+	out := make([]string, len(es))
+	for i, e := range es {
+		out[i] = string(e)
+	}
+	return out
 }

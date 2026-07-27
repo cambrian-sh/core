@@ -17,7 +17,7 @@ func TestRemember_PublishesMemoryWrittenEvent(t *testing.T) {
 		events = append(events, e.(domain.MemoryWrittenEvent))
 	})
 
-	svc := NewRememberService(store, &fakeEmbedder{}, fakeWriteResolver{known: map[string]bool{"agent-1": true}})
+	svc := NewRememberService(store, &fakeEmbedder{}, fakeAuthorizer{known: map[string]bool{"agent-1": true}})
 	svc.SetEventBus(bus)
 
 	docID, err := svc.Remember(context.Background(), "agent-1", "the sky is blue", nil, "src", "sess-9", 0)
@@ -42,7 +42,7 @@ func TestRemember_NoEventOnRejectedWrite(t *testing.T) {
 	var count int
 	bus.Subscribe(domain.EventTypeMemoryWritten, func(domain.DomainEvent) { count++ })
 
-	svc := NewRememberService(&capturingSaveStore{}, &fakeEmbedder{}, fakeWriteResolver{known: map[string]bool{}})
+	svc := NewRememberService(&capturingSaveStore{}, &fakeEmbedder{}, fakeAuthorizer{known: map[string]bool{}})
 	svc.SetEventBus(bus)
 
 	if _, err := svc.Remember(context.Background(), "ghost", "x", nil, "s", "sess", 0); err == nil {

@@ -5,6 +5,8 @@ status: Proposed
 date: 2026-07-22
 supersedes: []
 superseded_by: []
+amended_by:
+  - 0090-ingress-and-surface-identity
 depends_on:
   - 0031-universal-input-router
   - 0032-reactive-rule-engine
@@ -16,6 +18,15 @@ depends_on:
 ---
 
 # ADR-0080: Chat Daemon Ownership
+
+> **Amended-by (pending): [ADR-0090](0090-ingress-and-surface-identity.md)** — the **Chat
+> Manager** tier is renamed the **Chat Ingress** and generalised: an *ingress* is any point
+> where the outside world enters Cambrian (Telegram, webhook, websocket, inbound API), of which
+> chat is one payload type. ADR-0090 also adds what this ADR left open — an ingress is assigned
+> its surface by the kernel from an out-of-band registration, never from its own claim (INV-5),
+> and the end-user principal requires a verified link rather than a forwarded external id. The
+> two-tier shape (D1/D2), the planner-bypass rule (D4) and the error-leakage guardrail (D5) are
+> unchanged. Decisions here remain live; ADR-0090 is design-only.
 
 ## Status
 

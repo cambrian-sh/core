@@ -21,6 +21,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/agentpool"
+	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/centralexec"
 	corechat "github.com/cambrian-sh/core/internal/chat"
 	"github.com/cambrian-sh/core/internal/config"
@@ -29,6 +30,7 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	mcp "github.com/cambrian-sh/core/internal/infrastructure/mcp"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
+	"github.com/cambrian-sh/core/internal/ingress"
 	"github.com/cambrian-sh/core/internal/kernel"
 	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/memory/vault"
@@ -37,7 +39,6 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/calibration"
 	"github.com/cambrian-sh/core/internal/metabolism/routescorer"
 	ossreactive "github.com/cambrian-sh/core/internal/reactive"
-	"github.com/cambrian-sh/core/internal/scope"
 	skilldiscovery "github.com/cambrian-sh/core/internal/skill/discovery"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
@@ -133,9 +134,13 @@ type Kernel struct {
 	ArtifactVault   *vault.ArtifactVault
 	EventBus        *domain.InMemoryEventBus
 
-	// ADR-0034: Tag-Based Data Access Scoping.
-	ScopeResolver *scope.ScopeResolver
-	ScopeStore    *postgres.PgAgentScopeStore
+	// ADR-0085: the access-control decision point. In OSS this is the allow-all
+	// default; a premium policy plugin replaces it. The kernel holds it so every
+	// enforcement point asks the SAME decision point.
+	Authorizer domain.Authorizer
+	// PolicyAdmin is the policy authoring surface. nil in OSS ⇒ the scope admin
+	// endpoints answer 501 rather than silently accepting a boundary.
+	PolicyAdmin domain.PolicyAdmin
 
 	// ADR-0039: tool grants store (operator sets grants via the admin endpoint).
 	ToolGrants *domain.InMemoryGrantsStore
@@ -355,15 +360,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		return vec.Pool().Ping(pctx)
 	})
 
-	// ADR-0034: agent scope store + resolver. Authoritative scope lives in the
-	// PostgreSQL agent_scopes table (shared with pgvector — reuse its pool); the
-	// resolver caches in-memory and invalidates cross-replica via LISTEN/NOTIFY.
-	scopeStore, err := postgres.NewPgAgentScopeStore(ctx, vec.Pool())
-	if err != nil {
-		storeHandle.Close()
-		return nil, fmt.Errorf("agent scope store: %w", err)
+	// ADR-0085: resolve the access-control decision point ONCE, here, and hand the
+	// same instance to every enforcement point. A nil Authorizer means no policy
+	// plugin is installed, which in OSS is not a degraded mode — unrestricted is
+	// the correct and only semantics for a single-tenant open-source deployment.
+	// Fail-closed is a property of the plugin, not of the kernel.
+	authorizer := opts.Authorizer
+	if authorizer == nil {
+		authorizer = domain.AllowAllAuthorizer{}
 	}
-	scopeResolver := scope.NewScopeResolver(scopeStore, 0, slog.Default())
 
 	// ADR-0047 0047-24: durable operator audit store (Postgres), reusing the
 	// pgvector pool. Falls back to in-memory if the table can't be created.
@@ -384,10 +389,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		slog.Warn("ADR-0084: conversation store unavailable; chat surfaces disabled", "err", convErr)
 	} else {
 		conversations = convStore
-	}
-
-	if err := scopeResolver.Warm(ctx); err != nil {
-		slog.Warn("ADR-0034: scope resolver warm failed (continuing with cold cache)", "err", err)
 	}
 
 	// ADR-0042: the centralized LLM Provider is the sole authority on model
@@ -449,25 +450,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	reconcileFilesystemAgents(ctx, reg, func(p string) bool { _, err := os.Stat(p); return err == nil })
 
 	// 2. Domain stacks — sequential construction (dependency order)
-	mem := kernel.NewMemoryStack(vec, memoryGen, embedder, cfg.Execution)
+	mem := kernel.NewMemoryStack(vec, memoryGen, embedder, cfg.Execution, authorizer)
 	// ADR-0048 #1: let Tier-2 commit offload a promoted fact's full body to CAS so
 	// recall serves {summary + content_cid} instead of the full text.
 	mem.Agent.ContentStore = storeHandle.ContentStore
 
-	// ADR-0034 Phase 1: enable agent_scope enforcement on the agent-facing memory
-	// query path. The resolver disambiguates registered-but-unprofiled (unrestricted)
-	// from unknown principals (fail-closed) via the registry; the QueryService is
-	// rewired with a fail-closed ScopedVectorStore. Only agent_scope (non-forgeable)
-	// is enforced; caller-supplied Handoff.Context tags carry no weight until Phase 2.
-	scopeResolver.SetExister(reg)
-	// ADR-0034 scope enforcement is a PREMIUM concern (extraction to a scope plugin
-	// pending). In OSS core it is OFF by default: memory is single-tenant and UNSCOPED, so
-	// the query path is left with no resolver (q.scopes == nil ⇒ no tag predicate ⇒ every
-	// caller reads all memory, including operator-ingested documents). Only the premium
-	// scope plugin flips execution.scope_enforcement_enabled on to install the enforcing gate.
-	if cfg.Execution.ScopeEnforcementEnabled {
-		mem.QueryService.EnableScoping(scopeResolver, scope.NewScopedVectorStore(vec, slog.Default()))
-	}
+	// ADR-0085: route the agent-facing memory query path through the fail-closed
+	// read chokepoint, UNCONDITIONALLY. There is no flag: the kernel always asks,
+	// and what the answer is depends only on which decision point is installed.
+	// Previously this was gated on execution.scope_enforcement_enabled, which meant
+	// an unscoped deployment had no chokepoint at all rather than a permissive one.
+	mem.QueryService.EnableAuthorization(authorizer, mem.ReadStore)
 
 	pp := config.NewStaticPolicyProvider(cfg.Execution.HippocampusPolicies, cfg.Execution.HippocampusDefaultPolicy)
 	aw := kernel.NewAwarenessStack(awarenessGen, reg, mem.Hippocampus, mem.WorkspaceStage, pp)
@@ -553,12 +546,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 	sessionMgr := session.New(sessionRepo)
 
-	// ADR-0034 Phase 2: caller_scope re-derivation. Gated with Phase-1 scoping above —
-	// when scope enforcement is off (OSS default) the session/caller scope is not wired,
-	// so a conversation's recall posture never narrows what the worker can read.
-	if cfg.Execution.ScopeEnforcementEnabled {
-		mem.QueryService.EnablePhase2(scopeResolver, sessionMgr)
-	}
+	// The per-session caller term is composed INSIDE the decision point now
+	// (premium authz.Authorizer.Sessions), so there is nothing to wire here: the
+	// session manager is handed to the plugin, not to the query path.
 
 	// ADR-0053 Phase 0: KG²RAG one-hop chunk expansion (config-gated). The
 	// pgvector adapter doubles as the ChunkTripletsStore (per-chunk h, r, t
@@ -646,8 +636,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			"top_k", cfg.Execution.RerankerTopK, "w_bge", cfg.Execution.RerankerWeight)
 	}
 
-
-
 	// Experiential memory removed: the EpisodicExtractor + MemoryLifecycleManager
 	// (ADR-0029/0030 episodic-narrative consolidation) are no longer wired. Session
 	// token eviction stays on the CircadianRhythm below; ttl still drives dormancy.
@@ -656,6 +644,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Wire SessionManager so it publishes SessionDormantEvent on state transition.
 	sessionMgr.SetEventBus(eventBus)
 	sessionMgr.SetTTL(ttl)
+	// ADR-0090 D3: a session opened by a REGISTERED ingress carries that ingress's
+	// surface, decided here and never restated by the daemon delivering later turns.
+	// nil resolver (the OSS default) leaves every surface transport-derived.
+	sessionMgr.SetIngressResolver(opts.IngressResolver)
 
 	// CircadianRhythm now only handles session token eviction (ADR-0018 sweep).
 	circadianRhythm := circadian.New(sessionMgr, 0)
@@ -815,14 +807,21 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// The capability bundle handed to plugins. Built once so the ADR-0082 D12 Build phase
 	// and the ADR-0057 NewSignalReceiver hook see exactly the same services.
 	kernelSvc := KernelServices{
-		Manager:    meta.Manager,
-		Auctioneer: meta.Auctioneer,
-		Memory:     mem.Agent,
-		Planner:    aw.Planner,
-		LLM:        aw.LLM,
-		WatchStore: reg,
-		EventBus:   eventBus,
-		Journal:    reg, // REACT-01 / ADR-0061: durable reactive execution (bbolt).
+		// ADR-0085: the policy plugin owns its own tables and needs to tell a
+		// registered-but-unprofiled agent from an unknown principal, so it gets the
+		// pool, the registry existence check, and the session caller term. It gets
+		// nothing else about the kernel.
+		SQL:           vec.Pool(),
+		AgentExists:   reg.HasAgent,
+		SessionScopes: sessionMgr,
+		Manager:       meta.Manager,
+		Auctioneer:    meta.Auctioneer,
+		Memory:        mem.Agent,
+		Planner:       aw.Planner,
+		LLM:           aw.LLM,
+		WatchStore:    reg,
+		EventBus:      eventBus,
+		Journal:       reg, // REACT-01 / ADR-0061: durable reactive execution (bbolt).
 		// ADR-0080: let a direct-dispatch consumer (chat manager) provision a managed-LLM
 		// session token, the way the planner path does at server.go:493. Nil gateway ⇒ no-op.
 		AcquireLLMToken: func(ctx context.Context, tokenLimit int, ttl time.Duration) (string, func(), error) {
@@ -869,6 +868,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// delegates to the planner opens a session linked back to the exchange that
 		// ordered it — resolved server-side, never named by the agent.
 		chatTurns.SetLeaseBinder(llmGateway)
+		// ADR-0090 D8: a reply to a conversation that arrived through an ingress goes
+		// back out through that ingress. The address is resolved from the conversation
+		// record, never supplied by the agent, and the registration is re-checked at
+		// delivery time so revoking an ingress stops conversations already bound to it.
+		chatTurns.SetDeliverer(ingress.NewDeliveryService(
+			conversations, opts.IngressResolver, ingress.NewDaemonTransport(meta.Manager)))
 		lifecycles = append(lifecycles, Lifecycle{
 			Name: "chat-pool",
 			Start: func(ctx context.Context) {
@@ -898,6 +903,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		watchBacktester = bt
 	}
 	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, providers, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
+
+	// ADR-0090: a signal from a REGISTERED ingress is a conversational turn, so it is
+	// routed to the chat lane before the signal pipeline sees it — the planner never
+	// receives external chat traffic (ADR-0080 D4). nil resolver or no chat lane and
+	// this stays nil, leaving every signal on its ordinary path.
+	if opts.IngressResolver != nil && chatTurns != nil && conversations != nil {
+		cambrianServer.IngressInbound = ingress.NewInboundService(conversations, opts.IngressResolver, chatTurns)
+	}
 
 	// Phase 4: runs and checkpoints follow sessions into Postgres. ProvideServer wires the
 	// bbolt registry by default; override here when the Postgres store is available so a
@@ -940,16 +953,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Provider, which already applies the Langfuse trace wrapper — so GenWrapper is
 	// left nil to avoid double-tracing. (wrapGen is identity when GenWrapper is nil.)
 
-	// ADR-0034 / REQ-SDK-007c: wire scope-enforced artifact storage.
+	// REQ-SDK-007c: wire artifact storage behind the decision point.
 	cambrianServer.ArtifactBytes = artifactVault
 	cambrianServer.ArtifactMeta = reg
-	cambrianServer.ArtifactScopes = scopeResolver
-	cambrianServer.ArtifactSessions = sessionMgr // ADR-0034 Phase 2: session caller_scope parity
-	cambrianServer.ArtifactVocab = scope.NewVocabulary(cfg.Execution.ClassificationVocabulary)
+	cambrianServer.Authz = authorizer
 
-	// ADR-0035 C2: memory.remember() write-back through the ScopedStoreWriter with
-	// kernel-derived classification (DefaultWriteTags) + stamped provenance.
-	rememberSvc := memory.NewRememberService(mem.WriteStore, embedder, scopeResolver)
+	// ADR-0035 C2: memory.remember() write-back through the write chokepoint, with
+	// the classification derived by the decision point + stamped provenance.
+	rememberSvc := memory.NewRememberService(mem.WriteStore, embedder, authorizer)
 	rememberSvc.SetEventBus(eventBus) // ADR-0047 0047-15: publish MemoryWrittenEvent on save
 	// ADR-0015: a remembered fact with activation 0 can never clear the recall floor
 	// (cosine·α < RecallSimilarityFloor) — seed a recallable default (LoCoMo-tunable).
@@ -989,6 +1000,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		if mem.ChunkTripletsBatcher != nil {
 			mem.IngestionManager.SetChunkTripletsBatcher(mem.ChunkTripletsBatcher)
 		}
+		// ADR-0093: record the source-document entity on every ingest. Deliberately NOT
+		// behind the structure-graph flag below — a document exists whether or not its
+		// hierarchy was parsed, and it is the row that owns the classification tags, so
+		// gating it would leave tag ownership dependent on an unrelated feature switch.
+		// Called directly rather than through a type assertion: `vec` is the concrete
+		// adapter and document_store.go carries a compile-time proof it satisfies the
+		// port, so a mismatch is a build error instead of a feature that silently is
+		// not wired.
+		mem.IngestionManager.SetDocumentStore(vec)
 		// ADR-0060: structure-aware ingestion — parse each document's real hierarchy
 		// via the docling_agent and persist a structure graph (sections + PART_OF/NEXT
 		// edges), stamping every chunk with its inherited section path. Opt-in.
@@ -1018,7 +1038,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// (grant + resource policy + scope + approval) and runs it in a confined
 	// Python child. Default: no grants ⇒ no system tools (fail-closed).
 	toolReg := domain.NewInMemoryToolRegistry()
-	toolFiles, terr := tooldiscovery.LoadRegistry("tools", toolReg)
+	toolFiles, terr := tooldiscovery.LoadRegistry("tools", toolReg, cfg.Execution.ToolEffectsStrict)
 	if terr != nil {
 		slog.Warn("tool discovery failed; system tools disabled", "err", terr)
 	}
@@ -1051,9 +1071,20 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			slog.Info("ADR-0075: registering plugin MCP server", "id", s.ID, "transport", s.Transport)
 		}
 		for _, s := range cfg.MCP.Servers {
+			// ADR-0085 D2: a domain-bound integration tags every tool it advertises, so a
+			// policy has something to act on. Without this, dynamically discovered tools
+			// arrive untagged and no predicate can restrict them.
+			if len(s.ClassificationTags) > 0 {
+				slog.Info("ADR-0085: MCP server tools classified",
+					"server", s.ID, "tags", s.ClassificationTags)
+			}
 			toolPolicy := make(map[string]mcp.ToolPolicy, len(s.Tools))
 			for _, tc := range s.Tools {
-				toolPolicy[tc.Name] = mcp.ToolPolicy{Dangerous: tc.Dangerous, DataWriteKinds: tc.DataWriteKinds}
+				toolPolicy[tc.Name] = mcp.ToolPolicy{
+					Dangerous:          tc.Dangerous,
+					DataWriteKinds:     tc.DataWriteKinds,
+					ClassificationTags: tc.ClassificationTags,
+				}
 				if tc.Pricing.Kind != "" {
 					pricing["mcp:"+s.ID+"/"+tc.Name] = domain.ToolPricing{
 						Kind:            domain.PricingKind(tc.Pricing.Kind),
@@ -1066,7 +1097,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			servers = append(servers, mcp.ServerConfig{
 				ID: s.ID, Transport: s.Transport, Endpoint: s.Endpoint, Args: s.Args,
 				AuthType: s.Auth.Type, AuthHeader: s.Auth.Header, AuthTokenEnv: s.Auth.TokenEnv,
-				Tools: toolPolicy,
+				Tools:                     toolPolicy,
+				DefaultClassificationTags: s.ClassificationTags,
 			})
 		}
 		mcpServers = servers
@@ -1120,7 +1152,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		EgressAuditor:   mcpAuditor,   // ADR-0043: nil ⇒ no egress auditing
 		Budget:          mcpBudget,    // ADR-0043: nil ⇒ MCP calls unmetered
 		Pricing:         mcpPricing,   // ADR-0043: nil ⇒ MCP calls unmetered
-		Scope:           scopeResolver,
+		Authz:           authorizer,   // ADR-0085: data-store regime + (Phase 2) effect classes
 		ContentStore:    storeHandle.ContentStore,
 		InlineThreshold: 65536,
 		Unrestricted:    cfg.Execution.ToolsUnrestricted, // dev/trusted bypass: all agents, all tools
@@ -1132,7 +1164,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		ArtifactBytes: artifactVault,
 		ArtifactMeta:  reg,
 		ArtifactTags: func(ctx context.Context, agentID string) []string {
-			return scopeResolver.DefaultWriteTags(ctx, agentID)
+			// A promoted artifact is a WRITE, so its classification is derived by the
+			// decision point exactly like a memory write — never chosen by the tool.
+			tags, _ := authorizer.ClassifyWrite(ctx, domain.AgentPrincipal(agentID), nil)
+			return tags
 		},
 		ArtifactOutputDir: filepath.Join(cfg.Storage.DataDir, "outputs"),
 		// ADR-0048 D6: feed substantive tool outputs into Tier-1/Tier-2 curation so
@@ -1290,9 +1325,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// retriever reads through a fail-closed ScopedVectorStore so an agent only
 	// retrieves skills its effective scope permits (the same read path as memory).
 	cambrianServer.SkillRegistry = skillReg
-	cambrianServer.SkillScope = scopeResolver
 	cambrianServer.SkillRetriever = domain.VectorSkillRetriever{
-		Store:    scope.NewScopedVectorStore(vec, slog.Default()),
+		Store:    authz.NewEnforcingVectorStore(vec, slog.Default()),
 		Embedder: embedder,
 		Floor:    cfg.Execution.ToolRetrievalFloor,
 	}
@@ -1312,10 +1346,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// TagMemory follows Amendment A1.2: operators may widen AND narrow tags, from
 	// the controlled vocabulary, written through the kernel store (not a raw DB
 	// write), audited by the command path.
-	operatorTagVocab := scope.NewVocabulary(cfg.Execution.ClassificationVocabulary)
+	// The controlled vocabulary lives with the decision point. With no policy
+	// plugin installed there is no vocabulary to violate, so any tag is accepted —
+	// consistent with the rest of the OSS posture.
 	operatorEffects := operator.CommandEffectsFuncs{
 		TagMemoryFn: func(ctx context.Context, docID, tag string, add bool) error {
-			if !operatorTagVocab.Contains(tag) {
+			if opts.PolicyAdmin != nil && !opts.PolicyAdmin.ValidateTag(tag) {
 				return fmt.Errorf("tag %q is not in the controlled vocabulary", tag)
 			}
 			doc, err := vec.GetByID(ctx, docID)
@@ -1331,9 +1367,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			return vec.Save(ctx, doc)
 		},
 		SetScopeFn: func(ctx context.Context, agentID string, required, anyOf, forbidden []string) error {
-			return scopeResolver.SaveScope(ctx, agentID, domain.ScopeConfig{
-				RequiredTags: required, AnyOfTags: anyOf, ForbiddenTags: forbidden,
-			})
+			if opts.PolicyAdmin == nil {
+				return fmt.Errorf("set_scope requires the access-policy plugin; this build has none")
+			}
+			return opts.PolicyAdmin.SetAgentScope(ctx, agentID, required, anyOf, forbidden)
 		},
 		RegisterSkillFn: func(ctx context.Context, name, description, instructions string, toolGrants, scopeTags []string) error {
 			sk := domain.Skill{Name: name, Description: description, Instructions: instructions, ToolGrants: toolGrants, ScopeTags: scopeTags}
@@ -1420,8 +1457,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		CircadianRhythm:    circadianRhythm,
 		ArtifactVault:      artifactVault,
 		EventBus:           eventBus,
-		ScopeResolver:      scopeResolver,
-		ScopeStore:         scopeStore,
+		Authorizer:         authorizer,
+		PolicyAdmin:        opts.PolicyAdmin,
 		ToolGrants:         toolGrants,
 		MCPConnector:       mcpConnector,
 		MCPSink:            mcpSink,
@@ -1441,18 +1478,6 @@ func truncateRunes(s string, n int) string {
 }
 
 func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
-	// ADR-0034: subscribe to cross-replica scope invalidations (LISTEN/NOTIFY).
-	if k.ScopeStore != nil && k.ScopeResolver != nil {
-		if ch, err := k.ScopeStore.Subscribe(ctx); err != nil {
-			slog.Warn("ADR-0034: scope invalidation subscribe failed (TTL-only revocation)", "err", err)
-		} else {
-			g.Go(func() error {
-				k.ScopeResolver.WatchInvalidations(ctx, ch)
-				return nil
-			})
-		}
-	}
-
 	// A. Domain stack background workers
 	g.Go(func() error { return k.Memory.Start(ctx) })
 	g.Go(func() error { return k.Metabolism.Start(ctx) })
@@ -1508,8 +1533,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// backend swaps in behind the OperatorIdentity port.
 		operatorIDP := operatorBootstrapIdentity()
 		k.GRPC = grpc.NewServer(
-			grpc.ChainUnaryInterceptor(operator.UnaryAuthInterceptor(operatorIDP)),
-			grpc.ChainStreamInterceptor(operator.StreamAuthInterceptor(operatorIDP)),
+			// ADR-0085 D7: stamp the surface FIRST, from the transport, so every
+			// downstream handler knows where the request arrived from. It runs
+			// unconditionally — the kernel always establishes the entry point; whether
+			// that constrains anything is the decision point's business.
+			grpc.ChainUnaryInterceptor(authz.UnarySurfaceInterceptor(), operator.UnaryAuthInterceptor(operatorIDP)),
+			grpc.ChainStreamInterceptor(authz.StreamSurfaceInterceptor(), operator.StreamAuthInterceptor(operatorIDP)),
 			// The operator binary-ingest lane (IngestMemory) carries raw file bytes;
 			// gRPC's 4 MiB default rejects any PDF above it server-side before docling
 			// ever runs, so the documented upload path is unusable for real documents.
@@ -1628,6 +1657,10 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// ROUTE-07 / ADR-0077: gatekeeper route-preview (deterministic merit scoring over
 		// inline candidates, under the active scorer arm). Always available in core.
 		if k.Metabolism != nil && k.Metabolism.Gatekeeper != nil {
+			// ADR-0085: the access-policy administration surface (ExplainAccess,
+			// ListClassificationTags). nil in OSS ⇒ those RPCs answer Unimplemented,
+			// because an unscoped deployment has no policy to explain.
+			operatorSvc.SetPolicyAdmin(k.PolicyAdmin)
 			operatorSvc.SetRoutePreviewer(routePreviewAdapter{
 				cfg:    k.Config.Execution,
 				scorer: k.Metabolism.Gatekeeper.RouteScorer,
@@ -1684,10 +1717,18 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		}
 		operatorCaps = append(operatorCaps, "session-lifecycle")
 		operatorCaps = append(operatorCaps, k.PluginCapabilities...)
-		// Contract 0064 (Phase 2): adds SessionStateOp to the feed and the CloseSession
-		// RPC. The "session-lifecycle" capability lets a console detect whether the kernel
-		// can actually report pause/created transitions before it renders controls for them.
-		operatorSvc.SetHandshake("0.6.9-alpha", "0065", operatorCaps)
+		// Contract 0067 (ADR-0089): adds SnapshotResponse.plugins — every declared
+		// plugin with its own version line, so a console can detect plugin-level skew
+		// the way it already detects contract skew. 0066 (ADR-0085) added
+		// ExplainAccess + ListClassificationTags, the AccessDecisionOp shape, and
+		// QueryMemoryResponse.policy_note. The "access-policy" capability (declared by
+		// the policy plugin's manifest) lets a console decide whether to render the
+		// policy surfaces at all, instead of probing and getting Unimplemented.
+		operatorSvc.SetHandshake("0.6.9-alpha", "0067", operatorCaps)
+		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
+		// declared plugin, registered or not — the console needs to distinguish "this
+		// deployment has no such plugin" from "it declined to register".
+		operatorSvc.SetPlugins(pluginHandshake(k.PluginStatuses))
 		// ADR-0047 0047-10: chat & steer. CreateSession is wired to the
 		// SessionManager; SendMessage/Inject dispatch through the Execute path is
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).
@@ -1798,8 +1839,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
-			if k.ScopeResolver == nil {
-				http.Error(w, "scope resolver unavailable", http.StatusServiceUnavailable)
+			// Scope + write-tags are POLICY administration, so they exist only when a
+			// policy plugin is installed. An OSS build answers 501 rather than
+			// pretending to have stored a boundary it will never enforce.
+			if k.PolicyAdmin == nil {
+				http.Error(w, "access-policy plugin not installed; scope administration unavailable", http.StatusNotImplemented)
 				return
 			}
 			if suffix == "write-tags" {
@@ -1812,7 +1856,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 					http.Error(w, "invalid write-tags body: "+err.Error(), http.StatusBadRequest)
 					return
 				}
-				if err := k.ScopeResolver.SaveWriteTags(r.Context(), agentID, body.DefaultWriteTags); err != nil {
+				if err := k.PolicyAdmin.SetAgentWriteTags(r.Context(), agentID, body.DefaultWriteTags); err != nil {
 					http.Error(w, "write-tags rejected: "+err.Error(), http.StatusBadRequest)
 					return
 				}
@@ -1820,18 +1864,19 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
-			var cfg domain.ScopeConfig
+			var cfg domain.TagSet
 			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 				http.Error(w, "invalid scope body: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-			// SaveScope runs ScopeConfig.Validate() and rejects unsatisfiable /
-			// conflicting profiles before persisting (R5).
-			if err := k.ScopeResolver.SaveScope(r.Context(), agentID, cfg); err != nil {
+			// The decision point validates and rejects unsatisfiable / conflicting
+			// profiles BEFORE persisting: an administrator learns at save time, not
+			// through an empty result three days later (ADR-0085 D14).
+			if err := k.PolicyAdmin.SetAgentScope(r.Context(), agentID, cfg.RequiredTags, cfg.AnyOfTags, cfg.ForbiddenTags); err != nil {
 				http.Error(w, "scope rejected: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-			slog.Info("ADR-0034: agent scope profile updated", "agent_id", agentID)
+			slog.Info("ADR-0085: agent scope profile updated", "agent_id", agentID)
 			w.WriteHeader(http.StatusOK)
 		})
 		srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux}
@@ -2228,6 +2273,35 @@ func applyTag(tags []string, tag string, add bool) []string {
 	}
 	if add && !found {
 		out = append(out, tag)
+	}
+	return out
+}
+
+// pluginHandshake maps composed plugin statuses into the operator plane's own
+// shape (ADR-0089). The mapping lives here, in the composition root, because the
+// operator package must not learn how plugins are composed — the same separation
+// that keeps the kernel from interpreting capability strings (ADR-0082 D2).
+func pluginHandshake(statuses []PluginStatus) []operator.PluginInfo {
+	out := make([]operator.PluginInfo, 0, len(statuses))
+	for _, st := range statuses {
+		info := operator.PluginInfo{
+			ID:           st.Manifest.ID,
+			DisplayName:  st.Manifest.DisplayName,
+			Version:      st.Manifest.Version,
+			State:        st.State,
+			Capabilities: st.Manifest.Capabilities,
+			Reason:       st.Reason,
+			Missing:      st.Missing,
+		}
+		if st.ExpiresAt != nil {
+			info.ExpiresAt = st.ExpiresAt.Format(time.RFC3339)
+		}
+		for _, pan := range st.Manifest.Panels {
+			info.Panels = append(info.Panels, operator.PluginPanel{
+				ID: pan.ID, Title: pan.Title, Capability: pan.Capability,
+			})
+		}
+		out = append(out, info)
 	}
 	return out
 }

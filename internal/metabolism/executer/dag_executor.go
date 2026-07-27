@@ -14,7 +14,7 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
-	"github.com/cambrian-sh/core/internal/scope"
+	"github.com/cambrian-sh/core/internal/authz"
 )
 
 // ArtifactStepLister lists artifacts produced by a session+step (ADR-0034). Used to
@@ -23,11 +23,9 @@ type ArtifactStepLister interface {
 	ListStepArtifacts(sessionID string, stepIndex int) ([]domain.Artifact, error)
 }
 
-// SessionCallerScopes returns the non-forgeable caller_scope for a session, used to
-// scope-filter surfaced artifacts (ADR-0034 Phase 2). Optional.
-type SessionCallerScopes interface {
-	CallerScope(ctx context.Context, sessionID domain.SessionID) domain.ScopeConfig
-}
+// (The former SessionCallerScopes seam is gone: composing a session's caller term
+// with anything else is the decision point's job, so the executor asks
+// domain.Authorizer for a predicate instead of assembling one. ADR-0085.)
 
 // TaskEventWriter is the interface that BBoltAdapter (and test mocks) implement
 // to persist TaskEvent records after each DAG step completes.
@@ -154,7 +152,10 @@ type DAGExecutor struct {
 	// the step's working memory as ContextRefs. Best-effort discovery — the
 	// authoritative gate remains GetArtifact (agent_scope). nil → disabled.
 	ArtifactLister ArtifactStepLister
-	SessionScopes  SessionCallerScopes
+	// Authz is the decision point used to filter surfaced artifacts. nil ⇒ the
+	// discovery layer surfaces everything (the OSS default); GetArtifact remains
+	// the authoritative gate either way.
+	Authz domain.Authorizer
 
 	// replanSuppressor is notified when replanning starts/ends to suppress
 	// duplicate signals (usually set to the Watcher).
@@ -791,23 +792,22 @@ func (d *DAGExecutor) ExecuteFrom(
 				mu.Unlock()
 				contextSnapshot = nil // mutually exclusive with WorkingMemory
 
-				// ADR-0034 / REQ-SDK-007b: surface prior-step artifacts (scope-filtered)
-				// into working_memory as discovery refs. Best-effort — GetArtifact is the
-				// authoritative gate. Filtered by the session caller_scope (Phase 2); when
-				// absent, ScopeSystem surfaces all (still gated downstream at fetch).
+				// REQ-SDK-007b: surface prior-step artifacts (predicate-filtered) into
+				// working_memory as discovery refs. Best-effort — GetArtifact is the
+				// authoritative gate. With no decision point wired this surfaces all
+				// (the OSS default); with one, it surfaces only what the principal on
+				// this context may see.
 				if d.ArtifactLister != nil && d.CurrentSessionID != "" {
 					eff := domain.ScopeSystem
-					if d.SessionScopes != nil {
-						if cs := d.SessionScopes.CallerScope(cancelCtx, d.CurrentSessionID); !cs.IsZero() {
-							e := domain.NewEffectiveScope(cs, domain.ScopeConfig{})
-							eff = &e
-						}
+					if d.Authz != nil {
+						eff, _ = d.Authz.ReadFilter(cancelCtx,
+							domain.PrincipalFromContext(cancelCtx), domain.SurfaceFromContext(cancelCtx))
 					}
 					for _, dep := range plan.Steps[i].DependsOn {
 						arts, lerr := d.ArtifactLister.ListStepArtifacts(string(d.CurrentSessionID), dep)
 						if lerr == nil && len(arts) > 0 {
 							workingMemory = append(workingMemory,
-								scope.ArtifactContextRefs(eff, arts, fmt.Sprintf("step_%d", dep))...)
+								authz.ArtifactContextRefs(eff, arts, fmt.Sprintf("step_%d", dep))...)
 						}
 					}
 				}

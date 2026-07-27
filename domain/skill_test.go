@@ -82,7 +82,7 @@ func TestSkillDisclosure(t *testing.T) {
 }
 
 // SkillVisible: nil scope denies (fail-closed); ScopeSystem permits; otherwise
-// EffectiveScope.Allows decides on the skill's tags.
+// TagPredicate.Allows decides on the skill's tags.
 func TestSkillVisible(t *testing.T) {
 	s := Skill{Name: "deploy", ScopeTags: []string{"ops"}}
 	if SkillVisible(nil, s) {
@@ -91,11 +91,11 @@ func TestSkillVisible(t *testing.T) {
 	if !SkillVisible(ScopeSystem, s) {
 		t.Error("ScopeSystem must permit")
 	}
-	permits := &EffectiveScope{AnyOfClauses: [][]string{{"ops"}}}
+	permits := &TagPredicate{AnyOfClauses: [][]string{{"ops"}}}
 	if !SkillVisible(permits, s) {
 		t.Error("a scope permitting 'ops' should see an ops-tagged skill")
 	}
-	denies := &EffectiveScope{AnyOfClauses: [][]string{{"finance"}}}
+	denies := &TagPredicate{AnyOfClauses: [][]string{{"finance"}}}
 	if SkillVisible(denies, s) {
 		t.Error("a scope not permitting 'ops' must not see an ops-tagged skill")
 	}
@@ -111,7 +111,7 @@ func TestVectorSkillRetriever_FloorAndScopePassed(t *testing.T) {
 		{Document: Document{ID: "backup"}, RawScore: 0.20}, // below floor
 	}}
 	r := VectorSkillRetriever{Store: store, Embedder: emb, Floor: 0.30}
-	scope := &EffectiveScope{AnyOfClauses: [][]string{{"ops"}}}
+	scope := &TagPredicate{AnyOfClauses: [][]string{{"ops"}}}
 
 	got, err := r.Rank(context.Background(), "deploy the app", scope, 3)
 	if err != nil {

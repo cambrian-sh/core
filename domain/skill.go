@@ -18,7 +18,7 @@ type Skill struct {
 	ToolGrants   []string // bundled tools, activated run-scoped on load (D6)
 	// ScopeTags are the skill's classification labels (ADR-0046 D9, option A):
 	// stored as the skill document's metadata.tags, so an agent retrieves the
-	// skill only when its ADR-0034 EffectiveScope.Allows these tags — the same
+	// skill only when its ADR-0034 TagPredicate.Allows these tags — the same
 	// read path as memory, no new permission logic.
 	ScopeTags []string
 }
@@ -96,19 +96,20 @@ func SkillDisclosure(s Skill, full bool) (description, instructions string, tool
 	return description, instructions, toolGrants
 }
 
-// SkillVisible reports whether an agent's effective scope permits loading a skill
-// (ADR-0046 D9, option A): the skill's ScopeTags are treated as the document's
-// classification labels, gated by EffectiveScope.Allows — the same relation
-// memory uses. A nil scope is fail-closed (deny); ScopeSystem permits all. Used
-// for the registry-based (named / full-menu) paths; the ranked path delegates
-// the identical check to the store via SearchOptions.Scope.
-func SkillVisible(eff *EffectiveScope, s Skill) bool {
-	if eff == nil {
-		return false
-	}
-	if eff.System {
-		return true
-	}
+// AuthzRef identifies a skill to the decision point (Taggable).
+func (s Skill) AuthzRef() ResourceRef { return ResourceRef{Kind: KindSkill, ID: s.Name} }
+
+// AuthzTags presents the skill's classification labels (Taggable). ADR-0046 D9:
+// they are the same labels memory uses, so one algebra governs both.
+func (s Skill) AuthzTags() []string { return s.ScopeTags }
+
+// SkillVisible reports whether an effective read predicate permits loading a
+// skill (ADR-0046 D9, option A): the skill's ScopeTags are treated as the
+// document's classification labels, gated by TagPredicate.Allows — the same
+// relation memory uses. A nil predicate is fail-closed (deny); the ScopeSystem
+// bypass permits all. Used for the registry-based (named / full-menu) paths; the
+// ranked path delegates the identical check to the store via SearchOptions.Scope.
+func SkillVisible(eff *TagPredicate, s Skill) bool {
 	return eff.Allows(s.ScopeTags)
 }
 

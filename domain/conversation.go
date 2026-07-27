@@ -97,8 +97,45 @@ type Conversation struct {
 	// not resend it each turn. Empty means no policy prompt.
 	Policy string
 
+	// Delivery is where a reply to this conversation goes: which ingress, and which
+	// identity on the far side of it (ADR-0090). Bound by the KERNEL on first
+	// inbound contact and never supplied by an agent.
+	//
+	// This is the envelope, in SMTP's sense: the recipient is data the server owns,
+	// not content the sender writes. An agent names a CONVERSATION and the kernel
+	// resolves the address — otherwise anything that can produce a message could
+	// choose who reads it, and a fire-and-forget ingress would dutifully deliver.
+	//
+	// Zero means nothing has ever arrived through an ingress, so there is nowhere
+	// to deliver. That is the correct state for a console-only conversation, and it
+	// happens to match Telegram's own rule that a bot cannot open a chat with
+	// someone who never contacted it.
+	Delivery DeliveryAddress
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// DeliveryAddress is where outbound messages for a conversation are sent.
+type DeliveryAddress struct {
+	// IngressAgentID is the registered ingress that carries the traffic. It is an
+	// agent id, so the kernel can look up the registration and re-check the
+	// namespace at delivery time rather than trusting what was stored.
+	IngressAgentID string
+	// ExternalID identifies the recipient on the far side — a Telegram chat id, a
+	// websocket connection key. Opaque to the kernel: only the ingress interprets it.
+	ExternalID string
+}
+
+// IsZero reports whether no delivery address has been bound.
+func (d DeliveryAddress) IsZero() bool { return d.IngressAgentID == "" || d.ExternalID == "" }
+
+// String renders "ingress:external" for logs and audit records.
+func (d DeliveryAddress) String() string {
+	if d.IsZero() {
+		return "<undeliverable>"
+	}
+	return d.IngressAgentID + ":" + d.ExternalID
 }
 
 // Validate checks the invariants the store relies on.
@@ -183,4 +220,29 @@ type ConversationStore interface {
 	// ListMessages returns messages with Seq strictly greater than afterSeq, in order.
 	// Pass afterSeq=0 for the whole history. limit <= 0 means no limit.
 	ListMessages(ctx context.Context, conversationID string, afterSeq int64, limit int) ([]Message, error)
+
+	// BindDelivery records where replies to this conversation go (ADR-0090).
+	//
+	// WRITE-ONCE: an already-bound conversation keeps its address and this returns
+	// ErrDeliveryAlreadyBound. Rebinding would be a redirect — the one operation an
+	// attacker who reached this call would want, since it silently retargets every
+	// future reply. Changing a recipient is therefore a deliberate administrative
+	// act, not a side effect of a message arriving.
+	BindDelivery(ctx context.Context, conversationID string, addr DeliveryAddress) error
+
+	// FindByDelivery returns the conversation bound to addr, if any.
+	//
+	// This is the inbound hot path: every message arriving through an ingress asks
+	// "is this sender already talking to us?". Migration 0006 adds the partial index
+	// it reads, partial because in a console-only deployment almost every row is
+	// unbound and would otherwise bloat it.
+	FindByDelivery(ctx context.Context, addr DeliveryAddress) (*Conversation, error)
 }
+
+// ErrDeliveryAlreadyBound is returned when a conversation's delivery address is
+// already set. Binding is write-once precisely so a later inbound cannot redirect
+// where earlier replies were going.
+var ErrDeliveryAlreadyBound = errors.New("conversation: delivery address is already bound")
+
+// ErrDeliveryAddressInvalid is returned for an address that could never deliver.
+var ErrDeliveryAddressInvalid = errors.New("conversation: delivery address requires an ingress and an external id")
