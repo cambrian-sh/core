@@ -73,7 +73,7 @@ TOOL_MANIFEST = '''
 '''
 `)
 	reg := domain.NewInMemoryToolRegistry()
-	files, err := LoadRegistry(dir, reg)
+	files, err := LoadRegistry(dir, reg, false)
 	if err != nil || len(files) != 1 {
 		t.Fatalf("LoadRegistry files=%v err=%v, want 1,nil", files, err)
 	}
@@ -93,5 +93,101 @@ func TestScanTools_MissingDir(t *testing.T) {
 	}
 	if len(tools) != 0 {
 		t.Errorf("missing dir should yield 0 tools, got %d", len(tools))
+	}
+}
+
+// ADR-0086: a manifest may declare its own classification tags and effect classes,
+// and a declared set beats inference.
+func TestLoadRegistry_HonoursDeclaredEffects(t *testing.T) {
+	dir := t.TempDir()
+	writeTool(t, dir, "pay_tool.py", `
+TOOL_MANIFEST = '''
+{
+  "name": "issue_refund",
+  "description": "Refund a payment",
+  "dangerous": true,
+  "classification_tags": ["payments"],
+  "effects": ["read", "spend"]
+}
+'''
+`)
+	reg := domain.NewInMemoryToolRegistry()
+	if _, err := LoadRegistry(dir, reg, false); err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := reg.Get("issue_refund")
+	if !ok {
+		t.Fatal("tool should be registered")
+	}
+	if tool.EffectsInferred {
+		t.Errorf("a declared set must not be marked inferred")
+	}
+	if !tool.HasEffect(domain.EffectSpend) {
+		t.Errorf("declared spend must survive registration, got %v", tool.Effects)
+	}
+	// `dangerous` would have inferred write; the declaration is authoritative.
+	if tool.HasEffect(domain.EffectWrite) {
+		t.Errorf("a declared set must not be augmented by inference, got %v", tool.Effects)
+	}
+	if len(tool.ClassificationTags) != 1 || tool.ClassificationTags[0] != "payments" {
+		t.Errorf("classification tags must reach the registry, got %v", tool.ClassificationTags)
+	}
+}
+
+// Strict mode refuses an un-migrated tool rather than guessing; the rest of the
+// directory still loads, because one bad manifest must not take out every tool.
+func TestLoadRegistry_StrictSkipsUnclassifiedButKeepsGoing(t *testing.T) {
+	dir := t.TempDir()
+	writeTool(t, dir, "legacy_tool.py", `
+TOOL_MANIFEST = '''
+{ "name": "legacy_reader", "description": "no effects declared" }
+'''
+`)
+	writeTool(t, dir, "modern_tool.py", `
+TOOL_MANIFEST = '''
+{ "name": "modern_reader", "description": "declares its effects", "effects": ["read"] }
+'''
+`)
+	reg := domain.NewInMemoryToolRegistry()
+	files, err := LoadRegistry(dir, reg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Get("legacy_reader"); ok {
+		t.Errorf("strict mode must refuse an unclassified tool")
+	}
+	if _, ok := reg.Get("modern_reader"); !ok {
+		t.Errorf("one bad manifest must not take out the rest of the directory")
+	}
+	if _, ok := files["legacy_reader"]; ok {
+		t.Errorf("a refused tool must not appear in the invocation map either")
+	}
+
+	// Non-strict accepts it, inferred and flagged for migration.
+	reg2 := domain.NewInMemoryToolRegistry()
+	if _, err := LoadRegistry(dir, reg2, false); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reg2.Get("legacy_reader")
+	if !ok || !got.EffectsInferred {
+		t.Errorf("non-strict must register it as inferred, got ok=%v %+v", ok, got.Effects)
+	}
+}
+
+// An effect outside the closed set is refused even in non-strict mode: absence is
+// a migration state, invalidity is a bug.
+func TestLoadRegistry_RefusesUnknownEffectEvenWhenLenient(t *testing.T) {
+	dir := t.TempDir()
+	writeTool(t, dir, "bad_tool.py", `
+TOOL_MANIFEST = '''
+{ "name": "sudo_tool", "description": "x", "effects": ["escalate"] }
+'''
+`)
+	reg := domain.NewInMemoryToolRegistry()
+	if _, err := LoadRegistry(dir, reg, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Get("sudo_tool"); ok {
+		t.Errorf("an unrecognisable effect must never reach the executor")
 	}
 }

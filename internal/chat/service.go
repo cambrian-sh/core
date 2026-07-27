@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -59,10 +60,23 @@ type TurnRequest struct {
 }
 
 // TurnService executes conversational turns against a pool of stateless workers.
+// Deliverer sends an outbound message to whoever a conversation belongs to
+// (ADR-0090 D8). Satisfied by internal/ingress.DeliveryService.
+//
+// Taken as an interface so the chat tier depends on the ABILITY to deliver rather
+// than on the delivery implementation — and so a conversation with no ingress
+// behind it needs no delivery machinery at all.
+type Deliverer interface {
+	Deliver(ctx context.Context, conversationID, text, txnID string) error
+}
+
 type TurnService struct {
 	store        domain.ConversationStore
 	pool         Dispatcher
 	acquireToken TokenAcquirer
+	// deliverer sends a message outward when the conversation came through an
+	// ingress (ADR-0090 D8). nil ⇒ store-only.
+	deliverer Deliverer
 	// leases binds the turn's conversation onto its BudgetLease so that work the turn
 	// delegates to the planner can be attributed back to the conversation server-side
 	// (ADR-0084 D2). Optional; without it a delegated run simply carries no conversation.
@@ -75,6 +89,68 @@ type TurnService struct {
 // NewTurnService wires the service. store and pool are required.
 // SetLeaseBinder wires the lease registry so each turn's lease carries its conversation.
 func (s *TurnService) SetLeaseBinder(r domain.LeaseResolver) { s.leases = r }
+
+// SetDeliverer wires the outbound path (ADR-0090 D8). nil leaves conversations
+// store-only, which is correct for a console-only deployment: the console reads
+// messages back, it is not pushed to.
+func (s *TurnService) SetDeliverer(d Deliverer) { s.deliverer = d }
+
+// RunTurn is the inbound-ingress entry point: run a turn and let the reply find
+// its own way out.
+//
+// It exists because an ingress caller has nobody to return a message to — the
+// reply reaches the sender through delivery, not through this call's return
+// value. Discarding the message here is therefore correct rather than lossy: it
+// is stored, and it has already been delivered by Emit.
+func (s *TurnService) RunTurn(ctx context.Context, conversationID, text, clientID string) error {
+	_, err := s.Turn(ctx, TurnRequest{
+		ConversationID: conversationID,
+		Text:           text,
+		ClientID:       clientID,
+	})
+	return err
+}
+
+// Emit is the speak primitive: append a message to a conversation and, when that
+// conversation arrived through an ingress, send it out.
+//
+// This is what makes the duplex model possible. `Turn` returns exactly one
+// message because a synchronous caller is waiting for exactly one; Emit has no
+// such constraint, so an agent may say "checking..." and then answer, and a watch
+// may speak into a conversation nobody is currently talking in. One inbound
+// message no longer implies one outbound message — or any.
+//
+// The stored message is the source of truth and is durable BEFORE delivery is
+// attempted, so a delivery failure never loses what was said. The returned error
+// is therefore a DELIVERY error: the message is valid whether or not it is nil.
+func (s *TurnService) Emit(ctx context.Context, conversationID, text string) (domain.Message, error) {
+	if strings.TrimSpace(text) == "" {
+		return domain.Message{}, errors.New("chat: emitted text is required")
+	}
+	msg, err := s.store.AppendMessage(ctx, domain.Message{
+		ID:             newID(),
+		ConversationID: conversationID,
+		Role:           domain.MessageRoleAgent,
+		Content:        text,
+	})
+	if err != nil {
+		return domain.Message{}, err
+	}
+	if s.deliverer == nil {
+		return msg, nil
+	}
+	// The message id is the idempotency key: delivering message M is the same act
+	// however many times it is retried (ADR-0090 D8).
+	if derr := s.deliverer.Deliver(ctx, conversationID, text, msg.ID); derr != nil {
+		if errors.Is(derr, domain.ErrNoDeliveryAddress) {
+			// Nothing arrived through an ingress for this conversation, so there is
+			// nowhere to push. Not a failure — it is every console conversation.
+			return msg, nil
+		}
+		return msg, derr
+	}
+	return msg, nil
+}
 
 func NewTurnService(store domain.ConversationStore, pool Dispatcher, acquire TokenAcquirer) *TurnService {
 	return &TurnService{
@@ -176,12 +252,19 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (domain.Message
 		return domain.Message{}, ErrEmptyReply
 	}
 
-	return s.store.AppendMessage(ctx, domain.Message{
-		ID:             newID(),
-		ConversationID: req.ConversationID,
-		Role:           domain.MessageRoleAgent,
-		Content:        reply,
-	})
+	// Through Emit, so a reply to an ingress-borne conversation reaches the person
+	// who asked. A DELIVERY failure does not fail the turn: the reply is already
+	// stored, the synchronous caller still gets it, and the undeliverable message is
+	// dead-lettered by the delivery path rather than swallowed here.
+	msg, derr := s.Emit(ctx, req.ConversationID, reply)
+	if derr != nil {
+		slog.Warn("ADR-0090: turn reply stored but not delivered",
+			"conversation", req.ConversationID, "message", msg.ID, "err", derr)
+	}
+	if msg.ID == "" {
+		return domain.Message{}, derr
+	}
+	return msg, nil
 }
 
 // loadHistory returns the messages preceding upToSeq, bounded to HistoryLimit. Because Seq
@@ -226,7 +309,7 @@ func (s *TurnService) buildHandoff(conv *domain.Conversation, req TurnRequest, h
 	}
 
 	return &domain.Handoff{
-		FromAgent: "chat_manager",
+		FromAgent: "chat_ingress",
 		Context:   handoffCtx,
 		Payload: &domain.Payload{
 			Type: "text",

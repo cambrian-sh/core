@@ -35,7 +35,18 @@ type Session struct {
 	// field (looked up via session token) — NEVER from the forgeable Handoff.Context.
 	// This is the non-forgeable transport that unlocks Phase-2 caller-scoped
 	// enforcement. ADR-0034 (D13/R2).
-	CallerScope ScopeConfig `json:"caller_scope,omitempty"`
+	CallerScope TagSet `json:"caller_scope,omitempty"`
+
+	// Surface is the entry point this session was OPENED on, decided ONCE by the
+	// kernel from the connection and persisted here (ADR-0085 D7). Every later turn
+	// inherits it, so a conversation opened on an outsider-facing ingress stays an
+	// outsider conversation even when a subsequent turn arrives over an internal
+	// path — widening on the way in is exactly the escalation the surface clamp
+	// exists to prevent.
+	//
+	// Like CallerScope it is non-forgeable by construction: the kernel writes it,
+	// and the daemon delivering a turn has no way to restate it (INV-5).
+	Surface SurfaceRef `json:"surface,omitempty"`
 
 	// ConversationID is the exchange that ORDERED this work, when there was one
 	// (ADR-0084 D2). It is a reference, never an identity: a Conversation is a long-lived

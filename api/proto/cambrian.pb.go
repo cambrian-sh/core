@@ -3154,8 +3154,17 @@ func (x *MemoryResult) GetMetadata() string {
 
 // LTM semantic query response
 type MemoryResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Results       []*MemoryResult        `protobuf:"bytes,1,rep,name=results,proto3" json:"results,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Results []*MemoryResult        `protobuf:"bytes,1,rep,name=results,proto3" json:"results,omitempty"`
+	// policy_note explains a result set that was emptied or narrowed BECAUSE of
+	// access policy, rather than because the corpus had nothing to say (ADR-0085
+	// INV-3). Empty when policy played no part.
+	//
+	// This exists so an agent can answer "I am not permitted to see that" instead of
+	// "I found nothing" — two very different statements that a fail-closed model
+	// otherwise renders identical. Additive and optional: a client that ignores it
+	// behaves exactly as before.
+	PolicyNote    string `protobuf:"bytes,2,opt,name=policy_note,json=policyNote,proto3" json:"policy_note,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3195,6 +3204,13 @@ func (x *MemoryResponse) GetResults() []*MemoryResult {
 		return x.Results
 	}
 	return nil
+}
+
+func (x *MemoryResponse) GetPolicyNote() string {
+	if x != nil {
+		return x.PolicyNote
+	}
+	return ""
 }
 
 // GenerateStreamRequest carries the agent's LLM call parameters for
@@ -4216,9 +4232,11 @@ const file_cambrian_proto_rawDesc = "" +
 	"\fMemoryResult\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x14\n" +
 	"\x05score\x18\x02 \x01(\x02R\x05score\x12\x1a\n" +
-	"\bmetadata\x18\x03 \x01(\tR\bmetadata\"B\n" +
+	"\bmetadata\x18\x03 \x01(\tR\bmetadata\"c\n" +
 	"\x0eMemoryResponse\x120\n" +
-	"\aresults\x18\x01 \x03(\v2\x16.cambrian.MemoryResultR\aresults\"\xad\x01\n" +
+	"\aresults\x18\x01 \x03(\v2\x16.cambrian.MemoryResultR\aresults\x12\x1f\n" +
+	"\vpolicy_note\x18\x02 \x01(\tR\n" +
+	"policyNote\"\xad\x01\n" +
 	"\x15GenerateStreamRequest\x12,\n" +
 	"\x10session_token_id\x18\x01 \x01(\tB\x02\x18\x01R\x0esessionTokenId\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x123\n" +

@@ -213,17 +213,20 @@ type ToolCallResponse struct {
 // kernel-side and pre-invocation (A1.4), then dispatches to the handler, audits,
 // and offloads large results. It never panics.
 type ToolExecutor struct {
-	Registry        ToolRegistry
-	Grants          GrantsProvider
-	Handler         ToolHandler          // the confined Python tool-process invoker (A1.2)
-	MCPHandler      ToolHandler          // ADR-0043: invokes external MCP tools (mcp:<server>/<tool>); nil ⇒ none
-	Approval        ApprovalController   // nil ⇒ dangerous tools are denied (fail-closed)
-	EvalSessions    EvaluationSessionSet // nil ⇒ no session is an evaluation (operator approval applies)
-	EgressAuditor   EgressAuditor        // ADR-0043: records remote-tool data egress; nil ⇒ no auditing
-	Retriever       ToolRetriever        // ADR-0044: relevance-ranks the granted menu; nil ⇒ full menu
-	Scope           ToolScopeResolver    // nil ⇒ data-regime tools are denied (fail-closed)
-	ContentStore    ContentStore         // nil ⇒ results returned inline
-	InlineThreshold int                  // results larger than this go to the ContentStore
+	Registry      ToolRegistry
+	Grants        GrantsProvider
+	Handler       ToolHandler          // the confined Python tool-process invoker (A1.2)
+	MCPHandler    ToolHandler          // ADR-0043: invokes external MCP tools (mcp:<server>/<tool>); nil ⇒ none
+	Approval      ApprovalController   // nil ⇒ dangerous tools are denied (fail-closed)
+	EvalSessions  EvaluationSessionSet // nil ⇒ no session is an evaluation (operator approval applies)
+	EgressAuditor EgressAuditor        // ADR-0043: records remote-tool data egress; nil ⇒ no auditing
+	Retriever     ToolRetriever        // ADR-0044: relevance-ranks the granted menu; nil ⇒ full menu
+	// Authz is the access-control decision point (ADR-0085). It gates the
+	// data-store regime (Regime 1) and, once effects are declared, the effect
+	// classes an invocation may exercise. nil ⇒ the OSS allow-all default.
+	Authz           Authorizer
+	ContentStore    ContentStore // nil ⇒ results returned inline
+	InlineThreshold int          // results larger than this go to the ContentStore
 	// ADR-0043 budget regime: when both are set, a priced tool call is reserved
 	// against the session budget before dispatch and reconciled to actual after.
 	// nil ⇒ tool calls are unmetered (no behaviour change).
@@ -378,6 +381,19 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 	if !req.System && (len(tool.DataReadKinds) > 0 || len(tool.DataWriteKinds) > 0) {
 		if !e.scopeAllows(ctx, req.AgentID, tool) {
 			return denied("scope", argHash)
+		}
+	}
+
+	// Regime 3 — EFFECT classes (ADR-0086). The tag check above asks what the tool
+	// is ABOUT; this asks what the invocation DOES. Both must pass, and this one
+	// applies to every tool, not only the tagged-store ones — "no tool may
+	// transmit outside this network" has to hold for a tool that touches no store.
+	//
+	// An operator ScopeSystem execution carries its own authority (A2.2) and is not
+	// effect-gated; the resource-arg policy and process confinement still apply.
+	if !req.System {
+		if dec := e.effectDecision(ctx, req, tool); !dec.Allowed {
+			return denied("effect not permitted: "+dec.Detail, argHash)
 		}
 	}
 
@@ -545,8 +561,8 @@ func (e *ToolExecutor) persistArtifacts(ctx context.Context, req ToolCallRequest
 					// per-step lease itself, so ListStepArtifacts(sessionID) could never
 					// find it — the artifact was addressed by a key nothing would ever
 					// look it up by.
-					SessionID:   string(artifactSession(ctx, req)),
-					Tags:        tags,
+					SessionID: string(artifactSession(ctx, req)),
+					Tags:      tags,
 				}); rerr != nil {
 					slog.Warn("tool artifact promote: metadata record failed", "tool", req.ToolName, "path", r.Path, "err", rerr)
 				}
@@ -725,20 +741,115 @@ func (e *ToolExecutor) grantFor(ctx context.Context, agentID, tool, sessionToken
 }
 
 // ConferSkillGrants activates a loaded system skill's tool grants run-scoped
-// (ADR-0046 D6). A system skill is operator-authored, so it MAY confer tools the
-// agent otherwise lacks, for the duration of the run (keyed by session). No-op
-// without an overlay/session. Agent-local skills never call this — their grants
-// are already within the agent's envelope (narrow-only).
-func (e *ToolExecutor) ConferSkillGrants(session string, tools []string) {
-	e.Overlay.Activate(session, tools)
+// (ADR-0046 D6), INTERSECTED with what policy permits the principal (ADR-0085 D4).
+//
+// This is the security-critical half of the skill model. A skill is gated on
+// retrieval by its tags, and loading it activates tool grants — so without an
+// intersection, "if you can see the skill you get its tools" makes skill
+// visibility a privilege-granting operation, and the skill tag vocabulary
+// silently becomes a tool-permission vocabulary.
+//
+// The intersection is against POLICY, not against the agent's static grants: a
+// system skill is operator-authored and may still confer a tool the agent has no
+// standing grant for (that is D6, and it is the point of skills). What it can
+// never do is confer a tool the decision point refuses — loading a skill only
+// ever narrows or maintains privilege, exactly as a restricted Windows token
+// cannot be widened by the thing it loads.
+//
+// A clipped grant does NOT fail the load: the rest of the skill activates and a
+// ReasonSkillGrantClipped decision is returned per dropped tool. Denying the whole
+// skill makes the system feel broken; granting the tool is a security hole.
+// Returns the granted set and one decision per clip.
+func (e *ToolExecutor) ConferSkillGrants(ctx context.Context, session, agentID string, tools []string) (granted []string, clipped []AccessDecision) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	a := e.Authz
+	if a == nil {
+		a = AllowAllAuthorizer{}
+	}
+	for _, name := range tools {
+		tool, known := e.Registry.Get(name)
+		if !known {
+			clipped = append(clipped, AccessDecision{
+				Resource:  ResourceRef{Kind: KindTool, ID: name},
+				Principal: AgentPrincipal(agentID),
+				Reason:    ReasonSkillGrantClipped,
+				Detail:    "skill grants an unknown tool",
+			})
+			continue
+		}
+		// ADR-0051 D6: a restricted principal's hard ceiling outranks a skill —
+		// otherwise a skill would be the way around the Scout's confinement.
+		if allow, restricted := e.RestrictedTools[agentID]; restricted && !allow[name] {
+			clipped = append(clipped, AccessDecision{
+				Resource:  tool.AuthzRef(),
+				Principal: AgentPrincipal(agentID),
+				Reason:    ReasonSkillGrantClipped,
+				Detail:    "outside the principal's restricted tool ceiling",
+			})
+			continue
+		}
+		dec := a.Authorize(ctx, AccessRequest{
+			Principal: AgentPrincipal(agentID),
+			Surface:   SurfaceFromContext(ctx),
+			Resource:  tool.AuthzRef(),
+			Tags:      tool.AuthzTags(),
+			Effects:   tool.Effects,
+			Session:   SessionID(session),
+		})
+		if !dec.Allowed {
+			dec.Reason = ReasonSkillGrantClipped
+			if dec.Detail == "" {
+				dec.Detail = "not permitted to this principal"
+			}
+			clipped = append(clipped, dec)
+			continue
+		}
+		granted = append(granted, name)
+	}
+	e.Overlay.Activate(session, granted)
+	return granted, clipped
 }
 
-func (e *ToolExecutor) scopeAllows(ctx context.Context, agentID string, tool SystemTool) bool {
-	if e.Scope == nil {
-		return false // fail-closed: a data tool with no scope resolver is denied
+// effectDecision asks the decision point whether every effect this tool declares
+// is permitted to this principal on this surface. With no decision point (OSS) the
+// answer is always yes — the check runs, the policy is simply empty.
+func (e *ToolExecutor) effectDecision(ctx context.Context, req ToolCallRequest, tool SystemTool) AccessDecision {
+	if len(tool.Effects) == 0 {
+		// Unclassified only reaches here in non-strict mode, where registration
+		// inferred a set. An empty set at this point means the tool bypassed
+		// validation entirely, which is a wiring bug — deny and say so.
+		return AccessDecision{
+			Allowed: false, Reason: ReasonEffectNotPermitted,
+			Detail: "tool declares no effect classes (unvalidated registration)",
+		}
 	}
-	eff, ok := e.Scope.EffectiveForAgent(ctx, agentID)
-	if !ok {
+	a := e.Authz
+	if a == nil {
+		a = AllowAllAuthorizer{}
+	}
+	return a.Authorize(ctx, AccessRequest{
+		Principal: AgentPrincipal(req.AgentID),
+		Surface:   SurfaceFromContext(ctx),
+		Resource:  tool.AuthzRef(),
+		Tags:      tool.AuthzTags(),
+		Effects:   tool.Effects,
+		Session:   SessionID(req.SessionTokenID),
+	})
+}
+
+// scopeAllows applies the data-store regime (ADR-0039 D8 Regime 1): a tool that
+// touches tagged stores may run only if the principal's predicate admits the tag
+// classes the tool declares. The decision point resolves the predicate; a nil
+// predicate (the plugin could not resolve the principal) denies.
+func (e *ToolExecutor) scopeAllows(ctx context.Context, agentID string, tool SystemTool) bool {
+	a := e.Authz
+	if a == nil {
+		a = AllowAllAuthorizer{}
+	}
+	eff, _ := a.ReadFilter(ctx, AgentPrincipal(agentID), SurfaceFromContext(ctx))
+	if eff == nil {
 		return false
 	}
 	if !eff.Allows(tool.DataReadKinds) {

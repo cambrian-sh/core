@@ -62,7 +62,7 @@ func mkSession(id string, status domain.SessionStatus) domain.Session {
 func TestPgSessionStore_SaveGetRoundTrip(t *testing.T) {
 	store, _, ctx := newSessionStore(t)
 	want := mkSession("s1", domain.SessionActive)
-	want.CallerScope = domain.ScopeConfig{ForbiddenTags: []string{"secrets"}}
+	want.CallerScope = domain.TagSet{ForbiddenTags: []string{"secrets"}}
 
 	if err := store.SaveSession(ctx, want); err != nil {
 		t.Fatalf("save: %v", err)

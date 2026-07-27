@@ -27,6 +27,27 @@ func (im *IngestionManager) persistChunks(
 	}
 	documentID := externalDocumentID(doc)
 
+	// ADR-0093: record the document itself FIRST. Chunks and sections carry a foreign
+	// key to it, so the parent has to exist before its children — and this is also the
+	// row that now owns the classification tags, rather than N copies scattered across
+	// chunk metadata.
+	//
+	// A failure here is logged and not fatal: losing the ingest of a whole document
+	// because its entity row could not be written would be a worse outcome than chunks
+	// with an unresolved parent, which still retrieve correctly.
+	if im.documentStore != nil {
+		if derr := im.documentStore.SaveDocument(ctx, SourceDocument{
+			ID:         documentID,
+			Title:      doc.Title,
+			SourceType: doc.SourceType,
+			Text:       doc.Body,
+			Tags:       doc.Tags,
+		}); derr != nil {
+			slog.WarnContext(ctx, "IngestionManager: document entity not recorded; chunks will have no parent",
+				"doc", documentID, "err", derr)
+		}
+	}
+
 	// ADR-0060 leaves-as-chunks: when structure parsing is on, the parser's leaves
 	// ARE the chunk set, so chunk boundaries match the hierarchy exactly and every
 	// chunk's section stamp is correct by construction. Falls back to the flat

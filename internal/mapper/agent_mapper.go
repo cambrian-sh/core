@@ -168,25 +168,25 @@ func (m *AgentMapper) SessionToRecord(s domain.Session) storage.SessionRecord {
 	}
 }
 
-// scopeToRecord converts a domain.ScopeConfig to its storage mirror, returning
+// scopeToRecord converts a domain.TagSet to its storage mirror, returning
 // nil for a zero (unrestricted) scope. ADR-0034.
-func scopeToRecord(c domain.ScopeConfig) *storage.ScopeConfigRecord {
+func scopeToRecord(c domain.TagSet) *storage.TagSetRecord {
 	if c.IsZero() {
 		return nil
 	}
-	return &storage.ScopeConfigRecord{
+	return &storage.TagSetRecord{
 		RequiredTags:  c.RequiredTags,
 		AnyOfTags:     c.AnyOfTags,
 		ForbiddenTags: c.ForbiddenTags,
 	}
 }
 
-// scopeFromRecord converts a storage mirror back to a domain.ScopeConfig.
-func scopeFromRecord(r *storage.ScopeConfigRecord) domain.ScopeConfig {
+// scopeFromRecord converts a storage mirror back to a domain.TagSet.
+func scopeFromRecord(r *storage.TagSetRecord) domain.TagSet {
 	if r == nil {
-		return domain.ScopeConfig{}
+		return domain.TagSet{}
 	}
-	return domain.ScopeConfig{
+	return domain.TagSet{
 		RequiredTags:  r.RequiredTags,
 		AnyOfTags:     r.AnyOfTags,
 		ForbiddenTags: r.ForbiddenTags,

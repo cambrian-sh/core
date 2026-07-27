@@ -69,12 +69,12 @@ type SessionRecord struct {
 	UpdatedAt    string             `json:"updated_at"`
 	CompletedAt  string             `json:"completed_at,omitempty"`
 	CriticalData []string           `json:"critical_data,omitempty"`
-	CallerScope  *ScopeConfigRecord `json:"caller_scope,omitempty"` // ADR-0034 (D13): non-forgeable caller_scope
+	CallerScope  *TagSetRecord `json:"caller_scope,omitempty"` // ADR-0034 (D13): non-forgeable caller_scope
 }
 
-// ScopeConfigRecord is the storage mirror of domain.ScopeConfig (storage holds no
+// TagSetRecord is the storage mirror of domain.TagSet (storage holds no
 // domain imports). ADR-0034.
-type ScopeConfigRecord struct {
+type TagSetRecord struct {
 	RequiredTags  []string `json:"required_tags,omitempty"`
 	AnyOfTags     []string `json:"any_of_tags,omitempty"`
 	ForbiddenTags []string `json:"forbidden_tags,omitempty"`

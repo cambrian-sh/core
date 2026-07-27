@@ -7,7 +7,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/memory"
-	"github.com/cambrian-sh/core/internal/scope"
+	"github.com/cambrian-sh/core/internal/authz"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -82,7 +82,7 @@ func TestIngestMemory_UnknownPrincipalIsPermissionDenied(t *testing.T) {
 // 0035-05: a coined narrow-only hint (tag outside the controlled vocabulary) maps
 // to InvalidArgument — the agent must learn the tag has to be added by the operator.
 func TestIngestMemory_CoinedHintIsInvalidArgument(t *testing.T) {
-	s := &Server{MemoryWriter: &fakeMemoryWriter{err: scope.ErrUnknownClassification}}
+	s := &Server{MemoryWriter: &fakeMemoryWriter{err: authz.ErrWriteDenied}}
 
 	_, err := s.IngestMemory(agentCtx("analyst"), &pb.IngestMemoryRequest{
 		Text: "x", Tags: []string{"invented"},

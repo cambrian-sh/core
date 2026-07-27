@@ -25,18 +25,27 @@ type ServerConfig struct {
 	Endpoint     string   // URL (http) or command (stdio)
 	Args         []string // stdio command args
 	AuthType     string   // "none" | "bearer" | "header"
-	AuthHeader   string // header name when AuthType == "header"
-	AuthTokenEnv string // env var holding the credential
+	AuthHeader   string   // header name when AuthType == "header"
+	AuthTokenEnv string   // env var holding the credential
 	// Tools is operator policy keyed by the server's advertised (unqualified)
 	// tool name. Applied to the discovered SystemTool — the server's own metadata
 	// is descriptive only (A1.5).
 	Tools map[string]ToolPolicy
+	// DefaultClassificationTags apply to every tool this server advertises unless a
+	// per-tool policy overrides them. Without this, dynamically discovered tools are
+	// untagged and no tag predicate can restrict them.
+	DefaultClassificationTags []string
 }
 
 // ToolPolicy is the operator-set policy for one discovered tool (ADR-0043 D4/D9).
 type ToolPolicy struct {
 	Dangerous      bool
 	DataWriteKinds []string
+	// ClassificationTags are the domain tags a policy can act on (ADR-0085 D2).
+	// Operator-set like everything else here: a remote server does not get to
+	// classify its own tools, for the same reason it does not get to declare itself
+	// safe — that would let the thing being governed choose its own governance.
+	ClassificationTags []string
 }
 
 // Connector dials configured MCP servers, discovers their tools, and serves the
@@ -81,7 +90,7 @@ func (c *Connector) ConnectAll(ctx context.Context, servers []ServerConfig) []do
 		c.sessions[s.ID] = sess
 		c.mu.Unlock()
 
-		discovered, derr := discover(ctx, s.ID, sess, s.Tools)
+		discovered, derr := discover(ctx, s.ID, sess, s.Tools, s.DefaultClassificationTags)
 		if derr != nil {
 			slog.Warn("ADR-0043: MCP tool discovery failed", "server", s.ID, "err", derr)
 			continue
@@ -198,7 +207,7 @@ func (c *Connector) watchServer(ctx context.Context, s ServerConfig, sink ToolSi
 		c.mu.Lock()
 		c.sessions[s.ID] = newSess
 		c.mu.Unlock()
-		tools, derr := discover(ctx, s.ID, newSess, s.Tools)
+		tools, derr := discover(ctx, s.ID, newSess, s.Tools, s.DefaultClassificationTags)
 		if derr != nil {
 			slog.Warn("ADR-0043: MCP re-discovery failed", "server", s.ID, "err", derr)
 			continue
@@ -233,7 +242,7 @@ func (c *Connector) Close() {
 // discover lists a server's tools and maps them to namespaced SystemTools. The
 // advertised metadata is descriptive only — policy is bound by operator config
 // keyed by the identity (A1.5 / ADR-0043 D3).
-func discover(ctx context.Context, serverID string, sess *mcpsdk.ClientSession, policy map[string]ToolPolicy) ([]domain.SystemTool, error) {
+func discover(ctx context.Context, serverID string, sess *mcpsdk.ClientSession, policy map[string]ToolPolicy, defaultTags []string) ([]domain.SystemTool, error) {
 	res, err := sess.ListTools(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -251,11 +260,18 @@ func discover(ctx context.Context, serverID string, sess *mcpsdk.ClientSession, 
 			Description: t.Description,
 			Schema:      schema,
 		}
-		// Apply operator policy (dangerous-flag + data-egress kinds) — never the
-		// server's own advertised metadata (A1.5 / ADR-0043 D4/D9).
+		// Apply operator policy (dangerous-flag + data-egress kinds + domain tags) —
+		// never the server's own advertised metadata (A1.5 / ADR-0043 D4/D9).
+		st.ClassificationTags = defaultTags
 		if p, ok := policy[t.Name]; ok {
 			st.Dangerous = p.Dangerous
 			st.DataWriteKinds = p.DataWriteKinds
+			if len(p.ClassificationTags) > 0 {
+				// A per-tool list REPLACES the server default rather than adding to it, so
+				// one tool in a domain-bound server can be classified differently without
+				// silently inheriting the boundary it was meant to leave.
+				st.ClassificationTags = p.ClassificationTags
+			}
 		}
 		out = append(out, st)
 	}

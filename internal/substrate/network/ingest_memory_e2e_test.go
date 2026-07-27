@@ -10,7 +10,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/memory"
-	"github.com/cambrian-sh/core/internal/scope"
+	"github.com/cambrian-sh/core/internal/authz"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -53,20 +53,46 @@ func (e2eEmbedder) Embed(context.Context, string) ([]float32, error) {
 	return []float32{0.1, 0.2, 0.3}, nil
 }
 
-type e2eResolver struct {
+// e2eAuthz is a stand-in decision point implementing the two rules this e2e
+// cares about: an unknown principal is denied, and a write is classified by the
+// operator ceiling narrowed (never widened) by the agent's hint, with a coined
+// tag refused.
+type e2eAuthz struct {
+	domain.AllowAllAuthorizer
 	known     map[string]bool
 	writeTags map[string][]string
+	vocab     map[string]bool
 }
 
-func (r e2eResolver) EffectiveForAgent(_ context.Context, id string) (*domain.EffectiveScope, bool) {
-	if !r.known[id] {
-		return nil, false
+func (r e2eAuthz) ReadFilter(_ context.Context, p domain.PrincipalRef, s domain.SurfaceRef) (*domain.TagPredicate, domain.AccessDecision) {
+	if !r.known[p.ID] {
+		return nil, domain.AccessDecision{Principal: p, Surface: s, Reason: domain.ReasonNoPrincipal}
 	}
-	eff := domain.NewEffectiveScope(domain.ScopeConfig{}, domain.ScopeConfig{})
-	return &eff, true
+	return &domain.TagPredicate{}, domain.AccessDecision{Allowed: true, Principal: p, Reason: domain.ReasonAllowed}
 }
-func (r e2eResolver) DefaultWriteTags(_ context.Context, id string) []string {
-	return r.writeTags[id]
+
+func (r e2eAuthz) ClassifyWrite(_ context.Context, p domain.PrincipalRef, hint []string) ([]string, domain.AccessDecision) {
+	for _, h := range hint {
+		if len(r.vocab) > 0 && !r.vocab[h] {
+			return nil, domain.AccessDecision{Principal: p, Reason: domain.ReasonForbiddenTag, Detail: h}
+		}
+	}
+	ceiling := r.writeTags[p.ID]
+	out := []string{}
+	if len(hint) == 0 {
+		out = append(out, ceiling...)
+	} else {
+		want := map[string]bool{}
+		for _, h := range hint {
+			want[h] = true
+		}
+		for _, c := range ceiling {
+			if want[c] {
+				out = append(out, c)
+			}
+		}
+	}
+	return append(out, "provenance:source="+p.ID), domain.AccessDecision{Allowed: true, Principal: p, Reason: domain.ReasonAllowed}
 }
 
 func tagsOf(d *domain.Document) []string {
@@ -85,17 +111,21 @@ func tagsContain(ss []string, want string) bool {
 	return false
 }
 
-// newIngestServer assembles a Server exactly as cmd/orchestrator/main.go does:
-// MemoryWriter = RememberService over a ScopedStoreWriter (kernel-derived
-// classification + provenance). The capture store and log buffer are returned so the
-// test can assert the persisted document and observability warnings.
+// newIngestServer assembles a Server exactly as the composition root does:
+// MemoryWriter = RememberService over the write chokepoint, with the decision
+// point supplying the classification. The capture store and log buffer are
+// returned so the test can assert the persisted document and the warnings.
 func newIngestServer(known map[string]bool, writeTags map[string][]string, vocab []string) (*Server, *e2eCaptureStore, *bytes.Buffer) {
 	cap := &e2eCaptureStore{}
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	writeStore := scope.NewScopedStoreWriter(cap, scope.NewVocabulary(vocab), logger)
-	resolver := e2eResolver{known: known, writeTags: writeTags}
-	s := &Server{MemoryWriter: memory.NewRememberService(writeStore, e2eEmbedder{}, resolver)}
+	vset := map[string]bool{}
+	for _, v := range vocab {
+		vset[v] = true
+	}
+	a := e2eAuthz{known: known, writeTags: writeTags, vocab: vset}
+	writeStore := authz.NewEnforcingStoreWriter(cap, a, logger)
+	s := &Server{MemoryWriter: memory.NewRememberService(writeStore, e2eEmbedder{}, a)}
 	return s, cap, &logBuf
 }
 
@@ -187,7 +217,9 @@ func TestIngestMemoryE2E_NarrowToUnclassifiedLogsWarning(t *testing.T) {
 			t.Errorf("expected an unclassified write (provenance only), got classification tag %q", tg)
 		}
 	}
-	if !strings.Contains(logBuf.String(), "scope_write_unclassified") {
-		t.Errorf("expected a scope_write_unclassified warning, log was: %s", logBuf.String())
-	}
+	// The kernel's guarantee is that the write still lands and carries only what
+	// the decision point returned. The richer "you narrowed yourself to nothing"
+	// warning is emitted by the decision point, which owns the vocabulary — see
+	// the premium authz test of the same name.
+	_ = logBuf
 }

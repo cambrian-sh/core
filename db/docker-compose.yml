@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_USER: ${CAMBRIAN_DB_USER:-cambrian}
       POSTGRES_PASSWORD: ${CAMBRIAN_DB_PASSWORD:-cambrian}
-      POSTGRES_DB: cambrian_db
+      POSTGRES_DB: ${CAMBRIAN_DB_NAME:-cambrian_db}
     ports:
       - "5432:5432"
     volumes:

@@ -77,9 +77,6 @@ type EgressAuditor interface {
 	RecordEgress(agentID, toolName string, dataClasses []string)
 }
 
-// ToolScopeResolver resolves an agent's effective read scope for the data-store
-// authorization regime (ADR-0039 D8 Regime 1). The ADR-0034 ScopeResolver
-// satisfies it. found=false ⇒ unknown principal (fail-closed).
-type ToolScopeResolver interface {
-	EffectiveForAgent(ctx context.Context, agentID string) (*EffectiveScope, bool)
-}
+// (The former ToolScopeResolver seam is gone: the data-store regime now asks
+// domain.Authorizer for the principal's predicate, so tools, memory, skills, and
+// artifacts all resolve access through one port. ADR-0085.)

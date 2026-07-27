@@ -10,6 +10,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 
 	"google.golang.org/grpc/metadata"
 )
@@ -34,6 +35,12 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	sessionID := s.resolveCallerSession(ctx)
 	if sessionID != "" {
 		ctx = domain.WithSessionID(ctx, sessionID)
+		// ADR-0085 D7: a session's recorded surface OVERRIDES the transport-derived
+		// one. It is the narrower, more specific fact — a conversation opened on an
+		// outsider ingress stays an outsider conversation even when a later turn
+		// arrives over an internal path. Widening on the way in is exactly the
+		// escalation the clamp exists to prevent.
+		ctx = domain.WithSurface(ctx, authz.ResolveSurface(ctx, s.SessionMgr))
 	}
 
 	slog.Info("QueryMemory called", "caller", callerID, "query", req.GetQuery())
@@ -144,5 +151,35 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 		pbResults = pbResults[:k]
 	}
 
-	return &pb.MemoryResponse{Results: pbResults}, nil
+	return &pb.MemoryResponse{Results: pbResults, PolicyNote: s.policyNote(ctx, callerID, len(pbResults))}, nil
+}
+
+// policyNote explains an EMPTY result set that access policy caused, so an agent
+// can say "I am not permitted to see that" instead of "I found nothing" (ADR-0085
+// INV-3). It returns "" when results were returned, when no decision point is
+// installed, or when policy played no part — annotating every response would
+// train callers to ignore the field.
+//
+// It re-asks the decision point rather than threading the earlier decision back
+// out of the search path: the question is cheap (a cache hit on the resolver) and
+// keeping it out of the retrieval signatures is worth more than saving it.
+func (s *Server) policyNote(ctx context.Context, callerID string, resultCount int) string {
+	if resultCount > 0 || s.Authz == nil {
+		return ""
+	}
+	pred, dec := s.Authz.ReadFilter(ctx, domain.AgentPrincipal(callerID), domain.SurfaceRef{Kind: domain.SurfaceAgent})
+	switch {
+	case pred == nil:
+		// The principal did not resolve at all — the single most silent failure in
+		// the system, now stated out loud.
+		return dec.Explain()
+	case dec.Reason == domain.ReasonUnsatisfiablePolicy:
+		return dec.Explain()
+	case !pred.Bypass && !pred.IsZero():
+		// A real predicate applied and nothing came back. That may be an honest
+		// "no data", but the caller deserves to know a boundary was in play.
+		return "no results within the caller's access boundary; " + dec.Explain()
+	default:
+		return "" // unrestricted read, genuinely empty corpus
+	}
 }

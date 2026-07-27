@@ -46,6 +46,42 @@ func (m *memStore) ListConversations(context.Context, string, int) ([]domain.Con
 	return nil, nil
 }
 
+// FindByDelivery is the inbound lookup: is this sender already talking to us?
+func (m *memStore) FindByDelivery(_ context.Context, addr domain.DeliveryAddress) (*domain.Conversation, error) {
+	if addr.IsZero() {
+		return nil, domain.ErrConversationNotFound
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.convs {
+		if c.Delivery == addr {
+			cp := c
+			return &cp, nil
+		}
+	}
+	return nil, domain.ErrConversationNotFound
+}
+
+// BindDelivery mirrors the store contract: write-once, so a second bind cannot
+// redirect where replies were already going (ADR-0090).
+func (m *memStore) BindDelivery(_ context.Context, id string, addr domain.DeliveryAddress) error {
+	if addr.IsZero() {
+		return domain.ErrDeliveryAddressInvalid
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.convs[id]
+	if !ok {
+		return domain.ErrConversationNotFound
+	}
+	if !c.Delivery.IsZero() {
+		return domain.ErrDeliveryAlreadyBound
+	}
+	c.Delivery = addr
+	m.convs[id] = c
+	return nil
+}
+
 func (m *memStore) SetConversationStatus(_ context.Context, id string, s domain.ConversationStatus) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

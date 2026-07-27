@@ -20,7 +20,8 @@ func (s *scopeApplyingStore) Search(_ context.Context, _ []float32, opts domain.
 		if raw, ok := d.Metadata["tags"].([]string); ok {
 			tags = raw
 		}
-		// A nil opts.Scope (enforcement disabled) returns everything.
+		// A nil opts.Scope would mean the chokepoint was bypassed; the fake mirrors
+		// pgvector, which adds no predicate in that case.
 		if opts.Scope == nil || opts.Scope.Allows(tags) {
 			out = append(out, domain.SearchResult{Document: d})
 		}
@@ -48,18 +49,28 @@ func (s *scopeApplyingStore) QueryByMetadata(context.Context, map[string]string,
 	return nil, nil
 }
 
-// fakeScopeProvider returns a fixed effective scope per agentID.
-type fakeScopeProvider struct {
-	scopes map[string]domain.ScopeConfig
-	known  map[string]bool
+// policyAuthorizer is a stand-in decision point: a fixed predicate per principal,
+// and a nil predicate for principals it does not know (the plugin's fail-closed
+// half). The kernel must honour whatever the decision point says without knowing
+// how it decided.
+type policyAuthorizer struct {
+	domain.AllowAllAuthorizer
+	preds map[string]*domain.TagPredicate
+	known map[string]bool
 }
 
-func (p *fakeScopeProvider) EffectiveForAgent(_ context.Context, agentID string) (*domain.EffectiveScope, bool) {
-	if !p.known[agentID] {
-		return nil, false
+func (p *policyAuthorizer) ReadFilter(_ context.Context, pr domain.PrincipalRef, s domain.SurfaceRef) (*domain.TagPredicate, domain.AccessDecision) {
+	if !p.known[pr.ID] {
+		return nil, domain.AccessDecision{
+			Principal: pr, Surface: s,
+			Reason: domain.ReasonNoPrincipal, Detail: "unknown principal " + pr.ID,
+		}
 	}
-	eff := domain.NewEffectiveScope(domain.ScopeConfig{}, p.scopes[agentID])
-	return &eff, true
+	pred := p.preds[pr.ID]
+	if pred == nil {
+		pred = &domain.TagPredicate{} // registered but unprofiled ⇒ unrestricted
+	}
+	return pred, domain.AccessDecision{Allowed: true, Principal: pr, Reason: domain.ReasonAllowed}
 }
 
 func corpus() *scopeApplyingStore {
@@ -77,13 +88,14 @@ func collect(rs []domain.SearchResult) map[string]bool {
 	return m
 }
 
-// A support agent forbidden `secrets` never retrieves secrets-tagged docs.
+// A support agent whose predicate forbids `secrets` never retrieves
+// secrets-tagged docs.
 func TestQueryService_ForbiddenTagExcluded(t *testing.T) {
 	store := corpus()
 	q := NewQueryService(&fakeEmbedder{}, store)
-	q.EnableScoping(&fakeScopeProvider{
-		known:  map[string]bool{"support": true},
-		scopes: map[string]domain.ScopeConfig{"support": {ForbiddenTags: []string{"secrets"}}},
+	q.EnableAuthorization(&policyAuthorizer{
+		known: map[string]bool{"support": true},
+		preds: map[string]*domain.TagPredicate{"support": {ForbiddenTags: []string{"secrets"}}},
 	}, store)
 
 	res, err := q.Search(context.Background(), "anything", "support")
@@ -99,14 +111,11 @@ func TestQueryService_ForbiddenTagExcluded(t *testing.T) {
 	}
 }
 
-// An unprofiled (empty scope) registered agent retrieves everything.
+// A registered-but-unprofiled agent (empty predicate) retrieves everything.
 func TestQueryService_UnprofiledUnrestricted(t *testing.T) {
 	store := corpus()
 	q := NewQueryService(&fakeEmbedder{}, store)
-	q.EnableScoping(&fakeScopeProvider{
-		known:  map[string]bool{"analyst": true},
-		scopes: map[string]domain.ScopeConfig{"analyst": {}},
-	}, store)
+	q.EnableAuthorization(&policyAuthorizer{known: map[string]bool{"analyst": true}}, store)
 
 	res, err := q.Search(context.Background(), "anything", "analyst")
 	if err != nil {
@@ -117,11 +126,12 @@ func TestQueryService_UnprofiledUnrestricted(t *testing.T) {
 	}
 }
 
-// An unknown principal is fail-closed: empty result set.
+// An unknown principal is fail-closed: empty result set. Note this is the
+// PLUGIN's decision — the kernel simply honours a nil predicate.
 func TestQueryService_UnknownPrincipalDenied(t *testing.T) {
 	store := corpus()
 	q := NewQueryService(&fakeEmbedder{}, store)
-	q.EnableScoping(&fakeScopeProvider{known: map[string]bool{}}, store)
+	q.EnableAuthorization(&policyAuthorizer{known: map[string]bool{}}, store)
 
 	res, err := q.Search(context.Background(), "anything", "ghost")
 	if err != nil {
@@ -132,22 +142,57 @@ func TestQueryService_UnknownPrincipalDenied(t *testing.T) {
 	}
 }
 
-// Phase-1 honesty: the QueryService enforces only the resolver-supplied
-// agent_scope and never reads caller-supplied tags. There is no API surface by
-// which a forged Handoff.Context could widen the result — the only inputs are
-// (query, callerID). This test documents that invariant.
+// The OSS default is the mirror image: with no policy plugin installed, every
+// principal — including one nobody has ever registered — reads everything. This
+// is the pairing §4.2 warns about getting backwards.
+func TestQueryService_OSSDefaultReadsEverything(t *testing.T) {
+	store := corpus()
+	q := NewQueryService(&fakeEmbedder{}, store)
+	q.EnableAuthorization(nil, store) // nil ⇒ allow-all
+
+	res, err := q.Search(context.Background(), "anything", "nobody-registered-this")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 2 {
+		t.Errorf("an unscoped OSS deployment reads every doc, got %d", len(res))
+	}
+}
+
+// The QueryService enforces only the decision point's predicate and never reads
+// caller-supplied tags. There is no API surface by which a forged Handoff.Context
+// could widen the result — the only inputs are (query, callerID). This test
+// documents that invariant (INV-5).
 func TestQueryService_IgnoresCallerSuppliedTags(t *testing.T) {
 	store := corpus()
 	q := NewQueryService(&fakeEmbedder{}, store)
-	q.EnableScoping(&fakeScopeProvider{
-		known:  map[string]bool{"support": true},
-		scopes: map[string]domain.ScopeConfig{"support": {ForbiddenTags: []string{"secrets"}}},
+	q.EnableAuthorization(&policyAuthorizer{
+		known: map[string]bool{"support": true},
+		preds: map[string]*domain.TagPredicate{"support": {ForbiddenTags: []string{"secrets"}}},
 	}, store)
 
-	// Even though a malicious caller might try to widen scope, Search takes no
-	// caller-tag parameter; the agent_scope forbids secrets regardless.
+	// Even though a malicious caller might try to widen access, Search takes no
+	// caller-tag parameter; the predicate forbids secrets regardless.
 	res, _ := q.Search(context.Background(), "give me secrets", "support")
 	if collect(res)["secret"] {
-		t.Errorf("caller intent must not override agent_scope ForbiddenTags")
+		t.Errorf("caller intent must not override the resolved predicate")
+	}
+}
+
+// The kernel-internal bypass is seeded server-side on the context and outranks
+// per-caller resolution — that is how the operator plane reads at ScopeSystem
+// without impersonating an agent (ADR-0047 D13/A2).
+func TestQueryService_ContextBypassOutranksPerCallerResolution(t *testing.T) {
+	store := corpus()
+	q := NewQueryService(&fakeEmbedder{}, store)
+	q.EnableAuthorization(&policyAuthorizer{known: map[string]bool{}}, store) // would deny everyone
+
+	ctx := domain.WithScope(context.Background(), domain.ScopeSystem)
+	res, err := q.Search(ctx, "anything", "ghost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 2 {
+		t.Errorf("a ScopeSystem read must bypass per-caller denial, got %d results", len(res))
 	}
 }

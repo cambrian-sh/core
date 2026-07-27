@@ -23,14 +23,21 @@ var toolManifestRegex = regexp.MustCompile(`(?s)TOOL_MANIFEST\s*=\s*'''([\s\S]*?
 // and which args are paths/urls/commands; the policy bounds come from the grant.
 type toolManifest struct {
 	Name           string          `json:"name"`
-	Description     string          `json:"description"`
-	Dangerous       bool            `json:"dangerous"`
-	PathArgs        []string        `json:"path_args"`
-	URLArgs         []string        `json:"url_args"`
-	CommandArgs     []string        `json:"command_args"`
-	DataReadKinds   []string        `json:"data_read_kinds"`
-	DataWriteKinds  []string        `json:"data_write_kinds"`
-	Schema          json.RawMessage `json:"schema"`
+	Description    string          `json:"description"`
+	Dangerous      bool            `json:"dangerous"`
+	PathArgs       []string        `json:"path_args"`
+	URLArgs        []string        `json:"url_args"`
+	CommandArgs    []string        `json:"command_args"`
+	DataReadKinds  []string        `json:"data_read_kinds"`
+	DataWriteKinds []string        `json:"data_write_kinds"`
+	Schema         json.RawMessage `json:"schema"`
+
+	// ClassificationTags name the domain this tool touches (ADR-0085 D2); Effects
+	// are the closed-set verb classes it exercises (ADR-0086). A manifest that
+	// omits effects has them inferred from its other fields, unless the deployment
+	// runs strict — see domain.ValidateRegistration.
+	ClassificationTags []string `json:"classification_tags"`
+	Effects            []string `json:"effects"`
 }
 
 // Discovered pairs a parsed tool with the path of the *tool.py that declared it
@@ -106,15 +113,17 @@ func Discover(dir string) ([]Discovered, error) {
 			tools = append(tools, Discovered{
 				File: path,
 				Tool: domain.SystemTool{
-					Name:           man.Name,
-					Description:     man.Description,
-					Schema:          man.Schema,
-					Dangerous:       man.Dangerous,
-					PathArgs:        man.PathArgs,
-					URLArgs:         man.URLArgs,
-					CommandArgs:     man.CommandArgs,
-					DataReadKinds:   man.DataReadKinds,
-					DataWriteKinds:  man.DataWriteKinds,
+					Name:               man.Name,
+					Description:        man.Description,
+					Schema:             man.Schema,
+					Dangerous:          man.Dangerous,
+					PathArgs:           man.PathArgs,
+					URLArgs:            man.URLArgs,
+					CommandArgs:        man.CommandArgs,
+					DataReadKinds:      man.DataReadKinds,
+					DataWriteKinds:     man.DataWriteKinds,
+					ClassificationTags: man.ClassificationTags,
+					Effects:            toEffects(man.Effects),
 				},
 			})
 		}
@@ -122,17 +131,54 @@ func Discover(dir string) ([]Discovered, error) {
 	return tools, nil
 }
 
+// toEffects converts the manifest's strings to effect classes WITHOUT validating
+// them — validation belongs to domain.ValidateRegistration, which is the single
+// place that decides what an unknown or absent effect means.
+func toEffects(names []string) []domain.ToolEffect {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]domain.ToolEffect, 0, len(names))
+	for _, n := range names {
+		out = append(out, domain.ToolEffect(n))
+	}
+	return out
+}
+
 // LoadRegistry scans dir, registers every discovered tool into reg, and returns
 // the tool-name → file-path map the ProcessHandler invokes.
-func LoadRegistry(dir string, reg domain.ToolRegistry) (map[string]string, error) {
+//
+// strict refuses to infer effects: an undeclared tool fails registration instead
+// of being classified from its other manifest fields (ADR-0086). A tool that
+// fails validation is SKIPPED with an error log rather than aborting discovery —
+// one bad manifest must not take out every other tool, which is the same posture
+// discovery already takes for malformed JSON.
+func LoadRegistry(dir string, reg domain.ToolRegistry, strict bool) (map[string]string, error) {
 	d, err := Discover(dir)
 	if err != nil {
 		return nil, err
 	}
 	files := make(map[string]string, len(d))
+	var inferred []string
 	for _, x := range d {
-		reg.Register(x.Tool)
-		files[x.Tool.Name] = x.File
+		// Validate here so STRICT mode can reject an undeclared tool. The registry
+		// validates again (non-strict) — that repetition is deliberate: the registry
+		// is the chokepoint no path may skip, and this is where the deployment's
+		// strictness is known.
+		tool, verr := domain.ValidateRegistration(x.Tool, strict)
+		if verr != nil {
+			slog.Error("tool discovery: registration rejected", "tool", x.Tool.Name, "file", x.File, "err", verr)
+			continue
+		}
+		if tool.EffectsInferred {
+			inferred = append(inferred, tool.Name)
+		}
+		reg.Register(tool)
+		files[tool.Name] = x.File
+	}
+	if len(inferred) > 0 {
+		slog.Warn("ADR-0086: tools registered with INFERRED effect classes; declare them in the manifest",
+			"count", len(inferred), "tools", inferred)
 	}
 	return files, nil
 }

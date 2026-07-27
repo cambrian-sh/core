@@ -18,7 +18,7 @@ import (
 )
 
 // skillFrontmatter is the YAML contract a SKILL.md declares. Scope maps onto the
-// ADR-0034 domain.ScopeConfig used to gate which agents may load the skill.
+// ADR-0034 domain.TagSet used to gate which agents may load the skill.
 type skillFrontmatter struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`

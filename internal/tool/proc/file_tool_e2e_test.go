@@ -49,7 +49,7 @@ func TestFileTool_JailSweepToCAS(t *testing.T) {
 		t.Skip("repo root not found")
 	}
 	reg := domain.NewInMemoryToolRegistry()
-	files, err := discovery.LoadRegistry(filepath.Join(root, "tools"), reg)
+	files, err := discovery.LoadRegistry(filepath.Join(root, "tools"), reg, false)
 	if err != nil {
 		t.Fatalf("discover tools: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestFileTool_RealIO(t *testing.T) {
 	toolsDir := filepath.Join(root, "tools")
 
 	reg := domain.NewInMemoryToolRegistry()
-	files, err := discovery.LoadRegistry(toolsDir, reg)
+	files, err := discovery.LoadRegistry(toolsDir, reg, false)
 	if err != nil {
 		t.Fatalf("discover tools: %v", err)
 	}

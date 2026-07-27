@@ -170,6 +170,45 @@ type Registry struct {
 	agentSources     []AgentSource
 	mcpServers       []MCPServerSpec
 	capabilities     []string
+	authorizer       domain.Authorizer
+	policyAdmin      domain.PolicyAdmin
+	authzOwner       string
+	ingressResolver  domain.IngressResolver
+	ingressOwner     string
+}
+
+// SetAuthorizer installs the access-control decision point (ADR-0085). Tier-1
+// replace-one: at most one plugin may own the decision; a second registration is
+// an error, because two decision points would mean two answers to the same
+// question and no way to say which held.
+//
+// The admin surface travels with it: whoever decides also administers. Passing a
+// nil admin is allowed (a decision point with no authoring UI).
+func (r *Registry) SetAuthorizer(owner string, a domain.Authorizer, admin domain.PolicyAdmin) error {
+	if r.authorizer != nil {
+		return fmt.Errorf("authorizer already registered by plugin %q; %q cannot also own it", r.authzOwner, owner)
+	}
+	r.authorizer = a
+	r.policyAdmin = admin
+	r.authzOwner = owner
+	return nil
+}
+
+// SetIngressResolver installs the registry that says which principals are entry
+// points into Cambrian (ADR-0090 D2). Tier-1 replace-one, for the same reason the
+// authorizer is: two registries could disagree about what a daemon is permitted
+// to be, and there would be no way to say which answer held.
+//
+// A resolver may be registered before it has its backing store — the composition
+// root hands plugins their database only at Build. Register the value, populate
+// it later; that is why this takes an interface rather than a constructor.
+func (r *Registry) SetIngressResolver(owner string, res domain.IngressResolver) error {
+	if r.ingressResolver != nil {
+		return fmt.Errorf("ingress resolver already registered by plugin %q; %q cannot also own it", r.ingressOwner, owner)
+	}
+	r.ingressResolver = res
+	r.ingressOwner = owner
+	return nil
 }
 
 // AddCapability advertises an operator capability string beyond those declared statically
@@ -508,6 +547,16 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 	// ResourceSelector: plugin wins only if not set directly (ADR-0074 replace-one).
 	if opts.ResourceSelector == nil && reg.resourceSelector != nil {
 		opts.ResourceSelector = reg.resourceSelector
+	}
+	// Authorizer + PolicyAdmin: plugin wins only if not set directly.
+	if opts.Authorizer == nil && reg.authorizer != nil {
+		opts.Authorizer = reg.authorizer
+	}
+	if opts.PolicyAdmin == nil && reg.policyAdmin != nil {
+		opts.PolicyAdmin = reg.policyAdmin
+	}
+	if opts.IngressResolver == nil && reg.ingressResolver != nil {
+		opts.IngressResolver = reg.ingressResolver
 	}
 	// ExtraServices: compose every registered gRPC service with any directly-set one.
 	if len(reg.grpcServices) > 0 {

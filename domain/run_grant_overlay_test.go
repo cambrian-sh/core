@@ -47,7 +47,7 @@ func TestGrantFor_SkillConferred(t *testing.T) {
 		t.Fatal("ungranted tool with no overlay must be denied")
 	}
 
-	exec.ConferSkillGrants("run1", []string{"execute_command"})
+	exec.ConferSkillGrants(ctx, "run1", "agent1", []string{"execute_command"})
 	if _, ok := exec.grantFor(ctx, "agent1", "execute_command", "run1"); !ok {
 		t.Error("a system skill should be able to confer a tool run-scoped")
 	}

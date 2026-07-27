@@ -58,6 +58,8 @@ const (
 	OperatorConsole_GetWatchMetrics_FullMethodName          = "/cambrian.OperatorConsole/GetWatchMetrics"
 	OperatorConsole_BacktestWatch_FullMethodName            = "/cambrian.OperatorConsole/BacktestWatch"
 	OperatorConsole_PreviewRoute_FullMethodName             = "/cambrian.OperatorConsole/PreviewRoute"
+	OperatorConsole_ExplainAccess_FullMethodName            = "/cambrian.OperatorConsole/ExplainAccess"
+	OperatorConsole_ListClassificationTags_FullMethodName   = "/cambrian.OperatorConsole/ListClassificationTags"
 )
 
 // OperatorConsoleClient is the client API for OperatorConsole service.
@@ -179,6 +181,22 @@ type OperatorConsoleClient interface {
 	// data-generation + evaluation, under the active scorer arm (hand weights or the
 	// ROUTE-07 learned scorer). Capability "route-preview"; nil-in-OSS ⇒ Unimplemented.
 	PreviewRoute(ctx context.Context, in *PreviewRouteOpRequest, opts ...grpc.CallOption) (*PreviewRouteOpResponse, error)
+	// ExplainAccess (ADR-0085 D8) answers "why can / can't this principal reach this
+	// resource?" WITHOUT performing the access. It is the gpresult / Azure "Check
+	// access" analogue: the reply names the reason, the specific tag or effect
+	// responsible, and which policy — linked where — contributed it.
+	//
+	// Explainability is not a debugging aid here. A fail-closed access model with
+	// policy composition multiplies the ways to reach an empty result set by
+	// accident, and an unexplained empty result is indistinguishable from "there is
+	// no data". Capability "access-policy"; nil-in-OSS ⇒ Unimplemented, because an
+	// unscoped deployment has no policy to explain.
+	ExplainAccess(ctx context.Context, in *ExplainAccessOpRequest, opts ...grpc.CallOption) (*ExplainAccessOpResponse, error)
+	// ListClassificationTags (ADR-0085 D11) returns the controlled classification
+	// vocabulary, so a policy UI offers SELECTION rather than free text. A free-text
+	// tag field is a defect: a typo is the primary route to a scope that silently
+	// matches nothing. Capability "access-policy"; nil-in-OSS ⇒ Unimplemented.
+	ListClassificationTags(ctx context.Context, in *ListClassificationTagsOpRequest, opts ...grpc.CallOption) (*ListClassificationTagsOpResponse, error)
 }
 
 type operatorConsoleClient struct {
@@ -597,6 +615,26 @@ func (c *operatorConsoleClient) PreviewRoute(ctx context.Context, in *PreviewRou
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ExplainAccess(ctx context.Context, in *ExplainAccessOpRequest, opts ...grpc.CallOption) (*ExplainAccessOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExplainAccessOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ExplainAccess_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListClassificationTags(ctx context.Context, in *ListClassificationTagsOpRequest, opts ...grpc.CallOption) (*ListClassificationTagsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListClassificationTagsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListClassificationTags_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OperatorConsoleServer is the server API for OperatorConsole service.
 // All implementations must embed UnimplementedOperatorConsoleServer
 // for forward compatibility.
@@ -716,6 +754,22 @@ type OperatorConsoleServer interface {
 	// data-generation + evaluation, under the active scorer arm (hand weights or the
 	// ROUTE-07 learned scorer). Capability "route-preview"; nil-in-OSS ⇒ Unimplemented.
 	PreviewRoute(context.Context, *PreviewRouteOpRequest) (*PreviewRouteOpResponse, error)
+	// ExplainAccess (ADR-0085 D8) answers "why can / can't this principal reach this
+	// resource?" WITHOUT performing the access. It is the gpresult / Azure "Check
+	// access" analogue: the reply names the reason, the specific tag or effect
+	// responsible, and which policy — linked where — contributed it.
+	//
+	// Explainability is not a debugging aid here. A fail-closed access model with
+	// policy composition multiplies the ways to reach an empty result set by
+	// accident, and an unexplained empty result is indistinguishable from "there is
+	// no data". Capability "access-policy"; nil-in-OSS ⇒ Unimplemented, because an
+	// unscoped deployment has no policy to explain.
+	ExplainAccess(context.Context, *ExplainAccessOpRequest) (*ExplainAccessOpResponse, error)
+	// ListClassificationTags (ADR-0085 D11) returns the controlled classification
+	// vocabulary, so a policy UI offers SELECTION rather than free text. A free-text
+	// tag field is a defect: a typo is the primary route to a scope that silently
+	// matches nothing. Capability "access-policy"; nil-in-OSS ⇒ Unimplemented.
+	ListClassificationTags(context.Context, *ListClassificationTagsOpRequest) (*ListClassificationTagsOpResponse, error)
 	mustEmbedUnimplementedOperatorConsoleServer()
 }
 
@@ -842,6 +896,12 @@ func (UnimplementedOperatorConsoleServer) BacktestWatch(context.Context, *Backte
 }
 func (UnimplementedOperatorConsoleServer) PreviewRoute(context.Context, *PreviewRouteOpRequest) (*PreviewRouteOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PreviewRoute not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ExplainAccess(context.Context, *ExplainAccessOpRequest) (*ExplainAccessOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExplainAccess not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListClassificationTags(context.Context, *ListClassificationTagsOpRequest) (*ListClassificationTagsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListClassificationTags not implemented")
 }
 func (UnimplementedOperatorConsoleServer) mustEmbedUnimplementedOperatorConsoleServer() {}
 func (UnimplementedOperatorConsoleServer) testEmbeddedByValue()                         {}
@@ -1552,6 +1612,42 @@ func _OperatorConsole_PreviewRoute_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ExplainAccess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExplainAccessOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ExplainAccess(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ExplainAccess_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ExplainAccess(ctx, req.(*ExplainAccessOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListClassificationTags_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListClassificationTagsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListClassificationTags(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListClassificationTags_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListClassificationTags(ctx, req.(*ListClassificationTagsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OperatorConsole_ServiceDesc is the grpc.ServiceDesc for OperatorConsole service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1706,6 +1802,14 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PreviewRoute",
 			Handler:    _OperatorConsole_PreviewRoute_Handler,
+		},
+		{
+			MethodName: "ExplainAccess",
+			Handler:    _OperatorConsole_ExplainAccess_Handler,
+		},
+		{
+			MethodName: "ListClassificationTags",
+			Handler:    _OperatorConsole_ListClassificationTags_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

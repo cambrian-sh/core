@@ -1,7 +1,12 @@
-# Chat Manager ↔ Session Contract (draft)
+# Chat Ingress ↔ Session Contract (draft)
+
+> **Renamed by [ADR-0090](../adr/0090-ingress-and-surface-identity.md).** What ADR-0080 calls
+> the *Chat Manager* is the **Chat Ingress**: one instance of the general *ingress* concept —
+> any point where the outside world enters Cambrian (Telegram, webhook, websocket, inbound
+> API), of which chat is one payload type. The contract below is unchanged; only the noun is.
 
 Companion to **ADR-0080** (Chat Daemon Ownership). Defines the two interfaces of the
-two-tier chat hierarchy so a Chat Manager (default or user-authored) and a Session daemon
+two-tier chat hierarchy so a Chat Ingress (default or user-authored) and a Session daemon
 can be built independently.
 
 ```

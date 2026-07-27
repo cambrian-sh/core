@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/migrate"
 
@@ -34,12 +34,53 @@ var dialect = goqu.Dialect("postgres")
 func (p *PgVectorAdapter) Pool() *pgxpool.Pool { return p.pool }
 
 const (
+	// TableDocuments is the DOCUMENT ENTITY (ADR-0093) — one row per ingested source
+	// document, authoritative for classification tags. It is NOT where retrievable
+	// rows live; that is TableChunks.
 	TableDocuments         = "documents"
+	TableChunks            = "chunks"
+	TableSections          = "document_sections"
+	TableTools             = "tools"
+	TableSkills            = "skills"
+	TableAgentProfiles     = "agent_profiles"
 	TableEdges             = "document_edges"
 	TableChunkTriplets     = "chunk_triplets"
 	TableChunkPagerank     = "chunk_pagerank"
 	TableChunkPagerankMeta = "chunk_pagerank_meta"
 )
+
+// tableFor maps a document type to the table that owns it (ADR-0093).
+//
+// Everything recall can return lives in `chunks` — that is deliberate and load-bearing.
+// Recall searched one table before this split and still does, so the split cannot have
+// narrowed what a search can find. Only the seeded descriptors, which recall never
+// returns, were moved out.
+//
+// An unknown type resolves to chunks rather than erroring: a type nobody registered is a
+// memory-shaped thing, and failing a write here would lose data over a naming question.
+func tableFor(documentType string) string {
+	switch documentType {
+	case domain.DocTypeTool:
+		return TableTools
+	case domain.DocTypeSkill:
+		return TableSkills
+	case domain.DocTypeAgentProfile:
+		return TableAgentProfiles
+	case domain.DocTypeDocSection:
+		return TableSections
+	default:
+		return TableChunks
+	}
+}
+
+// idLookupTables is the search order for operations that carry an id but no type.
+// Chunks first because it holds the overwhelming majority of rows and every recall hit;
+// the descriptor tables are small and only reached on a miss.
+//
+// Sections are excluded on purpose: they are structural nodes with no embedding, they are
+// never fetched or deleted by these paths, and including them would mean a section could be
+// returned from a call whose contract is "a retrievable document".
+var idLookupTables = []string{TableChunks, TableTools, TableSkills, TableAgentProfiles}
 
 func mapError(op string, err error) error {
 	if err == nil {
@@ -217,7 +258,7 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 		SELECT atttypmod
 		FROM pg_attribute
 		WHERE attrelid = $1::regclass AND attname = 'embedding'
-	`, TableDocuments).Scan(&existingDim)
+	`, TableChunks).Scan(&existingDim)
 	if existingDim != 0 && existingDim != p.dim {
 		// Count documents that a drop would DESTROY — exclude system-seeded types
 		// (tool/skill/agent_profile), which are recreated on every boot regardless.
@@ -227,14 +268,14 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 		// swallowed error here is exactly how a crash could silently drop a
 		// populated corpus.
 		if err := p.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT count(*) FROM %s WHERE document_type NOT IN ('tool','skill','agent_profile')`,
-			TableDocuments,
+			`SELECT count(*) FROM %s`,
+			TableChunks,
 		)).Scan(&memDocs); err != nil {
 			return fmt.Errorf(
 				"REFUSING to recreate %s: embedding dimension mismatch (table=%d, configured=%d) and "+
 					"could not verify the document count (%w) — refusing a destructive recreate that could "+
 					"wipe the corpus; retry once the database is healthy",
-				TableDocuments, existingDim, p.dim, err)
+				TableChunks, existingDim, p.dim, err)
 		}
 
 		allowDestructive := os.Getenv("ALLOW_DESTRUCTIVE_DIM_MIGRATION") == "1"
@@ -245,7 +286,7 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 					"Make the embedder dimension in config match the table (e.g. the table is %d), "+
 					"or re-embed the corpus at the new dimension. To intentionally wipe and recreate, "+
 					"restart once with ALLOW_DESTRUCTIVE_DIM_MIGRATION=1.",
-				TableDocuments, existingDim, p.dim, memDocs, existingDim,
+				TableChunks, existingDim, p.dim, memDocs, existingDim,
 			)
 		}
 
@@ -254,7 +295,7 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 		if _, err := p.pool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE;", TableEdges)); err != nil {
 			return fmt.Errorf("drop edges table for dimension migration: %w", err)
 		}
-		if _, err := p.pool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE;", TableDocuments)); err != nil {
+		if _, err := p.pool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s, %s, %s, %s CASCADE;", TableChunks, TableTools, TableSkills, TableAgentProfiles)); err != nil {
 			return fmt.Errorf("drop documents table for dimension migration: %w", err)
 		}
 		// PLAT-02 / ADR-0064: the corpus tables were just dropped for a dimension
@@ -343,14 +384,33 @@ func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) *goqu.InsertDat
 		"activation_strength":    goqu.L("EXCLUDED.activation_strength"),
 		"scoring_prompt_version": goqu.L("EXCLUDED.scoring_prompt_version"),
 		"last_accessed_at":       goqu.L("EXCLUDED.last_accessed_at"),
-		"version":                goqu.L("documents.version + 1"), // Optimistic Concurrency
+		// ADR-0093: the conflict target must name the table actually being written, not
+		// `documents`. A tool upsert emitting `documents.version + 1` is a missing
+		// FROM-clause error at runtime — invisible to any test that does not upsert a
+		// descriptor against the real schema, which is how it reached a live boot.
+		"version": goqu.L(tableFor(doc.DocumentType) + ".version + 1"), // Optimistic Concurrency
 	}
 	if len(doc.Embedding.Vector) > 0 {
 		record["embedding"] = pgvector.NewVector(doc.Embedding.Vector)
 		update["embedding"] = goqu.L("EXCLUDED.embedding")
 	}
 
-	return dialect.Insert(TableDocuments).Rows(record).OnConflict(
+	// ADR-0093: a chunk carved from an ingested document points at it. The id was
+	// already in metadata; this promotes it to a real column so the relationship is
+	// enforced by the database rather than by a string convention.
+	//
+	// Written through a SUBSELECT on purpose: an id whose document row does not exist
+	// resolves to NULL instead of violating the foreign key. A memory write must never
+	// fail over bookkeeping about its parentage — losing the memory is far worse than
+	// losing the link.
+	if table := tableFor(doc.DocumentType); table == TableChunks {
+		if parent, ok := doc.Metadata["document_id"].(string); ok && parent != "" {
+			record["document_id"] = goqu.L("(SELECT id FROM "+TableDocuments+" WHERE id = ?)", parent)
+			update["document_id"] = goqu.L("EXCLUDED.document_id")
+		}
+	}
+
+	return dialect.Insert(tableFor(doc.DocumentType)).Rows(record).OnConflict(
 		goqu.DoUpdate("id", update),
 	)
 }
@@ -466,13 +526,18 @@ func (p *PgVectorAdapter) Search(ctx context.Context, vector []float32, opts dom
 	return result, nil
 }
 
-// scopeExpressions builds the parameterized jsonb-containment predicates for an
-// effective access scope (ADR-0034 D12), served by the existing idx_doc_metadata
-// GIN (jsonb_path_ops) index. Returns nil for a nil or System scope (no
-// filtering). Tags live under metadata.tags as a JSON array. This is the SQL
-// mirror of domain.EffectiveScope.Allows.
-func scopeExpressions(eff *domain.EffectiveScope) []goqu.Expression {
-	if eff == nil || eff.System {
+// scopeExpressions builds the parameterized jsonb-containment predicates for a
+// resolved access predicate (ADR-0034 D12 / ADR-0085), served by the existing
+// idx_doc_metadata GIN (jsonb_path_ops) index. Tags live under metadata.tags as a
+// JSON array. This is the SQL mirror of domain.TagPredicate.Allows, and the two
+// must agree — the in-memory form is authoritative.
+//
+// A nil predicate yields NO predicate here on purpose: the fail-closed decision
+// belongs to the chokepoint (internal/authz), which refuses the read before it
+// ever reaches SQL. Duplicating it here would put the same security decision in
+// two places, and the SQL copy is the one nobody reads.
+func scopeExpressions(eff *domain.TagPredicate) []goqu.Expression {
+	if eff == nil || eff.Bypass {
 		return nil
 	}
 	contains := func(tag string) string {
@@ -503,7 +568,7 @@ func scopeExpressions(eff *domain.EffectiveScope) []goqu.Expression {
 }
 
 func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32, opts domain.SearchOptions, limit int) ([]domain.SearchResult, error) {
-	ds := dialect.From(TableDocuments).
+	ds := dialect.From(tableFor(opts.DocumentType)).
 		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path")
 
 	if vector != nil {
@@ -573,7 +638,7 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 	}
 	// OR-tsquery: plainto -> text (' & ' joined lexemes) -> swap & for | -> tsquery.
 	orQuery := goqu.L("replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery", queryText)
-	ds := dialect.From(TableDocuments).
+	ds := dialect.From(tableFor(opts.DocumentType)).
 		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
 		SelectAppend(goqu.L("ts_rank_cd(to_tsvector('english', text), replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery)", queryText).As("distance")).
 		Where(goqu.L("to_tsvector('english', text) @@ ?", orQuery)).
@@ -614,36 +679,56 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 	return results, rows.Err()
 }
 
+// GetByID looks the id up across every table that can hold a retrievable document
+// (ADR-0093). The caller has an id and no type, so the alternative would be to make
+// every caller learn the storage layout — which is exactly the coupling the split was
+// meant to remove.
+//
+// Chunks is tried first and answers virtually every call; the descriptor tables are
+// small and only reached on a miss.
 func (p *PgVectorAdapter) GetByID(ctx context.Context, id string) (*domain.Document, error) {
-	// 1. Fetch the document
-	sql, args, _ := dialect.From(TableDocuments).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
-		Where(goqu.Ex{"id": id}).ToSQL()
+	for _, table := range idLookupTables {
+		sql, args, _ := dialect.From(table).
+			Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
+			Where(goqu.Ex{"id": id}).ToSQL()
 
-	doc, _, err := scanDocument(p.pool.QueryRow(ctx, sql, args...), false)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
+		doc, _, err := scanDocument(p.pool.QueryRow(ctx, sql, args...), false)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			return nil, mapError("GetByID", err)
 		}
-		return nil, mapError("GetByID", err)
+		return &doc, nil
 	}
-
-	return &doc, nil
+	return nil, nil
 }
 
+// Delete removes the id from wherever it lives. It issues one statement per table
+// rather than locating the row first: a delete that silently matched nothing because
+// the caller guessed the wrong table is the failure mode worth spending a few cheap
+// statements to make impossible.
 func (p *PgVectorAdapter) Delete(ctx context.Context, id string) error {
-	sql, args, _ := dialect.Delete(TableDocuments).Where(goqu.Ex{"id": id}).ToSQL()
-	_, err := p.pool.Exec(ctx, sql, args...)
-	return mapError("Delete", err)
+	for _, table := range idLookupTables {
+		sql, args, _ := dialect.Delete(table).Where(goqu.Ex{"id": id}).ToSQL()
+		if _, err := p.pool.Exec(ctx, sql, args...); err != nil {
+			return mapError("Delete", err)
+		}
+	}
+	return nil
 }
 
 func (p *PgVectorAdapter) DeleteBatch(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	sql, args, _ := dialect.Delete(TableDocuments).Where(goqu.Ex{"id": ids}).ToSQL()
-	_, err := p.pool.Exec(ctx, sql, args...)
-	return mapError("DeleteBatch", err)
+	for _, table := range idLookupTables {
+		sql, args, _ := dialect.Delete(table).Where(goqu.Ex{"id": ids}).ToSQL()
+		if _, err := p.pool.Exec(ctx, sql, args...); err != nil {
+			return mapError("DeleteBatch", err)
+		}
+	}
+	return nil
 }
 
 // ListIDsByType returns the IDs of every document of the given document_type.
@@ -656,7 +741,7 @@ func (p *PgVectorAdapter) DeleteBatch(ctx context.Context, ids []string) error {
 // orphans to Delete. Deliberately NOT on the VectorStore port — it is a
 // boot-only maintenance query on the concrete adapter, so no fake must grow it.
 func (p *PgVectorAdapter) ListIDsByType(ctx context.Context, docType string) ([]string, error) {
-	sql, args, _ := dialect.From(TableDocuments).
+	sql, args, _ := dialect.From(tableFor(docType)).
 		Select("id").
 		Where(goqu.Ex{"document_type": docType}).ToSQL()
 	rows, err := p.pool.Query(ctx, sql, args...)
@@ -685,7 +770,23 @@ func (p *PgVectorAdapter) GetBatch(ctx context.Context, ids []string) ([]domain.
 
 	// goqu.Ex{"id": ids} maps to Postgres 'id = ANY($1)' or 'IN ($1, $2...)'
 	// logic automatically.
-	sql, args, err := dialect.From(TableDocuments).
+	//
+	// ADR-0093: ids carry no type, so this reads every table that can hold one and
+	// concatenates. Ids that match nothing are simply absent from the result, which is
+	// the contract this method always had.
+	out := make([]domain.Document, 0, len(ids))
+	for _, table := range idLookupTables {
+		batch, berr := p.getBatchFrom(ctx, table, ids)
+		if berr != nil {
+			return nil, berr
+		}
+		out = append(out, batch...)
+	}
+	return out, nil
+}
+
+func (p *PgVectorAdapter) getBatchFrom(ctx context.Context, table string, ids []string) ([]domain.Document, error) {
+	sql, args, err := dialect.From(table).
 		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
 		Where(goqu.Ex{"id": ids}).ToSQL()
 
@@ -719,7 +820,7 @@ func (p *PgVectorAdapter) GetBatch(ctx context.Context, ids []string) ([]domain.
 
 func (p *PgVectorAdapter) GetStaleMemories(ctx context.Context, limit int) ([]domain.Document, error) {
 	// Fetches the lowest-activation, least-accessed/oldest memories
-	sql, args, _ := dialect.From(TableDocuments).
+	sql, args, _ := dialect.From(TableChunks).
 		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
 		Where(goqu.Ex{"activation_strength": goqu.Op{"lt": 0.5}}).
 		Order(goqu.I("access_count").Asc(), goqu.I("last_accessed_at").Asc().NullsFirst()).
@@ -753,13 +854,13 @@ func (p *PgVectorAdapter) UpdateActivationStrength(ctx context.Context, docID st
 func (p *PgVectorAdapter) CountStaleDocuments(ctx context.Context, threshold float64) (int, error) {
 	var count int
 	err := p.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM documents WHERE activation_strength < $1", threshold,
+		"SELECT COUNT(*) FROM chunks WHERE activation_strength < $1", threshold,
 	).Scan(&count)
 	return count, mapError("CountStaleDocuments", err)
 }
 
 func (p *PgVectorAdapter) IncrementAccess(ctx context.Context, id string) error {
-	sql, args, _ := dialect.Update(TableDocuments).
+	sql, args, _ := dialect.Update(TableChunks).
 		Set(goqu.Record{
 			"access_count":     goqu.L("access_count + 1"),
 			"last_accessed_at": goqu.L("CURRENT_TIMESTAMP"),
@@ -782,7 +883,7 @@ func (p *PgVectorAdapter) QueryByMetadata(ctx context.Context, filter map[string
 		return nil, fmt.Errorf("QueryByMetadata: marshal filter: %w", err)
 	}
 
-	q := dialect.From(TableDocuments).
+	q := dialect.From(TableChunks).
 		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
 		Where(goqu.L("metadata @> ?::jsonb", string(filterBytes))).
 		Order(goqu.I("created_at").Asc())

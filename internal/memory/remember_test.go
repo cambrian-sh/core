@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/scope"
+	"github.com/cambrian-sh/core/internal/authz"
 )
 
 // capturingSaveStore records Save calls and implements domain.VectorStore.
@@ -43,28 +43,46 @@ func (c *capturingSaveStore) QueryByMetadata(context.Context, map[string]string,
 	return nil, nil
 }
 
-type fakeWriteResolver struct {
+// fakeAuthorizer stands in for a policy plugin: it knows a fixed set of principals
+// and a write ceiling per principal, and it enforces the narrow-only rule. The
+// kernel must behave correctly against ANY decision point, so the test supplies
+// one rather than importing the premium implementation.
+type fakeAuthorizer struct {
+	domain.AllowAllAuthorizer
 	known     map[string]bool
 	writeTags map[string][]string
 }
 
-func (f fakeWriteResolver) EffectiveForAgent(_ context.Context, id string) (*domain.EffectiveScope, bool) {
-	if !f.known[id] {
-		return nil, false
+func (f fakeAuthorizer) ReadFilter(_ context.Context, p domain.PrincipalRef, s domain.SurfaceRef) (*domain.TagPredicate, domain.AccessDecision) {
+	if !f.known[p.ID] {
+		return nil, domain.AccessDecision{Principal: p, Surface: s, Reason: domain.ReasonNoPrincipal}
 	}
-	eff := domain.NewEffectiveScope(domain.ScopeConfig{}, domain.ScopeConfig{})
-	return &eff, true
-}
-func (f fakeWriteResolver) DefaultWriteTags(_ context.Context, id string) []string {
-	return f.writeTags[id]
+	return &domain.TagPredicate{}, domain.AccessDecision{Allowed: true, Principal: p, Reason: domain.ReasonAllowed}
 }
 
-func tagsOfDoc(d *domain.Document) []string {
-	if v, ok := d.Metadata["tags"].([]string); ok {
-		return v
+func (f fakeAuthorizer) ClassifyWrite(_ context.Context, p domain.PrincipalRef, hint []string) ([]string, domain.AccessDecision) {
+	ceiling := f.writeTags[p.ID]
+	out := []string{}
+	if len(hint) == 0 {
+		out = append(out, ceiling...)
+	} else {
+		want := map[string]bool{}
+		for _, h := range hint {
+			want[h] = true
+		}
+		for _, c := range ceiling { // the hint can only remove, never add
+			if want[c] {
+				out = append(out, c)
+			}
+		}
 	}
-	return nil
+	if p.ID != "" {
+		out = append(out, "provenance:source="+p.ID)
+	}
+	return out, domain.AccessDecision{Allowed: true, Principal: p, Reason: domain.ReasonAllowed}
 }
+
+func tagsOfDoc(d *domain.Document) []string { return authz.DocTags(d) }
 
 func has(ss []string, want string) bool {
 	for _, s := range ss {
@@ -75,23 +93,27 @@ func has(ss []string, want string) bool {
 	return false
 }
 
+func writerFor(a domain.Authorizer, cap *capturingSaveStore) domain.VectorStore {
+	return authz.NewEnforcingStoreWriter(cap, a, nil)
+}
+
 func TestRemember_UnknownPrincipalRejected(t *testing.T) {
-	store := scope.NewScopedStoreWriter(&capturingSaveStore{}, scope.NewVocabulary(nil), nil)
-	svc := NewRememberService(store, &fakeEmbedder{}, fakeWriteResolver{known: map[string]bool{}})
+	a := fakeAuthorizer{known: map[string]bool{}}
+	svc := NewRememberService(writerFor(a, &capturingSaveStore{}), &fakeEmbedder{}, a)
 
 	if _, err := svc.Remember(context.Background(), "ghost", "x", nil, "src", "sess", 0); !errors.Is(err, ErrUnknownPrincipal) {
 		t.Fatalf("expected ErrUnknownPrincipal, got %v", err)
 	}
 }
 
-// C2: the remembered doc is classified by the agent's DefaultWriteTags + provenance.
+// C2: the remembered doc is classified by the decision point, not by the agent.
 func TestRemember_DerivesClassification(t *testing.T) {
 	cap := &capturingSaveStore{}
-	store := scope.NewScopedStoreWriter(cap, scope.NewVocabulary(nil), nil)
-	svc := NewRememberService(store, &fakeEmbedder{}, fakeWriteResolver{
+	a := fakeAuthorizer{
 		known:     map[string]bool{"analyst": true},
 		writeTags: map[string][]string{"analyst": {"company_wide"}},
-	})
+	}
+	svc := NewRememberService(writerFor(a, cap), &fakeEmbedder{}, a)
 
 	id, err := svc.Remember(context.Background(), "analyst", "an insight", nil, "analyst", "sess-1", 0)
 	if err != nil {
@@ -111,8 +133,8 @@ func TestRemember_DerivesClassification(t *testing.T) {
 // RecallSimilarityFloor, so it would be permanently unrecallable. This guards that bug.
 func TestRemember_StampsRecallableActivation(t *testing.T) {
 	cap := &capturingSaveStore{}
-	store := scope.NewScopedStoreWriter(cap, scope.NewVocabulary(nil), nil)
-	svc := NewRememberService(store, &fakeEmbedder{}, fakeWriteResolver{known: map[string]bool{"a": true}})
+	a := fakeAuthorizer{known: map[string]bool{"a": true}}
+	svc := NewRememberService(writerFor(a, cap), &fakeEmbedder{}, a)
 	svc.SetDefaultActivation(0.5)
 
 	// No importance hint → the configured default activation.
@@ -131,14 +153,15 @@ func TestRemember_StampsRecallableActivation(t *testing.T) {
 	}
 }
 
-// The agent cannot broaden via the hint.
+// The agent cannot broaden via the hint — the chokepoint writes what the decision
+// point returned, not what the agent asked for.
 func TestRemember_HintCannotBroaden(t *testing.T) {
 	cap := &capturingSaveStore{}
-	store := scope.NewScopedStoreWriter(cap, scope.NewVocabulary([]string{"company_wide", "secrets"}), nil)
-	svc := NewRememberService(store, &fakeEmbedder{}, fakeWriteResolver{
+	a := fakeAuthorizer{
 		known:     map[string]bool{"a": true},
 		writeTags: map[string][]string{"a": {"company_wide"}},
-	})
+	}
+	svc := NewRememberService(writerFor(a, cap), &fakeEmbedder{}, a)
 
 	if _, err := svc.Remember(context.Background(), "a", "x", []string{"secrets"}, "a", "s", 0); err != nil {
 		t.Fatal(err)

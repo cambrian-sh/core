@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 
 	"github.com/cambrian-sh/core/domain"
@@ -54,6 +55,31 @@ type Options struct {
 	// the directly-set fields above. OSS default: empty (no plugins).
 	Plugins []Plugin
 
+	// Authorizer is the access-control DECISION POINT (ADR-0085). OSS default: nil,
+	// which the composition root replaces with domain.AllowAllAuthorizer — the
+	// correct semantics for a single-tenant, unscoped open-source deployment. A
+	// premium policy plugin supplies a real one, which fails CLOSED.
+	//
+	// Tier-1 replace-one (ADR-0074): at most one plugin may own the decision. The
+	// ENFORCEMENT POINTS that consult it are not pluggable at all — a missing
+	// plugin must mean "no policy", never "no check".
+	Authorizer domain.Authorizer
+
+	// IngressResolver answers which principals are registered ingresses and what
+	// surface the kernel stamps on sessions they open (ADR-0090 D2/D3). nil — the
+	// OSS default — means nothing is an ingress and every surface stays
+	// transport-derived, which is exactly the behaviour before ADR-0090.
+	//
+	// It is separate from Authorizer on purpose: the Authorizer DECIDES using a
+	// surface, this SUPPLIES one. Folding them would let a decision point choose
+	// its own inputs.
+	IngressResolver domain.IngressResolver
+
+	// PolicyAdmin is the policy ADMINISTRATION surface behind the operator plane's
+	// scope/vocabulary/explain RPCs. nil in OSS ⇒ those RPCs return Unimplemented,
+	// the same shape as WatchConfigHandler.
+	PolicyAdmin domain.PolicyAdmin
+
 	// ExtraServices, when non-nil, is invoked with the kernel's gRPC server AFTER the
 	// core services (Orchestrator, Health, OperatorConsole) are registered and BEFORE
 	// Serve, letting a downstream (premium) binary mount ADDITIONAL gRPC services that
@@ -93,6 +119,33 @@ type KernelServices struct {
 	// GenerateViaModelStream call is rejected UNAUTHENTICATED. Returns the token id and a
 	// release func to call when the turn completes. Nil when no gateway is configured.
 	AcquireLLMToken func(ctx context.Context, tokenLimit int, ttl time.Duration) (tokenID string, release func(), err error)
+
+	// SQL is the kernel's Postgres pool, handed to plugins that own their own
+	// tables (the policy plugin's agent_scopes / policy objects). nil when no
+	// Postgres is configured — a plugin must degrade rather than panic.
+	//
+	// It is deliberately the concrete pool rather than an interface: a plugin that
+	// owns tables owns their schema and their queries, and pretending otherwise
+	// would mean re-exporting half of pgx through a seam nobody benefits from.
+	SQL *pgxpool.Pool
+
+	// AgentExists reports whether an agent is registered. The policy plugin needs
+	// it to tell "registered but unprofiled" (unrestricted) apart from "unknown
+	// principal" (fail-closed) — a distinction that decides whether a query
+	// returns everything or nothing.
+	AgentExists func(agentID string) bool
+
+	// SessionScopes reads the non-forgeable per-session caller term from the
+	// persisted session record. The policy plugin composes it with the rest; the
+	// kernel never interprets it. nil when no session store is available.
+	SessionScopes SessionScopeReader
+}
+
+// SessionScopeReader returns the caller term persisted on a session record. It is
+// re-derived SERVER-SIDE and never read from a handoff payload — a caller that
+// could name its own scope would not be a boundary at all (INV-5).
+type SessionScopeReader interface {
+	CallerScope(ctx context.Context, sessionID domain.SessionID) domain.TagSet
 }
 
 // ReactiveServices is the former name of KernelServices, kept as an alias so the rename is

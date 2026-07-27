@@ -25,7 +25,7 @@ func TestWebTool_FailClosedWhenUnconfigured(t *testing.T) {
 		t.Skip("repo root not found")
 	}
 	reg := domain.NewInMemoryToolRegistry()
-	files, err := discovery.LoadRegistry(root+"/tools", reg)
+	files, err := discovery.LoadRegistry(root+"/tools", reg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestWebTool_FirecrawlSearchAndExtract(t *testing.T) {
 	t.Setenv("CAMBRIAN_FIRECRAWL_URL", srv.URL)
 
 	reg := domain.NewInMemoryToolRegistry()
-	files, err := discovery.LoadRegistry(root+"/tools", reg)
+	files, err := discovery.LoadRegistry(root+"/tools", reg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestWebTool_LiveSearch(t *testing.T) {
 	py := pythonOrSkip(t)
 	root := repoRoot()
 	reg := domain.NewInMemoryToolRegistry()
-	files, _ := discovery.LoadRegistry(root+"/tools", reg)
+	files, _ := discovery.LoadRegistry(root+"/tools", reg, false)
 	h := &ProcessHandler{
 		PythonExec:     py,
 		ToolFiles:      files,

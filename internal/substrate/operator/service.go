@@ -44,6 +44,7 @@ type Service struct {
 	watchMetrics  domain.WatchMetricsReader    // REACT-05 / ADR-0071
 	watchBacktest domain.WatchBacktester       // REACT-05 / ADR-0071
 	routePreview  RoutePreviewer               // ROUTE-07 / ADR-0077
+	policy        domain.PolicyAdmin           // ADR-0085; nil ⇒ access-policy RPCs Unimplemented
 
 	sessionOps SessionOps
 	convOps    ConversationOps // ADR-0084 D9: OSS chat lane
@@ -51,6 +52,32 @@ type Service struct {
 	kernelVersion   string
 	contractVersion string
 	capabilities    []string
+	plugins         []PluginInfo // ADR-0089: plugin identity on the handshake
+}
+
+// PluginInfo is one declared plugin as reported on the handshake (ADR-0089).
+//
+// It is declared HERE rather than reusing app.PluginStatus because app imports
+// this package; the composition root maps its status into this shape. That keeps
+// the operator plane free of any knowledge of how plugins are composed, which is
+// the same reason the kernel never interprets a capability string (ADR-0082 D2).
+type PluginInfo struct {
+	ID           string
+	DisplayName  string
+	Version      string
+	State        string
+	Capabilities []string
+	Panels       []PluginPanel
+	Reason       string
+	Missing      []string
+	ExpiresAt    string // RFC3339, empty when not applicable
+}
+
+// PluginPanel is one operator surface a plugin contributes.
+type PluginPanel struct {
+	ID         string
+	Title      string
+	Capability string
 }
 
 // NewService wires the OperatorConsole over a Spool feed. The projection and
@@ -94,6 +121,13 @@ func (s *Service) SetHandshake(kernelVersion, contractVersion string, capabiliti
 	s.capabilities = capabilities
 }
 
+// SetPlugins records which plugins this build declared, for the handshake
+// (ADR-0089). Every DECLARED plugin is reported, including one that failed
+// entitlement or has unmet dependencies: a console that cannot tell "this
+// deployment has no reactive engine" from "the reactive engine declined to
+// register" cannot explain a missing surface to the operator who paid for it.
+func (s *Service) SetPlugins(plugins []PluginInfo) { s.plugins = plugins }
+
 // Snapshot returns bounded live operational state stamped with a lower-bound
 // as_of_seq captured BEFORE any source read (ADR-0047 D6) — so an event landing
 // mid-read is re-delivered on resume rather than lost. The client resumes
@@ -106,6 +140,24 @@ func (s *Service) Snapshot(ctx context.Context, _ *pb.SnapshotRequest) (*pb.Snap
 		KernelVersion:   s.kernelVersion,
 		ContractVersion: s.contractVersion,
 		Capabilities:    s.capabilities,
+	}
+	for _, p := range s.plugins {
+		info := &pb.PluginInfoOp{
+			Id:           p.ID,
+			DisplayName:  p.DisplayName,
+			Version:      p.Version,
+			State:        p.State,
+			Capabilities: p.Capabilities,
+			Reason:       p.Reason,
+			Missing:      p.Missing,
+			ExpiresAt:    p.ExpiresAt,
+		}
+		for _, pan := range p.Panels {
+			info.Panels = append(info.Panels, &pb.PluginPanelOp{
+				Id: pan.ID, Title: pan.Title, Capability: pan.Capability,
+			})
+		}
+		resp.Plugins = append(resp.Plugins, info)
 	}
 	for _, p := range s.projection.PlansInFlight() {
 		resp.Plans = append(resp.Plans, &pb.PlanInFlightOp{
