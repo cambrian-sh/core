@@ -25,6 +25,7 @@ const (
 	Orchestrator_ChatStream_FullMethodName             = "/cambrian.Orchestrator/ChatStream"
 	Orchestrator_SignalStream_FullMethodName           = "/cambrian.Orchestrator/SignalStream"
 	Orchestrator_GenerateViaModelStream_FullMethodName = "/cambrian.Orchestrator/GenerateViaModelStream"
+	Orchestrator_GenerateWithTools_FullMethodName      = "/cambrian.Orchestrator/GenerateWithTools"
 	Orchestrator_GetContextNode_FullMethodName         = "/cambrian.Orchestrator/GetContextNode"
 	Orchestrator_PutContextNode_FullMethodName         = "/cambrian.Orchestrator/PutContextNode"
 	Orchestrator_RegisterWatch_FullMethodName          = "/cambrian.Orchestrator/RegisterWatch"
@@ -63,6 +64,16 @@ type OrchestratorClient interface {
 	// from the allocated TraitModel to the agent with per-chunk token accounting.
 	// ADR-0018.
 	GenerateViaModelStream(ctx context.Context, in *GenerateStreamRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GenerateChunk], error)
+	// ADR-0097 Phase B: one managed generation turn WITH native tool-calling.
+	//
+	// Unary, not streaming, deliberately. A tool call is only actionable once it is
+	// complete — name plus a fully-formed argument object — so streaming it buys
+	// nothing an agent can use and forces every client to reassemble partial calls.
+	// Text-only generation keeps using GenerateViaModelStream, which still streams.
+	//
+	// Callers must treat Unimplemented / FailedPrecondition as "this deployment has
+	// no native tool support" and fall back to the prompt-encoded action protocol.
+	GenerateWithTools(ctx context.Context, in *GenerateWithToolsRequest, opts ...grpc.CallOption) (*GenerateWithToolsResponse, error)
 	// Resolve a CID from the ContentStore (step results) or LTM pgvector.
 	// Used by agents' assemble_context(fetch_fn=agent.substrate.get_context_node).
 	// Returns empty data when the CID is unknown. ADR-0022 Phase 3.
@@ -198,6 +209,16 @@ func (c *orchestratorClient) GenerateViaModelStream(ctx context.Context, in *Gen
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Orchestrator_GenerateViaModelStreamClient = grpc.ServerStreamingClient[GenerateChunk]
+
+func (c *orchestratorClient) GenerateWithTools(ctx context.Context, in *GenerateWithToolsRequest, opts ...grpc.CallOption) (*GenerateWithToolsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenerateWithToolsResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_GenerateWithTools_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 func (c *orchestratorClient) GetContextNode(ctx context.Context, in *ContextNodeRequest, opts ...grpc.CallOption) (*ContextNodeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -388,6 +409,16 @@ type OrchestratorServer interface {
 	// from the allocated TraitModel to the agent with per-chunk token accounting.
 	// ADR-0018.
 	GenerateViaModelStream(*GenerateStreamRequest, grpc.ServerStreamingServer[GenerateChunk]) error
+	// ADR-0097 Phase B: one managed generation turn WITH native tool-calling.
+	//
+	// Unary, not streaming, deliberately. A tool call is only actionable once it is
+	// complete — name plus a fully-formed argument object — so streaming it buys
+	// nothing an agent can use and forces every client to reassemble partial calls.
+	// Text-only generation keeps using GenerateViaModelStream, which still streams.
+	//
+	// Callers must treat Unimplemented / FailedPrecondition as "this deployment has
+	// no native tool support" and fall back to the prompt-encoded action protocol.
+	GenerateWithTools(context.Context, *GenerateWithToolsRequest) (*GenerateWithToolsResponse, error)
 	// Resolve a CID from the ContentStore (step results) or LTM pgvector.
 	// Used by agents' assemble_context(fetch_fn=agent.substrate.get_context_node).
 	// Returns empty data when the CID is unknown. ADR-0022 Phase 3.
@@ -466,6 +497,9 @@ func (UnimplementedOrchestratorServer) SignalStream(grpc.BidiStreamingServer[Han
 }
 func (UnimplementedOrchestratorServer) GenerateViaModelStream(*GenerateStreamRequest, grpc.ServerStreamingServer[GenerateChunk]) error {
 	return status.Error(codes.Unimplemented, "method GenerateViaModelStream not implemented")
+}
+func (UnimplementedOrchestratorServer) GenerateWithTools(context.Context, *GenerateWithToolsRequest) (*GenerateWithToolsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GenerateWithTools not implemented")
 }
 func (UnimplementedOrchestratorServer) GetContextNode(context.Context, *ContextNodeRequest) (*ContextNodeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetContextNode not implemented")
@@ -614,6 +648,24 @@ func _Orchestrator_GenerateViaModelStream_Handler(srv interface{}, stream grpc.S
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Orchestrator_GenerateViaModelStreamServer = grpc.ServerStreamingServer[GenerateChunk]
+
+func _Orchestrator_GenerateWithTools_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerateWithToolsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).GenerateWithTools(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_GenerateWithTools_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).GenerateWithTools(ctx, req.(*GenerateWithToolsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
 
 func _Orchestrator_GetContextNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ContextNodeRequest)
@@ -914,6 +966,10 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryMemory",
 			Handler:    _Orchestrator_QueryMemory_Handler,
+		},
+		{
+			MethodName: "GenerateWithTools",
+			Handler:    _Orchestrator_GenerateWithTools_Handler,
 		},
 		{
 			MethodName: "GetContextNode",

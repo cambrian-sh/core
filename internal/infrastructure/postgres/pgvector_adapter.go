@@ -45,6 +45,7 @@ const (
 	TableAgentProfiles     = "agent_profiles"
 	TableEdges             = "document_edges"
 	TableChunkTriplets     = "chunk_triplets"
+	TableExperiences       = "experiences"
 	TableChunkPagerank     = "chunk_pagerank"
 	TableChunkPagerankMeta = "chunk_pagerank_meta"
 )
@@ -408,6 +409,14 @@ func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) *goqu.InsertDat
 			record["document_id"] = goqu.L("(SELECT id FROM "+TableDocuments+" WHERE id = ?)", parent)
 			update["document_id"] = goqu.L("EXCLUDED.document_id")
 		}
+		// ADR-0095 D2: the second parent — the EPISODE that produced this row. Same
+		// subselect discipline and for the same reason; a corpus chunk simply leaves
+		// it empty, and the two parents are not alternatives (a row may legitimately
+		// have neither).
+		if doc.ExperienceID != "" {
+			record["experience_id"] = goqu.L("(SELECT id FROM "+TableExperiences+" WHERE id = ?)", doc.ExperienceID)
+			update["experience_id"] = goqu.L("EXCLUDED.experience_id")
+		}
 	}
 
 	return dialect.Insert(tableFor(doc.DocumentType)).Rows(record).OnConflict(
@@ -537,8 +546,19 @@ func (p *PgVectorAdapter) Search(ctx context.Context, vector []float32, opts dom
 // ever reaches SQL. Duplicating it here would put the same security decision in
 // two places, and the SQL copy is the one nobody reads.
 func scopeExpressions(eff *domain.TagPredicate) []goqu.Expression {
+	return scopeExpressionsOn(eff, "")
+}
+
+// scopeExpressionsOn is scopeExpressions with an optional table qualifier, for
+// queries that JOIN and would otherwise leave `metadata` ambiguous. An empty
+// alias reproduces the unqualified form exactly.
+func scopeExpressionsOn(eff *domain.TagPredicate, alias string) []goqu.Expression {
 	if eff == nil || eff.Bypass {
 		return nil
+	}
+	col := "metadata"
+	if alias != "" {
+		col = alias + ".metadata"
 	}
 	contains := func(tag string) string {
 		b, _ := json.Marshal(map[string][]string{"tags": {tag}})
@@ -547,7 +567,7 @@ func scopeExpressions(eff *domain.TagPredicate) []goqu.Expression {
 	var exprs []goqu.Expression
 	// Required: a doc must carry ALL → one AND containment term per tag.
 	for _, r := range eff.RequiredTags {
-		exprs = append(exprs, goqu.L("metadata @> ?::jsonb", contains(r)))
+		exprs = append(exprs, goqu.L(col+" @> ?::jsonb", contains(r)))
 	}
 	// AnyOfClauses (CNF): each clause is an OR of containment; clauses are ANDed.
 	for _, clause := range eff.AnyOfClauses {
@@ -556,13 +576,13 @@ func scopeExpressions(eff *domain.TagPredicate) []goqu.Expression {
 		}
 		ors := make([]goqu.Expression, 0, len(clause))
 		for _, a := range clause {
-			ors = append(ors, goqu.L("metadata @> ?::jsonb", contains(a)))
+			ors = append(ors, goqu.L(col+" @> ?::jsonb", contains(a)))
 		}
 		exprs = append(exprs, goqu.Or(ors...))
 	}
 	// Forbidden: a doc must NOT carry ANY → NOT(a OR b) == (NOT a) AND (NOT b).
 	for _, f := range eff.ForbiddenTags {
-		exprs = append(exprs, goqu.L("NOT (metadata @> ?::jsonb)", contains(f)))
+		exprs = append(exprs, goqu.L("NOT ("+col+" @> ?::jsonb)", contains(f)))
 	}
 	return exprs
 }
@@ -1056,22 +1076,40 @@ func (p *PgVectorAdapter) ForChunks(ctx context.Context, chunkIDs []string) (map
 // ChunksMentioningEntity returns the chunk IDs that have a triplet
 // referencing the given entity (head OR tail). Match is case-insensitive.
 // Returns at most `limit` chunk IDs, ordered by recency (extracted_at DESC).
-func (p *PgVectorAdapter) ChunksMentioningEntity(ctx context.Context, entity string, limit int) ([]string, error) {
+//
+// AUTHORIZATION (ADR-0095 D9). `chunk_triplets` has no classification column, so the
+// predicate is applied by JOINing `chunks`, which carries the per-chunk tag copy that
+// ADR-0093 D4 keeps on the hot path precisely so a filter need not join `documents`.
+// Without this the lookup returned IDs for chunks the caller cannot read.
+//
+// Unlike fetchCandidates, NOTHING upstream refuses this read — it is reached directly
+// from kgExpand, not through the authz chokepoint — so a nil predicate FAILS CLOSED here
+// rather than yielding "no filter". That is a deliberate departure from
+// scopeExpressions' nil convention, which is safe only behind the chokepoint.
+func (p *PgVectorAdapter) ChunksMentioningEntity(ctx context.Context, entity string, limit int, scope *domain.TagPredicate) ([]string, error) {
 	if entity == "" {
 		return nil, nil
+	}
+	if scope == nil {
+		return nil, nil // fail-closed: no predicate ⇒ no read is authorized
 	}
 	if limit <= 0 {
 		limit = 20
 	}
 	e := strings.ToLower(strings.TrimSpace(entity))
-	sql, args, _ := dialect.From(TableChunkTriplets).
-		Select("chunk_id").
+	ds := dialect.From(goqu.T(TableChunkTriplets).As("ct")).
+		Join(goqu.T(TableChunks).As("c"), goqu.On(goqu.Ex{"c.id": goqu.I("ct.chunk_id")})).
+		Select("ct.chunk_id").
 		Where(goqu.ExOr{
-			"h": e,
-			"t": e,
-		}).
-		GroupBy("chunk_id").
-		Order(goqu.L("MAX(extracted_at)").Desc()).
+			"ct.h": e,
+			"ct.t": e,
+		})
+	for _, expr := range scopeExpressionsOn(scope, "c") {
+		ds = ds.Where(expr)
+	}
+	sql, args, _ := ds.
+		GroupBy("ct.chunk_id").
+		Order(goqu.L("MAX(ct.extracted_at)").Desc()).
 		Limit(uint(limit)).ToSQL()
 	rows, err := p.pool.Query(ctx, sql, args...)
 	if err != nil {

@@ -21,4 +21,7 @@ type MemorySearcher interface {
 	// transitions (situation → outcome + action path), failure-weighted and similarity-
 	// gated, so the agent can anticipate the consequence of its next action.
 	SearchPrecedents(ctx context.Context, query, callerID string) ([]SearchResult, error)
+	// SearchProcedures is the ADR-0094 D5 procedural lane — induced routines for the
+	// situation being planned. Advisory: a procedure is planner INPUT, never authority.
+	SearchProcedures(ctx context.Context, query, callerID string) ([]SearchResult, error)
 }

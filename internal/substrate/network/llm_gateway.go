@@ -1,6 +1,7 @@
 package network
 
 import (
+	"errors"
 	"context"
 	"fmt"
 	"log/slog"
@@ -35,6 +36,11 @@ type LLMGateway interface {
 	Complete(ctx context.Context, leaseID domain.LeaseID) (llm.TokenUsage, error)
 	EvictExpired()
 	StreamChunks(ctx context.Context, leaseID domain.LeaseID, prompt string, opts domain.GenerateOptions, out chan<- domain.StreamChunk) error
+	// GenerateWithTools runs ONE managed generation turn with native tool-calling
+	// (ADR-0097 Phase B). Returns ErrToolCallingUnsupported when the allocated model
+	// cannot do it, which callers translate into the prompt-encoded fallback rather
+	// than a failure.
+	GenerateWithTools(ctx context.Context, leaseID domain.LeaseID, messages []domain.ModelMessage, opts domain.GenerateOptions, tools []domain.ToolDefinition) (domain.ModelTurn, error)
 }
 
 // SubstrateLLMGateway implements LLMGateway.
@@ -341,6 +347,105 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 	g.markHealthy(modelID)
 
 	return nil
+}
+
+// ErrToolCallingUnsupported is returned when the model allocated to a step cannot do
+// native tool-calling. It is a CAPABILITY answer, not a failure: the caller is
+// expected to fall back to the prompt-encoded action protocol, so it must stay
+// distinguishable from a real generation error.
+var ErrToolCallingUnsupported = errors.New("tool_calling_unsupported")
+
+// GenerateWithTools runs one managed generation turn with native tool-calling.
+//
+// It reuses the same guards as StreamChunks — CONWIP, session lookup, allocation
+// chain with default-model fallback, health selection — because a tool-calling turn
+// is the same managed LLM call, just with a different response shape. Diverging on
+// any of those would mean the tool path quietly escapes budget or health control.
+func (g *SubstrateLLMGateway) GenerateWithTools(
+	ctx context.Context, sessionID domain.LeaseID, messages []domain.ModelMessage,
+	opts domain.GenerateOptions, tools []domain.ToolDefinition,
+) (domain.ModelTurn, error) {
+	var zero domain.ModelTurn
+
+	select {
+	case g.semaphore <- struct{}{}:
+		defer func() { <-g.semaphore }()
+	case <-ctx.Done():
+		return zero, ctx.Err()
+	default:
+		return zero, fmt.Errorf("gateway_overflow")
+	}
+
+	g.mu.RLock()
+	ss, ok := g.sessions[sessionID]
+	g.mu.RUnlock()
+	if !ok {
+		return zero, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	modelIDs := make([]string, 0, 4)
+	if ss.StepAllocation.Winner.ID != "" {
+		modelIDs = append(modelIDs, ss.StepAllocation.Winner.ID)
+	}
+	for _, fb := range ss.StepAllocation.Fallbacks {
+		if fb.ID != "" {
+			modelIDs = append(modelIDs, fb.ID)
+		}
+	}
+	g.mu.RLock()
+	def := g.defaultModelID
+	g.mu.RUnlock()
+	if len(modelIDs) == 0 && def != "" {
+		modelIDs = append(modelIDs, def)
+	}
+	if len(modelIDs) == 0 {
+		return zero, fmt.Errorf("no model allocated for session %s and no default model configured", sessionID)
+	}
+
+	modelID, err := g.selectHealthyModel(modelIDs)
+	if err != nil {
+		return zero, err
+	}
+
+	client, err := g.getStreamer(modelID)
+	if err != nil {
+		return zero, err
+	}
+	tg, ok := client.(domain.ToolCallingGenerator)
+	if !ok || !domain.SupportsToolCalling(client) {
+		// Capability, not health: do NOT mark the model degraded. A model that
+		// cannot do tool-calling is perfectly healthy for text generation, and
+		// poisoning the health cache here would take it out of service entirely.
+		return zero, fmt.Errorf("%w: model %s", ErrToolCallingUnsupported, modelID)
+	}
+
+	turn, err := tg.GenerateWithTools(ctx, messages, tools)
+	if err != nil {
+		slog.Error("llm_gateway: tool-calling generation failed; marking degraded for cooldown",
+			"model", modelID, "err", err)
+		g.markUnhealthy(modelID, err.Error())
+		return zero, err
+	}
+
+	// Budget accounting on the same basis as the streaming path: estimate from the
+	// text, plus the serialized arguments, since a turn that is ALL tool calls has
+	// no text and would otherwise bill as zero.
+	consumed := llm.EstimateTokens(turn.Text)
+	for _, tc := range turn.ToolCalls {
+		consumed += llm.EstimateTokens(string(tc.Arguments))
+	}
+	g.mu.Lock()
+	if st, ok := g.sessions[sessionID]; ok {
+		ttl := time.Duration(float64(time.Minute) * g.cfg.SessionTokenTTLMultiplier)
+		st.ExpiresAt = time.Now().Add(ttl)
+		st.LastActivityAt = time.Now()
+		st.ConsumedTokens += consumed
+		st.ActualTokensUsed += consumed
+	}
+	g.mu.Unlock()
+
+	g.markHealthy(modelID)
+	return turn, nil
 }
 
 func (g *SubstrateLLMGateway) selectHealthyModel(modelIDs []string) (string, error) {

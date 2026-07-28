@@ -85,13 +85,17 @@ func TestToolExecutor_PromotesSubstantiveOutputOnly(t *testing.T) {
 		return rec.got
 	}
 
-	if got := run([]byte(`{"result":"` + pad + `"}`)); len(got) != 1 || got[0].ToolName != "web_search" || got[0].IsMutation {
-		t.Errorf("substantive read output should be recorded as a non-mutation, got %v", got)
+	// The size floor now decides FactEligible, not whether the call is reported at
+	// all. Every non-denied call reaches the recorder so the world model can see what
+	// it touched; only a substantive output is eligible to be curated as a FACT.
+	if got := run([]byte(`{"result":"` + pad + `"}`)); len(got) != 1 || got[0].ToolName != "web_search" || got[0].IsMutation || !got[0].FactEligible {
+		t.Errorf("substantive read output should be recorded as a fact-eligible non-mutation, got %+v", got)
 	}
-	if got := run([]byte(`{"error":"` + pad + `"}`)); len(got) != 0 {
-		t.Errorf("error output must not be recorded, got %v", got)
+	if got := run([]byte(`{"error":"` + pad + `"}`)); len(got) != 1 || got[0].FactEligible {
+		t.Errorf("error output must be reported but NOT fact-eligible, got %+v", got)
 	}
-	if got := run([]byte(`{"r":"small"}`)); len(got) != 0 {
-		t.Errorf("below-floor output must not be recorded, got %v", got)
+	if got := run([]byte(`{"r":"small"}`)); len(got) != 1 || got[0].FactEligible {
+		t.Errorf("below-floor output must be reported (the world model needs it) but NOT "+
+			"fact-eligible, got %+v", got)
 	}
 }

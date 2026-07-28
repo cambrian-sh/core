@@ -7,6 +7,11 @@ type LTMEnrichment struct {
 	Negatives  []SearchResult // DocTypeNegativeEdge results
 	Episodes   []SearchResult // DocTypeEpisodicMemory results above "episodic" policy threshold (ADR-0029)
 	Precedents []Precedent    // ADR-0049 D11: world-model transitions for the situation being planned
+	// Procedures are ADR-0094 induced routines for the situation being planned —
+	// "how has this kind of work gone here?". ADVISORY (D6): planner input, never a
+	// directive. The Gatekeeper still filters and the Auctioneer still selects, which
+	// is why a routine names capabilities and never agents.
+	Procedures []Procedure
 }
 
 // Precedent is a world-model TRANSITION (ADR-0049 D11): a past situation, what was DONE

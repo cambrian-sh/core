@@ -71,7 +71,7 @@ func TestApplyAnchorConstraint_PromotesBuriedChunk(t *testing.T) {
 		{Document: domain.Document{ID: "n2"}, Score: 0.7},
 		{Document: domain.Document{ID: "gold-1"}, Score: 0.05},
 	}
-	out := q.applyAnchorConstraint(context.Background(), pool, "What coded phrase appears in Chapter 1, scene 1?", nil)
+	out := q.applyAnchorConstraint(context.Background(), pool, "What coded phrase appears in Chapter 1, scene 1?", nil, &domain.TagPredicate{Bypass: true})
 
 	if out[0].Document.ID != "gold-1" {
 		t.Fatalf("anchored gold chunk must lead; got order %v", ids(out))
@@ -97,7 +97,7 @@ func TestApplyAnchorConstraint_PrefersSpecific(t *testing.T) {
 	vs := &fakeVecStore{docs: map[string]domain.Document{"gold": {ID: "gold"}, "sibling": {ID: "sibling"}}}
 	q := &QueryService{chunkTriplets: st, vectorStore: vs, anchorConstraint: true, kgPerEntity: 5, floor: 0.3}
 
-	out := q.applyAnchorConstraint(context.Background(), nil, "In Chapter 1, scene 1, which artifact?", nil)
+	out := q.applyAnchorConstraint(context.Background(), nil, "In Chapter 1, scene 1, which artifact?", nil, &domain.TagPredicate{Bypass: true})
 	if len(out) != 1 || out[0].Document.ID != "gold" {
 		t.Fatalf("only the compound-matched chunk should be promoted; got %v", ids(out))
 	}
@@ -114,7 +114,8 @@ func TestApplyAnchorConstraint_MultiHopTwoIds(t *testing.T) {
 	q := &QueryService{chunkTriplets: st, vectorStore: vs, anchorConstraint: true, kgPerEntity: 5, floor: 0.3}
 
 	out := q.applyAnchorConstraint(context.Background(), nil,
-		"Add the ledger amounts from "+id5+" and "+id15+". What is the combined total?", nil)
+		"Add the ledger amounts from "+id5+" and "+id15+". What is the combined total?", nil,
+		&domain.TagPredicate{Bypass: true})
 	var got5, got15 bool
 	for _, r := range out {
 		if r.Document.ID == id5 {
@@ -136,7 +137,7 @@ func TestApplyAnchorConstraint_NoAnchorIsNoop(t *testing.T) {
 	q := &QueryService{chunkTriplets: st, vectorStore: vs, anchorConstraint: true, kgPerEntity: 5, floor: 0.3}
 
 	pool := []domain.SearchResult{{Document: domain.Document{ID: "x"}, Score: 0.9}}
-	out := q.applyAnchorConstraint(context.Background(), pool, "Who is the harbor magistrate?", nil)
+	out := q.applyAnchorConstraint(context.Background(), pool, "Who is the harbor magistrate?", nil, &domain.TagPredicate{Bypass: true})
 	if len(out) != 1 || out[0].Document.ID != "x" || out[0].Score != 0.9 {
 		t.Fatalf("anchorless query must leave the pool untouched; got %v", ids(out))
 	}

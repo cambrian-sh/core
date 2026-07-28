@@ -43,6 +43,7 @@ func TestCommitItem_SkipsTier2SceneWhenEagerSceneExists(t *testing.T) {
 	store := &sceneCollectStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	s := scoredItem{
 		Item: pendingItem{
 			SceneID: "scene-1", // eager scene already written
@@ -64,6 +65,7 @@ func TestCommitItem_WritesTier2SceneWhenNoEagerScene(t *testing.T) {
 	store := &sceneCollectStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	s := scoredItem{
 		Item: pendingItem{
 			SceneID: "",
@@ -104,11 +106,12 @@ func TestWritePlanScene_AccretesAndWritesOneScene(t *testing.T) {
 	store := &captureSaveStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	ctx := context.Background()
 	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "step-0-p1"})
 	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"b.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "step-1-p1"})
 
-	_ = agent.WritePlanScene(ctx, "p1", "build docs", true)
+	_ = agent.WritePlanScene(ctx, domain.PlanRecord{PlanID: "p1", Goal: "build docs", Success: true, Surprise: -1})
 
 	if store.savedDoc == nil || store.savedDoc.DocumentType != domain.DocTypeMnemonicScene {
 		t.Fatalf("expected a mnemonic_scene; got %+v", store.savedDoc)
@@ -131,11 +134,12 @@ func TestWritePlanScene_WritesSceneEntityEdges(t *testing.T) {
 	gs := &captureGraphStore{}
 	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	agent.GraphStore = gs
 	ctx := context.Background()
 
 	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"docs/a.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "step-0-pe"})
-	_ = agent.WritePlanScene(ctx, "pe", "build docs", true)
+	_ = agent.WritePlanScene(ctx, domain.PlanRecord{PlanID: "pe", Goal: "build docs", Success: true, Surprise: -1})
 
 	want := map[string]bool{"file:docs/a.md": false, "dir:docs": false}
 	for _, e := range gs.edges {
@@ -158,13 +162,14 @@ func TestWritePlanScene_EmbedsInlineActionSummary(t *testing.T) {
 	store := &collectStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	ctx := context.Background()
 
 	// Two mutations under plan p9 → two action records (resolvable by plan_id).
 	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "step-0-p9"})
 	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"b.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "step-1-p9"})
 
-	_ = agent.WritePlanScene(ctx, "p9", "build docs", true)
+	_ = agent.WritePlanScene(ctx, domain.PlanRecord{PlanID: "p9", Goal: "build docs", Success: true, Surprise: -1})
 
 	var scene *domain.Document
 	for _, d := range store.docs {
@@ -190,10 +195,11 @@ func TestWritePlanScene_SkipsContentlessScene(t *testing.T) {
 	store := &captureSaveStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 
 	// No engagements accreted for this plan (e.g. a pure-reasoning plan, or a replan
 	// whose work all happened under the original planID).
-	_ = agent.WritePlanScene(context.Background(), "p-empty", "Replan: think hard about X", true)
+	_ = agent.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "p-empty", Goal: "Replan: think hard about X", Success: true, Surprise: -1})
 
 	if store.savedDoc != nil {
 		t.Errorf("a plan with no engaged entities must write no scene; got %+v", store.savedDoc)
@@ -206,11 +212,12 @@ func TestWritePlanScene_CapturesBaselineCIDs(t *testing.T) {
 	store := &captureSaveStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	agent.ContentStore = &fakeContentStore{}
 	ctx := context.Background()
 
 	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`baseline body`), IsMutation: true, TaskID: "step-0-p2"})
-	_ = agent.WritePlanScene(ctx, "p2", "read docs", true)
+	_ = agent.WritePlanScene(ctx, domain.PlanRecord{PlanID: "p2", Goal: "read docs", Success: true, Surprise: -1})
 
 	engaged, ok := store.savedDoc.Metadata["engaged"].(map[string]string)
 	if !ok || engaged["file:a.md"] != "cid-abc" {
@@ -244,6 +251,7 @@ func TestRecordExecution_DefersFollowsEdgeUntilBothCommitted(t *testing.T) {
 	gs := &captureGraphStore{}
 	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	agent.GraphStore = gs
 	ctx := context.Background()
 
@@ -293,6 +301,7 @@ func TestDropStepSynthesis(t *testing.T) {
 func TestRecordExecution_DropsSingleActionSynthesis(t *testing.T) {
 	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	ctx := context.Background()
 	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "t1"})
 	_ = agent.RecordExecution(ctx, domain.StepResult{Index: 0, Output: "appended ok", TaskID: "t1"})
@@ -305,6 +314,7 @@ func TestRecordExecution_DropsSingleActionSynthesis(t *testing.T) {
 func TestRecordExecution_KeepsMultiActionSynthesis(t *testing.T) {
 	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	ctx := context.Background()
 	for i := 0; i < 2; i++ {
 		_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "t2"})
@@ -322,6 +332,7 @@ func TestRecordExecution_KeepsMultiActionSynthesis(t *testing.T) {
 func TestRecordExecution_UncorrelatedKeepsSynthesis(t *testing.T) {
 	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	_ = agent.RecordExecution(context.Background(), domain.StepResult{Index: 0, Output: "x", TaskID: ""})
 	if len(agent.pendingItems) != 1 {
 		t.Errorf("uncorrelated step keeps its synthesis; pending=%d", len(agent.pendingItems))
@@ -334,6 +345,7 @@ func TestRecordToolOutput_MutationSavesActionDoc(t *testing.T) {
 	store := &collectStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 
 	err := agent.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
 		ToolName: "write_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true,
@@ -364,9 +376,12 @@ func TestRecordToolOutput_ReadGoesToFactPending(t *testing.T) {
 	store := &captureSaveStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 
 	err := agent.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
-		ToolName: "web_search", Output: []byte(`{"results":["x"]}`), IsMutation: false,
+		// FactEligible: the executor already applied the ADR-0048 D6 size floor; a
+		// read only reaches the fact lane when it cleared that floor.
+		ToolName: "web_search", Output: []byte(`{"results":["x"]}`), IsMutation: false, FactEligible: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -412,6 +427,7 @@ func TestCommitItem_ToolOutputIndexedByDescriptor(t *testing.T) {
 	mgr := NewMemoryManager(store, emb)
 	agent := NewAgent(mgr, nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 
 	raw := `tool[mcp:firecrawl/firecrawl_search]: [{"rivers":"Nile, Amazon, ..."}]`
 	s := scoredItem{
@@ -468,6 +484,7 @@ func TestCommitItem_OffloadsFullBodyAndRecordsCID(t *testing.T) {
 	cs := &fakeContentStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	agent.ContentStore = cs
 
 	raw := `tool[web_search]: {"big":"body"}`
@@ -501,6 +518,7 @@ func TestCommitItem_StepRecordGetsSummaryKeepsTextNoOffload(t *testing.T) {
 	cs := &fakeContentStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	agent.ContentStore = cs
 
 	s := scoredItem{

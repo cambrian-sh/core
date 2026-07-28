@@ -50,6 +50,11 @@ func (m *mockMemorySearcher) SearchPrecedents(_ context.Context, _, _ string) ([
 	return m.precedentResults, m.err
 }
 
+func (m *mockMemorySearcher) SearchProcedures(_ context.Context, _, _ string) ([]domain.SearchResult, error) {
+	m.lastLane = "procedures"
+	return m.precedentResults, m.err
+}
+
 func ctxWithAgentID(agentID string) context.Context {
 	md := metadata.Pairs("x-agent-id", agentID)
 	return metadata.NewIncomingContext(context.Background(), md)

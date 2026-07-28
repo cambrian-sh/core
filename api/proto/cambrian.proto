@@ -68,6 +68,17 @@ service Orchestrator {
   // ADR-0018.
   rpc GenerateViaModelStream(GenerateStreamRequest) returns (stream GenerateChunk);
 
+  // ADR-0097 Phase B: one managed generation turn WITH native tool-calling.
+  //
+  // Unary, not streaming, deliberately. A tool call is only actionable once it is
+  // complete — name plus a fully-formed argument object — so streaming it buys
+  // nothing an agent can use and forces every client to reassemble partial calls.
+  // Text-only generation keeps using GenerateViaModelStream, which still streams.
+  //
+  // Callers must treat Unimplemented / FailedPrecondition as "this deployment has
+  // no native tool support" and fall back to the prompt-encoded action protocol.
+  rpc GenerateWithTools(GenerateWithToolsRequest) returns (GenerateWithToolsResponse);
+
   // Resolve a CID from the ContentStore (step results) or LTM pgvector.
   // Used by agents' assemble_context(fetch_fn=agent.substrate.get_context_node).
   // Returns empty data when the CID is unknown. ADR-0022 Phase 3.
@@ -459,6 +470,73 @@ message GenerateOptions {
   int32 max_tokens = 1;
   float temperature = 2;
   repeated string stop_sequences = 3;
+}
+
+// ToolDefinitionProto is one tool offered to the model (ADR-0097).
+message ToolDefinitionProto {
+  string name = 1;
+  string description = 2;
+  // JSON Schema object describing the arguments. Carried as a string because it is
+  // authored elsewhere (agent manifests, the kernel tool registry) and this plane
+  // only forwards it.
+  string parameters_json = 3;
+}
+
+// ModelToolCallProto is one tool invocation the MODEL asked for. Distinct from the
+// kernel EXECUTING a call (ExecuteTool): the model requests, the kernel authorizes
+// and runs. Keeping the two apart keeps an authorization boundary legible.
+message ModelToolCallProto {
+  // Provider-assigned call id. MUST be echoed back on the corresponding result —
+  // providers correlate on it and reject a synthesized one. Never generate locally.
+  string id = 1;
+  string name = 2;
+  string arguments_json = 3;
+}
+
+// ModelMessageProto is one turn of the provider conversation (ADR-0097 D8).
+//
+// Native tool-calling is a CONVERSATIONAL protocol, not a request shape: the model
+// replies with an assistant turn carrying tool_calls, and the caller must send that
+// turn back verbatim alongside one tool-role message per call, correlated by
+// tool_call_id. Without those the model cannot see that its own call happened, or
+// what it returned.
+message ModelMessageProto {
+  // "user" | "assistant" | "tool"
+  string role = 1;
+  string content = 2;
+  // Set on an ASSISTANT turn being echoed back — the calls the model asked for.
+  repeated ModelToolCallProto tool_calls = 3;
+  // Set on a TOOL turn — which call this result answers. Must be the provider's own
+  // id from the assistant turn; a synthesized one is rejected.
+  string tool_call_id = 4;
+}
+
+message GenerateWithToolsRequest {
+  string lease_id = 1;
+  // DEPRECATED (ADR-0097 D8): a single prompt string cannot express an assistant turn
+  // or a tool result, which made every round a fresh conversation in which the model
+  // had never called anything. Use `messages`. Ignored when `messages` is non-empty;
+  // when `messages` is empty it is wrapped as a lone user turn so an un-upgraded
+  // client still works.
+  string prompt = 2 [deprecated = true];
+  GenerateOptions options = 3;
+  repeated ToolDefinitionProto tools = 4;
+  repeated ModelMessageProto messages = 5;
+}
+
+message GenerateWithToolsResponse {
+  string text = 1;
+  repeated ModelToolCallProto tool_calls = 2;
+  // Normalized stop reason: "tool_use" | "end_turn" | "max_tokens" |
+  // "stop_sequence" | "refusal" | "unknown". Mapped at the kernel's adapter so no
+  // client learns a provider's vocabulary.
+  //
+  // Only "end_turn" means finished. Anything else — INCLUDING "unknown" — means the
+  // response is incomplete and the loop must continue. A client must also continue
+  // whenever tool_calls is non-empty, regardless of this field: some providers
+  // report "stop" while returning calls.
+  string stop_reason = 3;
+  int32 usage_tokens = 4;
 }
 
 // GenerateChunk carries one token group streamed from the Substrate to

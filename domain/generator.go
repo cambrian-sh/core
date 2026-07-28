@@ -29,7 +29,7 @@ type MemoryRecorder interface {
 	// (ADR-0049 D5/D7) — id `scene-{planID}`, holding the goal + engaged-entity scope
 	// (accreted from the plan's actions) + the outcome. Written for BOTH success and
 	// failure (a failure scene is the highest-value precedent). Replaces per-step scenes.
-	WritePlanScene(ctx context.Context, planID, goal string, success bool) error
+	WritePlanScene(ctx context.Context, rec PlanRecord) error
 }
 
 // WorkspaceStage enriches the Planner and DAGExecutor with cross-session LTM facts.
@@ -49,4 +49,34 @@ type WorkspaceStage interface {
 	// Returns refs sorted by activation descending; BFS-discovered refs carry Precision=-1.0.
 	// May return (nil, nil) when the graph is empty and pgvector returns no seeds.
 	PrimeForStep(ctx context.Context, query string, priorStepRefs []ContextRef, planningFacts []SearchResult, stepFactCosineThreshold float64, maxItems int) ([]ContextRef, error)
+}
+
+// PlanRecord is everything the memory layer needs about a completed plan (ADR-0049
+// A2.2). A struct rather than a parameter list because this has already grown once —
+// goal, then surprise, now the capability shape — and each widening churned every call
+// site and test fake. Fields are added here without touching any of them.
+type PlanRecord struct {
+	PlanID  string
+	Goal    string
+	Success bool
+	// Surprise is the A2.3 prediction error: the LARGEST |expected - actual| across the
+	// plan's steps, or -1 when no step had a merit history to predict from. The maximum,
+	// not the mean, because one badly-mispredicted step is what makes an episode worth
+	// remembering; averaging dilutes it away. -1 is deliberately distinct from 0.0.
+	Surprise float64
+	// Capabilities is the ordered capability sequence the plan's steps required — the
+	// SHAPE of the routine, which is what ADR-0094 D3 clusters on. Empty when the
+	// capability_contract arm is off, in which case the episode is not inducible: the
+	// inducer skips it rather than grouping on situation alone, which over-groups.
+	Capabilities []string
+	// FollowedProcedures are the ADR-0094 routines that were in the planner's context
+	// when this plan was built. They close the co-evolution loop: a routine that shaped
+	// a plan learns from how that plan turned out.
+	//
+	// "In context" rather than "provably obeyed" is deliberate. A procedure is ADVISORY
+	// (D6) — the planner may adapt or ignore it — so demanding proof of compliance
+	// before feeding anything back would leave the loop permanently open. Attributing
+	// the outcome to what informed the plan is the honest approximation, and the slow
+	// consolidation rate in ApplyOutcome is what keeps that approximation safe.
+	FollowedProcedures []string
 }

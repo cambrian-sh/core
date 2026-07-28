@@ -1,5 +1,30 @@
 package domain
 
+// Agent-pin strengths for Step.AgentPin / AuctionTask.AgentPin.
+//
+// The pin exists because the planner was ALREADY trying to name agents and had no
+// field to name them in: its prompt invites "you may reference a specific agent ID",
+// so it smuggled `terminal_agent` into required_capabilities, where a working L1 gate
+// turned it into a requirement nothing could satisfy and the step died with no
+// candidates (measured 2026-07-28). Naming an agent is a legitimate user instruction —
+// it needs a channel of its own, separate from the capability contract.
+//
+// This is not a Zero-Hardcode breach: the agent name arrives as DATA on a plan step,
+// derived from what the user asked for. The rule forbids authored agent-routing tables
+// in Go, not honouring an explicit human directive.
+const (
+	// PinSoft prioritises the named agent without guaranteeing it: exempt from the L2
+	// semantic gate and given a merit boost, but still subject to the L1 capability
+	// contract and still able to lose to a stronger candidate. An unknown name
+	// degrades to ordinary selection — a soft pin never strands a step.
+	PinSoft = "soft"
+	// PinHard binds the named agent directly, skipping auction and semantic gating.
+	// Reserved for an imperative user instruction ("use X to do Y"), where silently
+	// routing elsewhere would be a worse answer than failing. An unavailable name is
+	// an error, not a fallback.
+	PinHard = "hard"
+)
+
 type Step struct {
 	Query            string  `json:"query"`
 	DependsOn        []int   `json:"depends_on,omitempty"`
@@ -16,6 +41,16 @@ type Step struct {
 	// required ⊆ manifest.Capabilities. Empty ⇒ today's behavior (backward
 	// compatible). Populated only under the capability_contract arm.
 	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
+
+	// PreferredAgent names the agent this step should run on, emitted by the planner
+	// when the USER named one. Empty ⇒ ordinary discovery + selection, which stays the
+	// default: the planner is instructed to describe capabilities, not pick agents.
+	PreferredAgent string `json:"preferred_agent,omitempty"`
+
+	// AgentPin is the strength of PreferredAgent — PinSoft or PinHard. Empty with a
+	// non-empty PreferredAgent reads as PinSoft, so an unspecified or malformed pin
+	// degrades to the weaker, non-stranding behaviour.
+	AgentPin string `json:"agent_pin,omitempty"`
 
 	// FanOutOver (ADR-0051 D10 / ADR-0078 R2) makes this a PARAMETRIC step: it names
 	// the index of a prior step whose output supplies a SET, and at runtime the
@@ -40,7 +75,17 @@ type ExecutionPlan struct {
 	Subject              string         `json:"subject"`
 	CachePolicy          string         `json:"cache_policy,omitempty"` // ADR-0027: LLM-classified policy name for Hippocampus retrieval thresholds
 	PlanningFacts        []SearchResult `json:"-"`                      // AGENTCONTEXTREQ: planning-time LTM facts forwarded to agents; not serialised in JSON prompt.
-	PlannerPromptVersion string         `json:"-"`                      // PROMPTREQ: hash of the static prompt template that produced this plan; written to PlanEvent.
+	// PROMPTREQ: hash of the static prompt template that produced this plan; written to PlanEvent.
+	PlannerPromptVersion string `json:"-"`
+	// FollowedProcedures are the ADR-0094 routine IDs that were in the planner's
+	// context when this plan was produced (ADR-0094 D8 co-evolution).
+	//
+	// It closes the tier's learning loop. PlanRecord.FollowedProcedures was declared
+	// and READ by the memory agent — which feeds each routine's confidence from the
+	// outcome and deprecates the ones that stop working — but nothing ever wrote it,
+	// so `len(rec.FollowedProcedures) > 0` was never true and no routine's confidence
+	// ever moved. The tier could influence a plan and never learn whether it helped.
+	FollowedProcedures []string `json:"-"`
 }
 
 // Clone returns a deep copy of the ExecutionPlan.
@@ -55,6 +100,11 @@ func (e *ExecutionPlan) Clone() *ExecutionPlan {
 		CachePolicy:          e.CachePolicy,
 		PlannerPromptVersion: e.PlannerPromptVersion,
 	}
+	// Provenance must survive the freeze, or a replanned plan loses the record of
+	// which routines informed it and their confidence never updates.
+	if len(e.FollowedProcedures) > 0 {
+		cloned.FollowedProcedures = append([]string(nil), e.FollowedProcedures...)
+	}
 	if len(e.Steps) > 0 {
 		cloned.Steps = make([]Step, len(e.Steps))
 		for i, s := range e.Steps {
@@ -67,6 +117,12 @@ func (e *ExecutionPlan) Clone() *ExecutionPlan {
 				CheckpointQuery:  s.CheckpointQuery,
 				CacheTTLSeconds:  s.CacheTTLSeconds,
 				FanOutVar:        s.FanOutVar,
+				// This clone is field-by-field, so a field omitted here vanishes on
+				// every replan and plan freeze without a compiler error — the same
+				// silent-drop shape that made the EFE arm exempt from the capability
+				// contract. Any field added to Step must be added here too.
+				PreferredAgent: s.PreferredAgent,
+				AgentPin:       s.AgentPin,
 			}
 			if s.FanOutOver != nil { // deep-copy the pointer so a clone never aliases
 				v := *s.FanOutOver

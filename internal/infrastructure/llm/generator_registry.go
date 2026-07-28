@@ -41,6 +41,7 @@ func NewGeneratorRegistry(generators []config.GeneratorConfig) (*GeneratorRegist
 			TimeoutMs:       g.TimeoutMs,
 			Capabilities:    g.Capabilities,
 			DisableThinking: g.DisableThinking,
+			NativeTools:     g.NativeTools,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("generator %q: %w", g.ID, err)
@@ -102,6 +103,39 @@ func newHealthGenerator(id string, inner domain.Generator, breaker *CircuitBreak
 func (h *healthGenerator) Generate(ctx context.Context, prompt string) (string, error) {
 	out, err := h.inner.Generate(ctx, prompt)
 	ok := err == nil && strings.TrimSpace(out) != ""
+	h.breaker.Record(h.id, ok)
+	return out, err
+}
+
+// GenerateWithTools forwards native tool-calling through the health wrapper and
+// records the outcome on the breaker, exactly as Generate does.
+//
+// A decorator that forwards Generate but NOT this silently downgrades a capable
+// generator to the text path — the capability simply disappears, with no error and no
+// log. That is the same silent-wiring shape as the EFE task rebuild dropping
+// RequiredCapabilities and base.think() shadowing the tool-round default; both cost a
+// day. Hence a forwarding test per decorator. ADR-0097 D1.
+// NativeToolsEnabled forwards the inner generator's capability report. Forwarding
+// GenerateWithTools without this would make the wrapper claim tool support on behalf
+// of an inner that has it disabled — over-reporting is as wrong as under-reporting,
+// just in the other direction.
+func (h *healthGenerator) NativeToolsEnabled() bool {
+	r, ok := h.inner.(domain.ToolCallingReporter)
+	return !ok || r.NativeToolsEnabled()
+}
+
+func (h *healthGenerator) GenerateWithTools(
+	ctx context.Context, messages []domain.ModelMessage, tools []domain.ToolDefinition,
+) (domain.ModelTurn, error) {
+	tg, ok := h.inner.(domain.ToolCallingGenerator)
+	if !ok {
+		return domain.ModelTurn{}, fmt.Errorf(
+			"llm provider: health-wrapped %T does not implement native tool-calling", h.inner)
+	}
+	out, err := tg.GenerateWithTools(ctx, messages, tools)
+	// Same health signal as Generate: a turn that produced neither text nor a tool
+	// call is a failed call, even without an error.
+	ok = err == nil && (strings.TrimSpace(out.Text) != "" || len(out.ToolCalls) > 0)
 	h.breaker.Record(h.id, ok)
 	return out, err
 }

@@ -43,6 +43,13 @@ func (g *fakeScoutGateway) Complete(_ context.Context, id domain.LeaseID) (llm.T
 	return llm.TokenUsage{}, nil
 }
 func (g *fakeScoutGateway) EvictExpired() {}
+// GenerateWithTools satisfies LLMGateway (ADR-0097 Phase B). This fake is a
+// text-path double, so it reports the capability as absent — which is the
+// answer that exercises the caller's fallback rather than a fake tool call.
+func (g *fakeScoutGateway) GenerateWithTools(_ context.Context, _ domain.LeaseID, _ []domain.ModelMessage, _ domain.GenerateOptions, _ []domain.ToolDefinition) (domain.ModelTurn, error) {
+	return domain.ModelTurn{}, ErrToolCallingUnsupported
+}
+
 func (g *fakeScoutGateway) StreamChunks(_ context.Context, _ domain.LeaseID, _ string, _ domain.GenerateOptions, _ chan<- domain.StreamChunk) error {
 	return nil
 }

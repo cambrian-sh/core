@@ -36,15 +36,26 @@ func (im *IngestionManager) persistChunks(
 	// because its entity row could not be written would be a worse outcome than chunks
 	// with an unresolved parent, which still retrieve correctly.
 	if im.documentStore != nil {
-		if derr := im.documentStore.SaveDocument(ctx, SourceDocument{
+		stored, derr := im.documentStore.SaveDocument(ctx, SourceDocument{
 			ID:         documentID,
 			Title:      doc.Title,
 			SourceType: doc.SourceType,
 			Text:       doc.Body,
 			Tags:       doc.Tags,
-		}); derr != nil {
+		})
+		if derr != nil {
 			slog.WarnContext(ctx, "IngestionManager: document entity not recorded; chunks will have no parent",
 				"doc", documentID, "err", derr)
+		} else {
+			// ADR-0093 D4: the chunk copies are a DERIVED CACHE, so they are derived from
+			// the row they cache — not re-derived independently from the same request.
+			//
+			// The document's tags have just been through the write chokepoint, which may
+			// have narrowed them. Carrying the original request forward would leave the
+			// document saying one thing and its chunks another, which is precisely the
+			// split-brain this ADR removed at the schema level and would have quietly
+			// reintroduced one layer up.
+			doc.Tags = stored
 		}
 	}
 
@@ -239,11 +250,26 @@ func externalDocumentID(doc domain.ExternalDocument) string {
 			return doc.Tags[i+1]
 		}
 	}
+	// 1b. A bare classification tag, used as a WEAK id. A tag is not an identity —
+	//     nothing stops a caller applying the same tag to a hundred documents, and
+	//     ADR-0035 will in any case replace caller tags with kernel classification.
+	//     So the tag only GROUPS; the content digest is what separates.
+	//
+	//     Without the digest this branch silently destroyed data. Ingesting N
+	//     documents that share one tag collapsed them all onto "<tag>-chunk-K", each
+	//     call overwriting the previous one's chunks, while every call returned a
+	//     doc id and reported success. Measured: 8 documents in, 8 source-doc
+	//     entities, ONE surviving fact chunk — the last document's. It is the same
+	//     failure rule 2 below already names ("collapses every turn onto
+	//     <source>-chunk-1 and each ingest overwrites the previous one") and fixes
+	//     the same way; this branch simply never got the fix, and it SHADOWS rule 2,
+	//     so a caller supplying a perfectly unique ThreadID still lost data as long
+	//     as it also passed a tag.
 	for _, tag := range doc.Tags {
 		if tag == "" || tag == "document-qa" || tag == "source_document" || strings.HasPrefix(tag, "chunker:") {
 			continue
 		}
-		return tag
+		return tag + ":" + contentDigest(doc.Body)
 	}
 	// 2. Threaded/streamed items (e.g. conversation turns) share ONE SourceURI
 	//    across many ingests, so SourceURI alone is not a unique id — using it

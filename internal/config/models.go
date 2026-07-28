@@ -13,4 +13,9 @@ type ModelConfig struct {
 	// DisableThinking sends thinking:{"type":"disabled"} for OpenAI-compat
 	// reasoning models (e.g. deepseek-v4-flash), suppressing reasoning tokens.
 	DisableThinking bool `json:"disable_thinking,omitempty"`
+	// NativeTools declares that this endpoint honours the provider's tool-calling
+	// API (ADR-0097 D2). See GeneratorConfig.NativeTools — this struct is a
+	// field-by-field copy of it, so a field added there MUST be added here and in
+	// the two mappings that populate it, or the capability silently never arrives.
+	NativeTools bool `json:"native_tools,omitempty"`
 }

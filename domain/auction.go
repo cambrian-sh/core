@@ -71,6 +71,12 @@ type AuctionTask struct {
 	// the byte-identical control-arm behavior.
 	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 
+	// PreferredAgent / AgentPin carry the step's agent pin into selection (see the
+	// PinSoft/PinHard docs). Empty PreferredAgent ⇒ ordinary selection, so the
+	// unpinned path is unchanged.
+	PreferredAgent string `json:"preferred_agent,omitempty"`
+	AgentPin       string `json:"agent_pin,omitempty"`
+
 	// Funnel is a ROUTE-02 diagnostic OUTPUT written by Gatekeeper.FindCandidates
 	// (not part of the RFP broadcast, hence json:"-"). The Auctioneer reads it
 	// back off the same task pointer when emitting the AuctionEventPayload so the

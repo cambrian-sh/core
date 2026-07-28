@@ -25,7 +25,7 @@ AGENT_MANIFEST = '''
 {
   "version": "1.0.0",
   "trait": "cognitive",
-  "capabilities": ["code_search", "file_read", "general_purpose"],
+  "capabilities": ["code_search", "file_read", "file_write", "general_purpose"],
   "supported_formats": ["text", "code"],
   "tools": ["code_generation", "python_generation", "generate_python_code"],
   "release_notes": "LLM-powered Python expert with a structured code-generation tool.",

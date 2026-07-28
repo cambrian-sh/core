@@ -34,9 +34,23 @@ const plannerDecisionRules = `STRICT DECISION RULES:
 - Describe what the step needs in natural language. The runtime will discover the right agent automatically.
 - If the user provides explicit answers, construct steps effectively without redundant actions.
 - IMPORTANT: The example "uppercase the Name column in data.csv" is ONLY a format example. NEVER use it as the actual task unless the user explicitly requests it.
-- You may reference a specific agent ID from the capability clusters if the task is unambiguously domain-specific, but prefer capability-level descriptions. The runtime resolves each step to a concrete agent at execution time (discovery + selection); do not assume a particular selection mechanism.
+- Describe steps by CAPABILITY, not by agent. The runtime resolves each step to a concrete agent at execution time (discovery + selection); do not assume a particular selection mechanism. If the USER named an agent, express that with "preferred_agent" (see AGENT PINNING) — never by naming an agent inside "query" alone, and never as a capability tag.
 - When a step requires analysis, comparison, evaluation, or justification, start the query with verbs like "Analyse...", "Compare...", or "Evaluate...". Do NOT start analysis steps with "Summarise..." — that will route the task to the wrong agent.
 - NEVER set "is_thought": true for steps that require analysis, comparison, evaluation, code generation, or summarisation. These MUST be routed to the corresponding cognitive agent. Only use "is_thought": true for trivial synthesis or routing decisions that do not require domain expertise.`
+
+// plannerAgentPinRules is the agent-pinning instruction block, shared by both
+// planner arms. It gives the planner a legitimate field for naming an agent: the
+// prompt previously invited "you may reference a specific agent ID" with nowhere
+// to put it, so the name leaked into required_capabilities and, once L1 actually
+// enforced the capability contract, filtered every candidate and killed the step.
+const plannerAgentPinRules = `AGENT PINNING:
+- Default: do NOT name an agent. Leave "preferred_agent" absent and let the runtime select.
+- ONLY when the USER's request itself names an agent, set "preferred_agent" to that exact agent ID from the CAPABILITY CLUSTERS list.
+- Set "agent_pin":"hard" when the user is directing ("use terminal_agent to ...", "run this with X"): the named agent is bound and the step FAILS if it is unavailable.
+- Set "agent_pin":"soft" when the agent is a suggestion or your own inference ("probably the research agent"): the named agent is prioritised but the runtime may still choose better.
+- NEVER put an agent ID in "required_capabilities" — those are capability tags only, and an agent ID there matches nothing and kills the step.
+
+`
 
 const plannerDependencyRules = `DEPENDENCY RULES:
 - Each step has a "depends_on" field: a list of zero-based indices of steps that MUST complete before this step can run.
@@ -96,7 +110,9 @@ const PlanOutputSchema = `{
           "checkpoint_after": { "type": "boolean" },
           "checkpoint_query": { "type": "string" },
           "fan_out_over":     { "type": "integer" },
-          "fan_out_var":      { "type": "string" }
+          "fan_out_var":      { "type": "string" },
+          "preferred_agent":  { "type": "string" },
+          "agent_pin":        { "type": "string", "enum": ["soft", "hard"] }
         },
         "required": ["query", "depends_on"]
       }
@@ -139,7 +155,9 @@ const planOutputSchemaCap = `{
           "checkpoint_after":      { "type": "boolean" },
           "checkpoint_query":      { "type": "string" },
           "fan_out_over":          { "type": "integer" },
-          "fan_out_var":           { "type": "string" }
+          "fan_out_var":           { "type": "string" },
+          "preferred_agent":       { "type": "string" },
+          "agent_pin":             { "type": "string", "enum": ["soft", "hard"] }
         },
         "required": ["query", "depends_on", "required_capabilities"]
       }
@@ -164,14 +182,14 @@ Example:
 // counterparts of plannerStaticText / plannerPromptHash. The added capability
 // rules + schema field change the hash, so PlanEvent provenance distinguishes the
 // two arms for free.
-const plannerStaticTextCap = plannerRole + plannerLTMRules + plannerDecisionRules + plannerCapabilityRules + plannerDependencyRules + plannerUsageRules + planOutputSchemaCap
+const plannerStaticTextCap = plannerRole + plannerLTMRules + plannerDecisionRules + plannerCapabilityRules + plannerAgentPinRules + plannerDependencyRules + plannerUsageRules + planOutputSchemaCap
 
 var plannerPromptHashCap = domain.PromptHashOf(plannerStaticTextCap)
 
 // plannerStaticText is the concatenation of all static planner prompt parts.
 // Only this text is hashed — dynamic injections are excluded so the hash
 // remains stable across requests.
-const plannerStaticText = plannerRole + plannerLTMRules + plannerDecisionRules + plannerDependencyRules + plannerUsageRules + planOutputSchema
+const plannerStaticText = plannerRole + plannerLTMRules + plannerDecisionRules + plannerAgentPinRules + plannerDependencyRules + plannerUsageRules + planOutputSchema
 
 // plannerPromptHash is the 8-char SHA-256 of the planner's static prompt text.
 // Written to ExecutionPlan.PlannerPromptVersion and forwarded to PlanEvent.
@@ -382,11 +400,16 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	}
 	schema := planOutputSchema
 	promptVersion := plannerPromptHash
+	// The capability vocabulary the planner was actually shown. nil when the contract
+	// arm is off, which disables the guard below along with the feature itself.
+	var capVocab map[string]struct{}
 	if p.capabilityContract {
+		clusterBlock, vocab := buildCapabilityClusterFromManifests(ctx, agents, p.provider, p.canonicalVocab)
+		capVocab = vocab
 		constraints = []string{
 			// manifest-derived vocabulary so the emitted required_capabilities
 			// match what L1 Declaration enforces (NOT the clusterer's labels).
-			buildCapabilityClusterFromManifests(ctx, agents, p.provider, p.canonicalVocab),
+			clusterBlock,
 			modelSection,
 			plannerLTMRules,
 			plannerDecisionRules,
@@ -431,9 +454,64 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	// AGENTCONTEXTREQ REQ1: forward planning-time facts to DAGExecutor so agents
 	// execute with the same background knowledge that informed the Planner.
 	plan.PlanningFacts = ltmEnrichment.Facts
+	// ADR-0094 D8: record WHICH routines informed this plan, so the outcome can feed
+	// their confidence. Every routine the planner was shown counts as followed — the
+	// block is advisory and the model may ignore it, but a routine that was present
+	// and did not help is exactly the evidence that should lower its confidence.
+	// Requiring proof of use would mean only successes were ever recorded.
+	for _, proc := range ltmEnrichment.Procedures {
+		if proc.ID != "" {
+			plan.FollowedProcedures = append(plan.FollowedProcedures, proc.ID)
+		}
+	}
 	// PROMPTREQ: record which static prompt template produced this plan
 	// (capability-arm hash when the contract is on — free provenance).
 	plan.PlannerPromptVersion = promptVersion
+
+	// ROUTE-03 vocabulary guard: drop emitted capabilities the planner was not shown.
+	//
+	// The prompt says "NEVER invent a capability tag that is not listed in CAPABILITY
+	// CLUSTERS" and the planner invents them anyway — measured 2026-07-28, it emitted
+	// `required_capabilities: ["file_write"]` when no agent declared `file_write` and
+	// the tag was absent from the rendered vocabulary. Once L1 Declaration genuinely
+	// enforces, an undeclared tag matches nothing, filters every candidate, and the
+	// step dies with `no candidates found`. A hallucinated tag must not be able to
+	// hard-fail a step.
+	//
+	// Dropping is fail-OPEN for that step: it falls back to unconstrained routing,
+	// which is exactly the pre-ROUTE-03 behaviour. That is a deliberate and bounded
+	// choice — the capability contract is a ROUTING refinement derived from an
+	// LLM emission, not an authorization boundary. Scope (ADR-0034/0035), the policy
+	// PDP (ADR-0085/0087) and approval gates are separate and untouched; none of them
+	// consult this field. Were it load-bearing for access, the right answer would be
+	// to fail the step instead.
+	//
+	// Same shape as the cache_policy validation directly below: an LLM-emitted name is
+	// checked against the configured set and silently normalised when unknown.
+	//
+	// Guarded on NON-EMPTY: an empty vocabulary means "no manifest declared any
+	// capability" — no knowledge — not "every emitted tag is invented". Filtering on
+	// an absence of information would silently strip every requirement the moment the
+	// registry were empty or a manifest read failed, which is the same silent-failure
+	// shape this guard exists to prevent.
+	if len(capVocab) > 0 {
+		for i := range plan.Steps {
+			kept := plan.Steps[i].RequiredCapabilities[:0]
+			for _, c := range plan.Steps[i].RequiredCapabilities {
+				lookup := c
+				if p.canonicalVocab {
+					lookup = domain.NormalizeCapability(c)
+				}
+				if _, ok := capVocab[lookup]; ok {
+					kept = append(kept, c)
+					continue
+				}
+				slog.WarnContext(ctx, "planner: dropping invented capability tag",
+					"capability", c, "step", i)
+			}
+			plan.Steps[i].RequiredCapabilities = kept
+		}
+	}
 
 	// ADR-0027: validate LLM-emitted cache_policy against the configured policy set.
 	// Unknown names are normalised to "" so the Hippocampus falls back to default.
@@ -511,6 +589,11 @@ func buildLTMBlock(plan *domain.PlanLTMEntry, enrichment domain.LTMEnrichment) s
 	// ADR-0049 D11: precedent block — prior transitions for the situation being planned,
 	// failure-weighted, for the LLM to anticipate which approach worked or failed.
 	if block := buildPrecedentBlock(enrichment.Precedents); block != "" {
+		sb.WriteString(block)
+	}
+	// ADR-0094 D5: induced routines for this situation — how this kind of work has
+	// gone here before.
+	if block := buildProcedureBlock(enrichment.Procedures); block != "" {
 		sb.WriteString(block)
 	}
 	return sb.String()
@@ -607,7 +690,10 @@ func extractEpisodicMemory(r domain.SearchResult) (domain.EpisodicMemory, bool) 
 // emitted required_capabilities would never match. Agents with no declared
 // capabilities are listed as (uncategorized) so the planner can still route them
 // with an empty requirement set.
-func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.AgentDefinition, provider AgentProvider, canonical bool) string {
+// It returns BOTH the rendered block and the vocabulary set it rendered, from one
+// pass. Two passes would be two sources of truth for "what capabilities exist", and
+// the guard in Plan() depends on the set being exactly what the planner was shown.
+func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.AgentDefinition, provider AgentProvider, canonical bool) (string, map[string]struct{}) {
 	clusters := make(map[string][]string)
 	var uncategorized []domain.AgentDefinition
 	for _, a := range agents {
@@ -632,6 +718,11 @@ func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.Ag
 		}
 	}
 
+	vocab := make(map[string]struct{}, len(clusters))
+	for cap := range clusters {
+		vocab[cap] = struct{}{}
+	}
+
 	var sb strings.Builder
 	sb.WriteString("CAPABILITY CLUSTERS (active agents grouped by declared capability):\n")
 	keys := make([]string, 0, len(clusters))
@@ -645,7 +736,7 @@ func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.Ag
 	for _, a := range uncategorized {
 		fmt.Fprintf(&sb, "- (uncategorized): %s — %q\n", a.ID, a.Description)
 	}
-	return sb.String()
+	return sb.String(), vocab
 }
 
 func buildCapabilityCluster(agents []domain.AgentDefinition) string {

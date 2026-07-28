@@ -25,6 +25,7 @@ func NewClient(cfg config.ModelConfig) (domain.Generator, TokenUsageExtractor, e
 			APIKeyEnv:       cfg.APIKeyEnv,
 			TimeoutMs:       cfg.TimeoutMs,
 			DisableThinking: cfg.DisableThinking,
+			NativeTools:     cfg.NativeTools,
 		}
 		return c, &openaiExtractor{}, nil
 	case "anthropic":

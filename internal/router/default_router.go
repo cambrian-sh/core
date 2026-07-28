@@ -180,8 +180,19 @@ func (r *DefaultRouter) layer3(ctx context.Context, input domain.RouterInput) (*
 		return nil, fmt.Errorf("router: Layer 3 generator error: %w", err)
 	}
 
+	// Extract before unmarshalling. Models wrap JSON in ```json fences and emit
+	// reasoning preambles, and this was the ONE place in the kernel that fed raw
+	// generator output straight to json.Unmarshal — every other LLM-output parser
+	// (the Planner among them) already goes through ExtractJSONObject. Measured
+	// 2026-07-28: 5 of 21 benchmark tasks died here with "invalid character '`'"
+	// BEFORE a plan existed, i.e. the request was lost at the front door.
+	extracted := domain.ExtractJSONObject(raw)
+	if extracted == "" {
+		extracted = raw // keep the original text in the error when there is no JSON at all
+	}
+
 	var resp classifyResponse
-	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+	if err := json.Unmarshal([]byte(extracted), &resp); err != nil {
 		return nil, fmt.Errorf("router: Layer 3 invalid JSON response: %w", err)
 	}
 

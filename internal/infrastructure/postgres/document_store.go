@@ -17,9 +17,9 @@ import (
 // load-bearing for access control. A classification you cannot constrain, index, or
 // see in the schema is one that drifts — which is precisely what happened when the
 // only copies lived in per-chunk JSON.
-func (p *PgVectorAdapter) SaveDocument(ctx context.Context, doc memory.SourceDocument) error {
+func (p *PgVectorAdapter) SaveDocument(ctx context.Context, doc memory.SourceDocument) ([]string, error) {
 	if doc.ID == "" {
-		return nil
+		return nil, nil
 	}
 	meta := []byte("{}")
 	if len(doc.Metadata) > 0 {
@@ -44,7 +44,10 @@ func (p *PgVectorAdapter) SaveDocument(ctx context.Context, doc memory.SourceDoc
 			metadata    = EXCLUDED.metadata,
 			updated_at  = NOW()`,
 		doc.ID, doc.Title, doc.SourceType, doc.Text, tags, string(meta))
-	return mapError("SaveDocument", err)
+	if err != nil {
+		return nil, mapError("SaveDocument", err)
+	}
+	return tags, nil
 }
 
 // compile-time proof the adapter satisfies the ingest port.

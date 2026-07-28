@@ -200,7 +200,7 @@ func anchorIsSpecific(a string) bool {
 //   - anchored chunks lead, scored 1.0 + query cosine (so multiple anchored
 //     chunks — e.g. a two-id multi-hop query — all clear the floor and rank
 //     first); non-anchored candidates keep their order after them.
-func (q *QueryService) applyAnchorConstraint(ctx context.Context, results []domain.SearchResult, query string, vec []float32) []domain.SearchResult {
+func (q *QueryService) applyAnchorConstraint(ctx context.Context, results []domain.SearchResult, query string, vec []float32, scope *domain.TagPredicate) []domain.SearchResult {
 	if q.chunkTriplets == nil {
 		return results
 	}
@@ -225,7 +225,7 @@ func (q *QueryService) applyAnchorConstraint(ctx context.Context, results []doma
 	anchored := make([]string, 0, len(use)*perEntity)
 	inAnchored := map[string]bool{}
 	for _, a := range use {
-		ids, err := q.chunkTriplets.ChunksMentioningEntity(ctx, a, perEntity)
+		ids, err := q.chunkTriplets.ChunksMentioningEntity(ctx, a, perEntity, scope)
 		if err != nil {
 			slog.WarnContext(ctx, "anchor constraint: lookup failed", "anchor", a, "err", err)
 			continue

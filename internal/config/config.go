@@ -79,6 +79,13 @@ type ExecutionConfig struct {
 	// OFF is byte-identical to the pre-ROUTE-03 kernel — the planner uses its
 	// original prompt/hash and no capability requirements are threaded.
 	CapabilityContract bool `json:"capability_contract"`
+	// AgentPinning honours a step's PreferredAgent/AgentPin: a soft pin exempts the
+	// named agent from the L2 semantic gate and boosts its merit, a hard pin binds
+	// it directly. Default TRUE — unlike the learning arms this is directive
+	// following, not a model, and a user who says "use X" expects X. It stays a
+	// flag so the routing change can be A/B'd and switched off in one place; OFF
+	// ignores both fields and restores unpinned selection exactly.
+	AgentPinning bool `json:"agent_pinning"`
 	// RoutingTraceEnabled turns on the ROUTE-02 gatekeeper candidate-funnel trace
 	// (Declaration→Interview→Merit per-agent verdicts + winner margin) carried on
 	// the auction event. Default true: the funnel only records values the
@@ -286,6 +293,65 @@ type ExecutionConfig struct {
 	// auto-capture. Off by default; benchmark rigs that measure experiential recall can
 	// re-enable it via tuning.local.json.
 	ExperientialMemoryEnabled bool `json:"experiential_memory_enabled"`
+	// ExperienceRecordsEnabled turns on the ADR-0049 §A2.2 OUTCOME RECORD: one
+	// structured record per completed plan (the abstracted D7 projection + engaged
+	// entity refs + action path + outcome), parented to an `experiences` row.
+	//
+	// This is NOT the flag above. `experiential_memory_enabled` guards the RAW path
+	// removed on 2026-07-18 — whole tool payloads embedded as single vectors — and
+	// stays false permanently. This one guards the abstraction-only replacement:
+	// nothing raw is ever embedded, and a plan that engaged no entity writes nothing
+	// at all.
+	//
+	// DEFAULT TRUE as of 2026-07-28 (owner decision). The reasoning, recorded because
+	// "we turned the removed thing back on" is the wrong summary:
+	//
+	//   - What broke in July was the RAW path. That stays false permanently, and this
+	//     path cannot embed a tool payload by construction (§A2.2 hard constraint).
+	//   - Defect 4 — experience crowding corpus recall — now has a structural guard
+	//     (§A2.4 lane-aware truncation), measured to cost nothing.
+	//   - The volume is bounded: ONE record per plan, and none at all for a plan that
+	//     engaged no entity.
+	//   - It is the only way to progress. `mean_foreign_share` cannot detect
+	//     displacement until experience has volume, and volume only accrues if this is
+	//     on. Enabling is how the measurement STARTS, not a substitute for it.
+	//
+	// The pre-enable baseline is runs/lg_1 and runs/lg_2 (hit 1.0, MRR ~0.60,
+	// foreign_share ~0.43). Drift against those is the thing to watch.
+	ExperienceRecordsEnabled bool `json:"experience_records_enabled"`
+	// ExperienceSurpriseFloor is the ADR-0049 A2.3 gate: an episode whose prediction
+	// error reaches this writes an additional FAILURE PRECEDENT (a negative edge)
+	// beyond its ordinary outcome record. Surprise is |merit expectation - actual|, so
+	// 0.5 means "merit was wrong by half" — a confident agent that failed, or a
+	// distrusted one that succeeded. Both are worth remembering; a routine failure by
+	// an agent already known to fail is not.
+	//
+	// Default 0.5 is editorial, not measured. It should be tuned from the surprise
+	// distribution the outcome records accumulate, which is exactly why they are
+	// written unconditionally with the score stamped on them.
+	ExperienceSurpriseFloor float64 `json:"experience_surprise_floor"`
+	// ProcedureInductionIntervalHours schedules the ADR-0094 D3 batch pass that
+	// distils recurring successful episodes into reusable routines. ZERO DISABLES IT,
+	// and zero is the default.
+	//
+	// This is the batch consolidation ADR-0049 originally rejected and §A2.5 later
+	// permitted, under constraints the scheduler is built around: nothing load-bearing
+	// may depend on it, it produces only abstractions, and it is idempotent. Off by
+	// default because it cannot produce anything useful until outcome records have
+	// accumulated under the capability_contract arm — a scheduler with nothing to
+	// induce from is pure cost.
+	ProcedureInductionIntervalHours int `json:"procedure_induction_interval_hours"`
+	// ProcedureMinSamples is the D3 promotion threshold: how many times a routine must
+	// recur before it is a routine rather than a coincidence. Floors at 2 regardless —
+	// a single occurrence is never inducible.
+	ProcedureMinSamples int `json:"procedure_min_samples"`
+	// ProcedureMaxEpisodesPerPass bounds one pass's read of the store. Default 500.
+	ProcedureMaxEpisodesPerPass int `json:"procedure_max_episodes_per_pass"`
+	// ProcedureDeprecateBelow is the confidence floor under which a routine that keeps
+	// failing is retired (ADR-0094 D4). 0 disables procedure feedback. Default 0.3 —
+	// low, because deprecation is a strong action and ApplyOutcome's slow consolidation
+	// already means reaching this floor takes sustained failure, not a bad afternoon.
+	ProcedureDeprecateBelow float64 `json:"procedure_deprecate_below"`
 	// (execution.scope_enforcement_enabled is GONE — ADR-0085. Access control is no
 	// longer a flag: the enforcement points always run, and whether they restrict
 	// anything depends on whether a policy plugin is installed. A flag that turned
@@ -1009,6 +1075,7 @@ func DefaultConfig() *Config {
 			LatencyWindowSize:                50,
 			GatekeeperMaxCandidates:          5,
 			CapabilityContract:               false, // ROUTE-03 arm toggle; OFF = pre-ROUTE-03 behavior
+			AgentPinning:                     true,  // honour an explicit "use agent X" directive
 			RoutingTraceEnabled:              true,
 			GatekeeperW1:                     0.4,
 			GatekeeperW2:                     0.4,
@@ -1095,29 +1162,38 @@ func DefaultConfig() *Config {
 			CanonicalVocab:                       false, // ROUTE-04 arm toggle; OFF = declared strings verbatim
 			CalibratedBids:                       false, // ROUTE-05 arm toggle; OFF = raw self-reported confidence
 			BidCalibrationMinSamples:             10,
-			PerCapabilityMerit:                   false, // ROUTE-06 arm toggle; OFF = global merit + unconditional bypass
-			LearnedScorer:                        false, // ROUTE-07 arm toggle; OFF = hand-weighted GatekeeperScore
-			ProvisionalExplorationBudget:         3,
-			ProvisionalExplorationWindowSeconds:  3600,
-			DaemonRestartMaxAttempts:             5, // REACT-04: auto-restart on, crash-loop → quarantine
-			DaemonRestartWindowSeconds:           300,
-			DaemonRestartBaseBackoffMs:           1000,
-			DaemonRestartMaxBackoffMs:            30000,
-			LLMGatewayMaxConcurrency:             20,
-			LLMGatewayRetryBackoffMs:             100,
-			SessionTokenSweepIntervalSeconds:     30,
-			SessionTokenTTLMultiplier:            5.0,
-			BudgetExhaustionAlarmRate:            0.05,
-			MinStepEnergy:                        256,
-			MaxStepEnergy:                        32768,
-			HistogramMinSamples:                  20,
-			HistogramAlpha:                       0.2,
-			IngestionHTTPPort:                    0, // disabled by default; set to e.g. 8080 to enable
-			InboxDir:                             "data/inbox",
-			IngestionQueueSize:                   1000,
-			IngestionBatchSize:                   5,
-			IngestionWorkers:                     5,
-			IngestionBatchWaitMs:                 1000,
+			// ADR-0049 A2.2 outcome records: ON (owner decision 2026-07-28). The RAW
+			// path stays off — see ExperientialMemoryEnabled, which is deliberately
+			// absent from this block and therefore false.
+			ExperienceRecordsEnabled:            true,
+			ExperienceSurpriseFloor:             0.5,
+			ProcedureInductionIntervalHours:     0, // ADR-0094: 0 = scheduler disabled (default)
+			ProcedureMinSamples:                 2,
+			ProcedureMaxEpisodesPerPass:         500,
+			ProcedureDeprecateBelow:             0.3,   // ADR-0049 A2.3 failure-precedent gate
+			PerCapabilityMerit:                  false, // ROUTE-06 arm toggle; OFF = global merit + unconditional bypass
+			LearnedScorer:                       false, // ROUTE-07 arm toggle; OFF = hand-weighted GatekeeperScore
+			ProvisionalExplorationBudget:        3,
+			ProvisionalExplorationWindowSeconds: 3600,
+			DaemonRestartMaxAttempts:            5, // REACT-04: auto-restart on, crash-loop → quarantine
+			DaemonRestartWindowSeconds:          300,
+			DaemonRestartBaseBackoffMs:          1000,
+			DaemonRestartMaxBackoffMs:           30000,
+			LLMGatewayMaxConcurrency:            20,
+			LLMGatewayRetryBackoffMs:            100,
+			SessionTokenSweepIntervalSeconds:    30,
+			SessionTokenTTLMultiplier:           5.0,
+			BudgetExhaustionAlarmRate:           0.05,
+			MinStepEnergy:                       256,
+			MaxStepEnergy:                       32768,
+			HistogramMinSamples:                 20,
+			HistogramAlpha:                      0.2,
+			IngestionHTTPPort:                   0, // disabled by default; set to e.g. 8080 to enable
+			InboxDir:                            "data/inbox",
+			IngestionQueueSize:                  1000,
+			IngestionBatchSize:                  5,
+			IngestionWorkers:                    5,
+			IngestionBatchWaitMs:                1000,
 			HippocampusPolicies: map[string]domain.HippocampusPolicy{
 				"codegen":   {SimilarityThreshold: 0.92, ConfidenceFloor: 0.85, MaxAgeHours: 24},
 				"cognitive": {SimilarityThreshold: 0.85, ConfidenceFloor: 0.70, MaxAgeHours: 168},

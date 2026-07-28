@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1565,5 +1566,72 @@ func TestDAGExecutor_ObserverOnTaskCompletedCalled(t *testing.T) {
 	}
 	if captured.TaskID == "" {
 		t.Error("Observer.TaskID is empty")
+	}
+}
+
+// fixedReplanHandler returns a one-step plan with a caller-chosen query, so a test
+// can control whether the replan repeats the failing step or genuinely differs.
+type fixedReplanHandler struct{ query string }
+
+func (h *fixedReplanHandler) Replan(
+	_ context.Context, _ int, _ error,
+	_ map[string]string, _ *domain.ExecutionPlan,
+) (*domain.ExecutionPlan, error) {
+	return &domain.ExecutionPlan{
+		Steps:   []domain.Step{{Query: h.query}},
+		Subject: "Replan",
+	}, nil
+}
+
+// failOnceStep fails the first call and succeeds afterwards, so the executor takes
+// the error-pause → replan path exactly once.
+func failOnceStep(calls *int32) StepFunc {
+	return func(_ context.Context, _ int, _ *domain.Handoff) (*domain.Handoff, error) {
+		if atomic.AddInt32(calls, 1) == 1 {
+			return nil, errors.New("boom")
+		}
+		return &domain.Handoff{Payload: &domain.Payload{Data: []byte("ok")}}, nil
+	}
+}
+
+// REGRESSION (2026-07-28): the replan loop-guard used to run AFTER
+// applyReplannedPlan, which does `*plan = newPlan`. It therefore compared the new
+// plan with ITSELF — at failedStepIdx 0 that is `newPlan.Steps[0] == newPlan.Steps[0]`,
+// always true — so EVERY step-0 replan aborted, including ones carrying a perfectly
+// good recovery step. Tiered recovery was effectively dead at the most common failure
+// position.
+func TestDAGExecutor_ReplanWithDifferentFirstStep_IsAccepted(t *testing.T) {
+	var calls int32
+	executor := &DAGExecutor{
+		ReplanHandler:     &fixedReplanHandler{query: "a genuinely different recovery step"},
+		MaxReplanAttempts: 2,
+	}
+	plan := &domain.ExecutionPlan{Steps: []domain.Step{{Query: "the step that fails"}}}
+
+	_, err := executor.Execute(t.Context(), plan, nil, failOnceStep(&calls))
+	if err != nil {
+		t.Fatalf("a replan offering a DIFFERENT first step must be accepted, got: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got < 2 {
+		t.Fatalf("replanned step was never executed (calls=%d)", got)
+	}
+}
+
+// The guard must still do its actual job: a replan that restates the failing step
+// is a loop and has to abort.
+func TestDAGExecutor_ReplanRepeatingFailedStep_StillAborts(t *testing.T) {
+	var calls int32
+	executor := &DAGExecutor{
+		ReplanHandler:     &fixedReplanHandler{query: "the step that fails"},
+		MaxReplanAttempts: 2,
+	}
+	plan := &domain.ExecutionPlan{Steps: []domain.Step{{Query: "the step that fails"}}}
+
+	_, err := executor.Execute(t.Context(), plan, nil, failOnceStep(&calls))
+	if err == nil {
+		t.Fatal("a replan repeating the failed step must abort")
+	}
+	if !strings.Contains(err.Error(), "repeats the same step") {
+		t.Fatalf("expected the loop-guard error, got: %v", err)
 	}
 }

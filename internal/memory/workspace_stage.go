@@ -148,6 +148,8 @@ func (w *WorkspaceStageImpl) PrimeForPlanning(ctx context.Context, taskQuery str
 	// surfacing prior TRANSITIONS (similar past situations + their outcome + action path),
 	// failure-weighted and similarity-gated, for the LLM to reason over before it commits.
 	enrichment.Precedents = w.retrievePrecedentLane(ctx, taskQuery)
+	// ADR-0094 D5: induced routines for this situation.
+	enrichment.Procedures = w.retrieveProcedureLane(ctx, taskQuery)
 	return enrichment, nil
 }
 
@@ -432,4 +434,44 @@ func blendEmbeddings(a, b []float32) []float32 {
 		blended[i] = (a[i] + b[i]) / 2
 	}
 	return blended
+}
+
+// retrieveProcedureLane finds induced routines whose TRIGGER matches the situation being
+// planned (ADR-0094 D5).
+//
+// Similarity-gated by RetrievalFloor, like the precedent lane and for a sharper reason:
+// a procedure retrieved for a situation it does not fit is worse than no procedure at
+// all — it is a confident wrong answer, and a plausible-looking list of steps is exactly
+// the kind of wrong a planner will follow.
+//
+// DEPRECATED and SUPERSEDED routines are excluded here rather than merely deranked. They
+// already sink to the activation floor (procedureActivation), but a retired routine
+// reaching a prompt at all would undo the point of retiring it, and "it scored low" is a
+// weaker guarantee than "it was not returned".
+func (w *WorkspaceStageImpl) retrieveProcedureLane(ctx context.Context, query string) []domain.Procedure {
+	if w.Store == nil || w.Embedder == nil {
+		return nil
+	}
+	vec, err := w.Embedder.Embed(ctx, query)
+	if err != nil {
+		return nil
+	}
+	hits, err := w.Store.Search(ctx, vec, domain.SearchOptions{
+		DocumentType:   domain.DocTypeMnemonicProcedure,
+		TopK:           3, // a planner needs the best routine, not a catalogue
+		RetrievalFloor: w.RetrievalFloor,
+		Scope:          domain.ScopeSystem,
+	})
+	if err != nil || len(hits) == 0 {
+		return nil
+	}
+	out := make([]domain.Procedure, 0, len(hits))
+	for _, h := range hits {
+		p, ok := procedureFromDoc(h.Document)
+		if !ok || p.Status != domain.ProcedureActive {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }

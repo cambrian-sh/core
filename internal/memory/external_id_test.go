@@ -50,3 +50,58 @@ func TestExternalDocumentID_FileKeepsSourceURI(t *testing.T) {
 		t.Fatalf("file id must stay the SourceURI; got %q", got)
 	}
 }
+
+func TestExternalDocumentID_BareTagIsGroupingNotIdentity(t *testing.T) {
+	// The regression this branch existed to cause. N documents sharing ONE
+	// classification tag must get N distinct ids: a tag groups, it does not
+	// identify. Before the fix all of these collapsed onto the tag itself, so
+	// their chunks shared "<tag>-chunk-K" and each ingest silently overwrote the
+	// previous document's chunks while still reporting success.
+	tagged := func(body string) domain.ExternalDocument {
+		return domain.ExternalDocument{
+			SourceURI: "memory-guard-" + body[:4],
+			ThreadID:  "memory-guard:v1:" + body[:4],
+			Tags:      []string{"memory-guard"},
+			Body:      body,
+		}
+	}
+	a := externalDocumentID(tagged("Marrowgate Institute was established in 1971"))
+	b := externalDocumentID(tagged("Vellum Harbour Trust was established in 2010"))
+	c := externalDocumentID(tagged("Ostrand Survey Office was established in 1974"))
+
+	ids := map[string]bool{a: true, b: true, c: true}
+	if len(ids) != 3 {
+		t.Fatalf("documents sharing a tag must get distinct ids; got %q, %q, %q", a, b, c)
+	}
+	for _, id := range []string{a, b, c} {
+		if id == "memory-guard" {
+			t.Fatalf("id collapsed onto the bare tag: %q", id)
+		}
+	}
+}
+
+func TestExternalDocumentID_BareTagIsStableOnReingest(t *testing.T) {
+	// The other half of the contract: distinct bodies differ, but the SAME body
+	// re-ingested resolves to the same id, so a re-ingest updates in place rather
+	// than orphaning the old chunks.
+	doc := domain.ExternalDocument{
+		Tags: []string{"memory-guard"},
+		Body: "Marrowgate Institute was established in 1971",
+	}
+	if externalDocumentID(doc) != externalDocumentID(doc) {
+		t.Fatal("re-ingesting identical content must be idempotent")
+	}
+}
+
+func TestExternalDocumentID_ExplicitIDStillBeatsDigest(t *testing.T) {
+	// Rule 1a is untouched: a caller that explicitly names the document via
+	// source_document still owns the id, digest or not. document-qa's
+	// "<doc_id>-chunk-N" evidence contract depends on this.
+	doc := domain.ExternalDocument{
+		Tags: []string{"document-qa", "source_document", "tidebound-archive", "chunker:late"},
+		Body: "anything",
+	}
+	if got := externalDocumentID(doc); got != "tidebound-archive" {
+		t.Fatalf("explicit id must still win; got %q", got)
+	}
+}

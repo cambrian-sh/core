@@ -219,3 +219,42 @@ func (g *captureGenerator) Generate(_ context.Context, prompt string) (string, e
 func containsString(haystack, needle string) bool {
 	return strings.Contains(haystack, needle)
 }
+
+// ── Layer 3 — wrapped JSON (regression) ──────────────────────────────────────
+
+// Models routinely fence their JSON or precede it with reasoning. Layer 3 used to
+// json.Unmarshal the raw generator output, so a fenced response failed with
+// "invalid character '`'" and the whole request died BEFORE a plan existed —
+// measured at 5 of 21 benchmark tasks on 2026-07-28. Every other LLM-output parser
+// in the kernel already went through domain.ExtractJSONObject; this one did not.
+func TestLayer3_WrappedJSON_IsExtracted(t *testing.T) {
+	cases := map[string]string{
+		"fenced":            "```json\n" + highConfidenceResponse + "\n```",
+		"fenced no lang":    "```\n" + highConfidenceResponse + "\n```",
+		"reasoning preface": "Let me classify this.\n\n" + highConfidenceResponse,
+		"trailing prose":    highConfidenceResponse + "\n\nHope that helps.",
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := newRouterWithGen(harness.NewFakeGenerator(raw))
+
+			dec, err := r.Resolve(context.Background(), domain.RouterInput{Body: "can you refactor this for me"})
+			if err != nil {
+				t.Fatalf("wrapped JSON must still classify, got error: %v", err)
+			}
+			if dec.Type != domain.DecisionPlan {
+				t.Fatalf("expected DecisionPlan, got %q", dec.Type)
+			}
+		})
+	}
+}
+
+// Extraction must not turn genuinely unparseable output into a silent success:
+// no-JSON-at-all is still a hard error (ADR: Layer 3 never silently falls back).
+func TestLayer3_NoJSONAnywhere_StillErrors(t *testing.T) {
+	r := newRouterWithGen(harness.NewFakeGenerator("I am not going to answer that."))
+
+	if _, err := r.Resolve(context.Background(), domain.RouterInput{Body: "do something"}); err == nil {
+		t.Fatal("expected hard error when the response contains no JSON")
+	}
+}
