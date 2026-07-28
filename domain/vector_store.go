@@ -19,6 +19,7 @@ const (
 	DocTypeMnemonicAction     = "mnemonic_action" // ADR-0049: a mutation/side-effecting tool call — an EVENT ("what I did"), not knowledge
 	DocTypeMnemonicScene      = "mnemonic_scene"  // ADR-0015: masterContext snapshot at step completion time
 	DocTypeMnemonicEntity     = "mnemonic_entity" // ADR-0049 D8: a first-class engaged THING (file/dir/api/…), keyed by canonical kind:id
+	DocTypeMnemonicProcedure  = "mnemonic_procedure" // ADR-0094: an INDUCED reusable routine — descriptive ("how this has gone"), not normative like a Skill
 	DocTypeEpisodicMemory     = "episodic_memory" // ADR-0029: session narrative index (goal + decisions)
 	DocTypeTool               = "tool"            // ADR-0044: tool descriptor indexed for semantic retrieval
 	DocTypeSkill              = "skill"           // ADR-0046: system-skill descriptor indexed for semantic retrieval
@@ -82,6 +83,17 @@ type Document struct {
 	// and for any row ingested before structure-aware chunking. Read-only on the
 	// recall path: it is stamped by the structure store, never by a writer here.
 	SectionPath string `json:"section_path,omitempty"`
+	// ExperienceID is the EPISODE this row belongs to (ADR-0095 D2) — the second
+	// nullable parent, alongside the document parentage a corpus chunk carries.
+	// Empty for corpus chunks (which have a document parent instead) and for derived
+	// artifacts like procedures, which are distilled from many episodes and link
+	// through `experience_derivations` rather than naming one parent.
+	//
+	// Written through a subselect at the adapter, so an id whose experience row does
+	// not exist resolves to NULL rather than violating the foreign key: losing a
+	// memory because its parentage could not be recorded would be far worse than
+	// losing the link (ADR-0095 D5 / ADR-0093 D5).
+	ExperienceID string `json:"experience_id,omitempty"`
 }
 
 // SearchResult holds the search hit containing the document and its similarity score.

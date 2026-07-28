@@ -121,6 +121,29 @@ type Agent struct {
 	// automatic capture is gated. Set from execution.experiential_memory_enabled.
 	RecordExperiential bool
 
+	// RecordOutcomes gates the ADR-0049 §A2.2 OUTCOME RECORD — one structured record
+	// per completed plan (`WritePlanScene`). Separate from RecordExperiential on
+	// purpose: that flag guards the deprecated RAW path (auto-embedded step results
+	// and tool payloads) which stays off permanently, while this one guards the
+	// abstraction-only path that replaces it. Conflating them would mean re-enabling
+	// the design that was removed on 2026-07-18. Default false — a new lever lands as
+	// a default-off arm. Set from execution.experience_records_enabled.
+	RecordOutcomes bool
+
+	// ExperienceStore persists the episode parent row an outcome record hangs from
+	// (ADR-0095 D1). May be nil → the record is still written, with a NULL parent:
+	// losing the memory because its parentage could not be recorded would be worse
+	// than losing the link (ADR-0095 D5).
+	ExperienceStore domain.ExperienceStore
+
+	// SurpriseFloor is the ADR-0049 A2.3 gate for the FAILURE PRECEDENT (a negative
+	// edge written in addition to the ordinary outcome record). 0 disables it.
+	SurpriseFloor float64
+
+	// ProcedureDeprecateBelow is the confidence under which a repeatedly-failing routine
+	// is retired (ADR-0094 D4). 0 disables procedure feedback entirely.
+	ProcedureDeprecateBelow float64
+
 	// Tier-1 bounded channel (ADR-0015): pre-embedded step results before Tier-2 pgvector commit.
 	pendingItems []pendingItem
 	pendingMu    sync.RWMutex
@@ -189,7 +212,7 @@ type Agent struct {
 type pendingItem struct {
 	Embedding []float32
 	Doc       *domain.Document
-	SceneID   string // ADR-0025: scene doc ID for this step; drives discussed_in edge
+	SceneID   string           // ADR-0025: scene doc ID for this step; drives discussed_in edge
 	SessionID domain.SessionID // ADR-0029: session scope; written to Doc.Metadata["session_id"] at commit time
 }
 
@@ -407,21 +430,46 @@ func (a *Agent) RecordExecution(ctx context.Context, result domain.StepResult) e
 // D1), a tool output carries source_agent="ToolOutput" so it stays recallable. The
 // kernel only feeds it here — the keep/drop value judgment is the Tier-2 LLM's.
 func (a *Agent) RecordToolOutput(ctx context.Context, rec domain.ToolOutputRecord) error {
-	// Experiential capture is off by default (execution.experiential_memory_enabled): tool
-	// outputs (reads and mutation action-events alike) are not auto-embedded into LTM.
-	if !a.RecordExperiential {
+	// TWO arms, not one, because this function does two different things and only one
+	// of them was removed on 2026-07-18 (ADR-0049 §A2).
+	//
+	//   recordReadFact    — a read tool's PAYLOAD embedded whole as a fact. This is the
+	//                       raw path A2 removed. Gated by RecordExperiential (false
+	//                       permanently).
+	//   recordActionRecord — a mutation's STRUCTURED action event ("write_file → ok |
+	//                       path=…, +19B"). D1 defines this as deterministic structured
+	//                       form, "never a raw-JSON dump", and A2.2 names the action
+	//                       path as part of the outcome record. Gated by RecordOutcomes.
+	//   engageEntities    — accretes the plan's engaged-entity scope and mints entity
+	//                       records. Writes no payload anywhere; it is the world model.
+	//
+	// Gating all three on RecordExperiential made A2.2 a NO-OP: nothing accreted
+	// planEntities, so every plan scene hit the contentless-scene skip and no outcome
+	// record was ever written. The unit tests missed it because they set both flags;
+	// only a live plan execution showed it.
+	if !a.RecordExperiential && !a.RecordOutcomes {
 		return nil
 	}
 	if rec.IsMutation {
 		// A mutation additionally writes an action EVENT ("what I did"); entity
 		// engagement happens inside, stamped with the action's docID as provenance.
+		if !a.RecordOutcomes {
+			return nil
+		}
 		return a.recordActionRecord(ctx, rec)
 	}
 	// A READ is DISCOVERY (ADR-0049): it still engages its entities — reading a file/url
 	// tells us the thing exists and what its content is, which is world-model knowledge
 	// worth keeping. No action event (a read is not "something I did"); it flows to the
 	// fact lane. No action-docID provenance (a read has no durable event record).
-	a.engageEntities(ctx, rec, "")
+	if a.RecordOutcomes {
+		// The world model sees EVERY read, regardless of output size: what the call
+		// touched is the signal, not how much it returned.
+		a.engageEntities(ctx, rec, "")
+	}
+	if !a.RecordExperiential || !rec.FactEligible {
+		return nil
+	}
 	return a.recordReadFact(ctx, rec)
 }
 
@@ -431,8 +479,22 @@ func (a *Agent) RecordToolOutput(ctx context.Context, rec domain.ToolOutputRecor
 // entity record (field-LWW) and accretes it into the plan's scene scope. actionDocID is
 // the provenance link for a mutation (its action event), "" for a read.
 func (a *Agent) engageEntities(ctx context.Context, rec domain.ToolOutputRecord, actionDocID string) {
+	// A tool call whose args are not parseable JSON yields no entities — and
+	// `engagedEntities` reports that with a bare `return nil`, indistinguishable from
+	// "this tool engaged nothing". That silence is a world-model hole: on Windows an
+	// unescaped path (`C:\Users\...`) is invalid JSON (`\U` is not an escape), so every
+	// file a tool touched would vanish from the world model with nothing logged
+	// anywhere. Downstream the only symptom is a contentless plan scene, i.e. no
+	// outcome record at all, with no stated reason.
+	if len(rec.ArgsJSON) > 0 && !json.Valid(rec.ArgsJSON) {
+		slog.WarnContext(ctx, "MemoryAgent: tool args are not valid JSON — engaged entities lost (ADR-0049 D8)",
+			"tool", rec.ToolName, "task_id", rec.TaskID, "args_bytes", len(rec.ArgsJSON))
+		return
+	}
 	ents := engagedEntities(rec.ToolName, rec.ArgsJSON)
 	if len(ents) == 0 {
+		slog.DebugContext(ctx, "MemoryAgent: tool engaged no entities",
+			"tool", rec.ToolName, "task_id", rec.TaskID)
 		return
 	}
 	baseline := a.offloadBaseline(rec.Output)
@@ -452,6 +514,22 @@ func (a *Agent) engageEntities(ctx context.Context, rec domain.ToolOutputRecord,
 func (a *Agent) accreteEngaged(taskID string, ents []canonicalEntity, baseline string) {
 	planID := planIDFromTaskID(taskID)
 	if planID == "" {
+		// The ADR-0049 D3 correlation chain broke somewhere upstream, and this is the
+		// only place it is observable. The chain is: DAGExecutor stamps
+		// snapshot["_task_id"] = step-{i}-{planID} → the SDK runtime reads it off the
+		// step context → sends it as `x-task-id` metadata on ExecuteTool → the kernel
+		// handler reads it back into ToolOutputRecord.TaskID. Every link exists; a
+		// break in any of them arrives here as an empty taskID.
+		//
+		// Logged rather than silently dropped because the DOWNSTREAM symptom is a
+		// contentless plan scene — i.e. the outcome record simply never appears, with
+		// nothing anywhere saying why. That silence is what made this cost an entire
+		// investigation to find. WARN, not Debug: an engaged entity that cannot be
+		// attributed to a plan is lost world-model state, not routine noise.
+		if len(ents) > 0 {
+			slog.Warn("MemoryAgent: engaged entities dropped — no plan correlation (ADR-0049 D3)",
+				"task_id", taskID, "entities", len(ents))
+		}
 		return
 	}
 	a.planEntitiesMu.Lock()
@@ -542,7 +620,11 @@ func (a *Agent) mintEntities(ctx context.Context, toolName string, ents []canoni
 // rebuildable from provenance (ADR-0049 D9). Reconstruction "what's true now" (Issue 012)
 // reads these same materialized fields.
 func (a *Agent) upsertEntity(ctx context.Context, ent canonicalEntity, obs entityObservation, toolName, actionDocID, taskID string, now time.Time) {
-	existing, _ := a.Manager.Store.GetByID(ctx, ent.Key())
+	// Kernel-internal read of the entity cache on the WRITE path — no principal is
+	// asking. Explicit bypass, because the read chokepoint now enforces by-identity
+	// reads (ADR-0095 D9) and would otherwise fail closed here, silently re-minting
+	// entities instead of enriching them.
+	existing, _ := a.Manager.Store.GetByID(domain.WithScope(ctx, domain.ScopeSystem), ent.Key())
 	cur := decodeEntityFields(existing)
 	// ADR-0049 §A1.2: detect fields this observation CHANGES from cache. Only a READ
 	// (no mutating verb) discovering a difference is "drift" (the world moved under us);
@@ -690,11 +772,65 @@ func sceneProjection(goal string, refs []string) string {
 	for _, k := range kinds {
 		parts = append(parts, fmt.Sprintf("%d %s", counts[k], k))
 	}
-	proj := "goal: " + goal
+	proj := "goal: " + canonicalGoal(goal)
 	if len(parts) > 0 {
 		proj += " | engages: " + strings.Join(parts, ", ")
 	}
 	return proj
+}
+
+// canonicalGoal strips the volatile specifics out of the planner's free-text subject
+// before it becomes the projection.
+//
+// The projection is the ABSTRACTED retrieval face — it is what gets embedded, and the
+// concrete things acted on are already recorded by reference in `engaged`. Leaving
+// absolute paths in it indexed situations by where they happened: nine runs of one
+// benchmark family embedded nine different sandbox directories
+// ("... in runs/rt_diag6/workspace"), so situational retrieval keyed partly on a run id
+// that will never recur. Removing them makes the projection mean "this KIND of
+// situation", which is what it was for.
+//
+// Deliberately conservative: paths and quoted literals only. Filenames and prose stay,
+// because for a real request ("summarise q3.pdf") the filename IS part of the
+// situation. Cluster-key normalization is a separate, harder concern and lives in
+// normalizeTrigger.
+func canonicalGoal(goal string) string {
+	// Quoted spans go first, as spans: 'beta record' is two whitespace-separated
+	// fields, so a per-token check sees only an unbalanced 'beta and a record' and
+	// keeps both — which is how the payload leaks back into the situation.
+	stripped := stripQuotedSpans(goal)
+
+	fields := strings.Fields(stripped)
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if strings.ContainsAny(strings.Trim(f, ".,;:!?()[]{}"), "/\\") {
+			continue // a path: names where, not what
+		}
+		out = append(out, f)
+	}
+	if len(out) == 0 {
+		return goal // never abstract a goal away to nothing
+	}
+	return strings.Join(out, " ")
+}
+
+// stripQuotedSpans removes '...' and "..." runs. An unterminated quote is left alone —
+// dropping the rest of the goal on one stray apostrophe would be worse than keeping it.
+func stripQuotedSpans(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != '\'' && c != '"' {
+			b.WriteByte(c)
+			continue
+		}
+		if close := strings.IndexByte(s[i+1:], c); close >= 0 {
+			i += close + 1 // skip to the closing quote; loop's i++ moves past it
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // planIDFromTaskID extracts the planID embedded in a step TaskID ("step-{i}-{planID}").
@@ -725,8 +861,14 @@ func (a *Agent) offloadBaseline(output []byte) string {
 // D5): id `scene-{planID}` (pre-allocated/derivable, so mid-plan actions reference it
 // via their planID), holding the goal + the engaged-entity scope accreted during the
 // plan. Written once at completion; the per-plan accumulator is then cleared.
-func (a *Agent) WritePlanScene(ctx context.Context, planID, goal string, success bool) error {
+func (a *Agent) WritePlanScene(ctx context.Context, rec domain.PlanRecord) error {
+	planID, goal, success, surprise := rec.PlanID, rec.Goal, rec.Success, rec.Surprise
 	if planID == "" || a.Manager == nil {
+		return nil
+	}
+	// ADR-0049 §A2.2: the outcome record is a default-off arm. Off ⇒ the plan leaves
+	// no experiential trace at all, which is the post-2026-07-18 baseline.
+	if !a.RecordOutcomes {
 		return nil
 	}
 	goal = normalizeSceneGoal(goal)
@@ -777,6 +919,32 @@ func (a *Agent) WritePlanScene(ctx context.Context, planID, goal string, success
 	}
 
 	projection := sceneProjection(goal, refs)
+
+	// ADR-0049 A2.9: REINFORCE, do not multiply.
+	//
+	// A2.3 gates retrievability rather than existence, on the reasoning that an episode
+	// is "one cheap structured row". That holds for one episode; it does not hold for
+	// the same episode twenty times. Measured 2026-07-28: 141 scenes carried only 100
+	// distinct projections, one situation appearing 8 times, every row embedded
+	// separately and every row pinned at the 0.100 activation floor.
+	//
+	// The cost is not the disk. It is that induction counts ROWS, so eight reruns of one
+	// task read as eight confirmations of a routine rather than one observation seen
+	// eight times — inflating confidence in exactly the shape it should not.
+	//
+	// So a repeat of a known situation bumps seen_count and recency on the existing
+	// scene instead of inserting a sibling. Repetition strengthens a memory; it does not
+	// clone it.
+	// Reinforcement replaces the scene INSERT and nothing else. Returning here would
+	// also skip the failure precedent and the procedure-outcome feedback below — and a
+	// repeated failure is precisely when a precedent is worth most. Dedup is about not
+	// storing the same situation twice, not about ignoring what happened in it.
+	reinforced := false
+	if existing := a.findSceneByProjection(ctx, sceneIdentity(projection, refs)); existing != nil {
+		a.reinforceScene(ctx, existing, outcomeOf(success), surprise)
+		reinforced = true
+	}
+
 	vec, err := a.Manager.Embedder.Embed(ctx, projection) // embed the ABSTRACTED projection
 	if err != nil {
 		slog.Warn("MemoryAgent: failed to embed plan scene", "plan_id", planID, "err", err)
@@ -786,24 +954,101 @@ func (a *Agent) WritePlanScene(ctx context.Context, planID, goal string, success
 	if success {
 		outcome = "success"
 	}
+
+	// ADR-0095 D1/D4: mint the EPISODE parent before the record that hangs from it,
+	// born tagged. The stamp is kernel-derived — surface from the context the ingress
+	// wrote (ADR-0090), classification defaulting to `internal` — and an agent has no
+	// way to reach it, which is what makes the boundary enforceable rather than
+	// dependent on whoever remembers to classify.
+	//
+	// A failure here is logged and NOT fatal: the outcome record is still written and
+	// simply keeps a NULL parent. Losing the memory over bookkeeping about its
+	// parentage would be the worse outcome (ADR-0095 D5).
+	experienceID := "exp-" + planID
+	if a.ExperienceStore != nil {
+		sessionID, _ := domain.SessionIDFromContext(ctx)
+		exp := domain.Experience{
+			ID:          experienceID,
+			SessionID:   string(sessionID),
+			Surface:     domain.SurfaceFromContext(ctx).Kind,
+			Tags:        domain.BornTags(domain.SurfaceFromContext(ctx)),
+			Outcome:     outcome,
+			CompletedAt: time.Now().UTC(),
+		}
+		if err := a.ExperienceStore.SaveExperience(ctx, exp); err != nil {
+			slog.WarnContext(ctx, "MemoryAgent: experience parent not recorded; outcome record will have no parent",
+				"plan_id", planID, "err", err)
+			experienceID = ""
+		}
+	} else {
+		experienceID = ""
+	}
+
+	// ADR-0049 A2.3 gates RETRIEVABILITY, not existence. Recording the episode is one
+	// cheap structured row and is always worth it; what must be earned is the right to
+	// COMPETE for a retrieval slot. A surprising episode therefore starts more active
+	// and an unsurprising one decays out of contention on the existing Ebbinghaus
+	// curve — reusing machinery that already exists rather than adding a second gate.
+	//
+	// Unknown surprise (-1, no merit history) takes the baseline: absence of a
+	// prediction is not evidence the episode was dull.
+	activation := 0.1
+	if surprise > 0 {
+		activation = 0.1 + 0.4*surprise
+	}
 	doc := &domain.Document{
 		ID:                 "scene-" + planID,
 		DocumentType:       domain.DocTypeMnemonicScene,
 		Text:               text,
-		ActivationStrength: 0.1,
+		ActivationStrength: activation,
+		ExperienceID:       experienceID,
 		Embedding:          domain.Embedding{Vector: vec},
 		Metadata: map[string]interface{}{
 			"timestamp":  time.Now().Format(time.RFC3339),
 			"plan_id":    planID,
 			"engaged":    set,         // map ref → baseline cid (by reference)
 			"projection": projection,  // the abstracted retrieval face
+			// The DEDUP key: shape + concrete entities. Distinct from projection,
+			// which must stay coarse to match situations of the same shape.
+			"scene_identity": sceneIdentity(projection, refs),
 			"outcome":    outcome,     // a FIELD, not part of the similarity key
 			"actions":    actionLines, // the inline action path ("what I did")
+			// ADR-0049 A2.3: how far the episode diverged from what merit predicted.
+			// A field, never part of the similarity key — you match on the SITUATION,
+			// then read how surprising what followed was.
+			"surprise": surprise,
+			// ADR-0094 D3: the capability shape, so induction can group routines
+			// without re-deriving them from prose.
+			"capabilities": capabilitiesJSON(rec.Capabilities),
 		},
 	}
-	if err := a.Manager.Store.Save(ctx, doc); err != nil {
-		slog.Warn("MemoryAgent: failed to save plan scene", "plan_id", planID, "err", err)
-		return nil
+	if !reinforced {
+		if err := a.Manager.Store.Save(ctx, doc); err != nil {
+			slog.Warn("MemoryAgent: failed to save plan scene", "plan_id", planID, "err", err)
+			return nil
+		}
+	}
+
+	// ADR-0049 A2.3 — the FAILURE PRECEDENT. A failed episode that merit did NOT see
+	// coming is the single most decision-relevant thing this system can remember, so it
+	// earns a second, faster-decaying record in the negative-edge lane the
+	// WorkspaceStage already queries. A failure by an agent already known to fail is
+	// unsurprising and writes nothing extra: that is the difference between a surprise
+	// gate and a failure gate.
+	if !success && a.SurpriseFloor > 0 && surprise >= a.SurpriseFloor {
+		if err := a.IngestNegativeEdge(ctx, "unexpected plan failure: "+goal, text, ""); err != nil {
+			slog.WarnContext(ctx, "MemoryAgent: failure precedent not recorded",
+				"plan_id", planID, "surprise", surprise, "err", err)
+		}
+	}
+
+	// ADR-0094 co-evolution: the routines that informed this plan learn from its
+	// outcome. After the scene is durable, because feedback is an enrichment of an
+	// enrichment — the episode is the record that matters, and losing a confidence
+	// update is recoverable on the next occurrence.
+	if a.ProcedureDeprecateBelow > 0 && len(rec.FollowedProcedures) > 0 {
+		FeedProcedureOutcome(ctx, a.Manager.Store, a.Manager.Embedder,
+			rec.FollowedProcedures, success, a.ProcedureDeprecateBelow)
 	}
 
 	// ADR-0049: connect the world model in the graph. A scene→entity `engaged` edge per
@@ -1586,3 +1831,133 @@ func (a *Agent) writeEdge(ctx context.Context, sourceID, targetID string, edgeTy
 // JSON extraction from LLM responses (reasoning-wrapper-tolerant) lives in
 // domain as domain.ExtractJSONArray / domain.ExtractJSONObject —
 // shared with the awareness planner so the two no longer drift.
+
+// engagedCountForPlan reports how many entities a plan has accreted into its scene
+// scope. Test seam: the accretion is in-memory and otherwise only observable through a
+// completed scene, which is exactly what made its absence hard to see.
+func (a *Agent) engagedCountForPlan(planID string) int {
+	a.planEntitiesMu.Lock()
+	defer a.planEntitiesMu.Unlock()
+	return len(a.planEntities[planID])
+}
+
+// capabilitiesJSON renders the capability sequence for scene metadata. A JSON string
+// rather than a []string because metadata round-trips through JSONB, where a typed slice
+// comes back as []interface{} and every reader would have to re-narrow it.
+func capabilitiesJSON(caps []string) string {
+	if len(caps) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(caps)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// outcomeOf renders a plan's success as the stored outcome vocabulary.
+func outcomeOf(success bool) string {
+	if success {
+		return "success"
+	}
+	return "failure"
+}
+
+// sceneIdentity is the DEDUP key: the abstracted projection plus the concrete entities
+// engaged.
+//
+// The projection alone is not enough, and getting this wrong costs in both directions.
+// It renders engaged entities by KIND and COUNT ("engages: 1 file") and canonicalGoal
+// strips paths from the goal — by design, because it is the RETRIEVAL face and must
+// match situations of the same shape. Reusing it as the dedup identity merged genuine
+// VARIANTS: three plans touching main.go, api.go and db.go project identically, so the
+// second and third were recorded as reruns of the first. Induction then saw one
+// situation where there were three, and no routine could ever reach min_samples.
+//
+// So identity = shape + the specific things acted on. Same shape AND same entities is
+// a rerun and reinforces; same shape on different entities is a variant and earns its
+// own episode, which is exactly the evidence a routine is generalised FROM.
+func sceneIdentity(projection string, refs []string) string {
+	if len(refs) == 0 {
+		return projection
+	}
+	sorted := append([]string(nil), refs...)
+	sort.Strings(sorted) // order of engagement is not part of identity
+	return projection + " | on: " + strings.Join(sorted, ",")
+}
+
+// findSceneByProjection returns an existing scene for this exact situation, or nil.
+//
+// Exact match on the identity key, not similarity: deciding that two DIFFERENT
+// situations are close enough to merge is a clustering judgement, and it belongs to
+// induction, which can be tuned and re-run. A write-path merge is irreversible.
+func (a *Agent) findSceneByProjection(ctx context.Context, identity string) *domain.Document {
+	if a.Manager == nil || a.Manager.Store == nil || identity == "" {
+		return nil
+	}
+	docs, err := a.Manager.Store.QueryByMetadata(ctx, map[string]string{
+		"scene_identity": identity,
+	}, 1)
+	if err != nil || len(docs) == 0 {
+		return nil
+	}
+	// Only a scene reinforces a scene — the same projection key could in principle
+	// appear on another document type.
+	if docs[0].DocumentType != domain.DocTypeMnemonicScene {
+		return nil
+	}
+	return &docs[0]
+}
+
+// reinforceScene bumps an existing scene's seen_count and recency, and raises its
+// activation if THIS occurrence was more surprising than any before it.
+//
+// Repetition alone earns nothing: seeing the same unsurprising thing again is not
+// evidence that it deserves a retrieval slot, and boosting on repetition would let a
+// loop promote its own noise. What repetition earns is an honest COUNT.
+//
+// SURPRISE is different, and this is the subtle part. A surprising outcome in a
+// FAMILIAR situation is the most decision-relevant thing the system can observe — the
+// situation looked routine and was not. Deduplicating by situation must therefore not
+// suppress it: the scene carries the HIGHEST surprise ever seen in that situation, so
+// one shocking occurrence makes the memory retrievable even if a hundred dull ones
+// preceded it. Without this, dedup would silently disable the A2.3 surprise gate for
+// every repeated situation.
+func (a *Agent) reinforceScene(ctx context.Context, doc *domain.Document, outcome string, surprise float64) {
+	if doc.Metadata == nil {
+		doc.Metadata = map[string]interface{}{}
+	}
+	seen := 1
+	switch v := doc.Metadata["seen_count"].(type) {
+	case float64: // JSONB round-trips numbers as float64
+		seen = int(v) + 1
+	case int:
+		seen = v + 1
+	default:
+		seen = 2 // the row existed, so this sighting is at least the second
+	}
+	doc.Metadata["seen_count"] = seen
+	doc.Metadata["last_seen"] = time.Now().UTC().Format(time.RFC3339)
+	if surprise > 0 {
+		if activation := 0.1 + 0.4*surprise; activation > doc.ActivationStrength {
+			doc.ActivationStrength = activation
+			doc.Metadata["surprise"] = surprise
+		}
+	}
+	// Track outcomes so a situation that starts failing is visible without a second
+	// row: a routine induced from successes must not be reinforced by failures.
+	if outcome == "failure" {
+		fails := 0
+		if v, ok := doc.Metadata["failure_count"].(float64); ok {
+			fails = int(v)
+		}
+		doc.Metadata["failure_count"] = fails + 1
+	}
+	if err := a.Manager.Store.Save(ctx, doc); err != nil {
+		slog.WarnContext(ctx, "MemoryAgent: scene reinforcement not persisted",
+			"scene", doc.ID, "err", err)
+		return
+	}
+	slog.DebugContext(ctx, "MemoryAgent: scene reinforced (duplicate situation)",
+		"scene", doc.ID, "seen_count", seen)
+}

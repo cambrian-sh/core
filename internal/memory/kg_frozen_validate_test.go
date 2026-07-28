@@ -61,7 +61,7 @@ func (s *memTripletStore) ForChunks(_ context.Context, ids []string) (map[string
 	}
 	return out, nil
 }
-func (s *memTripletStore) ChunksMentioningEntity(_ context.Context, entity string, limit int) ([]string, error) {
+func (s *memTripletStore) ChunksMentioningEntity(_ context.Context, entity string, limit int, _ *domain.TagPredicate) ([]string, error) {
 	ids := s.byEntity[entity] // already sorted; matches production "lowercase entity" match
 	if limit > 0 && limit < len(ids) {
 		ids = ids[:limit]
@@ -129,7 +129,7 @@ func graphRecall(ctx context.Context, store ChunkTripletsStore, qas []evidenceQA
 			seeds := []domain.SearchResult{{Document: domain.Document{ID: ev[0]}, Score: 1.0}}
 			// High caps so the only bound is the production limit-5-per-entity;
 			// many hops to measure full one-component reachability.
-			out := kgExpand(ctx, seeds, store, vs, nil, kgExpandOpts{
+			out := kgExpand(ctx, seeds, store, vs, nil, &domain.TagPredicate{Bypass: true}, kgExpandOpts{
 				Hops: 8, MaxExpanded: 1_000_000, MaxEntities: 1_000_000,
 			})
 			reached := make(map[string]bool, len(out))

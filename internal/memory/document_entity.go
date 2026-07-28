@@ -1,6 +1,15 @@
 package memory
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrDocumentWriteDenied is returned when the decision point refuses to classify a
+// document write. Deliberately coarse — the specific reason travels in the
+// AccessDecision, which the chokepoint logs, so the error cannot be used to probe
+// the vocabulary.
+var ErrDocumentWriteDenied = errors.New("authz: document write denied by policy")
 
 // SourceDocument is the ingested document itself — the thing a chunk came FROM
 // (ADR-0093).
@@ -33,7 +42,14 @@ type SourceDocument struct {
 // a search. Folding it into the vector store would have put it back in the recall
 // path this split exists to clean up.
 type DocumentStore interface {
-	SaveDocument(ctx context.Context, doc SourceDocument) error
+	// SaveDocument persists the document and returns the classification that was
+	// actually stored.
+	//
+	// It returns the tags rather than swallowing them because the document row is
+	// AUTHORITATIVE (ADR-0093 D4): the per-chunk copies are a derived cache, and a
+	// cache derived from anything other than its source is just a second opinion.
+	// The caller stamps chunks with exactly what landed here.
+	SaveDocument(ctx context.Context, doc SourceDocument) ([]string, error)
 }
 
 // SetDocumentStore wires the source-document entity onto the ingest path. Optional:

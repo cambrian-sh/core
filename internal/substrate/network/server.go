@@ -89,10 +89,13 @@ type Server struct {
 	Router  domain.InputRouter
 	Planner Planner
 	// Scout is the ADR-0051 pre-plan discovery organ. nil ⇒ one-shot planning.
-	Scout               WorldScout
-	Manager             *agentmgr.AgentManager
-	Auctioneer          domain.Auctioneer
-	MemoryAgent         domain.MemoryAgent
+	Scout       WorldScout
+	Manager     *agentmgr.AgentManager
+	Auctioneer  domain.Auctioneer
+	MemoryAgent domain.MemoryAgent
+	// SurpriseOracle scores a step outcome against merit (ADR-0049 A2.3). Nil ⇒ the
+	// episode records surprise as unknown rather than as zero.
+	SurpriseOracle      domain.SurpriseOracle
 	ExecCfg             config.ExecutionConfig
 	EnqueueVerification executer.EnqueueVerification
 	Watcher             *supwatcher.Watcher
@@ -636,7 +639,11 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			if s.ExecCfg.CapabilityContract {
 				auctionTask.RequiredCapabilities = step.RequiredCapabilities
 			}
-
+			// Agent pin: carried unconditionally (the flag is read at the gate, so
+			// one place decides whether a pin is honoured). Empty PreferredAgent is
+			// the overwhelmingly common case and changes nothing downstream.
+			auctionTask.PreferredAgent = step.PreferredAgent
+			auctionTask.AgentPin = step.AgentPin
 			// ADR-0037: when the session's variant is "efe", bind via the
 			// Central-Executive selector (no Auctioneer). Any selection failure
 			// falls through to the auction so the path is never worse than today.
@@ -745,7 +752,17 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	executor := &executer.DAGExecutor{
 		EventWriter:         eventWriter,
 		EnqueueVerification: s.EnqueueVerification,
-		// Experiential memory removed: no step-result / plan-scene write-back (nil recorder).
+		// ADR-0049 §A2.2. The recorder is wired again, but the two paths behind it are
+		// gated independently and only one is armed by default:
+		//   RecordExecution  — the RAW path removed 2026-07-18 (whole tool payloads as
+		//                      single embeddings). Self-gates on RecordExperiential,
+		//                      which stays false permanently.
+		//   WritePlanScene   — the OUTCOME RECORD. Self-gates on RecordOutcomes
+		//                      (execution.experience_records_enabled), default false.
+		// Wiring the recorder therefore does NOT restore the removed design; with both
+		// flags at their defaults this is exactly the current no-write-back behaviour.
+		MemoryRecorder:         s.MemoryAgent,
+		Surprise:               s.SurpriseOracle, // ADR-0049 A2.3: may be nil ⇒ surprise unknown (-1)
 		WorkspaceStage:         s.WorkspaceStage,
 		ArtifactLister:         s.ArtifactMeta, // ADR-0034: surface prior-step artifacts (scope-filtered)
 		Authz:                  s.Authz,        // ADR-0085: artifact discovery filter (may be nil)
@@ -935,7 +952,16 @@ func (s *Server) useEFE(sessionID domain.SessionID) bool {
 // selection or dispatch failure it returns (nil, false) so the caller falls
 // through to the auction path (the EFE arm is never worse than the status quo).
 func (s *Server) selectViaEFE(ctx context.Context, task *domain.AuctionTask, query string, h *domain.Handoff, winningAgentID *string) (*domain.Handoff, bool) {
-	sel, err := s.ResourceSelector.Select(ctx, domain.Intent{ID: task.ID, Description: query}, nil)
+	sel, err := s.ResourceSelector.Select(ctx, domain.Intent{
+		ID:          task.ID,
+		Description: query,
+		// ROUTE-03: hand the selector the capability contract the caller already
+		// resolved onto the task; without it the selector's rebuilt AuctionTask
+		// reaches L1 with no requirements and the gate is a no-op for this arm.
+		RequiredCapabilities: task.RequiredCapabilities,
+		PreferredAgent:       task.PreferredAgent,
+		AgentPin:             task.AgentPin,
+	}, nil)
 	if err != nil || sel.ResourceID == "" {
 		slog.Warn("EFE selection failed; falling back to auction", "task", task.ID, "err", err)
 		return nil, false

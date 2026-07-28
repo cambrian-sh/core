@@ -164,6 +164,30 @@ func (c *concurrencyGenerator) Generate(ctx context.Context, prompt string) (str
 	return c.inner.Generate(ctx, prompt)
 }
 
+// GenerateWithTools forwards native tool-calling while holding a concurrency slot,
+// mirroring Generate. See healthGenerator.GenerateWithTools on why forwarding is
+// mandatory rather than optional.
+// NativeToolsEnabled forwards the inner generator's capability report.
+func (c *concurrencyGenerator) NativeToolsEnabled() bool {
+	r, ok := c.inner.(domain.ToolCallingReporter)
+	return !ok || r.NativeToolsEnabled()
+}
+
+func (c *concurrencyGenerator) GenerateWithTools(
+	ctx context.Context, messages []domain.ModelMessage, tools []domain.ToolDefinition,
+) (domain.ModelTurn, error) {
+	tg, ok := c.inner.(domain.ToolCallingGenerator)
+	if !ok {
+		return domain.ModelTurn{}, fmt.Errorf(
+			"llm provider: %T does not implement native tool-calling", c.inner)
+	}
+	if err := c.acquire(ctx); err != nil {
+		return domain.ModelTurn{}, err
+	}
+	defer func() { <-c.sem }()
+	return tg.GenerateWithTools(ctx, messages, tools)
+}
+
 func (c *concurrencyGenerator) GenerateStream(ctx context.Context, prompt string) (<-chan domain.StreamChunk, error) {
 	sg, ok := c.inner.(streamingInner)
 	if !ok {
@@ -238,6 +262,24 @@ func (g *purposeGenerator) Generate(ctx context.Context, prompt string) (string,
 		return "", err
 	}
 	return gen.Generate(ctx, prompt)
+}
+
+// GenerateWithTools acquires a generator for this purpose and forwards native
+// tool-calling. The acquired generator decides the capability, so this returns an
+// error rather than silently degrading when the resolved generator cannot do it.
+func (g *purposeGenerator) GenerateWithTools(
+	ctx context.Context, messages []domain.ModelMessage, tools []domain.ToolDefinition,
+) (domain.ModelTurn, error) {
+	gen, err := g.provider.Acquire(ctx, domain.LLMRequest{Purpose: g.purpose, CapabilityHints: g.hints})
+	if err != nil {
+		return domain.ModelTurn{}, err
+	}
+	tg, ok := gen.(domain.ToolCallingGenerator)
+	if !ok {
+		return domain.ModelTurn{}, fmt.Errorf(
+			"llm provider: acquired %T does not implement native tool-calling", gen)
+	}
+	return tg.GenerateWithTools(ctx, messages, tools)
 }
 
 // GenerateStream acquires a healthy generator and delegates to its streaming

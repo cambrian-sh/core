@@ -13,8 +13,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
 
 // ArtifactStepLister lists artifacts produced by a session+step (ADR-0034). Used to
@@ -109,9 +109,13 @@ type CheckpointMeta = domain.CheckpointMeta
 // MemoryRecorder, if non-nil, is called after each successful step merge to
 // feed the Tier-1 pending channel (ADR-0015). Write is non-blocking.
 type DAGExecutor struct {
-	EventWriter            TaskEventWriter            // may be nil
-	EnqueueVerification    EnqueueVerification        // may be nil
-	MemoryRecorder         domain.MemoryRecorder      // ADR-0015: may be nil
+	EventWriter         TaskEventWriter       // may be nil
+	EnqueueVerification EnqueueVerification   // may be nil
+	MemoryRecorder      domain.MemoryRecorder // ADR-0015: may be nil
+	// Surprise scores each step against merit (ADR-0049 A2.3). Nil ⇒ no prediction is
+	// available and the episode is recorded with surprise -1 ("unknown"), which is NOT
+	// the same as zero: an unscored fleet is unpredictable, not predictable.
+	Surprise               domain.SurpriseOracle
 	WorkspaceStage         domain.WorkspaceStage      // ADR-0016: may be nil; nil disables GWS enrichment
 	LLMGateway             LLMGateway                 // ADR-0018: may be nil
 	Observer               domain.TelemetryObserver   // ADR-0019: may be nil
@@ -827,6 +831,10 @@ func (d *DAGExecutor) ExecuteFrom(
 
 	dispatch() // seed: all root steps (DependsOn == nil/empty) go first
 
+	// ADR-0049 A2.3: -1 means "no step had a merit history to predict from", which is
+	// distinct from 0.0 ("predicted exactly right"). Collapsing the two would let an
+	// unscored fleet look perfectly predictable and silence the gate.
+	maxSurprise := -1.0
 	for inFlight > 0 || (func() bool { d.pausedMu.Lock(); defer d.pausedMu.Unlock(); return d.paused }()) {
 		// When paused and all in-flight steps have completed, block until resume.
 		if inFlight == 0 {
@@ -869,21 +877,38 @@ func (d *DAGExecutor) ExecuteFrom(
 					}
 				}
 
-				if topoErr := d.applyReplannedPlan(newPlan, &plan, &n, alreadyDispatched, completed, &topoOrder); topoErr != nil {
-					return nil, topoErr
+				// Loop guard: refuse a replan that just restates the step that failed.
+				//
+				// This MUST read the failing query before applyReplannedPlan, and must
+				// decide before it too. applyReplannedPlan does `*plan = newPlan`, so
+				// the old form — apply, then compare newPlan.Steps[0] against
+				// plan.Steps[failedStepIdx] — compared the new plan with ITSELF. At
+				// failedStepIdx 0, the overwhelmingly common failure position, that is
+				// `newPlan.Steps[0] == newPlan.Steps[0]`: always true. Every step-0
+				// replan aborted, including the ones that had produced a perfectly good
+				// recovery step, so tiered recovery effectively did not exist. Observed
+				// 2026-07-28: a replan offering "Check if the parent directory exists;
+				// if not, create it" was rejected as a repeat of "Write the exact line
+				// 'alpha record' to …".
+				failedQuery := ""
+				if failedStepIdx >= 0 && failedStepIdx < len(plan.Steps) {
+					failedQuery = plan.Steps[failedStepIdx].Query
+				}
+				if len(newPlan.Steps) > 0 && failedQuery != "" && newPlan.Steps[0].Query == failedQuery {
+					slog.Warn("Replan dry-run: new plan repeats same faulty step query",
+						"step", newPlan.Steps[0].Query)
+					return nil, &PartialPlanError{
+						FailedStep:  failedStepIdx,
+						LastError:   fmt.Errorf("replan validation: replanned plan repeats the same step that failed: %s", newPlan.Steps[0].Query),
+						Context:     cloneMap(masterContext),
+						ReplanCount: d.replanCount,
+					}
 				}
 
-				if len(newPlan.Steps) > 0 && failedStepIdx < len(newPlan.Steps) {
-					if newPlan.Steps[0].Query == plan.Steps[failedStepIdx].Query {
-						slog.Warn("Replan dry-run: new plan repeats same faulty step query",
-							"step", newPlan.Steps[0].Query)
-						return nil, &PartialPlanError{
-							FailedStep:  failedStepIdx,
-							LastError:   fmt.Errorf("replan validation: replanned plan repeats the same step that failed: %s", newPlan.Steps[0].Query),
-							Context:     cloneMap(masterContext),
-							ReplanCount: d.replanCount,
-						}
-					}
+				// Only now mutate: a rejected replan must leave the executor's state
+				// untouched rather than half-swapped.
+				if topoErr := d.applyReplannedPlan(newPlan, &plan, &n, alreadyDispatched, completed, &topoOrder); topoErr != nil {
+					return nil, topoErr
 				}
 
 				firstErr = nil
@@ -988,6 +1013,19 @@ func (d *DAGExecutor) ExecuteFrom(
 		// ADR-0049 D5: scenes are no longer per-step. The ONE plan-wide scene is written
 		// at plan completion (WritePlanScene below); per-step SceneID stays empty.
 		var sceneID string
+
+		// ADR-0049 A2.3: score this step against what merit predicted of its agent, and
+		// keep the plan's WORST miss. The executing agent is the handoff's sender; the
+		// step's first required capability scopes the expectation when ROUTE-06 has one.
+		if d.Surprise != nil && r.resp != nil && r.resp.FromAgent != "" {
+			var stepCap string
+			if rc := plan.Steps[r.index].RequiredCapabilities; len(rc) > 0 {
+				stepCap = rc[0]
+			}
+			if pe, ok := d.Surprise.PredictionError(ctx, r.resp.FromAgent, stepCap, r.err == nil); ok && pe > maxSurprise {
+				maxSurprise = pe
+			}
+		}
 
 		// ADR-0015: Feed step result to Tier-1 pending channel (non-blocking, best-effort).
 		// SceneID forwarded so Tier-2 drain can write the discussed_in edge (ADR-0025).
@@ -1136,7 +1174,21 @@ func (d *DAGExecutor) ExecuteFrom(
 	// engaged-entity scope is fully known — for BOTH success and failure (a failure
 	// scene is the highest-value precedent), with the outcome recorded.
 	if d.MemoryRecorder != nil {
-		_ = d.MemoryRecorder.WritePlanScene(ctx, planID, plan.Subject, firstErr == nil)
+		_ = d.MemoryRecorder.WritePlanScene(ctx, domain.PlanRecord{
+			PlanID:  planID,
+			Goal:    plan.Subject,
+			Success: firstErr == nil,
+			// ADR-0094 D3 clusters on the capability SHAPE, so the sequence has to
+			// reach the record. Taken from the plan rather than from what executed,
+			// so a routine describes what the work REQUIRED, not who happened to win.
+			Capabilities: planCapabilitySequence(plan),
+			Surprise:     maxSurprise,
+			// ADR-0094 D8: the routines that informed this plan, so the memory agent
+			// can feed their confidence from how it turned out. Without this the
+			// co-evolution branch in WritePlanScene is unreachable — the field was
+			// read but never written, so no routine ever learned from an outcome.
+			FollowedProcedures: plan.FollowedProcedures,
+		})
 	}
 
 	if firstErr != nil {
@@ -1386,4 +1438,18 @@ func deduplicate(indices []int) []int {
 		}
 	}
 	return result
+}
+
+// planCapabilitySequence renders a plan's ordered capability requirements — the shape
+// ADR-0094 D3 groups on. Empty when the capability_contract arm is off, which makes the
+// plan uninducible rather than mis-grouped.
+func planCapabilitySequence(plan *domain.ExecutionPlan) []string {
+	out := make([]string, 0, len(plan.Steps))
+	for _, st := range plan.Steps {
+		if len(st.RequiredCapabilities) == 0 {
+			continue
+		}
+		out = append(out, strings.Join(st.RequiredCapabilities, "+"))
+	}
+	return out
 }

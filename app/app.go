@@ -43,6 +43,7 @@ import (
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 	session "github.com/cambrian-sh/core/internal/substrate/session"
+	"github.com/cambrian-sh/core/internal/supervision"
 	"github.com/cambrian-sh/core/internal/supervision/circadian"
 	"github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 	supwatcher "github.com/cambrian-sh/core/internal/supervision/watcher"
@@ -1004,11 +1005,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// behind the structure-graph flag below — a document exists whether or not its
 		// hierarchy was parsed, and it is the row that owns the classification tags, so
 		// gating it would leave tag ownership dependent on an unrelated feature switch.
-		// Called directly rather than through a type assertion: `vec` is the concrete
-		// adapter and document_store.go carries a compile-time proof it satisfies the
-		// port, so a mismatch is a build error instead of a feature that silently is
-		// not wired.
-		mem.IngestionManager.SetDocumentStore(vec)
+		// Wrapped, never handed the raw adapter. `documents.tags` is the authoritative
+		// classification every access decision reads, so it goes through the same write
+		// chokepoint as the vector store: the ingesting agent's tags are a request, the
+		// decision point returns the answer. Passing `vec` directly here — which is what
+		// this line originally did — exempted the one column that matters most from
+		// ADR-0085's "the check runs on every path".
+		mem.IngestionManager.SetDocumentStore(
+			memory.NewEnforcingDocumentStore(vec, authorizer, slog.Default()),
+		)
 		// ADR-0060: structure-aware ingestion — parse each document's real hierarchy
 		// via the docling_agent and persist a structure graph (sections + PART_OF/NEXT
 		// edges), stamping every chunk with its inherited section path. Opt-in.
@@ -1126,6 +1131,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if cfg.Execution.ToolsAutoApprove {
 		toolApprovalCtrl = domain.AlwaysApproveController{}
 	}
+	// ADR-0049 A2.3: score each step outcome against the merit the ProfileAggregator
+	// already maintains. Wired unconditionally — the gate it feeds is what is
+	// default-off, not the measurement, so the surprise distribution accumulates on
+	// outcome records and can be used to tune the floor from data rather than taste.
+	cambrianServer.SurpriseOracle = &supervision.MeritSurpriseOracle{Profiles: mem.ProfileStore}
+
 	cambrianServer.ToolExecutor = &domain.ToolExecutor{
 		Registry:   toolReg,
 		Grants:     toolGrants,
@@ -1687,6 +1698,13 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			"scout-usefulness",
 			// route-preview: PreviewRoute deterministic gatekeeper merit scoring (ROUTE-07).
 			"route-preview",
+			// native-tool-calling: the agent-plane GenerateWithTools RPC exists on this
+			// build (ADR-0097 Phase B). Declared unconditionally because the RPC is
+			// always served; whether a given STEP can use it depends on the model
+			// allocated to it, which the kernel answers per call with
+			// FailedPrecondition. A client uses this to decide whether the RPC is worth
+			// attempting at all, rather than probing and getting Unimplemented.
+			"native-tool-calling",
 			// agent-steps: per-memory_query AgentStepOp on the feed — agent-loop
 			// observability (query-thrash + retrieval-provenance poisoning signals).
 			"agent-steps",
@@ -1717,6 +1735,20 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		}
 		operatorCaps = append(operatorCaps, "session-lifecycle")
 		operatorCaps = append(operatorCaps, k.PluginCapabilities...)
+		// Contract 0069 (ADR-0097 D8): GenerateWithToolsRequest carries `messages`
+		// (ModelMessageProto: role/content/tool_calls/tool_call_id) and deprecates the
+		// single `prompt`. Native tool-calling is a CONVERSATION — the model must be
+		// sent its own assistant turn and the tool result under the provider's call id —
+		// and a lone prompt string could not express either. 0068 shipped that defect;
+		// this revision is what makes the RPC usable.
+		//
+		// Contract 0068 (ADR-0097 Phase B): adds the agent-plane GenerateWithTools RPC
+		// (native tool-calling) with ToolDefinitionProto / ModelToolCallProto. The
+		// operator surface is unchanged, but the version is bumped anyway: the
+		// handshake is the ONLY way a client can tell which agent-plane RPCs exist,
+		// and the SetRuntimeConfig incident is the standing reminder that an
+		// un-bumped proto change is invisible and undebuggable.
+		//
 		// Contract 0067 (ADR-0089): adds SnapshotResponse.plugins — every declared
 		// plugin with its own version line, so a console can detect plugin-level skew
 		// the way it already detects contract skew. 0066 (ADR-0085) added
@@ -1724,7 +1756,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// QueryMemoryResponse.policy_note. The "access-policy" capability (declared by
 		// the policy plugin's manifest) lets a console decide whether to render the
 		// policy surfaces at all, instead of probing and getting Unimplemented.
-		operatorSvc.SetHandshake("0.6.9-alpha", "0067", operatorCaps)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0069", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".

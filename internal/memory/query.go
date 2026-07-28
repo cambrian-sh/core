@@ -1147,7 +1147,7 @@ func extractQueryTerms(query string) []string {
 // kgExpand additions (expandedScore: a survival floor lifted by query cosine) and
 // carry RawScore=0 so the Stage-A blend treats them as beneficiaries, not
 // relevance anchors. Deduped against the existing pool and bounded by kgMaxExpanded.
-func (q *QueryService) injectQueryEntitySeeds(ctx context.Context, results []domain.SearchResult, query string, vec []float32) []domain.SearchResult {
+func (q *QueryService) injectQueryEntitySeeds(ctx context.Context, results []domain.SearchResult, query string, vec []float32, scope *domain.TagPredicate) []domain.SearchResult {
 	terms := extractQueryTerms(query)
 	if len(terms) == 0 {
 		return results
@@ -1169,7 +1169,7 @@ func (q *QueryService) injectQueryEntitySeeds(ctx context.Context, results []dom
 		if added >= budget {
 			break
 		}
-		ids, err := q.chunkTriplets.ChunksMentioningEntity(ctx, term, perEntity)
+		ids, err := q.chunkTriplets.ChunksMentioningEntity(ctx, term, perEntity, scope)
 		if err != nil {
 			slog.WarnContext(ctx, "query-entity seeding: lookup failed", "term", term, "err", err)
 			continue
@@ -1321,6 +1321,22 @@ func (q *QueryService) SearchScenes(ctx context.Context, query, callerID string)
 	return q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicScene, false)
 }
 
+// SearchProcedures is the ADR-0094 D5 procedural lane: "how has this kind of work gone
+// here?". A fourth intent alongside facts, actions and precedents — grounding a claim,
+// reconstructing history, recalling a transition and recalling a ROUTINE are four
+// different questions, and D4/A2.4 exist because mixing them re-bloats context.
+//
+// Similarity-gated like the precedent lane: no trigger match above the floor returns
+// nothing rather than the nearest routine, because a procedure retrieved for a
+// situation it does not fit is worse than none — it is a confident wrong answer.
+//
+// Deprecated and superseded routines sink to the activation floor rather than being
+// deleted (see procedureActivation), so they fall out of contention here without losing
+// the record that they once worked.
+func (q *QueryService) SearchProcedures(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
+	return q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicProcedure, false)
+}
+
 // SearchEntities is the EXACT-lookup access path (ADR-0049 D8/Issue 012): the query is a
 // canonical `kind:id` (not a semantic phrase), resolved by id to ONE entity record. The
 // returned text is the RECONSTRUCTED current state — the materialized field-LWW view,
@@ -1446,6 +1462,13 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 		return []domain.SearchResult{}, nil
 	}
 	opts.Scope = eff
+	// Carry the resolved predicate on the CONTEXT as well, not just on opts. Search
+	// pushes opts.Scope down into SQL, but the enrichment stages below reach chunks
+	// BY ID (anchor promotion, neighbour window, entity seeding, kgExpand), and those
+	// reads have no opts to carry a predicate — ctx is their only channel. Seeding it
+	// once here means a by-id read added later is enforced by default rather than by
+	// whoever remembers to thread it (ADR-0095 D9).
+	ctx = domain.WithScope(ctx, eff)
 
 	results, err := q.vectorStore.Search(ctx, vec, opts)
 	if err != nil {
@@ -1498,11 +1521,11 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 	// inject the chunks mentioning them as seeds, so a vector miss is rescued by
 	// the graph. Runs before kgExpand so the expansion also walks from these.
 	if q.queryEntitySeed && q.chunkTriplets != nil {
-		results = q.injectQueryEntitySeeds(ctx, results, query, vec)
+		results = q.injectQueryEntitySeeds(ctx, results, query, vec, eff)
 	}
 
 	if q.chunkTriplets != nil && len(results) > 0 {
-		results = kgExpand(ctx, results, q.chunkTriplets, q.vectorStore, vec, kgExpandOpts{
+		results = kgExpand(ctx, results, q.chunkTriplets, q.vectorStore, vec, eff, kgExpandOpts{
 			Hops:        q.kgHops,
 			MaxExpanded: q.kgMaxExpanded,
 			MaxEntities: q.kgMaxEntities,
@@ -1533,7 +1556,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 	// (Chapter 1, scene 1 / an explicit id), lift the chunks that carry it above
 	// the floor so the reranker can't bury them among template-identical siblings.
 	if q.anchorConstraint && q.chunkTriplets != nil {
-		results = q.applyAnchorConstraint(ctx, results, query, vec)
+		results = q.applyAnchorConstraint(ctx, results, query, vec, eff)
 	}
 
 	// ADR-0060: structure-graph section scoping — promote chunks under a section
@@ -1564,23 +1587,19 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 	// the graph help (fill empty slots on a sparse store) but never hurt (evict a
 	// dense hit on a noisy one). results is sorted by blended score, so each pass
 	// takes the highest-scored members of its group first.
-	filtered := make([]domain.SearchResult, 0, topK)
-	for _, r := range results { // pass 1: primary hits only
-		if len(filtered) >= topK {
-			break
-		}
-		if primaryIDs[r.Document.ID] && admit(r) {
-			filtered = append(filtered, r)
-		}
-	}
-	for _, r := range results { // pass 2: injected chunks fill the remainder
-		if len(filtered) >= topK {
-			break
-		}
-		if !primaryIDs[r.Document.ID] && admit(r) {
-			filtered = append(filtered, r)
-		}
-	}
+	// ADR-0049 A2.4 adds a LANE dimension to the same idea. Corpus knowledge and
+	// experience are different KINDS of thing — testimony someone asserted, versus
+	// observation the system made of itself — and a knowledge question must not have
+	// its evidence crowded out by the system's own history. So the passes run
+	// in-lane-first: a knowledge query fills from corpus before experience is
+	// considered at all, and a precedent query the other way round. Out-of-lane rows
+	// are not excluded (cross-lane association is genuinely useful — "I hit this error
+	// before, and the docs say X"); they simply never displace an in-lane hit.
+	//
+	// Defect 4 in A2.1: the experiential lane never had this protection, and injected
+	// 0.5-floor rows evicting real hits is the same failure that once nearly halved
+	// MuSiQue support-recall.
+	filtered := assembleLanes(results, primaryIDs, topK, laneIsExperiential(docType), admit)
 
 	// ADR-0048 D2: optionally expand the fact seeds associatively over the memory
 	// graph. Off for the action lane.
@@ -2009,4 +2028,81 @@ func docTags(meta map[string]interface{}) []string {
 		return out
 	}
 	return nil
+}
+
+// isExperientialDoc reports whether a row is EXPERIENCE (something the system observed
+// itself doing) rather than corpus knowledge (something an operator ingested).
+//
+// Typed on the document type rather than on provenance metadata because the type IS the
+// distinction ADR-0049 D1 draws — memory is typed by what it is, not where it came from
+// — and because a type check cannot be defeated by a missing metadata key.
+func isExperientialDoc(d domain.Document) bool {
+	switch d.DocumentType {
+	case domain.DocTypeMnemonicScene, domain.DocTypeMnemonicAction,
+		domain.DocTypeMnemonicEntity, domain.DocTypeEpisodicMemory,
+		domain.DocTypeNegativeEdge, domain.DocTypeMnemonicProcedure:
+		return true
+	}
+	// An agent-written fact parented to an episode is experience too. Empty for corpus
+	// chunks, and for any row read back before ADR-0095 D2 stamped the column.
+	return d.ExperienceID != ""
+}
+
+// laneIsExperiential maps a query's document type to the lane it is asking in: a
+// knowledge question wants corpus, an action or precedent question wants experience.
+func laneIsExperiential(docType string) bool {
+	switch docType {
+	case domain.DocTypeMnemonicAction, domain.DocTypeMnemonicScene,
+		domain.DocTypeEpisodicMemory, domain.DocTypeNegativeEdge,
+		domain.DocTypeMnemonicProcedure:
+		return true
+	}
+	return false
+}
+
+// assembleLanes is the ADR-0049 A2.4 lane-aware non-displacing truncation. Pure, so the
+// precedence rules are testable without a store, a session, or an embedder.
+//
+// Two orthogonal precedences, applied in order:
+//
+//	IN-LANE before OUT-OF-LANE   — a knowledge question fills from corpus before
+//	                               experience is considered; a precedent question the
+//	                               other way round.
+//	PRIMARY before INJECTED      — a genuine dense+lexical hit outranks an
+//	                               associatively-injected one (the original rule).
+//
+// Out-of-lane rows are NOT excluded. Cross-lane association is the point of a shared
+// store — "I hit this error before, and the docs say X" — they simply never displace an
+// in-lane hit. `admit` is the session/floor filter; nil admits everything.
+func assembleLanes(
+	results []domain.SearchResult,
+	primaryIDs map[string]bool,
+	topK int,
+	wantExperiential bool,
+	admit func(domain.SearchResult) bool,
+) []domain.SearchResult {
+	if admit == nil {
+		admit = func(domain.SearchResult) bool { return true }
+	}
+	inLane := func(r domain.SearchResult) bool {
+		return isExperientialDoc(r.Document) == wantExperiential
+	}
+	passes := []func(domain.SearchResult) bool{
+		func(r domain.SearchResult) bool { return inLane(r) && primaryIDs[r.Document.ID] },
+		func(r domain.SearchResult) bool { return inLane(r) && !primaryIDs[r.Document.ID] },
+		func(r domain.SearchResult) bool { return !inLane(r) && primaryIDs[r.Document.ID] },
+		func(r domain.SearchResult) bool { return !inLane(r) && !primaryIDs[r.Document.ID] },
+	}
+	out := make([]domain.SearchResult, 0, topK)
+	for _, keep := range passes {
+		for _, r := range results {
+			if len(out) >= topK {
+				return out
+			}
+			if keep(r) && admit(r) {
+				out = append(out, r)
+			}
+		}
+	}
+	return out
 }

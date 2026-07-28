@@ -79,10 +79,11 @@ func TestWritePlanScene_EmbedsProjectionAndRecordsOutcome(t *testing.T) {
 	emb := &recordingEmbedder{}
 	agent := NewAgent(NewMemoryManager(store, emb), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
+	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
 	ctx := context.Background()
 
 	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "step-0-pf"})
-	_ = agent.WritePlanScene(ctx, "pf", "ship it", false) // failed plan
+	_ = agent.WritePlanScene(ctx, domain.PlanRecord{PlanID: "pf", Goal: "ship it", Success: false, Surprise: -1}) // failed plan
 
 	// The EMBEDDED text is the abstracted projection, not the human-readable Text.
 	if emb.lastText != "goal: ship it | engages: 1 file" {

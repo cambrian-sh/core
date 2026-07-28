@@ -43,6 +43,7 @@ func NewProviderRegistryFromGenerators(generators []config.GeneratorConfig) (*Pr
 			TimeoutMs:       g.TimeoutMs,
 			Capabilities:    g.Capabilities,
 			DisableThinking: g.DisableThinking,
+			NativeTools:     g.NativeTools,
 		}
 	}
 	return NewProviderRegistry(models)
@@ -67,7 +68,11 @@ func NewStreamersFromGenerators(generators []config.GeneratorConfig) (map[string
 		case "ollama":
 			s = &OllamaClient{BaseURL: g.Endpoint, Model: g.Model, TimeoutMs: g.TimeoutMs}
 		case "openai":
-			s = &OpenAIClient{Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs, DisableThinking: g.DisableThinking}
+			// NativeTools must be carried here too: this is the THIRD field-by-field copy
+			// of the generator config, and the gateway type-asserts these very values
+			// for tool support. Omitting it would leave every agent-plane call on the
+			// text path with no error anywhere (ADR-0097).
+			s = &OpenAIClient{Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs, DisableThinking: g.DisableThinking, NativeTools: g.NativeTools}
 		case "anthropic":
 			s = &AnthropicClient{Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs}
 		case "gemini":
@@ -111,6 +116,7 @@ func NewProviderRegistry(models []config.ModelConfig) (*ProviderRegistry, error)
 				APIKeyEnv:       mc.APIKeyEnv,
 				TimeoutMs:       mc.TimeoutMs,
 				DisableThinking: mc.DisableThinking,
+				NativeTools:     mc.NativeTools,
 			}
 		case "anthropic":
 			reg.Anthropic = &AnthropicClient{

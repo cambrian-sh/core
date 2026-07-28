@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/memory"
 	memstore "github.com/cambrian-sh/core/internal/memory/store"
-	"github.com/cambrian-sh/core/internal/authz"
 )
 
 // MemoryStack is the memory substrate of the system. It owns everything that
@@ -19,7 +19,7 @@ import (
 //
 // Biologically: this is the hippocampus + long-term memory cortex.
 type MemoryStack struct {
-	VecDB                domain.VectorStore
+	VecDB domain.VectorStore
 	// ReadStore is the fail-closed read chokepoint over VecDB. Every principal-facing
 	// read goes through it; the raw VecDB is reserved for kernel-internal components
 	// that need the concrete adapter (graph store, spreader, profile store).
@@ -37,6 +37,9 @@ type MemoryStack struct {
 	EdgeWriter           *memory.EdgeWriter           // ADR-0052: per-doc LLM-driven edge populator (sync mode, kept for tests)
 	EdgeBatcher          *memory.EdgeBatcher          // ADR-0052: batched LLM-driven edge populator; production path
 	ChunkTripletsBatcher *memory.ChunkTripletsBatcher // ADR-0053 Phase 0: batched per-chunk (h,r,t) extractor
+	// ProcedureScheduler runs the ADR-0094 induction pass. nil ⇒ disabled, which is
+	// the default (execution.procedure_induction_interval_hours = 0).
+	ProcedureScheduler *memory.ProcedureScheduler
 }
 
 // NewPgSceneWriter constructs a per-request PgSceneWriter for DAGExecutor.
@@ -79,6 +82,21 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// Passive experiential capture (auto-embedding step results + tool outputs into LTM) is
 	// off unless explicitly enabled. See execution.experiential_memory_enabled.
 	memoryAgent.RecordExperiential = execCfg.ExperientialMemoryEnabled
+	// ADR-0049 §A2.2: the outcome record — one abstracted record per completed plan.
+	// A separate arm from the raw path above, because they are opposite designs: that
+	// one embeds whole tool payloads (removed 2026-07-18, stays off), this one embeds
+	// only the D7 projection and references everything else. `vec` is the raw adapter
+	// on purpose — this is a kernel-owned write of a row the kernel itself stamps, not
+	// a principal-facing one.
+	memoryAgent.RecordOutcomes = execCfg.ExperienceRecordsEnabled
+	memoryAgent.SurpriseFloor = execCfg.ExperienceSurpriseFloor
+	memoryAgent.ProcedureDeprecateBelow = execCfg.ProcedureDeprecateBelow
+	// Asserted rather than required on the port: a store that cannot persist episode
+	// parents (a test fake, a future backend) leaves this nil, and the outcome record
+	// is then written with a NULL parent instead of not written at all.
+	if es, ok := vec.(domain.ExperienceStore); ok {
+		memoryAgent.ExperienceStore = es
+	}
 	hippocampus := memory.NewHippocampus(scopedRead, embed,
 		config.NewStaticPolicyProvider(execCfg.HippocampusPolicies, execCfg.HippocampusDefaultPolicy))
 	queryService := memory.NewQueryService(embed, vec)
@@ -200,6 +218,29 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// weight) and its fixed-dir fsnotify watch errored at startup when InboxDir was
 	// absent. On-demand + reactive watch sources (ADR-0032/REACT-06) supersede it.
 
+	// ADR-0094 D3 + ADR-0049 A2.5: the offline induction pass. Constructed only when
+	// an interval is configured, so a deployment that has not opted in carries no
+	// goroutine, no ticker and no store reads. The inducer writes through the RAW
+	// adapter because a procedure is a kernel-authored artifact, not a principal's
+	// write — the same reasoning as the experience parent row.
+	var procScheduler *memory.ProcedureScheduler
+	if h := execCfg.ProcedureInductionIntervalHours; h > 0 {
+		inducer := &memory.ProcedureInducer{
+			Store:      vec,
+			Embedder:   embed,
+			MinSamples: execCfg.ProcedureMinSamples,
+		}
+		if es, ok := vec.(domain.ExperienceStore); ok {
+			inducer.Experience = es
+		}
+		procScheduler = &memory.ProcedureScheduler{
+			Inducer:     inducer,
+			Store:       vec,
+			Interval:    time.Duration(h) * time.Hour,
+			MaxEpisodes: execCfg.ProcedureMaxEpisodesPerPass,
+		}
+	}
+
 	return &MemoryStack{
 		VecDB:                vec,
 		ReadStore:            scopedRead,
@@ -216,6 +257,7 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		EdgeWriter:           edgeWriter,
 		EdgeBatcher:          edgeBatcher,
 		ChunkTripletsBatcher: chunkTripletsBatcher,
+		ProcedureScheduler:   procScheduler,
 	}
 }
 
@@ -236,6 +278,9 @@ func (s *MemoryStack) Start(ctx context.Context) error {
 	if s.IngestionManager != nil {
 		s.IngestionManager.Start(ctx)
 	}
+	// ADR-0094: the induction pass. Start is a no-op when the scheduler is nil
+	// (no interval configured), so the default deployment is unaffected.
+	s.ProcedureScheduler.Start(ctx)
 	return s.Agent.StartMemoryWorker(ctx, false)
 }
 

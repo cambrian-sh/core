@@ -65,6 +65,9 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	case "entity":
 		// ADR-0049 Issue 012: exact entity lookup — the query is a canonical kind:id.
 		results, err = s.MemorySearcher.SearchEntities(ctx, req.GetQuery(), callerID)
+	case "procedures":
+		// ADR-0094 D5: induced routines ("how has this gone here?").
+		results, err = s.MemorySearcher.SearchProcedures(ctx, req.GetQuery(), callerID)
 	case "precedents":
 		// ADR-0049 Issue 014: the world-model precedent pull lane (transitions).
 		results, err = s.MemorySearcher.SearchPrecedents(ctx, req.GetQuery(), callerID)

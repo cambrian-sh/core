@@ -48,11 +48,19 @@ func TestSceneWriter_NilIsNoop(t *testing.T) {
 }
 
 // captureRecorder records WritePlanScene calls (ADR-0049 D5).
-type captureRecorder struct{ planGoals []string }
+//
+// It keeps the WHOLE record, not just the goal: the PlanRecord is assembled
+// field-by-field at the call site, so a field that stops being copied there is
+// invisible to any assertion that only reads one other field.
+type captureRecorder struct {
+	planGoals []string
+	recs      []domain.PlanRecord
+}
 
 func (c *captureRecorder) RecordExecution(_ context.Context, _ domain.StepResult) error { return nil }
-func (c *captureRecorder) WritePlanScene(_ context.Context, _ string, goal string, _ bool) error {
-	c.planGoals = append(c.planGoals, goal)
+func (c *captureRecorder) WritePlanScene(_ context.Context, rec domain.PlanRecord) error {
+	c.planGoals = append(c.planGoals, rec.Goal)
+	c.recs = append(c.recs, rec)
 	return nil
 }
 
@@ -81,5 +89,30 @@ func TestWritePlanScene_OncePerPlan(t *testing.T) {
 	}
 	if len(rec.planGoals) != 1 || rec.planGoals[0] != "the plan goal" {
 		t.Errorf("expected exactly one plan scene with the goal; got %v", rec.planGoals)
+	}
+}
+
+// ADR-0094 D8: the routines that informed the plan must reach the PlanRecord, or the
+// memory agent's co-evolution branch (`len(rec.FollowedProcedures) > 0`) is
+// unreachable and no routine's confidence ever moves from an outcome.
+//
+// This asserts the EXECUTOR hop specifically. The end-to-end feedback test in
+// internal/memory builds its PlanRecord directly, so it passes with this hop deleted —
+// which it was, for as long as the field existed.
+func TestWritePlanScene_CarriesFollowedProcedures(t *testing.T) {
+	rec := &captureRecorder{}
+	ex := &DAGExecutor{MemoryRecorder: rec}
+
+	plan := twoStepPlan()
+	plan.FollowedProcedures = []string{"routine-a", "routine-b"}
+	if _, err := ex.Execute(context.Background(), plan, nil, StepFunc(okStepFn)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(rec.recs) != 1 {
+		t.Fatalf("expected one plan record; got %d", len(rec.recs))
+	}
+	got := rec.recs[0].FollowedProcedures
+	if len(got) != 2 || got[0] != "routine-a" || got[1] != "routine-b" {
+		t.Errorf("PlanRecord dropped the followed routines: got %v, want [routine-a routine-b]", got)
 	}
 }

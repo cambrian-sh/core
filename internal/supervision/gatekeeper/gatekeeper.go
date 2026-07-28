@@ -2,12 +2,30 @@ package gatekeeper
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 )
+
+// SoftPinBoost is added to a soft-pinned agent's merit score, clamped to 1.0.
+// Sized to dominate ordinary merit spread (success-rate/trust differences are
+// typically well under 0.2) without being absolute — a soft pin should win among
+// comparable agents and lose to one that is drastically better. PinHard is the
+// mechanism for "this agent, regardless".
+const SoftPinBoost = 0.25
+
+// softPinned applies SoftPinBoost with clamping, so a pin can never push a score
+// outside the [0,1] range the rest of selection assumes.
+func softPinned(score float64) float64 {
+	if boosted := score + SoftPinBoost; boosted < 1.0 {
+		return boosted
+	}
+	return 1.0
+}
 
 const (
 	DefaultProvisionalScore    = 0.1
@@ -86,6 +104,33 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 		return nil, err
 	}
 
+	// Agent pinning. Resolved once so the hard short-circuit and the soft
+	// exemptions below cannot disagree about which agent is pinned.
+	pinnedID := ""
+	if g.ExecCfg.AgentPinning && task != nil {
+		pinnedID = task.PreferredAgent
+	}
+	// EqualFold, not ==: the pin strength comes from an LLM, and "Hard" losing its
+	// meaning on capitalisation would be a silent downgrade. Anything that is not
+	// recognisably "hard" still degrades to soft, which is the safe direction.
+	if pinnedID != "" && strings.EqualFold(task.AgentPin, domain.PinHard) {
+		// A hard pin skips discovery entirely: the user named the executor, so
+		// there is nothing to select. Daemons and privileged system organs stay
+		// undispatchable — they do not serve task steps at all, and letting a pin
+		// reach them would route work into machinery that cannot run it.
+		for _, agent := range agents {
+			if agent.ID != pinnedID {
+				continue
+			}
+			if agent.Trait == domain.TraitDaemon || domain.IsSystemAgent(agent.ID) {
+				return nil, fmt.Errorf("%w: %q is not dispatchable", domain.ErrPinnedAgentUnavailable, pinnedID)
+			}
+			slog.Info("Gatekeeper: hard agent pin bound", "agent_id", pinnedID, "task_id", task.ID)
+			return []domain.ScoredCandidate{{Agent: agent, Score: 1.0}}, nil
+		}
+		return nil, fmt.Errorf("%w: %q is not registered", domain.ErrPinnedAgentUnavailable, pinnedID)
+	}
+
 	// Pre-load all manifests in one Tx if the registry supports batch reads.
 	var manifestCache map[string]*domain.AgentManifest
 	if batcher, ok := g.Registry.(batchManifestReader); ok {
@@ -155,6 +200,13 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 				meritByAgent[agent.ID] = mb
 			}
 		}
+		// A soft pin is a thumb on the scale, not a verdict: the named agent is
+		// boosted but still ranked, so a markedly better candidate can win. Note
+		// the pin is applied AFTER L1 — a soft pin never buys past the capability
+		// contract, it only competes harder inside it.
+		if agent.ID == pinnedID {
+			score = softPinned(score)
+		}
 		candidates = append(candidates, domain.ScoredCandidate{Agent: agent, Score: score})
 	}
 
@@ -202,8 +254,14 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 				}
 				var filtered []domain.ScoredCandidate
 				for _, c := range candidates {
-					bypass := c.Agent.Provisional &&
-						(!g.ExecCfg.PerCapabilityMerit || g.ExplorationBudget.Allowed(budgetCap))
+					// A soft-pinned agent bypasses the semantic gate. L2 measures
+					// whether an agent's DESCRIPTION reads as similar to the step,
+					// which is the wrong question once a user has named the executor:
+					// "use terminal_agent to summarise this" is a legitimate request
+					// that description similarity would veto.
+					bypass := c.Agent.ID == pinnedID ||
+						(c.Agent.Provisional &&
+							(!g.ExecCfg.PerCapabilityMerit || g.ExplorationBudget.Allowed(budgetCap)))
 					if bypass {
 						filtered = append(filtered, c)
 						if trace {

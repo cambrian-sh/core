@@ -14,6 +14,10 @@ import (
 // ChunksMentioningEntity scans the inverted index (head or tail).
 type fakeChunkTripletsStore struct {
 	byChunkID map[string][]ChunkTriplet
+	// lastScope records the predicate the caller threaded through, so a test can
+	// assert the ADR-0095 D9 wiring exists rather than trusting it.
+	lastScope *domain.TagPredicate
+	scopeSeen bool
 }
 
 func newFakeChunkTripletsStore() *fakeChunkTripletsStore {
@@ -54,7 +58,9 @@ func (f *fakeChunkTripletsStore) ForChunks(_ context.Context, chunkIDs []string)
 	return out, nil
 }
 
-func (f *fakeChunkTripletsStore) ChunksMentioningEntity(_ context.Context, entity string, limit int) ([]string, error) {
+func (f *fakeChunkTripletsStore) ChunksMentioningEntity(_ context.Context, entity string, limit int, scope *domain.TagPredicate) ([]string, error) {
+	f.lastScope = scope
+	f.scopeSeen = true
 	e := strings.ToLower(strings.TrimSpace(entity))
 	if e == "" {
 		return nil, nil
@@ -177,7 +183,7 @@ func TestKgExpand_OneHop_AddsRelatedChunks(t *testing.T) {
 		"chunk-3": {ID: "chunk-3", Text: "alice knows bob"},
 	}}
 
-	got := kgExpand(context.Background(), seeds, store, vs, nil, kgExpandOpts{Hops: 1, MaxExpanded: 10, MaxEntities: 10})
+	got := kgExpand(context.Background(), seeds, store, vs, nil, &domain.TagPredicate{Bypass: true}, kgExpandOpts{Hops: 1, MaxExpanded: 10, MaxEntities: 10})
 
 	if len(got) < 2 {
 		t.Fatalf("expected seed + at least 1 expanded, got %d: %+v", len(got), got)
@@ -205,7 +211,7 @@ func TestKgExpand_NoTriplets_ReturnsSeeds(t *testing.T) {
 		{Document: domain.Document{ID: "seed-1"}, Score: 0.9},
 	}
 	vs := fakeVectorSearch{docs: map[string]domain.Document{"seed-1": seeds[0].Document}}
-	got := kgExpand(context.Background(), seeds, store, vs, nil, kgExpandOpts{})
+	got := kgExpand(context.Background(), seeds, store, vs, nil, &domain.TagPredicate{Bypass: true}, kgExpandOpts{})
 	if len(got) != 1 || got[0].Document.ID != "seed-1" {
 		t.Errorf("expected just the seed, got %+v", got)
 	}
@@ -236,7 +242,7 @@ func TestKgExpand_OneHopLimit(t *testing.T) {
 	}}
 
 	// Hops=1: should reach chunk-2 (shared "quantum"), NOT chunk-3.
-	got := kgExpand(context.Background(), seeds, store, vs, nil, kgExpandOpts{Hops: 1, MaxExpanded: 20, MaxEntities: 10})
+	got := kgExpand(context.Background(), seeds, store, vs, nil, &domain.TagPredicate{Bypass: true}, kgExpandOpts{Hops: 1, MaxExpanded: 20, MaxEntities: 10})
 	hasChunk2 := false
 	hasChunk3 := false
 	for _, r := range got {
@@ -296,10 +302,143 @@ func TestKgExpand_RespectsMaxExpanded(t *testing.T) {
 	seeds := []domain.SearchResult{
 		{Document: docs["seed"], Score: 0.9},
 	}
-	got := kgExpand(context.Background(), seeds, store, fakeVectorSearch{docs: docs}, nil,
+	got := kgExpand(context.Background(), seeds, store, fakeVectorSearch{docs: docs}, nil, &domain.TagPredicate{Bypass: true},
 		kgExpandOpts{Hops: 1, MaxExpanded: 5, MaxEntities: 10})
 
 	if len(got) > 1+5 {
 		t.Errorf("expected seed + 5 = 6 max, got %d", len(got))
+	}
+}
+
+// TestKGExpand_DropsForbiddenChunk is the ADR-0095 D9 regression.
+//
+// KG expansion reaches chunks BY ID (ChunksMentioningEntity -> GetByID), and neither
+// hop is enforced: chunk_triplets has no classification column, and EnforcingVectorStore
+// overrides Search only, so GetByID reads the raw adapter. The predicate must therefore be
+// applied to what comes back, or a restricted chunk is admitted with its FULL CONTENT.
+//
+// The prior mustGetDoc also returned domain.Document{ID: id} whenever GetByID failed, so
+// even a denied chunk entered the pool as a stub carrying its ID — and `{docID}-chunk-{n}`
+// ids encode their source document. Both are asserted here: no content, and no bare id.
+func TestKGExpand_DropsForbiddenChunk(t *testing.T) {
+	store := newFakeChunkTripletsStore()
+	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []ChunkTriplet{
+		{H: "caroline", R: "researched", T: "quantum"},
+	})
+	// Both mention `quantum`, so both are reachable from the seed by one hop.
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-public", []ChunkTriplet{
+		{H: "quantum", R: "developed at", T: "ibm"},
+	})
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-secret", []ChunkTriplet{
+		{H: "quantum", R: "billed via", T: "stripe"},
+	})
+
+	const secret = "internal billing api key sk-live-9f3c endpoint https://billing.internal"
+	seeds := []domain.SearchResult{
+		{Document: domain.Document{ID: "seed-1", Text: "caroline researched quantum"}, Score: 0.9},
+	}
+	vs := fakeVectorSearch{docs: map[string]domain.Document{
+		"seed-1":       seeds[0].Document,
+		"chunk-public": {ID: "chunk-public", Text: "quantum was developed at IBM"},
+		"chunk-secret": {
+			ID:       "chunk-secret",
+			Text:     secret,
+			Metadata: map[string]interface{}{"tags": []string{"internal"}},
+		},
+	}}
+
+	// A customer-surface predicate: `internal` is forbidden, everything else allowed.
+	scope := &domain.TagPredicate{ForbiddenTags: []string{"internal"}}
+	got := kgExpand(context.Background(), seeds, store, vs, nil, scope,
+		kgExpandOpts{Hops: 1, MaxExpanded: 10, MaxEntities: 10})
+
+	for _, r := range got {
+		if r.Document.ID == "chunk-secret" {
+			t.Errorf("forbidden chunk admitted (id leaked): %+v", r.Document)
+		}
+		if strings.Contains(r.Document.Text, "sk-live-9f3c") {
+			t.Errorf("forbidden chunk CONTENT admitted: %q", r.Document.Text)
+		}
+	}
+
+	// Not over-blocking: the permitted neighbour still expands.
+	var sawPublic bool
+	for _, r := range got {
+		if r.Document.ID == "chunk-public" {
+			sawPublic = true
+		}
+	}
+	if !sawPublic {
+		t.Errorf("permitted chunk was dropped; expansion over-blocked: %+v", got)
+	}
+}
+
+// TestKGExpand_NilPredicateFailsClosed: a nil predicate means no read is authorized
+// (readFilter's contract), so expansion must admit nothing rather than everything.
+// This is what makes the required `scope` parameter safe to forget.
+func TestKGExpand_NilPredicateFailsClosed(t *testing.T) {
+	store := newFakeChunkTripletsStore()
+	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []ChunkTriplet{
+		{H: "caroline", R: "researched", T: "quantum"},
+	})
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-2", []ChunkTriplet{
+		{H: "quantum", R: "developed at", T: "ibm"},
+	})
+
+	seeds := []domain.SearchResult{
+		{Document: domain.Document{ID: "seed-1", Text: "caroline researched quantum"}, Score: 0.9},
+	}
+	vs := fakeVectorSearch{docs: map[string]domain.Document{
+		"seed-1":  seeds[0].Document,
+		"chunk-2": {ID: "chunk-2", Text: "quantum was developed at IBM"},
+	}}
+
+	got := kgExpand(context.Background(), seeds, store, vs, nil, nil,
+		kgExpandOpts{Hops: 1, MaxExpanded: 10, MaxEntities: 10})
+
+	// Seeds pass through untouched (they were already authorized upstream); only the
+	// expansion is gated.
+	if len(got) != 1 || got[0].Document.ID != "seed-1" {
+		t.Errorf("nil predicate must admit no expanded chunks, got %d: %+v", len(got), got)
+	}
+}
+
+// TestKGExpand_ThreadsScopeToTripletStore asserts the ADR-0095 D9 wiring: the caller's
+// predicate must actually REACH ChunksMentioningEntity, which applies it by joining the
+// chunk rows (chunk_triplets carries no classification of its own).
+//
+// This is a wiring test on purpose. The predicate check inside authorizedDoc is covered
+// by TestKGExpand_DropsForbiddenChunk; what that cannot catch is a lookup that quietly
+// stops being passed a scope — the failure mode is invisible in review, because the call
+// still compiles and still returns rows.
+func TestKGExpand_ThreadsScopeToTripletStore(t *testing.T) {
+	store := newFakeChunkTripletsStore()
+	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []ChunkTriplet{
+		{H: "caroline", R: "researched", T: "quantum"},
+	})
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-2", []ChunkTriplet{
+		{H: "quantum", R: "developed at", T: "ibm"},
+	})
+
+	seeds := []domain.SearchResult{
+		{Document: domain.Document{ID: "seed-1", Text: "caroline researched quantum"}, Score: 0.9},
+	}
+	vs := fakeVectorSearch{docs: map[string]domain.Document{
+		"seed-1":  seeds[0].Document,
+		"chunk-2": {ID: "chunk-2", Text: "quantum was developed at IBM"},
+	}}
+
+	scope := &domain.TagPredicate{ForbiddenTags: []string{"internal"}}
+	_ = kgExpand(context.Background(), seeds, store, vs, nil, scope,
+		kgExpandOpts{Hops: 1, MaxExpanded: 10, MaxEntities: 10})
+
+	if !store.scopeSeen {
+		t.Fatal("ChunksMentioningEntity was never called; test cannot prove threading")
+	}
+	if store.lastScope == nil {
+		t.Fatal("scope did not reach ChunksMentioningEntity (nil) — the lookup would be unscoped")
+	}
+	if len(store.lastScope.ForbiddenTags) != 1 || store.lastScope.ForbiddenTags[0] != "internal" {
+		t.Errorf("wrong predicate reached the store: %+v", store.lastScope)
 	}
 }

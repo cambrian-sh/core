@@ -69,7 +69,7 @@ func TestInjectQueryEntitySeeds_RescuesVectorMiss(t *testing.T) {
 	q := &QueryService{chunkTriplets: st, vectorStore: vs, queryEntitySeed: true, kgPerEntity: 5, kgMaxExpanded: 20}
 
 	// Vector pool is EMPTY (total miss). Seeding must still surface gold-1.
-	out := q.injectQueryEntitySeeds(context.Background(), nil, "Where did Caroline move from?", nil)
+	out := q.injectQueryEntitySeeds(context.Background(), nil, "Where did Caroline move from?", nil, &domain.TagPredicate{Bypass: true})
 
 	var foundGold, foundNoise bool
 	for _, r := range out {
@@ -98,12 +98,12 @@ func TestInjectQueryEntitySeeds_DedupAndNoop(t *testing.T) {
 
 	// "g" already in the pool ⇒ no duplicate.
 	pool := []domain.SearchResult{{Document: domain.Document{ID: "g"}, RawScore: 0.9}}
-	out := q.injectQueryEntitySeeds(context.Background(), pool, "What did Melanie paint?", nil)
+	out := q.injectQueryEntitySeeds(context.Background(), pool, "What did Melanie paint?", nil, &domain.TagPredicate{Bypass: true})
 	if len(out) != 1 {
 		t.Fatalf("existing chunk must not be duplicated, got %d", len(out))
 	}
 	// All-stopword query ⇒ no terms ⇒ unchanged pool.
-	out2 := q.injectQueryEntitySeeds(context.Background(), pool, "what did they do?", nil)
+	out2 := q.injectQueryEntitySeeds(context.Background(), pool, "what did they do?", nil, &domain.TagPredicate{Bypass: true})
 	if len(out2) != 1 {
 		t.Fatalf("entity-less query must be a no-op, got %d", len(out2))
 	}

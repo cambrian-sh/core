@@ -63,7 +63,16 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 			Tags:       append([]string(nil), req.GetTags()...),
 			Importance: float64(req.GetImportance()),
 		}
-		entityID, err := s.IngestionProcessor.ProcessSync(ctx, doc)
+		// Stamp the authenticated principal, exactly as the Remember path below does.
+		// Without it every write this ingest performs reaches the chokepoint with no
+		// identity: OSS fails open and never notices, while a premium deployment fails
+		// CLOSED and rejects the whole ingest with `no_principal`. That asymmetry is why
+		// it survived — the path is only broken where the check actually works.
+		ictx := ctx
+		if agentID := callerAgentID(ctx); agentID != "" {
+			ictx = domain.WithPrincipal(ctx, domain.AgentPrincipal(agentID))
+		}
+		entityID, err := s.IngestionProcessor.ProcessSync(ictx, doc)
 		if err != nil {
 			return nil, status.Error(codes.Internal, "ingestion manager: "+err.Error())
 		}

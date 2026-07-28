@@ -17,7 +17,15 @@ type AuctionSelector struct {
 
 // Select runs the Gatekeeper and returns the top-scored candidate.
 func (s *AuctionSelector) Select(ctx context.Context, intent domain.Intent, _ []domain.AgentDefinition) (domain.Selection, error) {
-	task := &domain.AuctionTask{ID: intent.ID, Description: intent.Description}
+	task := &domain.AuctionTask{
+		ID:          intent.ID,
+		Description: intent.Description,
+		// ROUTE-03: see GatekeeperEFESelector.Select — the capability contract must
+		// survive the rebuild or this arm is exempt from the L1 gate.
+		RequiredCapabilities: intent.RequiredCapabilities,
+		PreferredAgent:       intent.PreferredAgent,
+		AgentPin:             intent.AgentPin,
+	}
 	scored, err := s.Gatekeeper.FindCandidates(ctx, task)
 	if err != nil {
 		return domain.Selection{}, err

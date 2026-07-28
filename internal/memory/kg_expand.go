@@ -32,7 +32,12 @@ type ChunkTripletsStore interface {
 	// referencing the given entity (as either head or tail). This is the
 	// "entity → chunks" lookup that powers the KG expansion.
 	// Matching is case-insensitive (entities are stored lowercase).
-	ChunksMentioningEntity(ctx context.Context, entity string, limit int) ([]string, error)
+	//
+	// `scope` is the caller's read predicate and is REQUIRED (ADR-0095 D9):
+	// chunk_triplets carries no classification, so the implementation applies the
+	// predicate by joining the chunk rows. A nil predicate returns nothing — this
+	// lookup is reached directly from kgExpand, with no chokepoint in front of it.
+	ChunksMentioningEntity(ctx context.Context, entity string, limit int, scope *domain.TagPredicate) ([]string, error)
 }
 
 // kgExpand is the KG²RAG one-hop chunk expansion. It walks the per-chunk
@@ -50,12 +55,25 @@ type ChunkTripletsStore interface {
 //  1. Seed chunks first (in input order)
 //  2. Then expanded chunks by descending cosine score (from the vector search)
 //  3. Ties broken by chunk ID for determinism
+//
+// AUTHORIZATION (ADR-0095 D9). Expansion reaches chunks BY ID, which does not pass
+// through the one place reads are enforced: EnforcingVectorStore overrides Search and
+// nothing else ("Search is the single SQL-building chokepoint"), so GetByID is an
+// unguarded read of the raw adapter. ChunksMentioningEntity is likewise an unscoped
+// lookup over chunk_triplets, a table with no classification column. Neither is changed
+// here; instead every materialized chunk is checked against `scope` before admission, so
+// the ID path honours the predicate the Search path honours.
+//
+// `scope` is a REQUIRED parameter rather than an opts field on purpose: a new call site
+// must supply it, and a nil predicate denies everything (TagPredicate.Check fail-closes),
+// so forgetting to wire it drops expansion rather than silently widening it.
 func kgExpand(
 	ctx context.Context,
 	seeds []domain.SearchResult,
 	store ChunkTripletsStore,
 	vectorSearch kgExpandVectorSearch,
 	queryVec []float32,
+	scope *domain.TagPredicate,
 	opts kgExpandOpts,
 ) []domain.SearchResult {
 	if len(seeds) == 0 || store == nil {
@@ -125,7 +143,7 @@ func kgExpand(
 			if len(out)+len(nextFrontier) >= budget {
 				break
 			}
-			relatedIDs, err := store.ChunksMentioningEntity(ctx, ent, opts.PerEntity)
+			relatedIDs, err := store.ChunksMentioningEntity(ctx, ent, opts.PerEntity, scope)
 			if err != nil {
 				slog.Warn("kgExpand: ChunksMentioningEntity failed", "entity", ent, "err", err)
 				continue
@@ -135,12 +153,19 @@ func kgExpand(
 					continue
 				}
 				seen[id] = true
+				// Materialize under the caller's read predicate. A chunk that is
+				// missing, unreadable, or NOT PERMITTED is dropped outright — never
+				// admitted as a stub. It is marked seen either way so a denial is not
+				// retried on a later entity (and costs no extra query).
+				doc, ok := authorizedDoc(ctx, vectorSearch, scope, id)
+				if !ok {
+					continue
+				}
 				// Score the entity-routed chunk: a 0.5 floor so the chunk
 				// SURVIVES the downstream rerank (KG expansion exists to surface
 				// chunks vector search missed), lifted by the query→chunk cosine
 				// when the chunk is also query-relevant. expandedScore is the seam
 				// the ADR-0054 Stage-A multi-signal blend extends.
-				doc := mustGetDoc(ctx, vectorSearch, id)
 				nextFrontier = append(nextFrontier, domain.SearchResult{
 					Document: doc,
 					Score:    expandedScore(queryVec, doc),
@@ -187,12 +212,31 @@ type kgExpandVectorSearch interface {
 // mustGetDoc returns the doc for an ID, or a minimal placeholder if the
 // fetch fails. The expansion shouldn't fail the query just because a
 // related-chunk fetch errored; the user still has the seed chunks.
-func mustGetDoc(ctx context.Context, vs kgExpandVectorSearch, id string) domain.Document {
+// authorizedDoc materializes an expanded chunk and admits it only if the caller's
+// read predicate allows its classification tags. ok=false means DROP — the chunk is
+// missing, unreadable, or forbidden.
+//
+// It replaces mustGetDoc, whose `return domain.Document{ID: id}` fallback leaked. That
+// fallback PREDATES authorization: it was correct when a missing row was the only way
+// GetByID could fail, and ADR-0085 added a second reason — denial — which it then
+// treated identically. The stub carried the restricted chunk's ID into the result pool
+// (and `{docID}-chunk-{n}` ids encode their source document), while expandedScore floored
+// it at 0.5 because a stub has no embedding. Worse, GetByID is not enforced at all, so a
+// permitted-looking read returned the row's FULL CONTENT. Hence the check here rather
+// than a nil-check: there is no denial signal to detect, so the predicate is applied
+// directly to what came back.
+//
+// A nil predicate denies everything (TagPredicate.Check fail-closes on nil), matching
+// readFilter's contract that a nil predicate means no read is authorized.
+func authorizedDoc(ctx context.Context, vs kgExpandVectorSearch, scope *domain.TagPredicate, id string) (domain.Document, bool) {
 	doc, err := vs.GetByID(ctx, id)
 	if err != nil || doc == nil {
-		return domain.Document{ID: id}
+		return domain.Document{}, false
 	}
-	return *doc
+	if !scope.Allows(docTags(doc.Metadata)) {
+		return domain.Document{}, false
+	}
+	return *doc, true
 }
 
 // kgExpandOpts configures the expansion depth and limits.

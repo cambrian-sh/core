@@ -45,6 +45,17 @@ type ToolOutputRecord struct {
 	Output     []byte
 	IsMutation bool
 	TaskID     string // ADR-0049 D3: per-step correlation key stamped on action records
+	// FactEligible reports whether this output passed the ADR-0048 D6 cost floor and
+	// is therefore worth curating as a FACT. It does not gate the world model.
+	//
+	// The two were previously the same decision, and that was a hole. The size floor
+	// asks "is this output substantial enough to embed as knowledge"; the world model
+	// asks "what did this call touch". A tiny result — an MCP write confirming success
+	// in 30 bytes — fails the first and is highly relevant to the second. Conflating
+	// them meant every small tool call vanished from the world model, so plan scenes
+	// came back contentless and no outcome record was ever written, with nothing
+	// logged to say why.
+	FactEligible bool
 }
 
 // FormatActionLine renders a mutation tool call into a compact, deterministic action
@@ -486,19 +497,23 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 	// happened is durable history), skipping only a denied call (it never ran). A READ
 	// is knowledge: keep the ADR-0048 D6 cost floor + error pre-filter before Tier-2.
 	// Best-effort — never fails the call.
-	if e.ToolOutput != nil {
+	// Every non-denied call is REPORTED; the recorder decides what to keep. The size
+	// floor is passed as FactEligible rather than applied here, because it answers only
+	// "is this output worth embedding as a fact" — it must not also decide whether the
+	// call's engaged entities reach the world model. A denied call is skipped outright:
+	// it never ran, so it touched nothing.
+	if e.ToolOutput != nil && !isDeniedResult(result) {
 		isMutation := len(tool.DataWriteKinds) > 0
-		if isMutation {
-			if !isDeniedResult(result) {
-				_ = e.ToolOutput.RecordToolOutput(ctx, ToolOutputRecord{
-					ToolName: req.ToolName, ArgsJSON: req.ArgsJSON, Output: result, IsMutation: true, TaskID: req.TaskID,
-				})
-			}
-		} else if shouldPromoteToolOutput(result, e.ToolOutputMinBytes) {
-			_ = e.ToolOutput.RecordToolOutput(ctx, ToolOutputRecord{
-				ToolName: req.ToolName, ArgsJSON: req.ArgsJSON, Output: result, IsMutation: false, TaskID: req.TaskID,
-			})
-		}
+		_ = e.ToolOutput.RecordToolOutput(ctx, ToolOutputRecord{
+			ToolName:   req.ToolName,
+			ArgsJSON:   req.ArgsJSON,
+			Output:     result,
+			IsMutation: isMutation,
+			TaskID:     req.TaskID,
+			// A mutation is always durable history; a read must clear the cost floor
+			// before it is curated as knowledge.
+			FactEligible: isMutation || shouldPromoteToolOutput(result, e.ToolOutputMinBytes),
+		})
 	}
 
 	resp := ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result), ApproverID: approver}

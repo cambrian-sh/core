@@ -132,3 +132,129 @@ D10's graph is structurally rich (`follows`/`closes`/Hebbian) but **semantically
 
 ### A1 sequencing note
 A1.1 (valid-time) + A1.2 (drift event) are the **dependency slice** ADR-0051 §Sequencing item 0 — they unblock Scout's staleness-targeting (0051 D3) and write-back (0051 D9). A1.3 is automatic given D8. A1.4 is deferred behind a cost/latency design.
+
+---
+
+## Amendment A2 — The removal, and the terms of re-entry (2026-07-27)
+
+**Status: Proposed.** Nothing in A2 is built. A2 does not revise D1–D11; it records why the write path was removed, and constrains how it comes back. Research backing: `docs/research/experiential-memory/SUMMARY.md` (2026-07-27).
+
+### A2.0 — What happened
+On **2026-07-18** all agent-EXECUTION write-back was unwired: `RecordExecution`, `WritePlanScene`, `Hippocampus.Store`, `IngestNegativeEdge`, the `EpisodicExtractor` + `MemoryLifecycleManager` (both **removed outright**), and ADR-0034 scope promotion. Component implementations are retained. Document **ingestion is unchanged** and agents still **read** memory. The gate is `execution.experiential_memory_enabled`, default false. Recorded at `CONTEXT.md` §Known Gaps and in the flag's own doc comment:
+
+> "the design stores whole, unfocused tool outputs (a directory listing, a file's contents) as single embeddings, which both overflows the embedder's context window and pollutes recall with low-signal auto-captured junk. Knowledge that is genuinely a memory source belongs in the explicit chunked ingest pipeline, not this auto-capture."
+
+**The removal was correct and is not reversed by A2.** What is reversed is the assumption that the only alternative to raw auto-capture is nothing.
+
+### A2.1 — Diagnosis: four defects, and which decisions they touch
+
+| # | Defect | Verdict on the original decision |
+|---|---|---|
+| 1 | **Wrong write granularity.** Raw tool payloads embedded whole. | D1/D2 are correct in *typing* but were silent on *payload shape*. A2.2 closes this. |
+| 2 | **No write gate.** Every step result and tool output written; one event produced ~4 near-identical rows. | D3 fixed *structural* duplication, but nothing decided whether an event was worth storing at all. A2.3 closes this. |
+| 3 | **Undifferentiated recall.** Experience and corpus competed in one result set on one score. | **D4 already specified the fix and it was never enforced at the ranking layer.** A2.4 closes this. |
+| 4 | **No displacement protection.** Nothing stopped low-signal experience evicting corpus gold. | Not covered by any original decision. A2.4 closes this. |
+
+The design was not the problem. **D7 remains the most valuable decision in this ADR** — abstracting the retrieval projection to goal + entity *roles* + environment kind, and deliberately excluding specific entity IDs from the similarity key, is exactly the representation the 2026 literature converged on (arXiv:2604.27003, arXiv:2606.04703: abstract/principle-level experience transfers where instance-level does not).
+
+### A2.2 — Writes are abstractions; no raw payload is ever embedded
+Amends D1/D2. Three write products, and **nothing else** enters the experiential lane:
+
+| Product | Content | Cardinality |
+|---|---|---|
+| **Outcome record** | The D7 projection + action path (D2) + outcome. Deterministic; structured. | One per plan |
+| **Failure precedent** | Conditions → attempt → failure mode. Feeds the existing failure-weighted `precedent.go`. | One per gated failure |
+| **Procedural abstraction** | A reusable capability-tagged routine. | One per recurring pattern — **specified in ADR-0094, not here** |
+
+Hard constraint: **a tool payload is never the text of an experiential document.** Payloads may be referenced (D6's by-reference baselines, `content_cid`) but never embedded. This is the rule whose absence caused the removal, and it is the one rule in A2 that is not measurement-gated — it is a correctness constraint.
+
+**Where these writes land, and how they are classified: ADR-0095.** Each of the three products is a chunk parented to an `experiences` row — the entity that did not exist, and whose absence made the lane ungovernable (an experiential memory had no authoritative row to carry `classification_tags`, so ADR-0091's closed-tag enforcement had nothing to bind to). ADR-0095 D4 additionally requires that **an experience is born tagged and cannot be born untagged**: the kernel stamps the originating surface (ADR-0090 `Session.Surface`) plus a default `internal` classification at creation, unforgeable and narrowable-only per ADR-0035. The parent row must therefore exist before Phase 1 writes anything.
+
+### A2.3 — The write gate is prediction error, CONSTRUCTED from merit and outcome
+Amends D1 by adding a prior question: *should this be written at all?*
+
+**Correction (2026-07-27).** A2.3 originally said "the verifier already produces a prediction error per execution — reuse it." **It does not.** `PredictionError` exists only as a phrase in a doc comment (`internal/centralexec/belief/store.go`: `Success = 1 − Verifier prediction-error`). What the verifier produces is a **quality score in [0,1]** — an *outcome*, not an error. There was no prediction to subtract it from.
+
+That distinction is load-bearing, not clerical. `1 − quality` is a **failure gate**, not a **surprise gate**, and surprise is the principle (arXiv:2508.03341). A plan predicted to fail that fails teaches nothing; a plan predicted to succeed that fails is the informative one — and so is a surprising *success*, which a failure gate never records at all.
+
+**Decision: prediction error is constructed as `|prediction − outcome|`, where:**
+- **prediction** = merit expected-success for the (agent, capability) pair — `AgentProfile.SuccessRate`, or `CapabilityStats` when ROUTE-06 is armed.
+- **outcome** = the plan's own success/failure, refined by verifier quality when a verifier ran.
+
+Why merit rather than the agent's bid confidence: merit is **already live** (`ProfileAggregator` runs unconditionally in the supervision stack), whereas calibrated bids are a default-off arm (ROUTE-05), so a gate keyed on them would inherit that arm's off-by-default status and its calibration debt. Merit is also the kernel's own belief rather than the agent's self-report, which keeps the gate unforgeable in the same sense ADR-0035 means it.
+
+Why the plan outcome rather than verifier quality alone: **the verifier samples ~10%.** `shouldSample` (`internal/supervision/verify/verification_worker.go`) always verifies a low-trust agent's task but otherwise takes `hash(taskID) % 10 == 0`. Keying the gate on verifier quality alone would blind it to roughly nine tenths of a trusted agent's plans. Plan success/failure is known for 100% of plans; verifier quality sharpens the outcome estimate on the sampled subset rather than being the only source of it.
+
+Write when the outcome *surprised* the system; a plan that went as predicted leaves only its structured outcome record.
+
+Why this gate and not another:
+- **Deterministic and free.** Both terms are already computed — merit by the ProfileAggregator, outcome by the DAG executor — so the gate is arithmetic on existing state. No extra LLM call, honouring this ADR's determinism-where-possible constraint and the kernel's "no LLM at chunk granularity" rule.
+- **Unforgeable.** Kernel-computed from an independent verifier, so an agent cannot inflate its own memorability. Consistent with ADR-0035.
+- **Self-throttling.** Volume falls as the system's model of a domain improves — the correct behaviour, and a direct answer to the volume problem behind the removal.
+- **Externally corroborated.** arXiv:2508.03341 (NEMORI) reaches the same conclusion independently — future utility is a matter of predictability — after rejecting heuristic write-gates.
+
+The error floor is a benchmark-gated tunable. Below the floor, **nothing** is written; this is not a "log everything quietly" switch.
+
+### A2.4 — Lane separation is enforced at the ranking layer, not the storage layer
+Amends D4 by giving it teeth, and settles the "one store or two" question.
+
+**Storage stays unified.** ADR-0093 D2 (2026-07-27) keeps every recall type in `chunks` — *"splitting recall further would have been the easy mistake: tidier DDL, and a quiet reduction in what memory can retrieve."* A2 does not disturb this. One store, one embedding space; cross-lane association (an experience recalling a corpus fact) is a feature.
+
+**Four things separate instead:**
+1. **Write gate** — explicit chunked ingestion vs. A2.3. Never the same code path.
+2. **Retrieval intent** — D4's lanes (facts / actions / precedents, + procedures per ADR-0094) enforced as distinct query intents rather than one blended pool.
+3. **Displacement** — the two-pass non-displacing truncation in `internal/memory/query.go` gains a **lane dimension**: experience may never evict a corpus primary from a knowledge query, and corpus chunks may never evict a precedent from a precedent query. This reuses the exact mechanism that exists because kgExpand once halved MuSiQue support-recall (0.285→0.158); the experiential lane never received that protection.
+4. **Trust class** — corpus knowledge is **testimony** (externally asserted, stable, ingest-time-bounded poisoning surface); experience is **observation** (self-generated, validity flips via supersession, *continuous and self-reinforcing* poisoning surface). They already decay differently (fact λ=0.005/hr vs scene λ=0.02/hr); they must also carry distinct provenance and must not be interchangeable as grounding. arXiv:2512.16962 (MemoryGraft) attacks precisely the unearned authority of stored "successful experience."
+
+### A2.5 — Batch consolidation is permitted (reverses a recorded rejection)
+This ADR's §Context states *"Nightly/batch consolidation is explicitly rejected."* **That rejection is withdrawn, by owner decision, 2026-07-27.**
+
+Rationale: the original rejection targeted *graph population* — making rich `document_edges` depend on a pass that did not fire reliably. D10 solved that correctly by deriving edges as a byproduct of write and read, and **that solution stands**. Recurrence-based procedural induction (ADR-0094) is a different problem: a pattern cannot be recognised as recurring from inside a single plan, so it is *inherently* cross-plan and therefore inherently offline.
+
+Constraints, so the original concern cannot return:
+- **Nothing load-bearing may depend on it.** The online path must be fully correct with the batch pass never running. A missed pass degrades enrichment; it never breaks recall, planning, or the graph.
+- **It may only produce abstractions**, never repair or backfill primary records.
+- **Idempotent and resumable**, over already-durable inputs.
+- Externally corroborated: arXiv:2606.09483 (DCPM System 2), arXiv:2504.13171 (sleep-time compute).
+
+### A2.6 — Agents do not own durable memory
+Settles a question this ADR left implicit.
+
+| Level | Owner | Persistence | Decision |
+|---|---|---|---|
+| Working memory (SDK `working_memory.py`) | The agent, in-process | Per-invocation | **Private. Unchanged.** |
+| Experience it produced | The kernel | Durable | **Shared substrate, provenance-tagged.** Not private. |
+| Competence about it (`AgentProfile`, `CapabilityStats`) | The kernel | Durable | **Unchanged** — held *about* the agent, not *by* it. |
+
+No agent-owned durable store. In Cambrian's terms: it would make merit non-portable and create incumbency lock-in unrelated to declared capability (a corrosion of the Auction model); it would be an unaudited write channel outside kernel-derived write classification; agents are already stateless per call (ADR-0084 D4); and retaining experience only in its producer forces every newly spawned agent to rediscover what the fleet already knows (arXiv:2606.19911).
+
+**Open knob (not decided here):** whether an agent's *own* prior experience is preferred at retrieval by a **soft provenance term in the ADR-0054 blend** or a **hard per-agent filter**. Both satisfy A2.6. Measurement-gated; see ADR-0094 §Open Questions.
+
+### A2.7 — Sequencing and gate
+**Phase 0 is a benchmark, not code.** There is still no memory benchmark in CI. Re-enabling any write path without a corpus-recall A/B repeats the exact failure mode that produced the removal. Defect 4 is *invisible* without it.
+
+**Status of this sequencing (2026-07-28): Phases 0-4 implemented, all behind default-off
+arms; Phase 4's belief half deferred to ADR-0037's own gate. Nothing here changes
+behaviour until an operator opts in, and nothing can be MEASURED until plans accumulate
+under the `capability_contract` arm — the writers, the guard and the instrument are in
+place waiting for volume, which is the honest state to leave this in.**
+
+1. **Phase 0 — measure.** ✅ DONE — Stand up a continual/test-time-learning suite (arXiv:2511.20857 Evo-Memory shape; MemoryAgentBench as alternative) in `cambrian-benchmarks`; run existing recall suites with the experiential lane on and off. Gate decision → DECISIONS.md with run-manifest IDs for both arms.
+2. ✅ DONE — **Phase 1 — ADR-0095 `experiences` parent table FIRST, then A2.2 outcome records + A2.3 gated failure precedents.** The parent row is what the writes attach to and what classification binds to; writing experiential records before it exists recreates the ungovernable, undeletable state the lane is in today. Raw auto-capture stays off permanently.
+3. ✅ DONE — **Phase 2 — A2.4 lane-aware truncation FIRST, then rewire `precedent.go`** through the live `PrimeForPlanning` push and the pull lane. Order is load-bearing: rewiring before the lane guard reintroduces defect 4.
+4. ✅ DONE — **Phase 3 — the procedural tier: ADR-0094.** Induction, persistence, lifecycle, the D5 lane, provenance links and the batch scheduler; naturalisation fails open to deterministic intents.
+5. 🔶 PARTIAL — **Phase 4 — close the loop.** The prediction-error write gate is done
+   (A2.3). The PROCEDURE half of the co-evolution is done: routines shape plans via the
+   D5 lane, and plan outcomes update routines via `FeedProcedureOutcome`.
+
+   The `belief.Store` half is **NOT** done and was deliberately not attempted.
+   `internal/centralexec/belief` is wired nowhere and is "unwired by design" pending
+   ADR-0037's EFE-vs-auction A/B spike (`CONTEXT.md` Known Gaps). Wiring it as a side
+   effect of a memory phase would smuggle a gated routing decision through an unrelated
+   ADR. It belongs to ADR-0037's gate, not this one.
+
+### A2.8 — Residual, and what A2 does NOT decide
+- `execution.experiential_memory_enabled` (the raw path) stays **false permanently**. Renaming it to name the deprecated raw-capture path rather than "experiential memory" as a whole is proposed, not decided (config-schema change).
+- Own-experience ranking: soft blend term vs. hard filter (A2.6).
+- Prediction-error floor value — benchmark-derived, not editorial.
+- This ADR's top `**Status:**` token still reads `Proposed` while `CONTEXT.md` records issues 001–014 Implemented. That drift is pre-existing and known (`docs/adr/README.md`); A2 does not silently flip it.

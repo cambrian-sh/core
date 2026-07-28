@@ -38,7 +38,15 @@ func NewGatekeeperEFESelector(gk CandidateSource, explorationBonus float64) *Gat
 // Select discovers candidates via the Gatekeeper then runs the EFE pick, seeding
 // each candidate's expected-success prior from its Gatekeeper merit score.
 func (g *GatekeeperEFESelector) Select(ctx context.Context, intent domain.Intent, _ []domain.AgentDefinition) (domain.Selection, error) {
-	task := &domain.AuctionTask{ID: intent.ID, Description: intent.Description}
+	task := &domain.AuctionTask{
+		ID:          intent.ID,
+		Description: intent.Description,
+		// ROUTE-03: the capability contract is a HARD gate at L1. Rebuilding the
+		// task without it made the EFE arm silently exempt from the contract.
+		RequiredCapabilities: intent.RequiredCapabilities,
+		PreferredAgent:       intent.PreferredAgent,
+		AgentPin:             intent.AgentPin,
+	}
 	scored, err := g.gatekeeper.FindCandidates(ctx, task)
 	if err != nil {
 		return domain.Selection{}, err

@@ -40,6 +40,17 @@ type GeneratorConfig struct {
 	// BEFORE the answer, so leaving them on adds latency and can consume the whole
 	// max_tokens budget (empty content). No effect on models that ignore the field.
 	DisableThinking bool `json:"disable_thinking,omitempty"`
+	// NativeTools declares that this generator's endpoint honours the provider's
+	// tool-calling API (ADR-0097 D2). DECLARED, not probed: probing means the first
+	// request of a session decides behaviour, which makes an A/B unattributable and a
+	// failure intermittent. A wrong declaration fails loudly on first use, which is
+	// the better failure.
+	//
+	// Default false — an OpenAI-COMPATIBLE endpoint is not necessarily tool-capable,
+	// and silently sending `tools` to one that ignores them yields a model that never
+	// calls anything, which reads as a model quality problem rather than a config one.
+	// Verified true for deepseek-v4-flash and mimo-v2.5 on opencode (2026-07-28).
+	NativeTools bool `json:"native_tools,omitempty"`
 }
 
 // HealthConfig tunes the per-id circuit-breaker (ADR-0042 D4). Zero values are
