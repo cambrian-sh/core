@@ -38,6 +38,9 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			ErrorMsg:     e.ErrorMsg,
 			WinnerMargin: e.WinnerMargin,
 			Funnel:       gatekeeperFunnelToOp(e.Funnel),
+			// ADR-0100 P2: selection cost, emitted by both arms.
+			SelectionLatencyMs: e.SelectionLatencyMs,
+			SelectionBoots:     e.SelectionBoots,
 		}}
 
 	case domain.AgentReadyEvent:

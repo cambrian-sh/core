@@ -3209,9 +3209,19 @@ type AuctionEventOp struct {
 	// funnel is the Gatekeeper's Declaration->Interview->Merit candidate trace for
 	// this auction (ROUTE-02). Absent when routing tracing is disabled or on the
 	// 'started' event.
-	Funnel        *GatekeeperFunnelOp `protobuf:"bytes,8,opt,name=funnel,proto3" json:"funnel,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Funnel *GatekeeperFunnelOp `protobuf:"bytes,8,opt,name=funnel,proto3" json:"funnel,omitempty"`
+	// ADR-0100 P2 selection cost, reported identically by BOTH selection arms so
+	// they are directly comparable.
+	// selection_latency_ms is the wall-time spent DECIDING who runs this step
+	// (candidate discovery + the bid round on the auction arm); it excludes the
+	// winner's execution.
+	SelectionLatencyMs int32 `protobuf:"varint,9,opt,name=selection_latency_ms,json=selectionLatencyMs,proto3" json:"selection_latency_ms,omitempty"`
+	// selection_boots is how many agent processes were cold-started to reach that
+	// decision. The auction booted every candidate to ask for a bid; dispatch
+	// boots nothing to decide.
+	SelectionBoots int32 `protobuf:"varint,10,opt,name=selection_boots,json=selectionBoots,proto3" json:"selection_boots,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *AuctionEventOp) Reset() {
@@ -3298,6 +3308,20 @@ func (x *AuctionEventOp) GetFunnel() *GatekeeperFunnelOp {
 		return x.Funnel
 	}
 	return nil
+}
+
+func (x *AuctionEventOp) GetSelectionLatencyMs() int32 {
+	if x != nil {
+		return x.SelectionLatencyMs
+	}
+	return 0
+}
+
+func (x *AuctionEventOp) GetSelectionBoots() int32 {
+	if x != nil {
+		return x.SelectionBoots
+	}
+	return 0
 }
 
 type BidEntryOp struct {
@@ -8770,7 +8794,7 @@ const file_operator_proto_rawDesc = "" +
 	"\x0eresponse_chars\x18\t \x01(\x05R\rresponseChars\"/\n" +
 	"\x0eResyncRequired\x12\x1d\n" +
 	"\n" +
-	"latest_seq\x18\x01 \x01(\x04R\tlatestSeq\"\x9d\x02\n" +
+	"latest_seq\x18\x01 \x01(\x04R\tlatestSeq\"\xf8\x02\n" +
 	"\x0eAuctionEventOp\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1b\n" +
 	"\ttask_desc\x18\x02 \x01(\tR\btaskDesc\x12\x16\n" +
@@ -8779,7 +8803,10 @@ const file_operator_proto_rawDesc = "" +
 	"\x04bids\x18\x05 \x03(\v2\x14.cambrian.BidEntryOpR\x04bids\x12\x1b\n" +
 	"\terror_msg\x18\x06 \x01(\tR\berrorMsg\x12#\n" +
 	"\rwinner_margin\x18\a \x01(\x02R\fwinnerMargin\x124\n" +
-	"\x06funnel\x18\b \x01(\v2\x1c.cambrian.GatekeeperFunnelOpR\x06funnel\"\xa8\x01\n" +
+	"\x06funnel\x18\b \x01(\v2\x1c.cambrian.GatekeeperFunnelOpR\x06funnel\x120\n" +
+	"\x14selection_latency_ms\x18\t \x01(\x05R\x12selectionLatencyMs\x12'\n" +
+	"\x0fselection_boots\x18\n" +
+	" \x01(\x05R\x0eselectionBoots\"\xa8\x01\n" +
 	"\n" +
 	"BidEntryOp\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1e\n" +

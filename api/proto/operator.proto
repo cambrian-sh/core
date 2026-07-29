@@ -573,6 +573,16 @@ message AuctionEventOp {
   // this auction (ROUTE-02). Absent when routing tracing is disabled or on the
   // 'started' event.
   GatekeeperFunnelOp funnel = 8;
+  // ADR-0100 P2 selection cost, reported identically by BOTH selection arms so
+  // they are directly comparable.
+  // selection_latency_ms is the wall-time spent DECIDING who runs this step
+  // (candidate discovery + the bid round on the auction arm); it excludes the
+  // winner's execution.
+  int32 selection_latency_ms = 9;
+  // selection_boots is how many agent processes were cold-started to reach that
+  // decision. The auction booted every candidate to ask for a bid; dispatch
+  // boots nothing to decide.
+  int32 selection_boots = 10;
 }
 
 message BidEntryOp {

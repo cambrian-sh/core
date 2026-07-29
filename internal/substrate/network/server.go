@@ -649,6 +649,11 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			// the overwhelmingly common case and changes nothing downstream.
 			auctionTask.PreferredAgent = step.PreferredAgent
 			auctionTask.AgentPin = step.AgentPin
+			// ADR-0100 D4: carry the step's budget + verification flag so dispatch
+			// can pick its per-step policy. The auction ignores both, so this is
+			// inert on that arm.
+			auctionTask.MaxEnergy = step.MaxEnergy
+			auctionTask.CheckpointAfter = step.CheckpointAfter
 			// ADR-0037: when the session's variant is "efe", bind via the
 			// Central-Executive selector (no Auctioneer). Any selection failure
 			// falls through to the auction so the path is never worse than today.
