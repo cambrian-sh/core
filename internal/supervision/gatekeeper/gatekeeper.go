@@ -140,12 +140,79 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 		}
 		manifestCache, _ = batcher.GetManifestBatch(ids)
 	}
+	// Memoized so the ADR-0100 D5 vocabulary pre-pass below costs nothing extra
+	// when the registry cannot batch: each manifest is fetched at most once.
+	manifestMemo := make(map[string]*domain.AgentManifest, len(agents))
 	getManifest := func(agentID string) *domain.AgentManifest {
 		if manifestCache != nil {
 			return manifestCache[agentID]
 		}
+		if m, ok := manifestMemo[agentID]; ok {
+			return m
+		}
 		m, _ := g.Registry.GetManifest(ctx, agentID)
+		manifestMemo[agentID] = m
 		return m
+	}
+
+	// ADR-0100 D5: resolve the step's declared requirements against the LIVE
+	// capability vocabulary before gating on them. Gating on a capability no
+	// agent declares admits nobody, which is how a plan step dies with a generic
+	// "no candidates" (measured: ADR-0096, 4 dead steps). The ladder is
+	//   normalize → authored alias → generalist tier → fail loudly.
+	// Only runs when the step actually declares requirements, so the pre-ROUTE-03
+	// path and the control arm stay byte-identical.
+	gateTask := task
+	if g.ExecCfg.CapabilityResolution && task != nil && len(task.RequiredCapabilities) > 0 {
+		live := make([]*domain.AgentManifest, 0, len(agents))
+		for _, a := range agents {
+			if a.Trait == domain.TraitDaemon || domain.IsSystemAgent(a.ID) {
+				continue // never dispatchable; not part of the routable vocabulary
+			}
+			live = append(live, getManifest(a.ID))
+		}
+		vocabulary := domain.BuildCapabilityVocabulary(live)
+		// Per-agent sets, not just the union: L1 needs ONE agent to declare every
+		// required capability, so satisfiability must be checked agent-wise.
+		agentSets := make([][]string, 0, len(live))
+		for _, m := range live {
+			if m != nil {
+				agentSets = append(agentSets, m.Capabilities)
+			}
+		}
+		resolution := domain.ResolveCapabilities(task.RequiredCapabilities, vocabulary,
+			g.ExecCfg.CapabilityAliases, agentSets)
+
+		if !resolution.Satisfiable() {
+			// Loud, diagnosable failure naming the gap and the live vocabulary,
+			// rather than an empty slate the caller has to guess about.
+			return nil, &domain.NoCapabilityMatchError{
+				TaskID:     task.ID,
+				Unmatched:  resolution.Unmatched,
+				Vocabulary: resolution.Vocabulary,
+			}
+		}
+		// ALWAYS gate on the resolved set, including on the exact tier. Resolved
+		// carries the fleet's DECLARED spelling, and L1 compares verbatim unless
+		// canonical_vocab is on — so leaving the planner's own spelling in place
+		// means `code-search` "resolves" against a declared `code_search` and then
+		// L1 rejects every agent on spelling alone. Measured 2026-07-29: that is
+		// what produced `no_candidate` on the orchestration probe.
+		// The COPY keeps the caller's task — the record of what the planner
+		// actually asked for — untouched.
+		if len(resolution.Resolved) > 0 {
+			tCopy := *task
+			tCopy.RequiredCapabilities = resolution.Resolved
+			gateTask = &tCopy
+		}
+		// Logged on EVERY tier, not just fallbacks: the ADR-0100 P2 A/B needs to be
+		// able to explain any routing outcome from the run's own logs, and an
+		// "exact" resolution that still admits nobody is precisely the case that is
+		// impossible to diagnose without it.
+		slog.Info("Gatekeeper: capability requirements resolved",
+			"task_id", task.ID, "tier", resolution.Tier,
+			"required", task.RequiredCapabilities, "resolved", resolution.Resolved,
+			"unmatched", resolution.Unmatched, "vocabulary", resolution.Vocabulary)
 	}
 
 	// ROUTE-02 routing trace: record the Declaration→Interview→Merit funnel so a
@@ -177,7 +244,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 
 		manifest := getManifest(agent.ID)
 
-		if !PassesDeclaration(manifest, task, g.ExecCfg.CanonicalVocab) {
+		if !PassesDeclaration(manifest, gateTask, g.ExecCfg.CanonicalVocab) {
 			slog.Info("Gatekeeper: agent filtered by declaration", "agent_id", agent.ID)
 			if trace {
 				funnel.L1 = append(funnel.L1, domain.DeclarationResult{
@@ -194,7 +261,10 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 
 		score := DefaultProvisionalScore
 		if !agent.Provisional {
-			mb := g.computeMeritBreakdown(ctx, agent, task.RequiredCapabilities)
+			// Rank on the SAME tags the gate enforced: that is where the agent's
+			// per-capability history lives (ROUTE-06). An unmatched requirement has
+			// no history anyway and falls back to the global profile.
+			mb := g.computeMeritBreakdown(ctx, agent, gateTask.RequiredCapabilities)
 			score = mb.Score
 			if trace {
 				meritByAgent[agent.ID] = mb
@@ -288,7 +358,30 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 						}
 					}
 				}
-				candidates = filtered
+				// ADR-0100 D1: L1 decides ELIGIBILITY, L2 only expresses PREFERENCE.
+				// A semantic gate that empties a slate L1 approved is doing L1's job
+				// with a fuzzy tool (routing diagnosis D3) and kills the step outright.
+				// Measured 2026-07-29 on the live probe: L1 admitted exactly one
+				// capability-eligible agent and L2 eliminated it at similarity 0.0
+				// (its interview vector was missing), producing `no_candidate`.
+				// Keep the eligible set and let merit rank it.
+				// Only when L1 ACTUALLY gated: eligibility must have been established
+				// by the capability contract for L2 to be overridable. With no declared
+				// requirements L1 is a free pass, so L2 is the only filter there is and
+				// emptying the slate is legitimate (ADR-0023: tool agents must qualify
+				// semantically rather than winning everything).
+				l1Enforced := gateTask != nil && len(gateTask.RequiredCapabilities) > 0
+				if l1Enforced && len(filtered) == 0 && len(candidates) > 0 {
+					slog.Warn("Gatekeeper: L2 eliminated every capability-eligible candidate — keeping the L1 set (eligibility is L1's decision, not L2's)",
+						"l1_survivors", len(candidates), "l2_threshold", DefaultSimilarityThreshold)
+					if trace {
+						for i := range funnel.L2 {
+							funnel.L2[i].Survived = true
+						}
+					}
+				} else {
+					candidates = filtered
+				}
 			}
 		}
 	}

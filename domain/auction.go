@@ -77,6 +77,14 @@ type AuctionTask struct {
 	PreferredAgent string `json:"preferred_agent,omitempty"`
 	AgentPin       string `json:"agent_pin,omitempty"`
 
+	// MaxEnergy and CheckpointAfter are carried from the Step so capability-typed
+	// dispatch can apply its per-step policy (ADR-0100 D4): a CHEAP step whose
+	// output will be VERIFIED can afford the cheapest competent agent, because the
+	// checkpoint catches a bad answer; anything else takes merit-argmax. Both are
+	// ignored by the auction, so populating them is inert on that arm.
+	MaxEnergy       float64 `json:"max_energy,omitempty"`
+	CheckpointAfter bool    `json:"checkpoint_after,omitempty"`
+
 	// Funnel is a ROUTE-02 diagnostic OUTPUT written by Gatekeeper.FindCandidates
 	// (not part of the RFP broadcast, hence json:"-"). The Auctioneer reads it
 	// back off the same task pointer when emitting the AuctionEventPayload so the

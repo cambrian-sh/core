@@ -11,6 +11,7 @@ import (
 	memstore "github.com/cambrian-sh/core/internal/memory/store"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	metauc "github.com/cambrian-sh/core/internal/metabolism/auctioneer"
+	"github.com/cambrian-sh/core/internal/metabolism/dispatch"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	"github.com/cambrian-sh/core/internal/metabolism/interview"
 	supgk "github.com/cambrian-sh/core/internal/supervision/gatekeeper"
@@ -25,10 +26,23 @@ import (
 // Biologically: this is cellular metabolism — energy management, replication,
 // and quality control.
 type MetabolismStack struct {
-	rootCtx            context.Context // set by Start; scopes EnqueueVerification closures
-	Manager            *agentmgr.AgentManager
-	Gatekeeper         *supgk.Gatekeeper
-	Auctioneer         *metauc.Auctioneer
+	rootCtx    context.Context // set by Start; scopes EnqueueVerification closures
+	Manager    *agentmgr.AgentManager
+	Gatekeeper *supgk.Gatekeeper
+	// Auctioneer owns the agent connection pool and CallAgent. Privileged system
+	// organs (Scout, kg_extractor, docling, reranker) call agents through it
+	// DIRECTLY, bypassing selection entirely — they are kernel infrastructure,
+	// not candidates.
+	Auctioneer *metauc.Auctioneer
+	// Selector is the step-selection mechanism the DAG executor uses: the
+	// capability-typed Dispatcher by default, or the legacy Auctioneer when
+	// execution.bid_round is on (ADR-0100 P0 — the A/B arm, deleted in P3).
+	Selector domain.Auctioneer
+	// Dispatcher is the concrete Selector when dispatch is active (nil under
+	// bid_round). Exposed ONLY so the composition root can finish wiring it —
+	// the EventBus is built after this stack, and a dispatcher that cannot emit
+	// AuctionEventPayload is invisible to the orchestration suite.
+	Dispatcher         *dispatch.Dispatcher
 	InterviewWorker    *interview.InterviewWorker
 	VerificationWorker *verify.VerificationWorker
 	VerifierPool       *verify.VerifierPool
@@ -81,6 +95,7 @@ func NewMetabolismStack(
 	auctioneer.Profiles = profileStore
 	auctioneer.ExplorationRate = cfg.Execution.ExplorationRate
 	auctioneer.Observer = observer
+	auctioneer.Boots = manager // ADR-0100 P2: cold starts attributable to the bid round
 
 	iWorker.Requester = auctioneer
 	iWorker.EventWriter = reg
@@ -114,10 +129,47 @@ func NewMetabolismStack(
 		}
 	}
 
+	// ADR-0100 P0: capability-typed dispatch is the default selection mechanism.
+	// The Auctioneer is still constructed — it owns the connection pool CallAgent
+	// needs, and the privileged organs call through it — but it no longer SELECTS
+	// unless execution.bid_round explicitly asks for the legacy auction.
+	var selector domain.Auctioneer = auctioneer
+	var dispatcher *dispatch.Dispatcher
+	if !cfg.Execution.BidRound {
+		dispatcher = &dispatch.Dispatcher{
+			Gatekeeper:      gatekeeper,
+			Caller:          auctioneer, // shared pool; moves in-package at ADR-0100 P3
+			Manifests:       manager,
+			Profiles:        profileStore,
+			Boots:           manager, // ADR-0100 P2
+			ExecCfg:         cfg.Execution,
+			Observer:        observer,
+			ExplorationRate: cfg.Execution.ExplorationRate,
+		}
+		selector = dispatcher
+	}
+	// The active selection mechanism must be visible at boot: the ADR-0100 P2 A/B
+	// compares two arms chosen by config, and a run whose arm cannot be identified
+	// from its own logs is not evidence. Note EFE (resource_selector="efe")
+	// short-circuits BEFORE this selector, so under EFE neither arm runs.
+	if cfg.Execution.BidRound {
+		slog.Warn("ADR-0100: selection mechanism = AUCTION (execution.bid_round=true) — the legacy arm; every candidate is booted to solicit a bid",
+			"capability_contract", cfg.Execution.CapabilityContract,
+			"resource_selector", cfg.Execution.ResourceSelector)
+	} else {
+		slog.Info("ADR-0100: selection mechanism = DISPATCH (capability-typed; zero RPCs, only the winner is booted)",
+			"capability_contract", cfg.Execution.CapabilityContract,
+			"capability_resolution", cfg.Execution.CapabilityResolution,
+			"cheap_energy_max", cfg.Execution.DispatchCheapEnergyMax,
+			"resource_selector", cfg.Execution.ResourceSelector)
+	}
+
 	return &MetabolismStack{
 		Manager:            manager,
 		Gatekeeper:         gatekeeper,
 		Auctioneer:         auctioneer,
+		Selector:           selector,
+		Dispatcher:         dispatcher,
 		InterviewWorker:    iWorker,
 		VerificationWorker: vWorker,
 		VerifierPool:       vPool,

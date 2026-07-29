@@ -103,6 +103,15 @@ type AuctionEventPayload struct {
 	// Funnel is the Gatekeeper's per-agent Declaration→Interview→Merit trace for
 	// this auction (ROUTE-02). Nil when tracing is off or not applicable.
 	Funnel *GatekeeperFunnel
+
+	// SelectionLatencyMs is the wall-time spent DECIDING who runs this step —
+	// candidate discovery plus (on the auction arm) the bid round. It excludes
+	// the winner's actual execution. ADR-0100 P2.
+	SelectionLatencyMs int32
+	// SelectionBoots is the number of agent processes cold-started to reach that
+	// decision. The auction booted every candidate to ask it for a bid; dispatch
+	// boots only the winner, and boots nothing at all to decide. ADR-0100 P2.
+	SelectionBoots int32
 }
 
 // BidEntry is a single agent's bid inside an AuctionEventPayload.

@@ -503,6 +503,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// insight write-back) is no longer wired. Document ingestion (the corpus) is unaffected.
 	meta.InterviewWorker.EventBus = eventBus
 	meta.Auctioneer.EventBus = eventBus
+	// ADR-0100 P2: the dispatcher emits the SAME AuctionEventPayload the auction
+	// does (winner + candidate slate + selection cost), which is how the
+	// orchestration suite scores both arms. The bus is built after the metabolism
+	// stack, so this wiring cannot happen at construction — without it the
+	// dispatch arm would be silently invisible to the benchmark.
+	if meta.Dispatcher != nil {
+		meta.Dispatcher.EventBus = eventBus
+	}
 	meta.VerificationWorker.EventBus = eventBus // ADR-0047 D3: VerifierRoundEvent → operator feed
 	// ADR-0033: crash detection publishes DaemonCrashedEvent to this bus.
 	meta.Manager.EventBus = eventBus
@@ -1768,6 +1776,10 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			// routing-trace: AuctionEventOp carries the Gatekeeper L1/L2/L3
 			// candidate funnel + winner margin + bid requirements (backlog ROUTE-02).
 			"routing-trace",
+			// selection-cost (ADR-0100 P2): AuctionEventOp carries selection_latency_ms
+			// + selection_boots, so a client can measure what a routing decision cost
+			// and compare the dispatch and auction arms.
+			"selection-cost",
 			// scout-usefulness: per-session ScoutUsefulnessOp on the feed (ROUTE-08 A).
 			"scout-usefulness",
 			// route-preview: PreviewRoute deterministic gatekeeper merit scoring (ROUTE-07).
@@ -1847,7 +1859,10 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// QueryMemoryResponse.policy_note. The "access-policy" capability (declared by
 		// the policy plugin's manifest) lets a console decide whether to render the
 		// policy surfaces at all, instead of probing and getting Unimplemented.
-		operatorSvc.SetHandshake("0.6.9-alpha", "0070", operatorCaps)
+		// Contract 0071 (ADR-0100 P2): AuctionEventOp gains selection_latency_ms +
+		// selection_boots — the cost of the SELECTION decision, emitted identically by
+		// the auction and dispatch arms so the orchestration suite can compare them.
+		operatorSvc.SetHandshake("0.6.9-alpha", "0071", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".

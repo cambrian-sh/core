@@ -62,6 +62,10 @@ type Auctioneer struct {
 	EventBus             domain.EventBus          // may be nil; emits auction events internally
 	Observer             domain.TelemetryObserver // ADR-0019: may be nil
 
+	// Boots measures agent cold starts attributable to the bid round (ADR-0100 P2),
+	// so the auction and dispatch arms report the same metric. nil ⇒ reported as 0.
+	Boots interface{ BootCount() uint64 }
+
 	// Calibrator, when non-nil AND execution.calibrated_bids is on, corrects each raw
 	// bid confidence toward expected verified quality for winner selection (ROUTE-05 /
 	// ADR-0068). nil ⇒ raw self-reported confidence (byte-identical to pre-ROUTE-05).
@@ -204,6 +208,23 @@ func (a *Auctioneer) ConductAuction(ctx context.Context, task *domain.AuctionTas
 		return nil, fmt.Errorf("no candidates found for task %s", task.ID)
 	}
 
+	// ADR-0100 P2: same instrumentation as the dispatch arm, so the two are
+	// directly comparable. On this arm the window covers the bid round, which is
+	// where both the latency and the cold starts come from.
+	selStart := time.Now()
+	bootsBefore := uint64(0)
+	if a.Boots != nil {
+		bootsBefore = a.Boots.BootCount()
+	}
+	selectionCost := func() (int32, int32) {
+		ms := int32(time.Since(selStart).Milliseconds())
+		boots := int32(0)
+		if a.Boots != nil {
+			boots = int32(a.Boots.BootCount() - bootsBefore)
+		}
+		return ms, boots
+	}
+
 	a.emitAuctionEvent(domain.AuctionEventPayload{
 		TaskID:   task.ID,
 		TaskDesc: task.Description,
@@ -277,13 +298,16 @@ func (a *Auctioneer) ConductAuction(ctx context.Context, task *domain.AuctionTas
 	}
 
 	if bestProposal == nil {
+		failMs, failBoots := selectionCost()
 		a.emitAuctionEvent(domain.AuctionEventPayload{
-			TaskID:   task.ID,
-			TaskDesc: task.Description,
-			Status:   "failed",
-			Bids:     allBids,
-			ErrorMsg: "no valid proposals received",
-			Funnel:   task.Funnel, // ROUTE-02: candidate funnel explains the no-winner
+			TaskID:             task.ID,
+			TaskDesc:           task.Description,
+			Status:             "failed",
+			Bids:               allBids,
+			ErrorMsg:           "no valid proposals received",
+			Funnel:             task.Funnel, // ROUTE-02: candidate funnel explains the no-winner
+			SelectionLatencyMs: failMs,
+			SelectionBoots:     failBoots,
 		})
 		if a.Observer != nil {
 			a.Observer.OnAuctionNoWinner(task.ID)
@@ -291,14 +315,17 @@ func (a *Auctioneer) ConductAuction(ctx context.Context, task *domain.AuctionTas
 		return nil, fmt.Errorf("no valid proposals received for task %s", task.ID)
 	}
 
+	okMs, okBoots := selectionCost()
 	a.emitAuctionEvent(domain.AuctionEventPayload{
-		TaskID:       task.ID,
-		TaskDesc:     task.Description,
-		Status:       "completed",
-		WinnerID:     bestProposal.AgentID,
-		Bids:         allBids,
-		WinnerMargin: winnerMargin(allBids, bestProposal.AgentID, float32(bestProposal.Confidence)),
-		Funnel:       task.Funnel, // ROUTE-02
+		SelectionLatencyMs: okMs,
+		SelectionBoots:     okBoots,
+		TaskID:             task.ID,
+		TaskDesc:           task.Description,
+		Status:             "completed",
+		WinnerID:           bestProposal.AgentID,
+		Bids:               allBids,
+		WinnerMargin:       winnerMargin(allBids, bestProposal.AgentID, float32(bestProposal.Confidence)),
+		Funnel:             task.Funnel, // ROUTE-02
 	})
 
 	// ROUTE-06 / ADR-0069: a provisional agent winning consumes exploration budget for

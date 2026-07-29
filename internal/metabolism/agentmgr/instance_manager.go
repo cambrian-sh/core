@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -23,6 +24,12 @@ import (
 // It owns instance boot, PID tracking, socket cleanup, and process
 // termination — nothing related to agent selection, A2A, or gRPC.
 type InstanceManager struct {
+	// bootCount is the process-lifetime tally of agent SPAWNS (not cache hits).
+	// ADR-0100 P2 reads a delta around a selection decision to measure how many
+	// agent processes that decision cost — the auction booted every candidate to
+	// ask it for a bid; dispatch boots only the winner. Atomic and first in the
+	// struct so it stays 64-bit aligned on 32-bit platforms.
+	bootCount     atomic.Uint64
 	mu            sync.Mutex
 	instances     map[string]*domain.Instance
 	agentIndex    map[string][]string  // agentID → []instanceID
@@ -361,7 +368,13 @@ func (im *InstanceManager) KillAllAgents(ctx context.Context) error {
 	}
 }
 
+// BootCount returns the process-lifetime number of agent spawns. A delta across
+// a selection decision is the cost, in cold starts, of making that decision
+// (ADR-0100 P2).
+func (im *InstanceManager) BootCount() uint64 { return im.bootCount.Load() }
+
 func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefinition) error {
+	im.bootCount.Add(1)
 	inst := domain.NewInstance(def.ID)
 
 	// PLAT-01: fail fast with the missing dep named, not a silent spawn crash.

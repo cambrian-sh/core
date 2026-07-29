@@ -236,6 +236,42 @@ type ExecutionConfig struct {
 	// `file-write`) and worse misroutes. OFF ⇒ declared strings verbatim (pre-ROUTE-04).
 	// The LLM CapabilityClusterer is retired regardless of this flag.
 	CanonicalVocab bool `json:"canonical_vocab"`
+	// CapabilityResolution (ADR-0100 D5) turns on the capability resolution
+	// ladder: normalize → authored alias → generalist tier → fail loudly. Without
+	// it, a step requiring a capability nothing declares gates every agent out and
+	// dies as a generic "no candidates". Only runs for steps that declare
+	// requirements, so the pre-ROUTE-03 path is unaffected. Default true.
+	CapabilityResolution bool `json:"capability_resolution"`
+	// CapabilityAliases is the AUTHORED synonym map — the second rung of that
+	// ladder. Keys and values are normalized before lookup, so casing and
+	// separators do not matter: {"websearch": "research"} maps a planner-emitted
+	// `web-search` onto the declared `research`.
+	//
+	// This is DATA, reviewed by a human, deliberately NOT an embedding match:
+	// ADR-0067 rejected fuzzy capability merging because `file-read`/`file-write`
+	// and `read`/`delete` are embedding-close and semantically opposite, and a
+	// wrong merge silently misroutes. Empty by default — every entry should be
+	// added because a real step failed to route, not speculatively.
+	CapabilityAliases map[string]string `json:"capability_aliases"`
+	// BidRound (ADR-0100 P0) controls WHICH selection mechanism runs.
+	//
+	// false (default) ⇒ capability-typed DISPATCH: eligibility → merit ranking →
+	// argmax (or cheapest-competent, see DispatchCheapEnergyMax). Zero RPCs, zero
+	// LLM calls, and only the winner's process is booted.
+	//
+	// true ⇒ the legacy AUCTION: solicit a bid from every candidate, booting each
+	// one to ask. Retained ONLY to capture the A/B evidence; both this flag and the
+	// auction are deleted in ADR-0100 P3. Do not build on it.
+	BidRound bool `json:"bid_round"`
+	// DispatchCheapEnergyMax is the Step.MaxEnergy at or below which a VERIFIED step
+	// (CheckpointAfter) takes the cheapest competent agent instead of merit-argmax
+	// (ADR-0100 D4). 0 disables the branch entirely — every step takes argmax.
+	// A step with no declared budget is never treated as cheap.
+	DispatchCheapEnergyMax float64 `json:"dispatch_cheap_energy_max"`
+	// DispatchMeritFloor is the minimum merit a candidate needs before the
+	// cheapest-competent branch will consider it. Keeps "cheapest" from meaning
+	// "worst". Ignored on the argmax path.
+	DispatchMeritFloor float64 `json:"dispatch_merit_floor"`
 	// CalibratedBids (ROUTE-05 / ADR-0068) selects the auction winner by a CALIBRATED
 	// bid confidence (expected verified quality, learned per-agent from the event log)
 	// instead of the raw LLM self-report. OFF ⇒ raw confidence (byte-identical).
@@ -1074,39 +1110,44 @@ func DefaultConfig() *Config {
 			EWMAAlpha:                        0.5,
 			LatencyWindowSize:                50,
 			GatekeeperMaxCandidates:          5,
-			CapabilityContract:               false, // ROUTE-03 arm toggle; OFF = pre-ROUTE-03 behavior
-			AgentPinning:                     true,  // honour an explicit "use agent X" directive
-			RoutingTraceEnabled:              true,
-			GatekeeperW1:                     0.4,
-			GatekeeperW2:                     0.4,
-			GatekeeperW3:                     0.2,
-			GatekeeperW4:                     0.15,
-			ColdStartPenaltyMultiplier:       0.6,
-			VerifierPoolThreshold:            0.8,
-			TrustBoostThreshold:              0.4,
-			VerificationQueueCapacity:        256,
-			MinVerifiedEvents:                3,
-			VerifierRecencyWindow:            3,
-			TrustScoreCalWeight:              0.6,
-			TrustScoreAbsWeight:              0.4,
-			VerifierPoolMinSize:              2,
-			VerifierPoolThresholdStep:        0.05,
-			VerifierPoolThresholdFloor:       0.6,
-			CrossVerifyRate:                  0.05,
-			MinAuctionConfidence:             0.3,
-			MaxRecursionDepth:                3,
-			FallbackConfidenceThreshold:      0.4,
-			FallbackEnabled:                  true,
-			MaxReplanAttempts:                2,
-			MaxFanOutWidth:                   64,
-			MaxPartialContextBytes:           51200,
-			SignalNoiseThreshold:             3,
-			SignalNoiseWindowSecs:            10,
-			ExplorationRate:                  0.05,
-			SessionTTLDays:                   7,
-			PlanDriftDays:                    7,
-			SessionIdleTimeoutMinutes:        1440, // 24h idle ⇒ dormant
-			SessionIdleSweepIntervalSeconds:  300,
+			// ADR-0100: default ON. Capability-typed dispatch gates on
+			// step.required_capabilities, and this flag is what makes the planner emit
+			// them — with it off, L1 is a no-op, the D5 ladder never fires, and
+			// "dispatch" degrades to merit-ranking alone. It stops being an arm the
+			// moment selection depends on it.
+			CapabilityContract:              true,
+			AgentPinning:                    true, // honour an explicit "use agent X" directive
+			RoutingTraceEnabled:             true,
+			GatekeeperW1:                    0.4,
+			GatekeeperW2:                    0.4,
+			GatekeeperW3:                    0.2,
+			GatekeeperW4:                    0.15,
+			ColdStartPenaltyMultiplier:      0.6,
+			VerifierPoolThreshold:           0.8,
+			TrustBoostThreshold:             0.4,
+			VerificationQueueCapacity:       256,
+			MinVerifiedEvents:               3,
+			VerifierRecencyWindow:           3,
+			TrustScoreCalWeight:             0.6,
+			TrustScoreAbsWeight:             0.4,
+			VerifierPoolMinSize:             2,
+			VerifierPoolThresholdStep:       0.05,
+			VerifierPoolThresholdFloor:      0.6,
+			CrossVerifyRate:                 0.05,
+			MinAuctionConfidence:            0.3,
+			MaxRecursionDepth:               3,
+			FallbackConfidenceThreshold:     0.4,
+			FallbackEnabled:                 true,
+			MaxReplanAttempts:               2,
+			MaxFanOutWidth:                  64,
+			MaxPartialContextBytes:          51200,
+			SignalNoiseThreshold:            3,
+			SignalNoiseWindowSecs:           10,
+			ExplorationRate:                 0.05,
+			SessionTTLDays:                  7,
+			PlanDriftDays:                   7,
+			SessionIdleTimeoutMinutes:       1440, // 24h idle ⇒ dormant
+			SessionIdleSweepIntervalSeconds: 300,
 			// 30 days of completed history is generous for debugging and audit while
 			// still bounding the table. Retention only ever touches COMPLETED sessions.
 			SessionRetentionDays:                 30,
@@ -1159,8 +1200,13 @@ func DefaultConfig() *Config {
 			CapabilityClusterEpsilon:             0.02,
 			CapabilityClusterMinAgents:           3,
 			CapabilityClusterIntervalSeconds:     3600,
-			CanonicalVocab:                       false, // ROUTE-04 arm toggle; OFF = declared strings verbatim
-			CalibratedBids:                       false, // ROUTE-05 arm toggle; OFF = raw self-reported confidence
+			CanonicalVocab:                       false,               // ROUTE-04 arm toggle; OFF = declared strings verbatim
+			CapabilityResolution:                 true,                // ADR-0100 D5 ladder; only fires for steps that declare requirements
+			CapabilityAliases:                    map[string]string{}, // authored, reviewed; add an entry only when a real step failed to route
+			BidRound:                             false,               // ADR-0100: dispatch is the default; true = legacy auction (A/B only)
+			DispatchCheapEnergyMax:               0,                   // cheapest-competent branch OFF until the A/B lands (P0 = pure argmax)
+			DispatchMeritFloor:                   0.5,                 // neutral prior; a candidate must be at least average to be "competent"
+			CalibratedBids:                       false,               // ROUTE-05 arm toggle; OFF = raw self-reported confidence
 			BidCalibrationMinSamples:             10,
 			// ADR-0049 A2.2 outcome records: ON (owner decision 2026-07-28). The RAW
 			// path stays off — see ExperientialMemoryEnabled, which is deliberately
