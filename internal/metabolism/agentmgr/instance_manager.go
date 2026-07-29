@@ -393,6 +393,9 @@ func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefin
 	if err != nil {
 		return fmt.Errorf("stderr pipe error: %v", err)
 	}
+	// SEC-01 / lifetime: bind the child's life to ours before it exists, so a hard kill
+	// of the kernel cannot leave it running.
+	containLifetime(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -495,6 +498,9 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	if err != nil {
 		return nil, fmt.Errorf("daemon stderr pipe: %w", err)
 	}
+	// SEC-01 / lifetime: bind the child's life to ours before it exists, so a hard kill
+	// of the kernel cannot leave it running.
+	containLifetime(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}

@@ -20,13 +20,25 @@ AGENT_DESCRIPTION = (
 
 AGENT_MANIFEST = '''
 {
-  "version": "1.0.0",
-  "trait": "cognitive",
-  "capabilities": ["test_execution", "run_inspection", "general_purpose"],
-  "supported_formats": ["text", "code"],
-  "tools": ["code_execution", "python_execution", "execute_code"],
-  "release_notes": "Python code execution behind kernel-owned tool registry (ADR-0039/0040).",
-  "dependencies": []
+    "version": "1.0.0",
+    "trait": "cognitive",
+    "capabilities": [
+        "code_execution",
+        "test_execution",
+        "run_inspection",
+        "general_purpose"
+    ],
+    "supported_formats": [
+        "text",
+        "code"
+    ],
+    "tools": [
+        "code_execution",
+        "python_execution",
+        "execute_code"
+    ],
+    "release_notes": "Python code execution behind kernel-owned tool registry (ADR-0039/0040).",
+    "dependencies": []
 }
 '''
 

@@ -82,6 +82,12 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 	// ownerless-only, and artifacts were stamped with the per-step lease instead — so
 	// ListStepArtifacts(sessionID) could never find them.
 	ctx = s.withCallerSession(ctx)
+
+	// ADR-0098: tool calls are the other place a turn spends real time. The tool's NAME is
+	// deliberately not reported — the closed phase vocabulary exists so a customer-facing
+	// surface learns that work is happening, not what the deployment is made of.
+	s.reportProgress(ctx, domain.PhaseRunningTool)
+
 	resp := s.ToolExecutor.Execute(ctx, domain.ToolCallRequest{
 		AgentID:        agentIDFromMetadata(ctx),
 		ToolName:       req.GetToolName(),

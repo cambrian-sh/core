@@ -127,6 +127,23 @@ type KernelServices struct {
 	// It is deliberately the concrete pool rather than an interface: a plugin that
 	// owns tables owns their schema and their queries, and pretending otherwise
 	// would mean re-exporting half of pgx through a seam nobody benefits from.
+	// SetProgressSink installs the ADR-0098 progress channel onto the chat lane.
+	// A plugin calls this during Build to start receiving "what is happening now"
+	// snapshots; without one the kernel's emission sites are inert.
+	//
+	// Handed over as a function rather than the service itself so a plugin gets the
+	// ONE capability it needs and no access to the turn path around it.
+	// nil when the chat lane is not wired (no conversation store, no pool).
+	SetProgressSink func(domain.ProgressSink)
+
+	// DeliverProgress sends one supersedable progress snapshot to whatever ingress
+	// carries a conversation (ADR-0098 D2). It resolves and re-authorises the address
+	// itself, so a plugin never handles delivery addresses.
+	//
+	// Best-effort: callers are expected to drop the error. nil when there is no
+	// ingress delivery path.
+	DeliverProgress func(ctx context.Context, conversationID, text string, final bool) error
+
 	SQL *pgxpool.Pool
 
 	// AgentExists reports whether an agent is registered. The policy plugin needs

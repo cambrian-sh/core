@@ -12,6 +12,7 @@
 package chat
 
 import (
+	"sync/atomic"
 	"context"
 	"errors"
 	"fmt"
@@ -36,6 +37,14 @@ type TokenAcquirer func(ctx context.Context, tokenLimit int, ttl time.Duration) 
 const (
 	// DefaultTurnTimeout bounds one dispatched turn (tool calls + LLM).
 	DefaultTurnTimeout = 240 * time.Second
+	// DefaultStallTimeout is how long a turn may report NOTHING before it is treated as
+	// wedged.
+	//
+	// Sized against what it is measuring: the emission points are memory retrieval and
+	// tool execution, and a healthy turn hits one every few seconds. Ninety seconds of
+	// complete silence is not slow work, it is stopped work — while still leaving ample
+	// room for a single long retrieval or a slow tool.
+	DefaultStallTimeout = 90 * time.Second
 	// DefaultHistoryLimit is how many prior messages are threaded into a turn. Bounded
 	// because prompt size — and therefore cost and latency — otherwise grows without limit
 	// as a conversation lengthens.
@@ -81,9 +90,80 @@ type TurnService struct {
 	// delegates to the planner can be attributed back to the conversation server-side
 	// (ADR-0084 D2). Optional; without it a delegated run simply carries no conversation.
 	leases domain.LeaseResolver
+	// progress receives supersedable "what is happening now" snapshots for the turn
+	// (ADR-0098). nil ⇒ nothing is listening, which is the OSS default: the kernel
+	// emits unconditionally and a premium bridge decides what becomes of it.
+	progress domain.ProgressSink
+	// liveness reports when a conversation last showed signs of work. Supplied by the
+	// composition root; nil disables stall detection.
+	liveness func(conversationID string) time.Time
 
 	TurnTimeout  time.Duration
 	HistoryLimit int
+	// StallTimeout fails a turn that has stopped making progress, well before
+	// TurnTimeout would.
+	//
+	// The two bound different things. TurnTimeout caps how long a turn may legitimately
+	// take; StallTimeout catches one that is no longer doing anything at all. Without it
+	// a wedged turn holds its worker, its lease and the user's attention for the full
+	// TurnTimeout while reporting nothing — truthfully, and uselessly.
+	StallTimeout time.Duration
+}
+
+// SetLivenessProbe wires stall detection. Optional: without it a turn is bounded only by
+// TurnTimeout.
+func (s *TurnService) SetLivenessProbe(f func(conversationID string) time.Time) { s.liveness = f }
+
+// watchStall cancels the turn when it stops reporting progress.
+//
+// It deliberately measures SILENCE rather than elapsed time: a turn legitimately running
+// for three minutes while retrieving and calling tools keeps reporting, and must not be
+// killed. One that has emitted nothing for the stall window has stopped, whatever the
+// clock says.
+func (s *TurnService) watchStall(ctx context.Context, conversationID string, cancel context.CancelFunc, stalled *atomic.Bool) {
+	if s.liveness == nil || s.StallTimeout <= 0 {
+		return
+	}
+	// Poll at a fraction of the window so detection is prompt without being chatty.
+	tick := s.StallTimeout / 4
+	if tick < time.Second {
+		tick = time.Second
+	}
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			last := s.liveness(conversationID)
+			if last.IsZero() {
+				continue // nothing has reported yet; the turn has only just begun
+			}
+			if time.Since(last) > s.StallTimeout {
+				stalled.Store(true)
+				slog.Warn("chat: turn stopped making progress; cancelling",
+					"conversation", conversationID, "silent_for", time.Since(last).Round(time.Second))
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+// SetProgressSink wires the ADR-0098 progress channel. Optional: without it the emission
+// sites are inert.
+func (s *TurnService) SetProgressSink(sink domain.ProgressSink) { s.progress = sink }
+
+// emitProgress is the local shorthand for one supersedable snapshot on this turn.
+//
+// Best-effort by construction (ADR-0098 D5) — it cannot return an error, so a progress
+// problem can never fail the turn it describes.
+func (s *TurnService) emitProgress(ctx context.Context, conversationID string, phase domain.ProgressPhase) {
+	domain.EmitProgress(ctx, s.progress, domain.ProgressUpdate{
+		ConversationID: conversationID,
+		Phase:          phase,
+	})
 }
 
 // NewTurnService wires the service. store and pool are required.
@@ -170,7 +250,7 @@ func NewTurnService(store domain.ConversationStore, pool Dispatcher, acquire Tok
 // already follows it, the original reply is returned and no second turn is dispatched. This
 // is what stops a client retry from double-charging an LLM call or re-running side-effecting
 // tools.
-func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (domain.Message, error) {
+func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Message, turnErr error) {
 	if strings.TrimSpace(req.Text) == "" {
 		return domain.Message{}, errors.New("chat: turn text is required")
 	}
@@ -201,17 +281,44 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (domain.Message
 		}
 	}
 
+	// The user is now waiting. Say something immediately: the gap between "sent" and the
+	// first sign of life is what makes a working system indistinguishable from a hung one.
+	s.emitProgress(ctx, req.ConversationID, domain.PhaseUnderstanding)
+
+	// ADR-0098 D3, on EVERY exit path. The happy path clears itself — the reply supersedes
+	// the status line — but a turn that fails before replying delivers nothing, and an
+	// uncleared line strands the user on "working on it" forever, which reads as a hang.
+	// Deferring is what makes this true for the error returns as well as the success one.
+	// A failure rides out on the SAME line rather than becoming a message. The user needs
+	// to know what happened — silence is indistinguishable from a hang — but a failure
+	// notice does not belong in the transcript: persisting it would feed "something went
+	// wrong" back into the model's context next turn, and would break the invariant that a
+	// failed turn stores nothing. So the status line ends as the explanation.
+	defer func() {
+		domain.EmitProgress(context.WithoutCancel(ctx), s.progress, domain.ProgressUpdate{
+			ConversationID: req.ConversationID,
+			Final:          true,
+			Note:           humanFailure(turnErr), // empty on success ⇒ the line is cleared
+		})
+	}()
+
 	history, err := s.loadHistory(ctx, req.ConversationID, userMsg.Seq)
 	if err != nil {
 		return domain.Message{}, err
 	}
 
 	turnCtx := ctx
+	turnCancel := context.CancelFunc(func() {})
 	if s.TurnTimeout > 0 {
-		var cancel context.CancelFunc
-		turnCtx, cancel = context.WithTimeout(ctx, s.TurnTimeout)
-		defer cancel()
+		turnCtx, turnCancel = context.WithTimeout(ctx, s.TurnTimeout)
+	} else {
+		turnCtx, turnCancel = context.WithCancel(ctx)
 	}
+	defer turnCancel()
+
+	// A turn that goes quiet is cut loose long before TurnTimeout would notice.
+	var stalled atomic.Bool
+	go s.watchStall(turnCtx, req.ConversationID, turnCancel, &stalled)
 
 	// Acquire the managed-LLM lease HERE, not inside buildHandoff: the release must live
 	// until the turn has been dispatched and answered. Releasing it when buildHandoff returns
@@ -238,15 +345,36 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (domain.Message
 		}
 	}
 
+	// Everything after this point is the agent's own loop, which is where the minutes go.
+	s.emitProgress(ctx, req.ConversationID, domain.PhaseWorking)
+
 	h := s.buildHandoff(conv, req, history, sessionToken)
 	resp, err := s.pool.Dispatch(turnCtx, h)
 	if err != nil {
+		// Distinguish "we gave up on a wedged turn" from an ordinary cancellation, so the
+		// user is told what actually happened rather than a generic failure.
+		if stalled.Load() {
+			return domain.Message{}, ErrTurnStalled
+		}
 		return domain.Message{}, err // ErrPoolBusy / ErrWorkerLost pass through
 	}
 
 	reply := ""
 	if resp != nil && resp.Payload != nil {
 		reply = strings.TrimSpace(string(resp.Payload.Data))
+	}
+	// An agent that falls back can hand its ReAct envelope through verbatim. Nobody
+	// should ever be shown raw JSON, so unwrap it here — the last point before the text
+	// becomes a message.
+	reply = unwrapFinalAnswer(reply)
+	// A control envelope that survived the agent loop is not an answer. Treating it as an
+	// empty reply routes it through the normal failure path — the user gets a sentence
+	// they can act on instead of machine JSON, and the turn is recorded as failed, which
+	// it was.
+	if looksLikeControlEnvelope(reply) {
+		slog.Warn("chat: agent returned a control envelope instead of an answer; suppressing",
+			"conversation", req.ConversationID)
+		reply = ""
 	}
 	if reply == "" {
 		return domain.Message{}, ErrEmptyReply
@@ -256,6 +384,10 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (domain.Message
 	// who asked. A DELIVERY failure does not fail the turn: the reply is already
 	// stored, the synchronous caller still gets it, and the undeliverable message is
 	// dead-lettered by the delivery path rather than swallowed here.
+	// ADR-0098 D3: the answer supersedes the progress. A user must never be left looking at
+	// "working on it" after the reply has arrived.
+	s.emitProgress(ctx, req.ConversationID, domain.PhaseWriting)
+
 	msg, derr := s.Emit(ctx, req.ConversationID, reply)
 	if derr != nil {
 		slog.Warn("ADR-0090: turn reply stored but not delivered",

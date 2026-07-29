@@ -58,6 +58,9 @@ type deliveryPayload struct {
 	Recipient      string `json:"recipient"`
 	Text           string `json:"text"`
 	TxnID          string `json:"txn_id,omitempty"`
+	// Final marks the last progress update of a turn: render it, then stop tracking the
+	// line so the next turn starts a fresh one instead of overwriting this.
+	Final bool `json:"final,omitempty"`
 }
 
 // Deliver hands one message to the ingress daemon.
@@ -66,12 +69,14 @@ func (t *DaemonTransport) Deliver(ctx context.Context, d domain.IngressDelivery)
 		return errors.New("delivery: no daemon caller configured")
 	}
 
+	kind := string(d.Kind.Resolved())
 	body, err := json.Marshal(deliveryPayload{
-		Kind:           "ingress.deliver",
+		Kind:           kind,
 		ConversationID: d.ConversationID,
 		Recipient:      d.Address.ExternalID,
 		Text:           d.Text,
 		TxnID:          d.TxnID,
+		Final:          d.Final,
 	})
 	if err != nil {
 		return fmt.Errorf("delivery: encode payload: %w", err)
@@ -81,7 +86,7 @@ func (t *DaemonTransport) Deliver(ctx context.Context, d domain.IngressDelivery)
 		ID:        d.TxnID,
 		FromAgent: "kernel",
 		ToAgent:   d.Address.IngressAgentID,
-		Payload:   &domain.Payload{ID: d.TxnID, Type: "ingress.deliver", Data: body},
+		Payload:   &domain.Payload{ID: d.TxnID, Type: kind, Data: body},
 		Context: map[string]string{
 			"_conversation_id": d.ConversationID,
 			"_delivery_txn":    d.TxnID,

@@ -45,6 +45,11 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 
 	slog.Info("QueryMemory called", "caller", callerID, "query", req.GetQuery())
 
+	// ADR-0098: an agent searching memory is the single most common reason a turn takes
+	// time. Reporting it is the difference between a status line that moves and one that
+	// reads as a hang.
+	s.reportProgress(ctx, domain.PhaseSearching)
+
 	if s.MemorySearcher == nil {
 		return &pb.MemoryResponse{Results: []*pb.MemoryResult{}}, nil
 	}

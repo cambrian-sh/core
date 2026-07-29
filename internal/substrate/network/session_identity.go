@@ -114,6 +114,33 @@ func (s *Server) resolveCallerBinding(ctx context.Context) (domain.LeaseBinding,
 	return resolver.ResolveLease(domain.LeaseID(lease))
 }
 
+// resolveBindingFromHandoff resolves the caller's identity when the lease arrived INSIDE
+// the request rather than as a gRPC header.
+//
+// The SDK's delegation call (`delegate`) sends its lease as the handoff metadata field
+// `_session_token_id` and sets no gRPC metadata at all. So a chat turn that delegates to
+// the planner looked, to header-based resolution, like a caller with no lease — and the
+// session it opened was never linked to the conversation that ordered it. Every session in
+// the store carried an empty conversation_id as a result, and anything that needed to
+// attribute delegated work back to a conversation silently found nothing.
+//
+// Header first, payload second: the header is set by the transport and the payload by the
+// caller, so preferring the header keeps the more trustworthy source authoritative.
+func (s *Server) resolveBindingFromHandoff(ctx context.Context, meta map[string]string) (domain.LeaseBinding, bool) {
+	if b, known := s.resolveCallerBinding(ctx); known {
+		return b, true
+	}
+	resolver := s.leaseResolver()
+	if resolver == nil || meta == nil {
+		return domain.LeaseBinding{}, false
+	}
+	lease := meta["_session_token_id"]
+	if lease == "" {
+		return domain.LeaseBinding{}, false
+	}
+	return resolver.ResolveLease(domain.LeaseID(lease))
+}
+
 // withCallerSession threads the resolved session into ctx for the read/write chokepoints
 // that look it up (scope re-derivation, content-node ownership, the same-session step
 // filter). A caller with no session leaves ctx untouched, so "no session" stays
@@ -145,4 +172,72 @@ func leaseIDOf(preferred, deprecated string) domain.LeaseID {
 		return domain.LeaseID(preferred)
 	}
 	return domain.LeaseID(deprecated)
+}
+
+// resolveCallerConversation returns the conversation a caller's lease was issued under, or
+// "" when the work is not part of a chat turn (ADR-0098).
+//
+// It reads the SAME binding as resolveCallerSession, for the same reason: the conversation
+// travels on the lease rather than in client metadata, so the kernel can attribute work to
+// a chat turn without trusting an agent to name a conversation it was not dispatched under.
+//
+// Used only to decide who should be told what is happening. A miss means no progress is
+// reported, never that work is blocked.
+func (s *Server) resolveCallerConversation(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	resolver := s.leaseResolver()
+	if resolver == nil {
+		return ""
+	}
+	lease := domain.LeaseID(firstMD(md, leaseHeader))
+	if lease == "" {
+		lease = domain.LeaseID(firstMD(md, sessionHeader)) // stale SDKs put the lease here
+	}
+	if lease == "" {
+		return ""
+	}
+	binding, known := resolver.ResolveLease(lease)
+	if !known {
+		return ""
+	}
+	if binding.ConversationID != "" {
+		return binding.ConversationID
+	}
+
+	// Second hop, and the one that actually matters in practice.
+	//
+	// Only the chat turn's OWN lease carries a conversation. The moment that turn delegates
+	// to the planner, each step runs under a fresh step lease bound to a SessionID — so the
+	// agents doing the slow work (retrieval, tools, file writes) resolve to no conversation
+	// at all, and the user watching sees one static line while the system is busiest.
+	//
+	// ADR-0084 D2 linked the session back to the conversation that ordered it precisely so
+	// this attribution is possible server-side, without an agent naming anything.
+	if binding.SessionID == "" || s.SessionMgr == nil {
+		return ""
+	}
+	ses, err := s.SessionMgr.GetSession(ctx, binding.SessionID)
+	if err != nil || ses == nil {
+		return ""
+	}
+	return ses.ConversationID
+}
+
+// reportProgress tells whoever is waiting on this caller's conversation what the kernel is
+// doing on their behalf. Best-effort and silent when nothing is listening (ADR-0098 D5).
+func (s *Server) reportProgress(ctx context.Context, phase domain.ProgressPhase) {
+	if s.Progress == nil {
+		return
+	}
+	conversationID := s.resolveCallerConversation(ctx)
+	if conversationID == "" {
+		return
+	}
+	domain.EmitProgress(ctx, s.Progress, domain.ProgressUpdate{
+		ConversationID: conversationID,
+		Phase:          phase,
+	})
 }

@@ -32,6 +32,35 @@ type IngressDelivery struct {
 	// message id is the natural value: delivering message M is the same act however
 	// many times it is retried.
 	TxnID string
+	// Kind separates a real reply from a supersedable progress snapshot (ADR-0098).
+	// Empty means DeliveryKindMessage, so every existing caller keeps its meaning.
+	//
+	// The distinction has to reach the ingress, because the two are rendered
+	// differently: a message is appended, a progress snapshot REPLACES the last one.
+	// An ingress that does not understand progress ignores it, which is the correct
+	// degradation — silence rather than a wall of status lines.
+	Kind DeliveryKind
+	// Final marks the terminal progress update of a turn (ADR-0098 D3).
+	Final bool
+}
+
+// DeliveryKind distinguishes what an ingress is being asked to render.
+type DeliveryKind string
+
+const (
+	// DeliveryKindMessage is a real conversation turn: append it.
+	DeliveryKindMessage DeliveryKind = "ingress.deliver"
+	// DeliveryKindProgress is a supersedable snapshot: replace the previous one, and
+	// never treat it as conversation content (ADR-0098 D1/D2).
+	DeliveryKindProgress DeliveryKind = "ingress.progress"
+)
+
+// Resolved returns the effective kind, defaulting to a message.
+func (k DeliveryKind) Resolved() DeliveryKind {
+	if k == "" {
+		return DeliveryKindMessage
+	}
+	return k
 }
 
 // IngressTransport hands a delivery to the ingress daemon that carries it.

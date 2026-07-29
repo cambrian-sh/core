@@ -15,7 +15,10 @@ import (
 // kernel host. Prlimit is applied post-start on the child's PID; the brief
 // window before the child allocates is acceptable. memLimitMB <= 0 disables.
 func applyResourceCaps(cmd *exec.Cmd, memLimitMB int) (func(), error) {
-	if memLimitMB <= 0 || cmd.Process == nil {
+	if cmd.Process == nil {
+		return nil, nil
+	}
+	if memLimitMB <= 0 {
 		return nil, nil
 	}
 	lim := uint64(memLimitMB) * 1024 * 1024

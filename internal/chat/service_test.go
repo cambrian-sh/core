@@ -151,6 +151,16 @@ func (f *fakePool) Dispatch(_ context.Context, h *domain.Handoff) (*domain.Hando
 	return &domain.Handoff{Payload: &domain.Payload{Data: []byte(reply)}}, nil
 }
 
+// all returns every handoff dispatched so far, for assertions that must hold on each turn
+// rather than only the most recent.
+func (f *fakePool) all() []*domain.Handoff {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*domain.Handoff, len(f.handoffs))
+	copy(out, f.handoffs)
+	return out
+}
+
 func (f *fakePool) calls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -74,6 +74,44 @@ func (s *DeliveryService) SetLogger(l *slog.Logger) {
 // The order of the checks is the design: resolve, then re-authorise, then send.
 // Re-authorising after resolution is what makes revocation effective on
 // conversations that were bound while the ingress was still trusted.
+// DeliverProgress sends a supersedable progress snapshot (ADR-0098).
+//
+// It differs from Deliver in three ways, each deliberate:
+//
+//   - No txnID, so it never touches the idempotency journal. Progress is a snapshot,
+//     not an event; "already sent" is meaningless when each update replaces the last.
+//   - Errors are returned but callers are expected to drop them. Progress is
+//     best-effort by construction (ADR-0098 D5).
+//   - A conversation with no delivery address is NOT an error here. Most conversations
+//     have no one waiting on the far side, and progress for them is simply moot.
+func (s *DeliveryService) DeliverProgress(ctx context.Context, conversationID, text string, final bool) error {
+	// An EMPTY text is meaningful here and must not be short-circuited: it is the
+	// "clear the status line" signal (ADR-0098 D3). Only a missing transport is a no-op.
+	if s.transport == nil {
+		return nil
+	}
+	conv, err := s.convs.GetConversation(ctx, conversationID)
+	if err != nil {
+		return err
+	}
+	if conv.Delivery.IsZero() {
+		return nil // nobody is waiting on an ingress; nothing to report to
+	}
+	// Re-authorise on every snapshot, exactly as a real delivery does. Progress is
+	// lower-stakes content but it still leaves the deployment, so revoking an ingress
+	// must stop it too.
+	if err := s.authorise(ctx, conv.Delivery); err != nil {
+		return err
+	}
+	return s.transport.Deliver(ctx, domain.IngressDelivery{
+		ConversationID: conversationID,
+		Address:        conv.Delivery,
+		Text:           text,
+		Kind:           domain.DeliveryKindProgress,
+		Final:          final,
+	})
+}
+
 func (s *DeliveryService) Deliver(ctx context.Context, conversationID, text, txnID string) error {
 	if s.transport == nil {
 		return errors.New("delivery: no ingress transport configured")

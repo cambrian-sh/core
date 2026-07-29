@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -63,15 +64,42 @@ func (p *PgVectorAdapter) RetagDocument(ctx context.Context, documentID string, 
 // Reads the document row rather than sampling a chunk: sampling is what the old shape
 // forced, and it cannot tell a correct answer from one chunk of a half-classified
 // document.
-func (p *PgVectorAdapter) DocumentTags(ctx context.Context, documentID string) ([]string, error) {
-	var tags []string
-	err := p.pool.QueryRow(ctx,
+// It reports found separately from an empty result, because "this document has no
+// labels" and "there is no such document" demand different handling and an untagged
+// document is the common case rather than an error.
+func (p *PgVectorAdapter) DocumentTags(ctx context.Context, documentID string) (tags []string, found bool, err error) {
+	err = p.pool.QueryRow(ctx,
 		`SELECT tags FROM `+TableDocuments+` WHERE id = $1`, documentID).Scan(&tags)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, nil
 		}
-		return nil, mapError("DocumentTags", err)
+		return nil, false, mapError("DocumentTags", err)
 	}
-	return tags, nil
+	return tags, true, nil
+}
+
+// ParentDocumentOf resolves the document a chunk belongs to, if any.
+//
+// Retrieval returns CHUNKS, so an operator labelling something they found in search is
+// holding a chunk id. Tagging that row directly would label one chunk of a document and
+// leave the rest — the half-classified state ADR-0093 exists to prevent, produced by the
+// very console feature meant to fix classification.
+//
+// A memory an agent wrote has no parent and correctly reports none: it is its own
+// authority, and tagging it in place is right.
+func (p *PgVectorAdapter) ParentDocumentOf(ctx context.Context, chunkID string) (string, bool, error) {
+	var parent *string
+	err := p.pool.QueryRow(ctx,
+		`SELECT document_id FROM `+TableChunks+` WHERE id = $1`, chunkID).Scan(&parent)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, mapError("ParentDocumentOf", err)
+	}
+	if parent == nil || *parent == "" {
+		return "", false, nil
+	}
+	return *parent, true, nil
 }

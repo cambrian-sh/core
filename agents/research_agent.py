@@ -18,13 +18,24 @@ AGENT_DESCRIPTION = (
 
 AGENT_MANIFEST = '''
 {
-  "version": "1.0.0",
-  "trait": "cognitive",
-  "capabilities": ["code_search", "file_read", "general_purpose"],
-  "supported_formats": ["text"],
-  "tools": ["web_research", "research", "information_retrieval"],
-  "release_notes": "Reference tool-using research agent (ADR-0040).",
-  "dependencies": []
+    "version": "1.0.0",
+    "trait": "cognitive",
+    "capabilities": [
+        "research",
+        "code_search",
+        "file_read",
+        "general_purpose"
+    ],
+    "supported_formats": [
+        "text"
+    ],
+    "tools": [
+        "web_research",
+        "research",
+        "information_retrieval"
+    ],
+    "release_notes": "Reference tool-using research agent (ADR-0040).",
+    "dependencies": []
 }
 '''
 

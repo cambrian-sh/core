@@ -15,6 +15,11 @@ import (
 
 const defaultExternalActivation = 0.5
 
+// sourceDocumentMarker announces that the NEXT tag is the caller's document id
+// (see externalDocumentID rule 1). It is wire protocol, not a classification, and
+// classificationTags removes it before the tags are stored as labels.
+const sourceDocumentMarker = "source_document"
+
 func (im *IngestionManager) persistChunks(
 	ctx context.Context,
 	doc domain.ExternalDocument,
@@ -26,6 +31,23 @@ func (im *IngestionManager) persistChunks(
 		return 0, fmt.Errorf("ingestion manager: vector store is not configured")
 	}
 	documentID := externalDocumentID(doc)
+
+	// The tag list is overloaded: it carries a CLASSIFICATION *and*, by the
+	// `source_document` convention above, an IDENTITY. Only the first is a label.
+	//
+	// Identity has to stay on the wire — `externalDocumentID` has just read it, and
+	// dropping it at the caller renames every document to `<tag>:<content-digest>`.
+	// But it must not survive as a *classification*, because access policy acts on
+	// tags and never on a document by name (ADR-0085): a tag naming exactly one
+	// document is a term no rule can usefully match, and one per document buries the
+	// controlled vocabulary. Measured on the live store: 726 distinct tags against a
+	// 12-term vocabulary, 710 of them a document's own id.
+	//
+	// So the split happens HERE, at the write chokepoint, and not in any caller: it is
+	// the one place that knows both the full request and which tag actually became the
+	// id. Every ingest path gets it, including the six benchmark suites that use the
+	// convention, without any of them changing.
+	doc.Tags = classificationTags(doc.Tags, documentID)
 
 	// ADR-0093: record the document itself FIRST. Chunks and sections carry a foreign
 	// key to it, so the parent has to exist before its children — and this is also the
@@ -237,6 +259,44 @@ func chunkMetadata(
 	return meta
 }
 
+// classificationTags strips the IDENTITY terms from a caller's tag list, leaving the
+// classification.
+//
+// Removes exactly two things:
+//
+//  1. the `source_document` marker, which is wire protocol announcing "the next tag
+//     is this document's id" and was never a label; and
+//  2. a tag equal to the document id it produced.
+//
+// Everything else is preserved, in order. The id is matched against the RESOLVED
+// documentID rather than blindly dropping whatever follows the marker, so a caller
+// whose id came from somewhere else (a thread, a source URI, a content digest) keeps
+// every tag it sent. A caller that never used the convention is unaffected.
+//
+// This is narrowing at the write chokepoint, which the document entity already does
+// (ADR-0093 D4: SaveDocument returns what was actually stored, and the chunk cache is
+// derived from that rather than from the request).
+func classificationTags(tags []string, documentID string) []string {
+	if len(tags) == 0 {
+		return tags
+	}
+	out := make([]string, 0, len(tags))
+	for i := 0; i < len(tags); i++ {
+		if tags[i] == sourceDocumentMarker {
+			// Consume the id it introduced, but only if that tag is genuinely the id.
+			if i+1 < len(tags) && tags[i+1] == documentID {
+				i++
+			}
+			continue
+		}
+		if tags[i] == documentID {
+			continue
+		}
+		out = append(out, tags[i])
+	}
+	return out
+}
+
 // externalDocumentID derives the STABLE, UNIQUE document id an item's chunks hang
 // off of (chunk ids are "<documentID>-chunk-<n>"). "Unique" so two distinct items
 // never collide onto the same chunk id and overwrite each other; "stable" so
@@ -246,7 +306,7 @@ func externalDocumentID(doc domain.ExternalDocument) string {
 	// 1. Explicit caller-supplied id (multi-chunk uploads tagged source_document).
 	//    Preserves the "<doc_id>-chunk-N" contract downstream consumers match on.
 	for i, tag := range doc.Tags {
-		if tag == "source_document" && i+1 < len(doc.Tags) && doc.Tags[i+1] != "" {
+		if tag == sourceDocumentMarker && i+1 < len(doc.Tags) && doc.Tags[i+1] != "" {
 			return doc.Tags[i+1]
 		}
 	}
@@ -266,7 +326,7 @@ func externalDocumentID(doc domain.ExternalDocument) string {
 	//     so a caller supplying a perfectly unique ThreadID still lost data as long
 	//     as it also passed a tag.
 	for _, tag := range doc.Tags {
-		if tag == "" || tag == "document-qa" || tag == "source_document" || strings.HasPrefix(tag, "chunker:") {
+		if tag == "" || tag == "document-qa" || tag == sourceDocumentMarker || strings.HasPrefix(tag, "chunker:") {
 			continue
 		}
 		return tag + ":" + contentDigest(doc.Body)

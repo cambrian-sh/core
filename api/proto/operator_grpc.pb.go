@@ -45,6 +45,7 @@ const (
 	OperatorConsole_ListTools_FullMethodName                = "/cambrian.OperatorConsole/ListTools"
 	OperatorConsole_ListSkills_FullMethodName               = "/cambrian.OperatorConsole/ListSkills"
 	OperatorConsole_QueryMemory_FullMethodName              = "/cambrian.OperatorConsole/QueryMemory"
+	OperatorConsole_ListDocuments_FullMethodName            = "/cambrian.OperatorConsole/ListDocuments"
 	OperatorConsole_AnswerMemory_FullMethodName             = "/cambrian.OperatorConsole/AnswerMemory"
 	OperatorConsole_SetToolPolicy_FullMethodName            = "/cambrian.OperatorConsole/SetToolPolicy"
 	OperatorConsole_ExecuteTool_FullMethodName              = "/cambrian.OperatorConsole/ExecuteTool"
@@ -136,6 +137,20 @@ type OperatorConsoleClient interface {
 	ListTools(ctx context.Context, in *ListToolsOpRequest, opts ...grpc.CallOption) (*ListToolsOpResponse, error)
 	ListSkills(ctx context.Context, in *ListSkillsOpRequest, opts ...grpc.CallOption) (*ListSkillsOpResponse, error)
 	QueryMemory(ctx context.Context, in *QueryMemoryRequest, opts ...grpc.CallOption) (*QueryMemoryResponse, error)
+	// ListDocuments enumerates ingested documents by ROW, not by relevance.
+	//
+	// QueryMemory is semantic: it answers "find the document that says X". That is the
+	// wrong instrument for classification, which asks "which of my documents have no
+	// labels?" — a question with no query text, because the operator does not yet know
+	// what those documents say. Access policy acts only on labels, so an unlabelled
+	// document is not denied, it is INVISIBLE to the policy model; without an
+	// enumeration there was no way to find one except by already knowing its contents.
+	//
+	// Reads the `documents` table directly (small, GIN-indexed on tags). Documents are
+	// an OSS concept — the store owns them with or without the policy plugin — so this
+	// lives on the OSS plane rather than behind access-policy. Read RPC (any
+	// authenticated role, no command_id).
+	ListDocuments(ctx context.Context, in *ListDocumentsOpRequest, opts ...grpc.CallOption) (*ListDocumentsOpResponse, error)
 	// AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
 	// composed answer with inline [n] citation markers, plus the evidence each marker
 	// resolves to. Distinct from QueryMemory's single-pass evidence lane: this is a
@@ -476,6 +491,16 @@ func (c *operatorConsoleClient) QueryMemory(ctx context.Context, in *QueryMemory
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListDocuments(ctx context.Context, in *ListDocumentsOpRequest, opts ...grpc.CallOption) (*ListDocumentsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDocumentsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListDocuments_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) AnswerMemory(ctx context.Context, in *AnswerMemoryRequest, opts ...grpc.CallOption) (*AnswerMemoryResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AnswerMemoryResponse)
@@ -709,6 +734,20 @@ type OperatorConsoleServer interface {
 	ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error)
 	ListSkills(context.Context, *ListSkillsOpRequest) (*ListSkillsOpResponse, error)
 	QueryMemory(context.Context, *QueryMemoryRequest) (*QueryMemoryResponse, error)
+	// ListDocuments enumerates ingested documents by ROW, not by relevance.
+	//
+	// QueryMemory is semantic: it answers "find the document that says X". That is the
+	// wrong instrument for classification, which asks "which of my documents have no
+	// labels?" — a question with no query text, because the operator does not yet know
+	// what those documents say. Access policy acts only on labels, so an unlabelled
+	// document is not denied, it is INVISIBLE to the policy model; without an
+	// enumeration there was no way to find one except by already knowing its contents.
+	//
+	// Reads the `documents` table directly (small, GIN-indexed on tags). Documents are
+	// an OSS concept — the store owns them with or without the policy plugin — so this
+	// lives on the OSS plane rather than behind access-policy. Read RPC (any
+	// authenticated role, no command_id).
+	ListDocuments(context.Context, *ListDocumentsOpRequest) (*ListDocumentsOpResponse, error)
 	// AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
 	// composed answer with inline [n] citation markers, plus the evidence each marker
 	// resolves to. Distinct from QueryMemory's single-pass evidence lane: this is a
@@ -857,6 +896,9 @@ func (UnimplementedOperatorConsoleServer) ListSkills(context.Context, *ListSkill
 }
 func (UnimplementedOperatorConsoleServer) QueryMemory(context.Context, *QueryMemoryRequest) (*QueryMemoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryMemory not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListDocuments(context.Context, *ListDocumentsOpRequest) (*ListDocumentsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDocuments not implemented")
 }
 func (UnimplementedOperatorConsoleServer) AnswerMemory(context.Context, *AnswerMemoryRequest) (*AnswerMemoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AnswerMemory not implemented")
@@ -1385,6 +1427,24 @@ func _OperatorConsole_QueryMemory_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListDocuments_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDocumentsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListDocuments(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListDocuments_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListDocuments(ctx, req.(*ListDocumentsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_AnswerMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AnswerMemoryRequest)
 	if err := dec(in); err != nil {
@@ -1754,6 +1814,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryMemory",
 			Handler:    _OperatorConsole_QueryMemory_Handler,
+		},
+		{
+			MethodName: "ListDocuments",
+			Handler:    _OperatorConsole_ListDocuments_Handler,
 		},
 		{
 			MethodName: "AnswerMemory",
