@@ -20,13 +20,27 @@ AGENT_DESCRIPTION = (
 
 AGENT_MANIFEST = '''
 {
-  "version": "1.0.0",
-  "trait": "cognitive",
-  "capabilities": ["file_read", "file_write", "run_inspection", "test_execution", "safety_guardrails", "general_purpose"],
-  "supported_formats": ["text"],
-  "tools": ["shell_command", "terminal", "command_execution"],
-  "release_notes": "Shell command execution behind kernel-owned tool registry (ADR-0039/0040).",
-  "dependencies": []
+    "version": "1.0.0",
+    "trait": "cognitive",
+    "capabilities": [
+        "shell_execution",
+        "file_read",
+        "file_write",
+        "run_inspection",
+        "test_execution",
+        "safety_guardrails",
+        "general_purpose"
+    ],
+    "supported_formats": [
+        "text"
+    ],
+    "tools": [
+        "shell_command",
+        "terminal",
+        "command_execution"
+    ],
+    "release_notes": "Shell command execution behind kernel-owned tool registry (ADR-0039/0040).",
+    "dependencies": []
 }
 '''
 

@@ -241,3 +241,34 @@ func (m *AgentManager) ListRunningDaemons() []DaemonInstance {
 	}
 	return out
 }
+
+// StopAllDaemons stops every running daemon. Called on kernel shutdown.
+//
+// This is the GRACEFUL half of lifetime containment. The OS-level half —
+// PDEATHSIG on Linux, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE on Windows — is the
+// backstop for a hard kill, where no cleanup code runs at all. Both are needed
+// and neither replaces the other: the backstop cannot flush or log, and graceful
+// shutdown cannot help when the kernel is killed outright.
+//
+// Errors are logged, never returned. A shutdown that aborts partway through
+// leaves exactly the orphans this exists to prevent, so every daemon gets its
+// turn regardless of what the previous one did.
+func (m *AgentManager) StopAllDaemons() {
+	m.daemons.mu.Lock()
+	streams := make([]string, 0, len(m.daemons.byStream))
+	for streamID := range m.daemons.byStream {
+		streams = append(streams, streamID)
+	}
+	m.daemons.mu.Unlock()
+
+	if len(streams) == 0 {
+		return
+	}
+	slog.Info("ADR-0033: stopping daemons on shutdown", "count", len(streams))
+	for _, streamID := range streams {
+		if err := m.StopDaemon(streamID); err != nil {
+			slog.Warn("ADR-0033: daemon did not stop cleanly on shutdown",
+				"stream", streamID, "err", err)
+		}
+	}
+}

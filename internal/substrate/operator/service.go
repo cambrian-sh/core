@@ -8,6 +8,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/memory"
 )
 
 // SessionLister supplies persistent session state for the Snapshot fan-in.
@@ -36,7 +37,8 @@ type Service struct {
 	tools         ToolCatalog
 	skills        SkillLister
 	memory        MemoryQuerier
-	answerer      MemoryAnswerer // ADR-0081; nil ⇒ AnswerMemory Unimplemented
+	documents     memory.DocumentLister // nil ⇒ ListDocuments Unimplemented
+	answerer      MemoryAnswerer        // ADR-0081; nil ⇒ AnswerMemory Unimplemented
 	toolRunner    ToolRunner
 	ingestor      MemoryIngestor
 	watches       domain.WatchConfigHandler

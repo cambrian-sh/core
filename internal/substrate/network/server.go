@@ -83,6 +83,11 @@ type WorldScout interface {
 }
 
 type Server struct {
+	// Progress reports what the kernel is doing on behalf of a chat turn, so a user
+	// waiting on a slow request sees movement rather than one static line (ADR-0098).
+	// nil ⇒ nothing is listening, which is the OSS default.
+	Progress domain.ProgressSink
+
 	pb.UnimplementedOrchestratorServer
 	// Router is the universal input classifier (ADR-0031). When nil, Execute
 	// falls back to the legacy PLAN-only path for backward compatibility.
@@ -417,7 +422,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			// back to the conversation. Resolved from the caller's lease, never from a
 			// client-supplied field, and persisted only on a session we just opened —
 			// re-linking an existing session would rewrite its origin.
-			if b, known := s.resolveCallerBinding(ctx); known && b.ConversationID != "" && ses.ConversationID == "" {
+			if b, known := s.resolveBindingFromHandoff(ctx, in.GetMetadata()); known && b.ConversationID != "" && ses.ConversationID == "" {
 				ses.ConversationID = b.ConversationID
 				ses.OriginMessageID = b.OriginMessageID
 				if serr := s.SessionMgr.SaveConversationLink(ctx, ses.ID, b.ConversationID, b.OriginMessageID); serr != nil {

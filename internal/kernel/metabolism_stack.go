@@ -149,7 +149,15 @@ func (s *MetabolismStack) Start(ctx context.Context) error {
 }
 
 // Shutdown kills all active agents and stops background workers.
+//
+// Daemons go FIRST, and through StopDaemon rather than a bare kill. StopDaemon marks the
+// exit as expected, so REACT-04's crash watcher ignores it; killing them as ordinary
+// instances instead looks like a crash, and the supervisor helpfully respawns a daemon
+// moments before the kernel dies — which is exactly how a restart used to strand one.
+// A stranded poller then holds its integration's token and answers the replacement with
+// 409 indefinitely.
 func (s *MetabolismStack) Shutdown(ctx context.Context) {
+	s.Manager.StopAllDaemons()
 	if err := s.Manager.KillAllAgents(ctx); err != nil {
 		slog.Warn("MetabolismStack: agent cleanup failed", "err", err)
 	}

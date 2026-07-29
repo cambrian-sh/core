@@ -161,3 +161,47 @@ func TestRetag_DeletingADocumentCascadesToChunks(t *testing.T) {
 		t.Errorf("an unparented memory was deleted with an unrelated document")
 	}
 }
+
+// Tagging from the operator console must reach the DOCUMENT, not one chunk.
+//
+// This is the path that was broken after the split: the console's TagMemory did
+// GetByID → mutate metadata → Save, and `documents` is deliberately not among the
+// tables GetByID searches. So tagging a document by its id said "not found", while
+// tagging a chunk id succeeded and silently desynchronised the document row from its
+// own chunks. The fix routes a document id through RetagDocument; this asserts the
+// result is authoritative AND propagated.
+func TestRetag_OperatorTagReachesDocumentAndChunks(t *testing.T) {
+	ctx, pool := splitTestPool(t)
+	retagFixture(ctx, t, pool)
+
+	// A document that arrived with no classification at all — the armata.pdf case.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO documents (id, title, tags) VALUES ('doc-untagged', 'Untagged', '{}')
+		 ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatalf("seed document: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO chunks (id, document_id, text, document_type)
+		 VALUES ('doc-untagged-chunk-1', 'doc-untagged', 'body', 'mnemonic_fact')
+		 ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatalf("seed chunk: %v", err)
+	}
+
+	if err := retag(ctx, t, pool, "doc-untagged", []string{"internal"}, `["internal"]`); err != nil {
+		t.Fatalf("retag: %v", err)
+	}
+
+	var tags []string
+	if err := pool.QueryRow(ctx,
+		`SELECT tags FROM documents WHERE id='doc-untagged'`).Scan(&tags); err != nil {
+		t.Fatalf("read document: %v", err)
+	}
+	if len(tags) != 1 || tags[0] != "internal" {
+		t.Errorf("document tags = %v, want [internal] — the authoritative row must carry it", tags)
+	}
+	// And the chunk carries the derived copy, so a retrieval-time tag filter sees it.
+	if got := count(ctx, t, pool,
+		`SELECT count(*) FROM chunks WHERE document_id='doc-untagged' AND metadata->'tags' @> '["internal"]'`); got != 1 {
+		t.Errorf("chunks carrying the label = %d, want 1 — an untagged chunk stays invisible to any rule", got)
+	}
+}

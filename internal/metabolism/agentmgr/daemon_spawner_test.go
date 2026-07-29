@@ -130,3 +130,42 @@ func TestDaemonSpawner_DaemonStatus(t *testing.T) {
 		t.Errorf("want 'unavailable', got %q", s)
 	}
 }
+
+// StopAllDaemons must clear every registered stream, so shutdown leaves nothing behind.
+//
+// The failure this guards against is subtle and was seen in the wild: killing daemons as
+// ordinary instances looks like a crash to the REACT-04 watcher, which respawns one just
+// as the kernel dies — stranding a process that outlives its parent. Stopping them through
+// the daemon path first marks each exit expected, so nothing is resurrected.
+func TestStopAllDaemons_ClearsEveryStream(t *testing.T) {
+	m := makeTestDaemonManager()
+
+	for _, stream := range []string{"gold-tracker", "telegram", "mailbox"} {
+		inst := domain.NewInstance(stream)
+		inst.Mode = domain.ModeDaemon
+		m.InstanceManager.mu.Lock()
+		m.InstanceManager.instances[inst.ID] = inst
+		m.InstanceManager.agentIndex[stream] = []string{inst.ID}
+		m.InstanceManager.mu.Unlock()
+		m.IncrementDaemonRef(stream, inst.ID)
+	}
+	if got := len(m.daemons.byStream); got != 3 {
+		t.Fatalf("expected 3 registered daemon streams, got %d", got)
+	}
+
+	m.StopAllDaemons()
+
+	if got := len(m.daemons.byStream); got != 0 {
+		t.Errorf("shutdown left %d daemon stream(s) registered: %v", got, m.daemons.byStream)
+	}
+}
+
+// Shutdown must be safe with nothing running — the common case for a kernel that never
+// spawned a daemon at all.
+func TestStopAllDaemons_WithNoneRunningIsANoOp(t *testing.T) {
+	m := makeTestDaemonManager()
+	m.StopAllDaemons() // must not panic
+	if got := len(m.daemons.byStream); got != 0 {
+		t.Errorf("expected no daemon streams, got %d", got)
+	}
+}

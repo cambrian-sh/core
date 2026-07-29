@@ -97,6 +97,11 @@ type Kernel struct {
 	OperatorEffects operator.CommandEffects
 	// ADR-0047 0047-24: durable operator audit store (Postgres, in-memory fallback).
 	OperatorAudit domain.AuditStore
+	// Documents enumerates ingested documents by row, backing the ListDocuments RPC
+	// and the "document-listing" capability. Carried on the Kernel because the store
+	// handle is local to bootstrapKernel while the operator service is wired later,
+	// in startKernelServices. nil ⇒ the RPC answers Unimplemented.
+	Documents memory.DocumentLister
 	// REACT-01 / ADR-0061: reactive dead-letter read source (the bbolt journal
 	// decorator). Backs the OperatorConsole ListWatchDeadLetters RPC.
 	WatchDeadLetters domain.WatchDeadLetterReader
@@ -807,11 +812,18 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 	// The capability bundle handed to plugins. Built once so the ADR-0082 D12 Build phase
 	// and the ADR-0057 NewSignalReceiver hook see exactly the same services.
+	// ADR-0098: plugins are Built before the chat lane exists, so the progress channel is
+	// wired through holders that are handed over now and filled in below.
+	progressSink := &progressHolder{}
+	progressOut := &progressDelivererHolder{}
+
 	kernelSvc := KernelServices{
 		// ADR-0085: the policy plugin owns its own tables and needs to tell a
 		// registered-but-unprofiled agent from an unknown principal, so it gets the
 		// pool, the registry existence check, and the session caller term. It gets
 		// nothing else about the kernel.
+		SetProgressSink: progressSink.set,
+		DeliverProgress: progressOut.deliver,
 		SQL:           vec.Pool(),
 		AgentExists:   reg.HasAgent,
 		SessionScopes: sessionMgr,
@@ -869,12 +881,23 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// delegates to the planner opens a session linked back to the exchange that
 		// ordered it — resolved server-side, never named by the agent.
 		chatTurns.SetLeaseBinder(llmGateway)
+		// ADR-0098: always install the holder — the emission sites then need no nil check,
+		// and whether anything is listening is decided later by whether a plugin filled it.
+		chatTurns.SetProgressSink(progressSink)
+		// The same holder answers "when did this conversation last do anything?", which is
+		// what lets a wedged turn be cut loose instead of holding a worker and a lease for
+		// the full TurnTimeout while reporting nothing.
+		chatTurns.SetLivenessProbe(progressSink.LastActivity)
+		chatTurns.StallTimeout = corechat.DefaultStallTimeout
 		// ADR-0090 D8: a reply to a conversation that arrived through an ingress goes
 		// back out through that ingress. The address is resolved from the conversation
 		// record, never supplied by the agent, and the registration is re-checked at
 		// delivery time so revoking an ingress stops conversations already bound to it.
-		chatTurns.SetDeliverer(ingress.NewDeliveryService(
-			conversations, opts.IngressResolver, ingress.NewDaemonTransport(meta.Manager)))
+		deliverySvc := ingress.NewDeliveryService(
+			conversations, opts.IngressResolver, ingress.NewDaemonTransport(meta.Manager))
+		chatTurns.SetDeliverer(deliverySvc)
+		// ADR-0098 D2: the same resolved, re-authorised envelope carries progress.
+		progressOut.set(deliverySvc.DeliverProgress)
 		lifecycles = append(lifecycles, Lifecycle{
 			Name: "chat-pool",
 			Start: func(ctx context.Context) {
@@ -904,6 +927,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		watchBacktester = bt
 	}
 	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, providers, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
+	// ADR-0098: the agent-facing plane reports memory searches and tool calls against the
+	// conversation its caller's lease was issued under, so a slow turn shows movement
+	// rather than one static line. Installed unconditionally — the holder is inert until
+	// a plugin fills it.
+	cambrianServer.Progress = progressSink
 
 	// ADR-0090: a signal from a REGISTERED ingress is a conversational turn, so it is
 	// routed to the chat lane before the signal pipeline sees it — the planner never
@@ -1365,9 +1393,44 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			if opts.PolicyAdmin != nil && !opts.PolicyAdmin.ValidateTag(tag) {
 				return fmt.Errorf("tag %q is not in the controlled vocabulary", tag)
 			}
+			// ADR-0093: try the DOCUMENT ENTITY first. `documents.tags` is the
+			// authoritative classification, and the per-chunk copies are a derived
+			// cache — so tagging a document has to go through RetagDocument, which
+			// moves the row and every one of its chunks in one transaction.
+			//
+			// Writing the chunk directly (which is all this used to do) left the
+			// document row saying one thing and its chunks another: precisely the
+			// half-classified state the split was built to make impossible. It also
+			// could not tag a document at ALL, because GetByID searches the chunk and
+			// descriptor tables and `documents` is deliberately not among them.
+			if current, found, derr := vec.DocumentTags(ctx, docID); derr != nil {
+				return fmt.Errorf("tag_memory: %w", derr)
+			} else if found {
+				return vec.RetagDocument(ctx, docID, applyTag(current, tag, add))
+			}
+
+			// Retrieval returns CHUNKS, so an operator labelling a search result holds a
+			// chunk id. Label its parent document instead: tagging the chunk alone would
+			// leave the document's other chunks unlabelled, which is the half-classified
+			// state this design exists to prevent — produced by the feature meant to fix
+			// classification.
+			if parent, ok, perr := vec.ParentDocumentOf(ctx, docID); perr != nil {
+				return fmt.Errorf("tag_memory: %w", perr)
+			} else if ok {
+				current, _, terr := vec.DocumentTags(ctx, parent)
+				if terr != nil {
+					return fmt.Errorf("tag_memory: %w", terr)
+				}
+				return vec.RetagDocument(ctx, parent, applyTag(current, tag, add))
+			}
+
+			// Not a document and not part of one — an agent-written memory, a tool
+			// descriptor, a scene. Those have no parent to be authoritative, so the row
+			// itself is it.
+			// Those have no parent to be authoritative, so the row itself is it.
 			doc, err := vec.GetByID(ctx, docID)
 			if err != nil || doc == nil {
-				return fmt.Errorf("tag_memory: document %s not found: %w", docID, err)
+				return fmt.Errorf("tag_memory: %s is neither a document nor a memory: %w", docID, err)
 			}
 			tags := stringSliceFromMeta(doc.Metadata["tags"])
 			tags = applyTag(tags, tag, add)
@@ -1445,6 +1508,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	return &Kernel{
 		OperatorEffects:    operatorEffects,
 		OperatorAudit:      operatorAudit,
+		Documents:          vec,
 		Config:             cfg,
 		Registry:           reg,
 		WatchDeadLetters:   reg,                   // REACT-01 / ADR-0061
@@ -1626,6 +1690,16 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// catalog (whole registry, not a per-agent menu), the system-skill registry,
 		// and ScopeSystem memory recall (operator sees all data, D13).
 		operatorSvc.SetReadSources(k.Server.ToolExecutor, k.Server.SkillRegistry, k.Memory.QueryService)
+		// Document enumeration: the classification counterpart to memory recall.
+		// Search cannot answer "which of my documents have no labels?" — that question
+		// has no query text — and an unlabelled document is invisible to the policy
+		// model rather than denied, so without this the console could not find the one
+		// set of documents that most needs attention.
+		//
+		// Reads the store directly, like the operator's other reads: the operator plane
+		// is ScopeSystem (D13) and sees all data. This is a listing of ids and labels,
+		// never document bodies, so it discloses nothing a tag listing would not.
+		operatorSvc.SetDocumentLister(k.Documents)
 		// ADR-0081: the answer lane is only meaningful when the agentic retrieval
 		// loop is wired (it synthesizes over multi-hop evidence). Gate on the same
 		// flag; the "memory-answer" capability is advertised iff this is set.
@@ -1720,6 +1794,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if operatorSvc.HasMemoryAnswerer() {
 			operatorCaps = append(operatorCaps, "memory-answer")
 		}
+		// document-listing: ListDocuments enumerates documents by row, including the
+		// unlabelled-only filter. Advertised only when a store backs it, so a console
+		// never renders a document browser against a kernel that answers Unimplemented.
+		if operatorSvc.HasDocumentLister() {
+			operatorCaps = append(operatorCaps, "document-listing")
+		}
 		// ADR-0082 D2: plugin-contributed capabilities. Each plugin declares the operator
 		// surfaces it implements in its own manifest; the kernel collects them here and
 		// advertises them WITHOUT interpreting any of them — which is what keeps downstream
@@ -1735,6 +1815,17 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		}
 		operatorCaps = append(operatorCaps, "session-lifecycle")
 		operatorCaps = append(operatorCaps, k.PluginCapabilities...)
+		// Contract 0070: adds the OSS ListDocuments RPC (ListDocumentsOpRequest /
+		// ListDocumentsOpResponse / DocumentSummaryOp) and the "document-listing"
+		// capability. Documents are an OSS concept — the store owns them with or
+		// without the policy plugin — so this is NOT on the premium authz plane.
+		//
+		// It exists because access policy acts on labels and never on a document by
+		// name, which makes an unlabelled document invisible to the policy model
+		// rather than denied. Search cannot find one: "which of my documents have no
+		// labels?" has no query text. Enumeration is the only instrument that answers
+		// it, and the operator console had none.
+		//
 		// Contract 0069 (ADR-0097 D8): GenerateWithToolsRequest carries `messages`
 		// (ModelMessageProto: role/content/tool_calls/tool_call_id) and deprecates the
 		// single `prompt`. Native tool-calling is a CONVERSATION — the model must be
@@ -1756,7 +1847,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// QueryMemoryResponse.policy_note. The "access-policy" capability (declared by
 		// the policy plugin's manifest) lets a console decide whether to render the
 		// policy surfaces at all, instead of probing and getting Unimplemented.
-		operatorSvc.SetHandshake("0.6.9-alpha", "0069", operatorCaps)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0070", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".

@@ -87,3 +87,7 @@ notebooks/.ipynb_checkpoints/
 kg_extractors/eval_evidence.json
 data/content_store_blobs/*
 data/agents.db.bak-1784834010
+
+# Local secret material for agents (ADR-0090 ingress tokens etc.)
+secrets/
+*.token

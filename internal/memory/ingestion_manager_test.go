@@ -119,8 +119,21 @@ func TestIngestionManager_ProcessSync_savesDocumentQAChunksBeforeReturn(t *testi
 	if first.Metadata["source_agent_id"] != doc.Author {
 		t.Fatalf("source_agent_id metadata = %v, want %v", first.Metadata["source_agent_id"], doc.Author)
 	}
-	if gotTags, ok := first.Metadata["tags"].([]string); !ok || len(gotTags) != 3 {
-		t.Fatalf("tags metadata = %#v, want preserved []string tags", first.Metadata["tags"])
+	// The chunk cache carries the CLASSIFICATION, not the identity (ADR-0099). The
+	// document was ingested as {"document-qa", "source_document", "tidebound-archive"},
+	// where the last two are the id protocol `externalDocumentID` reads — wire
+	// protocol, not labels. They are stripped at the write chokepoint, because a tag
+	// naming exactly one document is a term no rule can usefully match.
+	//
+	// Identity is NOT lost by stripping them: the `document_id` assertion above still
+	// reads "tidebound-archive". That pairing is the point of the ADR, so the two
+	// assertions belong in the same test.
+	gotTags, ok := first.Metadata["tags"].([]string)
+	if !ok {
+		t.Fatalf("tags metadata = %#v, want []string", first.Metadata["tags"])
+	}
+	if len(gotTags) != 1 || gotTags[0] != "document-qa" {
+		t.Fatalf("tags metadata = %#v, want only the classification []string{\"document-qa\"}", gotTags)
 	}
 }
 

@@ -19,13 +19,22 @@ AGENT_DESCRIPTION = "Solves arithmetic and mathematical word problems using calc
 
 AGENT_MANIFEST = '''
 {
-  "version": "1.0.0",
-  "trait": "cognitive",
-  "capabilities": ["general_purpose"],
-  "supported_formats": ["text"],
-  "tools": ["calculation", "arithmetic", "math"],
-  "release_notes": "SDK v2 demo: @tool registry + think() ReAct loop.",
-  "dependencies": []
+    "version": "1.0.0",
+    "trait": "cognitive",
+    "capabilities": [
+        "calculation",
+        "general_purpose"
+    ],
+    "supported_formats": [
+        "text"
+    ],
+    "tools": [
+        "calculation",
+        "arithmetic",
+        "math"
+    ],
+    "release_notes": "SDK v2 demo: @tool registry + think() ReAct loop.",
+    "dependencies": []
 }
 '''
 

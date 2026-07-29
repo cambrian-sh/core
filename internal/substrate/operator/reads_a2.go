@@ -11,6 +11,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/memory"
 )
 
 // ADR-0047 Amendment A2 (CORE-OPS-1): the operator-plane paged reads. These are
@@ -63,10 +64,59 @@ func (s *Service) SetReadSources(tools ToolCatalog, skills SkillLister, memory M
 	s.memory = memory
 }
 
+// SetDocumentLister wires the document enumeration read. nil (the default) leaves
+// ListDocuments returning Unimplemented and withholds the "document-listing"
+// capability, so a console never renders a browser the kernel cannot serve.
+func (s *Service) SetDocumentLister(l memory.DocumentLister) { s.documents = l }
+
+// HasDocumentLister reports whether enumeration is wired, so app.go can gate the
+// "document-listing" capability on it.
+func (s *Service) HasDocumentLister() bool { return s.documents != nil }
+
 // SetMemoryAnswerer wires the ADR-0081 answer lane. nil (the default) leaves
 // AnswerMemory returning Unimplemented and withholds the "memory-answer"
 // capability.
 func (s *Service) SetMemoryAnswerer(a MemoryAnswerer) { s.answerer = a }
+
+// ListDocuments enumerates ingested documents by row (read RPC; any authenticated
+// role, no command_id).
+//
+// The counterpart to QueryMemory, not a variant of it. Search answers "find the
+// document that says X"; this answers "which of my documents have no labels?" —
+// a question with no query text, because the operator does not yet know what those
+// documents say. Access policy acts only on labels, so an unlabelled document is
+// not denied, it is invisible to the policy model, and until this existed the
+// console could not enumerate the invisible set at all.
+func (s *Service) ListDocuments(ctx context.Context, req *pb.ListDocumentsOpRequest) (*pb.ListDocumentsOpResponse, error) {
+	if s.documents == nil {
+		return nil, status.Error(codes.Unimplemented, "document listing not configured")
+	}
+	page, next, total, err := s.documents.ListDocuments(ctx, memory.DocumentFilter{
+		Limit:          int(req.GetLimit()),
+		Cursor:         req.GetCursor(),
+		UnlabelledOnly: req.GetUnlabelledOnly(),
+		IDPrefix:       req.GetIdPrefix(),
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list documents: %v", err)
+	}
+	out := make([]*pb.DocumentSummaryOp, 0, len(page))
+	for _, d := range page {
+		out = append(out, &pb.DocumentSummaryOp{
+			Id:              d.ID,
+			Title:           d.Title,
+			SourceType:      d.SourceType,
+			Tags:            d.Tags,
+			ChunkCount:      int32(d.ChunkCount),
+			CreatedAtUnixMs: d.CreatedAt.UnixMilli(),
+		})
+	}
+	return &pb.ListDocumentsOpResponse{
+		Documents:     out,
+		NextCursor:    next,
+		TotalMatching: int32(total),
+	}, nil
+}
 
 // HasMemoryAnswerer reports whether the answer lane is wired, so app.go can gate
 // the "memory-answer" capability on it.

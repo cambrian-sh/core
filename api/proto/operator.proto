@@ -93,6 +93,21 @@ service OperatorConsole {
   rpc ListSkills(ListSkillsOpRequest)   returns (ListSkillsOpResponse);
   rpc QueryMemory(QueryMemoryRequest) returns (QueryMemoryResponse);
 
+  // ListDocuments enumerates ingested documents by ROW, not by relevance.
+  //
+  // QueryMemory is semantic: it answers "find the document that says X". That is the
+  // wrong instrument for classification, which asks "which of my documents have no
+  // labels?" — a question with no query text, because the operator does not yet know
+  // what those documents say. Access policy acts only on labels, so an unlabelled
+  // document is not denied, it is INVISIBLE to the policy model; without an
+  // enumeration there was no way to find one except by already knowing its contents.
+  //
+  // Reads the `documents` table directly (small, GIN-indexed on tags). Documents are
+  // an OSS concept — the store owns them with or without the policy plugin — so this
+  // lives on the OSS plane rather than behind access-policy. Read RPC (any
+  // authenticated role, no command_id).
+  rpc ListDocuments(ListDocumentsOpRequest) returns (ListDocumentsOpResponse);
+
   // AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
   // composed answer with inline [n] citation markers, plus the evidence each marker
   // resolves to. Distinct from QueryMemory's single-pass evidence lane: this is a
@@ -384,7 +399,11 @@ message SnapshotResponse {
   // tools-read, tools-manage, skills-read, memory-read, memory-ingest, tool-exec,
   // tool-approvals, routing-trace (ROUTE-02 auction funnel), scout-usefulness
   // (ROUTE-08 A), chat (ADR-0084 D9 conversation lane — advertised only when the chat
-  // worker pool is enabled, execution.chat_pool_size > 0). Premium adds: watches-read,
+  // worker pool is enabled, execution.chat_pool_size > 0), document-listing
+  // (contract 0070 — ListDocuments enumerates documents by row, including the
+  // unlabelled-only filter; advertised only when a store backs it, so a console
+  // never renders a document browser against a kernel that answers Unimplemented).
+  // Premium adds: watches-read,
   // watches-crud (A2), watch-deadletter, reactive-backpressure, watch-condition-guard,
   // watch-observability, watch-schedule (REACT-06 cron-driven watches). route-preview
   // (ROUTE-07 gatekeeper scoring) is core. contract 0062 (ADR-0084 + ListConversations sidebar).
@@ -1151,4 +1170,35 @@ message ListClassificationTagsOpRequest {}
 
 message ListClassificationTagsOpResponse {
   repeated string tags = 1;
+}
+
+message ListDocumentsOpRequest {
+  int32  limit  = 1;  // page size; the server clamps it
+  string cursor = 2;  // keyset: the last id of the previous page, exclusive
+  // The question that motivated the RPC. An unlabelled document is unreachable by
+  // any rule, so this is the operator's actual worklist rather than a convenience
+  // filter.
+  bool   unlabelled_only = 3;
+  string id_prefix = 4;  // cheap prefix filter; full-text search is QueryMemory's job
+}
+
+// DocumentSummaryOp is a LISTING row, not a document: no body, no chunks. Enough to
+// decide what to label and nothing more, so paging a large corpus stays cheap.
+message DocumentSummaryOp {
+  string id = 1;
+  string title = 2;
+  string source_type = 3;
+  repeated string tags = 4;
+  int32  chunk_count = 5;
+  int64  created_at_unix_ms = 6;
+}
+
+message ListDocumentsOpResponse {
+  repeated DocumentSummaryOp documents = 1;
+  // Empty when the last page has been served. Opaque to the client.
+  string next_cursor = 2;
+  // Total documents matching the filter, ignoring paging — so the console can say
+  // "422 of 1163 unlabelled" rather than "50 shown", which is the number that tells
+  // an operator how much of the corpus no rule can reach.
+  int32 total_matching = 3;
 }
