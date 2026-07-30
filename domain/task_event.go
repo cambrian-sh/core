@@ -8,6 +8,31 @@ type TaskEventWriter interface {
 	WriteTaskEvent(event TaskEvent) error
 }
 
+// TokenBucket is one hour of token usage (contract 0075), backing the operator
+// console's spend sparkline.
+//
+// Tokens only — there is deliberately no cost field. A completion response
+// carries token counts and never a price, so a currency figure here would be one
+// the kernel invented from an unreconciled rate. That is a wrong-units bug, not a
+// rounding one.
+type TokenBucket struct {
+	HourStart    time.Time
+	InputTokens  int64
+	OutputTokens int64
+	// Calls counts model invocations in the hour. A step that never reached a
+	// model (a cache hit, a thought step) is NOT counted — otherwise the call
+	// count measures steps rather than spend.
+	Calls int64
+}
+
+// TokenSeriesReader returns recent hourly token usage, oldest first. Hours with
+// no usage come back as ZERO buckets rather than being omitted: a sparkline
+// drawn from a sparse series compresses idle time and makes a quiet night look
+// like continuous activity.
+type TokenSeriesReader interface {
+	TokenSeries(hours int) []TokenBucket
+}
+
 // TaskEventReadWriter extends TaskEventWriter with a read-back method so that
 // VerificationWorker can update an existing event in place.
 type TaskEventReadWriter interface {

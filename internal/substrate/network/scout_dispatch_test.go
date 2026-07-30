@@ -43,6 +43,7 @@ func (g *fakeScoutGateway) Complete(_ context.Context, id domain.LeaseID) (llm.T
 	return llm.TokenUsage{}, nil
 }
 func (g *fakeScoutGateway) EvictExpired() {}
+
 // GenerateWithTools satisfies LLMGateway (ADR-0097 Phase B). This fake is a
 // text-path double, so it reports the capability as absent — which is the
 // answer that exercises the caller's fallback rather than a fake tool call.

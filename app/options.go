@@ -75,6 +75,15 @@ type Options struct {
 	// its own inputs.
 	IngressResolver domain.IngressResolver
 
+	// IdentityResolver answers "who is this external sender?" on the inbound path
+	// (contract 0077).
+	//
+	// nil means the surface IS the identity: a policy links to "chat:telegram", so
+	// every sender who finds the bot has the same reach and "@unknown_4471" is
+	// governed by the same rule as a named colleague — not because they are
+	// different people, but because nobody is.
+	IdentityResolver domain.IdentityResolver
+
 	// PolicyAdmin is the policy ADMINISTRATION surface behind the operator plane's
 	// scope/vocabulary/explain RPCs. nil in OSS ⇒ those RPCs return Unimplemented,
 	// the same shape as WatchConfigHandler.
@@ -119,6 +128,39 @@ type KernelServices struct {
 	// GenerateViaModelStream call is rejected UNAUTHENTICATED. Returns the token id and a
 	// release func to call when the turn completes. Nil when no gateway is configured.
 	AcquireLLMToken func(ctx context.Context, tokenLimit int, ttl time.Duration) (tokenID string, release func(), err error)
+
+	// Agents lists registered agents, so a plugin can tell a real principal from
+	// one that only a policy link mentions (contract 0074 ListPrincipals).
+	//
+	// Read-only by construction — the port carries GetAllAgents and nothing else,
+	// because a plugin that could MUTATE the registry could mint principals for
+	// itself, and the whole value of the orphan check is that it compares against
+	// a set the plugin does not control.
+	Agents domain.AgentLister
+
+	// IngressTraffic reports who has come through an entry point, from the
+	// durable conversation record.
+	//
+	// The console's "recent inbound" list was built from the access-decision
+	// journal, which cannot answer the question it asks: the journal is in-memory
+	// and only records when something ASKS the decision point, so a turn that
+	// answers a greeting leaves no trace. The panel was empty for exactly the
+	// traffic it existed to show. Decisions remain the right source for what
+	// POLICY did, and ride along as an overlay.
+	IngressTraffic domain.IngressTrafficLister
+
+	// Ingresses is the registered entry-point registry, READ-ONLY.
+	//
+	// A plugin that mints entry points needs to know whether the surface its
+	// traffic will arrive on has actually been registered. A bot with no
+	// registration is not broken — it polls, it receives, it answers — but its
+	// traffic arrives with NO POLICY attached to the door it came through, and
+	// that is the one state a console must never render as healthy.
+	//
+	// Read-only by construction: registering an ingress MINTS A SURFACE and stays
+	// an operator action on the access plane (ADR-0090 D2), because a plugin that
+	// could grant itself a surface could widen its own reach.
+	Ingresses domain.IngressResolver
 
 	// SQL is the kernel's Postgres pool, handed to plugins that own their own
 	// tables (the policy plugin's agent_scopes / policy objects). nil when no

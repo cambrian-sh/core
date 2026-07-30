@@ -327,3 +327,70 @@ func (s *PgConversationStore) FindByDelivery(ctx context.Context, addr domain.De
 	c.Profile = domain.ConversationProfile(prof)
 	return &c, nil
 }
+
+// ListIngressTraffic reports who has come through an entry point (domain.IngressTrafficLister).
+//
+// One aggregate per conversation rather than a row per message: the console is
+// asking "who came through", and a message-level list would bury one persistent
+// stranger under a hundred rows from a colleague.
+//
+// `answered` compares the last inbound message against the last reply. A turn
+// that failed silently — the agent produced nothing, or delivery never happened —
+// leaves the person's message as the final word, and that is exactly the outcome
+// worth seeing.
+func (s *PgConversationStore) ListIngressTraffic(ctx context.Context, ingressAgentID string, limit int) ([]domain.InboundContact, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	q := `
+		SELECT c.id, c.delivery_ingress, c.delivery_external,
+		       MIN(m.created_at) FILTER (WHERE m.role = 'user')  AS first_seen,
+		       MAX(m.created_at) FILTER (WHERE m.role = 'user')  AS last_seen,
+		       COUNT(*)          FILTER (WHERE m.role = 'user')  AS msg_count,
+		       (ARRAY_AGG(m.content ORDER BY m.seq DESC) FILTER (WHERE m.role = 'user'))[1] AS last_text,
+		       COALESCE(MAX(m.seq) FILTER (WHERE m.role <> 'user'), -1) >
+		       COALESCE(MAX(m.seq) FILTER (WHERE m.role  = 'user'), -1) AS answered
+		  FROM conversations c
+		  JOIN conversation_messages m ON m.conversation_id = c.id
+		 WHERE c.delivery_ingress <> ''`
+	args := []any{}
+	if ingressAgentID != "" {
+		q += ` AND c.delivery_ingress = $1`
+		args = append(args, ingressAgentID)
+	}
+	q += `
+		 GROUP BY c.id, c.delivery_ingress, c.delivery_external
+		 HAVING COUNT(*) FILTER (WHERE m.role = 'user') > 0
+		 ORDER BY last_seen DESC
+		 LIMIT ` + fmt.Sprint(limit)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list ingress traffic: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.InboundContact
+	for rows.Next() {
+		var (
+			c                   domain.InboundContact
+			firstSeen, lastSeen *time.Time
+			lastText            *string
+		)
+		if err := rows.Scan(&c.ConversationID, &c.IngressAgentID, &c.ExternalID,
+			&firstSeen, &lastSeen, &c.MessageCount, &lastText, &c.Answered); err != nil {
+			return nil, fmt.Errorf("scan ingress traffic: %w", err)
+		}
+		if firstSeen != nil {
+			c.FirstSeen = *firstSeen
+		}
+		if lastSeen != nil {
+			c.LastSeen = *lastSeen
+		}
+		if lastText != nil {
+			c.LastText = *lastText
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

@@ -179,6 +179,206 @@ service OperatorConsole {
   // tag field is a defect: a typo is the primary route to a scope that silently
   // matches nothing. Capability "access-policy"; nil-in-OSS ⇒ Unimplemented.
   rpc ListClassificationTags(ListClassificationTagsOpRequest) returns (ListClassificationTagsOpResponse);
+
+  // ── Contract 0072 — the operator console's Wave 1 (ADR-0101 + UX refactor) ──
+
+  // ListSessionCheckpoints reads the checkpoints written as a session executes.
+  //
+  // Checkpoints are keyed by RUN, not by session: a session accumulates many runs
+  // and a step index only means anything relative to the plan of the run it was
+  // taken against. A response therefore carries run_id on every row, and a
+  // console must group by it — flattening a session's checkpoints into one
+  // timeline offers a resume from the wrong plan.
+  //
+  // Read RPC (no command_id). OSS: served whenever a checkpoint store is wired.
+  rpc ListSessionCheckpoints(ListSessionCheckpointsOpRequest) returns (ListSessionCheckpointsOpResponse);
+
+  // ListMCPServers enumerates the external MCP servers this kernel consumes tools
+  // from (ADR-0043), with live connection state.
+  //
+  // It exists because "0 MCP servers" and "this kernel cannot report MCP servers"
+  // are different facts an operator must be able to tell apart, and before this
+  // RPC the console could not: there was no read and no feed event, so the
+  // surface listed zero on every deployment forever.
+  rpc ListMCPServers(ListMCPServersOpRequest) returns (ListMCPServersOpResponse);
+
+  // GetEmbeddingConfig reports the embedding model, its dimensions and the stored
+  // vector count.
+  //
+  // The pairing matters more than the fields: changing the model WITHOUT
+  // re-embedding leaves every stored vector meaningless and NOTHING errors —
+  // retrieval starts returning near-random chunks and grounded answers stay
+  // confidently wrong, citations and all. Any future model-change RPC must carry
+  // the re-embed with it.
+  rpc GetEmbeddingConfig(GetEmbeddingConfigOpRequest) returns (EmbeddingConfigOp);
+
+  // ClassifyInput returns the ADR-0031 router's decision for a typed sentence
+  // WITHOUT acting on it, so a console can show what is about to happen and offer
+  // one click to overrule it.
+  //
+  // The classification vocabulary is FIVE values, not three: chat, plan, ingest,
+  // watch, clarification. `ingest` is the one a client must not collapse into
+  // another — it WRITES to memory, so rendering it as a read makes an operator
+  // approve a write believing they approved a question.
+  rpc ClassifyInput(ClassifyInputOpRequest) returns (ClassifiedInputOp);
+
+  // ListGenerators reports the configured LLM generators (ADR-0042) with live
+  // breaker state, and ListRoleAssignments which generator serves each system
+  // organ (planner / verifier / router / interview / memory).
+  //
+  // No credential is ever returned: a generator carries key_configured and
+  // key_last_four only. There is deliberately no GetGeneratorKey — a console that
+  // can display a credential leaks it to whoever is looking at the screen, to a
+  // screen recording, and to whatever logged the response, none of which is
+  // recoverable.
+  rpc ListGenerators(ListGeneratorsOpRequest) returns (ListGeneratorsOpResponse);
+  rpc ListRoleAssignments(ListRoleAssignmentsOpRequest) returns (ListRoleAssignmentsOpResponse);
+
+  // TestGenerator makes ONE real call against a configured generator's live
+  // endpoint.
+  //
+  // The field that earns this RPC is model_served: the model string the endpoint
+  // ECHOED BACK, not the one that was asked for. An endpoint answering happily
+  // with a different build is the most common misconfiguration in this space and
+  // nothing else in the console would ever reveal it.
+  rpc TestGenerator(TestGeneratorOpRequest) returns (GeneratorTestResultOp);
+
+  // GetConfigSchema is the READ half of the runtime-config surface.
+  //
+  // SetRuntimeConfig has been able to write a tunable since contract 0047 and
+  // nothing could read one back, so a console could only display the kernel's
+  // documented defaults and label them a guess.
+  //
+  // value_source is the field that earns this RPC. It closes the worst
+  // configuration bug there is — you change a value, it saves, and nothing
+  // happens because something upstream pins it — by naming the layer actually
+  // supplying each key, so a pinned field renders read-only NAMING THE PIN.
+  //
+  // Read RPC (no command_id).
+  rpc GetConfigSchema(GetConfigSchemaOpRequest) returns (ConfigSchemaOp);
+
+  // SetConfig durably records operator configuration intent (ADR-0101).
+  //
+  // Distinct from SetRuntimeConfig, and both must survive. SetRuntimeConfig is
+  // the ADR-0054 automated-tuning seam: ephemeral, keyed by param name, and
+  // written by a tuner that must NOT leave permanent marks on a deployment.
+  // SetConfig is a human saying "make it this, and keep it this way" — it is
+  // keyed by config path and outlives the process.
+  //
+  // Per-key outcomes rather than one ack, because a partial set can partly
+  // succeed. Collapsing that into a single ok/fail hides WHICH field did not
+  // take, which is the state an operator most needs to see.
+  //
+  // Mutating: command_id + reason, audited, Operator-only.
+  rpc SetConfig(SetConfigOpRequest) returns (SetConfigOpResponse);
+
+  // DeleteConfig removes a stored override, reverting the key to whatever the
+  // layers beneath the store supply.
+  //
+  // It is not a convenience. Once a durable write path exists, "put it back" has
+  // no other expression: writing the old value over the top leaves the key
+  // pinned by the store, so the file or default underneath it stays overridden
+  // and a later change to that file silently does nothing.
+  rpc DeleteConfig(DeleteConfigOpRequest) returns (SetConfigOpResponse);
+
+  // SetGeneratorKey / ClearGeneratorKey store an LLM provider credential
+  // (ADR-0101 D5). Write-only by construction: there is no getter anywhere on
+  // this plane, and the stored value is encrypted at rest.
+  //
+  // Mutating: command_id + reason, audited. The key itself is never echoed back
+  // and never appears in the audit record — only the fact that one was set.
+  rpc SetGeneratorKey(SetGeneratorKeyOpRequest) returns (SetConfigOpResponse);
+  rpc ClearGeneratorKey(ClearGeneratorKeyOpRequest) returns (CommandAck);
+
+  // SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
+  //
+  // Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
+  // the plan schema rather than a second one. Notably the soft/hard agent pin is
+  // already two fields in the domain (ADR-0096): preferred_agent goes first but
+  // ranking still runs behind it, agent_pin makes the step DIE if that agent is
+  // unavailable. Collapsing them would lose the distinction the design turns on.
+  //
+  // dry_run validates and estimates WITHOUT creating a session, starting a plan
+  // or spending anything. It is not a courtesy: an operator-authored DAG can
+  // carry a dependency cycle, which the planner path cannot produce, so the
+  // validation it performs has no other home.
+  //
+  // Mutating: command_id + reason, audited, Operator-only.
+  rpc SubmitPlan(SubmitPlanOpRequest) returns (SubmitPlanOpResponse);
+
+  // GetReactiveBudget reports the reactive plane's running totals against its
+  // caps (contract 0074).
+  //
+  // ReactiveBudgetOp on the feed is a SHED event — it fires once the plane is
+  // already dropping work. This is the approach to that line, which is what lets
+  // an operator act before the shedding starts rather than after.
+  //
+  // Read RPC (no command_id). Premium; OSS returns Unimplemented.
+  rpc GetReactiveBudget(GetReactiveBudgetOpRequest) returns (GetReactiveBudgetOpResponse);
+
+  // GetTokenSeries returns recent hourly token usage for the spend sparkline
+  // (contract 0075).
+  //
+  // Tokens only. There is no cost, currency or rate field anywhere in the
+  // response: a completion response carries token COUNTS and never a price, so a
+  // money figure would be one the kernel invented from an unreconciled rate —
+  // a wrong-units bug rather than a rounding one.
+  //
+  // Read RPC (no command_id).
+  rpc GetTokenSeries(GetTokenSeriesOpRequest) returns (GetTokenSeriesOpResponse);
+
+  // ProposePlan turns a goal into a plan WITHOUT committing to it.
+  //
+  // The load-bearing property is what it does NOT do: no session is created, no
+  // plan is started, nothing is spent. `CreateSession` + `SendMessage` commit;
+  // this is where work is SHAPED, and the session begins on approval. A console
+  // that promises "nothing committed yet" needs an RPC that honours it.
+  //
+  // A vague goal comes back as QUESTIONS rather than a bad plan. Planner output
+  // is the ceiling on routing quality (ADR-0100 D3), so vagueness cannot be
+  // recovered downstream — asking is cheaper than planning badly, and that makes
+  // the questions a feature rather than a delay.
+  //
+  // Read-shaped: no command_id, because nothing is mutated.
+  rpc ProposePlan(ProposePlanOpRequest) returns (ProposePlanOpResponse);
+
+  // ExplainAccessBatch answers many access questions in ONE call, so a
+  // reachability matrix can be authoritative instead of predicted.
+  //
+  // It exists to delete a client-side re-implementation. A console rendering an
+  // NxM grid cannot make NxM round trips, so it evaluates the policy set itself —
+  // which is a SECOND implementation of access-control logic, and a wrong
+  // "allowed" cell there is a security-shaped bug rather than a cosmetic one.
+  // Every cell answered by this RPC is answered by the same decision point the
+  // enforcement path asks, so the two cannot disagree.
+  //
+  // Read RPC (no command_id). Bounded server-side; see the request's `queries`.
+  rpc ExplainAccessBatch(ExplainAccessBatchOpRequest) returns (ExplainAccessBatchOpResponse);
+
+  // GetBlastRadiusPreview reports what a scope or grant mutation would do to
+  // AGENTS and IN-FLIGHT PLANS, before it is applied.
+  //
+  // Distinct from the policy blast radius the scope screens already compute:
+  // that one answers "how many documents does this rule touch?" from the
+  // document listing. This one answers "whose reach changes, and which running
+  // plans have to be re-evaluated?" — a different question with a different
+  // source, and the only one that can tell an operator they are about to widen
+  // an agent mid-plan.
+  //
+  // An EMPTY preview understates the radius, which is the one direction this
+  // number must never be wrong in. A kernel that cannot compute it returns
+  // Unimplemented rather than an empty answer.
+  //
+  // Read RPC (no command_id): it previews, it does not apply.
+  rpc GetBlastRadiusPreview(BlastRadiusPreviewOpRequest) returns (BlastRadiusPreviewOp);
+
+  // RetryWatchDeadLetter replays one dead-lettered reactive action.
+  //
+  // Safe because REACT-01 (ADR-0061) already records the idempotency key with the
+  // dead letter, so the replay runs under the original key and a double-click
+  // cannot double-fire. Mutating: command_id + reason, audited. Premium
+  // (capability "watch-deadletter"); OSS returns Unimplemented.
+  rpc RetryWatchDeadLetter(RetryWatchDeadLetterOpRequest) returns (CommandAck);
 }
 
 message CreateSessionRequest {
@@ -426,8 +626,17 @@ message PluginInfoOp {
   // version is the plugin's OWN version line, unrelated to contract_version.
   // A console pins what it was built against and warns when this differs.
   string version = 3;
-  // state is one of: active, deps_unmet, not_entitled, expired (ADR-0082 D9).
+  // state is one of: active, deps_unmet, not_entitled, expired,
+  // licence_unverifiable (ADR-0082 D9, extended in contract 0072).
   // "expired" still serves — an entitlement inside its grace window.
+  //
+  // "licence_unverifiable" means the CHECK ITSELF failed, which fails closed: the
+  // plugin is off, the operator's work is intact, and it starts on its own when
+  // the check succeeds. It is a distinct state because rendering that as
+  // "not_entitled" tells an operator they do not own something they paid for.
+  // A client must treat any UNRECOGNISED state as unverifiable rather than as
+  // not-entitled — that is the safe reading, and it is what lets an older console
+  // degrade correctly against a newer kernel.
   string state = 4;
   // capabilities this plugin contributes to the handshake above.
   repeated string capabilities = 5;
@@ -440,6 +649,11 @@ message PluginInfoOp {
   repeated string missing = 8;
   // expires_at is the entitlement expiry (RFC3339), empty when not applicable.
   string expires_at = 9;
+  // last_check_unix_ms is when the entitlement check last ran. It is what turns
+  // "the licence could not be verified" into "…at 14:02", which is the difference
+  // between a state an operator can act on and one they can only stare at.
+  // 0 ⇒ never checked / not applicable.
+  int64 last_check_unix_ms = 10;
 }
 
 message PluginPanelOp {
@@ -497,6 +711,17 @@ message OperatorEvent {
     AgentStepOp agent_step = 26;             // agent-loop observability (query-thrash + poisoning)
     AgentLLMExchangeOp llm_exchange = 27;    // provider-tap: full prompt+completion of every agent reasoning turn (live-only)
     SessionStateOp session_state = 28;       // Phase 2: absolute session lifecycle state
+    // ADR-0098 progress, on the OPERATOR feed (contract 0079).
+    //
+    // The progress channel delivers to an ingress-bound conversation — Telegram
+    // gets "working on it, step 2 of 4" and the operator console got nothing,
+    // because a console conversation has no delivery address. Progress was
+    // computed and dropped.
+    //
+    // Live-only, like TokenChunkOp: seq is 0 and it is never replayed. It is a
+    // STATUS LINE, not history — a replayed "working on it" for a turn that
+    // finished an hour ago would be worse than no progress at all.
+    ConversationProgressOp conversation_progress = 29;
   }
 }
 
@@ -636,6 +861,30 @@ message AgentReadyOp {
   double trust_score = 3;
   repeated string capabilities = 4;
   int64 interview_ms = 5;
+
+  // ── Contract 0074: the agent detail fields contract 0057 removed ────────
+  //
+  // Folded onto the projection by agent_id (absolute state, ADR-0047 D6), so an
+  // agent detail pane fills from the feed rather than needing a getter back.
+  string description = 6;
+  string trait = 7;
+  string runtime = 8;
+  string exec_path = 9;
+  string manifest_version = 10;
+  // provisional marks an agent whose capability claims have not been verified by
+  // an interview yet. It is the difference between "this agent says it can do X"
+  // and "we have seen it do X", and routing treats the two differently.
+  bool provisional = 11;
+  bool system = 12;
+  // classification_tags describe what the agent IS, so a policy can permit or
+  // deny INVOKING it (ADR-0085 D2). NOT the agent's own read boundary — that
+  // lives in the policy plugin, and conflating them is how an operator ends up
+  // widening an agent's reach while believing they only labelled it.
+  repeated string classification_tags = 13;
+  // last_error is the most recent failure this agent reported, empty when none.
+  // A healthy-looking agent that fails every dispatch is otherwise indistinguishable
+  // from one that is simply idle.
+  string last_error = 14;
 }
 
 // SessionStateOp is the ABSOLUTE lifecycle state of one session, emitted on every
@@ -747,6 +996,17 @@ message PlanStepOp {
   bool is_thought = 4;           // reasoning/synthesis step (no external action)
   string status = 5;             // "pending" | "running" | "done" | "failed"
   string agent = 6;              // executor agent id, once dispatched (may be empty)
+  // required_capabilities is the ROUTE-03 capability contract for this step — what
+  // the planner asked for, straight off domain.Step.RequiredCapabilities.
+  //
+  // It fills the step-row slot the retiring auction's bids_count vacated. Without
+  // it a row can only name the agent, which is the RESULT of routing rather than
+  // the REASON for it — and when routing fails, "no agents available" without the
+  // requested capability is a dead end for whoever has to fix it.
+  //
+  // Empty ⇒ the planner emitted no capability contract for this step (the
+  // backward-compatible default), NOT "this step needs nothing".
+  repeated string required_capabilities = 7;
 }
 
 message TokenChunkOp {
@@ -812,6 +1072,20 @@ message ToolOp {
   // operator flips execution.tool_effects_strict once this is false everywhere,
   // after which an unclassified tool cannot register at all.
   bool effects_inferred = 10;
+
+  // ── Contract 0074: the detail fields contract 0057 removed ──────────────
+  //
+  // schema_json is the tool's JSON Schema — the exact menu entry the model sees.
+  // It is what makes a tool detail pane answer "why did the agent call this with
+  // those arguments?", which nothing else on this plane can. Already carried by
+  // domain.SystemTool and simply not projected.
+  string schema_json = 11;
+  // The resource-arg declarations (ADR-0039 A1.4): which arguments carry a path,
+  // a URL or a shell command, and therefore which ones a resource policy binds.
+  // Without them a grant's policy reads as applying to the whole tool.
+  repeated string path_args = 12;
+  repeated string url_args = 13;
+  repeated string command_args = 14;
 }
 
 message ListToolsOpRequest {
@@ -837,6 +1111,16 @@ message SkillOp {
   string description = 2;
   repeated string tool_grants = 3;
   repeated string scope_tags = 4;
+
+  // ── Contract 0074 ───────────────────────────────────────────────────────
+  //
+  // body is the skill's instruction text (SKILL.md). A skill IS its instructions
+  // — that is the whole artefact — so a detail pane without it can only list the
+  // skill's name and grants and never show what it actually tells an agent to do.
+  string body = 5;
+  // source_path is where it was loaded from, which is what an operator needs to
+  // edit it. Empty for a skill registered over the wire rather than from disk.
+  string source_path = 6;
 }
 message ListSkillsOpResponse {
   repeated SkillOp skills = 1;
@@ -1004,6 +1288,8 @@ message WatchConfigOp {
   string source_stream_id = 5;
   string condition = 6;
   string condition_type = 7;
+  // action is the FIRST arm. Kept singular so a watch stored before contract
+  // 0076 still round-trips unchanged.
   WatchActionOp action = 8;
   bool active = 9;
   string response_mode = 10;
@@ -1016,6 +1302,52 @@ message WatchConfigOp {
   string source_cron = 17;                      // REACT-06 / ADR-0072: 5-field cron (or @shortcut) for a "schedule" source
   string source_timezone = 18;                  // REACT-06 / ADR-0072: IANA tz the cron is evaluated in (empty = UTC)
   string missed_fire_policy = 19;               // REACT-06 / ADR-0072: "fire_once" | "skip" (default) across restart
+
+  // ── Contract 0074: stream liveness ──────────────────────────────────────
+  //
+  // A watch is only as alive as the stream under it. When the daemon feeding
+  // source_stream_id crashes, the stream goes unavailable and EVERY watch on it
+  // silently stops evaluating — no error, no dead letter, no fired event. The
+  // watch still reads "active", which is the most misleading state in the
+  // reactive plane: an operator sees a healthy row for a rule that has not run
+  // in days.
+  //
+  // source_stream_state is "live" | "unavailable" | "unknown". "unknown" is NOT
+  // "unavailable": a kernel with no stream registry cannot tell, and reporting a
+  // guess as a fact here would raise false alarms on every watch.
+  string source_stream_state = 20;
+  // source_stream_refcount is how many watches hold this stream. It answers the
+  // question that follows the first: fixing a dead daemon un-breaks N rules, not
+  // just the one being looked at. -1 ⇒ not counted.
+  int32 source_stream_refcount = 21;
+
+  // last_fires is the recent fire history, newest last, for the sparkline the
+  // design asks for. Bounded server-side; empty ⇒ never fired OR not recorded by
+  // this kernel — see WatchFireOp.
+  repeated WatchFireOp last_fires = 22;
+
+  // actions are arms 2..N (contract 0076). A multi-armed pipeline — "notify the
+  // channel AND open a ticket" — could not be stored while `action` was the only
+  // field, so a builder had to draw arms the engine silently dropped. A builder
+  // that draws what the engine collapses is worse than one that says "not yet".
+  //
+  // Arms run IN ORDER and independently: one failing arm does not cancel the
+  // others, because a notification that succeeded has already been seen and
+  // pretending otherwise would misreport what happened.
+  repeated WatchActionOp actions = 23;
+}
+
+// WatchFireOp is one recorded evaluation of a watch.
+message WatchFireOp {
+  int64 at_unix_ms = 1;
+  // outcome is "fired" | "suppressed" | "failed" | "would_fire" (dry run).
+  // "suppressed" is a rule WORKING — the condition was evaluated and said no —
+  // and a console that renders it as a failure trains an operator to loosen a
+  // boundary that is doing its job.
+  string outcome = 2;
+  // error is set only when outcome == "failed".
+  string error = 3;
+  int64 latency_ms = 4;
 }
 message ListWatchesOpRequest {
   int32 page = 1;
@@ -1211,4 +1543,588 @@ message ListDocumentsOpResponse {
   // "422 of 1163 unlabelled" rather than "50 shown", which is the number that tells
   // an operator how much of the corpus no rule can reach.
   int32 total_matching = 3;
+}
+
+// ── Contract 0072 messages ───────────────────────────────────────────────────
+
+message ListSessionCheckpointsOpRequest {
+  string session_id = 1;
+  // after_seq pages forward; 0 ⇒ from the beginning.
+  int64 after_seq = 2;
+}
+
+// SessionCheckpointOp is one persisted mid-plan recovery point.
+message SessionCheckpointOp {
+  string session_id = 1;
+  // run_id is load-bearing, not decoration. Checkpoints are keyed by RUN, and a
+  // session accumulates many runs, so step_index is only meaningful relative to
+  // this run's plan. Two rows can share step_index 2 and mean different points.
+  string run_id = 2;
+  string plan_id = 3;
+  int32  step_index = 4;
+  int64  written_at_unix_ms = 5;
+  // reason is why this point was checkpointed (an explicit checkpoint_after, a
+  // pre-replan snapshot, and so on). Empty when the writer recorded none.
+  string reason = 6;
+  // resumable reports whether a resume FROM HERE is still valid — the plan it was
+  // taken against still matches, and the stored context still satisfies it.
+  //
+  // It matters more than it looks: a checkpoint the kernel would refuse to resume
+  // from is worse than no checkpoint at all, because the operator plans a recovery
+  // that will not happen.
+  bool resumable = 7;
+}
+
+message ListSessionCheckpointsOpResponse {
+  repeated SessionCheckpointOp checkpoints = 1;
+}
+
+message ListMCPServersOpRequest {}
+
+// MCPServerOp is one configured external MCP server (ADR-0043).
+message MCPServerOp {
+  string name = 1;
+  // transport is "stdio" or "http", mirroring MCPServerConfig.
+  string transport = 2;
+  // command / url describe how it is reached. Never any auth material: MCP auth
+  // is referenced by env-var NAME in config and resolved at call time.
+  string command = 3;
+  string url = 4;
+  // connected reports live reachability at the time of the call.
+  bool connected = 5;
+  // last_error is the most recent connection or call failure, empty when none.
+  string last_error = 6;
+  // tool_count is how many tools this server currently advertises.
+  int32 tool_count = 7;
+}
+
+message ListMCPServersOpResponse {
+  repeated MCPServerOp servers = 1;
+  // configured distinguishes "this deployment has no MCP servers" (true, empty
+  // list) from "MCP is not set up at all" (false). Without it a console cannot
+  // tell an intentional zero from an absent subsystem, and renders the same
+  // screen for both.
+  bool configured = 2;
+}
+
+message GetEmbeddingConfigOpRequest {}
+
+message EmbeddingConfigOp {
+  string provider = 1;
+  string model = 2;
+  int32  dimensions = 3;
+  // vector_count is the number of stored embeddings. -1 ⇒ the kernel could not
+  // count them (no vector store wired), which is NOT the same as zero.
+  int64  vector_count = 4;
+  string endpoint = 5;
+}
+
+message ClassifyInputOpRequest {
+  string text = 1;
+  // surface optionally names where the text arrived from, which the router may
+  // use as a pre-classification hint (Layer 0). Empty ⇒ classify from the text.
+  string surface = 2;
+}
+
+message ClassifiedInputOp {
+  // classification is one of: "chat", "plan", "ingest", "watch", "clarification".
+  //
+  // A client MUST NOT collapse this into a smaller set. "plan" spends tokens and
+  // touches files; "ingest" WRITES to memory and the written content inherits the
+  // ingress's labels. Rendering either as the other misrepresents the consequence
+  // the operator is being asked to approve. An unrecognised value means the kernel
+  // is newer than the client: show it verbatim and do not act.
+  string classification = 1;
+  // why names the layer that decided and its reason ("layer 2 heuristic: imperative
+  // verb with a file object"). An unexplained label is not something an operator
+  // can sensibly overrule, and overruling is the entire point of showing it.
+  string why = 2;
+  // confidence is the classifier's own confidence in [0,1]. 0 ⇒ not reported by
+  // the deciding layer (the deterministic layers do not compute one).
+  double confidence = 3;
+  // clarification_question / clarification_options are populated only when
+  // classification == "clarification": the router already knows the input is too
+  // ambiguous to route and has the question ready.
+  string clarification_question = 4;
+  repeated string clarification_options = 5;
+}
+
+message ListGeneratorsOpRequest {}
+
+// GeneratorOp is one configured LLM generator plus its live pulse.
+message GeneratorOp {
+  string id = 1;
+  string provider = 2;
+  string model = 3;
+  string endpoint = 4;
+  // key_configured / key_last_four are the ONLY credential facts on the wire.
+  // There is no field carrying the key and no RPC that returns one (see
+  // ListGenerators). key_source is "env:<VAR>" or "store", so an operator can see
+  // WHERE the active credential comes from without seeing the credential.
+  bool   key_configured = 5;
+  string key_last_four = 6;
+  string key_source = 7;
+  // breaker_state is "closed" (healthy), "open" (shedding) or "half_open".
+  string breaker_state = 8;
+  int32  recent_failures = 9;
+  int64  timeout_ms = 10;
+  // Token accounting only — no price, currency or rate fields anywhere on this
+  // plane. A completion response carries token counts and never money, so any
+  // figure in a currency would be one the kernel invented from an unreconciled
+  // rate. Configured rates live in config and are published as a catalogue, not
+  // multiplied into a spend figure here.
+  //
+  // -1 means NOT TRACKED by this kernel, and is distinct from 0. "0 calls today"
+  // is a claim about traffic; reporting it for a counter that does not exist
+  // would make a busy generator look idle, which is the direction that misleads.
+  int64 tokens_in_today = 11;
+  int64 tokens_out_today = 12;
+  int64 calls_today = 13;
+  // is_default marks the generator serving as the global default (ADR-0042).
+  bool is_default = 14;
+}
+
+message ListGeneratorsOpResponse {
+  repeated GeneratorOp generators = 1;
+}
+
+message ListRoleAssignmentsOpRequest {}
+
+// RoleAssignmentOp binds a system organ to the generator that serves it.
+message RoleAssignmentOp {
+  // role is one of: "planner", "verifier", "router", "interview", "memory".
+  // Note "interview" is the AGENT examiner (ROUTE-03), not an operator-facing
+  // clarification interview — they are different subsystems with one word.
+  string role = 1;
+  string generator_id = 2;
+  // resolved reports whether generator_id names a generator that actually exists.
+  // A role pointing at a removed generator silently falls back to the default,
+  // which is invisible everywhere else.
+  bool resolved = 3;
+}
+
+message ListRoleAssignmentsOpResponse {
+  repeated RoleAssignmentOp assignments = 1;
+}
+
+message TestGeneratorOpRequest {
+  string generator_id = 1;
+}
+
+message GeneratorTestResultOp {
+  bool   ok = 1;
+  // model_served is the model string the ENDPOINT echoed back, which is the whole
+  // reason this RPC exists. An endpoint that answers happily with a different
+  // build than the one requested is the most common misconfiguration here, and it
+  // is invisible in every other surface — including a successful generation.
+  string model_served = 2;
+  int64  latency_ms = 3;
+  string error = 4;
+  // sample is a short fragment of the completion, so a human can see it answered
+  // rather than echoed. Never the full response.
+  string sample = 5;
+}
+
+message RetryWatchDeadLetterOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  // dead_letter_id identifies the entry to replay. The replay reuses the
+  // idempotency key recorded with it (REACT-01), so a double-click is a no-op
+  // rather than a second fire.
+  string dead_letter_id = 3;
+}
+
+message GetConfigSchemaOpRequest {}
+
+message ConfigSchemaOp {
+  string schema_version = 1;
+  // schema_json is JSON Schema Draft 2020-12 over the editable tunables.
+  string schema_json = 2;
+  string schema_hash = 3;
+
+  // editable_keys may be written through SetRuntimeConfig. kernel_only_keys are
+  // reported so a form can render them READ-ONLY rather than omit them — a field
+  // an operator cannot find is indistinguishable from one that does not exist.
+  repeated string editable_keys = 4;
+  repeated string kernel_only_keys = 5;
+
+  // current_values is a flat map<string,double>, mirroring
+  // SetRuntimeConfigRequest.params exactly, so read and write agree on shape and
+  // booleans travel as 1/0 in both directions.
+  //
+  // Deliberately scoped to the NUMERIC tuning surface. The kernel holds
+  // non-numeric config too (generators, MCP servers, the embedder), but those
+  // have typed accessors of their own; widening this into a value union would
+  // produce one RPC that is awkward for both jobs.
+  map<string, double> current_values = 6;
+
+  // value_source maps a key to the layer supplying it: "default", "tuning.json",
+  // "tuning.local.json", "config.json", "store", "env:CAMBRIAN_…".
+  //
+  // An "env:" source means a store write will be SHADOWED. The kernel also warns
+  // at write time rather than leaving this read to be the only signal, because an
+  // operator who sees "saved" learns the truth otherwise only if they look.
+  map<string, string> value_source = 7;
+}
+
+message SetConfigOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  // values maps flat config keys ("execution.ewma_alpha") to their new value.
+  // Numeric only, mirroring SetRuntimeConfigRequest.params, so booleans travel
+  // as 1/0 in both directions and the read and write halves agree on shape.
+  map<string, double> values = 3;
+}
+
+message DeleteConfigOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  repeated string keys = 3;
+}
+
+message SetGeneratorKeyOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string generator_id = 3;
+  // key is write-only. It is never returned by any RPC, never written to the
+  // audit log, and never logged.
+  string key = 4;
+}
+
+message ClearGeneratorKeyOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string generator_id = 3;
+}
+
+// ConfigWriteOutcomeOp is what happened to ONE key.
+message ConfigWriteOutcomeOp {
+  string key = 1;
+  // stored reports whether the value reached the durable store. A shadowed key
+  // is still STORED — it is the operator's stated intent, and it takes effect
+  // the moment the shadowing variable is removed.
+  bool stored = 2;
+
+  // effect is one of:
+  //   "live"             — applied to the running kernel AND stored
+  //   "restart_required" — stored; the kernel reads this key only at boot
+  //   "shadowed"         — stored, but a higher layer supplies the live value,
+  //                        so nothing changes until that layer is removed
+  //   "rejected"         — not stored; see error
+  //
+  // "shadowed" is the reason this response exists. It closes the worst
+  // configuration bug there is — you change a value, it saves, and nothing
+  // happens — by saying so AT WRITE TIME rather than leaving the operator to
+  // infer it from a later read they may never perform.
+  string effect = 3;
+
+  // shadowed_by names the layer winning over the store, e.g.
+  // "env:CAMBRIAN_EXECUTION__EWMA_ALPHA". Set only when effect == "shadowed",
+  // and it must name the specific variable: "something is pinning this" leaves
+  // an operator hunting, the variable name does not.
+  string shadowed_by = 4;
+
+  // error explains a rejection: an unknown key, or a value outside the range the
+  // schema declares. An unknown key is reported and SKIPPED rather than failing
+  // the whole request, so a console built against a newer or older kernel cannot
+  // lose the writes that were valid.
+  string error = 5;
+}
+
+message SetConfigOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  repeated ConfigWriteOutcomeOp outcomes = 3;
+}
+
+// AuthoredStepOp is one step of an operator-authored plan. Field-for-field
+// domain.Step — the DAG builder is a face for the plan schema, not a new one.
+message AuthoredStepOp {
+  string query = 1;
+  repeated string required_capabilities = 2;
+  // depends_on holds ZERO-BASED indices into the submitted step list.
+  repeated int32 depends_on = 3;
+  double max_energy = 4;
+  string recommended_model = 5;
+  bool   checkpoint_after = 6;
+  string checkpoint_query = 7;
+  bool   is_thought = 8;
+
+  // preferred_agent is the SOFT pin: this agent goes first, but ranking still
+  // runs behind it and the step cascades normally if it is unavailable.
+  string preferred_agent = 9;
+  // agent_pin is the STRENGTH of preferred_agent — "soft" or "hard". A hard pin
+  // kills the step rather than cascading. Empty with a non-empty preferred_agent
+  // reads as SOFT, so a malformed pin degrades to the weaker, non-stranding
+  // behaviour rather than stranding a step on a typo.
+  string agent_pin = 10;
+
+  // fan_out_over names the index of a prior step whose output supplies a SET;
+  // at runtime this one step expands into N children. -1 ⇒ an ordinary step.
+  int32  fan_out_over = 11;
+  // fan_out_var is the template variable substituted per item in `query`.
+  // Empty ⇒ "item". Supplying fan_out_over without this silently templates on
+  // "item", which is why the field is explicit here rather than implied.
+  string fan_out_var = 12;
+}
+
+message SubmitPlanOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  // session_id to attach to; empty ⇒ create one (unless dry_run).
+  string session_id = 3;
+  // dry_run validates and estimates only. Nothing is created, started or spent.
+  bool   dry_run = 4;
+  repeated AuthoredStepOp steps = 5;
+  // subject is a short human label for the plan. Empty ⇒ derived from step 0.
+  string subject = 6;
+}
+
+// PlanValidationIssueOp is one problem found in an authored plan.
+message PlanValidationIssueOp {
+  // step_index is the offending step, or -1 for a whole-plan problem.
+  int32  step_index = 1;
+  // code is a stable machine token: "cycle", "out_of_bounds_dependency",
+  // "empty_query", "unknown_capability", "unknown_agent", "bad_fan_out".
+  string code = 2;
+  string message = 3;
+  // fatal distinguishes "this plan cannot run" from "this will probably not do
+  // what you meant". Both are worth showing; only one blocks submission, and
+  // conflating them either blocks valid plans or runs broken ones.
+  bool fatal = 4;
+}
+
+message SubmitPlanOpResponse {
+  string command_id = 1;
+  bool   deduped = 2;
+  // accepted is false when validation found a fatal issue, in which case nothing
+  // was created or started regardless of dry_run.
+  bool   accepted = 3;
+  string session_id = 4;
+  string plan_id = 5;
+  repeated PlanValidationIssueOp issues = 6;
+  // execution_order is the topologically-sorted step order the executor would
+  // use. Returned on a dry run because "these three run in parallel and that one
+  // waits" is the question a DAG author is actually asking, and a drawing of the
+  // graph does not answer it past a handful of nodes.
+  repeated int32 execution_order = 7;
+}
+
+// ReactivePlaneBudgetOp is the plane-wide budget picture (contract 0074).
+//
+// Distinct from ReactiveBudgetOp, which is a SHED EVENT — "this stream was
+// dropped, here is why". These are the running totals against their caps, which
+// is what a pipelines list puts above the rows: an operator needs to know how
+// close the plane is to shedding BEFORE it starts, not only that it did.
+//
+// Every counter is -1 when not tracked, which is distinct from 0. "0 plans
+// started this hour" is a claim about activity; reporting it for a counter that
+// does not exist would make a busy plane look idle.
+message ReactivePlaneBudgetOp {
+  int64 gate_evaluations_this_hour = 1;
+  int64 gate_evaluations_cap = 2;
+  int64 plans_started_this_hour = 3;
+  int64 plans_started_cap = 4;
+  int64 signals_shed_this_hour = 5;
+  // window_started_unix_ms is when the current hour window opened, so a console
+  // can say "resets in 12 minutes" rather than leaving an operator to guess
+  // whether a near-cap number is about to reset or about to bite.
+  int64 window_started_unix_ms = 6;
+}
+
+message GetReactiveBudgetOpRequest {}
+
+message GetReactiveBudgetOpResponse {
+  ReactivePlaneBudgetOp budget = 1;
+  // dead_letter_count is the current queue depth — the one figure on this screen
+  // that was already real before contract 0074.
+  int64 dead_letter_count = 2;
+}
+
+message GetTokenSeriesOpRequest {
+  // hours of history, oldest first. 0 or out of range ⇒ the server's retention.
+  int32 hours = 1;
+}
+
+// TokenSeriesPointOp is one hour of usage.
+message TokenSeriesPointOp {
+  int64 hour_start_unix_ms = 1;
+  int64 input_tokens = 2;
+  int64 output_tokens = 3;
+  // calls counts model invocations. A step that never reached a model (a cache
+  // hit, a thought step) is not counted, so this measures spend rather than steps.
+  int64 calls = 4;
+}
+
+message GetTokenSeriesOpResponse {
+  // points are CONTIGUOUS hours, oldest first. An hour with no usage is present
+  // as a zero point rather than omitted — a sparkline built from a sparse series
+  // silently compresses idle time and draws a quiet night as continuous activity.
+  repeated TokenSeriesPointOp points = 1;
+  // retention_hours is how much history this kernel keeps, so a console can say
+  // "48h" rather than implying the series is all there has ever been.
+  int32 retention_hours = 2;
+}
+
+message ProposePlanOpRequest {
+  string goal = 1;
+  // answers replies to a previous round's questions, positionally by question
+  // index. Re-send the original goal alongside them: the call is stateless, and
+  // holding a half-answered interview server-side would make an abandoned one a
+  // leak.
+  repeated string answers = 2;
+}
+
+// InterviewOptionOp is one answer to a clarification question.
+message InterviewOptionOp {
+  string label = 1;
+  // detail carries a REAL count — "Q2 only — 61 documents". The counts are what
+  // make this a decision rather than a preference: the same two options without
+  // them are a matter of taste. Resolved against the CALLER's own reachable set,
+  // which is why only the kernel can compute them.
+  string detail = 2;
+  // document_count is the same figure as data, so a console can sort or warn on
+  // it. -1 ⇒ not counted, which is NOT zero: a zero-document option is a real
+  // and alarming answer, and "we could not count" is not.
+  int32 document_count = 3;
+}
+
+message InterviewQuestionOp {
+  string question = 1;
+  // kind is "scope" (which subset of the corpus) or "judgement" (what counts as
+  // done). They read differently and a console renders them differently: a scope
+  // question has countable options, a judgement question does not.
+  string kind = 2;
+  repeated InterviewOptionOp options = 3;
+  // why_it_changes_the_answer states what actually differs between the options.
+  // Without it a question reads as bureaucracy and gets answered at random.
+  string why_it_changes_the_answer = 4;
+}
+
+message PlanProposalOp {
+  repeated AuthoredStepOp steps = 1;
+  int64  estimated_tokens = 2;
+  int64  estimated_wall_ms = 3;
+  int32  max_parallel = 4;
+  // access_note names what this plan would read and write, in the caller's own
+  // terms.
+  string access_note = 5;
+}
+
+message ProposePlanOpResponse {
+  // questions non-empty ⇒ too vague to plan. A console must render these INSTEAD
+  // of a proposal, not alongside one: offering a runnable plan next to "I need to
+  // ask you something" invites approving the plan and skipping the question.
+  repeated InterviewQuestionOp questions = 1;
+  // proposal is present once the goal is answerable.
+  PlanProposalOp proposal = 2;
+  // access_consequence is volunteered BEFORE planning — what this goal would
+  // touch and what that means for the answer.
+  //
+  // "refund logs carry customer-pii. You can read them as operator, so this will
+  // work — but the answer will quote customer records, and anything written back
+  // into memory inherits that label." Discovering that after the answer already
+  // quotes a customer record is too late, which is why it is on the response that
+  // commits to nothing rather than on the one that runs.
+  string access_consequence = 3;
+}
+
+message ExplainAccessBatchOpRequest {
+  // queries is the grid, flattened. Bounded server-side: a matrix large enough to
+  // hurt is a matrix nobody can read, so the limit protects the kernel without
+  // costing a usable screen.
+  repeated ExplainAccessOpRequest queries = 1;
+}
+
+message ExplainAccessBatchOpResponse {
+  // decisions are POSITIONAL — decisions[i] answers queries[i]. A failed query
+  // still occupies its slot with a denial carrying the reason, because dropping
+  // it would shift every later answer onto the wrong cell, and a matrix that is
+  // silently off by one is worse than one that refuses to render.
+  repeated AccessDecisionOp decisions = 1;
+  // truncated is true when the request exceeded the server limit and only the
+  // first N were evaluated. The console must say so rather than draw a partial
+  // grid as if it were complete.
+  bool truncated = 2;
+  // limit is the server's maximum, so a client can page deliberately instead of
+  // discovering the bound by hitting it.
+  int32 limit = 3;
+}
+
+message BlastRadiusPreviewOpRequest {
+  // mutation is one of: "tag_memory" | "set_scope" | "set_write_tags" |
+  // "set_tool_grant". An unknown value is REFUSED rather than previewed as
+  // no-change, because "this mutation affects nothing" and "I do not know what
+  // this mutation is" must not render the same.
+  string mutation = 1;
+  // target_id is the agent, document or tool the mutation is aimed at.
+  string target_id = 2;
+  // tags / scope terms the mutation would apply, as the corresponding write RPC
+  // would receive them.
+  repeated string tags = 3;
+  repeated string required = 4;
+  repeated string any_of = 5;
+  repeated string forbidden = 6;
+}
+
+// AgentImpactOp is one agent whose effective reach would change.
+message AgentImpactOp {
+  string agent_id = 1;
+  string before = 2;
+  string after = 3;
+  // direction is "widened" | "narrowed" | "unchanged". Widened is the one that
+  // matters: narrowing an agent breaks a task, widening one breaks a boundary,
+  // and only the second is invisible afterwards.
+  string direction = 4;
+}
+
+// PlanImpactOp is one in-flight plan that would need re-evaluating.
+message PlanImpactOp {
+  string session_id = 1;
+  string plan_id = 2;
+  bool   re_evaluation_required = 3;
+  // reason names WHY in the operator's terms — which step, on which agent,
+  // reading what.
+  string reason = 4;
+}
+
+message BlastRadiusPreviewOp {
+  repeated AgentImpactOp affected_agents = 1;
+  repeated PlanImpactOp affected_plans = 2;
+  int64 computed_at_unix_ms = 3;
+  // cache_ttl_ms is how long this answer stays meaningful. A blast radius is a
+  // statement about live state — agents register, plans finish — so a stale
+  // preview understates, which is the direction that misleads.
+  int64 cache_ttl_ms = 4;
+  // complete is false when the kernel could not see everything it needed (no
+  // in-flight plan registry, for instance). A partial radius rendered as total
+  // is exactly the understatement this RPC exists to avoid.
+  bool complete = 5;
+  // incomplete_reason names what could not be inspected, so "partial" is
+  // actionable rather than merely worrying.
+  string incomplete_reason = 6;
+}
+
+// ConversationProgressOp is one supersedable progress snapshot (ADR-0098).
+//
+// Snapshots SUPERSEDE rather than accumulate: a consumer keeps the latest per
+// conversation and renders one line. Appending them would turn a status line
+// into a log of itself.
+message ConversationProgressOp {
+  string conversation_id = 1;
+  // text is the rendered line ("working on it — step 2 of 4"). EMPTY means
+  // CLEAR: a final update with nothing to say takes the line down.
+  string text = 2;
+  // phase is the machine-readable half ("thinking", "searching memory", …), so a
+  // console can style without parsing the sentence.
+  string phase = 3;
+  // step / total_steps are 0 while the plan is still unknown — a consumer renders
+  // "working on it" rather than inventing a denominator.
+  int32 step = 4;
+  int32 total_steps = 5;
+  // final marks the turn over, successfully or not. It exists because a turn that
+  // fails before replying delivers nothing, and without a terminal signal the
+  // status line says "working on it" forever — which looks exactly like a hang.
+  bool  final = 6;
+  int64 updated_at_unix_ms = 7;
 }

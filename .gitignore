@@ -91,3 +91,10 @@ data/agents.db.bak-1784834010
 # Local secret material for agents (ADR-0090 ingress tokens etc.)
 secrets/
 *.token
+
+# ADR-0101: the embedded config + secret store, and the key that decrypts it.
+# Never commit either. The .db holds durable operator settings and every stored
+# credential; secret.key is the only thing that makes those credentials
+# recoverable, so it belongs in your BACKUP set but never in git.
+configs/config.db
+configs/secret.key

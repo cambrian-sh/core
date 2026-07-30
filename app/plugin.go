@@ -174,6 +174,8 @@ type Registry struct {
 	policyAdmin      domain.PolicyAdmin
 	authzOwner       string
 	ingressResolver  domain.IngressResolver
+	identityResolver domain.IdentityResolver
+	identityOwner    string
 	ingressOwner     string
 }
 
@@ -208,6 +210,26 @@ func (r *Registry) SetIngressResolver(owner string, res domain.IngressResolver) 
 	}
 	r.ingressResolver = res
 	r.ingressOwner = owner
+	return nil
+}
+
+// SetIdentityResolver installs the registry that answers "who is this external
+// sender?" on the inbound path (contract 0077). Tier-1 replace-one, for the same
+// reason the ingress resolver is: two registries could disagree about who an
+// external id maps to, and a binding decides REACH — there would be no way to
+// say which answer held, and the safe-looking one is not necessarily the one
+// that ran.
+//
+// Leaving it unset is valid and means the SURFACE IS THE IDENTITY: every sender
+// who finds the entry point has identical reach, because nobody is
+// distinguished. That is the pre-0077 behaviour and it is named rather than
+// treated as a neutral default.
+func (r *Registry) SetIdentityResolver(owner string, res domain.IdentityResolver) error {
+	if r.identityResolver != nil {
+		return fmt.Errorf("identity resolver already registered by plugin %q; %q cannot also own it", r.identityOwner, owner)
+	}
+	r.identityResolver = res
+	r.identityOwner = owner
 	return nil
 }
 
@@ -554,6 +576,9 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 	}
 	if opts.PolicyAdmin == nil && reg.policyAdmin != nil {
 		opts.PolicyAdmin = reg.policyAdmin
+	}
+	if opts.IdentityResolver == nil && reg.identityResolver != nil {
+		opts.IdentityResolver = reg.identityResolver
 	}
 	if opts.IngressResolver == nil && reg.ingressResolver != nil {
 		opts.IngressResolver = reg.ingressResolver

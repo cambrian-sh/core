@@ -173,9 +173,13 @@ func TestLeaseIDIsNeverASession(t *testing.T) {
 }
 
 // memSessionStore is a minimal in-memory session.SessionRepository.
-type memSessionStore struct{ m map[domain.SessionID]domain.Session }
+type memSessionStore struct {
+	m map[domain.SessionID]domain.Session
+}
 
-func newMemSessionStore() *memSessionStore { return &memSessionStore{m: map[domain.SessionID]domain.Session{}} }
+func newMemSessionStore() *memSessionStore {
+	return &memSessionStore{m: map[domain.SessionID]domain.Session{}}
+}
 
 func (s *memSessionStore) SaveSession(_ context.Context, ses domain.Session) error {
 	s.m[ses.ID] = ses

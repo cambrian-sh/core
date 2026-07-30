@@ -70,7 +70,23 @@ func (r *RosterLatch) Seed(ctx context.Context, src AgentCapabilitySource) {
 		}
 		r.mu.Lock()
 		if _, exists := r.roster[a.ID]; !exists {
-			r.roster[a.ID] = domain.AgentReadyEvent{AgentID: a.ID, Capabilities: caps}
+			// Contract 0074: carry the detail fields 0057 removed. This is the one
+			// place that already holds the whole AgentDefinition, so populating
+			// here means an agent detail pane fills from the ordinary feed rather
+			// than needing the per-entity getter back.
+			r.roster[a.ID] = domain.AgentReadyEvent{
+				AgentID:            a.ID,
+				Capabilities:       caps,
+				SourceHash:         a.SourceHash,
+				Description:        a.Description,
+				Trait:              string(a.Trait),
+				Runtime:            string(a.Runtime),
+				ExecPath:           a.ExecPath,
+				ManifestVersion:    a.ManifestVersion,
+				Provisional:        a.Provisional,
+				System:             a.System,
+				ClassificationTags: a.ClassificationTags,
+			}
 		}
 		r.mu.Unlock()
 	}

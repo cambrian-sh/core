@@ -89,9 +89,9 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 	s.reportProgress(ctx, domain.PhaseRunningTool)
 
 	resp := s.ToolExecutor.Execute(ctx, domain.ToolCallRequest{
-		AgentID:        agentIDFromMetadata(ctx),
-		ToolName:       req.GetToolName(),
-		ArgsJSON:       []byte(req.GetArgsJson()),
+		AgentID:  agentIDFromMetadata(ctx),
+		ToolName: req.GetToolName(),
+		ArgsJSON: []byte(req.GetArgsJson()),
 		// Phase 1: lease_id wins; the deprecated session_token_id is the fallback.
 		SessionTokenID: leaseIDOf(req.GetLeaseId(), req.GetSessionTokenId()),
 		TaskID:         mdValue(ctx, "x-task-id"), // ADR-0049 D3: per-step correlation key

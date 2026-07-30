@@ -61,6 +61,25 @@ const (
 	OperatorConsole_PreviewRoute_FullMethodName             = "/cambrian.OperatorConsole/PreviewRoute"
 	OperatorConsole_ExplainAccess_FullMethodName            = "/cambrian.OperatorConsole/ExplainAccess"
 	OperatorConsole_ListClassificationTags_FullMethodName   = "/cambrian.OperatorConsole/ListClassificationTags"
+	OperatorConsole_ListSessionCheckpoints_FullMethodName   = "/cambrian.OperatorConsole/ListSessionCheckpoints"
+	OperatorConsole_ListMCPServers_FullMethodName           = "/cambrian.OperatorConsole/ListMCPServers"
+	OperatorConsole_GetEmbeddingConfig_FullMethodName       = "/cambrian.OperatorConsole/GetEmbeddingConfig"
+	OperatorConsole_ClassifyInput_FullMethodName            = "/cambrian.OperatorConsole/ClassifyInput"
+	OperatorConsole_ListGenerators_FullMethodName           = "/cambrian.OperatorConsole/ListGenerators"
+	OperatorConsole_ListRoleAssignments_FullMethodName      = "/cambrian.OperatorConsole/ListRoleAssignments"
+	OperatorConsole_TestGenerator_FullMethodName            = "/cambrian.OperatorConsole/TestGenerator"
+	OperatorConsole_GetConfigSchema_FullMethodName          = "/cambrian.OperatorConsole/GetConfigSchema"
+	OperatorConsole_SetConfig_FullMethodName                = "/cambrian.OperatorConsole/SetConfig"
+	OperatorConsole_DeleteConfig_FullMethodName             = "/cambrian.OperatorConsole/DeleteConfig"
+	OperatorConsole_SetGeneratorKey_FullMethodName          = "/cambrian.OperatorConsole/SetGeneratorKey"
+	OperatorConsole_ClearGeneratorKey_FullMethodName        = "/cambrian.OperatorConsole/ClearGeneratorKey"
+	OperatorConsole_SubmitPlan_FullMethodName               = "/cambrian.OperatorConsole/SubmitPlan"
+	OperatorConsole_GetReactiveBudget_FullMethodName        = "/cambrian.OperatorConsole/GetReactiveBudget"
+	OperatorConsole_GetTokenSeries_FullMethodName           = "/cambrian.OperatorConsole/GetTokenSeries"
+	OperatorConsole_ProposePlan_FullMethodName              = "/cambrian.OperatorConsole/ProposePlan"
+	OperatorConsole_ExplainAccessBatch_FullMethodName       = "/cambrian.OperatorConsole/ExplainAccessBatch"
+	OperatorConsole_GetBlastRadiusPreview_FullMethodName    = "/cambrian.OperatorConsole/GetBlastRadiusPreview"
+	OperatorConsole_RetryWatchDeadLetter_FullMethodName     = "/cambrian.OperatorConsole/RetryWatchDeadLetter"
 )
 
 // OperatorConsoleClient is the client API for OperatorConsole service.
@@ -212,6 +231,187 @@ type OperatorConsoleClient interface {
 	// tag field is a defect: a typo is the primary route to a scope that silently
 	// matches nothing. Capability "access-policy"; nil-in-OSS ⇒ Unimplemented.
 	ListClassificationTags(ctx context.Context, in *ListClassificationTagsOpRequest, opts ...grpc.CallOption) (*ListClassificationTagsOpResponse, error)
+	// ListSessionCheckpoints reads the checkpoints written as a session executes.
+	//
+	// Checkpoints are keyed by RUN, not by session: a session accumulates many runs
+	// and a step index only means anything relative to the plan of the run it was
+	// taken against. A response therefore carries run_id on every row, and a
+	// console must group by it — flattening a session's checkpoints into one
+	// timeline offers a resume from the wrong plan.
+	//
+	// Read RPC (no command_id). OSS: served whenever a checkpoint store is wired.
+	ListSessionCheckpoints(ctx context.Context, in *ListSessionCheckpointsOpRequest, opts ...grpc.CallOption) (*ListSessionCheckpointsOpResponse, error)
+	// ListMCPServers enumerates the external MCP servers this kernel consumes tools
+	// from (ADR-0043), with live connection state.
+	//
+	// It exists because "0 MCP servers" and "this kernel cannot report MCP servers"
+	// are different facts an operator must be able to tell apart, and before this
+	// RPC the console could not: there was no read and no feed event, so the
+	// surface listed zero on every deployment forever.
+	ListMCPServers(ctx context.Context, in *ListMCPServersOpRequest, opts ...grpc.CallOption) (*ListMCPServersOpResponse, error)
+	// GetEmbeddingConfig reports the embedding model, its dimensions and the stored
+	// vector count.
+	//
+	// The pairing matters more than the fields: changing the model WITHOUT
+	// re-embedding leaves every stored vector meaningless and NOTHING errors —
+	// retrieval starts returning near-random chunks and grounded answers stay
+	// confidently wrong, citations and all. Any future model-change RPC must carry
+	// the re-embed with it.
+	GetEmbeddingConfig(ctx context.Context, in *GetEmbeddingConfigOpRequest, opts ...grpc.CallOption) (*EmbeddingConfigOp, error)
+	// ClassifyInput returns the ADR-0031 router's decision for a typed sentence
+	// WITHOUT acting on it, so a console can show what is about to happen and offer
+	// one click to overrule it.
+	//
+	// The classification vocabulary is FIVE values, not three: chat, plan, ingest,
+	// watch, clarification. `ingest` is the one a client must not collapse into
+	// another — it WRITES to memory, so rendering it as a read makes an operator
+	// approve a write believing they approved a question.
+	ClassifyInput(ctx context.Context, in *ClassifyInputOpRequest, opts ...grpc.CallOption) (*ClassifiedInputOp, error)
+	// ListGenerators reports the configured LLM generators (ADR-0042) with live
+	// breaker state, and ListRoleAssignments which generator serves each system
+	// organ (planner / verifier / router / interview / memory).
+	//
+	// No credential is ever returned: a generator carries key_configured and
+	// key_last_four only. There is deliberately no GetGeneratorKey — a console that
+	// can display a credential leaks it to whoever is looking at the screen, to a
+	// screen recording, and to whatever logged the response, none of which is
+	// recoverable.
+	ListGenerators(ctx context.Context, in *ListGeneratorsOpRequest, opts ...grpc.CallOption) (*ListGeneratorsOpResponse, error)
+	ListRoleAssignments(ctx context.Context, in *ListRoleAssignmentsOpRequest, opts ...grpc.CallOption) (*ListRoleAssignmentsOpResponse, error)
+	// TestGenerator makes ONE real call against a configured generator's live
+	// endpoint.
+	//
+	// The field that earns this RPC is model_served: the model string the endpoint
+	// ECHOED BACK, not the one that was asked for. An endpoint answering happily
+	// with a different build is the most common misconfiguration in this space and
+	// nothing else in the console would ever reveal it.
+	TestGenerator(ctx context.Context, in *TestGeneratorOpRequest, opts ...grpc.CallOption) (*GeneratorTestResultOp, error)
+	// GetConfigSchema is the READ half of the runtime-config surface.
+	//
+	// SetRuntimeConfig has been able to write a tunable since contract 0047 and
+	// nothing could read one back, so a console could only display the kernel's
+	// documented defaults and label them a guess.
+	//
+	// value_source is the field that earns this RPC. It closes the worst
+	// configuration bug there is — you change a value, it saves, and nothing
+	// happens because something upstream pins it — by naming the layer actually
+	// supplying each key, so a pinned field renders read-only NAMING THE PIN.
+	//
+	// Read RPC (no command_id).
+	GetConfigSchema(ctx context.Context, in *GetConfigSchemaOpRequest, opts ...grpc.CallOption) (*ConfigSchemaOp, error)
+	// SetConfig durably records operator configuration intent (ADR-0101).
+	//
+	// Distinct from SetRuntimeConfig, and both must survive. SetRuntimeConfig is
+	// the ADR-0054 automated-tuning seam: ephemeral, keyed by param name, and
+	// written by a tuner that must NOT leave permanent marks on a deployment.
+	// SetConfig is a human saying "make it this, and keep it this way" — it is
+	// keyed by config path and outlives the process.
+	//
+	// Per-key outcomes rather than one ack, because a partial set can partly
+	// succeed. Collapsing that into a single ok/fail hides WHICH field did not
+	// take, which is the state an operator most needs to see.
+	//
+	// Mutating: command_id + reason, audited, Operator-only.
+	SetConfig(ctx context.Context, in *SetConfigOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
+	// DeleteConfig removes a stored override, reverting the key to whatever the
+	// layers beneath the store supply.
+	//
+	// It is not a convenience. Once a durable write path exists, "put it back" has
+	// no other expression: writing the old value over the top leaves the key
+	// pinned by the store, so the file or default underneath it stays overridden
+	// and a later change to that file silently does nothing.
+	DeleteConfig(ctx context.Context, in *DeleteConfigOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
+	// SetGeneratorKey / ClearGeneratorKey store an LLM provider credential
+	// (ADR-0101 D5). Write-only by construction: there is no getter anywhere on
+	// this plane, and the stored value is encrypted at rest.
+	//
+	// Mutating: command_id + reason, audited. The key itself is never echoed back
+	// and never appears in the audit record — only the fact that one was set.
+	SetGeneratorKey(ctx context.Context, in *SetGeneratorKeyOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
+	ClearGeneratorKey(ctx context.Context, in *ClearGeneratorKeyOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
+	//
+	// Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
+	// the plan schema rather than a second one. Notably the soft/hard agent pin is
+	// already two fields in the domain (ADR-0096): preferred_agent goes first but
+	// ranking still runs behind it, agent_pin makes the step DIE if that agent is
+	// unavailable. Collapsing them would lose the distinction the design turns on.
+	//
+	// dry_run validates and estimates WITHOUT creating a session, starting a plan
+	// or spending anything. It is not a courtesy: an operator-authored DAG can
+	// carry a dependency cycle, which the planner path cannot produce, so the
+	// validation it performs has no other home.
+	//
+	// Mutating: command_id + reason, audited, Operator-only.
+	SubmitPlan(ctx context.Context, in *SubmitPlanOpRequest, opts ...grpc.CallOption) (*SubmitPlanOpResponse, error)
+	// GetReactiveBudget reports the reactive plane's running totals against its
+	// caps (contract 0074).
+	//
+	// ReactiveBudgetOp on the feed is a SHED event — it fires once the plane is
+	// already dropping work. This is the approach to that line, which is what lets
+	// an operator act before the shedding starts rather than after.
+	//
+	// Read RPC (no command_id). Premium; OSS returns Unimplemented.
+	GetReactiveBudget(ctx context.Context, in *GetReactiveBudgetOpRequest, opts ...grpc.CallOption) (*GetReactiveBudgetOpResponse, error)
+	// GetTokenSeries returns recent hourly token usage for the spend sparkline
+	// (contract 0075).
+	//
+	// Tokens only. There is no cost, currency or rate field anywhere in the
+	// response: a completion response carries token COUNTS and never a price, so a
+	// money figure would be one the kernel invented from an unreconciled rate —
+	// a wrong-units bug rather than a rounding one.
+	//
+	// Read RPC (no command_id).
+	GetTokenSeries(ctx context.Context, in *GetTokenSeriesOpRequest, opts ...grpc.CallOption) (*GetTokenSeriesOpResponse, error)
+	// ProposePlan turns a goal into a plan WITHOUT committing to it.
+	//
+	// The load-bearing property is what it does NOT do: no session is created, no
+	// plan is started, nothing is spent. `CreateSession` + `SendMessage` commit;
+	// this is where work is SHAPED, and the session begins on approval. A console
+	// that promises "nothing committed yet" needs an RPC that honours it.
+	//
+	// A vague goal comes back as QUESTIONS rather than a bad plan. Planner output
+	// is the ceiling on routing quality (ADR-0100 D3), so vagueness cannot be
+	// recovered downstream — asking is cheaper than planning badly, and that makes
+	// the questions a feature rather than a delay.
+	//
+	// Read-shaped: no command_id, because nothing is mutated.
+	ProposePlan(ctx context.Context, in *ProposePlanOpRequest, opts ...grpc.CallOption) (*ProposePlanOpResponse, error)
+	// ExplainAccessBatch answers many access questions in ONE call, so a
+	// reachability matrix can be authoritative instead of predicted.
+	//
+	// It exists to delete a client-side re-implementation. A console rendering an
+	// NxM grid cannot make NxM round trips, so it evaluates the policy set itself —
+	// which is a SECOND implementation of access-control logic, and a wrong
+	// "allowed" cell there is a security-shaped bug rather than a cosmetic one.
+	// Every cell answered by this RPC is answered by the same decision point the
+	// enforcement path asks, so the two cannot disagree.
+	//
+	// Read RPC (no command_id). Bounded server-side; see the request's `queries`.
+	ExplainAccessBatch(ctx context.Context, in *ExplainAccessBatchOpRequest, opts ...grpc.CallOption) (*ExplainAccessBatchOpResponse, error)
+	// GetBlastRadiusPreview reports what a scope or grant mutation would do to
+	// AGENTS and IN-FLIGHT PLANS, before it is applied.
+	//
+	// Distinct from the policy blast radius the scope screens already compute:
+	// that one answers "how many documents does this rule touch?" from the
+	// document listing. This one answers "whose reach changes, and which running
+	// plans have to be re-evaluated?" — a different question with a different
+	// source, and the only one that can tell an operator they are about to widen
+	// an agent mid-plan.
+	//
+	// An EMPTY preview understates the radius, which is the one direction this
+	// number must never be wrong in. A kernel that cannot compute it returns
+	// Unimplemented rather than an empty answer.
+	//
+	// Read RPC (no command_id): it previews, it does not apply.
+	GetBlastRadiusPreview(ctx context.Context, in *BlastRadiusPreviewOpRequest, opts ...grpc.CallOption) (*BlastRadiusPreviewOp, error)
+	// RetryWatchDeadLetter replays one dead-lettered reactive action.
+	//
+	// Safe because REACT-01 (ADR-0061) already records the idempotency key with the
+	// dead letter, so the replay runs under the original key and a double-click
+	// cannot double-fire. Mutating: command_id + reason, audited. Premium
+	// (capability "watch-deadletter"); OSS returns Unimplemented.
+	RetryWatchDeadLetter(ctx context.Context, in *RetryWatchDeadLetterOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 }
 
 type operatorConsoleClient struct {
@@ -660,6 +860,196 @@ func (c *operatorConsoleClient) ListClassificationTags(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListSessionCheckpoints(ctx context.Context, in *ListSessionCheckpointsOpRequest, opts ...grpc.CallOption) (*ListSessionCheckpointsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSessionCheckpointsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListSessionCheckpoints_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListMCPServers(ctx context.Context, in *ListMCPServersOpRequest, opts ...grpc.CallOption) (*ListMCPServersOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListMCPServersOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListMCPServers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GetEmbeddingConfig(ctx context.Context, in *GetEmbeddingConfigOpRequest, opts ...grpc.CallOption) (*EmbeddingConfigOp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EmbeddingConfigOp)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetEmbeddingConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ClassifyInput(ctx context.Context, in *ClassifyInputOpRequest, opts ...grpc.CallOption) (*ClassifiedInputOp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClassifiedInputOp)
+	err := c.cc.Invoke(ctx, OperatorConsole_ClassifyInput_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListGenerators(ctx context.Context, in *ListGeneratorsOpRequest, opts ...grpc.CallOption) (*ListGeneratorsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListGeneratorsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListGenerators_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListRoleAssignments(ctx context.Context, in *ListRoleAssignmentsOpRequest, opts ...grpc.CallOption) (*ListRoleAssignmentsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRoleAssignmentsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListRoleAssignments_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) TestGenerator(ctx context.Context, in *TestGeneratorOpRequest, opts ...grpc.CallOption) (*GeneratorTestResultOp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GeneratorTestResultOp)
+	err := c.cc.Invoke(ctx, OperatorConsole_TestGenerator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GetConfigSchema(ctx context.Context, in *GetConfigSchemaOpRequest, opts ...grpc.CallOption) (*ConfigSchemaOp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConfigSchemaOp)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetConfigSchema_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SetConfig(ctx context.Context, in *SetConfigOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetConfigOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) DeleteConfig(ctx context.Context, in *DeleteConfigOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetConfigOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_DeleteConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SetGeneratorKey(ctx context.Context, in *SetGeneratorKeyOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetConfigOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetGeneratorKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ClearGeneratorKey(ctx context.Context, in *ClearGeneratorKeyOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_ClearGeneratorKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SubmitPlan(ctx context.Context, in *SubmitPlanOpRequest, opts ...grpc.CallOption) (*SubmitPlanOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitPlanOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SubmitPlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GetReactiveBudget(ctx context.Context, in *GetReactiveBudgetOpRequest, opts ...grpc.CallOption) (*GetReactiveBudgetOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetReactiveBudgetOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetReactiveBudget_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GetTokenSeries(ctx context.Context, in *GetTokenSeriesOpRequest, opts ...grpc.CallOption) (*GetTokenSeriesOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTokenSeriesOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetTokenSeries_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ProposePlan(ctx context.Context, in *ProposePlanOpRequest, opts ...grpc.CallOption) (*ProposePlanOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProposePlanOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ProposePlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ExplainAccessBatch(ctx context.Context, in *ExplainAccessBatchOpRequest, opts ...grpc.CallOption) (*ExplainAccessBatchOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExplainAccessBatchOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ExplainAccessBatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GetBlastRadiusPreview(ctx context.Context, in *BlastRadiusPreviewOpRequest, opts ...grpc.CallOption) (*BlastRadiusPreviewOp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BlastRadiusPreviewOp)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetBlastRadiusPreview_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RetryWatchDeadLetter(ctx context.Context, in *RetryWatchDeadLetterOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_RetryWatchDeadLetter_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OperatorConsoleServer is the server API for OperatorConsole service.
 // All implementations must embed UnimplementedOperatorConsoleServer
 // for forward compatibility.
@@ -809,6 +1199,187 @@ type OperatorConsoleServer interface {
 	// tag field is a defect: a typo is the primary route to a scope that silently
 	// matches nothing. Capability "access-policy"; nil-in-OSS ⇒ Unimplemented.
 	ListClassificationTags(context.Context, *ListClassificationTagsOpRequest) (*ListClassificationTagsOpResponse, error)
+	// ListSessionCheckpoints reads the checkpoints written as a session executes.
+	//
+	// Checkpoints are keyed by RUN, not by session: a session accumulates many runs
+	// and a step index only means anything relative to the plan of the run it was
+	// taken against. A response therefore carries run_id on every row, and a
+	// console must group by it — flattening a session's checkpoints into one
+	// timeline offers a resume from the wrong plan.
+	//
+	// Read RPC (no command_id). OSS: served whenever a checkpoint store is wired.
+	ListSessionCheckpoints(context.Context, *ListSessionCheckpointsOpRequest) (*ListSessionCheckpointsOpResponse, error)
+	// ListMCPServers enumerates the external MCP servers this kernel consumes tools
+	// from (ADR-0043), with live connection state.
+	//
+	// It exists because "0 MCP servers" and "this kernel cannot report MCP servers"
+	// are different facts an operator must be able to tell apart, and before this
+	// RPC the console could not: there was no read and no feed event, so the
+	// surface listed zero on every deployment forever.
+	ListMCPServers(context.Context, *ListMCPServersOpRequest) (*ListMCPServersOpResponse, error)
+	// GetEmbeddingConfig reports the embedding model, its dimensions and the stored
+	// vector count.
+	//
+	// The pairing matters more than the fields: changing the model WITHOUT
+	// re-embedding leaves every stored vector meaningless and NOTHING errors —
+	// retrieval starts returning near-random chunks and grounded answers stay
+	// confidently wrong, citations and all. Any future model-change RPC must carry
+	// the re-embed with it.
+	GetEmbeddingConfig(context.Context, *GetEmbeddingConfigOpRequest) (*EmbeddingConfigOp, error)
+	// ClassifyInput returns the ADR-0031 router's decision for a typed sentence
+	// WITHOUT acting on it, so a console can show what is about to happen and offer
+	// one click to overrule it.
+	//
+	// The classification vocabulary is FIVE values, not three: chat, plan, ingest,
+	// watch, clarification. `ingest` is the one a client must not collapse into
+	// another — it WRITES to memory, so rendering it as a read makes an operator
+	// approve a write believing they approved a question.
+	ClassifyInput(context.Context, *ClassifyInputOpRequest) (*ClassifiedInputOp, error)
+	// ListGenerators reports the configured LLM generators (ADR-0042) with live
+	// breaker state, and ListRoleAssignments which generator serves each system
+	// organ (planner / verifier / router / interview / memory).
+	//
+	// No credential is ever returned: a generator carries key_configured and
+	// key_last_four only. There is deliberately no GetGeneratorKey — a console that
+	// can display a credential leaks it to whoever is looking at the screen, to a
+	// screen recording, and to whatever logged the response, none of which is
+	// recoverable.
+	ListGenerators(context.Context, *ListGeneratorsOpRequest) (*ListGeneratorsOpResponse, error)
+	ListRoleAssignments(context.Context, *ListRoleAssignmentsOpRequest) (*ListRoleAssignmentsOpResponse, error)
+	// TestGenerator makes ONE real call against a configured generator's live
+	// endpoint.
+	//
+	// The field that earns this RPC is model_served: the model string the endpoint
+	// ECHOED BACK, not the one that was asked for. An endpoint answering happily
+	// with a different build is the most common misconfiguration in this space and
+	// nothing else in the console would ever reveal it.
+	TestGenerator(context.Context, *TestGeneratorOpRequest) (*GeneratorTestResultOp, error)
+	// GetConfigSchema is the READ half of the runtime-config surface.
+	//
+	// SetRuntimeConfig has been able to write a tunable since contract 0047 and
+	// nothing could read one back, so a console could only display the kernel's
+	// documented defaults and label them a guess.
+	//
+	// value_source is the field that earns this RPC. It closes the worst
+	// configuration bug there is — you change a value, it saves, and nothing
+	// happens because something upstream pins it — by naming the layer actually
+	// supplying each key, so a pinned field renders read-only NAMING THE PIN.
+	//
+	// Read RPC (no command_id).
+	GetConfigSchema(context.Context, *GetConfigSchemaOpRequest) (*ConfigSchemaOp, error)
+	// SetConfig durably records operator configuration intent (ADR-0101).
+	//
+	// Distinct from SetRuntimeConfig, and both must survive. SetRuntimeConfig is
+	// the ADR-0054 automated-tuning seam: ephemeral, keyed by param name, and
+	// written by a tuner that must NOT leave permanent marks on a deployment.
+	// SetConfig is a human saying "make it this, and keep it this way" — it is
+	// keyed by config path and outlives the process.
+	//
+	// Per-key outcomes rather than one ack, because a partial set can partly
+	// succeed. Collapsing that into a single ok/fail hides WHICH field did not
+	// take, which is the state an operator most needs to see.
+	//
+	// Mutating: command_id + reason, audited, Operator-only.
+	SetConfig(context.Context, *SetConfigOpRequest) (*SetConfigOpResponse, error)
+	// DeleteConfig removes a stored override, reverting the key to whatever the
+	// layers beneath the store supply.
+	//
+	// It is not a convenience. Once a durable write path exists, "put it back" has
+	// no other expression: writing the old value over the top leaves the key
+	// pinned by the store, so the file or default underneath it stays overridden
+	// and a later change to that file silently does nothing.
+	DeleteConfig(context.Context, *DeleteConfigOpRequest) (*SetConfigOpResponse, error)
+	// SetGeneratorKey / ClearGeneratorKey store an LLM provider credential
+	// (ADR-0101 D5). Write-only by construction: there is no getter anywhere on
+	// this plane, and the stored value is encrypted at rest.
+	//
+	// Mutating: command_id + reason, audited. The key itself is never echoed back
+	// and never appears in the audit record — only the fact that one was set.
+	SetGeneratorKey(context.Context, *SetGeneratorKeyOpRequest) (*SetConfigOpResponse, error)
+	ClearGeneratorKey(context.Context, *ClearGeneratorKeyOpRequest) (*CommandAck, error)
+	// SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
+	//
+	// Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
+	// the plan schema rather than a second one. Notably the soft/hard agent pin is
+	// already two fields in the domain (ADR-0096): preferred_agent goes first but
+	// ranking still runs behind it, agent_pin makes the step DIE if that agent is
+	// unavailable. Collapsing them would lose the distinction the design turns on.
+	//
+	// dry_run validates and estimates WITHOUT creating a session, starting a plan
+	// or spending anything. It is not a courtesy: an operator-authored DAG can
+	// carry a dependency cycle, which the planner path cannot produce, so the
+	// validation it performs has no other home.
+	//
+	// Mutating: command_id + reason, audited, Operator-only.
+	SubmitPlan(context.Context, *SubmitPlanOpRequest) (*SubmitPlanOpResponse, error)
+	// GetReactiveBudget reports the reactive plane's running totals against its
+	// caps (contract 0074).
+	//
+	// ReactiveBudgetOp on the feed is a SHED event — it fires once the plane is
+	// already dropping work. This is the approach to that line, which is what lets
+	// an operator act before the shedding starts rather than after.
+	//
+	// Read RPC (no command_id). Premium; OSS returns Unimplemented.
+	GetReactiveBudget(context.Context, *GetReactiveBudgetOpRequest) (*GetReactiveBudgetOpResponse, error)
+	// GetTokenSeries returns recent hourly token usage for the spend sparkline
+	// (contract 0075).
+	//
+	// Tokens only. There is no cost, currency or rate field anywhere in the
+	// response: a completion response carries token COUNTS and never a price, so a
+	// money figure would be one the kernel invented from an unreconciled rate —
+	// a wrong-units bug rather than a rounding one.
+	//
+	// Read RPC (no command_id).
+	GetTokenSeries(context.Context, *GetTokenSeriesOpRequest) (*GetTokenSeriesOpResponse, error)
+	// ProposePlan turns a goal into a plan WITHOUT committing to it.
+	//
+	// The load-bearing property is what it does NOT do: no session is created, no
+	// plan is started, nothing is spent. `CreateSession` + `SendMessage` commit;
+	// this is where work is SHAPED, and the session begins on approval. A console
+	// that promises "nothing committed yet" needs an RPC that honours it.
+	//
+	// A vague goal comes back as QUESTIONS rather than a bad plan. Planner output
+	// is the ceiling on routing quality (ADR-0100 D3), so vagueness cannot be
+	// recovered downstream — asking is cheaper than planning badly, and that makes
+	// the questions a feature rather than a delay.
+	//
+	// Read-shaped: no command_id, because nothing is mutated.
+	ProposePlan(context.Context, *ProposePlanOpRequest) (*ProposePlanOpResponse, error)
+	// ExplainAccessBatch answers many access questions in ONE call, so a
+	// reachability matrix can be authoritative instead of predicted.
+	//
+	// It exists to delete a client-side re-implementation. A console rendering an
+	// NxM grid cannot make NxM round trips, so it evaluates the policy set itself —
+	// which is a SECOND implementation of access-control logic, and a wrong
+	// "allowed" cell there is a security-shaped bug rather than a cosmetic one.
+	// Every cell answered by this RPC is answered by the same decision point the
+	// enforcement path asks, so the two cannot disagree.
+	//
+	// Read RPC (no command_id). Bounded server-side; see the request's `queries`.
+	ExplainAccessBatch(context.Context, *ExplainAccessBatchOpRequest) (*ExplainAccessBatchOpResponse, error)
+	// GetBlastRadiusPreview reports what a scope or grant mutation would do to
+	// AGENTS and IN-FLIGHT PLANS, before it is applied.
+	//
+	// Distinct from the policy blast radius the scope screens already compute:
+	// that one answers "how many documents does this rule touch?" from the
+	// document listing. This one answers "whose reach changes, and which running
+	// plans have to be re-evaluated?" — a different question with a different
+	// source, and the only one that can tell an operator they are about to widen
+	// an agent mid-plan.
+	//
+	// An EMPTY preview understates the radius, which is the one direction this
+	// number must never be wrong in. A kernel that cannot compute it returns
+	// Unimplemented rather than an empty answer.
+	//
+	// Read RPC (no command_id): it previews, it does not apply.
+	GetBlastRadiusPreview(context.Context, *BlastRadiusPreviewOpRequest) (*BlastRadiusPreviewOp, error)
+	// RetryWatchDeadLetter replays one dead-lettered reactive action.
+	//
+	// Safe because REACT-01 (ADR-0061) already records the idempotency key with the
+	// dead letter, so the replay runs under the original key and a double-click
+	// cannot double-fire. Mutating: command_id + reason, audited. Premium
+	// (capability "watch-deadletter"); OSS returns Unimplemented.
+	RetryWatchDeadLetter(context.Context, *RetryWatchDeadLetterOpRequest) (*CommandAck, error)
 	mustEmbedUnimplementedOperatorConsoleServer()
 }
 
@@ -944,6 +1515,63 @@ func (UnimplementedOperatorConsoleServer) ExplainAccess(context.Context, *Explai
 }
 func (UnimplementedOperatorConsoleServer) ListClassificationTags(context.Context, *ListClassificationTagsOpRequest) (*ListClassificationTagsOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListClassificationTags not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListSessionCheckpoints(context.Context, *ListSessionCheckpointsOpRequest) (*ListSessionCheckpointsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSessionCheckpoints not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListMCPServers(context.Context, *ListMCPServersOpRequest) (*ListMCPServersOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListMCPServers not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetEmbeddingConfig(context.Context, *GetEmbeddingConfigOpRequest) (*EmbeddingConfigOp, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetEmbeddingConfig not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ClassifyInput(context.Context, *ClassifyInputOpRequest) (*ClassifiedInputOp, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClassifyInput not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListGenerators(context.Context, *ListGeneratorsOpRequest) (*ListGeneratorsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListGenerators not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListRoleAssignments(context.Context, *ListRoleAssignmentsOpRequest) (*ListRoleAssignmentsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRoleAssignments not implemented")
+}
+func (UnimplementedOperatorConsoleServer) TestGenerator(context.Context, *TestGeneratorOpRequest) (*GeneratorTestResultOp, error) {
+	return nil, status.Error(codes.Unimplemented, "method TestGenerator not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetConfigSchema(context.Context, *GetConfigSchemaOpRequest) (*ConfigSchemaOp, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetConfigSchema not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetConfig(context.Context, *SetConfigOpRequest) (*SetConfigOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetConfig not implemented")
+}
+func (UnimplementedOperatorConsoleServer) DeleteConfig(context.Context, *DeleteConfigOpRequest) (*SetConfigOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteConfig not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetGeneratorKey(context.Context, *SetGeneratorKeyOpRequest) (*SetConfigOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetGeneratorKey not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ClearGeneratorKey(context.Context, *ClearGeneratorKeyOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClearGeneratorKey not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SubmitPlan(context.Context, *SubmitPlanOpRequest) (*SubmitPlanOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubmitPlan not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetReactiveBudget(context.Context, *GetReactiveBudgetOpRequest) (*GetReactiveBudgetOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetReactiveBudget not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetTokenSeries(context.Context, *GetTokenSeriesOpRequest) (*GetTokenSeriesOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTokenSeries not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ProposePlan(context.Context, *ProposePlanOpRequest) (*ProposePlanOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProposePlan not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ExplainAccessBatch(context.Context, *ExplainAccessBatchOpRequest) (*ExplainAccessBatchOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExplainAccessBatch not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetBlastRadiusPreview(context.Context, *BlastRadiusPreviewOpRequest) (*BlastRadiusPreviewOp, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetBlastRadiusPreview not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RetryWatchDeadLetter(context.Context, *RetryWatchDeadLetterOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method RetryWatchDeadLetter not implemented")
 }
 func (UnimplementedOperatorConsoleServer) mustEmbedUnimplementedOperatorConsoleServer() {}
 func (UnimplementedOperatorConsoleServer) testEmbeddedByValue()                         {}
@@ -1708,6 +2336,348 @@ func _OperatorConsole_ListClassificationTags_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListSessionCheckpoints_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSessionCheckpointsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListSessionCheckpoints(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListSessionCheckpoints_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListSessionCheckpoints(ctx, req.(*ListSessionCheckpointsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListMCPServers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListMCPServersOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListMCPServers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListMCPServers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListMCPServers(ctx, req.(*ListMCPServersOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetEmbeddingConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetEmbeddingConfigOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetEmbeddingConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetEmbeddingConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetEmbeddingConfig(ctx, req.(*GetEmbeddingConfigOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ClassifyInput_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClassifyInputOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ClassifyInput(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ClassifyInput_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ClassifyInput(ctx, req.(*ClassifyInputOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListGenerators_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListGeneratorsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListGenerators(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListGenerators_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListGenerators(ctx, req.(*ListGeneratorsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListRoleAssignments_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRoleAssignmentsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListRoleAssignments(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListRoleAssignments_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListRoleAssignments(ctx, req.(*ListRoleAssignmentsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_TestGenerator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TestGeneratorOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).TestGenerator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_TestGenerator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).TestGenerator(ctx, req.(*TestGeneratorOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetConfigSchema_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetConfigSchemaOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetConfigSchema(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetConfigSchema_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetConfigSchema(ctx, req.(*GetConfigSchemaOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SetConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetConfigOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetConfig(ctx, req.(*SetConfigOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_DeleteConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteConfigOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).DeleteConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_DeleteConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).DeleteConfig(ctx, req.(*DeleteConfigOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SetGeneratorKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetGeneratorKeyOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetGeneratorKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetGeneratorKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetGeneratorKey(ctx, req.(*SetGeneratorKeyOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ClearGeneratorKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClearGeneratorKeyOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ClearGeneratorKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ClearGeneratorKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ClearGeneratorKey(ctx, req.(*ClearGeneratorKeyOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SubmitPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitPlanOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SubmitPlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SubmitPlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SubmitPlan(ctx, req.(*SubmitPlanOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetReactiveBudget_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetReactiveBudgetOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetReactiveBudget(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetReactiveBudget_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetReactiveBudget(ctx, req.(*GetReactiveBudgetOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetTokenSeries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTokenSeriesOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetTokenSeries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetTokenSeries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetTokenSeries(ctx, req.(*GetTokenSeriesOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ProposePlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProposePlanOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ProposePlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ProposePlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ProposePlan(ctx, req.(*ProposePlanOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ExplainAccessBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExplainAccessBatchOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ExplainAccessBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ExplainAccessBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ExplainAccessBatch(ctx, req.(*ExplainAccessBatchOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetBlastRadiusPreview_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BlastRadiusPreviewOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetBlastRadiusPreview(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetBlastRadiusPreview_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetBlastRadiusPreview(ctx, req.(*BlastRadiusPreviewOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RetryWatchDeadLetter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RetryWatchDeadLetterOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RetryWatchDeadLetter(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RetryWatchDeadLetter_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RetryWatchDeadLetter(ctx, req.(*RetryWatchDeadLetterOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OperatorConsole_ServiceDesc is the grpc.ServiceDesc for OperatorConsole service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1874,6 +2844,82 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListClassificationTags",
 			Handler:    _OperatorConsole_ListClassificationTags_Handler,
+		},
+		{
+			MethodName: "ListSessionCheckpoints",
+			Handler:    _OperatorConsole_ListSessionCheckpoints_Handler,
+		},
+		{
+			MethodName: "ListMCPServers",
+			Handler:    _OperatorConsole_ListMCPServers_Handler,
+		},
+		{
+			MethodName: "GetEmbeddingConfig",
+			Handler:    _OperatorConsole_GetEmbeddingConfig_Handler,
+		},
+		{
+			MethodName: "ClassifyInput",
+			Handler:    _OperatorConsole_ClassifyInput_Handler,
+		},
+		{
+			MethodName: "ListGenerators",
+			Handler:    _OperatorConsole_ListGenerators_Handler,
+		},
+		{
+			MethodName: "ListRoleAssignments",
+			Handler:    _OperatorConsole_ListRoleAssignments_Handler,
+		},
+		{
+			MethodName: "TestGenerator",
+			Handler:    _OperatorConsole_TestGenerator_Handler,
+		},
+		{
+			MethodName: "GetConfigSchema",
+			Handler:    _OperatorConsole_GetConfigSchema_Handler,
+		},
+		{
+			MethodName: "SetConfig",
+			Handler:    _OperatorConsole_SetConfig_Handler,
+		},
+		{
+			MethodName: "DeleteConfig",
+			Handler:    _OperatorConsole_DeleteConfig_Handler,
+		},
+		{
+			MethodName: "SetGeneratorKey",
+			Handler:    _OperatorConsole_SetGeneratorKey_Handler,
+		},
+		{
+			MethodName: "ClearGeneratorKey",
+			Handler:    _OperatorConsole_ClearGeneratorKey_Handler,
+		},
+		{
+			MethodName: "SubmitPlan",
+			Handler:    _OperatorConsole_SubmitPlan_Handler,
+		},
+		{
+			MethodName: "GetReactiveBudget",
+			Handler:    _OperatorConsole_GetReactiveBudget_Handler,
+		},
+		{
+			MethodName: "GetTokenSeries",
+			Handler:    _OperatorConsole_GetTokenSeries_Handler,
+		},
+		{
+			MethodName: "ProposePlan",
+			Handler:    _OperatorConsole_ProposePlan_Handler,
+		},
+		{
+			MethodName: "ExplainAccessBatch",
+			Handler:    _OperatorConsole_ExplainAccessBatch_Handler,
+		},
+		{
+			MethodName: "GetBlastRadiusPreview",
+			Handler:    _OperatorConsole_GetBlastRadiusPreview_Handler,
+		},
+		{
+			MethodName: "RetryWatchDeadLetter",
+			Handler:    _OperatorConsole_RetryWatchDeadLetter_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -46,6 +46,12 @@ func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f memory.DocumentFi
 	if f.UnlabelledOnly {
 		filters = append(filters, "cardinality(d.tags) = 0")
 	}
+	if len(f.Tags) > 0 {
+		// @> is the GIN-indexed containment operator: "carries all of these".
+		// Intersection, matching DocumentFilter.Tags — OR would make a second
+		// label widen the scope rather than narrow it.
+		filters = append(filters, "d.tags @> "+placeholder(f.Tags))
+	}
 	if f.IDPrefix != "" {
 		// ESCAPE is explicit because document ids routinely contain '_', which LIKE
 		// reads as "any single character" — without it a prefix filter silently

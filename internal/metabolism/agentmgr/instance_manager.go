@@ -238,6 +238,22 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 		if streamID != "" {
 			cmd.Args = append(cmd.Args, "--stream-id", streamID)
 		}
+		// The REGISTRY id, so the process can declare itself as the identity the
+		// kernel knows it by.
+		//
+		// Discovery derives the registry id from the filename while a signal's
+		// sender comes from the id the process declares for itself, and nothing
+		// made the two agree — when they diverge a reply is generated and then has
+		// nowhere to go. Passing it removes the divergence by construction, and it
+		// is what lets ONE script run as several distinct principals: N bots, N
+		// registrations, N surfaces, one file.
+		//
+		// A flag rather than an environment variable deliberately. Per-agent env
+		// would mean reopening the SEC-01 deny-by-default environment, which is
+		// the boundary that stops kernel secrets reaching agent processes; an
+		// argv flag carries no such risk. Unknown flags are ignored by the SDK,
+		// so older agents are unaffected.
+		cmd.Args = append(cmd.Args, "--agent-id", def.ID)
 	}
 	return cmd, nil
 }

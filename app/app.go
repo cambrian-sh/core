@@ -22,6 +22,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/agentpool"
 	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/awareness"
 	"github.com/cambrian-sh/core/internal/centralexec"
 	corechat "github.com/cambrian-sh/core/internal/chat"
 	"github.com/cambrian-sh/core/internal/config"
@@ -40,6 +41,7 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/routescorer"
 	ossreactive "github.com/cambrian-sh/core/internal/reactive"
 	skilldiscovery "github.com/cambrian-sh/core/internal/skill/discovery"
+	"github.com/cambrian-sh/core/internal/storage"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 	session "github.com/cambrian-sh/core/internal/substrate/session"
@@ -79,7 +81,16 @@ const maxGRPCMessageBytes = 512 * 1024 * 1024
 //   - domain stacks (Memory, Awareness, Metabolism, Supervision)
 //   - runtime handles (Server, GRPC)
 type Kernel struct {
-	Config      *config.Config
+	Config *config.Config
+	// ConfigProvenance records which layer supplied each config key (ADR-0101 D4).
+	// Backs GetConfigSchema.value_source, and the write path's "stored, but an env
+	// var pins this" warning. Never nil after a successful boot.
+	ConfigProvenance config.Provenance
+	// ConfigStore is the durable config + secret store (ADR-0101). nil when the
+	// store layer is disabled (CAMBRIAN_CONFIG_STORE=off), in which case the
+	// operator plane's config writes answer Unimplemented rather than pretending
+	// to persist.
+	ConfigStore *storage.BoltConfigStore
 	Registry    domain.AgentRegistry // domain-facing interface layer
 	Store       io.Closer            // opaque storage handle — only Close() is exposed
 	Memory      *kernel.MemoryStack
@@ -156,6 +167,46 @@ type Kernel struct {
 	// ADR-0043 D8 / ADR-0044: health/reconnect inputs for the background Watch loop.
 	MCPSink    mcp.ToolSink
 	MCPServers []mcp.ServerConfig
+
+	// ── Contract 0072 (Wave 1) sources ───────────────────────────────────────
+	// Carried on the Kernel because they are constructed in bootstrapKernel but
+	// consumed later, where the operator service is wired.
+
+	// CheckpointSource is the store backing ListSessionCheckpoints. Typed as any
+	// because the concrete store differs by backend (Postgres or bbolt) and the
+	// operator wiring type-asserts for the two methods it needs. nil ⇒ the
+	// Checkpoints tab reports Unimplemented rather than an empty list.
+	CheckpointSource any
+	// LLMProvider backs the generator registry reads (breaker state, roles).
+	LLMProvider *llm.Provider
+	// VectorCounter returns the stored embedding count, or -1 when it cannot be
+	// counted. nil ⇒ -1, which is NOT zero (see EmbeddingConfigOp.vector_count).
+	VectorCounter func(ctx context.Context) int64
+	// TokenSeries is the hourly token accumulator behind the spend sparkline
+	// (contract 0075). Tokens only — never money.
+	TokenSeries domain.TokenSeriesReader
+	// Progress is the ADR-0098 progress holder. Carried here because it is built
+	// before the operator feed exists, and contract 0079 needs to give it the
+	// feed as a second destination once that feed is up.
+	Progress *progressHolder
+}
+
+// mcpToolCounter returns a function counting the tools attributed to one MCP
+// server, or nil when no tool catalog is available. Tool ids are namespaced by
+// server, which is what makes the count derivable without a second registry.
+func (k *Kernel) mcpToolCounter() func(serverID string) int {
+	if k.Server == nil || k.Server.ToolExecutor == nil {
+		return nil
+	}
+	return func(serverID string) int {
+		n := 0
+		for _, t := range k.Server.ToolExecutor.AllTools() {
+			if strings.HasPrefix(t.Name, serverID+".") || strings.HasPrefix(t.Name, serverID+":") {
+				n++
+			}
+		}
+		return n
+	}
 }
 
 // Shutdown initiates the graceful teardown of all kernel resources.
@@ -241,7 +292,21 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("load .env: %w", err)
 	}
 
-	cfg, err := config.LoadConfig(filepath.Join(baseDir, "configs", "config.json"))
+	// ADR-0101: the embedded config + secret store, opened BEFORE config loads
+	// because it is one of config's layers. Its path derives from baseDir rather
+	// than from cfg.Storage.DataDir, which would be circular — and deliberately
+	// so: keeping it in the config bundle rather than the data directory means a
+	// corpus reset (which truncates the data dir) cannot take an operator's
+	// durable settings and every stored credential with it.
+	cfgStore, err := OpenConfigStore(baseDir)
+	if err != nil {
+		return err
+	}
+	if cfgStore != nil {
+		defer func() { _ = cfgStore.Close() }()
+	}
+
+	cfg, prov, err := config.LoadConfigWithStore(filepath.Join(baseDir, "configs", "config.json"), cfgStore)
 	if err != nil {
 		return err // ConfigError is already structured; wrapping breaks errors.As in main()
 	}
@@ -301,6 +366,11 @@ func Run(ctx context.Context, opts Options) error {
 		_ = lis.Close()
 		return fmt.Errorf("bootstrap: %w", err)
 	}
+	// ADR-0101: carried onto the Kernel so the operator plane can read config
+	// provenance and write durable settings. bootstrapKernel does not take them
+	// because they are resolved before it runs — the store IS a config layer.
+	k.ConfigProvenance = prov
+	k.ConfigStore = cfgStore
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -391,10 +461,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// fail-soft posture the audit store uses. Retrieval and orchestration do not depend on
 	// conversations, so a missing chat store must not take the whole kernel down.
 	var conversations domain.ConversationStore
+	// Held separately as the concrete type: "who came through this entry point" is
+	// an aggregate query the ConversationStore interface deliberately does not
+	// carry, and widening that interface would oblige every implementation and
+	// every test fake to grow a method none of them use.
+	var ingressTraffic domain.IngressTrafficLister
 	if convStore, convErr := postgres.NewPgConversationStore(ctx, vec.Pool()); convErr != nil {
 		slog.Warn("ADR-0084: conversation store unavailable; chat surfaces disabled", "err", convErr)
 	} else {
 		conversations = convStore
+		ingressTraffic = convStore
 	}
 
 	// ADR-0042: the centralized LLM Provider is the sole authority on model
@@ -832,8 +908,20 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// nothing else about the kernel.
 		SetProgressSink: progressSink.set,
 		DeliverProgress: progressOut.deliver,
-		SQL:           vec.Pool(),
-		AgentExists:   reg.HasAgent,
+		SQL:             vec.Pool(),
+		AgentExists:     reg.HasAgent,
+		// Contract 0074: enumeration, not just existence. AgentExists answers "is
+		// this one real?"; ListPrincipals needs "which ones are", to find a policy
+		// linked to a principal that is not.
+		Agents: reg,
+		// Who has come through an entry point, from the DURABLE conversation
+		// record. The decision journal cannot answer that: it is in-memory and
+		// only records when something asks the decision point, so a turn that
+		// answers a greeting leaves no trace at all.
+		IngressTraffic: ingressTraffic,
+		// Read-only: so a plugin can tell whether the surface its traffic will
+		// arrive on has been registered, without being able to register one.
+		Ingresses:     opts.IngressResolver,
 		SessionScopes: sessionMgr,
 		Manager:       meta.Manager,
 		Auctioneer:    meta.Auctioneer,
@@ -946,7 +1034,21 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// receives external chat traffic (ADR-0080 D4). nil resolver or no chat lane and
 	// this stays nil, leaving every signal on its ordinary path.
 	if opts.IngressResolver != nil && chatTurns != nil && conversations != nil {
-		cambrianServer.IngressInbound = ingress.NewInboundService(conversations, opts.IngressResolver, chatTurns)
+		inbound := ingress.NewInboundService(conversations, opts.IngressResolver, chatTurns)
+		// Contract 0077. Without this the registry records nothing and resolves
+		// nobody: every sender stays the ingress daemon's principal, the unbound
+		// worklist is permanently empty, and blocking a sender has no effect on
+		// the path that would carry them.
+		inbound.SetIdentityResolver(opts.IdentityResolver)
+		cambrianServer.IngressInbound = inbound
+	}
+	// Which ENTRY POINT a conversation arrived on. Wired independently of the
+	// inbound service because it is read on the way OUT — when an agent working a
+	// chat turn calls back into the kernel — and a chat turn carries no task
+	// session, so without it the turn is authorised as an ordinary agent call and
+	// the ingress's own policy never applies.
+	if conversations != nil && opts.IngressResolver != nil {
+		cambrianServer.ConvSurfaces = ingress.NewConversationSurfaces(conversations, opts.IngressResolver)
 	}
 
 	// Phase 4: runs and checkpoints follow sessions into Postgres. ProvideServer wires the
@@ -1066,6 +1168,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0041: expose the kernel embedder for the agent Local Recurrent Workspace
 	// relevance ranking (the Embed RPC). Read-only; no authorization impact.
 	cambrianServer.Embedder = embedder
+	// Contract 0075: the hourly token series behind the spend sparkline. ONE
+	// accumulator shared by every execution — the event writer is resolved per
+	// Execute, so a per-call accumulator would reset the series on every plan.
+	tokenSeries := telemetry.NewTokenSeries()
+	cambrianServer.TokenRecorder = tokenSeries
 
 	// ADR-0037 D10–D15 (ADR-0041 follow-up 0041-07): wire the YieldDriver so a
 	// yielding agent's sub-goal is bound (via the live selector — Zero-Hardcode),
@@ -1514,9 +1621,18 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 
 	return &Kernel{
-		OperatorEffects:    operatorEffects,
-		OperatorAudit:      operatorAudit,
-		Documents:          vec,
+		OperatorEffects: operatorEffects,
+		OperatorAudit:   operatorAudit,
+		Documents:       vec,
+		// Contract 0072 (Wave 1). storeHandle is the session/checkpoint store for
+		// both backends; the operator wiring type-asserts for the two methods it
+		// needs, so a backend lacking them degrades to Unimplemented rather than
+		// to an empty list.
+		CheckpointSource:   storeHandle,
+		TokenSeries:        tokenSeries,
+		Progress:           progressSink,
+		LLMProvider:        llmProvider,
+		VectorCounter:      vectorCounterFor(vec),
 		Config:             cfg,
 		Registry:           reg,
 		WatchDeadLetters:   reg,                   // REACT-01 / ADR-0061
@@ -1759,6 +1875,127 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				scorer: k.Metabolism.Gatekeeper.RouteScorer,
 			})
 		}
+		// ── Contract 0072 (Wave 1) read sources ──────────────────────────────
+		//
+		// Each is wired only when its backing surface actually exists, because the
+		// capability strings below are derived from which of these are non-nil. A
+		// source wired without a real backing would advertise a surface that then
+		// answers emptily — the "0 MCP servers on a kernel with no MCP" confusion
+		// these RPCs were added to remove.
+		var (
+			cpLister   operator.CheckpointLister
+			mcpSource  operator.MCPServerLister
+			embedSrc   operator.EmbeddingReporter
+			classifier operator.InputClassifier
+		)
+		if src, ok := k.CheckpointSource.(checkpointSource); ok && src != nil {
+			cpLister = checkpointLister{src: src}
+		}
+		if k.MCPServers != nil {
+			mcpSource = mcpLister{
+				servers:   k.MCPServers,
+				connector: k.MCPConnector,
+				toolsFor:  k.mcpToolCounter(),
+			}
+		}
+		embedSrc = embeddingReporter{cfg: k.Config.Embedder, counter: k.VectorCounter}
+		if k.Server != nil && k.Server.Router != nil {
+			classifier = inputClassifier{router: k.Server.Router}
+		}
+		operatorSvc.SetWave1Reads(cpLister, mcpSource, embedSrc, classifier)
+
+		if k.TokenSeries != nil {
+			operatorSvc.SetTokenSeriesReader(k.TokenSeries)
+		}
+
+		// Contract 0076: the blast-radius preview. Wired whenever agents can be
+		// listed; the estimator itself reports INCOMPLETE for anything it cannot
+		// inspect rather than returning a reassuringly empty radius.
+		if k.Registry != nil {
+			operatorSvc.SetBlastRadiusEstimator(blastRadiusEstimator{
+				agents: func(ctx context.Context) []domain.AgentDefinition {
+					all, err := k.Registry.GetAllAgents(ctx)
+					if err != nil {
+						return nil
+					}
+					return all
+				},
+				scopeOf: k.agentScopeRenderer(),
+				// In-flight plan tracking is not projected on this build, so the
+				// preview marks itself incomplete and names why. That is the honest
+				// state: a partial radius shown as total is the understatement this
+				// RPC exists to prevent.
+				inFlight: nil,
+			})
+		}
+
+		// Contract 0075: propose WITHOUT committing. It reaches the planner
+		// directly rather than through Server.Execute, because Execute is the
+		// committing path — it binds a session, persists a run and dispatches
+		// agents. Suppressing those afterwards would make the "nothing committed"
+		// promise depend on every future edit to Execute remembering this caller.
+		if k.Awareness != nil && k.Awareness.Planner != nil {
+			var clarifier *awareness.Clarifier
+			if k.Awareness.LLM != nil {
+				clarifier = &awareness.Clarifier{
+					LLM:        k.Awareness.LLM,
+					Vocabulary: k.Config.Execution.ClassificationVocabulary,
+					Documents:  documentTagCounter(k.Documents),
+				}
+			}
+			operatorSvc.SetPlanProposer(planProposer{
+				planner:   k.Awareness.Planner.GetExecutionPlan,
+				clarifier: clarifier,
+				tags: func(context.Context) []string {
+					return k.Config.Execution.ClassificationVocabulary
+				},
+			})
+		}
+
+		if k.LLMProvider != nil {
+			operatorSvc.SetGeneratorRegistry(generatorRegistry{
+				cfg:      k.Config.LLMProvider,
+				provider: k.LLMProvider,
+				secrets:  k.ConfigStore,
+			})
+		}
+
+		// ADR-0101 D7: the read half of the runtime-config surface. Wired only when
+		// provenance exists, because value_source is the field that earns this RPC
+		// — without it the form can report a value but not what pins it, which is
+		// the disclaiming state it was added to replace.
+		if k.ConfigProvenance != nil {
+			var live func(string) (float64, bool)
+			if k.Memory != nil && k.Memory.QueryService != nil {
+				live = liveBlendWeights(k.Memory.QueryService)
+			}
+			operatorSvc.SetConfigSchemaReporter(configSchemaSource{
+				cfg:  k.Config,
+				prov: k.ConfigProvenance,
+				live: live,
+			})
+
+			// ADR-0101 D3: the durable WRITE path. Wired only alongside a real
+			// store, because a Save button that cannot persist is worse than none —
+			// it reports success for a change that vanishes on restart.
+			if k.ConfigStore != nil {
+				writer := configWriteSource{
+					store:    k.ConfigStore,
+					prov:     k.ConfigProvenance,
+					hotApply: hotApplyFor(k.OperatorEffects),
+					generators: func() map[string]string {
+						out := map[string]string{}
+						for _, g := range k.Config.LLMProvider.Generators {
+							out[g.ID] = g.APIKeyEnv
+						}
+						return out
+					},
+				}
+				operatorSvc.SetConfigWriter(writer)
+				operatorSvc.SetSecretWriter(writer)
+			}
+		}
+
 		// ADR-0047 D14: capability + version handshake. The UI hides surfaces this
 		// build does not advertise and warns on contract-version skew.
 		// ADR-0047 Amendment A2: contract bumped 0047→0048 for the CORE-OPS-1 read/
@@ -1812,6 +2049,45 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if operatorSvc.HasDocumentLister() {
 			operatorCaps = append(operatorCaps, "document-listing")
 		}
+		// Contract 0072 capabilities. Each is advertised only when a source backs
+		// it, so a console never renders a surface against a kernel that answers
+		// Unimplemented — and, just as importantly, can tell "this deployment has
+		// none of these" apart from "this kernel cannot report them".
+		operatorCaps = append(operatorCaps, operatorSvc.Wave1Capabilities()...)
+		// config-schema: GetConfigSchema reports live tunable values AND the layer
+		// supplying each one. Advertised separately because it is wired from the
+		// config pipeline rather than from a kernel subsystem.
+		if operatorSvc.HasConfigSchema() {
+			operatorCaps = append(operatorCaps, "config-schema")
+		}
+		// config-write: SetConfig / DeleteConfig / SetGeneratorKey persist DURABLY
+		// (ADR-0101). Advertised separately from config-schema because a kernel can
+		// report its configuration without being able to persist a change to it —
+		// and a console must render a read-only form in that case rather than a
+		// Save button that silently does nothing.
+		if operatorSvc.HasConfigWriter() {
+			operatorCaps = append(operatorCaps, "config-write")
+		}
+		// authored-plans: SubmitPlan accepts an operator-written DAG. Without it a
+		// console must hide Run/Dry-run rather than offer buttons with nowhere to go.
+		if operatorSvc.HasPlanSubmitter() {
+			operatorCaps = append(operatorCaps, "authored-plans")
+		}
+		// token-series: GetTokenSeries projects hourly usage. Without it a console
+		// must say "no history is projected" rather than draw a flat line, which
+		// reads as zero spend.
+		if operatorSvc.HasTokenSeries() {
+			operatorCaps = append(operatorCaps, "token-series")
+		}
+		if operatorSvc.HasBlastRadiusEstimator() {
+			operatorCaps = append(operatorCaps, "blast-radius")
+		}
+		// propose-plan: ProposePlan shapes work without committing to it. A console
+		// gates its "nothing committed yet" header on this — without the RPC the
+		// only way to see a plan is to start one.
+		if operatorSvc.HasPlanProposer() {
+			operatorCaps = append(operatorCaps, "propose-plan")
+		}
 		// ADR-0082 D2: plugin-contributed capabilities. Each plugin declares the operator
 		// surfaces it implements in its own manifest; the kernel collects them here and
 		// advertises them WITHOUT interpreting any of them — which is what keeps downstream
@@ -1859,10 +2135,33 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// QueryMemoryResponse.policy_note. The "access-policy" capability (declared by
 		// the policy plugin's manifest) lets a console decide whether to render the
 		// policy surfaces at all, instead of probing and getting Unimplemented.
+		// Contract 0073 (ADR-0101 D3/D5): the durable WRITE path — SetConfig,
+		// DeleteConfig, SetGeneratorKey, ClearGeneratorKey, with per-key
+		// ConfigWriteOutcomeOp. The outcome shape is the point: a write that a
+		// higher layer shadows is reported AT WRITE TIME, naming the variable,
+		// rather than leaving the operator to infer it from a later read.
+		// Capabilities "config-write" (+ "config-schema" for the read half).
+		//
+		// Contract 0072 (ADR-0101 + the operator UX refactor's Wave 1): adds
+		// ListSessionCheckpoints, ListMCPServers, GetEmbeddingConfig, ClassifyInput,
+		// ListGenerators / ListRoleAssignments / TestGenerator, RetryWatchDeadLetter;
+		// PlanStepOp.required_capabilities; PluginInfoOp.last_check_unix_ms and the
+		// "licence_unverifiable" state.
+		//
+		// Bundled as ONE bump rather than eight because each bump costs a re-vendor
+		// across ui/proto, ui/src-tauri/pb.rs and cli/proto.
+		//
 		// Contract 0071 (ADR-0100 P2): AuctionEventOp gains selection_latency_ms +
 		// selection_boots — the cost of the SELECTION decision, emitted identically by
 		// the auction and dispatch arms so the orchestration suite can compare them.
-		operatorSvc.SetHandshake("0.6.9-alpha", "0071", operatorCaps)
+		// Contract 0079: ADR-0098 progress onto the operator feed. The ephemeral
+		// lane, because a status line is not history — replaying "working on it"
+		// for a turn that finished an hour ago is worse than showing nothing.
+		if k.Progress != nil {
+			k.Progress.setFeed(operatorFeed.EmitEphemeral)
+		}
+
+		operatorSvc.SetHandshake("0.6.9-alpha", "0079", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".
@@ -1899,6 +2198,50 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				return nil
 			},
 		})
+		// Contract 0074: operator-authored plans. The submitter reuses the SAME
+		// execution path a planner-produced plan takes — it hands the plan in via
+		// network.AuthoredPlanMetadataKey rather than opening a second entrypoint,
+		// so session binding, run persistence, checkpointing and the feed are all
+		// the existing code.
+		if k.SessionMgr != nil && k.Server != nil {
+			operatorSvc.SetPlanSubmitter(planSubmitter{
+				sessions: func(ctx context.Context, goal string) (string, error) {
+					ses, err := k.SessionMgr.CreateSession(ctx, goal, "")
+					if err != nil {
+						return "", err
+					}
+					return string(ses.ID), nil
+				},
+				execute: func(sessionID, planJSON string) {
+					go func() {
+						mdCtx := metadata.NewIncomingContext(
+							context.Background(),
+							metadata.Pairs("x-session-id", sessionID),
+						)
+						_, err := k.Server.Execute(mdCtx, &pb.Handoff{
+							Payload: &pb.Object{Data: []byte("")},
+							Metadata: map[string]string{
+								subnetwork.AuthoredPlanMetadataKey: planJSON,
+							},
+						})
+						if err != nil {
+							slog.Warn("operator SubmitPlan execution failed", "session", sessionID, "err", err)
+						}
+					}()
+				},
+				known: func(id string) bool {
+					if k.Registry == nil {
+						// Cannot verify ⇒ do not warn. A false "no such agent" on
+						// every pin would train an operator to ignore the warning,
+						// and then the real one goes unread too.
+						return true
+					}
+					a, err := k.Registry.GetAgentByName(context.Background(), id)
+					return err == nil && a != nil
+				},
+			})
+		}
+
 		// ADR-0084 D9: the OSS chat lane on the operator plane. Wired only when the chat
 		// TurnService exists (execution.chat_pool_size > 0 + a conversation store), so an
 		// OSS build with chat off honestly reports SendTurn/OpenConversation as Unimplemented

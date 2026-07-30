@@ -11,8 +11,11 @@ const (
 	// transition (open, pause, resume, dormant, complete). Phase 2 — it exists because
 	// the two events above cover only two of the five transitions, so a consumer folding
 	// just those can never see a session be created or paused.
-	EventTypeSessionState   = "session.state"
-	EventTypeMemoryPressure = "memory.pressure"
+	EventTypeSessionState = "session.state"
+	// EventTypeConversationProgress is the ADR-0098 status line on the operator
+	// feed. Live-only: it supersedes rather than accumulates.
+	EventTypeConversationProgress = "conversation.progress"
+	EventTypeMemoryPressure       = "memory.pressure"
 	// EventTypeWatchTriggered is the default routing key for WatchTriggeredEvent.
 	// WatchAction.Target can override it on a per-rule basis. ADR-0032.
 	EventTypeWatchTriggered = "watch.triggered"
@@ -189,6 +192,23 @@ type AgentReadyEvent struct {
 	TrustScore   float64
 	Capabilities []string
 	InterviewMs  int64
+
+	// Contract 0074: the agent detail fields contract 0057 removed from the
+	// operator projection. Carried on the READY event because the projection
+	// folds agents by id from it — putting them here means an agent detail pane
+	// fills from the feed rather than needing a per-entity getter back.
+	Description        string
+	Trait              string
+	Runtime            string
+	ExecPath           string
+	ManifestVersion    string
+	Provisional        bool
+	System             bool
+	ClassificationTags []string
+	// LastError is the most recent failure this agent reported. A healthy-looking
+	// agent that fails every dispatch is otherwise indistinguishable from an idle
+	// one.
+	LastError string
 }
 
 // SessionDormantEvent is emitted by SessionManager when a session transitions
@@ -216,6 +236,32 @@ type SessionStateEvent struct {
 }
 
 func (SessionStateEvent) EventType() string { return EventTypeSessionState }
+
+// ConversationProgressEvent carries an ADR-0098 progress snapshot onto the
+// OPERATOR feed (contract 0079).
+//
+// The progress channel delivers to an ingress-bound conversation, so Telegram
+// saw "working on it, step 2 of 4" and the operator console saw nothing — a
+// console conversation has no delivery address, so DeliverProgress returned
+// early and the snapshot was computed and dropped.
+//
+// It rides the EPHEMERAL lane (seq 0, never replayed) because it is a status
+// line rather than history. A replayed "working on it" for a turn that finished
+// an hour ago would be worse than showing no progress at all.
+type ConversationProgressEvent struct {
+	ConversationID string
+	// Text is the rendered line. EMPTY means CLEAR — a final update with nothing
+	// to say takes the line down.
+	Text       string
+	Phase      string
+	Step       int
+	TotalSteps int
+	Final      bool
+	UpdatedAt  time.Time
+}
+
+func (ConversationProgressEvent) domainEvent()      {}
+func (ConversationProgressEvent) EventType() string { return EventTypeConversationProgress }
 
 // MemoryPressureEvent is emitted when document count or index size exceeds a
 // configured threshold. Subscribers (MemoryLifecycleManager, Scavenger) trigger
@@ -334,6 +380,12 @@ type PlanStepState struct {
 	IsThought bool   // a reasoning/synthesis step (no external action)
 	Status    string // "pending" | "running" | "done" | "failed"
 	Agent     string // the executor agent id, once the step has been dispatched
+	// RequiredCapabilities is the step's ROUTE-03 capability contract, copied from
+	// domain.Step. Carried onto the feed (contract 0072) because it is the REASON
+	// a step routed where it did — Agent is only the result. When routing fails,
+	// "no agents available" without the requested capability is a dead end for
+	// whoever has to fix it.
+	RequiredCapabilities []string
 }
 
 // AuditEvent carries an operator-mutating action onto the feed in realtime

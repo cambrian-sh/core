@@ -158,6 +158,15 @@ func (s *Service) ListTools(_ context.Context, req *pb.ListToolsOpRequest) (*pb.
 			Effects:            effectNames(t.Effects),
 			EffectsInferred:    t.EffectsInferred,
 			Grants:             rev[t.Name],
+			// Contract 0074: the detail fields 0057 removed. SchemaJson is the
+			// exact menu entry the model sees, so a tool pane can answer "why did
+			// the agent call this with those arguments?"; the resource-arg lists
+			// say WHICH arguments a resource policy actually binds, without which
+			// a grant's policy reads as applying to the whole tool.
+			SchemaJson:  string(t.Schema),
+			PathArgs:    t.PathArgs,
+			UrlArgs:     t.URLArgs,
+			CommandArgs: t.CommandArgs,
 		})
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Name < filtered[j].Name })
@@ -205,6 +214,10 @@ func (s *Service) ListSkills(_ context.Context, req *pb.ListSkillsOpRequest) (*p
 			Description: sk.Description,
 			ToolGrants:  sk.ToolGrants,
 			ScopeTags:   sk.ScopeTags,
+			// Contract 0074: a skill IS its instructions. Without the body a detail
+			// pane can list a skill's name and grants and never show what it
+			// actually tells an agent to do.
+			Body: sk.Instructions,
 		})
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Name < filtered[j].Name })

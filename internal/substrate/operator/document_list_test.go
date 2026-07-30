@@ -3,6 +3,7 @@ package operator_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -66,7 +67,9 @@ func TestListDocuments_PassesFilterAndMapsRows(t *testing.T) {
 	// the RPC, and silently dropping it would return a plausible page of the wrong
 	// documents.
 	want := memory.DocumentFilter{Limit: 2, Cursor: "doc-0", UnlabelledOnly: true, IDPrefix: "doc-"}
-	if lister.got != want {
+	// DeepEqual, not ==: DocumentFilter gained a Tags slice in contract 0075 and
+	// is no longer a comparable struct.
+	if !reflect.DeepEqual(lister.got, want) {
 		t.Fatalf("filter = %+v, want %+v", lister.got, want)
 	}
 

@@ -71,6 +71,15 @@ type DocumentFilter struct {
 	UnlabelledOnly bool
 	// IDPrefix is a cheap prefix filter. Not full-text: that is QueryMemory's job.
 	IDPrefix string
+	// Tags restricts the listing to documents carrying ALL of these labels
+	// (contract 0075). It is what lets an interview option say "61 documents"
+	// against the same source the documents screen reads, so the two can never
+	// disagree about the size of a scope the operator is choosing between.
+	//
+	// Intersection rather than union on purpose: a scope is a narrowing, and OR
+	// would make adding a second label WIDEN it, which is the opposite of what
+	// selecting two labels means to the person doing it.
+	Tags []string
 }
 
 // DocumentSummary is one LISTING row — no body, no chunks.

@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // Provider is the concrete LLMProvider (ADR-0042). It composes the id-keyed
@@ -301,9 +301,47 @@ func (g *purposeGenerator) GenerateStream(ctx context.Context, prompt string) (<
 }
 
 var (
-	_ domain.LLMProvider                       = (*Provider)(nil)
-	_ domain.Generator                         = (*purposeGenerator)(nil)
+	_ domain.LLMProvider = (*Provider)(nil)
+	_ domain.Generator   = (*purposeGenerator)(nil)
 	_ interface {
 		GenerateStream(ctx context.Context, prompt string) (<-chan domain.StreamChunk, error)
 	} = (*purposeGenerator)(nil)
 )
+
+// BreakerState reports the circuit breaker's view of one generator, as
+// "closed" (healthy and taking traffic) or "open" (shedding after consecutive
+// failures). Added for the operator plane's ListGenerators (contract 0072).
+//
+// The breaker is PASSIVE — it learns health only from traffic that actually
+// flowed (ADR-0042 D4) — so "closed" on an idle generator means "nothing has
+// failed", not "verified working". TestGenerator is the active check.
+func (p *Provider) BreakerState(id string) string {
+	if p.breaker == nil {
+		return "closed"
+	}
+	if p.breaker.Healthy(id) {
+		return "closed"
+	}
+	return "open"
+}
+
+// Roles returns the role → generator-id map (planner/verifier/router/interview/
+// memory). Copied, so a caller cannot mutate the Provider's routing table.
+func (p *Provider) Roles() map[string]string {
+	out := make(map[string]string, len(p.roles))
+	for k, v := range p.roles {
+		out[k] = v
+	}
+	return out
+}
+
+// KnowsGenerator reports whether id names a registered generator. It backs
+// RoleAssignmentOp.resolved: a role pointing at a removed generator silently
+// falls back to the default, and nothing else in the system says so.
+func (p *Provider) KnowsGenerator(id string) bool {
+	if p.registry == nil {
+		return false
+	}
+	_, ok := p.registry.Lookup(id)
+	return ok
+}

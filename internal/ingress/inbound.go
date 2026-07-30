@@ -44,8 +44,11 @@ type InboundService struct {
 	convs     ConversationBinder
 	ingresses domain.IngressResolver
 	turns     TurnRunner
-	logger    *slog.Logger
-	newID     func() string
+	// identities resolves an external sender to a principal (contract 0077).
+	// nil ⇒ the surface remains the identity, which is the pre-0077 behaviour.
+	identities domain.IdentityResolver
+	logger     *slog.Logger
+	newID      func() string
 	// Profile is stamped on conversations this path opens. Customer is the honest
 	// default: a message arriving through an outsider-facing entry point is not an
 	// employee's, whatever the sender claims.
@@ -88,12 +91,35 @@ type InboundMessage struct {
 	// Policy is the standing instruction for this conversation, applied ONLY when
 	// the conversation is opened. Ignored on every later message.
 	Policy string
+	// SpeakerID, Username and DisplayName describe WHO SPOKE. All three are claims
+	// the bridge relays and none is ever matched on — they are carried so the
+	// unbound worklist can name a person instead of listing an id nobody
+	// recognises. Absent on a bridge that does not report them, which is a thinner
+	// row rather than a failure.
+	SpeakerID   string
+	Username    string
+	DisplayName string
+}
+
+// profile is what gets recorded when this message's sender is resolved.
+func (m InboundMessage) profile() domain.SenderProfile {
+	return domain.SenderProfile{
+		ExternalID:  m.ExternalID,
+		SpeakerID:   m.SpeakerID,
+		Username:    strings.TrimPrefix(strings.TrimSpace(m.Username), "@"),
+		DisplayName: strings.TrimSpace(m.DisplayName),
+	}
 }
 
 // ErrNotAnIngress is returned when the sender is not a registered entry point.
 // The caller should fall through to its ordinary signal handling rather than
 // treat this as a failure — most signals are not ingress traffic.
 var ErrNotAnIngress = errors.New("ingress: sender is not a registered ingress")
+
+// ErrSenderNotBound is returned when a surface is set to refuse_until_bound and
+// the sender has no binding. The caller replies once — a refusal the person can
+// act on — rather than dropping the message silently.
+var ErrSenderNotBound = errors.New("ingress: sender is not bound to a principal on this surface")
 
 // Accept handles one inbound message.
 //
@@ -120,6 +146,26 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 	addr, err := reg.DeliveryFor(externalID)
 	if err != nil {
 		return err
+	}
+
+	// Contract 0077: identity resolution, BEFORE a conversation exists.
+	//
+	// A block that dropped later would still have opened a conversation, run the
+	// turn's setup and left a transcript to clean up. Dropping here is what makes
+	// "a blocked sender never reaches a policy or a plan" true rather than
+	// aspirational.
+	if s.identities != nil {
+		surface := reg.Surface.String()
+		if binding, bound := s.identities.ResolveIdentity(ctx, surface, m.profile()); bound {
+			if binding.Blocked {
+				return domain.NewBlockedSenderError(externalID)
+			}
+		} else if pol := s.identities.StrangerPolicyFor(ctx, surface); pol.Mode == domain.StrangerRefuseUntilBound {
+			// Refused, and the caller REPLIES once rather than ignoring: silent
+			// ignoring is indistinguishable from a broken bot, so the person
+			// retries instead of asking an operator to bind them.
+			return ErrSenderNotBound
+		}
 	}
 
 	conv, err := s.resolveConversation(ctx, addr, m.Policy)
@@ -188,3 +234,12 @@ func randomHex(n int) string {
 	}
 	return hex.EncodeToString(b)
 }
+
+// SetIdentityResolver wires identity bindings (contract 0077).
+//
+// nil is valid and means the surface IS the identity — every sender who finds
+// the entry point has the surface's reach. That is the pre-0077 behaviour, and
+// it is worth naming rather than treating as a neutral default: it is the state
+// in which two different people are governed by one rule because nobody is
+// distinguished.
+func (s *InboundService) SetIdentityResolver(r domain.IdentityResolver) { s.identities = r }

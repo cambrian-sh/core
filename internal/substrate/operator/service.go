@@ -48,6 +48,38 @@ type Service struct {
 	routePreview  RoutePreviewer               // ROUTE-07 / ADR-0077
 	policy        domain.PolicyAdmin           // ADR-0085; nil ⇒ access-policy RPCs Unimplemented
 
+	// Contract 0072 (Wave 1). Each is nil-able and its RPC then answers
+	// Unimplemented — never an empty success, so a console can distinguish
+	// "nothing to report" from "this kernel cannot report it".
+	checkpoints CheckpointLister
+	mcpServers  MCPServerLister
+	embedding   EmbeddingReporter
+	classifier  InputClassifier
+	generators  GeneratorRegistry
+	// deadletterRetry is premium-only: reading the dead-letter queue is safe on
+	// any build, replaying from it is not.
+	deadletterRetry DeadLetterRetrier
+	// configSchema is the ADR-0101 read half of the runtime-config surface.
+	configSchema ConfigSchemaReporter
+	// configWriter / secretWriter are the ADR-0101 durable write halves. nil ⇒
+	// the write RPCs answer Unimplemented rather than accepting a save that
+	// cannot persist.
+	// Contract 0074 reactive liveness. nil ⇒ the fields stay at their
+	// "cannot tell" values rather than defaulting to something healthy-looking.
+	streams     domain.StreamRegistry
+	watchFires  domain.WatchFireReader
+	planeBudget domain.ReactiveBudgetReader
+	// blastRadius previews a scope/grant mutation's effect (contract 0076).
+	blastRadius BlastRadiusEstimator
+	// tokenSeries backs the spend sparkline (contract 0075).
+	tokenSeries domain.TokenSeriesReader
+	// planProposer plans WITHOUT committing (contract 0075). Side-effect free.
+	planProposer PlanProposer
+	// planSubmitter runs operator-authored plans (contract 0074).
+	planSubmitter PlanSubmitter
+	configWriter  ConfigWriter
+	secretWriter  SecretWriter
+
 	sessionOps SessionOps
 	convOps    ConversationOps // ADR-0084 D9: OSS chat lane
 

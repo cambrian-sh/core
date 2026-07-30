@@ -80,6 +80,21 @@ type WatchParams struct{}
 type RouterDecision struct {
 	Type DecisionType
 
+	// Why names the layer that decided and its reason ("layer 1: /plan prefix",
+	// "layer 3 LLM: wants to read files and reason over them").
+	//
+	// Added for the operator plane's ClassifyInput (contract 0072), which shows
+	// the decision BEFORE it acts and offers one click to overrule it. An
+	// unexplained label is not something an operator can sensibly overrule, and
+	// overruling is the entire point of showing it. Layer 3 already received a
+	// reason from the classifier and discarded it.
+	Why string
+
+	// Confidence is the deciding layer's confidence in [0,1]. 0 means "not
+	// reported": layers 0–2 are deterministic and compute none, which is
+	// different from a layer-3 call that genuinely returned zero confidence.
+	Confidence float64
+
 	// ClarificationQuestion is the question posed to the user.
 	// Non-empty only when Type == DecisionClarification.
 	ClarificationQuestion string

@@ -56,6 +56,15 @@ func (s *Server) leaseResolver() domain.LeaseResolver {
 // The asymmetry between the two branches is deliberate: the new header is strict (a lease
 // is only ever a lease), the legacy header is permissive (it has to serve both callers
 // until it is removed).
+// callerConversation returns the conversation this caller is working for, or "".
+func (s *Server) callerConversation(ctx context.Context) string {
+	b, ok := s.resolveCallerBinding(ctx)
+	if !ok {
+		return ""
+	}
+	return b.ConversationID
+}
+
 func (s *Server) resolveCallerSession(ctx context.Context) domain.SessionID {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {

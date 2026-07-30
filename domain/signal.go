@@ -46,6 +46,85 @@ type WatchMetricsReader interface {
 	WatchMetrics() []WatchMetrics
 }
 
+// Stream liveness states (contract 0074). StreamUnknown is deliberately distinct
+// from StreamUnavailable: a kernel with no stream registry cannot tell, and
+// reporting a guess as a fact would raise a false alarm on every watch.
+const (
+	StreamLive        = "live"
+	StreamUnavailable = "unavailable"
+	StreamUnknown     = "unknown"
+)
+
+// StreamRegistry reports whether a signal stream is alive and how many watches
+// hold it (contract 0074).
+//
+// It closes the reactive plane's quietest failure: when the daemon feeding a
+// stream crashes, every watch on that stream stops evaluating — no error, no
+// dead letter, no fired event — while each watch still reads "active". Nothing
+// anywhere in the system said so.
+//
+// Satisfied by the premium reactive engine; nil ⇒ every watch reports
+// StreamUnknown, which a console must render as "cannot tell", not as healthy.
+type StreamRegistry interface {
+	// StreamState returns StreamLive, StreamUnavailable or StreamUnknown.
+	StreamState(streamID string) string
+	// StreamRefcount returns how many watches hold streamID, or -1 when the
+	// registry does not count them.
+	StreamRefcount(streamID string) int
+}
+
+// WatchFire is one recorded evaluation of a watch (contract 0074), backing the
+// fire-history sparkline.
+type WatchFire struct {
+	At time.Time
+	// Outcome is "fired" | "suppressed" | "failed" | "would_fire".
+	//
+	// "suppressed" is a rule WORKING — the condition was evaluated and said no.
+	// A console rendering it as a failure trains an operator to loosen a boundary
+	// that is doing its job, which is the same mistake as reading a policy denial
+	// as an error.
+	Outcome   string
+	Error     string
+	LatencyMs int64
+}
+
+// Watch fire outcomes.
+const (
+	FireFired      = "fired"
+	FireSuppressed = "suppressed"
+	FireFailed     = "failed"
+	FireWouldFire  = "would_fire"
+)
+
+// WatchFireReader returns a watch's recent evaluations, newest last. Satisfied
+// by the premium reactive engine; nil ⇒ no history is reported (which is NOT the
+// same as "never fired").
+type WatchFireReader interface {
+	RecentFires(watchID string, limit int) []WatchFire
+}
+
+// ReactivePlaneBudget is the plane-wide running total against its caps
+// (contract 0074).
+//
+// Distinct from the shed EVENT: that fires once the plane is already dropping
+// work, and this is the approach to that line. Every field is -1 when not
+// tracked, which is distinct from 0 — "0 plans started this hour" is a claim
+// about activity, and reporting it for a counter that does not exist would make
+// a busy plane look idle.
+type ReactivePlaneBudget struct {
+	GateEvaluationsThisHour int64
+	GateEvaluationsCap      int64
+	PlansStartedThisHour    int64
+	PlansStartedCap         int64
+	SignalsShedThisHour     int64
+	WindowStarted           time.Time
+}
+
+// ReactiveBudgetReader reports the plane budget. nil ⇒ Unimplemented.
+type ReactiveBudgetReader interface {
+	PlaneBudget() ReactivePlaneBudget
+}
+
 // WatchBacktester replays a candidate WatchConfig over the signal journal without acting
 // (REACT-05 / ADR-0071). Satisfied by the premium ReactiveEngine.
 type WatchBacktester interface {
@@ -93,6 +172,20 @@ type WatchAction struct {
 	Payload string `json:"payload,omitempty"`
 }
 
+// EffectiveActions returns every arm this watch runs, first arm first.
+//
+// One accessor so no caller has to remember the Action/Actions split, and an
+// empty Action with populated Actions still works — which is what a client that
+// only knows the plural form will send.
+func (w WatchConfig) EffectiveActions() []WatchAction {
+	var out []WatchAction
+	if w.Action.Type != "" {
+		out = append(out, w.Action)
+	}
+	out = append(out, w.Actions...)
+	return out
+}
+
 // WatchConfig is a persistent user-defined reactive rule. When a signal
 // arrives on the matching StreamID, the ReactiveEngine evaluates Condition
 // and executes Action if the condition is true. ADR-0031 / ADR-0032.
@@ -103,7 +196,18 @@ type WatchConfig struct {
 	Source        WatchSource `json:"source"`
 	Condition     string      `json:"condition,omitempty"`      // e.g. "price > 5000" or "true"
 	ConditionType string      `json:"condition_type,omitempty"` // see ConditionType* constants
-	Action        WatchAction `json:"action"`
+	// Action is the FIRST arm, kept as the durable single-action form so every
+	// persisted watch written before contract 0076 still loads unchanged.
+	Action WatchAction `json:"action"`
+	// Actions are arms 2..N (contract 0076). A multi-armed pipeline — "notify the
+	// channel AND open a ticket" — could not be stored at all while Action was
+	// singular, so the builder had to draw arms the engine would silently drop.
+	//
+	// Deliberately NOT a `repeated` replacement for Action: rewriting the field
+	// would break every stored watch, and a migration for a feature nobody has
+	// used yet is a cost with no payer. EffectiveActions() is the accessor
+	// everything should read.
+	Actions []WatchAction `json:"actions,omitempty"`
 	Active        bool        `json:"active"`
 	// ResponseMode is "" (async, default) or "sync" (CHAT conversations).
 	ResponseMode string `json:"response_mode,omitempty"`
