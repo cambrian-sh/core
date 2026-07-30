@@ -100,3 +100,84 @@ func policyNote(d domain.AccessDecision) *pb.AccessDecisionOp {
 		return nil
 	}
 }
+
+// MaxExplainBatch bounds one ExplainAccessBatch call.
+//
+// 400 is a 20x20 grid — larger than any matrix a person can actually read, so
+// the bound protects the kernel without costing a usable screen.
+const MaxExplainBatch = 400
+
+// ExplainAccessBatch answers many access questions in one call.
+//
+// Every decision goes through the SAME s.policy.ExplainAccess the single-question
+// RPC and the enforcement path use. That is the entire value: a console can stop
+// re-implementing access-control logic to render a grid, and a cell can no longer
+// disagree with what the kernel would actually do.
+func (s *Service) ExplainAccessBatch(ctx context.Context, req *pb.ExplainAccessBatchOpRequest) (*pb.ExplainAccessBatchOpResponse, error) {
+	if s.policy == nil {
+		return nil, status.Error(codes.Unimplemented, "access policy not configured (unscoped deployment)")
+	}
+	queries := req.GetQueries()
+	if len(queries) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "queries is required")
+	}
+
+	truncated := false
+	if len(queries) > MaxExplainBatch {
+		queries = queries[:MaxExplainBatch]
+		truncated = true
+	}
+
+	out := &pb.ExplainAccessBatchOpResponse{
+		Truncated: truncated,
+		Limit:     MaxExplainBatch,
+		Decisions: make([]*pb.AccessDecisionOp, 0, len(queries)),
+	}
+	for _, q := range queries {
+		out.Decisions = append(out.Decisions, s.explainOne(ctx, q))
+	}
+	return out, nil
+}
+
+// explainOne answers a single cell, never returning an error.
+//
+// A malformed query yields a DENIAL carrying the reason rather than failing the
+// batch or being skipped. Skipping would shift every later answer onto the wrong
+// cell — a matrix silently off by one is worse than one that refuses to render —
+// and failing the whole call would let one bad cell blank a grid that was
+// otherwise correct. Denial is also the safe direction: a cell that should have
+// said "allowed" but says "denied, malformed" sends someone to look, whereas the
+// reverse would be a security-shaped lie.
+func (s *Service) explainOne(ctx context.Context, req *pb.ExplainAccessOpRequest) *pb.AccessDecisionOp {
+	if req.GetPrincipalId() == "" {
+		return &pb.AccessDecisionOp{
+			Allowed: false,
+			Reason:  "invalid_query",
+			Explain: "this cell names no principal, so there is nothing to decide about",
+		}
+	}
+	kind := domain.PrincipalKind(req.GetPrincipalKind())
+	if kind == "" {
+		kind = domain.PrincipalAgent
+	}
+	effects := make([]domain.ToolEffect, 0, len(req.GetEffects()))
+	for _, e := range req.GetEffects() {
+		eff := domain.ToolEffect(e)
+		if !domain.ValidToolEffect(eff) {
+			return &pb.AccessDecisionOp{
+				Allowed: false,
+				Reason:  "invalid_query",
+				Explain: "unknown effect class " + e,
+			}
+		}
+		effects = append(effects, eff)
+	}
+	dec := s.policy.ExplainAccess(ctx, domain.AccessRequest{
+		Principal: domain.PrincipalRef{ID: req.GetPrincipalId(), Kind: kind},
+		Surface:   domain.SurfaceRef{Kind: req.GetSurfaceKind(), ID: req.GetSurfaceId()},
+		Resource:  domain.ResourceRef{Kind: domain.ResourceKind(req.GetResourceKind()), ID: req.GetResourceId()},
+		Tags:      req.GetTags(),
+		Effects:   effects,
+	})
+	return AccessDecisionToOp(dec)
+}

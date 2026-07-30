@@ -10,14 +10,14 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/cambrian-sh/core/api/proto"
-	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
 
 type toolGateway struct {
-	turn      domain.ModelTurn
-	err       error
-	gotTools  []domain.ToolDefinition
+	turn        domain.ModelTurn
+	err         error
+	gotTools    []domain.ToolDefinition
 	gotMessages []domain.ModelMessage
 }
 

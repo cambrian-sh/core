@@ -1349,58 +1349,85 @@ func ResolveBaseDir() string {
 }
 
 func LoadConfig(path string) (*Config, error) {
+	cfg, _, err := LoadConfigWithStore(path, nil)
+	return cfg, err
+}
+
+// LoadConfigWithStore is LoadConfig plus the ADR-0101 embedded store layer and
+// per-key provenance.
+//
+// `store` may be nil, which reproduces the pre-ADR-0101 pipeline exactly — that
+// is how the OSS default, the tests and any benchmark arm that must ignore
+// operator writes are configured.
+//
+// The returned Provenance records which layer supplied each flat key. It is
+// gathered by observing the SAME merge that produces cfg (ADR-0101 D4), so it
+// cannot disagree with the values the kernel goes on to use — a reconstruction
+// that re-applied precedence separately could, and a provenance report that
+// disagrees with the running config is worse than none.
+func LoadConfigWithStore(path string, store Store) (*Config, Provenance, error) {
 	// All secondary paths are derived from the directory of the primary `path`,
 	// not from the process CWD. This keeps the layering deterministic across
 	// invocation contexts (tests, systemd, dev shells).
 	dir := filepath.Dir(path)
 
 	k := koanf.New(".")
+	t := newTracker()
 
 	// Layer 1: Go defaults (lowest priority). Marshalled from the pre-filled
 	// DefaultConfig() struct via rawbytes + JSON parser so the existing `json`
 	// tags on every field continue to drive the merge.
 	defaultBytes, err := stdjson.Marshal(DefaultConfig())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := k.Load(rawbytes.Provider(defaultBytes), kjson.Parser()); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	t.claim(scratchBytes(defaultBytes), SourceDefault)
 
 	// Layer 2: tuning.json (committed curated power-user starter). Absent ⇒ skip.
 	// Curated, NOT a full mirror of all hyperparameters — see configs/tuning.json
 	// header comment and ADR-0024 §Curated tuning.json.
 	loadIfPresent(k, filepath.Join(dir, "tuning.json"))
+	t.claim(scratchFile(filepath.Join(dir, "tuning.json")), SourceTuning)
 
 	// Layer 3: tuning.local.json (gitignored, per-machine). Wins over tuning.json.
 	loadIfPresent(k, filepath.Join(dir, "tuning.local.json"))
+	t.claim(scratchFile(filepath.Join(dir, "tuning.local.json")), SourceTuningLocal)
 
 	// Layer 4: the primary `path` argument (configs/config.json in production).
 	// ADR-0057: the OSS repo ships config.example.json (gitignored config.json
 	// holds real user values). A missing primary file is fine: built-in
 	// defaults + the other layers still produce a valid config.
 	loadIfPresent(k, path)
+	t.claim(scratchFile(path), SourceConfig)
 
 	// Layer 5: config.local.json — silently skipped when absent.
 	// Convention: .json → .local.json (e.g. config.json → config.local.json).
 	localPath := strings.TrimSuffix(path, ".json") + ".local.json"
 	loadIfPresent(k, localPath)
+	t.claim(scratchFile(localPath), SourceConfigLocal)
 
 	// Layer 6: embedder.json (gitignored, the embedding model). Absent ⇒ default
 	// embedder from DefaultConfig() (bge-large via Ollama, localhost:11434).
 	// If both config.json and embedder.json define an `embedder` block, embedder.json wins.
 	loadIfPresent(k, filepath.Join(dir, "embedder.json"))
+	t.claim(scratchFile(filepath.Join(dir, "embedder.json")), SourceEmbedder)
 
 	// Layer 7: embedder.local.json (gitignored, per-machine embedder override).
 	loadIfPresent(k, filepath.Join(dir, "embedder.local.json"))
+	t.claim(scratchFile(filepath.Join(dir, "embedder.local.json")), SourceEmbedderLocal)
 
 	// Layer 8: providers.json (gitignored, the LLM provider list). Absent ⇒
 	// DefaultConfig() applies (empty generators, validate skipped). If both
 	// config.json and providers.json define an `llm_provider` block, providers.json wins.
 	loadIfPresent(k, filepath.Join(dir, "providers.json"))
+	t.claim(scratchFile(filepath.Join(dir, "providers.json")), SourceProviders)
 
 	// Layer 9: providers.local.json (gitignored, per-machine LLM provider override).
 	loadIfPresent(k, filepath.Join(dir, "providers.local.json"))
+	t.claim(scratchFile(filepath.Join(dir, "providers.local.json")), SourceProvidersLocal)
 
 	// Layer 10: mcp.json (gitignored MCP servers). Absent ⇒ no MCP behavior.
 	// If both config.json and mcp.json define an `mcp` block, mcp.json wins.
@@ -1408,17 +1435,39 @@ func LoadConfig(path string) (*Config, error) {
 	// block from config.json because Koanf merges per-key. Operators who
 	// don't use MCP should simply not create mcp.json.
 	loadIfPresent(k, filepath.Join(dir, "mcp.json"))
+	t.claim(scratchFile(filepath.Join(dir, "mcp.json")), SourceMCP)
 
-	// Layer 11: environment variables (highest priority). The env-var
+	// Layer 11 (ADR-0101 D1): the embedded store — durable operator writes.
+	// Above every file so a console edit survives a restart and outranks the
+	// shipped defaults; below the environment so a deployment still wins.
+	if store != nil {
+		if overrides, err := store.Overrides(); err == nil && len(overrides) > 0 {
+			if b, mErr := stdjson.Marshal(expand(overrides)); mErr == nil {
+				_ = k.Load(rawbytes.Provider(b), kjson.Parser())
+				t.claim(scratchBytes(b), SourceStore)
+			}
+		}
+	}
+
+	// Layer 12: environment variables (highest priority). The env-var
 	// convention (`CAMBRIAN_` prefix, `__` as hierarchy separator, `_` literal
 	// within a segment) is unchanged. Example: CAMBRIAN_EXECUTION__EWMA_ALPHA=0.7
 	// overrides execution.ewma_alpha from every lower layer.
-	_ = k.Load(env.Provider("CAMBRIAN_", ".", func(s string) string {
+	envMap := func(s string) string {
+		orig := s
 		s = strings.TrimPrefix(s, "CAMBRIAN_")
 		s = strings.ToLower(s)
 		s = strings.ReplaceAll(s, "__", ".")
+		// Record the variable name alongside the config key it maps to: this
+		// callback is the only place both are visible at once, and the variable
+		// name is the half that makes "something pins this" actionable.
+		t.noteEnvKey(s, orig)
 		return s
-	}), nil)
+	}
+	_ = k.Load(env.Provider("CAMBRIAN_", ".", envMap), nil)
+	envScratch := koanf.New(".")
+	_ = envScratch.Load(env.Provider("CAMBRIAN_", ".", envMap), nil)
+	t.claimEnv(envScratch)
 
 	var cfg Config
 	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{
@@ -1431,7 +1480,7 @@ func LoadConfig(path string) (*Config, error) {
 			Result:           &cfg,
 		},
 	}); err != nil {
-		return nil, &ConfigError{Field: "unmarshal", Message: err.Error()}
+		return nil, nil, &ConfigError{Field: "unmarshal", Message: err.Error()}
 	}
 
 	// ADR-0042 defaults for the llm_provider block.
@@ -1450,10 +1499,10 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	if err := cfg.validateSecrets(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return &cfg, nil
+	return &cfg, t.prov, nil
 }
 
 // loadIfPresent loads the JSON file at p into k when the file exists. A missing
@@ -1465,6 +1514,33 @@ func loadIfPresent(k *koanf.Koanf, p string) {
 		return // missing file: skip this layer
 	}
 	_ = k.Load(file.Provider(p), kjson.Parser())
+}
+
+// scratchFile returns a throwaway Koanf holding ONLY the contents of the file at
+// p, or nil when the file is absent or unreadable. It is how the provenance
+// tracker learns which keys a layer states, without inferring it from a diff of
+// the merged result (ADR-0101 D4). Parsing each small config file a second time
+// at boot is a price worth paying for an answer that is right when a file
+// restates a default.
+func scratchFile(p string) *koanf.Koanf {
+	if _, err := os.Stat(p); err != nil {
+		return nil
+	}
+	sk := koanf.New(".")
+	if err := sk.Load(file.Provider(p), kjson.Parser()); err != nil {
+		return nil
+	}
+	return sk
+}
+
+// scratchBytes is scratchFile for a layer already in memory (the Go defaults and
+// the embedded store).
+func scratchBytes(b []byte) *koanf.Koanf {
+	sk := koanf.New(".")
+	if err := sk.Load(rawbytes.Provider(b), kjson.Parser()); err != nil {
+		return nil
+	}
+	return sk
 }
 
 // validateSecrets checks that required fields are non-empty after all layers merge.

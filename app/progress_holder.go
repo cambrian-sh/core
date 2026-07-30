@@ -21,6 +21,16 @@ import (
 type progressHolder struct {
 	sink atomic.Pointer[domain.ProgressSink]
 
+	// feed is the SECOND destination: the operator feed (contract 0079).
+	//
+	// The plugin sink delivers to whatever ingress carries a conversation, which
+	// is how Telegram gets its status line. A console conversation has no
+	// delivery address, so that path returns early and the snapshot is dropped —
+	// progress was being computed and thrown away for the one surface that is
+	// always watching. Emitting here reaches both without touching any of the
+	// emission sites on the turn path.
+	feed atomic.Pointer[func(domain.DomainEvent)]
+
 	// lastActivity is when each conversation last reported doing something. It is
 	// recorded whether or not a plugin is listening, because it is not telemetry: it
 	// is the only signal the kernel has that a turn is still alive.
@@ -42,6 +52,16 @@ func (h *progressHolder) set(s domain.ProgressSink) {
 	h.sink.Store(&s)
 }
 
+// setFeed installs the operator-feed emitter. Safe to call at any point during
+// boot; a nil emitter simply means no console is being served.
+func (h *progressHolder) setFeed(f func(domain.DomainEvent)) {
+	if f == nil {
+		h.feed.Store(nil)
+		return
+	}
+	h.feed.Store(&f)
+}
+
 // Progress forwards to the installed sink, or discards.
 //
 // Deliberately swallows a nil delegate rather than guarding at each call site: the emission
@@ -51,6 +71,21 @@ func (h *progressHolder) Progress(ctx context.Context, u domain.ProgressUpdate) 
 	h.touch(u.ConversationID, u.Final)
 	if p := h.sink.Load(); p != nil {
 		(*p).Progress(ctx, u)
+	}
+	// The operator feed gets the same snapshot. Emitted AFTER the sink so a
+	// panicking console emitter cannot cost the ingress its status line, and
+	// unconditionally otherwise: progress must never be able to fail the work it
+	// describes (ADR-0098 D5).
+	if f := h.feed.Load(); f != nil {
+		(*f)(domain.ConversationProgressEvent{
+			ConversationID: u.ConversationID,
+			Text:           u.Text(),
+			Phase:          string(u.Phase),
+			Step:           u.Step,
+			TotalSteps:     u.TotalSteps,
+			Final:          u.Final,
+			UpdatedAt:      u.UpdatedAt,
+		})
 	}
 }
 

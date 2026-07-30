@@ -19,6 +19,20 @@ import (
 // happened whenever a session id happened to be present.
 const ResumeMetadataKey = "_resume_run"
 
+// AuthoredPlanMetadataKey carries an OPERATOR-AUTHORED plan as JSON, bypassing
+// the planner (contract 0074 SubmitPlan).
+//
+// It is deliberately shaped like ResumeMetadataKey rather than as a new
+// execution entrypoint: a plan supplied here enters at exactly the same point a
+// planner-produced one does, so session binding, run persistence, DAG execution,
+// checkpointing and the operator feed are all the SAME code. A parallel
+// entrypoint would be a second execution path to keep in step with this one, and
+// the first thing to drift would be whichever of the two is used less.
+//
+// The router is skipped when this key is present: the input is a plan by
+// construction, so there is nothing left to classify.
+const AuthoredPlanMetadataKey = "_authored_plan"
+
 // ResumedRun is a run rehydrated for continuation.
 type ResumedRun struct {
 	Run *domain.Run

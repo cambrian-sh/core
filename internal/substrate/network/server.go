@@ -14,6 +14,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/awareness"
 	"github.com/cambrian-sh/core/internal/centralexec"
 	"github.com/cambrian-sh/core/internal/config"
@@ -111,6 +112,10 @@ type Server struct {
 	ModelRouter    *llm.ProviderRegistry
 	Provider       domain.LLMProvider // ADR-0042: agent-step model provisioning (health-guarded)
 	SessionMgr     *session.SessionManager
+	// ConvSurfaces resolves which ENTRY POINT a conversation arrived on, for turns
+	// that have no task session. Without it a chat turn from an ingress is
+	// authorised as an ordinary agent call and the ingress's policy never applies.
+	ConvSurfaces authz.ConversationSurfaceReader
 	// Runs persists plan executions so a resume can replay against the run's OWN plan.
 	Runs domain.RunStore
 	// Checkpoints persists mid-run state. Wired EXPLICITLY at the composition root rather
@@ -128,6 +133,11 @@ type Server struct {
 	// ADR-0025: per-request because PgSceneWriter tracks lastSceneID for specifies edges.
 	// nil = scene writing disabled.
 	SceneWriterFactory func() domain.SceneWriter
+
+	// TokenRecorder taps token usage for the hourly spend series (contract 0075).
+	// nil ⇒ no tap and the resolved event writer is used unchanged, which is what
+	// a build with no operator console wants.
+	TokenRecorder TokenRecorder
 
 	// AgentCallLogger records agent-initiated LLM calls (GenerateViaModelStream) to an
 	// external observability backend. nil = disabled (no-op). OBSERVABILITYREQ REQ1.
@@ -304,6 +314,13 @@ func validatePlan(plan *domain.ExecutionPlan, knownTools map[string]struct{}) er
 	return nil
 }
 
+// TokenRecorder decorates a task-event writer so token usage lands in the
+// hourly series on its way past. Declared here rather than imported so the
+// network layer keeps no dependency on the telemetry package.
+type TokenRecorder interface {
+	Wrap(inner domain.TaskEventWriter) domain.TaskEventReadWriter
+}
+
 func planWithValidation(ctx context.Context, planner Planner, userInput string, knownTools map[string]struct{}) (*domain.ExecutionPlan, error) {
 	plan, err := planner.GetExecutionPlan(ctx, userInput)
 	if err != nil {
@@ -344,9 +361,14 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		return s.executeBypassAuction(ctx, in, rawInput)
 	}
 
+	// An operator-authored plan (contract 0074) is a plan by construction, so
+	// there is nothing for the router to classify — and running it anyway could
+	// route the plan's own text to CHAT and answer instead of executing it.
+	authoredPlanJSON := in.GetMetadata()[AuthoredPlanMetadataKey]
+
 	// ADR-0031: Route through InputRouter when configured.
 	// The Router classifies raw input before any enrichment (mood, LTM, etc.).
-	if s.Router != nil {
+	if s.Router != nil && authoredPlanJSON == "" {
 		routerInput := domain.RouterInput{
 			Body:       rawInput,
 			SourceType: "grpc",
@@ -485,10 +507,25 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	}
 
 	var plan *domain.ExecutionPlan
-	if resumed != nil {
+	switch {
+	case resumed != nil:
 		plan = resumed.Plan
 		slog.Info("↩️ RESUMING RUN", "run", resumed.Run.ID, "from_step", resumed.StartFrom)
-	} else {
+	case authoredPlanJSON != "":
+		// Contract 0074: the operator wrote this plan. It is still validated here
+		// — the operator plane validates before accepting, but this is the LAST
+		// gate before execution and it must not depend on a caller having done
+		// its job. Same TopologicalSort, so the two answers cannot disagree.
+		var authored domain.ExecutionPlan
+		if uerr := json.Unmarshal([]byte(authoredPlanJSON), &authored); uerr != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "authored plan is not valid JSON: %v", uerr)
+		}
+		if _, terr := executer.TopologicalSort(authored.Steps); terr != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "authored plan is not executable: %v", terr)
+		}
+		plan = &authored
+		slog.Info("📝 OPERATOR-AUTHORED PLAN", "subject", plan.Subject, "steps", len(plan.Steps))
+	default:
 		p, perr := planWithValidation(ctx, s.Planner, userInput, nil)
 		if perr != nil {
 			return nil, perr
@@ -754,6 +791,13 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	if ew, ok := s.Manager.Registry.(executer.TaskEventWriter); ok {
 		eventWriter = ew
 	}
+	// Contract 0075: tap token usage for the hourly series on its way past.
+	// Decorating the resolved writer rather than adding an emission site means
+	// the series counts exactly what the kernel recorded and cannot drift from
+	// it. Nil recorder ⇒ the original writer, unchanged.
+	if s.TokenRecorder != nil {
+		eventWriter = s.TokenRecorder.Wrap(eventWriter)
+	}
 
 	var sceneWriter domain.SceneWriter
 	if s.SceneWriterFactory != nil {
@@ -794,9 +838,13 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		DefaultOutputCostPer1M: s.Manager.DefaultOutputCostPer1M,
 		CurrentSessionID:       sessionID,
 		CurrentRunID:           executionID,
-		CheckpointStore:        s.executorCheckpointStore(),
-		StepCachePolicies:      s.ExecCfg.StepCachePolicies,
-		EventBus:               s.EventBus, // ADR-0047 0047-17: PlanStateChanged → operator feed
+		// Close the task when its plan finishes. Nothing else did: `completed`
+		// was only ever set by the operator's explicit command, so finished work
+		// stayed open indefinitely.
+		SessionCloser:     s.SessionMgr,
+		CheckpointStore:   s.executorCheckpointStore(),
+		StepCachePolicies: s.ExecCfg.StepCachePolicies,
+		EventBus:          s.EventBus, // ADR-0047 0047-17: PlanStateChanged → operator feed
 	}
 
 	// ADR-0047 0047-18: register this live execution's controls so the operator
@@ -1394,12 +1442,43 @@ func injectMoodContext(ctx context.Context, s *Server, sessionID domain.SessionI
 	return userInput
 }
 
+// looseString decodes a JSON string OR number into a string.
+//
+// An external id is an opaque handle: Telegram numbers its users, Slack does
+// not. Insisting on one JSON type here would make the decoder silently drop half
+// of them, and a dropped id is indistinguishable from a bridge that reports none.
+type looseString string
+
+func (l *looseString) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		*l = ""
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*l = looseString(s)
+		return nil
+	}
+	// A number, and it stays EXACTLY as written: routing it through float64 would
+	// round a 64-bit user id into a different person's.
+	*l = looseString(strings.TrimSpace(string(b)))
+	return nil
+}
+
 // ingressFields pulls the sender and the text out of an ingress signal.
 //
 // The SDK sends {"external_id": ..., "text": ...} as the payload. The external id
 // is read from the PAYLOAD rather than from metadata deliberately: it is a claim
 // about who wrote the message, not about who is connected, and it is checked
 // against the ingress's namespace before it is trusted for anything.
+//
+// speaker_id and speaker_name are OPTIONAL labels the SDK passes through from an
+// ingress's extra kwargs. They were already on the wire and were being discarded
+// here, which is why the unbound worklist could only ever show bare numeric ids —
+// the one thing an operator cannot make a decision from.
 func ingressFields(h *domain.Handoff) ingress.InboundMessage {
 	if h == nil || h.Payload == nil {
 		return ingress.InboundMessage{}
@@ -1408,9 +1487,23 @@ func ingressFields(h *domain.Handoff) ingress.InboundMessage {
 		ExternalID string `json:"external_id"`
 		Text       string `json:"text"`
 		Policy     string `json:"policy"`
+		// SpeakerID arrives as a NUMBER from Telegram and as a STRING from
+		// platforms that do not number their users. Decoded loosely so a bridge
+		// author does not have to know which shape this decoder happened to pick —
+		// guessing wrong would silently drop the id and leave a nameless worklist.
+		SpeakerID   looseString `json:"speaker_id"`
+		SpeakerName string      `json:"speaker_name"`
+		DisplayName string      `json:"display_name"`
 	}
 	if err := json.Unmarshal(h.Payload.Data, &body); err != nil {
 		return ingress.InboundMessage{}
 	}
-	return ingress.InboundMessage{ExternalID: body.ExternalID, Text: body.Text, Policy: body.Policy}
+	return ingress.InboundMessage{
+		ExternalID:  body.ExternalID,
+		Text:        body.Text,
+		Policy:      body.Policy,
+		SpeakerID:   string(body.SpeakerID),
+		Username:    body.SpeakerName,
+		DisplayName: body.DisplayName,
+	}
 }

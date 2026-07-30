@@ -161,6 +161,17 @@ type DAGExecutor struct {
 	// the authoritative gate either way.
 	Authz domain.Authorizer
 
+	// SessionCloser marks a session finished when its plan completes.
+	//
+	// Nothing else closes a task. `SessionCompleted` was previously set in exactly
+	// one place — the operator's explicit Complete command — so a task whose plan
+	// ran to the end stayed `active` for ever, and the console filled with rows
+	// that were neither working nor finished.
+	//
+	// nil ⇒ tasks stay open until an operator closes them, which is the previous
+	// behaviour and remains correct for a kernel that wires no session manager.
+	SessionCloser SessionCloser
+
 	// replanSuppressor is notified when replanning starts/ends to suppress
 	// duplicate signals (usually set to the Watcher).
 	replanSuppressor interface{ SetReplanning(bool) }
@@ -494,6 +505,52 @@ func (d *DAGExecutor) Resume() {
 // D7/0047-17). Best-effort and nil-safe. MUST be called only from the Execute
 // coordinator goroutine so the global feed order preserves this plan's causal
 // order (one-timeline-one-publisher, D4).
+// SessionCloser marks a task finished. Satisfied by the session manager.
+//
+// It reads before it writes so a legitimate refusal never reaches the log — see
+// closeSession.
+type SessionCloser interface {
+	GetSession(ctx context.Context, id domain.SessionID) (*domain.Session, error)
+	TransitionStatusReason(ctx context.Context, sessionID domain.SessionID, target domain.SessionStatus, reason string) error
+}
+
+// closeSession marks this run's task finished, best-effort.
+//
+// Best-effort deliberately: the work succeeded, and a task that failed to close
+// is a tidiness problem. Failing the plan over it would turn a cosmetic issue
+// into a lost result.
+//
+// Only `active` is closed. A PAUSED task is an operator decision and the
+// transition would be refused anyway; a DORMANT one the kernel put to sleep and
+// may still wake. Reading the status first keeps a legitimate refusal out of the
+// log, so a warning here means something actually went wrong.
+func (d *DAGExecutor) closeSession() {
+	if d.SessionCloser == nil || d.CurrentSessionID == "" {
+		return
+	}
+	// Detached: the caller's context is finished with the run, and cancellation
+	// on the way out must not be what stops the task being closed.
+	ctx := context.WithoutCancel(context.Background())
+
+	ses, err := d.SessionCloser.GetSession(ctx, d.CurrentSessionID)
+	if err != nil || ses == nil {
+		return
+	}
+	if ses.Status != domain.SessionActive {
+		// Paused is an operator decision and dormant may still wake. Both would
+		// be refused by the transition rules; returning here keeps that expected
+		// refusal out of the log, so a warning below means something real.
+		return
+	}
+
+	if err := d.SessionCloser.TransitionStatusReason(ctx, d.CurrentSessionID,
+		domain.SessionCompleted, "every plan finished"); err != nil {
+		slog.Warn("could not close the task after its plan finished",
+			"session", d.CurrentSessionID, "err", err,
+			"effect", "the task stays open until an operator completes it")
+	}
+}
+
 func (d *DAGExecutor) publishPlanState(planID, status string, activeStep int, cost float64, terminal bool, steps []domain.PlanStepState) {
 	if d.EventBus == nil {
 		return
@@ -542,6 +599,9 @@ func buildStepStates(plan *domain.ExecutionPlan, completed, dispatched map[int]b
 			IsThought: s.IsThought,
 			Status:    status,
 			Agent:     agentByStep[i],
+			// Contract 0072: the capability contract travels with the step so the
+			// console can show WHY it routed, not only where it landed.
+			RequiredCapabilities: s.RequiredCapabilities,
 		}
 	}
 	return out
@@ -724,6 +784,14 @@ func (d *DAGExecutor) ExecuteFrom(
 			status = "failed"
 		}
 		d.publishPlanState(planID, status, lastActiveStep, runningCost, true, buildSteps())
+
+		// The task is finished when its work is. ONLY on success: a failed plan
+		// leaves the task open, because a failure is the state that most needs a
+		// human and `completed` is irreversible — closing it would file the
+		// failure away as "Finished" and remove the one row worth looking at.
+		if retErr == nil {
+			d.closeSession()
+		}
 	}()
 
 	// ADR-0021: Plan-level telemetry accumulator.

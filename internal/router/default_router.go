@@ -96,17 +96,26 @@ func NewWithConfig(gen domain.Generator, minConfidence float64, bodyChars int) *
 func (r *DefaultRouter) Resolve(ctx context.Context, input domain.RouterInput) (*domain.RouterDecision, error) {
 	// Layer 0: Gateway pre-classification.
 	if domain.IsKnownDecision(input.Intent) {
-		return &domain.RouterDecision{Type: input.Intent}, nil
+		return &domain.RouterDecision{
+			Type: input.Intent,
+			Why:  "layer 0: the caller pre-classified this input",
+		}, nil
 	}
 
 	// Layer 1: Slash-prefix commands.
 	if dec, ok := layer1(input.Body); ok {
-		return &domain.RouterDecision{Type: dec}, nil
+		return &domain.RouterDecision{
+			Type: dec,
+			Why:  "layer 1: an explicit /" + string(dec) + " prefix",
+		}, nil
 	}
 
 	// Layer 2: Word-boundary keyword heuristics.
 	if dec, ok := layer2(input.Body); ok {
-		return &domain.RouterDecision{Type: dec}, nil
+		return &domain.RouterDecision{
+			Type: dec,
+			Why:  "layer 2: a single keyword category matched (" + string(dec) + ")",
+		}, nil
 	}
 
 	// Layer 3: LLM classification.
@@ -144,10 +153,10 @@ func layer1(body string) (domain.DecisionType, bool) {
 
 // classifyResponse is the JSON structure returned by the Layer 3 LLM.
 type classifyResponse struct {
-	Decision     string              `json:"decision"`
-	Confidence   float64             `json:"confidence"`
+	Decision     string                `json:"decision"`
+	Confidence   float64               `json:"confidence"`
 	Alternatives []classifyAlternative `json:"alternatives"`
-	Reason       string              `json:"reason"`
+	Reason       string                `json:"reason"`
 }
 
 type classifyAlternative struct {
@@ -202,7 +211,15 @@ func (r *DefaultRouter) layer3(ctx context.Context, input domain.RouterInput) (*
 	}
 
 	if resp.Confidence >= r.minConfidence {
-		return &domain.RouterDecision{Type: topDecision}, nil
+		why := resp.Reason
+		if why == "" {
+			why = "layer 3: classified by the LLM"
+		}
+		return &domain.RouterDecision{
+			Type:       topDecision,
+			Why:        why,
+			Confidence: resp.Confidence,
+		}, nil
 	}
 
 	// Below confidence threshold → return structured clarification.
@@ -224,7 +241,11 @@ func (r *DefaultRouter) layer3(ctx context.Context, input domain.RouterInput) (*
 	}
 
 	return &domain.RouterDecision{
-		Type:                  domain.DecisionClarification,
+		Type: domain.DecisionClarification,
+		// The confidence that FAILED the threshold is carried through, not the
+		// clarification's own. It is the number that explains why we are asking.
+		Confidence:            resp.Confidence,
+		Why:                   fmt.Sprintf("layer 3: best guess %q scored %.2f, below the %.2f threshold", topDecision, resp.Confidence, r.minConfidence),
 		ClarificationQuestion: "I'm not sure what you'd like me to do. Please choose:",
 		ClarificationOptions:  options,
 	}, nil

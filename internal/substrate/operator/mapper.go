@@ -50,7 +50,32 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			TrustScore:   e.TrustScore,
 			Capabilities: e.Capabilities,
 			InterviewMs:  e.InterviewMs,
+			// Contract 0074: the detail fields 0057 removed. Empty on a producer
+			// that does not populate them, which folds harmlessly — the projection
+			// upserts by agent_id and an absent field is not a cleared one.
+			Description:        e.Description,
+			Trait:              e.Trait,
+			Runtime:            e.Runtime,
+			ExecPath:           e.ExecPath,
+			ManifestVersion:    e.ManifestVersion,
+			Provisional:        e.Provisional,
+			System:             e.System,
+			ClassificationTags: e.ClassificationTags,
+			LastError:          e.LastError,
 		}}
+
+	case domain.ConversationProgressEvent:
+		out.Payload = &pb.OperatorEvent_ConversationProgress{
+			ConversationProgress: &pb.ConversationProgressOp{
+				ConversationId:  e.ConversationID,
+				Text:            e.Text,
+				Phase:           e.Phase,
+				Step:            int32(e.Step),
+				TotalSteps:      int32(e.TotalSteps),
+				Final:           e.Final,
+				UpdatedAtUnixMs: e.UpdatedAt.UnixMilli(),
+			},
+		}
 
 	case domain.SessionStateEvent:
 		out.SessionId = string(e.SessionID)
@@ -215,12 +240,13 @@ func planStepsToOp(steps []domain.PlanStepState) []*pb.PlanStepOp {
 			deps[j] = int32(d)
 		}
 		out[i] = &pb.PlanStepOp{
-			Index:     int32(s.Index),
-			Label:     s.Label,
-			DependsOn: deps,
-			IsThought: s.IsThought,
-			Status:    s.Status,
-			Agent:     s.Agent,
+			Index:                int32(s.Index),
+			Label:                s.Label,
+			DependsOn:            deps,
+			IsThought:            s.IsThought,
+			Status:               s.Status,
+			Agent:                s.Agent,
+			RequiredCapabilities: s.RequiredCapabilities,
 		}
 	}
 	return out

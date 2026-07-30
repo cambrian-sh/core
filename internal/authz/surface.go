@@ -97,6 +97,22 @@ type SessionSurfaceReader interface {
 	SessionSurface(ctx context.Context, sessionID domain.SessionID) (domain.SurfaceRef, bool)
 }
 
+// ConversationSurfaceReader resolves the surface a CONVERSATION arrived on, from
+// its bound delivery address.
+//
+// It exists because a chat turn has no task session. A turn's lease carries a
+// ConversationID and an empty SessionID (leases minted outside a session — chat
+// dispatch, scout, retrieval), so session-based resolution finds nothing and the
+// request keeps the transport-derived surface: `agent`.
+//
+// The consequence was not cosmetic. Every turn from a Telegram user was
+// authorised as an ordinary agent call, so the policy linked to
+// `surface:chat:telegram` — the lock on the door those messages came through —
+// was never consulted, and no decision was ever attributed to the entry point.
+type ConversationSurfaceReader interface {
+	ConversationSurface(ctx context.Context, conversationID string) (domain.SurfaceRef, bool)
+}
+
 // ResolveSurface returns the surface for a request: the session's recorded
 // surface when there is one, otherwise the transport-derived surface already on
 // the context.
@@ -111,6 +127,39 @@ func ResolveSurface(ctx context.Context, sessions SessionSurfaceReader) domain.S
 			if s, found := sessions.SessionSurface(ctx, sid); found && (s.Kind != "" || s.ID != "") {
 				return s
 			}
+		}
+	}
+	return domain.SurfaceFromContext(ctx)
+}
+
+// ResolveSurfaceForTurn is ResolveSurface with the conversation fallback.
+//
+// Order is narrowest-first and deliberate: a task session's recorded surface,
+// then the conversation the turn belongs to, then the transport. Both of the
+// first two are read SERVER-SIDE from a persisted record — the daemon delivering
+// a turn cannot restate which surface it is on, which is the whole point of the
+// clamp (INV-5). The conversation id comes off the LEASE the kernel minted, not
+// from client metadata, for the same reason.
+//
+// Widening on the way in is exactly the escalation this exists to prevent, so a
+// conversation that arrived through an ingress keeps that ingress's surface even
+// though the turn reaches the kernel over an ordinary agent connection.
+func ResolveSurfaceForTurn(
+	ctx context.Context,
+	sessions SessionSurfaceReader,
+	conversations ConversationSurfaceReader,
+	conversationID string,
+) domain.SurfaceRef {
+	if sessions != nil {
+		if sid, ok := domain.SessionIDFromContext(ctx); ok {
+			if s, found := sessions.SessionSurface(ctx, sid); found && (s.Kind != "" || s.ID != "") {
+				return s
+			}
+		}
+	}
+	if conversations != nil && conversationID != "" {
+		if s, found := conversations.ConversationSurface(ctx, conversationID); found && (s.Kind != "" || s.ID != "") {
+			return s
 		}
 	}
 	return domain.SurfaceFromContext(ctx)

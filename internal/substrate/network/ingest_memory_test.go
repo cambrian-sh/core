@@ -6,8 +6,8 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/memory"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

@@ -1,8 +1,8 @@
 package network
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"

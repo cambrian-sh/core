@@ -121,7 +121,9 @@ func (s *Service) ListWatches(_ context.Context, req *pb.ListWatchesOpRequest) (
 		if req.GetActiveOnly() && !w.Active {
 			continue
 		}
-		filtered = append(filtered, toWatchConfigOp(w))
+		op := toWatchConfigOp(w)
+		s.enrichWatchConfig(op)
+		filtered = append(filtered, op)
 	}
 	page, lo, hi := paginate(len(filtered), req.GetPage(), req.GetPageSize())
 	return &pb.ListWatchesOpResponse{Configs: filtered[lo:hi], Total: int32(len(filtered)), Page: page}, nil
@@ -243,7 +245,36 @@ func fromWatchConfigOp(c *pb.WatchConfigOp) domain.WatchConfig {
 		Approved:             c.GetApproved(),
 		DryRun:               c.GetDryRun(),
 		MissedFirePolicy:     c.GetMissedFirePolicy(),
+		Actions:              watchActionsFromOp(c.GetActions()),
 	}
+}
+
+// watchActionsToOp maps arms 2..N onto the wire.
+func watchActionsToOp(in []domain.WatchAction) []*pb.WatchActionOp {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*pb.WatchActionOp, 0, len(in))
+	for _, a := range in {
+		out = append(out, &pb.WatchActionOp{
+			Type: a.Type, TargetType: a.TargetType, Target: a.Target, Payload: a.Payload,
+		})
+	}
+	return out
+}
+
+// watchActionsFromOp maps arms 2..N off the wire.
+func watchActionsFromOp(in []*pb.WatchActionOp) []domain.WatchAction {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]domain.WatchAction, 0, len(in))
+	for _, a := range in {
+		out = append(out, domain.WatchAction{
+			Type: a.GetType(), TargetType: a.GetTargetType(), Target: a.GetTarget(), Payload: a.GetPayload(),
+		})
+	}
+	return out
 }
 
 func toWatchConfigOp(c domain.WatchConfig) *pb.WatchConfigOp {
@@ -260,6 +291,7 @@ func toWatchConfigOp(c domain.WatchConfig) *pb.WatchConfigOp {
 		Action: &pb.WatchActionOp{
 			Type: c.Action.Type, TargetType: c.Action.TargetType, Target: c.Action.Target, Payload: c.Action.Payload,
 		},
+		Actions:              watchActionsToOp(c.Actions),
 		Active:               c.Active,
 		ResponseMode:         c.ResponseMode,
 		DaemonParams:         anyMapToString(c.DaemonParams),
@@ -268,8 +300,51 @@ func toWatchConfigOp(c domain.WatchConfig) *pb.WatchConfigOp {
 		ConditionPayloadKeys: c.ConditionPayloadKeys,
 		Approved:             c.Approved,
 		DryRun:               c.DryRun,
+		// MissedFirePolicy was declared on the wire by REACT-06 and dropped here,
+		// so a schedule watch round-tripped through the console silently lost its
+		// catch-up behaviour and reverted to "skip". Fixed with contract 0074.
+		MissedFirePolicy: c.MissedFirePolicy,
+		// Contract 0074: "unknown" until a stream registry says otherwise, and -1
+		// for an uncounted refcount. Both are filled in by enrichWatchConfig when
+		// the reactive plane can answer; neither may default to a healthy-looking
+		// value, because a watch whose stream has died still reads "active".
+		SourceStreamState:    domain.StreamUnknown,
+		SourceStreamRefcount: -1,
 	}
 }
+
+// enrichWatchConfig fills the contract-0074 liveness and history fields.
+//
+// Split from toWatchConfigOp because the mapper is a pure translation and these
+// need live sources — and because a nil source must leave "unknown" in place
+// rather than overwrite it with a default that reads as healthy.
+func (s *Service) enrichWatchConfig(op *pb.WatchConfigOp) {
+	if op == nil {
+		return
+	}
+	if s.streams != nil && op.GetSourceStreamId() != "" {
+		op.SourceStreamState = s.streams.StreamState(op.GetSourceStreamId())
+		op.SourceStreamRefcount = int32(s.streams.StreamRefcount(op.GetSourceStreamId()))
+	}
+	if s.watchFires != nil {
+		fires := s.watchFires.RecentFires(op.GetId(), watchFireHistoryLimit)
+		out := make([]*pb.WatchFireOp, 0, len(fires))
+		for _, f := range fires {
+			out = append(out, &pb.WatchFireOp{
+				AtUnixMs:  f.At.UnixMilli(),
+				Outcome:   f.Outcome,
+				Error:     f.Error,
+				LatencyMs: f.LatencyMs,
+			})
+		}
+		op.LastFires = out
+	}
+}
+
+// watchFireHistoryLimit bounds the per-watch history on a LIST response. The
+// design asks for a 20-bar sparkline; fetching more would cost a page of rows
+// nothing renders.
+const watchFireHistoryLimit = 20
 
 func stringMapToAny(m map[string]string) map[string]any {
 	if m == nil {
@@ -291,4 +366,89 @@ func anyMapToString(m map[string]any) map[string]string {
 		out[k] = fmt.Sprint(v)
 	}
 	return out
+}
+
+// DeadLetterRetrier replays a dead-lettered reactive action.
+//
+// Satisfied by the premium reactive engine; nil in OSS. Kept separate from
+// WatchDeadLetterReader because reading the queue is safe on any build and
+// replaying is not — an OSS kernel that could list entries must not thereby be
+// able to fire them.
+type DeadLetterRetrier interface {
+	// RetryDeadLetter replays one entry under the idempotency key recorded with
+	// it (REACT-01), so a repeated call is a no-op rather than a second fire.
+	RetryDeadLetter(ctx context.Context, deadLetterID string) error
+}
+
+// SetDeadLetterRetrier wires the replay surface. nil ⇒ RetryWatchDeadLetter
+// returns Unimplemented, which is what the console renders as "this contract has
+// no retry RPC" rather than offering a button that fails.
+func (s *Service) SetDeadLetterRetrier(r DeadLetterRetrier) { s.deadletterRetry = r }
+
+// RetryWatchDeadLetter replays one dead letter. Mutating: command_id + reason,
+// audited, idempotent.
+//
+// Two layers of idempotency, deliberately. command_id dedupes the OPERATOR's
+// retry (a double-click, a client resend); the REACT-01 key dedupes the ACTION
+// itself (a replay of something that in fact already ran). They protect against
+// different mistakes and neither subsumes the other.
+func (s *Service) RetryWatchDeadLetter(ctx context.Context, req *pb.RetryWatchDeadLetterOpRequest) (*pb.CommandAck, error) {
+	if s.deadletterRetry == nil {
+		return nil, status.Error(codes.Unimplemented, "replaying a dead letter is a premium capability")
+	}
+	if req.GetDeadLetterId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "dead_letter_id is required")
+	}
+	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(),
+		"retry_watch_dead_letter", "watch_dead_letter", req.GetDeadLetterId(), req.GetDeadLetterId(),
+		func() error { return s.deadletterRetry.RetryDeadLetter(ctx, req.GetDeadLetterId()) })
+}
+
+// SetWatchLiveness wires the contract-0074 stream registry, fire history and
+// plane-budget readers. Any may be nil, and a nil source leaves its fields at
+// the "cannot tell" value rather than a default that reads as healthy.
+func (s *Service) SetWatchLiveness(streams domain.StreamRegistry, fires domain.WatchFireReader, budget domain.ReactiveBudgetReader) {
+	s.streams = streams
+	s.watchFires = fires
+	s.planeBudget = budget
+}
+
+// GetReactiveBudget reports the plane's running totals against its caps.
+//
+// The dead-letter count comes from the existing reader, so the screen's one
+// already-real figure keeps working even on a kernel that cannot report budgets.
+func (s *Service) GetReactiveBudget(_ context.Context, _ *pb.GetReactiveBudgetOpRequest) (*pb.GetReactiveBudgetOpResponse, error) {
+	if s.planeBudget == nil && s.deadletters == nil {
+		return nil, status.Error(codes.Unimplemented, "the reactive plane is not configured on this kernel")
+	}
+
+	resp := &pb.GetReactiveBudgetOpResponse{DeadLetterCount: -1}
+	if s.deadletters != nil {
+		if entries, err := s.deadletters.ListDeadLetters(0); err == nil {
+			resp.DeadLetterCount = int64(len(entries))
+		}
+	}
+	if s.planeBudget == nil {
+		// Every counter absent rather than zero: a console must be able to say
+		// "not reported" instead of drawing a plane that looks idle.
+		resp.Budget = &pb.ReactivePlaneBudgetOp{
+			GateEvaluationsThisHour: -1, GateEvaluationsCap: -1,
+			PlansStartedThisHour: -1, PlansStartedCap: -1,
+			SignalsShedThisHour: -1,
+		}
+		return resp, nil
+	}
+
+	b := s.planeBudget.PlaneBudget()
+	resp.Budget = &pb.ReactivePlaneBudgetOp{
+		GateEvaluationsThisHour: b.GateEvaluationsThisHour,
+		GateEvaluationsCap:      b.GateEvaluationsCap,
+		PlansStartedThisHour:    b.PlansStartedThisHour,
+		PlansStartedCap:         b.PlansStartedCap,
+		SignalsShedThisHour:     b.SignalsShedThisHour,
+	}
+	if !b.WindowStarted.IsZero() {
+		resp.Budget.WindowStartedUnixMs = b.WindowStarted.UnixMilli()
+	}
+	return resp, nil
 }

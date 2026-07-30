@@ -35,12 +35,20 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	sessionID := s.resolveCallerSession(ctx)
 	if sessionID != "" {
 		ctx = domain.WithSessionID(ctx, sessionID)
-		// ADR-0085 D7: a session's recorded surface OVERRIDES the transport-derived
-		// one. It is the narrower, more specific fact — a conversation opened on an
-		// outsider ingress stays an outsider conversation even when a later turn
-		// arrives over an internal path. Widening on the way in is exactly the
-		// escalation the clamp exists to prevent.
-		ctx = domain.WithSurface(ctx, authz.ResolveSurface(ctx, s.SessionMgr))
+	}
+	// ADR-0085 D7: a recorded surface OVERRIDES the transport-derived one. It is
+	// the narrower, more specific fact — a conversation opened on an outsider
+	// ingress stays an outsider conversation even when a later turn arrives over
+	// an internal path. Widening on the way in is exactly the escalation the clamp
+	// exists to prevent.
+	//
+	// Resolved for EVERY caller, not only those with a session. A chat turn has no
+	// session — its lease carries a conversation instead — so gating this on
+	// sessionID left every turn from a Telegram user authorised as a plain agent
+	// call, with the policy linked to `surface:chat:telegram` never consulted and
+	// no decision ever attributed to the entry point.
+	if convID := s.callerConversation(ctx); sessionID != "" || convID != "" {
+		ctx = domain.WithSurface(ctx, authz.ResolveSurfaceForTurn(ctx, s.SessionMgr, s.ConvSurfaces, convID))
 	}
 
 	slog.Info("QueryMemory called", "caller", callerID, "query", req.GetQuery())
