@@ -56,6 +56,8 @@ const (
 	OperatorConsole_DeleteWatch_FullMethodName              = "/cambrian.OperatorConsole/DeleteWatch"
 	OperatorConsole_SetWatchActive_FullMethodName           = "/cambrian.OperatorConsole/SetWatchActive"
 	OperatorConsole_ListWatchDeadLetters_FullMethodName     = "/cambrian.OperatorConsole/ListWatchDeadLetters"
+	OperatorConsole_QueryLogs_FullMethodName                = "/cambrian.OperatorConsole/QueryLogs"
+	OperatorConsole_TailLogs_FullMethodName                 = "/cambrian.OperatorConsole/TailLogs"
 	OperatorConsole_GetWatchMetrics_FullMethodName          = "/cambrian.OperatorConsole/GetWatchMetrics"
 	OperatorConsole_BacktestWatch_FullMethodName            = "/cambrian.OperatorConsole/BacktestWatch"
 	OperatorConsole_PreviewRoute_FullMethodName             = "/cambrian.OperatorConsole/PreviewRoute"
@@ -73,6 +75,8 @@ const (
 	OperatorConsole_DeleteConfig_FullMethodName             = "/cambrian.OperatorConsole/DeleteConfig"
 	OperatorConsole_SetGeneratorKey_FullMethodName          = "/cambrian.OperatorConsole/SetGeneratorKey"
 	OperatorConsole_ClearGeneratorKey_FullMethodName        = "/cambrian.OperatorConsole/ClearGeneratorKey"
+	OperatorConsole_SaveGenerator_FullMethodName            = "/cambrian.OperatorConsole/SaveGenerator"
+	OperatorConsole_RemoveGenerator_FullMethodName          = "/cambrian.OperatorConsole/RemoveGenerator"
 	OperatorConsole_SubmitPlan_FullMethodName               = "/cambrian.OperatorConsole/SubmitPlan"
 	OperatorConsole_GetReactiveBudget_FullMethodName        = "/cambrian.OperatorConsole/GetReactiveBudget"
 	OperatorConsole_GetTokenSeries_FullMethodName           = "/cambrian.OperatorConsole/GetTokenSeries"
@@ -202,6 +206,21 @@ type OperatorConsoleClient interface {
 	// ADR-0061). Read RPC (no command_id). Capability "watch-deadletter", advertised
 	// on premium builds; OSS returns an empty list (no reactive engine writes them).
 	ListWatchDeadLetters(ctx context.Context, in *ListWatchDeadLettersOpRequest, opts ...grpc.CallOption) (*ListWatchDeadLettersOpResponse, error)
+	// ── Kernel logs (contract 0082) ───────────────────────────────────────────
+	//
+	// OPERATOR-ONLY, both of them. A log line carries whatever the kernel happened
+	// to write — ids, request shapes, sometimes content — and it bypasses the
+	// access-policy plane entirely, so it is not filtered per principal the way a
+	// memory read is. Until it can be, a Viewer does not get it. The auth gate
+	// lists these explicitly because the convention there would otherwise open any
+	// method named Query* to a Viewer by its spelling alone.
+	//
+	// Both read the kernel's in-process retention window, which is BOUNDED and
+	// does not survive a restart. `LogWindowOp` travels with every response so a
+	// console can state that rather than presenting a truncated window as the
+	// whole story.
+	QueryLogs(ctx context.Context, in *QueryLogsOpRequest, opts ...grpc.CallOption) (*QueryLogsOpResponse, error)
+	TailLogs(ctx context.Context, in *TailLogsOpRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LogRecordOp], error)
 	// REACT-05 / ADR-0071: watch observability. GetWatchMetrics returns per-watch fire/
 	// suppression/dry-run/dead-letter counters + mean condition latency. BacktestWatch
 	// replays the signal journal through a candidate watch config and reports would-fires
@@ -329,6 +348,24 @@ type OperatorConsoleClient interface {
 	// and never appears in the audit record — only the fact that one was set.
 	SetGeneratorKey(ctx context.Context, in *SetGeneratorKeyOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
 	ClearGeneratorKey(ctx context.Context, in *ClearGeneratorKeyOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// SaveGenerator / RemoveGenerator are the WRITE half of the generator surface
+	// (contract 0083). They land on the ADR-0101 store, which is what the read
+	// half's comment has been waiting for — editing configs/providers.json from
+	// the operator plane is the thing that store exists to stop.
+	//
+	// The stored value is the WHOLE generator list, not one entry, because the
+	// store layer merges per key and koanf replaces a list wholesale: writing a
+	// single generator would delete every other one. Save therefore reads the
+	// effective list, applies the edit, and stores the result.
+	//
+	// The effect is restart_required, and that is reported rather than smoothed
+	// over: generators are constructed once, at boot, into the provider's routing
+	// table. Claiming `live` here would leave an operator watching traffic go to a
+	// model they believe they replaced.
+	//
+	// Mutating: command_id + reason, audited, Operator-only.
+	SaveGenerator(ctx context.Context, in *SaveGeneratorOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
+	RemoveGenerator(ctx context.Context, in *RemoveGeneratorOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
 	// SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
 	//
 	// Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
@@ -810,6 +847,35 @@ func (c *operatorConsoleClient) ListWatchDeadLetters(ctx context.Context, in *Li
 	return out, nil
 }
 
+func (c *operatorConsoleClient) QueryLogs(ctx context.Context, in *QueryLogsOpRequest, opts ...grpc.CallOption) (*QueryLogsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QueryLogsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_QueryLogs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) TailLogs(ctx context.Context, in *TailLogsOpRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LogRecordOp], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &OperatorConsole_ServiceDesc.Streams[2], OperatorConsole_TailLogs_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[TailLogsOpRequest, LogRecordOp]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type OperatorConsole_TailLogsClient = grpc.ServerStreamingClient[LogRecordOp]
+
 func (c *operatorConsoleClient) GetWatchMetrics(ctx context.Context, in *GetWatchMetricsOpRequest, opts ...grpc.CallOption) (*GetWatchMetricsOpResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetWatchMetricsOpResponse)
@@ -974,6 +1040,26 @@ func (c *operatorConsoleClient) ClearGeneratorKey(ctx context.Context, in *Clear
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CommandAck)
 	err := c.cc.Invoke(ctx, OperatorConsole_ClearGeneratorKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SaveGenerator(ctx context.Context, in *SaveGeneratorOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetConfigOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SaveGenerator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RemoveGenerator(ctx context.Context, in *RemoveGeneratorOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetConfigOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_RemoveGenerator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1170,6 +1256,21 @@ type OperatorConsoleServer interface {
 	// ADR-0061). Read RPC (no command_id). Capability "watch-deadletter", advertised
 	// on premium builds; OSS returns an empty list (no reactive engine writes them).
 	ListWatchDeadLetters(context.Context, *ListWatchDeadLettersOpRequest) (*ListWatchDeadLettersOpResponse, error)
+	// ── Kernel logs (contract 0082) ───────────────────────────────────────────
+	//
+	// OPERATOR-ONLY, both of them. A log line carries whatever the kernel happened
+	// to write — ids, request shapes, sometimes content — and it bypasses the
+	// access-policy plane entirely, so it is not filtered per principal the way a
+	// memory read is. Until it can be, a Viewer does not get it. The auth gate
+	// lists these explicitly because the convention there would otherwise open any
+	// method named Query* to a Viewer by its spelling alone.
+	//
+	// Both read the kernel's in-process retention window, which is BOUNDED and
+	// does not survive a restart. `LogWindowOp` travels with every response so a
+	// console can state that rather than presenting a truncated window as the
+	// whole story.
+	QueryLogs(context.Context, *QueryLogsOpRequest) (*QueryLogsOpResponse, error)
+	TailLogs(*TailLogsOpRequest, grpc.ServerStreamingServer[LogRecordOp]) error
 	// REACT-05 / ADR-0071: watch observability. GetWatchMetrics returns per-watch fire/
 	// suppression/dry-run/dead-letter counters + mean condition latency. BacktestWatch
 	// replays the signal journal through a candidate watch config and reports would-fires
@@ -1297,6 +1398,24 @@ type OperatorConsoleServer interface {
 	// and never appears in the audit record — only the fact that one was set.
 	SetGeneratorKey(context.Context, *SetGeneratorKeyOpRequest) (*SetConfigOpResponse, error)
 	ClearGeneratorKey(context.Context, *ClearGeneratorKeyOpRequest) (*CommandAck, error)
+	// SaveGenerator / RemoveGenerator are the WRITE half of the generator surface
+	// (contract 0083). They land on the ADR-0101 store, which is what the read
+	// half's comment has been waiting for — editing configs/providers.json from
+	// the operator plane is the thing that store exists to stop.
+	//
+	// The stored value is the WHOLE generator list, not one entry, because the
+	// store layer merges per key and koanf replaces a list wholesale: writing a
+	// single generator would delete every other one. Save therefore reads the
+	// effective list, applies the edit, and stores the result.
+	//
+	// The effect is restart_required, and that is reported rather than smoothed
+	// over: generators are constructed once, at boot, into the provider's routing
+	// table. Claiming `live` here would leave an operator watching traffic go to a
+	// model they believe they replaced.
+	//
+	// Mutating: command_id + reason, audited, Operator-only.
+	SaveGenerator(context.Context, *SaveGeneratorOpRequest) (*SetConfigOpResponse, error)
+	RemoveGenerator(context.Context, *RemoveGeneratorOpRequest) (*SetConfigOpResponse, error)
 	// SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
 	//
 	// Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
@@ -1501,6 +1620,12 @@ func (UnimplementedOperatorConsoleServer) SetWatchActive(context.Context, *SetWa
 func (UnimplementedOperatorConsoleServer) ListWatchDeadLetters(context.Context, *ListWatchDeadLettersOpRequest) (*ListWatchDeadLettersOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWatchDeadLetters not implemented")
 }
+func (UnimplementedOperatorConsoleServer) QueryLogs(context.Context, *QueryLogsOpRequest) (*QueryLogsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method QueryLogs not implemented")
+}
+func (UnimplementedOperatorConsoleServer) TailLogs(*TailLogsOpRequest, grpc.ServerStreamingServer[LogRecordOp]) error {
+	return status.Error(codes.Unimplemented, "method TailLogs not implemented")
+}
 func (UnimplementedOperatorConsoleServer) GetWatchMetrics(context.Context, *GetWatchMetricsOpRequest) (*GetWatchMetricsOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetWatchMetrics not implemented")
 }
@@ -1551,6 +1676,12 @@ func (UnimplementedOperatorConsoleServer) SetGeneratorKey(context.Context, *SetG
 }
 func (UnimplementedOperatorConsoleServer) ClearGeneratorKey(context.Context, *ClearGeneratorKeyOpRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method ClearGeneratorKey not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SaveGenerator(context.Context, *SaveGeneratorOpRequest) (*SetConfigOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SaveGenerator not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RemoveGenerator(context.Context, *RemoveGeneratorOpRequest) (*SetConfigOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveGenerator not implemented")
 }
 func (UnimplementedOperatorConsoleServer) SubmitPlan(context.Context, *SubmitPlanOpRequest) (*SubmitPlanOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitPlan not implemented")
@@ -2246,6 +2377,35 @@ func _OperatorConsole_ListWatchDeadLetters_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_QueryLogs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryLogsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).QueryLogs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_QueryLogs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).QueryLogs(ctx, req.(*QueryLogsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_TailLogs_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(TailLogsOpRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(OperatorConsoleServer).TailLogs(m, &grpc.GenericServerStream[TailLogsOpRequest, LogRecordOp]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type OperatorConsole_TailLogsServer = grpc.ServerStreamingServer[LogRecordOp]
+
 func _OperatorConsole_GetWatchMetrics_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetWatchMetricsOpRequest)
 	if err := dec(in); err != nil {
@@ -2552,6 +2712,42 @@ func _OperatorConsole_ClearGeneratorKey_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_SaveGenerator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SaveGeneratorOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SaveGenerator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SaveGenerator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SaveGenerator(ctx, req.(*SaveGeneratorOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RemoveGenerator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveGeneratorOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RemoveGenerator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RemoveGenerator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RemoveGenerator(ctx, req.(*RemoveGeneratorOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_SubmitPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubmitPlanOpRequest)
 	if err := dec(in); err != nil {
@@ -2826,6 +3022,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _OperatorConsole_ListWatchDeadLetters_Handler,
 		},
 		{
+			MethodName: "QueryLogs",
+			Handler:    _OperatorConsole_QueryLogs_Handler,
+		},
+		{
 			MethodName: "GetWatchMetrics",
 			Handler:    _OperatorConsole_GetWatchMetrics_Handler,
 		},
@@ -2894,6 +3094,14 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _OperatorConsole_ClearGeneratorKey_Handler,
 		},
 		{
+			MethodName: "SaveGenerator",
+			Handler:    _OperatorConsole_SaveGenerator_Handler,
+		},
+		{
+			MethodName: "RemoveGenerator",
+			Handler:    _OperatorConsole_RemoveGenerator_Handler,
+		},
+		{
 			MethodName: "SubmitPlan",
 			Handler:    _OperatorConsole_SubmitPlan_Handler,
 		},
@@ -2931,6 +3139,11 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "WatchToolApprovals",
 			Handler:       _OperatorConsole_WatchToolApprovals_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "TailLogs",
+			Handler:       _OperatorConsole_TailLogs_Handler,
 			ServerStreams: true,
 		},
 	},

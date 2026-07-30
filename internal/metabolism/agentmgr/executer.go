@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -241,10 +242,53 @@ func envsEqual(a, b []string) bool {
 	return true
 }
 
+// pythonLogPrefix matches the default `logging` format, `LEVEL:logger:message`.
+//
+// It is worth special-casing because it is what every Python agent in this repo
+// emits: the SDK does not configure a formatter, so `logging.basicConfig` writes
+// this shape to STDERR for every level including INFO and DEBUG.
+var pythonLogPrefix = regexp.MustCompile(`^(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL):([^:]*):(.*)$`)
+
+// parseLevel maps a level word onto slog. The second return is false for
+// anything unrecognised, so a caller can tell "not stated" from "stated as info".
+func parseLevel(word string) (slog.Level, bool) {
+	switch strings.ToLower(strings.TrimSpace(word)) {
+	case "debug":
+		return slog.LevelDebug, true
+	case "info", "notice":
+		return slog.LevelInfo, true
+	case "warn", "warning":
+		return slog.LevelWarn, true
+	case "error", "err", "critical", "fatal", "exception":
+		return slog.LevelError, true
+	}
+	return slog.LevelInfo, false
+}
+
+// forwardPipe relays one agent process's output into the kernel's log.
+//
+// The level an agent DECLARES wins over the stream it arrived on, and that is
+// the whole point of this function. Python's `logging` writes to stderr at every
+// level, so keying the level off the stream recorded every agent INFO line as a
+// kernel ERROR — which is what the log actually looked like: hundreds of
+//
+//	{"level":"ERROR","msg":"INFO:__main__:telegram ingress: polling from update_id 0"}
+//
+// That is not a cosmetic problem. Level is the primary signal an operator
+// filters and alerts on, so a stream where almost everything is ERROR is a
+// stream where nothing is: the real errors were indistinguishable from a bot
+// reporting that it was fine.
+//
+// Precedence, strongest first:
+//
+//  1. an explicit `level` field on a JSON line,
+//  2. a `LEVEL:logger:` prefix on a plain line,
+//  3. the stream it came from — stderr is an error only when nothing said
+//     otherwise, which keeps a bare traceback or a panic correctly loud.
 func forwardPipe(ctx context.Context, r io.Reader, agentID string, isErr bool) {
-	level := slog.LevelInfo
+	streamLevel := slog.LevelInfo
 	if isErr {
-		level = slog.LevelError
+		streamLevel = slog.LevelError
 	}
 
 	scanner := bufio.NewScanner(r)
@@ -259,29 +303,54 @@ func forwardPipe(ctx context.Context, r io.Reader, agentID string, isErr bool) {
 			}
 			delete(fields, "msg")
 
-			logLevel := level
-			if !isErr {
-				if lvlStr, ok := fields["level"].(string); ok {
-					switch strings.ToLower(lvlStr) {
-					case "error", "err":
-						logLevel = slog.LevelError
-					case "warn", "warning":
-						logLevel = slog.LevelWarn
-					case "debug":
-						logLevel = slog.LevelDebug
-					}
+			// The declared level, from EITHER stream. The old `if !isErr` guard
+			// here is the bug: a structured line that said "info" was still
+			// recorded as an error purely because it arrived on stderr.
+			logLevel := streamLevel
+			if lvlStr, ok := fields["level"].(string); ok {
+				if parsed, known := parseLevel(lvlStr); known {
+					logLevel = parsed
 				}
 			}
 			delete(fields, "level")
+
+			// The SDK's own records arrive as JSON whose `msg` still carries the
+			// `LEVEL:logger:` prefix. Lift it out so the level is honoured and the
+			// logger becomes an attribute rather than punctuation inside a string
+			// that no field query can reach.
+			if m := pythonLogPrefix.FindStringSubmatch(msg); m != nil {
+				if parsed, known := parseLevel(m[1]); known {
+					logLevel = parsed
+				}
+				if _, taken := fields["logger"]; !taken && m[2] != "" {
+					fields["logger"] = m[2]
+				}
+				msg = strings.TrimSpace(m[3])
+			}
 
 			args := []any{"agent_id", agentID}
 			for k, v := range fields {
 				args = append(args, k, v)
 			}
 			slog.Log(ctx, logLevel, msg, args...)
-		} else {
-			slog.Log(ctx, level, line, "agent_id", agentID)
+			continue
 		}
+
+		// Plain text. This is the common path for Python agents, and the one that
+		// produced the ERROR flood.
+		logLevel := streamLevel
+		args := []any{"agent_id", agentID}
+		msg := line
+		if m := pythonLogPrefix.FindStringSubmatch(line); m != nil {
+			if parsed, known := parseLevel(m[1]); known {
+				logLevel = parsed
+			}
+			if m[2] != "" {
+				args = append(args, "logger", m[2])
+			}
+			msg = strings.TrimSpace(m[3])
+		}
+		slog.Log(ctx, logLevel, msg, args...)
 	}
 }
 

@@ -17,8 +17,8 @@ type EmbedderConfig struct {
 	// query side and nothing on the document side (ADR-0048). Empty = no prefix
 	// (e.g. nomic, which is symmetric in our setup). The document/store path uses
 	// the plain Embed; only the recall path applies this.
-	QueryPrefix string `json:"query_prefix,omitempty"`
-	SupportsLongContext bool `json:"supports_long_context,omitempty"`
+	QueryPrefix         string `json:"query_prefix,omitempty"`
+	SupportsLongContext bool   `json:"supports_long_context,omitempty"`
 }
 
 // GeneratorConfig declares one LLM generator the Provider can hand out. ADR-0042:
@@ -132,9 +132,19 @@ func (c LLMProviderConfig) validate(embedder EmbedderConfig) []string {
 		}
 		ids[g.ID] = true
 
-		if g.Provider != "ollama" && g.APIKeyEnv == "" {
-			errs = append(errs, fmt.Sprintf("llm_provider.generators[%d].api_key_env is required for non-ollama provider %q", i, g.Provider))
-		}
+		// api_key_env is NO LONGER REQUIRED (ADR-0101 D5).
+		//
+		// It predates the credential store, when an environment variable was the
+		// only way to supply a key. A key stored from the console has no env var
+		// by design -- the console never invents a variable name -- so keeping
+		// this a hard error meant the kernel REFUSED TO BOOT on a generator an
+		// operator had just added through the supported path.
+		//
+		// A generator with no credential from either source is still a real
+		// problem, but it is not a config-FILE problem: it surfaces as
+		// key_configured=false in the console, in the generator test, and as the
+		// endpoint's own 401. Refusing to start is the one response that helps
+		// nobody, because the console that fixes it needs a kernel that is up.
 	}
 
 	if c.Default == "" {

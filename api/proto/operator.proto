@@ -147,6 +147,22 @@ service OperatorConsole {
   // on premium builds; OSS returns an empty list (no reactive engine writes them).
   rpc ListWatchDeadLetters(ListWatchDeadLettersOpRequest) returns (ListWatchDeadLettersOpResponse);
 
+  // ── Kernel logs (contract 0082) ───────────────────────────────────────────
+  //
+  // OPERATOR-ONLY, both of them. A log line carries whatever the kernel happened
+  // to write — ids, request shapes, sometimes content — and it bypasses the
+  // access-policy plane entirely, so it is not filtered per principal the way a
+  // memory read is. Until it can be, a Viewer does not get it. The auth gate
+  // lists these explicitly because the convention there would otherwise open any
+  // method named Query* to a Viewer by its spelling alone.
+  //
+  // Both read the kernel's in-process retention window, which is BOUNDED and
+  // does not survive a restart. `LogWindowOp` travels with every response so a
+  // console can state that rather than presenting a truncated window as the
+  // whole story.
+  rpc QueryLogs(QueryLogsOpRequest) returns (QueryLogsOpResponse);
+  rpc TailLogs(TailLogsOpRequest) returns (stream LogRecordOp);
+
   // REACT-05 / ADR-0071: watch observability. GetWatchMetrics returns per-watch fire/
   // suppression/dry-run/dead-letter counters + mean condition latency. BacktestWatch
   // replays the signal journal through a candidate watch config and reports would-fires
@@ -289,6 +305,25 @@ service OperatorConsole {
   // and never appears in the audit record — only the fact that one was set.
   rpc SetGeneratorKey(SetGeneratorKeyOpRequest) returns (SetConfigOpResponse);
   rpc ClearGeneratorKey(ClearGeneratorKeyOpRequest) returns (CommandAck);
+
+  // SaveGenerator / RemoveGenerator are the WRITE half of the generator surface
+  // (contract 0083). They land on the ADR-0101 store, which is what the read
+  // half's comment has been waiting for — editing configs/providers.json from
+  // the operator plane is the thing that store exists to stop.
+  //
+  // The stored value is the WHOLE generator list, not one entry, because the
+  // store layer merges per key and koanf replaces a list wholesale: writing a
+  // single generator would delete every other one. Save therefore reads the
+  // effective list, applies the edit, and stores the result.
+  //
+  // The effect is restart_required, and that is reported rather than smoothed
+  // over: generators are constructed once, at boot, into the provider's routing
+  // table. Claiming `live` here would leave an operator watching traffic go to a
+  // model they believe they replaced.
+  //
+  // Mutating: command_id + reason, audited, Operator-only.
+  rpc SaveGenerator(SaveGeneratorOpRequest) returns (SetConfigOpResponse);
+  rpc RemoveGenerator(RemoveGeneratorOpRequest) returns (SetConfigOpResponse);
 
   // SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
   //
@@ -1682,6 +1717,16 @@ message GeneratorOp {
   int64 calls_today = 13;
   // is_default marks the generator serving as the global default (ADR-0042).
   bool is_default = 14;
+  // The DECLARED half of a generator — what an operator edits, as opposed to the
+  // measured pulse above. Reported so an edit round-trips: a console that cannot
+  // read these back has to invent them on save, and writing an invented false
+  // over a true native_tools declaration silently disables tool-calling.
+  repeated string capabilities = 15;
+  // native_tools is DECLARED, never probed (ADR-0097 D2). An OpenAI-COMPATIBLE
+  // endpoint is not necessarily tool-capable, and a wrong declaration fails
+  // loudly on first use rather than intermittently mid-session.
+  bool native_tools = 16;
+  bool disable_thinking = 17;
 }
 
 message ListGeneratorsOpResponse {
@@ -1723,6 +1768,60 @@ message GeneratorTestResultOp {
   // sample is a short fragment of the completion, so a human can see it answered
   // rather than echoed. Never the full response.
   string sample = 5;
+  // model_requested is the model this generator is CONFIGURED with — what the
+  // probe asked for. Carried because the comparison that matters needs both
+  // sides, and a client that only receives one has to guess at the other.
+  string model_requested = 6;
+  // model_matches is the verdict, decided HERE.
+  //
+  // The console previously compared model_served against the generator ID, which
+  // is a different string entirely, so a correctly-served model reported a
+  // mismatch while displaying two identical values. The kernel holds both facts;
+  // it should not be exporting half of a comparison.
+  bool model_matches = 7;
+  // native_tools_checked reports whether tool-calling was exercised at all.
+  //
+  // FALSE means not tested — which is not the same as failed, and must never be
+  // rendered as one. The probe does a plain completion today.
+  bool native_tools_checked = 8;
+  bool native_tools_ok = 9;
+}
+
+// GeneratorSpecOp is the DECLARED half of a generator — the fields an operator
+// authors. Deliberately no breaker state, no counters and no credential: those
+// are measured or write-only, and accepting them here would invite a console to
+// send back a stale reading as if it were intent.
+message GeneratorSpecOp {
+  // id is permanent — role assignments refer to it. Saving under a new id
+  // CREATES a generator; the old one keeps serving whatever pointed at it.
+  string id = 1;
+  // provider is the wire protocol ("openai", "ollama", …), not the vendor.
+  string provider = 2;
+  string model = 3;
+  string endpoint = 4;
+  int64  timeout_ms = 5;
+  // capabilities is the work this generator will be OFFERED. A tag it lacks is
+  // work it never sees, so an empty list is a meaningful, and quiet, choice.
+  repeated string capabilities = 6;
+  bool native_tools = 7;
+  bool disable_thinking = 8;
+  // api_key_env names an environment variable holding the credential, for
+  // deployments that inject one. It is a VARIABLE NAME, never a key — the key
+  // itself has exactly one path onto this plane, SetGeneratorKey, and no path
+  // back off it.
+  string api_key_env = 9;
+}
+
+message SaveGeneratorOpRequest {
+  GeneratorSpecOp generator = 1;
+  string command_id = 2;
+  string reason = 3;
+}
+
+message RemoveGeneratorOpRequest {
+  string generator_id = 1;
+  string command_id = 2;
+  string reason = 3;
 }
 
 message RetryWatchDeadLetterOpRequest {
@@ -2127,4 +2226,99 @@ message ConversationProgressOp {
   // status line says "working on it" forever — which looks exactly like a hang.
   bool  final = 6;
   int64 updated_at_unix_ms = 7;
+}
+
+// ── Kernel logs (contract 0082) ─────────────────────────────────────────────
+
+// LogAttrOp is one structured attribute, TYPED.
+//
+// A map<string,string> would flatten every number and boolean into text, which
+// puts the console straight back to regex — the one thing retaining structured
+// logs was meant to avoid. A oneof keeps `status=504` comparable as a number.
+message LogAttrOp {
+  string key = 1;
+  oneof value {
+    string s = 2;
+    int64  i = 3;
+    double f = 4;
+    bool   b = 5;
+  }
+}
+
+message LogRecordOp {
+  // seq is monotonic within a boot and is the resume cursor.
+  uint64 seq = 1;
+  int64  at_unix_ms = 2;
+  // level is "debug" | "info" | "warn" | "error".
+  string level = 3;
+  // component is the subsystem: an agent's logger name, or the message's own
+  // prefix ("ADR-0074", "contract 0077").
+  string component = 4;
+  // message is the slog message with any level/logger prefix already stripped,
+  // so repeat-grouping can key on it.
+  string message = 5;
+  repeated LogAttrOp attrs = 6;
+  // boot_id changes on every process start — how a reader tells "before the
+  // restart" from "after".
+  string boot_id = 7;
+  // truncated marks a record whose message or an attribute was clipped to keep
+  // the window's memory ceiling real. Never mistake a clipped value for the
+  // whole one.
+  bool truncated = 8;
+}
+
+// LogFilterOp narrows a read. Every field is optional; an empty filter matches
+// everything in the window.
+message LogFilterOp {
+  // level_at_least is "debug" | "info" | "warn" | "error". Empty = debug.
+  string level_at_least = 1;
+  // components matches any of these exactly. Empty = every component.
+  repeated string components = 2;
+  // contains is a case-insensitive substring over the message. It is ONE term
+  // among several rather than the only filter — that is the whole argument for
+  // retaining attributes typed.
+  string contains = 3;
+  // attr_equals matches records carrying this attribute with this value, compared
+  // as text. This is the field query the console's filter chips build.
+  map<string, string> attr_equals = 4;
+  // since_unix_ms bounds the window from below. 0 = as far back as the ring goes.
+  int64 since_unix_ms = 5;
+}
+
+// LogWindowOp describes what the ring can currently answer for.
+//
+// It rides on every response because a window that silently has nothing behind
+// it is worse than one that says how far back it reaches.
+message LogWindowOp {
+  string boot_id = 1;
+  int32  capacity = 2;
+  int32  count = 3;
+  // dropped counts records overwritten since boot. Non-zero means the window no
+  // longer reaches back to process start, and a console must say so.
+  uint64 dropped = 4;
+  int64  oldest_unix_ms = 5;
+  int64  newest_unix_ms = 6;
+  // last_seq is the newest sequence issued — where a tail should resume from.
+  uint64 last_seq = 7;
+}
+
+message QueryLogsOpRequest {
+  LogFilterOp filter = 1;
+  // after_seq returns only records newer than this. 0 = from the oldest retained.
+  uint64 after_seq = 2;
+  // limit caps the returned records, newest-biased when the window is larger.
+  // 0 defaults to a server-side cap.
+  int32 limit = 3;
+}
+
+message QueryLogsOpResponse {
+  repeated LogRecordOp records = 1;
+  LogWindowOp window = 2;
+}
+
+message TailLogsOpRequest {
+  LogFilterOp filter = 1;
+  // after_seq resumes a tail. 0 starts from the live edge rather than replaying
+  // the whole window — a tail is for what happens next; QueryLogs is for history.
+  uint64 after_seq = 2;
 }

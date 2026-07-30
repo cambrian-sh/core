@@ -201,6 +201,12 @@ func (g generatorRegistry) Generators() []operator.GeneratorInfo {
 			TokensInToday:  -1,
 			TokensOutToday: -1,
 			CallsToday:     -1,
+			// The declared half, so an edit in the console round-trips instead of
+			// being reconstructed from defaults on save.
+			Capabilities:    gen.Capabilities,
+			NativeTools:     gen.NativeTools,
+			DisableThinking: gen.DisableThinking,
+			APIKeyEnv:       gen.APIKeyEnv,
 		}
 		if g.provider != nil {
 			info.BreakerState = g.provider.BreakerState(gen.ID)
@@ -225,7 +231,7 @@ func (g generatorRegistry) keyFacts(gen config.GeneratorConfig) (configured bool
 		}
 	}
 	if g.secrets != nil {
-		name := "generator:" + gen.ID + ":api_key"
+		name := llm.GeneratorKeySecretName(gen.ID)
 		if g.secrets.Configured(name) {
 			return true, g.secrets.LastFour(name), "store"
 		}
@@ -261,11 +267,12 @@ func (g generatorRegistry) TestGenerator(ctx context.Context, id string) (operat
 		}
 		r := llm.ProbeGenerator(ctx, gen)
 		return operator.GeneratorTestResult{
-			OK:          r.OK,
-			ModelServed: r.ModelServed,
-			LatencyMs:   r.LatencyMs,
-			Error:       r.Err,
-			Sample:      r.Sample,
+			OK:             r.OK,
+			ModelServed:    r.ModelServed,
+			ModelRequested: r.ModelRequested,
+			LatencyMs:      r.LatencyMs,
+			Error:          r.Err,
+			Sample:         r.Sample,
 		}, nil
 	}
 	return operator.GeneratorTestResult{}, fmt.Errorf("no generator with id %q is configured", id)

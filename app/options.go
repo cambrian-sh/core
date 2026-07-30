@@ -138,6 +138,25 @@ type KernelServices struct {
 	// a set the plugin does not control.
 	Agents domain.AgentLister
 
+	// RegisterAgent adds ONE agent definition to the live registry, so a plugin
+	// that gains a new unit at runtime does not need a restart to run it.
+	//
+	// This is a deliberate narrowing of the read-only rule above, not a
+	// repeal of it. The seam is bounded at construction, in buildPlugins:
+	//
+	//   - the id must sit in the plugin's OWN namespace ("<plugin-id>_…"), so a
+	//     plugin cannot mint a principal that policy elsewhere refers to;
+	//   - System is forced false, so no privilege can be granted this way.
+	//
+	// What it deliberately does NOT do is register an INGRESS. A new agent has
+	// no surface until an operator registers one on the access plane (ADR-0090
+	// D2), so the reach a plugin can grant itself here is exactly none: it can
+	// create a unit that runs, not a door that traffic arrives through.
+	//
+	// nil in tests and in any kernel built without a registry — a plugin must
+	// degrade to "this takes effect on the next start" rather than panic.
+	RegisterAgent func(domain.AgentDefinition) error
+
 	// IngressTraffic reports who has come through an entry point, from the
 	// durable conversation record.
 	//

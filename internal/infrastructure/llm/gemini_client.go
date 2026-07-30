@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -29,6 +28,10 @@ type GeminiClient struct {
 	Endpoint  string // default: https://generativelanguage.googleapis.com/v1beta
 	Model     string // e.g. "gemini-2.0-flash"; put in the URL path, NOT the body
 	APIKeyEnv string // env var name holding the API key (default: GEMINI_API_KEY)
+	// GeneratorID names this generator in the credential store. Empty for a
+	// client built straight from config with no store entry of its own -- the
+	// environment path still applies.
+	GeneratorID string
 	TimeoutMs int
 }
 
@@ -110,7 +113,7 @@ func (c *GeminiClient) apiKey() string {
 	if env == "" {
 		env = "GEMINI_API_KEY"
 	}
-	return os.Getenv(env)
+	return APIKeyFor(c.GeneratorID, env)
 }
 
 func (c *GeminiClient) modelURL() string {

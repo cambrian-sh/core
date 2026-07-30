@@ -3,8 +3,8 @@ package llm
 import (
 	"fmt"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // ProviderRegistry holds initialized LLM provider clients and extractors,
@@ -37,6 +37,7 @@ func NewProviderRegistryFromGenerators(generators []config.GeneratorConfig) (*Pr
 			Provider:        g.Provider,
 			Model:           g.Model,
 			Endpoint:        g.Endpoint,
+			ID:              g.ID,
 			APIKeyEnv:       g.APIKeyEnv,
 			CostPer1MInput:  g.CostPer1MInput,
 			CostPer1MOutput: g.CostPer1MOutput,
@@ -72,11 +73,11 @@ func NewStreamersFromGenerators(generators []config.GeneratorConfig) (map[string
 			// of the generator config, and the gateway type-asserts these very values
 			// for tool support. Omitting it would leave every agent-plane call on the
 			// text path with no error anywhere (ADR-0097).
-			s = &OpenAIClient{Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs, DisableThinking: g.DisableThinking, NativeTools: g.NativeTools}
+			s = &OpenAIClient{GeneratorID: g.ID, Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs, DisableThinking: g.DisableThinking, NativeTools: g.NativeTools}
 		case "anthropic":
-			s = &AnthropicClient{Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs}
+			s = &AnthropicClient{GeneratorID: g.ID, Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs}
 		case "gemini":
-			s = &GeminiClient{Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs}
+			s = &GeminiClient{GeneratorID: g.ID, Endpoint: g.Endpoint, Model: g.Model, APIKeyEnv: g.APIKeyEnv, TimeoutMs: g.TimeoutMs}
 		default:
 			if firstErr == nil {
 				firstErr = fmt.Errorf("NewStreamersFromGenerators: unknown provider %q for generator %q", g.Provider, g.ID)
@@ -113,6 +114,7 @@ func NewProviderRegistry(models []config.ModelConfig) (*ProviderRegistry, error)
 			reg.OpenAI = &OpenAIClient{
 				Endpoint:        mc.Endpoint,
 				Model:           mc.Model,
+				GeneratorID:     mc.ID,
 				APIKeyEnv:       mc.APIKeyEnv,
 				TimeoutMs:       mc.TimeoutMs,
 				DisableThinking: mc.DisableThinking,
@@ -120,17 +122,19 @@ func NewProviderRegistry(models []config.ModelConfig) (*ProviderRegistry, error)
 			}
 		case "anthropic":
 			reg.Anthropic = &AnthropicClient{
-				Endpoint:  mc.Endpoint,
-				Model:     mc.Model,
-				APIKeyEnv: mc.APIKeyEnv,
-				TimeoutMs: mc.TimeoutMs,
+				Endpoint:    mc.Endpoint,
+				Model:       mc.Model,
+				GeneratorID: mc.ID,
+				APIKeyEnv:   mc.APIKeyEnv,
+				TimeoutMs:   mc.TimeoutMs,
 			}
 		case "gemini":
 			reg.Gemini = &GeminiClient{
-				Endpoint:  mc.Endpoint,
-				Model:     mc.Model,
-				APIKeyEnv: mc.APIKeyEnv,
-				TimeoutMs: mc.TimeoutMs,
+				Endpoint:    mc.Endpoint,
+				Model:       mc.Model,
+				GeneratorID: mc.ID,
+				APIKeyEnv:   mc.APIKeyEnv,
+				TimeoutMs:   mc.TimeoutMs,
 			}
 		default:
 			err = fmt.Errorf("unknown LLM provider: %q", mc.Provider)

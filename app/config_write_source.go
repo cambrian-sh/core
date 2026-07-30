@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"sort"
 
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/storage"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
@@ -27,6 +29,9 @@ type configWriteSource struct {
 	// generators reports the configured generator ids, so a credential cannot be
 	// stored against a generator that does not exist.
 	generators func() map[string]string // id -> APIKeyEnv
+	// generatorList reports the BOOTED generator list, used as the base for a
+	// save when the store holds none yet.
+	generatorList func() []config.GeneratorConfig
 }
 
 // tunableByKey indexes the catalogue for validation.
@@ -149,7 +154,7 @@ func (c configWriteSource) DeleteConfig(keys []string) ([]operator.ConfigWriteOu
 
 // SetGeneratorKey stores a provider credential.
 func (c configWriteSource) SetGeneratorKey(generatorID, key string) (operator.ConfigWriteOutcome, error) {
-	res := operator.ConfigWriteOutcome{Key: "generator:" + generatorID + ":api_key"}
+	res := operator.ConfigWriteOutcome{Key: llm.GeneratorKeySecretName(generatorID)}
 	if c.store == nil {
 		return res, fmt.Errorf("no credential store is available")
 	}
@@ -211,4 +216,141 @@ func hotApplyFor(effects interface {
 	return func(param string, v float64) bool {
 		return effects.SetRuntimeConfig(context.Background(), map[string]float64{param: v}) == nil
 	}
+}
+
+// ── Generator write half (contract 0083) ─────────────────────────────────────
+
+// generatorsKey is the store key holding the WHOLE generator list.
+//
+// One key for the list, not one per generator, because the store layer merges
+// per key and koanf replaces a list wholesale: a per-generator key would produce
+// a list containing only the last generator written.
+const generatorsKey = "llm_provider.generators"
+
+// effectiveGenerators returns the generator list a save should be applied on top
+// of: what the store holds now, or the booted config when the store holds none.
+//
+// Reading the STORE first and the boot config only as a fallback is what makes
+// two saves in one process lifetime compose. Taking the boot config every time
+// would make the second save silently discard the first, since nothing reloads
+// config in between.
+func (c configWriteSource) effectiveGenerators() []config.GeneratorConfig {
+	if c.store != nil {
+		if overrides, err := c.store.Overrides(); err == nil {
+			if raw, ok := overrides[generatorsKey]; ok {
+				if b, mErr := json.Marshal(raw); mErr == nil {
+					var list []config.GeneratorConfig
+					if json.Unmarshal(b, &list) == nil {
+						return list
+					}
+				}
+			}
+		}
+	}
+	if c.generatorList != nil {
+		return c.generatorList()
+	}
+	return nil
+}
+
+// SaveGenerator creates or replaces one generator and stores the whole list.
+func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.ConfigWriteOutcome, error) {
+	res := operator.ConfigWriteOutcome{Key: generatorsKey}
+	if c.store == nil {
+		return res, fmt.Errorf("no configuration store is available")
+	}
+
+	entry := config.GeneratorConfig{
+		ID:              spec.ID,
+		Provider:        spec.Provider,
+		Model:           spec.Model,
+		Endpoint:        spec.Endpoint,
+		APIKeyEnv:       spec.APIKeyEnv,
+		TimeoutMs:       int(spec.TimeoutMs),
+		Capabilities:    spec.Capabilities,
+		NativeTools:     spec.NativeTools,
+		DisableThinking: spec.DisableThinking,
+	}
+
+	list := c.effectiveGenerators()
+	replaced := false
+	for i := range list {
+		if list[i].ID == spec.ID {
+			// Cost fields are preserved rather than zeroed: they are catalogue
+			// data this plane deliberately never carries (no money crosses the
+			// operator wire), so a save that echoed back what the console knows
+			// would erase them.
+			entry.CostPer1MInput = list[i].CostPer1MInput
+			entry.CostPer1MOutput = list[i].CostPer1MOutput
+			// APIKeyEnv likewise. The console never sends a variable NAME (it has
+			// no way to know one, and the key itself travels by another route
+			// entirely), so taking the request at face value silently unset the
+			// variable a deployment supplies its credential through -- and, with
+			// the old validation, left a kernel that would not boot.
+			if entry.APIKeyEnv == "" {
+				entry.APIKeyEnv = list[i].APIKeyEnv
+			}
+			list[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		list = append(list, entry)
+	}
+
+	if err := c.store.SetOverride(generatorsKey, list); err != nil {
+		res.Effect = operator.EffectRejected
+		res.Error = "could not write to the configuration store: " + err.Error()
+		return res, nil
+	}
+	res.Set = true
+
+	if pin := c.prov.PinnedAbove(generatorsKey); pin != "" {
+		res.Effect = operator.EffectShadowed
+		res.ShadowedBy = pin
+		return res, nil
+	}
+	// Always restart-required. Generators are constructed once, at boot, into
+	// the provider's routing table, breaker map and ledger; there is no live
+	// path, and reporting `live` would leave an operator watching traffic go to
+	// a model they believe they replaced.
+	res.Effect = operator.EffectRestartRequired
+	return res, nil
+}
+
+// RemoveGenerator drops one generator from the stored list.
+func (c configWriteSource) RemoveGenerator(id string) (operator.ConfigWriteOutcome, error) {
+	res := operator.ConfigWriteOutcome{Key: generatorsKey}
+	if c.store == nil {
+		return res, fmt.Errorf("no configuration store is available")
+	}
+
+	list := c.effectiveGenerators()
+	kept := make([]config.GeneratorConfig, 0, len(list))
+	found := false
+	for _, g := range list {
+		if g.ID == id {
+			found = true
+			continue
+		}
+		kept = append(kept, g)
+	}
+	if !found {
+		// Named a specific thing the caller believes exists, unlike a config key
+		// whose desired post-condition already holds. Silence here hides a typo
+		// and leaves the real generator serving traffic.
+		res.Effect = operator.EffectRejected
+		res.Error = "no generator with id " + id
+		return res, nil
+	}
+
+	if err := c.store.SetOverride(generatorsKey, kept); err != nil {
+		res.Effect = operator.EffectRejected
+		res.Error = "could not write to the configuration store: " + err.Error()
+		return res, nil
+	}
+	res.Set = true
+	res.Effect = operator.EffectRestartRequired
+	return res, nil
 }

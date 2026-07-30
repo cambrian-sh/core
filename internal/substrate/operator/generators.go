@@ -47,6 +47,15 @@ type GeneratorInfo struct {
 	TokensOutToday int64
 	CallsToday     int64
 	IsDefault      bool
+	// The DECLARED half — what an operator authored, as opposed to the measured
+	// pulse above. Reported so an edit round-trips: a console that cannot read
+	// these back invents them on save, and writing an invented false over a true
+	// NativeTools declaration silently disables tool-calling.
+	Capabilities    []string
+	NativeTools     bool
+	DisableThinking bool
+	// APIKeyEnv is a VARIABLE NAME, never a key.
+	APIKeyEnv string
 }
 
 // RoleAssignment binds a system organ to the generator serving it.
@@ -67,9 +76,14 @@ type GeneratorTestResult struct {
 	// than the one requested is the most common misconfiguration in this space,
 	// and a successful generation does not reveal it.
 	ModelServed string
-	LatencyMs   int64
-	Error       string
-	Sample      string
+	// ModelRequested is what the probe ASKED for — the generator's configured
+	// model. Both sides are needed or the comparison cannot be made here, and a
+	// client left to guess the other side is what produced a mismatch verdict
+	// beside two identical strings.
+	ModelRequested string
+	LatencyMs      int64
+	Error          string
+	Sample         string
 }
 
 // SetGeneratorRegistry wires the generator read surface. nil ⇒ Unimplemented.
@@ -84,20 +98,23 @@ func (s *Service) ListGenerators(_ context.Context, _ *pb.ListGeneratorsOpReques
 	out := make([]*pb.GeneratorOp, 0, len(gens))
 	for _, g := range gens {
 		out = append(out, &pb.GeneratorOp{
-			Id:             g.ID,
-			Provider:       g.Provider,
-			Model:          g.Model,
-			Endpoint:       g.Endpoint,
-			KeyConfigured:  g.KeyConfigured,
-			KeyLastFour:    g.KeyLastFour,
-			KeySource:      g.KeySource,
-			BreakerState:   g.BreakerState,
-			RecentFailures: int32(g.RecentFailures),
-			TimeoutMs:      g.TimeoutMs,
-			TokensInToday:  g.TokensInToday,
-			TokensOutToday: g.TokensOutToday,
-			CallsToday:     g.CallsToday,
-			IsDefault:      g.IsDefault,
+			Id:              g.ID,
+			Provider:        g.Provider,
+			Model:           g.Model,
+			Endpoint:        g.Endpoint,
+			KeyConfigured:   g.KeyConfigured,
+			KeyLastFour:     g.KeyLastFour,
+			KeySource:       g.KeySource,
+			BreakerState:    g.BreakerState,
+			RecentFailures:  int32(g.RecentFailures),
+			TimeoutMs:       g.TimeoutMs,
+			TokensInToday:   g.TokensInToday,
+			TokensOutToday:  g.TokensOutToday,
+			CallsToday:      g.CallsToday,
+			IsDefault:       g.IsDefault,
+			Capabilities:    g.Capabilities,
+			NativeTools:     g.NativeTools,
+			DisableThinking: g.DisableThinking,
 		})
 	}
 	return &pb.ListGeneratorsOpResponse{Generators: out}, nil
@@ -137,10 +154,19 @@ func (s *Service) TestGenerator(ctx context.Context, req *pb.TestGeneratorOpRequ
 		return &pb.GeneratorTestResultOp{Ok: false, Error: err.Error()}, nil
 	}
 	return &pb.GeneratorTestResultOp{
-		Ok:          res.OK,
-		ModelServed: res.ModelServed,
-		LatencyMs:   res.LatencyMs,
-		Error:       res.Error,
-		Sample:      res.Sample,
+		Ok:             res.OK,
+		ModelServed:    res.ModelServed,
+		ModelRequested: res.ModelRequested,
+		// Decided HERE, where both sides are known. An endpoint that echoes no
+		// model at all cannot be said to match — that is unknown, not agreement.
+		ModelMatches: res.ModelServed != "" && res.ModelServed == res.ModelRequested,
+		LatencyMs:    res.LatencyMs,
+		Error:        res.Error,
+		Sample:       res.Sample,
+		// The probe does a plain completion. Tool-calling is NOT exercised, and
+		// saying so is the difference between "not tested" and "failed" — the
+		// console was rendering the second.
+		NativeToolsChecked: false,
+		NativeToolsOk:      false,
 	}, nil
 }

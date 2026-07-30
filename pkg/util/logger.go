@@ -22,9 +22,13 @@ const (
 
 // LoggerResult holds the opened log file and the original stdout/stderr handles.
 type LoggerResult struct {
-	File            *os.File
-	OriginalStdout  *os.File
-	OriginalStderr  *os.File
+	File           *os.File
+	OriginalStdout *os.File
+	OriginalStderr *os.File
+	// Ring is the in-process retention window. Every record the kernel logs is
+	// also kept here, so the process can answer "what happened an hour ago"
+	// without something outside it having been attached at the time.
+	Ring *LogRing
 }
 
 // InitLogger sets up the global logger. In TUI mode it redirects everything
@@ -47,8 +51,13 @@ func InitLogger(mode LogMode, dataDir string) (*LoggerResult, error) {
 		} else {
 			handler = slog.NewJSONHandler(os.Stdout, opts)
 		}
-		slog.SetDefault(slog.New(handler))
-		return &LoggerResult{OriginalStderr: os.Stderr}, nil
+		// Retain as well as print. A decorator rather than a change at every call
+		// site, so it captures everything already being logged — including the
+		// agent output relayed through the agent manager.
+		ring := NewLogRing(DefaultLogRingCapacity)
+		SetDefaultLogRing(ring)
+		slog.SetDefault(slog.New(NewLogRingHandler(handler, ring, slog.LevelDebug)))
+		return &LoggerResult{OriginalStderr: os.Stderr, Ring: ring}, nil
 	}
 
 	// TUI mode: write to file, suppress stdout/stderr.
@@ -67,13 +76,21 @@ func InitLogger(mode LogMode, dataDir string) (*LoggerResult, error) {
 
 	// Redirect standard-library log package.
 	log.SetOutput(f)
-	// Redirect structured logger.
-	slog.SetDefault(slog.New(slog.NewTextHandler(f, opts)))
+	// Redirect structured logger — still retained, because a TUI hides the very
+	// output an operator would otherwise scroll back through.
+	ring := NewLogRing(DefaultLogRingCapacity)
+	SetDefaultLogRing(ring)
+	slog.SetDefault(slog.New(NewLogRingHandler(slog.NewTextHandler(f, opts), ring, slog.LevelDebug)))
 	// Redirect direct stdout/stderr writes from any library.
 	os.Stdout = f
 	os.Stderr = f
 
-	return &LoggerResult{File: f, OriginalStdout: originalStdout, OriginalStderr: originalStderr}, nil
+	return &LoggerResult{
+		File:           f,
+		OriginalStdout: originalStdout,
+		OriginalStderr: originalStderr,
+		Ring:           ring,
+	}, nil
 }
 
 // isTerminal reports whether f is an interactive character device (a TTY/console)

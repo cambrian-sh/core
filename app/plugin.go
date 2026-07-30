@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -623,15 +624,45 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 // and capabilities may depend on what Build constructed. Plugins that do not implement
 // Builder are skipped.
 func buildPlugins(plugins []Plugin, svc KernelServices) error {
+	base := svc.RegisterAgent
 	for _, p := range plugins {
 		b, ok := p.(Builder)
 		if !ok {
 			continue
 		}
+		// Each plugin gets its OWN registrar, bounded to its own id namespace.
+		// Enforced here rather than trusted to the plugin: the guarantee that a
+		// plugin cannot mint a principal outside itself is only worth something
+		// if the seam holds it, and every plugin sharing one registrar would
+		// leave the namespace rule as a comment.
+		svc.RegisterAgent = scopedAgentRegistrar(p.Manifest().ID, base)
 		if err := b.Build(svc); err != nil {
 			return fmt.Errorf("plugin %q build: %w", p.Manifest().ID, err)
 		}
 		slog.Info("ADR-0082: plugin built", "plugin", p.Manifest().ID)
 	}
 	return nil
+}
+
+// scopedAgentRegistrar bounds a plugin's runtime agent registration to its own
+// namespace and forbids privilege.
+//
+// A nil base means this kernel has no live registry, and that is reported as an
+// error rather than swallowed: a plugin told nothing went wrong would report a
+// bot as running when nothing had been created.
+func scopedAgentRegistrar(pluginID string, base func(domain.AgentDefinition) error) func(domain.AgentDefinition) error {
+	if base == nil {
+		return nil
+	}
+	prefix := pluginID + "_"
+	return func(def domain.AgentDefinition) error {
+		if def.ID != pluginID && !strings.HasPrefix(def.ID, prefix) {
+			return fmt.Errorf("plugin %q may only register agents named %q…, not %q", pluginID, prefix, def.ID)
+		}
+		// Forced, not validated: a plugin that asked for privilege and got an
+		// error would simply stop asking, while a plugin that gets an ordinary
+		// agent keeps working with exactly the reach it should have.
+		def.System = false
+		return base(def)
+	}
 }

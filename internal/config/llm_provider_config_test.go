@@ -51,9 +51,6 @@ func TestLLMProviderConfig_Validate_Errors(t *testing.T) {
 		{"role not a generator", func(p *LLMProviderConfig, _ *EmbedderConfig) {
 			p.Roles["verifier"] = "ghost"
 		}, "is not a declared generator id"},
-		{"non-ollama missing api_key_env", func(p *LLMProviderConfig, _ *EmbedderConfig) {
-			p.Generators[1].APIKeyEnv = ""
-		}, "api_key_env is required for non-ollama"},
 		{"missing embedder", func(_ *LLMProviderConfig, e *EmbedderConfig) {
 			e.Model = ""
 		}, "embedder.model is required"},
@@ -131,5 +128,18 @@ func TestLoadConfig_LLMProvider_ValidationErrorSurfaces(t *testing.T) {
 		t.Fatal("expected LoadConfig to reject a default not in generators")
 	} else if !strings.Contains(err.Error(), "not a declared generator") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// ADR-0101 D5 removed the api_key_env requirement: a credential may come from
+// the encrypted store instead, and a generator added from the console has no
+// environment variable by design. Requiring one made the kernel REFUSE TO BOOT
+// after an ordinary save — a config error for a configuration the supported path
+// produces.
+func TestLLMProviderConfig_AGeneratorKeyedFromTheStoreIsValid(t *testing.T) {
+	p, e := validProvider()
+	p.Generators[1].APIKeyEnv = ""
+	if errs := p.validate(e); len(errs) != 0 {
+		t.Fatalf("a store-keyed generator must validate, got %v", errs)
 	}
 }

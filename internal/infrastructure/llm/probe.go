@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -25,9 +24,12 @@ type ProbeResult struct {
 	// perfectly successful generation, which is exactly why a normal call cannot
 	// substitute for this one. Empty ⇒ the provider does not echo a model back.
 	ModelServed string
-	Sample      string
-	LatencyMs   int64
-	Err         string
+	// ModelRequested is what the probe asked the endpoint for — the generator's
+	// configured model. Reported so the comparison has both sides.
+	ModelRequested string
+	Sample         string
+	LatencyMs      int64
+	Err            string
 }
 
 // ProbeGenerator makes ONE real call against a generator's configured endpoint
@@ -61,9 +63,10 @@ func ProbeGenerator(ctx context.Context, g config.GeneratorConfig) ProbeResult {
 	}
 
 	res := ProbeResult{
-		ModelServed: served,
-		Sample:      truncateSample(sample),
-		LatencyMs:   time.Since(start).Milliseconds(),
+		ModelServed:    served,
+		ModelRequested: g.Model,
+		Sample:         truncateSample(sample),
+		LatencyMs:      time.Since(start).Milliseconds(),
 	}
 	if err != nil {
 		res.Err = err.Error()
@@ -92,10 +95,12 @@ func probeOpenAICompat(ctx context.Context, g config.GeneratorConfig) (served, s
 		return "", "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if g.APIKeyEnv != "" {
-		if key := os.Getenv(g.APIKeyEnv); key != "" {
-			req.Header.Set("Authorization", "Bearer "+key)
-		}
+	// The SAME resolution the real clients use. When the probe read only the
+	// environment it reported "the key was rejected" for a credential the
+	// console had stored and displayed -- diagnosing a fault in the key rather
+	// than in the thing that never looked for it.
+	if key := APIKeyFor(g.ID, g.APIKeyEnv); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
 	resp, err := http.DefaultClient.Do(req)

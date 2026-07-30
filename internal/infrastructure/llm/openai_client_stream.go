@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
@@ -68,7 +67,7 @@ func (c *OpenAIClient) GenerateStream(ctx context.Context, prompt string) (<-cha
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if apiKey := os.Getenv(c.APIKeyEnv); apiKey != "" {
+	if apiKey := APIKeyFor(c.GeneratorID, c.APIKeyEnv); apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 

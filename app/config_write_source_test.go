@@ -316,3 +316,157 @@ func TestSetConfig_SurvivesIntoTheNextConfigLoad(t *testing.T) {
 		t.Fatalf("value_source = %q, want %q", got, config.SourceStore)
 	}
 }
+
+// ── Generator write half (contract 0083) ─────────────────────────────────────
+
+func TestSaveGenerator_AppendsWithoutLosingTheBootedList(t *testing.T) {
+	src := writeSource(t, bundle(t, map[string]string{}), nil)
+	src.generatorList = func() []config.GeneratorConfig {
+		return []config.GeneratorConfig{
+			{ID: "existing", Provider: "openai", Model: "gpt-x", Endpoint: "https://a"},
+		}
+	}
+
+	out, err := src.SaveGenerator(operator.GeneratorSpec{
+		ID: "added", Provider: "ollama", Model: "qwen3", Endpoint: "http://localhost:11434",
+	})
+	if err != nil {
+		t.Fatalf("SaveGenerator: %v", err)
+	}
+	if !out.Set || out.Effect != operator.EffectRestartRequired {
+		t.Fatalf("expected a stored, restart-required write, got %+v", out)
+	}
+
+	// The whole point of storing the LIST: the file-configured generator must
+	// survive a console save, or adding one silently deletes the others.
+	got := src.effectiveGenerators()
+	if len(got) != 2 || got[0].ID != "existing" || got[1].ID != "added" {
+		t.Fatalf("expected both generators, got %+v", got)
+	}
+}
+
+func TestSaveGenerator_SecondSaveSeesTheFirst(t *testing.T) {
+	src := writeSource(t, bundle(t, map[string]string{}), nil)
+	src.generatorList = func() []config.GeneratorConfig { return nil }
+
+	if _, err := src.SaveGenerator(operator.GeneratorSpec{
+		ID: "one", Provider: "openai", Model: "a",
+	}); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	// Nothing reloads config between two saves in one process, so a base taken
+	// from the booted list every time would discard this one.
+	if _, err := src.SaveGenerator(operator.GeneratorSpec{
+		ID: "two", Provider: "openai", Model: "b",
+	}); err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+
+	got := src.effectiveGenerators()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 generators after two saves, got %d: %+v", len(got), got)
+	}
+}
+
+func TestSaveGenerator_ReplacesByIDAndKeepsCatalogueCosts(t *testing.T) {
+	src := writeSource(t, bundle(t, map[string]string{}), nil)
+	src.generatorList = func() []config.GeneratorConfig {
+		return []config.GeneratorConfig{
+			{ID: "g", Provider: "openai", Model: "old", CostPer1MInput: 3, CostPer1MOutput: 15},
+		}
+	}
+
+	if _, err := src.SaveGenerator(operator.GeneratorSpec{
+		ID: "g", Provider: "openai", Model: "new", NativeTools: true,
+	}); err != nil {
+		t.Fatalf("SaveGenerator: %v", err)
+	}
+
+	got := src.effectiveGenerators()
+	if len(got) != 1 || got[0].Model != "new" || !got[0].NativeTools {
+		t.Fatalf("expected the edit to land, got %+v", got)
+	}
+	// Cost never crosses the operator wire, so a save that echoed back what the
+	// console knows would erase the catalogue.
+	if got[0].CostPer1MInput != 3 || got[0].CostPer1MOutput != 15 {
+		t.Fatalf("costs were erased by a save that never carried them: %+v", got[0])
+	}
+}
+
+func TestRemoveGenerator_RejectsAnUnknownID(t *testing.T) {
+	src := writeSource(t, bundle(t, map[string]string{}), nil)
+	src.generatorList = func() []config.GeneratorConfig {
+		return []config.GeneratorConfig{{ID: "real", Provider: "openai", Model: "m"}}
+	}
+
+	out, err := src.RemoveGenerator("typo")
+	if err != nil {
+		t.Fatalf("RemoveGenerator: %v", err)
+	}
+	// A silent success here hides a typo and leaves the real generator serving.
+	if out.Set || out.Effect != operator.EffectRejected {
+		t.Fatalf("expected a rejection for an unknown id, got %+v", out)
+	}
+	if len(src.effectiveGenerators()) != 1 {
+		t.Fatalf("a failed remove must not change the list")
+	}
+}
+
+func TestRemoveGenerator_DropsTheEntry(t *testing.T) {
+	src := writeSource(t, bundle(t, map[string]string{}), nil)
+	src.generatorList = func() []config.GeneratorConfig {
+		return []config.GeneratorConfig{
+			{ID: "keep", Provider: "openai", Model: "m"},
+			{ID: "drop", Provider: "openai", Model: "m"},
+		}
+	}
+
+	if _, err := src.RemoveGenerator("drop"); err != nil {
+		t.Fatalf("RemoveGenerator: %v", err)
+	}
+	got := src.effectiveGenerators()
+	if len(got) != 1 || got[0].ID != "keep" {
+		t.Fatalf("expected only `keep`, got %+v", got)
+	}
+}
+
+// The console has no way to know an environment variable's NAME and never sends
+// one, so taking the request at face value unset the variable a deployment
+// supplies its credential through — and, with the validation that used to
+// require it, produced a kernel that refused to boot after an ordinary save.
+func TestSaveGenerator_KeepsTheConfiguredAPIKeyEnv(t *testing.T) {
+	src := writeSource(t, bundle(t, map[string]string{}), nil)
+	src.generatorList = func() []config.GeneratorConfig {
+		return []config.GeneratorConfig{
+			{ID: "g", Provider: "openai", Model: "old", APIKeyEnv: "OPENAI_API_KEY"},
+		}
+	}
+
+	if _, err := src.SaveGenerator(operator.GeneratorSpec{
+		ID: "g", Provider: "openai", Model: "new", // no APIKeyEnv, as the console sends
+	}); err != nil {
+		t.Fatalf("SaveGenerator: %v", err)
+	}
+
+	got := src.effectiveGenerators()
+	if len(got) != 1 || got[0].APIKeyEnv != "OPENAI_API_KEY" {
+		t.Fatalf("the configured env var was erased by a save that never carried it: %+v", got)
+	}
+}
+
+// A generator saved from the console has NO env var by design — its credential
+// goes to the store. That combination must be storable.
+func TestSaveGenerator_AcceptsAGeneratorWithNoEnvVar(t *testing.T) {
+	src := writeSource(t, bundle(t, map[string]string{}), nil)
+	src.generatorList = func() []config.GeneratorConfig { return nil }
+
+	out, err := src.SaveGenerator(operator.GeneratorSpec{
+		ID: "store-keyed", Provider: "openai", Model: "m",
+	})
+	if err != nil {
+		t.Fatalf("SaveGenerator: %v", err)
+	}
+	if !out.Set {
+		t.Fatalf("a store-keyed generator must be storable, got %+v", out)
+	}
+}
