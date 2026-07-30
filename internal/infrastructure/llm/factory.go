@@ -3,8 +3,8 @@ package llm
 import (
 	"fmt"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // NewClient creates a Generator + TokenUsageExtractor pair for the given model
@@ -23,6 +23,7 @@ func NewClient(cfg config.ModelConfig) (domain.Generator, TokenUsageExtractor, e
 			Endpoint:        cfg.Endpoint,
 			Model:           cfg.Model,
 			APIKeyEnv:       cfg.APIKeyEnv,
+			GeneratorID:     cfg.ID,
 			TimeoutMs:       cfg.TimeoutMs,
 			DisableThinking: cfg.DisableThinking,
 			NativeTools:     cfg.NativeTools,
@@ -30,18 +31,20 @@ func NewClient(cfg config.ModelConfig) (domain.Generator, TokenUsageExtractor, e
 		return c, &openaiExtractor{}, nil
 	case "anthropic":
 		c := &AnthropicClient{
-			Endpoint:  cfg.Endpoint,
-			Model:     cfg.Model,
-			APIKeyEnv: cfg.APIKeyEnv,
-			TimeoutMs: cfg.TimeoutMs,
+			Endpoint:    cfg.Endpoint,
+			Model:       cfg.Model,
+			APIKeyEnv:   cfg.APIKeyEnv,
+			GeneratorID: cfg.ID,
+			TimeoutMs:   cfg.TimeoutMs,
 		}
 		return c, &anthropicExtractor{}, nil
 	case "gemini":
 		c := &GeminiClient{
-			Endpoint:  cfg.Endpoint,
-			Model:     cfg.Model,
-			APIKeyEnv: cfg.APIKeyEnv,
-			TimeoutMs: cfg.TimeoutMs,
+			Endpoint:    cfg.Endpoint,
+			Model:       cfg.Model,
+			APIKeyEnv:   cfg.APIKeyEnv,
+			GeneratorID: cfg.ID,
+			TimeoutMs:   cfg.TimeoutMs,
 		}
 		return c, &geminiExtractor{}, nil
 	default:

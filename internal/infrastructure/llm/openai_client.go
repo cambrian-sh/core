@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -18,6 +17,10 @@ type OpenAIClient struct {
 	Endpoint  string
 	Model     string
 	APIKeyEnv string
+	// GeneratorID names this generator in the credential store. Empty for a
+	// client built straight from config with no store entry of its own -- the
+	// environment path still applies.
+	GeneratorID string
 	TimeoutMs int
 	// DisableThinking sends thinking:{"type":"disabled"} to suppress server-side
 	// reasoning on OpenAI-compat reasoning models (deepseek-v4-flash on opencode).
@@ -89,7 +92,7 @@ func (c *OpenAIClient) Generate(ctx context.Context, prompt string) (string, err
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if apiKey := os.Getenv(c.APIKeyEnv); apiKey != "" {
+	if apiKey := APIKeyFor(c.GeneratorID, c.APIKeyEnv); apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
@@ -229,7 +232,7 @@ func (c *OpenAIClient) GenerateWithTools(
 		return zero, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if apiKey := os.Getenv(c.APIKeyEnv); apiKey != "" {
+	if apiKey := APIKeyFor(c.GeneratorID, c.APIKeyEnv); apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 

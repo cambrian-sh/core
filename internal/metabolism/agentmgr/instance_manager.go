@@ -3,6 +3,7 @@ package agentmgr
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -200,8 +202,52 @@ func (im *InstanceManager) killAllInstances() {
 	im.cmds = make(map[string]*exec.Cmd)
 }
 
+// maxSocketPathLen is the sockaddr_un limit every gRPC implementation enforces.
+//
+// It is 108 bytes including the NUL terminator, so 107 usable. This is not a
+// tunable: a path one byte over is refused at bind time by the OS, and the
+// agent dies during startup with a message about ports that says nothing about
+// names being too long.
+const maxSocketPathLen = 107
+
+// socketPath builds an agent instance's socket path, BOUNDED.
+//
+// The obvious construction -- temp dir + agent id + a full UUID + ".sock" --
+// runs to 109 characters for an agent named "telegram_ingress_support" under a
+// normal Windows temp directory. The default Telegram ingress happened to land
+// on exactly 107 and worked, so every per-bot agent failed to start while the
+// one everybody tests with was fine, and the error named ports rather than
+// lengths.
+//
+// The instance id is shortened to 8 hex characters (still 4 billion values
+// within one agent id, and the full id remains in the logs), and the agent id is
+// truncated only if the budget demands it -- with a short digest appended so two
+// long ids that share a prefix cannot collide onto one socket.
 func socketPath(agentID, instanceID string) string {
-	return filepath.Join(os.TempDir(), fmt.Sprintf("cambrian_%s_%s.sock", agentID, instanceID))
+	dir := os.TempDir()
+	shortInstance := instanceID
+	if len(shortInstance) > 8 {
+		shortInstance = strings.ReplaceAll(shortInstance, "-", "")[:8]
+	}
+
+	// Everything the name needs beyond the agent id itself.
+	fixed := len(filepath.Join(dir, "cambrian__.sock")) + len(shortInstance)
+	budget := maxSocketPathLen - fixed
+	name := agentID
+	if budget < 1 {
+		// A temp directory this long leaves no room for a readable name at all.
+		// A digest still produces a working socket, which beats an agent that
+		// cannot start.
+		name = ""
+	} else if len(name) > budget {
+		digest := fmt.Sprintf("%x", sha1.Sum([]byte(agentID)))[:6]
+		if budget > len(digest)+1 {
+			name = name[:budget-len(digest)-1] + "-" + digest
+		} else {
+			name = digest[:min(budget, len(digest))]
+		}
+	}
+	return filepath.Join(dir, fmt.Sprintf("cambrian_%s_%s.sock", name, shortInstance))
 }
 
 // buildAgentCmd constructs the OS command for an agent process.

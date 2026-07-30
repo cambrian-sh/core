@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"time"
 )
 
@@ -15,6 +14,10 @@ type AnthropicClient struct {
 	Endpoint  string
 	Model     string
 	APIKeyEnv string
+	// GeneratorID names this generator in the credential store. Empty for a
+	// client built straight from config with no store entry of its own -- the
+	// environment path still applies.
+	GeneratorID string
 	TimeoutMs int
 }
 
@@ -57,7 +60,7 @@ func (c *AnthropicClient) Generate(ctx context.Context, prompt string) (string, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if apiKey := os.Getenv(c.APIKeyEnv); apiKey != "" {
+	if apiKey := APIKeyFor(c.GeneratorID, c.APIKeyEnv); apiKey != "" {
 		req.Header.Set("x-api-key", apiKey)
 	}
 

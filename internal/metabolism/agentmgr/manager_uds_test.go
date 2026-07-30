@@ -74,8 +74,12 @@ func TestSocketPath_UniquePerInstance(t *testing.T) {
 	if !strings.Contains(p1, "agent-X") {
 		t.Errorf("socket path should contain agentID, got %s", p1)
 	}
-	if !strings.Contains(p1, id1.ID) {
-		t.Errorf("socket path should contain instanceID, got %s", p1)
+	// The path is DERIVED from the instance id rather than containing it: a full
+	// UUID pushes the name past the 107-character sockaddr_un limit, which the OS
+	// refuses at bind time. Uniqueness per instance is the property that matters
+	// and is asserted above.
+	if !strings.Contains(p1, strings.ReplaceAll(id1.ID, "-", "")[:8]) {
+		t.Errorf("socket path should be derived from instanceID, got %s", p1)
 	}
 	if !strings.HasSuffix(p1, ".sock") {
 		t.Errorf("socket path should end with .sock, got %s", p1)

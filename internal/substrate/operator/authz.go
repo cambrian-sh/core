@@ -148,11 +148,29 @@ func authorize(ctx context.Context, fullMethod string, idp OperatorIdentity) (co
 // (Operator-only). Reads (StreamEvents/Snapshot/Login and Query* reads) are open
 // to any authenticated role. Command RPCs are added by later slices; this list
 // is the single gate point. ADR-0047 D13.
+// operatorOnlyReads are READS that a Viewer must not make.
+//
+// The prefix rule below is fail-closed for unknown names but fail-OPEN for
+// anything called Query*/List*/Get* — so a read simply named `QueryLogs` would
+// inherit Viewer access by its spelling. That is the wrong default here: the log
+// stream carries whatever the kernel happened to write, which routinely includes
+// more than any policy would disclose, and it bypasses the access-policy plane
+// entirely. Logs are operator-only until they can be filtered per principal.
+var operatorOnlyReads = map[string]bool{
+	"QueryLogs": true,
+	"TailLogs":  true,
+}
+
 func isOperatorOnly(fullMethod string) bool {
 	name := strings.TrimPrefix(fullMethod, operatorMethodPrefix)
 	switch name {
 	case "Login", "StreamEvents", "Snapshot":
 		return false
+	}
+	// Checked BEFORE the naming convention, so a read cannot open itself to a
+	// Viewer by being named like one.
+	if operatorOnlyReads[name] {
+		return true
 	}
 	// Read RPCs are conventionally named Query*/List*/Get*/Describe*; everything
 	// else under OperatorConsole is treated as a mutating command (fail-closed).

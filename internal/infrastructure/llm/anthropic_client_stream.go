@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
@@ -64,7 +63,7 @@ func (c *AnthropicClient) GenerateStream(ctx context.Context, prompt string) (<-
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if apiKey := os.Getenv(c.APIKeyEnv); apiKey != "" {
+	if apiKey := APIKeyFor(c.GeneratorID, c.APIKeyEnv); apiKey != "" {
 		req.Header.Set("x-api-key", apiKey)
 	}
 

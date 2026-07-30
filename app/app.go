@@ -189,6 +189,13 @@ type Kernel struct {
 	// before the operator feed exists, and contract 0079 needs to give it the
 	// feed as a second destination once that feed is up.
 	Progress *progressHolder
+	// Logs is the in-process log retention window.
+	//
+	// Carried on the kernel because it is created with the logger — before almost
+	// everything else — and the surface that will read it is created near the end.
+	// Without this the ring exists and nothing can reach it, which is a window
+	// nobody can look through.
+	Logs *util.LogRing
 }
 
 // mcpToolCounter returns a function counting the tools attributed to one MCP
@@ -371,6 +378,16 @@ func Run(ctx context.Context, opts Options) error {
 	// because they are resolved before it runs — the store IS a config layer.
 	k.ConfigProvenance = prov
 	k.ConfigStore = cfgStore
+	// ADR-0101 D5: let the LLM clients READ the credentials this store holds.
+	//
+	// Without this the store was write-only in the worst sense: SetGeneratorKey
+	// encrypted a key, the console reported it installed and showed its last four,
+	// and every client still called os.Getenv and nothing else -- so the endpoint
+	// answered 401 while the panel said a key was configured. Nothing anywhere
+	// ever read what had been saved.
+	if cfgStore != nil {
+		llm.SetSecretResolver(cfgStore)
+	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -914,6 +931,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// this one real?"; ListPrincipals needs "which ones are", to find a policy
 		// linked to a principal that is not.
 		Agents: reg,
+		// The one WRITE the registry exposes to a plugin, bounded per plugin in
+		// buildPlugins to its own id namespace and to non-system agents. It
+		// exists so a plugin that gains a unit at runtime — a second Telegram
+		// bot, say — can actually run it, instead of recording it and waiting
+		// for a restart nobody mentioned.
+		RegisterAgent: func(def domain.AgentDefinition) error {
+			return reg.SetAgentWithManifest(def, nil)
+		},
 		// Who has come through an entry point, from the DURABLE conversation
 		// record. The decision journal cannot answer that: it is in-memory and
 		// only records when something asks the decision point, so a turn that
@@ -1631,6 +1656,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		CheckpointSource:   storeHandle,
 		TokenSeries:        tokenSeries,
 		Progress:           progressSink,
+		Logs:               util.DefaultLogRing(),
 		LLMProvider:        llmProvider,
 		VectorCounter:      vectorCounterFor(vec),
 		Config:             cfg,
@@ -1990,9 +2016,16 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 						}
 						return out
 					},
+					generatorList: func() []config.GeneratorConfig {
+						return k.Config.LLMProvider.Generators
+					},
 				}
 				operatorSvc.SetConfigWriter(writer)
 				operatorSvc.SetSecretWriter(writer)
+				// Contract 0083: the write half of the generator surface. Same
+				// store, same shadowing rules — the console's Save button now
+				// has somewhere to land other than a gitignored config file.
+				operatorSvc.SetGeneratorWriter(writer)
 			}
 		}
 
@@ -2003,6 +2036,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// handler is wired (D14) — an OSS kernel hides the Watches screen.
 		operatorCaps := []string{
 			"feed", "snapshot", "commands", "steering", "audit",
+			// kernel-logs (contract 0082): QueryLogs/TailLogs read the in-process
+			// retention window. OPERATOR-ONLY — a Viewer is refused, because a log
+			// line bypasses the access-policy plane and is not filtered per
+			// principal. A console gates the whole surface on this string.
+			"kernel-logs",
 			"tools-read", "tools-manage", "skills-read",
 			"memory-read", "memory-ingest", "tool-exec", "tool-approvals",
 			// memory-ingest-binary: IngestMemoryOpRequest carries `content`/`filename`
@@ -2161,7 +2199,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			k.Progress.setFeed(operatorFeed.EmitEphemeral)
 		}
 
-		operatorSvc.SetHandshake("0.6.9-alpha", "0079", operatorCaps)
+		// Contract 0082: the kernel's own logs, operator-only.
+		if k.Logs != nil {
+			operatorSvc.SetLogRing(k.Logs)
+		}
+		operatorSvc.SetHandshake("0.6.9-alpha", "0083", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".
@@ -2591,7 +2633,23 @@ func reconcileFilesystemAgents(ctx context.Context, reg registryReconciler, exis
 		if a.Trait == domain.TraitModel || a.Runtime == domain.RuntimeA2A || a.ExecPath == "" {
 			continue
 		}
-		fullPath := filepath.Join(a.Dir, a.ExecPath)
+		// ExecPath is stored BOTH ways: the filesystem scanner records a path
+		// relative to Dir, while a plugin-contributed definition carries an
+		// absolute one — it has to, because the spawner runs it with
+		// cmd.Dir = Dir and no other anchor.
+		//
+		// Joining an already-absolute path onto Dir produced a doubled path that
+		// can never exist, so every plugin-contributed agent was deleted at the
+		// same boot that registered it, and every later spawn failed with
+		// "agent not found in database". That is what kept a second Telegram bot
+		// from ever starting.
+		// An empty Dir is skipped for the same reason: there is nothing to
+		// resolve against, so joining can only rewrite separators — enough, on
+		// Windows, to turn a path that exists into one that does not.
+		fullPath := a.ExecPath
+		if a.Dir != "" && !filepath.IsAbs(fullPath) {
+			fullPath = filepath.Join(a.Dir, a.ExecPath)
+		}
 		if exists(fullPath) {
 			continue
 		}

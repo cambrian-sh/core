@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // GeneratorEntry is a constructed generator plus the metadata the Provider needs
@@ -32,6 +32,8 @@ func NewGeneratorRegistry(generators []config.GeneratorConfig) (*GeneratorRegist
 	r := &GeneratorRegistry{entries: make(map[string]GeneratorEntry, len(generators))}
 	for _, g := range generators {
 		gen, ext, err := NewClient(config.ModelConfig{
+			// Carried so the client can find this generator's stored credential.
+			ID:              g.ID,
 			Provider:        g.Provider,
 			Model:           g.Model,
 			Endpoint:        g.Endpoint,

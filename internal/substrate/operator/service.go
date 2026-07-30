@@ -9,6 +9,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/memory"
+	"github.com/cambrian-sh/core/pkg/util"
 )
 
 // SessionLister supplies persistent session state for the Snapshot fan-in.
@@ -30,8 +31,12 @@ type Service struct {
 	audit      AuditStore
 	grants     GrantsStore
 	controls   *ExecutionControlHub
-	hitl       domain.ApprovalHub
-	effects    CommandEffects
+	// logs is the kernel's in-process retention window (contract 0082). nil ⇒
+	// QueryLogs/TailLogs answer Unimplemented rather than an empty window, which
+	// would read as "the kernel has been silent".
+	logs    *util.LogRing
+	hitl    domain.ApprovalHub
+	effects CommandEffects
 
 	// ADR-0047 Amendment A2 read sources (CORE-OPS-1).
 	tools         ToolCatalog
@@ -79,6 +84,11 @@ type Service struct {
 	planSubmitter PlanSubmitter
 	configWriter  ConfigWriter
 	secretWriter  SecretWriter
+	// generatorWriter is the write half of the generator surface (contract
+	// 0083). nil ⇒ SaveGenerator/RemoveGenerator return Unimplemented, which a
+	// console renders as "this kernel's generators are file-configured" rather
+	// than offering a Save button that does nothing.
+	generatorWriter GeneratorWriter
 
 	sessionOps SessionOps
 	convOps    ConversationOps // ADR-0084 D9: OSS chat lane
