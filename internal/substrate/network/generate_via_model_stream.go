@@ -92,7 +92,32 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 	// Persist full prompt+response as a neural trace in pgvector.
 	neuralTrace := fmt.Sprintf("PROMPT:\n%s\n\nRESPONSE:\n%s", req.Prompt, completion)
 	if s.VectorStore != nil && neuralTrace != "" {
-		storeNeuralTrace(stream.Context(), s.VectorStore, neuralTrace, string(leaseID), "", stepIndex, 0, agentID)
+		// BRAIN-01: resolve the caller's SESSION server-side and put it on the
+		// context the trace is written under.
+		//
+		// This is the path that writes most traces, and it had no session at all —
+		// so a trace was one run's reasoning that every other run could retrieve
+		// forever, with nothing on it to say whose run it was. Resolved from the
+		// LEASE the same way QueryMemory does it, never from a request field: a
+		// caller restating its own session is not a security boundary (INV-5).
+		traceCtx := stream.Context()
+		sid := s.resolveCallerSession(traceCtx)
+		if sid == "" {
+			// Fall back to the lease THIS CALL is already running under. The metadata
+			// lookup above re-reads the lease header, which a streaming call does not
+			// always carry; leaseID is the same fact, already resolved server-side,
+			// and it is what the trace is keyed on anyway. Still not caller-supplied:
+			// the lease was minted by the kernel and the binding is the kernel's.
+			if r := s.leaseResolver(); r != nil {
+				if binding, known := r.ResolveLease(leaseID); known {
+					sid = binding.SessionID
+				}
+			}
+		}
+		if sid != "" {
+			traceCtx = domain.WithSessionID(traceCtx, sid)
+		}
+		storeNeuralTrace(traceCtx, s.VectorStore, neuralTrace, string(leaseID), "", stepIndex, 0, agentID)
 	}
 
 	// OBSERVABILITYREQ REQ1: Log agent LLM call to Langfuse (fire-and-forget).

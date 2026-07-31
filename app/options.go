@@ -253,9 +253,18 @@ type ReactiveJournal interface {
 	RecordDeadLetter(dl domain.ReactiveDeadLetter) error
 	// ListDeadLetters returns dead-letter entries newest-first (limit <= 0 ⇒ all).
 	ListDeadLetters(limit int) ([]domain.ReactiveDeadLetter, error)
-	// Prune drops journal records at/below minAcked whose TTL has expired. Returns
-	// the count removed.
-	Prune(minAcked uint64) (removed int, err error)
+	// Prune drops up to limit journal records at/below minAcked whose TTL has
+	// expired. Returns the count removed and whether more remained at the cap
+	// (limit <= 0 ⇒ unbounded).
+	//
+	// Bounded since GOV-02: an unbounded first prune over a journal that has grown
+	// for months holds the store's write lock for the whole pass, which is itself
+	// the outage the GC exists to prevent.
+	Prune(minAcked uint64, limit int) (removed int, more bool, err error)
+	// RetainedWindow reports the oldest and newest seq the journal still holds and
+	// how many records remain. Pruning shortens what a backtest can replay, so the
+	// window must be reportable rather than assumed.
+	RetainedWindow() (oldestSeq, newestSeq uint64, count int, err error)
 }
 
 // ReactiveAgentDispatcher is the agent-manager surface reactive needs:

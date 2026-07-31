@@ -32,8 +32,8 @@ type EdgeBatcher struct {
 	pending []*domain.Document
 	mu      sync.Mutex
 
-	batchSize int
-	maxIdle   time.Duration
+	batchSize  int
+	maxIdle    time.Duration
 	llmTimeout time.Duration
 
 	stopCh   chan struct{}
@@ -137,9 +137,9 @@ func (b *EdgeBatcher) Stats() (enqueued, dropped, drained, llmCalls uint64) {
 // backpressure when pending is itself at a sane cap.
 //
 // The loop has three phases per iteration:
-//   1. DrainQueueToPending: pull every available item off the channel.
-//   2. If pending >= batchSize: call the LLM (blocking).
-//   3. Otherwise: wait for more items / idle / stop / ctx-done.
+//  1. DrainQueueToPending: pull every available item off the channel.
+//  2. If pending >= batchSize: call the LLM (blocking).
+//  3. Otherwise: wait for more items / idle / stop / ctx-done.
 func (b *EdgeBatcher) drainLoop(ctx context.Context) {
 	defer close(b.doneCh)
 	timer := time.NewTimer(b.maxIdle)

@@ -394,3 +394,55 @@ fallback). The reactive suite should be re-run as a **regression check**, not a 
 - Code: `app/plugin.go`, `app/options.go`, `app/app.go` (~1528–1582 capability assembly),
   `internal/config/config.go:481`, `api/proto/operator.proto`, `domain/signal.go`,
   `domain/reactive_journal.go`; `cambrian-premium/wiring/`, `cambrian-premium/cmd/orchestrator/main.go`.
+
+---
+
+## Amendment A1 — capabilities a plugin can only know after Build (2026-07-31, REC-02)
+
+**Amends D2** (manifest-declared capabilities). D2 stands as the norm; this adds a second,
+narrower contribution point.
+
+### What was wrong
+
+D2 has capabilities declared in the manifest, which is read at **Register** — before any
+kernel exists. That is the right answer for a surface a build either has or does not have,
+and it stays the default.
+
+It is the wrong answer for a capability whose truth depends on what the deployment
+supplied. The record lane (ADR-0102) advertised `record-lane` from its manifest on a kernel
+with **no Postgres**, so a console enabled the surface and every call answered
+`Unimplemented`. The ABSENCE of the capability is the meaningful signal there — a
+deployment without a database is correct, not broken — and the manifest could not express
+it.
+
+The earlier reasoning ("the manifest describes what this build CAN contribute; whether it
+did is reported by plugin state on the handshake") was coherent but did not survive
+contact: nothing consumed plugin state to suppress the capability, so the distinction
+existed in prose and not in the handshake a console actually reads.
+
+### Decision
+
+`app.CapabilityReporter` is an OPTIONAL interface:
+
+```go
+type CapabilityReporter interface { LiveCapabilities() []string }
+```
+
+Called ONCE, after every plugin's `Build`, and merged into the same deduped capability set.
+Ordering is the point and is visible at the call site: all plugins are built, *then* each is
+asked what it can actually serve. A plugin polled mid-build would answer about a
+half-constructed self.
+
+A plugin implementing nothing here keeps manifest-only behaviour, so this is additive for
+every existing plugin.
+
+### Consequences
+
+- `driftplugin` declares NO manifest capability and reports `record-lane` from
+  `LiveCapabilities()` only when its store is non-nil.
+- The rule of thumb: **manifest** for what a build contains, **LiveCapabilities** for what a
+  deployment turned out to have.
+- This is a new OSS type, which the company-brain backlog's cross-cutting rule 2 forbids.
+  Reopened deliberately: rule 2 says an issue that appears to need a core change is a design
+  smell to re-derive, and the re-derivation landed here — there is no plugin-local way to
+  suppress a capability the composition root already collected.

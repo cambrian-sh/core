@@ -7,6 +7,22 @@ import (
 	"testing"
 )
 
+// relExec is the ExecPath form the adapter actually stores: RELATIVE to the
+// agents dir.
+//
+// These tests all asserted an absolute path. The adapter has stored a relative
+// one deliberately since discoverAgent — buildAgentCmd resolves ExecPath under
+// cmd.Dir=def.Dir, so an absolute path yields a doubled "agents/agents/..." that
+// python cannot open. The expectations, not the code, were stale.
+func relExec(t *testing.T, agentsDir, fullPath string) string {
+	t.Helper()
+	rel, err := filepath.Rel(agentsDir, fullPath)
+	if err != nil {
+		t.Fatalf("rel(%q, %q): %v", agentsDir, fullPath, err)
+	}
+	return filepath.ToSlash(rel)
+}
+
 // ── Sidecar Manifest Discovery Tests (Issue #0008-03) ────────────────────────
 
 // helper: write a sidecar manifest JSON and fake binary to a temp dir.
@@ -60,7 +76,7 @@ func TestSidecar_ValidToolManifest_RegistersWithTraitTool(t *testing.T) {
 		t.Errorf("expected Trait=%q, got %q", "tool", got.Trait)
 	}
 	// ExecPath must be resolved (absolute) and point to the binary alongside the manifest
-	wantExecPath := filepath.ToSlash(filepath.Join(agentsDir, "file_writer"))
+	wantExecPath := relExec(t, agentsDir, filepath.Join(agentsDir, "file_writer"))
 	if got.ExecPath != wantExecPath {
 		t.Errorf("expected ExecPath=%q, got %q", wantExecPath, got.ExecPath)
 	}
@@ -306,7 +322,7 @@ AGENT_MANIFEST = '''
 	if got.ID != "scout_agent" {
 		t.Errorf("expected ID=%q, got %q", "scout_agent", got.ID)
 	}
-	wantExecPath := filepath.ToSlash(filepath.Join(nestedDir, "scout_agent.py"))
+	wantExecPath := relExec(t, agentsDir, filepath.Join(nestedDir, "scout_agent.py"))
 	if got.ExecPath != wantExecPath {
 		t.Errorf("expected ExecPath=%q, got %q", wantExecPath, got.ExecPath)
 	}
@@ -336,10 +352,10 @@ AGENT_MANIFEST = '''
 	}
 
 	files := map[string]string{
-		filepath.Join(agentsDir, "browser_agent.py"):                pyContent("Top-level browser agent."),
-		filepath.Join(nestedDir, "scout_agent.py"):                  pyContent("System scout."),
-		filepath.Join(nestedDir, "reranker_agent.py"):               pyContent("System reranker."),
-		filepath.Join(nestedDir, "kg_extractor_agent.py"):           pyContent("System kg extractor."),
+		filepath.Join(agentsDir, "browser_agent.py"):      pyContent("Top-level browser agent."),
+		filepath.Join(nestedDir, "scout_agent.py"):        pyContent("System scout."),
+		filepath.Join(nestedDir, "reranker_agent.py"):     pyContent("System reranker."),
+		filepath.Join(nestedDir, "kg_extractor_agent.py"): pyContent("System kg extractor."),
 	}
 	for path, content := range files {
 		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
@@ -362,10 +378,10 @@ AGENT_MANIFEST = '''
 	}
 
 	wantIDs := map[string]string{
-		"browser_agent":     filepath.ToSlash(filepath.Join(agentsDir, "browser_agent.py")),
-		"scout_agent":       filepath.ToSlash(filepath.Join(nestedDir, "scout_agent.py")),
-		"reranker_agent":    filepath.ToSlash(filepath.Join(nestedDir, "reranker_agent.py")),
-		"kg_extractor_agent": filepath.ToSlash(filepath.Join(nestedDir, "kg_extractor_agent.py")),
+		"browser_agent":      relExec(t, agentsDir, filepath.Join(agentsDir, "browser_agent.py")),
+		"scout_agent":        relExec(t, agentsDir, filepath.Join(nestedDir, "scout_agent.py")),
+		"reranker_agent":     relExec(t, agentsDir, filepath.Join(nestedDir, "reranker_agent.py")),
+		"kg_extractor_agent": relExec(t, agentsDir, filepath.Join(nestedDir, "kg_extractor_agent.py")),
 	}
 
 	seen := make(map[string]string, len(agents))
@@ -429,7 +445,7 @@ func TestSeed_NestedSidecarAgent_RegistersAndResolvesExecPath(t *testing.T) {
 	if got.ID != "sys_tool" {
 		t.Errorf("expected ID=%q, got %q", "sys_tool", got.ID)
 	}
-	wantExecPath := filepath.ToSlash(binaryPath)
+	wantExecPath := relExec(t, agentsDir, binaryPath)
 	if got.ExecPath != wantExecPath {
 		t.Errorf("expected ExecPath=%q, got %q", wantExecPath, got.ExecPath)
 	}
@@ -491,7 +507,7 @@ AGENT_MANIFEST = '''
 	if got.ID != "scanner_agent" {
 		t.Errorf("expected ID=%q, got %q", "scanner_agent", got.ID)
 	}
-	wantExecPath := filepath.ToSlash(filepath.Join(pkgDir, "agent.py"))
+	wantExecPath := relExec(t, agentsDir, filepath.Join(pkgDir, "agent.py"))
 	if got.ExecPath != wantExecPath {
 		t.Errorf("expected ExecPath=%q, got %q", wantExecPath, got.ExecPath)
 	}

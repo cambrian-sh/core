@@ -71,10 +71,10 @@ type Step struct {
 
 // ExecutionPlan carries the structured plan produced by the Planner.
 type ExecutionPlan struct {
-	Steps                []Step         `json:"steps"`
-	Subject              string         `json:"subject"`
-	CachePolicy          string         `json:"cache_policy,omitempty"` // ADR-0027: LLM-classified policy name for Hippocampus retrieval thresholds
-	PlanningFacts        []SearchResult `json:"-"`                      // AGENTCONTEXTREQ: planning-time LTM facts forwarded to agents; not serialised in JSON prompt.
+	Steps         []Step         `json:"steps"`
+	Subject       string         `json:"subject"`
+	CachePolicy   string         `json:"cache_policy,omitempty"` // ADR-0027: LLM-classified policy name for Hippocampus retrieval thresholds
+	PlanningFacts []SearchResult `json:"-"`                      // AGENTCONTEXTREQ: planning-time LTM facts forwarded to agents; not serialised in JSON prompt.
 	// PROMPTREQ: hash of the static prompt template that produced this plan; written to PlanEvent.
 	PlannerPromptVersion string `json:"-"`
 	// FollowedProcedures are the ADR-0094 routine IDs that were in the planner's

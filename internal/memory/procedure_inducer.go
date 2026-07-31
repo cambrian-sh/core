@@ -137,7 +137,7 @@ func EpisodesFromScenes(docs []domain.Document) []EpisodeShape {
 			// one observation and suppress every promotion. Falls back to the
 			// experience id when absent, which preserves per-row counting for older
 			// scenes rather than silently merging them.
-			RawTrigger: sceneIdentityOf(d),
+			RawTrigger:   sceneIdentityOf(d),
 			Capabilities: capabilitiesOf(d),
 			Succeeded:    outcome == "success",
 			Tags:         docTags(d.Metadata),

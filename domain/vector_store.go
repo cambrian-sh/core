@@ -15,15 +15,15 @@ const (
 	DocTypeProceduralTemplate = "procedural_template"
 	DocTypeNeuralTrace        = "neural_trace"
 	DocTypeNegativeEdge       = "negative_edge"
-	DocTypeMnemonicFact       = "mnemonic_fact"   // ADR-0015: structured step output (tool response, agent result)
-	DocTypeMnemonicAction     = "mnemonic_action" // ADR-0049: a mutation/side-effecting tool call — an EVENT ("what I did"), not knowledge
-	DocTypeMnemonicScene      = "mnemonic_scene"  // ADR-0015: masterContext snapshot at step completion time
-	DocTypeMnemonicEntity     = "mnemonic_entity" // ADR-0049 D8: a first-class engaged THING (file/dir/api/…), keyed by canonical kind:id
+	DocTypeMnemonicFact       = "mnemonic_fact"      // ADR-0015: structured step output (tool response, agent result)
+	DocTypeMnemonicAction     = "mnemonic_action"    // ADR-0049: a mutation/side-effecting tool call — an EVENT ("what I did"), not knowledge
+	DocTypeMnemonicScene      = "mnemonic_scene"     // ADR-0015: masterContext snapshot at step completion time
+	DocTypeMnemonicEntity     = "mnemonic_entity"    // ADR-0049 D8: a first-class engaged THING (file/dir/api/…), keyed by canonical kind:id
 	DocTypeMnemonicProcedure  = "mnemonic_procedure" // ADR-0094: an INDUCED reusable routine — descriptive ("how this has gone"), not normative like a Skill
-	DocTypeEpisodicMemory     = "episodic_memory" // ADR-0029: session narrative index (goal + decisions)
-	DocTypeTool               = "tool"            // ADR-0044: tool descriptor indexed for semantic retrieval
-	DocTypeSkill              = "skill"           // ADR-0046: system-skill descriptor indexed for semantic retrieval
-	DocTypeDocSection         = "doc_section"     // ADR-0060: a structural section node (chapter/section/subsection) of an ingested document; NOT embedded, excluded from fact recall
+	DocTypeEpisodicMemory     = "episodic_memory"    // ADR-0029: session narrative index (goal + decisions)
+	DocTypeTool               = "tool"               // ADR-0044: tool descriptor indexed for semantic retrieval
+	DocTypeSkill              = "skill"              // ADR-0046: system-skill descriptor indexed for semantic retrieval
+	DocTypeDocSection         = "doc_section"        // ADR-0060: a structural section node (chapter/section/subsection) of an ingested document; NOT embedded, excluded from fact recall
 )
 
 // SearchOptions carries all optional parameters for a VectorStore.Search call.
@@ -48,6 +48,17 @@ type SearchOptions struct {
 	// fails closed when it is nil; the pgvector adapter translates it into the
 	// three-set/CNF jsonb containment predicate. ScopeSystem bypasses filtering.
 	Scope *TagPredicate
+	// Isolation is the session boundary applied to this search (BRAIN-01) — a
+	// SECOND predicate beside Scope, never more terms on it. Scope answers "may
+	// this principal see this class of thing"; Isolation answers "does this belong
+	// to the conversation I am answering". Folding them together would make both
+	// unauditable and would force session identities into the classification
+	// vocabulary, which ADR-0099 forbids.
+	//
+	// nil adds no SQL predicate here, exactly as a nil Scope does: the fail-closed
+	// decision belongs to the chokepoint (internal/authz), and duplicating it in
+	// the SQL builder would put one security decision in two places.
+	Isolation *SessionIsolation
 }
 
 // Embedding represents the vector data and its associated metadata.

@@ -3,12 +3,24 @@
 # operator.proto pinned to a kernel version and generates Rust (tonic/prost) and
 # TS (ts-proto / tauri-specta) from its own buf.gen.yaml — those plugin blocks
 # are documented below but not emitted here (no Go-side coupling to the UI repo).
+#
+# NOT the canonical generator. `make proto` uses protoc, which is what produced
+# the committed bindings and reproduces them byte-for-byte; this file exists for
+# ad-hoc `buf generate` and as the schema-gate config's neighbour.
+#
+# The plugin versions below are PINNED to the canonical toolchain. They were
+# unpinned until 2026-07-31, which meant `buf generate` silently tracked whatever
+# the latest remote plugin was — installing buf then made `make proto-check` fail
+# on a clean tree. Pinning stops the silent part; it does not make buf output
+# identical to protoc's, because buf does not shell out to protoc and writes
+# `protoc (unknown)` into the grpc header where protoc writes its version. If you
+# regenerate with buf, expect that header line to differ and do not commit it.
 version: v2
 plugins:
-  - remote: buf.build/protocolbuffers/go
+  - remote: buf.build/protocolbuffers/go:v1.36.11
     out: api/proto
     opt: paths=source_relative
-  - remote: buf.build/grpc/go
+  - remote: buf.build/grpc/go:v1.6.1
     out: api/proto
     opt: paths=source_relative
 

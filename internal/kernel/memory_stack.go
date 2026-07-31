@@ -32,7 +32,7 @@ type MemoryStack struct {
 	Embedder             domain.Embedder
 	WorkspaceStage       domain.WorkspaceStage        // ADR-0016: may be nil
 	GraphStore           domain.GraphStore            // ADR-0025: may be nil; used to construct PgSceneWriter
-	IngestionManager     *memory.IngestionManager     // ADR-0028: may be nil when IngestionQueueSize=0
+	IngestionManager     *memory.IngestionManager     // ADR-0028: ALWAYS non-nil (a zero queue size defaults to 1000). The old "may be nil" note was false and implied a raw-write fallback that could not fire.
 	EntityIndex          *memory.EntityIndex          // ADR-0052: in-memory entity→docs index; nil = surface-only recall
 	EdgeWriter           *memory.EdgeWriter           // ADR-0052: per-doc LLM-driven edge populator (sync mode, kept for tests)
 	EdgeBatcher          *memory.EdgeBatcher          // ADR-0052: batched LLM-driven edge populator; production path

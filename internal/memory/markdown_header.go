@@ -55,9 +55,9 @@ func (m MarkdownHeaderChunker) Chunk(ctx context.Context, doc *domain.ExternalDo
 	}
 
 	type pending struct {
-		header   string
-		path     []string
-		content  []string
+		header  string
+		path    []string
+		content []string
 	}
 	var (
 		pendingChunks []pending
@@ -100,7 +100,7 @@ func (m MarkdownHeaderChunker) Chunk(ctx context.Context, doc *domain.ExternalDo
 	out := make([]domain.Chunk, total)
 	for i, p := range pendingChunks {
 		out[i] = domain.Chunk{
-			Body:    joinChunkBody(p.header, p.content),
+			Body: joinChunkBody(p.header, p.content),
 			Metadata: map[string]any{
 				"chunk_index":  i,
 				"total_chunks": total,

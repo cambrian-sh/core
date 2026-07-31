@@ -36,6 +36,37 @@ func ScopeFromContext(ctx context.Context) (*TagPredicate, bool) {
 	return scope, ok
 }
 
+// isolationCtxKey carries the session-isolation predicate (BRAIN-01).
+//
+// Seeded on the SAME context as the read predicate and for the same stated
+// reason: Search pushes it into SQL, but the enrichment stages reach chunks BY ID
+// (anchor promotion, neighbour window, entity seeding, kgExpand) and ctx is their
+// only channel. Seeding once means a by-id read added later is isolated by
+// default rather than by whoever remembers to thread it.
+//
+// It is a SECOND predicate rather than more terms on the first, because the two
+// answer different questions — may this principal see this CLASS of thing, versus
+// does this belong to the conversation I am answering — and a session id is an
+// identity, not a classification (ADR-0099).
+type isolationCtxKey struct{}
+
+// WithIsolation returns a child context carrying the session-isolation predicate.
+func WithIsolation(ctx context.Context, iso *SessionIsolation) context.Context {
+	return context.WithValue(ctx, isolationCtxKey{}, iso)
+}
+
+// IsolationFromContext returns the isolation predicate carried by ctx, if any.
+// The boolean reports PRESENCE — a present-but-nil predicate is distinct from
+// absence, and both are treated fail-closed at the chokepoint.
+func IsolationFromContext(ctx context.Context) (*SessionIsolation, bool) {
+	v := ctx.Value(isolationCtxKey{})
+	if v == nil {
+		return nil, false
+	}
+	iso, ok := v.(*SessionIsolation)
+	return iso, ok
+}
+
 // principalCtxKey carries the authenticated principal.
 type principalCtxKey struct{}
 

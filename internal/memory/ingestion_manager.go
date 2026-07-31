@@ -40,6 +40,58 @@ type IngestionManager struct {
 	// hot path (ADR-0049 episodic scenes). Default OFF: it stalls ingest when no
 	// LLM is reachable and is not needed for document/structure retrieval.
 	sceneGenEnabled bool
+	// bus publishes MemoryWrittenEvent so an ingest reaches the operator feed
+	// (ADR-0047 D3). nil ⇒ no-op.
+	//
+	// This lived only on RememberService until 2026-07-31 — which sat on the
+	// unreachable raw-write fallback, so the operator's memory feed had a
+	// publisher wired to a dead path and a consumer receiving nothing.
+	bus domain.EventBus
+}
+
+// plural keeps the feed readable: "1 chunks" is the kind of small wrongness that
+// makes an operator trust a surface slightly less.
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
+}
+
+// SetEventBus wires the operator feed. Call before Start; nil is ignored.
+func (im *IngestionManager) SetEventBus(bus domain.EventBus) {
+	if im != nil {
+		im.bus = bus
+	}
+}
+
+// publishWritten emits ONE event per ingested DOCUMENT, keyed on the source-doc
+// entity id.
+//
+// Per document, not per chunk, and the choice is deliberate: a chunk is an
+// internal unit of retrieval, so a 200-chunk upload would put 200 rows on an
+// operator's feed describing one action they took. The document is the thing the
+// operator did; the chunk count is detail, and it rides in the summary.
+func (im *IngestionManager) publishWritten(doc domain.ExternalDocument, entityID string, chunkCount int) {
+	if im == nil || im.bus == nil || entityID == "" {
+		return
+	}
+	summary := doc.Title
+	if summary == "" {
+		summary = doc.SourceURI
+	}
+	_ = im.bus.Publish(domain.MemoryWrittenEvent{
+		DocID: entityID,
+		// The SOURCE DOCUMENT, not a chunk type: the id is the source-doc entity and
+		// the event describes the document the operator ingested.
+		DocType: sourceDocumentMarker,
+		// The ingest THREAD, not a task session — an ingestion thread is not a run
+		// (see chunkMetadata), and reporting it as one would make every upload look
+		// like the output of an execution on the feed.
+		SessionID: doc.ThreadID,
+		Source:    doc.SourceURI,
+		Summary:   fmt.Sprintf("%s (%d %s)", summary, chunkCount, plural(chunkCount, "chunk")),
+	})
 }
 
 // SetChunkTripletsBatcher wires the per-chunk triplet/anchor extractor onto the
@@ -151,6 +203,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 		return entityID, nil
 	}
 	slog.Info("IngestionManager: sync ingest complete", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", chunkCount)
+	im.publishWritten(doc, entityID, chunkCount)
 	return entityID, nil
 }
 

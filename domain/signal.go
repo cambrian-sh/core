@@ -128,7 +128,24 @@ type ReactiveBudgetReader interface {
 // WatchBacktester replays a candidate WatchConfig over the signal journal without acting
 // (REACT-05 / ADR-0071). Satisfied by the premium ReactiveEngine.
 type WatchBacktester interface {
-	Backtest(ctx context.Context, cfg WatchConfig, afterSeq uint64) ([]WatchBacktestVerdict, error)
+	Backtest(ctx context.Context, cfg WatchConfig, afterSeq uint64) (WatchBacktestResult, error)
+}
+
+// WatchBacktestResult is a backtest's verdicts together with the journal window
+// they were computed over (GOV-02).
+//
+// The window is part of the RESULT rather than a separate query on purpose. Journal
+// GC shortens replayable history, so "this watch would have fired twice" is only
+// meaningful next to how much history was actually searched — and a window a caller
+// has to remember to ask for separately is a window most callers will not ask for.
+type WatchBacktestResult struct {
+	Verdicts []WatchBacktestVerdict
+	// RetainedOldestSeq/RetainedNewestSeq bound the journal still on disk.
+	RetainedOldestSeq uint64
+	RetainedNewestSeq uint64
+	// RetainedCount is how many records remain; 0 means an empty journal, which is
+	// a stated answer rather than an unknown one.
+	RetainedCount int
 }
 
 // WatchSource identifies the origin of signals for a WatchConfig.
@@ -208,7 +225,7 @@ type WatchConfig struct {
 	// used yet is a cost with no payer. EffectiveActions() is the accessor
 	// everything should read.
 	Actions []WatchAction `json:"actions,omitempty"`
-	Active        bool        `json:"active"`
+	Active  bool          `json:"active"`
 	// ResponseMode is "" (async, default) or "sync" (CHAT conversations).
 	ResponseMode string `json:"response_mode,omitempty"`
 	// DaemonParams carries parameters injected into the daemon on first RegisterWatch.

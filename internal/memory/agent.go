@@ -1006,13 +1006,13 @@ func (a *Agent) WritePlanScene(ctx context.Context, rec domain.PlanRecord) error
 		Metadata: map[string]interface{}{
 			"timestamp":  time.Now().Format(time.RFC3339),
 			"plan_id":    planID,
-			"engaged":    set,         // map ref → baseline cid (by reference)
-			"projection": projection,  // the abstracted retrieval face
+			"engaged":    set,        // map ref → baseline cid (by reference)
+			"projection": projection, // the abstracted retrieval face
 			// The DEDUP key: shape + concrete entities. Distinct from projection,
 			// which must stay coarse to match situations of the same shape.
 			"scene_identity": sceneIdentity(projection, refs),
-			"outcome":    outcome,     // a FIELD, not part of the similarity key
-			"actions":    actionLines, // the inline action path ("what I did")
+			"outcome":        outcome,     // a FIELD, not part of the similarity key
+			"actions":        actionLines, // the inline action path ("what I did")
 			// ADR-0049 A2.3: how far the episode diverged from what merit predicted.
 			// A field, never part of the similarity key — you match on the SITUATION,
 			// then read how surprising what followed was.

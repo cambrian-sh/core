@@ -330,4 +330,10 @@ var feedEventTypes = []string{
 	domain.EventTypeReactiveBudget,
 	// Agent-loop observability: per-memory_query thrash + poisoning-provenance events.
 	domain.EventTypeAgentStep,
+	// ADR-0102 A1: retention/compaction passes. Present here rather than only on the
+	// owning plugin's plane because a deletion an operator has to go looking for is
+	// not meaningfully auditable. Note the ROUTE-08.A precedent above — a mapper case
+	// without an entry in THIS list is an event that is built, published and silently
+	// never delivered.
+	domain.EventTypeRetentionRun,
 }

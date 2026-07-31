@@ -204,6 +204,24 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			Replanned:           e.Replanned,
 		}}
 
+	case domain.RetentionRunEvent:
+		// No SessionId: retention is a background pass, not session work. Leaving
+		// it empty is correct rather than lossy — attributing a deletion to whatever
+		// session happened to be live would invent a causal link that is not there.
+		dels := make([]*pb.RetentionDeletionOp, len(e.Deleted))
+		for i, d := range e.Deleted {
+			dels[i] = &pb.RetentionDeletionOp{Category: d.Category, Count: int32(d.Count)}
+		}
+		out.Payload = &pb.OperatorEvent_RetentionRun{RetentionRun: &pb.RetentionRunOp{
+			Source:     e.Source,
+			RunId:      e.RunID,
+			StartedAt:  timestamppb.New(e.StartedAt),
+			FinishedAt: timestamppb.New(e.FinishedAt),
+			Deleted:    dels,
+			Bounded:    e.Bounded,
+			Error:      e.Err,
+		}}
+
 	case domain.AgentStepEvent:
 		out.SessionId = e.SessionID
 		out.Payload = &pb.OperatorEvent_AgentStep{AgentStep: &pb.AgentStepOp{

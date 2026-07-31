@@ -140,3 +140,42 @@ func TestStoreNeuralTrace_HealAttempt_Nonzero(t *testing.T) {
 		t.Errorf("heal_attempt = %v, want %d", v, 2)
 	}
 }
+
+// BRAIN-01: a neural trace must carry the SESSION that produced it.
+//
+// A trace is one run's reasoning — the archetypal "another task's evidence".
+// Without a session stamp it was retrievable by every other run forever, and
+// nothing downstream could tell whose run it belonged to: `trace_id` looks
+// session-shaped but is a plan or lease id.
+func TestStoreNeuralTrace_StampsTheSession(t *testing.T) {
+	vs := &capturingVS{saved: make(chan *domain.Document, 1)}
+	ctx := domain.WithSessionID(context.Background(), "sess-owner")
+
+	storeNeuralTrace(ctx, vs, "thought text", "trace-1", "plan-1", 0, 0, "agent-x")
+
+	doc := waitForDoc(t, vs.saved)
+	got, _ := doc.Metadata[domain.MetaSessionID].(string)
+	if got != "sess-owner" {
+		t.Fatalf("session_id = %q, want %q — an unstamped trace is invisible to "+
+			"isolation and uncountable by cross_session_retrieval_rate", got, "sess-owner")
+	}
+	// Stored as a plain string: Metadata is an untyped JSON edge, and every reader
+	// does a .(string) assertion that would silently miss a typed value.
+	if _, ok := doc.Metadata[domain.MetaSessionID].(string); !ok {
+		t.Fatalf("session_id is not a plain string: %T", doc.Metadata[domain.MetaSessionID])
+	}
+}
+
+// No session on the context (a kernel-internal or unattended write) must NOT
+// invent one. An empty-string stamp would be worse than none: it is a value that
+// every predicate then has to special-case.
+func TestStoreNeuralTrace_NoSessionLeavesTheKeyAbsent(t *testing.T) {
+	vs := &capturingVS{saved: make(chan *domain.Document, 1)}
+
+	storeNeuralTrace(context.Background(), vs, "thought text", "trace-1", "plan-1", 0, 0, "agent-x")
+
+	doc := waitForDoc(t, vs.saved)
+	if v, present := doc.Metadata[domain.MetaSessionID]; present {
+		t.Fatalf("session_id present as %#v with no session on the context", v)
+	}
+}

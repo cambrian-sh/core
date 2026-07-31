@@ -222,9 +222,9 @@ func TestFloorMultiplier_Reranking(t *testing.T) {
 	// We use two different vectors to get different raw cosine distances (and hence scores).
 	docs := []*domain.Document{
 		{
-			ID:                 "test-rerank-001",
-			Text:               "doc with high activation but medium similarity",
-			DocumentType:       domain.DocTypeMemory,
+			ID:           "test-rerank-001",
+			Text:         "doc with high activation but medium similarity",
+			DocumentType: domain.DocTypeMemory,
 			Embedding: domain.Embedding{Vector: func() []float32 {
 				v := make([]float32, 1536)
 				v[0] = 0.3
@@ -233,9 +233,9 @@ func TestFloorMultiplier_Reranking(t *testing.T) {
 			ActivationStrength: 0.8,
 		},
 		{
-			ID:                 "test-rerank-002",
-			Text:               "doc with low activation but high similarity",
-			DocumentType:       domain.DocTypeMemory,
+			ID:           "test-rerank-002",
+			Text:         "doc with low activation but high similarity",
+			DocumentType: domain.DocTypeMemory,
 			Embedding: domain.Embedding{Vector: func() []float32 {
 				v := make([]float32, 1536)
 				v[0] = 0.85

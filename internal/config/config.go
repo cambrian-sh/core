@@ -953,6 +953,27 @@ type Config struct {
 	} `json:"database"`
 	Server struct {
 		Port string `json:"port"`
+		// BindAddress is the interface the gRPC plane listens on. Default
+		// "127.0.0.1" — LOOPBACK, not every interface.
+		//
+		// It used to bind ":port", which is 0.0.0.0: the operator plane was reachable
+		// from any host on the network, in plaintext, with no way to notice from the
+		// config. The zero-config edge profile wants localhost anyway; a deployment
+		// that genuinely serves other machines sets this deliberately, and then the
+		// TLS guard below applies.
+		BindAddress string `json:"bind_address"`
+		// TLSCertFile / TLSKeyFile enable TLS on the operator listener (SEC-03).
+		// Both required together; either alone is a config error rather than a
+		// silent downgrade to plaintext.
+		TLSCertFile string `json:"tls_cert_file"`
+		TLSKeyFile  string `json:"tls_key_file"`
+		// InsecureLocalhost permits PLAINTEXT on a non-loopback bind. Off by default:
+		// without it, binding a routable address with no TLS FAILS at boot rather
+		// than quietly serving an unencrypted operator plane to the network.
+		//
+		// Named for the case it is meant to cover — a trusted single host — and
+		// deliberately awkward to reach for on a server.
+		InsecureLocalhost bool `json:"insecure_localhost"`
 		// HealthzPort, when > 0, starts an HTTP /healthz shim on that port for dumb
 		// probes (PLAT-03 / ADR-0065). Off by default; the gRPC grpc.health.v1 service
 		// is always on the main listener.

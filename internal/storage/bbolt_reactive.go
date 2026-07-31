@@ -211,9 +211,20 @@ func (b *BBoltAdapter) ListReactiveDeadLetters(limit int) ([]ReactiveDeadLetterR
 // AND whose TTL has expired before now. Both conditions must hold: an un-acked or
 // still-live record is never removed. Returns the count pruned. Bounded periodic
 // compaction so the journal does not grow unbounded (ADR-0061).
-func (b *BBoltAdapter) PruneReactiveJournal(minAcked uint64, now time.Time) (int, error) {
-	pruned := 0
-	err := b.db.Update(func(tx *bbolt.Tx) error {
+// PruneReactiveJournal drops up to limit journal records at/below minAcked whose
+// TTL has expired, and reports whether more remained when the cap was hit.
+//
+// BOUNDED (GOV-02). The unbounded form deleted every match in a single bbolt
+// Update — fine on a journal a test just wrote, and an outage on one that has
+// grown for months: bbolt serializes writers, so a first prune over a large
+// backlog holds the write lock for the whole scan-and-delete and stalls every
+// signal append behind it. The cap makes a large backlog drain over several
+// passes instead of one long stall.
+//
+// limit <= 0 means unbounded, which is retained for the tests and manual paths
+// that predate the cap.
+func (b *BBoltAdapter) PruneReactiveJournal(minAcked uint64, now time.Time, limit int) (pruned int, more bool, err error) {
+	err = b.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(reactiveJournalBucket)
 		if bucket == nil {
 			return nil
@@ -235,17 +246,58 @@ func (b *BBoltAdapter) PruneReactiveJournal(minAcked uint64, now time.Time) (int
 			if !rec.TTLExpires.IsZero() && rec.TTLExpires.After(now) {
 				continue // still live
 			}
+			if limit > 0 && len(toDelete) >= limit {
+				// Another record was prunable and is being left for the next pass.
+				// Reported so a caller can tell "done" from "capped" — an operator
+				// seeing `more` on every tick is being told the backlog is not draining.
+				more = true
+				break
+			}
 			kc := make([]byte, len(k))
 			copy(kc, k)
 			toDelete = append(toDelete, kc)
 		}
 		for _, k := range toDelete {
-			if err := bucket.Delete(k); err != nil {
-				return err
+			if derr := bucket.Delete(k); derr != nil {
+				return derr
 			}
 			pruned++
 		}
 		return nil
 	})
-	return pruned, err
+	return pruned, more, err
+}
+
+// ReactiveJournalWindow reports what the journal still holds: the oldest and
+// newest seq present, and how many records there are.
+//
+// Exists for GOV-02's backtest requirement. `Backtest` replays journalled history
+// to answer "would this watch have fired?", and pruning silently shortens the
+// history it can reach — so the window has to be stateable alongside the verdicts
+// rather than left for the reader to assume.
+//
+// An empty journal returns (0, 0, 0, nil): no window, stated as such.
+func (b *BBoltAdapter) ReactiveJournalWindow() (oldestSeq, newestSeq uint64, count int, err error) {
+	err = b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(reactiveJournalBucket)
+		if bucket == nil {
+			return nil
+		}
+		c := bucket.Cursor()
+		for k, _ := c.First(); k != nil; k, _ = c.Next() {
+			if len(k) != 8 {
+				continue
+			}
+			seq := binary.BigEndian.Uint64(k)
+			if count == 0 || seq < oldestSeq {
+				oldestSeq = seq
+			}
+			if seq > newestSeq {
+				newestSeq = seq
+			}
+			count++
+		}
+		return nil
+	})
+	return oldestSeq, newestSeq, count, err
 }

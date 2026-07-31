@@ -757,7 +757,48 @@ message OperatorEvent {
     // STATUS LINE, not history — a replayed "working on it" for a turn that
     // finished an hour ago would be worse than no progress at all.
     ConversationProgressOp conversation_progress = 29;
+    RetentionRunOp retention_run = 30;       // ADR-0102 A1: a retention/compaction pass deleted data
   }
+}
+
+// RetentionRunOp reports one bounded retention/compaction pass — what it deleted,
+// whether it hit its cap, and whether it failed (ADR-0102 Amendment A1).
+//
+// A1 reverses ADR-0102 D6, which exposed retention only on the owning plugin's
+// own plane. Deletion you can only discover by knowing to go looking for it is
+// too close to silent for a product whose argument is auditability.
+//
+// SOURCE-AGNOSTIC on purpose. The record compactor (REC-03) and the
+// reactive-journal GC (GOV-02) are the same shape, so one message serves both and
+// the second caller costs no contract bump. It also keeps the OSS contract from
+// naming a premium plugin's tables, which ADR-0057 D5 forbids.
+message RetentionRunOp {
+  // source is the retention domain that ran, e.g. "records". Free-form: an OSS
+  // enum here would have to enumerate premium plugins to be useful.
+  string source = 1;
+  // run_id is the source's own id for the pass, so a feed entry joins to the
+  // durable row behind it.
+  int64 run_id = 2;
+  google.protobuf.Timestamp started_at = 3;
+  google.protobuf.Timestamp finished_at = 4;
+  // deleted is the per-category count; empty means the pass ran and removed
+  // nothing, which is a normal outcome and not missing data.
+  repeated RetentionDeletionOp deleted = 5;
+  // bounded is true when the pass hit its per-pass cap and more remains. Seen on
+  // every tick, it says the backlog is not draining.
+  bool bounded = 6;
+  // error is empty on success. A FAILED pass is reported, not swallowed:
+  // retention that quietly stops working is how a table becomes the outage.
+  string error = 7;
+}
+
+// RetentionDeletionOp is one category of thing a pass removed. A list rather than
+// fixed columns because sources delete different things (record versions and push
+// commands; journal entries and dead letters), and fixed fields would force every
+// later source to misname its counts or break the contract to add its own.
+message RetentionDeletionOp {
+  string category = 1; // the source's own word, e.g. "record_versions"
+  int32 count = 2;
 }
 
 // ScoutUsefulnessOp is the ROUTE-08 phase-A per-session signal: did the always-on
@@ -1450,6 +1491,18 @@ message BacktestWatchOpRequest {
 }
 message BacktestWatchOpResponse {
   repeated WatchBacktestVerdictOp verdicts = 1;
+  // The journal window these verdicts were computed over (GOV-02).
+  //
+  // A backtest answers "would this watch have fired over history?", and journal GC
+  // shortens the history it can reach. Without the window a caller cannot tell
+  // "fired twice in six months" from "fired twice in the four days still retained"
+  // — the same sentence, two very different answers. Reported alongside the
+  // verdicts rather than left to be assumed.
+  //
+  // retained_count 0 means the journal is empty, not that the window is unknown.
+  uint64 retained_oldest_seq = 2;
+  uint64 retained_newest_seq = 3;
+  int32 retained_count = 4;
 }
 message WatchBacktestVerdictOp {
   uint64 seq = 1;

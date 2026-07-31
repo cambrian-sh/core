@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Store is the read/write port for the embedded config layer (ADR-0101 D1). It
 // sits ABOVE the JSON files and BELOW the CAMBRIAN_* environment, so an
@@ -65,9 +68,35 @@ type SecretStore interface {
 // A key whose prefix collides with an existing scalar is skipped rather than
 // silently reshaping the tree: {"a": 1} plus "a.b" = 2 has no coherent merge,
 // and guessing one would corrupt a neighbouring value.
+//
+// THE SCALAR WINS, and it wins deterministically. Keys are processed
+// shallowest-first (then lexically) rather than in Go map order, because map
+// iteration is randomised: {"a": 1, "a.b": 2} previously produced {"a":1} or
+// {"a":{"b":2}} depending on which key the runtime happened to visit first, so
+// the same config file could expand two different ways in the same process. The
+// collision rule was already written down — this makes the code actually obey it
+// every time instead of roughly half the time.
+//
+// Shallowest-first is what enforces it: "a" is placed before "a.b" is considered,
+// so the deeper key hits the existing scalar and is skipped by the prefix walk
+// below. Sorting also makes the output stable, which is what lets a caller diff
+// two expansions and believe the result.
 func expand(flat map[string]any) map[string]any {
+	keys := make([]string, 0, len(flat))
+	for k := range flat {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		di, dj := strings.Count(keys[i], "."), strings.Count(keys[j], ".")
+		if di != dj {
+			return di < dj
+		}
+		return keys[i] < keys[j]
+	})
+
 	out := map[string]any{}
-	for key, val := range flat {
+	for _, key := range keys {
+		val := flat[key]
 		parts := strings.Split(key, ".")
 		cur := out
 		ok := true

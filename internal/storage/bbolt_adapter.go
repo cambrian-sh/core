@@ -278,7 +278,16 @@ func isAgentPackage(dir string) bool {
 // signal that the package-layout convention is broken.
 func (b *BBoltAdapter) checkSystemAgentLayout(agentsDir string) error {
 	systemDir := filepath.ToSlash(filepath.Join(agentsDir, "system"))
-	systemDirPrefix := systemDir + "/"
+	// ExecPath is RELATIVE to Dir (see discoverAgent: an absolute path produces a
+	// doubled "agents/agents/..." and python cannot open the file), so the prefix
+	// this compares against must be relative too.
+	//
+	// It used to be the ABSOLUTE systemDir, which no relative ExecPath can ever
+	// match — so the warning fired for every correctly-placed system agent and the
+	// deployment log said the convention was broken four times a boot when it was
+	// not. A check that cannot pass is worse than no check: it teaches people to
+	// ignore the line that would matter when something really is misplaced.
+	const systemDirPrefix = "system/"
 	return b.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(agentBucket)
 		if bucket == nil {
@@ -300,7 +309,7 @@ func (b *BBoltAdapter) checkSystemAgentLayout(agentsDir string) error {
 
 // pythonAgentRecord builds the DiscoveredAgent for a `*_agent.py` entry (no DB access).
 // Manifest resolution prefers a sibling `<id>.manifest.json` (a non-"tool" ManifestRecord)
-// over the embedded `AGENT_MANIFEST='''…'''` regex (ADR-0075 sidecar-preference) — the
+// over the embedded `AGENT_MANIFEST=”'…”'` regex (ADR-0075 sidecar-preference) — the
 // declared JSON is less brittle than parsing a manifest out of source text. ok is always
 // true (an unreadable entry still registers with defaults, preserving pre-inversion
 // behavior; availability health-gating is applied by the app-layer source, not here).

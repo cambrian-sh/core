@@ -31,29 +31,28 @@ func TestSeed_RealSystemAgents_RegisteredAsSystem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllAgentRecords: %v", err)
 	}
-	if len(agents) != 3 {
-		ids := make([]string, 0, len(agents))
-		for _, a := range agents {
-			ids = append(ids, a.ID)
-		}
-		t.Fatalf("expected 3 system agents, got %d (%v)", len(agents), ids)
-	}
-
+	// The three agents this test is ABOUT must be present, system-flagged, and in
+	// the package layout. It deliberately does NOT assert the total roster size:
+	// the previous version required exactly 3 agents and the repo now ships 13, so
+	// it failed on every added agent while telling you nothing about the property
+	// it exists to check.
 	wantIDs := map[string]bool{
-		"scout_agent":       false,
-		"reranker_agent":    false,
+		"scout_agent":        false,
+		"reranker_agent":     false,
 		"kg_extractor_agent": false,
 	}
 	for _, a := range agents {
 		if _, ok := wantIDs[a.ID]; !ok {
-			t.Errorf("unexpected agent: %q", a.ID)
-			continue
+			continue // another agent in the tree; not this test's business
 		}
 		wantIDs[a.ID] = true
 		if !a.System {
 			t.Errorf("%s.System: want true, got false", a.ID)
 		}
-		wantExec := filepath.ToSlash(filepath.Join(agentsDir, "system", a.ID, "agent.py"))
+		// ExecPath is RELATIVE to Dir — buildAgentCmd resolves it under
+		// cmd.Dir=def.Dir, and an absolute path produces a doubled
+		// "agents/agents/..." that python cannot open.
+		wantExec := "system/" + a.ID + "/agent.py"
 		if a.ExecPath != wantExec {
 			t.Errorf("%s.ExecPath: want %q, got %q", a.ID, wantExec, a.ExecPath)
 		}

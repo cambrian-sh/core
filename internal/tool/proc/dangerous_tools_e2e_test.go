@@ -20,9 +20,23 @@ func loadRealTools(t *testing.T) (*ProcessHandler, string) {
 		t.Skip("repo root not found")
 	}
 	reg := domain.NewInMemoryToolRegistry()
-	files, err := discovery.LoadRegistry(filepath.Join(root, "tools"), reg, false)
+	toolsDir := filepath.Join(root, "tools")
+	files, err := discovery.LoadRegistry(toolsDir, reg, false)
 	if err != nil {
 		t.Fatalf("discover tools: %v", err)
+	}
+	// SKIP rather than fail when this checkout ships no tool manifests.
+	//
+	// These E2E tests execute the REAL tools — `execute_command`, the file tools,
+	// the web tools — and this repository's `tools/` tree has only ever contained
+	// `tau2_mcp`. They were failing with "tool X has no registered handler module",
+	// which reads like a broken handler and is actually a missing resource.
+	//
+	// A test that cannot pass in the environment it ships in is not a gate, it is
+	// noise that trains people to ignore a red suite. Same convention the Postgres
+	// integration tests use: skip loudly, with the reason.
+	if len(reg.All()) == 0 {
+		t.Skipf("no tool manifests under %s; these E2E tests need a populated tools/ tree", toolsDir)
 	}
 	return &ProcessHandler{PythonExec: py, ToolFiles: files, DefaultTimeout: 15 * time.Second}, root
 }

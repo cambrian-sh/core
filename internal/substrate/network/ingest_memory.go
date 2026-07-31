@@ -8,17 +8,10 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
-	"github.com/cambrian-sh/core/internal/memory"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
-
-// MemoryWriter is the agent memory write-back surface (memory.remember()). The
-// memory.RememberService satisfies it. Classification is kernel-derived (ADR-0035 C2).
-type MemoryWriter interface {
-	Remember(ctx context.Context, agentID, text string, hint []string, source, sessionID string, importance float64) (string, error)
-}
 
 // IngestionProcessor is the chunking-pipeline entry point. The gRPC
 // IngestMemory handler routes through this when the Server has it
@@ -47,6 +40,27 @@ type IngestionProcessor interface {
 // not a per-item fact ID. Falls back to MemoryWriter when IngestionProcessor
 // is nil (legacy path).
 func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) (*pb.IngestMemoryResponse, error) {
+	// Fail closed on an unknown principal, BEFORE any work.
+	//
+	// This check lived only in RememberService — on the raw-write fallback that
+	// could never fire — so the live chunked path had no equivalent: an agent with
+	// no scope profile reached the enforcing store, which only asks ClassifyWrite
+	// and has no notion of "we have never heard of you". Moved here so it guards
+	// the path that actually runs.
+	//
+	// A nil read predicate is the decision point saying it could not resolve the
+	// principal at all, which is the difference between "registered but unprofiled"
+	// (unrestricted) and "unknown" (deny).
+	if s.Authz != nil {
+		agentID := callerAgentID(ctx)
+		if agentID == "" {
+			return nil, status.Error(codes.PermissionDenied, "unknown principal: no agent identity on the call")
+		}
+		if pred, _ := s.Authz.ReadFilter(ctx, domain.AgentPrincipal(agentID), domain.SurfaceFromContext(ctx)); pred == nil {
+			return nil, status.Error(codes.PermissionDenied, "unknown principal: "+agentID)
+		}
+	}
+
 	if s.IngestionProcessor != nil {
 		sourceURI := req.GetSource()
 		if sourceURI == "" {
@@ -74,26 +88,40 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 		}
 		entityID, err := s.IngestionProcessor.ProcessSync(ictx, doc)
 		if err != nil {
-			return nil, status.Error(codes.Internal, "ingestion manager: "+err.Error())
+			// Map the CAUSE, not the layer. Collapsing everything to Internal is how a
+			// denied write or a coined tag surfaced as
+			// "ingestion manager: failed to mint source-doc entity [INTERNAL]" — a
+			// message that names the symptom, hides the reason, and sent more than one
+			// debugging session after the wrong thing entirely.
+			switch {
+			case errors.Is(err, authz.ErrWriteDenied):
+				return nil, status.Error(codes.InvalidArgument, err.Error())
+			default:
+				return nil, status.Error(codes.Internal, "ingestion manager: "+err.Error())
+			}
 		}
 		return &pb.IngestMemoryResponse{DocId: entityID}, nil
 	}
-	if s.MemoryWriter == nil {
-		return nil, status.Error(codes.Unimplemented, "memory write-back not configured")
-	}
-	agentID := callerAgentID(ctx)
-	docID, err := s.MemoryWriter.Remember(ctx, agentID, req.GetText(), req.GetTags(), req.GetSource(), req.GetSessionId(), req.GetImportance())
-	if err != nil {
-		switch {
-		case errors.Is(err, memory.ErrUnknownPrincipal):
-			return nil, status.Error(codes.PermissionDenied, "unknown principal: "+agentID)
-		case errors.Is(err, authz.ErrWriteDenied):
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		default:
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-	}
-	return &pb.IngestMemoryResponse{DocId: docID}, nil
+	// EVERYTHING ingested goes through the chunker. There is no second way in.
+	//
+	// This used to fall back to a direct MemoryWriter.Remember — a raw store write
+	// that produced a STRUCTURALLY DIFFERENT row: one un-chunked blob with a single
+	// embedding, no source-document entity, no chunk_relations, no structural
+	// sections, invisible to ListDocuments, and carrying "session_id" where the
+	// chunked path deliberately writes an ingest-thread id instead.
+	//
+	// It was also unreachable: NewIngestionManager never returns nil (a zero queue
+	// size defaults to 1000), so the fallback could not fire in any real deployment
+	// — while still reading, to anyone auditing this file, as a live second path
+	// with different semantics. Dead code that changes the answer to "how is memory
+	// written" is worse than no code.
+	//
+	// If the pipeline is genuinely absent the ingest FAILS rather than silently
+	// degrading the shape of everything it writes (the ADR-0060 fail-loud rule:
+	// an unknown route is an error, not a quiet fallback).
+	return nil, status.Error(codes.FailedPrecondition,
+		"ingestion pipeline not configured: every memory ingest must go through the "+
+			"chunker, and there is no raw-store-write path")
 }
 
 func firstLine(s string, max int) string {

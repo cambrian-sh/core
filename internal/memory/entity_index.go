@@ -31,7 +31,7 @@ type IndexedDoc struct {
 // it after a crash.
 type EntityIndex struct {
 	mu          sync.RWMutex
-	entityDocs  map[string][]IndexedDoc    // key → docs
+	entityDocs  map[string][]IndexedDoc     // key → docs
 	entityName  map[string]string           // key → raw name (for embedding)
 	entityMeta  map[string]EntityMetaKind   // key → meta-kind
 	entityEmbed map[string]domain.Embedding // key → name embedding

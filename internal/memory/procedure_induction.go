@@ -55,7 +55,7 @@ type EpisodeShape struct {
 	// "create alpha.md" and "create beta.md" the same situation. That is right for
 	// grouping and wrong for counting: without the raw form a bucket cannot tell eight
 	// reruns of ONE task from one run of eight different ones.
-	RawTrigger string
+	RawTrigger   string
 	Capabilities []string // ordered, one entry per step
 	Succeeded    bool
 	Tags         []string

@@ -10,7 +10,6 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
-	"github.com/cambrian-sh/core/internal/memory"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -125,8 +124,53 @@ func newIngestServer(known map[string]bool, writeTags map[string][]string, vocab
 	}
 	a := e2eAuthz{known: known, writeTags: writeTags, vocab: vset}
 	writeStore := authz.NewEnforcingStoreWriter(cap, a, logger)
-	s := &Server{MemoryWriter: memory.NewRememberService(writeStore, e2eEmbedder{}, a)}
+	// Routed through the INGESTION PROCESSOR, because that is the only way in now:
+	// the raw MemoryWriter fallback was removed so every ingest goes through the
+	// chunker. These tests are about the ADR-0035 C2 write chokepoint — unknown
+	// principal, coined tag, broadening hint clamped to the ceiling — and that
+	// chokepoint sits in the enforcing store BELOW whichever path reaches it, so
+	// they keep asserting exactly what they always did while now exercising the
+	// live route.
+	s := &Server{
+		IngestionProcessor: writerProcessor{store: writeStore, embedder: e2eEmbedder{}},
+		// The handler's own unknown-principal guard needs the decision point.
+		Authz: a,
+	}
 	return s, cap, &logBuf
+}
+
+// writerProcessor is the smallest IngestionProcessor that still exercises the
+// write chokepoint: embed, then save through the ENFORCING store.
+//
+// It deliberately does not chunk. These tests assert authorization — unknown
+// principal, coined tag, a hint that cannot broaden the ceiling — and that
+// decision lives in the enforcing store BELOW whichever path reaches it. A real
+// chunker here would add moving parts with no bearing on the property under test,
+// and a stand-in for the deleted RememberService would re-implement the thing
+// being tested.
+type writerProcessor struct {
+	store    domain.VectorStore
+	embedder domain.Embedder
+}
+
+func (w writerProcessor) ProcessSync(ctx context.Context, doc domain.ExternalDocument) (string, error) {
+	vec, err := w.embedder.Embed(ctx, doc.Body)
+	if err != nil {
+		return "", err
+	}
+	d := &domain.Document{
+		ID:           "source_doc:" + doc.SourceURI,
+		Text:         doc.Body,
+		DocumentType: domain.DocTypeMnemonicFact,
+		Embedding:    domain.Embedding{Vector: vec},
+		// The authored tags are a narrow-only HINT; the enforcing store replaces
+		// them with the kernel-derived classification (ADR-0035 C2).
+		Metadata: map[string]interface{}{"tags": doc.Tags},
+	}
+	if err := w.store.Save(ctx, d); err != nil {
+		return "", err
+	}
+	return d.ID, nil
 }
 
 // 0035-07 e2e: an agent that hints a broadening tag still gets only the operator

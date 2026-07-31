@@ -16,10 +16,18 @@ type fakeMetricsReader struct{ ms []domain.WatchMetrics }
 
 func (f *fakeMetricsReader) WatchMetrics() []domain.WatchMetrics { return f.ms }
 
-type fakeBacktester struct{ verdicts []domain.WatchBacktestVerdict }
+type fakeBacktester struct {
+	verdicts []domain.WatchBacktestVerdict
+	window   [3]uint64 // oldest, newest, count — GOV-02 retained window
+}
 
-func (f *fakeBacktester) Backtest(context.Context, domain.WatchConfig, uint64) ([]domain.WatchBacktestVerdict, error) {
-	return f.verdicts, nil
+func (f *fakeBacktester) Backtest(context.Context, domain.WatchConfig, uint64) (domain.WatchBacktestResult, error) {
+	return domain.WatchBacktestResult{
+		Verdicts:          f.verdicts,
+		RetainedOldestSeq: f.window[0],
+		RetainedNewestSeq: f.window[1],
+		RetainedCount:     int(f.window[2]),
+	}, nil
 }
 
 // REACT-05 / ADR-0071: unwired (OSS) ⇒ both observability RPCs are Unimplemented.
