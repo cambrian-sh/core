@@ -30,8 +30,8 @@ type ContextNode struct {
 	Type         string
 	Data         []byte
 	Labels       []string
-	Parents      []CID  // provenance edges — NOT part of CID computation
-	Snippet      string // inline resilience snippet (see ContextRef.Snippet)
+	Parents      []CID     // provenance edges — NOT part of CID computation
+	Snippet      string    // inline resilience snippet (see ContextRef.Snippet)
 	OwnerSession SessionID // ADR-0048 D4: session that wrote this node; "" = system/ownerless
 }
 

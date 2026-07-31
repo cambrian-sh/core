@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,24 +13,45 @@ import (
 // captureAllStore is a VectorStore that records EVERY Save call so a test
 // can pick out the source-doc entity row and the chunk rows that the
 // IngestionManager pushed through Manager.Store + Agent.EnqueueExternal.
+// QA-01: this fake is written by the IngestionManager's WORKER goroutines and read
+// by the test goroutine, so every accessor is guarded.
+//
+// The race the detector reported lives entirely here, not in IngestionManager: the
+// manager does the ordinary thing (calls store.Save from its workers) and the fake
+// simply was not safe to share. Fixing it as a production race — adding locks
+// around the manager's own path — would have been the wrong repair to a real
+// signal, which is why the diagnosis came before the change.
 type captureAllStore struct {
 	fakeVectorStore
+	mu        sync.Mutex
 	savedDocs []*domain.Document
 }
 
 func (c *captureAllStore) Save(_ context.Context, doc *domain.Document) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.savedDocs = append(c.savedDocs, doc)
 	return nil
 }
 
 func (c *captureAllStore) SaveBatch(_ context.Context, docs []*domain.Document) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.savedDocs = append(c.savedDocs, docs...)
 	return nil
 }
 
+// snapshot copies the captured slice under the lock, so a caller can range over it
+// without holding one.
+func (c *captureAllStore) snapshot() []*domain.Document {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*domain.Document(nil), c.savedDocs...)
+}
+
 // findByID returns the saved doc whose ID matches, or nil.
 func (c *captureAllStore) findByID(id string) *domain.Document {
-	for _, d := range c.savedDocs {
+	for _, d := range c.snapshot() {
 		if d != nil && d.ID == id {
 			return d
 		}
@@ -39,7 +61,7 @@ func (c *captureAllStore) findByID(id string) *domain.Document {
 
 // findByKind returns the saved entity whose Metadata["kind"] matches.
 func (c *captureAllStore) findByKind(kind string) *domain.Document {
-	for _, d := range c.savedDocs {
+	for _, d := range c.snapshot() {
 		if d == nil || d.Metadata == nil {
 			continue
 		}
@@ -52,7 +74,7 @@ func (c *captureAllStore) findByKind(kind string) *domain.Document {
 
 func (c *captureAllStore) facts() []*domain.Document {
 	var out []*domain.Document
-	for _, d := range c.savedDocs {
+	for _, d := range c.snapshot() {
 		if d != nil && d.DocumentType == domain.DocTypeMnemonicFact {
 			out = append(out, d)
 		}

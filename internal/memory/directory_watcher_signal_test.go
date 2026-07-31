@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,13 +13,35 @@ import (
 )
 
 // captureSignalReceiver records signals delivered to it.
+//
+// QA-01: guarded because the DirectoryWatcher delivers from its own goroutine
+// while the test polls from another. Like captureAllStore, the race the detector
+// found is in this fake and not in the watcher — the watcher does the ordinary
+// thing and the fake was simply not safe to share.
 type captureSignalReceiver struct {
+	mu      sync.Mutex
 	signals []domain.Signal
 }
 
 func (r *captureSignalReceiver) OnSignal(_ context.Context, sig domain.Signal) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.signals = append(r.signals, sig)
 	return nil
+}
+
+// count and at read under the lock, so the polling loop and the assertions below
+// never touch the slice while the watcher is appending to it.
+func (r *captureSignalReceiver) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.signals)
+}
+
+func (r *captureSignalReceiver) at(i int) domain.Signal {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.signals[i]
 }
 
 // Cycle 52 — DirectoryWatcher.Start with a SignalReceiver sends Signal on file creation.
@@ -42,15 +65,15 @@ func TestDirectoryWatcher_SendsSignalOnFileCreate(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(receiver.signals) == 0 {
+	for time.Now().Before(deadline) && receiver.count() == 0 {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	if len(receiver.signals) == 0 {
+	if receiver.count() == 0 {
 		t.Fatal("expected at least one Signal to be delivered to SignalReceiver")
 	}
 
-	sig := receiver.signals[0]
+	sig := receiver.at(0)
 	if sig.StreamID != dir {
 		t.Errorf("expected StreamID=%q, got %q", dir, sig.StreamID)
 	}
@@ -67,8 +90,18 @@ func TestDirectoryWatcher_SendsSignalOnFileCreate(t *testing.T) {
 func TestDirectoryWatcher_NilSignalReceiver_UsesEnqueue(t *testing.T) {
 	dir := t.TempDir()
 
+	// Guarded for the same reason as the fakes above: the enqueue callback runs on
+	// the watcher's goroutine and the poll below runs on the test's.
+	var mu sync.Mutex
 	var enqueued []domain.ExternalDocument
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(enqueued)
+	}
 	dw := memory.NewDirectoryWatcher(dir, func(doc domain.ExternalDocument) bool {
+		mu.Lock()
+		defer mu.Unlock()
 		enqueued = append(enqueued, doc)
 		return true
 	})
@@ -85,11 +118,11 @@ func TestDirectoryWatcher_NilSignalReceiver_UsesEnqueue(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(enqueued) == 0 {
+	for time.Now().Before(deadline) && count() == 0 {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	if len(enqueued) == 0 {
+	if count() == 0 {
 		t.Fatal("expected enqueue to be called when SignalReceiver is nil")
 	}
 }

@@ -86,12 +86,12 @@ func (o OptionCChunker) Chunk(ctx context.Context, doc *domain.ExternalDocument)
 		chunks[i] = domain.Chunk{
 			Body: body,
 			Metadata: map[string]any{
-				"chunk_index": i,
+				"chunk_index":  i,
 				"total_chunks": total,
-				"source_uri": doc.SourceURI,
-				"source_type": doc.SourceType,
-				"author": doc.Author,
-				"timestamp": timestampStr,
+				"source_uri":   doc.SourceURI,
+				"source_type":  doc.SourceType,
+				"author":       doc.Author,
+				"timestamp":    timestampStr,
 			},
 		}
 	}

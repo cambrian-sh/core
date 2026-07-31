@@ -298,7 +298,7 @@ func (s *PgConversationStore) BindDelivery(ctx context.Context, conversationID s
 // FindByDelivery returns the conversation bound to addr, or ErrConversationNotFound.
 //
 // An unbound address matches nothing by construction: the index is partial on
-// delivery_ingress <> '', and a zero address is refused before the query, so an
+// delivery_ingress <> ”, and a zero address is refused before the query, so an
 // empty external id can never collide with the empty defaults of unbound rows.
 func (s *PgConversationStore) FindByDelivery(ctx context.Context, addr domain.DeliveryAddress) (*domain.Conversation, error) {
 	if addr.IsZero() {

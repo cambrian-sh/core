@@ -49,9 +49,9 @@ type ExtractedEntity struct {
 // The recall path does NOT branch on Label; it traverses every edge weighted by
 // confidence.
 type ExtractedRelation struct {
-	Source     string  // canonical key: "{kind}:{lowercased-name}"
-	Target     string  // canonical key
-	Label      string  // free-form verb phrase
+	Source     string // canonical key: "{kind}:{lowercased-name}"
+	Target     string // canonical key
+	Label      string // free-form verb phrase
 	Confidence float64
 }
 

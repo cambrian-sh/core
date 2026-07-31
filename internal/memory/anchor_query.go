@@ -161,8 +161,8 @@ func extractQueryAnchors(query string) []string {
 		if !strings.ContainsAny(tok, "0123456789") {
 			continue // "harbor-magistrate" is not an id
 		}
-		specific = append(specific, tok)        // raw token matches a chunk-id subject
-		specific = append(specific, "id:"+tok)  // "id:inv-2024" matches an in-text id anchor
+		specific = append(specific, tok)       // raw token matches a chunk-id subject
+		specific = append(specific, "id:"+tok) // "id:inv-2024" matches an in-text id anchor
 	}
 
 	// specific first (more selective), then atomics; dedupe preserving order.

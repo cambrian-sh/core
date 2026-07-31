@@ -29,6 +29,9 @@ func TestWebTool_FailClosedWhenUnconfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(reg.All()) == 0 {
+		t.Skip("no tool manifests in this checkout; these E2E tests need a populated tools/ tree")
+	}
 	if files["web_search"] == "" {
 		t.Fatal("web tool not discovered")
 	}
@@ -89,6 +92,9 @@ func TestWebTool_FirecrawlSearchAndExtract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(reg.All()) == 0 {
+		t.Skip("no tool manifests in this checkout; these E2E tests need a populated tools/ tree")
+	}
 	h := &ProcessHandler{
 		PythonExec:     py,
 		ToolFiles:      files,
@@ -147,6 +153,9 @@ func TestWebTool_LiveSearch(t *testing.T) {
 		ToolFiles:      files,
 		DefaultTimeout: 30 * time.Second,
 		EnvPassthrough: []string{"CAMBRIAN_WEB_PROVIDER", "CAMBRIAN_WEB_API_KEY", "CAMBRIAN_SEARXNG_URL"},
+	}
+	if len(reg.All()) == 0 {
+		t.Skip("no tool manifests in this checkout; these E2E tests need a populated tools/ tree")
 	}
 	args, _ := json.Marshal(map[string]string{"query": "Cambrian explosion", "max_results": "3"})
 	out, err := h.Execute(context.Background(), domain.ToolCall{ToolName: "web_search", ArgsJSON: args})

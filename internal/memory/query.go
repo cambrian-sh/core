@@ -1470,6 +1470,27 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 	// whoever remembers to thread it (ADR-0095 D9).
 	ctx = domain.WithScope(ctx, eff)
 
+	// BRAIN-01: the SESSION boundary, resolved once and carried the same two ways
+	// as the read predicate — on opts for the SQL push-down, and on ctx for the
+	// by-id enrichment reads below.
+	//
+	// A second predicate, never more terms on the first. Scope answers "may this
+	// principal see this class of thing"; this answers "does this belong to the
+	// conversation I am answering". A session id is an identity, and expressing it
+	// as a tag would coin session:<uuid> per conversation — the exact thing
+	// ADR-0099 rejects.
+	//
+	// No session on the context means no conversation to isolate to (a kernel or
+	// operator read), and that is a BYPASS rather than a denial: denying would make
+	// every unattended read return nothing, which is a far larger blast radius than
+	// the bleed being fixed. The narrowing happens where a session exists.
+	iso := domain.IsolationBypass()
+	if sid, ok := domain.SessionIDFromContext(ctx); ok && sid != "" {
+		iso = domain.IsolateTo(sid)
+	}
+	opts.Isolation = iso
+	ctx = domain.WithIsolation(ctx, iso)
+
 	results, err := q.vectorStore.Search(ctx, vec, opts)
 	if err != nil {
 		return nil, fmt.Errorf("memory query: search: %w", err)
@@ -1572,6 +1593,13 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 		// ADR-0048 D1: exclude the run's own auto-recorded System step records (the
 		// feedback loop). A no-op for the action lane (actions are source ToolOutput).
 		if isSameSessionStepRecord(r.Document, sid) {
+			return false
+		}
+		// BRAIN-01: the in-memory mirror of the SQL predicate, and the AUTHORITATIVE
+		// form. Rows can enter this set from paths that never touched opts —
+		// lexical fusion, entity seeding, kgExpand — so the boundary is re-asserted
+		// where every candidate converges rather than only where the SQL was built.
+		if !iso.Allows(r.Document.Metadata) {
 			return false
 		}
 		// ADR-0048 #1: drop seeds below the relevance floor so an all-irrelevant query

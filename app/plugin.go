@@ -86,6 +86,26 @@ type Builder interface {
 	Build(KernelServices) error
 }
 
+// CapabilityReporter reports the capabilities a plugin can only determine AFTER
+// Build — the ones that depend on what the deployment actually gave it.
+//
+// Manifest capabilities are declared at Register, before any kernel exists, so
+// they describe what a build CAN contribute. That is the right answer for most
+// surfaces and stays the norm. It is the wrong answer for a capability whose
+// truth depends on infrastructure: the record lane advertised itself on a
+// deployment with no Postgres, so a console enabled a surface that answered
+// Unimplemented, and "no record lane here" was indistinguishable from "this
+// kernel is broken".
+//
+// Reported post-Build and merged into the same deduped set, so a plugin can
+// advertise a capability it has actually got. Optional: a plugin that implements
+// nothing here keeps manifest-only behaviour. ADR-0082 D2, amended by REC-02.
+type CapabilityReporter interface {
+	// LiveCapabilities returns capability strings for surfaces this plugin can
+	// genuinely serve right now. Called once, after Build.
+	LiveCapabilities() []string
+}
+
 // Lifecycle is a background component a plugin needs started at boot and drained on
 // shutdown (e.g. the reactive engine's worker pools + REACT-06 scheduler). Start is
 // non-blocking (it launches goroutines and returns); Stop drains them.
@@ -623,6 +643,27 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 // the kernel stacks exist and before gRPC registration + handshake — so a plugin's services
 // and capabilities may depend on what Build constructed. Plugins that do not implement
 // Builder are skipped.
+// liveCapabilities collects the post-Build capability contributions (REC-02).
+//
+// Separate from buildPlugins so the ORDER is visible at the call site: every
+// plugin is built first, then asked what it can actually serve. A plugin polled
+// mid-build would answer about a half-constructed self.
+func liveCapabilities(plugins []Plugin) []string {
+	var out []string
+	for _, p := range plugins {
+		r, ok := p.(CapabilityReporter)
+		if !ok {
+			continue
+		}
+		for _, c := range r.LiveCapabilities() {
+			if c != "" {
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
 func buildPlugins(plugins []Plugin, svc KernelServices) error {
 	base := svc.RegisterAgent
 	for _, p := range plugins {

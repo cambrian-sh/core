@@ -65,18 +65,26 @@ func (s *Service) BacktestWatch(ctx context.Context, req *pb.BacktestWatchOpRequ
 		return nil, status.Error(codes.Unimplemented, "watch backtesting is a premium capability")
 	}
 	cfg := fromWatchConfigOp(req.GetConfig())
-	verdicts, err := s.watchBacktest.Backtest(ctx, cfg, req.GetAfterSeq())
+	res, err := s.watchBacktest.Backtest(ctx, cfg, req.GetAfterSeq())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "backtest: %v", err)
 	}
-	out := make([]*pb.WatchBacktestVerdictOp, 0, len(verdicts))
-	for _, v := range verdicts {
+	out := make([]*pb.WatchBacktestVerdictOp, 0, len(res.Verdicts))
+	for _, v := range res.Verdicts {
 		out = append(out, &pb.WatchBacktestVerdictOp{
 			Seq: v.Seq, StreamId: v.StreamID, RawText: v.RawText,
 			WouldFire: v.WouldFire, EvalError: v.EvalError,
 		})
 	}
-	return &pb.BacktestWatchOpResponse{Verdicts: out}, nil
+	// The window rides with the verdicts (GOV-02): journal GC shortens replayable
+	// history, and "would have fired twice" means nothing without how much history
+	// was searched.
+	return &pb.BacktestWatchOpResponse{
+		Verdicts:          out,
+		RetainedOldestSeq: res.RetainedOldestSeq,
+		RetainedNewestSeq: res.RetainedNewestSeq,
+		RetainedCount:     int32(res.RetainedCount),
+	}, nil
 }
 
 // ListWatchDeadLetters returns reactive actions that could not be delivered

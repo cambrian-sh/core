@@ -106,7 +106,15 @@ func (d *AgentRepoDecorator) ListDeadLetters(limit int) ([]domain.ReactiveDeadLe
 	return out, nil
 }
 
-// Prune drops journal records at/below minAcked whose TTL has expired.
-func (d *AgentRepoDecorator) Prune(minAcked uint64) (int, error) {
-	return d.store.PruneReactiveJournal(minAcked, time.Now().UTC())
+// Prune drops up to limit journal records at/below minAcked whose TTL has expired,
+// reporting whether more remained at the cap (GOV-02).
+func (d *AgentRepoDecorator) Prune(minAcked uint64, limit int) (int, bool, error) {
+	return d.store.PruneReactiveJournal(minAcked, time.Now().UTC(), limit)
+}
+
+// RetainedWindow reports the journal's remaining seq range and record count, so a
+// backtest can state the history it actually had rather than implying it saw all
+// of it.
+func (d *AgentRepoDecorator) RetainedWindow() (uint64, uint64, int, error) {
+	return d.store.ReactiveJournalWindow()
 }

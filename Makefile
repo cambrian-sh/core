@@ -51,6 +51,11 @@ help:
 test:
 	go test ./internal/...
 
+# QA-01: the race gate. In `per-pr` rather than `nightly` because the cost was
+# MEASURED, not guessed: 16s plain vs 41s with -race across ./internal/... — a
+# 25-second tax on a pipeline that already runs integration, chaos and micro
+# benchmarks. Nightly-only was the fallback if that had been unacceptable; it was
+# not, and a race found tomorrow morning is a race that already merged.
 test-race:
 	go test -race ./internal/...
 
@@ -156,7 +161,16 @@ export:
 # ─── Pipelines ───────────────────────────────────────────────────────────────
 
 # Per-PR pipeline: fast, no Docker, runs in <2 minutes
-per-pr: test separability integration chaos bench-micro
+# `test-race` replaces `test` rather than joining it: -race runs the same suite,
+# so listing both would pay for the whole thing twice.
+#
+# The proto gates run FIRST and cost ~2s: a stale binding or a broken wire
+# contract invalidates every test that follows, so failing before the 40s race
+# suite is strictly cheaper. They were documented as mandatory in the change-
+# control rules while being wired into no pipeline at all — the reason a contract
+# change once reached main unbumped was that nothing ran the check, not that
+# someone bypassed it.
+per-pr: proto-check proto-breaking test-race separability integration chaos bench-micro
 	@echo ""
 	@echo "=== Per-PR pipeline complete ==="
 
@@ -171,31 +185,90 @@ release-gate: bench-macro chaos-real contract-release fuzz-release leak-integrat
 	@echo "=== Release gate pipeline complete ==="
 
 # ─── Protobuf (ADR-0047 0047-13 / Amendment A2) ───────────────────────────────
-# Generate + commit Go bindings via buf, falling back to protoc when buf is
-# absent (offline contributors). Both must reproduce the committed bindings — the
-# proto files pin `option go_package = "core/api/proto"` so the
-# embedded descriptor is toolchain-independent. `proto-check` guards drift.
+# protoc is the CANONICAL generator; buf runs the schema gates (breaking, lint).
+# Two different jobs: protoc compiles one version of a schema, buf compares two.
+# protoc has no breaking-change mode at all, so it cannot stand in for the gate.
+#
+# This target used to prefer buf when installed and fall back to protoc, on the
+# stated assumption that both reproduce the committed bindings. MEASURED
+# 2026-07-31: they do not. buf.gen.yaml's remote plugins are unpinned, so buf
+# emits `protoc-gen-go-grpc v1.6.2` / `protoc (unknown)` against the committed
+# `v1.6.1` / `protoc v7.34.1`. The embedded descriptor is toolchain-independent;
+# the generated file header is not. Preferring whichever tool happened to be on
+# PATH made `proto-check` fail on a CLEAN tree the moment someone installed buf —
+# same command, different output per machine. One generator, named explicitly.
+#
+# Canonical toolchain (matches the committed bindings; a mismatch here is what
+# proto-check will report):
+#   protoc v7.34.1 · protoc-gen-go v1.36.11 · protoc-gen-go-grpc v1.6.1
+PROTOC ?= protoc
+BUF    ?= buf
+
 proto:
-	@if command -v buf >/dev/null 2>&1; then \
-		buf generate; \
-	else \
-		echo "buf not found — falling back to protoc"; \
-		protoc -I api/proto \
-			--go_out=api/proto --go_opt=paths=source_relative \
-			--go-grpc_out=api/proto --go-grpc_opt=paths=source_relative \
-			api/proto/operator.proto api/proto/cambrian.proto; \
+	$(PROTOC) -I api/proto \
+		--go_out=api/proto --go_opt=paths=source_relative \
+		--go-grpc_out=api/proto --go-grpc_opt=paths=source_relative \
+		api/proto/operator.proto api/proto/cambrian.proto
+
+# Drift gate: the committed bindings must match what the .proto files generate
+# RIGHT NOW (ADR-0047 A2.7).
+#
+# Generates to a temp dir and compares, rather than regenerating in place and
+# diffing against HEAD. The old form did `proto` then `git diff -- api/proto`,
+# which had two faults that only showed once this was wired into `per-pr`:
+#
+#   1. `api/proto` holds the hand-edited .proto SOURCES as well as the generated
+#      .pb.go. An uncommitted proto edit therefore failed the gate — reporting
+#      "generated bindings are stale" when the bindings were perfectly in sync —
+#      so per-pr could never pass while you were editing a contract, which is
+#      precisely when you would run it. It passed in CI only because the edit is
+#      committed by then.
+#   2. Regenerating in place rewrote four files on every run, leaving the tree
+#      stat-dirty on Windows (core.autocrlf=true) even when byte-identical.
+#
+# Comparing generated-vs-fresh is the property actually wanted, and it leaves the
+# working tree untouched.
+proto-check:
+	@tmp=$$(mktemp -d) || exit 1; \
+	$(PROTOC) -I api/proto \
+		--go_out=$$tmp --go_opt=paths=source_relative \
+		--go-grpc_out=$$tmp --go-grpc_opt=paths=source_relative \
+		api/proto/operator.proto api/proto/cambrian.proto || { rm -rf $$tmp; exit 1; }; \
+	rc=0; \
+	for f in operator.pb.go operator_grpc.pb.go cambrian.pb.go cambrian_grpc.pb.go; do \
+		if ! diff -q "api/proto/$$f" "$$tmp/$$f" >/dev/null 2>&1; then \
+			echo "stale binding: $$f"; rc=1; \
+		fi; \
+	done; \
+	rm -rf $$tmp; \
+	if [ $$rc -ne 0 ]; then \
+		echo "generated bindings do not match the .proto sources: run 'make proto' and commit"; \
+		exit 1; \
 	fi
 
-# CI drift gate: regenerating must not change the committed bindings (ADR-0047 A2.7).
-proto-check: proto
-	@git diff --exit-code -- api/proto || (echo "generated bindings are stale: run 'make proto' and commit"; exit 1)
-
-# Fail on a backward-incompatible operator-contract change (CI gate).
+# Fail on a backward-incompatible operator-contract change.
+#
+# Fails LOUD when buf is missing instead of skipping. A gate that quietly does not
+# run is not a weaker gate, it is a false one: `SetRuntimeConfig` reached main
+# without a contract bump while this target existed but was wired into nothing.
 proto-breaking:
-	buf breaking --against '.git#branch=main'
+	@command -v $(BUF) >/dev/null 2>&1 || { \
+		echo "buf is required for the operator-contract gate, and is not installed."; \
+		echo "    go install github.com/bufbuild/buf/cmd/buf@v1.47.2"; \
+		exit 1; \
+	}
+	$(BUF) breaking --against '.git#branch=main'
 
+# NOT in per-pr: operator.proto carries ~15 pre-existing RPC-naming findings
+# (SubmitPlanOpRequest vs SubmitPlanRequest). Renaming them is a contract break,
+# so they need an explicit `except` in buf.yaml before this can gate anything.
 proto-lint:
-	buf lint
+	@command -v $(BUF) >/dev/null 2>&1 || { \
+		echo "buf is required for proto-lint, and is not installed."; \
+		echo "    go install github.com/bufbuild/buf/cmd/buf@v1.47.2"; \
+		exit 1; \
+	}
+	$(BUF) lint
 
 # PLAT-01: regenerate per-agent requirements.txt + the union lockfile from the
 # installed agent Python (importlib.metadata — no pip-tools needed).

@@ -158,3 +158,65 @@ tests are unaffected.
   (operator transport plane / spool retention), ADR-0057 (open-core boundary).
 - Durable-execution prior art: Restate, Temporal, Inngest (journal +
   replay-with-skips + dead-letter).
+
+---
+
+## Amendment A1 — the GC this ADR specified, actually scheduled (2026-08-01, GOV-02)
+
+This ADR wrote, under Consequences: *"Journal growth requires GC... The prune only
+removes records that are acked **and** past TTL."*
+
+Both halves were true of `Prune`. Neither was true of the system, because **nothing
+ever called it.** `Prune` shipped implemented, unit-tested, and wired to no caller;
+the journal grew until someone pruned by hand. This is the fifth instance of that
+exact shape in this codebase — after `SetCallerScope`, `MemoryWrittenEvent`, the
+unknown-principal check and the `RememberService` ingest route — and it is worth
+naming as a class: **a subsystem whose tests pass because a test supplies the
+caller the product does not.** The unit test is not evidence the feature exists.
+
+### Decisions
+
+**A1.1 — `Prune` is bounded.** Signature becomes
+`Prune(minAcked uint64, limit int) (removed int, more bool, err error)`. The
+unbounded form deleted every match inside a single bbolt `Update`; bbolt serializes
+writers, so a first prune over a journal grown for months holds the write lock for
+the whole scan-and-delete and stalls every append behind it. The cap makes a large
+backlog drain over several passes instead of one long stall, and `more` lets a
+caller distinguish *capped* from *done* — seen on every tick, it says the backlog
+is not draining.
+
+**A1.2 — The floor is the lowest cursor across every REGISTERED watch**, not across
+the watches that have acked. A watch registered but never advanced sits at cursor 0
+and correctly holds the floor at 0; taking the minimum over only watches with a
+recorded cursor would compute a floor above a watch that has consumed nothing and
+prune signals it had never seen. With no watches at all, TTL alone governs — a
+deployment that removes its last watch must not thereby keep the journal forever.
+
+**A1.3 — No citation floor, and the reason is checked rather than assumed.** GOV-02
+asked that a signal "cited by a dead-letter entry" survive pruning, on the model of
+REC-03's evidence floor. It does not need one: `domain.ReactiveDeadLetter` embeds
+the whole `Signal` **by value**, so a dead letter is self-contained and pruning
+cannot orphan it. A test pins that property, so if the type ever becomes a seq
+reference the assumption fails loudly instead of silently becoming wrong.
+
+**A1.4 — A backtest states the window it searched.** `WatchBacktester.Backtest`
+returns `domain.WatchBacktestResult` carrying the retained oldest/newest seq and
+count alongside the verdicts (contract `0084`→`0085`). GC shortens replayable
+history, which made *"would have fired twice in six months"* and *"would have fired
+twice in the four days still retained"* the same reply. The window is part of the
+result rather than a separate query because one a caller must remember to ask for
+is one most callers will not ask for.
+
+**A1.5 — Passes are announced on the operator feed** using REC-03's
+`RetentionRunEvent` with `source="reactive_journal"`. That event was made
+source-agnostic for this caller, so the second consumer of retention costs no
+contract bump and an operator gets ONE answer shape to "what did this system
+delete", whether the answer is record versions or journal entries.
+
+### Status
+
+Implemented. `reactive.JournalGC` (bounded pass, timer loop, feed announcement)
+starts from the reactive plugin's `Lifecycle.Start` in its own goroutine, so `Start`
+still returns promptly. Config `GCInterval`/`GCBatch`, defaults 1h / 5000, `0`
+disables — a real deployment choice, but not the default, since "implemented and
+never scheduled" is the defect this amendment closes.

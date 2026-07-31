@@ -165,7 +165,7 @@ func TestReactive_PruneGuardedByAckAndTTL(t *testing.T) {
 	_, _ = a.AppendReactiveSignal(ReactiveJournalRecord{StreamID: "s", TTLExpires: now.Add(time.Hour)})
 	_, _ = a.AppendReactiveSignal(ReactiveJournalRecord{StreamID: "s", TTLExpires: now.Add(-time.Hour)})
 
-	pruned, err := a.PruneReactiveJournal(s1+1 /* minAcked covers seq1,seq2 */, now)
+	pruned, _, err := a.PruneReactiveJournal(s1+1 /* minAcked covers seq1,seq2 */, now, 0)
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}

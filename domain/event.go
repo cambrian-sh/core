@@ -67,6 +67,14 @@ const (
 	// EventTypeExplorationBudget reports that a capability's provisional-exploration
 	// budget was exhausted (the free L2 bypass is withdrawn). ROUTE-06 / ADR-0069.
 	EventTypeExplorationBudget = "exploration.budget"
+	// EventTypeRetentionRun reports one bounded retention/compaction pass: what was
+	// deleted, whether the pass hit its cap, and whether it failed. ADR-0102 A1.
+	//
+	// Deliberately SOURCE-AGNOSTIC. Two callers have this exact shape — the records
+	// plugin's version compactor (REC-03) and the reactive-journal GC (GOV-02) — and
+	// a `drift_records`-specific event would both need a second contract bump for the
+	// second caller and name a premium feature in an OSS proto (ADR-0057 D5).
+	EventTypeRetentionRun = "retention.run"
 	// EventTypeAgentLLMExchange is one agent reasoning turn captured at the managed LLM
 	// provider chokepoint: the full prompt+completion of a GenerateViaModelStream call.
 	// The ordered sequence per session reconstructs an agent's whole internal ReAct loop
@@ -509,6 +517,53 @@ type ScoutUsefulnessEvent struct {
 
 func (ScoutUsefulnessEvent) domainEvent()      {}
 func (ScoutUsefulnessEvent) EventType() string { return EventTypeScoutUsefulness }
+
+// RetentionDeletion is one category of thing a retention pass removed. Carried as
+// a list rather than as fixed fields because what a pass deletes differs per
+// source (record versions and push commands; journal entries and dead letters),
+// and a fixed pair of int columns would force every future source to either
+// misname its counts or break the contract to add its own.
+type RetentionDeletion struct {
+	// Category is the caller's own word for what was removed, e.g.
+	// "record_versions", "push_commands", "journal_entries".
+	Category string
+	Count    int
+}
+
+// RetentionRunEvent reports one bounded retention/compaction pass so an operator
+// can see what was dropped and when (ADR-0102 Amendment A1).
+//
+// A1 reverses ADR-0102 D6, which put retention runs only on the owning plugin's
+// own plane. Deletion that is answerable only if you already know to go looking
+// is too close to silent for a product whose argument is auditability — the
+// operator watching the feed is exactly the person who needs to know the audit
+// trail just got shorter.
+//
+// A FAILED pass is an event too. Retention that stops working quietly is how a
+// table becomes the outage, so `Err` being set is the signal worth surfacing
+// most, not an error to swallow.
+type RetentionRunEvent struct {
+	// Source identifies which retention domain ran, e.g. "records". Free-form by
+	// design: the OSS feed must not enumerate premium plugins.
+	Source string
+	// RunID is the source's own identifier for the pass, so a feed entry can be
+	// joined to the durable row behind it.
+	RunID     int64
+	StartedAt time.Time
+	// FinishedAt is when the pass ended, successfully or not.
+	FinishedAt time.Time
+	// Deleted is the per-category count. Empty means the pass ran and removed
+	// nothing — which is a normal, reportable outcome, not an absence of data.
+	Deleted []RetentionDeletion
+	// Bounded is true when the pass hit its per-pass cap and more remains. An
+	// operator seeing this on every tick is being told the backlog is not draining.
+	Bounded bool
+	// Err is empty on success.
+	Err string
+}
+
+func (RetentionRunEvent) domainEvent()      {}
+func (RetentionRunEvent) EventType() string { return EventTypeRetentionRun }
 
 // AgentStepEvent is one observed step of an agent's in-loop activity (a memory_query
 // today), emitted so the benchmark harness can measure what the final Handoff hides:

@@ -54,6 +54,21 @@ func storeNeuralTrace(ctx context.Context, vs domain.VectorStore, trace, traceID
 				"heal_attempt": healAttempt,
 			},
 		}
+		// BRAIN-01: stamp the SESSION that produced this trace.
+		//
+		// A neural trace is the archetypal "another task's evidence" — it is one
+		// run's reasoning, and without this it was retrievable by every other run
+		// forever. `trace_id` looks session-shaped but is a plan or lease id, so
+		// nothing downstream could tell whose run a trace belonged to: session
+		// isolation could not fence it and `cross_session_retrieval_rate` could not
+		// count it.
+		//
+		// Read from the CONTEXT, never from a parameter: the session is seeded
+		// server-side from the authenticated caller, and a value passed in here
+		// would be one a caller could choose.
+		if sid, ok := domain.SessionIDFromContext(saveCtx); ok && sid != "" {
+			doc.Metadata[domain.MetaSessionID] = string(sid)
+		}
 		if err := vs.Save(saveCtx, doc); err != nil {
 			slog.Error("🧠 NEURAL AMNESIA: Trace storage failed", "step", stepIndex, "err", err)
 		}
@@ -188,16 +203,14 @@ type Server struct {
 	// an unscoped deployment the answer is always yes.
 	Authz domain.Authorizer
 
-	// MemoryWriter backs memory.remember() / IngestMemory (ADR-0035 C2). nil →
-	// IngestMemory returns Unimplemented.
-	MemoryWriter MemoryWriter
-
-	// IngestionProcessor is the new chunking-pipeline path the gRPC
-	// IngestMemory routes through (ADR-0060 D8 / D9). nil →
-	// IngestMemory falls back to MemoryWriter; non-nil →
-	// IngestMemory routes the body through the chunker registry +
-	// source-doc entity + chunk ingestion. Satisfied by
+	// IngestionProcessor is the ONLY way memory is written (ADR-0060 D8/D9): the
+	// body goes through the chunker registry, a source-doc entity is minted, and
+	// each chunk is ingested with chunk_relations. Satisfied by
 	// *memory.IngestionManager.
+	//
+	// nil → IngestMemory FAILS. There is deliberately no raw-store-write fallback;
+	// the one that existed produced an un-chunked row with different metadata keys,
+	// invisible to ListDocuments, and could not fire anyway.
 	IngestionProcessor IngestionProcessor
 
 	// ADR-0039: kernel-owned tool registry + executor. nil → ExecuteTool returns

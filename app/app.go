@@ -353,10 +353,29 @@ func Run(ctx context.Context, opts Options) error {
 		os.Exit(1)
 	}()
 
-	// REDEMPTION: Health Check First (Fail Fast)
-	lis, err := net.Listen("tcp", ":"+cfg.Server.Port)
+	// SEC-03: decide transport security BEFORE binding, so a configuration that
+	// would serve a plaintext operator plane to the network fails at boot rather
+	// than after the port is open.
+	_, transportMode, err := transportCredentials(cfg)
 	if err != nil {
-		return fmt.Errorf("network (port %s unavailable): %w", cfg.Server.Port, err)
+		return err
+	}
+
+	// REDEMPTION: Health Check First (Fail Fast)
+	addr := listenAddress(cfg)
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("network (%s unavailable): %w", addr, err)
+	}
+	switch transportMode {
+	case "tls":
+		slog.Info("SEC-03: operator plane serving TLS", "addr", addr)
+	case "plaintext-insecure-optin":
+		slog.Warn("SEC-03: operator plane serving PLAINTEXT on a routable address "+
+			"(server.insecure_localhost=true)", "addr", addr,
+			"effect", "bearer tokens cross the network unencrypted")
+	default:
+		slog.Info("SEC-03: operator plane on loopback, plaintext", "addr", addr)
 	}
 
 	logResult, err := util.InitLogger(util.LogModeHeadless, cfg.Storage.DataDir)
@@ -977,6 +996,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if err := buildPlugins(composed.built, kernelSvc); err != nil {
 		return nil, err
 	}
+	// REC-02: capabilities a plugin could only decide once it saw the deployment.
+	// Collected AFTER every Build, so a plugin reports what it actually got rather
+	// than what its build could in principle contribute — the record lane used to
+	// advertise itself on a kernel with no Postgres, which made "no record lane
+	// here" indistinguishable from "this kernel is broken".
+	composed.capabilities = append(composed.capabilities, liveCapabilities(composed.built)...)
 
 	// ADR-0084 D4: the OSS chat lane. A bounded pool of stateless session workers replaces
 	// one process per conversation: process count becomes a configured constant instead of a
@@ -1124,26 +1149,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	// ADR-0035 C2: memory.remember() write-back through the write chokepoint, with
 	// the classification derived by the decision point + stamped provenance.
-	rememberSvc := memory.NewRememberService(mem.WriteStore, embedder, authorizer)
-	rememberSvc.SetEventBus(eventBus) // ADR-0047 0047-15: publish MemoryWrittenEvent on save
-	// ADR-0015: a remembered fact with activation 0 can never clear the recall floor
-	// (cosine·α < RecallSimilarityFloor) — seed a recallable default (LoCoMo-tunable).
-	rememberSvc.SetDefaultActivation(cfg.Execution.RememberDefaultActivation)
-	// ADR-0052: wire the BATCHED LLM-based entity+relation extractor. One LLM
-	// call per batch (default 32 facts) instead of one per ingest; ~32x fewer
-	// LLM calls. The batcher is non-blocking; the doc is still saved even if
-	// the queue is full.
-	if mem.EdgeBatcher != nil {
-		rememberSvc.SetEdgeBatcher(mem.EdgeBatcher)
-	}
-	// ADR-0053 D2 (revised): wire the per-chunk (h, r, t) extractor. The
-	// producer is swapped in main.go above (UseExtractor): the kg_extractor
-	// system agent when execution.kg_extractor_enabled is true, else the
-	// LLM residue adapter.
-	if mem.ChunkTripletsBatcher != nil {
-		rememberSvc.SetChunkTripletsBatcher(mem.ChunkTripletsBatcher)
-	}
-	cambrianServer.MemoryWriter = rememberSvc
+	// RememberService was REMOVED 2026-07-31. It was the raw-store-write path for
+	// ingest, and nothing routed to it: IngestMemory and the operator ingestor both
+	// go through the chunker, which is the only way memory is written. Its two
+	// unique behaviours moved to the paths that actually run — MemoryWrittenEvent to
+	// IngestionManager, and the unknown-principal fail-closed check to the ingest
+	// handler.
 
 	// ADR-0060 D8/D9: route the gRPC IngestMemory through the
 	// chunking pipeline. The IngestionManager (constructed by
@@ -1152,10 +1163,20 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// chunk with chunk_relations.parent_entity_id set. The
 	// SourceType/extension drives the chunker registry's
 	// Resolve(sourceType, ext) lookup; documents with no extension
-	// fall back to OptionC. The gRPC handler falls back to
-	// MemoryWriter when the IngestionManager is nil (legacy path).
+	// fall back to OptionC.
+	//
+	// There is NO legacy fallback any more: the gRPC handler and the operator
+	// ingestor both FAIL when this is absent rather than writing to the store
+	// directly. A raw write produced an un-chunked row with no source-document
+	// entity and different metadata keys, so "how is memory written" had two
+	// answers selected by a queue-size setting.
 	if mem.IngestionManager != nil {
 		cambrianServer.IngestionProcessor = mem.IngestionManager
+		// ADR-0047 D3: the operator feed. This publisher lived only on
+		// RememberService, which sat on the raw-write fallback — a path that could
+		// not fire — so MemoryWrittenEvent had a wired consumer and no reachable
+		// producer, and the operator memory feed was silent.
+		mem.IngestionManager.SetEventBus(eventBus)
 		mem.IngestionManager.SetSceneGenEnabled(cfg.Execution.SceneGenOnIngestEnabled)
 		// ADR-0053: also feed the document-ingest path's chunks to the triplet/
 		// anchor extractor, so uploaded documents populate chunk_triplets (KG2RAG,
@@ -1757,20 +1778,34 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// (secure-by-default: no creds ⇒ no login). The production identity
 		// backend swaps in behind the OperatorIdentity port.
 		operatorIDP := operatorBootstrapIdentity()
+		// SEC-03: recomputed from the same cfg rather than threaded through the
+		// signature. transportCredentials is pure, so the two calls cannot disagree,
+		// and Run has already failed the boot if this configuration is refusable.
+		tlsOpts, _, terr := transportCredentials(k.Config)
+		if terr != nil {
+			// FAIL, never degrade. Run already refused this configuration before
+			// binding, so reaching here means it changed underneath us — and the
+			// tempting fallback (serve with no credentials) is precisely the
+			// fail-open direction this file exists to close.
+			return fmt.Errorf("SEC-03: refusing to start the gRPC server: %w", terr)
+		}
 		k.GRPC = grpc.NewServer(
-			// ADR-0085 D7: stamp the surface FIRST, from the transport, so every
-			// downstream handler knows where the request arrived from. It runs
-			// unconditionally — the kernel always establishes the entry point; whether
-			// that constrains anything is the decision point's business.
-			grpc.ChainUnaryInterceptor(authz.UnarySurfaceInterceptor(), operator.UnaryAuthInterceptor(operatorIDP)),
-			grpc.ChainStreamInterceptor(authz.StreamSurfaceInterceptor(), operator.StreamAuthInterceptor(operatorIDP)),
-			// The operator binary-ingest lane (IngestMemory) carries raw file bytes;
-			// gRPC's 4 MiB default rejects any PDF above it server-side before docling
-			// ever runs, so the documented upload path is unusable for real documents.
-			// Raise both directions to 64 MiB (matches the UI client's tonic limits).
-			grpc.MaxRecvMsgSize(maxGRPCMessageBytes),
-			grpc.MaxSendMsgSize(maxGRPCMessageBytes),
-		)
+			// TLS when configured. Empty when the plane is on loopback or an operator
+			// explicitly opted into plaintext.
+			append(tlsOpts,
+				// ADR-0085 D7: stamp the surface FIRST, from the transport, so every
+				// downstream handler knows where the request arrived from. It runs
+				// unconditionally — the kernel always establishes the entry point; whether
+				// that constrains anything is the decision point's business.
+				grpc.ChainUnaryInterceptor(authz.UnarySurfaceInterceptor(), operator.UnaryAuthInterceptor(operatorIDP)),
+				grpc.ChainStreamInterceptor(authz.StreamSurfaceInterceptor(), operator.StreamAuthInterceptor(operatorIDP)),
+				// The operator binary-ingest lane (IngestMemory) carries raw file bytes;
+				// gRPC's 4 MiB default rejects any PDF above it server-side before docling
+				// ever runs, so the documented upload path is unusable for real documents.
+				// Raise both directions to 64 MiB (matches the UI client's tonic limits).
+				grpc.MaxRecvMsgSize(maxGRPCMessageBytes),
+				grpc.MaxSendMsgSize(maxGRPCMessageBytes),
+			)...)
 		pb.RegisterOrchestratorServer(k.GRPC, k.Server)
 		// PLAT-03 / ADR-0065: standard grpc.health.v1 on the main listener. Starts the
 		// readiness probe loop (DB ping) and, if configured, the /healthz HTTP shim.
@@ -1868,10 +1903,13 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				doc := operatorIngestDoc(req)
 				return k.Server.IngestionProcessor.ProcessSync(ctx, doc)
 			}
-			if k.Server.MemoryWriter != nil {
-				return k.Server.MemoryWriter.Remember(ctx, req.Author, req.Text, req.Tags, req.Source, req.SessionID, req.Importance)
-			}
-			return "", fmt.Errorf("memory ingest not configured")
+			// No raw-store-write fallback, matching the agent plane. A direct
+			// MemoryWriter.Remember here produced a structurally different row —
+			// un-chunked, no source-document entity, invisible to ListDocuments — so
+			// the SAME operator action wrote two different shapes of memory depending
+			// on a queue-size setting. Failing is the honest outcome.
+			return "", fmt.Errorf("ingestion pipeline not configured: every memory ingest " +
+				"must go through the chunker, and there is no raw-store-write path")
 		}))
 		// ADR-0047 A2.6: watch CRUD is premium capability-gated. k.Server.WatchHandler
 		// is nil in an OSS build (⇒ Unimplemented, WatchTriggered never publishes) and
@@ -2059,6 +2097,16 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			"scout-usefulness",
 			// route-preview: PreviewRoute deterministic gatekeeper merit scoring (ROUTE-07).
 			"route-preview",
+			// retention-feed (contract 0084, ADR-0102 A1): RetentionRunOp on the feed,
+			// reporting what a compaction pass deleted, whether it was capped, and
+			// whether it failed.
+			//
+			// Advertised UNCONDITIONALLY, unlike the source-backed strings below. The
+			// capability is the kernel's ability to CARRY the event, which is true of
+			// every build; whether any source emits one is a deployment fact. Gating it
+			// on a registered plugin would make a console hide the retention view on an
+			// OSS kernel that is perfectly able to display a journal-GC pass (GOV-02).
+			"retention-feed",
 			// native-tool-calling: the agent-plane GenerateWithTools RPC exists on this
 			// build (ADR-0097 Phase B). Declared unconditionally because the RPC is
 			// always served; whether a given STEP can use it depends on the model
@@ -2203,7 +2251,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Logs != nil {
 			operatorSvc.SetLogRing(k.Logs)
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0083", operatorCaps)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0085", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".
@@ -2213,7 +2261,10 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// the pending executor-producer side (nil hooks ⇒ Unimplemented).
 		operatorSvc.SetSessionOps(operator.SessionOpsFuncs{
 			CreateFn: func(ctx context.Context, goal, parentID string) (string, error) {
-				ses, err := k.SessionMgr.CreateSession(ctx, goal, domain.SessionID(parentID))
+				// BRAIN-01: persist the caller's scope at session start, so later turns
+				// can re-derive effective = caller_scope ∩ agent_scope (ADR-0034 D13).
+				ses, err := k.SessionMgr.CreateScopedSession(ctx, goal,
+					domain.SessionID(parentID), callerScopeFor(ctx, k.Server.Authz))
 				if err != nil {
 					return "", err
 				}
@@ -2248,7 +2299,8 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.SessionMgr != nil && k.Server != nil {
 			operatorSvc.SetPlanSubmitter(planSubmitter{
 				sessions: func(ctx context.Context, goal string) (string, error) {
-					ses, err := k.SessionMgr.CreateSession(ctx, goal, "")
+					ses, err := k.SessionMgr.CreateScopedSession(ctx, goal, "",
+						callerScopeFor(ctx, k.Server.Authz))
 					if err != nil {
 						return "", err
 					}

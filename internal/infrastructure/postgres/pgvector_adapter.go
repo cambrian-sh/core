@@ -587,6 +587,42 @@ func scopeExpressionsOn(eff *domain.TagPredicate, alias string) []goqu.Expressio
 	return exprs
 }
 
+// isolationExpressions builds the SQL mirror of domain.SessionIsolation.Allows
+// (BRAIN-01).
+//
+// A SECOND predicate beside the tag one, over its own field. Documents already
+// carry metadata["session_id"], stamped at commit time, so this needs no column
+// and no migration — only a predicate that was never written. It is deliberately
+// NOT expressed as a tag: a session id is an identity, and coining session:<uuid>
+// per conversation is what ADR-0099 forbids.
+//
+// A nil predicate yields NO predicate here, exactly as scopeExpressions does: the
+// fail-closed decision belongs to the chokepoint, and the SQL copy is the one
+// nobody reads.
+func isolationExpressions(iso *domain.SessionIsolation, alias string) []goqu.Expression {
+	if iso == nil || iso.Bypass {
+		return nil
+	}
+	col := "metadata"
+	if alias != "" {
+		col = alias + ".metadata"
+	}
+	owner := goqu.L(col + " ->> 'session_id'")
+	mine := goqu.L(col+" ->> 'session_id' = ?", string(iso.SessionID))
+	if !iso.IncludeUnowned {
+		return []goqu.Expression{mine}
+	}
+	// Unowned material stays visible. This is what makes isolation a predicate
+	// rather than a store reset: an ingested corpus carries no session id, and
+	// fencing it off would delete every deployment's knowledge base the day
+	// isolation shipped.
+	return []goqu.Expression{goqu.Or(
+		goqu.L("? IS NULL", owner),
+		goqu.L("? = ''", owner),
+		mine,
+	)}
+}
+
 func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32, opts domain.SearchOptions, limit int) ([]domain.SearchResult, error) {
 	ds := dialect.From(tableFor(opts.DocumentType)).
 		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path")
@@ -609,6 +645,10 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 	// adds no predicate. The ScopedVectorStore decorator is the fail-closed gate;
 	// this is the SQL-building mirror of EffectiveScope.Allows.
 	for _, expr := range scopeExpressions(opts.Scope) {
+		ds = ds.Where(expr)
+	}
+	// BRAIN-01: and the session boundary, as its own predicate over its own field.
+	for _, expr := range isolationExpressions(opts.Isolation, "") {
 		ds = ds.Where(expr)
 	}
 	// Wire the previously-dead SearchOptions.Filter as a raw additional predicate.
@@ -668,6 +708,9 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 		ds = ds.Where(goqu.Ex{"document_type": opts.DocumentType})
 	}
 	for _, expr := range scopeExpressions(opts.Scope) {
+		ds = ds.Where(expr)
+	}
+	for _, expr := range isolationExpressions(opts.Isolation, "") {
 		ds = ds.Where(expr)
 	}
 	if opts.Filter != "" {
@@ -1106,6 +1149,15 @@ func (p *PgVectorAdapter) ChunksMentioningEntity(ctx context.Context, entity str
 		})
 	for _, expr := range scopeExpressionsOn(scope, "c") {
 		ds = ds.Where(expr)
+	}
+	// BRAIN-01: this is a by-entity read with no opts to carry a predicate, so the
+	// session boundary comes off the CONTEXT — the same channel the enrichment
+	// stages already use, which is what makes a read added here isolated by
+	// default rather than by whoever remembers to thread it.
+	if iso, ok := domain.IsolationFromContext(ctx); ok {
+		for _, expr := range isolationExpressions(iso, "c") {
+			ds = ds.Where(expr)
+		}
 	}
 	sql, args, _ := ds.
 		GroupBy("ct.chunk_id").

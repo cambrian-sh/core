@@ -53,6 +53,9 @@ func TestFileTool_JailSweepToCAS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discover tools: %v", err)
 	}
+	if len(reg.All()) == 0 {
+		t.Skip("no tool manifests in this checkout; these E2E tests need a populated tools/ tree")
+	}
 	cas := newFakeContentStore()
 	h := &ProcessHandler{PythonExec: py, ToolFiles: files, DefaultTimeout: 10 * time.Second, ContentStore: cas}
 
@@ -102,6 +105,9 @@ func TestFileTool_RealIO(t *testing.T) {
 	files, err := discovery.LoadRegistry(toolsDir, reg, false)
 	if err != nil {
 		t.Fatalf("discover tools: %v", err)
+	}
+	if len(reg.All()) == 0 {
+		t.Skip("no tool manifests in this checkout; these E2E tests need a populated tools/ tree")
 	}
 	if files["read_file"] == "" || files["write_file"] == "" {
 		t.Fatalf("file tool not discovered from %s (got %v)", toolsDir, files)
