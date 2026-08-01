@@ -105,6 +105,13 @@ type Options struct {
 	// and kernel behaviour bit-identical. Plugins contribute through
 	// Registry.AddDecisionObserver; this field is the directly-set equivalent.
 	DecisionObserver domain.DecisionObserver
+
+	// EvidenceTransformers are the transformation-stage consumers of the
+	// evidence outbox (ADR-0108 D3). Plugins contribute through
+	// Registry.AddEvidenceTransformer; empty means the outbox consumer never
+	// starts, which is correct — a consumer with no consumers is the unwired
+	// trap with a ticker.
+	EvidenceTransformers []domain.EvidenceTransformer
 }
 
 // KernelServices is the OSS-provided capability bundle handed to every plugin's Build phase
@@ -241,6 +248,17 @@ type KernelServices struct {
 	// boundary exists to prevent (memo §18 phase-2 note). nil when no Postgres
 	// is configured.
 	Knowledge domain.KnowledgeStore
+
+	// Events is the substrate's typed event/observation boundary (ADR-0108 D2):
+	// point lookups and history over stored rows, exact, nothing embedded.
+	// nil when no Postgres is configured.
+	Events domain.EventStore
+
+	// EvidenceIngest preserves one delivery as evidence under the ADR-0105
+	// ordering contract (bytes → verify → atomic evidence+outbox). nil when
+	// evidence capture is disabled — a plugin lane that needs the archive must
+	// say so rather than silently detecting over content nobody preserved.
+	EvidenceIngest func(ctx context.Context, raw domain.RawEvidence) (domain.EvidenceID, bool, error)
 }
 
 // SessionScopeReader returns the caller term persisted on a session record. It is

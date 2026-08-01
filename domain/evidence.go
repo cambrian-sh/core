@@ -58,6 +58,24 @@ type Evidence struct {
 // EvidenceID identifies one evidence row.
 type EvidenceID string
 
+// RawEvidence is one delivery to be preserved as evidence. Transport-shaped on
+// purpose: no interpretation, no derived fields — interpretation belongs to the
+// pipeline stages that read the archive, never to the archiving step.
+type RawEvidence struct {
+	NamespaceID    string
+	SourceID       string
+	SourceKey      string
+	SourceRevision string
+	SourceTime     time.Time
+	Bytes          []byte
+	Classification []string
+	Cursor         string
+	TraceID        string
+	// RevisesID links this delivery to the evidence row it supersedes, when the
+	// source itself declared a revision relationship.
+	RevisesID EvidenceID
+}
+
 // EvidenceOutboxItem is one unit of pending post-ingest work, inserted in the
 // SAME transaction as its evidence row (transactional outbox, memo §11) and
 // consumed at-least-once by the transformation stage (Phase 2).
