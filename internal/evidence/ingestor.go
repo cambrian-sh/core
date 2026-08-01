@@ -20,29 +20,15 @@ package evidence
 import (
 	"context"
 	"fmt"
-	"time"
 	"unicode/utf8"
 
 	"github.com/cambrian-sh/core/domain"
 )
 
-// Raw is one delivery to be preserved as evidence. It is transport-shaped on
-// purpose: no interpretation, no derived fields — interpretation belongs to
-// later pipeline stages that read the archive, never to the archiving step.
-type Raw struct {
-	NamespaceID    string
-	SourceID       string
-	SourceKey      string
-	SourceRevision string
-	SourceTime     time.Time
-	Bytes          []byte
-	Classification []string
-	Cursor         string
-	TraceID        string
-	// RevisesID links this delivery to the evidence row it supersedes, when the
-	// source itself declared a revision relationship.
-	RevisesID domain.EvidenceID
-}
+// Raw is the delivery shape this package archives. It lives in domain
+// (domain.RawEvidence) so plugins can hand deliveries to the kernel seam
+// without importing internals; the alias keeps this package's vocabulary.
+type Raw = domain.RawEvidence
 
 // Ingestor turns raw deliveries into durable evidence under the ordering
 // contract above.

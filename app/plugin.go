@@ -199,6 +199,7 @@ type Registry struct {
 	identityOwner    string
 	ingressOwner     string
 	decisionObs      []domain.DecisionObserver
+	transformers     []domain.EvidenceTransformer
 }
 
 // SetAuthorizer installs the access-control decision point (ADR-0085). Tier-1
@@ -307,6 +308,17 @@ func (r *Registry) AddGRPCService(f func(*grpc.Server)) {
 func (r *Registry) AddDecisionObserver(o domain.DecisionObserver) {
 	if o != nil {
 		r.decisionObs = append(r.decisionObs, o)
+	}
+}
+
+// AddEvidenceTransformer registers a transformation-stage consumer for the
+// evidence outbox (ADR-0108 D3). Add-many: several transformers may watch the
+// same archive for different shapes; each sees every delivery at least once and
+// answers handled=false for shapes that are not its own. Registered
+// transformers are what make the kernel start the outbox consumer at all.
+func (r *Registry) AddEvidenceTransformer(t domain.EvidenceTransformer) {
+	if t != nil {
+		r.transformers = append(r.transformers, t)
 	}
 }
 
@@ -643,6 +655,8 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 		fan = append(fan, reg.decisionObs...)
 		opts.DecisionObserver = fan
 	}
+	// Evidence transformers (ADR-0108 D3): appended in registration order.
+	opts.EvidenceTransformers = append(opts.EvidenceTransformers, reg.transformers...)
 	// Capabilities: dedupe, preserving first-seen order so the handshake list is stable
 	// across boots (a UI diffing capabilities should not see spurious churn).
 	var caps []string

@@ -963,6 +963,21 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// One reader, shared by the plugin seam and the operator RPC.
 	docReader := &kernelDocumentReader{store: authz.NewEnforcingVectorStore(vec, slog.Default())}
 
+	// ADR-0105/0108: the evidence foundation's pieces, built ONCE here so the
+	// plugin seam, the ingest chokepoint and the outbox consumer share one
+	// ingestor and one store. Construction is fail-loud: with the flag on, a
+	// kernel that cannot preserve evidence must not boot into silently-not-
+	// preserving it.
+	var evIngestor *evidence.Ingestor
+	evStore := postgres.NewPgEvidenceStore(vec.Pool())
+	if cfg.Execution.Ingestion.EvidenceCaptureEnabled {
+		var everr error
+		evIngestor, everr = evidence.NewIngestor(storeHandle.ContentStore, evStore)
+		if everr != nil {
+			return nil, fmt.Errorf("evidence capture (ADR-0105): %w", everr)
+		}
+	}
+
 	kernelSvc := KernelServices{
 		// ADR-0085: the policy plugin owns its own tables and needs to tell a
 		// registered-but-unprofiled agent from an unknown principal, so it gets the
@@ -1017,6 +1032,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// producing or consuming knowledge items goes through this port so no
 		// consumer ever grows SQL against substrate tables.
 		Knowledge:     postgres.NewPgKnowledgeStore(vec.Pool()),
+		// ADR-0108 D2: the typed event/observation boundary — exact reads over
+		// stored rows, nothing embedded.
+		Events:        postgres.NewPgEventStore(vec.Pool()),
 		Manager:       meta.Manager,
 		Auctioneer:    meta.Auctioneer,
 		Memory:        mem.Agent,
@@ -1038,6 +1056,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			// chat.TokenAcquirer speaks the wire type; the lease is cast at this seam.
 			return string(tok), func() { _, _ = llmGateway.Complete(context.Background(), tok) }, nil
 		},
+	}
+	if evIngestor != nil {
+		kernelSvc.EvidenceIngest = evIngestor.Ingest
 	}
 
 	// ADR-0082 D12: the Build phase — plugins construct their runtime objects now that the
@@ -1268,17 +1289,22 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// ADR-0105: the knowledge substrate's evidence foundation. Opt-in. Every
 		// ingested document's original bytes become durable, content-addressed
 		// evidence (+ outbox work item) BEFORE chunking or any other semantic step.
-		// Construction is fail-loud: with the flag on, a kernel that cannot
-		// preserve evidence must not boot into silently-not-preserving it.
-		if cfg.Execution.Ingestion.EvidenceCaptureEnabled {
-			evIngestor, err := evidence.NewIngestor(
-				storeHandle.ContentStore, postgres.NewPgEvidenceStore(vec.Pool()))
-			if err != nil {
-				return nil, fmt.Errorf("evidence capture (ADR-0105): %w", err)
-			}
+		if evIngestor != nil {
 			mem.IngestionManager.SetEvidenceCapture(evIngestor)
 			slog.Info("ADR-0105: evidence capture ENABLED (content-first evidence + outbox on every ingest)")
 		}
+	}
+
+	// ADR-0108 D3: the transformation stage. Starts ONLY when evidence is being
+	// captured AND at least one transformer registered — a consumer with no
+	// consumers, or one whose archive is never written, is the unwired trap.
+	if evIngestor != nil && len(opts.EvidenceTransformers) > 0 {
+		consumer, cerr := evidence.NewConsumer(evStore, storeHandle.ContentStore,
+			opts.EvidenceTransformers, slog.Default())
+		if cerr != nil {
+			return nil, fmt.Errorf("evidence consumer (ADR-0108): %w", cerr)
+		}
+		go consumer.Run(ctx)
 	}
 
 	// ADR-0041: expose the kernel embedder for the agent Local Recurrent Workspace
