@@ -699,6 +699,21 @@ type RetrievalConfig struct {
 	RecallOverFetch int `json:"recall_over_fetch,omitempty"`
 	HnswEfSearch    int `json:"hnsw_ef_search,omitempty"`
 
+	// EmbeddingProjectionWrite dual-writes every chunk embedding into the
+	// chunk_embeddings projection under the active embedder's (model, dims) —
+	// ADR-0107 stage 3a. WRITE ONLY: retrieval keeps reading chunks.embedding,
+	// so flipping this cannot move a recall number by construction; the read
+	// switch is stage 3b's separately-gated flag. Default off.
+	EmbeddingProjectionWrite bool `json:"embedding_projection_write,omitempty"`
+
+	// EmbeddingProjectionRead switches dense chunk retrieval onto the
+	// projection's rows for the ACTIVE model (ADR-0107 stage 3b). Requires
+	// EmbeddingProjectionWrite (boot-enforced) and a completed backfill
+	// (cmd/embed-backfill) — an unbackfilled chunk is invisible through the
+	// projection. Part of the retrieval fingerprint: it changes where the
+	// ranking's vectors come from. Default off.
+	EmbeddingProjectionRead bool `json:"embedding_projection_read,omitempty"`
+
 	// Hybrid retrieval (ADR-0054): fuse dense (pgvector cosine) with sparse/lexical
 	// (Postgres full-text) via Reciprocal Rank Fusion, so exact-token chunks the
 	// embedder misses (names, titles, places) still enter the candidate pool.

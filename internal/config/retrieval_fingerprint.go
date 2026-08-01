@@ -38,6 +38,11 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 	// flag changing. Identity and dimension travel together in embedderID.
 	fmt.Fprintf(&b, "embedder=%s\n", embedderID)
 
+	// Where the ranking's vectors come from (ADR-0107 stage 3b). The WRITE flag
+	// is deliberately absent — it cannot affect a ranking; the READ switch is a
+	// different vector source and therefore a different ranking function.
+	fmt.Fprintf(&b, "embedding_projection_read=%t\n", c.Retrieval.EmbeddingProjectionRead)
+
 	// Window and floor.
 	fmt.Fprintf(&b, "recall_top_k=%d\n", c.Retrieval.RecallTopK)
 	fmt.Fprintf(&b, "recall_over_fetch=%d\n", c.Retrieval.RecallOverFetch)
