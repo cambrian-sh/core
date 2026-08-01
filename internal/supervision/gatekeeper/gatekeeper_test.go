@@ -80,7 +80,7 @@ func TestFindCandidates_ActiveAgentScore(t *testing.T) {
 	if len(candidates) != 1 {
 		t.Fatalf("expected 1 candidate, got %d", len(candidates))
 	}
-	wantScore := cfg.GatekeeperW1*0.5 + cfg.GatekeeperW2*0.5 + cfg.GatekeeperW3*1.0
+	wantScore := cfg.Gatekeeper.GatekeeperW1*0.5 + cfg.Gatekeeper.GatekeeperW2*0.5 + cfg.Gatekeeper.GatekeeperW3*1.0
 	if abs64(candidates[0].Score-wantScore) > 1e-9 {
 		t.Errorf("expected neutral score %.4f, got %.4f", wantScore, candidates[0].Score)
 	}

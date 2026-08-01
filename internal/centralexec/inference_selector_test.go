@@ -11,7 +11,7 @@ import (
 // (0037-03) and the Gatekeeper precision oracle (0037-04). It returns canned
 // weights so the InferenceSelector can be tested in isolation.
 type fakePrecision struct {
-	weights []domain.PrecisionWeight
+	weights       []domain.PrecisionWeight
 	gotIntent     domain.Intent
 	gotCandidates []domain.AgentDefinition
 }

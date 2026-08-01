@@ -12,7 +12,7 @@ import (
 // pinCfg is the pinning arm ON, which is the shipped default.
 func pinCfg() config.ExecutionConfig {
 	cfg := defaultGatekeeperCfg()
-	cfg.AgentPinning = true
+	cfg.Routing.AgentPinning = true
 	return cfg
 }
 
@@ -152,7 +152,7 @@ func TestPin_EmptyStrengthDegradesToSoft(t *testing.T) {
 // honour a hard pin.
 func TestPin_ArmOffIgnoresPinEntirely(t *testing.T) {
 	cfg := defaultGatekeeperCfg()
-	cfg.AgentPinning = false
+	cfg.Routing.AgentPinning = false
 	g := NewGatekeeper(pinAgents(), cfg)
 
 	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{

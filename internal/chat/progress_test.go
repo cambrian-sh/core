@@ -174,7 +174,7 @@ func TestProgress_TerminalClearOnFailurePaths(t *testing.T) {
 		name  string
 		reply string
 	}{
-		{"empty reply", ""},          // ErrEmptyReply — returns before the success path
+		{"empty reply", ""}, // ErrEmptyReply — returns before the success path
 		{"normal reply", "hello there"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

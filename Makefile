@@ -9,6 +9,8 @@
         fuzz fuzz-release \
         contract contract-release \
         separability \
+        lint lint-new deadcode \
+        proto-sync proto-sync-check \
         corpus export \
         per-pr nightly release-gate
 
@@ -21,6 +23,9 @@ help:
 	@echo "  FAST (no external deps)"
 	@echo "    make test              Unit tests, all packages                  ~30s"
 	@echo "    make separability      OTel / premium import gate                 ~1s"
+	@echo "    make lint              golangci-lint, full report (advisory)      ~40s"
+	@echo "    make lint-new          golangci-lint vs $(LINT_BASE) (the gate)     ~40s"
+	@echo "    make deadcode          Unreachable funcs across all binaries      ~20s"
 	@echo "    make integration       SystemHarness E2E tests                    ~5s"
 	@echo "    make chaos             Per-PR chaos scenarios (6, in-process)     <5s"
 	@echo "    make leak              Package-level goroutine leak detection      ~3s"
@@ -59,20 +64,70 @@ test:
 test-race:
 	go test -race ./internal/...
 
+# ─── Lint & Dead Code ────────────────────────────────────────────────────────
+
+GOLANGCI ?= golangci-lint
+DEADCODE ?= deadcode
+
+# Full report. ADVISORY, not a gate: the tree carried ~131 pre-existing findings
+# when the config landed, and blocking every PR on a backlog nobody has triaged is
+# how a linter gets disabled. Use `lint-new` for the gate.
+lint:
+	@command -v $(GOLANGCI) >/dev/null 2>&1 || { \
+		echo "golangci-lint is not installed."; \
+		echo "    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; \
+		exit 1; \
+	}
+	$(GOLANGCI) run ./...
+
+# The GATE: only issues introduced by this branch fail. This is what makes the
+# linter adoptable — existing findings are paid down deliberately while new code
+# is held to the full standard from day one.
+#
+# Needs full history and the base ref present; a shallow clone reports everything
+# as new. LINT_BASE is overridable for a branch cut from something other than main.
+LINT_BASE ?= origin/main
+lint-new:
+	@command -v $(GOLANGCI) >/dev/null 2>&1 || { \
+		echo "golangci-lint is not installed."; \
+		echo "    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; \
+		exit 1; \
+	}
+	$(GOLANGCI) run --new-from-rev=$(LINT_BASE) ./...
+
+# Unreachable exported+unexported functions across ALL binaries.
+#
+# `./cmd/...`, never a single binary: analysing only cmd/orchestrator wrongly
+# condemns internal/memory/pagerank.go and internal/metabolism/routescorer/,
+# which other maintenance binaries use. It also cannot see cross-MODULE callers,
+# so app/plugin.go's Registry.* (the premium plugin API) always appears
+# unreachable — grep cambrian-premium before deleting anything there.
+deadcode:
+	@command -v $(DEADCODE) >/dev/null 2>&1 || { \
+		echo "deadcode is not installed."; \
+		echo "    go install golang.org/x/tools/cmd/deadcode@latest"; \
+		exit 1; \
+	}
+	$(DEADCODE) ./cmd/...
+
 # ─── Separability Gate ───────────────────────────────────────────────────────
 
+# The check lives in scripts/check-separability.sh — a real script with a real
+# exit code, not an inline grep. The previous inline fallback scanned
+# `internal/domain` (which does not exist; domain/ is at the repo root) and
+# grepped for `internal/premium` (a path retired by ADR-0057), so it passed
+# vacuously and could not have caught a boundary violation.
+#
+# bash is preferred because it is what CI runs; the pwsh variant is kept at
+# parity for Windows developers without a bash on PATH.
 separability:
 	@echo "--- Checking OTel / premium separability ---"
-	@if command -v pwsh > /dev/null 2>&1; then \
+	@if command -v bash > /dev/null 2>&1; then \
+		bash scripts/check-separability.sh; \
+	elif command -v pwsh > /dev/null 2>&1; then \
 		pwsh -File scripts/check-separability.ps1; \
 	else \
-		! grep -r "go.opentelemetry.io" \
-			internal/domain internal/metabolism internal/awareness \
-			internal/supervision internal/substrate 2>/dev/null | grep .; \
-		! grep -r "internal/premium" \
-			internal/domain internal/metabolism internal/awareness \
-			internal/supervision internal/substrate 2>/dev/null | grep .; \
-		echo "PASS: No OTel or premium imports in core packages"; \
+		powershell -NoProfile -File scripts/check-separability.ps1; \
 	fi
 
 # ─── Integration Tests (SystemHarness, no external deps) ─────────────────────
@@ -98,13 +153,21 @@ chaos-real:
 
 # ─── Goroutine Leak Detection ─────────────────────────────────────────────────
 
-# Runs goleak TestMain for all background worker packages
+# Runs goleak TestMain for all background worker packages.
+#
+# This list must match the packages that actually carry a leak_test.go; a stale
+# entry is not harmless. `internal/supervision/clusterer` (retired with the LLM
+# CapabilityClusterer, ADR-0067) and `internal/supervision/synaptic` were both
+# removed from the tree while still listed here, so `go test` failed with
+# "setup failed" on a missing pattern and the target had been red — which nothing
+# noticed, because no CI ran it.
+#
+# If you retire a worker package, delete its line. If you add one, add it here
+# together with its leak_test.go.
 leak:
 	go test ./internal/supervision/aggregator/... -v
-	go test ./internal/supervision/clusterer/... -v
 	go test ./internal/metabolism/interview/... -v
 	go test ./internal/supervision/verify/... -v
-	go test ./internal/supervision/synaptic/... -v
 	go test ./internal/supervision/circadian/... -v
 
 # Full-kernel goroutine leak test (requires chaos tag)
@@ -175,7 +238,7 @@ per-pr: proto-check proto-breaking test-race separability integration chaos benc
 	@echo "=== Per-PR pipeline complete ==="
 
 # Nightly pipeline: macro benchmarks + short fuzz + leak detection
-nightly: bench-macro fuzz leak
+nightly: bench-macro fuzz leak deadcode
 	@echo ""
 	@echo "=== Nightly pipeline complete ==="
 
@@ -228,6 +291,13 @@ proto:
 #
 # Comparing generated-vs-fresh is the property actually wanted, and it leaves the
 # working tree untouched.
+#
+# The comparison is LINE-ENDING AGNOSTIC (`diff --strip-trailing-cr`). protoc
+# always emits LF; a Windows checkout under core.autocrlf=true holds CRLF. Those
+# are the same bindings, and a byte comparison called them stale — the gate failed
+# with "run 'make proto' and commit" when running `make proto` would have changed
+# nothing a reviewer could see. A REAL staleness always shows as a content
+# difference, which this still catches. See .gitattributes for the underlying fix.
 proto-check:
 	@tmp=$$(mktemp -d) || exit 1; \
 	$(PROTOC) -I api/proto \
@@ -236,7 +306,7 @@ proto-check:
 		api/proto/operator.proto api/proto/cambrian.proto || { rm -rf $$tmp; exit 1; }; \
 	rc=0; \
 	for f in operator.pb.go operator_grpc.pb.go cambrian.pb.go cambrian_grpc.pb.go; do \
-		if ! diff -q "api/proto/$$f" "$$tmp/$$f" >/dev/null 2>&1; then \
+		if ! diff -q --strip-trailing-cr "api/proto/$$f" "$$tmp/$$f" >/dev/null 2>&1; then \
 			echo "stale binding: $$f"; rc=1; \
 		fi; \
 	done; \
@@ -245,6 +315,17 @@ proto-check:
 		echo "generated bindings do not match the .proto sources: run 'make proto' and commit"; \
 		exit 1; \
 	fi
+
+# Propagate / verify the vendored .proto copies in ui/, cli/ and (report-only)
+# cambrian-benchmarks. Requires the sibling repos to be checked out alongside this
+# one, i.e. the local workspace layout — which is why this is not in `per-pr`
+# (core's own CI clones core alone). The multi-repo gate is the `proto-sync` job in
+# .github/workflows/ci.yml, which checks the siblings out first.
+proto-sync:
+	bash scripts/sync-protos.sh
+
+proto-sync-check:
+	bash scripts/sync-protos.sh --check
 
 # Fail on a backward-incompatible operator-contract change.
 #

@@ -3,8 +3,8 @@ package llm
 import (
 	"testing"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // Every configured generator — across providers — gets a streaming client keyed

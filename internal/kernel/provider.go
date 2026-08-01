@@ -96,8 +96,8 @@ func ProvideServer(
 	// travelled). Previously reused aw.LLM (the planner generator).
 	srv.Router = router.NewWithConfig(
 		llmProvider.GeneratorFor(domain.PurposeRouter),
-		cfg.RouterMinClassificationConfidence,
-		cfg.RouterClassificationBodyChars,
+		cfg.Router.RouterMinClassificationConfidence,
+		cfg.Router.RouterClassificationBodyChars,
 	)
 
 	// ADR-0057: signal receiver + watch handler are injected (no build tags).
@@ -107,10 +107,10 @@ func ProvideServer(
 	// ADR-0037: wire the Central-Executive selection arm behind the flag.
 	// Default "auction" leaves the EFE selector nil — production dispatch is
 	// unchanged until an operator opts in via resource_selector=efe|auto.
-	srv.SelectorMode = cfg.ResourceSelector
-	srv.EFETrafficPercent = cfg.EFETrafficPercent
-	if cfg.ResourceSelector == "efe" || cfg.ResourceSelector == "auto" {
-		srv.ResourceSelector = centralexec.NewGatekeeperEFESelector(meta.Gatekeeper, cfg.EFEExplorationBonus)
+	srv.SelectorMode = cfg.Routing.ResourceSelector
+	srv.EFETrafficPercent = cfg.Routing.EFETrafficPercent
+	if cfg.Routing.ResourceSelector == "efe" || cfg.Routing.ResourceSelector == "auto" {
+		srv.ResourceSelector = centralexec.NewGatekeeperEFESelector(meta.Gatekeeper, cfg.Routing.EFEExplorationBonus)
 	}
 
 	return srv

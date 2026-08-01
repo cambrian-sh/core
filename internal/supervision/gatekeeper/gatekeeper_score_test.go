@@ -71,7 +71,7 @@ func TestGatekeeperScore_TopNCandidates(t *testing.T) {
 	profiles := &mockGatekeeperProfileReader{profiles: profileMap}
 	registry := newMockAgentDeclarationSource(agentList, nil)
 	cfg := defaultTestExecCfg()
-	cfg.GatekeeperMaxCandidates = 5
+	cfg.Gatekeeper.GatekeeperMaxCandidates = 5
 	gk := NewGatekeeper(registry, cfg, WithProfiles(profiles))
 
 	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t13"})
@@ -95,7 +95,7 @@ func TestGatekeeperScore_ProfileProvisional_PenaltyApplied(t *testing.T) {
 	}
 	registry := newMockAgentDeclarationSource([]domain.AgentDefinition{active, postInterview}, nil)
 	cfg := defaultTestExecCfg()
-	cfg.ColdStartPenaltyMultiplier = 0.6
+	cfg.Gatekeeper.ColdStartPenaltyMultiplier = 0.6
 	gk := NewGatekeeper(registry, cfg, WithProfiles(profiles))
 
 	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t18"})

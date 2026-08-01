@@ -43,6 +43,7 @@ type Service struct {
 	skills        SkillLister
 	memory        MemoryQuerier
 	documents     memory.DocumentLister // nil ⇒ ListDocuments Unimplemented
+	docGetter     memory.DocumentGetter // nil ⇒ GetDocument Unimplemented
 	answerer      MemoryAnswerer        // ADR-0081; nil ⇒ AnswerMemory Unimplemented
 	toolRunner    ToolRunner
 	ingestor      MemoryIngestor

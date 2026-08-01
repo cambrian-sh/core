@@ -109,34 +109,42 @@ func TestLoadConfig_CapabilityCluster_DefaultsApplied(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	ex := cfg.Execution
-	if ex.CapabilityClusterThreshold != 0.80 {
-		t.Errorf("CapabilityClusterThreshold: want 0.80, got %v", ex.CapabilityClusterThreshold)
+	if ex.Capability.CapabilityClusterThreshold != 0.80 {
+		t.Errorf("CapabilityClusterThreshold: want 0.80, got %v", ex.Capability.CapabilityClusterThreshold)
 	}
-	if ex.CapabilityClusterEpsilon != 0.02 {
-		t.Errorf("CapabilityClusterEpsilon: want 0.02, got %v", ex.CapabilityClusterEpsilon)
+	if ex.Capability.CapabilityClusterEpsilon != 0.02 {
+		t.Errorf("CapabilityClusterEpsilon: want 0.02, got %v", ex.Capability.CapabilityClusterEpsilon)
 	}
-	if ex.CapabilityClusterMinAgents != 3 {
-		t.Errorf("CapabilityClusterMinAgents: want 3, got %v", ex.CapabilityClusterMinAgents)
+	if ex.Capability.CapabilityClusterMinAgents != 3 {
+		t.Errorf("CapabilityClusterMinAgents: want 3, got %v", ex.Capability.CapabilityClusterMinAgents)
 	}
-	if ex.CapabilityClusterIntervalSeconds != 3600 {
-		t.Errorf("CapabilityClusterIntervalSeconds: want 3600, got %v", ex.CapabilityClusterIntervalSeconds)
+	if ex.Capability.CapabilityClusterIntervalSeconds != 3600 {
+		t.Errorf("CapabilityClusterIntervalSeconds: want 3600, got %v", ex.Capability.CapabilityClusterIntervalSeconds)
 	}
 }
 
 func TestExecutionConfig_Validate_ModelConfigs(t *testing.T) {
 	cfg := config.ExecutionConfig{
-		StepTimeoutMultiplier:       2.0,
-		PlanTimeoutMs:               120000,
-		EWMAAlpha:                   0.5,
-		GatekeeperW1:                0.4,
-		GatekeeperW2:                0.4,
-		GatekeeperW3:                0.2,
-		TrustScoreCalWeight:         0.6,
-		TrustScoreAbsWeight:         0.4,
-		MinAuctionConfidence:        0.3,
-		MaxReplanAttempts:           2,
-		MaxPartialContextBytes:      51200,
-		FallbackConfidenceThreshold: 0.4,
+		Plan: config.PlanConfig{
+			StepTimeoutMultiplier:       2.0,
+			PlanTimeoutMs:               120000,
+			MaxReplanAttempts:           2,
+			MaxPartialContextBytes:      51200,
+			FallbackConfidenceThreshold: 0.4,
+		},
+		Gatekeeper: config.GatekeeperConfig{
+			GatekeeperW1:         0.4,
+			GatekeeperW2:         0.4,
+			GatekeeperW3:         0.2,
+			MinAuctionConfidence: 0.3,
+		},
+		Verification: config.VerificationConfig{
+			TrustScoreCalWeight: 0.6,
+			TrustScoreAbsWeight: 0.4,
+		},
+		Supervision: config.SupervisionConfig{
+			EWMAAlpha: 0.5,
+		},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("valid config should not error: %v", err)
@@ -145,31 +153,31 @@ func TestExecutionConfig_Validate_ModelConfigs(t *testing.T) {
 
 func TestExecutionConfig_ADR0018Defaults(t *testing.T) {
 	cfg := config.ExecutionConfig{}
-	if cfg.LLMGatewayMaxConcurrency != 0 {
+	if cfg.LLM.LLMGatewayMaxConcurrency != 0 {
 		t.Error("LLMGatewayMaxConcurrency zero value should be 0 before LoadConfig")
 	}
-	if cfg.LLMGatewayRetryBackoffMs != 0 {
+	if cfg.LLM.LLMGatewayRetryBackoffMs != 0 {
 		t.Error("LLMGatewayRetryBackoffMs zero value should be 0 before LoadConfig")
 	}
-	if cfg.SessionTokenSweepIntervalSeconds != 0 {
+	if cfg.Session.SessionTokenSweepIntervalSeconds != 0 {
 		t.Error("SessionTokenSweepIntervalSeconds zero value should be 0 before LoadConfig")
 	}
-	if cfg.SessionTokenTTLMultiplier != 0 {
+	if cfg.Session.SessionTokenTTLMultiplier != 0 {
 		t.Error("SessionTokenTTLMultiplier zero value should be 0 before LoadConfig")
 	}
-	if cfg.BudgetExhaustionAlarmRate != 0 {
+	if cfg.Plan.BudgetExhaustionAlarmRate != 0 {
 		t.Error("BudgetExhaustionAlarmRate zero value should be 0 before LoadConfig")
 	}
-	if cfg.MinStepEnergy != 0 {
+	if cfg.Plan.MinStepEnergy != 0 {
 		t.Error("MinStepEnergy zero value should be 0 before LoadConfig")
 	}
-	if cfg.MaxStepEnergy != 0 {
+	if cfg.Plan.MaxStepEnergy != 0 {
 		t.Error("MaxStepEnergy zero value should be 0 before LoadConfig")
 	}
-	if cfg.HistogramMinSamples != 0 {
+	if cfg.Supervision.HistogramMinSamples != 0 {
 		t.Error("HistogramMinSamples zero value should be 0 before LoadConfig")
 	}
-	if cfg.HistogramAlpha != 0 {
+	if cfg.Supervision.HistogramAlpha != 0 {
 		t.Error("HistogramAlpha zero value should be 0 before LoadConfig")
 	}
 }
@@ -201,10 +209,16 @@ func TestTelemetryConfig_Unmarshal(t *testing.T) {
 
 func TestConfigError_DetectableViaErrorsAs(t *testing.T) {
 	invalid := config.ExecutionConfig{
-		PlanTimeoutMs:       0, // below minimum of 1000 — triggers validation error
-		EWMAAlpha:           0.5,
-		TrustScoreCalWeight: 0.6,
-		TrustScoreAbsWeight: 0.4,
+		Plan: config.PlanConfig{
+			PlanTimeoutMs: 0, // below minimum of 1000 — triggers validation error
+		},
+		Verification: config.VerificationConfig{
+			TrustScoreCalWeight: 0.6,
+			TrustScoreAbsWeight: 0.4,
+		},
+		Supervision: config.SupervisionConfig{
+			EWMAAlpha: 0.5,
+		},
 	}
 	err := invalid.Validate()
 	if err == nil {
@@ -224,10 +238,16 @@ func TestConfigError_DetectableViaErrorsAs(t *testing.T) {
 
 func TestConfigError_MultipleFailuresJoined(t *testing.T) {
 	invalid := config.ExecutionConfig{
-		PlanTimeoutMs:       0,   // < 1000
-		EWMAAlpha:           2.0, // > 1
-		TrustScoreCalWeight: 0.6,
-		TrustScoreAbsWeight: 0.4,
+		Plan: config.PlanConfig{
+			PlanTimeoutMs: 0, // < 1000
+		},
+		Verification: config.VerificationConfig{
+			TrustScoreCalWeight: 0.6,
+			TrustScoreAbsWeight: 0.4,
+		},
+		Supervision: config.SupervisionConfig{
+			EWMAAlpha: 2.0, // > 1
+		},
 	}
 	err := invalid.Validate()
 	if err == nil {
@@ -357,14 +377,14 @@ func TestLoadConfig_MinimalFile_DefaultsPreserved(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	def := config.DefaultConfig()
-	if cfg.Execution.EWMAAlpha != def.Execution.EWMAAlpha {
-		t.Errorf("EWMAAlpha: want %v, got %v", def.Execution.EWMAAlpha, cfg.Execution.EWMAAlpha)
+	if cfg.Execution.Supervision.EWMAAlpha != def.Execution.Supervision.EWMAAlpha {
+		t.Errorf("EWMAAlpha: want %v, got %v", def.Execution.Supervision.EWMAAlpha, cfg.Execution.Supervision.EWMAAlpha)
 	}
-	if cfg.Execution.PlanTimeoutMs != def.Execution.PlanTimeoutMs {
-		t.Errorf("PlanTimeoutMs: want %v, got %v", def.Execution.PlanTimeoutMs, cfg.Execution.PlanTimeoutMs)
+	if cfg.Execution.Plan.PlanTimeoutMs != def.Execution.Plan.PlanTimeoutMs {
+		t.Errorf("PlanTimeoutMs: want %v, got %v", def.Execution.Plan.PlanTimeoutMs, cfg.Execution.Plan.PlanTimeoutMs)
 	}
-	if cfg.Execution.FallbackEnabled != def.Execution.FallbackEnabled {
-		t.Errorf("FallbackEnabled: want %v, got %v", def.Execution.FallbackEnabled, cfg.Execution.FallbackEnabled)
+	if cfg.Execution.Plan.FallbackEnabled != def.Execution.Plan.FallbackEnabled {
+		t.Errorf("FallbackEnabled: want %v, got %v", def.Execution.Plan.FallbackEnabled, cfg.Execution.Plan.FallbackEnabled)
 	}
 }
 
@@ -405,7 +425,7 @@ func TestLoadConfig_FallbackEnabled_CanBeSetFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.Execution.FallbackEnabled {
+	if cfg.Execution.Plan.FallbackEnabled {
 		t.Error("FallbackEnabled: explicit false in config must not be overridden to true")
 	}
 }
@@ -442,13 +462,13 @@ func TestDefaultConfig_KnownValues(t *testing.T) {
 		got  any
 		want any
 	}{
-		{"EWMAAlpha", ex.EWMAAlpha, 0.5},
-		{"StepTimeoutMultiplier", ex.StepTimeoutMultiplier, 2.0},
-		{"PlanTimeoutMs", ex.PlanTimeoutMs, 120000},
-		{"FallbackEnabled", ex.FallbackEnabled, true},
-		{"GatekeeperW1", ex.GatekeeperW1, 0.4},
-		{"GatekeeperW4", ex.GatekeeperW4, 0.15},
-		{"CrossVerifyRate", ex.CrossVerifyRate, 0.05},
+		{"EWMAAlpha", ex.Supervision.EWMAAlpha, 0.5},
+		{"StepTimeoutMultiplier", ex.Plan.StepTimeoutMultiplier, 2.0},
+		{"PlanTimeoutMs", ex.Plan.PlanTimeoutMs, 120000},
+		{"FallbackEnabled", ex.Plan.FallbackEnabled, true},
+		{"GatekeeperW1", ex.Gatekeeper.GatekeeperW1, 0.4},
+		{"GatekeeperW4", ex.Gatekeeper.GatekeeperW4, 0.15},
+		{"CrossVerifyRate", ex.Verification.CrossVerifyRate, 0.05},
 		{"Graph.DecayFactor", ex.Graph.DecayFactor, 0.75},
 		{"Telemetry.TraceSamplingRate", cfg.Telemetry.TraceSamplingRate, 1.0},
 	}
@@ -463,25 +483,25 @@ func TestDefaultConfig_KnownValues(t *testing.T) {
 // (status quo control) at 0% EFE traffic for safe rollout.
 func TestDefaultConfig_ADR0037SelectorDefaults(t *testing.T) {
 	ex := config.DefaultConfig().Execution
-	if ex.ResourceSelector != "auction" {
-		t.Errorf("ResourceSelector = %q, want auction", ex.ResourceSelector)
+	if ex.Routing.ResourceSelector != "auction" {
+		t.Errorf("ResourceSelector = %q, want auction", ex.Routing.ResourceSelector)
 	}
-	if ex.EFETrafficPercent != 0 {
-		t.Errorf("EFETrafficPercent = %v, want 0 (safe rollout)", ex.EFETrafficPercent)
+	if ex.Routing.EFETrafficPercent != 0 {
+		t.Errorf("EFETrafficPercent = %v, want 0 (safe rollout)", ex.Routing.EFETrafficPercent)
 	}
-	if ex.EFEExplorationBonus <= 0 {
-		t.Errorf("EFEExplorationBonus = %v, want > 0", ex.EFEExplorationBonus)
+	if ex.Routing.EFEExplorationBonus <= 0 {
+		t.Errorf("EFEExplorationBonus = %v, want > 0", ex.Routing.EFEExplorationBonus)
 	}
 }
 
 func TestExecutionConfig_Validate_RejectsUnknownSelector(t *testing.T) {
 	ex := config.DefaultConfig().Execution
-	ex.ResourceSelector = "bogus"
+	ex.Routing.ResourceSelector = "bogus"
 	if err := ex.Validate(); err == nil {
 		t.Error("Validate() should reject an unknown ResourceSelector value")
 	}
 	for _, ok := range []string{"auction", "efe", "auto"} {
-		ex.ResourceSelector = ok
+		ex.Routing.ResourceSelector = ok
 		if err := ex.Validate(); err != nil {
 			t.Errorf("Validate() rejected valid selector %q: %v", ok, err)
 		}
@@ -546,13 +566,13 @@ func TestLoadConfig_TuningOverridesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.Execution.EWMAAlpha != 0.99 {
-		t.Errorf("EWMAAlpha: want 0.99 (from tuning.json), got %v", cfg.Execution.EWMAAlpha)
+	if cfg.Execution.Supervision.EWMAAlpha != 0.99 {
+		t.Errorf("EWMAAlpha: want 0.99 (from tuning.json), got %v", cfg.Execution.Supervision.EWMAAlpha)
 	}
 	// Untuned fields must fall through to DefaultConfig().
 	def := config.DefaultConfig()
-	if cfg.Execution.PlanTimeoutMs != def.Execution.PlanTimeoutMs {
-		t.Errorf("PlanTimeoutMs: want %v (default), got %v", def.Execution.PlanTimeoutMs, cfg.Execution.PlanTimeoutMs)
+	if cfg.Execution.Plan.PlanTimeoutMs != def.Execution.Plan.PlanTimeoutMs {
+		t.Errorf("PlanTimeoutMs: want %v (default), got %v", def.Execution.Plan.PlanTimeoutMs, cfg.Execution.Plan.PlanTimeoutMs)
 	}
 }
 
@@ -577,8 +597,8 @@ func TestLoadConfig_TuningLocalOverridesTuning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.Execution.EWMAAlpha != 0.3 {
-		t.Errorf("EWMAAlpha: want 0.3 (from tuning.local.json, wins over tuning.json), got %v", cfg.Execution.EWMAAlpha)
+	if cfg.Execution.Supervision.EWMAAlpha != 0.3 {
+		t.Errorf("EWMAAlpha: want 0.3 (from tuning.local.json, wins over tuning.json), got %v", cfg.Execution.Supervision.EWMAAlpha)
 	}
 }
 
@@ -598,14 +618,14 @@ func TestLoadConfig_TuningAbsent_DoesNotAffectDefaults(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	def := config.DefaultConfig()
-	if cfg.Execution.EWMAAlpha != def.Execution.EWMAAlpha {
-		t.Errorf("EWMAAlpha: want %v (default), got %v", def.Execution.EWMAAlpha, cfg.Execution.EWMAAlpha)
+	if cfg.Execution.Supervision.EWMAAlpha != def.Execution.Supervision.EWMAAlpha {
+		t.Errorf("EWMAAlpha: want %v (default), got %v", def.Execution.Supervision.EWMAAlpha, cfg.Execution.Supervision.EWMAAlpha)
 	}
-	if cfg.Execution.PlanTimeoutMs != def.Execution.PlanTimeoutMs {
-		t.Errorf("PlanTimeoutMs: want %v (default), got %v", def.Execution.PlanTimeoutMs, cfg.Execution.PlanTimeoutMs)
+	if cfg.Execution.Plan.PlanTimeoutMs != def.Execution.Plan.PlanTimeoutMs {
+		t.Errorf("PlanTimeoutMs: want %v (default), got %v", def.Execution.Plan.PlanTimeoutMs, cfg.Execution.Plan.PlanTimeoutMs)
 	}
-	if cfg.Execution.KG2RAGEnabled != def.Execution.KG2RAGEnabled {
-		t.Errorf("KG2RAGEnabled: want %v (default), got %v", def.Execution.KG2RAGEnabled, cfg.Execution.KG2RAGEnabled)
+	if cfg.Execution.Retrieval.KG2RAGEnabled != def.Execution.Retrieval.KG2RAGEnabled {
+		t.Errorf("KG2RAGEnabled: want %v (default), got %v", def.Execution.Retrieval.KG2RAGEnabled, cfg.Execution.Retrieval.KG2RAGEnabled)
 	}
 }
 
@@ -717,8 +737,8 @@ func TestLoadConfig_AllLayers(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	// Layer 7 (env) wins: 0.11.
-	if cfg.Execution.EWMAAlpha != 0.11 {
-		t.Errorf("EWMAAlpha: want 0.11 (env wins), got %v", cfg.Execution.EWMAAlpha)
+	if cfg.Execution.Supervision.EWMAAlpha != 0.11 {
+		t.Errorf("EWMAAlpha: want 0.11 (env wins), got %v", cfg.Execution.Supervision.EWMAAlpha)
 	}
 	// MCP layer (6) populates cfg.MCP.DefaultSessionBudget.
 	if cfg.MCP.DefaultSessionBudget != 7.0 {
@@ -761,8 +781,8 @@ func TestLoadConfig_PathDerivation_NotCWD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.Execution.EWMAAlpha != 0.77 {
-		t.Errorf("EWMAAlpha: want 0.77 (from <dir>/tuning.json, path-derived not CWD), got %v", cfg.Execution.EWMAAlpha)
+	if cfg.Execution.Supervision.EWMAAlpha != 0.77 {
+		t.Errorf("EWMAAlpha: want 0.77 (from <dir>/tuning.json, path-derived not CWD), got %v", cfg.Execution.Supervision.EWMAAlpha)
 	}
 }
 

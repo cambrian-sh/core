@@ -40,7 +40,18 @@ func EnvSource(envVar string) string { return SourceEnvPrefix + envVar }
 type Provenance map[string]string
 
 // Source returns the layer that supplied key, or "" when the key is unknown.
-func (p Provenance) Source(key string) string { return p[key] }
+//
+// A legacy flat execution key resolves through its v2 nested path: the layers
+// claim nested keys after migration, but the operator plane (tunable catalogue,
+// SetConfig, the store) still speaks flat ones. Answering "" for the flat
+// spelling would report every pinned key as "default" — the exact confusion
+// value_source exists to remove.
+func (p Provenance) Source(key string) string {
+	if src, ok := p[key]; ok {
+		return src
+	}
+	return p[CanonicalKey(key)]
+}
 
 // Keys returns every tracked key in sorted order. Sorted rather than map order
 // so a diff of two provenance dumps is readable.
@@ -62,6 +73,12 @@ func (p Provenance) Keys() []string {
 // at write time, rather than leaving the operator to discover it on a later read.
 func (p Provenance) PinnedAbove(key string) string {
 	src, ok := p[key]
+	if !ok {
+		// Same aliasing as Source: the write path asks with the flat operator
+		// key, the env layer claimed the nested one. Missing the translation
+		// here is worse than in Source — the shadow warning silently vanishes.
+		src, ok = p[CanonicalKey(key)]
+	}
 	if !ok {
 		return ""
 	}

@@ -63,7 +63,7 @@ func run() error {
 		return fmt.Errorf("no verified bid/quality samples in the event log yet")
 	}
 
-	model := calibration.Fit(samples, cfg.Execution.BidCalibrationMinSamples)
+	model := calibration.Fit(samples, cfg.Execution.Routing.BidCalibrationMinSamples)
 	refs := []float64{0.5, 0.7, 0.8, 0.9, 0.95, 1.0}
 	out := map[string]agentReport{}
 	agents := model.Agents()
@@ -80,6 +80,6 @@ func run() error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	fmt.Fprintf(os.Stderr, "fit %d samples across %d agents (min_samples=%d)\n",
-		len(samples), model.AgentCount(), cfg.Execution.BidCalibrationMinSamples)
+		len(samples), model.AgentCount(), cfg.Execution.Routing.BidCalibrationMinSamples)
 	return enc.Encode(out)
 }

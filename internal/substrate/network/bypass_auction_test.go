@@ -25,8 +25,10 @@ func TestExecute_BypassAuction_DispatchesToSingleAgent(t *testing.T) {
 	s := &Server{
 		Auctioneer: fake,
 		ExecCfg: config.ExecutionConfig{
-			BypassAuction: true,
-			SingleAgentID: "react_baseline_agent",
+			Routing: config.RoutingConfig{
+				BypassAuction: true,
+				SingleAgentID: "react_baseline_agent",
+			},
 		},
 	}
 
@@ -57,7 +59,7 @@ func TestExecute_BypassAuction_DispatchesToSingleAgent(t *testing.T) {
 func TestExecute_BypassAuction_RequiresSingleAgentID(t *testing.T) {
 	s := &Server{
 		Auctioneer: &fakeScoutAuctioneer{},
-		ExecCfg:    config.ExecutionConfig{BypassAuction: true},
+		ExecCfg:    config.ExecutionConfig{Routing: config.RoutingConfig{BypassAuction: true}},
 	}
 	_, err := s.Execute(context.Background(), &pb.Handoff{
 		Payload: &pb.Object{Data: []byte("anything")},

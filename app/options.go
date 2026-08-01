@@ -97,6 +97,14 @@ type Options struct {
 	// interceptors, so it is authenticated exactly like the OperatorConsole plane, not
 	// a bypass. OSS default: nil (no extra services). ADR-0057 (Model C) / ADR-0073.
 	ExtraServices func(*grpc.Server)
+
+	// DecisionObserver, when non-nil, receives a value-copy record of every completed
+	// retrieval (ADR-0103 D3). It observes AFTER assembly and cannot influence, delay
+	// or fail a query — retrieval reads fail open, and a provenance lane must not be
+	// able to invert that. OSS default: nil, which leaves the emit site a nil check
+	// and kernel behaviour bit-identical. Plugins contribute through
+	// Registry.AddDecisionObserver; this field is the directly-set equivalent.
+	DecisionObserver domain.DecisionObserver
 }
 
 // KernelServices is the OSS-provided capability bundle handed to every plugin's Build phase
@@ -112,10 +120,19 @@ type KernelServices struct {
 	Manager    ReactiveAgentDispatcher // direct dispatch + daemon lifecycle
 	Auctioneer domain.Auctioneer       // full Gatekeeper → Auction
 	Memory     ReactiveMemoryWriter    // async LTM ingest
-	Planner    ReactivePlanner         // plan generation for start_plan actions
-	LLM        domain.Generator        // LLM condition evaluation
-	WatchStore ReactiveWatchStore      // WatchConfig persistence (BBolt)
-	EventBus   domain.EventBus         // daemon-crash subscription, emit_event
+	// Ingestor is the full-fidelity memory write (ADR-0104 D3): one write path, so
+	// a lane that receives content puts it in the brain rather than beside it.
+	// nil ⇒ this deployment has no ingestion pipeline, and a caller must say so
+	// rather than silently detecting over content nobody stored.
+	Ingestor ReactiveMemoryIngestor
+	// Documents resolves a reference to its content, scope-enforced by the kernel.
+	// nil ⇒ this deployment cannot resolve references, and an action that needs one
+	// must say so rather than proceeding without evidence.
+	Documents  ReactiveDocumentReader
+	Planner    ReactivePlanner    // plan generation for start_plan actions
+	LLM        domain.Generator   // LLM condition evaluation
+	WatchStore ReactiveWatchStore // WatchConfig persistence (BBolt)
+	EventBus   domain.EventBus    // daemon-crash subscription, emit_event
 	// Journal is the durable-execution surface (REACT-01 / ADR-0061): signal
 	// journal + per-watch ack cursor + exactly-once idempotency + dead-letter.
 	// May be nil — a nil journal leaves the engine in its pure in-memory mode
@@ -282,6 +299,61 @@ type ReactiveAgentDispatcher interface {
 // ReactiveMemoryWriter ingests signal content into LTM asynchronously.
 type ReactiveMemoryWriter interface {
 	ProcessAndStoreAsync(ctx context.Context, text string, sourceAgent string)
+}
+
+// ReactiveDocumentReader resolves a document REFERENCE to its content, for a
+// plugin (ADR-0104 D6.2).
+//
+// A watch action's signal carries references only — the ingress contract forbids
+// bodies in the journal — so an action that needs the content must resolve the
+// reference. This is how it asks.
+//
+// # It takes a PRINCIPAL, never a predicate
+//
+// The plugin says who it is; the KERNEL decides what that principal may see, by
+// running the same `Authorizer.ReadFilter` chokepoint every other read goes
+// through. A seam that accepted a `*TagPredicate` would let a plugin choose its
+// own access scope, which is not an extension point but a bypass.
+//
+// This is also why the plugin does not simply hold the document store. It writes
+// to memory through KernelServices rather than touching a store, and reading is
+// symmetric: capabilities, not handles. A plugin holding a store would enforce
+// scope in a second place, and a second copy of the access model is a second thing
+// to drift.
+type ReactiveDocumentReader interface {
+	// GetDocument returns the document, or domain.ErrDocumentNotFound when it does
+	// not exist OR this principal cannot see it — deliberately the same answer, so
+	// a denial does not confirm existence.
+	GetDocument(ctx context.Context, principal domain.PrincipalRef, id string) (domain.Document, error)
+}
+
+// ReactiveMemoryIngestor is the FULL-FIDELITY memory write for a plugin
+// (ADR-0104 D3).
+//
+// # Why ReactiveMemoryWriter was not enough
+//
+// That seam is `ProcessAndStoreAsync(ctx, text, sourceAgent)` — text and one string.
+// It carries no tags, so a plugin writing through it silently strips the source's
+// classification, and a commitment distilled from restricted material would land
+// unrestricted (ADR-0095 D9 / D4 of this ADR). For the reactive `ingest` ACTION
+// that is a known thinness; for a lane that writes customer conversation it is a
+// classification hole.
+//
+// # Why a plugin needs this at all
+//
+// D3: an ingress reports ONCE and the kernel routes. Before it, the drift lane and
+// the memory lane were parallel universes — `IngestMessages` detected and dropped
+// the text, while the memory lane was a SEPARATE call the caller had to remember to
+// make. A connector calling only the drift RPC produced alerts over an empty
+// memory: nothing retrievable, no chunks, no structure, no extracted entities.
+//
+// It returns the entity id the kernel assigned, which is what makes a
+// references-only signal resolvable afterwards.
+type ReactiveMemoryIngestor interface {
+	// Ingest runs one document through the STANDARD ingestion pipeline — the same
+	// path the agent-plane IngestMemory RPC uses — and returns the source-document
+	// entity id.
+	Ingest(ctx context.Context, doc domain.ExternalDocument) (entityID string, err error)
 }
 
 // ReactivePlanner generates an execution plan for start_plan actions.

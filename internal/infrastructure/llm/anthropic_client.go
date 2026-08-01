@@ -18,7 +18,7 @@ type AnthropicClient struct {
 	// client built straight from config with no store entry of its own -- the
 	// environment path still applies.
 	GeneratorID string
-	TimeoutMs int
+	TimeoutMs   int
 }
 
 type anthropicMessageReq struct {

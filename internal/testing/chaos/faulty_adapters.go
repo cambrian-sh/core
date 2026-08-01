@@ -9,9 +9,9 @@ import (
 )
 
 var (
-	ErrInjected         = &FaultErr{Msg: "injected fault"}
+	ErrInjected          = &FaultErr{Msg: "injected fault"}
 	ErrConnectionRefused = &FaultErr{Msg: "connection refused"}
-	ErrDiskFull         = &FaultErr{Msg: "disk full"}
+	ErrDiskFull          = &FaultErr{Msg: "disk full"}
 )
 
 type FaultErr struct{ Msg string }
@@ -40,9 +40,9 @@ func (c *successCounter) shouldFail(after int) bool {
 }
 
 type FaultyGenerator struct {
-	inner    domain.Generator
-	cfg      FaultConfig
-	counter  successCounter
+	inner   domain.Generator
+	cfg     FaultConfig
+	counter successCounter
 }
 
 func NewFaultyGenerator(inner domain.Generator, cfg FaultConfig) *FaultyGenerator {

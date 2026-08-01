@@ -20,14 +20,14 @@ func NewWASIInterceptor(pool *HotClientPool) *WASIInterceptor {
 
 // RoundTrip intercepts the request and routes it through the Hot-Client Pool.
 func (i *WASIInterceptor) RoundTrip(req *http.Request) (*http.Response, error) {
-	slog.Info("Deep Kernel Intercepted I/O", 
-		"method", req.Method, 
+	slog.Info("Deep Kernel Intercepted I/O",
+		"method", req.Method,
 		"url", req.URL.String(),
 		"agent_context", "Deep Kernel Lens",
 	)
 
 	client := i.pool.GetClient(req.URL.Host)
-	
+
 	// Ensure we use the pool's transport
 	return client.Transport.RoundTrip(req)
 }

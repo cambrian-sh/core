@@ -1,0 +1,47 @@
+# Line-ending normalisation.
+#
+# Why this file exists: cambrian-core was checked out CRLF (Windows dev,
+# core.autocrlf=true) while the sibling repos that vendor its proto — ui/ and
+# cli/ — are LF. Every cross-repo diff of operator.proto therefore reported the
+# whole file as changed. The real drift at the time was 34 lines; the raw diff
+# said 4,788, and that noise is exactly what lets genuine contract drift go
+# unnoticed. `gofmt` also treats a CRLF Go file as unformatted, so ~89 files
+# reported as needing formatting when none of them did.
+#
+# `text=auto eol=lf` normalises to LF in the repository AND on checkout, and it
+# overrides core.autocrlf, so the tree is identical on every platform.
+#
+# ─── Adopting this on an existing checkout ───────────────────────────────────
+# Adding the file changes nothing on its own. On a CLEAN tree (no uncommitted
+# work — this rewrites almost every file), run:
+#
+#     git add --renormalize .
+#     git status          # review: should be line-ending changes only
+#     git commit -m "chore: normalise line endings to LF"
+#
+# Deliberately not done as part of the audit: the working tree carried
+# substantial in-flight work, and renormalising would have buried it under an
+# ~800-file diff.
+
+* text=auto eol=lf
+
+# Binary / generated assets git must not touch.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary
+*.gz   binary
+*.rar  binary
+*.exe  binary
+*.dll  binary
+*.so   binary
+*.dylib binary
+*.db   binary
+
+# Generated protobuf bindings. Still LF, but marked so they are collapsed in
+# diffs and excluded from language statistics — they are output, not source.
+*.pb.go      linguist-generated=true
+*_grpc.pb.go linguist-generated=true

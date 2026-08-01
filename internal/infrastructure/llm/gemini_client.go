@@ -19,11 +19,13 @@ import (
 // https://ai.google.dev/gemini-api/docs/text-generation
 //
 // Request body shape:
-//   {"contents": [{"parts": [{"text": "<prompt>"}]}], "generationConfig": {...}}
+//
+//	{"contents": [{"parts": [{"text": "<prompt>"}]}], "generationConfig": {...}}
 //
 // Response body shape:
-//   {"candidates": [{"content": {"parts": [{"text": "<answer>"}]}}],
-//    "usageMetadata": {"promptTokenCount": N, "candidatesTokenCount": M, "totalTokenCount": K}}
+//
+//	{"candidates": [{"content": {"parts": [{"text": "<answer>"}]}}],
+//	 "usageMetadata": {"promptTokenCount": N, "candidatesTokenCount": M, "totalTokenCount": K}}
 type GeminiClient struct {
 	Endpoint  string // default: https://generativelanguage.googleapis.com/v1beta
 	Model     string // e.g. "gemini-2.0-flash"; put in the URL path, NOT the body
@@ -32,7 +34,7 @@ type GeminiClient struct {
 	// client built straight from config with no store entry of its own -- the
 	// environment path still applies.
 	GeneratorID string
-	TimeoutMs int
+	TimeoutMs   int
 }
 
 // geminiGenerateRequest is the body shape for generateContent. The model

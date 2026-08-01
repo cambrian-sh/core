@@ -12,8 +12,12 @@ import (
 
 func newTestGateway(concurrency int) *SubstrateLLMGateway {
 	cfg := config.ExecutionConfig{
-		LLMGatewayMaxConcurrency:  concurrency,
-		SessionTokenTTLMultiplier: 5.0,
+		Session: config.SessionConfig{
+			SessionTokenTTLMultiplier: 5.0,
+		},
+		LLM: config.LLMConfig{
+			LLMGatewayMaxConcurrency: concurrency,
+		},
 	}
 	return NewLLMGateway(cfg)
 }

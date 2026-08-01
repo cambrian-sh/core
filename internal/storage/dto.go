@@ -26,7 +26,7 @@ type ManifestRecord struct {
 	Version          string         `json:"version,omitempty"`
 	Trait            string         `json:"trait,omitempty"`
 	Tools            []string       `json:"tools,omitempty"`
-	Capabilities     []string       `json:"capabilities,omitempty"`   // ROUTE-03: declared capability tags (manifest source of truth)
+	Capabilities     []string       `json:"capabilities,omitempty"`    // ROUTE-03: declared capability tags (manifest source of truth)
 	MemoryLimitMB    int            `json:"memory_limit_mb,omitempty"` // SEC-01: per-agent memory cap (0 = global default)
 	PythonDeps       []string       `json:"python_deps,omitempty"`     // PLAT-01: import names verified before spawn
 	SupportedFormats []string       `json:"supported_formats,omitempty"`
@@ -60,15 +60,15 @@ type TaskEventRecord struct {
 
 // SessionRecord is the raw JSON shape stored in the bbolt sessions bucket.
 type SessionRecord struct {
-	ID           string             `json:"id"`
-	ParentID     string             `json:"parent_id,omitempty"`
-	Goal         string             `json:"goal"`
-	Status       string             `json:"status"`
-	Summary      string             `json:"summary,omitempty"`
-	CreatedAt    string             `json:"created_at"`
-	UpdatedAt    string             `json:"updated_at"`
-	CompletedAt  string             `json:"completed_at,omitempty"`
-	CriticalData []string           `json:"critical_data,omitempty"`
+	ID           string        `json:"id"`
+	ParentID     string        `json:"parent_id,omitempty"`
+	Goal         string        `json:"goal"`
+	Status       string        `json:"status"`
+	Summary      string        `json:"summary,omitempty"`
+	CreatedAt    string        `json:"created_at"`
+	UpdatedAt    string        `json:"updated_at"`
+	CompletedAt  string        `json:"completed_at,omitempty"`
+	CriticalData []string      `json:"critical_data,omitempty"`
 	CallerScope  *TagSetRecord `json:"caller_scope,omitempty"` // ADR-0034 (D13): non-forgeable caller_scope
 }
 
@@ -79,6 +79,7 @@ type TagSetRecord struct {
 	AnyOfTags     []string `json:"any_of_tags,omitempty"`
 	ForbiddenTags []string `json:"forbidden_tags,omitempty"`
 }
+
 // ArtifactRecord is the raw JSON shape stored in the bbolt artifacts bucket.
 type ArtifactRecord struct {
 	Hash            string            `json:"hash"`
@@ -157,22 +158,22 @@ type TraversalLogEntryRecord struct {
 // It mirrors domain.WatchConfig — all fields are flat strings/primitives or JSON-safe maps.
 // ADR-0032.
 type WatchConfigRecord struct {
-	ID                 string         `json:"id"`
-	Name               string         `json:"name,omitempty"`
-	Description        string         `json:"description,omitempty"`
-	SourceType         string         `json:"source_type,omitempty"`
-	SourceStreamID     string         `json:"source_stream_id,omitempty"`
-	SourceCron         string         `json:"source_cron,omitempty"`     // REACT-06 / ADR-0072
-	SourceTimezone     string         `json:"source_timezone,omitempty"` // REACT-06 / ADR-0072
-	MissedFirePolicy   string         `json:"missed_fire_policy,omitempty"` // REACT-06 / ADR-0072
-	Condition          string         `json:"condition,omitempty"`
-	ConditionType      string         `json:"condition_type,omitempty"`
-	ActionType         string         `json:"action_type,omitempty"`
-	ActionTargetType   string         `json:"action_target_type,omitempty"`
-	ActionTarget       string         `json:"action_target,omitempty"`
-	ActionPayload      string         `json:"action_payload,omitempty"`
-	Active             bool           `json:"active"`
-	ResponseMode       string         `json:"response_mode,omitempty"`
+	ID                   string         `json:"id"`
+	Name                 string         `json:"name,omitempty"`
+	Description          string         `json:"description,omitempty"`
+	SourceType           string         `json:"source_type,omitempty"`
+	SourceStreamID       string         `json:"source_stream_id,omitempty"`
+	SourceCron           string         `json:"source_cron,omitempty"`        // REACT-06 / ADR-0072
+	SourceTimezone       string         `json:"source_timezone,omitempty"`    // REACT-06 / ADR-0072
+	MissedFirePolicy     string         `json:"missed_fire_policy,omitempty"` // REACT-06 / ADR-0072
+	Condition            string         `json:"condition,omitempty"`
+	ConditionType        string         `json:"condition_type,omitempty"`
+	ActionType           string         `json:"action_type,omitempty"`
+	ActionTargetType     string         `json:"action_target_type,omitempty"`
+	ActionTarget         string         `json:"action_target,omitempty"`
+	ActionPayload        string         `json:"action_payload,omitempty"`
+	Active               bool           `json:"active"`
+	ResponseMode         string         `json:"response_mode,omitempty"`
 	DaemonParams         map[string]any `json:"daemon_params,omitempty"`
 	MaxConcurrentPlans   int            `json:"max_concurrent_plans,omitempty"`
 	DebounceSeconds      int            `json:"debounce_seconds,omitempty"`       // REACT-02 / ADR-0062

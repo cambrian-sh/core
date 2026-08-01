@@ -54,8 +54,8 @@ func TestStore_Update_IsPerRegionNotGlobal(t *testing.T) {
 		s.Update("agent", "comparison", Outcome{Success: 1.0})
 	}
 
-	comp := s.Belief("agent", []float32{1, 0})   // comparison
-	summ := s.Belief("agent", []float32{0, 1})    // summarization (untouched)
+	comp := s.Belief("agent", []float32{1, 0}) // comparison
+	summ := s.Belief("agent", []float32{0, 1}) // summarization (untouched)
 
 	if comp.ExpectedSuccess <= 0.5 {
 		t.Errorf("comparison ExpectedSuccess = %v, want raised above prior 0.5", comp.ExpectedSuccess)

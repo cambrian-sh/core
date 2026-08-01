@@ -92,3 +92,19 @@ func FinalScore(bge, stageA, wBGE float64) float64 {
 	wBGE = clamp01(wBGE)
 	return wBGE*clamp01(bge) + (1-wBGE)*stageA
 }
+
+// clamp01 constrains v to [0, 1].
+//
+// Defined here rather than in a shared util file: blend.go is its only consumer.
+// It previously lived in edge_extractor.go, which was deleted with the rest of the
+// ADR-0052 LLM edge-extraction lane, and a scoring helper had no business living
+// in an extractor anyway.
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}

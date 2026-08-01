@@ -92,11 +92,10 @@ func collect(rs []domain.SearchResult) map[string]bool {
 // secrets-tagged docs.
 func TestQueryService_ForbiddenTagExcluded(t *testing.T) {
 	store := corpus()
-	q := NewQueryService(&fakeEmbedder{}, store)
-	q.EnableAuthorization(&policyAuthorizer{
+	q := NewQueryService(&fakeEmbedder{}, store, &policyAuthorizer{
 		known: map[string]bool{"support": true},
 		preds: map[string]*domain.TagPredicate{"support": {ForbiddenTags: []string{"secrets"}}},
-	}, store)
+	})
 
 	res, err := q.Search(context.Background(), "anything", "support")
 	if err != nil {
@@ -114,8 +113,7 @@ func TestQueryService_ForbiddenTagExcluded(t *testing.T) {
 // A registered-but-unprofiled agent (empty predicate) retrieves everything.
 func TestQueryService_UnprofiledUnrestricted(t *testing.T) {
 	store := corpus()
-	q := NewQueryService(&fakeEmbedder{}, store)
-	q.EnableAuthorization(&policyAuthorizer{known: map[string]bool{"analyst": true}}, store)
+	q := NewQueryService(&fakeEmbedder{}, store, &policyAuthorizer{known: map[string]bool{"analyst": true}})
 
 	res, err := q.Search(context.Background(), "anything", "analyst")
 	if err != nil {
@@ -130,8 +128,7 @@ func TestQueryService_UnprofiledUnrestricted(t *testing.T) {
 // PLUGIN's decision — the kernel simply honours a nil predicate.
 func TestQueryService_UnknownPrincipalDenied(t *testing.T) {
 	store := corpus()
-	q := NewQueryService(&fakeEmbedder{}, store)
-	q.EnableAuthorization(&policyAuthorizer{known: map[string]bool{}}, store)
+	q := NewQueryService(&fakeEmbedder{}, store, &policyAuthorizer{known: map[string]bool{}})
 
 	res, err := q.Search(context.Background(), "anything", "ghost")
 	if err != nil {
@@ -147,8 +144,7 @@ func TestQueryService_UnknownPrincipalDenied(t *testing.T) {
 // is the pairing §4.2 warns about getting backwards.
 func TestQueryService_OSSDefaultReadsEverything(t *testing.T) {
 	store := corpus()
-	q := NewQueryService(&fakeEmbedder{}, store)
-	q.EnableAuthorization(nil, store) // nil ⇒ allow-all
+	q := NewQueryService(&fakeEmbedder{}, store, nil) // nil ⇒ allow-all
 
 	res, err := q.Search(context.Background(), "anything", "nobody-registered-this")
 	if err != nil {
@@ -165,11 +161,10 @@ func TestQueryService_OSSDefaultReadsEverything(t *testing.T) {
 // documents that invariant (INV-5).
 func TestQueryService_IgnoresCallerSuppliedTags(t *testing.T) {
 	store := corpus()
-	q := NewQueryService(&fakeEmbedder{}, store)
-	q.EnableAuthorization(&policyAuthorizer{
+	q := NewQueryService(&fakeEmbedder{}, store, &policyAuthorizer{
 		known: map[string]bool{"support": true},
 		preds: map[string]*domain.TagPredicate{"support": {ForbiddenTags: []string{"secrets"}}},
-	}, store)
+	})
 
 	// Even though a malicious caller might try to widen access, Search takes no
 	// caller-tag parameter; the predicate forbids secrets regardless.
@@ -184,8 +179,7 @@ func TestQueryService_IgnoresCallerSuppliedTags(t *testing.T) {
 // without impersonating an agent (ADR-0047 D13/A2).
 func TestQueryService_ContextBypassOutranksPerCallerResolution(t *testing.T) {
 	store := corpus()
-	q := NewQueryService(&fakeEmbedder{}, store)
-	q.EnableAuthorization(&policyAuthorizer{known: map[string]bool{}}, store) // would deny everyone
+	q := NewQueryService(&fakeEmbedder{}, store, &policyAuthorizer{known: map[string]bool{}}) // would deny everyone
 
 	ctx := domain.WithScope(context.Background(), domain.ScopeSystem)
 	res, err := q.Search(ctx, "anything", "ghost")

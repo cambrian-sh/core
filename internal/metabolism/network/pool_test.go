@@ -24,7 +24,7 @@ func TestHotClientPool_Reuse(t *testing.T) {
 
 func TestHotClientPool_Request(t *testing.T) {
 	pool := NewHotClientPool()
-	
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
@@ -45,7 +45,7 @@ func TestHotClientPool_Request(t *testing.T) {
 
 func TestHotClientPool_Isolation(t *testing.T) {
 	pool := NewHotClientPool()
-	
+
 	clientA := pool.GetClient("host-a.com")
 	clientB := pool.GetClient("host-b.com")
 

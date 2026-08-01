@@ -108,6 +108,22 @@ service OperatorConsole {
   // authenticated role, no command_id).
   rpc ListDocuments(ListDocumentsOpRequest) returns (ListDocumentsOpResponse);
 
+  // GetDocument fetches ONE document by id, body included.
+  //
+  // The keyed read the memory lane never had. ListDocuments above is keyed but
+  // returns a listing row — "no body, no chunks" by its own contract — and
+  // QueryMemory returns the body but is RANKED. Nothing joined them, so resolving
+  // an id to its text meant searching semantically for an opaque token and hoping
+  // it ranked. That is not a retrieval-quality problem a larger top-k fixes: there
+  // is no question to rank against. It was a missing primitive.
+  //
+  // Two callers need it. A drift alert cites a message id, and a console that
+  // cannot open that message shows a citation nobody can follow. And a watch whose
+  // signal carries REFERENCES ONLY (the ingress contract) must resolve the
+  // reference to content it can read — which is the property that makes a replayed
+  // signal resolve today's document rather than a stale copy in the payload.
+  rpc GetDocument(GetDocumentOpRequest) returns (GetDocumentOpResponse);
+
   // AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
   // composed answer with inline [n] citation markers, plus the evidence each marker
   // resolves to. Distinct from QueryMemory's single-pass evidence lane: this is a
@@ -2374,4 +2390,22 @@ message TailLogsOpRequest {
   // after_seq resumes a tail. 0 starts from the live edge rather than replaying
   // the whole window — a tail is for what happens next; QueryLogs is for history.
   uint64 after_seq = 2;
+}
+
+
+message GetDocumentOpRequest {
+  string id = 1;
+}
+message GetDocumentOpResponse {
+  // found is false for an id no document carries. Distinct from an empty body: a
+  // dangling citation and a blank document are different answers, and a console
+  // resolving a reference has to tell them apart.
+  bool found = 1;
+  string id = 2;
+  string text = 3;
+  string summary = 4;
+  string document_type = 5;
+  repeated string tags = 6;
+  string source = 7;
+  int64 created_at_unix_ms = 8;
 }

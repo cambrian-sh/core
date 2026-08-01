@@ -29,7 +29,7 @@ func TestFunnel_RecordsL1AndL3(t *testing.T) {
 	reg.manifests["sql-agent"] = &domain.AgentManifest{SupportedFormats: []string{"xml"}}
 
 	cfg := defaultGatekeeperCfg()
-	cfg.RoutingTraceEnabled = true
+	cfg.Routing.RoutingTraceEnabled = true
 	gk := NewGatekeeper(reg, cfg)
 
 	task := &domain.AuctionTask{ID: "t-funnel-1", RequiredFormats: []string{"json"}}
@@ -79,7 +79,7 @@ func TestFunnel_RecordsL2SurvivorsAndEliminated(t *testing.T) {
 	searcher := &fakeInterviewSearcher{results: map[string]float64{"above": 0.8, "below": 0.1}}
 
 	cfg := defaultGatekeeperCfg()
-	cfg.RoutingTraceEnabled = true
+	cfg.Routing.RoutingTraceEnabled = true
 	gk := NewGatekeeper(reg, cfg, WithEmbedder(&mockEmbedder{}), WithSearcher(searcher))
 
 	task := &domain.AuctionTask{ID: "t-funnel-2", Description: "find something"}

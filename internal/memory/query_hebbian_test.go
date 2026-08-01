@@ -71,7 +71,7 @@ func TestSpreadingEngine_CoActivatedWeightDecaysOnRead(t *testing.T) {
 // A recall's strongly co-retrieved docs get co_activated edges written (both dirs).
 func TestReinforceCoActivation_WritesEdges(t *testing.T) {
 	gs := &captureGraphStore{}
-	q := NewQueryService(&fakeEmbedder{}, &scopeApplyingStore{})
+	q := NewQueryService(&fakeEmbedder{}, &scopeApplyingStore{}, nil)
 	q.EnableHebbian(gs, 0.05, 0.9, 0.5, 0.95, 0.2, 5)
 
 	q.reinforceCoActivation([]domain.SearchResult{

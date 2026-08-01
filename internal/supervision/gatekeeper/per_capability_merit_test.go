@@ -26,12 +26,12 @@ func TestComputeMeritBreakdown_PerCapabilityScoping(t *testing.T) {
 	ctx := context.Background()
 
 	// Arm OFF: global merit — high regardless of the pdf history.
-	cfg.PerCapabilityMerit = false
+	cfg.Routing.PerCapabilityMerit = false
 	gkOff := NewGatekeeper(registry, cfg, WithProfiles(profiles))
 	globalScore := gkOff.computeMeritBreakdown(ctx, agent, []string{"pdf"}).Score
 
 	// Arm ON, required=pdf: tag-scoped merit — low.
-	cfg.PerCapabilityMerit = true
+	cfg.Routing.PerCapabilityMerit = true
 	gkOn := NewGatekeeper(registry, cfg, WithProfiles(profiles))
 	pdfScore := gkOn.computeMeritBreakdown(ctx, agent, []string{"pdf"}).Score
 	if pdfScore >= globalScore {

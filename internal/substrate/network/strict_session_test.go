@@ -18,10 +18,10 @@ func strictServer(t *testing.T, strict bool) (*Server, *session.SessionManager) 
 	t.Helper()
 	s := minimalServer(t)
 	cfg := s.ExecCfg
-	cfg.RequireExplicitSession = strict
+	cfg.Session.RequireExplicitSession = strict
 	// Stop after planning: these tests are about the SESSION GATE, not execution, and this
 	// Server has no auctioneer to dispatch to.
-	cfg.PlanPreviewOnly = true
+	cfg.Plan.PlanPreviewOnly = true
 	s.ExecCfg = cfg
 	mgr := session.New(newMemSessionStore())
 	s.SessionMgr = mgr

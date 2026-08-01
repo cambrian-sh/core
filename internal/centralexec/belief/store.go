@@ -58,9 +58,9 @@ type Store struct {
 	cfg     Config
 	// fast[resource][region] and slow[resource][region]; seeded resources have a
 	// nil-valued posterior until Update writes one (prior fallback applies).
-	fast  map[string]map[string]*regionBelief
-	slow  map[string]map[string]*regionBelief
-	seen  map[string]bool // resources with a verified-declaration prior
+	fast map[string]map[string]*regionBelief
+	slow map[string]map[string]*regionBelief
+	seen map[string]bool // resources with a verified-declaration prior
 	// regionCluster maps a region label to its cluster (empty = standalone).
 	regionCluster map[string]string
 }

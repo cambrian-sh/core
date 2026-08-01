@@ -2,6 +2,8 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -68,6 +70,13 @@ type QueryService struct {
 	agenticEnabled   bool                    // AGENTIC_RETRIEVAL_SPEC: run the LLM query-planner before the single pass
 	planner          Planner                 // agentic: query-planner (Go→retrieval_agent dispatcher); nil = fail-open identity
 	agenticMaxHops   int                     // agentic: loop iteration bound; Phase 2a = 1
+	// ADR-0103 D3: decision-provenance seam. nil (the OSS default) ⇒ the emit site
+	// is a nil check and behaviour is bit-identical. cfgFingerprint is captured once
+	// at wiring rather than recomputed per query — hashing the config on the hot path
+	// to describe a config that cannot change without a restart would be pure cost.
+	decisionObs    domain.DecisionObserver
+	cfgFingerprint string
+	queryCounter   atomic.Uint64 // monotonic within a process; feeds QueryID
 }
 
 // Planner is the agentic retrieval loop's LLM step surface
@@ -376,24 +385,96 @@ func (q *QueryService) SetAssociativeTopK(k int) {
 }
 
 // NewQueryService creates a QueryService.
-func NewQueryService(embedder domain.Embedder, vectorStore domain.VectorStore) *QueryService {
-	return &QueryService{embedder: embedder, vectorStore: vectorStore}
+//
+// readStore MUST be the fail-closed read chokepoint (authz.EnforcingVectorStore),
+// never the raw adapter. authorizer is the decision point; nil means the OSS
+// allow-all default, which is a POLICY answer, not an absence of enforcement.
+//
+// # Why both are constructor arguments rather than setters
+//
+// They used to be attached afterwards, by an EnableAuthorization(authorizer, store)
+// mutator that the boot path called exactly once. That worked, and it was one
+// missed call away from not working — silently. A QueryService built without it
+// held the RAW store, and the raw adapter's GetByID/GetBatch apply no predicate at
+// all, so the enrichment lanes below (anchor promotion, neighbour window, entity
+// seeding, kgExpand) would have read across every principal's documents while
+// still looking correctly wired. Nothing would have failed; the reads would just
+// have returned more than they should.
+//
+// A component that can be constructed in an unsafe state eventually will be, by a
+// second embedding of the kernel or a new cmd/ binary that does not know the
+// mutator exists. Taking the enforcing store as a required argument moves that
+// from a runtime hope to a compile error.
+func NewQueryService(embedder domain.Embedder, readStore domain.VectorStore, authorizer domain.Authorizer) *QueryService {
+	if authorizer == nil {
+		authorizer = domain.AllowAllAuthorizer{}
+	}
+	return &QueryService{embedder: embedder, vectorStore: readStore, authz: authorizer}
 }
 
-// EnableAuthorization wires the decision point and routes every query through the
-// fail-closed read chokepoint. It is called UNCONDITIONALLY at boot: the kernel
-// always asks, and in OSS the answer is always yes (ADR-0085 §4.1).
-// enforcingStore is the chokepoint decorator over the same base store; a nil
-// authorizer degrades to the OSS allow-all default, never to an unguarded read.
-func (q *QueryService) EnableAuthorization(a domain.Authorizer, enforcingStore domain.VectorStore) {
-	if a == nil {
-		a = domain.AllowAllAuthorizer{}
-	}
-	q.authz = a
-	if enforcingStore != nil {
-		q.vectorStore = enforcingStore
-	}
+// SetDecisionObserver wires the ADR-0103 decision-provenance seam. obs nil (the
+// OSS default) leaves the emit site a nil check. fingerprint identifies the
+// retrieval configuration this service was built with
+// (config.ExecutionConfig.RetrievalFingerprint).
+func (q *QueryService) SetDecisionObserver(obs domain.DecisionObserver, fingerprint string) {
+	q.decisionObs = obs
+	q.cfgFingerprint = fingerprint
 }
+
+// emitDecision hands one completed retrieval to the observer (ADR-0103 D2).
+//
+// Three properties are load-bearing and none of them is incidental:
+//
+//   - It runs AFTER assembly, so it can never influence what was retrieved. The
+//     provenance lane observes the ranking; it does not participate in it.
+//   - It returns no error. Retrieval reads fail open (memory invariant #5), and a
+//     query must not fail because a downstream recorder is unhappy.
+//   - The query TEXT is hashed, never passed. The text can carry exactly the
+//     sensitive material a receipt exists to avoid duplicating, while the hash
+//     still proves two receipts answered the same question.
+//
+// The observer contract requires a prompt, non-blocking implementation; the kernel
+// deliberately does not defend against a wedged one by spawning a goroutine per
+// query, which would convert a slow consumer into unbounded goroutine growth on
+// the hottest path in the kernel.
+func (q *QueryService) emitDecision(query, callerID, sessionID, docType string, topK int, results []domain.SearchResult, primaryIDs map[string]bool) {
+	if q.decisionObs == nil {
+		return
+	}
+	sum := sha256.Sum256([]byte(query))
+	chunks := make([]domain.RetrievedChunk, 0, len(results))
+	for _, r := range results {
+		chunks = append(chunks, domain.RetrievedChunk{
+			ChunkID:      r.Document.ID,
+			DocumentType: r.Document.DocumentType,
+			SectionPath:  r.Document.SectionPath,
+			Score:        r.Score,
+			RawScore:     r.RawScore,
+			LexicalScore: r.LexicalScore,
+			Primary:      primaryIDs[r.Document.ID],
+		})
+	}
+	q.decisionObs.ObserveRetrieval(domain.RetrievalDecision{
+		QueryID:           fmt.Sprintf("q-%d-%d", time.Now().UnixNano(), q.queryCounter.Add(1)),
+		SessionID:         sessionID,
+		PrincipalID:       callerID,
+		QueryTextHash:     hex.EncodeToString(sum[:]),
+		DocType:           docType,
+		TopK:              topK,
+		Retrieved:         chunks,
+		ConfigFingerprint: q.cfgFingerprint,
+		At:                time.Now().UTC(),
+	})
+}
+
+// EnableAuthorization was removed. The decision point and the fail-closed read
+// chokepoint are now REQUIRED ARGUMENTS to NewQueryService — see the rationale
+// there. Enforcement that can be switched on after construction can also be
+// forgotten, and the failure is silent rather than loud.
+//
+// If you are here because a call to EnableAuthorization no longer compiles: pass
+// the enforcing read store and the authorizer to NewQueryService instead. Do not
+// re-add a setter.
 
 // EnableKG2RAG turns on ADR-0053 Phase-0 KG²RAG chunk expansion. The store is
 // the per-chunk triplets table; the hops / MaxExpanded / MaxEntities knobs
@@ -1644,6 +1725,10 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 	if q.neighborWindow {
 		filtered = q.applyNeighborWindow(ctx, filtered)
 	}
+	// ADR-0103 D2: emit the decision record LAST, so it describes what the caller
+	// actually received — including neighbor-window rows, which were never ranked
+	// and so are correctly reported as non-primary.
+	q.emitDecision(query, callerID, string(sid), docType, topK, filtered, primaryIDs)
 	return filtered, nil
 }
 

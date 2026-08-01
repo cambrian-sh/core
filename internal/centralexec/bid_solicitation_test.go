@@ -10,8 +10,8 @@ import (
 // recordingSolicitor records which candidates were asked for a live proposal
 // and returns canned self-assessed confidences keyed by resource ID.
 type recordingSolicitor struct {
-	bids   map[string]float64
-	asked  []string
+	bids  map[string]float64
+	asked []string
 }
 
 func (r *recordingSolicitor) SolicitBid(_ context.Context, _ domain.Intent, c domain.AgentDefinition) (float64, bool, error) {

@@ -198,6 +198,7 @@ type Registry struct {
 	identityResolver domain.IdentityResolver
 	identityOwner    string
 	ingressOwner     string
+	decisionObs      []domain.DecisionObserver
 }
 
 // SetAuthorizer installs the access-control decision point (ADR-0085). Tier-1
@@ -292,6 +293,20 @@ func (r *Registry) SetSignalReceiver(owner string, f func(KernelServices) (domai
 func (r *Registry) AddGRPCService(f func(*grpc.Server)) {
 	if f != nil {
 		r.grpcServices = append(r.grpcServices, f)
+	}
+}
+
+// AddDecisionObserver registers a receiver for completed retrievals (ADR-0103 D3).
+//
+// Add-many rather than replace-one: provenance is not exclusive, and several plugins
+// (a receipt lane, a quality monitor) may legitimately want the same stream. Every
+// registered observer sees every retrieval, in registration order.
+//
+// The implementation MUST return promptly and MUST NOT panic — it is called on the
+// kernel's hottest path, synchronously, after assembly.
+func (r *Registry) AddDecisionObserver(o domain.DecisionObserver) {
+	if o != nil {
+		r.decisionObs = append(r.decisionObs, o)
 	}
 }
 
@@ -616,6 +631,17 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 				reg(s)
 			}
 		}
+	}
+	// DecisionObservers: fan out to every registered observer plus any directly-set one
+	// (ADR-0103 D3). Composed into a single value so the retrieval call site stays one
+	// nil check rather than a loop.
+	if len(reg.decisionObs) > 0 {
+		fan := make(domain.MultiDecisionObserver, 0, len(reg.decisionObs)+1)
+		if opts.DecisionObserver != nil {
+			fan = append(fan, opts.DecisionObserver)
+		}
+		fan = append(fan, reg.decisionObs...)
+		opts.DecisionObserver = fan
 	}
 	// Capabilities: dedupe, preserving first-seen order so the handshake list is stable
 	// across boots (a UI diffing capabilities should not see spurious churn).

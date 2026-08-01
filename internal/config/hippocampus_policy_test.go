@@ -3,8 +3,8 @@ package config_test
 import (
 	"testing"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // Cycle 1 — GetPolicy returns (policy, true) for a known name.
@@ -63,13 +63,13 @@ func TestStaticPolicyProvider_DefaultPolicy(t *testing.T) {
 // Cycle 4 — DefaultConfig populates all 5 expected policies with correct key values.
 func TestDefaultConfig_HippocampusPolicies_AllPresent(t *testing.T) {
 	cfg := config.DefaultConfig()
-	policies := cfg.Execution.HippocampusPolicies
+	policies := cfg.Execution.Hippocampus.HippocampusPolicies
 
 	cases := []struct {
-		name      string
-		wantSim   float64
-		wantConf  float64
-		wantAge   int
+		name     string
+		wantSim  float64
+		wantConf float64
+		wantAge  int
 	}{
 		{"codegen", 0.92, 0.85, 24},
 		{"cognitive", 0.85, 0.70, 168},
@@ -93,15 +93,15 @@ func TestDefaultConfig_HippocampusPolicies_AllPresent(t *testing.T) {
 			t.Errorf("policy %q MaxAgeHours: want %v got %v", tc.name, tc.wantAge, pol.MaxAgeHours)
 		}
 	}
-	if cfg.Execution.HippocampusDefaultPolicy != "default" {
-		t.Errorf("HippocampusDefaultPolicy: want %q got %q", "default", cfg.Execution.HippocampusDefaultPolicy)
+	if cfg.Execution.Hippocampus.HippocampusDefaultPolicy != "default" {
+		t.Errorf("HippocampusDefaultPolicy: want %q got %q", "default", cfg.Execution.Hippocampus.HippocampusDefaultPolicy)
 	}
 }
 
 // Cycle 4b — DefaultConfig contains "episodic" policy with ADR-0029 values.
 func TestDefaultConfig_EpisodicPolicy_Present(t *testing.T) {
 	cfg := config.DefaultConfig()
-	pol, ok := cfg.Execution.HippocampusPolicies["episodic"]
+	pol, ok := cfg.Execution.Hippocampus.HippocampusPolicies["episodic"]
 	if !ok {
 		t.Fatal("DefaultConfig missing 'episodic' HippocampusPolicy (ADR-0029)")
 	}
@@ -116,7 +116,7 @@ func TestDefaultConfig_EpisodicPolicy_Present(t *testing.T) {
 // Cycle 5 — Validate rejects a config where HippocampusDefaultPolicy is not in the map.
 func TestExecutionConfig_Validate_RejectsMissingDefaultPolicy(t *testing.T) {
 	cfg := config.DefaultConfig()
-	cfg.Execution.HippocampusDefaultPolicy = "nonexistent"
+	cfg.Execution.Hippocampus.HippocampusDefaultPolicy = "nonexistent"
 
 	err := cfg.Execution.Validate()
 	if err == nil {

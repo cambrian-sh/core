@@ -3,27 +3,35 @@ package gatekeeper
 import (
 	"context"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 func defaultGatekeeperCfg() config.ExecutionConfig {
 	return config.ExecutionConfig{
-		GatekeeperW1:            0.4,
-		GatekeeperW2:            0.4,
-		GatekeeperW3:            0.2,
-		GatekeeperMaxCandidates: 0,
-		ContextGrowthK:          0.001,
+		Plan: config.PlanConfig{
+			ContextGrowthK: 0.001,
+		},
+		Gatekeeper: config.GatekeeperConfig{
+			GatekeeperW1:            0.4,
+			GatekeeperW2:            0.4,
+			GatekeeperW3:            0.2,
+			GatekeeperMaxCandidates: 0,
+		},
 	}
 }
 
 func defaultTestExecCfg() config.ExecutionConfig {
 	return config.ExecutionConfig{
-		GatekeeperW1:            0.4,
-		GatekeeperW2:            0.4,
-		GatekeeperW3:            0.2,
-		GatekeeperMaxCandidates: 5,
-		ContextGrowthK:          0.001,
+		Plan: config.PlanConfig{
+			ContextGrowthK: 0.001,
+		},
+		Gatekeeper: config.GatekeeperConfig{
+			GatekeeperW1:            0.4,
+			GatekeeperW2:            0.4,
+			GatekeeperW3:            0.2,
+			GatekeeperMaxCandidates: 5,
+		},
 	}
 }
 

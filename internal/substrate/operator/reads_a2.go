@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -470,4 +471,58 @@ func effectNames(es []domain.ToolEffect) []string {
 		out[i] = string(e)
 	}
 	return out
+}
+
+// SetDocumentGetter wires the keyed document read. nil (the default) leaves
+// GetDocument Unimplemented rather than answering not-found for every id, which
+// would make a missing wiring indistinguishable from a dangling citation.
+func (s *Service) SetDocumentGetter(g memory.DocumentGetter) { s.docGetter = g }
+
+// GetDocument fetches one document by id, body included.
+//
+// The primitive the memory lane was missing. ListDocuments is keyed but returns no
+// body; QueryMemory returns the body but is ranked. Resolving an id therefore meant
+// searching semantically for an opaque token — the worst case for an embedder — and
+// hoping it ranked. A larger top-k does not fix that, because there is no question
+// to rank against.
+//
+// Reads at operator scope, like the rest of this plane. `found=false` is a normal
+// answer, not an error: a console resolving a citation needs a dangling reference
+// and a blank document to stay distinguishable, and a gRPC NotFound would make
+// every unresolvable citation look like a transport failure.
+func (s *Service) GetDocument(ctx context.Context, req *pb.GetDocumentOpRequest) (*pb.GetDocumentOpResponse, error) {
+	if s.docGetter == nil {
+		return nil, status.Error(codes.Unimplemented, "document read not configured")
+	}
+	id := req.GetId()
+	if id == "" {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	// The operator plane reads at ScopeSystem (ADR-0047 D13), like its other reads.
+	// Stamped EXPLICITLY: a by-id BODY read that simply forgot a scope looks
+	// identical to one that deliberately reads as system, and only one is correct.
+	doc, err := s.docGetter.GetDocument(
+		domain.WithScope(ctx, domain.ScopeSystem), domain.SystemPrincipal, id)
+	if err != nil {
+		if errors.Is(err, memory.ErrDocumentNotFound) {
+			return &pb.GetDocumentOpResponse{Found: false, Id: id}, nil
+		}
+		return nil, status.Errorf(codes.Internal, "get document: %v", err)
+	}
+	resp := &pb.GetDocumentOpResponse{
+		Found:        true,
+		Id:           doc.ID,
+		Text:         doc.Text,
+		Summary:      doc.Summary,
+		DocumentType: doc.DocumentType,
+		Source:       metaString(doc.Metadata, "source"),
+	}
+	if tags, ok := doc.Metadata["tags"].([]any); ok {
+		for _, t := range tags {
+			if s, ok := t.(string); ok {
+				resp.Tags = append(resp.Tags, s)
+			}
+		}
+	}
+	return resp, nil
 }

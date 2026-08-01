@@ -43,7 +43,7 @@ func TestSearchEntities_ReconstructsCurrentState(t *testing.T) {
 			},
 		},
 	}}
-	q := NewQueryService(&fakeEmbedder{}, store)
+	q := NewQueryService(&fakeEmbedder{}, store, nil)
 
 	res, err := q.SearchEntities(context.Background(), "file:docs/a.md", "agent-a")
 	if err != nil || len(res) != 1 {
@@ -63,7 +63,7 @@ func TestSearchEntities_ReconstructsCurrentState(t *testing.T) {
 
 func TestSearchEntities_UnknownReturnsEmpty(t *testing.T) {
 	store := &programmableStore{byID: map[string]*domain.Document{}}
-	q := NewQueryService(&fakeEmbedder{}, store)
+	q := NewQueryService(&fakeEmbedder{}, store, nil)
 	res, err := q.SearchEntities(context.Background(), "file:nope.md", "agent-a")
 	if err != nil || len(res) != 0 {
 		t.Errorf("unknown entity must return empty (no record), no error; got %d err=%v", len(res), err)
@@ -80,7 +80,7 @@ func TestSearchPrecedents_FailureWeightedTransitions(t *testing.T) {
 		},
 		byMeta: []domain.Document{actionDoc("write_file → ok", "t1")},
 	}
-	q := NewQueryService(&fakeEmbedder{}, store)
+	q := NewQueryService(&fakeEmbedder{}, store, nil)
 
 	res, err := q.SearchPrecedents(context.Background(), "ship the thing", "agent-a")
 	if err != nil {
@@ -100,7 +100,7 @@ func TestSearchPrecedents_FailureWeightedTransitions(t *testing.T) {
 
 func TestSearchPrecedents_NoScenesNoPrecedent(t *testing.T) {
 	store := &programmableStore{searched: nil} // below floor / cold corpus → no scenes
-	q := NewQueryService(&fakeEmbedder{}, store)
+	q := NewQueryService(&fakeEmbedder{}, store, nil)
 	res, err := q.SearchPrecedents(context.Background(), "novel situation", "agent-a")
 	if err != nil || len(res) != 0 {
 		t.Errorf("no scenes must yield no precedent (not fabricated); got %d err=%v", len(res), err)

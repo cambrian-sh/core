@@ -1,0 +1,182 @@
+# Per-PR verification gate.
+#
+# This runs the same checks as `make per-pr`:
+#   proto-check proto-breaking test-race separability integration chaos bench-micro
+#
+# They are invoked as individual steps rather than the single `per-pr` target so a
+# failure names the gate that failed in the GitHub UI instead of one opaque red X.
+# Keep this list in sync with the `per-pr` target in the Makefile.
+#
+# Until this workflow existed, none of these gates ran anywhere except on a
+# developer's machine by convention — the repository's only workflow built and
+# pushed a container image and ran no tests.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # Canonical toolchain, per the Makefile header. A mismatch here is exactly what
+  # proto-check exists to report, so these are pinned deliberately.
+  PROTOC_VERSION: "34.1"
+  PROTOC_GEN_GO_VERSION: "v1.36.11"
+  PROTOC_GEN_GO_GRPC_VERSION: "v1.6.1"
+  BUF_VERSION: "v1.47.2"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # buf breaking compares against `.git#branch=main`, so the full history
+          # and the main ref must both be present. A shallow clone fails the gate.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ── Toolchain ────────────────────────────────────────────────────────────
+      - name: Install protoc
+        run: |
+          curl -sSLo /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -q -o /tmp/protoc.zip -d /usr/local
+          protoc --version
+
+      - name: Install protoc plugins
+        run: |
+          go install "google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION}"
+          go install "google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: ${{ env.BUF_VERSION }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Baseline ─────────────────────────────────────────────────────────────
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # ── per-pr gates ─────────────────────────────────────────────────────────
+      - name: Gate — generated bindings match .proto sources
+        run: make proto-check
+
+      - name: Gate — operator contract is not backward-incompatible
+        run: make proto-breaking
+
+      - name: Gate — open-core boundary + OTel isolation
+        run: make separability
+
+      - name: Gate — unit tests under the race detector
+        run: make test-race
+
+      - name: Gate — SystemHarness integration
+        run: make integration
+
+      - name: Gate — chaos scenarios
+        run: make chaos
+
+      - name: Gate — micro benchmarks
+        run: make bench-micro
+
+  # Vendored-contract drift. operator.proto is copied into ui/ and cli/, and there
+  # was nothing checking that the copies kept up: core gained the entire
+  # GetDocument RPC and neither consumer received it, so the console could not
+  # resolve a document id to its body and nothing reported it.
+  #
+  # Needs the sibling repositories, hence the extra checkouts. If they are private,
+  # SIBLING_CHECKOUT_TOKEN must grant read access — the job fails loudly rather
+  # than skipping, because a contract gate that quietly does not run is worse than
+  # no gate at all.
+  proto-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout cambrian-core
+        uses: actions/checkout@v4
+        with:
+          path: cambrian-core
+      - name: Checkout cambrian-premium (owns the plugin-plane protos)
+        uses: actions/checkout@v4
+        with:
+          repository: cambrian-sh/cambrian-premium
+          path: cambrian-premium
+          token: ${{ secrets.SIBLING_CHECKOUT_TOKEN || secrets.GITHUB_TOKEN }}
+      - name: Checkout ui
+        uses: actions/checkout@v4
+        with:
+          repository: cambrian-sh/ui
+          path: ui
+          token: ${{ secrets.SIBLING_CHECKOUT_TOKEN || secrets.GITHUB_TOKEN }}
+      - name: Checkout cli
+        uses: actions/checkout@v4
+        with:
+          repository: cambrian-sh/cli
+          path: cli
+          token: ${{ secrets.SIBLING_CHECKOUT_TOKEN || secrets.GITHUB_TOKEN }}
+      - name: Gate — vendored protos match their source of truth
+        working-directory: cambrian-core
+        run: make proto-sync-check
+
+  # Lint. Split from `verify` so a style finding never masks a failing test, and
+  # scoped to what THIS branch introduced (`--new-from-rev`): the tree carried ~131
+  # pre-existing findings when the config landed, and a gate that is red on arrival
+  # gets switched off rather than fixed. New code is held to the full standard.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # --new-from-rev diffs against the base branch, so the full history and
+          # the base ref must both be present. A shallow clone reports every
+          # pre-existing finding as new and the job is red for the wrong reason.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Gate — lint (new findings only)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.12.2
+          args: --new-from-rev=origin/${{ github.base_ref || github.event.repository.default_branch }} --timeout=5m
+
+  # Goroutine-leak detection. Split from `verify` because the Makefile puts it in
+  # `nightly`, not `per-pr` — it runs here on pushes to main only, so PRs stay fast
+  # while regressions still get caught before they age.
+  leak:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Gate — goroutine leaks
+        run: make leak
+
+      # Advisory, not a gate. `deadcode` cannot see cross-module callers, so
+      # app/plugin.go's Registry.* (the premium plugin API) always reports as
+      # unreachable; failing on that would be wrong. Printed so the count is
+      # visible in the log and a jump gets noticed.
+      - name: Report — unreachable functions
+        continue-on-error: true
+        run: |
+          go install golang.org/x/tools/cmd/deadcode@latest
+          "$(go env GOPATH)/bin/deadcode" ./cmd/... | tee /tmp/deadcode.txt
+          echo "unreachable functions: $(wc -l < /tmp/deadcode.txt)"

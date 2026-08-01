@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 type IngestionConfig struct {
@@ -119,13 +120,53 @@ func (im *IngestionManager) SetSceneGenEnabled(v bool) {
 	}
 }
 
-func defaultRegistry() *Registry {
-	reg, _ := NewRegistry(map[string]domain.Chunker{"option_c": OptionCChunker{}}, ChunkerConfig{Default: "option_c"})
+// fallbackRegistry is the back-compat floor: option_c only, no routes.
+//
+// It is reached when the caller supplied no registry at all. It is NOT the
+// configured path — NewIngestionManager builds a real registry from the
+// operator's config.ChunkerConfig. This used to be `defaultRegistry()` and it
+// WAS the only path: every deployment ran option_c regardless of what the
+// `chunker` block said, because the routing table was this Go literal.
+func fallbackRegistry() *Registry {
+	reg, err := NewRegistry(
+		map[string]domain.Chunker{OptionCChunker{}.Name(): OptionCChunker{}},
+		config.ChunkerConfig{Default: OptionCChunker{}.Name()},
+	)
+	if err != nil {
+		// Unreachable: the map and the default are both literals defined right
+		// here. Panicking beats returning nil, which would nil-deref at the first
+		// Resolve on the ingest path instead of at the line that is wrong.
+		panic(fmt.Sprintf("memory: fallback chunker registry is invalid: %v", err))
+	}
 	return reg
 }
 
-func NewIngestionManager(sceneGen *SceneGenerator, embedder domain.Embedder, agent *Agent, cfg IngestionConfig) *IngestionManager {
-	return NewIngestionManagerWithRegistry(sceneGen, embedder, agent, defaultRegistry(), cfg)
+// NewIngestionManager builds the manager with a chunker registry derived from the
+// OPERATOR'S configuration: every known chunker is registered and chunkerCfg
+// supplies the default plus the sourceType/ext routing table.
+//
+// An invalid chunkerCfg is a startup error, not a silent downgrade. NewRegistry
+// already rejects a route naming an unregistered chunker; the error is logged and
+// the manager falls back to option_c so ingestion still runs, because refusing to
+// ingest anything is a worse answer to a typo in one route than ingesting with the
+// documented default. The log line is the loud part.
+func NewIngestionManager(sceneGen *SceneGenerator, embedder domain.Embedder, agent *Agent, cfg IngestionConfig, chunkerCfg config.ChunkerConfig) *IngestionManager {
+	registry := fallbackRegistry()
+	if chunkerCfg.Default != "" {
+		reg, err := NewRegistry(NewDefaultChunkers(embedder, chunkerCfg), chunkerCfg)
+		if err != nil {
+			slog.Error("IngestionManager: invalid chunker config; falling back to option_c",
+				"err", err, "default", chunkerCfg.Default)
+		} else {
+			registry = reg
+			// ADR-0060 D6: the late chunker is opt-in. The gate is consulted per
+			// Resolve so a route naming "late" degrades to the default while the
+			// gate is closed, rather than being rejected at startup.
+			enabled := chunkerCfg.Late.Enabled
+			registry.SetLateGate(func() bool { return enabled })
+		}
+	}
+	return NewIngestionManagerWithRegistry(sceneGen, embedder, agent, registry, cfg)
 }
 
 func NewIngestionManagerWithRegistry(sceneGen *SceneGenerator, embedder domain.Embedder, agent *Agent, registry *Registry, cfg IngestionConfig) *IngestionManager {
@@ -142,7 +183,7 @@ func NewIngestionManagerWithRegistry(sceneGen *SceneGenerator, embedder domain.E
 		cfg.BatchWait = time.Second
 	}
 	if registry == nil {
-		registry = defaultRegistry()
+		registry = fallbackRegistry()
 	}
 	return &IngestionManager{queue: make(chan domain.ExternalDocument, cfg.QueueSize), sceneGen: sceneGen, embedder: embedder, agent: agent, registry: registry, cfg: cfg}
 }
@@ -313,7 +354,7 @@ func (im *IngestionManager) mintSourceDoc(ctx context.Context, doc domain.Extern
 	if cid != "" {
 		meta["content_cid"] = cid
 	}
-	if err := im.agent.Manager.Store.Save(ctx, &domain.Document{
+	if err := im.agent.Manager.Save(ctx, &domain.Document{
 		ID: entityID, DocumentType: domain.DocTypeMnemonicEntity,
 		Text: doc.Title, ActivationStrength: 0.1, Metadata: meta,
 	}); err != nil {

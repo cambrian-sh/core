@@ -9,58 +9,80 @@
 // name, the sourceType→chunker map, and the ext→chunker map are all
 // config values — no Go branching on sourceType values exists on the
 // path (Zero-Hardcode Rule, AGENTS.md).
+//
+// The routing config is config.ChunkerConfig — the operator-facing schema, the
+// one parsed from the `chunker` block and validated against KnownChunkerNames.
+// This package used to declare its OWN structurally-identical ChunkerConfig and
+// LateChunkerConfig, described in a comment as "the spec-shaped mirror of the
+// future config.ChunkerConfig … T-1.11 will promote it". T-1.11 was done and the
+// promoted types exist, but the mirror was never deleted and was the copy the
+// ingestion path actually used — so the operator's `chunker` block was parsed,
+// defaulted and validated, and then had no effect on anything. Two types meant
+// two sources of truth, and the authoritative-looking one was inert.
 package memory
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 const lateChunkerName = "late"
 
-// ChunkerConfig is the routing block the registry reads. It is the
-// spec-shaped mirror of the future `config.ChunkerConfig` (ADR-0060 D7,
-// T-1.11) and lives in this package for now so the registry is
-// testable in isolation; T-1.11 will promote it to
-// internal/config/config.go and have the registry read it from there.
+// ChunkerConfig and LateChunkerConfig were removed from this package. The
+// routing block is config.ChunkerConfig / config.LateChunkerConfig — see the
+// package comment for why having two of them meant the operator-facing one did
+// nothing. Use the config types directly.
+
+// NewDefaultChunkers builds the full set of chunkers the registry can route to.
 //
-// Field shape matches ADR-0060 D7 verbatim:
+// Every name in config.KnownChunkerNames is registered here, and that is the
+// point: the config layer validates an operator's `chunker.default` and
+// `chunker.routes` against KnownChunkerNames, so a name that validates but is
+// not registered is a promise the kernel cannot keep. Previously only
+// "option_c" was ever registered, so setting `chunker.default: markdown_header`
+// passed validation and then silently did nothing — the other four
+// implementations were unreachable code that the benchmark suite nonetheless
+// measured, via a hand-written Python port.
 //
-//	Default   string                       // default "option_c"
-//	Routes    map[string]string            // sourceType → chunker name
-//	ExtRoutes map[string]string            // ext → chunker name (second precedence)
-//	Late      LateChunkerConfig            // late-chunking gate (T-2.4)
-type ChunkerConfig struct {
-	// Default is the chunker name used when no route matches. The spec
-	// default is "option_c" (ADR-0060 D5) — the back-compat floor. An
-	// empty Default at NewRegistry time is a config error.
-	Default string
-	// Routes maps SourceType → chunker name (first precedence in
-	// Resolve). The keys are the values the IngestionManager passes as
-	// ExternalDocument.SourceType (e.g. "file_drop", "slack", "email").
-	Routes map[string]string
-	// ExtRoutes maps file extension → chunker name (second precedence
-	// in Resolve). The keys carry the leading dot (e.g. ".go", ".md"),
-	// matching the convention the chunkers use in their Supports check.
-	ExtRoutes map[string]string
-	// Late is the late-chunking gate config (ADR-0060 D6). T-2.4 will
-	// wire the gate into Resolve; for T-1.8 the registry just carries
-	// the config so the schema is in place.
-	Late LateChunkerConfig
+// embedder feeds the late chunker, which needs to embed a whole document before
+// splitting it. A plain Embedder is adapted through domain.EmbedBatchForwarder;
+// a backend that can vectorise a batch in one call satisfies domain.BatchEmbedder
+// directly and is used as-is (ADR-0060 D3).
+func NewDefaultChunkers(embedder domain.Embedder, cfg config.ChunkerConfig) map[string]domain.Chunker {
+	chunkers := map[string]domain.Chunker{
+		OptionCChunker{}.Name():                   OptionCChunker{},
+		ASTGoChunker{}.Name():                     ASTGoChunker{},
+		MarkdownHeaderChunker{}.Name():            MarkdownHeaderChunker{},
+		NewRecursiveCharacterChunker(0, 0).Name(): NewRecursiveCharacterChunker(0, 0),
+	}
+	// The late chunker is only registrable when there is something to embed with.
+	// A nil embedder is a legitimate state in tests and in a degraded boot, and
+	// registering a chunker that would nil-panic on first use is worse than not
+	// offering it: NewRegistry then rejects a route naming it, loudly, at startup.
+	if embedder != nil {
+		chunkers[lateChunkerName] = NewLateChunker(asBatchEmbedder(embedder), cfg.Late.MaxDocTokens)
+	}
+	return chunkers
 }
 
-// LateChunkerConfig is the late-chunking gate config. Resolved in T-2.4;
-// included here so the registry's config struct matches the ADR shape
-// (D7) and T-1.11's promotion is a pure cut/paste.
-type LateChunkerConfig struct {
-	// Enabled gates the late chunker on/off. Default false per spec.
-	Enabled bool
-	// MaxDocTokens caps the body size that late chunking will accept;
-	// larger bodies fall back to OptionCChunker (ADR-0060 D6). Default
-	// 8192, matching the existing nomic-embed-text 8K context window.
-	MaxDocTokens int
+// asBatchEmbedder adapts a plain Embedder to the BatchEmbedder the late chunker
+// wants, using the domain-provided forwarder when the backend has no native
+// batch call.
+func asBatchEmbedder(e domain.Embedder) domain.BatchEmbedder {
+	if be, ok := e.(domain.BatchEmbedder); ok {
+		return be
+	}
+	return forwardingBatchEmbedder{Embedder: e}
+}
+
+type forwardingBatchEmbedder struct{ domain.Embedder }
+
+func (f forwardingBatchEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	return domain.EmbedBatchForwarder(f.Embedder, ctx, texts)
 }
 
 // Registry routes (sourceType, ext) to a registered Chunker via
@@ -88,7 +110,7 @@ type Registry struct {
 // silent fallback (ADR-0060 D7). The default name is the floor; a
 // misconfigured default fails closed at startup rather than silently
 // routing every doc to the wrong chunker.
-func NewRegistry(chunkers map[string]domain.Chunker, cfg ChunkerConfig) (*Registry, error) {
+func NewRegistry(chunkers map[string]domain.Chunker, cfg config.ChunkerConfig) (*Registry, error) {
 	if chunkers == nil {
 		return nil, fmt.Errorf("chunker_registry: chunkers map is nil")
 	}

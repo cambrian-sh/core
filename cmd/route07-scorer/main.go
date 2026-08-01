@@ -171,7 +171,7 @@ func train(args []string) error {
 	cfg, cfgErr := config.LoadConfig("configs/config.json")
 	hw := routescorer.HandWeights{W1: 0.4, W2: 0.4} // defaults if config is unavailable
 	if cfgErr == nil {
-		hw = routescorer.HandWeights{W1: cfg.Execution.GatekeeperW1, W2: cfg.Execution.GatekeeperW2}
+		hw = routescorer.HandWeights{W1: cfg.Execution.Gatekeeper.GatekeeperW1, W2: cfg.Execution.Gatekeeper.GatekeeperW2}
 	}
 
 	trainSet, testSet := routescorer.Split(samples, 0.2)

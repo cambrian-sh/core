@@ -13,7 +13,7 @@ import (
 // gates, which is the shipped default combination.
 func resolutionCfg() config.ExecutionConfig {
 	cfg := defaultGatekeeperCfg()
-	cfg.CapabilityResolution = true
+	cfg.Capability.CapabilityResolution = true
 	return cfg
 }
 
@@ -93,7 +93,7 @@ func TestResolution_UnsatisfiableReturnsTypedError(t *testing.T) {
 // The authored alias map is the only synonym mechanism — and it works end to end.
 func TestResolution_AliasMapRoutesToDeclaringAgent(t *testing.T) {
 	cfg := resolutionCfg()
-	cfg.CapabilityAliases = map[string]string{"run_command": "shell_execution"}
+	cfg.Capability.CapabilityAliases = map[string]string{"run_command": "shell_execution"}
 	g := NewGatekeeper(resolutionAgents(), cfg)
 
 	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
@@ -125,7 +125,7 @@ func TestResolution_NoRequirementsIsUnaffected(t *testing.T) {
 // the flag actually controls the behaviour.
 func TestResolution_DisabledRestoresHardGate(t *testing.T) {
 	cfg := resolutionCfg()
-	cfg.CapabilityResolution = false
+	cfg.Capability.CapabilityResolution = false
 	g := NewGatekeeper(resolutionAgents(), cfg)
 
 	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
@@ -153,7 +153,7 @@ func ids(cs []domain.ScoredCandidate) []string {
 // filtered and the step dies with an empty slate.
 func TestResolution_PlannerSpellingIsSubstitutedBeforeVerbatimGate(t *testing.T) {
 	cfg := resolutionCfg()
-	cfg.CanonicalVocab = false // the shipped default: L1 is a verbatim comparison
+	cfg.Capability.CanonicalVocab = false // the shipped default: L1 is a verbatim comparison
 	g := NewGatekeeper(resolutionAgents(), cfg)
 
 	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{

@@ -105,7 +105,7 @@ func TestFindCandidates_Layer2_ProvisionalBypassesGate(t *testing.T) {
 		t.Errorf("expected 'prov', got %q", candidates[0].Agent.ID)
 	}
 	if candidates[0].Score != DefaultProvisionalScore {
-		t.Errorf("expected DefaultProvisionalScore %.4f, got %.4f", 		DefaultProvisionalScore, candidates[0].Score)
+		t.Errorf("expected DefaultProvisionalScore %.4f, got %.4f", DefaultProvisionalScore, candidates[0].Score)
 	}
 }
 

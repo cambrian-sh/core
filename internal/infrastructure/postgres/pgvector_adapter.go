@@ -163,7 +163,7 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (*PgVectorAdapt
 	// return a large candidate pool. pgvector's default ef_search=40 caps the
 	// number of candidates HNSW considers, so a bigger recall_over_fetch LIMIT is
 	// useless unless ef_search >= it. Set per-connection (GUC). 0 ⇒ a safe 100.
-	efSearch := cfg.Execution.HnswEfSearch
+	efSearch := cfg.Execution.Retrieval.HnswEfSearch
 	if efSearch <= 0 {
 		efSearch = 100
 	}
@@ -552,6 +552,27 @@ func scopeExpressions(eff *domain.TagPredicate) []goqu.Expression {
 // scopeExpressionsOn is scopeExpressions with an optional table qualifier, for
 // queries that JOIN and would otherwise leave `metadata` ambiguous. An empty
 // alias reproduces the unqualified form exactly.
+//
+// # It only binds on tables that carry tags in `metadata`
+//
+// This filters `metadata @> '{"tags":[...]}'`. Every table it is used against —
+// chunks, tools, skills, agent_profiles, sections — stores tags there. The
+// `documents` table does NOT: after the schema migration it carries tags in a
+// first-class `tags` column, and 0 of its 1281 rows have tags in metadata
+// (measured 2026-08-01).
+//
+// Applied to `documents` these predicates would therefore bind on nothing, and the
+// failure is ASYMMETRIC in the dangerous direction:
+//
+//   - RequiredTags  → `metadata @> …` matches nothing  → returns no rows (closed)
+//   - ForbiddenTags → `NOT (matches nothing)` is TRUE  → returns every row (OPEN)
+//
+// A scope forbidding `confidential` would filter nothing at all. Nothing routes a
+// scoped query there today (`tableFor` never returns TableDocuments, and
+// TestScopePredicateNeverTargetsDocuments pins that), and a hand-written scoped
+// read against `documents` was written and deleted during ADR-0104 D6.2 for exactly
+// this reason. Read documents through the enforcing store's post-fetch filter,
+// which reads tags from the domain object rather than from a column.
 func scopeExpressionsOn(eff *domain.TagPredicate, alias string) []goqu.Expression {
 	if eff == nil || eff.Bypass {
 		return nil

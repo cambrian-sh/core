@@ -43,7 +43,7 @@ func TestWASIInterceptor_Interception(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp2.Body.Close()
-	
+
 	if !receivedRequest {
 		t.Error("Expected pooled request to reach mock server")
 	}

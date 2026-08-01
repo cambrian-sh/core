@@ -5,7 +5,8 @@
 // batching, streaming, and queue-fall-back semantics are identical.
 //
 // Usage:
-//   chunk-fill --agent-id analyst_agent --batch-size 16 --max-idle-ms 2000
+//
+//	chunk-fill --agent-id analyst_agent --batch-size 16 --max-idle-ms 2000
 package main
 
 import (
@@ -16,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/memory"

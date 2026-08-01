@@ -90,7 +90,7 @@ func New(manager AgentDialer, gatekeeper domain.Gatekeeper, execCfg config.Execu
 		agentConns:           make(map[string]*grpc.ClientConn),
 		Manager:              manager,
 		Gatekeeper:           gatekeeper,
-		MinAuctionConfidence: execCfg.MinAuctionConfidence,
+		MinAuctionConfidence: execCfg.Gatekeeper.MinAuctionConfidence,
 		ExecCfg:              execCfg,
 	}
 }
@@ -234,7 +234,7 @@ func (a *Auctioneer) ConductAuction(ctx context.Context, task *domain.AuctionTas
 	proposalCh := make(chan *domain.AgentProposal, len(candidates))
 	var wg sync.WaitGroup
 
-	bidTimeout := time.Duration(a.ExecCfg.AuctionBidTimeoutMs) * time.Millisecond
+	bidTimeout := time.Duration(a.ExecCfg.Routing.AuctionBidTimeoutMs) * time.Millisecond
 	bidCtx, cancel := context.WithTimeout(ctx, bidTimeout)
 	defer cancel()
 
@@ -440,7 +440,7 @@ func (a *Auctioneer) requestProposalFromAgent(ctx context.Context, agent domain.
 		ConfidenceHint: confidenceHint,
 	}
 
-	proposalCtx, cancel := context.WithTimeout(ctx, time.Duration(a.ExecCfg.ProposalTimeoutMs)*time.Millisecond)
+	proposalCtx, cancel := context.WithTimeout(ctx, time.Duration(a.ExecCfg.Routing.ProposalTimeoutMs)*time.Millisecond)
 	defer cancel()
 
 	resp, err := client.RequestProposal(proposalCtx, protoTask)
@@ -535,7 +535,7 @@ func (a *Auctioneer) Execute(ctx context.Context, task *domain.AuctionTask, in *
 }
 
 func (a *Auctioneer) executeRecursive(ctx context.Context, task *domain.AuctionTask, in *domain.Handoff, depth int) (*domain.AuctionResult, error) {
-	if depth > a.ExecCfg.MaxRecursionDepth {
+	if depth > a.ExecCfg.Plan.MaxRecursionDepth {
 		return nil, fmt.Errorf("max recursion depth reached: %d", depth)
 	}
 

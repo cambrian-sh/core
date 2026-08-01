@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cambrian-sh/core/internal/centralexec/belief"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/centralexec/belief"
 )
 
 func vsRegions() []domain.CapabilityRegion {
