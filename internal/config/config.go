@@ -829,6 +829,15 @@ type IngestionConfig struct {
 	// and is not needed for document/structure retrieval.
 	SceneGenOnIngestEnabled bool `json:"scene_gen_on_ingest_enabled,omitempty"`
 
+	// EvidenceCaptureEnabled preserves every ingested document's original bytes
+	// as immutable evidence (content-addressed blob + evidence row + outbox)
+	// BEFORE the semantic pipeline touches it — the knowledge substrate's
+	// evidence foundation (ADR-0105). Default OFF until Phase 2 gives evidence a
+	// consumer; when on, a capture failure fails the ingest, because a lane that
+	// accepted content and cannot preserve it must not pretend it did. No LLM
+	// anywhere in the lane.
+	EvidenceCaptureEnabled bool `json:"evidence_capture_enabled,omitempty"`
+
 	// IngestionHTTPPort is the port for the standalone plain-HTTP ingestion server (ADR-0028).
 	// 0 disables the server (opt-in default). Use 8080 or similar for production.
 	IngestionHTTPPort int `json:"ingestion_http_port,omitempty"`

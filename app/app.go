@@ -30,6 +30,7 @@ import (
 	"github.com/cambrian-sh/core/internal/health"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	mcp "github.com/cambrian-sh/core/internal/infrastructure/mcp"
+	"github.com/cambrian-sh/core/internal/evidence"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/ingress"
 	"github.com/cambrian-sh/core/internal/kernel"
@@ -1012,6 +1013,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// arrive on has been registered, without being able to register one.
 		Ingresses:     opts.IngressResolver,
 		SessionScopes: sessionMgr,
+		// ADR-0106: the substrate's typed item/resolution boundary. A plugin
+		// producing or consuming knowledge items goes through this port so no
+		// consumer ever grows SQL against substrate tables.
+		Knowledge:     postgres.NewPgKnowledgeStore(vec.Pool()),
 		Manager:       meta.Manager,
 		Auctioneer:    meta.Auctioneer,
 		Memory:        mem.Agent,
@@ -1259,6 +1264,20 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			)
 			mem.QueryService.EnableSectionScopedRetrieval(vec)
 			slog.Info("ADR-0060: structure-aware ingestion ENABLED (docling parse -> structure graph)")
+		}
+		// ADR-0105: the knowledge substrate's evidence foundation. Opt-in. Every
+		// ingested document's original bytes become durable, content-addressed
+		// evidence (+ outbox work item) BEFORE chunking or any other semantic step.
+		// Construction is fail-loud: with the flag on, a kernel that cannot
+		// preserve evidence must not boot into silently-not-preserving it.
+		if cfg.Execution.Ingestion.EvidenceCaptureEnabled {
+			evIngestor, err := evidence.NewIngestor(
+				storeHandle.ContentStore, postgres.NewPgEvidenceStore(vec.Pool()))
+			if err != nil {
+				return nil, fmt.Errorf("evidence capture (ADR-0105): %w", err)
+			}
+			mem.IngestionManager.SetEvidenceCapture(evIngestor)
+			slog.Info("ADR-0105: evidence capture ENABLED (content-first evidence + outbox on every ingest)")
 		}
 	}
 
