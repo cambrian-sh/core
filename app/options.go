@@ -234,6 +234,13 @@ type KernelServices struct {
 	// persisted session record. The policy plugin composes it with the rest; the
 	// kernel never interprets it. nil when no session store is available.
 	SessionScopes SessionScopeReader
+
+	// Knowledge is the substrate's typed item/resolution boundary (ADR-0106).
+	// A plugin that produces or consumes knowledge items goes through THIS port
+	// — never SQL against substrate tables, which is the retrofit debt the
+	// boundary exists to prevent (memo §18 phase-2 note). nil when no Postgres
+	// is configured.
+	Knowledge domain.KnowledgeStore
 }
 
 // SessionScopeReader returns the caller term persisted on a session record. It is

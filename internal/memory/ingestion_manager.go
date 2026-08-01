@@ -2,6 +2,8 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/evidence"
 )
 
 type IngestionConfig struct {
@@ -48,6 +51,24 @@ type IngestionManager struct {
 	// unreachable raw-write fallback, so the operator's memory feed had a
 	// publisher wired to a dead path and a consumer receiving nothing.
 	bus domain.EventBus
+	// evidenceCapture preserves the delivery as immutable evidence (ADR-0105)
+	// before ANY semantic processing — including scene generation — touches it.
+	// nil = the substrate's evidence foundation is disabled (the default).
+	evidenceCapture EvidenceCapture
+}
+
+// EvidenceCapture is the evidence foundation's write seam (ADR-0105 D6).
+type EvidenceCapture interface {
+	Ingest(ctx context.Context, raw evidence.Raw) (domain.EvidenceID, bool, error)
+}
+
+// SetEvidenceCapture wires the evidence foundation. Call before Start; nil is
+// ignored. Once set, a capture failure FAILS the ingest: a lane that accepted
+// content and cannot preserve it must not pretend it did.
+func (im *IngestionManager) SetEvidenceCapture(c EvidenceCapture) {
+	if im != nil && c != nil {
+		im.evidenceCapture = c
+	}
 }
 
 // plural keeps the feed readable: "1 chunks" is the kind of small wrongness that
@@ -212,6 +233,15 @@ func (im *IngestionManager) Enqueue(doc domain.ExternalDocument) bool {
 // paths share the chunker registry + scene generator + agent
 // write path.
 func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.ExternalDocument) (string, error) {
+	// Evidence first (ADR-0105 D2): the original bytes must be durable and
+	// published as evidence before chunking, scene generation or any other
+	// semantic step — so a failure anywhere downstream still leaves source
+	// material that can be reprocessed.
+	if im.evidenceCapture != nil {
+		if err := im.captureEvidence(ctx, doc); err != nil {
+			return "", fmt.Errorf("ingestion manager: evidence capture: %w", err)
+		}
+	}
 	scene := ""
 	if im.sceneGenEnabled && im.sceneGen != nil {
 		scenes, err := im.sceneGen.Generate(ctx, []domain.ExternalDocument{doc})
@@ -246,6 +276,37 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	slog.Info("IngestionManager: sync ingest complete", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", chunkCount)
 	im.publishWritten(doc, entityID, chunkCount)
 	return entityID, nil
+}
+
+// captureEvidence maps one ExternalDocument onto the evidence write path.
+//
+// SourceKey is the document's stable identity (the same externalDocumentID the
+// rest of the pipeline uses), and SourceRevision is the content digest: a
+// replayed identical delivery dedupes, while the SAME key arriving with CHANGED
+// bytes becomes a NEW evidence revision rather than an update (ADR-0105 D4) —
+// which is exactly the re-ingest-a-changed-file case.
+func (im *IngestionManager) captureEvidence(ctx context.Context, doc domain.ExternalDocument) error {
+	body := doc.Data
+	if len(body) == 0 {
+		body = []byte(doc.Body)
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("document carries no bytes")
+	}
+	sourceID := doc.SourceType
+	if sourceID == "" {
+		sourceID = "unknown"
+	}
+	digest := sha256.Sum256(body)
+	_, _, err := im.evidenceCapture.Ingest(ctx, evidence.Raw{
+		SourceID:       sourceID,
+		SourceKey:      externalDocumentID(doc),
+		SourceRevision: hex.EncodeToString(digest[:]),
+		SourceTime:     doc.Timestamp,
+		Bytes:          body,
+		Classification: doc.Tags,
+	})
+	return err
 }
 
 func (im *IngestionManager) Start(ctx context.Context) {
