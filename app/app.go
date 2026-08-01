@@ -968,8 +968,18 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ingestor and one store. Construction is fail-loud: with the flag on, a
 	// kernel that cannot preserve evidence must not boot into silently-not-
 	// preserving it.
+	// ADR-0110: the kind registry, validated as a unit — a malformed spec, a
+	// duplicate kind, or a policy nobody registered refuses the boot rather
+	// than silently deriving under a different policy than a kind declared.
+	kindReg, kerr := domain.NewKindRegistry(opts.KnowledgeKinds, opts.ResolutionAuthorities)
+	if kerr != nil {
+		return nil, fmt.Errorf("knowledge kind registry (ADR-0110): %w", kerr)
+	}
+
 	var evIngestor *evidence.Ingestor
 	evStore := postgres.NewPgEvidenceStore(vec.Pool())
+	knowledgeStore := postgres.NewPgKnowledgeStore(vec.Pool(), kindReg)
+	eventStore := postgres.NewPgEventStore(vec.Pool(), kindReg)
 	if cfg.Execution.Ingestion.EvidenceCaptureEnabled {
 		var everr error
 		evIngestor, everr = evidence.NewIngestor(storeHandle.ContentStore, evStore)
@@ -1031,10 +1041,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// ADR-0106: the substrate's typed item/resolution boundary. A plugin
 		// producing or consuming knowledge items goes through this port so no
 		// consumer ever grows SQL against substrate tables.
-		Knowledge:     postgres.NewPgKnowledgeStore(vec.Pool()),
+		Knowledge:     knowledgeStore,
 		// ADR-0108 D2: the typed event/observation boundary — exact reads over
 		// stored rows, nothing embedded.
-		Events:        postgres.NewPgEventStore(vec.Pool()),
+		Events:        eventStore,
+		// ADR-0111: the closed query AST over all of the above.
+		QueryPlane:    postgres.NewPgQueryPlane(vec.Pool(), eventStore, knowledgeStore, evStore),
 		Manager:       meta.Manager,
 		Auctioneer:    meta.Auctioneer,
 		Memory:        mem.Agent,

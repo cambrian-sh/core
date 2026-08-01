@@ -200,6 +200,8 @@ type Registry struct {
 	ingressOwner     string
 	decisionObs      []domain.DecisionObserver
 	transformers     []domain.EvidenceTransformer
+	kinds            []domain.KindSpec
+	authorities      []domain.ResolutionAuthority
 }
 
 // SetAuthorizer installs the access-control decision point (ADR-0085). Tier-1
@@ -319,6 +321,21 @@ func (r *Registry) AddDecisionObserver(o domain.DecisionObserver) {
 func (r *Registry) AddEvidenceTransformer(t domain.EvidenceTransformer) {
 	if t != nil {
 		r.transformers = append(r.transformers, t)
+	}
+}
+
+// AddKnowledgeKinds declares knowledge kinds this plugin produces (ADR-0110
+// D1). Add-many; duplicate KIND declarations across plugins fail the boot in
+// NewKindRegistry — two owners for one kind is a fight the boot must referee.
+func (r *Registry) AddKnowledgeKinds(specs ...domain.KindSpec) {
+	r.kinds = append(r.kinds, specs...)
+}
+
+// AddResolutionAuthority registers a resolution policy implementation
+// (ADR-0110 D3). Add-many; a kind opts in by naming the policy in its spec.
+func (r *Registry) AddResolutionAuthority(a domain.ResolutionAuthority) {
+	if a != nil {
+		r.authorities = append(r.authorities, a)
 	}
 }
 
@@ -657,6 +674,10 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 	}
 	// Evidence transformers (ADR-0108 D3): appended in registration order.
 	opts.EvidenceTransformers = append(opts.EvidenceTransformers, reg.transformers...)
+	// Knowledge kinds + resolution authorities (ADR-0110): validated together
+	// at boot by NewKindRegistry.
+	opts.KnowledgeKinds = append(opts.KnowledgeKinds, reg.kinds...)
+	opts.ResolutionAuthorities = append(opts.ResolutionAuthorities, reg.authorities...)
 	// Capabilities: dedupe, preserving first-seen order so the handshake list is stable
 	// across boots (a UI diffing capabilities should not see spurious churn).
 	var caps []string
