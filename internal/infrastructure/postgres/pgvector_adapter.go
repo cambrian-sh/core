@@ -21,6 +21,7 @@ import (
 	"github.com/doug-martin/goqu/v9"
 	_ "github.com/doug-martin/goqu/v9/dialect/postgres"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pgvector/pgvector-go"
 	pgxvector "github.com/pgvector/pgvector-go/pgx"
@@ -97,6 +98,22 @@ type PgVectorAdapter struct {
 	pool        *pgxpool.Pool
 	dim         int  // Dynamic dimension support (ADR-0012)
 	autoMigrate bool // PLAT-02 / ADR-0064: run the migration runner at boot (default true)
+	// ADR-0107 stage 3a: dual-write chunk embeddings into the chunk_embeddings
+	// projection under the active embedder's identity. Write-only — nothing in
+	// this adapter READS the projection until stage 3b — so the flag cannot
+	// move a recall number by construction.
+	projectionWrite bool
+	// ADR-0107 stage 3b: dense chunk retrieval reads the ACTIVE model's rows
+	// from the projection instead of chunks.embedding. Requires projectionWrite
+	// (enforced at boot): reading a projection that new writes skip would make
+	// every fresh memory silently invisible to retrieval.
+	projectionRead bool
+	projModelID    string
+	// colDim is the legacy chunks.embedding column's dimension as probed at
+	// boot (0 = column absent/untyped). When the active embedder's dimension
+	// differs, column writes are skipped (stage 3c coexistence) — the typed
+	// column cannot hold the other model's vectors and must not fail the write.
+	colDim int
 }
 
 // scanDocument is the central data-integrity gate.
@@ -211,7 +228,37 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (*PgVectorAdapt
 				"set embedder.dimensions explicitly (e.g. 1024 for bge-large)")
 	}
 
-	p := &PgVectorAdapter{pool: pool, dim: dims, autoMigrate: cfg.Storage.AutoMigrate}
+	p := &PgVectorAdapter{
+		pool:            pool,
+		dim:             dims,
+		autoMigrate:     cfg.Storage.AutoMigrate,
+		projectionWrite: cfg.Execution.Retrieval.EmbeddingProjectionWrite,
+		projectionRead:  cfg.Execution.Retrieval.EmbeddingProjectionRead,
+		projModelID:     cfg.Embedder.Model,
+	}
+	if p.projectionWrite || p.projectionRead {
+		if p.projModelID == "" {
+			// The projection's whole point is model identity; an anonymous row
+			// could never be switched to or compared against (ADR-0107 D3).
+			return nil, fmt.Errorf("embedding projection requires embedder.model to be set")
+		}
+	}
+	if p.projectionRead && !p.projectionWrite {
+		// Read-without-write means every chunk written from now on never enters
+		// the projection and silently vanishes from dense retrieval — the exact
+		// invisible-recall-loss failure this programme measures for. Refusing at
+		// boot turns a config mistake into a startup error.
+		return nil, fmt.Errorf("embedding_projection_read requires embedding_projection_write: " +
+			"reading a projection that new writes skip makes fresh memories invisible to retrieval")
+	}
+	if p.projectionWrite {
+		mode := "stage 3a, write-only"
+		if p.projectionRead {
+			mode = "stage 3b, read+write"
+		}
+		slog.Info("ADR-0107: embedding projection ENABLED ("+mode+")",
+			"model_id", p.projModelID, "dims", dims)
+	}
 
 	// REDEMPTION: migration is no longer a side effect but a controlled startup step.
 	// In production, do this with an external 'migrate' tool.
@@ -260,6 +307,20 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 		FROM pg_attribute
 		WHERE attrelid = $1::regclass AND attname = 'embedding'
 	`, TableChunks).Scan(&existingDim)
+	p.colDim = existingDim
+	// ADR-0107 stage 3c: with the projection carrying the vectors, a dimension
+	// mismatch is COEXISTENCE, not a migration. The column stays at its old
+	// dimension and is simply no longer written (getUpsertBuilder skips it);
+	// reads already come from the projection, hydrated per active model. This
+	// is the end of the destructive dim-migration for projection deployments:
+	// switching models is a backfill plus a config change, and switching BACK
+	// is the same config change again.
+	if existingDim != 0 && existingDim != p.dim && p.projectionRead {
+		slog.Info("ADR-0107: embedder dimension differs from the legacy column; projection coexistence active",
+			"column_dim", existingDim, "embedder_dim", p.dim,
+			"effect", "chunks.embedding is no longer written; vectors live in chunk_embeddings per model")
+		return p.runMigrations(ctx)
+	}
 	if existingDim != 0 && existingDim != p.dim {
 		// Count documents that a drop would DESTROY — exclude system-seeded types
 		// (tool/skill/agent_profile), which are recreated on every boot regardless.
@@ -391,7 +452,12 @@ func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) *goqu.InsertDat
 		// descriptor against the real schema, which is how it reached a live boot.
 		"version": goqu.L(tableFor(doc.DocumentType) + ".version + 1"), // Optimistic Concurrency
 	}
-	if len(doc.Embedding.Vector) > 0 {
+	// ADR-0107 stage 3c: the typed legacy column only takes vectors of its own
+	// dimension. Under projection coexistence (active model's dims differ) the
+	// column write is SKIPPED rather than failed — the projection holds the
+	// vector, and a memory write must never die over a legacy cache it no
+	// longer serves.
+	if len(doc.Embedding.Vector) > 0 && (p.colDim == 0 || len(doc.Embedding.Vector) == p.colDim) {
 		record["embedding"] = pgvector.NewVector(doc.Embedding.Vector)
 		update["embedding"] = goqu.L("EXCLUDED.embedding")
 	}
@@ -424,10 +490,42 @@ func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) *goqu.InsertDat
 	)
 }
 
+// projectionUpsert mirrors a chunk's embedding into chunk_embeddings under the
+// active model (ADR-0107 stage 3a). Runs in the SAME transaction/statement
+// sequence as the chunk upsert, immediately after it, so the row and its
+// projection cannot diverge on a crash and the FK is always satisfied. Chunks
+// only: descriptor tables (tools, skills, profiles) are rebuilt from source on
+// every boot and have no model-migration problem to solve.
+const projectionUpsertSQL = `
+	INSERT INTO chunk_embeddings (chunk_id, model_id, model_version, dims, embedding)
+	VALUES ($1, $2, '', $3, $4)
+	ON CONFLICT (chunk_id, model_id)
+	DO UPDATE SET embedding = EXCLUDED.embedding, dims = EXCLUDED.dims, created_at = now()`
+
+// execer is the intersection of pgxpool.Pool and pgx.Tx this adapter needs to
+// run one statement on either.
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func (p *PgVectorAdapter) projectEmbedding(ctx context.Context, on execer, doc *domain.Document) error {
+	if !p.projectionWrite || len(doc.Embedding.Vector) == 0 || tableFor(doc.DocumentType) != TableChunks {
+		return nil
+	}
+	_, err := on.Exec(ctx, projectionUpsertSQL,
+		doc.ID, p.projModelID, len(doc.Embedding.Vector), pgvector.NewVector(doc.Embedding.Vector))
+	return err
+}
+
 func (p *PgVectorAdapter) Save(ctx context.Context, doc *domain.Document) error {
 	sql, args, _ := p.getUpsertBuilder(doc).ToSQL()
-	_, err := p.pool.Exec(ctx, sql, args...)
-	return mapError("Save", err)
+	if _, err := p.pool.Exec(ctx, sql, args...); err != nil {
+		return mapError("Save", err)
+	}
+	if err := p.projectEmbedding(ctx, p.pool, doc); err != nil {
+		return mapError("SaveProjection", err)
+	}
+	return nil
 }
 
 func (p *PgVectorAdapter) SaveBatch(ctx context.Context, docs []*domain.Document) error {
@@ -441,6 +539,9 @@ func (p *PgVectorAdapter) SaveBatch(ctx context.Context, docs []*domain.Document
 		sql, args, _ := p.getUpsertBuilder(doc).ToSQL()
 		if _, err := tx.Exec(ctx, sql, args...); err != nil {
 			return mapError("ExecBatch", err)
+		}
+		if err := p.projectEmbedding(ctx, tx, doc); err != nil {
+			return mapError("ExecBatchProjection", err)
 		}
 	}
 	return tx.Commit(ctx)
@@ -645,17 +746,52 @@ func isolationExpressions(iso *domain.SessionIsolation, alias string) []goqu.Exp
 }
 
 func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32, opts domain.SearchOptions, limit int) ([]domain.SearchResult, error) {
-	ds := dialect.From(tableFor(opts.DocumentType)).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path")
+	table := tableFor(opts.DocumentType)
+	// ADR-0107 stage 3b: dense chunk retrieval through the projection. The
+	// column list, its ORDER, and every predicate are IDENTICAL to the legacy
+	// branch — only where the vector comes from changes. The cast + the
+	// model_id join condition must match the partial index's expression and
+	// predicate VERBATIM (D2) or the planner falls back to exact scan: correct,
+	// slower, and the same fail-safe shape Phase 0 measured.
+	useProjection := p.projectionRead && vector != nil && table == TableChunks
 
-	if vector != nil {
+	var ds *goqu.SelectDataset
+	if useProjection {
 		vec := pgvector.NewVector(vector)
-		ds = ds.SelectAppend(goqu.L("embedding <=> ?", vec).As("distance")).
-			Order(goqu.L("embedding <=> ?", vec).Asc()).
-			Where(goqu.L("embedding IS NOT NULL"))
+		cast := fmt.Sprintf("(ce.embedding::vector(%d))", p.dim)
+		ds = dialect.From(TableChunks).
+			Join(goqu.T("chunk_embeddings").As("ce"), goqu.On(
+				goqu.L("ce.chunk_id = "+TableChunks+".id"),
+				goqu.L("ce.model_id = ?", p.projModelID),
+			)).
+			// Qualified: both tables carry `embedding` and `created_at`, and an
+			// ambiguous bare column here is a runtime error no unit test with a
+			// fake store can see.
+			// The hydrated `embedding` column comes from the PROJECTION, not the
+			// legacy column (stage 3c): downstream consumers of doc.Embedding
+			// (blend coherence, rerank) must see the ACTIVE model's vector, and
+			// under coexistence the legacy column may hold a different model's —
+			// or, for chunks written since the switch, none at all.
+			Select(goqu.I(TableChunks+".id"), goqu.I(TableChunks+".text"), goqu.I(TableChunks+".metadata"),
+				goqu.I(TableChunks+".access_count"), goqu.I(TableChunks+".activation_strength"),
+				goqu.I(TableChunks+".scoring_prompt_version"), goqu.I(TableChunks+".last_accessed_at"),
+				goqu.I(TableChunks+".created_at"), goqu.I(TableChunks+".document_type"),
+				goqu.I(TableChunks+".version"), goqu.L(cast).As("embedding"),
+				goqu.I(TableChunks+".summary"), goqu.I(TableChunks+".section_path")).
+			SelectAppend(goqu.L(cast+" <=> ?", vec).As("distance")).
+			Order(goqu.L(cast+" <=> ?", vec).Asc())
 	} else {
-		ds = ds.SelectAppend(goqu.V(0.0).As("distance")).
-			Order(goqu.I("last_accessed_at").Desc())
+		ds = dialect.From(table).
+			Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path")
+		if vector != nil {
+			vec := pgvector.NewVector(vector)
+			ds = ds.SelectAppend(goqu.L("embedding <=> ?", vec).As("distance")).
+				Order(goqu.L("embedding <=> ?", vec).Asc()).
+				Where(goqu.L("embedding IS NOT NULL"))
+		} else {
+			ds = ds.SelectAppend(goqu.V(0.0).As("distance")).
+				Order(goqu.I("last_accessed_at").Desc())
+		}
 	}
 
 	if opts.DocumentType != "" {
