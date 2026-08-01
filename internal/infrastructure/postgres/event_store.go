@@ -18,10 +18,18 @@ import (
 // stored rows — no vectors, no ranking, no model anywhere in this file.
 type PgEventStore struct {
 	pool *pgxpool.Pool
+	reg  *domain.KindRegistry
 }
 
-// NewPgEventStore wraps an existing pool.
-func NewPgEventStore(pool *pgxpool.Pool) *PgEventStore { return &PgEventStore{pool: pool} }
+// ObservationKind is the reserved registry kind observations validate under
+// (ADR-0110 D2): observations carry a predicate but no item kind, so their
+// value constraints are declared once, under this name.
+const ObservationKind = "observation"
+
+// NewPgEventStore wraps an existing pool. reg may be nil (no declared kinds).
+func NewPgEventStore(pool *pgxpool.Pool, reg *domain.KindRegistry) *PgEventStore {
+	return &PgEventStore{pool: pool, reg: reg}
+}
 
 var _ domain.EventStore = (*PgEventStore)(nil)
 
@@ -93,6 +101,19 @@ func (s *PgEventStore) RecordEvent(ctx context.Context, ev domain.Event) (domain
 func (s *PgEventStore) RecordObservation(ctx context.Context, ob domain.Observation) (bool, error) {
 	if ob.EntityID == "" || ob.Predicate == "" || ob.OccurredAt.IsZero() {
 		return false, fmt.Errorf("observation record: entity_id, predicate and occurred_at are required")
+	}
+	// ADR-0110 D2, under the reserved "observation" kind — per-PREDICATE
+	// opt-in: a declared predicate is constrained, an undeclared one passes,
+	// so declaring temperature_c cannot break an unrelated stream (monotonic
+	// adoption at observation granularity).
+	if spec, ok := s.reg.Spec(ObservationKind); ok {
+		if _, declared := spec.Predicates[ob.Predicate]; declared {
+			v := ob.Value
+			v.Predicate = ob.Predicate
+			if err := s.reg.ValidateValues(ObservationKind, []domain.StatementValue{v}); err != nil {
+				return false, err
+			}
+		}
 	}
 	ns := ob.NamespaceID
 	if ns == "" {

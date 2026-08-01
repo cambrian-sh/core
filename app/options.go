@@ -112,6 +112,13 @@ type Options struct {
 	// starts, which is correct — a consumer with no consumers is the unwired
 	// trap with a ticker.
 	EvidenceTransformers []domain.EvidenceTransformer
+
+	// KnowledgeKinds and ResolutionAuthorities feed the ADR-0110 kind
+	// registry, validated as a unit at boot: a malformed spec, a duplicate
+	// kind, or a policy nobody registered refuses to start rather than
+	// falling back silently.
+	KnowledgeKinds        []domain.KindSpec
+	ResolutionAuthorities []domain.ResolutionAuthority
 }
 
 // KernelServices is the OSS-provided capability bundle handed to every plugin's Build phase
@@ -259,6 +266,11 @@ type KernelServices struct {
 	// evidence capture is disabled — a plugin lane that needs the archive must
 	// say so rather than silently detecting over content nobody preserved.
 	EvidenceIngest func(ctx context.Context, raw domain.RawEvidence) (domain.EvidenceID, bool, error)
+
+	// QueryPlane executes the closed knowledge-query AST (ADR-0111): the seven
+	// §14 question shapes, with "cannot express safely" the only failure mode.
+	// nil when no Postgres is configured.
+	QueryPlane domain.QueryPlane
 }
 
 // SessionScopeReader returns the caller term persisted on a session record. It is
