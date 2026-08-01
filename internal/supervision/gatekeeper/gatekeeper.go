@@ -107,7 +107,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 	// Agent pinning. Resolved once so the hard short-circuit and the soft
 	// exemptions below cannot disagree about which agent is pinned.
 	pinnedID := ""
-	if g.ExecCfg.AgentPinning && task != nil {
+	if g.ExecCfg.Routing.AgentPinning && task != nil {
 		pinnedID = task.PreferredAgent
 	}
 	// EqualFold, not ==: the pin strength comes from an LLM, and "Hard" losing its
@@ -163,7 +163,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 	// Only runs when the step actually declares requirements, so the pre-ROUTE-03
 	// path and the control arm stay byte-identical.
 	gateTask := task
-	if g.ExecCfg.CapabilityResolution && task != nil && len(task.RequiredCapabilities) > 0 {
+	if g.ExecCfg.Capability.CapabilityResolution && task != nil && len(task.RequiredCapabilities) > 0 {
 		live := make([]*domain.AgentManifest, 0, len(agents))
 		for _, a := range agents {
 			if a.Trait == domain.TraitDaemon || domain.IsSystemAgent(a.ID) {
@@ -181,7 +181,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 			}
 		}
 		resolution := domain.ResolveCapabilities(task.RequiredCapabilities, vocabulary,
-			g.ExecCfg.CapabilityAliases, agentSets)
+			g.ExecCfg.Capability.CapabilityAliases, agentSets)
 
 		if !resolution.Satisfiable() {
 			// Loud, diagnosable failure naming the gap and the live vocabulary,
@@ -219,10 +219,10 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 	// mis-routed step is explainable from the persisted auction event alone. The
 	// funnel only captures values the layers already compute; it is nil (zero
 	// cost beyond the flag check) when tracing is off.
-	trace := g.ExecCfg.RoutingTraceEnabled && task != nil
+	trace := g.ExecCfg.Routing.RoutingTraceEnabled && task != nil
 	var funnel *domain.GatekeeperFunnel
 	if trace {
-		funnel = &domain.GatekeeperFunnel{MaxCandidates: g.ExecCfg.GatekeeperMaxCandidates}
+		funnel = &domain.GatekeeperFunnel{MaxCandidates: g.ExecCfg.Gatekeeper.GatekeeperMaxCandidates}
 	}
 	var meritByAgent map[string]MeritBreakdown
 	if trace {
@@ -244,7 +244,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 
 		manifest := getManifest(agent.ID)
 
-		if !PassesDeclaration(manifest, gateTask, g.ExecCfg.CanonicalVocab) {
+		if !PassesDeclaration(manifest, gateTask, g.ExecCfg.Capability.CanonicalVocab) {
 			slog.Info("Gatekeeper: agent filtered by declaration", "agent_id", agent.ID)
 			if trace {
 				funnel.L1 = append(funnel.L1, domain.DeclarationResult{
@@ -331,7 +331,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 					// that description similarity would veto.
 					bypass := c.Agent.ID == pinnedID ||
 						(c.Agent.Provisional &&
-							(!g.ExecCfg.PerCapabilityMerit || g.ExplorationBudget.Allowed(budgetCap)))
+							(!g.ExecCfg.Routing.PerCapabilityMerit || g.ExplorationBudget.Allowed(budgetCap)))
 					if bypass {
 						filtered = append(filtered, c)
 						if trace {
@@ -390,7 +390,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 		return candidates[i].Score > candidates[j].Score
 	})
 
-	maxK := g.ExecCfg.GatekeeperMaxCandidates
+	maxK := g.ExecCfg.Gatekeeper.GatekeeperMaxCandidates
 	if maxK > 0 && len(candidates) > maxK {
 		candidates = candidates[:maxK]
 	}
@@ -529,7 +529,7 @@ func (g *Gatekeeper) computeMeritBreakdown(ctx context.Context, agent domain.Age
 // live Gatekeeper path and the PreviewRoute RPC (the gatekeeper benchmark, ADR-0077) score
 // candidates identically — the benchmark supplies synthetic profiles inline, no live fleet.
 func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredCaps []string, cfg config.ExecutionConfig, scorer RouteScorer) MeritBreakdown {
-	w1, w2, w3, w4 := cfg.GatekeeperW1, cfg.GatekeeperW2, cfg.GatekeeperW3, cfg.GatekeeperW4
+	w1, w2, w3, w4 := cfg.Gatekeeper.GatekeeperW1, cfg.Gatekeeper.GatekeeperW2, cfg.Gatekeeper.GatekeeperW3, cfg.Gatekeeper.GatekeeperW4
 
 	const (
 		neutralSuccessRate = 0.5
@@ -547,7 +547,7 @@ func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredC
 		trustScore = profile.TrustScore
 		// ROUTE-06: prefer capability-scoped success/trust for the step's required
 		// capability when that tag has history; otherwise keep the global values.
-		if cfg.PerCapabilityMerit && len(requiredCaps) > 0 && len(profile.CapabilityStats) > 0 {
+		if cfg.Routing.PerCapabilityMerit && len(requiredCaps) > 0 && len(profile.CapabilityStats) > 0 {
 			for _, rc := range requiredCaps {
 				if st, ok := profile.CapabilityStats[rc]; ok && st.SampleCount > 0 {
 					successRate = st.SuccessRate
@@ -557,7 +557,7 @@ func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredC
 			}
 		}
 		normLatency = float64(profile.NetworkLatencyMedianMs+profile.ComputationLatencyMedianMs) +
-			domain.ContextGrowthPenalty(profile.ContextGrowthBytesMedian, cfg.ContextGrowthK)
+			domain.ContextGrowthPenalty(profile.ContextGrowthBytesMedian, cfg.Plan.ContextGrowthK)
 		profileProvisional = profile.Provisional
 		if profile.ModelMetrics != nil && profile.ModelMetrics.AvgCostPerTask > 0 {
 			normalizedCost = profile.ModelMetrics.AvgCostPerTask / 0.01
@@ -587,7 +587,7 @@ func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredC
 	// model's score REPLACES the hand-weighted score (and the cold-start penalty — the
 	// provisional flag is a model feature, so it must not be double-applied). The merit
 	// terms are still returned for the ROUTE-02 funnel. Byte-identical when the arm is off.
-	if cfg.LearnedScorer && scorer != nil {
+	if cfg.Routing.LearnedScorer && scorer != nil {
 		provFloat := 0.0
 		if profileProvisional {
 			provFloat = 1.0
@@ -597,7 +597,7 @@ func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredC
 	}
 
 	if profileProvisional {
-		penalty := cfg.ColdStartPenaltyMultiplier
+		penalty := cfg.Gatekeeper.ColdStartPenaltyMultiplier
 		if penalty == 0 {
 			penalty = 0.6
 		}

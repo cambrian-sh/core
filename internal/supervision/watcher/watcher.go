@@ -179,12 +179,6 @@ func (w *Watcher) HandleInvalidSignal(ctx context.Context, handoff *domain.Hando
 	return fmt.Errorf("%w: invalid signal from %s", ErrInvalidSignal, agentID)
 }
 
-// GenerateAuthToken produces a random hex token suitable for Instance authentication.
-// Delegates to signal.GenerateAuthToken.
-func GenerateAuthToken() (string, error) {
-	return signal.GenerateAuthToken()
-}
-
 // OnSignal implements domain.SignalReceiver for the OSS Watcher.
 // It validates the signal, enriches with LTM, and presents it to the Planner.
 // Equivalent to the SignalStream handler's per-signal processing. ADR-0032.

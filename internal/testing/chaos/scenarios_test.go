@@ -7,18 +7,20 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 	"github.com/cambrian-sh/core/internal/config"
+	"github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 	"github.com/cambrian-sh/core/internal/testing/chaos"
 )
 
 func TestChaos_GatekeeperFallsBackOnDbTimeout(t *testing.T) {
 	gk := gatekeeper.NewGatekeeper(newChaosRegistry(10), config.ExecutionConfig{
-		GatekeeperW1:              0.4,
-		GatekeeperW2:              0.4,
-		GatekeeperW3:              0.2,
-		ColdStartPenaltyMultiplier: 0.6,
-		GatekeeperMaxCandidates:    10,
+		Gatekeeper: config.GatekeeperConfig{
+			GatekeeperW1:               0.4,
+			GatekeeperW2:               0.4,
+			GatekeeperW3:               0.2,
+			ColdStartPenaltyMultiplier: 0.6,
+			GatekeeperMaxCandidates:    10,
+		},
 	}, gatekeeper.WithSearcher(nil))
 
 	task := &domain.AuctionTask{

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/storage"
 )
 
@@ -50,4 +51,29 @@ func OpenConfigStore(baseDir string) (*storage.BoltConfigStore, error) {
 			path, err, ConfigStoreEnv)
 	}
 	return store, nil
+}
+
+// configStoreOrNil converts the concrete store pointer into a config.Store
+// interface that is genuinely nil when there is no store.
+//
+// Without this, `CAMBRIAN_CONFIG_STORE=off` PANICKED — and it is the escape hatch
+// the kernel's own boot error recommends, so the documented recovery from a
+// corrupt store was itself a crash.
+//
+// The mechanism is the classic Go trap. `OpenConfigStore` returns
+// `(*storage.BoltConfigStore, error)` and yields a typed nil for "off". Assigning
+// that into an interface parameter produces an interface that is NOT nil — it
+// holds a non-nil type descriptor and a nil value — so `LoadConfigWithStore`'s
+// `if store != nil` guard passed and `Overrides()` dereferenced `s.db` on a nil
+// receiver.
+//
+// The guard was never wrong; the value lied to it. Converting at the boundary is
+// the fix, rather than adding nil-receiver guards to every store method: those
+// would make the same mistake survivable at each new call site instead of
+// impossible at the one place the conversion happens.
+func configStoreOrNil(s *storage.BoltConfigStore) config.Store {
+	if s == nil {
+		return nil
+	}
+	return s
 }

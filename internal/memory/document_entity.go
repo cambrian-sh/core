@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // ErrDocumentWriteDenied is returned when the decision point refuses to classify a
@@ -121,3 +123,12 @@ func (im *IngestionManager) SetDocumentStore(store DocumentStore) {
 		im.documentStore = store
 	}
 }
+
+// ErrDocumentNotFound and DocumentGetter live in domain so the premium module can
+// depend on them (internal/ is unimportable there). Aliased here because this
+// package is where the other document ports live and a reader looking for them
+// should find them, not a dead end.
+var ErrDocumentNotFound = domain.ErrDocumentNotFound
+
+// DocumentGetter is domain.DocumentGetter.
+type DocumentGetter = domain.DocumentGetter

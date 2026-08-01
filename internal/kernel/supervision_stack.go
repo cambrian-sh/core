@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	memstore "github.com/cambrian-sh/core/internal/memory/store"
 	"github.com/cambrian-sh/core/internal/supervision/aggregator"
 
@@ -39,12 +39,12 @@ func NewSupervisionStack(
 	observer domain.TelemetryObserver,
 ) *SupervisionStack {
 	agg := aggregator.New(reg, profileStore, aggregator.AggregatorConfig{
-		IntervalSeconds:     cfg.Execution.ProfileAggregatorIntervalSeconds,
-		EWMAAlpha:           cfg.Execution.EWMAAlpha,
-		LatencyWindow:       cfg.Execution.LatencyWindowSize,
-		MinVerifiedEvents:   cfg.Execution.MinVerifiedEvents,
-		TrustScoreCalWeight: cfg.Execution.TrustScoreCalWeight,
-		TrustScoreAbsWeight: cfg.Execution.TrustScoreAbsWeight,
+		IntervalSeconds:     cfg.Execution.Supervision.ProfileAggregatorIntervalSeconds,
+		EWMAAlpha:           cfg.Execution.Supervision.EWMAAlpha,
+		LatencyWindow:       cfg.Execution.Supervision.LatencyWindowSize,
+		MinVerifiedEvents:   cfg.Execution.Verification.MinVerifiedEvents,
+		TrustScoreCalWeight: cfg.Execution.Verification.TrustScoreCalWeight,
+		TrustScoreAbsWeight: cfg.Execution.Verification.TrustScoreAbsWeight,
 	})
 	agg.Observer = observer
 

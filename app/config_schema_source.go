@@ -216,15 +216,15 @@ func (c configSchemaSource) bootValue(key string) (float64, bool) {
 	e := c.cfg.Execution
 	switch key {
 	case "execution.ewma_alpha":
-		return e.EWMAAlpha, true
+		return e.Supervision.EWMAAlpha, true
 	case "execution.gatekeeper_max_candidates":
-		return float64(e.GatekeeperMaxCandidates), true
+		return float64(e.Gatekeeper.GatekeeperMaxCandidates), true
 	case "execution.memory_relevance_threshold":
-		return e.MemoryRelevanceThreshold, true
+		return e.Memory.MemoryRelevanceThreshold, true
 	case "execution.tool_retrieval_floor":
-		return e.ToolRetrievalFloor, true
+		return e.Tools.ToolRetrievalFloor, true
 	case "execution.step_timeout_multiplier":
-		return e.StepTimeoutMultiplier, true
+		return e.Plan.StepTimeoutMultiplier, true
 	}
 	return 0, false
 }

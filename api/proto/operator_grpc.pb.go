@@ -46,6 +46,7 @@ const (
 	OperatorConsole_ListSkills_FullMethodName               = "/cambrian.OperatorConsole/ListSkills"
 	OperatorConsole_QueryMemory_FullMethodName              = "/cambrian.OperatorConsole/QueryMemory"
 	OperatorConsole_ListDocuments_FullMethodName            = "/cambrian.OperatorConsole/ListDocuments"
+	OperatorConsole_GetDocument_FullMethodName              = "/cambrian.OperatorConsole/GetDocument"
 	OperatorConsole_AnswerMemory_FullMethodName             = "/cambrian.OperatorConsole/AnswerMemory"
 	OperatorConsole_SetToolPolicy_FullMethodName            = "/cambrian.OperatorConsole/SetToolPolicy"
 	OperatorConsole_ExecuteTool_FullMethodName              = "/cambrian.OperatorConsole/ExecuteTool"
@@ -174,6 +175,21 @@ type OperatorConsoleClient interface {
 	// lives on the OSS plane rather than behind access-policy. Read RPC (any
 	// authenticated role, no command_id).
 	ListDocuments(ctx context.Context, in *ListDocumentsOpRequest, opts ...grpc.CallOption) (*ListDocumentsOpResponse, error)
+	// GetDocument fetches ONE document by id, body included.
+	//
+	// The keyed read the memory lane never had. ListDocuments above is keyed but
+	// returns a listing row — "no body, no chunks" by its own contract — and
+	// QueryMemory returns the body but is RANKED. Nothing joined them, so resolving
+	// an id to its text meant searching semantically for an opaque token and hoping
+	// it ranked. That is not a retrieval-quality problem a larger top-k fixes: there
+	// is no question to rank against. It was a missing primitive.
+	//
+	// Two callers need it. A drift alert cites a message id, and a console that
+	// cannot open that message shows a citation nobody can follow. And a watch whose
+	// signal carries REFERENCES ONLY (the ingress contract) must resolve the
+	// reference to content it can read — which is the property that makes a replayed
+	// signal resolve today's document rather than a stale copy in the payload.
+	GetDocument(ctx context.Context, in *GetDocumentOpRequest, opts ...grpc.CallOption) (*GetDocumentOpResponse, error)
 	// AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
 	// composed answer with inline [n] citation markers, plus the evidence each marker
 	// resolves to. Distinct from QueryMemory's single-pass evidence lane: this is a
@@ -738,6 +754,16 @@ func (c *operatorConsoleClient) ListDocuments(ctx context.Context, in *ListDocum
 	return out, nil
 }
 
+func (c *operatorConsoleClient) GetDocument(ctx context.Context, in *GetDocumentOpRequest, opts ...grpc.CallOption) (*GetDocumentOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDocumentOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetDocument_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) AnswerMemory(ctx context.Context, in *AnswerMemoryRequest, opts ...grpc.CallOption) (*AnswerMemoryResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AnswerMemoryResponse)
@@ -1224,6 +1250,21 @@ type OperatorConsoleServer interface {
 	// lives on the OSS plane rather than behind access-policy. Read RPC (any
 	// authenticated role, no command_id).
 	ListDocuments(context.Context, *ListDocumentsOpRequest) (*ListDocumentsOpResponse, error)
+	// GetDocument fetches ONE document by id, body included.
+	//
+	// The keyed read the memory lane never had. ListDocuments above is keyed but
+	// returns a listing row — "no body, no chunks" by its own contract — and
+	// QueryMemory returns the body but is RANKED. Nothing joined them, so resolving
+	// an id to its text meant searching semantically for an opaque token and hoping
+	// it ranked. That is not a retrieval-quality problem a larger top-k fixes: there
+	// is no question to rank against. It was a missing primitive.
+	//
+	// Two callers need it. A drift alert cites a message id, and a console that
+	// cannot open that message shows a citation nobody can follow. And a watch whose
+	// signal carries REFERENCES ONLY (the ingress contract) must resolve the
+	// reference to content it can read — which is the property that makes a replayed
+	// signal resolve today's document rather than a stale copy in the payload.
+	GetDocument(context.Context, *GetDocumentOpRequest) (*GetDocumentOpResponse, error)
 	// AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
 	// composed answer with inline [n] citation markers, plus the evidence each marker
 	// resolves to. Distinct from QueryMemory's single-pass evidence lane: this is a
@@ -1589,6 +1630,9 @@ func (UnimplementedOperatorConsoleServer) QueryMemory(context.Context, *QueryMem
 }
 func (UnimplementedOperatorConsoleServer) ListDocuments(context.Context, *ListDocumentsOpRequest) (*ListDocumentsOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListDocuments not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetDocument(context.Context, *GetDocumentOpRequest) (*GetDocumentOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDocument not implemented")
 }
 func (UnimplementedOperatorConsoleServer) AnswerMemory(context.Context, *AnswerMemoryRequest) (*AnswerMemoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AnswerMemory not implemented")
@@ -2200,6 +2244,24 @@ func _OperatorConsole_ListDocuments_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OperatorConsoleServer).ListDocuments(ctx, req.(*ListDocumentsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetDocument_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDocumentOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetDocument(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetDocument_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetDocument(ctx, req.(*GetDocumentOpRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2984,6 +3046,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListDocuments",
 			Handler:    _OperatorConsole_ListDocuments_Handler,
+		},
+		{
+			MethodName: "GetDocument",
+			Handler:    _OperatorConsole_GetDocument_Handler,
 		},
 		{
 			MethodName: "AnswerMemory",

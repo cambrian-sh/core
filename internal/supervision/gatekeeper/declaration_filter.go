@@ -13,6 +13,7 @@ import "github.com/cambrian-sh/core/domain"
 //   - If manifest is nil → passes unconditionally (Provisional).
 //   - If manifest is empty (no tools, no formats) → passes unconditionally.
 //   - Every entry in task.RequiredFormats must appear in manifest.SupportedFormats.
+//
 // The canonical flag (ROUTE-04 / ADR-0067) applies deterministic capability
 // normalization to BOTH sides of the subset check, so format/typo variance
 // (`Web-Navigation` ≡ `web_navigation`) matches. It is byte-identical to the

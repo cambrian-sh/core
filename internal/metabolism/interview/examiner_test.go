@@ -37,7 +37,9 @@ func (f fakeJudge) Grade(_ context.Context, _, _, answer string) (domain.VerifyR
 	return domain.VerifyResponse{QualityScore: float32(f.scores[answer]), Critique: "ok"}, nil
 }
 
-func agentDef() domain.AgentDefinition { return domain.AgentDefinition{ID: "a1", Description: "does things"} }
+func agentDef() domain.AgentDefinition {
+	return domain.AgentDefinition{ID: "a1", Description: "does things"}
+}
 
 // The examiner runs every question, grades each answer, and reports the MEAN —
 // the cold-start prior. Answers preserve order alongside their questions.

@@ -64,28 +64,6 @@ func TestCircuitBreaker_SlidingWindowExpiresOldSignals(t *testing.T) {
 	}
 }
 
-// ── GenerateAuthToken ─────────────────────────────────────────────────────────
-
-// Cycle 5 — GenerateAuthToken returns a non-empty hex string.
-func TestGenerateAuthToken_NonEmpty(t *testing.T) {
-	tok, err := signal.GenerateAuthToken()
-	if err != nil {
-		t.Fatalf("GenerateAuthToken: %v", err)
-	}
-	if len(tok) < 16 {
-		t.Errorf("token too short: %q (len %d)", tok, len(tok))
-	}
-}
-
-// Cycle 6 — Two calls return different tokens (uniqueness).
-func TestGenerateAuthToken_Unique(t *testing.T) {
-	a, _ := signal.GenerateAuthToken()
-	b, _ := signal.GenerateAuthToken()
-	if a == b {
-		t.Error("GenerateAuthToken: two tokens should not be equal")
-	}
-}
-
 // ── ValidateToken ─────────────────────────────────────────────────────────────
 
 type noopManager struct{}

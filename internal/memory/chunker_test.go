@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 func testDoc(body string) domain.ExternalDocument {
@@ -20,10 +21,19 @@ func testDoc(body string) domain.ExternalDocument {
 	}
 }
 
+// chunkOptionC is what the deleted ChunkDocument back-compat shim did: delegate
+// straight to OptionCChunker. The shim was removed (it had no in-tree callers and
+// told readers to use the registry instead), but the behavioural coverage below is
+// worth keeping, so it survives as a test helper.
+func chunkOptionC(doc domain.ExternalDocument) []domain.Chunk {
+	chunks, _ := OptionCChunker{}.Chunk(context.Background(), &doc)
+	return chunks
+}
+
 // Cycle 1 — tracer bullet: two paragraphs produce two chunks.
-func TestChunkDocument_TwoParagraphs_TwoChunks(t *testing.T) {
+func TestOptionCChunker_TwoParagraphs_TwoChunks(t *testing.T) {
 	doc := testDoc("First paragraph.\n\nSecond paragraph.")
-	chunks := ChunkDocument(doc)
+	chunks := chunkOptionC(doc)
 	if len(chunks) != 2 {
 		t.Fatalf("expected 2 chunks, got %d", len(chunks))
 	}
@@ -36,9 +46,9 @@ func TestChunkDocument_TwoParagraphs_TwoChunks(t *testing.T) {
 }
 
 // Cycle 2 — body with no paragraph separator produces one chunk.
-func TestChunkDocument_NoParagraphBreak_OneChunk(t *testing.T) {
+func TestOptionCChunker_NoParagraphBreak_OneChunk(t *testing.T) {
 	doc := testDoc("Single paragraph with no double newline.")
-	chunks := ChunkDocument(doc)
+	chunks := chunkOptionC(doc)
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
@@ -48,7 +58,7 @@ func TestChunkDocument_NoParagraphBreak_OneChunk(t *testing.T) {
 }
 
 // Cycle 3 — paragraph exceeding maxChunkChars is split at sentence boundaries.
-func TestChunkDocument_LongParagraph_SentenceSplit(t *testing.T) {
+func TestOptionCChunker_LongParagraph_SentenceSplit(t *testing.T) {
 	// Build a paragraph longer than 1000 chars using short sentences.
 	var sb strings.Builder
 	for sb.Len() < 1100 {
@@ -57,7 +67,7 @@ func TestChunkDocument_LongParagraph_SentenceSplit(t *testing.T) {
 	longPara := strings.TrimSpace(sb.String())
 
 	doc := testDoc(longPara)
-	chunks := ChunkDocument(doc)
+	chunks := chunkOptionC(doc)
 	if len(chunks) < 2 {
 		t.Fatalf("expected multiple sentence chunks from long paragraph, got %d", len(chunks))
 	}
@@ -69,9 +79,9 @@ func TestChunkDocument_LongParagraph_SentenceSplit(t *testing.T) {
 }
 
 // Cycle 4 — every chunk carries the required provenance metadata.
-func TestChunkDocument_MetadataPropagated(t *testing.T) {
+func TestOptionCChunker_MetadataPropagated(t *testing.T) {
 	doc := testDoc("Para one.\n\nPara two.")
-	chunks := ChunkDocument(doc)
+	chunks := chunkOptionC(doc)
 	if len(chunks) != 2 {
 		t.Fatalf("expected 2 chunks, got %d", len(chunks))
 	}
@@ -140,20 +150,17 @@ func TestBuildBodyPreview_NoSeparator_FallbackTruncation(t *testing.T) {
 	}
 }
 
-// Cycle 8 (T-1.12) — the T-1.4 refactor moved the legacy ChunkDocument
-// body into OptionCChunker. ChunkDocument is now a shim that calls
-// OptionCChunker.Chunk(ctx, &doc). The registry routes any (sourceType,
-// ext) without a matching route to the configured default chunker, and
-// the spec default is "option_c". This test pins the equivalence: the
-// legacy ChunkDocument output must equal the registry-resolved
-// OptionCChunker output, element-wise on Body and on the six required
-// metadata keys. If anyone changes OptionC's behavior (e.g. adds a new
-// metadata key, drops a key, changes the chunk boundary logic), this
-// test fails — the regression bar for T-1.4 / T-1.8 / T-1.12.
-func TestChunkRegistry_OptionC_MatchesChunkDocument(t *testing.T) {
+// The registry routes any (sourceType, ext) without a matching route to the
+// configured default chunker, and the spec default is "option_c". This test pins
+// that equivalence: resolving through the registry must produce exactly what
+// calling OptionCChunker directly produces, element-wise on Body and on the six
+// required metadata keys. If anyone changes OptionC's behaviour (adds a metadata
+// key, drops one, moves a chunk boundary), this fails — the regression bar for
+// T-1.4 / T-1.8 / T-1.12.
+func TestChunkRegistry_DefaultResolvesToOptionC(t *testing.T) {
 	doc := testDoc("First paragraph.\n\nSecond paragraph.")
 
-	reg, err := NewRegistry(defaultChunkers(), ChunkerConfig{Default: "option_c"})
+	reg, err := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
@@ -171,7 +178,7 @@ func TestChunkRegistry_OptionC_MatchesChunkDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chunker.Chunk: %v", err)
 	}
-	oldChunks := ChunkDocument(doc)
+	oldChunks := chunkOptionC(doc)
 
 	if len(newChunks) != len(oldChunks) {
 		t.Fatalf("chunk count: new=%d old=%d", len(newChunks), len(oldChunks))

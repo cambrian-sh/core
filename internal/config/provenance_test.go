@@ -42,7 +42,7 @@ func TestProvenance_DefaultsAttributedToDefault(t *testing.T) {
 	dir := baseBundle(t)
 	_, prov := loadFrom(t, dir, nil)
 
-	if got := prov.Source("execution.ewma_alpha"); got != SourceDefault {
+	if got := prov.Source("execution.supervision.ewma_alpha"); got != SourceDefault {
 		t.Fatalf("ewma_alpha source = %q, want %q", got, SourceDefault)
 	}
 	// The key the test bundle DID set must not be attributed to defaults.
@@ -62,10 +62,10 @@ func TestProvenance_HighestLayerWins(t *testing.T) {
 
 	cfg, prov := loadFrom(t, dir, nil)
 
-	if cfg.Execution.EWMAAlpha != 0.9 {
-		t.Fatalf("EWMAAlpha = %v, want 0.9", cfg.Execution.EWMAAlpha)
+	if cfg.Execution.Supervision.EWMAAlpha != 0.9 {
+		t.Fatalf("EWMAAlpha = %v, want 0.9", cfg.Execution.Supervision.EWMAAlpha)
 	}
-	if got := prov.Source("execution.ewma_alpha"); got != SourceTuningLocal {
+	if got := prov.Source("execution.supervision.ewma_alpha"); got != SourceTuningLocal {
 		t.Fatalf("source = %q, want %q", got, SourceTuningLocal)
 	}
 }
@@ -84,7 +84,7 @@ func TestProvenance_HighestStatingLayerOwnsEvenWhenValuesMatch(t *testing.T) {
 
 	_, prov := loadFrom(t, dir, nil)
 
-	if got := prov.Source("execution.ewma_alpha"); got != SourceTuningLocal {
+	if got := prov.Source("execution.supervision.ewma_alpha"); got != SourceTuningLocal {
 		t.Fatalf("source = %q, want %q (the highest layer stating the key)", got, SourceTuningLocal)
 	}
 }
@@ -97,11 +97,11 @@ func TestProvenance_FileRestatingADefaultStillOwnsIt(t *testing.T) {
 	dir := baseBundle(t)
 	def := DefaultConfig()
 	writeCfg(t, dir, "tuning.json", `{"execution": {"ewma_alpha": `+
-		formatFloat(def.Execution.EWMAAlpha)+`}}`)
+		formatFloat(def.Execution.Supervision.EWMAAlpha)+`}}`)
 
 	_, prov := loadFrom(t, dir, nil)
 
-	if got := prov.Source("execution.ewma_alpha"); got != SourceTuning {
+	if got := prov.Source("execution.supervision.ewma_alpha"); got != SourceTuning {
 		t.Fatalf("source = %q, want %q — a file pinning a default still owns the key", got, SourceTuning)
 	}
 }
@@ -114,10 +114,10 @@ func TestProvenance_SilentLayerClaimsNothing(t *testing.T) {
 
 	_, prov := loadFrom(t, dir, nil)
 
-	if got := prov.Source("execution.ewma_alpha"); got != SourceTuning {
+	if got := prov.Source("execution.supervision.ewma_alpha"); got != SourceTuning {
 		t.Fatalf("source = %q, want %q — tuning.local.json never mentions this key", got, SourceTuning)
 	}
-	if got := prov.Source("execution.latency_window_size"); got != SourceTuningLocal {
+	if got := prov.Source("execution.supervision.latency_window_size"); got != SourceTuningLocal {
 		t.Fatalf("source = %q, want %q", got, SourceTuningLocal)
 	}
 }
@@ -129,15 +129,15 @@ func TestProvenance_EnvNamesItsVariable(t *testing.T) {
 
 	cfg, prov := loadFrom(t, dir, nil)
 
-	if cfg.Execution.EWMAAlpha != 0.77 {
-		t.Fatalf("EWMAAlpha = %v, want 0.77", cfg.Execution.EWMAAlpha)
+	if cfg.Execution.Supervision.EWMAAlpha != 0.77 {
+		t.Fatalf("EWMAAlpha = %v, want 0.77", cfg.Execution.Supervision.EWMAAlpha)
 	}
 	want := EnvSource("CAMBRIAN_EXECUTION__EWMA_ALPHA")
-	if got := prov.Source("execution.ewma_alpha"); got != want {
+	if got := prov.Source("execution.supervision.ewma_alpha"); got != want {
 		t.Fatalf("source = %q, want %q", got, want)
 	}
 	// PinnedAbove is what the write path calls to warn at save time (D3).
-	if got := prov.PinnedAbove("execution.ewma_alpha"); got != want {
+	if got := prov.PinnedAbove("execution.supervision.ewma_alpha"); got != want {
 		t.Fatalf("PinnedAbove = %q, want %q", got, want)
 	}
 }
@@ -148,7 +148,7 @@ func TestProvenance_PinnedAboveIsEmptyForUnpinnedKey(t *testing.T) {
 	dir := baseBundle(t)
 	_, prov := loadFrom(t, dir, nil)
 
-	if got := prov.PinnedAbove("execution.ewma_alpha"); got != "" {
+	if got := prov.PinnedAbove("execution.supervision.ewma_alpha"); got != "" {
 		t.Fatalf("PinnedAbove = %q, want \"\"", got)
 	}
 	if got := prov.PinnedAbove("no.such.key"); got != "" {
@@ -171,12 +171,12 @@ func TestStoreLayer_BeatsFiles(t *testing.T) {
 	writeCfg(t, dir, "tuning.json", `{"execution": {"ewma_alpha": 0.5}}`)
 	writeCfg(t, dir, "tuning.local.json", `{"execution": {"ewma_alpha": 0.6}}`)
 
-	cfg, prov := loadFrom(t, dir, mapStore{"execution.ewma_alpha": 0.8})
+	cfg, prov := loadFrom(t, dir, mapStore{"execution.supervision.ewma_alpha": 0.8})
 
-	if cfg.Execution.EWMAAlpha != 0.8 {
-		t.Fatalf("EWMAAlpha = %v, want 0.8 (store outranks every file)", cfg.Execution.EWMAAlpha)
+	if cfg.Execution.Supervision.EWMAAlpha != 0.8 {
+		t.Fatalf("EWMAAlpha = %v, want 0.8 (store outranks every file)", cfg.Execution.Supervision.EWMAAlpha)
 	}
-	if got := prov.Source("execution.ewma_alpha"); got != SourceStore {
+	if got := prov.Source("execution.supervision.ewma_alpha"); got != SourceStore {
 		t.Fatalf("source = %q, want %q", got, SourceStore)
 	}
 }
@@ -188,13 +188,13 @@ func TestStoreLayer_EnvStillWins(t *testing.T) {
 	dir := baseBundle(t)
 	t.Setenv("CAMBRIAN_EXECUTION__EWMA_ALPHA", "0.99")
 
-	cfg, prov := loadFrom(t, dir, mapStore{"execution.ewma_alpha": 0.8})
+	cfg, prov := loadFrom(t, dir, mapStore{"execution.supervision.ewma_alpha": 0.8})
 
-	if cfg.Execution.EWMAAlpha != 0.99 {
-		t.Fatalf("EWMAAlpha = %v, want 0.99 (env outranks the store)", cfg.Execution.EWMAAlpha)
+	if cfg.Execution.Supervision.EWMAAlpha != 0.99 {
+		t.Fatalf("EWMAAlpha = %v, want 0.99 (env outranks the store)", cfg.Execution.Supervision.EWMAAlpha)
 	}
 	want := EnvSource("CAMBRIAN_EXECUTION__EWMA_ALPHA")
-	if got := prov.PinnedAbove("execution.ewma_alpha"); got != want {
+	if got := prov.PinnedAbove("execution.supervision.ewma_alpha"); got != want {
 		t.Fatalf("PinnedAbove = %q, want %q — the operator must be told at write time", got, want)
 	}
 }
@@ -206,10 +206,10 @@ func TestStoreLayer_NilStoreIsThePreviousPipeline(t *testing.T) {
 
 	cfg, prov := loadFrom(t, dir, nil)
 
-	if cfg.Execution.EWMAAlpha != 0.5 {
-		t.Fatalf("EWMAAlpha = %v, want 0.5", cfg.Execution.EWMAAlpha)
+	if cfg.Execution.Supervision.EWMAAlpha != 0.5 {
+		t.Fatalf("EWMAAlpha = %v, want 0.5", cfg.Execution.Supervision.EWMAAlpha)
 	}
-	if got := prov.Source("execution.ewma_alpha"); got != SourceTuning {
+	if got := prov.Source("execution.supervision.ewma_alpha"); got != SourceTuning {
 		t.Fatalf("source = %q, want %q — no store layer should appear", got, SourceTuning)
 	}
 }
@@ -220,7 +220,7 @@ func TestStoreLayer_EmptyStoreClaimsNothing(t *testing.T) {
 	dir := baseBundle(t)
 	_, prov := loadFrom(t, dir, mapStore{})
 
-	if got := prov.Source("execution.ewma_alpha"); got != SourceDefault {
+	if got := prov.Source("execution.supervision.ewma_alpha"); got != SourceDefault {
 		t.Fatalf("source = %q, want %q", got, SourceDefault)
 	}
 }

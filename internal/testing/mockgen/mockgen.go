@@ -6,48 +6,48 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // Scenario defines the distributions for synthetic TaskEvent generation.
 type Scenario struct {
-	PromptTokensMean         float64
-	PromptTokensStddev       float64
-	CompletionTokensMean     float64
-	CompletionTokensStddev   float64
-	TokenLimitPerStep        int
-	FallbackRate             float64
-	SchemaMismatchRate       float64
+	PromptTokensMean       float64
+	PromptTokensStddev     float64
+	CompletionTokensMean   float64
+	CompletionTokensStddev float64
+	TokenLimitPerStep      int
+	FallbackRate           float64
+	SchemaMismatchRate     float64
 }
 
 var Baseline = Scenario{
-	PromptTokensMean:     500, PromptTokensStddev: 100,
+	PromptTokensMean: 500, PromptTokensStddev: 100,
 	CompletionTokensMean: 800, CompletionTokensStddev: 150,
 	TokenLimitPerStep: 1024, FallbackRate: 0.02, SchemaMismatchRate: 0.01,
 }
 
 var Adversarial = Scenario{
-	PromptTokensMean:     600, PromptTokensStddev: 100,
+	PromptTokensMean: 600, PromptTokensStddev: 100,
 	CompletionTokensMean: 1200, CompletionTokensStddev: 200,
 	TokenLimitPerStep: 512, FallbackRate: 0.05, SchemaMismatchRate: 0.02,
 }
 
 var Noisy = Scenario{
-	PromptTokensMean:     500, PromptTokensStddev: 400,
-	CompletionTokensMean:  800, CompletionTokensStddev: 600,
+	PromptTokensMean: 500, PromptTokensStddev: 400,
+	CompletionTokensMean: 800, CompletionTokensStddev: 600,
 	TokenLimitPerStep: 1024, FallbackRate: 0.03, SchemaMismatchRate: 0.02,
 }
 
 var ColdStart = Scenario{
-	PromptTokensMean:     300, PromptTokensStddev: 80,
-	CompletionTokensMean:  400, CompletionTokensStddev: 100,
+	PromptTokensMean: 300, PromptTokensStddev: 80,
+	CompletionTokensMean: 400, CompletionTokensStddev: 100,
 	TokenLimitPerStep: 768, FallbackRate: 0.15, SchemaMismatchRate: 0.05,
 }
 
 var BudgetCrisis = Scenario{
-	PromptTokensMean:     400, PromptTokensStddev: 80,
-	CompletionTokensMean:  400, CompletionTokensStddev: 60,
+	PromptTokensMean: 400, PromptTokensStddev: 80,
+	CompletionTokensMean: 400, CompletionTokensStddev: 60,
 	TokenLimitPerStep: 300, FallbackRate: 0.02, SchemaMismatchRate: 0.01,
 }
 
@@ -70,8 +70,8 @@ func GenerateTelemetryCorpus(n int, scenario Scenario, cfg *config.ExecutionConf
 	baseTime := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 
 	limit := scenario.TokenLimitPerStep
-	if cfg != nil && cfg.MinStepEnergy > 0 {
-		limit = cfg.MinStepEnergy
+	if cfg != nil && cfg.Plan.MinStepEnergy > 0 {
+		limit = cfg.Plan.MinStepEnergy
 	}
 
 	for i := 0; i < n; i++ {
@@ -100,7 +100,7 @@ func GenerateTelemetryCorpus(n int, scenario Scenario, cfg *config.ExecutionConf
 			BudgetOverrun:        completionTokens > effLimit,
 			FallbackModelUsed:    rng.Float64() < scenario.FallbackRate,
 			ActualModelID:        "model-001",
-			Timestamp:             baseTime.Add(time.Duration(i) * time.Second),
+			Timestamp:            baseTime.Add(time.Duration(i) * time.Second),
 		})
 	}
 	return events

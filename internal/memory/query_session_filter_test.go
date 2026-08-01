@@ -54,7 +54,7 @@ func TestQuerySearch_ExcludesSameSessionStepRecords(t *testing.T) {
 		{ID: "remembered", Metadata: map[string]interface{}{"source_agent": "analyst", "session_id": "s1"}}, // KEEP
 		{ID: "fact", Text: "a plain fact"}, // KEEP
 	}}
-	qs := NewQueryService(&fakeEmbedder{}, store)
+	qs := NewQueryService(&fakeEmbedder{}, store, nil)
 	ctx := domain.WithSessionID(context.Background(), "s1")
 
 	got, err := qs.Search(ctx, "query", "analyst")
@@ -86,7 +86,7 @@ func TestQuerySearch_IsolationKeepsUnownedCorpus(t *testing.T) {
 		{ID: "corpus-2", Text: "another plain fact"},
 		stepRec("theirs", "s2"),
 	}}
-	qs := NewQueryService(&fakeEmbedder{}, store)
+	qs := NewQueryService(&fakeEmbedder{}, store, nil)
 	got, err := qs.Search(domain.WithSessionID(context.Background(), "s1"), "query", "analyst")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -113,7 +113,7 @@ func TestQuerySearch_NoSessionMeansNoNarrowing(t *testing.T) {
 		stepRec("b", "s2"),
 		{ID: "corpus", Text: "a plain fact"},
 	}}
-	qs := NewQueryService(&fakeEmbedder{}, store)
+	qs := NewQueryService(&fakeEmbedder{}, store, nil)
 	got, err := qs.Search(context.Background(), "query", "analyst")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -129,7 +129,7 @@ func TestQuerySearch_TruncatesToTopK(t *testing.T) {
 	for i := 0; i < 15; i++ {
 		docs = append(docs, domain.Document{ID: fmt.Sprintf("f%d", i), Text: "fact"})
 	}
-	qs := NewQueryService(&fakeEmbedder{}, &scopeApplyingStore{docs: docs})
+	qs := NewQueryService(&fakeEmbedder{}, &scopeApplyingStore{docs: docs}, nil)
 	got, err := qs.Search(context.Background(), "q", "agent")
 	if err != nil {
 		t.Fatalf("Search: %v", err)

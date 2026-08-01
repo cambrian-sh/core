@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -134,4 +135,39 @@ type VectorStore interface {
 	// pairs in filter (PostgreSQL @> containment). Results ordered by created_at ASC.
 	// limit == 0 returns all matching documents. ADR-0033.
 	QueryByMetadata(ctx context.Context, filter map[string]string, limit int) ([]Document, error)
+}
+
+// ErrDocumentNotFound is returned when no document carries the given id.
+//
+// A distinct sentinel rather than a zero value: "this id does not exist" and
+// "this document is empty" are different answers, and a caller resolving a
+// citation must be able to tell a dangling reference from a blank one.
+var ErrDocumentNotFound = errors.New("document not found")
+
+// DocumentGetter fetches ONE document by id, body included.
+//
+// Declared in domain rather than internal/memory because a PLUGIN needs it: a
+// watch action whose signal carries references only (the ingress contract) has to
+// resolve that reference to content it can read, and internal/ is unimportable
+// from the premium module. The port belongs where its consumers can reach it.
+//
+// This is the primitive the memory lane was missing. Keyed reads returned no body
+// (ListDocuments is "no body, no chunks" by contract) and the lane that had bodies
+// was ranked, so resolving an id meant searching semantically for an opaque token.
+// A plain notebook does this for free; it is a dictionary lookup.
+type DocumentGetter interface {
+	// GetDocument returns the document, or ErrDocumentNotFound when no document
+	// carries the id OR this principal cannot read it.
+	//
+	// It takes a PRINCIPAL, never a predicate. A by-id read returns the BODY and
+	// ids travel freely — an alert cites one, a console links one, a signal payload
+	// carries one — so an unscoped variant is a way to read a restricted document
+	// out of the reference to it, which is the laundering the alert log is scoped
+	// to prevent. A caller that could pass its own predicate would be choosing its
+	// own access scope, which is a bypass rather than an extension point.
+	//
+	// Unreadable is reported as ErrDocumentNotFound, identical to absent.
+	// Distinguishing them confirms the document exists, which is the disclosure the
+	// predicate is there to withhold.
+	GetDocument(ctx context.Context, principal PrincipalRef, id string) (Document, error)
 }

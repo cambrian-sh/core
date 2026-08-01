@@ -309,8 +309,8 @@ func TestSetConfig_SurvivesIntoTheNextConfigLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second load: %v", err)
 	}
-	if cfg2.Execution.EWMAAlpha != 0.73 {
-		t.Fatalf("EWMAAlpha after restart = %v, want 0.73", cfg2.Execution.EWMAAlpha)
+	if cfg2.Execution.Supervision.EWMAAlpha != 0.73 {
+		t.Fatalf("EWMAAlpha after restart = %v, want 0.73", cfg2.Execution.Supervision.EWMAAlpha)
 	}
 	if got := prov2.Source("execution.ewma_alpha"); got != config.SourceStore {
 		t.Fatalf("value_source = %q, want %q", got, config.SourceStore)

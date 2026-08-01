@@ -34,8 +34,8 @@ func New(cfg Config) *SystemHarness {
 		Registry:  NewHarnessRegistry(),
 		Observer:  &CapturingTelemetryObserver{},
 		ExecCfg: config.ExecutionConfig{
-			PlanTimeoutMs:        120000,
-			MinAuctionConfidence: 0.3,
+			Plan:       config.PlanConfig{PlanTimeoutMs: 120000},
+			Gatekeeper: config.GatekeeperConfig{MinAuctionConfidence: 0.3},
 		},
 	}
 }

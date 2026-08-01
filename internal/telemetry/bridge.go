@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -91,6 +91,6 @@ func (b *Bridge) OnSchemaMismatch(agentID, kind string) {
 		))
 }
 
-func (b *Bridge) OnPlanCompleted(_ domain.PlanEvent)     {}
-func (b *Bridge) OnRetrievalCompleted(_ domain.RetrievalSession) {}
+func (b *Bridge) OnPlanCompleted(_ domain.PlanEvent)                       {}
+func (b *Bridge) OnRetrievalCompleted(_ domain.RetrievalSession)           {}
 func (b *Bridge) OnContradictionResolved(_ domain.ContradictionResolution) {}

@@ -23,7 +23,7 @@ func (f *fakeSpreader) Spread(_ context.Context, seeds []domain.SearchResult) []
 func TestQuerySearch_SpreadingExpandsAndRanks(t *testing.T) {
 	qs := NewQueryService(&fakeEmbedder{}, &scopeApplyingStore{docs: []domain.Document{
 		{ID: "seed", Text: "seed fact"},
-	}})
+	}}, nil)
 	qs.EnableSpreading(&fakeSpreader{extra: []domain.GraphNodeExpansion{
 		{Document: domain.Document{ID: "linked", Text: "graph-linked fact"}, ActivationEnergy: 0.9},
 	}})
@@ -46,7 +46,7 @@ func TestQuerySearch_SpreadingExpandsAndRanks(t *testing.T) {
 
 // Without EnableSpreading, recall is a flat top-k (no expansion).
 func TestQuerySearch_SpreadingDisabledIsFlatTopK(t *testing.T) {
-	qs := NewQueryService(&fakeEmbedder{}, &scopeApplyingStore{docs: []domain.Document{{ID: "seed"}}})
+	qs := NewQueryService(&fakeEmbedder{}, &scopeApplyingStore{docs: []domain.Document{{ID: "seed"}}}, nil)
 	got, err := qs.Search(context.Background(), "q", "agent")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -58,7 +58,7 @@ func TestQuerySearch_SpreadingDisabledIsFlatTopK(t *testing.T) {
 
 // Spreading still excludes the current session's own step records (D1 ∩ D2).
 func TestQuerySearch_SpreadingExcludesSameSessionStepRecords(t *testing.T) {
-	qs := NewQueryService(&fakeEmbedder{}, &scopeApplyingStore{docs: []domain.Document{{ID: "seed"}}})
+	qs := NewQueryService(&fakeEmbedder{}, &scopeApplyingStore{docs: []domain.Document{{ID: "seed"}}}, nil)
 	qs.EnableSpreading(&fakeSpreader{extra: []domain.GraphNodeExpansion{
 		{Document: stepRec("own", "s1"), ActivationEnergy: 0.99}, // same-session step record
 	}})

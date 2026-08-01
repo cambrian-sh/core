@@ -12,8 +12,8 @@ import (
 // results (independent or upstream steps) are preserved — never a restart.
 func TestForwardOnlyReplanScope(t *testing.T) {
 	steps := []domain.Step{
-		{Query: "retrieve"},                      // 0
-		{Query: "analyze", DependsOn: []int{0}},  // 1  <- fails
+		{Query: "retrieve"},                       // 0
+		{Query: "analyze", DependsOn: []int{0}},   // 1  <- fails
 		{Query: "summarize", DependsOn: []int{1}}, // 2  depends on 1 (downstream)
 		{Query: "sidebar", DependsOn: []int{0}},   // 3  independent of 1 (preserved)
 	}

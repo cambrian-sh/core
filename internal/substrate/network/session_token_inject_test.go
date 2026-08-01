@@ -78,9 +78,11 @@ func (a *capturingAuctioneer) CallAgent(ctx context.Context, agentID string, h *
 
 func tokenTestExecCfg() config.ExecutionConfig {
 	return config.ExecutionConfig{
-		PlanTimeoutMs:           30000,
-		StepTimeoutBaseBufferMs: 5000,
-		StepTimeoutMultiplier:   2.0,
+		Plan: config.PlanConfig{
+			PlanTimeoutMs:           30000,
+			StepTimeoutBaseBufferMs: 5000,
+			StepTimeoutMultiplier:   2.0,
+		},
 	}
 }
 

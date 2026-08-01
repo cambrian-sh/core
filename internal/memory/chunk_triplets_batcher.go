@@ -11,6 +11,18 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
+// streamingGenerator is the optional streaming capability a Generator may
+// implement. The batcher prefers it over Generate because streaming responses
+// are NOT subject to http.Client.Timeout (the streaming client omits the timeout
+// so a slow reasoning model can stream its body without being killed
+// mid-response). The fallback Generate is fine for test fakes and local Ollama.
+//
+// Moved here from edge_extractor.go, which was deleted with the ADR-0052 edge
+// lane; this batcher is now its only implementer-facing consumer.
+type streamingGenerator interface {
+	GenerateStream(ctx context.Context, prompt string) (<-chan domain.StreamChunk, error)
+}
+
 // ChunkTripletsBatcher batches the LLM-based per-chunk (h, r, t) extraction
 // that back-fills the chunk_triplets table (ADR-0053 Phase 0). Without
 // batching, every chunk makes one LLM call (1-2s); with batching, a single

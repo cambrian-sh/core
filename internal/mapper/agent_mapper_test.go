@@ -163,7 +163,7 @@ func TestTaskEventRoundTrip(t *testing.T) {
 		BidConfidence:        0.85,
 		VerifierScore:        0.92,
 		NetworkLatencyMs:     45,
-		ComputationLatencyMs:  120,
+		ComputationLatencyMs: 120,
 		ContextGrowthBytes:   1024,
 		Timestamp:            now,
 		Verified:             true,
@@ -253,8 +253,8 @@ func TestArtifactRoundTrip(t *testing.T) {
 // TestArtifactRoundTrip_NilMetadata verifies nil Metadata produces empty map.
 func TestArtifactRoundTrip_NilMetadata(t *testing.T) {
 	original := domain.Artifact{
-		Hash:      "hash-1",
-		Metadata:  nil,
+		Hash:     "hash-1",
+		Metadata: nil,
 	}
 	var m AgentMapper
 	rec := m.ArtifactToRecord(original)

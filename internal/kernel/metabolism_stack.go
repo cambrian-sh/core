@@ -71,10 +71,10 @@ func NewMetabolismStack(
 	manager := agentmgr.NewAgentManager(reg, cfg.Metabolism.PythonExecutable, "localhost:"+cfg.Server.Port, memoryAgent)
 	// SEC-01: spawned agents get a deny-by-default environment (OS essentials +
 	// the operator's non-secret passthrough); the kernel's API keys never leak.
-	manager.SetEnvPassthrough(cfg.Execution.AgentEnvPassthrough)
+	manager.SetEnvPassthrough(cfg.Execution.Agents.AgentEnvPassthrough)
 	// SEC-01: cap agent memory (0 = disabled) so a runaway agent is killed at its
 	// cap instead of OOMing the kernel host.
-	manager.SetAgentMemoryLimitMB(cfg.Execution.AgentMemoryLimitMB)
+	manager.SetAgentMemoryLimitMB(cfg.Execution.Agents.AgentMemoryLimitMB)
 	// Wire default model pricing for token cost estimation. ADR-0042: the default
 	// generator's cost is the single source of truth (was cfg.Models[0]).
 	if def := cfg.LLMProvider.DefaultGenerator(); def != nil {
@@ -93,19 +93,19 @@ func NewMetabolismStack(
 
 	auctioneer := metauc.New(manager, gatekeeper, cfg.Execution)
 	auctioneer.Profiles = profileStore
-	auctioneer.ExplorationRate = cfg.Execution.ExplorationRate
+	auctioneer.ExplorationRate = cfg.Execution.Routing.ExplorationRate
 	auctioneer.Observer = observer
 	auctioneer.Boots = manager // ADR-0100 P2: cold starts attributable to the bid round
 
 	iWorker.Requester = auctioneer
 	iWorker.EventWriter = reg
 
-	vPool := verify.NewVerifierPool(reg, profileStore, cfg.Execution.VerifierPoolThreshold, cfg.Execution.VerifierRecencyWindow)
+	vPool := verify.NewVerifierPool(reg, profileStore, cfg.Execution.Verification.VerifierPoolThreshold, cfg.Execution.Verification.VerifierRecencyWindow)
 	vWorker := verify.NewVerificationWorker(vPool, auctioneer, reg, profileStore, profileStore, embedder, verify.VerificationWorkerConfig{
-		TrustBoostThreshold:   cfg.Execution.TrustBoostThreshold,
-		QueueCapacity:         cfg.Execution.VerificationQueueCapacity,
-		CrossVerifyRate:       cfg.Execution.CrossVerifyRate,
-		VerifierRecencyWindow: cfg.Execution.VerifierRecencyWindow,
+		TrustBoostThreshold:   cfg.Execution.Verification.TrustBoostThreshold,
+		QueueCapacity:         cfg.Execution.Verification.VerificationQueueCapacity,
+		CrossVerifyRate:       cfg.Execution.Verification.CrossVerifyRate,
+		VerifierRecencyWindow: cfg.Execution.Verification.VerifierRecencyWindow,
 	})
 
 	// ADR-0037 interview grading: an LLM generates questions, the agent answers
@@ -117,7 +117,7 @@ func NewMetabolismStack(
 	// DisableInterviews (benchmark/eval-only) skips the graded LLM interview so
 	// the planner is not starved for LLM throughput; agents keep the neutral
 	// cold-start prior. Manifest capabilities (L1 + planner vocab) are unaffected.
-	if interviewGen != nil && !cfg.Execution.DisableInterviews {
+	if interviewGen != nil && !cfg.Execution.Agents.DisableInterviews {
 		iRunner = &scenarioRunner{caller: auctioneer}
 		iWorker.Examiner = &interview.Examiner{
 			Questions: interview.LLMQuestionGenerator{Gen: interviewGen},
@@ -135,7 +135,7 @@ func NewMetabolismStack(
 	// unless execution.bid_round explicitly asks for the legacy auction.
 	var selector domain.Auctioneer = auctioneer
 	var dispatcher *dispatch.Dispatcher
-	if !cfg.Execution.BidRound {
+	if !cfg.Execution.Routing.BidRound {
 		dispatcher = &dispatch.Dispatcher{
 			Gatekeeper:      gatekeeper,
 			Caller:          auctioneer, // shared pool; moves in-package at ADR-0100 P3
@@ -144,7 +144,7 @@ func NewMetabolismStack(
 			Boots:           manager, // ADR-0100 P2
 			ExecCfg:         cfg.Execution,
 			Observer:        observer,
-			ExplorationRate: cfg.Execution.ExplorationRate,
+			ExplorationRate: cfg.Execution.Routing.ExplorationRate,
 		}
 		selector = dispatcher
 	}
@@ -152,16 +152,16 @@ func NewMetabolismStack(
 	// compares two arms chosen by config, and a run whose arm cannot be identified
 	// from its own logs is not evidence. Note EFE (resource_selector="efe")
 	// short-circuits BEFORE this selector, so under EFE neither arm runs.
-	if cfg.Execution.BidRound {
+	if cfg.Execution.Routing.BidRound {
 		slog.Warn("ADR-0100: selection mechanism = AUCTION (execution.bid_round=true) — the legacy arm; every candidate is booted to solicit a bid",
-			"capability_contract", cfg.Execution.CapabilityContract,
-			"resource_selector", cfg.Execution.ResourceSelector)
+			"capability_contract", cfg.Execution.Routing.CapabilityContract,
+			"resource_selector", cfg.Execution.Routing.ResourceSelector)
 	} else {
 		slog.Info("ADR-0100: selection mechanism = DISPATCH (capability-typed; zero RPCs, only the winner is booted)",
-			"capability_contract", cfg.Execution.CapabilityContract,
-			"capability_resolution", cfg.Execution.CapabilityResolution,
-			"cheap_energy_max", cfg.Execution.DispatchCheapEnergyMax,
-			"resource_selector", cfg.Execution.ResourceSelector)
+			"capability_contract", cfg.Execution.Routing.CapabilityContract,
+			"capability_resolution", cfg.Execution.Capability.CapabilityResolution,
+			"cheap_energy_max", cfg.Execution.Routing.DispatchCheapEnergyMax,
+			"resource_selector", cfg.Execution.Routing.ResourceSelector)
 	}
 
 	return &MetabolismStack{

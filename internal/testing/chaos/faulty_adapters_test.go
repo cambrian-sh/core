@@ -113,7 +113,7 @@ type stubVectorStore struct {
 	embedding []float32
 }
 
-func (s *stubVectorStore) Save(ctx context.Context, doc *domain.Document) error    { return nil }
+func (s *stubVectorStore) Save(ctx context.Context, doc *domain.Document) error         { return nil }
 func (s *stubVectorStore) SaveBatch(ctx context.Context, docs []*domain.Document) error { return nil }
 func (s *stubVectorStore) Search(ctx context.Context, embedding []float32, opts domain.SearchOptions) ([]domain.SearchResult, error) {
 	if s.embedding == nil {
@@ -121,12 +121,18 @@ func (s *stubVectorStore) Search(ctx context.Context, embedding []float32, opts 
 	}
 	return []domain.SearchResult{{Score: 0.9}}, nil
 }
-func (s *stubVectorStore) GetByID(ctx context.Context, id string) (*domain.Document, error)         { return nil, nil }
-func (s *stubVectorStore) GetBatch(ctx context.Context, ids []string) ([]domain.Document, error)     { return nil, nil }
-func (s *stubVectorStore) Delete(ctx context.Context, id string) error                                 { return nil }
-func (s *stubVectorStore) DeleteBatch(ctx context.Context, ids []string) error                        { return nil }
-func (s *stubVectorStore) IncrementAccess(ctx context.Context, id string) error                       { return nil }
-func (s *stubVectorStore) GetStaleMemories(ctx context.Context, limit int) ([]domain.Document, error) { return nil, nil }
+func (s *stubVectorStore) GetByID(ctx context.Context, id string) (*domain.Document, error) {
+	return nil, nil
+}
+func (s *stubVectorStore) GetBatch(ctx context.Context, ids []string) ([]domain.Document, error) {
+	return nil, nil
+}
+func (s *stubVectorStore) Delete(ctx context.Context, id string) error          { return nil }
+func (s *stubVectorStore) DeleteBatch(ctx context.Context, ids []string) error  { return nil }
+func (s *stubVectorStore) IncrementAccess(ctx context.Context, id string) error { return nil }
+func (s *stubVectorStore) GetStaleMemories(ctx context.Context, limit int) ([]domain.Document, error) {
+	return nil, nil
+}
 func (s *stubVectorStore) QueryByMetadata(_ context.Context, _ map[string]string, _ int) ([]domain.Document, error) {
 	return nil, nil
 }

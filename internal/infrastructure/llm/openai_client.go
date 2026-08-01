@@ -21,7 +21,7 @@ type OpenAIClient struct {
 	// client built straight from config with no store entry of its own -- the
 	// environment path still applies.
 	GeneratorID string
-	TimeoutMs int
+	TimeoutMs   int
 	// DisableThinking sends thinking:{"type":"disabled"} to suppress server-side
 	// reasoning on OpenAI-compat reasoning models (deepseek-v4-flash on opencode).
 	DisableThinking bool

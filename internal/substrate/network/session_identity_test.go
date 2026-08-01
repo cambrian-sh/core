@@ -17,8 +17,12 @@ import (
 func newLeaseServer(t *testing.T) (*Server, *SubstrateLLMGateway) {
 	t.Helper()
 	gw := NewLLMGateway(config.ExecutionConfig{
-		LLMGatewayMaxConcurrency:  4,
-		SessionTokenTTLMultiplier: 5,
+		Session: config.SessionConfig{
+			SessionTokenTTLMultiplier: 5,
+		},
+		LLM: config.LLMConfig{
+			LLMGatewayMaxConcurrency: 4,
+		},
 	})
 	return &Server{LLMGateway: gw}, gw
 }
@@ -148,7 +152,7 @@ func TestResolveCallerSession_CompletedLease_StopsResolving(t *testing.T) {
 // store must never recognise one. If this ever passes, the two namespaces have merged
 // again.
 func TestLeaseIDIsNeverASession(t *testing.T) {
-	gw := NewLLMGateway(config.ExecutionConfig{LLMGatewayMaxConcurrency: 1, SessionTokenTTLMultiplier: 5})
+	gw := NewLLMGateway(config.ExecutionConfig{Session: config.SessionConfig{SessionTokenTTLMultiplier: 5}, LLM: config.LLMConfig{LLMGatewayMaxConcurrency: 1}})
 	lease, _ := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Second)
 
 	mgr := session.New(newMemSessionStore())

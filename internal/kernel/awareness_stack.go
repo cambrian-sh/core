@@ -3,10 +3,9 @@ package kernel
 import (
 	"context"
 
-	"github.com/cambrian-sh/core/internal/awareness"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/awareness"
 )
-
 
 // AwarenessStack is the LLM + planning layer. It owns the Planner which
 // generates ExecutionPlans and synthesises reasoning output.

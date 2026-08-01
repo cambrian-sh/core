@@ -136,9 +136,36 @@ func (im *IngestionManager) persistChunks(
 		})
 	}
 	if len(docs) == 0 {
+		// A document with a body that produced NO stored chunk. Reported, not
+		// swallowed.
+		//
+		// This returned `0, nil` silently, and the caller treats a zero count as
+		// success — so an ingest could mint its source-doc entity, store no content
+		// at all, and report success to the caller. Measured on the live store:
+		// 248 drift-lane documents, 248 entity stubs, ZERO content chunks, and not
+		// one log line. The entity's text is the TITLE, which for a short message
+		// equals the body, so even a spot-check of the stub looked like the content
+		// had landed.
+		//
+		// Every chunk was dropped by the `len(vec) == 0` guard above, which skips a
+		// chunk whose embedding came back empty WITHOUT an error — so neither of the
+		// embed-failure warnings fired either. Silence at three layers.
+		if len(chunks) > 0 {
+			empty := 0
+			for _, v := range vectors {
+				if len(v) == 0 {
+					empty++
+				}
+			}
+			slog.WarnContext(ctx, "IngestionManager: document produced NO stored chunks",
+				"doc", documentID, "source_uri", doc.SourceURI, "source_type", doc.SourceType,
+				"chunks", len(chunks), "empty_embeddings", empty, "body_len", len(doc.Body),
+				"effect", "the source-doc entity exists but the CONTENT is not stored, "+
+					"so this document is not retrievable")
+		}
 		return 0, nil
 	}
-	if err := im.agent.Manager.Store.SaveBatch(ctx, docs); err != nil {
+	if err := im.agent.Manager.SaveBatch(ctx, docs); err != nil {
 		return 0, fmt.Errorf("ingestion manager: save chunk batch: %w", err)
 	}
 	// ADR-0053: enqueue each saved chunk for per-chunk (h, r, t) + anchor

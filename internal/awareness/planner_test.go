@@ -493,4 +493,3 @@ func TestPlannerPrompt_ContainsCheckpointAfter(t *testing.T) {
 		t.Errorf("prompt must contain checkpoint_after field name\nprompt:\n%s", prompt)
 	}
 }
-

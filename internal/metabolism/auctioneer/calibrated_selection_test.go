@@ -44,7 +44,7 @@ func TestExecute_CalibratedSelection_FlipsWinner(t *testing.T) {
 		agentPtrs[d.id] = &a
 	}
 
-	cfg := config.ExecutionConfig{MinAuctionConfidence: 0.3, MaxRecursionDepth: 3, GatekeeperMaxCandidates: 3}
+	cfg := config.ExecutionConfig{Plan: config.PlanConfig{MaxRecursionDepth: 3}, Gatekeeper: config.GatekeeperConfig{MinAuctionConfidence: 0.3, GatekeeperMaxCandidates: 3}}
 	auc := New(&mockDialer{agents: agentPtrs}, &testGatekeeper{agents: agents, manifests: manifests}, cfg)
 	for _, d := range defs {
 		auc.RegisterAgentClient(d.id, &pbClientWrapper{m: mocks[d.id]}, nil)

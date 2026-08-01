@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // lateChunkerStub is a stand-in for the LateChunker that T-2.4 will
@@ -47,7 +48,7 @@ func defaultChunkers() map[string]domain.Chunker {
 }
 
 func TestNewRegistry_Default(t *testing.T) {
-	cfg := ChunkerConfig{
+	cfg := config.ChunkerConfig{
 		Default: "option_c",
 	}
 	reg, err := NewRegistry(defaultChunkers(), cfg)
@@ -84,7 +85,7 @@ func TestNewRegistry_Default(t *testing.T) {
 }
 
 func TestNewRegistry_InvalidDefault(t *testing.T) {
-	cfg := ChunkerConfig{
+	cfg := config.ChunkerConfig{
 		Default: "nonexistent",
 	}
 	_, err := NewRegistry(defaultChunkers(), cfg)
@@ -94,7 +95,7 @@ func TestNewRegistry_InvalidDefault(t *testing.T) {
 }
 
 func TestNewRegistry_InvalidRoute(t *testing.T) {
-	cfg := ChunkerConfig{
+	cfg := config.ChunkerConfig{
 		Default: "option_c",
 		Routes:  map[string]string{"file_drop": "nonexistent"},
 	}
@@ -105,7 +106,7 @@ func TestNewRegistry_InvalidRoute(t *testing.T) {
 }
 
 func TestNewRegistry_InvalidExtRoute(t *testing.T) {
-	cfg := ChunkerConfig{
+	cfg := config.ChunkerConfig{
 		Default:   "option_c",
 		ExtRoutes: map[string]string{".go": "ghost"},
 	}
@@ -116,21 +117,21 @@ func TestNewRegistry_InvalidExtRoute(t *testing.T) {
 }
 
 func TestNewRegistry_NilChunkers(t *testing.T) {
-	cfg := ChunkerConfig{Default: "option_c"}
+	cfg := config.ChunkerConfig{Default: "option_c"}
 	if _, err := NewRegistry(nil, cfg); err == nil {
 		t.Fatal("NewRegistry with nil chunkers map returned nil error, want an error")
 	}
 }
 
 func TestNewRegistry_EmptyDefault(t *testing.T) {
-	cfg := ChunkerConfig{}
+	cfg := config.ChunkerConfig{}
 	if _, err := NewRegistry(defaultChunkers(), cfg); err == nil {
 		t.Fatal("NewRegistry with empty Default returned nil error, want an error")
 	}
 }
 
 func TestRegistry_Resolve_SourceTypeMatch(t *testing.T) {
-	cfg := ChunkerConfig{
+	cfg := config.ChunkerConfig{
 		Default: "option_c",
 		Routes:  map[string]string{"file_drop": "markdown_header"},
 	}
@@ -148,7 +149,7 @@ func TestRegistry_Resolve_SourceTypeMatch(t *testing.T) {
 }
 
 func TestRegistry_Resolve_SourceTypeMiss_ExtHit(t *testing.T) {
-	cfg := ChunkerConfig{
+	cfg := config.ChunkerConfig{
 		Default:   "option_c",
 		ExtRoutes: map[string]string{".go": "ast_go"},
 	}
@@ -166,7 +167,7 @@ func TestRegistry_Resolve_SourceTypeMiss_ExtHit(t *testing.T) {
 }
 
 func TestRegistry_Resolve_DefaultFallback(t *testing.T) {
-	cfg := ChunkerConfig{
+	cfg := config.ChunkerConfig{
 		Default: "option_c",
 	}
 	reg, err := NewRegistry(defaultChunkers(), cfg)
@@ -187,7 +188,7 @@ func TestRegistry_Resolve_SupportsFalse(t *testing.T) {
 	// MarkdownHeaderChunker.Supports(.go) = false, so the registry
 	// must fall through to the default rather than dispatching to
 	// markdown_header anyway.
-	cfg := ChunkerConfig{
+	cfg := config.ChunkerConfig{
 		Default: "option_c",
 		Routes:  map[string]string{"file_drop": "markdown_header"},
 	}
@@ -207,7 +208,7 @@ func TestRegistry_Resolve_SupportsFalse(t *testing.T) {
 func TestRegistry_Resolve_SourceTypeBeatsExt(t *testing.T) {
 	// When both sourceType and ext would route somewhere, sourceType
 	// wins (the precedence rule, ADR-0060 D5).
-	cfg := ChunkerConfig{
+	cfg := config.ChunkerConfig{
 		Default:   "option_c",
 		Routes:    map[string]string{"file_drop": "markdown_header"},
 		ExtRoutes: map[string]string{".md": "ast_go"},
@@ -229,7 +230,7 @@ func TestRegistry_Resolve_RegistryMap(t *testing.T) {
 	// The 5 known chunkers must all be present in the registry's
 	// chunker map with their stable names.
 	chunkers := defaultChunkers()
-	reg, err := NewRegistry(chunkers, ChunkerConfig{Default: "option_c"})
+	reg, err := NewRegistry(chunkers, config.ChunkerConfig{Default: "option_c"})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
@@ -263,7 +264,7 @@ func TestLateChunker_Gated(t *testing.T) {
 		"markdown_header":     MarkdownHeaderChunker{},
 		"late":                LateChunker{},
 	}
-	cfg := ChunkerConfig{
+	cfg := config.ChunkerConfig{
 		Default: "option_c",
 		Routes:  map[string]string{"file_drop": "late"},
 	}

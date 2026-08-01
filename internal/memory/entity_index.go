@@ -10,6 +10,45 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
+// EntityMetaKind is the small closed set of meta-kinds an entity can carry. Not
+// a constraint on the entity set — the entity NAME is open; the meta-kind is a
+// routing hint for the recall path.
+//
+// This vocabulary lived in edge_extractor.go, which was deleted with the rest of
+// the ADR-0052 LLM edge-extraction lane (superseded by ADR-0053 chunk_triplets).
+// It moved here because this file is its only remaining consumer: the meta-kind
+// is a property of the entity index, not of the extractor that used to fill it.
+type EntityMetaKind string
+
+const (
+	MetaKindNamed   EntityMetaKind = "named"   // proper nouns: people, places, orgs, products, characters
+	MetaKindLocated EntityMetaKind = "located" // paths, URLs, endpoints, table names, file system entries
+	MetaKindValued  EntityMetaKind = "valued"  // versions, dates, IDs, counts, ticket numbers
+	MetaKindConcept EntityMetaKind = "concept" // abstract: topics, methods, ideas, categories, skills
+)
+
+// ValidMetaKinds is the closed set the recall path trusts; anything else is dropped.
+var ValidMetaKinds = map[EntityMetaKind]bool{
+	MetaKindNamed: true, MetaKindLocated: true, MetaKindValued: true, MetaKindConcept: true,
+}
+
+// canonicalKey builds the canonical entity key from a meta-kind and name, e.g.
+// "named:caroline". Empty / whitespace-only names, and names carrying a meta-kind
+// outside ValidMetaKinds, return "". The recall path's IsEntityKey uses the
+// meta-kind prefix to distinguish entity targets from doc targets.
+//
+// Moved here with EntityMetaKind when edge_writer.go was deleted. The original
+// carried hand-rolled trimSpace/isSpace helpers "to avoid pulling strings in just
+// for this"; this file already imports strings, so that reason is gone and
+// strings.TrimSpace is used directly.
+func canonicalKey(kind EntityMetaKind, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || !ValidMetaKinds[kind] {
+		return ""
+	}
+	return string(kind) + ":" + name
+}
+
 // IndexedDoc is a single doc-to-entity association tracked by the in-memory
 // reverse index. We keep the weight (LLM confidence) so the query path can
 // rank entity neighbors by relevance, not just surface recency.

@@ -1,91 +1,15 @@
 package memory
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
-
-// ── DirectoryWatcher tests ───────────────────────────────────────────────────
-
-// Cycle 1 — Poll returns files newer than 'since' with correct ExternalDocument fields.
-func TestDirectoryWatcher_Poll_ReturnsNewFiles(t *testing.T) {
-	dir := t.TempDir()
-	watcher := NewDirectoryWatcher(dir, nil)
-
-	before := time.Now().Add(-time.Second)
-	content := "# Hello\n\nThis is a markdown file."
-	if err := os.WriteFile(filepath.Join(dir, "note.md"), []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	docs, err := watcher.Poll(context.Background(), before)
-	if err != nil {
-		t.Fatalf("Poll: %v", err)
-	}
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 document, got %d", len(docs))
-	}
-	doc := docs[0]
-	if doc.SourceType != "md" {
-		t.Errorf("SourceType: want %q got %q", "md", doc.SourceType)
-	}
-	if doc.Body != content {
-		t.Errorf("Body mismatch")
-	}
-	if !strings.HasSuffix(doc.SourceURI, "note.md") {
-		t.Errorf("SourceURI: got %q", doc.SourceURI)
-	}
-}
-
-// Cycle 2 — Poll ignores files with unsupported extensions.
-func TestDirectoryWatcher_Poll_IgnoresUnsupportedExtensions(t *testing.T) {
-	dir := t.TempDir()
-	watcher := NewDirectoryWatcher(dir, nil)
-
-	_ = os.WriteFile(filepath.Join(dir, "binary.exe"), []byte("data"), 0644)
-	_ = os.WriteFile(filepath.Join(dir, "data.csv"), []byte("a,b"), 0644)
-	_ = os.WriteFile(filepath.Join(dir, "valid.txt"), []byte("hello"), 0644)
-
-	docs, err := watcher.Poll(context.Background(), time.Now().Add(-time.Second))
-	if err != nil {
-		t.Fatalf("Poll: %v", err)
-	}
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 doc (valid.txt only), got %d", len(docs))
-	}
-	if docs[0].SourceType != "txt" {
-		t.Errorf("unexpected SourceType: %q", docs[0].SourceType)
-	}
-}
-
-// Cycle 3 — Poll ignores files older than 'since'.
-func TestDirectoryWatcher_Poll_IgnoresOldFiles(t *testing.T) {
-	dir := t.TempDir()
-	watcher := NewDirectoryWatcher(dir, nil)
-
-	// Write a file, then set Poll's since to a future time.
-	_ = os.WriteFile(filepath.Join(dir, "old.txt"), []byte("old"), 0644)
-	future := time.Now().Add(time.Hour)
-
-	docs, err := watcher.Poll(context.Background(), future)
-	if err != nil {
-		t.Fatalf("Poll: %v", err)
-	}
-	if len(docs) != 0 {
-		t.Errorf("expected 0 docs for future since, got %d", len(docs))
-	}
-}
-
-// ── WebhookReceiver tests ────────────────────────────────────────────────────
 
 func webhookDoc() domain.ExternalDocument {
 	return domain.ExternalDocument{

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // captureParser records the StructureParseRequest the ingest path built.
@@ -34,7 +35,7 @@ func newCaptureIngestManager(t *testing.T, p StructureParser) *IngestionManager 
 		Manager:    &MemoryManager{Store: &captureAllStore{}, Embedder: &mockEmbedder{vec: []float32{0.1, 0.2}}},
 		pendingCap: 256,
 	}
-	reg, err := NewRegistry(defaultChunkers(), ChunkerConfig{Default: "option_c"})
+	reg, err := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}

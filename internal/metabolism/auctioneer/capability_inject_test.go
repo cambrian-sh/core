@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	pb "github.com/cambrian-sh/core/api/proto"
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // capturingCallHook records the Context of each handoff passed to CallAgent.
@@ -52,7 +52,7 @@ func makeToolAuctioneer(agentID string, tools []string) (*Auctioneer, *capturing
 	dialer := &manifestDialer{
 		manifests: map[string]*domain.AgentManifest{agentID: manifest},
 	}
-	cfg := config.ExecutionConfig{MinAuctionConfidence: 0.0, MaxRecursionDepth: 3}
+	cfg := config.ExecutionConfig{Plan: config.PlanConfig{MaxRecursionDepth: 3}, Gatekeeper: config.GatekeeperConfig{MinAuctionConfidence: 0.0}}
 	hook := &capturingCallHook{}
 	a := New(dialer, gk, cfg)
 	a.CallAgentHook = hook.hook
@@ -62,7 +62,7 @@ func makeToolAuctioneer(agentID string, tools []string) (*Auctioneer, *capturing
 	mockClient := &mockAgentClient{
 		proposal: &pb.ProposalResponse{
 			Confidence:         1.0,
-			Rationale:            agent.Description,
+			Rationale:          agent.Description,
 			EstimatedLatencyMs: 5,
 		},
 	}
@@ -117,7 +117,7 @@ func TestExecute_NoCapabilityWhenManifestHasNoTools(t *testing.T) {
 		manifests: map[string]*domain.AgentManifest{"bare-agent": {Tools: nil}},
 	}
 	hook := &capturingCallHook{}
-	a := New(&mockDialer{}, gk, config.ExecutionConfig{MaxRecursionDepth: 3})
+	a := New(&mockDialer{}, gk, config.ExecutionConfig{Plan: config.PlanConfig{MaxRecursionDepth: 3}})
 	a.CallAgentHook = hook.hook
 
 	// Register mock client so proposal RPC succeeds (ADR-0023 routing fix).

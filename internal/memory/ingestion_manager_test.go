@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // captureAllStore is a VectorStore that records EVERY Save call so a test
@@ -89,7 +90,7 @@ func TestIngestionManager_ProcessSync_savesDocumentQAChunksBeforeReturn(t *testi
 		Manager:    &MemoryManager{Store: store, Embedder: &mockEmbedder{vec: []float32{0.1, 0.2}}},
 		pendingCap: 256,
 	}
-	reg, err := NewRegistry(defaultChunkers(), ChunkerConfig{Default: "option_c"})
+	reg, err := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
@@ -187,7 +188,7 @@ func TestIngestionManager_ProcessSync_batchesChunkEmbeddings(t *testing.T) {
 		Manager:    &MemoryManager{Store: store, Embedder: embedder},
 		pendingCap: 256,
 	}
-	reg, err := NewRegistry(defaultChunkers(), ChunkerConfig{Default: "option_c"})
+	reg, err := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
@@ -236,7 +237,7 @@ func TestIngestionPipeline_SourceDocumentEntity(t *testing.T) {
 		ContentStore: cs,
 	}
 
-	reg, err := NewRegistry(defaultChunkers(), ChunkerConfig{Default: "option_c"})
+	reg, err := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
@@ -354,7 +355,7 @@ func TestIngestionPipeline_SourceDocumentEntity_SingleChunk(t *testing.T) {
 		pendingCap:   256,
 		ContentStore: cs,
 	}
-	reg, _ := NewRegistry(defaultChunkers(), ChunkerConfig{Default: "option_c"})
+	reg, _ := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
 	sg := NewSceneGenerator(&mockLLMGen{response: scenesJSON(1)})
 	im := NewIngestionManagerWithRegistry(sg, &mockEmbedder{vec: []float32{0.1}}, agent, reg, IngestionConfig{
 		QueueSize: 4, BatchSize: 1, Workers: 1, BatchWait: 20 * time.Millisecond,

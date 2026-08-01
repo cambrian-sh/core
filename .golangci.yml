@@ -1,0 +1,65 @@
+# golangci-lint configuration.
+#
+# The linter set is chosen to catch the defect CLASSES this codebase has actually
+# shipped, not to maximise linter count. Each entry below earned its place:
+#
+#   unused       — complete, tested, never-wired subsystems were the single most
+#                  expensive pattern found in audit. Green tests hide them; this
+#                  does not. (Note: `unused` is package-scoped and cannot see that
+#                  an exported symbol has no caller — `make deadcode` covers that.)
+#   errcheck     — `reg, _ := NewRegistry(...)` on the ingestion hot path let a
+#                  misconfigured chunker registry degrade in silence.
+#   contextcheck — a `context.Background()` inside a request path drops the
+#                  deadline, the cancellation AND the authz scope predicate, which
+#                  is a silent read-widening rather than an error.
+#   bodyclose    — leaked HTTP bodies in the LLM/embedder adapters.
+#   nilerr       — `if err != nil { return nil }` swallowing a real failure.
+#
+# Run: make lint   (or: golangci-lint run)
+version: "2"
+
+run:
+  timeout: 5m
+  # Test files are linted too. Test-only helpers living in production files and
+  # unused fixtures are both things this should catch.
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - errcheck
+    - govet
+    - ineffassign
+    - nilerr
+    - staticcheck
+    - unused
+
+  settings:
+    errcheck:
+      # Errors deliberately dropped on best-effort paths are written as `_ = f()`,
+      # which is the codebase's existing convention and is greppable. Assignment
+      # to blank is therefore NOT reported; a bare unchecked call still is.
+      check-blank: false
+      exclude-functions:
+        # Emitting to the operator feed is best-effort by contract: a wedged
+        # consumer must not fail the write that produced the event.
+        - (github.com/cambrian-sh/core/domain.EventBus).Publish
+
+  exclusions:
+    generated: strict
+    rules:
+      # api/proto is generated; buf/protoc own it.
+      - path: ^api/proto/
+        linters: [bodyclose, contextcheck, errcheck, govet, ineffassign, nilerr, staticcheck, unused]
+      # Table-driven tests legitimately ignore errors they are asserting on
+      # indirectly; requiring a check on every helper call in a fixture is noise.
+      - path: _test\.go$
+        linters: [errcheck, bodyclose]
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: strict

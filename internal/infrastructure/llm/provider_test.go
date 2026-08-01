@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 func testProvider(t *testing.T) *Provider {

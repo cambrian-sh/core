@@ -12,12 +12,12 @@
 package chat
 
 import (
-	"sync/atomic"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"

@@ -30,11 +30,11 @@ EMPTY=
 	}
 
 	cases := map[string]string{
-		"OPENCODE_API_KEY": "sk-from-file",   // export prefix stripped
-		"QUOTED":           "quoted value",   // double quotes stripped
-		"SINGLE":           "single value",   // single quotes stripped
-		"PRESET":           "from-os",        // OS env wins
-		"EMPTY":            "",               // empty value allowed
+		"OPENCODE_API_KEY": "sk-from-file", // export prefix stripped
+		"QUOTED":           "quoted value", // double quotes stripped
+		"SINGLE":           "single value", // single quotes stripped
+		"PRESET":           "from-os",      // OS env wins
+		"EMPTY":            "",             // empty value allowed
 	}
 	for k, want := range cases {
 		// Clean up vars this test introduced (t.Setenv already handles PRESET).

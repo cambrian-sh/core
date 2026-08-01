@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"

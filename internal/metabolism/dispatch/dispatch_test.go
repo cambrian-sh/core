@@ -45,7 +45,9 @@ func (f *fakeCaller) CallAgent(_ context.Context, agentID string, _ *domain.Hand
 	return &domain.Handoff{FromAgent: agentID}, nil
 }
 
-type fakeProfiles struct{ byID map[string]*domain.AgentProfile }
+type fakeProfiles struct {
+	byID map[string]*domain.AgentProfile
+}
 
 func (f *fakeProfiles) GetProfile(_ context.Context, agentID, _ string) (*domain.AgentProfile, error) {
 	p, ok := f.byID[agentID]
@@ -185,8 +187,8 @@ func TestSelectWinner_CheapestCompetentOnCheapVerifiedStep(t *testing.T) {
 		"expensive-best": {ModelMetrics: &domain.ModelMetrics{AvgCostPerTask: 0.05}},
 		"cheap-ok":       {ModelMetrics: &domain.ModelMetrics{AvgCostPerTask: 0.001}},
 	}}
-	d.ExecCfg.DispatchCheapEnergyMax = 10
-	d.ExecCfg.DispatchMeritFloor = 0.5
+	d.ExecCfg.Routing.DispatchCheapEnergyMax = 10
+	d.ExecCfg.Routing.DispatchMeritFloor = 0.5
 
 	task := &domain.AuctionTask{ID: "t", MaxEnergy: 5, CheckpointAfter: true}
 	if _, err := d.Execute(context.Background(), task, &domain.Handoff{}); err != nil {
@@ -210,7 +212,7 @@ func TestSelectWinner_ArgmaxWhenStepIsNotVerified(t *testing.T) {
 		"expensive-best": {ModelMetrics: &domain.ModelMetrics{AvgCostPerTask: 0.05}},
 		"cheap-ok":       {ModelMetrics: &domain.ModelMetrics{AvgCostPerTask: 0.001}},
 	}}
-	d.ExecCfg.DispatchCheapEnergyMax = 10
+	d.ExecCfg.Routing.DispatchCheapEnergyMax = 10
 
 	task := &domain.AuctionTask{ID: "t", MaxEnergy: 5, CheckpointAfter: false}
 	if _, err := d.Execute(context.Background(), task, &domain.Handoff{}); err != nil {
@@ -230,7 +232,7 @@ func TestSelectWinner_ZeroEnergyIsNotCheap(t *testing.T) {
 		"best":  {ModelMetrics: &domain.ModelMetrics{AvgCostPerTask: 0.05}},
 		"cheap": {ModelMetrics: &domain.ModelMetrics{AvgCostPerTask: 0.001}},
 	}}
-	d.ExecCfg.DispatchCheapEnergyMax = 10
+	d.ExecCfg.Routing.DispatchCheapEnergyMax = 10
 
 	task := &domain.AuctionTask{ID: "t", MaxEnergy: 0, CheckpointAfter: true}
 	if _, err := d.Execute(context.Background(), task, &domain.Handoff{}); err != nil {
@@ -250,8 +252,8 @@ func TestCheapestCompetent_RespectsMeritFloor(t *testing.T) {
 		"good":      {ModelMetrics: &domain.ModelMetrics{AvgCostPerTask: 0.05}},
 		"cheap-bad": {ModelMetrics: &domain.ModelMetrics{AvgCostPerTask: 0.0001}},
 	}}
-	d.ExecCfg.DispatchCheapEnergyMax = 10
-	d.ExecCfg.DispatchMeritFloor = 0.5
+	d.ExecCfg.Routing.DispatchCheapEnergyMax = 10
+	d.ExecCfg.Routing.DispatchMeritFloor = 0.5
 
 	task := &domain.AuctionTask{ID: "t", MaxEnergy: 1, CheckpointAfter: true}
 	if _, err := d.Execute(context.Background(), task, &domain.Handoff{}); err != nil {
@@ -268,7 +270,7 @@ func TestCheapestCompetent_FallsBackToArgmaxWithoutProfiles(t *testing.T) {
 	caller := &fakeCaller{}
 	d := newDispatcher(gk, caller)
 	d.Profiles = nil
-	d.ExecCfg.DispatchCheapEnergyMax = 10
+	d.ExecCfg.Routing.DispatchCheapEnergyMax = 10
 
 	task := &domain.AuctionTask{ID: "t", MaxEnergy: 1, CheckpointAfter: true}
 	if _, err := d.Execute(context.Background(), task, &domain.Handoff{}); err != nil {

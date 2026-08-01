@@ -8,8 +8,8 @@ import (
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // ─── Cycle 1: requestProposalFromAgent sets ConfidenceHint from profile ──────
@@ -202,7 +202,7 @@ func TestAuctioneer_Execute_SingleRequirement(t *testing.T) {
 	}
 	manager := &mockDialer{agents: agentPtrs}
 	gk := &testGatekeeper{agents: agents, manifests: manifests}
-	cfg := config.ExecutionConfig{MinAuctionConfidence: 0.3, MaxRecursionDepth: 3}
+	cfg := config.ExecutionConfig{Plan: config.PlanConfig{MaxRecursionDepth: 3}, Gatekeeper: config.GatekeeperConfig{MinAuctionConfidence: 0.3}}
 	auc := New(manager, gk, cfg)
 
 	auc.RegisterAgentClient(coordID, &pbClientWrapper{m: coordMock}, nil)
@@ -268,7 +268,7 @@ func TestAuctioneer_Execute_RecursionLimit(t *testing.T) {
 	}
 	manager := &mockDialer{agents: agentPtrs}
 	gk := &testGatekeeper{agents: agents, manifests: manifests}
-	cfg := config.ExecutionConfig{MinAuctionConfidence: 0.3, MaxRecursionDepth: 1}
+	cfg := config.ExecutionConfig{Plan: config.PlanConfig{MaxRecursionDepth: 1}, Gatekeeper: config.GatekeeperConfig{MinAuctionConfidence: 0.3}}
 	auc := New(manager, gk, cfg)
 
 	auc.RegisterAgentClient(idA, &pbClientWrapper{m: mockA}, nil)
@@ -328,12 +328,16 @@ func TestExecute_ReturnsRunnerUpCandidates(t *testing.T) {
 	manager := &mockDialer{agents: agentPtrs}
 	gk := &testGatekeeper{agents: agents, manifests: manifests}
 	cfg := config.ExecutionConfig{
-		MinAuctionConfidence:    0.3,
-		MaxRecursionDepth:       3,
-		GatekeeperMaxCandidates: 3,
-		GatekeeperW1:            0.4,
-		GatekeeperW2:            0.4,
-		GatekeeperW3:            0.2,
+		Plan: config.PlanConfig{
+			MaxRecursionDepth: 3,
+		},
+		Gatekeeper: config.GatekeeperConfig{
+			MinAuctionConfidence:    0.3,
+			GatekeeperMaxCandidates: 3,
+			GatekeeperW1:            0.4,
+			GatekeeperW2:            0.4,
+			GatekeeperW3:            0.2,
+		},
 	}
 	auc := New(manager, gk, cfg)
 
@@ -392,11 +396,15 @@ func TestExecute_ReturnsEmptyRunnerUpsWithSingleCandidate(t *testing.T) {
 	manager := &mockDialer{agents: map[string]*domain.AgentDefinition{agentID: &a}}
 	gk := &testGatekeeper{agents: agents, manifests: manifests}
 	cfg := config.ExecutionConfig{
-		MinAuctionConfidence: 0.3,
-		MaxRecursionDepth:    3,
-		GatekeeperW1:         0.4,
-		GatekeeperW2:         0.4,
-		GatekeeperW3:         0.2,
+		Plan: config.PlanConfig{
+			MaxRecursionDepth: 3,
+		},
+		Gatekeeper: config.GatekeeperConfig{
+			MinAuctionConfidence: 0.3,
+			GatekeeperW1:         0.4,
+			GatekeeperW2:         0.4,
+			GatekeeperW3:         0.2,
+		},
 	}
 	auc := New(manager, gk, cfg)
 	auc.RegisterAgentClient(agentID, &pbClientWrapper{m: mock}, nil)
@@ -486,7 +494,7 @@ func TestAuctioneer_ExplorationRunsWithoutCrash(t *testing.T) {
 
 	manager := &mockDialer{agents: agentPtrs}
 	gk := &testGatekeeper{agents: agents, manifests: manifests}
-	cfg := config.ExecutionConfig{MinAuctionConfidence: 0.3, MaxRecursionDepth: 3}
+	cfg := config.ExecutionConfig{Plan: config.PlanConfig{MaxRecursionDepth: 3}, Gatekeeper: config.GatekeeperConfig{MinAuctionConfidence: 0.3}}
 	auc := New(manager, gk, cfg)
 	auc.ExplorationRate = 1.0
 
@@ -536,7 +544,7 @@ func TestAuctioneer_ExplorationDisabled_SameWinner(t *testing.T) {
 
 	manager := &mockDialer{agents: agentPtrs}
 	gk := &testGatekeeper{agents: agents, manifests: manifests}
-	cfg := config.ExecutionConfig{MinAuctionConfidence: 0.3, MaxRecursionDepth: 3}
+	cfg := config.ExecutionConfig{Plan: config.PlanConfig{MaxRecursionDepth: 3}, Gatekeeper: config.GatekeeperConfig{MinAuctionConfidence: 0.3}}
 	auc := New(manager, gk, cfg)
 	auc.ExplorationRate = 0.0
 

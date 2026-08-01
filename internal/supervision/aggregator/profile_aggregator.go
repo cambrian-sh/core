@@ -46,11 +46,11 @@ type AggregatorConfig struct {
 
 // tokenHistogram tracks per-step-type token utilisation distribution.
 type tokenHistogram struct {
-	underUsed  int // utilisation ratio [0.0, 0.5)
-	normal     int // [0.5, 0.8)
-	nearLimit  int // [0.8, 1.0)
-	exhausted  int // [1.0, ∞)
-	total      int
+	underUsed int // utilisation ratio [0.0, 0.5)
+	normal    int // [0.5, 0.8)
+	nearLimit int // [0.8, 1.0)
+	exhausted int // [1.0, ∞)
+	total     int
 }
 
 // ProfileAggregator is the background worker that periodically reads raw TaskEvent

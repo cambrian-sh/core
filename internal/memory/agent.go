@@ -581,7 +581,7 @@ func (a *Agent) recordActionRecord(ctx context.Context, rec domain.ToolOutputRec
 			doc.Metadata["plan_id"] = planID
 		}
 	}
-	if err := a.Manager.Store.Save(ctx, doc); err != nil {
+	if err := a.Manager.Save(ctx, doc); err != nil {
 		slog.Warn("MemoryAgent: failed to save action record", "doc_id", doc.ID, "err", err)
 	}
 	a.bumpActionCount(rec.TaskID)      // ADR-0049 D3: count for the step's dedup decision
@@ -675,7 +675,7 @@ func (a *Agent) upsertEntity(ctx context.Context, ent canonicalEntity, obs entit
 		ActivationStrength: 0.1,
 		Metadata:           meta,
 	}
-	if err := a.Manager.Store.Save(ctx, doc); err != nil {
+	if err := a.Manager.Save(ctx, doc); err != nil {
 		slog.Warn("MemoryAgent: failed to mint entity", "entity", ent.Key(), "err", err)
 		return
 	}
@@ -1023,7 +1023,7 @@ func (a *Agent) WritePlanScene(ctx context.Context, rec domain.PlanRecord) error
 		},
 	}
 	if !reinforced {
-		if err := a.Manager.Store.Save(ctx, doc); err != nil {
+		if err := a.Manager.Save(ctx, doc); err != nil {
 			slog.Warn("MemoryAgent: failed to save plan scene", "plan_id", planID, "err", err)
 			return nil
 		}
@@ -1345,7 +1345,7 @@ func (a *Agent) IngestNegativeEdge(ctx context.Context, errorMsg, lastOutput, ag
 			"doc_type":     "negative_edge",
 		},
 	}
-	return a.Manager.Store.Save(ctx, doc)
+	return a.Manager.Save(ctx, doc)
 }
 
 // PoisonMemory marks a specific memory as "Poisoned" and adds a correction.
@@ -1361,7 +1361,7 @@ func (a *Agent) PoisonMemory(ctx context.Context, memoryID string, correction st
 	doc.Metadata["is_poisoned"] = true
 	doc.Metadata["correction"] = correction
 
-	return a.Manager.Store.Save(ctx, doc)
+	return a.Manager.Save(ctx, doc)
 }
 
 func (a *Agent) maskSensitiveData(text string) string {
@@ -1497,7 +1497,7 @@ func (a *Agent) commitErrorItem(ctx context.Context, item pendingItem, kind Erro
 			"timestamp":  time.Now().Format(time.RFC3339),
 		},
 	}
-	if err := a.Manager.Store.Save(ctx, doc); err != nil {
+	if err := a.Manager.Save(ctx, doc); err != nil {
 		slog.Warn("MemoryAgent: failed to commit error item as negative_edge", "err", err)
 	}
 	slog.Info("MemoryAgent: error item routed to negative_edge",
@@ -1673,7 +1673,7 @@ func (a *Agent) commitItem(ctx context.Context, s scoredItem) {
 		s.Item.Doc.DocumentType = domain.DocTypeMnemonicFact
 		s.Item.Doc.ScoringPromptVersion = scoringPromptHash
 		s.Item.Doc.Embedding = domain.Embedding{Vector: s.Item.Embedding}
-		if err := a.Manager.Store.Save(ctx, s.Item.Doc); err != nil {
+		if err := a.Manager.Save(ctx, s.Item.Doc); err != nil {
 			slog.Warn("MemoryAgent: Tier-2 failed to save FACT", "doc_id", s.Item.Doc.ID, "err", err)
 			return
 		}
@@ -1691,7 +1691,7 @@ func (a *Agent) commitItem(ctx context.Context, s scoredItem) {
 		s.Item.Doc.DocumentType = domain.DocTypeMnemonicFact
 		s.Item.Doc.ScoringPromptVersion = scoringPromptHash
 		s.Item.Doc.Embedding = domain.Embedding{Vector: s.Item.Embedding}
-		if err := a.Manager.Store.Save(ctx, s.Item.Doc); err != nil {
+		if err := a.Manager.Save(ctx, s.Item.Doc); err != nil {
 			slog.Warn("MemoryAgent: Tier-2 failed to save FACT_ONLY", "doc_id", s.Item.Doc.ID, "err", err)
 			return
 		}
@@ -1782,7 +1782,7 @@ func (a *Agent) createSceneDoc(ctx context.Context, s scoredItem) error {
 		ScoringPromptVersion: scoringPromptHash,
 		Metadata:             sceneMeta,
 	}
-	return a.Manager.Store.Save(ctx, sceneDoc)
+	return a.Manager.Save(ctx, sceneDoc)
 }
 
 // writeSyncEdges scans the step output for explicit references and creates document_edges.
@@ -1953,7 +1953,7 @@ func (a *Agent) reinforceScene(ctx context.Context, doc *domain.Document, outcom
 		}
 		doc.Metadata["failure_count"] = fails + 1
 	}
-	if err := a.Manager.Store.Save(ctx, doc); err != nil {
+	if err := a.Manager.Save(ctx, doc); err != nil {
 		slog.WarnContext(ctx, "MemoryAgent: scene reinforcement not persisted",
 			"scene", doc.ID, "err", err)
 		return

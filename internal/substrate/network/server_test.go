@@ -189,38 +189,6 @@ func TestPlanWithValidation_HardFailAfterTwoCyclicPlans(t *testing.T) {
 }
 
 // ============================================================
-// stepTimeout formula tests
-// ============================================================
-
-func TestStepTimeout_Formula(t *testing.T) {
-	cases := []struct {
-		latency int
-		mult    float64
-		base    int
-		wantMs  int
-	}{
-		{100, 2.0, 5000, 5200}, // 100*2 + 5000
-		{500, 1.5, 1000, 1750}, // 500*1.5 + 1000
-		{200, 3.0, 0, 600},     // 200*3 + 0
-	}
-	for _, c := range cases {
-		got := stepTimeout(c.latency, c.mult, c.base)
-		want := time.Duration(c.wantMs) * time.Millisecond
-		if got != want {
-			t.Errorf("stepTimeout(%d, %.1f, %d) = %v, want %v", c.latency, c.mult, c.base, got, want)
-		}
-	}
-}
-
-func TestStepTimeout_ZeroLatency_DegradestoBaseBuffer(t *testing.T) {
-	got := stepTimeout(0, 2.0, 5000)
-	want := 5000 * time.Millisecond
-	if got != want {
-		t.Errorf("zero latency: got %v, want %v", got, want)
-	}
-}
-
-// ============================================================
 // DAGExecutor tests
 // ============================================================
 
@@ -358,14 +326,18 @@ func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
 
 	mgr := agentmgr.NewAgentManager(reg, "python", "unix://tmp/cambrian.sock", nil)
 	gk := supgk.NewGatekeeper(reg, config.ExecutionConfig{
-		GatekeeperMaxCandidates: 5,
-		GatekeeperW1:            0.4,
-		GatekeeperW2:            0.4,
-		GatekeeperW3:            0.2,
+		Gatekeeper: config.GatekeeperConfig{
+			GatekeeperMaxCandidates: 5,
+			GatekeeperW1:            0.4,
+			GatekeeperW2:            0.4,
+			GatekeeperW3:            0.2,
+		},
 	})
 	auctioneer := metauc.New(mgr, gk, config.ExecutionConfig{
-		FallbackEnabled:             true,
-		FallbackConfidenceThreshold: 0.4,
+		Plan: config.PlanConfig{
+			FallbackEnabled:             true,
+			FallbackConfidenceThreshold: 0.4,
+		},
 	})
 
 	auctioneer.RequestProposalHook = func(ctx context.Context, agent domain.AgentDefinition, task *domain.AuctionTask, confidenceHint float32) (*domain.AgentProposal, error) {
@@ -407,9 +379,11 @@ func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
 		Manager:    mgr,
 		Auctioneer: auctioneer,
 		ExecCfg: config.ExecutionConfig{
-			FallbackEnabled:             true,
-			FallbackConfidenceThreshold: 0.4,
-			PlanTimeoutMs:               5000,
+			Plan: config.PlanConfig{
+				FallbackEnabled:             true,
+				FallbackConfidenceThreshold: 0.4,
+				PlanTimeoutMs:               5000,
+			},
 		},
 	}
 
@@ -464,14 +438,18 @@ func TestServer_StepFn_FallbackPropagatesErrorWhenAllRunnerUpsFail(t *testing.T)
 
 	mgr := agentmgr.NewAgentManager(reg, "python", "unix://tmp/cambrian.sock", nil)
 	gk := supgk.NewGatekeeper(reg, config.ExecutionConfig{
-		GatekeeperMaxCandidates: 5,
-		GatekeeperW1:            0.4,
-		GatekeeperW2:            0.4,
-		GatekeeperW3:            0.2,
+		Gatekeeper: config.GatekeeperConfig{
+			GatekeeperMaxCandidates: 5,
+			GatekeeperW1:            0.4,
+			GatekeeperW2:            0.4,
+			GatekeeperW3:            0.2,
+		},
 	})
 	auctioneer := metauc.New(mgr, gk, config.ExecutionConfig{
-		FallbackEnabled:             true,
-		FallbackConfidenceThreshold: 0.4,
+		Plan: config.PlanConfig{
+			FallbackEnabled:             true,
+			FallbackConfidenceThreshold: 0.4,
+		},
 	})
 
 	auctioneer.RequestProposalHook = func(ctx context.Context, agent domain.AgentDefinition, task *domain.AuctionTask, confidenceHint float32) (*domain.AgentProposal, error) {
@@ -504,9 +482,11 @@ func TestServer_StepFn_FallbackPropagatesErrorWhenAllRunnerUpsFail(t *testing.T)
 		Manager:    mgr,
 		Auctioneer: auctioneer,
 		ExecCfg: config.ExecutionConfig{
-			FallbackEnabled:             true,
-			FallbackConfidenceThreshold: 0.4,
-			PlanTimeoutMs:               5000,
+			Plan: config.PlanConfig{
+				FallbackEnabled:             true,
+				FallbackConfidenceThreshold: 0.4,
+				PlanTimeoutMs:               5000,
+			},
 		},
 	}
 

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/router"
 	"github.com/cambrian-sh/core/internal/testing/harness"
 )
@@ -181,16 +181,16 @@ func TestLayer3_PromptRegistry_HasClassifyEntry(t *testing.T) {
 // Cycle 36 — RouterMinClassificationConfidence default is 0.5.
 func TestConfig_RouterMinConfidence_Default(t *testing.T) {
 	cfg := defaultExecConfig()
-	if cfg.RouterMinClassificationConfidence != 0.5 {
-		t.Fatalf("expected default 0.5, got %v", cfg.RouterMinClassificationConfidence)
+	if cfg.Router.RouterMinClassificationConfidence != 0.5 {
+		t.Fatalf("expected default 0.5, got %v", cfg.Router.RouterMinClassificationConfidence)
 	}
 }
 
 // Cycle 37 — RouterClassificationBodyChars default is 500.
 func TestConfig_RouterBodyChars_Default(t *testing.T) {
 	cfg := defaultExecConfig()
-	if cfg.RouterClassificationBodyChars != 500 {
-		t.Fatalf("expected default 500, got %d", cfg.RouterClassificationBodyChars)
+	if cfg.Router.RouterClassificationBodyChars != 500 {
+		t.Fatalf("expected default 500, got %d", cfg.Router.RouterClassificationBodyChars)
 	}
 }
 

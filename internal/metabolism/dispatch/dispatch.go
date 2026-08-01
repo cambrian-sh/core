@@ -284,7 +284,7 @@ func (d *Dispatcher) cheapAndVerified(task *domain.AuctionTask) bool {
 	if !task.CheckpointAfter {
 		return false
 	}
-	maxE := d.ExecCfg.DispatchCheapEnergyMax
+	maxE := d.ExecCfg.Routing.DispatchCheapEnergyMax
 	if maxE <= 0 {
 		return false
 	}
@@ -298,7 +298,7 @@ func (d *Dispatcher) cheapestCompetent(ctx context.Context, scored []domain.Scor
 	if d.Profiles == nil {
 		return domain.ScoredCandidate{}, false
 	}
-	floor := d.ExecCfg.DispatchMeritFloor
+	floor := d.ExecCfg.Routing.DispatchMeritFloor
 
 	var best domain.ScoredCandidate
 	bestCost := 0.0

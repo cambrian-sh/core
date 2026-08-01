@@ -38,7 +38,9 @@ type inmemSessionRepo struct {
 	sessions map[domain.SessionID]domain.Session
 }
 
-func newInmem() *inmemSessionRepo { return &inmemSessionRepo{sessions: make(map[domain.SessionID]domain.Session)} }
+func newInmem() *inmemSessionRepo {
+	return &inmemSessionRepo{sessions: make(map[domain.SessionID]domain.Session)}
+}
 
 func (r *inmemSessionRepo) SaveSession(_ context.Context, s domain.Session) error {
 	r.sessions[s.ID] = s
@@ -100,7 +102,7 @@ func TestSessionManager_TransitionToCompleted_DoesNotPublishDormantEvent(t *test
 	ctx := context.Background()
 	sess, _ := mgr.CreateSession(ctx, "goal", "")
 	_ = mgr.TransitionStatus(ctx, sess.ID, domain.SessionDormant) // makes dormant first
-	bus.events = nil                                               // reset
+	bus.events = nil                                              // reset
 
 	_ = mgr.TransitionStatus(ctx, sess.ID, domain.SessionCompleted)
 

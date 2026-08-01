@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // ── test doubles ─────────────────────────────────────────────────────────────
@@ -152,7 +153,7 @@ func TestSceneGenerator_Generate_LLMError_FallbackPlaceholders(t *testing.T) {
 func TestIngestionManager_Enqueue_ReturnsFalseWhenFull(t *testing.T) {
 	sg := NewSceneGenerator(&mockLLMGen{response: scenesJSON(5)})
 	im := NewIngestionManager(sg, &mockEmbedder{vec: []float32{0.1}}, testAgent(),
-		IngestionConfig{QueueSize: 1, BatchSize: 5, Workers: 1, BatchWait: time.Second})
+		IngestionConfig{QueueSize: 1, BatchSize: 5, Workers: 1, BatchWait: time.Second}, config.ChunkerConfig{Default: "option_c"})
 
 	doc := makeDoc(0)
 	// Fill the queue.
@@ -178,7 +179,7 @@ func TestIngestionManager_EndToEnd_DocFlowsToChunkFacts(t *testing.T) {
 		BatchSize: 1, // flush after 1 doc so test doesn't wait
 		Workers:   1,
 		BatchWait: 50 * time.Millisecond,
-	})
+	}, config.ChunkerConfig{Default: "option_c"})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	im.Start(ctx)

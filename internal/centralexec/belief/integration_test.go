@@ -86,8 +86,8 @@ func TestStore_BeliefForSubgoal_InheritsSlowResetsFast(t *testing.T) {
 	}
 
 	emb := []float32{1, 0}
-	combined := s.Belief("agent", emb).ExpectedSuccess           // includes the fast bias
-	subgoal := s.BeliefForSubgoal("agent", emb).ExpectedSuccess  // slow store only
+	combined := s.Belief("agent", emb).ExpectedSuccess          // includes the fast bias
+	subgoal := s.BeliefForSubgoal("agent", emb).ExpectedSuccess // slow store only
 
 	if subgoal <= combined {
 		t.Errorf("BeliefForSubgoal=%v should exceed fast-contaminated Belief=%v (inherits slow trust)", subgoal, combined)

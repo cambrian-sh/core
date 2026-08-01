@@ -73,7 +73,7 @@ func (g *SubstrateLLMGateway) SetDefaultModelID(modelID string) {
 func NewLLMGateway(cfg config.ExecutionConfig) *SubstrateLLMGateway {
 	gw := &SubstrateLLMGateway{
 		sessions:     make(map[domain.LeaseID]*domain.BudgetLeaseState),
-		semaphore:    make(chan struct{}, cfg.LLMGatewayMaxConcurrency),
+		semaphore:    make(chan struct{}, cfg.LLM.LLMGatewayMaxConcurrency),
 		healthCache:  make(map[string]*modelHealthEntry),
 		modelClients: make(map[string]domain.LLMStreamer),
 		cfg:          cfg,
@@ -108,7 +108,7 @@ const minSessionTTL = 10 * time.Minute
 func (g *SubstrateLLMGateway) Acquire(_ context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (domain.LeaseID, error) {
 	sessionID := domain.LeaseID(fmt.Sprintf("lease-%d-%d", time.Now().UnixNano(), rand.Int63()%10000))
 	now := time.Now()
-	ttl := time.Duration(float64(estimatedDuration) * g.cfg.SessionTokenTTLMultiplier)
+	ttl := time.Duration(float64(estimatedDuration) * g.cfg.Session.SessionTokenTTLMultiplier)
 	if ttl < minSessionTTL {
 		ttl = minSessionTTL
 	}
@@ -307,7 +307,7 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		// Keepalive TTL refresh
 		g.mu.Lock()
 		if s, ok := g.sessions[sessionID]; ok {
-			ttl := time.Duration(float64(time.Minute) * g.cfg.SessionTokenTTLMultiplier)
+			ttl := time.Duration(float64(time.Minute) * g.cfg.Session.SessionTokenTTLMultiplier)
 			s.ExpiresAt = time.Now().Add(ttl)
 			s.LastActivityAt = time.Now()
 		}
@@ -436,7 +436,7 @@ func (g *SubstrateLLMGateway) GenerateWithTools(
 	}
 	g.mu.Lock()
 	if st, ok := g.sessions[sessionID]; ok {
-		ttl := time.Duration(float64(time.Minute) * g.cfg.SessionTokenTTLMultiplier)
+		ttl := time.Duration(float64(time.Minute) * g.cfg.Session.SessionTokenTTLMultiplier)
 		st.ExpiresAt = time.Now().Add(ttl)
 		st.LastActivityAt = time.Now()
 		st.ConsumedTokens += consumed

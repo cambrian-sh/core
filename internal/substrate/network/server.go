@@ -370,7 +370,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	// Scout discovery, Planner, Auctioneer, and DAGExecutor — the input goes
 	// verbatim to one configured agent through the same CallAgent seam a
 	// winning bidder would use (same priming, grants, scope, telemetry).
-	if s.ExecCfg.BypassAuction {
+	if s.ExecCfg.Routing.BypassAuction {
 		return s.executeBypassAuction(ctx, in, rawInput)
 	}
 
@@ -437,7 +437,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		// Phase 2 strict mode: refuse to invent a session. The caller must have opened one
 		// (CreateSession) and must present it, so "new work" and "continuation" are the
 		// caller's decision rather than a guess made from whether a header happens to be set.
-		if s.ExecCfg.RequireExplicitSession {
+		if s.ExecCfg.Session.RequireExplicitSession {
 			resolved := s.resolveCallerSession(ctx)
 			if resolved == "" {
 				return nil, status.Error(codes.InvalidArgument,
@@ -496,7 +496,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	var scoutReport *domain.DiscoveryReport
 	var scoutRan bool
 	var scoutLatencyMs int64
-	if s.Scout != nil && !s.ExecCfg.DisableScout {
+	if s.Scout != nil && !s.ExecCfg.Agents.DisableScout {
 		scoutStart := time.Now()
 		report := s.Scout.Discover(ctx, userInput)
 		scoutLatencyMs = time.Since(scoutStart).Milliseconds()
@@ -550,7 +550,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	// DAG execution when plan_preview_only is set. An eval can then score the
 	// planner's required_capabilities emission + deterministic L1 gating without
 	// paying for full agentic execution (benchmark/eval-only path).
-	if s.ExecCfg.PlanPreviewOnly {
+	if s.ExecCfg.Plan.PlanPreviewOnly {
 		planJSON, mErr := json.Marshal(plan)
 		if mErr != nil {
 			return nil, fmt.Errorf("plan_preview_only: marshal plan: %w", mErr)
@@ -691,7 +691,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			// ROUTE-03: thread the step's declared capabilities into the
 			// auction ONLY under the capability_contract arm, so the control
 			// arm leaves RequiredCapabilities empty (byte-identical L1).
-			if s.ExecCfg.CapabilityContract {
+			if s.ExecCfg.Routing.CapabilityContract {
 				auctionTask.RequiredCapabilities = step.RequiredCapabilities
 			}
 			// Agent pin: carried unconditionally (the flag is read at the gate, so
@@ -747,7 +747,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 				}
 
 				// Inter-step fallback: try runner-up candidates when winner fails.
-				if s.ExecCfg.FallbackEnabled && len(runnerUps) > 0 {
+				if s.ExecCfg.Plan.FallbackEnabled && len(runnerUps) > 0 {
 					if fbResp, ok := s.runFallback(stepCtx, i, handoff, runnerUps, winningAgentID, healErr); ok {
 						resp = fbResp
 						err = nil
@@ -797,7 +797,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		return resp, nil
 	}
 
-	planCtx, cancelPlan := context.WithTimeout(ctx, time.Duration(s.ExecCfg.PlanTimeoutMs)*time.Millisecond)
+	planCtx, cancelPlan := context.WithTimeout(ctx, time.Duration(s.ExecCfg.Plan.PlanTimeoutMs)*time.Millisecond)
 	defer cancelPlan()
 
 	var eventWriter executer.TaskEventWriter
@@ -838,15 +838,15 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		ContentStore:           s.ContentStore,
 		StepCache:              s.StepCache,
 		SceneWriter:            sceneWriter,
-		UseGlobalWorkspace:     s.ExecCfg.UseGlobalWorkspace,
-		MaxContextSlots:        s.ExecCfg.MaxContextSlots,
-		ContextRefSnippetChars: s.ExecCfg.ContextRefSnippetChars,
+		UseGlobalWorkspace:     s.ExecCfg.Workspace.UseGlobalWorkspace,
+		MaxContextSlots:        s.ExecCfg.Plan.MaxContextSlots,
+		ContextRefSnippetChars: s.ExecCfg.Plan.ContextRefSnippetChars,
 		ThoughtFn:              executer.StepFunc(s.thoughtFn(plan)),
 		CheckpointValidator:    awareness.NewLLMCheckpointValidator(s.Planner),
 		ReplanHandler:          s.replanHandler(),
-		MaxReplanAttempts:      s.ExecCfg.MaxReplanAttempts,
-		MaxFanOutWidth:         s.ExecCfg.MaxFanOutWidth,
-		MaxPlanCost:            s.ExecCfg.MaxPlanCost,
+		MaxReplanAttempts:      s.ExecCfg.Plan.MaxReplanAttempts,
+		MaxFanOutWidth:         s.ExecCfg.Plan.MaxFanOutWidth,
+		MaxPlanCost:            s.ExecCfg.Plan.MaxPlanCost,
 		DefaultInputCostPer1M:  s.Manager.DefaultInputCostPer1M,
 		DefaultOutputCostPer1M: s.Manager.DefaultOutputCostPer1M,
 		CurrentSessionID:       sessionID,
@@ -856,7 +856,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		// stayed open indefinitely.
 		SessionCloser:     s.SessionMgr,
 		CheckpointStore:   s.executorCheckpointStore(),
-		StepCachePolicies: s.ExecCfg.StepCachePolicies,
+		StepCachePolicies: s.ExecCfg.Plan.StepCachePolicies,
 		EventBus:          s.EventBus, // ADR-0047 0047-17: PlanStateChanged → operator feed
 	}
 
@@ -1243,7 +1243,7 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 // The "/plan " slash-prefix is stripped for parity with the auction arm,
 // where the InputRouter consumes it as a Layer-1 command, not task content.
 func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawInput string) (*pb.Handoff, error) {
-	agentID := s.ExecCfg.SingleAgentID
+	agentID := s.ExecCfg.Routing.SingleAgentID
 	if agentID == "" {
 		return nil, status.Error(codes.FailedPrecondition,
 			"bypass_auction: execution.single_agent_id is required")
@@ -1367,9 +1367,9 @@ func (s *Server) runFallback(
 			winnerConf = c
 		}
 	}
-	threshold := s.ExecCfg.FallbackConfidenceThreshold * winnerConf
+	threshold := s.ExecCfg.Plan.FallbackConfidenceThreshold * winnerConf
 	if threshold == 0 {
-		threshold = s.ExecCfg.FallbackConfidenceThreshold
+		threshold = s.ExecCfg.Plan.FallbackConfidenceThreshold
 	}
 
 	instanceIDs := s.Manager.GetInstanceIDs(winningAgentID)
@@ -1441,7 +1441,7 @@ func injectMoodContext(ctx context.Context, s *Server, sessionID domain.SessionI
 		ses, err := s.SessionMgr.GetSession(ctx, sessionID)
 		if err == nil && ses != nil && !ses.CompletedAt.IsZero() {
 			days := int(time.Since(ses.CompletedAt).Hours() / 24)
-			if days >= s.ExecCfg.PlanDriftDays && s.ExecCfg.PlanDriftDays > 0 {
+			if days >= s.ExecCfg.Plan.PlanDriftDays && s.ExecCfg.Plan.PlanDriftDays > 0 {
 				driftNote := fmt.Sprintf(
 					"\n\nCONTEXT DRIFT WARNING: This session was completed %d days ago. "+
 						"References, file paths, and configuration may be stale. "+

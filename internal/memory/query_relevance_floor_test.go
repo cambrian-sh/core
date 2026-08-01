@@ -45,7 +45,7 @@ func TestQuerySearch_RelevanceFloorDropsIrrelevant(t *testing.T) {
 		fact("borderline", 0.25), // == floor → kept (not below)
 		fact("river-junk", 0.10), // unrelated promoted tool output → DROP
 	}}
-	qs := NewQueryService(&fakeEmbedder{}, store)
+	qs := NewQueryService(&fakeEmbedder{}, store, nil)
 	qs.SetRelevanceFloor(0.25)
 
 	got, err := qs.Search(context.Background(), "q", "agent")
@@ -71,7 +71,7 @@ func TestQuerySearch_RelevanceFloorEmptyWhenAllBelow(t *testing.T) {
 		fact("junk-a", 0.12),
 		fact("junk-b", 0.08),
 	}}
-	qs := NewQueryService(&fakeEmbedder{}, store)
+	qs := NewQueryService(&fakeEmbedder{}, store, nil)
 	qs.SetRelevanceFloor(0.25)
 
 	got, err := qs.Search(context.Background(), "q", "agent")
@@ -89,7 +89,7 @@ func TestQuerySearch_RelevanceFloorZeroDisabled(t *testing.T) {
 		fact("a", 0.9),
 		fact("b", 0.01),
 	}}
-	qs := NewQueryService(&fakeEmbedder{}, store)
+	qs := NewQueryService(&fakeEmbedder{}, store, nil)
 	// no SetRelevanceFloor → floor 0
 
 	got, err := qs.Search(context.Background(), "q", "agent")
