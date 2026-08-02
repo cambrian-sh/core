@@ -250,6 +250,27 @@ func (p *Provider) GeneratorFor(purpose domain.Purpose, hints ...string) domain.
 	return &purposeGenerator{provider: p, purpose: purpose, hints: hints}
 }
 
+// GeneratorForModel returns a Generator that PREFERS the named generator id on
+// every call, falling down the ordinary failover ladder when it is unhealthy
+// or unknown (ADR-0112 §15: the Ingress Studio's drafting model is operator
+// configuration, resolved per call so a change needs no restart).
+func (p *Provider) GeneratorForModel(id string) domain.Generator {
+	return &modelGenerator{provider: p, id: id}
+}
+
+type modelGenerator struct {
+	provider *Provider
+	id       string
+}
+
+func (g *modelGenerator) Generate(ctx context.Context, prompt string) (string, error) {
+	gen, err := g.provider.Acquire(ctx, domain.LLMRequest{SuggestedModelID: g.id})
+	if err != nil {
+		return "", err
+	}
+	return gen.Generate(ctx, prompt)
+}
+
 type purposeGenerator struct {
 	provider *Provider
 	purpose  domain.Purpose

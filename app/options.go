@@ -296,6 +296,13 @@ type KernelServices struct {
 	// deployment's secrets.
 	ResolveNamedSecret func(name string) (value string, ok bool)
 
+	// GeneratorForModel returns a Generator that PREFERS the named generator
+	// id per call, falling down the failover ladder when it is unhealthy or
+	// unknown (ADR-0112 §15). Resolution happens on every Generate, so an
+	// operator's model change needs no restart. nil when no LLM provider is
+	// configured; an empty id behaves as the deployment default.
+	GeneratorForModel func(modelID string) domain.Generator
+
 	// StoreNamedSecret / ClearNamedSecret / NamedSecretStatus are the WRITE
 	// half of the named-credential seam (ADR-0112 §13): encrypted set, clear,
 	// and presence + last-four — never a read-back RPC anywhere above them.
