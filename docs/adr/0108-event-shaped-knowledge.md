@@ -1,6 +1,6 @@
 # ADR-0108: Event-Shaped Knowledge (Knowledge Substrate Phase 4)
 
-**Status:** Proposed
+**Status:** Implemented (gate passed live 2026-08-01, nothing embedded; see DECISIONS.md)
 **Date:** 2026-08-01
 **Relates to:** ADR-0105 (evidence + outbox), ADR-0106 (epistemic split), the
 knowledge-substrate memo (§6, §7A/B/E, §15, §18 phase 4), DECISIONS.md 2026-08-01

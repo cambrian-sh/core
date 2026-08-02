@@ -108,6 +108,44 @@ func (i *Ingestor) Ingest(ctx context.Context, raw Raw) (id domain.EvidenceID, i
 	return id, inserted, nil
 }
 
+// Stage makes one delivery's bytes durable in the content store WITHOUT
+// writing an evidence row — step 1 of the ordering contract, alone.
+//
+// Exists for the raw-delivery lane (ADR-0112 §6): a transport stages the
+// original bytes, sends only the CID through the signal journal (bodies never
+// ride the journal, ADR-0104), and the ingest_raw action later re-presents the
+// bytes to Ingest — whose own Put is idempotent under the same CID. A crash
+// between Stage and Ingest leaves an orphan blob: garbage, not damage, GC's
+// problem. Defined HERE so the content-node shape (type, snippet) can never
+// drift from what Ingest writes.
+func (i *Ingestor) Stage(ctx context.Context, data []byte) (domain.CID, error) {
+	if len(data) == 0 {
+		return "", fmt.Errorf("evidence stage: delivery carries no bytes")
+	}
+	cid, err := i.blobs.Put(ctx, data, contentNodeType, nil, snippet(data))
+	if err != nil {
+		return "", fmt.Errorf("evidence stage: store bytes: %w", err)
+	}
+	ok, err := i.blobs.Has(ctx, cid)
+	if err != nil {
+		return "", fmt.Errorf("evidence stage: verify content %s: %w", cid, err)
+	}
+	if !ok {
+		return "", fmt.Errorf("evidence stage: content %s not retrievable after put", cid)
+	}
+	return cid, nil
+}
+
+// FetchStaged resolves staged bytes by CID — the read half the ingest_raw
+// action needs to turn a journaled reference back into the original delivery.
+func (i *Ingestor) FetchStaged(ctx context.Context, cid domain.CID) ([]byte, error) {
+	node, err := i.blobs.Get(ctx, cid)
+	if err != nil {
+		return nil, fmt.Errorf("evidence fetch: content %s: %w", cid, err)
+	}
+	return node.Data, nil
+}
+
 // snippet returns a bounded, valid-UTF-8 prefix for the blob's inline snippet,
 // or "" for binary content — mirroring the ContentStore's own convention.
 func snippet(b []byte) string {

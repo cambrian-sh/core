@@ -1,6 +1,6 @@
 # ADR-0111: The Typed Query Plane (Knowledge Substrate Phase 7)
 
-**Status:** Proposed
+**Status:** Implemented (gate 10/10 live 2026-08-01; see DECISIONS.md)
 **Date:** 2026-08-01
 **Relates to:** ADR-0106/0108/0110 (the stores and registry it reads), the memo §14
 (the seven question shapes and the guarantee ladder) and §18 phase 7

@@ -412,6 +412,11 @@ func Run(ctx context.Context, opts Options) error {
 	// ever read what had been saved.
 	if cfgStore != nil {
 		llm.SetSecretResolver(cfgStore)
+		// ADR-0112: the plugin-facing named-secret seam reads the same store.
+		// Inside this guard on purpose — boxing a typed-nil *BoltConfigStore
+		// into the holder's interface would re-create the trap
+		// config_store_off_test.go exists to prevent.
+		setNamedSecretSource(cfgStore)
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1071,7 +1076,18 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 	if evIngestor != nil {
 		kernelSvc.EvidenceIngest = evIngestor.Ingest
+		// ADR-0112 §6: the raw-delivery lane's split of the same ordering
+		// contract — stage bytes now, journal a CID, ingest on the watch side.
+		kernelSvc.StageEvidenceContent = evIngestor.Stage
+		kernelSvc.FetchEvidenceContent = evIngestor.FetchStaged
 	}
+	// ADR-0112: name-at-a-time credential resolution for plugin lanes. Reads
+	// through the late-bound holder Run attaches the config store to; before
+	// attachment (or with the store off) it answers ok=false.
+	kernelSvc.ResolveNamedSecret = resolveNamedSecret
+	kernelSvc.StoreNamedSecret = storeNamedSecret
+	kernelSvc.ClearNamedSecret = clearNamedSecret
+	kernelSvc.NamedSecretStatus = namedSecretStatus
 
 	// ADR-0082 D12: the Build phase — plugins construct their runtime objects now that the
 	// stacks exist and before anything is served. Runs in dependency order; a plugin that
