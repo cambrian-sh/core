@@ -271,6 +271,39 @@ type KernelServices struct {
 	// §14 question shapes, with "cannot express safely" the only failure mode.
 	// nil when no Postgres is configured.
 	QueryPlane domain.QueryPlane
+
+	// StageEvidenceContent makes one delivery's ORIGINAL bytes durable in the
+	// content-addressed store before anything else touches them (ADR-0112 §6).
+	// The raw-delivery lane sends the returned CID — never the body — through
+	// the signal journal (ADR-0104's payload-as-reference rule), and the
+	// ingest_raw action re-presents the bytes to EvidenceIngest, whose own Put
+	// is idempotent under the same CID. nil when evidence capture is disabled —
+	// a transport that needs the archive must refuse deliveries rather than
+	// acknowledge what nothing preserved.
+	StageEvidenceContent func(ctx context.Context, data []byte) (domain.CID, error)
+
+	// FetchEvidenceContent resolves a staged CID back to the original bytes —
+	// the read half of the raw-delivery lane. nil when evidence capture is
+	// disabled.
+	FetchEvidenceContent func(ctx context.Context, cid domain.CID) ([]byte, error)
+
+	// ResolveNamedSecret reads ONE named credential (e.g. "ingress:<name>:secret",
+	// the llm generator-key naming pattern) from the ADR-0101 store. ok=false
+	// when no store is configured or the name is unset. The value must never
+	// appear in specs, logs, previews, or errors — the caller holds it exactly
+	// long enough to use it. Deliberately name-at-a-time with no list operation:
+	// a plugin can use a credential it knows the name of, never enumerate the
+	// deployment's secrets.
+	ResolveNamedSecret func(name string) (value string, ok bool)
+
+	// StoreNamedSecret / ClearNamedSecret / NamedSecretStatus are the WRITE
+	// half of the named-credential seam (ADR-0112 §13): encrypted set, clear,
+	// and presence + last-four — never a read-back RPC anywhere above them.
+	// The same name-at-a-time discipline: no enumeration. nil-safe like the
+	// read half (errors when the store is off).
+	StoreNamedSecret  func(name, value string) error
+	ClearNamedSecret  func(name string) error
+	NamedSecretStatus func(name string) (configured bool, lastFour string)
 }
 
 // SessionScopeReader returns the caller term persisted on a session record. It is

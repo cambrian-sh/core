@@ -1,6 +1,6 @@
 # ADR-0110: The Knowledge Kind Registry (Knowledge Substrate Phase 6)
 
-**Status:** Proposed
+**Status:** Implemented (gate: fourth source by configuration alone, 2026-08-01; see DECISIONS.md)
 **Date:** 2026-08-01
 **Relates to:** ADR-0106 (items/values, latest_assertion), ADR-0108 (events/observations,
 transformer seam), ADR-0109 (policy statements), the memo §5 (value types), §13

@@ -1,6 +1,6 @@
 # ADR-0105: The Evidence Foundation (Knowledge Substrate Phase 1)
 
-**Status:** Proposed
+**Status:** Implemented (gates green + live-validated 2026-08-01; see DECISIONS.md)
 **Date:** 2026-08-01
 **Relates to:** ADR-0053 (general-purpose knowledge graph, deferred Layers 1–2), ADR-0104
 (reactive-first architecture), ADR-0022 (content-addressed store), ADR-0095 (classification

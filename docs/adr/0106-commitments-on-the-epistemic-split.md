@@ -1,6 +1,6 @@
 # ADR-0106: Commitments on the Epistemic Split (Knowledge Substrate Phase 2a)
 
-**Status:** Proposed
+**Status:** Implemented (gate 0/244 x3, backing default ON since 2026-08-01; see DECISIONS.md)
 **Date:** 2026-08-01
 **Relates to:** ADR-0105 (evidence foundation), ADR-0102 (drift record lane, premium),
 the knowledge-substrate memo (§6, §8, §13, §18 are normative), DECISIONS.md 2026-08-01

@@ -33,8 +33,8 @@ func NewPgKnowledgeStore(pool *pgxpool.Pool, reg *domain.KindRegistry) *PgKnowle
 var _ domain.KnowledgeStore = (*PgKnowledgeStore)(nil)
 
 // PutItem appends one item and re-derives the resolution for its key from the
-// FULL item set via domain.ResolveLatestAssertion â€” never by comparing against
-// "the prior row", which is the arrival-order bug the memo forbids (Â§13).
+// FULL item set via domain.ResolveLatestAssertion — never by comparing against
+// "the prior row", which is the arrival-order bug the memo forbids (§13).
 func (s *PgKnowledgeStore) PutItem(ctx context.Context, item domain.KnowledgeItem) (domain.KnowledgeItemID, bool, error) {
 	if item.Kind == "" || item.EntityID == "" {
 		return "", false, fmt.Errorf("knowledge put: kind and entity_id are required")
@@ -101,7 +101,7 @@ func (s *PgKnowledgeStore) PutItem(ctx context.Context, item domain.KnowledgeIte
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Replay: the assertion is already recorded. Nothing changed, so the
-		// resolution cannot have changed either â€” return the existing identity.
+		// resolution cannot have changed either — return the existing identity.
 		if err := tx.QueryRow(ctx, `
 			SELECT id FROM knowledge_items
 			WHERE namespace_id=$1 AND kind=$2 AND entity_id=$3 AND source_ref=$4`,
@@ -164,7 +164,7 @@ func insertValue(ctx context.Context, tx pgx.Tx, itemID string, v domain.Stateme
 // rederive recomputes the key's resolution from ALL its items and versions the
 // row when the answer changed: close the current version, insert the new one.
 // The policy comes from the kind's declaration and the resolver from the
-// authority registry (ADR-0110 D3) â€” an undeclared kind derives under
+// authority registry (ADR-0110 D3) — an undeclared kind derives under
 // latest_assertion, exactly as before the registry existed.
 func (s *PgKnowledgeStore) rederive(ctx context.Context, tx pgx.Tx, ns, kind, entity, actor string) error {
 	policy := domain.ResolutionPolicyLatestAssertion
@@ -174,7 +174,7 @@ func (s *PgKnowledgeStore) rederive(ctx context.Context, tx pgx.Tx, ns, kind, en
 	authority, ok := s.reg.Authority(policy)
 	if !ok {
 		// NewKindRegistry refuses undeclared policies at boot, so this is a
-		// wiring bug, not a data condition â€” refuse rather than silently
+		// wiring bug, not a data condition — refuse rather than silently
 		// deriving under a different policy than the kind declared.
 		return fmt.Errorf("kind %q: no authority registered for policy %q", kind, policy)
 	}
@@ -242,7 +242,7 @@ func (s *PgKnowledgeStore) rederive(ctx context.Context, tx pgx.Tx, ns, kind, en
 		return err
 	default:
 		if equalPtr(curItem, winnerID) && curReason == reason {
-			return nil // unchanged â€” no new version
+			return nil // unchanged — no new version
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE resolutions SET system_to = now()
@@ -411,7 +411,7 @@ func scanItem(ctx context.Context, pool *pgxpool.Pool, where string, arg any) ([
 // EraseItems implements the compliance erasure (ADR-0106 addendum): delete the
 // matching items, their values (FK cascade) and every resolution version that
 // referenced them, then re-derive the projection for keys that only lost SOME
-// of their items â€” a surviving speaker's belief must not vanish because a
+// of their items — a surviving speaker's belief must not vanish because a
 // different speaker's data was erased.
 func (s *PgKnowledgeStore) EraseItems(ctx context.Context, namespace, kind string, sel domain.KnowledgeErasure) (int, error) {
 	if kind == "" {
@@ -434,7 +434,7 @@ func (s *PgKnowledgeStore) EraseItems(ctx context.Context, namespace, kind strin
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
 
-	// The victims, and the (entity, actor) keys they belong to â€” collected
+	// The victims, and the (entity, actor) keys they belong to — collected
 	// BEFORE deletion, because afterwards there is nothing left to ask.
 	rows, err := tx.Query(ctx, `
 		SELECT DISTINCT ki.id, ki.entity_id, ki.asserted_by
@@ -466,7 +466,7 @@ func (s *PgKnowledgeStore) EraseItems(ctx context.Context, namespace, kind strin
 		return 0, tx.Commit(ctx)
 	}
 
-	// Resolution history first (it references the items), then the items â€”
+	// Resolution history first (it references the items), then the items —
 	// statement_values goes with them via ON DELETE CASCADE.
 	if _, err := tx.Exec(ctx, `DELETE FROM resolutions WHERE item_id = ANY($1)`, ids); err != nil {
 		return 0, err
