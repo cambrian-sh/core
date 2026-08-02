@@ -1085,6 +1085,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// through the late-bound holder Run attaches the config store to; before
 	// attachment (or with the store off) it answers ok=false.
 	kernelSvc.ResolveNamedSecret = resolveNamedSecret
+	// ADR-0112 §15: model-pinned generators for plugin lanes whose model is
+	// operator configuration (the studio's drafter), resolved per call.
+	kernelSvc.GeneratorForModel = llmProvider.GeneratorForModel
 	kernelSvc.StoreNamedSecret = storeNamedSecret
 	kernelSvc.ClearNamedSecret = clearNamedSecret
 	kernelSvc.NamedSecretStatus = namedSecretStatus
