@@ -347,7 +347,7 @@ vocabulary in the UI or the contract.
 | **RP-1** | Graph data model + `EffectiveGraph()` compatibility + topological execution with pure/effect split (A1, A2 minus loops, A9). Legacy watches byte-identical. |
 | **RP-2** | Item stream, deterministic keys, fan-out, per-item claims **and recorded outputs**, per-item dead-letter (A3, A6, A7). |
 | **RP-3** | Routing nodes (`if`, `switch`), durable termination records (A4). |
-| **RP-4** | `save_to_memory` native node: `MemorySaver` port, synchronous result, kind-refusal split (A8). |
+| **RP-4** | `save_to_memory` native node, synchronous result, kind-refusal split (A8). **The `MemorySaver` port named in A8 is withdrawn by ADR-0114 D15** — the node is an adapter over ADR-0108's existing `domain.EventStore`, which is already reachable and already idempotent on `source_ref`. |
 | **RP-5** | `aggregate` / `merge` (A2). |
 | **RP-6** | `loop`: cycle legality check, iteration keys, `exhausted` port (A5). |
 | **RP-7** | Ingress pipelines: trigger binds the ADR-0090 registry, seed-on-arm, pinned `preserve_raw`, wildcard retired, floor becomes a lagged reconciler (B1–B5). |

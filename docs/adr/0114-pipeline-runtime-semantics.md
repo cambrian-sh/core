@@ -15,7 +15,7 @@ injection hardening), ADR-0071 (watch observability), ADR-0090 (ingress identity
 ADR-0113 describes a node-graph reactive engine: visual authoring, branching, bounded loops,
 aggregation, a native memory save, durable replay. An architecture review found the direction sound
 but the runtime semantics under-specified in ways that would have shipped defects. This ADR records
-the fourteen decisions that must be settled before any code is written.
+the twenty-two decisions that must be settled before any code is written.
 
 ### The finding that motivates the whole ADR
 
@@ -283,9 +283,334 @@ One transaction per deterministic node completion: verify fencing token → stor
 envelopes → close the consumed input obligation → enqueue ready successors or update the barrier →
 append the audit event → mark terminal.
 
+#### D14a. The fencing token is per-task, not global
+
+Each task row carries its own monotonically increasing `lease_token`, incremented on every claim.
+
+Fencing only has to order *attempts on the same task*: the question a commit asks is "am I still the
+owner of this task", never "am I newer than some other task". A global sequence would answer a
+question nobody asks and would become a write-contention point on exactly the hot path this store
+exists to make fast — every claim, from every worker, forever. A per-row counter is sufficient,
+contention-free, and local to the row already being locked.
+
+#### D14b. Lease expiry does not invalidate a commit — reassignment does
+
+The fence check verifies the token and deliberately **does not** check whether the lease has expired.
+
+If a lease lapsed but no other worker reclaimed the task, the token is unchanged and the slow
+worker's result is the only result that exists. Rejecting it would throw away completed work — and
+often externally-visible work, already performed — because a timer elapsed, gaining nothing: there is
+no competing result to protect. Since reclaiming a task *always* bumps the token, a genuinely
+superseded worker is already refused by the token check alone.
+
+So the rule is: **it is reassignment, not the clock, that makes a result stale.** Expiry only decides
+when a task becomes *claimable* again; it never decides whether finished work counts.
+
+The interaction to keep in mind: this means a very slow worker can commit long after its lease
+lapsed, provided nobody took the task. That is intended. The lease TTL is therefore a
+recovery-latency knob, not a correctness boundary — shortening it makes crashed work recoverable
+sooner and makes duplicate *attempts* more likely, which is precisely what the effect protocol's
+idempotency keys (D1) exist to absorb.
+
 **The live defect (`MarkExecutedOnce` loss window) is fixed by this state machine** — a claim becomes
 a lease with an attempt record, not a permanent one-way flag. Whether to also patch the shipped engine
 before the runtime lands is a separate call, tracked outside this ADR.
+
+### D15. `save_to_memory` is an adapter over ADR-0108's existing contract, not a new one
+
+**Owner directive, 2026-08-02.** The node reuses ADR-0108's existing **synchronous** substrate write
+contract directly. It does not introduce a parallel request model, and the reactive engine never
+touches substrate tables.
+
+`save_to_memory` is **only a graph-node adapter**. Its entire job is to convert its typed item into
+the substrate's existing command and supply a stable effect/idempotency key. Validation,
+kind-registry enforcement, provenance, isolation, transactionality, refusal handling and result IDs
+all remain owned by ADR-0108.
+
+**Verified: no new OSS surface is required.** The contract is already reachable —
+`app.KernelServices.Events` is `domain.EventStore`, "the substrate's typed event/observation
+boundary (ADR-0108 D2)", and it is synchronous and result-returning:
+
+```go
+RecordEvent(ctx, ev Event) (id EventID, inserted bool, err error)
+// Idempotent on (namespace, source_ref) when SourceRef is set: a replayed
+// delivery returns the existing id with inserted=false and writes nothing.
+```
+
+Two consequences worth stating, because they simplify the design rather than complicate it:
+
+- **The stable effect key is `SourceRef`.** The idempotency mechanism D1 asks for already exists in
+  the store, so this node's exactly-once claim is *structural* rather than something the pipeline
+  runtime implements or could get wrong.
+- **ADR-0113's "`MemorySaver` port" is withdrawn.** It would have been exactly the parallel model this
+  decision forbids. RP-3's work is the adapter and its key derivation, nothing more.
+
+The ADR-0112 "zero new OSS surface" directive is therefore honoured here with no deviation to
+ratify — unlike the three seams the ingress studio needed.
+
+### D16. Segment rollover: loop bodies are child runs
+
+**Decided 2026-08-02.** Of the two industry remedies D14's context names, we take AWS's: each loop
+iteration executes as its own **child `LogicalRun`**, linked to a parent, rather than rolling one run
+into successive journal segments (Temporal's Continue-As-New).
+
+Why this one, for us specifically:
+
+- **D5 already made loops own nested scopes.** A nested scope executing as a nested run is the same
+  shape twice, not a second concept.
+- **Everything already built keeps working unchanged** — tasks, leases, fencing, redrive, cancel and
+  the dead-letter view are all keyed by run, so a child run inherits them for free. Journal
+  segmentation would need a segment table, continuation-state encoding, atomic rollover and
+  cross-segment queries, none of which have a counterpart in the store.
+- **It bounds the thing that actually grows.** The unbounded quantity is tasks-per-run, and a child
+  run per iteration bounds it structurally rather than by watching a counter.
+
+**The rule that stops this becoming a loophole:** budgets roll up to the **root** run. ADR-0114's
+budgets section already says a child run must never be a way to hide unbounded work, and this is how
+that is enforced — every run carries a `root_run_id`, and work is charged against the root's counter
+no matter which child created it. A per-child budget bounds one iteration; the root budget bounds the
+whole tree.
+
+**Refinement (owner, 2026-08-02): the child-run boundary is the EXECUTION SCOPE, not a storage
+trick.** A child run is not "the same run's rows in another bucket". It is a first-class execution
+scope, and that has consequences the storage-only reading would miss:
+
+- **A run executes a scope, not always the root scope.** Every run records which compiled scope it
+  runs — the root scope for a parent, the loop's body scope for a child — so it has its own entry
+  node and its own task graph. This is what makes D5's nested scopes and D16's nested runs the same
+  structure rather than two that must be kept in sync.
+- **A child has its own lifecycle, and its terminal state is an observable fact.** The parent's loop
+  node consumes the child's completion to decide `done` / `exhausted` / `error`. It does not inspect
+  the child's tasks; it reads the child's outcome. Iterations are therefore composable in the same
+  way nodes are.
+- **Isolation is real.** A failure inside an iteration is contained to that child run, and what it
+  *means* is the parent's decision — which is precisely the "failure is local" invariant applied one
+  level up.
+- **Every store operation applies to a child unchanged**: it is independently claimable, resumable,
+  cancellable, redrivable and dead-letterable, because it is a run.
+
+Cancelling a parent cancels its descendants, and a child's failure surfaces on the parent's loop node
+through its `error` port. Both follow from the parent link and the scope boundary rather than needing
+separate machinery.
+
+### D17. Delivery mode is declared per node; there is no implicit default
+
+A sink that supports neither idempotency keys nor status lookup cannot be given a safe default by us,
+because the right answer is a business judgement. Such a node must declare:
+
+```
+delivery_mode: at_least_once | at_most_once
+```
+
+The **compiler refuses to publish or arm** a pipeline containing an uncapable-sink node that has not
+chosen. It is a **node** property, not a connector or deployment one: two uses of the same connector
+may have opposite consequences — a duplicate notification is noise, a duplicate payment is not.
+
+**No implicit deployment default exists.** Legacy configurations keep their historical behaviour
+under the D13 compatibility mode; every new node chooses.
+
+### D18. Retry policy: bounded inheritance, two budgets, classified errors
+
+Policy resolves through a fixed hierarchy, where an outer level can only *tighten*:
+
+```
+deployment hard ceiling
+    └── pipeline default
+            └── node override
+```
+
+Backoff is **exponential with full jitter**, shared with REACT-04's daemon backoff so the product has
+one curve rather than two that drift.
+
+**Two budgets, not one.** Retries are counted **per item**, so one poisonous record cannot consume
+the allowance of the other forty-nine — but there is also a **cumulative per-run attempt budget**,
+because per-item limits alone let 1,024 poisonous items each exhaust their own retries and become a
+retry storm. The per-item limit protects items from each other; the per-run limit protects the
+deployment from the run.
+
+Errors are classified, and the classification decides retryability rather than the call site:
+
+| Class | Behaviour |
+|---|---|
+| `refused` | Never retry — a constraint that rejected it will reject it again |
+| `permanent` | Never retry |
+| `transient` | Retry under policy |
+| `ambiguous` | The connector's delivery policy (D17) decides |
+
+**The default for an UNCLASSIFIED error is phase-aware, not fixed.** "Default to transient" is only
+sound while the runtime knows the request never left the process. Once it may have, a timeout, a
+connection reset or a worker crash is not evidence of failure — it is absence of evidence:
+
+| Phase | Unclassified error defaults to |
+|---|---|
+| Before dispatch, or a **confirmed** rejection | `transient` |
+| After possible dispatch, no receipt | `ambiguous` |
+
+An explicit classification always wins, which is what keeps a confirmed HTTP 400 *after* dispatch
+`permanent` rather than ambiguous.
+
+For `save_to_memory` the ambiguous case still resolves by retrying, because the same projection key
+(D23) makes Postgres return the original receipt rather than writing twice. That is the difference
+between an internal transactional sink and an external one, and it is why D1 grants exactly-once to
+one and not the other.
+
+### D19. `ProjectionIntent` is a distinct logical record in the execution store
+
+The execution store is the right home, but **the task must not be the only representation** — an
+earlier draft of this decision proposed exactly that and was wrong.
+
+**A `NodeTask` is an execution attempt. A `ProjectionIntent` is the stable logical mutation** that
+must survive attempts, leases, worker replacement and replay. Collapsing them makes the durable
+intent inherit the lifecycle of whichever attempt happened to carry it.
+
+```
+NodeTask
+  └── ProjectionIntent
+        ├── stable effect key
+        ├── substrate command / input digest
+        ├── evidence and item lineage
+        ├── prepared | dispatched | confirmed | ambiguous | failed
+        └── result receipt
+```
+
+They may share a transaction and a storage backend; they have **distinct identities and distinct
+lifecycle states**.
+
+**For `save_to_memory`, ambiguity normally resolves automatically.** Retrying the ADR-0108
+synchronous commit with the same effect key is safe: if the first commit succeeded, Postgres returns
+the existing receipt. Operator intervention is therefore mainly for *uncapable external sinks*, not
+for the substrate — which is another consequence of D15's reuse.
+
+**It does not go in `ingress_studio_projections`.** That would create a second execution authority,
+which is the split-brain D11 exists to remove.
+
+### D20. Join policy: strict on failure, successful closure on emptiness
+
+"Fail fast on everything" is too broad — producing no items is frequently the correct result of
+filtering or routing, and treating it as an error would make declared termination unusable.
+
+| Branch outcome | Default join behaviour |
+|---|---|
+| Succeeded with items | Include |
+| Closed empty | Continue, with an empty contribution |
+| Explicitly terminated | Continue, recording the termination |
+| Refused | Fail the join |
+| Permanently failed | Fail the join |
+| Timed out | Fail the join |
+| Cancelled | Fail the join |
+
+Overridable per join node.
+
+**Sibling cancellation is a separate policy**, `on_terminal_failure: cancel_pending_siblings`,
+**enabled by default** once the join can no longer succeed. The limit is stated rather than assumed
+away: already-running external effects cannot be presumed cancellable or reversible, so their
+eventual outcomes are still recorded even when their join is already lost.
+
+### D21. Canonical ordering at joins
+
+Ordering is specified precisely, because "deterministic" is not self-evident:
+
+- **normalised** item keys;
+- **bytewise lexicographic ascending**;
+- **duplicate keys within one join scope are rejected** rather than merged;
+- grouped joins sort by canonical group key, then item key;
+- the iteration path is part of identity where it applies.
+
+**Never worker completion order, and never enqueue order** — both make a replay's result depend on
+timing.
+
+### D22. Loop iteration state is explicit and typed
+
+`repeat_until` declares: `state_schema`, an `initial_state` expression, the child-body input schema,
+the `next_state` output schema, the termination condition, and maxima for iterations, state bytes and
+wall time.
+
+Each child run receives an **immutable envelope**:
+
+```
+{ iteration, state, item, loop_scope }
+```
+
+The body returns `next_state` through a **dedicated typed output**. That value becomes the next child
+run's input and is recorded in the child's outcome. There is no ambient mutation and no
+general-purpose `loop.acc` — which is what makes an iteration's contribution an observable fact of
+its run rather than a side effect, consistent with D16's execution-scope boundary.
+
+**`foreach` has no shared mutable state at all.** Each child receives its item plus read-only loop
+context. Shared iteration state would make the future move to parallel iteration nondeterministic,
+and that door should not be closed by an accident of the sequential implementation.
+
+#### D22a. Batching runs over a canonical order, and a batch's identity carries its contents
+
+**Owner invariant, 2026-08-02.** Two properties, and neither is optional:
+
+1. **Batching operates on a canonically ordered collection.** Partitioning is a function of order, so
+   an unstable order is an unstable partition. Elements are ordered by their canonical JSON encoding,
+   which is total and deterministic for anything the durable store can hold. `preserve_order: true`
+   opts out for sources where position both carries information and is trustworthy — opt-in, because
+   the failure it permits is silent while the failure the default permits (surprising reordering) is
+   visible immediately.
+2. **A batch's child-run identity is loop-node id + parent lineage + batch index + batch-content
+   digest.**
+
+The second is what makes the first enforceable rather than merely intended. A body task's key carries
+the batch index, and effect keys derive from the task key — so *which* items sit in batch 3 decides
+what effect key their work is recorded under. Index-only identity means a repartition silently hands
+batch 3's identity to different items, and a resume adopts work it never did. With the content digest,
+a repartition produces a *different* child run: the mismatch surfaces instead of corrupting.
+
+The same reasoning applies to `repeat_until` for a different reason and needs no digest: its identity
+is the iteration index and its content is the explicit `next_state`, which is itself recorded as the
+child's outcome.
+
+### D23. The projection key identifies the projection, not the evidence
+
+D15's reuse of `domain.EventStore` is only safe if the uniqueness key identifies **the logical
+projection**. Today's `source_ref` does not, and the gap was verified in code:
+`ingressstudio/projection.go` composes `ingress:<id>:<delivery_ref>[:<child>]@r<mappingRevision>`.
+
+That encodes the delivery, the *mapping's* child ordinal, and the *mapping* revision. It does **not**
+encode:
+
+| Distinction | Consequence if omitted |
+|---|---|
+| Save-node UUID | Two `save_to_memory` nodes consuming the same item collide; the second is silently suppressed |
+| Pipeline revision | Distinct from the mapping revision; a re-authored graph looks like a replay |
+| Pipeline fan-out lineage | A `split` node's children are not the mapping's children |
+| Iteration path | Loop iterations suppress each other |
+| Reprocess intent | Deliberate re-projection is indistinguishable from a resume |
+
+So the adapter derives a **projection key** and supplies *that* as the event's `SourceRef` — which is
+exactly what D15 means by "supplies a stable effect/idempotency key". The store's existing uniqueness
+constraint and returned receipt then operate on logical projection identity:
+
+```
+proj:<pipelineID>@r<pipelineRevision>:<saveNodeUUID>:<itemKey>[#iter=<path>][~e<epoch>]:<evidenceSourceRef>
+```
+
+**Resume versus reprocess falls out of the key rather than needing a flag.** A resume reuses the same
+run, revision and lineage, so it produces the same key and the store returns the original receipt —
+which is why ambiguity resolves automatically here. Deliberate re-projection changes the key, and
+follows the model DW-1R already established for the studio: **a new revision legitimately
+re-produces**. The optional `~e<epoch>` is the explicit escape hatch for re-projecting under an
+unchanged revision; without it, re-running the same revision is by definition the same projection and
+suppression is correct.
+
+**The failure this prevents is bidirectional**, which is why both halves matter: too coarse a key
+suppresses legitimate remapping, and too coarse a key also lets two knowledge items from one delivery
+collide. Neither is detectable after the fact.
+
+### D24. The duplicated backoff curve is pinned by shared golden vectors
+
+D18 requires REACT-04's full-jitter curve. The implementation cannot be shared — REACT-04's lives in
+core's `internal/` tree, unreachable from premium — so the formula is duplicated, and a "must mirror"
+comment is not a control. Comments drift; the drift is silent; and the symptom is a retry storm in
+production.
+
+A **canonical golden-vector file** therefore pins the curve: fixed attempt numbers, base and max
+delays, and injected random values, with the expected delay for each. Both implementations assert
+against the same file. A change to either curve fails that package's test with a concrete number,
+which is what "must mirror" cannot do.
 
 ## Budgets
 
@@ -313,7 +638,7 @@ contain sensitive ingress data, so redaction, encryption, access control and per
 | **Phase 0** | This ADR, approved. |
 | **RP-1** | Compiler + compatibility shell: revisions, node UUIDs, canonical plan + checksum, typed ports and cardinality, declared termination, legacy executor. Deterministic nodes only; no external actions. |
 | **RP-2** | Durable execution core: logical runs, leases + fencing, attempts, state transitions, item lineage, atomic result + successor scheduling, events + materialised state, multidimensional budgets, segment rollover, **cancellation, deadlines, recovery, dead-letter/redrive API**. |
-| **RP-3** | Effect protocol: intents, stable idempotency keys, dispatcher, `ambiguous`, retry/catch policy, typed error outputs. `save_to_memory` first (strongest idempotency); connectors only once their capability contracts are explicit. |
+| **RP-3** | Effect protocol: intents, stable idempotency keys, dispatcher, `ambiguous`, retry/catch policy, typed error outputs. `save_to_memory` first (strongest idempotency) — as an **adapter over `domain.EventStore`** per D15, not a new port; connectors only once their capability contracts are explicit. |
 | **RP-4** | Barriers and aggregation: fork obligations, branch closure, explicit merge/join, deterministic ordering, empty/failed/timeout policy. |
 | **RP-5** | Structured loops: `foreach`, `repeat_until`, iteration paths, continuation state, child/segment summaries. |
 | **RP-6** | Ingress integration and provenance: preserve-before-run, provenance propagation, external-fetch preservation, projection-intent reconciliation replacing independent repair. |
