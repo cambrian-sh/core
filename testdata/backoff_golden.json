@@ -1,0 +1,26 @@
+{
+  "description": "Canonical full-jitter exponential backoff vectors (ADR-0114 D24). The curve is ceiling = min(base * 2^n, max), and the returned delay is jitter(ceiling), uniform over [0, ceiling]. TWO implementations must satisfy this file: agentmgr.DaemonRestartPolicy (REACT-04 / ADR-0070, core internal) and pipeline.RetryPolicy (ADR-0114 D18, premium). They cannot share code — REACT-04 lives in core's internal tree and is unreachable from premium — so this file is the control that a 'must mirror' comment could never be. If you change either curve, this file fails with a concrete number in the package you changed.",
+  "attempt_indexing": "n is ZERO-BASED (first attempt is n=0). agentmgr uses n directly; pipeline.Backoff takes a 1-based attempt, so it is called with n+1.",
+  "vectors": [
+    {"n": 0, "base_ms": 1000, "max_ms": 8000, "ceiling_ms": 1000},
+    {"n": 1, "base_ms": 1000, "max_ms": 8000, "ceiling_ms": 2000},
+    {"n": 2, "base_ms": 1000, "max_ms": 8000, "ceiling_ms": 4000},
+    {"n": 3, "base_ms": 1000, "max_ms": 8000, "ceiling_ms": 8000},
+    {"n": 4, "base_ms": 1000, "max_ms": 8000, "ceiling_ms": 8000},
+    {"n": 10, "base_ms": 1000, "max_ms": 8000, "ceiling_ms": 8000},
+
+    {"n": 0, "base_ms": 500, "max_ms": 300000, "ceiling_ms": 500},
+    {"n": 1, "base_ms": 500, "max_ms": 300000, "ceiling_ms": 1000},
+    {"n": 5, "base_ms": 500, "max_ms": 300000, "ceiling_ms": 16000},
+    {"n": 9, "base_ms": 500, "max_ms": 300000, "ceiling_ms": 256000},
+    {"n": 10, "base_ms": 500, "max_ms": 300000, "ceiling_ms": 300000},
+
+    {"n": 0, "base_ms": 1, "max_ms": 1, "ceiling_ms": 1},
+    {"n": 7, "base_ms": 1, "max_ms": 1, "ceiling_ms": 1},
+
+    {"n": 40, "base_ms": 1000, "max_ms": 30000, "ceiling_ms": 30000},
+    {"n": 62, "base_ms": 1000, "max_ms": 30000, "ceiling_ms": 30000},
+    {"n": 200, "base_ms": 1000, "max_ms": 30000, "ceiling_ms": 30000}
+  ],
+  "jitter_bounds": "For every vector, the returned delay must lie in [0, ceiling_ms] inclusive. Injecting a jitter that returns 0 must yield 0; injecting one that returns its argument must yield exactly ceiling_ms. The high-n vectors exist to catch a float64 overflow producing +Inf or a negative integer wrap; both must still clamp to max_ms."
+}
