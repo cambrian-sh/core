@@ -44,6 +44,11 @@ mappings=(
     "$premium/api/proto/authz/access_policy.proto|$root/ui/proto/authz/access_policy.proto"
     "$premium/api/proto/records/records.proto|$root/ui/proto/records/records.proto"
     "$premium/api/proto/telegram/telegram_admin.proto|$root/ui/proto/telegram/telegram_admin.proto"
+    # ADR-0112. This copy was HAND-MAINTAINED and had already drifted: the UI's
+    # Rust client compiles from ui/proto, so a premium-side RPC simply did not
+    # exist for the console until somebody remembered to copy the file. That is
+    # the exact failure this script exists to prevent, so it is listed here now.
+    "$premium/api/proto/ingress/ingress_studio.proto|$root/ui/proto/ingress/ingress_studio.proto"
     "$premium/api/proto/telemetry/telemetry_admin.proto|$root/ui/proto/telemetry/telemetry_admin.proto"
     # Not a proto, same problem. cambrian-benchmarks re-implements the Go chunkers
     # in Python; this fixture is what its differential test asserts the ports

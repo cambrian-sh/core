@@ -163,6 +163,77 @@ service OperatorConsole {
   // on premium builds; OSS returns an empty list (no reactive engine writes them).
   rpc ListWatchDeadLetters(ListWatchDeadLettersOpRequest) returns (ListWatchDeadLettersOpResponse);
 
+  // ── Reactive pipelines (contract 0087, ADR-0114 D33/D34) ──────────────────
+  //
+  // A pipeline is not a watch. A watch is one condition and a list of arms; a
+  // pipeline is an authored, versioned GRAPH with typed ports, declared
+  // discards and a durable execution store behind it. They are listed
+  // separately because collapsing them would force one shape to lie about the
+  // other — a watch has no revisions and no nodes, a pipeline has no single
+  // condition.
+  //
+  // Every ingress created through the Ingress Studio owns one, generated from
+  // its mapping and armed with the ingress (D34). An ingress that has not been
+  // armed has NO armed pipeline, and that is a normal state, not a fault.
+  //
+  // Read RPC (no command_id). Capability "reactive-pipelines", advertised on
+  // premium builds; OSS returns an empty list.
+  rpc ListPipelines(ListPipelinesOpRequest) returns (ListPipelinesOpResponse);
+
+  // DryRunPipeline replays captured deliveries through the compiled plan with
+  // every effect shadowed: every gate, branch, aggregate and key derivation runs
+  // for real, and nothing reaches the world.
+  //
+  // The substitution is at the DISPATCHER and nowhere earlier, which is what
+  // makes the report worth reading — effect-key derivation, projection identity
+  // and barrier obligations all execute, so a duplicate key surfaces here rather
+  // than as missing knowledge weeks later.
+  //
+  // Distinct from BacktestWatch, which asks a different question: a dry run asks
+  // what this would do to what is arriving now; a backtest replays journaled
+  // history to argue for a change. Neither ever executes an arm.
+  //
+  // Read RPC (no command_id) — it performs nothing. Capability
+  // "reactive-pipelines"; OSS REFUSES by name rather than answering with an
+  // empty report, because "nothing would happen" is not a true answer on a build
+  // that cannot run one.
+  rpc DryRunPipeline(DryRunPipelineOpRequest) returns (DryRunPipelineOpResponse);
+
+  // GetPipeline returns one authored revision as authored, plus what the
+  // compiler says about it right now.
+  //
+  // The refusals travel with the READ, not only with an edit: a stored revision
+  // can stop compiling without anyone touching it — a ceiling lowered, a node
+  // kind retired — and a console that validated only on edit would offer to
+  // publish it.
+  //
+  // Read RPC (no command_id). Capability "reactive-pipelines".
+  rpc GetPipeline(GetPipelineOpRequest) returns (GetPipelineOpResponse);
+
+  // ValidatePipeline compiles a graph document WITHOUT storing it, so an editor
+  // can ask on every change.
+  //
+  // Deliberately separate from the lifecycle's own validate step, which
+  // transitions a stored revision. This one has no side effect of any kind: an
+  // editor that could accidentally publish is a worse editor, and the safest
+  // way to guarantee it cannot is to give it an RPC that has no power to.
+  //
+  // Read RPC (no command_id) — it stores nothing.
+  rpc ValidatePipeline(ValidatePipelineOpRequest) returns (ValidatePipelineOpResponse);
+
+  // SavePipeline stores an edited graph as a new DRAFT revision.
+  //
+  // It can create a draft and nothing else. Publishing and arming stay on the
+  // lifecycle, where each is an explicit act with its own gate — a canvas that
+  // could arm what it had just drawn would collapse four deliberate steps into
+  // one mouse click.
+  //
+  // A graph that breaks rules is still stored. An operator mid-edit needs to
+  // keep their work, and a draft cannot run; what refusals block is publishing.
+  //
+  // Capability "reactive-pipelines".
+  rpc SavePipeline(SavePipelineOpRequest) returns (SavePipelineOpResponse);
+
   // ── Kernel logs (contract 0082) ───────────────────────────────────────────
   //
   // OPERATOR-ONLY, both of them. A log line carries whatever the kernel happened
@@ -774,7 +845,84 @@ message OperatorEvent {
     // finished an hour ago would be worse than no progress at all.
     ConversationProgressOp conversation_progress = 29;
     RetentionRunOp retention_run = 30;       // ADR-0102 A1: a retention/compaction pass deleted data
+    PipelineMetersOp pipeline_meters = 31;   // ADR-0114 D37: live per-node counters
+    PipelineStepOp pipeline_step = 32;       // ADR-0114 D38: one item through one node
   }
+}
+
+// PipelineStepOp is one item passing through one node — the flow view.
+//
+// Where PipelineMetersOp answers "how much and where is it piling up", this
+// answers "what went where": which branch this delivery took, and what it
+// carried.
+//
+// Live-only and never replayed, like a token chunk. Replaying a step from an
+// hour ago into a flow view would show motion that is not occurring.
+//
+// RATE-CAPPED per pipeline by the emitter, because one event per node per item
+// would drown the plane. `dropped` carries what was skipped since the last one
+// sent, so a flow view that skips says so rather than misrepresenting the shape
+// of the traffic.
+//
+// `payload` travels ONLY when tracing is enabled, and is truncated by the
+// emitter with `payload_bytes` reporting the untruncated size. An item's value
+// is the real data moving through the deployment: shipping it by default would
+// make a diagnostic view an exfiltration surface, and a clipped payload must
+// never be mistakable for a whole one.
+message PipelineStepOp {
+  string pipeline_id = 1;
+  int32 revision = 2;
+  string run_id = 3;
+  // item_key identifies the item ACROSS steps, which is what makes a sequence
+  // of these a trace rather than a list.
+  string item_key = 4;
+  string node = 5;
+  string kind = 6;
+  // port is the port it left by, empty when it did not leave by one.
+  string port = 7;
+  // outcome is "routed", "terminated" or "failed".
+  string outcome = 8;
+  // reason is the operator's own words for a declared discard, or the error.
+  string reason = 9;
+  int64 duration_ms = 10;
+  string payload = 11;
+  int32 payload_bytes = 12;
+  int64 dropped = 13;
+}
+
+// PipelineMetersOp is a live per-node reading for one running pipeline.
+//
+// Live-only: process-local, never replayed, and reset by a restart. It describes
+// what this kernel is doing NOW, which is the question a console cannot answer
+// from an RPC read once when a tab opened.
+//
+// in_flight is why this is on the feed rather than behind a read. A count of
+// items that passed a node says nothing about a node holding forty of them —
+// the totals look healthy right up until the queue is the whole problem, and the
+// number is gone by the time anyone asks.
+message PipelineMetersOp {
+  string pipeline_id = 1;
+  int32 revision = 2;
+  repeated PipelineNodeMeterOp nodes = 3;
+}
+
+message PipelineNodeMeterOp {
+  string node = 1;
+  int64 entered = 2;
+  // in_flight is the bottleneck signal, and the one figure that cannot be
+  // reconstructed afterwards.
+  int64 in_flight = 3;
+  // failed is items the node could not process — kept apart from an `error`
+  // port, because "could not process it" and "sent it down error" are
+  // different events with different fixes.
+  int64 failed = 4;
+  // passed_on counts items that completed and were routed onward without a
+  // terminal outcome — the ordinary path through a node. Distinct from `ports`,
+  // which only a terminal fate names.
+  int64 passed_on = 5;
+  // ports counts items by the port they left on.
+  map<string, int64> ports = 6;
+  int64 mean_latency_ms = 7;
 }
 
 // RetentionRunOp reports one bounded retention/compaction pass — what it deleted,
@@ -2408,4 +2556,211 @@ message GetDocumentOpResponse {
   repeated string tags = 6;
   string source = 7;
   int64 created_at_unix_ms = 8;
+}
+
+// ── Reactive pipelines (contract 0087) ──────────────────────────────────────
+
+message ListPipelinesOpRequest {
+  // armed_only narrows to what is LIVE. The default is every revision, because
+  // "which revisions exist and which one is armed" is the question an operator
+  // has when deciding whether to roll back.
+  bool armed_only = 1;
+  // ingress_id narrows to one ingress's pipeline. Empty means all.
+  string ingress_id = 2;
+}
+
+message ListPipelinesOpResponse {
+  repeated PipelineOp pipelines = 1;
+}
+
+// ── Pipeline dry run (contract 0088) ────────────────────────────────────────
+
+message DryRunPipelineOpRequest {
+  string pipeline_id = 1;
+  // revision 0 means the latest authored revision.
+  int32 revision = 2;
+  // sample_limit caps how many captured deliveries are replayed. 0 means the
+  // server's default.
+  int32 sample_limit = 3;
+}
+
+message DryRunPipelineOpResponse {
+  // refused carries the named constraint when the run could not happen at all.
+  // Set means every other field is empty — a console must render this instead
+  // of an empty report, which would look like a clean one.
+  string refused = 1;
+  string run_id = 2;
+  // samples is how many captured deliveries were replayed. Zero is reported as
+  // zero, never as a clean result.
+  int32 samples = 3;
+  repeated ShadowEffectOp effects = 4;
+  repeated DuplicateEffectKeyOp duplicates = 5;
+  repeated PipelineTerminationOp terminations = 6;
+  // failures are items a node could not process — the red count, kept separate
+  // from the declared discards because a discard is intended and a failure is
+  // not. NOT "unrouted": the compiler refuses a graph with an unwired port, so
+  // an item reaching no port at all is structurally impossible.
+  repeated PipelineFailureOp failures = 7;
+  // elapsed_ms is how long the replay took — the figure that says whether
+  // running it over more deliveries is worth doing.
+  int64 elapsed_ms = 8;
+}
+
+// PipelineFailureOp is one item a node could not process.
+message PipelineFailureOp {
+  string node = 1;
+  string item_key = 2;
+  string err = 3;
+}
+
+// ── Pipeline authoring (contract 0089) ──────────────────────────────────────
+
+message GetPipelineOpRequest {
+  string pipeline_id = 1;
+  // revision 0 means the latest authored revision.
+  int32 revision = 2;
+}
+
+message GetPipelineOpResponse {
+  // refused is set when the revision cannot be read at all.
+  string refused = 1;
+  PipelineOp summary = 2;
+  // graph_json is the ADR-0114 pipeline document, as authored.
+  //
+  // JSON rather than a mirrored message because the graph is recursive — a
+  // structured-control node owns a nested scope — and every node carries an
+  // open configuration map. A mirror would be a second schema to keep in step,
+  // and the drift would surface as a node kind the console cannot render.
+  string graph_json = 3;
+  // refusals is what the compiler says about this revision right now.
+  repeated RefusalOp refusals = 4;
+  // reads names, per node, the payload paths that node's expressions look at —
+  // taken from the compiled AST, so it cannot disagree with what the runtime
+  // will read.
+  repeated NodeReadsOp reads = 5;
+}
+
+// NodeReadsOp is one node and the payload paths it reads.
+message NodeReadsOp {
+  string node = 1;
+  // paths are qualified by their root: `item.x`, `signal.y`. A path of
+  // `item.*` means the node reads the whole payload.
+  repeated string paths = 2;
+}
+
+message ValidatePipelineOpRequest {
+  string graph_json = 1;
+}
+
+message ValidatePipelineOpResponse {
+  // refused means the DOCUMENT could not be read — malformed JSON, say.
+  // Distinct from a refusal list, which means it was read and broke rules.
+  string refused = 1;
+  repeated RefusalOp refusals = 2;
+  // The plan facts a canvas header shows once it compiles. Zero when it does not.
+  int32 node_count = 3;
+  int32 effect_node_count = 4;
+  string plan_checksum = 5;
+  string semantics_checksum = 6;
+}
+
+message SavePipelineOpRequest {
+  string graph_json = 1;
+  // command_id makes the save idempotent under retry.
+  string command_id = 2;
+}
+
+message SavePipelineOpResponse {
+  // refused is set when nothing was stored at all.
+  string refused = 1;
+  string pipeline_id = 2;
+  // revision is the DRAFT revision created. Editing never overwrites a revision
+  // that is published, armed or retired — a run pins a revision.
+  int32 revision = 3;
+  // refusals is what the compiler said about the stored draft. Present and
+  // non-blocking: they hold Publish, not Save.
+  repeated RefusalOp refusals = 4;
+}
+
+// RefusalOp is one constraint a graph broke, and where it broke it.
+message RefusalOp {
+  // constraint is the STABLE rule identifier. A console keys behaviour off it —
+  // which refusals offer "wire it", which offer "terminate it with a reason" —
+  // so it must not change when the wording does.
+  string constraint = 1;
+  // node and port are empty when the refusal is about the pipeline or a whole
+  // scope. A console offers "take me there" only when node is set.
+  string node = 2;
+  string port = 3;
+  // message names the constraint, then the action. Never a validity verdict.
+  string message = 4;
+}
+
+// ShadowEffectOp is one effect that would have been carried out.
+message ShadowEffectOp {
+  string node = 1;
+  string kind = 2;
+  // effect_key is the real derived key, not a placeholder.
+  string effect_key = 3;
+  string item_key = 4;
+  string summary = 5;
+}
+
+// DuplicateEffectKeyOp is one key more than one effect would have used.
+message DuplicateEffectKeyOp {
+  string effect_key = 1;
+  int32 count = 2;
+  repeated string nodes = 3;
+}
+
+// PipelineTerminationOp is one declared discard and how many items took it.
+message PipelineTerminationOp {
+  string node = 1;
+  string port = 2;
+  // reason is the operator's own words from the spec.
+  string reason = 3;
+  int32 count = 4;
+}
+
+// PipelineOp is one authored revision.
+message PipelineOp {
+  string pipeline_id = 1;
+  int32 revision = 2;
+  string name = 3;
+  // state is the D3 lifecycle position: draft, validated, published, armed, retired.
+  string state = 4;
+  // trigger_type is "ingress", "stream", "schedule" or "manual"; trigger_ref is
+  // the ingress id, stream id or cron expression it names.
+  string trigger_type = 5;
+  string trigger_ref = 6;
+  int32 node_count = 7;
+  int32 edge_count = 8;
+  // effect_node_count is called out because it is the change class that can
+  // touch the world — the number an operator checks before arming.
+  int32 effect_node_count = 9;
+  // mapping_revision is the ingress mapping this graph was generated for, 0 for
+  // a hand-authored pipeline bound to no mapping.
+  int32 mapping_revision = 10;
+  // plan_checksum pins the compiled plan; semantics_checksum is the
+  // revision-independent fingerprint, so two revisions that differ only
+  // cosmetically compare equal (ADR-0114 D29).
+  string plan_checksum = 11;
+  string semantics_checksum = 12;
+  // generated is true when the Ingress Studio authored this revision rather
+  // than an operator editing the canvas.
+  bool generated = 13;
+  // dry_run evaluates everything and performs no effect (REACT-05). Surfaced
+  // because "it has decided N times and acted zero times" is the whole point of
+  // the mode, and a console that cannot see it shows a live-looking pipeline.
+  bool dry_run = 14;
+  // approved is the operator's acknowledgement for a high-risk pipeline.
+  bool approved = 15;
+  // entry_live reports whether the daemon feeding this pipeline is running.
+  //
+  // Three-valued: UNSET means nobody can tell, which is a different claim from
+  // "not running" and only one of them is a problem. An armed pipeline whose
+  // entry organ is switched off looks identical to a working one in the store —
+  // the graph is armed either way — and that difference is the whole question
+  // when a bot stops answering.
+  optional bool entry_live = 16;
 }

@@ -36,6 +36,14 @@ var runBucket = []byte("runs")
 var artifactBucket = []byte("artifacts")
 var clusterBucket = []byte("capability_clusters")
 var watchConfigBucket = []byte("watch_configs")
+
+// pipelineBucket holds authored reactive pipelines, keyed by pipeline id.
+//
+// The VALUE is an opaque JSON spec. Core stores it and never parses it: the
+// pipeline schema is premium's (the graph model, the node vocabulary, the
+// expression language), and a copy of that schema in OSS would be a second
+// definition to keep in step. Core's job here is durability, not meaning.
+var pipelineBucket = []byte("pipelines")
 var planEventBucket = []byte("plan_events")
 var retrievalSessionBucket = []byte("retrieval_sessions")
 var traversalLogBucket = []byte("traversal_log")
@@ -134,7 +142,7 @@ func createBuckets(tx *bbolt.Tx) error {
 	for _, name := range [][]byte{
 		agentBucket, manifestBucket, taskEventBucket, checkpointBucket, sessionBucket, runBucket,
 		artifactBucket, clusterBucket, planEventBucket, retrievalSessionBucket,
-		traversalLogBucket, contradictionResolutionBucket, watchConfigBucket,
+		traversalLogBucket, contradictionResolutionBucket, watchConfigBucket, pipelineBucket,
 		// REACT-01 (ADR-0061): durable reactive-execution buckets.
 		reactiveJournalBucket, reactiveCursorBucket, reactiveIdempotencyBucket, reactiveDeadLetterBucket,
 	} {
@@ -1316,5 +1324,56 @@ func (b *BBoltAdapter) SetWatchConfigActive(id string, active bool) error {
 			return err
 		}
 		return bucket.Put([]byte(id), updated)
+	})
+}
+
+// ── Reactive pipelines ────────────────────────────────────────────────────────
+
+// WritePipeline persists one pipeline spec under its id.
+//
+// The spec is opaque bytes by design — see pipelineBucket. Rewriting the whole
+// spec is the only update: a pipeline's lifecycle state lives INSIDE it, so a
+// separate "set active" would be a second place that could disagree with the
+// graph about whether it is live.
+func (b *BBoltAdapter) WritePipeline(id string, spec []byte) error {
+	if id == "" {
+		return fmt.Errorf("pipeline id is required")
+	}
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bkt := tx.Bucket(pipelineBucket)
+		if bkt == nil {
+			return fmt.Errorf("pipelines bucket not found")
+		}
+		return bkt.Put([]byte(id), spec)
+	})
+}
+
+// ReadAllPipelines returns every stored pipeline spec, keyed by id.
+func (b *BBoltAdapter) ReadAllPipelines() (map[string][]byte, error) {
+	out := map[string][]byte{}
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bkt := tx.Bucket(pipelineBucket)
+		if bkt == nil {
+			return nil // no bucket yet is "none stored", not a failure
+		}
+		return bkt.ForEach(func(k, v []byte) error {
+			// bbolt's bytes are only valid for the life of the transaction.
+			cp := make([]byte, len(v))
+			copy(cp, v)
+			out[string(k)] = cp
+			return nil
+		})
+	})
+	return out, err
+}
+
+// DeletePipeline removes one pipeline spec.
+func (b *BBoltAdapter) DeletePipeline(id string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bkt := tx.Bucket(pipelineBucket)
+		if bkt == nil {
+			return fmt.Errorf("pipelines bucket not found")
+		}
+		return bkt.Delete([]byte(id))
 	})
 }

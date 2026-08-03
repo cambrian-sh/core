@@ -129,3 +129,47 @@ func IngressSurface(ctx context.Context, r IngressResolver, principal PrincipalR
 	}
 	return reg.Surface, true
 }
+
+// IngressLister enumerates the registered ingresses (ADR-0090).
+//
+// `IngressResolver` answers "is this principal an ingress, and which surface
+// does it carry" — the authorization question, asked one principal at a time.
+// This answers "what ingresses exist", which is the operator question, and the
+// two are not the same lookup: a console cannot resolve what it cannot already
+// name.
+//
+// The registry itself stays a premium concern, exactly as IngressResolver does:
+// OSS holds the seam, the plugin holds the registry.
+type IngressLister interface {
+	ListIngresses(ctx context.Context) ([]IngressRegistration, error)
+}
+
+// IngressDeregistrar withdraws an entry organ's registration.
+//
+// Deliberately a separate interface from IngressLister: reading who may enter
+// and removing an entry are different powers, and bundling them would hand the
+// second to every caller that needs the first.
+type IngressDeregistrar interface {
+	DeregisterIngress(ctx context.Context, agentID string) error
+}
+
+// TurnFunc runs one admitted conversational turn in a conversation.
+//
+// Handed to a router so the router can decide WHEN and UNDER WHAT SHAPE the turn
+// happens without owning the turn itself. What a turn does — history, the worker
+// pool, the LLM lease — stays the chat tier's business.
+type TurnFunc func(ctx context.Context, conversationID, text string) error
+
+// TurnRouter shapes what happens around an admitted turn.
+//
+// It is reached ONLY after admission: the ingress daemon authenticated the sender
+// at the external surface, and the kernel has already checked the namespace, the
+// identity binding, blocked senders and the stranger policy. None of that is
+// visible here, and deliberately so (ADR-0090 D2) — a router is operator-authored
+// and must not be able to reorder or skip a security check.
+//
+// `handled=false` means "not mine": the caller runs the turn directly, which is
+// what keeps a deployment with no router behaving exactly as it does today.
+type TurnRouter interface {
+	RouteTurn(ctx context.Context, ingressAgentID, conversationID, text string, run TurnFunc) (handled bool, err error)
+}

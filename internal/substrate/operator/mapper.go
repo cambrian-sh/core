@@ -222,6 +222,43 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			Error:      e.Err,
 		}}
 
+	case domain.PipelineMetersEvent:
+		// No SessionId: a pipeline runs on its own, not inside session work.
+		nodes := make([]*pb.PipelineNodeMeterOp, len(e.Nodes))
+		for i, n := range e.Nodes {
+			nodes[i] = &pb.PipelineNodeMeterOp{
+				Node:          n.Node,
+				Entered:       n.Entered,
+				InFlight:      n.InFlight,
+				Failed:        n.Failed,
+				PassedOn:      n.PassedOn,
+				Ports:         n.Ports,
+				MeanLatencyMs: n.MeanLatencyMs,
+			}
+		}
+		out.Payload = &pb.OperatorEvent_PipelineMeters{PipelineMeters: &pb.PipelineMetersOp{
+			PipelineId: e.PipelineID,
+			Revision:   int32(e.Revision),
+			Nodes:      nodes,
+		}}
+
+	case domain.PipelineStepEvent:
+		out.Payload = &pb.OperatorEvent_PipelineStep{PipelineStep: &pb.PipelineStepOp{
+			PipelineId:   e.PipelineID,
+			Revision:     int32(e.Revision),
+			RunId:        e.RunID,
+			ItemKey:      e.ItemKey,
+			Node:         e.Node,
+			Kind:         e.Kind,
+			Port:         e.Port,
+			Outcome:      e.Outcome,
+			Reason:       e.Reason,
+			DurationMs:   e.DurationMs,
+			Payload:      e.Payload,
+			PayloadBytes: int32(e.PayloadBytes),
+			Dropped:      e.Dropped,
+		}}
+
 	case domain.AgentStepEvent:
 		out.SessionId = e.SessionID
 		out.Payload = &pb.OperatorEvent_AgentStep{AgentStep: &pb.AgentStepOp{

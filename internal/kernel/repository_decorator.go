@@ -320,6 +320,27 @@ func (d *AgentRepoDecorator) LogContradiction(res domain.ContradictionResolution
 	return d.store.WriteContradictionResolutionRecord(rec)
 }
 
+// ── Reactive pipeline persistence ─────────────────────────────────────────────
+//
+// Straight passthrough, unlike the watch methods below: there is no record type
+// and no mapper, because the spec is opaque bytes whose schema is premium's. A
+// DTO here would be a second definition of the pipeline model living in OSS.
+
+// WritePipeline persists one pipeline spec under its id.
+func (d *AgentRepoDecorator) WritePipeline(id string, spec []byte) error {
+	return d.store.WritePipeline(id, spec)
+}
+
+// ReadAllPipelines returns every stored pipeline spec, keyed by id.
+func (d *AgentRepoDecorator) ReadAllPipelines() (map[string][]byte, error) {
+	return d.store.ReadAllPipelines()
+}
+
+// DeletePipeline removes one pipeline spec.
+func (d *AgentRepoDecorator) DeletePipeline(id string) error {
+	return d.store.DeletePipeline(id)
+}
+
 // ── WatchConfig persistence (ADR-0032) ────────────────────────────────────────
 
 // WriteWatchConfig persists a WatchConfig to BBolt. ADR-0032.

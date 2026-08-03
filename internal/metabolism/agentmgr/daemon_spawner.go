@@ -110,6 +110,24 @@ func (m *AgentManager) SpawnDaemon(agentID, streamID string, params map[string]a
 }
 
 // StopDaemon marks the exit as expected and evicts the daemon instance. ADR-0033.
+// DaemonRunning reports whether a daemon is currently spawned for streamID.
+//
+// The console needs it to tell "armed" from "armed, and its entry organ is
+// switched off". Those look identical from the pipeline store — the graph is
+// armed either way — and the difference is the whole question an operator has
+// when a bot stops answering. A pipeline that reads armed while nothing feeds it
+// is the "looks like coverage, provides none" case in its most confusing form,
+// because here the coverage was real yesterday.
+//
+// Read-only: it takes the same lock the spawner does and answers from the same
+// map, so it cannot disagree with what is actually running.
+func (m *AgentManager) DaemonRunning(streamID string) bool {
+	m.daemons.mu.Lock()
+	defer m.daemons.mu.Unlock()
+	_, ok := m.daemons.byStream[streamID]
+	return ok
+}
+
 func (m *AgentManager) StopDaemon(streamID string) error {
 	m.daemons.mu.Lock()
 	state, ok := m.daemons.byStream[streamID]

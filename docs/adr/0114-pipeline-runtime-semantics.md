@@ -612,6 +612,252 @@ delays, and injected random values, with the expected delay for each. Both imple
 against the same file. A change to either curve fails that package's test with a concrete number,
 which is what "must mirror" cannot do.
 
+### D25. Provenance is a run-pinned field and an item field, never payload
+
+RP-6's first implementation read the originating evidence out of `item.Value["evidence_ref"]`. That
+is a convention, not a guarantee. `Value` is the data plane — the thing a `map` node exists to
+rewrite — so a `map` that projects three fields **drops** provenance and a `map` that writes that key
+**forges** it. Both are silent, and both change the projection key (D23), which is the idempotency key
+of every save the run performs. The pipeline canvas was therefore an interface for editing
+idempotency keys.
+
+So:
+
+- **`LogicalRun.Provenance`** is pinned at creation, immutable afterwards, and inherited unchanged by
+  loop-body child runs. A non-zero value is the durable proof that D10's step 2 preceded step 3.
+- **`Item.Evidence`** travels *beside* `Item.Value`. The runtime propagates it through every
+  transform; only a fetch node may replace it (D26).
+- CEL sees provenance read-only through the `evidence` variable. Forging it is not discouraged, it is
+  **unexpressible** — the language has no assignment.
+- Zero provenance means "this run has none" (a preview run, or one predating RP-6), which is
+  deliberately distinguishable from "this run has wrong provenance". The first is migrated; the second
+  is a defect.
+
+`StartRun` does not accept provenance as an argument. `IngressGateway.Admit` is the only supported way
+in, because an optional provenance parameter is an invitation to create runs without it.
+
+### D26. A fetch node archives before it releases, and a missing preserver is permanent
+
+D10's corollary — "any node that fetches new external data creates new evidence" — needs a mechanism,
+and D6 already names `external fetch` as an external action. `fetch` is therefore a node kind with the
+ordinary external-action contract (D17 delivery mode included) plus one extra obligation: its response
+is archived under **derived provenance** before its successors are enqueued.
+
+The ordering is enforced structurally rather than by convention. The successor list is built by a
+function that **can fail**, and a failure there prevents the commit that would have released the data
+downstream. There is no path where fetched bytes reach a save node unarchived.
+
+Derived identity is `parent source key + /fetch:<node>:<item>[#iter]`, at the **pipeline revision**, so
+page 2 is a distinct evidence row from page 1 and a re-authored graph re-fetches rather than being
+suppressed as a replay. `DerivedFrom` points back at the causing evidence, making a pagination chain
+walkable in both directions.
+
+Two refusals, both fail-closed: arming a plan containing a fetch node with no preserver wired is
+refused at `StartRun` in D12's shape, and a missing preserver at runtime is classified **permanent**
+rather than transient — no number of retries wires a dependency into a running scheduler, so retrying
+only delays the operator reading the error.
+
+### D27. Two guarded exceptions to the intent/task coupling
+
+D19 separates the intent from the attempt. RP-6 found the two places where that separation must be
+expressible in the store, and each is a *narrow, precondition-checked* exception rather than a general
+loophole:
+
+- **`ConfirmIntentOnly`** records a confirmed effect **without** settling its task. Between a call
+  returning and its successors being ready there is post-effect work that can fail — archiving what a
+  fetch fetched — and when it does, two things are true at once: the effect happened and must never
+  repeat, and the task has not finished and must retry. `ConfirmIntent` cannot express that, because it
+  settles both in one transaction. Fenced like every other in-flight transition.
+- **`ResolveOrphanIntent`** settles an intent **without a fencing token**, and is the only fenceless
+  intent transition in the store. It is safe solely because the store verifies the orphan precondition
+  *inside the same transaction as the write*: if the task exists and is not terminal, the call is
+  refused with `ErrIntentNotOrphaned`. Checking ownership in the reconciler instead would leave a
+  window where a task is revived between the check and the write — exactly what fencing prevents
+  everywhere else. An **absent** task is orphaned by the strongest definition and is allowed through.
+
+### D28. What the reconciler may repair, and what it can never invent
+
+D11 says the reconciler "completes unresolved intents and nothing else". Implementation makes the
+boundary concrete.
+
+**Ownership is decided by the task, not by a lag.** While a task is live the scheduler resolves its own
+intents through the normal retry path. The intents that need anyone else are the **orphans** — unsettled
+intents whose task has reached a terminal state and will never be claimed again: a run cancelled
+mid-effect, a retry budget exhausted after the call left the process, a worker that died between
+dispatching and confirming. ADR-0113's deliberate lag is not needed and is not used; task state answers
+the ownership question exactly.
+
+Per orphan, by connector capability: `prepared` → recorded as never performed (the request demonstrably
+never left the process); status lookup → asked, and a definite *no* is recorded while an **unanswerable**
+lookup **escalates rather than guessing**, because "I could not tell you" is not "it did not happen";
+idempotent or transactional sink → re-sent under the same effect key; at-most-once with no confirmation
+→ recorded ambiguous, never re-sent. A re-send whose recorded input no longer matches the intent's digest
+escalates instead, because it would be a different command than the one intended.
+
+**And the property that dissolves the split-brain:** an item the graph deliberately routed away has no
+intent, so there is nothing for the reconciler to act on. It cannot resurrect a discard — not because a
+lag window makes it unlikely, but because the record it would need does not exist.
+
+### D29. Two checksums, because pinning and comparison are different questions
+
+D3 requires a run to pin its plan checksum, so that checksum embeds the revision number: r4 and r5
+must be different by construction even when their content is identical, or a run could execute
+against a revision it did not start under.
+
+That makes it structurally unable to answer the other question an operator has — *"does this edit
+change what the pipeline does?"* — because every revision differs from every other. So the compiler
+emits **two** fingerprints over the same canonical form:
+
+- **`Checksum`** includes the revision. Used for pinning, and for nothing else.
+- **`SemanticsChecksum`** omits it. Two revisions that differ only cosmetically compare **equal**.
+
+Both are built from **per-node semantic hashes** (D3's "per-node semantic/config hashes", previously
+unimplemented), which is what lets a revision diff say *which* nodes changed rather than only *that*
+something did. Display name and layout are excluded by construction, not by filtering — renaming a
+node or dragging it across the canvas changes no hash, so a cosmetic edit can never invalidate a run.
+
+### D30. The lifecycle enforces immutability in the store, not only in the API
+
+D3's states are unchanged: `draft → validated → published → armed → retired`. What RP-7 settles is
+where the rules live.
+
+- **Editing forks.** `Draft` is the only way to change a pipeline, and it always produces a NEW
+  revision at `n+1`. Nothing returns to `draft`, because reopening a published revision is precisely
+  how it would become mutable.
+- **The store refuses content changes to a frozen revision**, independently of the registry. A rule
+  enforced only by the layer above is a rule the next caller bypasses, and D3's guarantee is about
+  what can exist in storage. State transitions on a frozen revision remain legal — publishing, arming
+  and retiring all rewrite the row — but content changes are refused with `ErrRevisionImmutabe`.
+- **`validated` is the compile gate.** D4 says the runtime executes only compiled plans, so a
+  revision cannot be published without compiling, and cannot be armed without being published. An
+  uncompilable graph is therefore unarmable at every step rather than at the last one.
+- **Arming is exclusive, and disarming returns to `published`** — not to retired, because
+  `published` is exactly the state rollback needs the previous revision to be in. Rollback is
+  therefore `Arm` pointed backwards: it introduces no state the system was not already in, which is
+  what makes it trustworthy under pressure.
+- **Arming never disturbs runs in flight.** They pinned their checksum at creation and the scheduler
+  verifies that pin per drain. Arming changes what the next delivery starts, and nothing else.
+
+### D31. A dry run is a real run with the sink replaced
+
+REACT-05's dry run evaluates the condition and stops. For one condition and one action that is the
+whole question; for a graph it is barely the beginning — the operator needs to know which branch each
+item took, what the aggregate came to, how many items the discard port swallowed, and above all what
+*would* have been written and sent.
+
+So a dry run here executes the real compiled plan through the real scheduler over a real execution
+store. Every deterministic node genuinely runs. The single substitution is at the **dispatcher**, and
+the position matters: short-circuiting any earlier would skip exactly the machinery most worth
+testing — effect-key derivation, projection identity, barrier obligations, retry classification. Those
+all run, which is why a dry run can surface a **colliding effect key** or a deadlocked join rather
+than only a routing mistake.
+
+Consequences that follow from the position of the substitution:
+
+- **Fetched material is shadowed too.** Archiving a synthetic body would put fiction in the evidence
+  archive, which is worse than a dry run that cannot exercise a fetch for real.
+- **Pinned receipts make a dry run repeatable.** Given the same pinned data, the same routing and the
+  same derived keys — so a diff between two dry runs means the *pipeline* changed.
+- **D12 is relaxed only under shadow, and the flag is unexported.** The gate asks whether an effect
+  could reach the world from a store that cannot remember it did; under shadow nothing reaches the
+  world, so the question does not arise. The relaxation is set only by `DryRun`, together with
+  substituting every dispatcher — because a flag that could be set alone would be a way around D12
+  rather than a consequence of it.
+
+### D32. Node tests refuse effect nodes rather than faking them
+
+A single-node test — pin an item, pick a node, see which port it takes and what comes out — is
+restricted to deterministic nodes. An effect node cannot be tested in isolation without either
+touching the world or claiming to have done something it did not, and a node test that silently faked
+a save would be the most misleading result the product could produce. The refusal names the dry run
+as the honest alternative.
+
+### D33. Ingress pipelines run side by side, and an unarmed ingress has no pipeline
+
+**Owner decision, 2026-08-02.** The new runtime reaches production through **ingress pipelines only**.
+Existing watches keep running on the shipped engine, untouched. Nothing is migrated by this; a
+pipeline is *added* where one is armed.
+
+**The attachment point is already correct, so nothing is rebuilt.** The ingress studio owns a working
+delivery lane: a transport stages bytes and emits a reference-only signal, and the studio's own
+kernel-side action preserves the delivery as evidence under ADR-0105's ordering. Evidence is durable
+before anything downstream runs — which is exactly D10's precondition, already met. The pipeline
+runtime therefore does not re-preserve, re-fetch, or take over the transport. It attaches where
+evidence becomes durable and starts the ingress's armed pipeline from it.
+
+D10 still holds here without the router preserving anything, and by construction rather than by
+convention: routing requires valid `Provenance`, and `Validate` refuses provenance without an evidence
+id. **A caller that has not preserved cannot construct an argument that would start a run.**
+
+**An ingress with no armed pipeline is not a reactive pipeline at all.** `ErrNoPipelineForIngress` is
+a sentinel, not an error string, because during side-by-side operation it is the *normal* answer and
+callers must be able to branch on it. An ingress that has not been armed must not appear in the
+reactive panel.
+
+**The default graph is generated, not blank.** An ingress already knows how to save what it receives,
+so a new one arrives with a pipeline that works, and the operator edits from there. The generator
+lifts the mapping's **control flow** into visible nodes and leaves its **value transform** alone:
+
+| Mapping construct | Becomes |
+|---|---|
+| discard rule | a `choice` whose matched port is declared terminated, named with the rule's own name |
+| fan-out | a `split` carrying the mapping's cardinality cap onto the pipeline budget |
+| roles, observations, event type, coercions, timestamps | unchanged, inside the mapping, reached through the save node |
+
+Re-implementing the mapping as a pile of `map` nodes is the obvious mistake and is rejected: it would
+fork the transform into two implementations that must agree forever, and it would put the closed
+mapping language's guarantees — missing ≠ null ≠ empty, named destructive filters, deterministic
+refusal — behind a graph that cannot express them. The save node stays an adapter (D15); the mapping
+stays the authority on what an envelope contains.
+
+Two ordering rules fall out and are enforced: **discards precede fan-out**, because a discard rule
+tests the delivery and evaluating a document-level predicate against a member would silently stop
+matching; and **generation is deterministic** for an unchanged mapping, or every regeneration would
+look like an edit and fork a pointless revision.
+
+The generated pipeline is a **draft**. Arming follows the ingress's own lifecycle — the studio's
+`DRAFT → CAPTURING → MAPPED → DRY_RUN → ARMED ⇄ PAUSED → RETIRED` maps onto the pipeline's
+`draft → validated → published → armed → retired`, so the two states track rather than drift.
+
+### D34. The ingress lifecycle drives the pipeline lifecycle
+
+D33 established that an ingress owns a pipeline. What makes that usable is that the operator moves
+**one** lifecycle and the other follows — two state machines that can drift are worse than one that is
+merely limited, because the reactive panel would show a live pipeline for a paused source.
+
+The binding is called from the studio's own transitions, not discovered afterwards by a reconciler: a
+reconciler noticing the drift later would be a second authority over which pipeline is live, and D11's
+whole point is that there is exactly one.
+
+| Ingress transition | Pipeline |
+|---|---|
+| `CAPTURING → MAPPED` | generate, validate, **publish** — inspectable and dry-runnable, not live |
+| `DRY_RUN → ARMED` | arm the revision built for **the release's mapping revision** |
+| `ARMED → PAUSED` | disarm, back to `published` |
+| `PAUSED → ARMED` | re-arm the revision for the **pinned** release (after a rollback, deliberately not the newest) |
+| `* → RETIRED` | retire every revision |
+
+Four consequences worth stating, because each is a way this could have been subtly wrong:
+
+- **Publishing is not arming.** Confirming a mapping produces something the operator can inspect and
+  dry-run. Only their explicit Arm makes it live, which is what keeps "an unarmed ingress is not a
+  reactive pipeline" true (D33).
+- **Arming resolves by mapping revision, not by recency.** A release pins a specific mapping; arming
+  the newest graph regardless would silently arm one built for a different transform. The
+  correspondence is read off the generated save node's `mapping_revision`, which already had to be
+  there — a second copy would be a second thing to keep in step.
+- **Regeneration never discards edits.** Re-confirming a mapping that already has a pipeline generates
+  nothing. And because an edited graph for mapping revision 3 is still *the pipeline for mapping
+  revision 3*, arming picks the operator's newest edit rather than reverting to the generated original.
+- **A generation or arming failure does not roll the ingress back.** The mapping really was confirmed,
+  and reversing the ingress would misreport that; the operator is told what failed instead.
+
+**The revision store must be durable.** An in-memory registry loses the operator's live pipeline on
+restart while the ingress still reports itself `ARMED` — precisely the drift this decision exists to
+prevent. `PgPipelineStore` persists revisions, enforces content-immutability in the store rather than
+only in the registry, and still permits the state transitions that publishing, arming and retiring
+legitimately make.
+
 ## Budgets
 
 ADR-0113's single "1024 items" ceiling, borrowed from Airflow's `max_map_length`, is withdrawn as a
@@ -641,8 +887,8 @@ contain sensitive ingress data, so redaction, encryption, access control and per
 | **RP-3** | Effect protocol: intents, stable idempotency keys, dispatcher, `ambiguous`, retry/catch policy, typed error outputs. `save_to_memory` first (strongest idempotency) — as an **adapter over `domain.EventStore`** per D15, not a new port; connectors only once their capability contracts are explicit. |
 | **RP-4** | Barriers and aggregation: fork obligations, branch closure, explicit merge/join, deterministic ordering, empty/failed/timeout policy. |
 | **RP-5** | Structured loops: `foreach`, `repeat_until`, iteration paths, continuation state, child/segment summaries. |
-| **RP-6** | Ingress integration and provenance: preserve-before-run, provenance propagation, external-fetch preservation, projection-intent reconciliation replacing independent repair. |
-| **RP-7** | Authoring and operations: canvas, pinning isolated from production, node tests, shadow-effect dry runs, backtests, per-run/node/edge inspection, cancel/redrive, draft→publish→arm→rollback and revision diff. |
+| **RP-6** | Ingress integration and provenance: preserve-before-run, provenance propagation, external-fetch preservation, projection-intent reconciliation replacing independent repair. **Implemented — see D25–D28.** |
+| **RP-7** | Authoring and operations: canvas, pinning isolated from production, node tests, shadow-effect dry runs, backtests, per-run/node/edge inspection, cancel/redrive, draft→publish→arm→rollback and revision diff. **Runtime half implemented — see D29–D32. Canvas, contract bump and backtest-over-journal outstanding.** |
 
 Dead-letter and redrive move from ADR-0113's RP-8 into **RP-2**: they are needed the moment per-item
 failure exists, not at the end.

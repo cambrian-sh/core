@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -288,4 +289,295 @@ type WatchBacktestVerdict struct {
 	RawText   string
 	WouldFire bool
 	EvalError string
+}
+
+// PipelineSummary is one authored reactive-pipeline revision, as the operator
+// console renders it (contract 0087, ADR-0114 D33/D34).
+//
+// A read-model, deliberately: the authoring types live in the premium pipeline
+// package and the console has no business knowing their shape. What it needs is
+// what an operator looks at — which revision is live, what the graph costs, and
+// which ingress mapping it was generated for.
+type PipelineSummary struct {
+	PipelineID string
+	Revision   int
+	Name       string
+	// State is the D3 lifecycle position: draft, validated, published, armed, retired.
+	State string
+	// TriggerType is "ingress", "stream", "schedule" or "manual"; TriggerRef is
+	// the ingress id, stream id or cron expression it names.
+	TriggerType string
+	TriggerRef  string
+	NodeCount   int
+	EdgeCount   int
+	// EffectNodeCount is separated because it is the change class that can touch
+	// the world — the number worth checking before arming.
+	EffectNodeCount int
+	// MappingRevision is the ingress mapping this graph was generated for, 0 for
+	// a hand-authored pipeline bound to no mapping.
+	MappingRevision int
+	PlanChecksum    string
+	// SemanticsChecksum is revision-independent, so two revisions differing only
+	// cosmetically compare equal (ADR-0114 D29).
+	SemanticsChecksum string
+	// Generated is true when the Ingress Studio authored the revision rather
+	// than an operator editing the canvas.
+	Generated bool
+	// DryRun evaluates everything and performs no effect (REACT-05).
+	DryRun bool
+	// Approved is the operator's acknowledgement for a high-risk pipeline.
+	Approved bool
+	// EntryLive reports whether the daemon feeding this pipeline is running.
+	//
+	// Three-valued as a pointer, because "not running" and "nobody can tell" are
+	// different claims and only one of them is a problem. An armed pipeline whose
+	// entry organ is switched off looks identical to a working one from the
+	// pipeline store — the graph is armed either way — and that difference is the
+	// whole question when a bot stops answering.
+	EntryLive *bool
+}
+
+// PipelineLister reads authored reactive pipelines for the operator console.
+//
+// Same seam shape as WatchConfigHandler and for the same reason: the interface
+// is named in domain so a downstream premium module can satisfy it, and it is
+// nil in OSS builds, where the RPC returns an empty list rather than an error —
+// "this build has no pipelines" is an answer, not a failure.
+type PipelineLister interface {
+	// ListPipelines returns authored revisions. armedOnly narrows to what is
+	// live; ingressID narrows to one ingress, empty for all.
+	ListPipelines(ctx context.Context, armedOnly bool, ingressID string) ([]PipelineSummary, error)
+}
+
+// ── Pipeline dry run (contract 0088) ────────────────────────────────────────
+
+// PipelineDryRun is what a shadow run observed: everything the pipeline would
+// have done, and nothing it did.
+//
+// The shape is deliberately four separate lists rather than one outcome per
+// item. "47 saved" and "3 skipped because under the reporting threshold" answer
+// different questions, and folding them into a single stream leaves an operator
+// counting rows to learn what a heading could have told them.
+type PipelineDryRun struct {
+	RunID string
+	// Samples is how many captured deliveries were replayed. A dry run over
+	// zero samples is reported as such, never as a clean result.
+	Samples int
+	// Effects is what would have been carried out, in full — the ledger's
+	// declared column. Its counterpart, the carried-out column, is always zero
+	// here, and keeping them apart is what later distinguishes "the save
+	// happened and the task failed" from "neither happened".
+	Effects []ShadowEffectSummary
+	// Duplicates is the finding a dry run exists for: two effects deriving the
+	// same key means two writes silently collapsing into one, and after the
+	// fact there is one record and no evidence there were ever two.
+	Duplicates []DuplicateEffectKey
+	// Terminations counts items that reached a declared discard, by the name the
+	// operator gave it. Reported by name because "3 skipped because under the
+	// reporting threshold" is a sentence an operator can check, and "47 of 52"
+	// is one they have to trust.
+	Terminations []PipelineTermination
+	// Failures are items a node could not process — the red count.
+	//
+	// This is deliberately NOT "unrouted". An item reaching no port at all is
+	// what the declared-termination rule makes structurally impossible: the
+	// compiler refuses a graph with an unwired port, so that counter could only
+	// ever read zero, and a counter that can never be anything else is noise
+	// rather than a fact worth a column. What can still go wrong at runtime is a
+	// node failing on an item, so that is what is counted and coloured.
+	Failures []PipelineFailure
+	// ElapsedMs is how long the replay took. Reported because a dry run is
+	// something an operator waits for, and "4.1 s over 52 items" is the figure
+	// that says whether running it over more is worth doing.
+	ElapsedMs int64
+	// Refused carries the named constraint when the run could not happen at all
+	// (no such pipeline, nothing captured, a plan that will not compile). When
+	// it is set every other field is empty, and the console shows this instead
+	// of an empty report that looks like a clean one.
+	Refused string
+}
+
+// ShadowEffectSummary is one effect that would have been carried out.
+type ShadowEffectSummary struct {
+	Node string
+	Kind string
+	// EffectKey is the real derived key, not a placeholder — which is what makes
+	// a collision detectable here rather than weeks later.
+	EffectKey string
+	ItemKey   string
+	// Summary is one line describing what it would have done.
+	Summary string
+}
+
+// DuplicateEffectKey is one key more than one effect would have used.
+type DuplicateEffectKey struct {
+	EffectKey string
+	Count     int
+	// Nodes are the effect nodes that derived it. More than one node means two
+	// distinct projections collapsing; one node means a fan-out whose key does
+	// not separate the items it produced.
+	Nodes []string
+}
+
+// PipelineTermination is one declared discard and how many items took it.
+type PipelineTermination struct {
+	Node string
+	Port string
+	// Reason is the operator's own words from the spec, which is why the
+	// language refuses an unnamed discard: without a name this row can only say
+	// that something was dropped.
+	Reason string
+	Count  int
+}
+
+// PipelineFailure is one item a node could not process.
+type PipelineFailure struct {
+	Node    string
+	ItemKey string
+	Err     string
+}
+
+// ── Pipeline authoring (contract 0089) ──────────────────────────────────────
+
+// PipelineRefusal is one constraint a graph broke, and where it broke it.
+//
+// The target is what makes a refusal actionable rather than merely readable: a
+// console draws it on the port it concerns and offers to jump to it. Recovering
+// that from prose would mean parsing sentences, which breaks the first time one
+// is improved.
+type PipelineRefusal struct {
+	// Constraint is the stable rule identifier. A console keys behaviour off it
+	// — which refusals offer "wire it", which offer "terminate it with a
+	// reason" — so it must not change when the wording does.
+	Constraint string
+	// Node and Port are empty when the refusal is about the pipeline or a whole
+	// scope. A console offers "take me there" only when Node is set.
+	Node string
+	Port string
+	// Message names the constraint, then the action. Never a validity verdict:
+	// "invalid" tells an operator they are wrong and nothing about what to do,
+	// and a graph that will not compile is usually one decision from compiling.
+	Message string
+}
+
+// PipelineGraph is one authored revision, as authored.
+type PipelineGraph struct {
+	Summary PipelineSummary
+	// GraphJSON is the ADR-0114 pipeline document.
+	//
+	// JSON rather than a mirrored proto message because the graph is recursive
+	// (a structured-control node owns a nested scope) and every node carries an
+	// open configuration map. Mirroring it would create a second schema to keep
+	// in step with the first, and the drift would surface as a node kind the
+	// console silently cannot render.
+	GraphJSON string
+	// Refusals is what the compiler says about this revision right now. Present
+	// on a read because a stored revision can stop compiling — a ceiling
+	// lowered, a node kind retired — and a console that only validated on edit
+	// would show it as publishable.
+	Refusals []PipelineRefusal
+	// Reads maps a node id to the payload paths its expressions look at,
+	// extracted from the compiled AST rather than from the source text.
+	//
+	// This is what turns a diagram of node kinds into a diagram of what happens
+	// to the data: an operator comparing a step against a schema profile is
+	// asking exactly this, and nothing else in the graph answers it.
+	Reads map[string][]string
+	// Refused is set when the revision cannot be read at all.
+	Refused string
+}
+
+// PipelineValidation is the compiler's answer about a graph that is being
+// edited and has not been stored.
+type PipelineValidation struct {
+	Refusals []PipelineRefusal
+	// The plan facts a header shows once it compiles. Zero when it does not.
+	NodeCount         int
+	EffectNodeCount   int
+	PlanChecksum      string
+	SemanticsChecksum string
+	// Refused is set when the document itself could not be read — malformed
+	// JSON, say. Distinct from a refusal list, which means it WAS read and
+	// broke rules.
+	Refused string
+}
+
+// ErrPipelineNotFound means THIS source does not hold that pipeline — not that
+// no source does.
+//
+// More than one source contributes pipelines: the reactive engine holds migrated
+// watches and generated chat graphs, the Ingress Studio holds what it generates
+// from mappings. A read names one pipeline, so it has to be offered to each in
+// turn until one recognises it. Without a distinguishable "not mine" the
+// composition root would have to match on refusal text, which breaks the first
+// time a sentence is improved.
+var ErrPipelineNotFound = errors.New("pipeline: not held by this source")
+
+// PipelineAuthor reads and validates authored pipelines for the canvas.
+//
+// Validation is separate from the lifecycle's Validate on purpose: this one
+// never stores anything and never transitions. An editor asks it on every
+// change, and an editor that could accidentally publish is a worse editor.
+type PipelineAuthor interface {
+	// GetPipeline returns one revision. revision 0 means the latest authored.
+	GetPipeline(ctx context.Context, pipelineID string, revision int) (PipelineGraph, error)
+	// ValidatePipeline compiles a graph document without storing it.
+	ValidatePipeline(ctx context.Context, graphJSON string) (PipelineValidation, error)
+}
+
+// PipelineSaved is the outcome of storing an edited graph.
+type PipelineSaved struct {
+	PipelineID string
+	// Revision is the DRAFT revision that was created. Editing never overwrites
+	// a revision that is published, armed or retired — a run pins a revision, so
+	// mutating one underneath it would change what already happened.
+	Revision int
+	// Refusals is what the compiler said. A graph that breaks rules is still
+	// STORED as a draft: an operator mid-edit needs to keep their work, and a
+	// draft cannot run. What refusals block is publishing, which is a separate
+	// act.
+	Refusals []PipelineRefusal
+	// Refused is set when nothing was stored at all.
+	Refused string
+}
+
+// PipelineHolder is an OPTIONAL capability on a writer: it can say whether an id
+// is already its own.
+//
+// It exists to route a save when more than one writer is registered. A read can
+// be offered to each source until one recognises the id, but a save of a NEW
+// pipeline is recognised by nobody — so the routing has to ask before writing
+// rather than discover afterwards, or an edited studio pipeline would be stored
+// into the reactive engine's own store and the two would disagree about what
+// that pipeline is.
+type PipelineHolder interface {
+	HoldsPipeline(ctx context.Context, pipelineID string) (bool, error)
+}
+
+// PipelineWriter stores an edited graph as a new draft revision.
+//
+// Deliberately a SEPARATE port from PipelineAuthor rather than a third method on
+// it. PipelineAuthor's guarantee is that it cannot write — that is what makes it
+// safe to call on every keystroke — and adding a write method would quietly
+// retract the guarantee its own documentation makes.
+//
+// It can create a draft and nothing else. Publishing and arming stay on the
+// lifecycle, where each is an explicit act with its own gate: a canvas that
+// could arm what it just drew would collapse four deliberate steps into one
+// mouse click.
+type PipelineWriter interface {
+	SavePipeline(ctx context.Context, graphJSON string) (PipelineSaved, error)
+}
+
+// PipelineDryRunner shadow-runs an authored pipeline over captured deliveries.
+//
+// Nil in OSS, like PipelineLister — but unlike it, an OSS kernel REFUSES by name
+// rather than answering with an empty report. "No pipelines exist" is a true
+// answer to a listing; "nothing would happen" is not a true answer to a dry run
+// on a build that cannot run one.
+type PipelineDryRunner interface {
+	// DryRunPipeline replays captured deliveries through the compiled plan with
+	// every effect shadowed. revision 0 means the latest authored revision;
+	// sampleLimit 0 means the implementation's default.
+	DryRunPipeline(ctx context.Context, pipelineID string, revision, sampleLimit int) (PipelineDryRun, error)
 }
