@@ -39,20 +39,24 @@ type Service struct {
 	effects CommandEffects
 
 	// ADR-0047 Amendment A2 read sources (CORE-OPS-1).
-	tools         ToolCatalog
-	skills        SkillLister
-	memory        MemoryQuerier
-	documents     memory.DocumentLister // nil ⇒ ListDocuments Unimplemented
-	docGetter     memory.DocumentGetter // nil ⇒ GetDocument Unimplemented
-	answerer      MemoryAnswerer        // ADR-0081; nil ⇒ AnswerMemory Unimplemented
-	toolRunner    ToolRunner
-	ingestor      MemoryIngestor
-	watches       domain.WatchConfigHandler
-	deadletters   domain.WatchDeadLetterReader // REACT-01 / ADR-0061
-	watchMetrics  domain.WatchMetricsReader    // REACT-05 / ADR-0071
-	watchBacktest domain.WatchBacktester       // REACT-05 / ADR-0071
-	routePreview  RoutePreviewer               // ROUTE-07 / ADR-0077
-	policy        domain.PolicyAdmin           // ADR-0085; nil ⇒ access-policy RPCs Unimplemented
+	tools          ToolCatalog
+	skills         SkillLister
+	memory         MemoryQuerier
+	documents      memory.DocumentLister // nil ⇒ ListDocuments Unimplemented
+	docGetter      memory.DocumentGetter // nil ⇒ GetDocument Unimplemented
+	answerer       MemoryAnswerer        // ADR-0081; nil ⇒ AnswerMemory Unimplemented
+	toolRunner     ToolRunner
+	ingestor       MemoryIngestor
+	watches        domain.WatchConfigHandler
+	pipelines      domain.PipelineLister
+	pipelineDryRun domain.PipelineDryRunner
+	pipelineAuthor domain.PipelineAuthor
+	pipelineWriter domain.PipelineWriter
+	deadletters    domain.WatchDeadLetterReader // REACT-01 / ADR-0061
+	watchMetrics   domain.WatchMetricsReader    // REACT-05 / ADR-0071
+	watchBacktest  domain.WatchBacktester       // REACT-05 / ADR-0071
+	routePreview   RoutePreviewer               // ROUTE-07 / ADR-0077
+	policy         domain.PolicyAdmin           // ADR-0085; nil ⇒ access-policy RPCs Unimplemented
 
 	// Contract 0072 (Wave 1). Each is nil-able and its RPC then answers
 	// Unimplemented — never an empty success, so a console can distinguish
@@ -337,4 +341,13 @@ var feedEventTypes = []string{
 	// without an entry in THIS list is an event that is built, published and silently
 	// never delivered.
 	domain.EventTypeRetentionRun,
+	// ADR-0114 D37: live per-node pipeline readings. The ROUTE-08.A and
+	// retention notes above are not decoration — this event had a publisher, a
+	// mapper case, a fold and a rendered column, and stayed blank because it was
+	// missing from THIS list. Third time.
+	domain.EventTypePipelineMeters,
+	// ADR-0114 D38: the per-item flow view. Bridged the moment the mapper case
+	// exists — the feed_bridge test asserts exactly this pairing, because three
+	// features have shipped blank by missing it.
+	domain.EventTypePipelineStep,
 }

@@ -75,6 +75,25 @@ const (
 	// a `drift_records`-specific event would both need a second contract bump for the
 	// second caller and name a premium feature in an OSS proto (ADR-0057 D5).
 	EventTypeRetentionRun = "retention.run"
+
+	// EventTypePipelineMeters reports what a running pipeline is doing NOW —
+	// per node, how many items entered, how many are in flight, and where they
+	// left by.
+	//
+	// In-flight is the reason this is an event and not an RPC. A count of items
+	// that passed a node says nothing about a node holding forty of them: the
+	// totals look healthy right up until the queue is the whole problem, and
+	// the number is meaningless once you read it after the fact.
+	EventTypePipelineMeters = "pipeline.meters"
+
+	// EventTypePipelineStep is one item moving through one node: which node,
+	// which port it left by, how long it took, and — when tracing is on — what
+	// it carried.
+	//
+	// Live-only and never replayed, like a token chunk. It is a view of what is
+	// happening NOW; replaying a step from an hour ago into a flow view would
+	// show motion that is not occurring.
+	EventTypePipelineStep = "pipeline.step"
 	// EventTypeAgentLLMExchange is one agent reasoning turn captured at the managed LLM
 	// provider chokepoint: the full prompt+completion of a GenerateViaModelStream call.
 	// The ordered sequence per session reconstructs an agent's whole internal ReAct loop
@@ -530,6 +549,92 @@ type RetentionDeletion struct {
 	Count    int
 }
 
+// PipelineMetersEvent is a live per-node reading for one pipeline.
+//
+// Process-local and NOT durable, deliberately: it describes what this kernel is
+// doing now. History is the journal's job, and a counter that survived a restart
+// would claim continuity across a boundary the runtime does not have.
+type PipelineMetersEvent struct {
+	PipelineID string
+	Revision   int
+	Nodes      []PipelineNodeMeter
+	At         time.Time
+}
+
+// PipelineStepEvent is one item passing through one node.
+//
+// The meters answer "how much and how fast"; this answers "what went where".
+// Both are needed and neither substitutes: an operator watching a graph wants
+// the counts to spot a queue and the steps to see an individual item take the
+// branch they did not expect.
+//
+// # Why the payload is opt-in
+//
+// An item's value is the actual data flowing through the deployment. Shipping it
+// to the operator plane by default would make a diagnostic view an exfiltration
+// surface, so it travels only when tracing is explicitly enabled, and it is
+// truncated by the emitter with the untruncated size reported — so a reader can
+// never mistake a clipped payload for the whole of one.
+type PipelineStepEvent struct {
+	PipelineID string
+	Revision   int
+	RunID      string
+	// ItemKey identifies the item across steps, which is what makes a sequence
+	// of these a trace rather than a list.
+	ItemKey string
+	Node    string
+	Kind    string
+	// Port is the port it left by, empty when it did not leave by one.
+	Port string
+	// Outcome is "routed", "terminated" or "failed".
+	Outcome string
+	// Reason is the operator's own words for a declared discard, or the error.
+	Reason     string
+	DurationMs int64
+	At         time.Time
+	// Payload is a bounded preview of what the item carried, present only when
+	// tracing is enabled.
+	Payload string
+	// PayloadBytes is the UNTRUNCATED size, so truncation is visible rather than
+	// silent.
+	PayloadBytes int
+	// Dropped counts steps this pipeline produced since the last emitted one and
+	// did not send, because the trace is rate-capped. Reported rather than
+	// hidden: a flow view that quietly skips is one that lies about the shape of
+	// the traffic.
+	Dropped int64
+}
+
+// Pipeline step outcomes.
+const (
+	StepRouted     = "routed"
+	StepTerminated = "terminated"
+	StepFailed     = "failed"
+)
+
+// PipelineNodeMeter is one node's live reading.
+type PipelineNodeMeter struct {
+	Node string
+	// Entered is how many items reached this node.
+	Entered int64
+	// InFlight is how many are being worked right now — the bottleneck signal,
+	// and the one figure that cannot be reconstructed afterwards.
+	InFlight int64
+	// Failed is items the node could not process. Kept apart from an `error`
+	// port: "could not process it" and "sent it down error" are different
+	// events with different fixes.
+	Failed int64
+	// PassedOn counts items that completed and were routed onward without a
+	// terminal outcome — the ordinary path through a node. Distinct from Ports,
+	// which only a terminal fate names.
+	PassedOn int64
+	// Ports counts items by the port they left on.
+	Ports map[string]int64
+	// MeanLatencyMs is enough to spot the node an order of magnitude slower
+	// than its neighbours, which is what "where is it stuck" usually means.
+	MeanLatencyMs int64
+}
+
 // RetentionRunEvent reports one bounded retention/compaction pass so an operator
 // can see what was dropped and when (ADR-0102 Amendment A1).
 //
@@ -562,8 +667,12 @@ type RetentionRunEvent struct {
 	Err string
 }
 
-func (RetentionRunEvent) domainEvent()      {}
-func (RetentionRunEvent) EventType() string { return EventTypeRetentionRun }
+func (RetentionRunEvent) domainEvent()        {}
+func (PipelineMetersEvent) domainEvent()      {}
+func (PipelineStepEvent) domainEvent()        {}
+func (RetentionRunEvent) EventType() string   { return EventTypeRetentionRun }
+func (PipelineMetersEvent) EventType() string { return EventTypePipelineMeters }
+func (PipelineStepEvent) EventType() string   { return EventTypePipelineStep }
 
 // AgentStepEvent is one observed step of an agent's in-loop activity (a memory_query
 // today), emitted so the benchmark harness can measure what the final Handoff hides:

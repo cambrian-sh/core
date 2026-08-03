@@ -1147,6 +1147,16 @@ type LLMConfig struct {
 	// behavior change — emission is fire-and-forget and never affects the agent stream.
 	CaptureLLMExchanges bool `json:"capture_llm_exchanges,omitempty"`
 
+	// TracePipelinePayloads attaches a bounded preview of what each item carried
+	// to the per-step flow view (ADR-0114 D38).
+	//
+	// Default OFF, for the same reason as the exchange capture above: an item's
+	// value is the real data moving through the deployment, and shipping it to
+	// the operator plane by default would make a diagnostic view an
+	// exfiltration surface. The FLOW itself — which node, which port, how long
+	// — is always emitted; only the contents are gated.
+	TracePipelinePayloads bool `json:"trace_pipeline_payloads,omitempty"`
+
 	// LLMGatewayMaxConcurrency is the CONWIP semaphore size bounding in-flight
 	// GenerateViaModelStream stream initializations. Default: 20. ADR-0018.
 	LLMGatewayMaxConcurrency int `json:"llm_gateway_max_concurrency"`

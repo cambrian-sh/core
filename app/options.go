@@ -142,11 +142,12 @@ type KernelServices struct {
 	// Documents resolves a reference to its content, scope-enforced by the kernel.
 	// nil ⇒ this deployment cannot resolve references, and an action that needs one
 	// must say so rather than proceeding without evidence.
-	Documents  ReactiveDocumentReader
-	Planner    ReactivePlanner    // plan generation for start_plan actions
-	LLM        domain.Generator   // LLM condition evaluation
-	WatchStore ReactiveWatchStore // WatchConfig persistence (BBolt)
-	EventBus   domain.EventBus    // daemon-crash subscription, emit_event
+	Documents     ReactiveDocumentReader
+	Planner       ReactivePlanner       // plan generation for start_plan actions
+	LLM           domain.Generator      // LLM condition evaluation
+	WatchStore    ReactiveWatchStore    // WatchConfig persistence (BBolt) — being retired
+	PipelineStore ReactivePipelineStore // authored pipeline persistence (BBolt)
+	EventBus      domain.EventBus       // daemon-crash subscription, emit_event
 	// Journal is the durable-execution surface (REACT-01 / ADR-0061): signal
 	// journal + per-watch ack cursor + exactly-once idempotency + dead-letter.
 	// May be nil — a nil journal leaves the engine in its pure in-memory mode
@@ -187,6 +188,75 @@ type KernelServices struct {
 	// nil in tests and in any kernel built without a registry — a plugin must
 	// degrade to "this takes effect on the next start" rather than panic.
 	RegisterAgent func(domain.AgentDefinition) error
+
+	// RegisterPipelineLister contributes the operator console's reactive-pipeline
+	// read surface (contract 0087, ADR-0114 D33/D34).
+	//
+	// A plugin registers rather than the kernel reaching into it, because the
+	// authored pipelines live in the plugin that authors them and the console has
+	// no business knowing that package exists.
+	//
+	// nil in a kernel built without an operator plane — a plugin must degrade to
+	// "nothing is listed" rather than panic.
+	RegisterPipelineLister func(domain.PipelineLister)
+
+	// RegisterPipelineDryRunner contributes the shadow-run surface (contract
+	// 0088).
+	//
+	// Separate from the lister, and singular where that one aggregates. Listing
+	// is a union — every source contributes rows and the console shows them all.
+	// A dry run names ONE pipeline and asks what it would do, so a second
+	// contributor could only answer about a pipeline it does not own. Last
+	// registration wins, and in practice only the reactive plugin registers one.
+	//
+	// nil in a kernel built without one — the RPC then refuses by name rather
+	// than reporting that nothing would happen.
+	RegisterPipelineDryRunner func(domain.PipelineDryRunner)
+
+	// RegisterPipelineAuthor contributes the canvas read surface (contract
+	// 0089): read one authored revision, and compile a graph without storing it.
+	//
+	// Singular for the same reason as the dry runner — both name ONE pipeline,
+	// where listing is a union over every source.
+	//
+	// nil in a kernel built without one — the RPCs then refuse by name rather
+	// than answering with an empty graph a canvas would draw.
+	RegisterPipelineAuthor func(domain.PipelineAuthor)
+
+	// RegisterPipelineWriter contributes the draft-save surface (contract 0090).
+	//
+	// Separate from RegisterPipelineAuthor, matching the separate port: the read
+	// surface's guarantee is that it cannot write, and a build can legitimately
+	// have one without the other.
+	RegisterPipelineWriter func(domain.PipelineWriter)
+
+	// RegisterIngressLister contributes the list of ADR-0090 registered
+	// ingresses, so surfaces that describe ingresses can name them all rather
+	// than only the ones a particular plugin authored.
+	//
+	// nil in a kernel with no registry — a plugin degrades to "none registered".
+	RegisterIngressLister func(domain.IngressLister)
+
+	// RegisterIngressDeregistrar contributes the WRITE half of the ADR-0090
+	// registry — withdrawing an entry organ when the plugin that owns it removes
+	// it. Separate from the lister for the same reason the interfaces are
+	// separate: listing and withdrawing are different powers.
+	RegisterIngressDeregistrar func(domain.IngressDeregistrar)
+
+	// RegisterIngressPipelineRetirer contributes the removal of a pipeline armed
+	// for an entry organ that has been withdrawn.
+	RegisterIngressPipelineRetirer func(func(ctx context.Context, agentID string) error)
+
+	// RegisterTurnRouter contributes the seam that shapes what happens around an
+	// admitted conversational turn.
+	//
+	// Reached only AFTER admission — the ingress daemon authenticated the sender
+	// at its external surface, and the kernel has already applied the namespace,
+	// the identity binding, blocked senders and the stranger policy. A router
+	// cannot see or skip any of it (ADR-0090 D2).
+	//
+	// nil ⇒ turns run directly, which is every deployment's behaviour today.
+	RegisterTurnRouter func(domain.TurnRouter)
 
 	// IngressTraffic reports who has come through an entry point, from the
 	// durable conversation record.
@@ -255,6 +325,30 @@ type KernelServices struct {
 	// boundary exists to prevent (memo §18 phase-2 note). nil when no Postgres
 	// is configured.
 	Knowledge domain.KnowledgeStore
+
+	// DeregisterIngress removes an entry organ's registration (ADR-0090).
+	//
+	// A plugin that OWNS an entry point — a Telegram bridge, say — must be able
+	// to withdraw it when the operator deletes it. Without this, deleting a bot
+	// stopped its daemon and forgot its token while leaving the registration
+	// behind, so the console kept listing an armed pipeline for a bot that no
+	// longer existed and nothing in the system disagreed.
+	//
+	// nil in a build with no ingress registry: a plugin then degrades to "the
+	// registration outlives the bot", which is what shipped.
+	DeregisterIngress func(ctx context.Context, agentID string) error
+
+	// RetireIngressPipeline removes the pipeline armed for an entry organ that
+	// has been removed.
+	//
+	// Paired with DeregisterIngress rather than folded into it: the registration
+	// and the pipeline are owned by different plugins, and a single call would
+	// make one of them responsible for the other's storage.
+	RetireIngressPipeline func(ctx context.Context, agentID string) error
+
+	// TracePipelinePayloads mirrors execution.llm.trace_pipeline_payloads so a
+	// plugin can honour it without reading kernel config directly.
+	TracePipelinePayloads bool
 
 	// Events is the substrate's typed event/observation boundary (ADR-0108 D2):
 	// point lookups and history over stored rows, exact, nothing embedded.
@@ -371,6 +465,12 @@ type ReactiveAgentDispatcher interface {
 	// streamID (ADR-0080), not any instance of the agent. Used by the chat manager to deliver
 	// a turn to that conversation's own supervised session daemon.
 	CallDaemon(ctx context.Context, streamID string, h *domain.Handoff) (*domain.Handoff, error)
+	// DaemonRunning reports whether a daemon is spawned for streamID.
+	//
+	// The console needs it to tell "armed" from "armed, and its entry organ is
+	// switched off" — which look identical from the pipeline store, because the
+	// graph is armed either way.
+	DaemonRunning(streamID string) bool
 }
 
 // ReactiveMemoryWriter ingests signal content into LTM asynchronously.
@@ -440,6 +540,20 @@ type ReactivePlanner interface {
 
 // ReactiveWatchStore is the WatchConfig persistence surface (satisfied by the BBolt
 // AgentRepoDecorator).
+// ReactivePipelineStore persists authored reactive pipelines.
+//
+// The spec is opaque bytes: the pipeline schema is premium's, and a copy of it
+// in OSS would be a second definition to keep in step. Core supplies durability.
+//
+// There is no SetActive: a pipeline's lifecycle state lives inside its spec, so
+// a separate flag would be a second place that could disagree with the graph
+// about whether it is live.
+type ReactivePipelineStore interface {
+	WritePipeline(id string, spec []byte) error
+	ReadAllPipelines() (map[string][]byte, error)
+	DeletePipeline(id string) error
+}
+
 type ReactiveWatchStore interface {
 	WriteWatchConfig(cfg domain.WatchConfig) error
 	ReadWatchConfig(id string) (domain.WatchConfig, error)

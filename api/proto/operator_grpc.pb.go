@@ -57,6 +57,11 @@ const (
 	OperatorConsole_DeleteWatch_FullMethodName              = "/cambrian.OperatorConsole/DeleteWatch"
 	OperatorConsole_SetWatchActive_FullMethodName           = "/cambrian.OperatorConsole/SetWatchActive"
 	OperatorConsole_ListWatchDeadLetters_FullMethodName     = "/cambrian.OperatorConsole/ListWatchDeadLetters"
+	OperatorConsole_ListPipelines_FullMethodName            = "/cambrian.OperatorConsole/ListPipelines"
+	OperatorConsole_DryRunPipeline_FullMethodName           = "/cambrian.OperatorConsole/DryRunPipeline"
+	OperatorConsole_GetPipeline_FullMethodName              = "/cambrian.OperatorConsole/GetPipeline"
+	OperatorConsole_ValidatePipeline_FullMethodName         = "/cambrian.OperatorConsole/ValidatePipeline"
+	OperatorConsole_SavePipeline_FullMethodName             = "/cambrian.OperatorConsole/SavePipeline"
 	OperatorConsole_QueryLogs_FullMethodName                = "/cambrian.OperatorConsole/QueryLogs"
 	OperatorConsole_TailLogs_FullMethodName                 = "/cambrian.OperatorConsole/TailLogs"
 	OperatorConsole_GetWatchMetrics_FullMethodName          = "/cambrian.OperatorConsole/GetWatchMetrics"
@@ -222,6 +227,72 @@ type OperatorConsoleClient interface {
 	// ADR-0061). Read RPC (no command_id). Capability "watch-deadletter", advertised
 	// on premium builds; OSS returns an empty list (no reactive engine writes them).
 	ListWatchDeadLetters(ctx context.Context, in *ListWatchDeadLettersOpRequest, opts ...grpc.CallOption) (*ListWatchDeadLettersOpResponse, error)
+	// ── Reactive pipelines (contract 0087, ADR-0114 D33/D34) ──────────────────
+	//
+	// A pipeline is not a watch. A watch is one condition and a list of arms; a
+	// pipeline is an authored, versioned GRAPH with typed ports, declared
+	// discards and a durable execution store behind it. They are listed
+	// separately because collapsing them would force one shape to lie about the
+	// other — a watch has no revisions and no nodes, a pipeline has no single
+	// condition.
+	//
+	// Every ingress created through the Ingress Studio owns one, generated from
+	// its mapping and armed with the ingress (D34). An ingress that has not been
+	// armed has NO armed pipeline, and that is a normal state, not a fault.
+	//
+	// Read RPC (no command_id). Capability "reactive-pipelines", advertised on
+	// premium builds; OSS returns an empty list.
+	ListPipelines(ctx context.Context, in *ListPipelinesOpRequest, opts ...grpc.CallOption) (*ListPipelinesOpResponse, error)
+	// DryRunPipeline replays captured deliveries through the compiled plan with
+	// every effect shadowed: every gate, branch, aggregate and key derivation runs
+	// for real, and nothing reaches the world.
+	//
+	// The substitution is at the DISPATCHER and nowhere earlier, which is what
+	// makes the report worth reading — effect-key derivation, projection identity
+	// and barrier obligations all execute, so a duplicate key surfaces here rather
+	// than as missing knowledge weeks later.
+	//
+	// Distinct from BacktestWatch, which asks a different question: a dry run asks
+	// what this would do to what is arriving now; a backtest replays journaled
+	// history to argue for a change. Neither ever executes an arm.
+	//
+	// Read RPC (no command_id) — it performs nothing. Capability
+	// "reactive-pipelines"; OSS REFUSES by name rather than answering with an
+	// empty report, because "nothing would happen" is not a true answer on a build
+	// that cannot run one.
+	DryRunPipeline(ctx context.Context, in *DryRunPipelineOpRequest, opts ...grpc.CallOption) (*DryRunPipelineOpResponse, error)
+	// GetPipeline returns one authored revision as authored, plus what the
+	// compiler says about it right now.
+	//
+	// The refusals travel with the READ, not only with an edit: a stored revision
+	// can stop compiling without anyone touching it — a ceiling lowered, a node
+	// kind retired — and a console that validated only on edit would offer to
+	// publish it.
+	//
+	// Read RPC (no command_id). Capability "reactive-pipelines".
+	GetPipeline(ctx context.Context, in *GetPipelineOpRequest, opts ...grpc.CallOption) (*GetPipelineOpResponse, error)
+	// ValidatePipeline compiles a graph document WITHOUT storing it, so an editor
+	// can ask on every change.
+	//
+	// Deliberately separate from the lifecycle's own validate step, which
+	// transitions a stored revision. This one has no side effect of any kind: an
+	// editor that could accidentally publish is a worse editor, and the safest
+	// way to guarantee it cannot is to give it an RPC that has no power to.
+	//
+	// Read RPC (no command_id) — it stores nothing.
+	ValidatePipeline(ctx context.Context, in *ValidatePipelineOpRequest, opts ...grpc.CallOption) (*ValidatePipelineOpResponse, error)
+	// SavePipeline stores an edited graph as a new DRAFT revision.
+	//
+	// It can create a draft and nothing else. Publishing and arming stay on the
+	// lifecycle, where each is an explicit act with its own gate — a canvas that
+	// could arm what it had just drawn would collapse four deliberate steps into
+	// one mouse click.
+	//
+	// A graph that breaks rules is still stored. An operator mid-edit needs to
+	// keep their work, and a draft cannot run; what refusals block is publishing.
+	//
+	// Capability "reactive-pipelines".
+	SavePipeline(ctx context.Context, in *SavePipelineOpRequest, opts ...grpc.CallOption) (*SavePipelineOpResponse, error)
 	// ── Kernel logs (contract 0082) ───────────────────────────────────────────
 	//
 	// OPERATOR-ONLY, both of them. A log line carries whatever the kernel happened
@@ -873,6 +944,56 @@ func (c *operatorConsoleClient) ListWatchDeadLetters(ctx context.Context, in *Li
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListPipelines(ctx context.Context, in *ListPipelinesOpRequest, opts ...grpc.CallOption) (*ListPipelinesOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPipelinesOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListPipelines_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) DryRunPipeline(ctx context.Context, in *DryRunPipelineOpRequest, opts ...grpc.CallOption) (*DryRunPipelineOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DryRunPipelineOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_DryRunPipeline_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GetPipeline(ctx context.Context, in *GetPipelineOpRequest, opts ...grpc.CallOption) (*GetPipelineOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPipelineOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetPipeline_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ValidatePipeline(ctx context.Context, in *ValidatePipelineOpRequest, opts ...grpc.CallOption) (*ValidatePipelineOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ValidatePipelineOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ValidatePipeline_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SavePipeline(ctx context.Context, in *SavePipelineOpRequest, opts ...grpc.CallOption) (*SavePipelineOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SavePipelineOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SavePipeline_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) QueryLogs(ctx context.Context, in *QueryLogsOpRequest, opts ...grpc.CallOption) (*QueryLogsOpResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(QueryLogsOpResponse)
@@ -1297,6 +1418,72 @@ type OperatorConsoleServer interface {
 	// ADR-0061). Read RPC (no command_id). Capability "watch-deadletter", advertised
 	// on premium builds; OSS returns an empty list (no reactive engine writes them).
 	ListWatchDeadLetters(context.Context, *ListWatchDeadLettersOpRequest) (*ListWatchDeadLettersOpResponse, error)
+	// ── Reactive pipelines (contract 0087, ADR-0114 D33/D34) ──────────────────
+	//
+	// A pipeline is not a watch. A watch is one condition and a list of arms; a
+	// pipeline is an authored, versioned GRAPH with typed ports, declared
+	// discards and a durable execution store behind it. They are listed
+	// separately because collapsing them would force one shape to lie about the
+	// other — a watch has no revisions and no nodes, a pipeline has no single
+	// condition.
+	//
+	// Every ingress created through the Ingress Studio owns one, generated from
+	// its mapping and armed with the ingress (D34). An ingress that has not been
+	// armed has NO armed pipeline, and that is a normal state, not a fault.
+	//
+	// Read RPC (no command_id). Capability "reactive-pipelines", advertised on
+	// premium builds; OSS returns an empty list.
+	ListPipelines(context.Context, *ListPipelinesOpRequest) (*ListPipelinesOpResponse, error)
+	// DryRunPipeline replays captured deliveries through the compiled plan with
+	// every effect shadowed: every gate, branch, aggregate and key derivation runs
+	// for real, and nothing reaches the world.
+	//
+	// The substitution is at the DISPATCHER and nowhere earlier, which is what
+	// makes the report worth reading — effect-key derivation, projection identity
+	// and barrier obligations all execute, so a duplicate key surfaces here rather
+	// than as missing knowledge weeks later.
+	//
+	// Distinct from BacktestWatch, which asks a different question: a dry run asks
+	// what this would do to what is arriving now; a backtest replays journaled
+	// history to argue for a change. Neither ever executes an arm.
+	//
+	// Read RPC (no command_id) — it performs nothing. Capability
+	// "reactive-pipelines"; OSS REFUSES by name rather than answering with an
+	// empty report, because "nothing would happen" is not a true answer on a build
+	// that cannot run one.
+	DryRunPipeline(context.Context, *DryRunPipelineOpRequest) (*DryRunPipelineOpResponse, error)
+	// GetPipeline returns one authored revision as authored, plus what the
+	// compiler says about it right now.
+	//
+	// The refusals travel with the READ, not only with an edit: a stored revision
+	// can stop compiling without anyone touching it — a ceiling lowered, a node
+	// kind retired — and a console that validated only on edit would offer to
+	// publish it.
+	//
+	// Read RPC (no command_id). Capability "reactive-pipelines".
+	GetPipeline(context.Context, *GetPipelineOpRequest) (*GetPipelineOpResponse, error)
+	// ValidatePipeline compiles a graph document WITHOUT storing it, so an editor
+	// can ask on every change.
+	//
+	// Deliberately separate from the lifecycle's own validate step, which
+	// transitions a stored revision. This one has no side effect of any kind: an
+	// editor that could accidentally publish is a worse editor, and the safest
+	// way to guarantee it cannot is to give it an RPC that has no power to.
+	//
+	// Read RPC (no command_id) — it stores nothing.
+	ValidatePipeline(context.Context, *ValidatePipelineOpRequest) (*ValidatePipelineOpResponse, error)
+	// SavePipeline stores an edited graph as a new DRAFT revision.
+	//
+	// It can create a draft and nothing else. Publishing and arming stay on the
+	// lifecycle, where each is an explicit act with its own gate — a canvas that
+	// could arm what it had just drawn would collapse four deliberate steps into
+	// one mouse click.
+	//
+	// A graph that breaks rules is still stored. An operator mid-edit needs to
+	// keep their work, and a draft cannot run; what refusals block is publishing.
+	//
+	// Capability "reactive-pipelines".
+	SavePipeline(context.Context, *SavePipelineOpRequest) (*SavePipelineOpResponse, error)
 	// ── Kernel logs (contract 0082) ───────────────────────────────────────────
 	//
 	// OPERATOR-ONLY, both of them. A log line carries whatever the kernel happened
@@ -1663,6 +1850,21 @@ func (UnimplementedOperatorConsoleServer) SetWatchActive(context.Context, *SetWa
 }
 func (UnimplementedOperatorConsoleServer) ListWatchDeadLetters(context.Context, *ListWatchDeadLettersOpRequest) (*ListWatchDeadLettersOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWatchDeadLetters not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListPipelines(context.Context, *ListPipelinesOpRequest) (*ListPipelinesOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListPipelines not implemented")
+}
+func (UnimplementedOperatorConsoleServer) DryRunPipeline(context.Context, *DryRunPipelineOpRequest) (*DryRunPipelineOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DryRunPipeline not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetPipeline(context.Context, *GetPipelineOpRequest) (*GetPipelineOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPipeline not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ValidatePipeline(context.Context, *ValidatePipelineOpRequest) (*ValidatePipelineOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ValidatePipeline not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SavePipeline(context.Context, *SavePipelineOpRequest) (*SavePipelineOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SavePipeline not implemented")
 }
 func (UnimplementedOperatorConsoleServer) QueryLogs(context.Context, *QueryLogsOpRequest) (*QueryLogsOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryLogs not implemented")
@@ -2439,6 +2641,96 @@ func _OperatorConsole_ListWatchDeadLetters_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListPipelines_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPipelinesOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListPipelines(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListPipelines_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListPipelines(ctx, req.(*ListPipelinesOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_DryRunPipeline_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DryRunPipelineOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).DryRunPipeline(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_DryRunPipeline_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).DryRunPipeline(ctx, req.(*DryRunPipelineOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetPipeline_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPipelineOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetPipeline(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetPipeline_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetPipeline(ctx, req.(*GetPipelineOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ValidatePipeline_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidatePipelineOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ValidatePipeline(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ValidatePipeline_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ValidatePipeline(ctx, req.(*ValidatePipelineOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SavePipeline_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SavePipelineOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SavePipeline(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SavePipeline_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SavePipeline(ctx, req.(*SavePipelineOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_QueryLogs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(QueryLogsOpRequest)
 	if err := dec(in); err != nil {
@@ -3086,6 +3378,26 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListWatchDeadLetters",
 			Handler:    _OperatorConsole_ListWatchDeadLetters_Handler,
+		},
+		{
+			MethodName: "ListPipelines",
+			Handler:    _OperatorConsole_ListPipelines_Handler,
+		},
+		{
+			MethodName: "DryRunPipeline",
+			Handler:    _OperatorConsole_DryRunPipeline_Handler,
+		},
+		{
+			MethodName: "GetPipeline",
+			Handler:    _OperatorConsole_GetPipeline_Handler,
+		},
+		{
+			MethodName: "ValidatePipeline",
+			Handler:    _OperatorConsole_ValidatePipeline_Handler,
+		},
+		{
+			MethodName: "SavePipeline",
+			Handler:    _OperatorConsole_SavePipeline_Handler,
 		},
 		{
 			MethodName: "QueryLogs",

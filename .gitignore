@@ -98,3 +98,4 @@ secrets/
 # recoverable, so it belongs in your BACKUP set but never in git.
 configs/config.db
 configs/secret.key
+*.exe

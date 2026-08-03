@@ -47,8 +47,11 @@ type InboundService struct {
 	// identities resolves an external sender to a principal (contract 0077).
 	// nil ⇒ the surface remains the identity, which is the pre-0077 behaviour.
 	identities domain.IdentityResolver
-	logger     *slog.Logger
-	newID      func() string
+	// router shapes what happens AROUND an admitted turn. nil ⇒ the turn runs
+	// directly, which is every deployment's behaviour today.
+	router domain.TurnRouter
+	logger *slog.Logger
+	newID  func() string
 	// Profile is stamped on conversations this path opens. Customer is the honest
 	// default: a message arriving through an outsider-facing entry point is not an
 	// employee's, whatever the sender claims.
@@ -66,6 +69,12 @@ func NewInboundService(convs ConversationBinder, ingresses domain.IngressResolve
 		Profile:   domain.ProfileCustomer,
 	}
 }
+
+// SetRouter wires the seam that shapes what happens around an admitted turn.
+//
+// nil is the default and means "run the turn directly" — the behaviour every
+// deployment has today.
+func (s *InboundService) SetRouter(r domain.TurnRouter) { s.router = r }
 
 // SetLogger overrides the default logger.
 func (s *InboundService) SetLogger(l *slog.Logger) {
@@ -175,6 +184,26 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 
 	// The message id doubles as the turn's idempotency key, so a redelivered
 	// inbound message does not run the turn twice.
+	// A router may shape what happens around the turn — save the message first,
+	// branch on it, notify after. It is reached only HERE, after admission, so no
+	// authored graph can reach a security check (ADR-0090 D2).
+	//
+	// The turn itself stays this tier's: the router is handed a function that
+	// runs it, rather than a way to run one of its own.
+	if s.router != nil {
+		run := func(ctx context.Context, conversationID, text string) error {
+			return s.turns.RunTurn(ctx, conversationID, text, "")
+		}
+		handled, rerr := s.router.RouteTurn(ctx, addr.IngressAgentID, conv.ID, text, run)
+		if rerr != nil {
+			return rerr
+		}
+		if handled {
+			return nil
+		}
+		// Not routed: fall through, so a deployment with no pipeline for this
+		// ingress behaves exactly as it did before there were pipelines.
+	}
 	return s.turns.RunTurn(ctx, conv.ID, text, "")
 }
 

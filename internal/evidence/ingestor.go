@@ -5,12 +5,12 @@
 // The package owns exactly one hard thing — the content-first commit ordering
 // (memo §10) — and encodes it in control flow rather than convention:
 //
-//	1. bytes  → ContentStore.Put   (idempotent under the content hash)
-//	2. verify → ContentStore.Has   (the pointer must resolve BEFORE it is published)
-//	3. commit → EvidenceStore.Insert (evidence + outbox, atomically)
-//	4. ONLY THEN may the caller acknowledge the sender
-//	5. orphan blobs from crashes between 1 and 3 are garbage, not damage —
-//	   ContentStore.GC collects them
+//  1. bytes  → ContentStore.Put   (idempotent under the content hash)
+//  2. verify → ContentStore.Has   (the pointer must resolve BEFORE it is published)
+//  3. commit → EvidenceStore.Insert (evidence + outbox, atomically)
+//  4. ONLY THEN may the caller acknowledge the sender
+//  5. orphan blobs from crashes between 1 and 3 are garbage, not damage —
+//     ContentStore.GC collects them
 //
 // The inverted order (rows before bytes) was a reviewed-and-caught bug: a crash
 // between the two leaves an evidence row whose source material cannot be
