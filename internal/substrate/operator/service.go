@@ -49,9 +49,10 @@ type Service struct {
 	ingestor       MemoryIngestor
 	watches        domain.WatchConfigHandler
 	pipelines      domain.PipelineLister
-	pipelineDryRun domain.PipelineDryRunner
-	pipelineAuthor domain.PipelineAuthor
-	pipelineWriter domain.PipelineWriter
+	pipelineDryRun    domain.PipelineDryRunner
+	pipelineAuthor    domain.PipelineAuthor
+	pipelineWriter    domain.PipelineWriter
+	pipelineLifecycle domain.PipelineLifecycle
 	deadletters    domain.WatchDeadLetterReader // REACT-01 / ADR-0061
 	watchMetrics   domain.WatchMetricsReader    // REACT-05 / ADR-0071
 	watchBacktest  domain.WatchBacktester       // REACT-05 / ADR-0071

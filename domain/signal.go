@@ -347,6 +347,31 @@ type PipelineLister interface {
 	// ListPipelines returns authored revisions. armedOnly narrows to what is
 	// live; ingressID narrows to one ingress, empty for all.
 	ListPipelines(ctx context.Context, armedOnly bool, ingressID string) ([]PipelineSummary, error)
+
+	// ListNodeItems returns what actually reached one node, newest first.
+	//
+	// The console could report that a node RAN and never what ran through it.
+	// Every task already carries its input envelope, its result and its
+	// evidence; this is the read that was missing, not the data.
+	ListNodeItems(ctx context.Context, pipelineID, nodeID string, limit int) ([]NodeItem, error)
+}
+
+// NodeItem is one item's passage through one node, as the console reads it.
+type NodeItem struct {
+	RunID    string
+	ItemKey  string
+	State    string
+	Attempt  int
+	IterPath string
+	// InputJSON is the envelope the task consumed; ResultJSON is what it
+	// produced. For an effect the result carries WHAT it did — the part an
+	// operator is actually looking for.
+	InputJSON  string
+	ResultJSON string
+	Error      string
+	// EvidenceRef names the material this item derives from (RP-6).
+	EvidenceRef string
+	UpdatedAt   time.Time
 }
 
 // ── Pipeline dry run (contract 0088) ────────────────────────────────────────
@@ -395,6 +420,26 @@ type PipelineDryRun struct {
 	// it is set every other field is empty, and the console shows this instead
 	// of an empty report that looks like a clean one.
 	Refused string
+	// Source names what was replayed (contract 0092): the archive's real
+	// deliveries, or the redacted capture samples. Load-bearing for reading the
+	// report: over redacted samples every value is a type token, so a gate
+	// comparing `mag > 5.0` fails on every item — a finding about the SOURCE,
+	// not the graph, and only this field lets a reader tell those apart.
+	Source string
+	// NodeExamples are real items observed at each node during the replay — the
+	// value as the node received it, and what the node reported back where it
+	// reported anything. This is "the actual data flowing", per node, bounded.
+	NodeExamples []PipelineNodeExample
+}
+
+// PipelineNodeExample is one item as one node saw it during a dry run.
+type PipelineNodeExample struct {
+	Node    string
+	ItemKey string
+	// ValueJSON is the item's value as the node received it.
+	ValueJSON string
+	// ResultJSON is what the node recorded (an effect's receipt), when any.
+	ResultJSON string
 }
 
 // ShadowEffectSummary is one effect that would have been carried out.
@@ -483,6 +528,17 @@ type PipelineGraph struct {
 	// to the data: an operator comparing a step against a schema profile is
 	// asking exactly this, and nothing else in the graph answers it.
 	Reads map[string][]string
+	// FieldsJSON is the per-node field schema: for every node, the fields
+	// available to its expressions (walked from the trigger's capture profile
+	// through each transform), what it reads, writes and drops, and — where a
+	// shape is not statically knowable — the reason, named. JSON for the same
+	// reason as GraphJSON: it is a per-node map of open, recursive facts, and a
+	// proto mirror would be a second schema to drift.
+	//
+	// Empty when the source cannot project (an OSS build, a revision that does
+	// not compile) — which a console must render as "unchecked", never as "no
+	// fields".
+	FieldsJSON string
 	// Refused is set when the revision cannot be read at all.
 	Refused string
 }
@@ -496,6 +552,18 @@ type PipelineValidation struct {
 	EffectNodeCount   int
 	PlanChecksum      string
 	SemanticsChecksum string
+	// FieldsJSON is the per-node field schema of the DRAFT being validated —
+	// same shape as PipelineGraph.FieldsJSON, so the picker tracks the graph as
+	// it is edited rather than the revision it started from. Empty when the
+	// draft does not compile.
+	FieldsJSON string
+	// FieldsResolved reports that the projection above was computed WITH the
+	// trigger's schema in hand. False still yields a valid projection — every
+	// availability is a named unknown — which is exactly why the composition
+	// root cannot tell the two apart by looking at FieldsJSON: both are
+	// non-empty JSON. Only the author knows whether it held the schema, so the
+	// author says so, and the root prefers a source that did.
+	FieldsResolved bool
 	// Refused is set when the document itself could not be read — malformed
 	// JSON, say. Distinct from a refusal list, which means it WAS read and
 	// broke rules.
@@ -539,6 +607,37 @@ type PipelineSaved struct {
 	Refusals []PipelineRefusal
 	// Refused is set when nothing was stored at all.
 	Refused string
+}
+
+// ── Pipeline lifecycle (contract 0093) ──────────────────────────────────────
+
+// PipelineTransitioned is the outcome of moving a revision along its lifecycle.
+type PipelineTransitioned struct {
+	PipelineID string
+	Revision   int
+	// State is where the revision IS now — the store's answer, not an echo of
+	// the request.
+	State string
+	// Refused names the constraint when the transition could not happen: a
+	// draft that does not compile, a state the table forbids. The revision is
+	// untouched when set.
+	Refused string
+}
+
+// PipelineLifecycle moves one authored revision along draft → validated →
+// published → armed (and back to published, which is how an armed pipeline
+// pauses; retired ends it).
+//
+// A SEPARATE port from PipelineWriter for the same reason the writer is
+// separate from the author: each surface's guarantee is what it CANNOT do.
+// The author cannot store, the writer cannot publish, and this cannot edit —
+// it only moves a revision that already exists through gates that already
+// hold (a revision that stopped compiling refuses to validate, whatever this
+// port is asked).
+type PipelineLifecycle interface {
+	// TransitionPipeline moves pipelineID@revision to toState. Sources that do
+	// not hold the pipeline return ErrPipelineNotFound so the next is asked.
+	TransitionPipeline(ctx context.Context, pipelineID string, revision int, toState string) (PipelineTransitioned, error)
 }
 
 // PipelineHolder is an OPTIONAL capability on a writer: it can say whether an id

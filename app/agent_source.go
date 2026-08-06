@@ -35,6 +35,25 @@ func NewFilesystemAgentSource(dir string) *FilesystemAgentSource {
 	return &FilesystemAgentSource{dir: dir, isSystemAgent: func(string) bool { return false }}
 }
 
+// NewSystemFilesystemAgentSource builds a plugin source that confers system status on
+// the agents it NAMES, and on no others.
+//
+// The plain constructor above cannot confer it, deliberately: a directory is not an
+// audit trail, and a plugin that could make anything it dropped on disk privileged
+// would be a privilege-escalation seam. Naming the IDs at the call site keeps the
+// property AddSystemAgent was written for — an explicit grant, visible in the
+// compiled-in plugin's own source — while still discovering the agent by scanning,
+// which is the only way a Python agent's manifest and exec path are found.
+//
+// Anything in `dir` that is not named here is a regular agent.
+func NewSystemFilesystemAgentSource(dir string, systemIDs ...string) *FilesystemAgentSource {
+	granted := make(map[string]bool, len(systemIDs))
+	for _, id := range systemIDs {
+		granted[id] = true
+	}
+	return &FilesystemAgentSource{dir: dir, isSystemAgent: func(id string) bool { return granted[id] }}
+}
+
 // newBuiltinFilesystemAgentSource builds the kernel's own agents-directory source. It is
 // system-aware (domain.IsSystemAgent stamps the privileged organs), so it reproduces the
 // pre-ADR-0075 built-in scan exactly — including manifests and system flags.

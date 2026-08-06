@@ -1226,6 +1226,23 @@ type ExecutionConfig struct {
 
 	// Graph holds spreading activation configuration (ADR-0017).
 	Graph GraphConfig `json:"graph"`
+
+	// Pipelines holds reactive-pipeline execution settings (ADR-0114).
+	Pipelines PipelinesConfig `json:"pipelines"`
+}
+
+// PipelinesConfig governs whether authored pipelines actually EXECUTE.
+type PipelinesConfig struct {
+	// DrainerEnabled starts the worker that claims and runs queued pipeline
+	// tasks. Default FALSE.
+	//
+	// Not a performance switch — without it, routing enqueues work that nothing
+	// ever claims, and the runs sit in `running` forever while the console
+	// reports them as live. Off by default because turning it on for the first
+	// time does not resume a paused system, it starts one: everything already
+	// queued executes at once, each run against the plan revision it was pinned
+	// to rather than any correction made since. Inspect the queue, then enable.
+	DrainerEnabled bool `json:"drainer_enabled,omitempty"`
 }
 
 // GraphConfig defines spreading activation parameters (ADR-0017).

@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
@@ -29,6 +30,31 @@ import (
 // that has to special-case an error to render an empty panel will eventually
 // render the error instead.
 func (s *Service) SetPipelineLister(l domain.PipelineLister) { s.pipelines = l }
+
+// ListNodeItems returns what reached one node, newest first.
+//
+// Empty rather than an error when no pipeline surface is wired, for the same
+// reason ListPipelines is: "this build authors no pipelines" is a true answer.
+func (s *Service) ListNodeItems(ctx context.Context, req *pb.ListNodeItemsOpRequest) (*pb.ListNodeItemsOpResponse, error) {
+	if s.pipelines == nil {
+		return &pb.ListNodeItemsOpResponse{}, nil
+	}
+	found, err := s.pipelines.ListNodeItems(ctx, req.GetPipelineId(), req.GetNodeId(), int(req.GetLimit()))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list node items: %v", err)
+	}
+	out := make([]*pb.NodeItemOp, 0, len(found))
+	for _, it := range found {
+		out = append(out, &pb.NodeItemOp{
+			RunId: it.RunID, ItemKey: it.ItemKey, State: it.State,
+			Attempt: int32(it.Attempt), IterPath: it.IterPath,
+			InputJson: it.InputJSON, ResultJson: it.ResultJSON,
+			Error: it.Error, EvidenceRef: it.EvidenceRef,
+			UpdatedAt: it.UpdatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return &pb.ListNodeItemsOpResponse{Items: out}, nil
+}
 
 // ListPipelines returns authored pipeline revisions.
 func (s *Service) ListPipelines(ctx context.Context, req *pb.ListPipelinesOpRequest) (*pb.ListPipelinesOpResponse, error) {
@@ -119,6 +145,13 @@ func (s *Service) DryRunPipeline(ctx context.Context, req *pb.DryRunPipelineOpRe
 	for _, f := range got.Failures {
 		fails = append(fails, &pb.PipelineFailureOp{Node: f.Node, ItemKey: f.ItemKey, Err: f.Err})
 	}
+	examples := make([]*pb.PipelineNodeExampleOp, 0, len(got.NodeExamples))
+	for _, ex := range got.NodeExamples {
+		examples = append(examples, &pb.PipelineNodeExampleOp{
+			Node: ex.Node, ItemKey: ex.ItemKey,
+			ValueJson: ex.ValueJSON, ResultJson: ex.ResultJSON,
+		})
+	}
 	return &pb.DryRunPipelineOpResponse{
 		RunId:        got.RunID,
 		Samples:      int32(got.Samples),
@@ -127,5 +160,7 @@ func (s *Service) DryRunPipeline(ctx context.Context, req *pb.DryRunPipelineOpRe
 		Terminations: terms,
 		Failures:     fails,
 		ElapsedMs:    got.ElapsedMs,
+		Source:       got.Source,
+		NodeExamples: examples,
 	}, nil
 }

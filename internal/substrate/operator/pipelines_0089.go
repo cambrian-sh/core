@@ -67,9 +67,10 @@ func (s *Service) GetPipeline(ctx context.Context, req *pb.GetPipelineOpRequest)
 			Approved:          p.Approved,
 			EntryLive:         p.EntryLive,
 		},
-		GraphJson: got.GraphJSON,
-		Refusals:  refusalsToProto(got.Refusals),
-		Reads:     readsToProto(got.Reads),
+		GraphJson:       got.GraphJSON,
+		Refusals:        refusalsToProto(got.Refusals),
+		Reads:           readsToProto(got.Reads),
+		FieldSchemaJson: got.FieldsJSON,
 	}, nil
 }
 
@@ -91,6 +92,7 @@ func (s *Service) ValidatePipeline(ctx context.Context, req *pb.ValidatePipeline
 		EffectNodeCount:   int32(got.EffectNodeCount),
 		PlanChecksum:      got.PlanChecksum,
 		SemanticsChecksum: got.SemanticsChecksum,
+		FieldSchemaJson:   got.FieldsJSON,
 	}, nil
 }
 
@@ -146,5 +148,36 @@ func (s *Service) SavePipeline(ctx context.Context, req *pb.SavePipelineOpReques
 		PipelineId: got.PipelineID,
 		Revision:   int32(got.Revision),
 		Refusals:   refusalsToProto(got.Refusals),
+	}, nil
+}
+
+// ── Lifecycle (contract 0093) ───────────────────────────────────────────────
+
+// SetPipelineLifecycle wires the premium transition surface. nil (OSS) ⇒
+// TransitionPipeline REFUSES by name.
+func (s *Service) SetPipelineLifecycle(l domain.PipelineLifecycle) { s.pipelineLifecycle = l }
+
+// TransitionPipeline moves one revision along its lifecycle.
+func (s *Service) TransitionPipeline(ctx context.Context, req *pb.TransitionPipelineOpRequest) (*pb.TransitionPipelineOpResponse, error) {
+	if s.pipelineLifecycle == nil {
+		return &pb.TransitionPipelineOpResponse{
+			Refused: "this build has no pipeline registry, so nothing can transition",
+		}, nil
+	}
+	if req.GetPipelineId() == "" {
+		return &pb.TransitionPipelineOpResponse{Refused: "a pipeline id is required"}, nil
+	}
+	if req.GetToState() == "" {
+		return &pb.TransitionPipelineOpResponse{Refused: "a target state is required — validated, published, armed, paused or retired"}, nil
+	}
+	got, err := s.pipelineLifecycle.TransitionPipeline(ctx, req.GetPipelineId(), int(req.GetRevision()), req.GetToState())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "transition pipeline: %v", err)
+	}
+	return &pb.TransitionPipelineOpResponse{
+		Refused:    got.Refused,
+		PipelineId: got.PipelineID,
+		Revision:   int32(got.Revision),
+		State:      got.State,
 	}, nil
 }

@@ -13956,6 +13956,239 @@ func (x *GetDocumentOpResponse) GetCreatedAtUnixMs() int64 {
 	return 0
 }
 
+type ListNodeItemsOpRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	PipelineId string                 `protobuf:"bytes,1,opt,name=pipeline_id,json=pipelineId,proto3" json:"pipeline_id,omitempty"`
+	NodeId     string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	// Newest first. Bounded by the server; 0 means its default.
+	Limit         int32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListNodeItemsOpRequest) Reset() {
+	*x = ListNodeItemsOpRequest{}
+	mi := &file_operator_proto_msgTypes[179]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListNodeItemsOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListNodeItemsOpRequest) ProtoMessage() {}
+
+func (x *ListNodeItemsOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[179]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListNodeItemsOpRequest.ProtoReflect.Descriptor instead.
+func (*ListNodeItemsOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{179}
+}
+
+func (x *ListNodeItemsOpRequest) GetPipelineId() string {
+	if x != nil {
+		return x.PipelineId
+	}
+	return ""
+}
+
+func (x *ListNodeItemsOpRequest) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *ListNodeItemsOpRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type NodeItemOp struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	RunId   string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	ItemKey string                 `protobuf:"bytes,2,opt,name=item_key,json=itemKey,proto3" json:"item_key,omitempty"`
+	State   string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`
+	Attempt int32                  `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	// The envelope this task consumed and what it produced, as JSON. The result
+	// of a save carries WHAT it wrote, which is the thing worth reading.
+	InputJson  string `protobuf:"bytes,5,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`
+	ResultJson string `protobuf:"bytes,6,opt,name=result_json,json=resultJson,proto3" json:"result_json,omitempty"`
+	Error      string `protobuf:"bytes,7,opt,name=error,proto3" json:"error,omitempty"`
+	// The material this item derives from (RP-6).
+	EvidenceRef string `protobuf:"bytes,8,opt,name=evidence_ref,json=evidenceRef,proto3" json:"evidence_ref,omitempty"`
+	UpdatedAt   string `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	// Iteration path through enclosing loops, empty outside one.
+	IterPath      string `protobuf:"bytes,10,opt,name=iter_path,json=iterPath,proto3" json:"iter_path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeItemOp) Reset() {
+	*x = NodeItemOp{}
+	mi := &file_operator_proto_msgTypes[180]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeItemOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeItemOp) ProtoMessage() {}
+
+func (x *NodeItemOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[180]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeItemOp.ProtoReflect.Descriptor instead.
+func (*NodeItemOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{180}
+}
+
+func (x *NodeItemOp) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *NodeItemOp) GetItemKey() string {
+	if x != nil {
+		return x.ItemKey
+	}
+	return ""
+}
+
+func (x *NodeItemOp) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *NodeItemOp) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *NodeItemOp) GetInputJson() string {
+	if x != nil {
+		return x.InputJson
+	}
+	return ""
+}
+
+func (x *NodeItemOp) GetResultJson() string {
+	if x != nil {
+		return x.ResultJson
+	}
+	return ""
+}
+
+func (x *NodeItemOp) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *NodeItemOp) GetEvidenceRef() string {
+	if x != nil {
+		return x.EvidenceRef
+	}
+	return ""
+}
+
+func (x *NodeItemOp) GetUpdatedAt() string {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return ""
+}
+
+func (x *NodeItemOp) GetIterPath() string {
+	if x != nil {
+		return x.IterPath
+	}
+	return ""
+}
+
+type ListNodeItemsOpResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*NodeItemOp          `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListNodeItemsOpResponse) Reset() {
+	*x = ListNodeItemsOpResponse{}
+	mi := &file_operator_proto_msgTypes[181]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListNodeItemsOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListNodeItemsOpResponse) ProtoMessage() {}
+
+func (x *ListNodeItemsOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[181]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListNodeItemsOpResponse.ProtoReflect.Descriptor instead.
+func (*ListNodeItemsOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{181}
+}
+
+func (x *ListNodeItemsOpResponse) GetItems() []*NodeItemOp {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *ListNodeItemsOpResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 type ListPipelinesOpRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// armed_only narrows to what is LIVE. The default is every revision, because
@@ -13970,7 +14203,7 @@ type ListPipelinesOpRequest struct {
 
 func (x *ListPipelinesOpRequest) Reset() {
 	*x = ListPipelinesOpRequest{}
-	mi := &file_operator_proto_msgTypes[179]
+	mi := &file_operator_proto_msgTypes[182]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13982,7 +14215,7 @@ func (x *ListPipelinesOpRequest) String() string {
 func (*ListPipelinesOpRequest) ProtoMessage() {}
 
 func (x *ListPipelinesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[179]
+	mi := &file_operator_proto_msgTypes[182]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13995,7 +14228,7 @@ func (x *ListPipelinesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPipelinesOpRequest.ProtoReflect.Descriptor instead.
 func (*ListPipelinesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{179}
+	return file_operator_proto_rawDescGZIP(), []int{182}
 }
 
 func (x *ListPipelinesOpRequest) GetArmedOnly() bool {
@@ -14021,7 +14254,7 @@ type ListPipelinesOpResponse struct {
 
 func (x *ListPipelinesOpResponse) Reset() {
 	*x = ListPipelinesOpResponse{}
-	mi := &file_operator_proto_msgTypes[180]
+	mi := &file_operator_proto_msgTypes[183]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14033,7 +14266,7 @@ func (x *ListPipelinesOpResponse) String() string {
 func (*ListPipelinesOpResponse) ProtoMessage() {}
 
 func (x *ListPipelinesOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[180]
+	mi := &file_operator_proto_msgTypes[183]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14046,7 +14279,7 @@ func (x *ListPipelinesOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPipelinesOpResponse.ProtoReflect.Descriptor instead.
 func (*ListPipelinesOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{180}
+	return file_operator_proto_rawDescGZIP(), []int{183}
 }
 
 func (x *ListPipelinesOpResponse) GetPipelines() []*PipelineOp {
@@ -14070,7 +14303,7 @@ type DryRunPipelineOpRequest struct {
 
 func (x *DryRunPipelineOpRequest) Reset() {
 	*x = DryRunPipelineOpRequest{}
-	mi := &file_operator_proto_msgTypes[181]
+	mi := &file_operator_proto_msgTypes[184]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14082,7 +14315,7 @@ func (x *DryRunPipelineOpRequest) String() string {
 func (*DryRunPipelineOpRequest) ProtoMessage() {}
 
 func (x *DryRunPipelineOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[181]
+	mi := &file_operator_proto_msgTypes[184]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14095,7 +14328,7 @@ func (x *DryRunPipelineOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DryRunPipelineOpRequest.ProtoReflect.Descriptor instead.
 func (*DryRunPipelineOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{181}
+	return file_operator_proto_rawDescGZIP(), []int{184}
 }
 
 func (x *DryRunPipelineOpRequest) GetPipelineId() string {
@@ -14139,14 +14372,24 @@ type DryRunPipelineOpResponse struct {
 	Failures []*PipelineFailureOp `protobuf:"bytes,7,rep,name=failures,proto3" json:"failures,omitempty"`
 	// elapsed_ms is how long the replay took — the figure that says whether
 	// running it over more deliveries is worth doing.
-	ElapsedMs     int64 `protobuf:"varint,8,opt,name=elapsed_ms,json=elapsedMs,proto3" json:"elapsed_ms,omitempty"`
+	ElapsedMs int64 `protobuf:"varint,8,opt,name=elapsed_ms,json=elapsedMs,proto3" json:"elapsed_ms,omitempty"`
+	// source names what was replayed (contract 0092): the archive's real
+	// deliveries, or the redacted capture samples. Load-bearing for reading the
+	// report — over redacted samples every value is a type token, so a numeric
+	// gate fails on every item, and only this field lets a reader blame the
+	// source rather than the graph.
+	Source string `protobuf:"bytes,9,opt,name=source,proto3" json:"source,omitempty"`
+	// node_examples are real items observed per node during the replay — the
+	// value as the node received it, and the node's own receipt where it
+	// recorded one. Bounded per node kernel-side: a panel a person reads.
+	NodeExamples  []*PipelineNodeExampleOp `protobuf:"bytes,10,rep,name=node_examples,json=nodeExamples,proto3" json:"node_examples,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DryRunPipelineOpResponse) Reset() {
 	*x = DryRunPipelineOpResponse{}
-	mi := &file_operator_proto_msgTypes[182]
+	mi := &file_operator_proto_msgTypes[185]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14158,7 +14401,7 @@ func (x *DryRunPipelineOpResponse) String() string {
 func (*DryRunPipelineOpResponse) ProtoMessage() {}
 
 func (x *DryRunPipelineOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[182]
+	mi := &file_operator_proto_msgTypes[185]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14171,7 +14414,7 @@ func (x *DryRunPipelineOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DryRunPipelineOpResponse.ProtoReflect.Descriptor instead.
 func (*DryRunPipelineOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{182}
+	return file_operator_proto_rawDescGZIP(), []int{185}
 }
 
 func (x *DryRunPipelineOpResponse) GetRefused() string {
@@ -14230,6 +14473,91 @@ func (x *DryRunPipelineOpResponse) GetElapsedMs() int64 {
 	return 0
 }
 
+func (x *DryRunPipelineOpResponse) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *DryRunPipelineOpResponse) GetNodeExamples() []*PipelineNodeExampleOp {
+	if x != nil {
+		return x.NodeExamples
+	}
+	return nil
+}
+
+// PipelineNodeExampleOp is one item as one node saw it during a dry run.
+type PipelineNodeExampleOp struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Node    string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	ItemKey string                 `protobuf:"bytes,2,opt,name=item_key,json=itemKey,proto3" json:"item_key,omitempty"`
+	// value_json is the item's value as the node received it.
+	ValueJson string `protobuf:"bytes,3,opt,name=value_json,json=valueJson,proto3" json:"value_json,omitempty"`
+	// result_json is what the node recorded (an effect's receipt), when any.
+	ResultJson    string `protobuf:"bytes,4,opt,name=result_json,json=resultJson,proto3" json:"result_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PipelineNodeExampleOp) Reset() {
+	*x = PipelineNodeExampleOp{}
+	mi := &file_operator_proto_msgTypes[186]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PipelineNodeExampleOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PipelineNodeExampleOp) ProtoMessage() {}
+
+func (x *PipelineNodeExampleOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[186]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PipelineNodeExampleOp.ProtoReflect.Descriptor instead.
+func (*PipelineNodeExampleOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{186}
+}
+
+func (x *PipelineNodeExampleOp) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *PipelineNodeExampleOp) GetItemKey() string {
+	if x != nil {
+		return x.ItemKey
+	}
+	return ""
+}
+
+func (x *PipelineNodeExampleOp) GetValueJson() string {
+	if x != nil {
+		return x.ValueJson
+	}
+	return ""
+}
+
+func (x *PipelineNodeExampleOp) GetResultJson() string {
+	if x != nil {
+		return x.ResultJson
+	}
+	return ""
+}
+
 // PipelineFailureOp is one item a node could not process.
 type PipelineFailureOp struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -14242,7 +14570,7 @@ type PipelineFailureOp struct {
 
 func (x *PipelineFailureOp) Reset() {
 	*x = PipelineFailureOp{}
-	mi := &file_operator_proto_msgTypes[183]
+	mi := &file_operator_proto_msgTypes[187]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14254,7 +14582,7 @@ func (x *PipelineFailureOp) String() string {
 func (*PipelineFailureOp) ProtoMessage() {}
 
 func (x *PipelineFailureOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[183]
+	mi := &file_operator_proto_msgTypes[187]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14267,7 +14595,7 @@ func (x *PipelineFailureOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineFailureOp.ProtoReflect.Descriptor instead.
 func (*PipelineFailureOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{183}
+	return file_operator_proto_rawDescGZIP(), []int{187}
 }
 
 func (x *PipelineFailureOp) GetNode() string {
@@ -14302,7 +14630,7 @@ type GetPipelineOpRequest struct {
 
 func (x *GetPipelineOpRequest) Reset() {
 	*x = GetPipelineOpRequest{}
-	mi := &file_operator_proto_msgTypes[184]
+	mi := &file_operator_proto_msgTypes[188]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14314,7 +14642,7 @@ func (x *GetPipelineOpRequest) String() string {
 func (*GetPipelineOpRequest) ProtoMessage() {}
 
 func (x *GetPipelineOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[184]
+	mi := &file_operator_proto_msgTypes[188]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14327,7 +14655,7 @@ func (x *GetPipelineOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPipelineOpRequest.ProtoReflect.Descriptor instead.
 func (*GetPipelineOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{184}
+	return file_operator_proto_rawDescGZIP(), []int{188}
 }
 
 func (x *GetPipelineOpRequest) GetPipelineId() string {
@@ -14361,14 +14689,21 @@ type GetPipelineOpResponse struct {
 	// reads names, per node, the payload paths that node's expressions look at —
 	// taken from the compiled AST, so it cannot disagree with what the runtime
 	// will read.
-	Reads         []*NodeReadsOp `protobuf:"bytes,5,rep,name=reads,proto3" json:"reads,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Reads []*NodeReadsOp `protobuf:"bytes,5,rep,name=reads,proto3" json:"reads,omitempty"`
+	// field_schema_json is the per-node field schema (contract 0091): for every
+	// node, the fields available to its expressions — walked from the trigger's
+	// capture profile through each transform — plus what it reads, writes and
+	// drops, and, where a shape is not statically knowable, the reason, named.
+	// JSON for the same reason as graph_json. Empty means "unchecked", never
+	// "no fields".
+	FieldSchemaJson string `protobuf:"bytes,6,opt,name=field_schema_json,json=fieldSchemaJson,proto3" json:"field_schema_json,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *GetPipelineOpResponse) Reset() {
 	*x = GetPipelineOpResponse{}
-	mi := &file_operator_proto_msgTypes[185]
+	mi := &file_operator_proto_msgTypes[189]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14380,7 +14715,7 @@ func (x *GetPipelineOpResponse) String() string {
 func (*GetPipelineOpResponse) ProtoMessage() {}
 
 func (x *GetPipelineOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[185]
+	mi := &file_operator_proto_msgTypes[189]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14393,7 +14728,7 @@ func (x *GetPipelineOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPipelineOpResponse.ProtoReflect.Descriptor instead.
 func (*GetPipelineOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{185}
+	return file_operator_proto_rawDescGZIP(), []int{189}
 }
 
 func (x *GetPipelineOpResponse) GetRefused() string {
@@ -14431,6 +14766,13 @@ func (x *GetPipelineOpResponse) GetReads() []*NodeReadsOp {
 	return nil
 }
 
+func (x *GetPipelineOpResponse) GetFieldSchemaJson() string {
+	if x != nil {
+		return x.FieldSchemaJson
+	}
+	return ""
+}
+
 // NodeReadsOp is one node and the payload paths it reads.
 type NodeReadsOp struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -14444,7 +14786,7 @@ type NodeReadsOp struct {
 
 func (x *NodeReadsOp) Reset() {
 	*x = NodeReadsOp{}
-	mi := &file_operator_proto_msgTypes[186]
+	mi := &file_operator_proto_msgTypes[190]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14456,7 +14798,7 @@ func (x *NodeReadsOp) String() string {
 func (*NodeReadsOp) ProtoMessage() {}
 
 func (x *NodeReadsOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[186]
+	mi := &file_operator_proto_msgTypes[190]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14469,7 +14811,7 @@ func (x *NodeReadsOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeReadsOp.ProtoReflect.Descriptor instead.
 func (*NodeReadsOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{186}
+	return file_operator_proto_rawDescGZIP(), []int{190}
 }
 
 func (x *NodeReadsOp) GetNode() string {
@@ -14495,7 +14837,7 @@ type ValidatePipelineOpRequest struct {
 
 func (x *ValidatePipelineOpRequest) Reset() {
 	*x = ValidatePipelineOpRequest{}
-	mi := &file_operator_proto_msgTypes[187]
+	mi := &file_operator_proto_msgTypes[191]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14507,7 +14849,7 @@ func (x *ValidatePipelineOpRequest) String() string {
 func (*ValidatePipelineOpRequest) ProtoMessage() {}
 
 func (x *ValidatePipelineOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[187]
+	mi := &file_operator_proto_msgTypes[191]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14520,7 +14862,7 @@ func (x *ValidatePipelineOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidatePipelineOpRequest.ProtoReflect.Descriptor instead.
 func (*ValidatePipelineOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{187}
+	return file_operator_proto_rawDescGZIP(), []int{191}
 }
 
 func (x *ValidatePipelineOpRequest) GetGraphJson() string {
@@ -14541,13 +14883,18 @@ type ValidatePipelineOpResponse struct {
 	EffectNodeCount   int32  `protobuf:"varint,4,opt,name=effect_node_count,json=effectNodeCount,proto3" json:"effect_node_count,omitempty"`
 	PlanChecksum      string `protobuf:"bytes,5,opt,name=plan_checksum,json=planChecksum,proto3" json:"plan_checksum,omitempty"`
 	SemanticsChecksum string `protobuf:"bytes,6,opt,name=semantics_checksum,json=semanticsChecksum,proto3" json:"semantics_checksum,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// field_schema_json is the per-node field schema of the DRAFT being
+	// validated — same shape as GetPipelineOpResponse.field_schema_json, so the
+	// picker tracks the graph as it is edited. Empty when the draft does not
+	// compile.
+	FieldSchemaJson string `protobuf:"bytes,7,opt,name=field_schema_json,json=fieldSchemaJson,proto3" json:"field_schema_json,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ValidatePipelineOpResponse) Reset() {
 	*x = ValidatePipelineOpResponse{}
-	mi := &file_operator_proto_msgTypes[188]
+	mi := &file_operator_proto_msgTypes[192]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14559,7 +14906,7 @@ func (x *ValidatePipelineOpResponse) String() string {
 func (*ValidatePipelineOpResponse) ProtoMessage() {}
 
 func (x *ValidatePipelineOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[188]
+	mi := &file_operator_proto_msgTypes[192]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14572,7 +14919,7 @@ func (x *ValidatePipelineOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidatePipelineOpResponse.ProtoReflect.Descriptor instead.
 func (*ValidatePipelineOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{188}
+	return file_operator_proto_rawDescGZIP(), []int{192}
 }
 
 func (x *ValidatePipelineOpResponse) GetRefused() string {
@@ -14617,6 +14964,13 @@ func (x *ValidatePipelineOpResponse) GetSemanticsChecksum() string {
 	return ""
 }
 
+func (x *ValidatePipelineOpResponse) GetFieldSchemaJson() string {
+	if x != nil {
+		return x.FieldSchemaJson
+	}
+	return ""
+}
+
 type SavePipelineOpRequest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	GraphJson string                 `protobuf:"bytes,1,opt,name=graph_json,json=graphJson,proto3" json:"graph_json,omitempty"`
@@ -14628,7 +14982,7 @@ type SavePipelineOpRequest struct {
 
 func (x *SavePipelineOpRequest) Reset() {
 	*x = SavePipelineOpRequest{}
-	mi := &file_operator_proto_msgTypes[189]
+	mi := &file_operator_proto_msgTypes[193]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14640,7 +14994,7 @@ func (x *SavePipelineOpRequest) String() string {
 func (*SavePipelineOpRequest) ProtoMessage() {}
 
 func (x *SavePipelineOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[189]
+	mi := &file_operator_proto_msgTypes[193]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14653,7 +15007,7 @@ func (x *SavePipelineOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SavePipelineOpRequest.ProtoReflect.Descriptor instead.
 func (*SavePipelineOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{189}
+	return file_operator_proto_rawDescGZIP(), []int{193}
 }
 
 func (x *SavePipelineOpRequest) GetGraphJson() string {
@@ -14687,7 +15041,7 @@ type SavePipelineOpResponse struct {
 
 func (x *SavePipelineOpResponse) Reset() {
 	*x = SavePipelineOpResponse{}
-	mi := &file_operator_proto_msgTypes[190]
+	mi := &file_operator_proto_msgTypes[194]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14699,7 +15053,7 @@ func (x *SavePipelineOpResponse) String() string {
 func (*SavePipelineOpResponse) ProtoMessage() {}
 
 func (x *SavePipelineOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[190]
+	mi := &file_operator_proto_msgTypes[194]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14712,7 +15066,7 @@ func (x *SavePipelineOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SavePipelineOpResponse.ProtoReflect.Descriptor instead.
 func (*SavePipelineOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{190}
+	return file_operator_proto_rawDescGZIP(), []int{194}
 }
 
 func (x *SavePipelineOpResponse) GetRefused() string {
@@ -14743,6 +15097,158 @@ func (x *SavePipelineOpResponse) GetRefusals() []*RefusalOp {
 	return nil
 }
 
+type TransitionPipelineOpRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	PipelineId string                 `protobuf:"bytes,1,opt,name=pipeline_id,json=pipelineId,proto3" json:"pipeline_id,omitempty"`
+	// revision 0 means the latest authored revision.
+	Revision int32 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	// to_state is one of: validated, published, armed, paused, retired.
+	ToState string `protobuf:"bytes,3,opt,name=to_state,json=toState,proto3" json:"to_state,omitempty"`
+	// command_id makes the transition idempotent under retry; reason is the
+	// operator's own words, audited like every mutating command.
+	CommandId     string `protobuf:"bytes,4,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason        string `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransitionPipelineOpRequest) Reset() {
+	*x = TransitionPipelineOpRequest{}
+	mi := &file_operator_proto_msgTypes[195]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransitionPipelineOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransitionPipelineOpRequest) ProtoMessage() {}
+
+func (x *TransitionPipelineOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[195]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransitionPipelineOpRequest.ProtoReflect.Descriptor instead.
+func (*TransitionPipelineOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{195}
+}
+
+func (x *TransitionPipelineOpRequest) GetPipelineId() string {
+	if x != nil {
+		return x.PipelineId
+	}
+	return ""
+}
+
+func (x *TransitionPipelineOpRequest) GetRevision() int32 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *TransitionPipelineOpRequest) GetToState() string {
+	if x != nil {
+		return x.ToState
+	}
+	return ""
+}
+
+func (x *TransitionPipelineOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *TransitionPipelineOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type TransitionPipelineOpResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// refused names the gate that held, in the registry's own words. The
+	// revision is untouched when set.
+	Refused    string `protobuf:"bytes,1,opt,name=refused,proto3" json:"refused,omitempty"`
+	PipelineId string `protobuf:"bytes,2,opt,name=pipeline_id,json=pipelineId,proto3" json:"pipeline_id,omitempty"`
+	Revision   int32  `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
+	// state is where the revision IS now — the store's answer, never an echo
+	// of the request.
+	State         string `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransitionPipelineOpResponse) Reset() {
+	*x = TransitionPipelineOpResponse{}
+	mi := &file_operator_proto_msgTypes[196]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransitionPipelineOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransitionPipelineOpResponse) ProtoMessage() {}
+
+func (x *TransitionPipelineOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[196]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransitionPipelineOpResponse.ProtoReflect.Descriptor instead.
+func (*TransitionPipelineOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{196}
+}
+
+func (x *TransitionPipelineOpResponse) GetRefused() string {
+	if x != nil {
+		return x.Refused
+	}
+	return ""
+}
+
+func (x *TransitionPipelineOpResponse) GetPipelineId() string {
+	if x != nil {
+		return x.PipelineId
+	}
+	return ""
+}
+
+func (x *TransitionPipelineOpResponse) GetRevision() int32 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *TransitionPipelineOpResponse) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
 // RefusalOp is one constraint a graph broke, and where it broke it.
 type RefusalOp struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -14762,7 +15268,7 @@ type RefusalOp struct {
 
 func (x *RefusalOp) Reset() {
 	*x = RefusalOp{}
-	mi := &file_operator_proto_msgTypes[191]
+	mi := &file_operator_proto_msgTypes[197]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14774,7 +15280,7 @@ func (x *RefusalOp) String() string {
 func (*RefusalOp) ProtoMessage() {}
 
 func (x *RefusalOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[191]
+	mi := &file_operator_proto_msgTypes[197]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14787,7 +15293,7 @@ func (x *RefusalOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefusalOp.ProtoReflect.Descriptor instead.
 func (*RefusalOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{191}
+	return file_operator_proto_rawDescGZIP(), []int{197}
 }
 
 func (x *RefusalOp) GetConstraint() string {
@@ -14833,7 +15339,7 @@ type ShadowEffectOp struct {
 
 func (x *ShadowEffectOp) Reset() {
 	*x = ShadowEffectOp{}
-	mi := &file_operator_proto_msgTypes[192]
+	mi := &file_operator_proto_msgTypes[198]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14845,7 +15351,7 @@ func (x *ShadowEffectOp) String() string {
 func (*ShadowEffectOp) ProtoMessage() {}
 
 func (x *ShadowEffectOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[192]
+	mi := &file_operator_proto_msgTypes[198]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14858,7 +15364,7 @@ func (x *ShadowEffectOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShadowEffectOp.ProtoReflect.Descriptor instead.
 func (*ShadowEffectOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{192}
+	return file_operator_proto_rawDescGZIP(), []int{198}
 }
 
 func (x *ShadowEffectOp) GetNode() string {
@@ -14908,7 +15414,7 @@ type DuplicateEffectKeyOp struct {
 
 func (x *DuplicateEffectKeyOp) Reset() {
 	*x = DuplicateEffectKeyOp{}
-	mi := &file_operator_proto_msgTypes[193]
+	mi := &file_operator_proto_msgTypes[199]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14920,7 +15426,7 @@ func (x *DuplicateEffectKeyOp) String() string {
 func (*DuplicateEffectKeyOp) ProtoMessage() {}
 
 func (x *DuplicateEffectKeyOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[193]
+	mi := &file_operator_proto_msgTypes[199]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14933,7 +15439,7 @@ func (x *DuplicateEffectKeyOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DuplicateEffectKeyOp.ProtoReflect.Descriptor instead.
 func (*DuplicateEffectKeyOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{193}
+	return file_operator_proto_rawDescGZIP(), []int{199}
 }
 
 func (x *DuplicateEffectKeyOp) GetEffectKey() string {
@@ -14971,7 +15477,7 @@ type PipelineTerminationOp struct {
 
 func (x *PipelineTerminationOp) Reset() {
 	*x = PipelineTerminationOp{}
-	mi := &file_operator_proto_msgTypes[194]
+	mi := &file_operator_proto_msgTypes[200]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14983,7 +15489,7 @@ func (x *PipelineTerminationOp) String() string {
 func (*PipelineTerminationOp) ProtoMessage() {}
 
 func (x *PipelineTerminationOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[194]
+	mi := &file_operator_proto_msgTypes[200]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14996,7 +15502,7 @@ func (x *PipelineTerminationOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineTerminationOp.ProtoReflect.Descriptor instead.
 func (*PipelineTerminationOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{194}
+	return file_operator_proto_rawDescGZIP(), []int{200}
 }
 
 func (x *PipelineTerminationOp) GetNode() string {
@@ -15075,7 +15581,7 @@ type PipelineOp struct {
 
 func (x *PipelineOp) Reset() {
 	*x = PipelineOp{}
-	mi := &file_operator_proto_msgTypes[195]
+	mi := &file_operator_proto_msgTypes[201]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15087,7 +15593,7 @@ func (x *PipelineOp) String() string {
 func (*PipelineOp) ProtoMessage() {}
 
 func (x *PipelineOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[195]
+	mi := &file_operator_proto_msgTypes[201]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15100,7 +15606,7 @@ func (x *PipelineOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineOp.ProtoReflect.Descriptor instead.
 func (*PipelineOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{195}
+	return file_operator_proto_rawDescGZIP(), []int{201}
 }
 
 func (x *PipelineOp) GetPipelineId() string {
@@ -16427,7 +16933,31 @@ const file_operator_proto_rawDesc = "" +
 	"\rdocument_type\x18\x05 \x01(\tR\fdocumentType\x12\x12\n" +
 	"\x04tags\x18\x06 \x03(\tR\x04tags\x12\x16\n" +
 	"\x06source\x18\a \x01(\tR\x06source\x12+\n" +
-	"\x12created_at_unix_ms\x18\b \x01(\x03R\x0fcreatedAtUnixMs\"V\n" +
+	"\x12created_at_unix_ms\x18\b \x01(\x03R\x0fcreatedAtUnixMs\"h\n" +
+	"\x16ListNodeItemsOpRequest\x12\x1f\n" +
+	"\vpipeline_id\x18\x01 \x01(\tR\n" +
+	"pipelineId\x12\x17\n" +
+	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\xa3\x02\n" +
+	"\n" +
+	"NodeItemOp\x12\x15\n" +
+	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x19\n" +
+	"\bitem_key\x18\x02 \x01(\tR\aitemKey\x12\x14\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\x12\x18\n" +
+	"\aattempt\x18\x04 \x01(\x05R\aattempt\x12\x1d\n" +
+	"\n" +
+	"input_json\x18\x05 \x01(\tR\tinputJson\x12\x1f\n" +
+	"\vresult_json\x18\x06 \x01(\tR\n" +
+	"resultJson\x12\x14\n" +
+	"\x05error\x18\a \x01(\tR\x05error\x12!\n" +
+	"\fevidence_ref\x18\b \x01(\tR\vevidenceRef\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\t \x01(\tR\tupdatedAt\x12\x1b\n" +
+	"\titer_path\x18\n" +
+	" \x01(\tR\biterPath\"[\n" +
+	"\x17ListNodeItemsOpResponse\x12*\n" +
+	"\x05items\x18\x01 \x03(\v2\x14.cambrian.NodeItemOpR\x05items\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"V\n" +
 	"\x16ListPipelinesOpRequest\x12\x1d\n" +
 	"\n" +
 	"armed_only\x18\x01 \x01(\bR\tarmedOnly\x12\x1d\n" +
@@ -16439,7 +16969,7 @@ const file_operator_proto_rawDesc = "" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\x05R\brevision\x12!\n" +
-	"\fsample_limit\x18\x03 \x01(\x05R\vsampleLimit\"\xf6\x02\n" +
+	"\fsample_limit\x18\x03 \x01(\x05R\vsampleLimit\"\xd4\x03\n" +
 	"\x18DryRunPipelineOpResponse\x12\x18\n" +
 	"\arefused\x18\x01 \x01(\tR\arefused\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x18\n" +
@@ -16451,7 +16981,17 @@ const file_operator_proto_rawDesc = "" +
 	"\fterminations\x18\x06 \x03(\v2\x1f.cambrian.PipelineTerminationOpR\fterminations\x127\n" +
 	"\bfailures\x18\a \x03(\v2\x1b.cambrian.PipelineFailureOpR\bfailures\x12\x1d\n" +
 	"\n" +
-	"elapsed_ms\x18\b \x01(\x03R\telapsedMs\"T\n" +
+	"elapsed_ms\x18\b \x01(\x03R\telapsedMs\x12\x16\n" +
+	"\x06source\x18\t \x01(\tR\x06source\x12D\n" +
+	"\rnode_examples\x18\n" +
+	" \x03(\v2\x1f.cambrian.PipelineNodeExampleOpR\fnodeExamples\"\x86\x01\n" +
+	"\x15PipelineNodeExampleOp\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x19\n" +
+	"\bitem_key\x18\x02 \x01(\tR\aitemKey\x12\x1d\n" +
+	"\n" +
+	"value_json\x18\x03 \x01(\tR\tvalueJson\x12\x1f\n" +
+	"\vresult_json\x18\x04 \x01(\tR\n" +
+	"resultJson\"T\n" +
 	"\x11PipelineFailureOp\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12\x19\n" +
 	"\bitem_key\x18\x02 \x01(\tR\aitemKey\x12\x10\n" +
@@ -16459,20 +16999,21 @@ const file_operator_proto_rawDesc = "" +
 	"\x14GetPipelineOpRequest\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12\x1a\n" +
-	"\brevision\x18\x02 \x01(\x05R\brevision\"\xde\x01\n" +
+	"\brevision\x18\x02 \x01(\x05R\brevision\"\x8a\x02\n" +
 	"\x15GetPipelineOpResponse\x12\x18\n" +
 	"\arefused\x18\x01 \x01(\tR\arefused\x12.\n" +
 	"\asummary\x18\x02 \x01(\v2\x14.cambrian.PipelineOpR\asummary\x12\x1d\n" +
 	"\n" +
 	"graph_json\x18\x03 \x01(\tR\tgraphJson\x12/\n" +
 	"\brefusals\x18\x04 \x03(\v2\x13.cambrian.RefusalOpR\brefusals\x12+\n" +
-	"\x05reads\x18\x05 \x03(\v2\x15.cambrian.NodeReadsOpR\x05reads\"7\n" +
+	"\x05reads\x18\x05 \x03(\v2\x15.cambrian.NodeReadsOpR\x05reads\x12*\n" +
+	"\x11field_schema_json\x18\x06 \x01(\tR\x0ffieldSchemaJson\"7\n" +
 	"\vNodeReadsOp\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12\x14\n" +
 	"\x05paths\x18\x02 \x03(\tR\x05paths\":\n" +
 	"\x19ValidatePipelineOpRequest\x12\x1d\n" +
 	"\n" +
-	"graph_json\x18\x01 \x01(\tR\tgraphJson\"\x86\x02\n" +
+	"graph_json\x18\x01 \x01(\tR\tgraphJson\"\xb2\x02\n" +
 	"\x1aValidatePipelineOpResponse\x12\x18\n" +
 	"\arefused\x18\x01 \x01(\tR\arefused\x12/\n" +
 	"\brefusals\x18\x02 \x03(\v2\x13.cambrian.RefusalOpR\brefusals\x12\x1d\n" +
@@ -16480,7 +17021,8 @@ const file_operator_proto_rawDesc = "" +
 	"node_count\x18\x03 \x01(\x05R\tnodeCount\x12*\n" +
 	"\x11effect_node_count\x18\x04 \x01(\x05R\x0feffectNodeCount\x12#\n" +
 	"\rplan_checksum\x18\x05 \x01(\tR\fplanChecksum\x12-\n" +
-	"\x12semantics_checksum\x18\x06 \x01(\tR\x11semanticsChecksum\"U\n" +
+	"\x12semantics_checksum\x18\x06 \x01(\tR\x11semanticsChecksum\x12*\n" +
+	"\x11field_schema_json\x18\a \x01(\tR\x0ffieldSchemaJson\"U\n" +
 	"\x15SavePipelineOpRequest\x12\x1d\n" +
 	"\n" +
 	"graph_json\x18\x01 \x01(\tR\tgraphJson\x12\x1d\n" +
@@ -16491,7 +17033,21 @@ const file_operator_proto_rawDesc = "" +
 	"\vpipeline_id\x18\x02 \x01(\tR\n" +
 	"pipelineId\x12\x1a\n" +
 	"\brevision\x18\x03 \x01(\x05R\brevision\x12/\n" +
-	"\brefusals\x18\x04 \x03(\v2\x13.cambrian.RefusalOpR\brefusals\"m\n" +
+	"\brefusals\x18\x04 \x03(\v2\x13.cambrian.RefusalOpR\brefusals\"\xac\x01\n" +
+	"\x1bTransitionPipelineOpRequest\x12\x1f\n" +
+	"\vpipeline_id\x18\x01 \x01(\tR\n" +
+	"pipelineId\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\x05R\brevision\x12\x19\n" +
+	"\bto_state\x18\x03 \x01(\tR\atoState\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x04 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x05 \x01(\tR\x06reason\"\x8b\x01\n" +
+	"\x1cTransitionPipelineOpResponse\x12\x18\n" +
+	"\arefused\x18\x01 \x01(\tR\arefused\x12\x1f\n" +
+	"\vpipeline_id\x18\x02 \x01(\tR\n" +
+	"pipelineId\x12\x1a\n" +
+	"\brevision\x18\x03 \x01(\x05R\brevision\x12\x14\n" +
+	"\x05state\x18\x04 \x01(\tR\x05state\"m\n" +
 	"\tRefusalOp\x12\x1e\n" +
 	"\n" +
 	"constraint\x18\x01 \x01(\tR\n" +
@@ -16540,7 +17096,7 @@ const file_operator_proto_rawDesc = "" +
 	"\bapproved\x18\x0f \x01(\bR\bapproved\x12\"\n" +
 	"\n" +
 	"entry_live\x18\x10 \x01(\bH\x00R\tentryLive\x88\x01\x01B\r\n" +
-	"\v_entry_live2\xb6-\n" +
+	"\v_entry_live2\xf1.\n" +
 	"\x0fOperatorConsole\x128\n" +
 	"\x05Login\x12\x16.cambrian.LoginRequest\x1a\x17.cambrian.LoginResponse\x12E\n" +
 	"\fStreamEvents\x12\x1a.cambrian.SubscribeRequest\x1a\x17.cambrian.OperatorEvent0\x01\x12A\n" +
@@ -16584,9 +17140,11 @@ const file_operator_proto_rawDesc = "" +
 	"\x14ListWatchDeadLetters\x12'.cambrian.ListWatchDeadLettersOpRequest\x1a(.cambrian.ListWatchDeadLettersOpResponse\x12T\n" +
 	"\rListPipelines\x12 .cambrian.ListPipelinesOpRequest\x1a!.cambrian.ListPipelinesOpResponse\x12W\n" +
 	"\x0eDryRunPipeline\x12!.cambrian.DryRunPipelineOpRequest\x1a\".cambrian.DryRunPipelineOpResponse\x12N\n" +
-	"\vGetPipeline\x12\x1e.cambrian.GetPipelineOpRequest\x1a\x1f.cambrian.GetPipelineOpResponse\x12]\n" +
+	"\vGetPipeline\x12\x1e.cambrian.GetPipelineOpRequest\x1a\x1f.cambrian.GetPipelineOpResponse\x12T\n" +
+	"\rListNodeItems\x12 .cambrian.ListNodeItemsOpRequest\x1a!.cambrian.ListNodeItemsOpResponse\x12]\n" +
 	"\x10ValidatePipeline\x12#.cambrian.ValidatePipelineOpRequest\x1a$.cambrian.ValidatePipelineOpResponse\x12Q\n" +
-	"\fSavePipeline\x12\x1f.cambrian.SavePipelineOpRequest\x1a .cambrian.SavePipelineOpResponse\x12H\n" +
+	"\fSavePipeline\x12\x1f.cambrian.SavePipelineOpRequest\x1a .cambrian.SavePipelineOpResponse\x12c\n" +
+	"\x12TransitionPipeline\x12%.cambrian.TransitionPipelineOpRequest\x1a&.cambrian.TransitionPipelineOpResponse\x12H\n" +
 	"\tQueryLogs\x12\x1c.cambrian.QueryLogsOpRequest\x1a\x1d.cambrian.QueryLogsOpResponse\x12@\n" +
 	"\bTailLogs\x12\x1b.cambrian.TailLogsOpRequest\x1a\x15.cambrian.LogRecordOp0\x01\x12Z\n" +
 	"\x0fGetWatchMetrics\x12\".cambrian.GetWatchMetricsOpRequest\x1a#.cambrian.GetWatchMetricsOpResponse\x12T\n" +
@@ -16629,7 +17187,7 @@ func file_operator_proto_rawDescGZIP() []byte {
 	return file_operator_proto_rawDescData
 }
 
-var file_operator_proto_msgTypes = make([]protoimpl.MessageInfo, 204)
+var file_operator_proto_msgTypes = make([]protoimpl.MessageInfo, 210)
 var file_operator_proto_goTypes = []any{
 	(*CreateSessionRequest)(nil),               // 0: cambrian.CreateSessionRequest
 	(*CreateSessionResponse)(nil),              // 1: cambrian.CreateSessionResponse
@@ -16810,44 +17368,50 @@ var file_operator_proto_goTypes = []any{
 	(*TailLogsOpRequest)(nil),                  // 176: cambrian.TailLogsOpRequest
 	(*GetDocumentOpRequest)(nil),               // 177: cambrian.GetDocumentOpRequest
 	(*GetDocumentOpResponse)(nil),              // 178: cambrian.GetDocumentOpResponse
-	(*ListPipelinesOpRequest)(nil),             // 179: cambrian.ListPipelinesOpRequest
-	(*ListPipelinesOpResponse)(nil),            // 180: cambrian.ListPipelinesOpResponse
-	(*DryRunPipelineOpRequest)(nil),            // 181: cambrian.DryRunPipelineOpRequest
-	(*DryRunPipelineOpResponse)(nil),           // 182: cambrian.DryRunPipelineOpResponse
-	(*PipelineFailureOp)(nil),                  // 183: cambrian.PipelineFailureOp
-	(*GetPipelineOpRequest)(nil),               // 184: cambrian.GetPipelineOpRequest
-	(*GetPipelineOpResponse)(nil),              // 185: cambrian.GetPipelineOpResponse
-	(*NodeReadsOp)(nil),                        // 186: cambrian.NodeReadsOp
-	(*ValidatePipelineOpRequest)(nil),          // 187: cambrian.ValidatePipelineOpRequest
-	(*ValidatePipelineOpResponse)(nil),         // 188: cambrian.ValidatePipelineOpResponse
-	(*SavePipelineOpRequest)(nil),              // 189: cambrian.SavePipelineOpRequest
-	(*SavePipelineOpResponse)(nil),             // 190: cambrian.SavePipelineOpResponse
-	(*RefusalOp)(nil),                          // 191: cambrian.RefusalOp
-	(*ShadowEffectOp)(nil),                     // 192: cambrian.ShadowEffectOp
-	(*DuplicateEffectKeyOp)(nil),               // 193: cambrian.DuplicateEffectKeyOp
-	(*PipelineTerminationOp)(nil),              // 194: cambrian.PipelineTerminationOp
-	(*PipelineOp)(nil),                         // 195: cambrian.PipelineOp
-	nil,                                        // 196: cambrian.SetRuntimeConfigRequest.ParamsEntry
-	nil,                                        // 197: cambrian.PipelineNodeMeterOp.PortsEntry
-	nil,                                        // 198: cambrian.WatchConfigOp.DaemonParamsEntry
-	nil,                                        // 199: cambrian.PreviewCandidateOp.CapabilityStatsEntry
-	nil,                                        // 200: cambrian.ConfigSchemaOp.CurrentValuesEntry
-	nil,                                        // 201: cambrian.ConfigSchemaOp.ValueSourceEntry
-	nil,                                        // 202: cambrian.SetConfigOpRequest.ValuesEntry
-	nil,                                        // 203: cambrian.LogFilterOp.AttrEqualsEntry
-	(*timestamppb.Timestamp)(nil),              // 204: google.protobuf.Timestamp
+	(*ListNodeItemsOpRequest)(nil),             // 179: cambrian.ListNodeItemsOpRequest
+	(*NodeItemOp)(nil),                         // 180: cambrian.NodeItemOp
+	(*ListNodeItemsOpResponse)(nil),            // 181: cambrian.ListNodeItemsOpResponse
+	(*ListPipelinesOpRequest)(nil),             // 182: cambrian.ListPipelinesOpRequest
+	(*ListPipelinesOpResponse)(nil),            // 183: cambrian.ListPipelinesOpResponse
+	(*DryRunPipelineOpRequest)(nil),            // 184: cambrian.DryRunPipelineOpRequest
+	(*DryRunPipelineOpResponse)(nil),           // 185: cambrian.DryRunPipelineOpResponse
+	(*PipelineNodeExampleOp)(nil),              // 186: cambrian.PipelineNodeExampleOp
+	(*PipelineFailureOp)(nil),                  // 187: cambrian.PipelineFailureOp
+	(*GetPipelineOpRequest)(nil),               // 188: cambrian.GetPipelineOpRequest
+	(*GetPipelineOpResponse)(nil),              // 189: cambrian.GetPipelineOpResponse
+	(*NodeReadsOp)(nil),                        // 190: cambrian.NodeReadsOp
+	(*ValidatePipelineOpRequest)(nil),          // 191: cambrian.ValidatePipelineOpRequest
+	(*ValidatePipelineOpResponse)(nil),         // 192: cambrian.ValidatePipelineOpResponse
+	(*SavePipelineOpRequest)(nil),              // 193: cambrian.SavePipelineOpRequest
+	(*SavePipelineOpResponse)(nil),             // 194: cambrian.SavePipelineOpResponse
+	(*TransitionPipelineOpRequest)(nil),        // 195: cambrian.TransitionPipelineOpRequest
+	(*TransitionPipelineOpResponse)(nil),       // 196: cambrian.TransitionPipelineOpResponse
+	(*RefusalOp)(nil),                          // 197: cambrian.RefusalOp
+	(*ShadowEffectOp)(nil),                     // 198: cambrian.ShadowEffectOp
+	(*DuplicateEffectKeyOp)(nil),               // 199: cambrian.DuplicateEffectKeyOp
+	(*PipelineTerminationOp)(nil),              // 200: cambrian.PipelineTerminationOp
+	(*PipelineOp)(nil),                         // 201: cambrian.PipelineOp
+	nil,                                        // 202: cambrian.SetRuntimeConfigRequest.ParamsEntry
+	nil,                                        // 203: cambrian.PipelineNodeMeterOp.PortsEntry
+	nil,                                        // 204: cambrian.WatchConfigOp.DaemonParamsEntry
+	nil,                                        // 205: cambrian.PreviewCandidateOp.CapabilityStatsEntry
+	nil,                                        // 206: cambrian.ConfigSchemaOp.CurrentValuesEntry
+	nil,                                        // 207: cambrian.ConfigSchemaOp.ValueSourceEntry
+	nil,                                        // 208: cambrian.SetConfigOpRequest.ValuesEntry
+	nil,                                        // 209: cambrian.LogFilterOp.AttrEqualsEntry
+	(*timestamppb.Timestamp)(nil),              // 210: google.protobuf.Timestamp
 }
 var file_operator_proto_depIdxs = []int32{
 	14,  // 0: cambrian.SendTurnOpResponse.reply:type_name -> cambrian.MessageOp
 	11,  // 1: cambrian.ListConversationsOpResponse.conversations:type_name -> cambrian.ConversationOp
 	14,  // 2: cambrian.ListConversationMessagesOpResponse.messages:type_name -> cambrian.MessageOp
-	196, // 3: cambrian.SetRuntimeConfigRequest.params:type_name -> cambrian.SetRuntimeConfigRequest.ParamsEntry
+	202, // 3: cambrian.SetRuntimeConfigRequest.params:type_name -> cambrian.SetRuntimeConfigRequest.ParamsEntry
 	66,  // 4: cambrian.QueryAuditResponse.entries:type_name -> cambrian.AuditOp
 	33,  // 5: cambrian.SnapshotResponse.plans:type_name -> cambrian.PlanInFlightOp
 	34,  // 6: cambrian.SnapshotResponse.sessions:type_name -> cambrian.SessionSummaryOp
 	31,  // 7: cambrian.SnapshotResponse.plugins:type_name -> cambrian.PluginInfoOp
 	32,  // 8: cambrian.PluginInfoOp.panels:type_name -> cambrian.PluginPanelOp
-	204, // 9: cambrian.OperatorEvent.ts:type_name -> google.protobuf.Timestamp
+	210, // 9: cambrian.OperatorEvent.ts:type_name -> google.protobuf.Timestamp
 	45,  // 10: cambrian.OperatorEvent.resync:type_name -> cambrian.ResyncRequired
 	46,  // 11: cambrian.OperatorEvent.auction:type_name -> cambrian.AuctionEventOp
 	52,  // 12: cambrian.OperatorEvent.agent_ready:type_name -> cambrian.AgentReadyOp
@@ -16873,17 +17437,17 @@ var file_operator_proto_depIdxs = []int32{
 	38,  // 32: cambrian.OperatorEvent.pipeline_meters:type_name -> cambrian.PipelineMetersOp
 	37,  // 33: cambrian.OperatorEvent.pipeline_step:type_name -> cambrian.PipelineStepOp
 	39,  // 34: cambrian.PipelineMetersOp.nodes:type_name -> cambrian.PipelineNodeMeterOp
-	197, // 35: cambrian.PipelineNodeMeterOp.ports:type_name -> cambrian.PipelineNodeMeterOp.PortsEntry
-	204, // 36: cambrian.RetentionRunOp.started_at:type_name -> google.protobuf.Timestamp
-	204, // 37: cambrian.RetentionRunOp.finished_at:type_name -> google.protobuf.Timestamp
+	203, // 35: cambrian.PipelineNodeMeterOp.ports:type_name -> cambrian.PipelineNodeMeterOp.PortsEntry
+	210, // 36: cambrian.RetentionRunOp.started_at:type_name -> google.protobuf.Timestamp
+	210, // 37: cambrian.RetentionRunOp.finished_at:type_name -> google.protobuf.Timestamp
 	41,  // 38: cambrian.RetentionRunOp.deleted:type_name -> cambrian.RetentionDeletionOp
 	47,  // 39: cambrian.AuctionEventOp.bids:type_name -> cambrian.BidEntryOp
 	48,  // 40: cambrian.AuctionEventOp.funnel:type_name -> cambrian.GatekeeperFunnelOp
 	49,  // 41: cambrian.GatekeeperFunnelOp.l1:type_name -> cambrian.DeclarationResultOp
 	50,  // 42: cambrian.GatekeeperFunnelOp.l2:type_name -> cambrian.InterviewResultOp
 	51,  // 43: cambrian.GatekeeperFunnelOp.l3:type_name -> cambrian.MeritResultOp
-	204, // 44: cambrian.SessionStateOp.created_at:type_name -> google.protobuf.Timestamp
-	204, // 45: cambrian.SessionStateOp.updated_at:type_name -> google.protobuf.Timestamp
+	210, // 44: cambrian.SessionStateOp.created_at:type_name -> google.protobuf.Timestamp
+	210, // 45: cambrian.SessionStateOp.updated_at:type_name -> google.protobuf.Timestamp
 	64,  // 46: cambrian.PlanStateOp.steps:type_name -> cambrian.PlanStepOp
 	67,  // 47: cambrian.ToolGrantOp.policy:type_name -> cambrian.ToolPolicyOp
 	68,  // 48: cambrian.ToolOp.grants:type_name -> cambrian.ToolGrantOp
@@ -16895,7 +17459,7 @@ var file_operator_proto_depIdxs = []int32{
 	111, // 54: cambrian.AnswerMemoryResponse.policy_note:type_name -> cambrian.AccessDecisionOp
 	67,  // 55: cambrian.SetToolPolicyRequest.policy:type_name -> cambrian.ToolPolicyOp
 	87,  // 56: cambrian.WatchConfigOp.action:type_name -> cambrian.WatchActionOp
-	198, // 57: cambrian.WatchConfigOp.daemon_params:type_name -> cambrian.WatchConfigOp.DaemonParamsEntry
+	204, // 57: cambrian.WatchConfigOp.daemon_params:type_name -> cambrian.WatchConfigOp.DaemonParamsEntry
 	89,  // 58: cambrian.WatchConfigOp.last_fires:type_name -> cambrian.WatchFireOp
 	87,  // 59: cambrian.WatchConfigOp.actions:type_name -> cambrian.WatchActionOp
 	88,  // 60: cambrian.ListWatchesOpResponse.configs:type_name -> cambrian.WatchConfigOp
@@ -16905,7 +17469,7 @@ var file_operator_proto_depIdxs = []int32{
 	88,  // 64: cambrian.BacktestWatchOpRequest.config:type_name -> cambrian.WatchConfigOp
 	103, // 65: cambrian.BacktestWatchOpResponse.verdicts:type_name -> cambrian.WatchBacktestVerdictOp
 	105, // 66: cambrian.PreviewRouteOpRequest.candidates:type_name -> cambrian.PreviewCandidateOp
-	199, // 67: cambrian.PreviewCandidateOp.capability_stats:type_name -> cambrian.PreviewCandidateOp.CapabilityStatsEntry
+	205, // 67: cambrian.PreviewCandidateOp.capability_stats:type_name -> cambrian.PreviewCandidateOp.CapabilityStatsEntry
 	51,  // 68: cambrian.PreviewRouteOpResponse.ranked:type_name -> cambrian.MeritResultOp
 	110, // 69: cambrian.AccessDecisionOp.decided_by:type_name -> cambrian.PolicyContributionOp
 	111, // 70: cambrian.ExplainAccessOpResponse.decision:type_name -> cambrian.AccessDecisionOp
@@ -16915,9 +17479,9 @@ var file_operator_proto_depIdxs = []int32{
 	129, // 74: cambrian.ListGeneratorsOpResponse.generators:type_name -> cambrian.GeneratorOp
 	132, // 75: cambrian.ListRoleAssignmentsOpResponse.assignments:type_name -> cambrian.RoleAssignmentOp
 	136, // 76: cambrian.SaveGeneratorOpRequest.generator:type_name -> cambrian.GeneratorSpecOp
-	200, // 77: cambrian.ConfigSchemaOp.current_values:type_name -> cambrian.ConfigSchemaOp.CurrentValuesEntry
-	201, // 78: cambrian.ConfigSchemaOp.value_source:type_name -> cambrian.ConfigSchemaOp.ValueSourceEntry
-	202, // 79: cambrian.SetConfigOpRequest.values:type_name -> cambrian.SetConfigOpRequest.ValuesEntry
+	206, // 77: cambrian.ConfigSchemaOp.current_values:type_name -> cambrian.ConfigSchemaOp.CurrentValuesEntry
+	207, // 78: cambrian.ConfigSchemaOp.value_source:type_name -> cambrian.ConfigSchemaOp.ValueSourceEntry
+	208, // 79: cambrian.SetConfigOpRequest.values:type_name -> cambrian.SetConfigOpRequest.ValuesEntry
 	146, // 80: cambrian.SetConfigOpResponse.outcomes:type_name -> cambrian.ConfigWriteOutcomeOp
 	148, // 81: cambrian.SubmitPlanOpRequest.steps:type_name -> cambrian.AuthoredStepOp
 	150, // 82: cambrian.SubmitPlanOpResponse.issues:type_name -> cambrian.PlanValidationIssueOp
@@ -16932,169 +17496,175 @@ var file_operator_proto_depIdxs = []int32{
 	166, // 91: cambrian.BlastRadiusPreviewOp.affected_agents:type_name -> cambrian.AgentImpactOp
 	167, // 92: cambrian.BlastRadiusPreviewOp.affected_plans:type_name -> cambrian.PlanImpactOp
 	170, // 93: cambrian.LogRecordOp.attrs:type_name -> cambrian.LogAttrOp
-	203, // 94: cambrian.LogFilterOp.attr_equals:type_name -> cambrian.LogFilterOp.AttrEqualsEntry
+	209, // 94: cambrian.LogFilterOp.attr_equals:type_name -> cambrian.LogFilterOp.AttrEqualsEntry
 	172, // 95: cambrian.QueryLogsOpRequest.filter:type_name -> cambrian.LogFilterOp
 	171, // 96: cambrian.QueryLogsOpResponse.records:type_name -> cambrian.LogRecordOp
 	173, // 97: cambrian.QueryLogsOpResponse.window:type_name -> cambrian.LogWindowOp
 	172, // 98: cambrian.TailLogsOpRequest.filter:type_name -> cambrian.LogFilterOp
-	195, // 99: cambrian.ListPipelinesOpResponse.pipelines:type_name -> cambrian.PipelineOp
-	192, // 100: cambrian.DryRunPipelineOpResponse.effects:type_name -> cambrian.ShadowEffectOp
-	193, // 101: cambrian.DryRunPipelineOpResponse.duplicates:type_name -> cambrian.DuplicateEffectKeyOp
-	194, // 102: cambrian.DryRunPipelineOpResponse.terminations:type_name -> cambrian.PipelineTerminationOp
-	183, // 103: cambrian.DryRunPipelineOpResponse.failures:type_name -> cambrian.PipelineFailureOp
-	195, // 104: cambrian.GetPipelineOpResponse.summary:type_name -> cambrian.PipelineOp
-	191, // 105: cambrian.GetPipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
-	186, // 106: cambrian.GetPipelineOpResponse.reads:type_name -> cambrian.NodeReadsOp
-	191, // 107: cambrian.ValidatePipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
-	191, // 108: cambrian.SavePipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
-	106, // 109: cambrian.PreviewCandidateOp.CapabilityStatsEntry.value:type_name -> cambrian.PreviewCapStatOp
-	27,  // 110: cambrian.OperatorConsole.Login:input_type -> cambrian.LoginRequest
-	35,  // 111: cambrian.OperatorConsole.StreamEvents:input_type -> cambrian.SubscribeRequest
-	29,  // 112: cambrian.OperatorConsole.Snapshot:input_type -> cambrian.SnapshotRequest
-	26,  // 113: cambrian.OperatorConsole.SetToolGrant:input_type -> cambrian.SetToolGrantRequest
-	23,  // 114: cambrian.OperatorConsole.QueryAudit:input_type -> cambrian.QueryAuditRequest
-	21,  // 115: cambrian.OperatorConsole.ResolveHITL:input_type -> cambrian.ResolveHITLRequest
-	22,  // 116: cambrian.OperatorConsole.PauseSession:input_type -> cambrian.SessionCommandRequest
-	22,  // 117: cambrian.OperatorConsole.ResumeSession:input_type -> cambrian.SessionCommandRequest
-	22,  // 118: cambrian.OperatorConsole.CloseSession:input_type -> cambrian.SessionCommandRequest
-	15,  // 119: cambrian.OperatorConsole.TagMemory:input_type -> cambrian.TagMemoryRequest
-	16,  // 120: cambrian.OperatorConsole.SetScope:input_type -> cambrian.SetScopeRequest
-	17,  // 121: cambrian.OperatorConsole.RegisterSkill:input_type -> cambrian.RegisterSkillRequest
-	18,  // 122: cambrian.OperatorConsole.RegisterMCP:input_type -> cambrian.RegisterMCPRequest
-	19,  // 123: cambrian.OperatorConsole.TriggerConsolidation:input_type -> cambrian.TriggerConsolidationRequest
-	20,  // 124: cambrian.OperatorConsole.SetRuntimeConfig:input_type -> cambrian.SetRuntimeConfigRequest
-	0,   // 125: cambrian.OperatorConsole.CreateSession:input_type -> cambrian.CreateSessionRequest
-	2,   // 126: cambrian.OperatorConsole.SendMessage:input_type -> cambrian.SendMessageRequest
-	3,   // 127: cambrian.OperatorConsole.InjectCorrection:input_type -> cambrian.InjectCorrectionRequest
-	4,   // 128: cambrian.OperatorConsole.OpenConversation:input_type -> cambrian.OpenConversationOpRequest
-	6,   // 129: cambrian.OperatorConsole.SendTurn:input_type -> cambrian.SendTurnOpRequest
-	8,   // 130: cambrian.OperatorConsole.CloseConversation:input_type -> cambrian.CloseConversationOpRequest
-	9,   // 131: cambrian.OperatorConsole.ListConversations:input_type -> cambrian.ListConversationsOpRequest
-	12,  // 132: cambrian.OperatorConsole.ListConversationMessages:input_type -> cambrian.ListConversationMessagesOpRequest
-	70,  // 133: cambrian.OperatorConsole.ListTools:input_type -> cambrian.ListToolsOpRequest
-	72,  // 134: cambrian.OperatorConsole.ListSkills:input_type -> cambrian.ListSkillsOpRequest
-	75,  // 135: cambrian.OperatorConsole.QueryMemory:input_type -> cambrian.QueryMemoryRequest
-	115, // 136: cambrian.OperatorConsole.ListDocuments:input_type -> cambrian.ListDocumentsOpRequest
-	177, // 137: cambrian.OperatorConsole.GetDocument:input_type -> cambrian.GetDocumentOpRequest
-	78,  // 138: cambrian.OperatorConsole.AnswerMemory:input_type -> cambrian.AnswerMemoryRequest
-	81,  // 139: cambrian.OperatorConsole.SetToolPolicy:input_type -> cambrian.SetToolPolicyRequest
-	82,  // 140: cambrian.OperatorConsole.ExecuteTool:input_type -> cambrian.ExecuteToolOpRequest
-	84,  // 141: cambrian.OperatorConsole.IngestMemory:input_type -> cambrian.IngestMemoryOpRequest
-	35,  // 142: cambrian.OperatorConsole.WatchToolApprovals:input_type -> cambrian.SubscribeRequest
-	90,  // 143: cambrian.OperatorConsole.ListWatches:input_type -> cambrian.ListWatchesOpRequest
-	92,  // 144: cambrian.OperatorConsole.RegisterWatch:input_type -> cambrian.RegisterWatchOpRequest
-	93,  // 145: cambrian.OperatorConsole.DeleteWatch:input_type -> cambrian.DeleteWatchOpRequest
-	94,  // 146: cambrian.OperatorConsole.SetWatchActive:input_type -> cambrian.SetWatchActiveOpRequest
-	95,  // 147: cambrian.OperatorConsole.ListWatchDeadLetters:input_type -> cambrian.ListWatchDeadLettersOpRequest
-	179, // 148: cambrian.OperatorConsole.ListPipelines:input_type -> cambrian.ListPipelinesOpRequest
-	181, // 149: cambrian.OperatorConsole.DryRunPipeline:input_type -> cambrian.DryRunPipelineOpRequest
-	184, // 150: cambrian.OperatorConsole.GetPipeline:input_type -> cambrian.GetPipelineOpRequest
-	187, // 151: cambrian.OperatorConsole.ValidatePipeline:input_type -> cambrian.ValidatePipelineOpRequest
-	189, // 152: cambrian.OperatorConsole.SavePipeline:input_type -> cambrian.SavePipelineOpRequest
-	174, // 153: cambrian.OperatorConsole.QueryLogs:input_type -> cambrian.QueryLogsOpRequest
-	176, // 154: cambrian.OperatorConsole.TailLogs:input_type -> cambrian.TailLogsOpRequest
-	98,  // 155: cambrian.OperatorConsole.GetWatchMetrics:input_type -> cambrian.GetWatchMetricsOpRequest
-	101, // 156: cambrian.OperatorConsole.BacktestWatch:input_type -> cambrian.BacktestWatchOpRequest
-	104, // 157: cambrian.OperatorConsole.PreviewRoute:input_type -> cambrian.PreviewRouteOpRequest
-	109, // 158: cambrian.OperatorConsole.ExplainAccess:input_type -> cambrian.ExplainAccessOpRequest
-	113, // 159: cambrian.OperatorConsole.ListClassificationTags:input_type -> cambrian.ListClassificationTagsOpRequest
-	118, // 160: cambrian.OperatorConsole.ListSessionCheckpoints:input_type -> cambrian.ListSessionCheckpointsOpRequest
-	121, // 161: cambrian.OperatorConsole.ListMCPServers:input_type -> cambrian.ListMCPServersOpRequest
-	124, // 162: cambrian.OperatorConsole.GetEmbeddingConfig:input_type -> cambrian.GetEmbeddingConfigOpRequest
-	126, // 163: cambrian.OperatorConsole.ClassifyInput:input_type -> cambrian.ClassifyInputOpRequest
-	128, // 164: cambrian.OperatorConsole.ListGenerators:input_type -> cambrian.ListGeneratorsOpRequest
-	131, // 165: cambrian.OperatorConsole.ListRoleAssignments:input_type -> cambrian.ListRoleAssignmentsOpRequest
-	134, // 166: cambrian.OperatorConsole.TestGenerator:input_type -> cambrian.TestGeneratorOpRequest
-	140, // 167: cambrian.OperatorConsole.GetConfigSchema:input_type -> cambrian.GetConfigSchemaOpRequest
-	142, // 168: cambrian.OperatorConsole.SetConfig:input_type -> cambrian.SetConfigOpRequest
-	143, // 169: cambrian.OperatorConsole.DeleteConfig:input_type -> cambrian.DeleteConfigOpRequest
-	144, // 170: cambrian.OperatorConsole.SetGeneratorKey:input_type -> cambrian.SetGeneratorKeyOpRequest
-	145, // 171: cambrian.OperatorConsole.ClearGeneratorKey:input_type -> cambrian.ClearGeneratorKeyOpRequest
-	137, // 172: cambrian.OperatorConsole.SaveGenerator:input_type -> cambrian.SaveGeneratorOpRequest
-	138, // 173: cambrian.OperatorConsole.RemoveGenerator:input_type -> cambrian.RemoveGeneratorOpRequest
-	149, // 174: cambrian.OperatorConsole.SubmitPlan:input_type -> cambrian.SubmitPlanOpRequest
-	153, // 175: cambrian.OperatorConsole.GetReactiveBudget:input_type -> cambrian.GetReactiveBudgetOpRequest
-	155, // 176: cambrian.OperatorConsole.GetTokenSeries:input_type -> cambrian.GetTokenSeriesOpRequest
-	158, // 177: cambrian.OperatorConsole.ProposePlan:input_type -> cambrian.ProposePlanOpRequest
-	163, // 178: cambrian.OperatorConsole.ExplainAccessBatch:input_type -> cambrian.ExplainAccessBatchOpRequest
-	165, // 179: cambrian.OperatorConsole.GetBlastRadiusPreview:input_type -> cambrian.BlastRadiusPreviewOpRequest
-	139, // 180: cambrian.OperatorConsole.RetryWatchDeadLetter:input_type -> cambrian.RetryWatchDeadLetterOpRequest
-	28,  // 181: cambrian.OperatorConsole.Login:output_type -> cambrian.LoginResponse
-	36,  // 182: cambrian.OperatorConsole.StreamEvents:output_type -> cambrian.OperatorEvent
-	30,  // 183: cambrian.OperatorConsole.Snapshot:output_type -> cambrian.SnapshotResponse
-	25,  // 184: cambrian.OperatorConsole.SetToolGrant:output_type -> cambrian.CommandAck
-	24,  // 185: cambrian.OperatorConsole.QueryAudit:output_type -> cambrian.QueryAuditResponse
-	25,  // 186: cambrian.OperatorConsole.ResolveHITL:output_type -> cambrian.CommandAck
-	25,  // 187: cambrian.OperatorConsole.PauseSession:output_type -> cambrian.CommandAck
-	25,  // 188: cambrian.OperatorConsole.ResumeSession:output_type -> cambrian.CommandAck
-	25,  // 189: cambrian.OperatorConsole.CloseSession:output_type -> cambrian.CommandAck
-	25,  // 190: cambrian.OperatorConsole.TagMemory:output_type -> cambrian.CommandAck
-	25,  // 191: cambrian.OperatorConsole.SetScope:output_type -> cambrian.CommandAck
-	25,  // 192: cambrian.OperatorConsole.RegisterSkill:output_type -> cambrian.CommandAck
-	25,  // 193: cambrian.OperatorConsole.RegisterMCP:output_type -> cambrian.CommandAck
-	25,  // 194: cambrian.OperatorConsole.TriggerConsolidation:output_type -> cambrian.CommandAck
-	25,  // 195: cambrian.OperatorConsole.SetRuntimeConfig:output_type -> cambrian.CommandAck
-	1,   // 196: cambrian.OperatorConsole.CreateSession:output_type -> cambrian.CreateSessionResponse
-	25,  // 197: cambrian.OperatorConsole.SendMessage:output_type -> cambrian.CommandAck
-	25,  // 198: cambrian.OperatorConsole.InjectCorrection:output_type -> cambrian.CommandAck
-	5,   // 199: cambrian.OperatorConsole.OpenConversation:output_type -> cambrian.OpenConversationOpResponse
-	7,   // 200: cambrian.OperatorConsole.SendTurn:output_type -> cambrian.SendTurnOpResponse
-	25,  // 201: cambrian.OperatorConsole.CloseConversation:output_type -> cambrian.CommandAck
-	10,  // 202: cambrian.OperatorConsole.ListConversations:output_type -> cambrian.ListConversationsOpResponse
-	13,  // 203: cambrian.OperatorConsole.ListConversationMessages:output_type -> cambrian.ListConversationMessagesOpResponse
-	71,  // 204: cambrian.OperatorConsole.ListTools:output_type -> cambrian.ListToolsOpResponse
-	74,  // 205: cambrian.OperatorConsole.ListSkills:output_type -> cambrian.ListSkillsOpResponse
-	77,  // 206: cambrian.OperatorConsole.QueryMemory:output_type -> cambrian.QueryMemoryResponse
-	117, // 207: cambrian.OperatorConsole.ListDocuments:output_type -> cambrian.ListDocumentsOpResponse
-	178, // 208: cambrian.OperatorConsole.GetDocument:output_type -> cambrian.GetDocumentOpResponse
-	80,  // 209: cambrian.OperatorConsole.AnswerMemory:output_type -> cambrian.AnswerMemoryResponse
-	25,  // 210: cambrian.OperatorConsole.SetToolPolicy:output_type -> cambrian.CommandAck
-	83,  // 211: cambrian.OperatorConsole.ExecuteTool:output_type -> cambrian.ExecuteToolOpResponse
-	85,  // 212: cambrian.OperatorConsole.IngestMemory:output_type -> cambrian.IngestMemoryOpResponse
-	86,  // 213: cambrian.OperatorConsole.WatchToolApprovals:output_type -> cambrian.ApprovalOp
-	91,  // 214: cambrian.OperatorConsole.ListWatches:output_type -> cambrian.ListWatchesOpResponse
-	25,  // 215: cambrian.OperatorConsole.RegisterWatch:output_type -> cambrian.CommandAck
-	25,  // 216: cambrian.OperatorConsole.DeleteWatch:output_type -> cambrian.CommandAck
-	25,  // 217: cambrian.OperatorConsole.SetWatchActive:output_type -> cambrian.CommandAck
-	96,  // 218: cambrian.OperatorConsole.ListWatchDeadLetters:output_type -> cambrian.ListWatchDeadLettersOpResponse
-	180, // 219: cambrian.OperatorConsole.ListPipelines:output_type -> cambrian.ListPipelinesOpResponse
-	182, // 220: cambrian.OperatorConsole.DryRunPipeline:output_type -> cambrian.DryRunPipelineOpResponse
-	185, // 221: cambrian.OperatorConsole.GetPipeline:output_type -> cambrian.GetPipelineOpResponse
-	188, // 222: cambrian.OperatorConsole.ValidatePipeline:output_type -> cambrian.ValidatePipelineOpResponse
-	190, // 223: cambrian.OperatorConsole.SavePipeline:output_type -> cambrian.SavePipelineOpResponse
-	175, // 224: cambrian.OperatorConsole.QueryLogs:output_type -> cambrian.QueryLogsOpResponse
-	171, // 225: cambrian.OperatorConsole.TailLogs:output_type -> cambrian.LogRecordOp
-	99,  // 226: cambrian.OperatorConsole.GetWatchMetrics:output_type -> cambrian.GetWatchMetricsOpResponse
-	102, // 227: cambrian.OperatorConsole.BacktestWatch:output_type -> cambrian.BacktestWatchOpResponse
-	107, // 228: cambrian.OperatorConsole.PreviewRoute:output_type -> cambrian.PreviewRouteOpResponse
-	112, // 229: cambrian.OperatorConsole.ExplainAccess:output_type -> cambrian.ExplainAccessOpResponse
-	114, // 230: cambrian.OperatorConsole.ListClassificationTags:output_type -> cambrian.ListClassificationTagsOpResponse
-	120, // 231: cambrian.OperatorConsole.ListSessionCheckpoints:output_type -> cambrian.ListSessionCheckpointsOpResponse
-	123, // 232: cambrian.OperatorConsole.ListMCPServers:output_type -> cambrian.ListMCPServersOpResponse
-	125, // 233: cambrian.OperatorConsole.GetEmbeddingConfig:output_type -> cambrian.EmbeddingConfigOp
-	127, // 234: cambrian.OperatorConsole.ClassifyInput:output_type -> cambrian.ClassifiedInputOp
-	130, // 235: cambrian.OperatorConsole.ListGenerators:output_type -> cambrian.ListGeneratorsOpResponse
-	133, // 236: cambrian.OperatorConsole.ListRoleAssignments:output_type -> cambrian.ListRoleAssignmentsOpResponse
-	135, // 237: cambrian.OperatorConsole.TestGenerator:output_type -> cambrian.GeneratorTestResultOp
-	141, // 238: cambrian.OperatorConsole.GetConfigSchema:output_type -> cambrian.ConfigSchemaOp
-	147, // 239: cambrian.OperatorConsole.SetConfig:output_type -> cambrian.SetConfigOpResponse
-	147, // 240: cambrian.OperatorConsole.DeleteConfig:output_type -> cambrian.SetConfigOpResponse
-	147, // 241: cambrian.OperatorConsole.SetGeneratorKey:output_type -> cambrian.SetConfigOpResponse
-	25,  // 242: cambrian.OperatorConsole.ClearGeneratorKey:output_type -> cambrian.CommandAck
-	147, // 243: cambrian.OperatorConsole.SaveGenerator:output_type -> cambrian.SetConfigOpResponse
-	147, // 244: cambrian.OperatorConsole.RemoveGenerator:output_type -> cambrian.SetConfigOpResponse
-	151, // 245: cambrian.OperatorConsole.SubmitPlan:output_type -> cambrian.SubmitPlanOpResponse
-	154, // 246: cambrian.OperatorConsole.GetReactiveBudget:output_type -> cambrian.GetReactiveBudgetOpResponse
-	157, // 247: cambrian.OperatorConsole.GetTokenSeries:output_type -> cambrian.GetTokenSeriesOpResponse
-	162, // 248: cambrian.OperatorConsole.ProposePlan:output_type -> cambrian.ProposePlanOpResponse
-	164, // 249: cambrian.OperatorConsole.ExplainAccessBatch:output_type -> cambrian.ExplainAccessBatchOpResponse
-	168, // 250: cambrian.OperatorConsole.GetBlastRadiusPreview:output_type -> cambrian.BlastRadiusPreviewOp
-	25,  // 251: cambrian.OperatorConsole.RetryWatchDeadLetter:output_type -> cambrian.CommandAck
-	181, // [181:252] is the sub-list for method output_type
-	110, // [110:181] is the sub-list for method input_type
-	110, // [110:110] is the sub-list for extension type_name
-	110, // [110:110] is the sub-list for extension extendee
-	0,   // [0:110] is the sub-list for field type_name
+	180, // 99: cambrian.ListNodeItemsOpResponse.items:type_name -> cambrian.NodeItemOp
+	201, // 100: cambrian.ListPipelinesOpResponse.pipelines:type_name -> cambrian.PipelineOp
+	198, // 101: cambrian.DryRunPipelineOpResponse.effects:type_name -> cambrian.ShadowEffectOp
+	199, // 102: cambrian.DryRunPipelineOpResponse.duplicates:type_name -> cambrian.DuplicateEffectKeyOp
+	200, // 103: cambrian.DryRunPipelineOpResponse.terminations:type_name -> cambrian.PipelineTerminationOp
+	187, // 104: cambrian.DryRunPipelineOpResponse.failures:type_name -> cambrian.PipelineFailureOp
+	186, // 105: cambrian.DryRunPipelineOpResponse.node_examples:type_name -> cambrian.PipelineNodeExampleOp
+	201, // 106: cambrian.GetPipelineOpResponse.summary:type_name -> cambrian.PipelineOp
+	197, // 107: cambrian.GetPipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
+	190, // 108: cambrian.GetPipelineOpResponse.reads:type_name -> cambrian.NodeReadsOp
+	197, // 109: cambrian.ValidatePipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
+	197, // 110: cambrian.SavePipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
+	106, // 111: cambrian.PreviewCandidateOp.CapabilityStatsEntry.value:type_name -> cambrian.PreviewCapStatOp
+	27,  // 112: cambrian.OperatorConsole.Login:input_type -> cambrian.LoginRequest
+	35,  // 113: cambrian.OperatorConsole.StreamEvents:input_type -> cambrian.SubscribeRequest
+	29,  // 114: cambrian.OperatorConsole.Snapshot:input_type -> cambrian.SnapshotRequest
+	26,  // 115: cambrian.OperatorConsole.SetToolGrant:input_type -> cambrian.SetToolGrantRequest
+	23,  // 116: cambrian.OperatorConsole.QueryAudit:input_type -> cambrian.QueryAuditRequest
+	21,  // 117: cambrian.OperatorConsole.ResolveHITL:input_type -> cambrian.ResolveHITLRequest
+	22,  // 118: cambrian.OperatorConsole.PauseSession:input_type -> cambrian.SessionCommandRequest
+	22,  // 119: cambrian.OperatorConsole.ResumeSession:input_type -> cambrian.SessionCommandRequest
+	22,  // 120: cambrian.OperatorConsole.CloseSession:input_type -> cambrian.SessionCommandRequest
+	15,  // 121: cambrian.OperatorConsole.TagMemory:input_type -> cambrian.TagMemoryRequest
+	16,  // 122: cambrian.OperatorConsole.SetScope:input_type -> cambrian.SetScopeRequest
+	17,  // 123: cambrian.OperatorConsole.RegisterSkill:input_type -> cambrian.RegisterSkillRequest
+	18,  // 124: cambrian.OperatorConsole.RegisterMCP:input_type -> cambrian.RegisterMCPRequest
+	19,  // 125: cambrian.OperatorConsole.TriggerConsolidation:input_type -> cambrian.TriggerConsolidationRequest
+	20,  // 126: cambrian.OperatorConsole.SetRuntimeConfig:input_type -> cambrian.SetRuntimeConfigRequest
+	0,   // 127: cambrian.OperatorConsole.CreateSession:input_type -> cambrian.CreateSessionRequest
+	2,   // 128: cambrian.OperatorConsole.SendMessage:input_type -> cambrian.SendMessageRequest
+	3,   // 129: cambrian.OperatorConsole.InjectCorrection:input_type -> cambrian.InjectCorrectionRequest
+	4,   // 130: cambrian.OperatorConsole.OpenConversation:input_type -> cambrian.OpenConversationOpRequest
+	6,   // 131: cambrian.OperatorConsole.SendTurn:input_type -> cambrian.SendTurnOpRequest
+	8,   // 132: cambrian.OperatorConsole.CloseConversation:input_type -> cambrian.CloseConversationOpRequest
+	9,   // 133: cambrian.OperatorConsole.ListConversations:input_type -> cambrian.ListConversationsOpRequest
+	12,  // 134: cambrian.OperatorConsole.ListConversationMessages:input_type -> cambrian.ListConversationMessagesOpRequest
+	70,  // 135: cambrian.OperatorConsole.ListTools:input_type -> cambrian.ListToolsOpRequest
+	72,  // 136: cambrian.OperatorConsole.ListSkills:input_type -> cambrian.ListSkillsOpRequest
+	75,  // 137: cambrian.OperatorConsole.QueryMemory:input_type -> cambrian.QueryMemoryRequest
+	115, // 138: cambrian.OperatorConsole.ListDocuments:input_type -> cambrian.ListDocumentsOpRequest
+	177, // 139: cambrian.OperatorConsole.GetDocument:input_type -> cambrian.GetDocumentOpRequest
+	78,  // 140: cambrian.OperatorConsole.AnswerMemory:input_type -> cambrian.AnswerMemoryRequest
+	81,  // 141: cambrian.OperatorConsole.SetToolPolicy:input_type -> cambrian.SetToolPolicyRequest
+	82,  // 142: cambrian.OperatorConsole.ExecuteTool:input_type -> cambrian.ExecuteToolOpRequest
+	84,  // 143: cambrian.OperatorConsole.IngestMemory:input_type -> cambrian.IngestMemoryOpRequest
+	35,  // 144: cambrian.OperatorConsole.WatchToolApprovals:input_type -> cambrian.SubscribeRequest
+	90,  // 145: cambrian.OperatorConsole.ListWatches:input_type -> cambrian.ListWatchesOpRequest
+	92,  // 146: cambrian.OperatorConsole.RegisterWatch:input_type -> cambrian.RegisterWatchOpRequest
+	93,  // 147: cambrian.OperatorConsole.DeleteWatch:input_type -> cambrian.DeleteWatchOpRequest
+	94,  // 148: cambrian.OperatorConsole.SetWatchActive:input_type -> cambrian.SetWatchActiveOpRequest
+	95,  // 149: cambrian.OperatorConsole.ListWatchDeadLetters:input_type -> cambrian.ListWatchDeadLettersOpRequest
+	182, // 150: cambrian.OperatorConsole.ListPipelines:input_type -> cambrian.ListPipelinesOpRequest
+	184, // 151: cambrian.OperatorConsole.DryRunPipeline:input_type -> cambrian.DryRunPipelineOpRequest
+	188, // 152: cambrian.OperatorConsole.GetPipeline:input_type -> cambrian.GetPipelineOpRequest
+	179, // 153: cambrian.OperatorConsole.ListNodeItems:input_type -> cambrian.ListNodeItemsOpRequest
+	191, // 154: cambrian.OperatorConsole.ValidatePipeline:input_type -> cambrian.ValidatePipelineOpRequest
+	193, // 155: cambrian.OperatorConsole.SavePipeline:input_type -> cambrian.SavePipelineOpRequest
+	195, // 156: cambrian.OperatorConsole.TransitionPipeline:input_type -> cambrian.TransitionPipelineOpRequest
+	174, // 157: cambrian.OperatorConsole.QueryLogs:input_type -> cambrian.QueryLogsOpRequest
+	176, // 158: cambrian.OperatorConsole.TailLogs:input_type -> cambrian.TailLogsOpRequest
+	98,  // 159: cambrian.OperatorConsole.GetWatchMetrics:input_type -> cambrian.GetWatchMetricsOpRequest
+	101, // 160: cambrian.OperatorConsole.BacktestWatch:input_type -> cambrian.BacktestWatchOpRequest
+	104, // 161: cambrian.OperatorConsole.PreviewRoute:input_type -> cambrian.PreviewRouteOpRequest
+	109, // 162: cambrian.OperatorConsole.ExplainAccess:input_type -> cambrian.ExplainAccessOpRequest
+	113, // 163: cambrian.OperatorConsole.ListClassificationTags:input_type -> cambrian.ListClassificationTagsOpRequest
+	118, // 164: cambrian.OperatorConsole.ListSessionCheckpoints:input_type -> cambrian.ListSessionCheckpointsOpRequest
+	121, // 165: cambrian.OperatorConsole.ListMCPServers:input_type -> cambrian.ListMCPServersOpRequest
+	124, // 166: cambrian.OperatorConsole.GetEmbeddingConfig:input_type -> cambrian.GetEmbeddingConfigOpRequest
+	126, // 167: cambrian.OperatorConsole.ClassifyInput:input_type -> cambrian.ClassifyInputOpRequest
+	128, // 168: cambrian.OperatorConsole.ListGenerators:input_type -> cambrian.ListGeneratorsOpRequest
+	131, // 169: cambrian.OperatorConsole.ListRoleAssignments:input_type -> cambrian.ListRoleAssignmentsOpRequest
+	134, // 170: cambrian.OperatorConsole.TestGenerator:input_type -> cambrian.TestGeneratorOpRequest
+	140, // 171: cambrian.OperatorConsole.GetConfigSchema:input_type -> cambrian.GetConfigSchemaOpRequest
+	142, // 172: cambrian.OperatorConsole.SetConfig:input_type -> cambrian.SetConfigOpRequest
+	143, // 173: cambrian.OperatorConsole.DeleteConfig:input_type -> cambrian.DeleteConfigOpRequest
+	144, // 174: cambrian.OperatorConsole.SetGeneratorKey:input_type -> cambrian.SetGeneratorKeyOpRequest
+	145, // 175: cambrian.OperatorConsole.ClearGeneratorKey:input_type -> cambrian.ClearGeneratorKeyOpRequest
+	137, // 176: cambrian.OperatorConsole.SaveGenerator:input_type -> cambrian.SaveGeneratorOpRequest
+	138, // 177: cambrian.OperatorConsole.RemoveGenerator:input_type -> cambrian.RemoveGeneratorOpRequest
+	149, // 178: cambrian.OperatorConsole.SubmitPlan:input_type -> cambrian.SubmitPlanOpRequest
+	153, // 179: cambrian.OperatorConsole.GetReactiveBudget:input_type -> cambrian.GetReactiveBudgetOpRequest
+	155, // 180: cambrian.OperatorConsole.GetTokenSeries:input_type -> cambrian.GetTokenSeriesOpRequest
+	158, // 181: cambrian.OperatorConsole.ProposePlan:input_type -> cambrian.ProposePlanOpRequest
+	163, // 182: cambrian.OperatorConsole.ExplainAccessBatch:input_type -> cambrian.ExplainAccessBatchOpRequest
+	165, // 183: cambrian.OperatorConsole.GetBlastRadiusPreview:input_type -> cambrian.BlastRadiusPreviewOpRequest
+	139, // 184: cambrian.OperatorConsole.RetryWatchDeadLetter:input_type -> cambrian.RetryWatchDeadLetterOpRequest
+	28,  // 185: cambrian.OperatorConsole.Login:output_type -> cambrian.LoginResponse
+	36,  // 186: cambrian.OperatorConsole.StreamEvents:output_type -> cambrian.OperatorEvent
+	30,  // 187: cambrian.OperatorConsole.Snapshot:output_type -> cambrian.SnapshotResponse
+	25,  // 188: cambrian.OperatorConsole.SetToolGrant:output_type -> cambrian.CommandAck
+	24,  // 189: cambrian.OperatorConsole.QueryAudit:output_type -> cambrian.QueryAuditResponse
+	25,  // 190: cambrian.OperatorConsole.ResolveHITL:output_type -> cambrian.CommandAck
+	25,  // 191: cambrian.OperatorConsole.PauseSession:output_type -> cambrian.CommandAck
+	25,  // 192: cambrian.OperatorConsole.ResumeSession:output_type -> cambrian.CommandAck
+	25,  // 193: cambrian.OperatorConsole.CloseSession:output_type -> cambrian.CommandAck
+	25,  // 194: cambrian.OperatorConsole.TagMemory:output_type -> cambrian.CommandAck
+	25,  // 195: cambrian.OperatorConsole.SetScope:output_type -> cambrian.CommandAck
+	25,  // 196: cambrian.OperatorConsole.RegisterSkill:output_type -> cambrian.CommandAck
+	25,  // 197: cambrian.OperatorConsole.RegisterMCP:output_type -> cambrian.CommandAck
+	25,  // 198: cambrian.OperatorConsole.TriggerConsolidation:output_type -> cambrian.CommandAck
+	25,  // 199: cambrian.OperatorConsole.SetRuntimeConfig:output_type -> cambrian.CommandAck
+	1,   // 200: cambrian.OperatorConsole.CreateSession:output_type -> cambrian.CreateSessionResponse
+	25,  // 201: cambrian.OperatorConsole.SendMessage:output_type -> cambrian.CommandAck
+	25,  // 202: cambrian.OperatorConsole.InjectCorrection:output_type -> cambrian.CommandAck
+	5,   // 203: cambrian.OperatorConsole.OpenConversation:output_type -> cambrian.OpenConversationOpResponse
+	7,   // 204: cambrian.OperatorConsole.SendTurn:output_type -> cambrian.SendTurnOpResponse
+	25,  // 205: cambrian.OperatorConsole.CloseConversation:output_type -> cambrian.CommandAck
+	10,  // 206: cambrian.OperatorConsole.ListConversations:output_type -> cambrian.ListConversationsOpResponse
+	13,  // 207: cambrian.OperatorConsole.ListConversationMessages:output_type -> cambrian.ListConversationMessagesOpResponse
+	71,  // 208: cambrian.OperatorConsole.ListTools:output_type -> cambrian.ListToolsOpResponse
+	74,  // 209: cambrian.OperatorConsole.ListSkills:output_type -> cambrian.ListSkillsOpResponse
+	77,  // 210: cambrian.OperatorConsole.QueryMemory:output_type -> cambrian.QueryMemoryResponse
+	117, // 211: cambrian.OperatorConsole.ListDocuments:output_type -> cambrian.ListDocumentsOpResponse
+	178, // 212: cambrian.OperatorConsole.GetDocument:output_type -> cambrian.GetDocumentOpResponse
+	80,  // 213: cambrian.OperatorConsole.AnswerMemory:output_type -> cambrian.AnswerMemoryResponse
+	25,  // 214: cambrian.OperatorConsole.SetToolPolicy:output_type -> cambrian.CommandAck
+	83,  // 215: cambrian.OperatorConsole.ExecuteTool:output_type -> cambrian.ExecuteToolOpResponse
+	85,  // 216: cambrian.OperatorConsole.IngestMemory:output_type -> cambrian.IngestMemoryOpResponse
+	86,  // 217: cambrian.OperatorConsole.WatchToolApprovals:output_type -> cambrian.ApprovalOp
+	91,  // 218: cambrian.OperatorConsole.ListWatches:output_type -> cambrian.ListWatchesOpResponse
+	25,  // 219: cambrian.OperatorConsole.RegisterWatch:output_type -> cambrian.CommandAck
+	25,  // 220: cambrian.OperatorConsole.DeleteWatch:output_type -> cambrian.CommandAck
+	25,  // 221: cambrian.OperatorConsole.SetWatchActive:output_type -> cambrian.CommandAck
+	96,  // 222: cambrian.OperatorConsole.ListWatchDeadLetters:output_type -> cambrian.ListWatchDeadLettersOpResponse
+	183, // 223: cambrian.OperatorConsole.ListPipelines:output_type -> cambrian.ListPipelinesOpResponse
+	185, // 224: cambrian.OperatorConsole.DryRunPipeline:output_type -> cambrian.DryRunPipelineOpResponse
+	189, // 225: cambrian.OperatorConsole.GetPipeline:output_type -> cambrian.GetPipelineOpResponse
+	181, // 226: cambrian.OperatorConsole.ListNodeItems:output_type -> cambrian.ListNodeItemsOpResponse
+	192, // 227: cambrian.OperatorConsole.ValidatePipeline:output_type -> cambrian.ValidatePipelineOpResponse
+	194, // 228: cambrian.OperatorConsole.SavePipeline:output_type -> cambrian.SavePipelineOpResponse
+	196, // 229: cambrian.OperatorConsole.TransitionPipeline:output_type -> cambrian.TransitionPipelineOpResponse
+	175, // 230: cambrian.OperatorConsole.QueryLogs:output_type -> cambrian.QueryLogsOpResponse
+	171, // 231: cambrian.OperatorConsole.TailLogs:output_type -> cambrian.LogRecordOp
+	99,  // 232: cambrian.OperatorConsole.GetWatchMetrics:output_type -> cambrian.GetWatchMetricsOpResponse
+	102, // 233: cambrian.OperatorConsole.BacktestWatch:output_type -> cambrian.BacktestWatchOpResponse
+	107, // 234: cambrian.OperatorConsole.PreviewRoute:output_type -> cambrian.PreviewRouteOpResponse
+	112, // 235: cambrian.OperatorConsole.ExplainAccess:output_type -> cambrian.ExplainAccessOpResponse
+	114, // 236: cambrian.OperatorConsole.ListClassificationTags:output_type -> cambrian.ListClassificationTagsOpResponse
+	120, // 237: cambrian.OperatorConsole.ListSessionCheckpoints:output_type -> cambrian.ListSessionCheckpointsOpResponse
+	123, // 238: cambrian.OperatorConsole.ListMCPServers:output_type -> cambrian.ListMCPServersOpResponse
+	125, // 239: cambrian.OperatorConsole.GetEmbeddingConfig:output_type -> cambrian.EmbeddingConfigOp
+	127, // 240: cambrian.OperatorConsole.ClassifyInput:output_type -> cambrian.ClassifiedInputOp
+	130, // 241: cambrian.OperatorConsole.ListGenerators:output_type -> cambrian.ListGeneratorsOpResponse
+	133, // 242: cambrian.OperatorConsole.ListRoleAssignments:output_type -> cambrian.ListRoleAssignmentsOpResponse
+	135, // 243: cambrian.OperatorConsole.TestGenerator:output_type -> cambrian.GeneratorTestResultOp
+	141, // 244: cambrian.OperatorConsole.GetConfigSchema:output_type -> cambrian.ConfigSchemaOp
+	147, // 245: cambrian.OperatorConsole.SetConfig:output_type -> cambrian.SetConfigOpResponse
+	147, // 246: cambrian.OperatorConsole.DeleteConfig:output_type -> cambrian.SetConfigOpResponse
+	147, // 247: cambrian.OperatorConsole.SetGeneratorKey:output_type -> cambrian.SetConfigOpResponse
+	25,  // 248: cambrian.OperatorConsole.ClearGeneratorKey:output_type -> cambrian.CommandAck
+	147, // 249: cambrian.OperatorConsole.SaveGenerator:output_type -> cambrian.SetConfigOpResponse
+	147, // 250: cambrian.OperatorConsole.RemoveGenerator:output_type -> cambrian.SetConfigOpResponse
+	151, // 251: cambrian.OperatorConsole.SubmitPlan:output_type -> cambrian.SubmitPlanOpResponse
+	154, // 252: cambrian.OperatorConsole.GetReactiveBudget:output_type -> cambrian.GetReactiveBudgetOpResponse
+	157, // 253: cambrian.OperatorConsole.GetTokenSeries:output_type -> cambrian.GetTokenSeriesOpResponse
+	162, // 254: cambrian.OperatorConsole.ProposePlan:output_type -> cambrian.ProposePlanOpResponse
+	164, // 255: cambrian.OperatorConsole.ExplainAccessBatch:output_type -> cambrian.ExplainAccessBatchOpResponse
+	168, // 256: cambrian.OperatorConsole.GetBlastRadiusPreview:output_type -> cambrian.BlastRadiusPreviewOp
+	25,  // 257: cambrian.OperatorConsole.RetryWatchDeadLetter:output_type -> cambrian.CommandAck
+	185, // [185:258] is the sub-list for method output_type
+	112, // [112:185] is the sub-list for method input_type
+	112, // [112:112] is the sub-list for extension type_name
+	112, // [112:112] is the sub-list for extension extendee
+	0,   // [0:112] is the sub-list for field type_name
 }
 
 func init() { file_operator_proto_init() }
@@ -17134,14 +17704,14 @@ func file_operator_proto_init() {
 		(*LogAttrOp_F)(nil),
 		(*LogAttrOp_B)(nil),
 	}
-	file_operator_proto_msgTypes[195].OneofWrappers = []any{}
+	file_operator_proto_msgTypes[201].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_operator_proto_rawDesc), len(file_operator_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   204,
+			NumMessages:   210,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

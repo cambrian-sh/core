@@ -199,6 +199,7 @@ type Registry struct {
 	identityOwner    string
 	ingressOwner     string
 	decisionObs      []domain.DecisionObserver
+	activityObs      []domain.AgentActivityObserver
 	transformers     []domain.EvidenceTransformer
 	kinds            []domain.KindSpec
 	authorities      []domain.ResolutionAuthority
@@ -307,6 +308,22 @@ func (r *Registry) AddGRPCService(f func(*grpc.Server)) {
 //
 // The implementation MUST return promptly and MUST NOT panic — it is called on the
 // kernel's hottest path, synchronously, after assembly.
+// AddAgentActivityObserver registers a receiver for agent tool activity.
+//
+// The operator-facing counterpart to ADR-0098's progress channel: append-only,
+// and it NAMES the tool and its arguments, which the phase vocabulary
+// deliberately does not. Use it for a console inspecting a run; never for a
+// customer-facing status line.
+//
+// Add-many, like AddDecisionObserver. The implementation MUST return promptly
+// and MUST NOT panic — it is called synchronously around a tool call the agent
+// is waiting on.
+func (r *Registry) AddAgentActivityObserver(o domain.AgentActivityObserver) {
+	if o != nil {
+		r.activityObs = append(r.activityObs, o)
+	}
+}
+
 func (r *Registry) AddDecisionObserver(o domain.DecisionObserver) {
 	if o != nil {
 		r.decisionObs = append(r.decisionObs, o)
@@ -671,6 +688,16 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 		}
 		fan = append(fan, reg.decisionObs...)
 		opts.DecisionObserver = fan
+	}
+	// AgentActivityObservers: same fan-out shape as decisions, so the tool call
+	// site stays one nil check.
+	if len(reg.activityObs) > 0 {
+		fan := make(domain.MultiAgentActivityObserver, 0, len(reg.activityObs)+1)
+		if opts.AgentActivityObserver != nil {
+			fan = append(fan, opts.AgentActivityObserver)
+		}
+		fan = append(fan, reg.activityObs...)
+		opts.AgentActivityObserver = fan
 	}
 	// Evidence transformers (ADR-0108 D3): appended in registration order.
 	opts.EvidenceTransformers = append(opts.EvidenceTransformers, reg.transformers...)

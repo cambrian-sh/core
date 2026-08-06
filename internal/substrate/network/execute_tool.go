@@ -8,9 +8,11 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 
+	"encoding/json"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"time"
 )
 
 // agentIDFromMetadata reads the non-forgeable caller principal from x-agent-id
@@ -88,13 +90,33 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 	// surface learns that work is happening, not what the deployment is made of.
 	s.reportProgress(ctx, domain.PhaseRunningTool)
 
+	agentID := agentIDFromMetadata(ctx)
+	sessionToken := leaseIDOf(req.GetLeaseId(), req.GetSessionTokenId())
+
+	// The operator-facing counterpart, which DOES name the tool.
+	//
+	// Emitted around the call rather than after it: a page fetch or a web search
+	// takes seconds, and a console that only learns about the call once it has
+	// returned is not showing work in progress — which was the whole complaint
+	// that this exists to answer.
+	s.reportActivity(domain.AgentActivity{
+		SessionTokenID: string(sessionToken), AgentID: agentID,
+		Tool: req.GetToolName(), Args: redactedArgs(req.GetArgsJson()),
+	})
+
 	resp := s.ToolExecutor.Execute(ctx, domain.ToolCallRequest{
-		AgentID:  agentIDFromMetadata(ctx),
+		AgentID:  agentID,
 		ToolName: req.GetToolName(),
 		ArgsJSON: []byte(req.GetArgsJson()),
 		// Phase 1: lease_id wins; the deprecated session_token_id is the fallback.
-		SessionTokenID: leaseIDOf(req.GetLeaseId(), req.GetSessionTokenId()),
+		SessionTokenID: sessionToken,
 		TaskID:         mdValue(ctx, "x-task-id"), // ADR-0049 D3: per-step correlation key
+	})
+
+	s.reportActivity(domain.AgentActivity{
+		SessionTokenID: string(sessionToken), AgentID: agentID,
+		Tool: req.GetToolName(), Done: true,
+		Denied: resp.Denied, Err: firstNonEmpty(resp.Error, resp.DenyReason),
 	})
 	return &pb.ExecuteToolResponse{
 		ResultJson: string(resp.ResultJSON),
@@ -189,4 +211,42 @@ func (s *Server) SubmitApprovalDecision(ctx context.Context, req *pb.ApprovalDec
 	}
 	ok := s.ApprovalHub.Submit(req.GetId(), req.GetApprove(), req.GetApproverId())
 	return &pb.ApprovalDecisionResponse{Ok: ok}, nil
+}
+
+// reportActivity fans one activity record out, best-effort.
+//
+// Silent when nobody is listening or when the caller had no managed session:
+// with no session token there is no one to correlate the record to, and an
+// unattributable activity record is noise rather than observability.
+func (s *Server) reportActivity(a domain.AgentActivity) {
+	if s.Activity == nil || a.SessionTokenID == "" {
+		return
+	}
+	if a.At.IsZero() {
+		a.At = time.Now()
+	}
+	s.Activity.ObserveAgentActivity(a)
+}
+
+// redactedArgs parses the agent's arg blob for display.
+//
+// Unparseable args are reported as absent rather than raw: the blob is whatever
+// a model produced, and pasting it into an operator console unparsed is how a
+// prompt-injected string gets rendered somewhere it was never meant to reach.
+func redactedArgs(argsJSON string) map[string]string {
+	if strings.TrimSpace(argsJSON) == "" {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(argsJSON), &m); err != nil {
+		return nil
+	}
+	return domain.RedactArgs(m)
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

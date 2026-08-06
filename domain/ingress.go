@@ -49,6 +49,33 @@ type IngressRegistration struct {
 	// moment a second ingress exists, because without it a compromised Telegram
 	// bridge could inject signals claiming to be a Slack user.
 	Namespace []string
+
+	// Schema is what this ingress DECLARES its items carry (ADR-0117): the
+	// fields, typed, that flow into a pipeline triggered by it. Declared at
+	// registration because the daemon is the one party that knows its own
+	// payload contract a priori — a Telegram bridge does not need fifty
+	// captures to learn it forwards `text`.
+	//
+	// Empty means undeclared, and everything downstream says "not declared"
+	// rather than inventing fields — the same discipline as an unprofiled
+	// studio ingress. The declaration must describe the ITEMS the pipeline
+	// receives, not the wire payload the daemon consumes upstream: declaring
+	// the whole Telegram Update here when only `text` reaches the item would
+	// be a schema for data that never arrives.
+	Schema []IngressSchemaField
+}
+
+// IngressSchemaField is one declared field of an ingress's items. Tagged for
+// storage: declarations persist as JSON on the registration row, and stored
+// JSON speaks snake_case like every other column in the deployment.
+type IngressSchemaField struct {
+	// Path is dotted, item-rooted, `*` for array members — the field
+	// projection's own notation.
+	Path string `json:"path"`
+	// Type is one of: string, number, boolean, object, array.
+	Type string `json:"type"`
+	// Format optionally refines (identifier, datetime_utc, …). Informational.
+	Format string `json:"format,omitempty"`
 }
 
 // MaySpeakFor reports whether externalID falls inside this ingress's namespace.
@@ -153,12 +180,46 @@ type IngressDeregistrar interface {
 	DeregisterIngress(ctx context.Context, agentID string) error
 }
 
+// IngressSchemaDeclarer records what a REGISTERED ingress's items carry
+// (ADR-0117). A third separate power, for the deregistrar's reason: declaring
+// a schema neither reads the registry nor withdraws from it, and the plugin
+// that owns an entry point should hold exactly this and nothing wider.
+// Declaring on an unregistered agent is refused — the registration itself
+// stays the operator's act, because registering mints a surface (ADR-0090 D2).
+type IngressSchemaDeclarer interface {
+	DeclareIngressSchema(ctx context.Context, agentID string, fields []IngressSchemaField) error
+}
+
 // TurnFunc runs one admitted conversational turn in a conversation.
 //
 // Handed to a router so the router can decide WHEN and UNDER WHAT SHAPE the turn
 // happens without owning the turn itself. What a turn does — history, the worker
 // pool, the LLM lease — stays the chat tier's business.
 type TurnFunc func(ctx context.Context, conversationID, text string) error
+
+// TurnMessage is the admitted turn as the router receives it: the text, plus
+// the sender facts the ingress TRANSPORTED alongside it (ADR-0117).
+//
+// The sender block exists because the item a pipeline gates on used to be
+// `{text}` alone while the wire carried the speaker's identity the whole way —
+// the graph could not say "route support-chat messages by who wrote them"
+// about facts the kernel was already holding. Every field except Text is a
+// relayed CLAIM (checked against the ingress's namespace where checkable,
+// never matched on for authorization) and may be absent on a bridge that does
+// not report it — absent, not empty-string-pretending-to-be-a-value.
+type TurnMessage struct {
+	Text string
+	// SenderExternalID is the namespace-checked external identity ("tg:123").
+	SenderExternalID string
+	// SpeakerID is who WROTE the message — distinct from the external id in a
+	// group chat, where the conversation is the group and the speaker is one
+	// member of it.
+	SpeakerID string
+	// Username and DisplayName are naming claims, carried so a graph (and a
+	// person reading its output) can name a sender instead of citing a number.
+	Username    string
+	DisplayName string
+}
 
 // TurnRouter shapes what happens around an admitted turn.
 //
@@ -171,5 +232,5 @@ type TurnFunc func(ctx context.Context, conversationID, text string) error
 // `handled=false` means "not mine": the caller runs the turn directly, which is
 // what keeps a deployment with no router behaving exactly as it does today.
 type TurnRouter interface {
-	RouteTurn(ctx context.Context, ingressAgentID, conversationID, text string, run TurnFunc) (handled bool, err error)
+	RouteTurn(ctx context.Context, ingressAgentID, conversationID string, msg TurnMessage, run TurnFunc) (handled bool, err error)
 }
