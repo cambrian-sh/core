@@ -103,6 +103,14 @@ type Server struct {
 	// waiting on a slow request sees movement rather than one static line (ADR-0098).
 	// nil ⇒ nothing is listening, which is the OSS default.
 	Progress domain.ProgressSink
+	// Activity reports WHAT an agent is doing inside a call — which tool, with
+	// which arguments — to whoever minted its session token.
+	//
+	// Distinct from Progress on purpose: Progress is a supersedable snapshot with
+	// a closed phase vocabulary for customer-facing surfaces, and deliberately
+	// names no tool. This is the append-only operator-facing counterpart, for a
+	// console inspecting a run. nil ⇒ nothing is emitted.
+	Activity domain.AgentActivityObserver
 
 	pb.UnimplementedOrchestratorServer
 	// Router is the universal input classifier (ADR-0031). When nil, Execute

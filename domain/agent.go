@@ -74,6 +74,22 @@ func IsSystemAgent(agentID string) bool {
 	return systemAgentIDs[agentID]
 }
 
+// IsSystemDefinition reports whether a DEFINITION is privileged, by either route.
+//
+// `systemAgentIDs` above can only ever name organs that live in this repository,
+// and a compiled-in plugin's agent is just as kernel-invoked: the source
+// discovery agent is called directly by the ingress studio's discovery plane and
+// is never assigned a user task. Naming it in the map above would put a premium
+// agent ID in OSS core, where it does not exist — so the second route is
+// `Registry.AddSystemAgent`, which stamps `System` as an explicit auditable
+// grant only a trusted compiled-in plugin can reach.
+//
+// Prefer this over IsSystemAgent wherever an AgentDefinition is in hand. Callers
+// holding only an ID keep the map lookup, which is why both exist.
+func IsSystemDefinition(a AgentDefinition) bool {
+	return a.System || systemAgentIDs[a.ID]
+}
+
 type AgentDefinition struct {
 	ID              string       `json:"ID"`
 	Name            string       `json:"Name"`

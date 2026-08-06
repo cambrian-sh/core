@@ -1037,7 +1037,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		RegisterPipelineDryRunner: func(r domain.PipelineDryRunner) { pipelineDryRunners.add(r) },
 		RegisterPipelineAuthor:    func(a domain.PipelineAuthor) { pipelineAuthors.add(a) },
 		RegisterPipelineWriter:    func(w domain.PipelineWriter) { pipelineWriters.add(w) },
+		RegisterPipelineLifecycle: func(l domain.PipelineLifecycle) { pipelineLifecycles.add(l) },
 		RegisterIngressLister:     func(l domain.IngressLister) { ingressListers.Store(&l) },
+		// The write half was DECLARED on this bundle and never wired — so the
+		// authz plugin's registration was skipped by its own nil-guard and
+		// svc.DeregisterIngress silently no-opped. A nil-guarded seam whose
+		// producer side is missing fails in the quietest possible way, which
+		// is why both halves are wired on adjacent lines now.
+		RegisterIngressDeregistrar:    func(d domain.IngressDeregistrar) { ingressDeregistrars.Store(&d) },
+		RegisterIngressSchemaDeclarer: func(d domain.IngressSchemaDeclarer) { ingressSchemaDeclarers.Store(&d) },
 		RegisterTurnRouter:        func(r domain.TurnRouter) { turnRouters.Store(&r) },
 		RegisterAgent: func(def domain.AgentDefinition) error {
 			return reg.SetAgentWithManifest(def, nil)
@@ -1067,6 +1075,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			}
 			return (*p).DeregisterIngress(ctx, agentID)
 		},
+		// Declaring what an ingress's items carry (ADR-0117), resolved at call
+		// time like its siblings so plugin build order does not matter.
+		DeclareIngressSchema: func(ctx context.Context, agentID string, fields []domain.IngressSchemaField) error {
+			p := ingressSchemaDeclarers.Load()
+			if p == nil || *p == nil {
+				return nil // no registry in this build; nothing to declare on
+			}
+			return (*p).DeclareIngressSchema(ctx, agentID, fields)
+		},
 		RetireIngressPipeline: func(ctx context.Context, agentID string) error {
 			p := ingressPipelineRetirers.Load()
 			if p == nil || *p == nil {
@@ -1074,8 +1091,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			}
 			return (*p)(ctx, agentID)
 		},
-		TracePipelinePayloads: cfg.Execution.LLM.TracePipelinePayloads,
-		Events:                eventStore,
+		TracePipelinePayloads:  cfg.Execution.LLM.TracePipelinePayloads,
+		PipelineDrainerEnabled: cfg.Execution.Pipelines.DrainerEnabled,
+		Events:                 eventStore,
 		// ADR-0111: the closed query AST over all of the above.
 		QueryPlane: postgres.NewPgQueryPlane(vec.Pool(), eventStore, knowledgeStore, evStore),
 		Manager:    meta.Manager,
@@ -1101,6 +1119,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			// chat.TokenAcquirer speaks the wire type; the lease is cast at this seam.
 			return string(tok), func() { _, _ = llmGateway.Complete(context.Background(), tok) }, nil
 		},
+	}
+	if evStore != nil {
+		// The read half, so a lane holding an EvidenceID can reach its content
+		// hash — the step that turns an id into bytes.
+		kernelSvc.EvidenceStore = evStore
 	}
 	if evIngestor != nil {
 		kernelSvc.EvidenceIngest = evIngestor.Ingest
@@ -1208,6 +1231,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// rather than one static line. Installed unconditionally — the holder is inert until
 	// a plugin fills it.
 	cambrianServer.Progress = progressSink
+	// The operator-facing activity stream (append-only, names the tool). A plugin
+	// subscribes via Registry.AddAgentActivityObserver; nil when none did, and the
+	// tool path then emits nothing.
+	cambrianServer.Activity = opts.AgentActivityObserver
 
 	// ADR-0090: a signal from a REGISTERED ingress is a conversational turn, so it is
 	// routed to the chat lane before the signal pipeline sees it — the planner never
@@ -2098,6 +2125,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// Contract 0090: the draft-save surface. Separate from the author for the
 		// same reason the ports are separate.
 		operatorSvc.SetPipelineWriter(deferredPipelineWriter{holder: &pipelineWriters})
+		operatorSvc.SetPipelineLifecycle(deferredPipelineLifecycle{holder: &pipelineLifecycles})
 		// REACT-01 / ADR-0061: the reactive dead-letter read surface reads the OSS
 		// bbolt journal. Wired only when the premium reactive engine is active — the
 		// same signal as watch CRUD (k.Server.WatchHandler) — since that engine is what
@@ -2335,6 +2363,20 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if pipelineListers.any() {
 			operatorCaps = append(operatorCaps, "reactive-pipelines")
 		}
+		// pipeline-field-schema (contract 0091): GetPipeline / ValidatePipeline
+		// carry the per-node field projection. Advertised with the authors,
+		// because the projection is computed by them — a console on an older
+		// kernel sees the capability absent and keeps its picker unavailable
+		// with the reason, rather than reading an empty schema as "no fields".
+		if len(pipelineAuthors.all()) > 0 {
+			operatorCaps = append(operatorCaps, "pipeline-field-schema")
+		}
+		// pipeline-lifecycle (contract 0093): TransitionPipeline is wired, so
+		// the console may render Publish/Arm/Pause as real buttons rather than
+		// the disabled placeholders older kernels required.
+		if len(pipelineLifecycles.all()) > 0 {
+			operatorCaps = append(operatorCaps, "pipeline-lifecycle")
+		}
 		// config-schema: GetConfigSchema reports live tunable values AND the layer
 		// supplying each one. Advertised separately because it is wired from the
 		// config pipeline rather than from a kernel subsystem.
@@ -2446,7 +2488,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Logs != nil {
 			operatorSvc.SetLogRing(k.Logs)
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0090", operatorCaps)
+		operatorSvc.SetHandshake("0.6.9-alpha", "0093", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".
@@ -3153,6 +3195,26 @@ func (d deferredPipelineLister) ListPipelines(ctx context.Context, armedOnly boo
 	return preferAuthored(out), nil
 }
 
+// ListNodeItems asks every contributor and returns the first non-empty answer.
+//
+// Concatenating would be wrong here, unlike ListPipelines: a node belongs to
+// exactly one pipeline, so two sources answering means one of them is describing
+// a pipeline it does not own. Taking the first that HAS the node keeps a derived
+// source from padding an authored source's item list with nothing.
+func (d deferredPipelineLister) ListNodeItems(ctx context.Context, pipelineID, nodeID string, limit int) ([]domain.NodeItem, error) {
+	for _, l := range d.holder.list() {
+		got, err := l.ListNodeItems(ctx, pipelineID, nodeID, limit)
+		if err != nil {
+			slog.Warn("operator: a pipeline source failed to list node items", "err", err)
+			continue
+		}
+		if len(got) > 0 {
+			return got, nil
+		}
+	}
+	return nil, nil
+}
+
 // preferAuthored collapses rows that describe the same pipeline.
 //
 // Two kinds of source contribute. One AUTHORS pipelines and reports the revision
@@ -3236,6 +3298,10 @@ var ingressPipelineRetirers atomic.Pointer[func(ctx context.Context, agentID str
 // acquire the second by asking for the first.
 var ingressDeregistrars atomic.Pointer[domain.IngressDeregistrar]
 
+// ingressSchemaDeclarers holds the schema half of the ADR-0090 registry
+// (ADR-0117): a plugin that owns an entry point declares what its items carry.
+var ingressSchemaDeclarers atomic.Pointer[domain.IngressSchemaDeclarer]
+
 // ingressListers holds the ADR-0090 ingress registry a plugin registers.
 //
 // One slot, unlike the pipeline listers: there is a single registry of record
@@ -3271,6 +3337,7 @@ var (
 	pipelineDryRunners pipelineSourceSet[domain.PipelineDryRunner]
 	pipelineAuthors    pipelineSourceSet[domain.PipelineAuthor]
 	pipelineWriters    pipelineSourceSet[domain.PipelineWriter]
+	pipelineLifecycles pipelineSourceSet[domain.PipelineLifecycle]
 )
 
 // pipelineSourceSet collects the sources registered for one per-pipeline surface.
@@ -3328,9 +3395,38 @@ func (d deferredPipelineAuthor) ValidatePipeline(ctx context.Context, graphJSON 
 			Refused: "this build has no pipeline compiler, so it cannot check a graph",
 		}, nil
 	}
-	// Validation is the COMPILER, which every source shares — so the first one
-	// answers for all of them. Asking each would return the same verdict N times.
-	return sources[0].ValidatePipeline(ctx, graphJSON)
+	// Validation is the COMPILER, which every source shares — the VERDICT is
+	// identical from all of them. The field projection is not: only the author
+	// holding the trigger's capture profile can say which fields arrive, and
+	// which author that is depends on plugin registration order. So each source
+	// is asked until one answers with the trigger schema RESOLVED, and the
+	// first answer stands when none does.
+	//
+	// The preference keys on FieldsResolved, never on FieldsJSON being
+	// non-empty — that check shipped a live defect TWICE: a schema-less author
+	// still returns a full projection (every availability a named unknown),
+	// which is non-empty JSON, so the editor's picker showed "no schema source"
+	// for an ingress pipeline whenever the reactive plugin registered first.
+	var fallback *domain.PipelineValidation
+	for _, a := range sources {
+		got, err := a.ValidatePipeline(ctx, graphJSON)
+		if err != nil {
+			slog.Warn("operator: a pipeline source failed to validate", "err", err)
+			continue
+		}
+		if got.FieldsResolved {
+			return got, nil
+		}
+		if fallback == nil {
+			fallback = &got
+		}
+	}
+	if fallback != nil {
+		return *fallback, nil
+	}
+	return domain.PipelineValidation{
+		Refused: "no pipeline compiler could check this graph",
+	}, nil
 }
 
 // deferredPipelineDryRunner offers a shadow run to each source in turn.
@@ -3397,6 +3493,41 @@ func (d deferredPipelineWriter) SavePipeline(ctx context.Context, graphJSON stri
 	return sources[0].SavePipeline(ctx, graphJSON)
 }
 
+// deferredPipelineLifecycle routes a transition to the source holding the id.
+type deferredPipelineLifecycle struct {
+	holder *pipelineSourceSet[domain.PipelineLifecycle]
+}
+
+func (d deferredPipelineLifecycle) TransitionPipeline(ctx context.Context, pipelineID string, revision int, toState string) (domain.PipelineTransitioned, error) {
+	sources := d.holder.all()
+	if len(sources) == 0 {
+		return domain.PipelineTransitioned{
+			Refused: "this build has no pipeline registry, so nothing can transition",
+		}, nil
+	}
+	// A transition is a WRITE: route by ownership first, exactly as saves are.
+	// Arming in the wrong registry would not fail — it would create a second
+	// authority over which revision is live, which is the split-brain D11
+	// exists to forbid.
+	for _, l := range sources {
+		h, ok := l.(domain.PipelineHolder)
+		if !ok {
+			continue
+		}
+		held, err := h.HoldsPipeline(ctx, pipelineID)
+		if err != nil {
+			slog.Warn("operator: a pipeline lifecycle failed an ownership check", "err", err)
+			continue
+		}
+		if held {
+			return l.TransitionPipeline(ctx, pipelineID, revision, toState)
+		}
+	}
+	return domain.PipelineTransitioned{
+		Refused: "no pipeline " + pipelineID + " is authored on this kernel",
+	}, nil
+}
+
 // pipelineIDIn reads just the id out of a graph document.
 //
 // Deliberately not a full unmarshal into a pipeline type: that type lives in the
@@ -3427,7 +3558,8 @@ type deferredTurnRouter struct {
 
 func (d deferredTurnRouter) RouteTurn(
 	ctx context.Context,
-	ingressAgentID, conversationID, text string,
+	ingressAgentID, conversationID string,
+	msg domain.TurnMessage,
 	run domain.TurnFunc,
 ) (bool, error) {
 	p := d.holder.Load()
@@ -3435,5 +3567,5 @@ func (d deferredTurnRouter) RouteTurn(
 		// No router in this build: the turn runs directly, exactly as before.
 		return false, nil
 	}
-	return (*p).RouteTurn(ctx, ingressAgentID, conversationID, text, run)
+	return (*p).RouteTurn(ctx, ingressAgentID, conversationID, msg, run)
 }

@@ -222,7 +222,7 @@ func (w *InterviewWorker) processAgent(ctx context.Context, agent domain.AgentDe
 	// bypass LLM scenario generation. They embed Description directly so they participate
 	// in cosine-similarity capability clustering. ADR-0033: TraitDaemon; ADR-0051: a system
 	// agent is kernel-invoked directly, so it is VERIFIED BY DEFAULT (no interview).
-	if agent.Trait == domain.TraitTool || agent.Trait == domain.TraitDaemon || domain.IsSystemAgent(agent.ID) {
+	if agent.Trait == domain.TraitTool || agent.Trait == domain.TraitDaemon || domain.IsSystemDefinition(agent) {
 		toolEmbedding, embedErr := w.Embedder.Embed(ctx, agent.Description)
 		if embedErr != nil || len(toolEmbedding) == 0 {
 			// A profile with no interview vector is invisible to the Gatekeeper's Layer-2

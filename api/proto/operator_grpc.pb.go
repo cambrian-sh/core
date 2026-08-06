@@ -60,8 +60,10 @@ const (
 	OperatorConsole_ListPipelines_FullMethodName            = "/cambrian.OperatorConsole/ListPipelines"
 	OperatorConsole_DryRunPipeline_FullMethodName           = "/cambrian.OperatorConsole/DryRunPipeline"
 	OperatorConsole_GetPipeline_FullMethodName              = "/cambrian.OperatorConsole/GetPipeline"
+	OperatorConsole_ListNodeItems_FullMethodName            = "/cambrian.OperatorConsole/ListNodeItems"
 	OperatorConsole_ValidatePipeline_FullMethodName         = "/cambrian.OperatorConsole/ValidatePipeline"
 	OperatorConsole_SavePipeline_FullMethodName             = "/cambrian.OperatorConsole/SavePipeline"
+	OperatorConsole_TransitionPipeline_FullMethodName       = "/cambrian.OperatorConsole/TransitionPipeline"
 	OperatorConsole_QueryLogs_FullMethodName                = "/cambrian.OperatorConsole/QueryLogs"
 	OperatorConsole_TailLogs_FullMethodName                 = "/cambrian.OperatorConsole/TailLogs"
 	OperatorConsole_GetWatchMetrics_FullMethodName          = "/cambrian.OperatorConsole/GetWatchMetrics"
@@ -271,6 +273,16 @@ type OperatorConsoleClient interface {
 	//
 	// Read RPC (no command_id). Capability "reactive-pipelines".
 	GetPipeline(ctx context.Context, in *GetPipelineOpRequest, opts ...grpc.CallOption) (*GetPipelineOpResponse, error)
+	// ListNodeItems returns what actually reached one node, newest first.
+	//
+	// The inspector could say a node RAN and never what ran through it: an
+	// operator watching their own data flow saw `save_to_memory → out "effect
+	// confirmed"` and not one value that landed. Every task already carried its
+	// input envelope, its result and its evidence — this is the read that was
+	// missing, not the data.
+	//
+	// Read RPC (no command_id). Capability "reactive-pipelines".
+	ListNodeItems(ctx context.Context, in *ListNodeItemsOpRequest, opts ...grpc.CallOption) (*ListNodeItemsOpResponse, error)
 	// ValidatePipeline compiles a graph document WITHOUT storing it, so an editor
 	// can ask on every change.
 	//
@@ -293,6 +305,20 @@ type OperatorConsoleClient interface {
 	//
 	// Capability "reactive-pipelines".
 	SavePipeline(ctx context.Context, in *SavePipelineOpRequest, opts ...grpc.CallOption) (*SavePipelineOpResponse, error)
+	// TransitionPipeline moves ONE revision along its lifecycle: draft →
+	// validated → published → armed; armed → published is the pause; retired
+	// ends it (contract 0093).
+	//
+	// This is the button SavePipeline deliberately is not. Each gate still
+	// holds — a revision that does not compile refuses to validate, publishing
+	// requires validated, arming requires published and disarms the incumbent —
+	// and a refusal names the gate in the registry's own words. `armed` walks a
+	// draft through validate and publish on the way, because "make THIS live"
+	// is one operator intent and answering it with two missing prerequisite
+	// buttons would be a bare precondition, not an answer.
+	//
+	// Capability "pipeline-lifecycle".
+	TransitionPipeline(ctx context.Context, in *TransitionPipelineOpRequest, opts ...grpc.CallOption) (*TransitionPipelineOpResponse, error)
 	// ── Kernel logs (contract 0082) ───────────────────────────────────────────
 	//
 	// OPERATOR-ONLY, both of them. A log line carries whatever the kernel happened
@@ -974,6 +1000,16 @@ func (c *operatorConsoleClient) GetPipeline(ctx context.Context, in *GetPipeline
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListNodeItems(ctx context.Context, in *ListNodeItemsOpRequest, opts ...grpc.CallOption) (*ListNodeItemsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListNodeItemsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListNodeItems_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) ValidatePipeline(ctx context.Context, in *ValidatePipelineOpRequest, opts ...grpc.CallOption) (*ValidatePipelineOpResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ValidatePipelineOpResponse)
@@ -988,6 +1024,16 @@ func (c *operatorConsoleClient) SavePipeline(ctx context.Context, in *SavePipeli
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SavePipelineOpResponse)
 	err := c.cc.Invoke(ctx, OperatorConsole_SavePipeline_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) TransitionPipeline(ctx context.Context, in *TransitionPipelineOpRequest, opts ...grpc.CallOption) (*TransitionPipelineOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TransitionPipelineOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_TransitionPipeline_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1462,6 +1508,16 @@ type OperatorConsoleServer interface {
 	//
 	// Read RPC (no command_id). Capability "reactive-pipelines".
 	GetPipeline(context.Context, *GetPipelineOpRequest) (*GetPipelineOpResponse, error)
+	// ListNodeItems returns what actually reached one node, newest first.
+	//
+	// The inspector could say a node RAN and never what ran through it: an
+	// operator watching their own data flow saw `save_to_memory → out "effect
+	// confirmed"` and not one value that landed. Every task already carried its
+	// input envelope, its result and its evidence — this is the read that was
+	// missing, not the data.
+	//
+	// Read RPC (no command_id). Capability "reactive-pipelines".
+	ListNodeItems(context.Context, *ListNodeItemsOpRequest) (*ListNodeItemsOpResponse, error)
 	// ValidatePipeline compiles a graph document WITHOUT storing it, so an editor
 	// can ask on every change.
 	//
@@ -1484,6 +1540,20 @@ type OperatorConsoleServer interface {
 	//
 	// Capability "reactive-pipelines".
 	SavePipeline(context.Context, *SavePipelineOpRequest) (*SavePipelineOpResponse, error)
+	// TransitionPipeline moves ONE revision along its lifecycle: draft →
+	// validated → published → armed; armed → published is the pause; retired
+	// ends it (contract 0093).
+	//
+	// This is the button SavePipeline deliberately is not. Each gate still
+	// holds — a revision that does not compile refuses to validate, publishing
+	// requires validated, arming requires published and disarms the incumbent —
+	// and a refusal names the gate in the registry's own words. `armed` walks a
+	// draft through validate and publish on the way, because "make THIS live"
+	// is one operator intent and answering it with two missing prerequisite
+	// buttons would be a bare precondition, not an answer.
+	//
+	// Capability "pipeline-lifecycle".
+	TransitionPipeline(context.Context, *TransitionPipelineOpRequest) (*TransitionPipelineOpResponse, error)
 	// ── Kernel logs (contract 0082) ───────────────────────────────────────────
 	//
 	// OPERATOR-ONLY, both of them. A log line carries whatever the kernel happened
@@ -1860,11 +1930,17 @@ func (UnimplementedOperatorConsoleServer) DryRunPipeline(context.Context, *DryRu
 func (UnimplementedOperatorConsoleServer) GetPipeline(context.Context, *GetPipelineOpRequest) (*GetPipelineOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetPipeline not implemented")
 }
+func (UnimplementedOperatorConsoleServer) ListNodeItems(context.Context, *ListNodeItemsOpRequest) (*ListNodeItemsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListNodeItems not implemented")
+}
 func (UnimplementedOperatorConsoleServer) ValidatePipeline(context.Context, *ValidatePipelineOpRequest) (*ValidatePipelineOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ValidatePipeline not implemented")
 }
 func (UnimplementedOperatorConsoleServer) SavePipeline(context.Context, *SavePipelineOpRequest) (*SavePipelineOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SavePipeline not implemented")
+}
+func (UnimplementedOperatorConsoleServer) TransitionPipeline(context.Context, *TransitionPipelineOpRequest) (*TransitionPipelineOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TransitionPipeline not implemented")
 }
 func (UnimplementedOperatorConsoleServer) QueryLogs(context.Context, *QueryLogsOpRequest) (*QueryLogsOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryLogs not implemented")
@@ -2695,6 +2771,24 @@ func _OperatorConsole_GetPipeline_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListNodeItems_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListNodeItemsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListNodeItems(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListNodeItems_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListNodeItems(ctx, req.(*ListNodeItemsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_ValidatePipeline_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ValidatePipelineOpRequest)
 	if err := dec(in); err != nil {
@@ -2727,6 +2821,24 @@ func _OperatorConsole_SavePipeline_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OperatorConsoleServer).SavePipeline(ctx, req.(*SavePipelineOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_TransitionPipeline_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TransitionPipelineOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).TransitionPipeline(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_TransitionPipeline_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).TransitionPipeline(ctx, req.(*TransitionPipelineOpRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3392,12 +3504,20 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _OperatorConsole_GetPipeline_Handler,
 		},
 		{
+			MethodName: "ListNodeItems",
+			Handler:    _OperatorConsole_ListNodeItems_Handler,
+		},
+		{
 			MethodName: "ValidatePipeline",
 			Handler:    _OperatorConsole_ValidatePipeline_Handler,
 		},
 		{
 			MethodName: "SavePipeline",
 			Handler:    _OperatorConsole_SavePipeline_Handler,
+		},
+		{
+			MethodName: "TransitionPipeline",
+			Handler:    _OperatorConsole_TransitionPipeline_Handler,
 		},
 		{
 			MethodName: "QueryLogs",

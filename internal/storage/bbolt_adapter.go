@@ -207,6 +207,8 @@ func DiscoverFilesystemAgents(agentsDir string, isSystemAgent func(id string) bo
 // write: an unchanged agent (same SourceHash) is left untouched — crucially preserving
 // its post-interview Provisional=false state across reboots — so registering the built-in
 // filesystem agents through an AgentSource behaves exactly like the old in-Seed scan.
+// The one exception is System status, which is composition-root policy rather than a
+// property of the agent's code and is therefore reconciled on every call.
 func (b *BBoltAdapter) UpsertDiscoveredAgent(da DiscoveredAgent) error {
 	return b.db.Update(func(tx *bbolt.Tx) error {
 		return upsertDiscovered(tx, da)
@@ -245,6 +247,29 @@ func upsertDiscovered(tx *bbolt.Tx, da DiscoveredAgent) error {
 	var existing AgentRecord
 	if json.Unmarshal(existingData, &existing) != nil {
 		return nil // malformed existing record — leave as-is
+	}
+	// System status is reconciled BEFORE the source-hash short-circuit, because it
+	// is a policy decision made by the composition root and not a property of the
+	// agent's code.
+	//
+	// It used to be refreshed only on the "source changed" branch below, so
+	// granting a plugin's agent system status had no effect until somebody
+	// happened to edit that agent's source. The kernel went on LLM-interviewing
+	// and auctioning an organ the composition root had already declared
+	// privileged, and the grant looked like it had simply not worked.
+	//
+	// A grant does NOT make the agent provisional: nothing about what it can do
+	// changed, only how the kernel is allowed to route to it.
+	if existing.System != da.Agent.System {
+		slog.Info("DB (BBOLT): agent system status changed", "id", id, "system", da.Agent.System)
+		existing.System = da.Agent.System
+		data, err := json.Marshal(existing)
+		if err != nil {
+			return fmt.Errorf("marshal updated agent %s: %w", id, err)
+		}
+		if err := agentsBucket.Put([]byte(id), data); err != nil {
+			return fmt.Errorf("put agent %s: %w", id, err)
+		}
 	}
 	if existing.SourceHash == da.Agent.SourceHash {
 		return nil // unchanged

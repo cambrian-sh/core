@@ -122,7 +122,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 			if agent.ID != pinnedID {
 				continue
 			}
-			if agent.Trait == domain.TraitDaemon || domain.IsSystemAgent(agent.ID) {
+			if agent.Trait == domain.TraitDaemon || domain.IsSystemDefinition(agent) {
 				return nil, fmt.Errorf("%w: %q is not dispatchable", domain.ErrPinnedAgentUnavailable, pinnedID)
 			}
 			slog.Info("Gatekeeper: hard agent pin bound", "agent_id", pinnedID, "task_id", task.ID)
@@ -238,7 +238,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTas
 		}
 		// Privileged system organs (ADR-0051 Scout) are kernel-invoked directly, never
 		// auctioned/EFE-selected for a user task — exclude them from the candidate pool.
-		if domain.IsSystemAgent(agent.ID) {
+		if domain.IsSystemDefinition(agent) {
 			continue
 		}
 

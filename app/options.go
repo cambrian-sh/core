@@ -105,6 +105,10 @@ type Options struct {
 	// and kernel behaviour bit-identical. Plugins contribute through
 	// Registry.AddDecisionObserver; this field is the directly-set equivalent.
 	DecisionObserver domain.DecisionObserver
+	// AgentActivityObserver receives agent tool activity (which tool, which args,
+	// and its outcome) keyed by the caller's session token. Operator-facing and
+	// append-only; see domain.AgentActivity for why it is not ProgressUpdate.
+	AgentActivityObserver domain.AgentActivityObserver
 
 	// EvidenceTransformers are the transformation-stage consumers of the
 	// evidence outbox (ADR-0108 D3). Plugins contribute through
@@ -230,12 +234,25 @@ type KernelServices struct {
 	// have one without the other.
 	RegisterPipelineWriter func(domain.PipelineWriter)
 
+	// RegisterPipelineLifecycle contributes the transition surface (contract
+	// 0093): draft → validated → published → armed, and back to published,
+	// which is the pause. Separate from the writer for the same reason the
+	// writer is separate from the author — this surface cannot edit a graph,
+	// only move a revision through gates the registry already holds.
+	RegisterPipelineLifecycle func(domain.PipelineLifecycle)
+
 	// RegisterIngressLister contributes the list of ADR-0090 registered
 	// ingresses, so surfaces that describe ingresses can name them all rather
 	// than only the ones a particular plugin authored.
 	//
 	// nil in a kernel with no registry — a plugin degrades to "none registered".
 	RegisterIngressLister func(domain.IngressLister)
+
+	// RegisterIngressSchemaDeclarer contributes the schema half of the
+	// ADR-0090 registry (ADR-0117): recording what a registered ingress's
+	// items carry, so a plugin that owns an entry point can declare its
+	// payload contract instead of the deployment inferring it from captures.
+	RegisterIngressSchemaDeclarer func(domain.IngressSchemaDeclarer)
 
 	// RegisterIngressDeregistrar contributes the WRITE half of the ADR-0090
 	// registry — withdrawing an entry organ when the plugin that owns it removes
@@ -338,6 +355,14 @@ type KernelServices struct {
 	// registration outlives the bot", which is what shipped.
 	DeregisterIngress func(ctx context.Context, agentID string) error
 
+	// DeclareIngressSchema records what an ingress's items carry (ADR-0117),
+	// on its EXISTING registration. The plugin that owns the entry point is
+	// the one party that knows its payload contract a priori — a Telegram
+	// bridge does not need fifty captures to learn it forwards `text`. Errors
+	// name their constraint (an unregistered agent among them); nil-safe in a
+	// build with no registry, where declaring is a no-op rather than a fault.
+	DeclareIngressSchema func(ctx context.Context, agentID string, fields []domain.IngressSchemaField) error
+
 	// RetireIngressPipeline removes the pipeline armed for an entry organ that
 	// has been removed.
 	//
@@ -350,10 +375,29 @@ type KernelServices struct {
 	// plugin can honour it without reading kernel config directly.
 	TracePipelinePayloads bool
 
+	// PipelineDrainerEnabled mirrors execution.pipelines.drainer_enabled.
+	//
+	// Off by default, and deliberately not a side effect of upgrading: turning a
+	// drainer on for the first time does not resume a paused system, it starts
+	// one. Whatever is already queued executes immediately, against the plan
+	// revision each run was PINNED to rather than any correction made since —
+	// which on a deployment that had never drained meant hundreds of runs, some
+	// belonging to an ingress that had been deleted.
+	PipelineDrainerEnabled bool
+
 	// Events is the substrate's typed event/observation boundary (ADR-0108 D2):
 	// point lookups and history over stored rows, exact, nothing embedded.
 	// nil when no Postgres is configured.
 	Events domain.EventStore
+
+	// EvidenceStore READS preserved evidence rows.
+	//
+	// The write half and the content fetch were both exposed; the row itself was
+	// not, so a plugin holding an EvidenceID had no way to reach its content
+	// hash — which is what turns an id into bytes. The outbox consumer does
+	// exactly this walk internally; a lane that projects outside the outbox needs
+	// the same one. nil when evidence capture is disabled.
+	EvidenceStore domain.EvidenceStore
 
 	// EvidenceIngest preserves one delivery as evidence under the ADR-0105
 	// ordering contract (bytes → verify → atomic evidence+outbox). nil when

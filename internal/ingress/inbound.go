@@ -194,7 +194,18 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 		run := func(ctx context.Context, conversationID, text string) error {
 			return s.turns.RunTurn(ctx, conversationID, text, "")
 		}
-		handled, rerr := s.router.RouteTurn(ctx, addr.IngressAgentID, conv.ID, text, run)
+		// The router gets the sender facts the ingress TRANSPORTED, not just
+		// the text (ADR-0117): they were on the wire and in this struct the
+		// whole time, and dropping them here was why a graph could not route
+		// on who wrote a message.
+		msg := domain.TurnMessage{
+			Text:             text,
+			SenderExternalID: externalID,
+			SpeakerID:        m.SpeakerID,
+			Username:         m.Username,
+			DisplayName:      m.DisplayName,
+		}
+		handled, rerr := s.router.RouteTurn(ctx, addr.IngressAgentID, conv.ID, msg, run)
 		if rerr != nil {
 			return rerr
 		}

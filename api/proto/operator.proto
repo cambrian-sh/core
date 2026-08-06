@@ -210,6 +210,17 @@ service OperatorConsole {
   // Read RPC (no command_id). Capability "reactive-pipelines".
   rpc GetPipeline(GetPipelineOpRequest) returns (GetPipelineOpResponse);
 
+  // ListNodeItems returns what actually reached one node, newest first.
+  //
+  // The inspector could say a node RAN and never what ran through it: an
+  // operator watching their own data flow saw `save_to_memory → out "effect
+  // confirmed"` and not one value that landed. Every task already carried its
+  // input envelope, its result and its evidence — this is the read that was
+  // missing, not the data.
+  //
+  // Read RPC (no command_id). Capability "reactive-pipelines".
+  rpc ListNodeItems(ListNodeItemsOpRequest) returns (ListNodeItemsOpResponse);
+
   // ValidatePipeline compiles a graph document WITHOUT storing it, so an editor
   // can ask on every change.
   //
@@ -233,6 +244,21 @@ service OperatorConsole {
   //
   // Capability "reactive-pipelines".
   rpc SavePipeline(SavePipelineOpRequest) returns (SavePipelineOpResponse);
+
+  // TransitionPipeline moves ONE revision along its lifecycle: draft →
+  // validated → published → armed; armed → published is the pause; retired
+  // ends it (contract 0093).
+  //
+  // This is the button SavePipeline deliberately is not. Each gate still
+  // holds — a revision that does not compile refuses to validate, publishing
+  // requires validated, arming requires published and disarms the incumbent —
+  // and a refusal names the gate in the registry's own words. `armed` walks a
+  // draft through validate and publish on the way, because "make THIS live"
+  // is one operator intent and answering it with two missing prerequisite
+  // buttons would be a bare precondition, not an answer.
+  //
+  // Capability "pipeline-lifecycle".
+  rpc TransitionPipeline(TransitionPipelineOpRequest) returns (TransitionPipelineOpResponse);
 
   // ── Kernel logs (contract 0082) ───────────────────────────────────────────
   //
@@ -2560,6 +2586,35 @@ message GetDocumentOpResponse {
 
 // ── Reactive pipelines (contract 0087) ──────────────────────────────────────
 
+message ListNodeItemsOpRequest {
+  string pipeline_id = 1;
+  string node_id = 2;
+  // Newest first. Bounded by the server; 0 means its default.
+  int32 limit = 3;
+}
+
+message NodeItemOp {
+  string run_id = 1;
+  string item_key = 2;
+  string state = 3;
+  int32 attempt = 4;
+  // The envelope this task consumed and what it produced, as JSON. The result
+  // of a save carries WHAT it wrote, which is the thing worth reading.
+  string input_json = 5;
+  string result_json = 6;
+  string error = 7;
+  // The material this item derives from (RP-6).
+  string evidence_ref = 8;
+  string updated_at = 9;
+  // Iteration path through enclosing loops, empty outside one.
+  string iter_path = 10;
+}
+
+message ListNodeItemsOpResponse {
+  repeated NodeItemOp items = 1;
+  string error = 2;
+}
+
 message ListPipelinesOpRequest {
   // armed_only narrows to what is LIVE. The default is every revision, because
   // "which revisions exist and which one is armed" is the question an operator
@@ -2604,6 +2659,26 @@ message DryRunPipelineOpResponse {
   // elapsed_ms is how long the replay took — the figure that says whether
   // running it over more deliveries is worth doing.
   int64 elapsed_ms = 8;
+  // source names what was replayed (contract 0092): the archive's real
+  // deliveries, or the redacted capture samples. Load-bearing for reading the
+  // report — over redacted samples every value is a type token, so a numeric
+  // gate fails on every item, and only this field lets a reader blame the
+  // source rather than the graph.
+  string source = 9;
+  // node_examples are real items observed per node during the replay — the
+  // value as the node received it, and the node's own receipt where it
+  // recorded one. Bounded per node kernel-side: a panel a person reads.
+  repeated PipelineNodeExampleOp node_examples = 10;
+}
+
+// PipelineNodeExampleOp is one item as one node saw it during a dry run.
+message PipelineNodeExampleOp {
+  string node = 1;
+  string item_key = 2;
+  // value_json is the item's value as the node received it.
+  string value_json = 3;
+  // result_json is what the node recorded (an effect's receipt), when any.
+  string result_json = 4;
 }
 
 // PipelineFailureOp is one item a node could not process.
@@ -2638,6 +2713,13 @@ message GetPipelineOpResponse {
   // taken from the compiled AST, so it cannot disagree with what the runtime
   // will read.
   repeated NodeReadsOp reads = 5;
+  // field_schema_json is the per-node field schema (contract 0091): for every
+  // node, the fields available to its expressions — walked from the trigger's
+  // capture profile through each transform — plus what it reads, writes and
+  // drops, and, where a shape is not statically knowable, the reason, named.
+  // JSON for the same reason as graph_json. Empty means "unchecked", never
+  // "no fields".
+  string field_schema_json = 6;
 }
 
 // NodeReadsOp is one node and the payload paths it reads.
@@ -2662,6 +2744,11 @@ message ValidatePipelineOpResponse {
   int32 effect_node_count = 4;
   string plan_checksum = 5;
   string semantics_checksum = 6;
+  // field_schema_json is the per-node field schema of the DRAFT being
+  // validated — same shape as GetPipelineOpResponse.field_schema_json, so the
+  // picker tracks the graph as it is edited. Empty when the draft does not
+  // compile.
+  string field_schema_json = 7;
 }
 
 message SavePipelineOpRequest {
@@ -2680,6 +2767,29 @@ message SavePipelineOpResponse {
   // refusals is what the compiler said about the stored draft. Present and
   // non-blocking: they hold Publish, not Save.
   repeated RefusalOp refusals = 4;
+}
+
+message TransitionPipelineOpRequest {
+  string pipeline_id = 1;
+  // revision 0 means the latest authored revision.
+  int32 revision = 2;
+  // to_state is one of: validated, published, armed, paused, retired.
+  string to_state = 3;
+  // command_id makes the transition idempotent under retry; reason is the
+  // operator's own words, audited like every mutating command.
+  string command_id = 4;
+  string reason = 5;
+}
+
+message TransitionPipelineOpResponse {
+  // refused names the gate that held, in the registry's own words. The
+  // revision is untouched when set.
+  string refused = 1;
+  string pipeline_id = 2;
+  int32 revision = 3;
+  // state is where the revision IS now — the store's answer, never an echo
+  // of the request.
+  string state = 4;
 }
 
 // RefusalOp is one constraint a graph broke, and where it broke it.
