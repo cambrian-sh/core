@@ -6,10 +6,9 @@ import (
 	"log/slog"
 
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/memory"
 )
 
-// KgExtractorDispatcher implements memory.TripletExtractor by invoking the
+// KgExtractorDispatcher implements domain.TripletExtractor by invoking the
 // privileged, NO-LLM kg_extractor system agent directly via the Auctioneer
 // (no auction), exactly like the pre-plan Scout (ADR-0051 / ADR-0053 D2 revised).
 //
@@ -29,7 +28,7 @@ type kgRequest struct {
 	IDs   []string `json:"ids,omitempty"`
 }
 
-// kgTriplet mirrors memory.ChunkTriplet on the wire (the agent emits this JSON).
+// kgTriplet mirrors domain.ChunkTriplet on the wire (the agent emits this JSON).
 type kgTriplet struct {
 	H          string   `json:"h"`
 	R          string   `json:"r"`
@@ -48,8 +47,8 @@ type kgResponse struct {
 // per-chunk triplets. Never errors: a dispatch/parse failure yields empty
 // extractions (the chunk docs are already saved upstream — only enrichment is lost),
 // the same degradation contract as the LLM extractor it replaces.
-func (d *KgExtractorDispatcher) ExtractBatch(ctx context.Context, texts []string, ids []string) [][]memory.ChunkTriplet {
-	out := make([][]memory.ChunkTriplet, len(texts))
+func (d *KgExtractorDispatcher) ExtractBatch(ctx context.Context, texts []string, ids []string) [][]domain.ChunkTriplet {
+	out := make([][]domain.ChunkTriplet, len(texts))
 	if d == nil || d.Auctioneer == nil || len(texts) == 0 {
 		return out
 	}
@@ -89,7 +88,7 @@ func (d *KgExtractorDispatcher) ExtractBatch(ctx context.Context, texts []string
 			if w == 0 {
 				w = 1.0
 			}
-			out[i] = append(out[i], memory.ChunkTriplet{
+			out[i] = append(out[i], domain.ChunkTriplet{
 				H: t.H, R: t.R, T: t.T, Weight: w,
 				Sources: t.Sources, Confidence: t.Confidence,
 			})

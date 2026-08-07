@@ -196,7 +196,7 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		// routing as the EdgeBatcher. Re-uses the EdgeExtraction* config knobs
 		// (the prompt is a similar size; 16-fact batches stream fine on
 		// the hosted reasoning model). nil = no enrichment (legacy).
-		if cts, ok := vec.(memory.ChunkTripletsStore); ok {
+		if cts, ok := vec.(domain.ChunkTripletsStore); ok {
 			chunkTripletsBatcher = memory.NewChunkTripletsBatcher(gen, cts, memory.ChunkTripletsBatcherConfig{
 				QueueSize:  execCfg.Ingestion.EdgeExtractionQueueSize,
 				BatchSize:  execCfg.Ingestion.EdgeExtractionBatchSize,

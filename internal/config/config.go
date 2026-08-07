@@ -721,7 +721,6 @@ type RetrievalConfig struct {
 	HybridSearchEnabled     bool    `json:"hybrid_search_enabled,omitempty"`
 	HybridRRFK              int     `json:"hybrid_rrf_k,omitempty"`
 	HybridLexicalWeight     float64 `json:"hybrid_lexical_weight,omitempty"`     // >1 leans RRF toward exact-term/entity matches; ≤0 ⇒ 1.0
-	HydeEnabled             bool    `json:"hyde_enabled,omitempty"`              // HyDE: embed a hypothetical answer passage for hop-1 dense retrieval
 	AgenticIrcotEnabled     bool    `json:"agentic_ircot_enabled,omitempty"`     // IRCoT: reason-then-retrieve loop (CoT step drives next retrieval)
 	AgenticDecomposeEnabled bool    `json:"agentic_decompose_enabled,omitempty"` // up-front grounded decomposition: decompose whole question, retrieve+answer each sub-question
 
@@ -899,49 +898,6 @@ type HippocampusConfig struct {
 	HippocampusDefaultPolicy string `json:"hippocampus_default_policy,omitempty"`
 }
 
-// ScoutConfig — Scout discovery.
-//
-// Split out of the former 198-field flat ExecutionConfig (config schema v2).
-// Field names, types and json tags are unchanged; only the nesting is new, so
-// each field means exactly what it meant before.
-type ScoutConfig struct {
-	// ScoutEnabled (ADR-0051 issue-008) gates the pre-plan Scout. It is the A/B falsification
-	// switch: false ⇒ one-shot planning (the baseline arm, the default — ADR-0051 is Proposed
-	// and gated on the spike), true ⇒ Scout-grounded planning (the treatment arm). Flip it to
-	// run the comparison; the promote/don't-promote decision stays a human call.
-	ScoutEnabled bool `json:"scout_enabled,omitempty"`
-
-	// ScoutModel (ADR-0051) is the model id the pre-plan Scout reasons with. Under the
-	// ADR-0079 deterministic-first design this is only the FALLBACK model for the opt-in
-	// LLM tier (ScoutLLMTierEnabled) — a cheap/fast variant (e.g. llm:mimo) is ideal.
-	// "" ⇒ the gateway's default model (still via a properly-allocated managed session).
-	ScoutModel string `json:"scout_model,omitempty"`
-
-	// ScoutLLMTierEnabled (ADR-0079 D1) turns on the opt-in LLM discovery tier (the
-	// ADR-0051 run_think scout) layered ON TOP of the deterministic probe registry. Off
-	// (default) ⇒ deterministic probes only, zero LLM on the discovery hot path.
-	ScoutLLMTierEnabled bool `json:"scout_llm_tier_enabled,omitempty"`
-
-	// ScoutHTTPProbeEnabled (ADR-0079 D2) registers the http/openapi discovery source.
-	// Off (default) because probing a URL from an untrusted request is an SSRF surface;
-	// when on, the source's guard refuses loopback/private/link-local hosts unless
-	// ScoutHTTPAllowPrivate is also set.
-	ScoutHTTPProbeEnabled bool `json:"scout_http_probe_enabled,omitempty"`
-
-	// ScoutHTTPAllowPrivate (ADR-0079 D2) permits the http source to reach loopback/private
-	// hosts (dev only — e.g. a localhost API). Default false (fail-closed).
-	ScoutHTTPAllowPrivate bool `json:"scout_http_allow_private,omitempty"`
-
-	// ScoutDiscoveryRoots (ADR-0079 D2/D6) are the directories the deterministic filesystem
-	// source may read. Empty ⇒ the kernel's working directory only (fail-closed-ish).
-	ScoutDiscoveryRoots []string `json:"scout_discovery_roots,omitempty"`
-
-	// ScoutScanCap (ADR-0051 D5) is the max number of LIVE world observations the Scout
-	// makes per request before planning. Bounds plan-time latency; over-budget referents
-	// become a discovery step. 0 ⇒ DefaultDiscoveryCap (3).
-	ScoutScanCap int `json:"scout_scan_cap,omitempty"`
-}
-
 // ToolsConfig — Tool execution policy and retrieval.
 //
 // Split out of the former 198-field flat ExecutionConfig (config schema v2).
@@ -980,14 +936,6 @@ type ToolsConfig struct {
 	// be served by semantic retrieval. Below it, "no tool fits" ⇒ an empty menu
 	// (grounding safeguard). 0 ⇒ no floor (any top-k is returned). Tunable.
 	ToolRetrievalFloor float64 `json:"tool_retrieval_floor,omitempty"`
-
-	// DiscoverySafeTools (ADR-0051 D6) is the operator-curated allowlist of tool names the
-	// Scout principal may use for read-only pre-plan discovery — a HARD ceiling that holds
-	// even under ToolsUnrestricted (the Scout fires unattended at plan time, so it earns a
-	// higher bar than "not dangerous"). Empty ⇒ no ceiling configured: the Scout falls back
-	// to normal grant resolution (so dev/unrestricted still works), and in a default prod
-	// run finds no tools ⇒ degrades to one-shot.
-	DiscoverySafeTools []string `json:"discovery_safe_tools,omitempty"`
 }
 
 // ChatConfig — Chat session worker pool.
@@ -1020,7 +968,7 @@ type ChatConfig struct {
 	ChatPoolAcquireTimeoutSeconds int `json:"chat_pool_acquire_timeout_seconds,omitempty"`
 }
 
-// AgentsConfig — Agent process runtime: resource caps, env passthrough, daemon restart policy and the interview/scout disable flags.
+// AgentsConfig — Agent process runtime: resource caps, env passthrough, daemon restart policy and the interview disable flag.
 //
 // Split out of the former 198-field flat ExecutionConfig (config schema v2).
 // Field names, types and json tags are unchanged; only the nesting is new, so
@@ -1039,12 +987,6 @@ type AgentsConfig struct {
 	// regardless. Empty by default: agents get only OS essentials + the substrate
 	// socket/addr (passed as flags), never the kernel's credentials.
 	AgentEnvPassthrough []string `json:"agent_env_passthrough,omitempty"`
-
-	// DisableScout skips the ADR-0051 pre-plan discovery Scout. Benchmark/eval-
-	// only: the Scout spends an LLM discovery pass per request to shape the plan
-	// to the observed world, which the offline routing eval does not need and
-	// which serialises ahead of every planner call. Default false ⇒ Scout runs.
-	DisableScout bool `json:"disable_scout"`
 
 	// DisableInterviews skips the ADR-0037 graded LLM interview (Examiner) at
 	// registration. Benchmark/eval-only: the graded interview spends an LLM Q&A
@@ -1203,16 +1145,13 @@ type ExecutionConfig struct {
 	// Hippocampus retrieval policies.
 	Hippocampus HippocampusConfig `json:"hippocampus"`
 
-	// Scout discovery.
-	Scout ScoutConfig `json:"scout"`
-
 	// Tool execution policy and retrieval.
 	Tools ToolsConfig `json:"tools"`
 
 	// Chat session worker pool.
 	Chat ChatConfig `json:"chat"`
 
-	// Agent process runtime: resource caps, env passthrough, daemon restart policy and the interview/scout disable flags.
+	// Agent process runtime: resource caps, env passthrough, daemon restart policy and the interview disable flag.
 	Agents AgentsConfig `json:"agents"`
 
 	// Supervision statistics: aggregation cadence, EWMA/latency windows and histogram sizing.
@@ -1722,7 +1661,7 @@ func DefaultConfig() *Config {
 // (configs/ + .env) against, so boot works regardless of the process working
 // directory. This matters because a benchmark supervisor (or systemd, or an IDE)
 // spawns the binary from an arbitrary cwd; when that cwd lacked configs/, every
-// layered override — including execution.scout_enabled in tuning.local.json —
+// layered override — including nested execution blocks in tuning.local.json —
 // silently fell back to DefaultConfig(), disabling the Scout without a trace.
 //
 // Resolution order:

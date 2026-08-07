@@ -168,40 +168,6 @@ func (d *RetrievalDispatcher) ReasonStep(ctx context.Context, query string, cot,
 	return rs.Thought, rs.Done, strings.TrimSpace(rs.SearchQuery), nil
 }
 
-// PlanHyde asks the retrieval_agent for a hypothetical answer passage (HyDE) to
-// embed for hop-1 dense retrieval. Returns "" (fail-open ⇒ embed the real query)
-// on any failure or empty passage.
-func (d *RetrievalDispatcher) PlanHyde(ctx context.Context, query string) (string, error) {
-	reqData, err := json.Marshal(struct {
-		Op    string `json:"op"`
-		Query string `json:"query"`
-	}{Op: "hyde", Query: query})
-	if err != nil {
-		return "", err
-	}
-	data, err := d.call(ctx, reqData)
-	if err != nil || len(data) == 0 {
-		return "", err
-	}
-	obj := domain.ExtractJSONObject(string(data))
-	if obj == "" {
-		return "", nil
-	}
-	var hp struct {
-		Passage string `json:"passage"`
-	}
-	if err := json.Unmarshal([]byte(obj), &hp); err != nil {
-		slog.WarnContext(ctx, "retrieval dispatch: bad hyde JSON; fail-open", "err", err)
-		return "", err
-	}
-	slog.InfoContext(ctx, "agentic-trace hyde", "passage_len", len(hp.Passage))
-	return hp.Passage, nil
-}
-
-// DecideContinue asks the retrieval_agent whether the accumulated chunks answer
-// the query (stop) or whether a bridge entity must be looked up next (continue).
-// FAIL-OPEN = stop: nil auctioneer, dispatch error, bad JSON, or a
-// missing/empty bridge all return stop=true, so a bad step ends the loop with
 // the results already accumulated rather than spinning.
 func (d *RetrievalDispatcher) DecideContinue(ctx context.Context, query string, history, chunks []string) (bool, string, error) {
 	reqData, err := json.Marshal(decideRequest{Op: "decide_continue", Query: query, History: history, Chunks: chunks})

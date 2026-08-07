@@ -158,7 +158,6 @@ type Options struct {
 type KernelServices struct {
 	Manager    ReactiveAgentDispatcher // direct dispatch + daemon lifecycle
 	Auctioneer domain.Auctioneer       // full Gatekeeper → Auction
-	Memory     ReactiveMemoryWriter    // async LTM ingest
 	// Ingestor is the full-fidelity memory write (ADR-0104 D3): one write path, so
 	// a lane that receives content puts it in the brain rather than beside it.
 	// nil ⇒ this deployment has no ingestion pipeline, and a caller must say so
@@ -545,11 +544,6 @@ type ReactiveAgentDispatcher interface {
 	DaemonRunning(streamID string) bool
 }
 
-// ReactiveMemoryWriter ingests signal content into LTM asynchronously.
-type ReactiveMemoryWriter interface {
-	ProcessAndStoreAsync(ctx context.Context, text string, sourceAgent string)
-}
-
 // ReactiveDocumentReader resolves a document REFERENCE to its content, for a
 // plugin (ADR-0104 D6.2).
 //
@@ -579,14 +573,16 @@ type ReactiveDocumentReader interface {
 // ReactiveMemoryIngestor is the FULL-FIDELITY memory write for a plugin
 // (ADR-0104 D3).
 //
-// # Why ReactiveMemoryWriter was not enough
+// # Why the thin seam was not enough (and is now gone)
 //
-// That seam is `ProcessAndStoreAsync(ctx, text, sourceAgent)` — text and one string.
-// It carries no tags, so a plugin writing through it silently strips the source's
-// classification, and a commitment distilled from restricted material would land
-// unrestricted (ADR-0095 D9 / D4 of this ADR). For the reactive `ingest` ACTION
-// that is a known thinness; for a lane that writes customer conversation it is a
-// classification hole.
+// The predecessor seam was `ReactiveMemoryWriter.ProcessAndStoreAsync(ctx, text,
+// sourceAgent)` — text and one string. It carried no tags, so a plugin writing through
+// it silently stripped the source's classification, and a commitment distilled from
+// restricted material would land unrestricted (ADR-0095 D9 / D4 of this ADR). For the
+// reactive `ingest` ACTION that was a known thinness; for a lane that writes customer
+// conversation it was a classification hole. Every caller having moved here, that seam
+// and the LLM-importance write path behind it have been REMOVED — this is now the only
+// plugin-facing memory write.
 //
 // # Why a plugin needs this at all
 //

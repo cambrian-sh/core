@@ -89,14 +89,6 @@ type PlanValidationError struct {
 func (e *PlanValidationError) Error() string { return e.Signal }
 
 // Server, Cambrian gRPC sunucusunu temsil eder.
-// WorldScout performs bounded read-only pre-plan discovery (ADR-0051): it observes the
-// current world state the request references and returns a DiscoveryReport the Planner
-// shapes its plan to. nil ⇒ no Scout, Execute plans one-shot as before. An empty report
-// (Scout found nothing / degraded) is likewise treated as one-shot. Satisfied by
-// *AgentScoutDispatcher, which invokes the privileged Python Scout agent (ADR-0051 D1).
-type WorldScout interface {
-	Discover(ctx context.Context, userInput string) *domain.DiscoveryReport
-}
 
 type Server struct {
 	// Progress reports what the kernel is doing on behalf of a chat turn, so a user
@@ -115,10 +107,8 @@ type Server struct {
 	pb.UnimplementedOrchestratorServer
 	// Router is the universal input classifier (ADR-0031). When nil, Execute
 	// falls back to the legacy PLAN-only path for backward compatibility.
-	Router  domain.InputRouter
-	Planner Planner
-	// Scout is the ADR-0051 pre-plan discovery organ. nil ⇒ one-shot planning.
-	Scout       WorldScout
+	Router      domain.InputRouter
+	Planner     Planner
 	Manager     *agentmgr.AgentManager
 	Auctioneer  domain.Auctioneer
 	MemoryAgent domain.MemoryAgent
@@ -167,7 +157,7 @@ type Server struct {
 	AgentCallLogger AgentCallLogger
 
 	// GenWrapper decorates a raw generator with cross-cutting concerns (Langfuse
-	// tracing) so thought/synthesis steps that route to a RecommendedModel are
+	// tracing) so thought/synthesis steps generated in-kernel are
 	// observable, not just the Planner's own generator. nil = identity.
 	GenWrapper func(domain.Generator) domain.Generator
 
@@ -375,7 +365,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	rawInput := string(in.Payload.Data)
 
 	// ADR-0050 D1: benchmark React-baseline arm. Skips Router classification,
-	// Scout discovery, Planner, Auctioneer, and DAGExecutor — the input goes
+	// Planner, Auctioneer, and DAGExecutor — the input goes
 	// verbatim to one configured agent through the same CallAgent seam a
 	// winning bidder would use (same priming, grants, scope, telemetry).
 	if s.ExecCfg.Routing.BypassAuction {
@@ -492,27 +482,6 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	// Mood Injection: append last 3 SessionEvents as social context.
 	if sessionID != "" {
 		userInput = injectMoodContext(ctx, s, sessionID, userInput)
-	}
-
-	// ADR-0051: pre-plan discovery. Scout observes the world state the request references
-	// and attaches its report to ctx; the Planner (via DiscoveryFromContext) shapes the plan
-	// to it. An empty report (no Scout, nothing to observe, or any degrade) leaves ctx
-	// untouched ⇒ one-shot planning exactly as before.
-	// ROUTE-08 phase A: capture whether the Scout ran, its latency, and the report
-	// (for the discovery↔plan reference check below). Logging only — behavior
-	// unchanged.
-	var scoutReport *domain.DiscoveryReport
-	var scoutRan bool
-	var scoutLatencyMs int64
-	if s.Scout != nil && !s.ExecCfg.Agents.DisableScout {
-		scoutStart := time.Now()
-		report := s.Scout.Discover(ctx, userInput)
-		scoutLatencyMs = time.Since(scoutStart).Milliseconds()
-		scoutRan = true
-		if !report.IsEmpty() {
-			scoutReport = report
-			ctx = domain.WithDiscovery(ctx, report)
-		}
 	}
 
 	// Phase 3: either CONTINUE a named run (explicit, replaying its persisted plan) or
@@ -677,8 +646,9 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		}
 
 		// healingOccurred is set true by innerFn when SelfHealer injects _heal_attempt,
-		// signalling that at least one retry was consumed. The Memory Barrier check
-		// below uses it to force IngestSync on any healed step.
+		// signalling that at least one retry was consumed. It is passed to the Memory
+		// Barrier, which since ADR-0049 D3 only logs — the step result is recorded by
+		// RecordExecution onto the Tier-1 channel, not re-ingested here.
 		healingOccurred := false
 
 		// runnerUps and winningAgentID are captured from the auction so that the
@@ -876,28 +846,6 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	}
 
 	masterCtx, err := executor.ExecuteFrom(planCtx, plan, initialCtx, executer.StepFunc(stepFn), startFromStep)
-
-	// ROUTE-08 phase A: log whether the always-on Scout earned its cost this
-	// session (referenced by the plan? ran without replan? what did it cost?).
-	// Emitted for both success and partial-plan outcomes — the plan ran either
-	// way. Logging only; the raw material for a later invoke/skip policy.
-	if s.EventBus != nil {
-		entities := 0
-		if scoutReport != nil {
-			entities = len(scoutReport.Entities)
-		}
-		replans := executor.ReplanCount()
-		_ = s.EventBus.Publish(domain.ScoutUsefulnessEvent{
-			SessionID:           string(sessionID),
-			ScoutRan:            scoutRan,
-			ScoutLatencyMs:      scoutLatencyMs,
-			DiscoveryEntities:   entities,
-			DiscoveryReferenced: domain.DiscoveryReferencedByPlan(scoutReport, plan),
-			PlanSteps:           len(plan.Steps),
-			ReplanCount:         replans,
-			Replanned:           replans > 0,
-		})
-	}
 
 	if err != nil {
 		var partialErr *executer.PartialPlanError
@@ -1102,22 +1050,9 @@ func (s *Server) thoughtFn(plan *domain.ExecutionPlan) executer.StepFunc {
 		var respStr string
 		var genErr error
 
-		if recommended := plan.Steps[i].RecommendedModel; recommended != "" && s.Provider != nil {
-			// ADR-0042: the step's recommended model is a prior; the Provider makes
-			// the final, health-guarded choice (failing over if it is unhealthy).
-			// Auction agent IDs are "llm:<id>"; strip the prefix to the generator id.
-			gen, acqErr := s.Provider.Acquire(ctx, domain.LLMRequest{
-				Purpose:          domain.PurposeAgentStep,
-				SuggestedModelID: strings.TrimPrefix(recommended, "llm:"),
-			})
-			if acqErr != nil {
-				respStr, genErr = s.Planner.Generate(ctx, prompt)
-			} else {
-				respStr, genErr = s.wrapGen(gen).Generate(ctx, prompt)
-			}
-		} else {
-			respStr, genErr = s.Planner.Generate(ctx, prompt)
-		}
+		// The model serving a thought step is the Provider's call, resolved from the
+		// declared need — no per-step model name travels on the plan any more.
+		respStr, genErr = s.Planner.Generate(ctx, prompt)
 
 		if genErr != nil {
 			return nil, genErr
@@ -1421,9 +1356,11 @@ func (s *Server) runFallback(
 	return nil, false
 }
 
-// handleMemoryBarrier ingests the step result into LTM. If kernelSync or
-// envMutation is set, ingestion is prioritised via a goroutine-isolated
-// IngestSync; otherwise the async path is used.
+// handleMemoryBarrier is a barrier SIGNAL only — it no longer ingests anything.
+// ADR-0049 D3 moved the step result onto RecordExecution (the `step_N:` fact) and
+// mutations onto synchronous `mnemonic_action` records, so re-ingesting here produced
+// a duplicate row. The former prioritised path went through IngestSync, which has since
+// been removed along with the rest of the LLM-importance write path.
 func (s *Server) handleMemoryBarrier(
 	stepCtx context.Context,
 	i int,

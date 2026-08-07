@@ -28,7 +28,6 @@ import (
 	"github.com/cambrian-sh/core/internal/centralexec"
 	corechat "github.com/cambrian-sh/core/internal/chat"
 	"github.com/cambrian-sh/core/internal/config"
-	"github.com/cambrian-sh/core/internal/discovery"
 	"github.com/cambrian-sh/core/internal/evidence"
 	"github.com/cambrian-sh/core/internal/health"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
@@ -301,7 +300,7 @@ func Run(ctx context.Context, opts Options) error {
 	// Resolve the config bundle against the binary, not just the cwd, so a kernel
 	// spawned from another directory (benchmark supervisor, systemd, IDE) still
 	// loads configs/ + .env — otherwise every layered override, including
-	// execution.scout_enabled, silently falls back to defaults (see ResolveBaseDir).
+	// nested execution overrides, silently falls back to defaults (see ResolveBaseDir).
 	baseDir := config.ResolveBaseDir()
 
 	// Load .env into the process environment before anything reads it, so API
@@ -332,7 +331,7 @@ func Run(ctx context.Context, opts Options) error {
 
 	// Anchor the remaining relative boot paths to the same base as the config
 	// bundle. Otherwise a kernel spawned from another cwd loads its config but
-	// then can't find agents_dir (no scout_agent → Scout dispatch degrades to
+	// then can't find agents_dir (no system agents → their dispatchers degrade to
 	// env-only) or writes data_dir under the wrong directory. When baseDir is "."
 	// (the normal in-tree launch) these are byte-for-byte no-ops.
 	if cfg.Metabolism.AgentsDir != "" && !filepath.IsAbs(cfg.Metabolism.AgentsDir) {
@@ -668,7 +667,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 	// ADR-0049 §A1.2: the MemoryAgent publishes passive world_delta drift signals when a
 	// read observes an entity field changed from its cached value (consumed by ADR-0051
-	// Scout staleness + deferred ADR-0037 adaptive trust).
+	// staleness + deferred ADR-0037 adaptive trust).
 	mem.Agent.EventBus = eventBus
 
 	// 4. Watcher — proactive signal processing (ADR-0009)
@@ -1109,7 +1108,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			slog.Default()),
 		Manager:    meta.Manager,
 		Auctioneer: meta.Auctioneer,
-		Memory:     mem.Agent,
 		Planner:    aw.Planner,
 		LLM:        aw.LLM,
 		WatchStore: reg,
@@ -1310,7 +1308,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// GenerateViaModelStream nil-checks the field before use.
 	cambrianServer.AgentCallLogger = opts.AgentCallLogger
 
-	// ADR-0042: agent-step (RecommendedModel) generations are Acquired from the
+	// ADR-0042: generations are Acquired from the
 	// Provider, which already applies the Langfuse trace wrapper — so GenWrapper is
 	// left nil to avoid double-tracing. (wrapGen is identity when GenWrapper is nil.)
 
@@ -1618,53 +1616,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Store: vec, Embedder: embedder, Floor: cfg.Execution.Tools.ToolRetrievalFloor,
 	}
 
-	// ADR-0079: the pre-plan Scout is DETERMINISTIC-FIRST — a registry of read-only probes
-	// (filesystem/system, plus opt-in http) runs on the hot path with NO LLM; the ADR-0051
-	// Python `run_think` scout is demoted to an opt-in tier (scout_llm_tier_enabled) layered
-	// on top. Wired only when scout_enabled is set (Off ⇒ Scout stays nil ⇒ one-shot planning).
-	if cfg.Execution.Scout.ScoutEnabled {
-		// ADR-0079 D2/D6: confine deterministic filesystem reads to an allowlist of roots
-		// (config, else the working directory). system source is local-only (no egress).
-		roots := cfg.Execution.Scout.ScoutDiscoveryRoots
-		if len(roots) == 0 {
-			if cwd, werr := os.Getwd(); werr == nil {
-				roots = []string{cwd}
-			}
-		}
-		discoverySources := []domain.DiscoverySource{
-			discovery.NewFilesystemSource(roots...),
-			&discovery.SystemSource{},
-		}
-		if cfg.Execution.Scout.ScoutHTTPProbeEnabled { // SSRF surface — opt-in (ADR-0079 D2)
-			discoverySources = append(discoverySources, discovery.NewHTTPSource(cfg.Execution.Scout.ScoutHTTPAllowPrivate))
-		}
-		cambrianServer.Scout = &subnetwork.AgentScoutDispatcher{
-			Auctioneer:     meta.Auctioneer,
-			ScoutAgentID:   "scout_agent",
-			Gateway:        llmGateway, // fallback-model allocation for the opt-in LLM tier
-			ScoutModel:     cfg.Execution.Scout.ScoutModel,
-			Registry:       discovery.NewRegistry(discoverySources...),
-			LLMTierEnabled: cfg.Execution.Scout.ScoutLLMTierEnabled,
-		}
-		// ADR-0051 D6: confine the scout_agent principal to the operator's `discovery-safe`
-		// tools — a hard ceiling that overrides tools_unrestricted (Scout fires unattended at
-		// plan time). Only set when configured, so dev (unrestricted) still works; unset ⇒
-		// Scout finds tools under unrestricted in dev, none in a default prod run (degrades).
-		if len(cfg.Execution.Tools.DiscoverySafeTools) > 0 {
-			safe := make(map[string]bool, len(cfg.Execution.Tools.DiscoverySafeTools))
-			for _, name := range cfg.Execution.Tools.DiscoverySafeTools {
-				safe[name] = true
-			}
-			cambrianServer.ToolExecutor.RestrictedTools = map[string]map[string]bool{"scout_agent": safe}
-		}
-		slog.Info("ADR-0079: pre-plan Scout ENABLED (deterministic-first discovery)",
-			"deterministic_sources", len(discoverySources), "llm_tier", cfg.Execution.Scout.ScoutLLMTierEnabled)
-	}
-
 	// AGENTIC_RETRIEVAL_SPEC Phase 2a: wire the LLM query-planner (retrieval_agent)
 	// as the QueryService's Planner — invoked directly via the Auctioneer (no
 	// auction) with a managed LLM session, the same privileged-organ + session
-	// pattern as the Scout. Default off; fail-open to the single pass when the
+	// privileged-organ pattern. Default off; fail-open to the single pass when the
 	// agent is unreachable or the config flag is unset.
 	if cfg.Execution.Retrieval.AgenticRetrievalEnabled {
 		mem.QueryService.EnableAgenticRetrieval(&subnetwork.RetrievalDispatcher{
@@ -1673,16 +1628,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			Gateway:    llmGateway,
 			Model:      cfg.Execution.Retrieval.AgenticPlannerModel, // "" ⇒ gateway default; a FAST model matters on the hot path
 		}, cfg.Execution.Retrieval.AgenticMaxHops)
-		mem.QueryService.SetHydeEnabled(cfg.Execution.Retrieval.HydeEnabled)
 		mem.QueryService.SetIrcotEnabled(cfg.Execution.Retrieval.AgenticIrcotEnabled)
 		mem.QueryService.SetDecomposeEnabled(cfg.Execution.Retrieval.AgenticDecomposeEnabled)
-		slog.Info("AGENTIC_RETRIEVAL_SPEC: agentic retrieval query-planner ENABLED (retrieval_agent)", "hyde", cfg.Execution.Retrieval.HydeEnabled, "ircot", cfg.Execution.Retrieval.AgenticIrcotEnabled, "decompose", cfg.Execution.Retrieval.AgenticDecomposeEnabled)
+		slog.Info("AGENTIC_RETRIEVAL_SPEC: agentic retrieval query-planner ENABLED (retrieval_agent)", "ircot", cfg.Execution.Retrieval.AgenticIrcotEnabled, "decompose", cfg.Execution.Retrieval.AgenticDecomposeEnabled)
 	}
 
 	// ADR-0053 D2 (revised): route write-time chunk-triplet extraction through the
 	// deterministic, NO-LLM kg_extractor system agent (metadata + spacy_patterns),
 	// invoked DIRECTLY via the Auctioneer (no auction) — the same privileged-organ
-	// pattern as the Scout. Off (default) ⇒ the batcher keeps its LLM extractor.
+	// privileged-organ pattern. Off (default) ⇒ the batcher keeps its LLM extractor.
 	// Injected before mem.Start so the swap is in place when the drain begins.
 	if cfg.Execution.Ingestion.KgExtractorEnabled && mem.ChunkTripletsBatcher != nil {
 		mem.ChunkTripletsBatcher.UseExtractor(&subnetwork.KgExtractorDispatcher{
@@ -2324,8 +2278,6 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			// + selection_boots, so a client can measure what a routing decision cost
 			// and compare the dispatch and auction arms.
 			"selection-cost",
-			// scout-usefulness: per-session ScoutUsefulnessOp on the feed (ROUTE-08 A).
-			"scout-usefulness",
 			// route-preview: PreviewRoute deterministic gatekeeper merit scoring (ROUTE-07).
 			"route-preview",
 			// document-read (contract 0086): GetDocument fetches one document by id,

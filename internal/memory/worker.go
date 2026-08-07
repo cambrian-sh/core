@@ -2,15 +2,13 @@ package memory
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
 
-// StartMemoryWorker begins background tasks for Memory Consolidation and Forgetfulness (Decay).
+// StartMemoryWorker begins the nightly background decay pass (Forgetfulness).
 // It blocks until ctx is cancelled.
 func (a *Agent) StartMemoryWorker(ctx context.Context, dryRun bool) error {
 	slog.Info("MemoryWorker starting", "dry_run", dryRun)
@@ -32,7 +30,7 @@ func (a *Agent) StartMemoryWorker(ctx context.Context, dryRun bool) error {
 			timer.Stop()
 			return nil
 		case <-timer.C:
-			slog.Info("MemoryWorker triggering nightly consolidation and decay")
+			slog.Info("MemoryWorker triggering nightly decay")
 			a.RunCleanupTask(ctx, dryRun)
 		}
 	}
@@ -57,87 +55,19 @@ func (a *Agent) RunCleanupTask(ctx context.Context, dryRun bool) {
 	processedIDs := make(map[string]bool)
 	var deletedCount int
 
+	// Every stale document goes through decay. The LLM CONSOLIDATION pass that used
+	// to run here for near-duplicate clusters was removed: it merged a cluster into a
+	// single unvalidated LLM summary and then DELETED the originals, so a bad summary
+	// permanently lost the sources, and nothing checked it. Decay is the conservative
+	// half — it deletes only what is both unreinforced and unread.
 	for _, doc := range staleDocs {
 		if processedIDs[doc.ID] {
 			continue
 		}
-
-		clusterRes, err := a.Manager.Query(ctx, doc.Text, 15)
-		if err != nil {
-			slog.Warn("MemoryWorker cluster lookup failed", "doc_id", doc.ID, "err", err)
-			continue
-		}
-
-		var cluster []domain.SearchResult
-		for _, c := range clusterRes {
-			if c.Score > 0.85 && !processedIDs[c.Document.ID] {
-				cluster = append(cluster, c)
-			}
-		}
-
-		if len(cluster) > 1 {
-			a.consolidateCluster(ctx, cluster, processedIDs, dryRun, &deletedCount)
-		} else {
-			a.decayLoner(ctx, doc, processedIDs, dryRun, &deletedCount)
-		}
+		a.decayLoner(ctx, doc, processedIDs, dryRun, &deletedCount)
 	}
 
 	slog.Info("MemoryWorker cleanup finished", "erased_vectors", deletedCount)
-}
-
-func (a *Agent) consolidateCluster(ctx context.Context, cluster []domain.SearchResult, processedIDs map[string]bool, dryRun bool, deletedCount *int) {
-	var notesB strings.Builder
-	var ids []string
-
-	for i, c := range cluster {
-		fmt.Fprintf(&notesB, "Note %d: %s\n", i+1, c.Document.Text)
-		ids = append(ids, c.Document.ID)
-		processedIDs[c.Document.ID] = true
-	}
-
-	prompt := domain.PromptBuild(
-		domain.PromptSystem(
-			"You are Cambrian's memory consolidation engine.",
-			"Resolve any conflicts between the notes, base your answer on the most recent decision.",
-		),
-		domain.PromptContext(notesB.String()),
-		domain.PromptTask("Produce a single concise technical summary of these notes."),
-		domain.PromptOutputSchemaString(500, "A single concise technical summary. No bullet points. No preamble."),
-	)
-
-	if dryRun {
-		slog.Info("MemoryWorker [dry-run] will merge vectors", "count", len(ids), "ids", ids)
-		*deletedCount += len(ids)
-		return
-	}
-
-	summary, err := a.LLMClient.Generate(ctx, prompt)
-	if err != nil {
-		slog.Error("MemoryWorker consolidation LLM failed", "err", err)
-		return
-	}
-
-	docID := fmt.Sprintf("mem-super-%d", time.Now().UnixNano())
-	newMem := &domain.Document{
-		ID:   docID,
-		Text: strings.TrimSpace(summary),
-		Metadata: map[string]interface{}{
-			"timestamp":    time.Now().Format(time.RFC3339),
-			"source_agent": "MemoryWorker",
-			"tags":         []string{"consolidated", "super-vector"},
-			"parent_ids":   ids,
-		},
-		ActivationStrength: 0.5,
-	}
-
-	if err := a.Manager.Ingest(ctx, newMem); err == nil {
-		if delErr := a.Manager.Store.DeleteBatch(ctx, ids); delErr != nil {
-			slog.Warn("MemoryWorker failed deleting merged vectors", "ids", ids, "err", delErr)
-		} else {
-			*deletedCount += len(ids)
-			slog.Info("MemoryWorker merged vectors", "count", len(ids), "super_id", docID)
-		}
-	}
 }
 
 func (a *Agent) decayLoner(ctx context.Context, doc domain.Document, processedIDs map[string]bool, dryRun bool, deletedCount *int) {

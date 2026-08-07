@@ -191,19 +191,6 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			ResponseChars: int32(e.ResponseChars),
 		}}
 
-	case domain.ScoutUsefulnessEvent:
-		out.SessionId = e.SessionID
-		out.Payload = &pb.OperatorEvent_ScoutUsefulness{ScoutUsefulness: &pb.ScoutUsefulnessOp{
-			SessionId:           e.SessionID,
-			ScoutRan:            e.ScoutRan,
-			ScoutLatencyMs:      e.ScoutLatencyMs,
-			DiscoveryEntities:   int32(e.DiscoveryEntities),
-			DiscoveryReferenced: e.DiscoveryReferenced,
-			PlanSteps:           int32(e.PlanSteps),
-			ReplanCount:         int32(e.ReplanCount),
-			Replanned:           e.Replanned,
-		}}
-
 	case domain.RetentionRunEvent:
 		// No SessionId: retention is a background pass, not session work. Leaving
 		// it empty is correct rather than lossy — attributing a deletion to whatever

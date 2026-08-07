@@ -55,7 +55,7 @@ func TestExtractQueryAnchors_NoAnchorFallback(t *testing.T) {
 func TestApplyAnchorConstraint_PromotesBuriedChunk(t *testing.T) {
 	st := newFakeChunkTripletsStore()
 	// gold carries the compound anchor for Chapter 1, scene 1 (subject = doc id).
-	_ = st.SaveChunkTriplets(context.Background(), "gold-1", []ChunkTriplet{
+	_ = st.SaveChunkTriplets(context.Background(), "gold-1", []domain.ChunkTriplet{
 		{H: "gold-1", R: "has_anchor", T: "chapter:1"},
 		{H: "gold-1", R: "has_anchor", T: "scene:1"},
 		{H: "gold-1", R: "has_anchor", T: "chapter_scene:1/1"},
@@ -85,12 +85,12 @@ func TestApplyAnchorConstraint_PromotesBuriedChunk(t *testing.T) {
 // broad chapter:1 atomic.
 func TestApplyAnchorConstraint_PrefersSpecific(t *testing.T) {
 	st := newFakeChunkTripletsStore()
-	_ = st.SaveChunkTriplets(context.Background(), "gold", []ChunkTriplet{
+	_ = st.SaveChunkTriplets(context.Background(), "gold", []domain.ChunkTriplet{
 		{H: "gold", R: "has_anchor", T: "chapter:1"},
 		{H: "gold", R: "has_anchor", T: "chapter_scene:1/1"},
 	})
 	// A sibling in the same chapter but a different scene: shares chapter:1 only.
-	_ = st.SaveChunkTriplets(context.Background(), "sibling", []ChunkTriplet{
+	_ = st.SaveChunkTriplets(context.Background(), "sibling", []domain.ChunkTriplet{
 		{H: "sibling", R: "has_anchor", T: "chapter:1"},
 		{H: "sibling", R: "has_anchor", T: "chapter_scene:1/2"},
 	})
@@ -108,8 +108,8 @@ func TestApplyAnchorConstraint_PrefersSpecific(t *testing.T) {
 func TestApplyAnchorConstraint_MultiHopTwoIds(t *testing.T) {
 	st := newFakeChunkTripletsStore()
 	id5, id15 := "tidebound-archive-chunk-5", "tidebound-archive-chunk-15"
-	_ = st.SaveChunkTriplets(context.Background(), id5, []ChunkTriplet{{H: id5, R: "has_anchor", T: "chapter:1"}})
-	_ = st.SaveChunkTriplets(context.Background(), id15, []ChunkTriplet{{H: id15, R: "has_anchor", T: "chapter:2"}})
+	_ = st.SaveChunkTriplets(context.Background(), id5, []domain.ChunkTriplet{{H: id5, R: "has_anchor", T: "chapter:1"}})
+	_ = st.SaveChunkTriplets(context.Background(), id15, []domain.ChunkTriplet{{H: id15, R: "has_anchor", T: "chapter:2"}})
 	vs := &fakeVecStore{docs: map[string]domain.Document{id5: {ID: id5}, id15: {ID: id15}}}
 	q := &QueryService{chunkTriplets: st, vectorStore: vs, anchorConstraint: true, kgPerEntity: 5, floor: 0.3}
 
@@ -132,7 +132,7 @@ func TestApplyAnchorConstraint_MultiHopTwoIds(t *testing.T) {
 
 func TestApplyAnchorConstraint_NoAnchorIsNoop(t *testing.T) {
 	st := newFakeChunkTripletsStore()
-	_ = st.SaveChunkTriplets(context.Background(), "x", []ChunkTriplet{{H: "x", R: "has_anchor", T: "chapter:1"}})
+	_ = st.SaveChunkTriplets(context.Background(), "x", []domain.ChunkTriplet{{H: "x", R: "has_anchor", T: "chapter:1"}})
 	vs := &fakeVecStore{docs: map[string]domain.Document{"x": {ID: "x"}}}
 	q := &QueryService{chunkTriplets: st, vectorStore: vs, anchorConstraint: true, kgPerEntity: 5, floor: 0.3}
 

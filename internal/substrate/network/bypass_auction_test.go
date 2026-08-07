@@ -12,11 +12,31 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// fakeAuctioneer is a minimal Auctioneer stand-in for the bypass path. It used to
+// live in the Scout dispatcher's test file; it was re-homed here when the Scout was
+// removed, because bypass_auction has always been its only other user.
+type fakeAuctioneer struct {
+	resp        *domain.Handoff
+	err         error
+	calledAgent string
+	gotHandoff  *domain.Handoff
+}
+
+func (f *fakeAuctioneer) Execute(_ context.Context, _ *domain.AuctionTask, _ *domain.Handoff) (*domain.AuctionResult, error) {
+	return nil, nil
+}
+
+func (f *fakeAuctioneer) CallAgent(_ context.Context, agentID string, h *domain.Handoff, _ string) (*domain.Handoff, error) {
+	f.calledAgent = agentID
+	f.gotHandoff = h
+	return f.resp, f.err
+}
+
 // ADR-0050 D1: bypass_auction dispatches the input verbatim to the configured
 // single agent, strips the benchmark's "/plan " routing prefix, and maps the
 // agent's handoff straight back to the caller.
 func TestExecute_BypassAuction_DispatchesToSingleAgent(t *testing.T) {
-	fake := &fakeScoutAuctioneer{
+	fake := &fakeAuctioneer{
 		resp: &domain.Handoff{
 			FromAgent: "",
 			Payload:   &domain.Payload{Data: []byte("the react answer")},
@@ -58,7 +78,7 @@ func TestExecute_BypassAuction_DispatchesToSingleAgent(t *testing.T) {
 
 func TestExecute_BypassAuction_RequiresSingleAgentID(t *testing.T) {
 	s := &Server{
-		Auctioneer: &fakeScoutAuctioneer{},
+		Auctioneer: &fakeAuctioneer{},
 		ExecCfg:    config.ExecutionConfig{Routing: config.RoutingConfig{BypassAuction: true}},
 	}
 	_, err := s.Execute(context.Background(), &pb.Handoff{

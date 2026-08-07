@@ -6,23 +6,6 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// TripletExtractor is the port the ChunkTripletsBatcher depends on to turn a
-// batch of chunk texts into per-chunk (h, r, t) triplets (ADR-0053 D2 revised).
-//
-// It has two adapters:
-//   - llmTripletExtractor  — the original write-time LLM extraction (residue tier).
-//   - the kg_extractor system agent dispatcher (internal/substrate/network) —
-//     the deterministic metadata + spacy_patterns tiers, injected in main.go.
-//
-// ExtractBatch returns one []ChunkTriplet per input text, positionally aligned
-// (texts[i] -> out[i]); a blank/failed position yields an empty slice. ids[i] is
-// the chunk's document id, positionally aligned with texts — the deterministic
-// adapter uses it to anchor structural (metadata) triplets to the real chunk;
-// the LLM adapter ignores it.
-type TripletExtractor interface {
-	ExtractBatch(ctx context.Context, texts []string, ids []string) [][]ChunkTriplet
-}
-
 // llmTripletExtractor is the original LLM-backed extractor (the Tier-3 residue
 // producer). It stamps every triplet sources={llm}, confidence=0 (filler) per
 // the ADR-0053 D2 (revised) scale — the LLM alone is the lowest-trust tier.
@@ -30,8 +13,8 @@ type llmTripletExtractor struct {
 	gen domain.Generator
 }
 
-func (e *llmTripletExtractor) ExtractBatch(ctx context.Context, texts []string, _ []string) [][]ChunkTriplet {
-	out := make([][]ChunkTriplet, len(texts))
+func (e *llmTripletExtractor) ExtractBatch(ctx context.Context, texts []string, _ []string) [][]domain.ChunkTriplet {
+	out := make([][]domain.ChunkTriplet, len(texts))
 	if e.gen == nil || len(texts) == 0 {
 		return out
 	}
@@ -75,7 +58,7 @@ func confPtr(v int) *int { return &v }
 
 // stampSource sets sources + confidence on every triplet that doesn't already
 // carry provenance (an adapter that already labelled its output is left alone).
-func stampSource(triplets []ChunkTriplet, source string, confidence int) []ChunkTriplet {
+func stampSource(triplets []domain.ChunkTriplet, source string, confidence int) []domain.ChunkTriplet {
 	for i := range triplets {
 		if len(triplets[i].Sources) == 0 {
 			triplets[i].Sources = []string{source}

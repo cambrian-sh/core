@@ -21,12 +21,12 @@ func sr(id string, raw float64) domain.SearchResult {
 func TestChunkCoherence_IslandSinks(t *testing.T) {
 	st := newFakeChunkTripletsStore()
 	for _, id := range []string{"a", "b", "c"} {
-		_ = st.SaveChunkTriplets(context.Background(), id, []ChunkTriplet{
+		_ = st.SaveChunkTriplets(context.Background(), id, []domain.ChunkTriplet{
 			{H: id, R: "dated at", T: "t26"},
 			{H: "melanie", R: "read", T: "book"},
 		})
 	}
-	_ = st.SaveChunkTriplets(context.Background(), "d", []ChunkTriplet{
+	_ = st.SaveChunkTriplets(context.Background(), "d", []domain.ChunkTriplet{
 		{H: "d", R: "dated at", T: "t44"},
 		{H: "tim", R: "read", T: "newspaper"},
 	})
@@ -52,11 +52,11 @@ func TestChunkCoherence_SeedAnchoredBeatsSize(t *testing.T) {
 	st := newFakeChunkTripletsStore()
 	// Relevant session: a high-cosine seed + the low-cosine gold, sharing the
 	// session timestamp and a rare speaker entity.
-	_ = st.SaveChunkTriplets(context.Background(), "seed", []ChunkTriplet{
+	_ = st.SaveChunkTriplets(context.Background(), "seed", []domain.ChunkTriplet{
 		{H: "seed", R: "dated at", T: "t26"},
 		{H: "melanie", R: "read", T: "book"},
 	})
-	_ = st.SaveChunkTriplets(context.Background(), "gold", []ChunkTriplet{
+	_ = st.SaveChunkTriplets(context.Background(), "gold", []domain.ChunkTriplet{
 		{H: "gold", R: "dated at", T: "t26"},
 		{H: "melanie", R: "recommended", T: "novel"},
 	})
@@ -64,7 +64,7 @@ func TestChunkCoherence_SeedAnchoredBeatsSize(t *testing.T) {
 	// timestamp — but none is a query-relevant seed.
 	big := []string{"x1", "x2", "x3", "x4", "x5"}
 	for _, id := range big {
-		_ = st.SaveChunkTriplets(context.Background(), id, []ChunkTriplet{
+		_ = st.SaveChunkTriplets(context.Background(), id, []domain.ChunkTriplet{
 			{H: id, R: "dated at", T: "t99"},
 			{H: "crowd", R: "at", T: "party"},
 		})
@@ -100,17 +100,17 @@ func TestChunkCoherence_NoSignalCases(t *testing.T) {
 		t.Fatalf("nil store must yield no signal, got %v", m)
 	}
 	st := newFakeChunkTripletsStore()
-	_ = st.SaveChunkTriplets(context.Background(), "a", []ChunkTriplet{{H: "x", R: "r", T: "y"}})
+	_ = st.SaveChunkTriplets(context.Background(), "a", []domain.ChunkTriplet{{H: "x", R: "r", T: "y"}})
 	if m := chunkCoherence(context.Background(), st, []domain.SearchResult{sr("a", 1)}, 10); len(m) != 0 {
 		t.Fatalf("single candidate must yield no signal, got %v", m)
 	}
 	// Two candidates that share an entity but NEITHER is a relevant seed (rel=0).
-	_ = st.SaveChunkTriplets(context.Background(), "b", []ChunkTriplet{{H: "x", R: "r", T: "y"}})
+	_ = st.SaveChunkTriplets(context.Background(), "b", []domain.ChunkTriplet{{H: "x", R: "r", T: "y"}})
 	if m := chunkCoherence(context.Background(), st, []domain.SearchResult{sr("a", 0), sr("b", 0)}, 10); len(m) != 0 {
 		t.Fatalf("no relevant seed must yield no signal, got %v", m)
 	}
 	// Two relevant seeds that share nothing ⇒ max raw is 0 ⇒ empty map.
-	_ = st.SaveChunkTriplets(context.Background(), "c", []ChunkTriplet{{H: "p", R: "r", T: "q"}})
+	_ = st.SaveChunkTriplets(context.Background(), "c", []domain.ChunkTriplet{{H: "p", R: "r", T: "q"}})
 	if m := chunkCoherence(context.Background(), st, []domain.SearchResult{sr("a", 1), sr("c", 1)}, 10); len(m) != 0 {
 		t.Fatalf("disjoint seeds must yield no signal, got %v", m)
 	}

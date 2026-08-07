@@ -115,7 +115,6 @@ func authoredStepsToDomain(in []*pb.AuthoredStepOp) []domain.Step {
 			RequiredCapabilities: a.GetRequiredCapabilities(),
 			DependsOn:            deps,
 			MaxEnergy:            a.GetMaxEnergy(),
-			RecommendedModel:     a.GetRecommendedModel(),
 			CheckpointAfter:      a.GetCheckpointAfter(),
 			CheckpointQuery:      a.GetCheckpointQuery(),
 			IsThought:            a.GetIsThought(),

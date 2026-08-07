@@ -2187,7 +2187,10 @@ message AuthoredStepOp {
   // depends_on holds ZERO-BASED indices into the submitted step list.
   repeated int32 depends_on = 3;
   double max_energy = 4;
-  string recommended_model = 5;
+  // DEPRECATED 2026-08-07 and no longer read. Model choice is the LLM Provider's,
+  // resolved from the declared need (ADR-0042 D1); a per-step model name on an
+  // authored plan overrode that decision. Field number retained, never reused.
+  string recommended_model = 5 [deprecated = true];
   bool   checkpoint_after = 6;
   string checkpoint_query = 7;
   bool   is_thought = 8;

@@ -49,12 +49,6 @@ const (
 	// emitted; there is no propagation or in-loop rescan. Durable raw material for
 	// deferred adaptive per-entity trust (ADR-0037 selection layer).
 	EventTypeWorldDelta = "world.delta"
-	// EventTypeScoutUsefulness reports, per session, whether the always-on Scout's
-	// pre-plan discovery actually earned its cost (ROUTE-08 phase A): was the
-	// <DiscoveryLTM> referenced by the plan, did the plan run without replan, and
-	// what did the Scout cost. Logging only — the raw material to later learn a
-	// self-regulation (invoke/skip) policy (phase B).
-	EventTypeScoutUsefulness = "scout.usefulness"
 	// EventTypeReactiveBudget reports that a reactive backpressure budget was
 	// exhausted and load is being shed. REACT-02 / ADR-0062.
 	EventTypeReactiveBudget = "reactive.budget"
@@ -506,36 +500,6 @@ func (e WatchTriggeredEvent) EventType() string {
 	}
 	return EventTypeWatchTriggered
 }
-
-// ScoutUsefulnessEvent is the ROUTE-08 phase-A per-session signal: did the
-// always-on Scout's pre-plan discovery pay for itself? Emitted once after
-// execution. Logging only (zero behavior change) — the training material for a
-// later invoke/skip policy (phase B).
-type ScoutUsefulnessEvent struct {
-	SessionID string
-	// ScoutRan is false when the Scout was disabled/absent or produced an empty
-	// (degrade-to-one-shot) report — the baseline the useful case is compared to.
-	ScoutRan bool
-	// ScoutLatencyMs is the wall-clock cost of the discovery pass (0 when it did
-	// not run).
-	ScoutLatencyMs int64
-	// DiscoveryEntities is how many structured observations the Scout returned.
-	DiscoveryEntities int
-	// DiscoveryReferenced is true when the emitted plan textually referenced the
-	// discovery (entity id/kind/summary token or an environment path) — the proxy
-	// for "the discovery changed the plan" (spec: string/citation overlap).
-	DiscoveryReferenced bool
-	// PlanSteps is the number of steps in the emitted plan.
-	PlanSteps int
-	// ReplanCount is how many times execution had to replan; Replanned is
-	// ReplanCount > 0. A plan that ran without replan is the "discovery was
-	// sufficient" success signal.
-	ReplanCount int
-	Replanned   bool
-}
-
-func (ScoutUsefulnessEvent) domainEvent()      {}
-func (ScoutUsefulnessEvent) EventType() string { return EventTypeScoutUsefulness }
 
 // RetentionDeletion is one category of thing a retention pass removed. Carried as
 // a list rather than as fixed fields because what a pass deletes differs per

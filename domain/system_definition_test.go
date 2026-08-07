@@ -15,8 +15,8 @@ func TestASystemGrantCountsAsMuchAsBeingNamedInTheMap(t *testing.T) {
 		t.Error("an explicit AddSystemAgent grant must confer system status, or a plugin's kernel organ gets interviewed and auctioned")
 	}
 	// And the ID route still works, so nothing compiled-in regressed.
-	if !IsSystemDefinition(AgentDefinition{ID: "scout_agent"}) {
-		t.Error("scout_agent lost system status")
+	if !IsSystemDefinition(AgentDefinition{ID: "retrieval_agent"}) {
+		t.Error("retrieval_agent lost system status")
 	}
 	// The grant is not retroactive to the ID map: an agent nobody granted and
 	// nobody named is ordinary, which is what keeps this from being a blanket.

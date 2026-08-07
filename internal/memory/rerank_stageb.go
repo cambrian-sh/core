@@ -20,7 +20,7 @@ const defaultRerankTopK = 50
 // relevance of each document to the query, returning one score per document in
 // input order. Implemented by network.RerankerDispatcher, which dispatches to the
 // warm `reranker_agent` system organ via the Auctioneer (no auction) — the same
-// privileged-organ pattern as the kg_extractor's TripletExtractor.
+// privileged-organ pattern as the kg_extractor's domain.TripletExtractor.
 //
 // Errors are the caller's signal to fail-soft: a down/erroring reranker leaves the
 // Stage-A ordering intact (retrieval never fails because the oracle is unreachable,

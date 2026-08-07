@@ -147,7 +147,6 @@ func domainStepsToAuthored(steps []domain.Step) []*pb.AuthoredStepOp {
 			RequiredCapabilities: st.RequiredCapabilities,
 			DependsOn:            deps,
 			MaxEnergy:            st.MaxEnergy,
-			RecommendedModel:     st.RecommendedModel,
 			CheckpointAfter:      st.CheckpointAfter,
 			CheckpointQuery:      st.CheckpointQuery,
 			IsThought:            st.IsThought,

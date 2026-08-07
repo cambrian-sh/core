@@ -58,7 +58,7 @@ func (im *IngestionManager) persistChunks(
 	// because its entity row could not be written would be a worse outcome than chunks
 	// with an unresolved parent, which still retrieve correctly.
 	if im.documentStore != nil {
-		stored, derr := im.documentStore.SaveDocument(ctx, SourceDocument{
+		stored, derr := im.documentStore.SaveDocument(ctx, domain.SourceDocument{
 			ID:         documentID,
 			Title:      doc.Title,
 			SourceType: doc.SourceType,

@@ -26,14 +26,13 @@ const (
 )
 
 type Step struct {
-	Query            string  `json:"query"`
-	DependsOn        []int   `json:"depends_on,omitempty"`
-	IsThought        bool    `json:"is_thought,omitempty"`
-	MaxEnergy        float64 `json:"max_energy,omitempty"`
-	RecommendedModel string  `json:"recommended_model,omitempty"`
-	CheckpointAfter  bool    `json:"checkpoint_after,omitempty"`
-	CheckpointQuery  string  `json:"checkpoint_query,omitempty"`
-	CacheTTLSeconds  int     `json:"cache_ttl_seconds,omitempty"`
+	Query           string  `json:"query"`
+	DependsOn       []int   `json:"depends_on,omitempty"`
+	IsThought       bool    `json:"is_thought,omitempty"`
+	MaxEnergy       float64 `json:"max_energy,omitempty"`
+	CheckpointAfter bool    `json:"checkpoint_after,omitempty"`
+	CheckpointQuery string  `json:"checkpoint_query,omitempty"`
+	CacheTTLSeconds int     `json:"cache_ttl_seconds,omitempty"`
 	// RequiredCapabilities is the ROUTE-03 capability contract: the capability
 	// tags a step needs its executor to declare, emitted by the planner from the
 	// live capability-cluster vocabulary. When non-empty AND the capability
@@ -109,14 +108,13 @@ func (e *ExecutionPlan) Clone() *ExecutionPlan {
 		cloned.Steps = make([]Step, len(e.Steps))
 		for i, s := range e.Steps {
 			cloned.Steps[i] = Step{
-				Query:            s.Query,
-				IsThought:        s.IsThought,
-				MaxEnergy:        s.MaxEnergy,
-				RecommendedModel: s.RecommendedModel,
-				CheckpointAfter:  s.CheckpointAfter,
-				CheckpointQuery:  s.CheckpointQuery,
-				CacheTTLSeconds:  s.CacheTTLSeconds,
-				FanOutVar:        s.FanOutVar,
+				Query:           s.Query,
+				IsThought:       s.IsThought,
+				MaxEnergy:       s.MaxEnergy,
+				CheckpointAfter: s.CheckpointAfter,
+				CheckpointQuery: s.CheckpointQuery,
+				CacheTTLSeconds: s.CacheTTLSeconds,
+				FanOutVar:       s.FanOutVar,
 				// This clone is field-by-field, so a field omitted here vanishes on
 				// every replan and plan freeze without a compiler error — the same
 				// silent-drop shape that made the EFE arm exempt from the capability

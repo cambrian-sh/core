@@ -269,12 +269,12 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (*PgVectorAdapt
 	return p, nil
 }
 
-// ChunkTripletsStore returns the adapter itself as a memory.ChunkTripletsStore.
+// ChunkTripletsStore returns the adapter itself as a domain.ChunkTripletsStore.
 // The pgvector adapter already implements the full ChunkTripletsStore
 // interface (ForChunk, ForChunks, ChunksMentioningEntity, SaveChunkTriplets);
 // this helper exists so external tools can grab the interface handle
 // without a type assertion. (ADR-0053 Phase 0.)
-func (p *PgVectorAdapter) ChunkTripletsStore() memory.ChunkTripletsStore { return p }
+func (p *PgVectorAdapter) ChunkTripletsStore() domain.ChunkTripletsStore { return p }
 
 func (p *PgVectorAdapter) Close() {
 	if p.pool != nil {
@@ -1192,7 +1192,7 @@ func (p *PgVectorAdapter) UpdateEdgeWeight(ctx context.Context, sourceID, target
 // SaveChunkTriplets persists a batch of (h, r, t) triplets for one chunk.
 // Idempotent on (chunk_id, h, r, t) — repeated inserts are no-ops via
 // ON CONFLICT DO NOTHING. Used by the LLM extraction at write time.
-func (p *PgVectorAdapter) SaveChunkTriplets(ctx context.Context, chunkID string, triplets []memory.ChunkTriplet) error {
+func (p *PgVectorAdapter) SaveChunkTriplets(ctx context.Context, chunkID string, triplets []domain.ChunkTriplet) error {
 	if chunkID == "" || len(triplets) == 0 {
 		return nil
 	}
@@ -1235,7 +1235,7 @@ func (p *PgVectorAdapter) SaveChunkTriplets(ctx context.Context, chunkID string,
 }
 
 // ForChunk returns the (h, r, t) triplets extracted from one chunk.
-func (p *PgVectorAdapter) ForChunk(ctx context.Context, chunkID string) ([]memory.ChunkTriplet, error) {
+func (p *PgVectorAdapter) ForChunk(ctx context.Context, chunkID string) ([]domain.ChunkTriplet, error) {
 	if chunkID == "" {
 		return nil, nil
 	}
@@ -1247,9 +1247,9 @@ func (p *PgVectorAdapter) ForChunk(ctx context.Context, chunkID string) ([]memor
 
 // ForChunks returns the triplets for many chunks, keyed by chunk ID.
 // One query; cheaper than N round-trips.
-func (p *PgVectorAdapter) ForChunks(ctx context.Context, chunkIDs []string) (map[string][]memory.ChunkTriplet, error) {
+func (p *PgVectorAdapter) ForChunks(ctx context.Context, chunkIDs []string) (map[string][]domain.ChunkTriplet, error) {
 	if len(chunkIDs) == 0 {
-		return map[string][]memory.ChunkTriplet{}, nil
+		return map[string][]domain.ChunkTriplet{}, nil
 	}
 	sql, args, _ := dialect.From(TableChunkTriplets).
 		Select("chunk_id", "h", "r", "t", "weight").
@@ -1259,7 +1259,7 @@ func (p *PgVectorAdapter) ForChunks(ctx context.Context, chunkIDs []string) (map
 		return nil, mapError("GetChunkTripletsBatch", err)
 	}
 	defer rows.Close()
-	out := make(map[string][]memory.ChunkTriplet, len(chunkIDs))
+	out := make(map[string][]domain.ChunkTriplet, len(chunkIDs))
 	for rows.Next() {
 		var (
 			cid, h, r, t string
@@ -1268,7 +1268,7 @@ func (p *PgVectorAdapter) ForChunks(ctx context.Context, chunkIDs []string) (map
 		if err := rows.Scan(&cid, &h, &r, &t, &w); err != nil {
 			return nil, mapError("ScanChunkTriplets", err)
 		}
-		out[cid] = append(out[cid], memory.ChunkTriplet{H: h, R: r, T: t, Weight: w})
+		out[cid] = append(out[cid], domain.ChunkTriplet{H: h, R: r, T: t, Weight: w})
 	}
 	return out, rows.Err()
 }
@@ -1336,20 +1336,20 @@ func (p *PgVectorAdapter) ChunksMentioningEntity(ctx context.Context, entity str
 	return out, rows.Err()
 }
 
-func (p *PgVectorAdapter) queryChunkTriplets(ctx context.Context, sql string, args ...any) ([]memory.ChunkTriplet, error) {
+func (p *PgVectorAdapter) queryChunkTriplets(ctx context.Context, sql string, args ...any) ([]domain.ChunkTriplet, error) {
 	rows, err := p.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, mapError("queryChunkTriplets", err)
 	}
 	defer rows.Close()
-	var out []memory.ChunkTriplet
+	var out []domain.ChunkTriplet
 	for rows.Next() {
 		var h, r, t string
 		var w float64
 		if err := rows.Scan(&h, &r, &t, &w); err != nil {
 			return nil, mapError("ScanChunkTriplet", err)
 		}
-		out = append(out, memory.ChunkTriplet{H: h, R: r, T: t, Weight: w})
+		out = append(out, domain.ChunkTriplet{H: h, R: r, T: t, Weight: w})
 	}
 	return out, rows.Err()
 }

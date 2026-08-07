@@ -129,7 +129,7 @@ func (w *WorkspaceStageImpl) PrimeForPlanning(ctx context.Context, taskQuery str
 		}()
 	}
 
-	facts, err := w.enrich(ctx, taskQuery, w.PlanningSlots, true, "planning")
+	facts, err := w.enrich(ctx, taskQuery, w.PlanningSlots, "planning")
 	if err != nil {
 		return domain.LTMEnrichment{}, err
 	}
@@ -182,7 +182,7 @@ func (w *WorkspaceStageImpl) PrimeForExecution(ctx context.Context, plan *domain
 	if query == "" && len(plan.Steps) > 0 {
 		query = plan.Steps[0].Query
 	}
-	results, err := w.enrich(ctx, query, w.ExecutionSlots, false, "execution")
+	results, err := w.enrich(ctx, query, w.ExecutionSlots, "execution")
 	if err != nil {
 		return map[string]string{}, err
 	}
@@ -194,16 +194,12 @@ func resultsToMap(results []domain.SearchResult) map[string]string {
 	m := make(map[string]string, len(results))
 	for i, r := range results {
 		key := fmt.Sprintf("ltm_fact_%d", i)
-		val := r.Document.Text
-		if tag, ok := r.Document.Metadata["conflict_tag"].(string); ok {
-			val = tag + " " + val
-		}
-		m[key] = val
+		m[key] = r.Document.Text
 	}
 	return m
 }
 
-func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int, applyContradiction bool, caller string) ([]domain.SearchResult, error) {
+func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int, caller string) ([]domain.SearchResult, error) {
 	// 1. Embed raw query.
 	rawVec, err := w.Embedder.Embed(ctx, query)
 	if err != nil {
@@ -326,11 +322,6 @@ func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int
 			"workspace_slots_truncated", true, "available_docs", len(results), "slots", slots, "caller", caller)
 	}
 
-	// 7. Contradiction guard (PrimeForPlanning only).
-	if applyContradiction {
-		w.applyContradictionGuard(ctx, results)
-	}
-
 	// ADR-0021: Log retrieval session for deferred LTR / nDCG@K data collection.
 	if w.RetrievalSessionLogger != nil {
 		retrievedDocs := make([]domain.RetrievedDoc, len(results))
@@ -377,51 +368,6 @@ func isToolOutputDoc(d domain.Document) bool {
 	}
 	src, _ := d.Metadata["source_agent"].(string)
 	return src == "ToolOutput"
-}
-
-func (w *WorkspaceStageImpl) applyContradictionGuard(ctx context.Context, results []domain.SearchResult) {
-	if len(results) < 2 || w.Generator == nil {
-		return
-	}
-
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			a := results[i].Document
-			b := results[j].Document
-			// A tool-output record is an EVENT breadcrumb (e.g. "wrote file X", "appended
-			// 19 B"), not a knowledge claim — two of them can't meaningfully contradict,
-			// yet near-identical JSON blobs always clear the similarity gate and burn an
-			// LLM call per pair every planning round. Skip them (the real fix is to stop
-			// misrouting side-effecting tool outputs into the fact lane).
-			if isToolOutputDoc(a) || isToolOutputDoc(b) {
-				continue
-			}
-			if len(a.Embedding.Vector) == 0 || len(b.Embedding.Vector) == 0 {
-				continue
-			}
-			sim := cosineSimilarity(a.Embedding.Vector, b.Embedding.Vector)
-			if sim > 0.85 && w.Generator != nil {
-				prompt := domain.PromptBuild(
-					domain.PromptSystem(
-						"You are a semantic contradiction detector.",
-						"Respond with AGREE if the two statements are consistent, CONFLICT if they contradict each other.",
-					),
-					domain.PromptContext(fmt.Sprintf("A: %s\nB: %s", a.Text, b.Text)),
-					domain.PromptTask("Do these two statements agree or conflict?"),
-					domain.PromptOutputSchemaEnum("AGREE", "CONFLICT"),
-				)
-				resp, err := w.Generator.Generate(ctx, prompt)
-				if err != nil {
-					continue
-				}
-				if resp == "CONFLICT" {
-					tag := fmt.Sprintf("[CONFLICT: %s vs %s]", a.ID, b.ID)
-					results[i].Document.Metadata["conflict_tag"] = tag
-					results[j].Document.Metadata["conflict_tag"] = tag
-				}
-			}
-		}
-	}
 }
 
 // blendEmbeddings creates a simple mean of two embeddings.

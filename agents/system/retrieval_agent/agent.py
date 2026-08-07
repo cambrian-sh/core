@@ -96,9 +96,6 @@ class RetrievalAgent(CognitiveAgent):
             chunks = obj.get("chunks") if isinstance(obj.get("chunks"), list) else []
             ans = planner.answer_subquestion(str(obj.get("subq", "")), chunks, llm)
             return self._ok({"answer": ans})
-        if op == "hyde":
-            llm = self._make_llm(task, _PLAN_MAX_TOKENS)
-            return self._ok({"passage": planner.hyde_passage(str(obj.get("query", "")), llm)})
         if op == "extract_provenance":
             llm = self._make_llm(task, _PLAN_MAX_TOKENS)
             return self._ok(

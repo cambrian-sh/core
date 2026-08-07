@@ -41,12 +41,12 @@ type streamingGenerator interface {
 // is already saved upstream — see ingest paths).
 type ChunkTripletsBatcher struct {
 	gen   domain.Generator
-	store ChunkTripletsStore
+	store domain.ChunkTripletsStore
 	// extractor is the triplet-extraction port (ADR-0053 D2 revised). Defaults
 	// to the LLM adapter; main.go swaps in the kg_extractor system-agent adapter
 	// when the deterministic tiered pipeline is enabled. The batching/persistence
 	// machinery is unchanged — only the producer of triplets differs.
-	extractor TripletExtractor
+	extractor domain.TripletExtractor
 
 	queue   chan *domain.Document
 	pending []*domain.Document
@@ -78,7 +78,7 @@ type ChunkTripletsBatcherConfig struct {
 
 // NewChunkTripletsBatcher builds the batcher but does NOT start the drain
 // goroutine. Call Start(ctx) to begin processing.
-func NewChunkTripletsBatcher(gen domain.Generator, store ChunkTripletsStore, cfg ChunkTripletsBatcherConfig) *ChunkTripletsBatcher {
+func NewChunkTripletsBatcher(gen domain.Generator, store domain.ChunkTripletsStore, cfg ChunkTripletsBatcherConfig) *ChunkTripletsBatcher {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 4096
 	}
@@ -108,7 +108,7 @@ func NewChunkTripletsBatcher(gen domain.Generator, store ChunkTripletsStore, cfg
 // before Start. nil is ignored (keeps the default LLM extractor). This is how
 // main.go injects the kg_extractor system-agent (metadata + spacy_patterns)
 // adapter onto the ingest hot path.
-func (b *ChunkTripletsBatcher) UseExtractor(e TripletExtractor) {
+func (b *ChunkTripletsBatcher) UseExtractor(e domain.TripletExtractor) {
 	if b == nil || e == nil {
 		return
 	}
@@ -392,8 +392,8 @@ func (e *tripletsStreamError) Error() string { return e.msg }
 //
 // The LLM may ramble or use a slightly different prefix; we use a permissive
 // regex.
-func parseBatchedTripletResponse(resp string, n int) [][]ChunkTriplet {
-	out := make([][]ChunkTriplet, n)
+func parseBatchedTripletResponse(resp string, n int) [][]domain.ChunkTriplet {
+	out := make([][]domain.ChunkTriplet, n)
 	// Split on "Triplets <i>:" prefixes. We look for the marker; if the LLM
 	// wrote something else (e.g. "Triplets for text 1:") we still try.
 	type segment struct {

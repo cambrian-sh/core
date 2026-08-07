@@ -10,11 +10,11 @@ import (
 
 // recordingDocStore captures what actually reached the store.
 type recordingDocStore struct {
-	got   SourceDocument
+	got   domain.SourceDocument
 	calls int
 }
 
-func (r *recordingDocStore) SaveDocument(_ context.Context, d SourceDocument) ([]string, error) {
+func (r *recordingDocStore) SaveDocument(_ context.Context, d domain.SourceDocument) ([]string, error) {
 	r.got = d
 	r.calls++
 	return d.Tags, nil
@@ -42,7 +42,7 @@ func TestEnforcingDocumentStore_DecisionPointOverridesRequestedTags(t *testing.T
 	inner := &recordingDocStore{}
 	w := NewEnforcingDocumentStore(inner, narrowingAuthorizer{classification: []string{"support"}}, nil)
 
-	stored, err := w.SaveDocument(context.Background(), SourceDocument{
+	stored, err := w.SaveDocument(context.Background(), domain.SourceDocument{
 		ID: "doc-a", Tags: []string{"public", "airline"},
 	})
 	if err != nil {
@@ -65,7 +65,7 @@ func TestEnforcingDocumentStore_DeniedWriteNeverReachesTheStore(t *testing.T) {
 	inner := &recordingDocStore{}
 	w := NewEnforcingDocumentStore(inner, narrowingAuthorizer{deny: true}, nil)
 
-	_, err := w.SaveDocument(context.Background(), SourceDocument{ID: "doc-a", Tags: []string{"x"}})
+	_, err := w.SaveDocument(context.Background(), domain.SourceDocument{ID: "doc-a", Tags: []string{"x"}})
 	if !errors.Is(err, ErrDocumentWriteDenied) {
 		t.Fatalf("want ErrDocumentWriteDenied, got %v", err)
 	}
@@ -80,7 +80,7 @@ func TestEnforcingDocumentStore_NilAuthorizerFailsOpen(t *testing.T) {
 	inner := &recordingDocStore{}
 	w := NewEnforcingDocumentStore(inner, nil, nil)
 
-	if _, err := w.SaveDocument(context.Background(), SourceDocument{
+	if _, err := w.SaveDocument(context.Background(), domain.SourceDocument{
 		ID: "doc-a", Tags: []string{"public"},
 	}); err != nil {
 		t.Fatalf("SaveDocument: %v", err)

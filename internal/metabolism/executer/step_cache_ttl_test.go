@@ -29,14 +29,6 @@ func TestResolveCacheTTL_CodeGenKeywords_Zero(t *testing.T) {
 	}
 }
 
-// Cycle 3 — RecommendedModel set → 24 hours.
-func TestResolveCacheTTL_RecommendedModel_TwentyFourHours(t *testing.T) {
-	s := domain.Step{RecommendedModel: "claude-opus-4-5"}
-	if got := resolveCacheTTL(s, nil); got != 24*time.Hour {
-		t.Errorf("expected 24h for cognitive step, got %v", got)
-	}
-}
-
 // Cycle 4 — default (tool/data step) → 7 days.
 func TestResolveCacheTTL_Default_SevenDays(t *testing.T) {
 	s := domain.Step{Query: "read data/users.csv and return row count"}
@@ -53,13 +45,5 @@ func TestResolveCacheTTL_ExplicitTTL_Wins(t *testing.T) {
 	}
 	if got := resolveCacheTTL(s, nil); got != time.Hour {
 		t.Errorf("expected explicit 1h TTL to win over heuristic, got %v", got)
-	}
-}
-
-// Cycle 6 — IsThought takes priority over RecommendedModel.
-func TestResolveCacheTTL_ThoughtBeatsRecommendedModel(t *testing.T) {
-	s := domain.Step{IsThought: true, RecommendedModel: "claude-opus-4-5"}
-	if got := resolveCacheTTL(s, nil); got != time.Hour {
-		t.Errorf("IsThought should yield 1h even when RecommendedModel is set, got %v", got)
 	}
 }
