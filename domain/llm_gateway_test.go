@@ -126,9 +126,9 @@ func TestTaskEvent_GatewayFields(t *testing.T) {
 }
 
 func TestAuctionResult_StepAllocation_NilSafe(t *testing.T) {
-	ar := domain.AuctionResult{}
+	ar := domain.DispatchResult{}
 	if ar.StepAllocation != nil {
-		t.Errorf("AuctionResult.StepAllocation zero value = %v, want nil", ar.StepAllocation)
+		t.Errorf("DispatchResult.StepAllocation zero value = %v, want nil", ar.StepAllocation)
 	}
 	sa := domain.StepAllocation{
 		Winner: domain.AgentDefinition{ID: "winner"},

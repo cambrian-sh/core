@@ -63,7 +63,7 @@ const (
 )
 
 // Dispatcher selects and invokes the executor for one step. It satisfies
-// domain.Auctioneer so it is a drop-in at the DAG call site.
+// domain.StepDispatcher so it is a drop-in at the DAG call site.
 type Dispatcher struct {
 	Gatekeeper domain.Gatekeeper
 	Caller     AgentCaller
@@ -104,7 +104,7 @@ func (d *Dispatcher) randIntn(n int) int {
 	return rand.Intn(n)
 }
 
-func (d *Dispatcher) emit(ev domain.AuctionEventPayload) {
+func (d *Dispatcher) emit(ev domain.SelectionEventPayload) {
 	if d.EventBus == nil {
 		return
 	}
@@ -112,7 +112,7 @@ func (d *Dispatcher) emit(ev domain.AuctionEventPayload) {
 }
 
 // Execute runs the full dispatch pipeline: Gatekeeper → select → CallAgent.
-func (d *Dispatcher) Execute(ctx context.Context, task *domain.AuctionTask, in *domain.Handoff) (*domain.AuctionResult, error) {
+func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in *domain.Handoff) (*domain.DispatchResult, error) {
 	// ADR-0100 P2 instrumentation: the selection decision only — the winner's
 	// execution is deliberately outside the window.
 	selStart := time.Now()
@@ -136,7 +136,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.AuctionTask, in *
 		// this is the failure mode that used to die as a generic "no candidates".
 		var noMatch *domain.NoCapabilityMatchError
 		if errors.As(err, &noMatch) {
-			d.emit(domain.AuctionEventPayload{
+			d.emit(domain.SelectionEventPayload{
 				TaskID:   task.ID,
 				TaskDesc: task.Description,
 				Status:   "failed",
@@ -151,7 +151,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.AuctionTask, in *
 		return nil, fmt.Errorf("gatekeeper failed: %w", err)
 	}
 
-	d.emit(domain.AuctionEventPayload{
+	d.emit(domain.SelectionEventPayload{
 		TaskID:   task.ID,
 		TaskDesc: task.Description,
 		Status:   "started",
@@ -162,7 +162,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.AuctionTask, in *
 		// proposals"; here it is named for what it is. The D5 resolution ladder
 		// (alias map → generalist tier) lands in P1 — until then this is a hard,
 		// loud failure rather than a silent misroute.
-		d.emit(domain.AuctionEventPayload{
+		d.emit(domain.SelectionEventPayload{
 			TaskID:   task.ID,
 			TaskDesc: task.Description,
 			Status:   "failed",
@@ -182,11 +182,11 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.AuctionTask, in *
 	// orchestration suite scores routing accuracy identically across both arms.
 	// Confidence carries the MERIT score, not a bid — labelled in Rationale so
 	// the two arms are never confused when the numbers are compared.
-	bids := make([]domain.BidEntry, 0, len(scored))
+	bids := make([]domain.CandidateEntry, 0, len(scored))
 	for _, sc := range scored {
 		// IsTool is deliberately left false: it recorded the static-bidder path
 		// (deprecated with TraitTool), and dispatch solicits no bids at all.
-		bids = append(bids, domain.BidEntry{
+		bids = append(bids, domain.CandidateEntry{
 			AgentID:    sc.Agent.ID,
 			Confidence: float32(sc.Score),
 			Rationale:  "merit-rank (dispatch: no bid solicited)",
@@ -194,7 +194,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.AuctionTask, in *
 	}
 
 	selMs, selBoots := selectionCost()
-	d.emit(domain.AuctionEventPayload{
+	d.emit(domain.SelectionEventPayload{
 		TaskID:             task.ID,
 		TaskDesc:           task.Description,
 		Status:             "completed",
@@ -237,10 +237,10 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.AuctionTask, in *
 	resp, err := d.Caller.CallAgent(ctx, winner.Agent.ID, in, "")
 	if err != nil {
 		in.Context["_winning_agent_id"] = winner.Agent.ID
-		return &domain.AuctionResult{Confidence: winner.Score, RunnerUps: runnerUps}, err
+		return &domain.DispatchResult{Confidence: winner.Score, RunnerUps: runnerUps}, err
 	}
 
-	return &domain.AuctionResult{
+	return &domain.DispatchResult{
 		Handoff:        resp,
 		Confidence:     winner.Score,
 		RunnerUps:      runnerUps,
@@ -256,7 +256,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.AuctionTask, in *
 // guesses wrong. The step itself already says which regime it is in — a cheap
 // step whose result will be verified can afford to try the cheap agent, because
 // the checkpoint catches a bad answer and escalation is affordable.
-func (d *Dispatcher) selectWinner(ctx context.Context, task *domain.AuctionTask, scored []domain.ScoredCandidate) (domain.ScoredCandidate, string) {
+func (d *Dispatcher) selectWinner(ctx context.Context, task *domain.DispatchTask, scored []domain.ScoredCandidate) (domain.ScoredCandidate, string) {
 	if len(scored) == 1 {
 		return scored[0], ReasonSoleCandidate
 	}
@@ -280,7 +280,7 @@ func (d *Dispatcher) selectWinner(ctx context.Context, task *domain.AuctionTask,
 // cheapest competent agent is the right bet: its output will be checked, and its
 // energy budget marks it as cheap. A step with no declared budget (MaxEnergy 0)
 // is NOT treated as cheap — absence of a budget is not a claim of cheapness.
-func (d *Dispatcher) cheapAndVerified(task *domain.AuctionTask) bool {
+func (d *Dispatcher) cheapAndVerified(task *domain.DispatchTask) bool {
 	if !task.CheckpointAfter {
 		return false
 	}
@@ -375,7 +375,7 @@ func (d *Dispatcher) selectModelCandidates(ctx context.Context, winnerAgentID st
 	return sa
 }
 
-// CallAgent satisfies domain.Auctioneer by delegating to the shared caller.
+// CallAgent satisfies domain.StepDispatcher by delegating to the shared caller.
 func (d *Dispatcher) CallAgent(ctx context.Context, agentID string, handoff *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error) {
 	return d.Caller.CallAgent(ctx, agentID, handoff, excludeInstanceID)
 }

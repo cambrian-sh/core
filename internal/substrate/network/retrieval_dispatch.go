@@ -31,10 +31,10 @@ const (
 // returns ("", nil) or ("", err); memory.QueryService.planQuery treats both as
 // "use the original query", so recall is never worse than the single pass.
 type RetrievalDispatcher struct {
-	Auctioneer domain.Auctioneer
-	AgentID    string // default "retrieval_agent"
-	Gateway    LLMGateway
-	Model      string // planner model id; "" ⇒ gateway default
+	Caller  domain.AgentCaller
+	AgentID string // default "retrieval_agent"
+	Gateway LLMGateway
+	Model   string // planner model id; "" ⇒ gateway default
 }
 
 var _ memory.Planner = (*RetrievalDispatcher)(nil)
@@ -75,7 +75,7 @@ type answerSubqRequest struct {
 // (mirrors scout_dispatch: acquire → inject _session_token_id → CallAgent →
 // Complete). Returns the agent's raw response bytes, or (nil, err) fail-open.
 func (d *RetrievalDispatcher) call(ctx context.Context, reqData []byte) ([]byte, error) {
-	if d == nil || d.Auctioneer == nil {
+	if d == nil || d.Caller == nil {
 		return nil, nil
 	}
 	agentID := d.AgentID
@@ -99,7 +99,7 @@ func (d *RetrievalDispatcher) call(ctx context.Context, reqData []byte) ([]byte,
 			defer func() { _, _ = d.Gateway.Complete(ctx, tokenID) }()
 		}
 	}
-	resp, err := d.Auctioneer.CallAgent(ctx, agentID, h, "")
+	resp, err := d.Caller.CallAgent(ctx, agentID, h, "")
 	if err != nil || resp == nil || resp.Payload == nil || len(resp.Payload.Data) == 0 {
 		slog.DebugContext(ctx, "retrieval dispatch: no response; fail-open", "err", err)
 		return nil, err

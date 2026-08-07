@@ -9,8 +9,10 @@ seam" below.)*
 
 - **Strict hexagonal architecture.** The domain core is isolated behind ports; adapters
   (Postgres, gRPC, LLM providers, BBolt, MCP) live at the edges. No business logic in adapters.
-- **The Auction model.** Work is not hard-routed to agents. Agents *bid* on tasks; the
-  Gatekeeper filters candidates and the Auctioneer selects winners on merit.
+- **Capability-typed dispatch.** Work is not hard-routed to agents, and it is no longer
+  bid on either. The Gatekeeper filters candidates by declared capability and ranks them on
+  merit; the `Dispatcher` picks the winner and calls it. Selection costs zero RPCs, zero LLM
+  calls and boots only the winner. The auction it replaced is gone (ADR-0100).
 - **Zero-Hardcode Rule.** Agent-to-task routing must never be a Go `if/else`/`switch` — it
   lives in the Awareness (LLM) layer. (Deterministic exceptions: system-shell and the
   reflexive path, for safety/latency.)
@@ -19,12 +21,13 @@ seam" below.)*
 
 | Path | Role |
 |---|---|
-| `domain/` | Pure domain types & ports (public, importable). The lingua franca: `Handoff`, `Signal`, `ExecutionPlan`, `Auctioneer`, `SignalReceiver`, … |
+| `domain/` | Pure domain types & ports (public, importable). The lingua franca: `Handoff`, `Signal`, `ExecutionPlan`, `StepDispatcher`, `AgentCaller`, `SignalReceiver`, … |
 | `app/` | **Composition root** — `app.Run(ctx, opts)` wires every subsystem. `app.Options` is the extension seam. |
 | `cmd/orchestrator/` | Thin `main` shell over `app.Run`. |
 | `internal/kernel/` | Subsystem assembly (`ProvideServer`, the domain "stacks"). |
 | `internal/awareness/` | Planner / Cortex — produces `ExecutionPlan`s (the LLM reasoning layer). |
-| `internal/metabolism/` | Auctioneer, AgentManager, Gatekeeper, verifier pool — the bidding/selection machinery. |
+| `internal/metabolism/` | Dispatcher, AgentManager, verifier pool — the selection machinery. |
+| `internal/agentplane/` | `Transport` — the kernel's client side of the agent plane: the gRPC connection pool plus the typed calls over it (execute, verify, propose). No selection. |
 | `internal/memory/` | LTM: pgvector store, hippocampus, KG²RAG retrieval, scene/edge writers. |
 | `internal/supervision/` | Watcher, circadian/lifecycle, signal validation. |
 | `internal/substrate/` | gRPC server (`network`), session, operator plane, synaptic event log. |
@@ -36,8 +39,9 @@ seam" below.)*
 
 1. A client opens a `ChatStream` to the gRPC **Server** (`internal/substrate/network`).
 2. The **Router** classifies input; the **Planner** (Awareness) produces an `ExecutionPlan`.
-3. The **DAG executor** runs steps; for each step the **Gatekeeper → Auctioneer** select an
-   agent by bid/merit (the Auction model).
+3. The **DAG executor** runs steps; for each step the **Gatekeeper → Dispatcher** select an
+   agent by declared capability then merit rank, and call it through the agent-plane
+   `Transport`.
 4. **Memory** enriches context (LTM retrieval) and records outcomes; the **Watcher**
    handles passive signal enrichment.
 

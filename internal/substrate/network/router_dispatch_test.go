@@ -58,7 +58,7 @@ func serverWithRouter(r domain.InputRouter) *Server {
 		Router:     r,
 		Planner:    &stubPlanner{},
 		ExecCfg:    tokenTestExecCfg(),
-		Auctioneer: &capturingAuctioneer{},
+		Dispatcher: &capturingAuctioneer{},
 	}
 	return s
 }

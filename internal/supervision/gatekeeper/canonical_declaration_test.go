@@ -10,7 +10,7 @@ import (
 // satisfies a required one; under canonical=false (ROUTE-03 verbatim) it does not.
 func TestPassesDeclaration_Canonical_FoldsFormatVariance(t *testing.T) {
 	manifest := &domain.AgentManifest{Capabilities: []string{"Web_Navigation"}}
-	task := &domain.AuctionTask{RequiredCapabilities: []string{"web-navigation"}}
+	task := &domain.DispatchTask{RequiredCapabilities: []string{"web-navigation"}}
 
 	if PassesDeclaration(manifest, task, false) {
 		t.Fatal("verbatim (canonical=false): Web_Navigation must NOT satisfy web-navigation")
@@ -24,7 +24,7 @@ func TestPassesDeclaration_Canonical_FoldsFormatVariance(t *testing.T) {
 // fails the gate.
 func TestPassesDeclaration_Canonical_NoWrongMerge(t *testing.T) {
 	manifest := &domain.AgentManifest{Capabilities: []string{"file-write"}}
-	task := &domain.AuctionTask{RequiredCapabilities: []string{"file-read"}}
+	task := &domain.DispatchTask{RequiredCapabilities: []string{"file-read"}}
 	if PassesDeclaration(manifest, task, true) {
 		t.Fatal("file-write must NOT satisfy file-read even under canonicalization")
 	}

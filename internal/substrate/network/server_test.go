@@ -12,7 +12,7 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/metabolism"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
-	metauc "github.com/cambrian-sh/core/internal/metabolism/auctioneer"
+	"github.com/cambrian-sh/core/internal/metabolism/dispatch"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	supgk "github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 )
@@ -309,6 +309,13 @@ func TestPartialPlanError_RepackHandlesEmptyContext(t *testing.T) {
 // Inter-step fallback tests
 // ============================================================
 
+// callerFunc lets a test closure satisfy dispatch.AgentCaller.
+type callerFunc func(ctx context.Context, agentID string, h *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error)
+
+func (f callerFunc) CallAgent(ctx context.Context, agentID string, h *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error) {
+	return f(ctx, agentID, h, excludeInstanceID)
+}
+
 func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
 	reg := metabolism.NewInMemoryRegistry()
 	reg.SetAgent(domain.AgentDefinition{
@@ -333,39 +340,25 @@ func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
 			GatekeeperW3:            0.2,
 		},
 	})
-	auctioneer := metauc.New(mgr, gk, config.ExecutionConfig{
-		Plan: config.PlanConfig{
-			FallbackEnabled:             true,
-			FallbackConfidenceThreshold: 0.4,
-		},
-	})
-
-	auctioneer.RequestProposalHook = func(ctx context.Context, agent domain.AgentDefinition, task *domain.AuctionTask, confidenceHint float32) (*domain.AgentProposal, error) {
-		conf := 0.5
-		if agent.ID == "winner" {
-			conf = 0.9
-		}
-		return &domain.AgentProposal{
-			AgentID:    agent.ID,
-			TaskID:     task.ID,
-			Confidence: float64(conf),
-		}, nil
-	}
-
+	// The SELECTED agent always fails; anything else succeeds. Which agent the
+	// Dispatcher picks is a merit decision and not this test's subject, so the
+	// fixture is written against selection ORDER rather than agent names.
 	var callAgentCalls []string
-	auctioneer.CallAgentHook = func(ctx context.Context, agentID string, handoff *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error) {
+	var selected string
+	recordingCaller := callerFunc(func(ctx context.Context, agentID string, handoff *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error) {
 		callAgentCalls = append(callAgentCalls, agentID)
-		if agentID == "runner-up-a" {
-			return &domain.Handoff{
-				Payload:   &domain.Payload{Data: []byte("fallback result")},
-				FromAgent: "runner-up-a",
-				Context: map[string]string{
-					"_thought_trace": "fallback trace",
-				},
-			}, nil
+		if selected == "" {
+			selected = agentID
 		}
-		return nil, errors.New("simulated agent failure")
-	}
+		if agentID == selected {
+			return nil, errors.New("simulated agent failure")
+		}
+		return &domain.Handoff{
+			Payload:   &domain.Payload{Data: []byte("fallback result")},
+			FromAgent: agentID,
+			Context:   map[string]string{"_thought_trace": "fallback trace"},
+		}, nil
+	})
 
 	mockPlan := &mockPlanner{
 		responses: []plannerResponse{{plan: &domain.ExecutionPlan{
@@ -374,10 +367,20 @@ func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
 		}}},
 	}
 
+	// ADR-0100: the Dispatcher is the selection port now, so the server's
+	// runner-up fallback is exercised through the mechanism that actually runs.
+	selector := &dispatch.Dispatcher{
+		Gatekeeper: gk,
+		Caller:     recordingCaller,
+		Manifests:  mgr,
+		Boots:      mgr,
+		ExecCfg:    config.ExecutionConfig{Gatekeeper: config.GatekeeperConfig{GatekeeperMaxCandidates: 5}},
+	}
+
 	s := &Server{
 		Planner:    mockPlan,
 		Manager:    mgr,
-		Auctioneer: auctioneer,
+		Dispatcher: selector,
 		ExecCfg: config.ExecutionConfig{
 			Plan: config.PlanConfig{
 				FallbackEnabled:             true,
@@ -395,25 +398,26 @@ func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
 		t.Fatalf("Execute should succeed via fallback, got: %v", err)
 	}
 
-	winnerCalls := 0
+	selectedCalls := 0
 	for _, c := range callAgentCalls {
-		if c == "winner" {
-			winnerCalls++
+		if c == selected {
+			selectedCalls++
 		}
 	}
-	if winnerCalls != 2 {
-		t.Errorf("expected 2 SelfHealer attempts for winner before loop detected, got %d (calls: %v)", winnerCalls, callAgentCalls)
+	if selectedCalls != 2 {
+		t.Errorf("expected 2 SelfHealer attempts for the selected agent %q before the loop is detected, got %d (calls: %v)",
+			selected, selectedCalls, callAgentCalls)
 	}
 
 	foundFallback := false
 	for _, c := range callAgentCalls {
-		if c == "runner-up-a" {
+		if c != selected {
 			foundFallback = true
 			break
 		}
 	}
 	if !foundFallback {
-		t.Errorf("fallback never tried runner-up-a, calls: %v", callAgentCalls)
+		t.Errorf("fallback never tried a runner-up, calls: %v", callAgentCalls)
 	}
 
 	if string(resp.Payload.Data) != "fallback result" {
@@ -445,29 +449,18 @@ func TestServer_StepFn_FallbackPropagatesErrorWhenAllRunnerUpsFail(t *testing.T)
 			GatekeeperW3:            0.2,
 		},
 	})
-	auctioneer := metauc.New(mgr, gk, config.ExecutionConfig{
-		Plan: config.PlanConfig{
-			FallbackEnabled:             true,
-			FallbackConfidenceThreshold: 0.4,
-		},
-	})
-
-	auctioneer.RequestProposalHook = func(ctx context.Context, agent domain.AgentDefinition, task *domain.AuctionTask, confidenceHint float32) (*domain.AgentProposal, error) {
-		conf := 0.5
-		if agent.ID == "winner" {
-			conf = 0.9
-		}
-		return &domain.AgentProposal{
-			AgentID:    agent.ID,
-			TaskID:     task.ID,
-			Confidence: float64(conf),
-		}, nil
-	}
-
 	var callAgentCalls []string
-	auctioneer.CallAgentHook = func(ctx context.Context, agentID string, handoff *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error) {
+	recordingCaller := callerFunc(func(ctx context.Context, agentID string, handoff *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error) {
 		callAgentCalls = append(callAgentCalls, agentID)
 		return nil, errors.New("simulated failure for " + agentID)
+	})
+
+	selector := &dispatch.Dispatcher{
+		Gatekeeper: gk,
+		Caller:     recordingCaller,
+		Manifests:  mgr,
+		Boots:      mgr,
+		ExecCfg:    config.ExecutionConfig{Gatekeeper: config.GatekeeperConfig{GatekeeperMaxCandidates: 5}},
 	}
 
 	mockPlan := &mockPlanner{
@@ -480,7 +473,7 @@ func TestServer_StepFn_FallbackPropagatesErrorWhenAllRunnerUpsFail(t *testing.T)
 	s := &Server{
 		Planner:    mockPlan,
 		Manager:    mgr,
-		Auctioneer: auctioneer,
+		Dispatcher: selector,
 		ExecCfg: config.ExecutionConfig{
 			Plan: config.PlanConfig{
 				FallbackEnabled:             true,

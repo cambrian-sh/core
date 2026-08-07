@@ -25,7 +25,6 @@ import (
 	"github.com/cambrian-sh/core/internal/agentpool"
 	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/awareness"
-	"github.com/cambrian-sh/core/internal/centralexec"
 	corechat "github.com/cambrian-sh/core/internal/chat"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/evidence"
@@ -39,7 +38,6 @@ import (
 	"github.com/cambrian-sh/core/internal/memory/vault"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/backfill"
-	"github.com/cambrian-sh/core/internal/metabolism/calibration"
 	"github.com/cambrian-sh/core/internal/metabolism/routescorer"
 	ossreactive "github.com/cambrian-sh/core/internal/reactive"
 	skilldiscovery "github.com/cambrian-sh/core/internal/skill/discovery"
@@ -643,8 +641,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Experiential memory removed: the ADR-0034 scope-promotion pipeline (clustered
 	// insight write-back) is no longer wired. Document ingestion (the corpus) is unaffected.
 	meta.InterviewWorker.EventBus = eventBus
-	meta.Auctioneer.EventBus = eventBus
-	// ADR-0100 P2: the dispatcher emits the SAME AuctionEventPayload the auction
+	// ADR-0100 P2: the dispatcher emits the SAME SelectionEventPayload the auction
 	// does (winner + candidate slate + selection cost), which is how the
 	// orchestration suite scores both arms. The bus is built after the metabolism
 	// stack, so this wiring cannot happen at construction — without it the
@@ -783,7 +780,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 	if cfg.Execution.Retrieval.RerankerEnabled {
 		mem.QueryService.EnableReranker(
-			&subnetwork.RerankerDispatcher{Auctioneer: meta.Auctioneer, AgentID: "reranker_agent"},
+			&subnetwork.RerankerDispatcher{Caller: meta.Auctioneer, AgentID: "reranker_agent"},
 			cfg.Execution.Retrieval.RerankerTopK,
 			cfg.Execution.Retrieval.RerankerWeight,
 		)
@@ -882,22 +879,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ROUTE-04 / ADR-0067: deterministic capability-vocabulary normalization arm.
 	aw.Planner.SetCanonicalVocab(cfg.Execution.Capability.CanonicalVocab)
 
-	// ROUTE-05 / ADR-0068: bid calibration. Offline-first — the arm is off by default;
-	// when on, fit a per-agent calibration map from the verified events already in the
-	// log and select auction winners by expected quality instead of raw self-report.
-	if cfg.Execution.Routing.CalibratedBids && meta.Auctioneer != nil {
-		if samples, err := reg.BidCalibrationSamples(); err != nil {
-			slog.Warn("ROUTE-05: could not read calibration samples — using raw confidence", "err", err)
-		} else if len(samples) == 0 {
-			slog.Warn("ROUTE-05: calibrated_bids on but no verified events yet — using raw confidence")
-		} else {
-			model := calibration.Fit(samples, cfg.Execution.Routing.BidCalibrationMinSamples)
-			meta.Auctioneer.Calibrator = model
-			slog.Info("ROUTE-05: bid calibration active",
-				"samples", len(samples), "agents", model.AgentCount())
-		}
-	}
-
 	// ROUTE-06 / ADR-0069: per-capability merit is read directly from ExecCfg by the
 	// Gatekeeper; here we wire the shared per-capability exploration budget that bounds
 	// the provisional L2 bypass (Gatekeeper reads Allowed; Auctioneer records wins).
@@ -914,9 +895,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		}
 		if meta.Gatekeeper != nil {
 			meta.Gatekeeper.ExplorationBudget = budget
-		}
-		if meta.Auctioneer != nil {
-			meta.Auctioneer.ExplorationBudget = budget
 		}
 		slog.Info("ROUTE-06: per-capability merit + bounded provisional exploration active",
 			"budget", cfg.Execution.Routing.ProvisionalExplorationBudget,
@@ -1052,7 +1030,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// is why both halves are wired on adjacent lines now.
 		RegisterIngressDeregistrar:    func(d domain.IngressDeregistrar) { ingressDeregistrars.Store(&d) },
 		RegisterIngressSchemaDeclarer: func(d domain.IngressSchemaDeclarer) { ingressSchemaDeclarers.Store(&d) },
-		RegisterTurnRouter:        func(r domain.TurnRouter) { turnRouters.Store(&r) },
+		RegisterTurnRouter:            func(r domain.TurnRouter) { turnRouters.Store(&r) },
 		RegisterAgent: func(def domain.AgentDefinition) error {
 			return reg.SetAgentWithManifest(def, nil)
 		},
@@ -1107,7 +1085,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			postgres.NewPgQueryPlane(vec.Pool(), eventStore, knowledgeStore, evStore),
 			slog.Default()),
 		Manager:    meta.Manager,
-		Auctioneer: meta.Auctioneer,
+		Dispatcher: meta.Selector, // plugins that select get the selector
 		Planner:    aw.Planner,
 		LLM:        aw.LLM,
 		WatchStore: reg,
@@ -1279,30 +1257,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		cambrianServer.Checkpoints = pgSessions
 	}
 
-	// ADR-0037: honor the resource_selector flag. Until now the Central-Executive
-	// EFE arm was implemented + unit-tested but never composed, so useEFE() was
-	// always false and every dispatch fell to the Auctioneer regardless of config.
-	// Wire the Gatekeeper-backed EFE selector here. "auction" leaves ResourceSelector
-	// nil (auction only); "efe"/"auto" enables the selector and useEFE() routes per
-	// AssignVariant(SelectorMode, EFETrafficPercent, sessionID).
-	cambrianServer.SelectorMode = cfg.Execution.Routing.ResourceSelector
-	cambrianServer.EFETrafficPercent = cfg.Execution.Routing.EFETrafficPercent
-	if opts.ResourceSelector != nil {
-		// ADR-0074 Tier-1 replace-one: a plugin-supplied selector overrides the
-		// config-driven (auction/EFE) default.
-		cambrianServer.ResourceSelector = opts.ResourceSelector
-		slog.Info("ADR-0074: resource selector provided by plugin (overrides config)",
-			"mode", cfg.Execution.Routing.ResourceSelector)
-	} else if (cfg.Execution.Routing.ResourceSelector == "efe" || cfg.Execution.Routing.ResourceSelector == "auto") &&
-		meta.Auctioneer != nil && meta.Auctioneer.Gatekeeper != nil {
-		cambrianServer.ResourceSelector = centralexec.NewGatekeeperEFESelector(
-			meta.Auctioneer.Gatekeeper, cfg.Execution.Routing.EFEExplorationBonus)
-		slog.Info("ADR-0037: EFE resource selector wired",
-			"mode", cfg.Execution.Routing.ResourceSelector,
-			"efe_traffic_percent", cfg.Execution.Routing.EFETrafficPercent,
-			"exploration_bonus", cfg.Execution.Routing.EFEExplorationBonus)
-	}
-
 	// OBSERVABILITYREQ REQ1 / ADR-0057: AgentCallLogger is an injected hook (Options).
 	// nil in OSS (no call logging); the premium binary injects a Langfuse logger.
 	// GenerateViaModelStream nil-checks the field before use.
@@ -1379,7 +1333,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// edges), stamping every chunk with its inherited section path. Opt-in.
 		if cfg.Execution.Retrieval.StructureGraphEnabled {
 			mem.IngestionManager.SetStructureGraph(
-				&subnetwork.DoclingDispatcher{Auctioneer: meta.Auctioneer},
+				&subnetwork.DoclingDispatcher{Caller: meta.Auctioneer},
 				vec.StructureGraphStore(),
 			)
 			mem.QueryService.EnableSectionScopedRetrieval(vec)
@@ -1414,13 +1368,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Execute, so a per-call accumulator would reset the series on every plan.
 	tokenSeries := telemetry.NewTokenSeries()
 	cambrianServer.TokenRecorder = tokenSeries
-
-	// ADR-0037 D10–D15 (ADR-0041 follow-up 0041-07): wire the YieldDriver so a
-	// yielding agent's sub-goal is bound (via the live selector — Zero-Hardcode),
-	// dispatched, and the parent resumed. Reuses the kernel embedder for the D15
-	// narrowing guard. Returns nil (yields inert) when no EFE selector is wired.
-	cambrianServer.YieldDriver = subnetwork.NewYieldDriver(
-		cambrianServer.ResourceSelector, meta.Auctioneer, embedder, 0.15, 8)
 
 	// ADR-0039: kernel-owned tool registry. Tools are auto-discovered from the
 	// tools/ dir (no Go registration); the executor authorizes every call
@@ -1623,10 +1570,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// agent is unreachable or the config flag is unset.
 	if cfg.Execution.Retrieval.AgenticRetrievalEnabled {
 		mem.QueryService.EnableAgenticRetrieval(&subnetwork.RetrievalDispatcher{
-			Auctioneer: meta.Auctioneer,
-			AgentID:    "retrieval_agent",
-			Gateway:    llmGateway,
-			Model:      cfg.Execution.Retrieval.AgenticPlannerModel, // "" ⇒ gateway default; a FAST model matters on the hot path
+			Caller:  meta.Auctioneer,
+			AgentID: "retrieval_agent",
+			Gateway: llmGateway,
+			Model:   cfg.Execution.Retrieval.AgenticPlannerModel, // "" ⇒ gateway default; a FAST model matters on the hot path
 		}, cfg.Execution.Retrieval.AgenticMaxHops)
 		mem.QueryService.SetIrcotEnabled(cfg.Execution.Retrieval.AgenticIrcotEnabled)
 		mem.QueryService.SetDecomposeEnabled(cfg.Execution.Retrieval.AgenticDecomposeEnabled)
@@ -1640,8 +1587,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Injected before mem.Start so the swap is in place when the drain begins.
 	if cfg.Execution.Ingestion.KgExtractorEnabled && mem.ChunkTripletsBatcher != nil {
 		mem.ChunkTripletsBatcher.UseExtractor(&subnetwork.KgExtractorDispatcher{
-			Auctioneer: meta.Auctioneer,
-			AgentID:    "kg_extractor_agent",
+			Caller:  meta.Auctioneer,
+			AgentID: "kg_extractor_agent",
 		})
 		slog.Info("ADR-0053 D2: kg_extractor ENABLED (deterministic metadata + spacy_patterns organ, no LLM)")
 	}
@@ -1834,17 +1781,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		VectorCounter:      vectorCounterFor(vec),
 		Config:             cfg,
 		Registry:           reg,
-		WatchDeadLetters:   reg,                   // REACT-01 / ADR-0061
-		WatchMetrics:       watchMetricsReader,    // REACT-05 / ADR-0071
-		WatchBacktester:    watchBacktester,       // REACT-05 / ADR-0071
+		WatchDeadLetters:   reg,                    // REACT-01 / ADR-0061
+		WatchMetrics:       watchMetricsReader,     // REACT-05 / ADR-0071
+		WatchBacktester:    watchBacktester,        // REACT-05 / ADR-0071
 		ExtraServices:      opts.ExtraServices,     // ADR-0073
 		AgentGRPCServices:  opts.AgentGRPCServices, // ADR-0118 D3
-		Lifecycles:         lifecycles,            // ADR-0074 (empty in OSS)
-		PluginCapabilities: composed.capabilities, // ADR-0082 D2 (empty in OSS)
-		Conversations:      conversations,         // ADR-0084 D1 (nil until migrated)
-		ChatTurns:          chatTurns,             // ADR-0084 D4 (nil when disabled)
-		PluginStatuses:     composed.statuses,     // ADR-0082 D9 (empty in OSS)
-		Health:             healthChecker,         // PLAT-03 / ADR-0065
+		Lifecycles:         lifecycles,             // ADR-0074 (empty in OSS)
+		PluginCapabilities: composed.capabilities,  // ADR-0082 D2 (empty in OSS)
+		Conversations:      conversations,          // ADR-0084 D1 (nil until migrated)
+		ChatTurns:          chatTurns,              // ADR-0084 D4 (nil when disabled)
+		PluginStatuses:     composed.statuses,      // ADR-0082 D9 (empty in OSS)
+		Health:             healthChecker,          // PLAT-03 / ADR-0065
 		Store:              storeHandle,
 		Memory:             mem,
 		Awareness:          aw,

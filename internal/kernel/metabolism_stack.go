@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/agentplane"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	memstore "github.com/cambrian-sh/core/internal/memory/store"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
-	metauc "github.com/cambrian-sh/core/internal/metabolism/auctioneer"
 	"github.com/cambrian-sh/core/internal/metabolism/dispatch"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	"github.com/cambrian-sh/core/internal/metabolism/interview"
@@ -33,15 +33,15 @@ type MetabolismStack struct {
 	// organs (Scout, kg_extractor, docling, reranker) call agents through it
 	// DIRECTLY, bypassing selection entirely — they are kernel infrastructure,
 	// not candidates.
-	Auctioneer *metauc.Auctioneer
+	Auctioneer *agentplane.Transport
 	// Selector is the step-selection mechanism the DAG executor uses: the
 	// capability-typed Dispatcher by default, or the legacy Auctioneer when
 	// execution.bid_round is on (ADR-0100 P0 — the A/B arm, deleted in P3).
-	Selector domain.Auctioneer
+	Selector domain.StepDispatcher
 	// Dispatcher is the concrete Selector when dispatch is active (nil under
 	// bid_round). Exposed ONLY so the composition root can finish wiring it —
 	// the EventBus is built after this stack, and a dispatcher that cannot emit
-	// AuctionEventPayload is invisible to the orchestration suite.
+	// SelectionEventPayload is invisible to the orchestration suite.
 	Dispatcher         *dispatch.Dispatcher
 	InterviewWorker    *interview.InterviewWorker
 	VerificationWorker *verify.VerificationWorker
@@ -91,11 +91,7 @@ func NewMetabolismStack(
 		supgk.WithSearcher(interviewSearcher),
 	)
 
-	auctioneer := metauc.New(manager, gatekeeper, cfg.Execution)
-	auctioneer.Profiles = profileStore
-	auctioneer.ExplorationRate = cfg.Execution.Routing.ExplorationRate
-	auctioneer.Observer = observer
-	auctioneer.Boots = manager // ADR-0100 P2: cold starts attributable to the bid round
+	auctioneer := agentplane.New(manager)
 
 	iWorker.Requester = auctioneer
 	iWorker.EventWriter = reg
@@ -129,41 +125,25 @@ func NewMetabolismStack(
 		}
 	}
 
-	// ADR-0100 P0: capability-typed dispatch is the default selection mechanism.
-	// The Auctioneer is still constructed — it owns the connection pool CallAgent
-	// needs, and the privileged organs call through it — but it no longer SELECTS
-	// unless execution.bid_round explicitly asks for the legacy auction.
-	var selector domain.Auctioneer = auctioneer
-	var dispatcher *dispatch.Dispatcher
-	if !cfg.Execution.Routing.BidRound {
-		dispatcher = &dispatch.Dispatcher{
-			Gatekeeper:      gatekeeper,
-			Caller:          auctioneer, // shared pool; moves in-package at ADR-0100 P3
-			Manifests:       manager,
-			Profiles:        profileStore,
-			Boots:           manager, // ADR-0100 P2
-			ExecCfg:         cfg.Execution,
-			Observer:        observer,
-			ExplorationRate: cfg.Execution.Routing.ExplorationRate,
-		}
-		selector = dispatcher
+	// ADR-0100: capability-typed dispatch is THE selection mechanism. The auction
+	// and the EFE selector are gone; the Auctioneer is still constructed because it
+	// owns the connection pool CallAgent needs and the privileged organs call
+	// through it, but it no longer selects anything.
+	dispatcher := &dispatch.Dispatcher{
+		Gatekeeper:      gatekeeper,
+		Caller:          auctioneer,
+		Manifests:       manager,
+		Profiles:        profileStore,
+		Boots:           manager,
+		ExecCfg:         cfg.Execution,
+		Observer:        observer,
+		ExplorationRate: cfg.Execution.Routing.ExplorationRate,
 	}
-	// The active selection mechanism must be visible at boot: the ADR-0100 P2 A/B
-	// compares two arms chosen by config, and a run whose arm cannot be identified
-	// from its own logs is not evidence. Note EFE (resource_selector="efe")
-	// short-circuits BEFORE this selector, so under EFE neither arm runs.
-	if cfg.Execution.Routing.BidRound {
-		slog.Warn("ADR-0100: selection mechanism = AUCTION (execution.bid_round=true) — the legacy arm; every candidate is booted to solicit a bid",
-			"capability_contract", cfg.Execution.Routing.CapabilityContract,
-			"resource_selector", cfg.Execution.Routing.ResourceSelector)
-	} else {
-		slog.Info("ADR-0100: selection mechanism = DISPATCH (capability-typed; zero RPCs, only the winner is booted)",
-			"capability_contract", cfg.Execution.Routing.CapabilityContract,
-			"capability_resolution", cfg.Execution.Capability.CapabilityResolution,
-			"cheap_energy_max", cfg.Execution.Routing.DispatchCheapEnergyMax,
-			"resource_selector", cfg.Execution.Routing.ResourceSelector)
-	}
-
+	var selector domain.StepDispatcher = dispatcher
+	slog.Info("ADR-0100: selection mechanism = DISPATCH (capability-typed; zero RPCs, only the winner is booted)",
+		"capability_contract", cfg.Execution.Routing.CapabilityContract,
+		"capability_resolution", cfg.Execution.Capability.CapabilityResolution,
+		"cheap_energy_max", cfg.Execution.Routing.DispatchCheapEnergyMax)
 	return &MetabolismStack{
 		Manager:            manager,
 		Gatekeeper:         gatekeeper,
@@ -250,7 +230,7 @@ type interviewSessionGateway interface {
 // stamps for normal steps) — without it the agent's generate() is rejected with
 // UNAUTHENTICATED and every interview scores 0.
 type scenarioRunner struct {
-	caller         domain.Auctioneer
+	caller         domain.AgentCaller
 	gw             interviewSessionGateway // nil until SetInterviewSession; nil ⇒ no token (agent generate will fail)
 	primaryModelID string
 	// eval flags the minted session as a sandboxed evaluation so the ToolExecutor
@@ -310,7 +290,7 @@ type poolJudge struct {
 }
 
 func (p poolJudge) GradeViaPool(ctx context.Context, agentID, question, answer string) (domain.VerifyResponse, error) {
-	task := &domain.AuctionTask{ID: agentID + "-interview", Description: question}
+	task := &domain.DispatchTask{ID: agentID + "-interview", Description: question}
 	verifier, err := p.pool.Select(ctx, task, agentID, nil)
 	if err != nil {
 		return domain.VerifyResponse{}, err

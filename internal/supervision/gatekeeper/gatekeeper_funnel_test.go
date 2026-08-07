@@ -8,7 +8,7 @@ import (
 )
 
 // ROUTE-02: the Gatekeeper records a Declaration->Interview->Merit funnel onto
-// the AuctionTask when routing tracing is enabled, so a mis-route is
+// the DispatchTask when routing tracing is enabled, so a mis-route is
 // explainable from the persisted auction event alone.
 
 func findEntry[T any](items []T, id string, idOf func(T) string) (T, bool) {
@@ -32,7 +32,7 @@ func TestFunnel_RecordsL1AndL3(t *testing.T) {
 	cfg.Routing.RoutingTraceEnabled = true
 	gk := NewGatekeeper(reg, cfg)
 
-	task := &domain.AuctionTask{ID: "t-funnel-1", RequiredFormats: []string{"json"}}
+	task := &domain.DispatchTask{ID: "t-funnel-1", RequiredFormats: []string{"json"}}
 	candidates, err := gk.FindCandidates(context.Background(), task)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -82,7 +82,7 @@ func TestFunnel_RecordsL2SurvivorsAndEliminated(t *testing.T) {
 	cfg.Routing.RoutingTraceEnabled = true
 	gk := NewGatekeeper(reg, cfg, WithEmbedder(&mockEmbedder{}), WithSearcher(searcher))
 
-	task := &domain.AuctionTask{ID: "t-funnel-2", Description: "find something"}
+	task := &domain.DispatchTask{ID: "t-funnel-2", Description: "find something"}
 	if _, err := gk.FindCandidates(context.Background(), task); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestFunnel_NilWhenTracingDisabled(t *testing.T) {
 	cfg := defaultGatekeeperCfg() // RoutingTraceEnabled defaults false in the test cfg
 	gk := NewGatekeeper(reg, cfg)
 
-	task := &domain.AuctionTask{ID: "t-funnel-3"}
+	task := &domain.DispatchTask{ID: "t-funnel-3"}
 	if _, err := gk.FindCandidates(context.Background(), task); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

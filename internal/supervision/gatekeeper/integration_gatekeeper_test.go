@@ -27,7 +27,7 @@ func TestIntegration_CorrectCandidateSelection(t *testing.T) {
 	pr := &mockGatekeeperProfileReader{profiles: profiles}
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg(), WithProfiles(pr))
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t-s1"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t-s1"})
 	if err != nil {
 		t.Fatalf("FindCandidates error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestIntegration_AllProvisional(t *testing.T) {
 	})
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg())
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t-s2"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t-s2"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

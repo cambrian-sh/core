@@ -105,7 +105,7 @@ type DomainEvent interface {
 	EventType() string
 }
 
-// AuctionEventPayload reports bidding lifecycle (started / completed / failed).
+// SelectionEventPayload reports bidding lifecycle (started / completed / failed).
 // Emitted by Auctioneer via EventBus.
 //
 // WinnerMargin and Funnel are ROUTE-02 routing-trace fields: they make a
@@ -113,12 +113,12 @@ type DomainEvent interface {
 // funnel that produced the slate, and how decisively the winner beat the
 // runner-up). Both are best-effort — Funnel is nil when routing tracing is
 // disabled (config execution.routing_trace_enabled) or on the "started" event.
-type AuctionEventPayload struct {
+type SelectionEventPayload struct {
 	TaskID   string
 	TaskDesc string
 	Status   string
 	WinnerID string
-	Bids     []BidEntry
+	Bids     []CandidateEntry
 	ErrorMsg string
 	// WinnerMargin is the winning bid's confidence minus the highest-confidence
 	// losing bid (0 when there is no runner-up). A near-zero margin flags a
@@ -138,8 +138,8 @@ type AuctionEventPayload struct {
 	SelectionBoots int32
 }
 
-// BidEntry is a single agent's bid inside an AuctionEventPayload.
-type BidEntry struct {
+// CandidateEntry is a single agent's bid inside an SelectionEventPayload.
+type CandidateEntry struct {
 	AgentID    string
 	Confidence float32
 	Rationale  string
@@ -153,7 +153,7 @@ type BidEntry struct {
 // GatekeeperFunnel is the per-auction candidate funnel: every agent the
 // Gatekeeper considered and the layer that admitted or eliminated it
 // (ROUTE-02). Produced by Gatekeeper.FindCandidates and carried to the
-// AuctionEventPayload so a suite row can reconstruct why a step routed the way
+// SelectionEventPayload so a suite row can reconstruct why a step routed the way
 // it did. Pure domain — no proto, no infrastructure.
 type GatekeeperFunnel struct {
 	// L1 is the Declaration pass-set: one entry per agent considered, with the
@@ -478,18 +478,18 @@ func (VerifierRoundEvent) EventType() string { return EventTypeVerifierRound }
 func (LLMHealthEvent) EventType() string     { return EventTypeLLMHealth }
 func (PlanStateChanged) EventType() string   { return EventTypePlanState }
 
-func (AuctionEventPayload) domainEvent() {}
-func (AgentReadyEvent) domainEvent()     {}
-func (SessionStateEvent) domainEvent()   {}
-func (SessionDormantEvent) domainEvent() {}
-func (MemoryPressureEvent) domainEvent() {}
-func (WatchTriggeredEvent) domainEvent() {}
-func (DaemonCrashedEvent) domainEvent()  {}
+func (SelectionEventPayload) domainEvent() {}
+func (AgentReadyEvent) domainEvent()       {}
+func (SessionStateEvent) domainEvent()     {}
+func (SessionDormantEvent) domainEvent()   {}
+func (MemoryPressureEvent) domainEvent()   {}
+func (WatchTriggeredEvent) domainEvent()   {}
+func (DaemonCrashedEvent) domainEvent()    {}
 
-func (AuctionEventPayload) EventType() string { return EventTypeAuctionEvent }
-func (AgentReadyEvent) EventType() string     { return EventTypeAgentReady }
-func (SessionDormantEvent) EventType() string { return EventTypeSessionDormant }
-func (MemoryPressureEvent) EventType() string { return EventTypeMemoryPressure }
+func (SelectionEventPayload) EventType() string { return EventTypeAuctionEvent }
+func (AgentReadyEvent) EventType() string       { return EventTypeAgentReady }
+func (SessionDormantEvent) EventType() string   { return EventTypeSessionDormant }
+func (MemoryPressureEvent) EventType() string   { return EventTypeMemoryPressure }
 
 func (DaemonCrashedEvent) EventType() string { return EventTypeDaemonCrashed }
 

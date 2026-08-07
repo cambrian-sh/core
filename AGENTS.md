@@ -11,7 +11,7 @@ local-only; this is the shared, published guide.
 
 ## Orientation
 - Read **`docs/ARCHITECTURE.md`** first for the layering and domain terms (Substrate,
-  Gatekeeper, Auctioneer, the Auction model, the Zero-Hardcode Rule).
+  Gatekeeper, Dispatcher, capability-typed dispatch, the Zero-Hardcode Rule).
 - Significant decisions live as ADRs in **`docs/adr/`** (see `docs/adr/README.md` for the
   status model). ADRs are the source of truth for *why*.
 

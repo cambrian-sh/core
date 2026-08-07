@@ -5,7 +5,6 @@ package kernel
 
 import (
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/centralexec"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
@@ -103,15 +102,6 @@ func ProvideServer(
 	// ADR-0057: signal receiver + watch handler are injected (no build tags).
 	srv.SignalReceiver = signalRcv
 	srv.WatchHandler = watchHandler
-
-	// ADR-0037: wire the Central-Executive selection arm behind the flag.
-	// Default "auction" leaves the EFE selector nil — production dispatch is
-	// unchanged until an operator opts in via resource_selector=efe|auto.
-	srv.SelectorMode = cfg.Routing.ResourceSelector
-	srv.EFETrafficPercent = cfg.Routing.EFETrafficPercent
-	if cfg.Routing.ResourceSelector == "efe" || cfg.Routing.ResourceSelector == "auto" {
-		srv.ResourceSelector = centralexec.NewGatekeeperEFESelector(meta.Gatekeeper, cfg.Routing.EFEExplorationBonus)
-	}
 
 	return srv
 }

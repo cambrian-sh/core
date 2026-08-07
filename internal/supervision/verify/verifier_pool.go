@@ -63,7 +63,7 @@ func (vp *VerifierPool) WithHealthGuard(minSize int, step, floor float64) *Verif
 // Select returns the highest-TrustScore Verifier Pool member that passes all filters.
 func (vp *VerifierPool) Select(
 	ctx context.Context,
-	task *domain.AuctionTask,
+	task *domain.DispatchTask,
 	excludeAgentID string,
 	subjectProfile *domain.AgentProfile,
 ) (*domain.AgentDefinition, error) {
@@ -152,7 +152,7 @@ func buildExclusionSet(excludeAgentID string, subjectProfile *domain.AgentProfil
 }
 
 // PassesDeclaration performs the Layer 1 (Declaration) hard compatibility check.
-func PassesDeclaration(manifest *domain.AgentManifest, task *domain.AuctionTask) bool {
+func PassesDeclaration(manifest *domain.AgentManifest, task *domain.DispatchTask) bool {
 	if manifest == nil {
 		return true
 	}

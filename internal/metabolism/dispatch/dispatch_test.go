@@ -16,10 +16,10 @@ type fakeGatekeeper struct {
 	candidates []domain.ScoredCandidate
 	err        error
 	models     []domain.ScoredCandidate
-	lastTask   *domain.AuctionTask
+	lastTask   *domain.DispatchTask
 }
 
-func (f *fakeGatekeeper) FindCandidates(_ context.Context, task *domain.AuctionTask) ([]domain.ScoredCandidate, error) {
+func (f *fakeGatekeeper) FindCandidates(_ context.Context, task *domain.DispatchTask) ([]domain.ScoredCandidate, error) {
 	f.lastTask = task
 	return f.candidates, f.err
 }
@@ -57,12 +57,14 @@ func (f *fakeProfiles) GetProfile(_ context.Context, agentID, _ string) (*domain
 	return p, nil
 }
 
-type capturingBus struct{ events []domain.AuctionEventPayload }
+type capturingBus struct {
+	events []domain.SelectionEventPayload
+}
 
 func (c *capturingBus) Subscribe(string, domain.EventHandler) {}
 
 func (c *capturingBus) Publish(ev domain.DomainEvent) error {
-	if p, ok := ev.(domain.AuctionEventPayload); ok {
+	if p, ok := ev.(domain.SelectionEventPayload); ok {
 		c.events = append(c.events, p)
 	}
 	return nil
@@ -91,7 +93,7 @@ func TestExecute_CallsOnlyTheWinner(t *testing.T) {
 	caller := &fakeCaller{}
 	d := newDispatcher(gk, caller)
 
-	res, err := d.Execute(context.Background(), &domain.AuctionTask{ID: "t1"}, &domain.Handoff{})
+	res, err := d.Execute(context.Background(), &domain.DispatchTask{ID: "t1"}, &domain.Handoff{})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -111,7 +113,7 @@ func TestExecute_ArgmaxPicksHighestMerit(t *testing.T) {
 	caller := &fakeCaller{}
 	d := newDispatcher(gk, caller)
 
-	if _, err := d.Execute(context.Background(), &domain.AuctionTask{ID: "t"}, &domain.Handoff{}); err != nil {
+	if _, err := d.Execute(context.Background(), &domain.DispatchTask{ID: "t"}, &domain.Handoff{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if caller.called[0] != "a" {
@@ -127,7 +129,7 @@ func TestExecute_NoEligibleCandidatesFailsLoudly(t *testing.T) {
 	d.EventBus = bus
 
 	_, err := d.Execute(context.Background(),
-		&domain.AuctionTask{ID: "t", RequiredCapabilities: []string{"pdf-extract"}}, &domain.Handoff{})
+		&domain.DispatchTask{ID: "t", RequiredCapabilities: []string{"pdf-extract"}}, &domain.Handoff{})
 	if err == nil {
 		t.Fatal("expected an error when no agent is eligible")
 	}
@@ -151,11 +153,11 @@ func TestExecute_EmitsWinnerAndSlateForBenchmarking(t *testing.T) {
 	d := newDispatcher(gk, &fakeCaller{})
 	d.EventBus = bus
 
-	if _, err := d.Execute(context.Background(), &domain.AuctionTask{ID: "t"}, &domain.Handoff{}); err != nil {
+	if _, err := d.Execute(context.Background(), &domain.DispatchTask{ID: "t"}, &domain.Handoff{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	var completed *domain.AuctionEventPayload
+	var completed *domain.SelectionEventPayload
 	for i := range bus.events {
 		if bus.events[i].Status == "completed" {
 			completed = &bus.events[i]
@@ -190,7 +192,7 @@ func TestSelectWinner_CheapestCompetentOnCheapVerifiedStep(t *testing.T) {
 	d.ExecCfg.Routing.DispatchCheapEnergyMax = 10
 	d.ExecCfg.Routing.DispatchMeritFloor = 0.5
 
-	task := &domain.AuctionTask{ID: "t", MaxEnergy: 5, CheckpointAfter: true}
+	task := &domain.DispatchTask{ID: "t", MaxEnergy: 5, CheckpointAfter: true}
 	if _, err := d.Execute(context.Background(), task, &domain.Handoff{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -214,7 +216,7 @@ func TestSelectWinner_ArgmaxWhenStepIsNotVerified(t *testing.T) {
 	}}
 	d.ExecCfg.Routing.DispatchCheapEnergyMax = 10
 
-	task := &domain.AuctionTask{ID: "t", MaxEnergy: 5, CheckpointAfter: false}
+	task := &domain.DispatchTask{ID: "t", MaxEnergy: 5, CheckpointAfter: false}
 	if _, err := d.Execute(context.Background(), task, &domain.Handoff{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -234,7 +236,7 @@ func TestSelectWinner_ZeroEnergyIsNotCheap(t *testing.T) {
 	}}
 	d.ExecCfg.Routing.DispatchCheapEnergyMax = 10
 
-	task := &domain.AuctionTask{ID: "t", MaxEnergy: 0, CheckpointAfter: true}
+	task := &domain.DispatchTask{ID: "t", MaxEnergy: 0, CheckpointAfter: true}
 	if _, err := d.Execute(context.Background(), task, &domain.Handoff{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -255,7 +257,7 @@ func TestCheapestCompetent_RespectsMeritFloor(t *testing.T) {
 	d.ExecCfg.Routing.DispatchCheapEnergyMax = 10
 	d.ExecCfg.Routing.DispatchMeritFloor = 0.5
 
-	task := &domain.AuctionTask{ID: "t", MaxEnergy: 1, CheckpointAfter: true}
+	task := &domain.DispatchTask{ID: "t", MaxEnergy: 1, CheckpointAfter: true}
 	if _, err := d.Execute(context.Background(), task, &domain.Handoff{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -272,7 +274,7 @@ func TestCheapestCompetent_FallsBackToArgmaxWithoutProfiles(t *testing.T) {
 	d.Profiles = nil
 	d.ExecCfg.Routing.DispatchCheapEnergyMax = 10
 
-	task := &domain.AuctionTask{ID: "t", MaxEnergy: 1, CheckpointAfter: true}
+	task := &domain.DispatchTask{ID: "t", MaxEnergy: 1, CheckpointAfter: true}
 	if _, err := d.Execute(context.Background(), task, &domain.Handoff{}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -291,7 +293,7 @@ func TestExecute_ExplorationCanPickANonTopCandidate(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 30; i++ {
 		caller.called = nil
-		if _, err := d.Execute(context.Background(), &domain.AuctionTask{ID: "t"}, &domain.Handoff{}); err != nil {
+		if _, err := d.Execute(context.Background(), &domain.DispatchTask{ID: "t"}, &domain.Handoff{}); err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
 		seen[caller.called[0]] = true
@@ -305,7 +307,7 @@ func TestExecute_RunnerUpsExcludeWinner(t *testing.T) {
 	gk := &fakeGatekeeper{candidates: []domain.ScoredCandidate{cand("a", 0.9), cand("b", 0.5), cand("c", 0.1)}}
 	d := newDispatcher(gk, &fakeCaller{})
 
-	res, err := d.Execute(context.Background(), &domain.AuctionTask{ID: "t"}, &domain.Handoff{})
+	res, err := d.Execute(context.Background(), &domain.DispatchTask{ID: "t"}, &domain.Handoff{})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -325,7 +327,7 @@ func TestExecute_CallFailureStillReturnsRunnerUps(t *testing.T) {
 	caller := &fakeCaller{err: errors.New("agent exploded")}
 	d := newDispatcher(gk, caller)
 
-	res, err := d.Execute(context.Background(), &domain.AuctionTask{ID: "t"}, &domain.Handoff{})
+	res, err := d.Execute(context.Background(), &domain.DispatchTask{ID: "t"}, &domain.Handoff{})
 	if err == nil {
 		t.Fatal("expected the call error to propagate")
 	}
@@ -338,14 +340,14 @@ func TestExecute_GatekeeperErrorPropagates(t *testing.T) {
 	gk := &fakeGatekeeper{err: errors.New("registry down")}
 	d := newDispatcher(gk, &fakeCaller{})
 
-	if _, err := d.Execute(context.Background(), &domain.AuctionTask{ID: "t"}, &domain.Handoff{}); err == nil {
+	if _, err := d.Execute(context.Background(), &domain.DispatchTask{ID: "t"}, &domain.Handoff{}); err == nil {
 		t.Fatal("expected the gatekeeper error to propagate")
 	}
 }
 
 // Dispatcher must remain a drop-in for the DAG call site.
 func TestDispatcherSatisfiesAuctioneerInterface(t *testing.T) {
-	var _ domain.Auctioneer = (*Dispatcher)(nil)
+	var _ domain.StepDispatcher = (*Dispatcher)(nil)
 }
 
 func contains(haystack, needle string) bool {

@@ -21,7 +21,7 @@ func TestGatekeeperScore_HighProfileScoresHigher(t *testing.T) {
 	registry := newMockAgentDeclarationSource([]domain.AgentDefinition{high, low}, nil)
 	gk := NewGatekeeper(registry, defaultTestExecCfg(), WithProfiles(profiles))
 
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t11"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t11"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestGatekeeperScore_NilProfile_NeutralScore(t *testing.T) {
 	cfg := defaultTestExecCfg()
 	gk := NewGatekeeper(registry, cfg, WithProfiles(profiles))
 
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t12"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t12"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestGatekeeperScore_TopNCandidates(t *testing.T) {
 	cfg.Gatekeeper.GatekeeperMaxCandidates = 5
 	gk := NewGatekeeper(registry, cfg, WithProfiles(profiles))
 
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t13"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t13"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestGatekeeperScore_ProfileProvisional_PenaltyApplied(t *testing.T) {
 	cfg.Gatekeeper.ColdStartPenaltyMultiplier = 0.6
 	gk := NewGatekeeper(registry, cfg, WithProfiles(profiles))
 
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t18"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t18"})
 	if err != nil {
 		t.Fatalf("FindCandidates: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestGatekeeperScore_ProvisionalLast(t *testing.T) {
 	registry := newMockAgentDeclarationSource([]domain.AgentDefinition{prov, active}, nil)
 	gk := NewGatekeeper(registry, defaultTestExecCfg(), WithProfiles(profiles))
 
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t14"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t14"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

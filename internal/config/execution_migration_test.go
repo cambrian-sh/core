@@ -169,6 +169,17 @@ var retiredExecutionFields = map[string]string{
 	"scout_llm_tier_enabled":   "Scout removed 2026-08-07.",
 	"scout_model":              "Scout removed 2026-08-07.",
 	"scout_scan_cap":           "Scout removed 2026-08-07.",
+
+	// The auction and the EFE selector retired 2026-08-07: capability-typed
+	// dispatch (ADR-0100) is now the only selection mechanism.
+	"bid_round":             "Auction retired 2026-08-07; dispatch is unconditional.",
+	"resource_selector":     "EFE selector retired 2026-08-07; it was never wired in any shipped config.",
+	"efe_traffic_percent":   "EFE selector retired 2026-08-07.",
+	"efe_exploration_bonus": "EFE selector retired 2026-08-07.",
+
+	// Auction vocabulary retired 2026-08-07 with the mechanism itself.
+	"auction_bid_timeout_ms": "Auction retired 2026-08-07; there is no bid round to time out.",
+	"bypass_auction":         "Renamed bypass_selection 2026-08-07 — it now bypasses dispatch, not an auction.",
 }
 
 func TestExecutionDefaultsSurvivedNesting(t *testing.T) {

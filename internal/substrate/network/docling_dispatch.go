@@ -14,8 +14,8 @@ import (
 // like the kg_extractor dispatcher (ADR-0060). The agent parses a document into
 // its real hierarchy; this Go side is just dispatch + JSON parse.
 type DoclingDispatcher struct {
-	Auctioneer domain.Auctioneer
-	AgentID    string // default "docling_agent"
+	Caller  domain.AgentCaller
+	AgentID string // default "docling_agent"
 }
 
 type doclingRequest struct {
@@ -31,7 +31,7 @@ type doclingRequest struct {
 // back to flat chunking (the chunk docs are already saved — only the structure
 // graph is lost).
 func (d *DoclingDispatcher) Parse(ctx context.Context, req memory.StructureParseRequest) (*memory.StructuredDocument, error) {
-	if d == nil || d.Auctioneer == nil {
+	if d == nil || d.Caller == nil {
 		return nil, nil
 	}
 	agentID := d.AgentID
@@ -51,7 +51,7 @@ func (d *DoclingDispatcher) Parse(ctx context.Context, req memory.StructureParse
 		Payload:   &domain.Payload{Type: "structure_request", Data: reqData},
 		Context:   map[string]string{"task_id": "docling-parse"},
 	}
-	resp, err := d.Auctioneer.CallAgent(ctx, agentID, h, "")
+	resp, err := d.Caller.CallAgent(ctx, agentID, h, "")
 	if err != nil || resp == nil || resp.Payload == nil || len(resp.Payload.Data) == 0 {
 		slog.DebugContext(ctx, "docling dispatch: no structure returned", "err", err)
 		return nil, err

@@ -18,7 +18,7 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 	}
 
 	switch e := se.Event.(type) {
-	case domain.AuctionEventPayload:
+	case domain.SelectionEventPayload:
 		bids := make([]*pb.BidEntryOp, len(e.Bids))
 		for i, b := range e.Bids {
 			bids[i] = &pb.BidEntryOp{

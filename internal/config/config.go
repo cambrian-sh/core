@@ -189,7 +189,7 @@ type VerificationConfig struct {
 type RoutingConfig struct {
 	// CapabilityContract turns on the ROUTE-03 capability contract: the planner
 	// emits per-step required_capabilities from the live capability-cluster
-	// vocabulary, those flow into the AuctionTask, and L1 Declaration hard-gates
+	// vocabulary, those flow into the DispatchTask, and L1 Declaration hard-gates
 	// candidates on required ⊆ manifest.Capabilities. Default false (arm toggle):
 	// OFF is byte-identical to the pre-ROUTE-03 kernel — the planner uses its
 	// original prompt/hash and no capability requirements are threaded.
@@ -214,17 +214,6 @@ type RoutingConfig struct {
 	// ExplorationRate is the probability of selecting a random TraitModel candidate
 	// instead of the top-scored one (ε-greedy exploration). Default: 0.05.
 	ExplorationRate float64 `json:"exploration_rate"`
-
-	// BidRound (ADR-0100 P0) controls WHICH selection mechanism runs.
-	//
-	// false (default) ⇒ capability-typed DISPATCH: eligibility → merit ranking →
-	// argmax (or cheapest-competent, see DispatchCheapEnergyMax). Zero RPCs, zero
-	// LLM calls, and only the winner's process is booted.
-	//
-	// true ⇒ the legacy AUCTION: solicit a bid from every candidate, booting each
-	// one to ask. Retained ONLY to capture the A/B evidence; both this flag and the
-	// auction are deleted in ADR-0100 P3. Do not build on it.
-	BidRound bool `json:"bid_round"`
 
 	// DispatchCheapEnergyMax is the Step.MaxEnergy at or below which a VERIFIED step
 	// (CheckpointAfter) takes the cheapest competent agent instead of merit-argmax
@@ -271,23 +260,19 @@ type RoutingConfig struct {
 	// ProvisionalExplorationWindowSeconds is the sliding window for that budget. Default 3600.
 	ProvisionalExplorationWindowSeconds int `json:"provisional_exploration_window_seconds"`
 
-	// AuctionBidTimeoutMs is the total duration (ms) for all agents to submit bids in an auction.
-	// Default: 2000.
-	AuctionBidTimeoutMs int `json:"auction_bid_timeout_ms"`
-
 	// ProposalTimeoutMs is the per-agent RPC timeout (ms) when calling RequestProposal.
 	// Default: 2000.
 	ProposalTimeoutMs int `json:"proposal_timeout_ms"`
 
-	// BypassAuction (ADR-0050 D1) short-circuits Server.Execute past the
+	// BypassSelection (ADR-0050 D1) short-circuits Server.Execute past the
 	// planner/auction/DAG path and dispatches the user's input verbatim to
 	// SingleAgentID — the within-substrate no-orchestration control arm the
 	// benchmark harness uses for routing A/Bs (ROUTE-01 baselines). Default
 	// OFF; production behavior is unchanged when false.
-	BypassAuction bool `json:"bypass_auction,omitempty"`
+	BypassSelection bool `json:"bypass_selection,omitempty"`
 
 	// SingleAgentID is the agent the bypass path dispatches to. Required when
-	// BypassAuction is true; Execute fails loud when it is empty or unknown.
+	// BypassSelection is true; Execute fails loud when it is empty or unknown.
 	SingleAgentID string `json:"single_agent_id,omitempty"`
 
 	// ADR-0057 (three-tier config): ReactiveEngine tuning is PREMIUM config and lives
@@ -295,20 +280,6 @@ type RoutingConfig struct {
 	// It is intentionally absent from the OSS ExecutionConfig schema.
 
 	// ADR-0037: Central-Executive Planner resource selection.
-	// ResourceSelector chooses the selection mechanism: "auction" (status quo
-	// control), "efe" (inference treatment), or "auto" (session-scoped A/B split
-	// governed by EFETrafficPercent). Default: "auction".
-	ResourceSelector string `json:"resource_selector,omitempty"`
-
-	// EFETrafficPercent is the fraction [0,100] of sessions assigned to the EFE
-	// arm when ResourceSelector="auto". Session-scoped (not step-scoped) so every
-	// step in a plan uses the same mechanism, keeping A/B attribution clean.
-	// Default: 0 (safe rollout — 100% auction even in "auto").
-	EFETrafficPercent int `json:"efe_traffic_percent,omitempty"`
-
-	// EFEExplorationBonus scales the epistemic (uncertainty-driven) term in the
-	// EFE pick (ADR-0037 D9). A deferred estimator tuned within the spike.
-	EFEExplorationBonus float64 `json:"efe_exploration_bonus,omitempty"`
 }
 
 // CapabilityConfig — Capability vocabulary, resolution and the retired clusterer knobs.
@@ -1463,9 +1434,7 @@ func DefaultConfig() *Config {
 				AgentPinning:                        true, // honour an explicit "use agent X" directive
 				RoutingTraceEnabled:                 true,
 				ExplorationRate:                     0.05,
-				AuctionBidTimeoutMs:                 2000,
 				ProposalTimeoutMs:                   2000,
-				BidRound:                            false, // ADR-0100: dispatch is the default; true = legacy auction (A/B only)
 				DispatchCheapEnergyMax:              0,     // cheapest-competent branch OFF until the A/B lands (P0 = pure argmax)
 				DispatchMeritFloor:                  0.5,   // neutral prior; a candidate must be at least average to be "competent"
 				CalibratedBids:                      false, // ROUTE-05 arm toggle; OFF = raw self-reported confidence
@@ -1474,9 +1443,6 @@ func DefaultConfig() *Config {
 				LearnedScorer:                       false, // ROUTE-07 arm toggle; OFF = hand-weighted GatekeeperScore
 				ProvisionalExplorationBudget:        3,
 				ProvisionalExplorationWindowSeconds: 3600,
-				ResourceSelector:                    "auction",
-				EFETrafficPercent:                   0,
-				EFEExplorationBonus:                 0.1,
 			},
 			Capability: CapabilityConfig{
 				CapabilityClusterThreshold:       0.80,
@@ -2016,9 +1982,6 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	if c.Plan.PlanDriftDays < 0 {
 		errs = append(errs, "plan_drift_days must be >= 0")
 	}
-	if c.Routing.AuctionBidTimeoutMs < 0 {
-		errs = append(errs, "auction_bid_timeout_ms must be >= 0")
-	}
 	if c.Routing.ProposalTimeoutMs < 0 {
 		errs = append(errs, "proposal_timeout_ms must be >= 0")
 	}
@@ -2035,18 +1998,6 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 		if _, ok := c.Hippocampus.HippocampusPolicies[c.Hippocampus.HippocampusDefaultPolicy]; !ok {
 			errs = append(errs, fmt.Sprintf("hippocampus_default_policy %q is not a key in hippocampus_policies", c.Hippocampus.HippocampusDefaultPolicy))
 		}
-	}
-	switch c.Routing.ResourceSelector {
-	case "", "auction", "efe", "auto":
-		// valid (empty resolves to auction)
-	default:
-		errs = append(errs, fmt.Sprintf("resource_selector %q must be one of auction|efe|auto", c.Routing.ResourceSelector))
-	}
-	if c.Routing.EFETrafficPercent < 0 || c.Routing.EFETrafficPercent > 100 {
-		errs = append(errs, "efe_traffic_percent must be in [0, 100]")
-	}
-	if c.Routing.EFEExplorationBonus < 0 {
-		errs = append(errs, "efe_exploration_bonus must be >= 0")
 	}
 
 	if len(errs) > 0 {
