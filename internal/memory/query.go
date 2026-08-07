@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -77,6 +78,12 @@ type QueryService struct {
 	decisionObs    domain.DecisionObserver
 	cfgFingerprint string
 	queryCounter   atomic.Uint64 // monotonic within a process; feeds QueryID
+	// ADR-0118 D5: the substrate consultant. nil (the OSS default) ⇒ the consult
+	// site is a nil check and behaviour is bit-identical. Premium injects an
+	// implementation that answers the MODELLED part of a query exactly through
+	// the scoped substrate seam; its citations ride ONE synthetic result row
+	// appended after truncation — typed rows never enter the ranked list.
+	substrate domain.SubstrateConsultant
 }
 
 // Planner is the agentic retrieval loop's LLM step surface
@@ -156,6 +163,74 @@ const (
 	AgenticTextKey   = "_agentic_text"
 	AgenticTraceKey  = "_agentic_trace"
 )
+
+// SubstrateCitationsID aliases the reserved id of the synthetic citations row
+// (ADR-0118 D5) — defined in domain so wire handlers can exempt it from
+// caller-window truncation without importing this package.
+const SubstrateCitationsID = domain.SubstrateCitationsID
+
+// Metadata keys on the substrate-citations row. The guarantee travels verbatim
+// (a row set without its warranty is just another ranked list); rows are the
+// typed answers, JSON-encoded and bounded; evidence ids receipt them.
+const (
+	SubstrateGuaranteeKey   = "_substrate_guarantee"
+	SubstrateRowsKey        = "_substrate_rows"
+	SubstrateEvidenceIDsKey = "_substrate_evidence_ids"
+)
+
+// substrateConsultTimeout bounds the fact-lane consult (ADR-0118 D5). The
+// substrate answers from indexed typed rows — if it cannot answer inside this
+// budget something is wrong, and retrieval fails open rather than waiting.
+const substrateConsultTimeout = 2 * time.Second
+
+// appendSubstrateCitations consults the substrate for the modelled part of the
+// query and, when it stands behind an answer, appends ONE synthetic metadata
+// row. Every failure mode — nil consultant, error, refusal, nothing modelled —
+// returns results unchanged (invariant 5: reads fail open). Never displaces:
+// runs after truncation and inserts nothing into the ranked list.
+func (q *QueryService) appendSubstrateCitations(ctx context.Context, query, callerID string, results []domain.SearchResult) []domain.SearchResult {
+	if q.substrate == nil {
+		return results
+	}
+	cctx, cancel := context.WithTimeout(ctx, substrateConsultTimeout)
+	defer cancel()
+	citations, err := q.substrate.Consult(cctx, callerID, query)
+	if err != nil || len(citations) == 0 {
+		if err != nil {
+			slog.Debug("ADR-0118: substrate consult failed open", "err", err)
+		}
+		return results
+	}
+	type wireCitation struct {
+		Entity    string            `json:"entity"`
+		Predicate string            `json:"predicate,omitempty"`
+		Guarantee string            `json:"guarantee"`
+		Rows      []domain.QueryRow `json:"rows"`
+	}
+	wire := make([]wireCitation, 0, len(citations))
+	var evidenceIDs []string
+	for _, c := range citations {
+		wire = append(wire, wireCitation{
+			Entity: c.Entity, Predicate: c.Predicate, Guarantee: c.Guarantee, Rows: c.Rows,
+		})
+		evidenceIDs = append(evidenceIDs, c.EvidenceIDs...)
+	}
+	rowsJSON, err := json.Marshal(wire)
+	if err != nil {
+		return results
+	}
+	return append(results, domain.SearchResult{
+		Document: domain.Document{
+			ID:           SubstrateCitationsID,
+			DocumentType: domain.DocTypeMnemonicFact,
+			Metadata: map[string]interface{}{
+				SubstrateGuaranteeKey:   citations[0].Guarantee,
+				SubstrateRowsKey:        string(rowsJSON),
+				SubstrateEvidenceIDsKey: strings.Join(evidenceIDs, ","),
+			},
+		},
+	})
+}
 
 // traceDoc is one retrieved chunk as recorded in the loop trace (bounded).
 type traceDoc struct {
@@ -419,6 +494,12 @@ func NewQueryService(embedder domain.Embedder, readStore domain.VectorStore, aut
 func (q *QueryService) SetDecisionObserver(obs domain.DecisionObserver, fingerprint string) {
 	q.decisionObs = obs
 	q.cfgFingerprint = fingerprint
+}
+
+// SetSubstrateConsultant wires the ADR-0118 D5 fact-lane substrate hook. c nil
+// (the OSS default) leaves the consult site a nil check.
+func (q *QueryService) SetSubstrateConsultant(c domain.SubstrateConsultant) {
+	q.substrate = c
 }
 
 // emitDecision hands one completed retrieval to the observer (ADR-0103 D2).
@@ -1283,10 +1364,21 @@ func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]do
 	// AGENTIC_RETRIEVAL_SPEC: the fact lane runs the agentic loop (plan → retrieve
 	// → decide_continue → iterate) when enabled; otherwise the single pass. Only
 	// the fact lane loops — action/scene recall stay single-pass.
+	var (
+		results []domain.SearchResult
+		err     error
+	)
 	if q.agenticEnabled {
-		return q.agenticSearch(ctx, query, callerID, domain.DocTypeMnemonicFact, true)
+		results, err = q.agenticSearch(ctx, query, callerID, domain.DocTypeMnemonicFact, true)
+	} else {
+		results, err = q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicFact, true)
 	}
-	return q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicFact, true)
+	if err != nil {
+		return results, err
+	}
+	// ADR-0118 D5: consult the substrate for the modelled part of the query,
+	// fact lane only, after final assembly. Fails open; never displaces.
+	return q.appendSubstrateCitations(ctx, query, callerID, results), nil
 }
 
 // SearchSystem is the operator-plane fact recall at ScopeSystem (ADR-0047 D13 /

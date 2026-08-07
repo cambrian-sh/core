@@ -131,6 +131,10 @@ type Kernel struct {
 	// ExtraServices (ADR-0073) mounts downstream (premium) gRPC services on the kernel
 	// server before Serve. nil in OSS. Carried from Options through bootstrapKernel.
 	ExtraServices func(*grpc.Server)
+	// AgentGRPCServices (ADR-0118 D3) mounts premium services on the AGENT plane,
+	// keyed by fully-qualified service name. The keys route auth: exempt from the
+	// operator bearer, SurfaceAgent, x-agent-id principal seeding. nil in OSS.
+	AgentGRPCServices map[string]func(*grpc.Server)
 	// Lifecycles are background components started at boot and drained in reverse on
 	// shutdown (ADR-0074) — plugin-contributed (the reactive engine's worker pools +
 	// REACT-06 scheduler) and kernel-contributed (the ADR-0084 chat worker pool). In OSS
@@ -589,6 +593,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// name — its dimension is implied by the model and enforced by the pgvector schema,
 	// so there is no separate dimension field to fold in.
 	mem.QueryService.SetDecisionObserver(opts.DecisionObserver, cfg.Execution.RetrievalFingerprint(cfg.Embedder.Model))
+	// ADR-0118 D5: the fact-lane substrate consultant. nil (the OSS default)
+	// leaves the consult site a nil check and behaviour bit-identical.
+	mem.QueryService.SetSubstrateConsultant(opts.SubstrateConsultant)
 	// ADR-0048 #1: let Tier-2 commit offload a promoted fact's full body to CAS so
 	// recall serves {summary + content_cid} instead of the full text.
 	mem.Agent.ContentStore = storeHandle.ContentStore
@@ -1094,8 +1101,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		TracePipelinePayloads:  cfg.Execution.LLM.TracePipelinePayloads,
 		PipelineDrainerEnabled: cfg.Execution.Pipelines.DrainerEnabled,
 		Events:                 eventStore,
-		// ADR-0111: the closed query AST over all of the above.
-		QueryPlane: postgres.NewPgQueryPlane(vec.Pool(), eventStore, knowledgeStore, evStore),
+		// ADR-0111/ADR-0118: the closed query AST over all of the above, scoped.
+		// The seam takes a principal, never a predicate; the RESOLVED authorizer
+		// decides scope (same reasoning as the Documents seam above).
+		QueryKnowledge: authz.QueryKnowledgeFunc(authorizer,
+			postgres.NewPgQueryPlane(vec.Pool(), eventStore, knowledgeStore, evStore),
+			slog.Default()),
 		Manager:    meta.Manager,
 		Auctioneer: meta.Auctioneer,
 		Memory:     mem.Agent,
@@ -1872,7 +1883,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		WatchDeadLetters:   reg,                   // REACT-01 / ADR-0061
 		WatchMetrics:       watchMetricsReader,    // REACT-05 / ADR-0071
 		WatchBacktester:    watchBacktester,       // REACT-05 / ADR-0071
-		ExtraServices:      opts.ExtraServices,    // ADR-0073
+		ExtraServices:      opts.ExtraServices,     // ADR-0073
+		AgentGRPCServices:  opts.AgentGRPCServices, // ADR-0118 D3
 		Lifecycles:         lifecycles,            // ADR-0074 (empty in OSS)
 		PluginCapabilities: composed.capabilities, // ADR-0082 D2 (empty in OSS)
 		Conversations:      conversations,         // ADR-0084 D1 (nil until migrated)
@@ -1976,6 +1988,14 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			// fail-open direction this file exists to close.
 			return fmt.Errorf("SEC-03: refusing to start the gRPC server: %w", terr)
 		}
+		// ADR-0118 D3: the declared agent-plane premium services route auth —
+		// exempt from the operator bearer, SurfaceAgent, x-agent-id principal.
+		// Everything else under /cambrian.premium. now REQUIRES the bearer
+		// (closing the pre-0118 pass-through).
+		agentPlaneServices := make(map[string]bool, len(k.AgentGRPCServices))
+		for name := range k.AgentGRPCServices {
+			agentPlaneServices[name] = true
+		}
 		k.GRPC = grpc.NewServer(
 			// TLS when configured. Empty when the plane is on loopback or an operator
 			// explicitly opted into plaintext.
@@ -1984,8 +2004,8 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				// downstream handler knows where the request arrived from. It runs
 				// unconditionally — the kernel always establishes the entry point; whether
 				// that constrains anything is the decision point's business.
-				grpc.ChainUnaryInterceptor(authz.UnarySurfaceInterceptor(), operator.UnaryAuthInterceptor(operatorIDP)),
-				grpc.ChainStreamInterceptor(authz.StreamSurfaceInterceptor(), operator.StreamAuthInterceptor(operatorIDP)),
+				grpc.ChainUnaryInterceptor(authz.UnarySurfaceInterceptor(agentPlaneServices), operator.UnaryAuthInterceptor(operatorIDP, agentPlaneServices)),
+				grpc.ChainStreamInterceptor(authz.StreamSurfaceInterceptor(agentPlaneServices), operator.StreamAuthInterceptor(operatorIDP, agentPlaneServices)),
 				// The operator binary-ingest lane (IngestMemory) carries raw file bytes;
 				// gRPC's 4 MiB default rejects any PDF above it server-side before docling
 				// ever runs, so the documented upload path is unusable for real documents.
@@ -2587,6 +2607,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// server-level operator auth interceptors. nil in OSS ⇒ no extra services.
 		if k.ExtraServices != nil {
 			k.ExtraServices(k.GRPC)
+		}
+		// ADR-0118 D3: agent-plane premium services, mounted on the same server;
+		// the interceptors already treat their declared names as agent plane.
+		for _, mount := range k.AgentGRPCServices {
+			mount(k.GRPC)
 		}
 		slog.Info("🧬 Cambrian Substrate Active", "port", k.Config.Server.Port)
 		return k.GRPC.Serve(k.Listener)

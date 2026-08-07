@@ -65,28 +65,50 @@ func (c *Consumer) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			c.drainOnce(ctx)
+			c.drainUntilIdle(ctx)
 		}
 	}
 }
 
-// drainOnce processes one pending batch. Exported-ish via tests; the loop is
-// just this on a ticker.
-func (c *Consumer) drainOnce(ctx context.Context) {
+// drainUntilIdle is the pipeline Drainer's busy-queue rule applied here: a
+// pass that filled its batch and completed something goes straight round
+// again. The ticker paces an IDLE queue; it must not cap catch-up throughput
+// (one batch per tick was a hard ceiling of batch/interval items per second,
+// felt as hours of lag after any downtime). Progress is required so a head of
+// stuck items — a paused ingress, a store outage — waits out the tick instead
+// of hot-looping on the same failures.
+func (c *Consumer) drainUntilIdle(ctx context.Context) {
+	for ctx.Err() == nil {
+		fetched, completed := c.drainOnce(ctx)
+		if fetched < c.batch || completed == 0 {
+			return
+		}
+	}
+}
+
+// drainOnce processes one pending batch, reporting how many items it fetched
+// and how many completed their outbox transition (failures stay pending).
+func (c *Consumer) drainOnce(ctx context.Context) (fetched, completed int) {
 	items, err := c.store.PendingOutbox(ctx, c.batch)
 	if err != nil {
 		c.logger.Warn("evidence consumer: pending read failed", "err", err)
-		return
+		return 0, 0
 	}
 	for _, it := range items {
+		if ctx.Err() != nil {
+			return len(items), completed
+		}
 		if err := c.processItem(ctx, it); err != nil {
 			// Leave pending: at-least-once. Logged loudly because a silently
 			// growing outbox is the failure mode the metrics caveat in the
 			// ADR-0105 Known Gaps entry warned about.
 			c.logger.Warn("evidence consumer: item left pending for retry",
 				"outbox_id", it.ID, "evidence_id", it.EvidenceID, "err", err)
+			continue
 		}
+		completed++
 	}
+	return len(items), completed
 }
 
 func (c *Consumer) processItem(ctx context.Context, it domain.EvidenceOutboxItem) error {

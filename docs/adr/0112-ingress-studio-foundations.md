@@ -390,3 +390,66 @@ surface yet — those are DW-0B/DW-1/DW-2/DW-3.
 3. Drafting model/role + model-egress default posture (D10) — before DW-2.
 4. Form-encoded (Twilio) support-or-refuse; SSE as archetype vs poller mode — decided
    against the real sources, in writing (DW-4).
+
+## Addendum (2026-08-06): revise-by-prompt — the drafter gains a base
+
+The mapping stage's own copy promised revision ("What is wrong with this
+mapping?" / "Redraft it") but the wiring drafted from scratch off the profile,
+discarding the current spec. Closed by giving the SAME drafter a base:
+
+- `Drafter.DraftMappingFrom(ctx, ingressID, guidance, baseSpecJSON)` — when a
+  base is present the prompt carries the current mapping inline (operator's
+  own validated configuration — trusted material, not payload) plus the
+  revision contract: change ONLY what the requested change requires, output
+  the FULL revised object, abstain when the change is inexpressible. Same
+  repair loop, same strict parser, same execution check, same propose-only
+  contract (§12); one deterministic guard on top — a revision must keep the
+  stream identity, refused through the repair loop like any parser refusal.
+- Wire: `DraftRequest.base_spec_json` (empty = from-scratch, unchanged).
+- UI: the mapping stage now passes the shown spec as the base, so "Redraft
+  it" finally revises; live ingresses gain a "Revise the mapping" box
+  (`ReviseMapping.tsx`) that authors a proposed revision and saves it as the
+  fork the shadow-reprocess → promote flow (§11) then carries — authoring
+  only, nothing applies until promote, viewers see nothing.
+
+Verified live against the armed `usgs-earthquakes` ingress: the instruction
+"add the event itself as a role named quake; rename station to network; add
+depth_km from /geometry/coordinates/2" produced exactly that revision on the
+first draft (zero corrections), stream and all prior observations preserved,
+proposal left unsaved for the operator.
+
+## Addendum (2026-08-06): poller item identity is content-derived when the spec declares none
+
+The poller's cursor discipline has always leaned on the evidence idempotency
+triple to absorb re-fetches ("duplicates, never gaps"). That absorption only
+happens when a re-fetched item carries the SAME delivery ref — and the
+fallback for specs without `delivery_ref_path` minted a fresh random ref per
+item per tick, so the triple never matched. Measured on a live deployment:
+282,522 evidence rows for 821 distinct bodies (99.7% byte-identical
+re-archives) from one polling ingress, ~13k rows/hour — misread as a
+transformer backlog until the Overview metric was corrected.
+
+Decision: `splitItems` now derives the fallback ref from the item's bytes
+(`itm_<sha256/32>`). A poll is a re-read of the source, not a new event: the
+same bytes fetched again are the same item. Consequences, stated rather than
+implied:
+
+- An unchanged item re-polled dedups at the archive (same key, same
+  revision) — no new evidence, no outbox item, no transformer work.
+- A changed item gets a NEW key (a new lineage, not a `revises_id` link).
+  Linking revisions of one item still requires `delivery_ref_path`, which
+  remains authoritative when declared; the content-derived ref is the floor
+  beneath it, not a replacement.
+- Byte-identical members within one page collapse to one delivery. They
+  carry no distinguishing information a minted ref could add.
+- Webhook and websocket deliveries keep minted refs (`MintDeliveryRef`
+  unchanged): for a push transport, two identical deliveries genuinely are
+  two events.
+
+Follow-up (same day): `splitItems` accepts an OBJECT-valued `items_path` as a
+single item — `records_at` names what the item IS, and a single-record
+endpoint's item is the object itself. This is what lets an envelope-volatile
+whole-body poller (open-meteo's per-request `generationtime_ms` beside a
+stable `/current_weather` payload) archive one row per new reading instead of
+one per fetch. Discovery derives such roots automatically (ADR-0115
+R-ITEM-IDENTITY addendum).

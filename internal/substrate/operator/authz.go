@@ -25,6 +25,15 @@ const (
 // gated, so agent-facing Orchestrator/AgentService RPCs (UDS) pass through.
 const operatorMethodPrefix = "/cambrian.OperatorConsole/"
 
+// premiumMethodPrefix covers plugin-mounted planes (ADR-0073/ADR-0118 D3).
+// Premium services are OPERATOR-plane by default and require the same bearer
+// as the console — the pre-0118 gap where they passed through unauthenticated
+// is exactly what three comments wrongly claimed did not exist. A premium
+// service is exempt only when it was DECLARED agent-facing at registration
+// (Registry.AddAgentGRPCService), in which case the agent plane's own
+// semantics apply (x-agent-id principal, SurfaceAgent).
+const premiumMethodPrefix = "/cambrian.premium."
+
 // loginMethod is the one OperatorConsole RPC reachable without a token.
 const loginMethod = operatorMethodPrefix + "Login"
 
@@ -122,11 +131,27 @@ func bearerToken(ctx context.Context) string {
 	return strings.TrimSpace(strings.TrimPrefix(vals[0], "Bearer "))
 }
 
+// serviceOf extracts "pkg.Service" from "/pkg.Service/Method".
+func serviceOf(fullMethod string) string {
+	rest := strings.TrimPrefix(fullMethod, "/")
+	if i := strings.Index(rest, "/"); i >= 0 {
+		return rest[:i]
+	}
+	return rest
+}
+
 // authorize is the shared gate for both interceptors. It returns the principal
-// context for OperatorConsole methods, passing through everything else.
-func authorize(ctx context.Context, fullMethod string, idp OperatorIdentity) (context.Context, error) {
-	// Only gate the operator plane; agent-facing RPCs are untouched.
-	if !strings.HasPrefix(fullMethod, operatorMethodPrefix) {
+// context for OperatorConsole and premium operator-plane methods, passing
+// through the agent plane (core and declared-premium alike).
+func authorize(ctx context.Context, fullMethod string, idp OperatorIdentity, agentPlane map[string]bool) (context.Context, error) {
+	operatorConsole := strings.HasPrefix(fullMethod, operatorMethodPrefix)
+	premium := strings.HasPrefix(fullMethod, premiumMethodPrefix)
+	// Agent-facing RPCs (core, and premium services DECLARED agent-facing) are
+	// untouched: the agent plane's own semantics apply.
+	if !operatorConsole && !premium {
+		return ctx, nil
+	}
+	if premium && agentPlane[serviceOf(fullMethod)] {
 		return ctx, nil
 	}
 	// Login is the only unauthenticated operator RPC.
@@ -138,6 +163,8 @@ func authorize(ctx context.Context, fullMethod string, idp OperatorIdentity) (co
 		return ctx, err // already an Unauthenticated status
 	}
 	// Viewer is denied mutating commands; reads/feed are allowed for any role.
+	// Premium operator planes follow the same naming convention, fail-closed:
+	// anything not spelled like a read is a command.
 	if isOperatorOnly(fullMethod) && role != RoleOperator {
 		return ctx, status.Errorf(codes.PermissionDenied, "role %q may not call %s", role, fullMethod)
 	}
@@ -162,7 +189,10 @@ var operatorOnlyReads = map[string]bool{
 }
 
 func isOperatorOnly(fullMethod string) bool {
-	name := strings.TrimPrefix(fullMethod, operatorMethodPrefix)
+	name := fullMethod
+	if i := strings.LastIndex(fullMethod, "/"); i >= 0 {
+		name = fullMethod[i+1:]
+	}
 	switch name {
 	case "Login", "StreamEvents", "Snapshot":
 		return false
@@ -182,10 +212,12 @@ func isOperatorOnly(fullMethod string) bool {
 	return true
 }
 
-// UnaryAuthInterceptor gates unary OperatorConsole RPCs (ADR-0047 D13).
-func UnaryAuthInterceptor(idp OperatorIdentity) grpc.UnaryServerInterceptor {
+// UnaryAuthInterceptor gates unary OperatorConsole and premium operator-plane
+// RPCs (ADR-0047 D13; ADR-0118 D3). agentPlane names the premium services
+// DECLARED agent-facing at registration — exempt from the operator bearer.
+func UnaryAuthInterceptor(idp OperatorIdentity, agentPlane map[string]bool) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		ctx, err := authorize(ctx, info.FullMethod, idp)
+		ctx, err := authorize(ctx, info.FullMethod, idp, agentPlane)
 		if err != nil {
 			return nil, err
 		}
@@ -193,10 +225,11 @@ func UnaryAuthInterceptor(idp OperatorIdentity) grpc.UnaryServerInterceptor {
 	}
 }
 
-// StreamAuthInterceptor gates streaming OperatorConsole RPCs (e.g. StreamEvents).
-func StreamAuthInterceptor(idp OperatorIdentity) grpc.StreamServerInterceptor {
+// StreamAuthInterceptor gates streaming OperatorConsole and premium
+// operator-plane RPCs (e.g. StreamEvents).
+func StreamAuthInterceptor(idp OperatorIdentity, agentPlane map[string]bool) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		ctx, err := authorize(ss.Context(), info.FullMethod, idp)
+		ctx, err := authorize(ss.Context(), info.FullMethod, idp, agentPlane)
 		if err != nil {
 			return err
 		}

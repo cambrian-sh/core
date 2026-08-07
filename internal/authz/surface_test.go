@@ -30,9 +30,43 @@ func TestSurfaceForMethod(t *testing.T) {
 		{"", domain.SurfaceInternal},
 	}
 	for _, tc := range cases {
-		if got := authz.SurfaceForMethod(tc.method); got.Kind != tc.wantKind {
+		if got := authz.SurfaceForMethod(tc.method, nil); got.Kind != tc.wantKind {
 			t.Errorf("SurfaceForMethod(%q).Kind = %q, want %q", tc.method, got.Kind, tc.wantKind)
 		}
+	}
+}
+
+// ADR-0118 D3: a premium service DECLARED agent-facing at registration is the
+// agent plane extended — SurfaceAgent, and the caller principal seeded from
+// x-agent-id (never from any surface-claiming header).
+func TestSurfaceForMethod_DeclaredAgentPlane(t *testing.T) {
+	agentPlane := map[string]bool{"cambrian.premium.substrate.SubstrateRetrieval": true}
+	got := authz.SurfaceForMethod("/cambrian.premium.substrate.SubstrateRetrieval/Query", agentPlane)
+	if got.Kind != domain.SurfaceAgent {
+		t.Fatalf("declared agent-plane service surface = %q, want %q", got.Kind, domain.SurfaceAgent)
+	}
+	// Undeclared premium services stay operator-plane.
+	got = authz.SurfaceForMethod("/cambrian.premium.substrate.SubstrateLane/Query", agentPlane)
+	if got.Kind != domain.SurfaceOperator {
+		t.Fatalf("undeclared premium service surface = %q, want %q", got.Kind, domain.SurfaceOperator)
+	}
+}
+
+func TestSurfaceInterceptor_SeedsAgentPrincipalForDeclaredService(t *testing.T) {
+	agentPlane := map[string]bool{"cambrian.premium.substrate.SubstrateRetrieval": true}
+	var seen domain.PrincipalRef
+	handler := func(ctx context.Context, _ any) (any, error) {
+		seen = domain.PrincipalFromContext(ctx)
+		return nil, nil
+	}
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-agent-id", "analyst_agent"))
+	interceptor := authz.UnarySurfaceInterceptor(agentPlane)
+	if _, err := interceptor(ctx, nil,
+		&grpc.UnaryServerInfo{FullMethod: "/cambrian.premium.substrate.SubstrateRetrieval/Query"}, handler); err != nil {
+		t.Fatal(err)
+	}
+	if seen.ID != "analyst_agent" || seen.Kind != domain.PrincipalAgent {
+		t.Fatalf("principal = %+v, want agent principal analyst_agent", seen)
 	}
 }
 
@@ -51,7 +85,7 @@ func TestSurfaceInterceptor_IgnoresCallerSuppliedClaims(t *testing.T) {
 		"x-surface-kind", "operator",
 		"surface", "operator",
 	))
-	interceptor := authz.UnarySurfaceInterceptor()
+	interceptor := authz.UnarySurfaceInterceptor(nil)
 	if _, err := interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/cambrian.Orchestrator/QueryMemory"}, handler); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +103,7 @@ func TestSurfaceInterceptor_AlwaysStamps(t *testing.T) {
 		seen = domain.SurfaceFromContext(ctx)
 		return nil, nil
 	}
-	interceptor := authz.UnarySurfaceInterceptor()
+	interceptor := authz.UnarySurfaceInterceptor(nil)
 	if _, err := interceptor(context.Background(), nil,
 		&grpc.UnaryServerInfo{FullMethod: "/cambrian.OperatorConsole/Snapshot"}, handler); err != nil {
 		t.Fatal(err)

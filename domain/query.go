@@ -64,10 +64,24 @@ type QueryResult struct {
 	Rows      []QueryRow
 }
 
+// ErrQueryScopeMissing is returned when a query reaches the plane with a nil
+// scope predicate. Scope is a REQUIRED positional parameter (ADR-0118 D1, the
+// records-lane discipline): the 2026-07-27 records audit found unscoped call
+// sites only because making scope required broke them at compile time. Nil
+// DENIES; unrestricted is said explicitly with a bypass predicate.
+var ErrQueryScopeMissing = errors.New("knowledge query scope missing: nil predicate denies")
+
+// ErrQueryDenied is returned by the principal-resolving seam when the
+// authorizer grants the caller no read predicate at all (fail closed).
+var ErrQueryDenied = errors.New("knowledge query not authorized for principal")
+
 // QueryPlane executes validated queries. Implementations MUST call Validate
-// first and refuse on error — an invalid query never half-executes.
+// first and refuse on error — an invalid query never half-executes — and MUST
+// enforce the scope predicate on every row (ADR-0118 D2): nil scope refuses
+// with ErrQueryScopeMissing, a bypass predicate reads unrestricted, anything
+// else filters by the classification the row's provenance carries.
 type QueryPlane interface {
-	Query(ctx context.Context, q KnowledgeQuery) (QueryResult, error)
+	Query(ctx context.Context, q KnowledgeQuery, scope *TagPredicate) (QueryResult, error)
 }
 
 func cannot(format string, args ...any) error {

@@ -164,7 +164,18 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	// — without this, req.TopK was silently dropped and every caller got the
 	// config window regardless of what it asked for.
 	if k := int(req.GetTopK()); k > 0 && len(pbResults) > k {
-		pbResults = pbResults[:k]
+		trimmed := pbResults[:k:k]
+		// ADR-0118 D5: the synthetic substrate-citations row is out-of-band
+		// metadata appended AFTER the ranked window, not a ranked hit —
+		// truncating it away would silently delete the citation the answer
+		// arrived with. results and pbResults are index-aligned by the
+		// mapping loop above.
+		for i := k; i < len(results); i++ {
+			if results[i].Document.ID == domain.SubstrateCitationsID {
+				trimmed = append(trimmed, pbResults[i])
+			}
+		}
+		pbResults = trimmed
 	}
 
 	return &pb.MemoryResponse{Results: pbResults, PolicyNote: s.policyNote(ctx, callerID, len(pbResults))}, nil

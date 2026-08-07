@@ -1,6 +1,6 @@
 # ADR-0117: Typed ingress schemas, and the mapping as a pipeline element
 
-**Status:** Accepted — Part A implemented 2026-08-05; Part B designed here, next slice
+**Status:** Implemented — Part A 2026-08-05; Part A′ and Part B 2026-08-06
 **Date:** 2026-08-05
 **Amends:** ADR-0112 (ingress studio resources — adds a third versioned resource), ADR-0116 (field
 schema projection — changes its source of truth). Part B, when it ships, amends ADR-0114 D15.
@@ -65,7 +65,29 @@ bridge, SDK chat ingresses — is an ADR-0090 registration. Those now declare th
   consumed but NEVER wired in the composition root — the authz plugin's nil-guard skipped it and
   `svc.DeregisterIngress` silently no-opped. Both halves now wire on adjacent lines.
 
-## Part B (designed, next slice) — the mapping is a node on the canvas
+## Part B (implemented 2026-08-06) — the mapping is a node on the canvas
+
+As designed below, with three refinements discovered while building:
+
+- The generated shape drops the visible split: the mapping's own `fan_out` evaluates inside the
+  node into N envelopes in one receipt, and the member stream an operator gates on is
+  `item.envelopes` — typed — with an ordinary `split` theirs to add. `NeedsPayload` counts
+  `apply_mapping` as a consumer, so the router materialises the delivery and evaluation is a pure
+  in-memory function (the archive read remains the fallback for replayed old runs).
+- The envelope WIRE form lives in ONE file (`ingressstudio/envelope_wire.go`), written by the
+  apply dispatcher, read by the save, declared by the projection (`pipeline.applyMappingCols` —
+  the one effect-protocol node whose downstream shape is exactly known). Deliberately not json
+  tags on `Envelope` itself: tagging the evaluator's internal type would freeze its field names
+  into a wire contract as a refactor side effect.
+- **Dry runs execute the mapping node for real** (`WithPureDispatchers`): it performs no effect,
+  and shadowing it would feed the save's collision check synthetic receipts — the rehearsal would
+  count fictions. Only provably pure dispatchers may ride this option; the save stays shadowed.
+
+The save's writer-only mode is config-declared (`input: "envelopes"`, generator-set), never
+shape-sniffed — a delivery could legitimately carry a top-level `envelopes` key. Every pre-B
+revision lacks the key and evaluates exactly as before; ADR-0114 D15's banner should point here.
+
+## Part B (as designed) — the mapping is a node on the canvas
 
 The insight that makes this cheap: the mapping's `Evaluate(spec, body)` is already a **pure
 function** from delivery bytes to typed envelopes, and the mapping language already declares

@@ -318,6 +318,11 @@ before the runtime lands is a separate call, tracked outside this ADR.
 
 ### D15. `save_to_memory` is an adapter over ADR-0108's existing contract, not a new one
 
+> **Amended by ADR-0117 B (2026-08-06).** The principle stands — config names WHICH mapping,
+> never what it does — but the transform moved one node upstream: a visible `apply_mapping`
+> node evaluates and emits typed envelopes, and the generated save becomes a writer
+> (`input: "envelopes"`). Saves generated before that keep the behaviour described here.
+
 **Owner directive, 2026-08-02.** The node reuses ADR-0108's existing **synchronous** substrate write
 contract directly. It does not introduce a parallel request model, and the reactive engine never
 touches substrate tables.

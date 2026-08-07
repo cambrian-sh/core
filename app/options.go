@@ -98,6 +98,27 @@ type Options struct {
 	// a bypass. OSS default: nil (no extra services). ADR-0057 (Model C) / ADR-0073.
 	ExtraServices func(*grpc.Server)
 
+	// AgentGRPCServices mounts premium-owned gRPC services on the AGENT plane
+	// (ADR-0118 D3), keyed by fully-qualified gRPC service name (e.g.
+	// "cambrian.premium.substrate.SubstrateRetrieval"). Declaring the name is
+	// what routes auth: these services are exempt from the operator bearer,
+	// stamped SurfaceAgent, and have the caller principal seeded from
+	// x-agent-id metadata by the kernel's interceptors — exactly as trustworthy
+	// as the rest of the agent plane (the SEC-03 residual applies equally). No
+	// premium service name is ever hardcoded in OSS; the declaration IS the
+	// registration. OSS default: nil. Plugins contribute through
+	// Registry.AddAgentGRPCService.
+	AgentGRPCServices map[string]func(*grpc.Server)
+
+	// SubstrateConsultant, when non-nil, is consulted by the fact-lane retrieval
+	// path AFTER final assembly (ADR-0118 D5): it answers the modelled part of a
+	// query exactly through the SCOPED substrate seam and returns citations that
+	// ride a synthetic, non-displacing result row. Any error or refusal fails
+	// open to the ordinary answer. OSS default: nil — the call site is a nil
+	// check and kernel behaviour is bit-identical. Plugins contribute through
+	// Registry.SetSubstrateConsultant.
+	SubstrateConsultant domain.SubstrateConsultant
+
 	// DecisionObserver, when non-nil, receives a value-copy record of every completed
 	// retrieval (ADR-0103 D3). It observes AFTER assembly and cannot influence, delay
 	// or fail a query — retrieval reads fail open, and a provenance lane must not be
@@ -405,10 +426,17 @@ type KernelServices struct {
 	// say so rather than silently detecting over content nobody preserved.
 	EvidenceIngest func(ctx context.Context, raw domain.RawEvidence) (domain.EvidenceID, bool, error)
 
-	// QueryPlane executes the closed knowledge-query AST (ADR-0111): the seven
-	// §14 question shapes, with "cannot express safely" the only failure mode.
-	// nil when no Postgres is configured.
-	QueryPlane domain.QueryPlane
+	// QueryKnowledge executes one closed knowledge query (ADR-0111) AS the given
+	// principal (ADR-0118 D1). The seam takes a principal, never a predicate — a
+	// seam accepting a *TagPredicate would let a plugin choose its own access
+	// scope, which is a bypass with extra steps (the Documents precedent). Scope
+	// resolves inside the kernel via the effective Authorizer: the OSS default
+	// (AllowAllAuthorizer) reads unrestricted, a policy authorizer fails closed
+	// (domain.ErrQueryDenied when the principal holds no read predicate).
+	// "Cannot express safely" stays the only in-AST failure mode. This replaced
+	// the raw QueryPlane seam, which was the substrate's one unguarded read
+	// path. nil when no Postgres is configured.
+	QueryKnowledge func(ctx context.Context, principal domain.PrincipalRef, q domain.KnowledgeQuery) (domain.QueryResult, error)
 
 	// StageEvidenceContent makes one delivery's ORIGINAL bytes durable in the
 	// content-addressed store before anything else touches them (ADR-0112 §6).

@@ -7,6 +7,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -46,38 +47,78 @@ const (
 
 // SurfaceForMethod derives the surface from the gRPC method being invoked.
 //
-//   - the operator console → SurfaceOperator (a human at the console)
-//   - the agent plane      → SurfaceAgent    (an agent under its own identity)
-//   - a premium plane      → SurfaceOperator (mounted behind the same operator
+//   - the operator console  → SurfaceOperator (a human at the console)
+//   - the agent plane       → SurfaceAgent    (an agent under its own identity)
+//   - a premium plane       → SurfaceOperator (mounted behind the same operator
 //     interceptors, so it is the operator plane extended, not a new privilege)
-//   - anything else        → SurfaceInternal (an in-process kernel path)
-func SurfaceForMethod(fullMethod string) domain.SurfaceRef {
+//     — UNLESS the service was declared agent-facing at registration
+//     (ADR-0118 D3), in which case it IS the agent plane extended and gets
+//     SurfaceAgent.
+//   - anything else         → SurfaceInternal (an in-process kernel path)
+func SurfaceForMethod(fullMethod string, agentPlane map[string]bool) domain.SurfaceRef {
 	switch {
 	case strings.HasPrefix(fullMethod, operatorServicePrefix):
 		return domain.SurfaceRef{Kind: domain.SurfaceOperator, ID: "console"}
 	case strings.HasPrefix(fullMethod, agentServicePrefix):
 		return domain.SurfaceRef{Kind: domain.SurfaceAgent, ID: "grpc"}
 	case strings.HasPrefix(fullMethod, premiumServicePrefix):
+		if agentPlane[serviceNameOf(fullMethod)] {
+			return domain.SurfaceRef{Kind: domain.SurfaceAgent, ID: "premium-agent-plane"}
+		}
 		return domain.SurfaceRef{Kind: domain.SurfaceOperator, ID: "premium-plane"}
 	default:
 		return domain.SurfaceRef{Kind: domain.SurfaceInternal}
 	}
 }
 
+// serviceNameOf extracts "pkg.Service" from "/pkg.Service/Method".
+func serviceNameOf(fullMethod string) string {
+	rest := strings.TrimPrefix(fullMethod, "/")
+	if i := strings.Index(rest, "/"); i >= 0 {
+		return rest[:i]
+	}
+	return rest
+}
+
+// seedAgentPrincipal stamps the caller principal from x-agent-id metadata for
+// agent-facing premium services (ADR-0118 D3) — the interceptor equivalent of
+// what individual core handlers (ingest_memory) already do by hand. Kernel-side
+// on purpose (INV-5): the handler never reads its own identity claims. The
+// metadata itself is as trustworthy as the agent plane's transport (the SEC-03
+// residual), no more and no less.
+func seedAgentPrincipal(ctx context.Context, fullMethod string, agentPlane map[string]bool) context.Context {
+	if len(agentPlane) == 0 || !strings.HasPrefix(fullMethod, premiumServicePrefix) ||
+		!agentPlane[serviceNameOf(fullMethod)] {
+		return ctx
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ctx
+	}
+	if vals := md.Get("x-agent-id"); len(vals) > 0 && vals[0] != "" {
+		return domain.WithPrincipal(ctx, domain.AgentPrincipal(vals[0]))
+	}
+	return ctx
+}
+
 // UnarySurfaceInterceptor stamps the transport-derived surface onto every unary
-// request context. It runs unconditionally — the kernel always establishes WHERE
-// a request came from, and whether that constrains anything is the decision
+// request context (and, for declared agent-facing premium services, the caller
+// principal). It runs unconditionally — the kernel always establishes WHERE a
+// request came from, and whether that constrains anything is the decision
 // point's business.
-func UnarySurfaceInterceptor() grpc.UnaryServerInterceptor {
+func UnarySurfaceInterceptor(agentPlane map[string]bool) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		return handler(domain.WithSurface(ctx, SurfaceForMethod(info.FullMethod)), req)
+		ctx = domain.WithSurface(ctx, SurfaceForMethod(info.FullMethod, agentPlane))
+		return handler(seedAgentPrincipal(ctx, info.FullMethod, agentPlane), req)
 	}
 }
 
 // StreamSurfaceInterceptor is the streaming counterpart.
-func StreamSurfaceInterceptor() grpc.StreamServerInterceptor {
+func StreamSurfaceInterceptor(agentPlane map[string]bool) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		return handler(srv, &surfaceStream{ServerStream: ss, ctx: domain.WithSurface(ss.Context(), SurfaceForMethod(info.FullMethod))})
+		ctx := domain.WithSurface(ss.Context(), SurfaceForMethod(info.FullMethod, agentPlane))
+		ctx = seedAgentPrincipal(ctx, info.FullMethod, agentPlane)
+		return handler(srv, &surfaceStream{ServerStream: ss, ctx: ctx})
 	}
 }
 
