@@ -8,12 +8,12 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// fakeChunkTripletsStore is an in-memory ChunkTripletsStore for unit tests.
+// fakeChunkTripletsStore is an in-memory domain.ChunkTripletsStore for unit tests.
 // No DB; no LLM. Mirrors the production semantics: Save is idempotent on
 // (chunkID, h, r, t), ForChunks returns the per-chunk list, and
 // ChunksMentioningEntity scans the inverted index (head or tail).
 type fakeChunkTripletsStore struct {
-	byChunkID map[string][]ChunkTriplet
+	byChunkID map[string][]domain.ChunkTriplet
 	// lastScope records the predicate the caller threaded through, so a test can
 	// assert the ADR-0095 D9 wiring exists rather than trusting it.
 	lastScope *domain.TagPredicate
@@ -21,15 +21,15 @@ type fakeChunkTripletsStore struct {
 }
 
 func newFakeChunkTripletsStore() *fakeChunkTripletsStore {
-	return &fakeChunkTripletsStore{byChunkID: map[string][]ChunkTriplet{}}
+	return &fakeChunkTripletsStore{byChunkID: map[string][]domain.ChunkTriplet{}}
 }
 
-func (f *fakeChunkTripletsStore) SaveChunkTriplets(_ context.Context, chunkID string, triplets []ChunkTriplet) error {
+func (f *fakeChunkTripletsStore) SaveChunkTriplets(_ context.Context, chunkID string, triplets []domain.ChunkTriplet) error {
 	if f.byChunkID == nil {
-		f.byChunkID = map[string][]ChunkTriplet{}
+		f.byChunkID = map[string][]domain.ChunkTriplet{}
 	}
 	existing := f.byChunkID[chunkID]
-	keyOf := func(t ChunkTriplet) string { return t.H + "##" + t.R + "##" + t.T }
+	keyOf := func(t domain.ChunkTriplet) string { return t.H + "##" + t.R + "##" + t.T }
 	seen := make(map[string]bool, len(existing))
 	for _, t := range existing {
 		seen[keyOf(t)] = true
@@ -46,12 +46,12 @@ func (f *fakeChunkTripletsStore) SaveChunkTriplets(_ context.Context, chunkID st
 	return nil
 }
 
-func (f *fakeChunkTripletsStore) ForChunk(_ context.Context, chunkID string) ([]ChunkTriplet, error) {
+func (f *fakeChunkTripletsStore) ForChunk(_ context.Context, chunkID string) ([]domain.ChunkTriplet, error) {
 	return f.byChunkID[chunkID], nil
 }
 
-func (f *fakeChunkTripletsStore) ForChunks(_ context.Context, chunkIDs []string) (map[string][]ChunkTriplet, error) {
-	out := make(map[string][]ChunkTriplet, len(chunkIDs))
+func (f *fakeChunkTripletsStore) ForChunks(_ context.Context, chunkIDs []string) (map[string][]domain.ChunkTriplet, error) {
+	out := make(map[string][]domain.ChunkTriplet, len(chunkIDs))
 	for _, id := range chunkIDs {
 		out[id] = f.byChunkID[id]
 	}
@@ -164,13 +164,13 @@ func TestKgExpand_OneHop_AddsRelatedChunks(t *testing.T) {
 	// Related chunk (one hop): "quantum was developed at IBM"
 	// The expansion should add the related chunk because it shares entity "quantum".
 	store := newFakeChunkTripletsStore()
-	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []domain.ChunkTriplet{
 		{H: "caroline", R: "researched", T: "quantum"},
 	})
-	_ = store.SaveChunkTriplets(context.Background(), "chunk-2", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-2", []domain.ChunkTriplet{
 		{H: "quantum", R: "developed at", T: "ibm"},
 	})
-	_ = store.SaveChunkTriplets(context.Background(), "chunk-3", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-3", []domain.ChunkTriplet{
 		{H: "alice", R: "knows", T: "bob"}, // unrelated
 	})
 
@@ -222,13 +222,13 @@ func TestKgExpand_OneHopLimit(t *testing.T) {
 	// "ibm" (mentioned in chunk-2). Two-hop should reach chunk-3; one-hop
 	// should NOT.
 	store := newFakeChunkTripletsStore()
-	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []domain.ChunkTriplet{
 		{H: "caroline", R: "researched", T: "quantum"},
 	})
-	_ = store.SaveChunkTriplets(context.Background(), "chunk-2", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-2", []domain.ChunkTriplet{
 		{H: "quantum", R: "developed at", T: "ibm"},
 	})
-	_ = store.SaveChunkTriplets(context.Background(), "chunk-3", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-3", []domain.ChunkTriplet{
 		{H: "ibm", R: "headquartered in", T: "new york"},
 	})
 
@@ -265,7 +265,7 @@ func TestKgExpand_RespectsMaxExpanded(t *testing.T) {
 	// Seed mentions 5 different entities; each entity has 3 chunks. MaxExpanded=5
 	// should cap the result at seed + 5.
 	store := newFakeChunkTripletsStore()
-	_ = store.SaveChunkTriplets(context.Background(), "seed", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "seed", []domain.ChunkTriplet{
 		{H: "e1", R: "r", T: "e2"},
 		{H: "e3", R: "r", T: "e4"},
 		{H: "e5", R: "r", T: "e6"},
@@ -292,7 +292,7 @@ func TestKgExpand_RespectsMaxExpanded(t *testing.T) {
 		for j := 0; j < 3; j++ {
 			candIdx++
 			cid := "cand-" + string(rune('0'+candIdx))
-			_ = store.SaveChunkTriplets(context.Background(), cid, []ChunkTriplet{
+			_ = store.SaveChunkTriplets(context.Background(), cid, []domain.ChunkTriplet{
 				{H: ent, R: "r", T: "tail"},
 			})
 			docs[cid] = domain.Document{ID: cid, Text: ent}
@@ -322,14 +322,14 @@ func TestKgExpand_RespectsMaxExpanded(t *testing.T) {
 // ids encode their source document. Both are asserted here: no content, and no bare id.
 func TestKGExpand_DropsForbiddenChunk(t *testing.T) {
 	store := newFakeChunkTripletsStore()
-	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []domain.ChunkTriplet{
 		{H: "caroline", R: "researched", T: "quantum"},
 	})
 	// Both mention `quantum`, so both are reachable from the seed by one hop.
-	_ = store.SaveChunkTriplets(context.Background(), "chunk-public", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-public", []domain.ChunkTriplet{
 		{H: "quantum", R: "developed at", T: "ibm"},
 	})
-	_ = store.SaveChunkTriplets(context.Background(), "chunk-secret", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-secret", []domain.ChunkTriplet{
 		{H: "quantum", R: "billed via", T: "stripe"},
 	})
 
@@ -378,10 +378,10 @@ func TestKGExpand_DropsForbiddenChunk(t *testing.T) {
 // This is what makes the required `scope` parameter safe to forget.
 func TestKGExpand_NilPredicateFailsClosed(t *testing.T) {
 	store := newFakeChunkTripletsStore()
-	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []domain.ChunkTriplet{
 		{H: "caroline", R: "researched", T: "quantum"},
 	})
-	_ = store.SaveChunkTriplets(context.Background(), "chunk-2", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-2", []domain.ChunkTriplet{
 		{H: "quantum", R: "developed at", T: "ibm"},
 	})
 
@@ -413,10 +413,10 @@ func TestKGExpand_NilPredicateFailsClosed(t *testing.T) {
 // still compiles and still returns rows.
 func TestKGExpand_ThreadsScopeToTripletStore(t *testing.T) {
 	store := newFakeChunkTripletsStore()
-	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []domain.ChunkTriplet{
 		{H: "caroline", R: "researched", T: "quantum"},
 	})
-	_ = store.SaveChunkTriplets(context.Background(), "chunk-2", []ChunkTriplet{
+	_ = store.SaveChunkTriplets(context.Background(), "chunk-2", []domain.ChunkTriplet{
 		{H: "quantum", R: "developed at", T: "ibm"},
 	})
 

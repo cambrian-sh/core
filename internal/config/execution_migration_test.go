@@ -146,6 +146,31 @@ func isExecutionGroup(name string) bool {
 // It compares by LEAF key, so it is blind to which block a field ended up in and
 // only fails when a value changed or a field vanished — which are the two things
 // a 198-field move can silently get wrong.
+// retiredExecutionFields are v1 fields that were DELIBERATELY removed after the
+// nesting move, with the reason. They are exempt from the "was lost" check and
+// nothing else — a field not listed here that vanishes is still a failure.
+//
+// The golden snapshot is deliberately NOT edited to drop them: it is the historical
+// record of what v1 actually had, and rewriting history is the one thing that would
+// make this guard meaningless.
+var retiredExecutionFields = map[string]string{
+	"hyde_enabled": "HyDE removed 2026-08-07: the hypothetical-passage lane was off by " +
+		"default and prior benchmarking showed no recall gain.",
+
+	// Scout retired 2026-08-07 (ADR pending): the whole pre-plan discovery organ —
+	// deterministic probe registry, the opt-in LLM tier, and the scout_agent principal
+	// with its discovery-safe tool ceiling.
+	"disable_scout":            "Scout removed 2026-08-07.",
+	"discovery_safe_tools":     "Scout removed 2026-08-07: the ceiling had no principal left to bind.",
+	"scout_discovery_roots":    "Scout removed 2026-08-07.",
+	"scout_enabled":            "Scout removed 2026-08-07.",
+	"scout_http_allow_private": "Scout removed 2026-08-07.",
+	"scout_http_probe_enabled": "Scout removed 2026-08-07.",
+	"scout_llm_tier_enabled":   "Scout removed 2026-08-07.",
+	"scout_model":              "Scout removed 2026-08-07.",
+	"scout_scan_cap":           "Scout removed 2026-08-07.",
+}
+
 func TestExecutionDefaultsSurvivedNesting(t *testing.T) {
 	raw, err := os.ReadFile(legacyGoldenPath)
 	if err != nil {
@@ -161,7 +186,9 @@ func TestExecutionDefaultsSurvivedNesting(t *testing.T) {
 	for k, wantVal := range want {
 		gotVal, ok := got[k]
 		if !ok {
-			missing = append(missing, k)
+			if _, retired := retiredExecutionFields[k]; !retired {
+				missing = append(missing, k)
+			}
 			continue
 		}
 		if !jsonEqual(wantVal, gotVal) {

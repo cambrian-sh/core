@@ -8,7 +8,7 @@ import (
 )
 
 // Cycle 9 — Test 15:
-// The real agents/system/ tree in this repo (scout_agent, reranker_agent,
+// The real agents/system/ tree in this repo (retrieval_agent, reranker_agent,
 // kg_extractor_agent — all package form after the migration) must be
 // auto-discovered and registered with System=true. This is the integration
 // check that ties the seeder walk + the kernel's domain.IsSystemAgent
@@ -37,9 +37,9 @@ func TestSeed_RealSystemAgents_RegisteredAsSystem(t *testing.T) {
 	// it failed on every added agent while telling you nothing about the property
 	// it exists to check.
 	wantIDs := map[string]bool{
-		"scout_agent":        false,
 		"reranker_agent":     false,
 		"kg_extractor_agent": false,
+		"retrieval_agent":    false,
 	}
 	for _, a := range agents {
 		if _, ok := wantIDs[a.ID]; !ok {

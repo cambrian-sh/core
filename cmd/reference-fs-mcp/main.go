@@ -1,5 +1,5 @@
 // Command reference-fs-mcp is a reference READ-ONLY filesystem MCP server for Cambrian's
-// Scout pre-plan discovery (ADR-0051 issue-007). It exposes two read-only tools —
+// MCP integration testing. It exposes two read-only tools —
 // list_directory and read_file — root-jailed to a single directory, over stdio. It has NO
 // write/mutating operations, so the operator can safely tag it `discovery-safe` (D6).
 //
@@ -7,7 +7,7 @@
 //
 //	{ "id": "fs", "endpoint": "reference-fs-mcp", "args": ["--root", "/path/to/workspace"] }
 //
-// The Scout then discovers list_directory/read_file via find_tools (no hardcoded names) and
+// A client then discovers list_directory/read_file via find_tools (no hardcoded names) and
 // the helicopter-class grounding works out of the box, without Cambrian shipping a System
 // tool (System tools stay deferred; discovery is MCP-only — ADR-0051 D4).
 package main

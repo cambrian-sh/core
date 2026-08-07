@@ -19,7 +19,7 @@ type testBatcherStore struct {
 	saves uint64
 }
 
-func (s *testBatcherStore) SaveChunkTriplets(ctx context.Context, chunkID string, triplets []ChunkTriplet) error {
+func (s *testBatcherStore) SaveChunkTriplets(ctx context.Context, chunkID string, triplets []domain.ChunkTriplet) error {
 	atomic.AddUint64(&s.saves, 1)
 	return s.fakeChunkTripletsStore.SaveChunkTriplets(ctx, chunkID, triplets)
 }

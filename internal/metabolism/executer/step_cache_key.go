@@ -21,8 +21,16 @@ var codeGenKeywords = []string{"write", "implement", "generate code"}
 //  1. Explicit Step.CacheTTLSeconds > 0 — Planner intent beats all heuristics.
 //  2. IsThought=true → policies["thought"] or 1h.
 //  3. Code-gen query → policies["code_gen"] or 0 (never cache).
-//  4. RecommendedModel set → policies["cognitive"] or 24h.
-//  5. Default → policies["tool"] or 7 days.
+//  4. Default → policies["tool"] or 7 days.
+//
+// A former rung keyed off Step.RecommendedModel — a step carrying a planner-assigned
+// model got policies["cognitive"] or 24h. That was a PROXY: the routing field happened
+// to correlate with "expensive reasoning step", and nothing validated the correlation.
+// The planner no longer assigns models, so the proxy has no carrier and was removed
+// rather than replaced with an invented one. A step that needs a shorter TTL says so
+// explicitly via CacheTTLSeconds (rung 1), which already outranks every heuristic.
+// CONSEQUENCE: steps that previously matched rung 4 now take the 7-day tool default
+// instead of 24h. Tune step_cache_policies.tool if that is too long.
 //
 // policies may be nil — nil map lookups return the zero value without panicking.
 func resolveCacheTTL(step domain.Step, policies map[string]int) time.Duration {
@@ -43,12 +51,6 @@ func resolveCacheTTL(step domain.Step, policies map[string]int) time.Duration {
 			}
 			return 0
 		}
-	}
-	if step.RecommendedModel != "" {
-		if h := policies["cognitive"]; h > 0 {
-			return time.Duration(h) * time.Hour
-		}
-		return 24 * time.Hour
 	}
 	if h := policies["tool"]; h > 0 {
 		return time.Duration(h) * time.Hour

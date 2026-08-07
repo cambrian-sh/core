@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/cambrian-sh/core/internal/memory"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // SaveDocument upserts the source-document entity (ADR-0093).
@@ -17,7 +17,7 @@ import (
 // load-bearing for access control. A classification you cannot constrain, index, or
 // see in the schema is one that drifts — which is precisely what happened when the
 // only copies lived in per-chunk JSON.
-func (p *PgVectorAdapter) SaveDocument(ctx context.Context, doc memory.SourceDocument) ([]string, error) {
+func (p *PgVectorAdapter) SaveDocument(ctx context.Context, doc domain.SourceDocument) ([]string, error) {
 	if doc.ID == "" {
 		return nil, nil
 	}
@@ -51,4 +51,4 @@ func (p *PgVectorAdapter) SaveDocument(ctx context.Context, doc memory.SourceDoc
 }
 
 // compile-time proof the adapter satisfies the ingest port.
-var _ memory.DocumentStore = (*PgVectorAdapter)(nil)
+var _ domain.DocumentStore = (*PgVectorAdapter)(nil)

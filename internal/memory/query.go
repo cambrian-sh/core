@@ -37,40 +37,39 @@ type Spreader interface {
 type QueryService struct {
 	embedder         domain.Embedder
 	vectorStore      domain.VectorStore
-	authz            domain.Authorizer       // ADR-0085: decision point; nil ⇒ OSS allow-all
-	spreader         Spreader                // ADR-0048 D2: nil = no associative expansion (flag-gated at wiring)
-	floor            float64                 // ADR-0048 #1: min cosine to return a recalled fact; 0 = disabled
-	graphWriter      domain.GraphStore       // ADR-0049 D10: Hebbian co-activation edge writes; nil = disabled
-	heb              hebbianParams           // ADR-0049 D10: Hebbian tuning (off unless EnableHebbian wired)
-	entityIdx        *EntityIndex            // ADR-0052: in-memory entity reverse index; nil = surface-only recall
-	assocWeight      float64                 // ADR-0052: β in the re-rank formula; default 0.2
-	assocLambda      float64                 // ADR-0052: λ for the temporal-decay term in the re-rank; default 0.005
-	assocTopK        int                     // ADR-0052: top-K entity keys to seed from; default 3
-	chunkTriplets    ChunkTripletsStore      // ADR-0053 Phase 0: per-chunk KG; nil = no KG expansion (legacy)
-	kgHops           int                     // ADR-0053 Phase 0: KG expansion depth; default 1
-	kgMaxExpanded    int                     // ADR-0053 Phase 0: max new chunks added by KG expansion; default 20
-	kgMaxEntities    int                     // ADR-0053 Phase 0: max entities considered per hop; default 30
-	kgPerEntity      int                     // ADR-0053 Phase 0: max chunks pulled per entity; default 5
-	queryEntitySeed  bool                    // recall: seed kgExpand from entities extracted from the QUERY text (LLM-free)
-	anchorConstraint bool                    // recall: promote chunks carrying the query's document-local anchors (companion to the anchor tier)
-	sectionStore     SectionScopedStore      // ADR-0060: structure-graph section-scoped retrieval; nil = disabled
-	neighborWindow   bool                    // ADR-0060: expand each returned chunk with its document neighbors
-	blender          atomic.Pointer[Blender] // ADR-0054 Stage A: nil = no blend re-rank; hot-swappable at runtime (SetBlendWeights ← operator SetRuntimeConfig)
-	rankSignals      RankSignalStore         // ADR-0054 Stage A: pagerank + per-chunk confidence source
-	recallTopK       int                     // ADR-0054: results returned to caller; 0 ⇒ defaultRecallTopK
-	recallOverFetch  int                     // ADR-0054: seed/ANN fetch size; 0 ⇒ defaultRecallOverFetch
-	lexical          LexicalSearcher         // ADR-0054 hybrid: nil = vector-only recall
-	rrfK             int                     // ADR-0054 hybrid: RRF constant; 0 ⇒ 60
-	lexicalWeight    float64                 // hybrid: multiplier on the lexical lane's RRF contribution (entity-anchoring); ≤0 ⇒ 1.0
-	hydeEnabled      bool                    // HyDE: embed a hypothetical answer passage for hop-1 dense retrieval
-	ircotEnabled     bool                    // IRCoT: reason-then-retrieve loop (generate CoT step, retrieve on it)
-	decompEnabled    bool                    // up-front grounded decomposition: decompose the whole question, retrieve+answer each sub-question
-	reranker         Reranker                // ADR-0054 Stage B: nil = no cross-encoder rerank (Stage-A order kept)
-	rerankTopK       int                     // ADR-0054 Stage B: candidates rescored by the cross-encoder; 0 ⇒ defaultRerankTopK
-	rerankWeight     float64                 // ADR-0054 Stage B: w_bge in FinalScore; ≤0 ⇒ 0.5
-	agenticEnabled   bool                    // AGENTIC_RETRIEVAL_SPEC: run the LLM query-planner before the single pass
-	planner          Planner                 // agentic: query-planner (Go→retrieval_agent dispatcher); nil = fail-open identity
-	agenticMaxHops   int                     // agentic: loop iteration bound; Phase 2a = 1
+	authz            domain.Authorizer         // ADR-0085: decision point; nil ⇒ OSS allow-all
+	spreader         Spreader                  // ADR-0048 D2: nil = no associative expansion (flag-gated at wiring)
+	floor            float64                   // ADR-0048 #1: min cosine to return a recalled fact; 0 = disabled
+	graphWriter      domain.GraphStore         // ADR-0049 D10: Hebbian co-activation edge writes; nil = disabled
+	heb              hebbianParams             // ADR-0049 D10: Hebbian tuning (off unless EnableHebbian wired)
+	entityIdx        *EntityIndex              // ADR-0052: in-memory entity reverse index; nil = surface-only recall
+	assocWeight      float64                   // ADR-0052: β in the re-rank formula; default 0.2
+	assocLambda      float64                   // ADR-0052: λ for the temporal-decay term in the re-rank; default 0.005
+	assocTopK        int                       // ADR-0052: top-K entity keys to seed from; default 3
+	chunkTriplets    domain.ChunkTripletsStore // ADR-0053 Phase 0: per-chunk KG; nil = no KG expansion (legacy)
+	kgHops           int                       // ADR-0053 Phase 0: KG expansion depth; default 1
+	kgMaxExpanded    int                       // ADR-0053 Phase 0: max new chunks added by KG expansion; default 20
+	kgMaxEntities    int                       // ADR-0053 Phase 0: max entities considered per hop; default 30
+	kgPerEntity      int                       // ADR-0053 Phase 0: max chunks pulled per entity; default 5
+	queryEntitySeed  bool                      // recall: seed kgExpand from entities extracted from the QUERY text (LLM-free)
+	anchorConstraint bool                      // recall: promote chunks carrying the query's document-local anchors (companion to the anchor tier)
+	sectionStore     SectionScopedStore        // ADR-0060: structure-graph section-scoped retrieval; nil = disabled
+	neighborWindow   bool                      // ADR-0060: expand each returned chunk with its document neighbors
+	blender          atomic.Pointer[Blender]   // ADR-0054 Stage A: nil = no blend re-rank; hot-swappable at runtime (SetBlendWeights ← operator SetRuntimeConfig)
+	rankSignals      RankSignalStore           // ADR-0054 Stage A: pagerank + per-chunk confidence source
+	recallTopK       int                       // ADR-0054: results returned to caller; 0 ⇒ defaultRecallTopK
+	recallOverFetch  int                       // ADR-0054: seed/ANN fetch size; 0 ⇒ defaultRecallOverFetch
+	lexical          LexicalSearcher           // ADR-0054 hybrid: nil = vector-only recall
+	rrfK             int                       // ADR-0054 hybrid: RRF constant; 0 ⇒ 60
+	lexicalWeight    float64                   // hybrid: multiplier on the lexical lane's RRF contribution (entity-anchoring); ≤0 ⇒ 1.0
+	ircotEnabled     bool                      // IRCoT: reason-then-retrieve loop (generate CoT step, retrieve on it)
+	decompEnabled    bool                      // up-front grounded decomposition: decompose the whole question, retrieve+answer each sub-question
+	reranker         Reranker                  // ADR-0054 Stage B: nil = no cross-encoder rerank (Stage-A order kept)
+	rerankTopK       int                       // ADR-0054 Stage B: candidates rescored by the cross-encoder; 0 ⇒ defaultRerankTopK
+	rerankWeight     float64                   // ADR-0054 Stage B: w_bge in FinalScore; ≤0 ⇒ 0.5
+	agenticEnabled   bool                      // AGENTIC_RETRIEVAL_SPEC: run the LLM query-planner before the single pass
+	planner          Planner                   // agentic: query-planner (Go→retrieval_agent dispatcher); nil = fail-open identity
+	agenticMaxHops   int                       // agentic: loop iteration bound; Phase 2a = 1
 	// ADR-0103 D3: decision-provenance seam. nil (the OSS default) ⇒ the emit site
 	// is a nil check and behaviour is bit-identical. cfgFingerprint is captured once
 	// at wiring rather than recomputed per query — hashing the config on the hot path
@@ -112,13 +111,6 @@ type Planner interface {
 // it, so its answer text stays citation-marker-free.
 type CitedSynthesizer interface {
 	SynthesizeCited(ctx context.Context, query string, chunks []string) (status, text string, err error)
-}
-
-// HydePlanner is an OPTIONAL planner capability: generate a hypothetical answer
-// passage to embed for hop-1 dense retrieval (HyDE). The loop type-asserts for it
-// and only uses it when hyde is enabled; absence ⇒ embed the real query (no-op).
-type HydePlanner interface {
-	PlanHyde(ctx context.Context, query string) (string, error)
 }
 
 // ReasoningPlanner is an OPTIONAL planner capability for IRCoT (interleave
@@ -376,11 +368,6 @@ func (q *QueryService) EnableHybrid(lex LexicalSearcher, rrfK int) {
 // large noisy store. ≤0 or 1 ⇒ the symmetric default.
 func (q *QueryService) SetLexicalWeight(w float64) { q.lexicalWeight = w }
 
-// SetHydeEnabled toggles HyDE hop-1 retrieval (embed a hypothetical answer
-// passage instead of the raw question for the dense lane). Requires the planner
-// to implement HydePlanner; otherwise it silently no-ops.
-func (q *QueryService) SetHydeEnabled(on bool) { q.hydeEnabled = on }
-
 // SetIrcotEnabled toggles the IRCoT reason-then-retrieve loop. Requires the
 // planner to implement ReasoningPlanner; otherwise it silently no-ops (legacy loop).
 func (q *QueryService) SetIrcotEnabled(on bool) { q.ircotEnabled = on }
@@ -562,7 +549,7 @@ func (q *QueryService) emitDecision(query, callerID, sessionID, docType string, 
 // bound the expansion. Zero values fall back to kgExpand defaults
 // (1 hop, +20 chunks, 30 entities). Wiring is the same flag-gated shape as
 // the spreader / entity index — nil store = no KG expansion (legacy).
-func (q *QueryService) EnableKG2RAG(store ChunkTripletsStore, hops, maxExpanded, maxEntities, perEntity int) {
+func (q *QueryService) EnableKG2RAG(store domain.ChunkTripletsStore, hops, maxExpanded, maxEntities, perEntity int) {
 	q.chunkTriplets = store
 	q.kgHops = hops
 	q.kgMaxExpanded = maxExpanded
@@ -651,18 +638,7 @@ func (q *QueryService) agenticSearch(ctx context.Context, query, callerID, docTy
 		} else {
 			planned = q.planQuery(ctx, query, scratchpad, history, hop)
 		}
-		// HyDE (hop-1 only): embed a hypothetical answer passage for the dense lane.
-		// Later hops look up a known bridge entity where exact match already works,
-		// and a hypothetical would just add drift. Fail-open: empty ⇒ embed query.
-		embedText := ""
-		if hop == 0 && q.hydeEnabled {
-			if hp, ok := q.planner.(HydePlanner); ok {
-				if passage, herr := hp.PlanHyde(ctx, query); herr == nil {
-					embedText = passage
-				}
-			}
-		}
-		hits, err := q.searchByType(ctx, planned, embedText, callerID, docType, spread)
+		hits, err := q.searchByType(ctx, planned, callerID, docType, spread)
 		if err != nil {
 			if len(hopResults) > 0 {
 				return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), trace, cot), nil // fail-open to what we have
@@ -730,14 +706,14 @@ func (q *QueryService) agenticSearch(ctx context.Context, query, callerID, docTy
 func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docType string, spread bool) ([]domain.SearchResult, error) {
 	dp, ok := q.planner.(DecomposePlanner)
 	if !ok {
-		return q.searchByType(ctx, query, "", callerID, docType, spread)
+		return q.searchByType(ctx, query, callerID, docType, spread)
 	}
 	subqs, refs, err := dp.Decompose(ctx, query)
 	if err != nil || len(subqs) == 0 {
 		if err != nil {
 			slog.WarnContext(ctx, "decomp: decompose failed; single pass (fail-open)", "err", err)
 		}
-		return q.searchByType(ctx, query, "", callerID, docType, spread)
+		return q.searchByType(ctx, query, callerID, docType, spread)
 	}
 	const maxContextChunks = 16
 	// subst[n-1] is what placeholder {n} resolves to downstream: the grounded
@@ -752,22 +728,10 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 	// interleave then gives this pass's top hit position 0, so the direct best match
 	// always survives top-k truncation. Diagnosed lever: 24/100 TechQA golds were
 	// never retrieved because decomposition narrowed the query away from them.
-	// + HyDE: when enabled, embed a hypothetical answer passage (doc-vocabulary)
-	// instead of the raw question, bridging the question↔document vocabulary gap
-	// that leaves coverage golds unretrieved. Grounded-safe: HyDE shapes only the
-	// query embedding, never the answer.
-	origEmbed := ""
-	if q.hydeEnabled {
-		if hp, ok := q.planner.(HydePlanner); ok {
-			if passage, herr := hp.PlanHyde(ctx, query); herr == nil {
-				origEmbed = passage
-			}
-		}
-	}
 	// Per-hop rerank is suppressed for the retrieval passes (sctx): the reranker
 	// runs ONCE on the fused union below, against the original question.
 	sctx := withSkipPerHopRerank(ctx)
-	if origHits, oerr := q.searchByType(sctx, query, origEmbed, callerID, docType, spread); oerr == nil && len(origHits) > 0 {
+	if origHits, oerr := q.searchByType(sctx, query, callerID, docType, spread); oerr == nil && len(origHits) > 0 {
 		hopResults = append(hopResults, origHits)
 		trace = append(trace, hopTrace{Hop: -1, PlannedQuery: query, Retrieved: traceDocs(origHits), Decision: "orig_query"})
 	}
@@ -777,7 +741,7 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 		// keyword query (`"Benevento Calcio" league`) REGRESSED results (answer
 		// 0.78→0.65) — forcing exact-phrase quoting hurts the dense lane, which
 		// retrieves the natural-language sub-question better. Kept the NL query.
-		hits, serr := q.searchByType(sctx, resolved, "", callerID, docType, spread)
+		hits, serr := q.searchByType(sctx, resolved, callerID, docType, spread)
 		if serr != nil {
 			if len(hopResults) > 0 {
 				break // fail-open to what we have
@@ -1138,7 +1102,7 @@ const defaultCoherenceSeedN = 10
 // coherence(C) = Σ over seeds S≠C of Σ over shared entities e of 1/df(e),
 // min-max normalized to [0,1]. nil store / <2 candidates / no seed overlap ⇒
 // empty map (the blend silently falls back to its other terms).
-func chunkCoherence(ctx context.Context, store ChunkTripletsStore, results []domain.SearchResult, seedN int) map[string]float64 {
+func chunkCoherence(ctx context.Context, store domain.ChunkTripletsStore, results []domain.SearchResult, seedN int) map[string]float64 {
 	out := make(map[string]float64, len(results))
 	if store == nil || len(results) < 2 {
 		return out
@@ -1371,7 +1335,7 @@ func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]do
 	if q.agenticEnabled {
 		results, err = q.agenticSearch(ctx, query, callerID, domain.DocTypeMnemonicFact, true)
 	} else {
-		results, err = q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicFact, true)
+		results, err = q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicFact, true)
 	}
 	if err != nil {
 		return results, err
@@ -1388,7 +1352,7 @@ func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]do
 // direct query, not an agent's grounding retrieval.
 func (q *QueryService) SearchSystem(ctx context.Context, query string) ([]domain.SearchResult, error) {
 	ctx = domain.WithScope(ctx, domain.ScopeSystem)
-	return q.searchByType(ctx, query, "", "operator:system", domain.DocTypeMnemonicFact, true)
+	return q.searchByType(ctx, query, "operator:system", domain.DocTypeMnemonicFact, true)
 }
 
 // errAgenticDisabled is returned by AnswerSystem when the agentic path is not
@@ -1452,7 +1416,7 @@ func (q *QueryService) AnswerSystem(ctx context.Context, query string) (status, 
 		}
 		// fall through to cited synthesis over the agentic evidence.
 	} else {
-		evidence, err = q.searchByType(ctx, query, "", "operator:system", domain.DocTypeMnemonicFact, true)
+		evidence, err = q.searchByType(ctx, query, "operator:system", domain.DocTypeMnemonicFact, true)
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -1483,7 +1447,7 @@ func (q *QueryService) AnswerSystem(ctx context.Context, query string) (status, 
 // never re-bloat fact grounding. Same ACL/scope/relevance-floor gating; no graph
 // spreading (actions are events, not associatively-expanded knowledge).
 func (q *QueryService) SearchActions(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	return q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicAction, false)
+	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicAction, false)
 }
 
 // SearchScenes is the situational-retrieval lane (ADR-0049 D7): find scenes whose
@@ -1491,7 +1455,7 @@ func (q *QueryService) SearchActions(ctx context.Context, query, callerID string
 // situation like this?". Below the relevance floor → empty ("no precedent"); no
 // graph spreading.
 func (q *QueryService) SearchScenes(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	return q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicScene, false)
+	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicScene, false)
 }
 
 // SearchProcedures is the ADR-0094 D5 procedural lane: "how has this kind of work gone
@@ -1507,7 +1471,7 @@ func (q *QueryService) SearchScenes(ctx context.Context, query, callerID string)
 // deleted (see procedureActivation), so they fall out of contention here without losing
 // the record that they once worked.
 func (q *QueryService) SearchProcedures(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	return q.searchByType(ctx, query, "", callerID, domain.DocTypeMnemonicProcedure, false)
+	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicProcedure, false)
 }
 
 // SearchEntities is the EXACT-lookup access path (ADR-0049 D8/Issue 012): the query is a
@@ -1596,14 +1560,8 @@ func (q *QueryService) SearchPrecedents(ctx context.Context, query, callerID str
 // searchByType embeds the query, searches one document type, and applies ACL +
 // same-session step-record exclusion (D1) + relevance floor (#1), optionally
 // spreading. Shared by the fact and action lanes (ADR-0049 D4).
-func (q *QueryService) searchByType(ctx context.Context, query, embedText, callerID, docType string, spread bool) ([]domain.SearchResult, error) {
-	// HyDE: embed a hypothetical answer passage for the DENSE lane when provided,
-	// while the lexical lane stays on the real query (so a misleading hypothetical
-	// can't strand retrieval). Empty ⇒ embed the query as usual (no-op).
+func (q *QueryService) searchByType(ctx context.Context, query, callerID, docType string, spread bool) ([]domain.SearchResult, error) {
 	embedInput := query
-	if strings.TrimSpace(embedText) != "" {
-		embedInput = embedText
-	}
 	// Recall side of an asymmetric embedder: if the embedder distinguishes query
 	// from document (ADR-0048, e.g. bge-large's query instruction), use EmbedQuery
 	// so the query carries the right prefix while stored docs stay bare. Embedders
@@ -1706,7 +1664,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, embedText, calle
 	}
 
 	// ADR-0053 Phase 0: KG²RAG one-hop chunk expansion. If the
-	// ChunkTripletsStore is wired, walk the per-chunk triplets from the
+	// domain.ChunkTripletsStore is wired, walk the per-chunk triplets from the
 	// seed chunks, collect referenced entities, and pull in the chunks that
 	// share those entities. The expansion is bounded to one hop (default).
 	// This is the second trigger family in T-Mem's vocabulary: a chunk

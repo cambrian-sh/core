@@ -227,37 +227,6 @@ def plan_step(query: str, llm: LLM, scratchpad: str = "",
 
 
 # --------------------------------------------------------------------------
-# hyde — hypothetical document embedding (HyDE) for hop-1 dense retrieval
-# --------------------------------------------------------------------------
-
-HYDE_PROMPT = """\
-Write a single short factual passage (1-3 sentences) that would DIRECTLY answer
-the question below, worded as if copied from the reference document that answers
-it — an encyclopedia article, a technical/support note, a policy, whatever the
-question's domain implies. Use the domain's own terminology (product names, error
-codes, field names, procedure steps) and invent plausible specifics if needed —
-this text is only used to search for the real passage by similarity, so concrete,
-domain-matched specifics help. No preamble, passage only.
-
-Question: {query}"""
-
-_HYDE_MAX_CHARS = 600
-
-
-def hyde_passage(query: str, llm: LLM) -> str:
-    """Generate a hypothetical answer passage to embed for dense retrieval
-    (HyDE). Fail-safe: on empty/again-the-question output, returns "" so the
-    caller falls back to embedding the real query (no regression)."""
-    q = query.strip()
-    if not q:
-        return ""
-    raw = (llm(HYDE_PROMPT.format(query=q)) or "").strip()
-    if not raw or raw.lower() == q.lower():
-        return ""
-    return raw[:_HYDE_MAX_CHARS]
-
-
-# --------------------------------------------------------------------------
 # reason_step — IRCoT: generate the next chain-of-thought step, retrieve on it
 # --------------------------------------------------------------------------
 

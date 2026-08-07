@@ -56,10 +56,10 @@ func (f *fakeVecStore) QueryByMetadata(context.Context, map[string]string, int) 
 func TestInjectQueryEntitySeeds_RescuesVectorMiss(t *testing.T) {
 	st := newFakeChunkTripletsStore()
 	// gold-1 mentions caroline; an unrelated chunk does not.
-	_ = st.SaveChunkTriplets(context.Background(), "gold-1", []ChunkTriplet{
+	_ = st.SaveChunkTriplets(context.Background(), "gold-1", []domain.ChunkTriplet{
 		{H: "caroline", R: "moved from", T: "seattle"},
 	})
-	_ = st.SaveChunkTriplets(context.Background(), "noise", []ChunkTriplet{
+	_ = st.SaveChunkTriplets(context.Background(), "noise", []domain.ChunkTriplet{
 		{H: "tim", R: "read", T: "book"},
 	})
 	vs := &fakeVecStore{docs: map[string]domain.Document{
@@ -92,7 +92,7 @@ func TestInjectQueryEntitySeeds_RescuesVectorMiss(t *testing.T) {
 // duplicated, and an empty/entity-less query is a no-op.
 func TestInjectQueryEntitySeeds_DedupAndNoop(t *testing.T) {
 	st := newFakeChunkTripletsStore()
-	_ = st.SaveChunkTriplets(context.Background(), "g", []ChunkTriplet{{H: "melanie", R: "painted", T: "sunset"}})
+	_ = st.SaveChunkTriplets(context.Background(), "g", []domain.ChunkTriplet{{H: "melanie", R: "painted", T: "sunset"}})
 	vs := &fakeVecStore{docs: map[string]domain.Document{"g": {ID: "g"}}}
 	q := &QueryService{chunkTriplets: st, vectorStore: vs, queryEntitySeed: true, kgPerEntity: 5, kgMaxExpanded: 20}
 

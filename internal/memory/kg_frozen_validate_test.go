@@ -38,22 +38,22 @@ type evidenceQA struct {
 	EvidenceChunkIDs []string `json:"evidence_chunk_ids"`
 }
 
-// memTripletStore is an in-memory ChunkTripletsStore loaded once from a frozen
+// memTripletStore is an in-memory domain.ChunkTripletsStore loaded once from a frozen
 // table. The production kgExpand algorithm runs against it unchanged; only the
 // I/O is in-memory so 1977 QA × full BFS doesn't issue millions of queries.
 type memTripletStore struct {
-	byChunk  map[string][]ChunkTriplet
+	byChunk  map[string][]domain.ChunkTriplet
 	byEntity map[string][]string // entity (lowercase) -> sorted chunk ids
 }
 
-func (s *memTripletStore) SaveChunkTriplets(context.Context, string, []ChunkTriplet) error {
+func (s *memTripletStore) SaveChunkTriplets(context.Context, string, []domain.ChunkTriplet) error {
 	return nil
 }
-func (s *memTripletStore) ForChunk(_ context.Context, id string) ([]ChunkTriplet, error) {
+func (s *memTripletStore) ForChunk(_ context.Context, id string) ([]domain.ChunkTriplet, error) {
 	return s.byChunk[id], nil
 }
-func (s *memTripletStore) ForChunks(_ context.Context, ids []string) (map[string][]ChunkTriplet, error) {
-	out := make(map[string][]ChunkTriplet, len(ids))
+func (s *memTripletStore) ForChunks(_ context.Context, ids []string) (map[string][]domain.ChunkTriplet, error) {
+	out := make(map[string][]domain.ChunkTriplet, len(ids))
 	for _, id := range ids {
 		if ts, ok := s.byChunk[id]; ok {
 			out[id] = ts
@@ -84,7 +84,7 @@ func loadFrozenStore(ctx context.Context, pool *pgxpool.Pool, table string) (*me
 		return nil, err
 	}
 	defer rows.Close()
-	st := &memTripletStore{byChunk: map[string][]ChunkTriplet{}, byEntity: map[string][]string{}}
+	st := &memTripletStore{byChunk: map[string][]domain.ChunkTriplet{}, byEntity: map[string][]string{}}
 	entSeen := map[string]map[string]struct{}{} // entity -> set of chunk ids (dedupe)
 	add := func(ent, chunk string) {
 		if ent == "" {
@@ -104,7 +104,7 @@ func loadFrozenStore(ctx context.Context, pool *pgxpool.Pool, table string) (*me
 		if err := rows.Scan(&cid, &h, &r, &tt, &w); err != nil {
 			return nil, err
 		}
-		st.byChunk[cid] = append(st.byChunk[cid], ChunkTriplet{H: h, R: r, T: tt, Weight: w})
+		st.byChunk[cid] = append(st.byChunk[cid], domain.ChunkTriplet{H: h, R: r, T: tt, Weight: w})
 		add(h, cid)
 		add(tt, cid)
 	}
@@ -114,7 +114,7 @@ func loadFrozenStore(ctx context.Context, pool *pgxpool.Pool, table string) (*me
 	return st, rows.Err()
 }
 
-func graphRecall(ctx context.Context, store ChunkTripletsStore, qas []evidenceQA) (map[string][2]int, [2]int) {
+func graphRecall(ctx context.Context, store domain.ChunkTripletsStore, qas []evidenceQA) (map[string][2]int, [2]int) {
 	// returns per-category {hits,total} and overall {hits,total}
 	byCat := map[string][2]int{}
 	var overall [2]int

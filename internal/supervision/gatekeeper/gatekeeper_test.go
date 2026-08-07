@@ -29,13 +29,13 @@ func TestFindCandidates_ProvisionalAgentLast(t *testing.T) {
 	}
 }
 
-// ADR-0051: a privileged system organ (scout_agent) is kernel-invoked directly and must
+// A privileged system organ (retrieval_agent) is kernel-invoked directly and must
 // NEVER appear as an auction/EFE candidate for a user task.
 func TestFindCandidates_ExcludesSystemAgent(t *testing.T) {
 	active := domain.AgentDefinition{ID: "active", Name: "active", Provisional: false}
-	scout := domain.AgentDefinition{ID: "scout_agent", Name: "scout", Provisional: false}
+	sysAgent := domain.AgentDefinition{ID: "retrieval_agent", Name: "retrieval", Provisional: false}
 
-	registry := newAgentSourceWith(active, scout)
+	registry := newAgentSourceWith(active, sysAgent)
 	gk := NewGatekeeper(registry, defaultGatekeeperCfg())
 
 	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t"})
@@ -43,8 +43,8 @@ func TestFindCandidates_ExcludesSystemAgent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, c := range candidates {
-		if c.Agent.ID == "scout_agent" {
-			t.Fatalf("scout_agent (system organ) must never be a candidate; got %+v", candidates)
+		if c.Agent.ID == "retrieval_agent" {
+			t.Fatalf("retrieval_agent (system organ) must never be a candidate; got %+v", candidates)
 		}
 	}
 	if len(candidates) != 1 || candidates[0].Agent.ID != "active" {

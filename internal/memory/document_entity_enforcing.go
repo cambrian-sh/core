@@ -20,7 +20,7 @@ import (
 // this, an agent could classify a document however it liked simply by ingesting it,
 // and every chunk under that document would inherit the classification.
 type EnforcingDocumentStore struct {
-	inner  DocumentStore
+	inner  domain.DocumentStore
 	authz  domain.Authorizer
 	logger *slog.Logger
 }
@@ -28,7 +28,7 @@ type EnforcingDocumentStore struct {
 // NewEnforcingDocumentStore wraps a document store with write classification. A nil
 // authorizer falls back to the OSS allow-all default, matching the vector store's
 // behaviour — OSS fails open, the premium policy plugin fails closed.
-func NewEnforcingDocumentStore(inner DocumentStore, a domain.Authorizer, logger *slog.Logger) *EnforcingDocumentStore {
+func NewEnforcingDocumentStore(inner domain.DocumentStore, a domain.Authorizer, logger *slog.Logger) *EnforcingDocumentStore {
 	if a == nil {
 		a = domain.AllowAllAuthorizer{}
 	}
@@ -39,7 +39,7 @@ func NewEnforcingDocumentStore(inner DocumentStore, a domain.Authorizer, logger 
 }
 
 // SaveDocument classifies the document's tags, then delegates.
-func (w *EnforcingDocumentStore) SaveDocument(ctx context.Context, doc SourceDocument) ([]string, error) {
+func (w *EnforcingDocumentStore) SaveDocument(ctx context.Context, doc domain.SourceDocument) ([]string, error) {
 	principal := domain.PrincipalFromContext(ctx)
 	final, dec := w.authz.ClassifyWrite(ctx, principal, doc.Tags)
 	if !dec.Allowed {

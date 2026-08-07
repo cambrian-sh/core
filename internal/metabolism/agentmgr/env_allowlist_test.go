@@ -30,10 +30,10 @@ func TestEffectiveMemLimitMB(t *testing.T) {
 		t.Errorf("undeclared user agent: want global default 1024, got %d", got)
 	}
 	// A system organ with no declared limit is EXEMPT from the fleet-wide default.
-	if !domain.IsSystemAgent("scout_agent") {
-		t.Fatal("test precondition: scout_agent should be a system agent")
+	if !domain.IsSystemAgent("retrieval_agent") {
+		t.Fatal("test precondition: retrieval_agent should be a system agent")
 	}
-	if got := im.effectiveMemLimitMB("scout_agent"); got != 0 {
+	if got := im.effectiveMemLimitMB("retrieval_agent"); got != 0 {
 		t.Errorf("undeclared system organ must be uncapped by the default, got %d", got)
 	}
 }

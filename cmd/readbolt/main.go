@@ -23,7 +23,7 @@ func main() {
 		c := bk.Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
 			ks := string(k)
-			if ks != "kg_extractor_agent" && ks != "scout_agent" && ks != "reranker_agent" {
+			if ks != "kg_extractor_agent" && ks != "reranker_agent" {
 				continue
 			}
 			var rec map[string]any

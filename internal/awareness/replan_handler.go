@@ -82,7 +82,6 @@ func (h *PlannerReplanHandler) Replan(
 		modelConstraint = `
 BUDGET CONSTRAINT:
 - The plan exceeded its cost budget. You MUST use ONLY the cheapest available model for ALL remaining steps.
-- Override any "recommended_model" with the cheapest model available.
 - Every remaining step should prefer thought steps (is_thought: true) over agent steps where possible, to avoid costly external agent invocations.
 
 `

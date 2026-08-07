@@ -26,8 +26,7 @@ const plannerLTMRules = `LTM CONTEXT RULES (applies when <FactLTM>, <PlanLTM>, <
 - <PlanLTM> contains a prior successful plan for a similar request. Use it as a structural reference but adapt it to the current request; do not copy it blindly.
 - <NegativeLTM> contains failure records from prior sessions. Avoid assigning the same task to the agent that previously failed it.
 - <DiscoveryLTM> contains LIVE observations of the CURRENT world state, scanned just now, one <entity> per thing observed. SHAPE THE PLAN TO MATCH IT: if it reports N remaining items, emit a step per remaining item — do NOT collapse them into one step or guess a count. The <entity> facts are authoritative; the <interpretation> is an advisory hint, not a directive.
-- <environment> (inside <DiscoveryLTM>) gives the ACTUAL host facts: os, home, desktop, cwd. Build every file/folder path from these ABSOLUTE paths and the host's OS conventions. On os="windows" use backslash Windows paths (e.g. the desktop is the "desktop" value) — NEVER "~", "~/Desktop", or forward-slash Unix paths. A step that creates "a folder on the desktop" MUST use the absolute "desktop" path from <environment>.
-- If <DiscoveryLTM> contains <unobserved> entries, the Scout could not observe those within its budget. Emit an EARLY step to scan/inspect each unobserved entity with "checkpoint_after": true BEFORE any step that depends on its contents, so the plan is corrected (re-planned) once the real state is known — never guess an unobserved entity's contents.`
+- <environment> (inside <DiscoveryLTM>) gives the ACTUAL host facts: os, home, desktop, cwd. Build every file/folder path from these ABSOLUTE paths and the host's OS conventions. On os="windows" use backslash Windows paths (e.g. the desktop is the "desktop" value) — NEVER "~", "~/Desktop", or forward-slash Unix paths. A step that creates "a folder on the desktop" MUST use the absolute "desktop" path from <environment>.`
 
 const plannerDecisionRules = `STRICT DECISION RULES:
 - The "query" field MUST contain the full natural-language instructions for the step. NEVER truncate the user's intent; include the complete action required.
@@ -316,32 +315,6 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 		return nil, fmt.Errorf("failed to fetch agent list: %v", err)
 	}
 
-	var modelsDescriptions strings.Builder
-	hasModels := false
-	for _, agent := range agents {
-		if agent.Trait != domain.TraitModel {
-			continue
-		}
-		// Skip embedding-only models from the recommendation list.
-		// The Planner should only recommend generation-capable LLMs.
-		if strings.Contains(strings.ToLower(agent.ID), "embed") {
-			continue
-		}
-		hasModels = true
-		// REQ6: omit empty capabilities — show only the model ID and provider name.
-		parts := strings.SplitN(agent.Description, "/", 2)
-		providerModel := agent.Description
-		if len(parts) == 2 {
-			providerModel = strings.TrimSpace(parts[1])
-		}
-		modelsDescriptions.WriteString(fmt.Sprintf("- %s (%s)\n", agent.ID, providerModel))
-	}
-
-	modelSection := ""
-	if hasModels {
-		modelSection = fmt.Sprintf("AVAILABLE MODELS:\n%s- Choose the cheapest model for simple steps, expert model for complex steps.\n- Tag each step with \"recommended_model\" to route to a specific model.", modelsDescriptions.String())
-	}
-
 	// ADR-0016: Enrich Planner with cross-session LTM facts.
 	// ADR-0025: Retrieve typed LTM enrichment and prior plan for XML-tag injection.
 	var ltmEnrichment domain.LTMEnrichment
@@ -380,19 +353,12 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	// static constraint groups are constants hashed into plannerPromptHash.
 	// LTM enrichment and user request are context/task — excluded from the hash.
 	ltmBlock := buildLTMBlock(planEntry, ltmEnrichment)
-	// ADR-0051 D9: if the Scout ran pre-plan (Server.Execute attached its report to ctx),
-	// render its live observations as <DiscoveryLTM> so the Planner shapes the plan to the
-	// observed world. Absent/empty ⇒ no block ⇒ one-shot planning exactly as before.
-	if report, ok := domain.DiscoveryFromContext(ctx); ok {
-		ltmBlock += domain.RenderDiscoveryBlock(report)
-	}
 	// ROUTE-03: under the capability_contract arm, inject the capability rules
 	// (after the decision rules) and the capability-schema variant. When off, the
 	// section list, schema, and prompt hash are exactly the pre-ROUTE-03 values,
 	// so the control arm is byte-identical.
 	constraints := []string{
 		buildCapabilityCluster(agents), // dynamic — excluded from hash
-		modelSection,                   // dynamic — excluded from hash
 		plannerLTMRules,
 		plannerDecisionRules,
 		plannerDependencyRules,
@@ -410,7 +376,6 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 			// manifest-derived vocabulary so the emitted required_capabilities
 			// match what L1 Declaration enforces (NOT the clusterer's labels).
 			clusterBlock,
-			modelSection,
 			plannerLTMRules,
 			plannerDecisionRules,
 			plannerCapabilityRules,

@@ -9,37 +9,6 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// ChunkTripletsStore is the storage interface for the per-chunk triplets that
-// the LLM extracts at write time. The KG²RAG retrieval pattern (ADR-0053 D3)
-// reads these at query time for one-hop chunk expansion.
-//
-// The implementation lives in the postgres adapter; this interface is what the
-// retrieval path depends on so it can be faked in unit tests.
-type ChunkTripletsStore interface {
-	// Save persists a list of triplets for a single chunk. Idempotent on
-	// (chunk_id, h, r, t) — repeated inserts are no-ops.
-	SaveChunkTriplets(ctx context.Context, chunkID string, triplets []ChunkTriplet) error
-
-	// ForChunk returns the triplets extracted from a chunk (h, r, t, weight).
-	ForChunk(ctx context.Context, chunkID string) ([]ChunkTriplet, error)
-
-	// ForChunks batches the above — returns a map chunkID -> []ChunkTriplet.
-	// Used by the KG expansion post-processor to walk many seed chunks in
-	// one query.
-	ForChunks(ctx context.Context, chunkIDs []string) (map[string][]ChunkTriplet, error)
-
-	// ChunksMentioningEntity returns the chunk IDs that have a triplet
-	// referencing the given entity (as either head or tail). This is the
-	// "entity → chunks" lookup that powers the KG expansion.
-	// Matching is case-insensitive (entities are stored lowercase).
-	//
-	// `scope` is the caller's read predicate and is REQUIRED (ADR-0095 D9):
-	// chunk_triplets carries no classification, so the implementation applies the
-	// predicate by joining the chunk rows. A nil predicate returns nothing — this
-	// lookup is reached directly from kgExpand, with no chokepoint in front of it.
-	ChunksMentioningEntity(ctx context.Context, entity string, limit int, scope *domain.TagPredicate) ([]string, error)
-}
-
 // kgExpand is the KG²RAG one-hop chunk expansion. It walks the per-chunk
 // triplets from the seed chunks, builds a set of referenced entities, and
 // pulls in the chunks that share those entities. The result is the union
@@ -70,7 +39,7 @@ type ChunkTripletsStore interface {
 func kgExpand(
 	ctx context.Context,
 	seeds []domain.SearchResult,
-	store ChunkTripletsStore,
+	store domain.ChunkTripletsStore,
 	vectorSearch kgExpandVectorSearch,
 	queryVec []float32,
 	scope *domain.TagPredicate,

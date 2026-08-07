@@ -61,21 +61,6 @@ func TestStep_MaxEnergy_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestStep_RecommendedModel_RoundTrip(t *testing.T) {
-	s := Step{Query: "synthesize report", RecommendedModel: "llm:openai:gpt-4o"}
-	data, err := json.Marshal(s)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var got Step
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.RecommendedModel != "llm:openai:gpt-4o" {
-		t.Errorf("want RecommendedModel=llm:openai:gpt-4o, got %q", got.RecommendedModel)
-	}
-}
-
 // Cycle 6 (ADR-0013): Legacy Step JSON without checkpoint fields deserialises
 // with zero values — CheckpointAfter=false, CheckpointQuery="".
 func TestStep_CheckpointFields_BackwardCompatibility(t *testing.T) {
@@ -128,9 +113,6 @@ func TestStep_OptionalFields_OmittedWhenZero(t *testing.T) {
 	}
 	if _, ok := raw["max_energy"]; ok {
 		t.Error("max_energy should be omitted when zero")
-	}
-	if _, ok := raw["recommended_model"]; ok {
-		t.Error("recommended_model should be omitted when empty")
 	}
 	// Cycle 8 (ADR-0013): checkpoint fields must be absent from JSON when at zero values.
 	if _, ok := raw["checkpoint_after"]; ok {

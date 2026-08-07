@@ -25,22 +25,21 @@ const (
 )
 
 // systemAgentIDs are privileged kernel-invoked organs (ADR-0051): the kernel calls them
-// DIRECTLY (e.g. the pre-plan Scout via Auctioneer.CallAgent), never through the auction.
+// DIRECTLY (e.g. the kg_extractor via Auctioneer.CallAgent), never through the auction.
 // They are therefore (a) verified by default — they bypass the Gatekeeper interview, and
 // (b) excluded from auction/EFE candidate selection — they are never assigned a user task.
 // A deterministic system exception, NOT task-to-agent routing, so the Zero-Hardcode Rule is
 // unaffected (the same class as the shell/Omurilik/scope exceptions).
 var systemAgentIDs = map[string]bool{
-	"scout_agent": true,
 	// kg_extractor_agent (ADR-0053 D2 revised): the deterministic, NO-LLM tiered
 	// triplet extractor (metadata + spacy_patterns). The kernel hands it a chunk
 	// batch and gets triplets back; it is invoked DIRECTLY on the ingest path,
-	// never auctioned/interviewed — the same privileged-organ class as the Scout.
+	// never auctioned/interviewed — the privileged-organ class.
 	"kg_extractor_agent": true,
 	// reranker_agent (ADR-0054 Stage B): the warm bge cross-encoder relevance
 	// oracle. The kernel hands it {query, documents} on the recall path and gets
 	// one relevance score per document back; invoked DIRECTLY via the Auctioneer,
-	// never auctioned/interviewed — same privileged-organ class as the Scout and
+	// never auctioned/interviewed — same privileged-organ class as the kg_extractor and
 	// the kg_extractor. DeterministicAgent: a scoring model, no generative think().
 	"reranker_agent": true,
 	// operator_agent (ADR-0059): the operator's privileged answer path. The
@@ -55,7 +54,7 @@ var systemAgentIDs = map[string]bool{
 	// retrieval loop (plan_step / decide_continue / synthesize). The kernel calls
 	// it DIRECTLY via the Auctioneer on the recall path with a managed LLM session
 	// (RetrievalDispatcher), never auctioned/interviewed — same privileged-organ
-	// class as the Scout. CognitiveAgent: makes managed generate() calls.
+	// class as the other system organs. CognitiveAgent: makes managed generate() calls.
 	"retrieval_agent": true,
 	// chat_agent (ADR-0084): the conversational front desk. The kernel's chat worker
 	// pool dispatches it DIRECTLY (CallDaemon) to own one conversation turn; it never
@@ -63,7 +62,7 @@ var systemAgentIDs = map[string]bool{
 	// whole tasks to the planner. It must be excluded from the auction/interview for
 	// two reasons: (a) it is incapable of doing task work, so routing a step to it dead-
 	// loops on empty memory queries; (b) letting the planner route back to it creates a
-	// chat→planner→chat recursion. Same privileged-organ class as the Scout — the
+	// chat→planner→chat recursion. Same privileged-organ class as the other organs — the
 	// configured ChatPoolAgentID defaults to this ID.
 	"chat_agent": true,
 }
