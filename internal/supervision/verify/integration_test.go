@@ -24,7 +24,7 @@ func TestIntegration_VerifierPoolEmptyDegradation(t *testing.T) {
 		RecencyWindow: 3,
 	}
 
-	task := &domain.AuctionTask{ID: "t-s4"}
+	task := &domain.DispatchTask{ID: "t-s4"}
 	_, err := pool.Select(context.Background(), task, "winner", nil)
 	if err != ErrNoVerifierAvailable {
 		t.Errorf("expected ErrNoVerifierAvailable from empty pool, got %v", err)

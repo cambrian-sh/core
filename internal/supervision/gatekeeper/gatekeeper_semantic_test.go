@@ -17,7 +17,7 @@ func TestFindCandidates_Layer2_EliminatesBelowThreshold(t *testing.T) {
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t-l2-1", Description: "find something"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t-l2-1", Description: "find something"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestFindCandidates_Layer2_FormatIncompatibleEliminated(t *testing.T) {
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t-l2-2", Description: "json task", RequiredFormats: []string{"json"},
 	})
 	if err != nil {
@@ -69,7 +69,7 @@ func TestFindCandidates_Layer2_MeritOrderPreserved(t *testing.T) {
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg(), WithProfiles(profiles), WithEmbedder(embedder), WithSearcher(searcher))
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t-l2-3", Description: "query task"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t-l2-3", Description: "query task"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestFindCandidates_Layer2_ProvisionalBypassesGate(t *testing.T) {
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t-l2-4", Description: "some task"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t-l2-4", Description: "some task"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestFindCandidates_TraitDaemon_Excluded(t *testing.T) {
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t-daemon", Description: "analysis task"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t-daemon", Description: "analysis task"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

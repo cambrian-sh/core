@@ -1,4 +1,4 @@
-package auctioneer
+package agentplane
 
 import (
 	"context"
@@ -88,12 +88,12 @@ func (r *auctioneerProfileReader) GetProfile(_ context.Context, agentID, sourceH
 // ─── Mock EventBus ───────────────────────────────────────────────────────────
 
 type capturingEventBus struct {
-	events []domain.AuctionEventPayload
+	events []domain.SelectionEventPayload
 }
 
 func (b *capturingEventBus) Subscribe(_ string, _ domain.EventHandler) {}
 func (b *capturingEventBus) Publish(ev domain.DomainEvent) error {
-	if auctionEv, ok := ev.(domain.AuctionEventPayload); ok {
+	if auctionEv, ok := ev.(domain.SelectionEventPayload); ok {
 		b.events = append(b.events, auctionEv)
 	}
 	return nil
@@ -137,7 +137,7 @@ type testGatekeeper struct {
 	manifests map[string]*domain.AgentManifest
 }
 
-func (g *testGatekeeper) FindCandidates(_ context.Context, task *domain.AuctionTask) ([]domain.ScoredCandidate, error) {
+func (g *testGatekeeper) FindCandidates(_ context.Context, task *domain.DispatchTask) ([]domain.ScoredCandidate, error) {
 	var candidates []domain.ScoredCandidate
 	for _, agent := range g.agents {
 		manifest := g.manifests[agent.ID]
@@ -208,18 +208,14 @@ func gatekeeperPassesFormats(manifest *domain.AgentManifest, required []string) 
 
 // ─── Test helpers ────────────────────────────────────────────────────────────
 
-func buildTestAuctioneer(agentID string, client pb.AgentServiceClient, profiles GatekeeperProfileReader) *Auctioneer {
-	a := &Auctioneer{
-		agentClients:         make(map[string]pb.AgentServiceClient),
-		Profiles:             profiles,
-		MinAuctionConfidence: 0.3,
-	}
+func buildTestAuctioneer(agentID string, client pb.AgentServiceClient) *Transport {
+	a := &Transport{agentClients: make(map[string]pb.AgentServiceClient)}
 	a.agentClients[agentID] = client
 	return a
 }
 
-func testAuctionTask() *domain.AuctionTask {
-	return &domain.AuctionTask{
+func testAuctionTask() *domain.DispatchTask {
+	return &domain.DispatchTask{
 		ID:          "task-001",
 		Description: "test description",
 		Context:     "test context",

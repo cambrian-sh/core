@@ -1,4 +1,4 @@
-package auctioneer
+package agentplane
 
 import (
 	"context"
@@ -37,7 +37,7 @@ func (d *countingDialer) GetManifest(_ context.Context, _ string) (*domain.Agent
 // path). Mutation-proof: revert getOrDialClient to dial-per-call and dials > 1.
 func TestGetOrDialClient_SingleFlightsConcurrentMisses(t *testing.T) {
 	d := &countingDialer{}
-	a := &Auctioneer{
+	a := &Transport{
 		agentClients: map[string]pb.AgentServiceClient{},
 		agentConns:   map[string]*grpc.ClientConn{},
 		Manager:      d,
@@ -68,7 +68,7 @@ func TestGetOrDialClient_SingleFlightsConcurrentMisses(t *testing.T) {
 // A warm cache hit never dials: the fast path stays lock-cheap.
 func TestGetOrDialClient_CacheHitDoesNotDial(t *testing.T) {
 	d := &countingDialer{}
-	a := &Auctioneer{
+	a := &Transport{
 		agentClients: map[string]pb.AgentServiceClient{},
 		agentConns:   map[string]*grpc.ClientConn{},
 		Manager:      d,

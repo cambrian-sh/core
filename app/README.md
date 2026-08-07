@@ -39,7 +39,7 @@ The capability bundle handed to the premium reactive hook. Every field is an int
 ```go
 type ReactiveServices struct {
     Manager    ReactiveAgentDispatcher  // direct dispatch + daemon lifecycle
-    Auctioneer domain.Auctioneer        // full Gatekeeper -> Auction
+    Dispatcher domain.StepDispatcher    // Gatekeeper -> merit rank -> call
     Memory     ReactiveMemoryWriter     // async LTM ingest
     Planner    ReactivePlanner          // plan generation for start_plan actions
     LLM        domain.Generator         // LLM condition evaluation

@@ -1,6 +1,6 @@
 package domain
 
-// Agent-pin strengths for Step.AgentPin / AuctionTask.AgentPin.
+// Agent-pin strengths for Step.AgentPin / DispatchTask.AgentPin.
 //
 // The pin exists because the planner was ALREADY trying to name agents and had no
 // field to name them in: its prompt invites "you may reference a specific agent ID",

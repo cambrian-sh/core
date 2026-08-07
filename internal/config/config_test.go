@@ -479,35 +479,6 @@ func TestDefaultConfig_KnownValues(t *testing.T) {
 	}
 }
 
-// ADR-0037 / 0037-01: the ResourceSelector flag defaults to the auction
-// (status quo control) at 0% EFE traffic for safe rollout.
-func TestDefaultConfig_ADR0037SelectorDefaults(t *testing.T) {
-	ex := config.DefaultConfig().Execution
-	if ex.Routing.ResourceSelector != "auction" {
-		t.Errorf("ResourceSelector = %q, want auction", ex.Routing.ResourceSelector)
-	}
-	if ex.Routing.EFETrafficPercent != 0 {
-		t.Errorf("EFETrafficPercent = %v, want 0 (safe rollout)", ex.Routing.EFETrafficPercent)
-	}
-	if ex.Routing.EFEExplorationBonus <= 0 {
-		t.Errorf("EFEExplorationBonus = %v, want > 0", ex.Routing.EFEExplorationBonus)
-	}
-}
-
-func TestExecutionConfig_Validate_RejectsUnknownSelector(t *testing.T) {
-	ex := config.DefaultConfig().Execution
-	ex.Routing.ResourceSelector = "bogus"
-	if err := ex.Validate(); err == nil {
-		t.Error("Validate() should reject an unknown ResourceSelector value")
-	}
-	for _, ok := range []string{"auction", "efe", "auto"} {
-		ex.Routing.ResourceSelector = ok
-		if err := ex.Validate(); err != nil {
-			t.Errorf("Validate() rejected valid selector %q: %v", ok, err)
-		}
-	}
-}
-
 func TestDefaultConfig_PassesValidation(t *testing.T) {
 	cfg := config.DefaultConfig()
 	if cfg == nil {

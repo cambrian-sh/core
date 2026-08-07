@@ -1,7 +1,7 @@
 # System Agents
 
 These are **privileged kernel organs** — the runtime dispatches to them *directly* by ID
-(bypassing the auction/interview; see `domain/agent.go` `systemAgentIDs`). The kernel is
+(bypassing selection/interview; see `domain/agent.go` `systemAgentIDs`). The kernel is
 incomplete without them, so they ship with the OSS runtime.
 
 | Agent | Role | ADR |

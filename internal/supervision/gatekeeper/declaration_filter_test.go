@@ -12,7 +12,7 @@ func TestPassesDeclaration_ExactFormatMatch(t *testing.T) {
 		Tools:            []string{"sql"},
 		SupportedFormats: []string{"json"},
 	}
-	task := &domain.AuctionTask{RequiredFormats: []string{"json"}}
+	task := &domain.DispatchTask{RequiredFormats: []string{"json"}}
 	if !PassesDeclaration(manifest, task, false) {
 		t.Error("expected agent with exact format match to pass Declaration")
 	}
@@ -24,14 +24,14 @@ func TestPassesDeclaration_MissingFormatEliminated(t *testing.T) {
 		Tools:            []string{"sql"},
 		SupportedFormats: []string{"csv"},
 	}
-	task := &domain.AuctionTask{RequiredFormats: []string{"json"}}
+	task := &domain.DispatchTask{RequiredFormats: []string{"json"}}
 	if PassesDeclaration(manifest, task, false) {
 		t.Error("expected agent missing required format to be eliminated")
 	}
 }
 
 func TestPassesDeclaration_NilManifestPasses(t *testing.T) {
-	task := &domain.AuctionTask{RequiredFormats: []string{"json"}}
+	task := &domain.DispatchTask{RequiredFormats: []string{"json"}}
 	if !PassesDeclaration(nil, task, false) {
 		t.Error("expected nil manifest to pass Declaration unconditionally")
 	}
@@ -39,7 +39,7 @@ func TestPassesDeclaration_NilManifestPasses(t *testing.T) {
 
 func TestPassesDeclaration_EmptyManifestPasses(t *testing.T) {
 	manifest := &domain.AgentManifest{}
-	task := &domain.AuctionTask{RequiredFormats: []string{"json"}}
+	task := &domain.DispatchTask{RequiredFormats: []string{"json"}}
 	if !PassesDeclaration(manifest, task, false) {
 		t.Error("expected empty manifest to pass Declaration unconditionally")
 	}
@@ -47,7 +47,7 @@ func TestPassesDeclaration_EmptyManifestPasses(t *testing.T) {
 
 func TestPassesDeclaration_NoRequirementsAllPass(t *testing.T) {
 	manifest := &domain.AgentManifest{Version: "1.0.0", Tools: []string{"sql"}}
-	task := &domain.AuctionTask{}
+	task := &domain.DispatchTask{}
 	if !PassesDeclaration(manifest, task, false) {
 		t.Error("expected all agents to pass when task has no requirements")
 	}
@@ -59,7 +59,7 @@ func TestPassesDeclaration_SupersetFormatsPasses(t *testing.T) {
 		Tools:            []string{"sql"},
 		SupportedFormats: []string{"json", "csv"},
 	}
-	task := &domain.AuctionTask{RequiredFormats: []string{"json"}}
+	task := &domain.DispatchTask{RequiredFormats: []string{"json"}}
 	if !PassesDeclaration(manifest, task, false) {
 		t.Error("expected agent with superset of supported formats to pass Declaration")
 	}
@@ -71,7 +71,7 @@ func TestPassesDeclaration_MultipleFormats_MissingOneEliminated(t *testing.T) {
 		Tools:            []string{"sql"},
 		SupportedFormats: []string{"json"},
 	}
-	task := &domain.AuctionTask{RequiredFormats: []string{"json", "xml"}}
+	task := &domain.DispatchTask{RequiredFormats: []string{"json", "xml"}}
 	if PassesDeclaration(manifest, task, false) {
 		t.Error("expected agent missing required format to be eliminated")
 	}
@@ -81,7 +81,7 @@ func TestPassesDeclaration_MultipleFormats_MissingOneEliminated(t *testing.T) {
 
 func TestPassesDeclaration_Capabilities_SubsetPasses(t *testing.T) {
 	manifest := &domain.AgentManifest{Capabilities: []string{"file_read", "code_search", "planning"}}
-	task := &domain.AuctionTask{RequiredCapabilities: []string{"file_read", "code_search"}}
+	task := &domain.DispatchTask{RequiredCapabilities: []string{"file_read", "code_search"}}
 	if !PassesDeclaration(manifest, task, false) {
 		t.Error("expected agent declaring a superset of required capabilities to pass")
 	}
@@ -89,7 +89,7 @@ func TestPassesDeclaration_Capabilities_SubsetPasses(t *testing.T) {
 
 func TestPassesDeclaration_Capabilities_MissingOneEliminated(t *testing.T) {
 	manifest := &domain.AgentManifest{Capabilities: []string{"file_read"}}
-	task := &domain.AuctionTask{RequiredCapabilities: []string{"file_read", "test_execution"}}
+	task := &domain.DispatchTask{RequiredCapabilities: []string{"file_read", "test_execution"}}
 	if PassesDeclaration(manifest, task, false) {
 		t.Error("expected agent missing a required capability to be eliminated")
 	}
@@ -98,7 +98,7 @@ func TestPassesDeclaration_Capabilities_MissingOneEliminated(t *testing.T) {
 // The empty-manifest free pass MUST NOT apply when the step declares a capability
 // requirement — an agent that declares nothing can satisfy no capability (D2 fix).
 func TestPassesDeclaration_Capabilities_EmptyManifestEliminated(t *testing.T) {
-	task := &domain.AuctionTask{RequiredCapabilities: []string{"browser"}}
+	task := &domain.DispatchTask{RequiredCapabilities: []string{"browser"}}
 	if PassesDeclaration(&domain.AgentManifest{}, task, false) {
 		t.Error("empty manifest must NOT pass when the step requires a capability")
 	}
@@ -109,7 +109,7 @@ func TestPassesDeclaration_Capabilities_EmptyManifestEliminated(t *testing.T) {
 
 // No capability requirement ⇒ control-arm behavior is unchanged (empty/nil pass).
 func TestPassesDeclaration_NoCapabilityRequirement_UnchangedBehavior(t *testing.T) {
-	task := &domain.AuctionTask{}
+	task := &domain.DispatchTask{}
 	if !PassesDeclaration(&domain.AgentManifest{}, task, false) {
 		t.Error("empty manifest must still pass when no capability is required")
 	}
@@ -126,7 +126,7 @@ func TestPassesDeclaration_Capabilities_ComposeWithFormatGate(t *testing.T) {
 		SupportedFormats: []string{"csv"},
 		Tools:            []string{"fs"},
 	}
-	task := &domain.AuctionTask{
+	task := &domain.DispatchTask{
 		RequiredCapabilities: []string{"file_read"},
 		RequiredFormats:      []string{"json"},
 	}

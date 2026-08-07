@@ -186,7 +186,6 @@ type Registry struct {
 	signalOwner      string
 	grpcServices     []func(*grpc.Server)
 	lifecycles       []Lifecycle
-	resourceSelector domain.ResourceSelector
 	selectorOwner    string
 	agentSources     []AgentSource
 	mcpServers       []MCPServerSpec
@@ -396,22 +395,6 @@ func (r *Registry) AddResolutionAuthority(a domain.ResolutionAuthority) {
 
 // AddLifecycle registers a background component to Start at boot and Stop on shutdown.
 func (r *Registry) AddLifecycle(l Lifecycle) { r.lifecycles = append(r.lifecycles, l) }
-
-// SetResourceSelector installs the routing ResourceSelector (ADR-0037), the arm that
-// picks which agent handles an intent from the offered candidates. Tier-1 replace-one
-// (ADR-0074): at most one plugin may own it; a second registration is an error. A
-// plugin-provided selector overrides the config-driven (auction/EFE) default. This is a
-// selection *mechanism* — the Zero-Hardcode routing *policy* (merit-based, not authored)
-// still holds; the selector receives candidates and ranks them, it does not hardcode
-// agent identities.
-func (r *Registry) SetResourceSelector(owner string, sel domain.ResourceSelector) error {
-	if r.resourceSelector != nil {
-		return fmt.Errorf("resource selector already registered by plugin %q; %q cannot also own it", r.selectorOwner, owner)
-	}
-	r.resourceSelector = sel
-	r.selectorOwner = owner
-	return nil
-}
 
 // AddAgentSource contributes an agent discovery source (ADR-0075). Tier-2 add-many:
 // its definitions are registered alongside the built-in filesystem + model sources.
@@ -685,10 +668,6 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 	// NewSignalReceiver: plugin wins only if not set directly.
 	if opts.NewSignalReceiver == nil && reg.signalReceiver != nil {
 		opts.NewSignalReceiver = reg.signalReceiver
-	}
-	// ResourceSelector: plugin wins only if not set directly (ADR-0074 replace-one).
-	if opts.ResourceSelector == nil && reg.resourceSelector != nil {
-		opts.ResourceSelector = reg.resourceSelector
 	}
 	// Authorizer + PolicyAdmin: plugin wins only if not set directly.
 	if opts.Authorizer == nil && reg.authorizer != nil {

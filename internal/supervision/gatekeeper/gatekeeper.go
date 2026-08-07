@@ -98,7 +98,7 @@ func NewGatekeeper(registry domain.AgentDeclarationSource, cfg config.ExecutionC
 	return g
 }
 
-func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.AuctionTask) ([]domain.ScoredCandidate, error) {
+func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTask) ([]domain.ScoredCandidate, error) {
 	agents, err := g.Registry.GetAllAgents(ctx)
 	if err != nil {
 		return nil, err

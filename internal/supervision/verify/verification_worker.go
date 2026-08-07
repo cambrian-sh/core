@@ -173,7 +173,7 @@ func (w *VerificationWorker) runLoop(ctx context.Context) (restart bool) {
 }
 
 func (w *VerificationWorker) processOne(ctx context.Context, vreq domain.VerificationRequest) {
-	task := &domain.AuctionTask{ID: vreq.TaskID, Description: vreq.TaskID}
+	task := &domain.DispatchTask{ID: vreq.TaskID, Description: vreq.TaskID}
 
 	subjectProfile, _ := w.ProfileStore.GetProfile(ctx, vreq.AgentID, vreq.SourceHash)
 
@@ -247,7 +247,7 @@ func (w *VerificationWorker) crossVerify(
 	crossExcludeProfile := &domain.AgentProfile{
 		RecentVerifierIDs: []string{primaryVerifier.ID},
 	}
-	task := &domain.AuctionTask{ID: crossVerifyTaskID, Description: crossVerifyTaskID}
+	task := &domain.DispatchTask{ID: crossVerifyTaskID, Description: crossVerifyTaskID}
 
 	crossVerifier, err := w.Pool.Select(ctx, task, vreq.AgentID, crossExcludeProfile)
 	if err != nil {

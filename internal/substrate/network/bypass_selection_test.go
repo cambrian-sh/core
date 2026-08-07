@@ -22,7 +22,7 @@ type fakeAuctioneer struct {
 	gotHandoff  *domain.Handoff
 }
 
-func (f *fakeAuctioneer) Execute(_ context.Context, _ *domain.AuctionTask, _ *domain.Handoff) (*domain.AuctionResult, error) {
+func (f *fakeAuctioneer) Execute(_ context.Context, _ *domain.DispatchTask, _ *domain.Handoff) (*domain.DispatchResult, error) {
 	return nil, nil
 }
 
@@ -43,11 +43,11 @@ func TestExecute_BypassAuction_DispatchesToSingleAgent(t *testing.T) {
 		},
 	}
 	s := &Server{
-		Auctioneer: fake,
+		Dispatcher: fake,
 		ExecCfg: config.ExecutionConfig{
 			Routing: config.RoutingConfig{
-				BypassAuction: true,
-				SingleAgentID: "react_baseline_agent",
+				BypassSelection: true,
+				SingleAgentID:   "react_baseline_agent",
 			},
 		},
 	}
@@ -78,8 +78,8 @@ func TestExecute_BypassAuction_DispatchesToSingleAgent(t *testing.T) {
 
 func TestExecute_BypassAuction_RequiresSingleAgentID(t *testing.T) {
 	s := &Server{
-		Auctioneer: &fakeAuctioneer{},
-		ExecCfg:    config.ExecutionConfig{Routing: config.RoutingConfig{BypassAuction: true}},
+		Dispatcher: &fakeAuctioneer{},
+		ExecCfg:    config.ExecutionConfig{Routing: config.RoutingConfig{BypassSelection: true}},
 	}
 	_, err := s.Execute(context.Background(), &pb.Handoff{
 		Payload: &pb.Object{Data: []byte("anything")},

@@ -10,13 +10,13 @@ import (
 )
 
 // fakeCaller records the handoff Context it receives so we can assert the session
-// token was injected. Satisfies domain.Auctioneer.
+// token was injected. Satisfies domain.StepDispatcher.
 type fakeCaller struct {
 	gotToken string
 	resp     string
 }
 
-func (f *fakeCaller) Execute(context.Context, *domain.AuctionTask, *domain.Handoff) (*domain.AuctionResult, error) {
+func (f *fakeCaller) Execute(context.Context, *domain.DispatchTask, *domain.Handoff) (*domain.DispatchResult, error) {
 	return nil, nil
 }
 func (f *fakeCaller) CallAgent(_ context.Context, _ string, h *domain.Handoff, _ string) (*domain.Handoff, error) {

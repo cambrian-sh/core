@@ -16,7 +16,6 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/awareness"
-	"github.com/cambrian-sh/core/internal/centralexec"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/ingress"
@@ -110,7 +109,7 @@ type Server struct {
 	Router      domain.InputRouter
 	Planner     Planner
 	Manager     *agentmgr.AgentManager
-	Auctioneer  domain.Auctioneer
+	Dispatcher  domain.StepDispatcher
 	MemoryAgent domain.MemoryAgent
 	// SurpriseOracle scores a step outcome against merit (ADR-0049 A2.3). Nil ⇒ the
 	// episode records surprise as unknown rather than as zero.
@@ -161,12 +160,6 @@ type Server struct {
 	// observable, not just the Planner's own generator. nil = identity.
 	GenWrapper func(domain.Generator) domain.Generator
 
-	// ResourceSelector is the ADR-0037 Central-Executive selection arm. When the
-	// session's assigned variant is "efe", a step is bound via this selector
-	// instead of the Auctioneer. nil = auction only.
-	ResourceSelector domain.ResourceSelector
-	// SelectorMode is the resource_selector flag: "auction" | "efe" | "auto".
-	SelectorMode string
 	// EFETrafficPercent is the session-scoped A/B split for "auto" mode (0..100).
 	EFETrafficPercent int
 
@@ -244,11 +237,6 @@ type Server struct {
 	// Embedder backs the Embed RPC (ADR-0041) used by an agent's Local Recurrent
 	// Workspace for relevance ranking. nil → Embed returns Unimplemented.
 	Embedder domain.Embedder
-
-	// YieldDriver resolves agent yields (ADR-0037 D10–D15) on the EFE dispatch
-	// path: it binds + dispatches a yielded sub-goal and resumes the parent. nil ⇒
-	// a yield is inert (the sub-goal is not executed).
-	YieldDriver *centralexec.YieldDriver
 }
 
 // AgentCallLogger observes LLM calls made by cognitive agents through the
@@ -285,7 +273,7 @@ func NewServer(
 	memorySearcher domain.MemorySearcher,
 	hippocampus domain.ProceduralMemory,
 	enqVerification executer.EnqueueVerification,
-	auctioneer domain.Auctioneer,
+	auctioneer domain.StepDispatcher,
 	watcher *supwatcher.Watcher,
 	modelRouter *llm.ProviderRegistry,
 	sessionMgr *session.SessionManager,
@@ -297,7 +285,7 @@ func NewServer(
 	return &Server{
 		Planner:             planner,
 		Manager:             manager,
-		Auctioneer:          auctioneer,
+		Dispatcher:          auctioneer,
 		MemoryAgent:         memoryAgent,
 		ExecCfg:             execCfg,
 		VectorStore:         vectorStore,
@@ -368,7 +356,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	// Planner, Auctioneer, and DAGExecutor — the input goes
 	// verbatim to one configured agent through the same CallAgent seam a
 	// winning bidder would use (same priming, grants, scope, telemetry).
-	if s.ExecCfg.Routing.BypassAuction {
+	if s.ExecCfg.Routing.BypassSelection {
 		return s.executeBypassAuction(ctx, in, rawInput)
 	}
 
@@ -660,7 +648,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			if h.Context["_heal_attempt"] != "" {
 				healingOccurred = true
 			}
-			auctionTask := &domain.AuctionTask{
+			auctionTask := &domain.DispatchTask{
 				ID:          fmt.Sprintf("task-%d", i),
 				Description: step.Query,
 				Context:     fmt.Sprintf("Subject: %s", plan.Subject),
@@ -682,16 +670,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			// inert on that arm.
 			auctionTask.MaxEnergy = step.MaxEnergy
 			auctionTask.CheckpointAfter = step.CheckpointAfter
-			// ADR-0037: when the session's variant is "efe", bind via the
-			// Central-Executive selector (no Auctioneer). Any selection failure
-			// falls through to the auction so the path is never worse than today.
-			if s.useEFE(sessionID) {
-				if resp, ok := s.selectViaEFE(ctx, auctionTask, step.Query, h, &winningAgentID); ok {
-					return resp, nil
-				}
-			}
-
-			result, err := s.Auctioneer.Execute(ctx, auctionTask, h)
+			result, err := s.Dispatcher.Execute(ctx, auctionTask, h)
 			if err != nil {
 				if result != nil {
 					runnerUps = result.RunnerUps
@@ -964,57 +943,6 @@ func (s *Server) wrapGen(g domain.Generator) domain.Generator {
 	return s.GenWrapper(g)
 }
 
-// useEFE reports whether this session's assigned variant is the EFE arm
-// (ADR-0037). Returns false unless a selector is wired and the flag/traffic
-// resolve to "efe" — so the default "auction" rollout never takes the new path.
-func (s *Server) useEFE(sessionID domain.SessionID) bool {
-	if s.ResourceSelector == nil {
-		return false
-	}
-	return centralexec.AssignVariant(s.SelectorMode, s.EFETrafficPercent, string(sessionID)) == domain.MechanismEFE
-}
-
-// selectViaEFE binds a step via the Central-Executive selector and dispatches it
-// through the Manager's CallAgent. It returns (resp, true) on success; on any
-// selection or dispatch failure it returns (nil, false) so the caller falls
-// through to the auction path (the EFE arm is never worse than the status quo).
-func (s *Server) selectViaEFE(ctx context.Context, task *domain.AuctionTask, query string, h *domain.Handoff, winningAgentID *string) (*domain.Handoff, bool) {
-	sel, err := s.ResourceSelector.Select(ctx, domain.Intent{
-		ID:          task.ID,
-		Description: query,
-		// ROUTE-03: hand the selector the capability contract the caller already
-		// resolved onto the task; without it the selector's rebuilt AuctionTask
-		// reaches L1 with no requirements and the gate is a no-op for this arm.
-		RequiredCapabilities: task.RequiredCapabilities,
-		PreferredAgent:       task.PreferredAgent,
-		AgentPin:             task.AgentPin,
-	}, nil)
-	if err != nil || sel.ResourceID == "" {
-		slog.Warn("EFE selection failed; falling back to auction", "task", task.ID, "err", err)
-		return nil, false
-	}
-	// Route through the YieldDriver so a yielded sub-goal (ADR-0037 D10) is bound,
-	// dispatched, and the parent resumed; falls back to a plain call when unwired.
-	var resp *domain.Handoff
-	var callErr error
-	if s.YieldDriver != nil {
-		resp, callErr = s.YieldDriver.Drive(ctx, sel.ResourceID, h)
-	} else {
-		resp, callErr = s.Auctioneer.CallAgent(ctx, sel.ResourceID, h, "")
-	}
-	if callErr != nil {
-		slog.Warn("EFE-bound agent call failed; falling back to auction", "agent", sel.ResourceID, "err", callErr)
-		return nil, false
-	}
-	*winningAgentID = sel.ResourceID
-	if h.Context == nil {
-		h.Context = map[string]string{}
-	}
-	h.Context["_winning_confidence"] = fmt.Sprintf("%f", sel.Confidence)
-	h.Context["_selection_mechanism"] = sel.Mechanism // A/B telemetry partition
-	return resp, true
-}
-
 func (s *Server) thoughtFn(plan *domain.ExecutionPlan) executer.StepFunc {
 	return func(ctx context.Context, i int, handoff *domain.Handoff) (*domain.Handoff, error) {
 		var prompt string
@@ -1227,7 +1155,7 @@ func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawIn
 	}
 
 	slog.Info("⚡ BYPASS AUCTION (ADR-0050 D1)", "agent", agentID)
-	resp, err := s.Auctioneer.CallAgent(ctx, agentID, handoff, "")
+	resp, err := s.Dispatcher.CallAgent(ctx, agentID, handoff, "")
 	if err != nil {
 		return nil, fmt.Errorf("bypass_auction: agent %q: %w", agentID, err)
 	}
@@ -1345,7 +1273,7 @@ func (s *Server) runFallback(
 			excludeID = instanceIDs[0]
 		}
 
-		fbResp, fbErr := s.Auctioneer.CallAgent(ctx, runnerUp.Agent.ID, fallbackHandoff, excludeID)
+		fbResp, fbErr := s.Dispatcher.CallAgent(ctx, runnerUp.Agent.ID, fallbackHandoff, excludeID)
 		if fbErr == nil && fbResp != nil {
 			slog.Info("🔄 Fallback succeeded", "step", i,
 				"runner_up", runnerUp.Agent.ID,

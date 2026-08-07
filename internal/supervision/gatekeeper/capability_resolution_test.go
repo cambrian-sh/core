@@ -34,7 +34,7 @@ func resolutionAgents() *mockAgentDeclarationSource {
 func TestResolution_ExactRequirementGatesToDeclaringAgent(t *testing.T) {
 	g := NewGatekeeper(resolutionAgents(), resolutionCfg())
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t1", Description: "run ls", RequiredCapabilities: []string{"shell_execution"},
 	})
 	if err != nil {
@@ -51,7 +51,7 @@ func TestResolution_ExactRequirementGatesToDeclaringAgent(t *testing.T) {
 func TestResolution_UnknownCapabilityFallsBackToGeneralists(t *testing.T) {
 	g := NewGatekeeper(resolutionAgents(), resolutionCfg())
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t2", Description: "extract a pdf", RequiredCapabilities: []string{"pdf_extract"},
 	})
 	if err != nil {
@@ -72,7 +72,7 @@ func TestResolution_UnsatisfiableReturnsTypedError(t *testing.T) {
 	)
 	g := NewGatekeeper(src, resolutionCfg())
 
-	_, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	_, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t3", Description: "extract a pdf", RequiredCapabilities: []string{"pdf_extract"},
 	})
 	if err == nil {
@@ -96,7 +96,7 @@ func TestResolution_AliasMapRoutesToDeclaringAgent(t *testing.T) {
 	cfg.Capability.CapabilityAliases = map[string]string{"run_command": "shell_execution"}
 	g := NewGatekeeper(resolutionAgents(), cfg)
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t4", Description: "run ls", RequiredCapabilities: []string{"run_command"},
 	})
 	if err != nil {
@@ -112,7 +112,7 @@ func TestResolution_AliasMapRoutesToDeclaringAgent(t *testing.T) {
 func TestResolution_NoRequirementsIsUnaffected(t *testing.T) {
 	g := NewGatekeeper(resolutionAgents(), resolutionCfg())
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t5", Description: "anything"})
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t5", Description: "anything"})
 	if err != nil {
 		t.Fatalf("FindCandidates: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestResolution_DisabledRestoresHardGate(t *testing.T) {
 	cfg.Capability.CapabilityResolution = false
 	g := NewGatekeeper(resolutionAgents(), cfg)
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t6", Description: "extract a pdf", RequiredCapabilities: []string{"pdf_extract"},
 	})
 	if err != nil {
@@ -156,7 +156,7 @@ func TestResolution_PlannerSpellingIsSubstitutedBeforeVerbatimGate(t *testing.T)
 	cfg.Capability.CanonicalVocab = false // the shipped default: L1 is a verbatim comparison
 	g := NewGatekeeper(resolutionAgents(), cfg)
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t7", Description: "run ls",
 		RequiredCapabilities: []string{"Shell-Execution"}, // declared as shell_execution
 	})
@@ -180,7 +180,7 @@ func TestResolution_L2CannotEmptyASlateL1Approved(t *testing.T) {
 		WithSearcher(&fakeInterviewSearcher{results: map[string]float64{}}),
 	)
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t8", Description: "run ls", RequiredCapabilities: []string{"shell_execution"},
 	})
 	if err != nil {
@@ -199,7 +199,7 @@ func TestResolution_L2MayEmptySlateWhenL1DidNotGate(t *testing.T) {
 		WithSearcher(&fakeInterviewSearcher{results: map[string]float64{}}),
 	)
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t9", Description: "anything at all",
 	})
 	if err != nil {

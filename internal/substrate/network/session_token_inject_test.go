@@ -58,7 +58,7 @@ type capturingAuctioneer struct {
 	received []*domain.Handoff
 }
 
-func (a *capturingAuctioneer) Execute(ctx context.Context, task *domain.AuctionTask, h *domain.Handoff) (*domain.AuctionResult, error) {
+func (a *capturingAuctioneer) Execute(ctx context.Context, task *domain.DispatchTask, h *domain.Handoff) (*domain.DispatchResult, error) {
 	a.mu.Lock()
 	clone := &domain.Handoff{Context: make(map[string]string)}
 	for k, v := range h.Context {
@@ -66,7 +66,7 @@ func (a *capturingAuctioneer) Execute(ctx context.Context, task *domain.AuctionT
 	}
 	a.received = append(a.received, clone)
 	a.mu.Unlock()
-	return &domain.AuctionResult{
+	return &domain.DispatchResult{
 		Handoff:    &domain.Handoff{Payload: &domain.Payload{Data: []byte("ok")}},
 		Confidence: 0.9,
 	}, nil
@@ -114,7 +114,7 @@ func TestExecute_InjectsSessionTokenID(t *testing.T) {
 	auc := &capturingAuctioneer{}
 	s := minimalServer(t)
 	s.LLMGateway = gw
-	s.Auctioneer = auc
+	s.Dispatcher = auc
 
 	runOneStepPlan(t, s)
 
@@ -131,7 +131,7 @@ func TestExecute_InjectsSessionTokenID(t *testing.T) {
 func TestExecute_InjectsStepIndex(t *testing.T) {
 	auc := &capturingAuctioneer{}
 	s := minimalServer(t)
-	s.Auctioneer = auc
+	s.Dispatcher = auc
 
 	runOneStepPlan(t, s)
 
@@ -149,7 +149,7 @@ func TestExecute_NilGateway_NoTokenInjected(t *testing.T) {
 	auc := &capturingAuctioneer{}
 	s := minimalServer(t)
 	s.LLMGateway = nil
-	s.Auctioneer = auc
+	s.Dispatcher = auc
 
 	runOneStepPlan(t, s)
 
@@ -168,7 +168,7 @@ func TestExecute_GatewayCompleteCalledAfterStep(t *testing.T) {
 	auc := &capturingAuctioneer{}
 	s := minimalServer(t)
 	s.LLMGateway = gw
-	s.Auctioneer = auc
+	s.Dispatcher = auc
 
 	runOneStepPlan(t, s)
 

@@ -34,12 +34,6 @@ type Options struct {
 	// that constructs the ReactiveEngine. ADR-0032 / ADR-0057.
 	NewSignalReceiver func(KernelServices) (domain.SignalReceiver, domain.WatchConfigHandler)
 
-	// ResourceSelector, when non-nil, replaces the config-driven (auction/EFE) routing
-	// selector (ADR-0037) with a caller/plugin-supplied one — the Tier-1 replace-one
-	// extension point for the selection mechanism (ADR-0074). OSS default: nil (config
-	// decides). A plugin sets this via Registry.SetResourceSelector.
-	ResourceSelector domain.ResourceSelector
-
 	// Entitlements decides which plugins may activate (ADR-0082 D3). It is consulted at
 	// the single chokepoint in applyPlugins, BEFORE a plugin registers, so an unentitled
 	// plugin contributes nothing at all. nil ⇒ every declared plugin activates: the OSS
@@ -157,7 +151,7 @@ type Options struct {
 // Until then they remain, documented as debt rather than silently tolerated.
 type KernelServices struct {
 	Manager    ReactiveAgentDispatcher // direct dispatch + daemon lifecycle
-	Auctioneer domain.Auctioneer       // full Gatekeeper → Auction
+	Dispatcher domain.StepDispatcher   // selection + invocation (the Dispatcher)
 	// Ingestor is the full-fidelity memory write (ADR-0104 D3): one write path, so
 	// a lane that receives content puts it in the brain rather than beside it.
 	// nil ⇒ this deployment has no ingestion pipeline, and a caller must say so

@@ -52,9 +52,9 @@ func TestAgentDefinition_NewFields_RoundTrip(t *testing.T) {
 	}
 }
 
-// Cycle 3: AuctionTask with RequiredFormats round-trips correctly.
+// Cycle 3: DispatchTask with RequiredFormats round-trips correctly.
 func TestAuctionTask_RequiredFormats_RoundTrip(t *testing.T) {
-	original := AuctionTask{
+	original := DispatchTask{
 		ID:              "task-1",
 		Description:     "summarise document",
 		RequiredFormats: []string{"markdown", "json"},
@@ -63,7 +63,7 @@ func TestAuctionTask_RequiredFormats_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal error: %v", err)
 	}
-	var got AuctionTask
+	var got DispatchTask
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}

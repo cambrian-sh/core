@@ -7,11 +7,15 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// stubSelector is a self-contained domain.ResourceSelector for the registry tests.
-type stubSelector struct{ id string }
+// stubConsultant is a self-contained domain.SubstrateConsultant used purely as a
+// VEHICLE for the Tier-1 replace-one registry tests below. These used to ride on
+// domain.ResourceSelector; that seam was removed with the auction, and the registry
+// semantics they cover (fold, direct-beats-plugin, two-owners-is-an-error) are
+// general to every Tier-1 point, so they were re-pointed rather than deleted.
+type stubConsultant struct{ id string }
 
-func (s stubSelector) Select(_ context.Context, _ domain.Intent, _ []domain.AgentDefinition) (domain.Selection, error) {
-	return domain.Selection{}, nil
+func (s stubConsultant) Consult(_ context.Context, _, _ string) ([]domain.SubstrateCitation, error) {
+	return nil, nil
 }
 
 // testPlugin registers whatever its fields tell it to.
@@ -19,7 +23,7 @@ type testPlugin struct {
 	name        string
 	caps        []string
 	requires    []string
-	selector    domain.ResourceSelector
+	consultant  domain.SubstrateConsultant
 	lifecycle   *Lifecycle
 	agent       *domain.AgentDefinition
 	systemAgent *domain.AgentDefinition
@@ -48,8 +52,8 @@ func (p *testPlugin) Register(r *Registry) error {
 	if p.order != nil {
 		*p.order = append(*p.order, "register:"+p.name)
 	}
-	if p.selector != nil {
-		if err := r.SetResourceSelector(p.name, p.selector); err != nil {
+	if p.consultant != nil {
+		if err := r.SetSubstrateConsultant(p.name, p.consultant); err != nil {
 			return err
 		}
 	}
@@ -66,43 +70,43 @@ func (p *testPlugin) Register(r *Registry) error {
 }
 
 // A plugin's ResourceSelector folds into the effective Options (Tier-1 replace-one).
-func TestApplyPlugins_FoldsResourceSelector(t *testing.T) {
-	sel := stubSelector{id: "custom"}
-	opts := Options{Plugins: []Plugin{&testPlugin{name: "p1", selector: sel}}}
+func TestApplyPlugins_FoldsTier1Seam(t *testing.T) {
+	c1 := stubConsultant{id: "custom"}
+	opts := Options{Plugins: []Plugin{&testPlugin{name: "p1", consultant: c1}}}
 	c, err := applyPlugins(opts)
 	if err != nil {
 		t.Fatalf("applyPlugins: %v", err)
 	}
-	if c.opts.ResourceSelector != domain.ResourceSelector(sel) {
-		t.Fatalf("ResourceSelector not folded from plugin: %#v", c.opts.ResourceSelector)
+	if c.opts.SubstrateConsultant != domain.SubstrateConsultant(c1) {
+		t.Fatalf("Tier-1 seam not folded from plugin: %#v", c.opts.SubstrateConsultant)
 	}
 }
 
-// A directly-set Options.ResourceSelector wins over a plugin's (explicit beats plugin).
-func TestApplyPlugins_DirectSelectorWins(t *testing.T) {
-	direct := stubSelector{id: "direct"}
-	plugin := stubSelector{id: "plugin"}
+// A directly-set Option wins over a plugin's (explicit beats plugin).
+func TestApplyPlugins_DirectTier1Wins(t *testing.T) {
+	direct := stubConsultant{id: "direct"}
+	plugin := stubConsultant{id: "plugin"}
 	opts := Options{
-		ResourceSelector: direct,
-		Plugins:          []Plugin{&testPlugin{name: "p1", selector: plugin}},
+		SubstrateConsultant: direct,
+		Plugins:             []Plugin{&testPlugin{name: "p1", consultant: plugin}},
 	}
 	c, err := applyPlugins(opts)
 	if err != nil {
 		t.Fatalf("applyPlugins: %v", err)
 	}
-	if c.opts.ResourceSelector != domain.ResourceSelector(direct) {
-		t.Fatalf("direct selector should win, got %#v", c.opts.ResourceSelector)
+	if c.opts.SubstrateConsultant != domain.SubstrateConsultant(direct) {
+		t.Fatalf("direct value should win, got %#v", c.opts.SubstrateConsultant)
 	}
 }
 
 // Two plugins owning the same replace-one point is a hard error (fail-closed).
-func TestApplyPlugins_SelectorConflictErrors(t *testing.T) {
+func TestApplyPlugins_Tier1ConflictErrors(t *testing.T) {
 	opts := Options{Plugins: []Plugin{
-		&testPlugin{name: "p1", selector: stubSelector{id: "a"}},
-		&testPlugin{name: "p2", selector: stubSelector{id: "b"}},
+		&testPlugin{name: "p1", consultant: stubConsultant{id: "a"}},
+		&testPlugin{name: "p2", consultant: stubConsultant{id: "b"}},
 	}}
 	if _, err := applyPlugins(opts); err == nil {
-		t.Fatal("expected a conflict error when two plugins register a ResourceSelector")
+		t.Fatal("expected a conflict error when two plugins claim the same Tier-1 seam")
 	}
 }
 
@@ -157,7 +161,7 @@ func TestApplyPlugins_AgentSources(t *testing.T) {
 // No plugins ⇒ Options unchanged, no lifecycles/sources (OSS default path).
 func TestApplyPlugins_Empty(t *testing.T) {
 	c, err := applyPlugins(Options{})
-	if err != nil || c.lifecycles != nil || c.agentSources != nil || c.opts.ResourceSelector != nil {
+	if err != nil || c.lifecycles != nil || c.agentSources != nil || c.opts.SubstrateConsultant != nil {
 		t.Fatalf("empty plugins should be a no-op, got err=%v lifecycles=%v sources=%v", err, c.lifecycles, c.agentSources)
 	}
 }

@@ -17,7 +17,7 @@ func TestVerifierPool_Select_ReturnsBestVerifier(t *testing.T) {
 		"v2:s2": {TrustScore: 0.95, SuccessRate: 0.92},
 	}
 	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.AuctionTask{ID: "t1"}
+	task := &domain.DispatchTask{ID: "t1"}
 
 	got, err := pool.Select(context.Background(), task, "other-agent", nil)
 	if err != nil {
@@ -38,7 +38,7 @@ func TestVerifierPool_Select_ExcludesWinner(t *testing.T) {
 		"verifier:sv": {TrustScore: 0.85, SuccessRate: 0.85},
 	}
 	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.AuctionTask{ID: "t2"}
+	task := &domain.DispatchTask{ID: "t2"}
 
 	got, err := pool.Select(context.Background(), task, "winner", nil)
 	if err != nil {
@@ -59,7 +59,7 @@ func TestVerifierPool_Select_ExcludesRecentVerifiers(t *testing.T) {
 		"fresh:sf":  {TrustScore: 0.82, SuccessRate: 0.82},
 	}
 	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.AuctionTask{ID: "t3"}
+	task := &domain.DispatchTask{ID: "t3"}
 	subjectProfile := &domain.AgentProfile{
 		RecentVerifierIDs: []string{"recent"},
 	}
@@ -84,7 +84,7 @@ func TestVerifierPool_Select_NoEligible_ReturnsError(t *testing.T) {
 		"only:so": {TrustScore: 0.9, SuccessRate: 0.9},
 	}
 	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.AuctionTask{ID: "t4"}
+	task := &domain.DispatchTask{ID: "t4"}
 
 	_, err := pool.Select(context.Background(), task, "only", nil)
 	if err != ErrNoVerifierAvailable {
@@ -102,7 +102,7 @@ func TestVerifierPool_Select_BelowThreshold_Excluded(t *testing.T) {
 		"high:sh": {TrustScore: 0.9, SuccessRate: 0.9},
 	}
 	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.AuctionTask{ID: "t5"}
+	task := &domain.DispatchTask{ID: "t5"}
 
 	got, err := pool.Select(context.Background(), task, "other", nil)
 	if err != nil {
@@ -123,7 +123,7 @@ func TestVerifierPool_Select_ExcludesProvisional(t *testing.T) {
 		"active:sa": {TrustScore: 0.85, SuccessRate: 0.85},
 	}
 	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.AuctionTask{ID: "t6"}
+	task := &domain.DispatchTask{ID: "t6"}
 
 	got, err := pool.Select(context.Background(), task, "other", nil)
 	if err != nil {
@@ -152,7 +152,7 @@ func TestVerifierPool_HealthGuard_RelaxesThreshold(t *testing.T) {
 		ThresholdStep:  0.05,
 		ThresholdFloor: 0.60,
 	}
-	task := &domain.AuctionTask{ID: "t-guard"}
+	task := &domain.DispatchTask{ID: "t-guard"}
 
 	got, err := pool.Select(context.Background(), task, "other", nil)
 	if err != nil {
@@ -179,7 +179,7 @@ func TestVerifierPool_HealthGuard_ReturnsBestAtFloor(t *testing.T) {
 		ThresholdStep:  0.05,
 		ThresholdFloor: 0.60,
 	}
-	task := &domain.AuctionTask{ID: "t-floor"}
+	task := &domain.DispatchTask{ID: "t-floor"}
 
 	got, err := pool.Select(context.Background(), task, "other", nil)
 	if err != nil {
@@ -206,7 +206,7 @@ func TestVerifierPool_HealthGuard_TotalCollapse_ReturnsError(t *testing.T) {
 		ThresholdStep:  0.05,
 		ThresholdFloor: 0.60,
 	}
-	task := &domain.AuctionTask{ID: "t-collapse"}
+	task := &domain.DispatchTask{ID: "t-collapse"}
 
 	_, err := pool.Select(context.Background(), task, "other", nil)
 	if err != ErrNoVerifierAvailable {
@@ -224,7 +224,7 @@ func TestVerifierPool_Select_NeverReturnsTraitTool(t *testing.T) {
 		"tool:st":      {TrustScore: 0.95, SuccessRate: 0.95},
 	}
 	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.AuctionTask{ID: "t-trait-exclusion"}
+	task := &domain.DispatchTask{ID: "t-trait-exclusion"}
 
 	for i := 0; i < 10; i++ {
 		got, err := pool.Select(context.Background(), task, "other", nil)
@@ -247,7 +247,7 @@ func TestVerifierPool_Select_NeverReturnsTraitDaemon(t *testing.T) {
 		"daemon:sd":    {TrustScore: 0.95, SuccessRate: 0.95},
 	}
 	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.AuctionTask{ID: "t-daemon-exclusion"}
+	task := &domain.DispatchTask{ID: "t-daemon-exclusion"}
 
 	for i := 0; i < 10; i++ {
 		got, err := pool.Select(context.Background(), task, "other", nil)
@@ -270,7 +270,7 @@ func TestVerifierPool_Select_OnlyTraitDaemon_ReturnsError(t *testing.T) {
 		"daemon2:sd2": {TrustScore: 0.95, SuccessRate: 0.95},
 	}
 	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.AuctionTask{ID: "t-daemon-only"}
+	task := &domain.DispatchTask{ID: "t-daemon-only"}
 
 	got, err := pool.Select(context.Background(), task, "other", nil)
 	if err == nil {
@@ -291,7 +291,7 @@ func TestVerifierPool_Select_OnlyTraitTool_ReturnsError(t *testing.T) {
 		"tool2:st2": {TrustScore: 0.95, SuccessRate: 0.95},
 	}
 	pool := newTestVerifierPool(agents, profiles, 0.8)
-	task := &domain.AuctionTask{ID: "t-tool-only"}
+	task := &domain.DispatchTask{ID: "t-tool-only"}
 
 	got, err := pool.Select(context.Background(), task, "other", nil)
 	if err == nil {

@@ -23,7 +23,7 @@ func TestChaos_GatekeeperFallsBackOnDbTimeout(t *testing.T) {
 		},
 	}, gatekeeper.WithSearcher(nil))
 
-	task := &domain.AuctionTask{
+	task := &domain.DispatchTask{
 		Description:     "execute a task",
 		RequiredFormats: []string{},
 	}

@@ -3,15 +3,6 @@ package domain
 import (
 	"context"
 	"errors"
-	"sort"
-)
-
-// Selection mechanism identifiers, carried on every Selection for telemetry /
-// audit partitioning (PRD-0037 A/B coexistence). The benchmark harness uses
-// these to split metrics by variant without external bookkeeping.
-const (
-	MechanismEFE     = "efe"
-	MechanismAuction = "auction"
 )
 
 // ErrNoCandidates is returned by a ResourceSelector when there is nothing to
@@ -26,7 +17,7 @@ var ErrNoCandidates = errors.New("selection: no candidates")
 var ErrPinnedAgentUnavailable = errors.New("selection: pinned agent unavailable")
 
 // Intent is a capability-space description of a unit of work (ADR-0037 D3).
-// Unlike AuctionTask it is agent-agnostic — the skeleton is drafted in intents
+// Unlike DispatchTask it is agent-agnostic — the skeleton is drafted in intents
 // and a concrete resource is bound to each at execution time. Embedding is the
 // shared description-embedding vector used for capability retrieval (D2 index).
 type Intent struct {
@@ -34,10 +25,10 @@ type Intent struct {
 	Description string
 	Embedding   []float32
 	// RequiredCapabilities carries the ROUTE-03 capability contract into the
-	// selector arms. Every selector rebuilds an AuctionTask from this Intent to
+	// selector arms. Every selector rebuilds an DispatchTask from this Intent to
 	// call the Gatekeeper, and a rebuild that omits this field silently disables
 	// the L1 capability gate for that arm — measured 2026-07-28: with
-	// resource_selector="efe" the contract reached the AuctionTask in the Server
+	// resource_selector="efe" the contract reached the DispatchTask in the Server
 	// and was then dropped by the rebuild, so L1 filtered nobody all run and an
 	// agent declaring only `general_purpose` won file-handling steps. The gate is
 	// a hard requirement, so it must survive every path that reaches L1.
@@ -45,7 +36,7 @@ type Intent struct {
 
 	// PreferredAgent / AgentPin carry the step's agent pin through the selector
 	// arms, for the same reason RequiredCapabilities does: every selector rebuilds
-	// an AuctionTask from this Intent, and whatever the rebuild omits is silently
+	// an DispatchTask from this Intent, and whatever the rebuild omits is silently
 	// dropped from selection.
 	PreferredAgent string
 	AgentPin       string
@@ -62,142 +53,10 @@ type PrecisionWeight struct {
 	Confidence      float64 // [0,1] — 1-Confidence is the epistemic value
 }
 
-// Selection is the outcome of a ResourceSelector pick (PRD-0037). Mechanism is
-// "efe" or "auction" for A/B partitioning; SolicitedBid is true when a live
-// RequestProposal was pulled because the posterior was flat (D6, issue 0037-05).
-type Selection struct {
-	ResourceID   string
-	Mechanism    string
-	Confidence   float64
-	SolicitedBid bool
-}
-
 // PrecisionProvider resolves a candidate set into precision-weighted beliefs
-// for an intent (ADR-0037 D2/D7). It is the seam between resource selection and
-// the CapabilityBelief store (0037-03) + Gatekeeper precision oracle (0037-04).
-// In 0037-01 a static cold-start seed satisfies it; learning swaps in later
-// without touching the selector — the Central Executive owns no belief itself.
+// for an intent (ADR-0037 D2/D7). It is the seam between the belief store and
+// the precision shaper. The EFE selector that once consumed it is gone; the
+// provider survives because the belief store and shaper are independent of it.
 type PrecisionProvider interface {
 	PrecisionFor(ctx context.Context, intent Intent, candidates []AgentDefinition) ([]PrecisionWeight, error)
-}
-
-// ResourceSelector is the abstraction behind which both selection mechanisms
-// live (PRD-0037 A/B coexistence): AuctionSelector (status quo) and
-// InferenceSelector (EFE). A flagged run picks one; every Selection carries its
-// Mechanism so the benchmark harness can partition metrics by variant.
-type ResourceSelector interface {
-	Select(ctx context.Context, intent Intent, candidates []AgentDefinition) (Selection, error)
-}
-
-// MinimizeEFE selects the resource that minimizes Expected Free Energy — i.e.
-// maximizes pragmatic value (expected success) plus epistemic value (an
-// exploration bonus scaled by uncertainty, 1-Confidence) (ADR-0037 D9).
-//
-//	value(r) = ExpectedSuccess(r) + explorationBonus × (1 - Confidence(r))
-//
-// It is a pure, deterministic function: routing is inference arithmetic, not a
-// Go switch/merit table (Zero-Hardcode Rule). Ties break lexically by
-// ResourceID for reproducibility. An empty candidate set is ErrNoCandidates.
-func MinimizeEFE(weights []PrecisionWeight, explorationBonus float64) (Selection, error) {
-	if len(weights) == 0 {
-		return Selection{}, ErrNoCandidates
-	}
-
-	ranked := make([]PrecisionWeight, len(weights))
-	copy(ranked, weights)
-	sort.SliceStable(ranked, func(i, j int) bool {
-		vi := EFEValue(ranked[i], explorationBonus)
-		vj := EFEValue(ranked[j], explorationBonus)
-		if vi != vj {
-			return vi > vj
-		}
-		return ranked[i].ResourceID < ranked[j].ResourceID
-	})
-
-	winner := ranked[0]
-	return Selection{
-		ResourceID: winner.ResourceID,
-		Mechanism:  MechanismEFE,
-		Confidence: winner.Confidence,
-	}, nil
-}
-
-// EFEValue is the negative Expected Free Energy of a single candidate — higher
-// is better (lower EFE): pragmatic value plus uncertainty-scaled epistemic value.
-func EFEValue(w PrecisionWeight, explorationBonus float64) float64 {
-	return w.ExpectedSuccess + explorationBonus*(1.0-w.Confidence)
-}
-
-// ModelWeight is the belief about a model (TraitModel) for an intent (ADR-0037
-// D16): the same region-resolved quality/confidence as an agent, plus a
-// first-class cost penalty (ADR-0011's neuromodulator — normalized tokens / $ /
-// latency). Models are just another resource population in the belief store.
-type ModelWeight struct {
-	ResourceID      string
-	ExpectedQuality float64 // [0,1]
-	Confidence      float64 // [0,1]
-	CostPenalty     float64 // subtracted from the EFE value
-}
-
-// ModelEFEValue is the negative Expected Free Energy for a model (D16):
-//
-//	expected_quality × confidence − cost_penalty + epistemic_value
-//
-// Unlike the agent value (where cost is a tiebreaker), cost is often the
-// deciding term for models. Higher is better.
-func ModelEFEValue(w ModelWeight, explorationBonus float64) float64 {
-	return w.ExpectedQuality*w.Confidence - w.CostPenalty + explorationBonus*(1.0-w.Confidence)
-}
-
-// MinimizeModelEFE selects the model minimizing Expected Free Energy with cost
-// as a first-class term (D16). Pure and deterministic; ties break lexically.
-func MinimizeModelEFE(weights []ModelWeight, explorationBonus float64) (Selection, error) {
-	if len(weights) == 0 {
-		return Selection{}, ErrNoCandidates
-	}
-	ranked := make([]ModelWeight, len(weights))
-	copy(ranked, weights)
-	sort.SliceStable(ranked, func(i, j int) bool {
-		vi := ModelEFEValue(ranked[i], explorationBonus)
-		vj := ModelEFEValue(ranked[j], explorationBonus)
-		if vi != vj {
-			return vi > vj
-		}
-		return ranked[i].ResourceID < ranked[j].ResourceID
-	})
-	winner := ranked[0]
-	return Selection{
-		ResourceID: winner.ResourceID,
-		Mechanism:  MechanismEFE,
-		Confidence: winner.Confidence,
-	}, nil
-}
-
-// IsFlatPosterior reports whether the top two candidates' EFE values are within
-// margin of each other — a near-tie / novel step (ADR-0037 D6). Exactly when
-// the Central Executive should solicit a live proposal (the FEP-optimal
-// epistemic action). Fewer than two candidates is trivially flat.
-func IsFlatPosterior(weights []PrecisionWeight, explorationBonus, margin float64) bool {
-	if len(weights) < 2 {
-		return true
-	}
-	top, second := -1.0, -1.0
-	for _, w := range weights {
-		v := EFEValue(w, explorationBonus)
-		switch {
-		case v > top:
-			second, top = top, v
-		case v > second:
-			second = v
-		}
-	}
-	return top-second < margin
-}
-
-// BidSolicitor pulls an agent's input-conditioned self-assessment for an intent
-// — the demoted RequestProposal as a solicited epistemic action (ADR-0037 D6).
-// It preserves the one thing a manifest embedding cannot reconstruct ("do I
-// hold credentials for this API?") while making the bid pull, not push.
-type BidSolicitor interface {
-	SolicitBid(ctx context.Context, intent Intent, candidate AgentDefinition) (confidence float64, ok bool, err error)
 }

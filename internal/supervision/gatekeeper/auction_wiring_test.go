@@ -25,7 +25,7 @@ func TestFindCandidates_TraitTool_GoesThroughLayer2(t *testing.T) {
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(registry, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t-gk-1", Description: "do some work"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t-gk-1", Description: "do some work"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestFindCandidates_TraitTool_CognitiveAgentStillChecked(t *testing.T) {
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(registry, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t-gk-2", Description: "cognitive task"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t-gk-2", Description: "cognitive task"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestFindCandidates_TraitTool_FailsDeclaration_Eliminated(t *testing.T) {
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(registry, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID:              "t-gk-3",
 		Description:     "json task",
 		RequiredFormats: []string{"json"},

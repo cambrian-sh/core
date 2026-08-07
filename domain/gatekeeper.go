@@ -23,7 +23,7 @@ type ScoredCandidate struct {
 // Gatekeeper is the three-layer interrupt controller (Declaration → Interview → Merit)
 // that filters the full agent list to a short candidate slate before the Auction.
 type Gatekeeper interface {
-	FindCandidates(ctx context.Context, task *AuctionTask) ([]ScoredCandidate, error)
+	FindCandidates(ctx context.Context, task *DispatchTask) ([]ScoredCandidate, error)
 	// FindModelCandidates returns all TraitModel agents filtered by required capabilities
 	// and ranked by merit score. Used by the Auctioneer for ADR-0018 TraitModel sub-selection.
 	// An empty requiredCapabilities list means no capability floor — all TraitModel agents pass.

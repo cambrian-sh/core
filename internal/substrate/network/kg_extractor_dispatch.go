@@ -17,8 +17,8 @@ import (
 // (metadata + spacy_patterns) lives in the agent (agents/system/kg_extractor_agent/);
 // this Go side is just dispatch + parse, mirroring AgentScoutDispatcher.
 type KgExtractorDispatcher struct {
-	Auctioneer domain.Auctioneer
-	AgentID    string // default "kg_extractor_agent"
+	Caller  domain.AgentCaller
+	AgentID string // default "kg_extractor_agent"
 }
 
 // kgRequest is the handoff payload the agent receives: positional batches of
@@ -49,7 +49,7 @@ type kgResponse struct {
 // the same degradation contract as the LLM extractor it replaces.
 func (d *KgExtractorDispatcher) ExtractBatch(ctx context.Context, texts []string, ids []string) [][]domain.ChunkTriplet {
 	out := make([][]domain.ChunkTriplet, len(texts))
-	if d == nil || d.Auctioneer == nil || len(texts) == 0 {
+	if d == nil || d.Caller == nil || len(texts) == 0 {
 		return out
 	}
 	agentID := d.AgentID
@@ -66,7 +66,7 @@ func (d *KgExtractorDispatcher) ExtractBatch(ctx context.Context, texts []string
 		Payload:   &domain.Payload{Type: "chunk_triplet_request", Data: reqData},
 		Context:   map[string]string{"task_id": "kg-extract"},
 	}
-	resp, err := d.Auctioneer.CallAgent(ctx, agentID, h, "")
+	resp, err := d.Caller.CallAgent(ctx, agentID, h, "")
 	if err != nil || resp == nil || resp.Payload == nil || len(resp.Payload.Data) == 0 {
 		slog.Debug("kg_extractor dispatch: no triplets returned", "err", err)
 		return out

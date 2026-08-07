@@ -14,7 +14,7 @@ func TestFindCandidates_ProvisionalAgentLast(t *testing.T) {
 	registry := newAgentSourceWith(provisional, active)
 	gk := NewGatekeeper(registry, defaultGatekeeperCfg())
 
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t1"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestFindCandidates_ExcludesSystemAgent(t *testing.T) {
 	registry := newAgentSourceWith(active, sysAgent)
 	gk := NewGatekeeper(registry, defaultGatekeeperCfg())
 
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestFindCandidates_ProvisionalScore(t *testing.T) {
 	registry := newAgentSourceWith(domain.AgentDefinition{ID: "prov", Name: "prov", Provisional: true})
 	gk := NewGatekeeper(registry, defaultGatekeeperCfg())
 
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t2"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t2"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestFindCandidates_ActiveAgentScore(t *testing.T) {
 	cfg := defaultGatekeeperCfg()
 	gk := NewGatekeeper(registry, cfg)
 
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{ID: "t3"})
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{ID: "t3"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestFindCandidates_NoCompatibleAgents_ReturnsEmpty(t *testing.T) {
 	registry.manifests["sql-agent"] = &domain.AgentManifest{Tools: []string{"sql"}}
 	gk := NewGatekeeper(registry, defaultGatekeeperCfg())
 
-	candidates, err := gk.FindCandidates(context.Background(), &domain.AuctionTask{
+	candidates, err := gk.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID:              "t4",
 		RequiredFormats: []string{"json"},
 	})

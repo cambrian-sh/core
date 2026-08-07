@@ -18,8 +18,8 @@ import (
 // load + scoring live in the warm agent (agents/system/reranker_agent/); this Go side
 // is just dispatch + parse, mirroring KgExtractorDispatcher.
 type RerankerDispatcher struct {
-	Auctioneer domain.Auctioneer
-	AgentID    string // default "reranker_agent"
+	Caller  domain.AgentCaller
+	AgentID string // default "reranker_agent"
 }
 
 // rerankRequest is the handoff payload the agent receives.
@@ -40,7 +40,7 @@ type rerankResponse struct {
 // signal must propagate rather than masquerade as an all-zero rerank (which would
 // silently flatten the ranking).
 func (d *RerankerDispatcher) Rerank(ctx context.Context, query string, documents []string) ([]float64, error) {
-	if d == nil || d.Auctioneer == nil {
+	if d == nil || d.Caller == nil {
 		return nil, fmt.Errorf("reranker: no auctioneer wired")
 	}
 	if len(documents) == 0 {
@@ -60,7 +60,7 @@ func (d *RerankerDispatcher) Rerank(ctx context.Context, query string, documents
 		Payload:   &domain.Payload{Type: "rerank_request", Data: reqData},
 		Context:   map[string]string{"task_id": "rerank"},
 	}
-	resp, err := d.Auctioneer.CallAgent(ctx, agentID, h, "")
+	resp, err := d.Caller.CallAgent(ctx, agentID, h, "")
 	if err != nil {
 		return nil, fmt.Errorf("reranker: dispatch: %w", err)
 	}

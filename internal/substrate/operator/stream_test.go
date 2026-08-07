@@ -41,7 +41,7 @@ func TestService_StreamEventsDeliversBacklogAndLive(t *testing.T) {
 	svc := operator.NewService(feed)
 
 	// Backlog emitted before the client subscribes.
-	feed.Emit(domain.AuctionEventPayload{TaskID: "t1", Status: "completed", WinnerID: "w1"})
+	feed.Emit(domain.SelectionEventPayload{TaskID: "t1", Status: "completed", WinnerID: "w1"})
 	feed.Emit(domain.AgentReadyEvent{AgentID: "a1", TrustScore: 0.9})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -169,7 +169,7 @@ func TestSubscribeBridge_PublishedEventsReachTheFeed(t *testing.T) {
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	operator.SubscribeBridge(bus, feed)
 
-	_ = bus.Publish(domain.AuctionEventPayload{TaskID: "t1"})
+	_ = bus.Publish(domain.SelectionEventPayload{TaskID: "t1"})
 	_ = bus.Publish(domain.AgentReadyEvent{AgentID: "a1"})
 	_ = bus.Publish(domain.MemoryWrittenEvent{DocID: "d1", SessionID: "s1"})
 	_ = bus.Publish(domain.HITLRaisedEvent{InterventionID: "i1", SessionID: "s1", IsDestructive: true})

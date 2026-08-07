@@ -36,7 +36,7 @@ func pinAgents() *mockAgentDeclarationSource {
 func TestHardPin_BindsOnlyNamedAgent(t *testing.T) {
 	g := NewGatekeeper(pinAgents(), pinCfg())
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t1", Description: "anything", PreferredAgent: "terminal_agent", AgentPin: domain.PinHard,
 	})
 	if err != nil {
@@ -52,7 +52,7 @@ func TestHardPin_BindsOnlyNamedAgent(t *testing.T) {
 func TestHardPin_StrengthIsCaseInsensitive(t *testing.T) {
 	g := NewGatekeeper(pinAgents(), pinCfg())
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t1", Description: "anything", PreferredAgent: "terminal_agent", AgentPin: "HARD",
 	})
 	if err != nil {
@@ -68,7 +68,7 @@ func TestHardPin_StrengthIsCaseInsensitive(t *testing.T) {
 func TestHardPin_UnknownAgentIsAnError(t *testing.T) {
 	g := NewGatekeeper(pinAgents(), pinCfg())
 
-	_, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	_, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t1", Description: "anything", PreferredAgent: "no_such_agent", AgentPin: domain.PinHard,
 	})
 	if !errors.Is(err, domain.ErrPinnedAgentUnavailable) {
@@ -83,7 +83,7 @@ func TestHardPin_UndispatchableAgentIsAnError(t *testing.T) {
 		[]domain.AgentDefinition{{ID: "watcher_agent", Trait: domain.TraitDaemon}}, nil)
 	g := NewGatekeeper(src, pinCfg())
 
-	_, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	_, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t1", Description: "anything", PreferredAgent: "watcher_agent", AgentPin: domain.PinHard,
 	})
 	if !errors.Is(err, domain.ErrPinnedAgentUnavailable) {
@@ -96,7 +96,7 @@ func TestHardPin_UndispatchableAgentIsAnError(t *testing.T) {
 func TestSoftPin_RanksFirstButKeepsOthers(t *testing.T) {
 	g := NewGatekeeper(pinAgents(), pinCfg())
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t1", Description: "anything", PreferredAgent: "research_agent", AgentPin: domain.PinSoft,
 	})
 	if err != nil {
@@ -117,7 +117,7 @@ func TestSoftPin_RanksFirstButKeepsOthers(t *testing.T) {
 func TestSoftPin_DoesNotBypassCapabilityContract(t *testing.T) {
 	g := NewGatekeeper(pinAgents(), pinCfg())
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t1", Description: "anything",
 		RequiredCapabilities: []string{"file_read"},
 		PreferredAgent:       "calculator_agent", AgentPin: domain.PinSoft,
@@ -137,7 +137,7 @@ func TestSoftPin_DoesNotBypassCapabilityContract(t *testing.T) {
 func TestPin_EmptyStrengthDegradesToSoft(t *testing.T) {
 	g := NewGatekeeper(pinAgents(), pinCfg())
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t1", Description: "anything", PreferredAgent: "no_such_agent", AgentPin: "",
 	})
 	if err != nil {
@@ -155,7 +155,7 @@ func TestPin_ArmOffIgnoresPinEntirely(t *testing.T) {
 	cfg.Routing.AgentPinning = false
 	g := NewGatekeeper(pinAgents(), cfg)
 
-	got, err := g.FindCandidates(context.Background(), &domain.AuctionTask{
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
 		ID: "t1", Description: "anything", PreferredAgent: "terminal_agent", AgentPin: domain.PinHard,
 	})
 	if err != nil {
