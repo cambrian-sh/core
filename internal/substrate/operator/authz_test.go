@@ -37,7 +37,7 @@ func login(t *testing.T, idp *operator.StaticIdentity, user, pw string) string {
 }
 
 func callUnary(idp operator.OperatorIdentity, ctx context.Context, method string) (called bool, err error) {
-	interceptor := operator.UnaryAuthInterceptor(idp)
+	interceptor := operator.UnaryAuthInterceptor(idp, nil)
 	_, err = interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method},
 		func(context.Context, any) (any, error) { called = true; return nil, nil })
 	return called, err
@@ -98,7 +98,7 @@ func TestAuth_ViewerAllowedReads(t *testing.T) {
 func TestAuth_PrincipalInContext(t *testing.T) {
 	idp := newIDP()
 	tok := login(t, idp, "op", "pw")
-	interceptor := operator.UnaryAuthInterceptor(idp)
+	interceptor := operator.UnaryAuthInterceptor(idp, nil)
 	var gotPrincipal string
 	var gotRole operator.Role
 	_, err := interceptor(ctxWithToken(tok), nil, &grpc.UnaryServerInfo{FullMethod: "/cambrian.OperatorConsole/Snapshot"},

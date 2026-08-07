@@ -251,3 +251,63 @@ after.
 - **Blocking emission for guaranteed completeness.** Trades an availability property (retrieval
   always answers) for a durability property, in the component with the strictest fail-open
   invariant in the kernel. D6's honest gap reporting is the better trade.
+
+## Addendum (2026-08-06): the audit log rides the receipts chain
+
+The competitive record named the gap plainly: audit rows were not
+cryptographically chained, so Buzz's non-repudiation advantage stood. The
+audit log in question is the ADR-0085 D13 decision journal — and its only
+implementation was a bounded in-memory ring that forgot on restart and could
+prove nothing to a third party.
+
+Decision: the chain machinery this ADR built is generalized by one Kind
+rather than duplicated. `KindAccessDecision` entries carry an `AuditRecord`
+(the authorizer's journal row, projected totally: resource, principal,
+surface, verdict, controlled-vocabulary reason, detail, contributing
+policies, policy version, report-only/would-have-denied, tags, effects) and
+ride their OWN chain — `<chain>/audit`, same table, same signer, same resume
+discipline — because audit rows and retrieval receipts are different
+histories with different write rates, and interleaving them would couple
+their sequence numbers.
+
+Wiring follows the established shapes end to end: the receipts plugin owns an
+`AuditJournal` stable wrapper (the `Recorder` pattern) implementing
+`authz.DecisionJournal`; the composition root hands it to the authz plugin
+(`UseJournal`), the same way drift reaches the authz decision point — the
+plugins never import each other. The wrapper keeps the in-memory ring, so
+What-If replay and the recent-decisions view are unchanged; the chain is the
+durable, tamper-evident half. Decisions recorded before Build are disclosed
+as an opening gap entry. Denials are never sampled (the ring's contract) and
+never silently lost (drops become signed gap entries — the D2/D6 discipline).
+
+Canonical-form compatibility is load-bearing: 792 production entries were
+hashed under the pre-addendum shape, so the audit block is a TRAILING
+extension emitted only when present, and a pinned-digest test
+(`canonical_compat_test.go`) fails the build if a pre-audit hash ever moves.
+`VerifyChain`/`GetChainHead` already took a `chain_id`, so the audit chain is
+verifiable and anchorable with no service change; `Receipt.audit` is the one
+proto addition. Retention deliberately does NOT apply to the audit chain —
+for audit the conservative direction is to keep everything, and pruning it
+would be a policy decision an operator must take explicitly.
+
+Residuals: the audit chain shares the retrieval lane's unbenchmarked status
+(the hot-path arm has still not been run); ExportDecisions still serves the
+ring (bounded window) while the durable history reads through the
+ReceiptLane; the reactive journal and the operator feed remain outside the
+chain — this addendum covers the ACCESS-DECISION log, which is what
+"audit log" meant in the gap it closes.
+
+### Benchmark obligation: met (2026-08-06)
+
+The hot-path latency arm ran as a three-run A/B/A (locomo recall-only, 200
+identical questions per run) on a live deployment whose retrieval path is
+LLM-decompose-bound (~7.2 s mean) and whose LLM shares the CPU with the
+kernel. The full lane — retrieval receipts plus the audit chain — costs
+≈ +210–250 ms mean (~3%) and ≈ +530 ms p95 (~5%) per question there; a
+control-vs-control run rejected time drift (−44 ms, CI spans zero), p99/max
+show no tail amplification, and recall is unchanged. Mechanism consistent
+with off-path CPU contention (hashing, signing, batched writes), not on-path
+blocking. Arm knob: `CAMBRIAN_RECEIPTS_DISABLED` (premium env; omits the
+plugin — an experiment knob, not a production configuration). Decision:
+lane stays on. Runs `locomo-recall-receipts-{off,on,off2}`; DECISIONS entry
+2026-08-06.

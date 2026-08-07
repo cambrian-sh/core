@@ -203,6 +203,9 @@ type Registry struct {
 	transformers     []domain.EvidenceTransformer
 	kinds            []domain.KindSpec
 	authorities      []domain.ResolutionAuthority
+	agentGRPC        map[string]func(*grpc.Server)
+	substrateConsult domain.SubstrateConsultant
+	consultOwner     string
 }
 
 // SetAuthorizer installs the access-control decision point (ADR-0085). Tier-1
@@ -298,6 +301,41 @@ func (r *Registry) AddGRPCService(f func(*grpc.Server)) {
 	if f != nil {
 		r.grpcServices = append(r.grpcServices, f)
 	}
+}
+
+// AddAgentGRPCService contributes a premium gRPC service mounted on the AGENT
+// plane (ADR-0118 D3). The fully-qualified service name is declared explicitly
+// — the declaration IS what routes auth (operator-bearer exemption,
+// SurfaceAgent, x-agent-id principal seeding); nothing is inferred by
+// reflection, and no premium name is ever hardcoded in OSS. Registering the
+// same name twice is an error: two mounts for one service would race in
+// grpc.Server registration and the safe-looking one is not necessarily the one
+// that ran.
+func (r *Registry) AddAgentGRPCService(serviceName string, f func(*grpc.Server)) error {
+	if serviceName == "" || f == nil {
+		return fmt.Errorf("agent gRPC service needs a fully-qualified name and a registrar")
+	}
+	if r.agentGRPC == nil {
+		r.agentGRPC = make(map[string]func(*grpc.Server))
+	}
+	if _, dup := r.agentGRPC[serviceName]; dup {
+		return fmt.Errorf("agent gRPC service %q already registered", serviceName)
+	}
+	r.agentGRPC[serviceName] = f
+	return nil
+}
+
+// SetSubstrateConsultant installs the fact-lane substrate consultant (ADR-0118
+// D5). Tier-1 replace-one: the retrieval path consults at most one substrate
+// answer per query — two consultants would attach two competing "exact"
+// citations to one answer, and there would be no way to say which held.
+func (r *Registry) SetSubstrateConsultant(owner string, c domain.SubstrateConsultant) error {
+	if r.substrateConsult != nil {
+		return fmt.Errorf("substrate consultant already registered by plugin %q; %q cannot also own it", r.consultOwner, owner)
+	}
+	r.substrateConsult = c
+	r.consultOwner = owner
+	return nil
 }
 
 // AddDecisionObserver registers a receiver for completed retrievals (ADR-0103 D3).
@@ -677,6 +715,23 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 				reg(s)
 			}
 		}
+	}
+	// Agent-plane gRPC services (ADR-0118 D3): merged by declared name; a name
+	// set directly on Options wins over a plugin's (the plugin-wins-only-if-unset
+	// rule, per key).
+	if len(reg.agentGRPC) > 0 {
+		if opts.AgentGRPCServices == nil {
+			opts.AgentGRPCServices = make(map[string]func(*grpc.Server), len(reg.agentGRPC))
+		}
+		for name, f := range reg.agentGRPC {
+			if _, taken := opts.AgentGRPCServices[name]; !taken {
+				opts.AgentGRPCServices[name] = f
+			}
+		}
+	}
+	// Substrate consultant (ADR-0118 D5): plugin wins only if not set directly.
+	if opts.SubstrateConsultant == nil && reg.substrateConsult != nil {
+		opts.SubstrateConsultant = reg.substrateConsult
 	}
 	// DecisionObservers: fan out to every registered observer plus any directly-set one
 	// (ADR-0103 D3). Composed into a single value so the retrieval call site stays one
