@@ -18,7 +18,10 @@ const defaultExternalActivation = 0.5
 // sourceDocumentMarker announces that the NEXT tag is the caller's document id
 // (see externalDocumentID rule 1). It is wire protocol, not a classification, and
 // classificationTags removes it before the tags are stored as labels.
-const sourceDocumentMarker = "source_document"
+// One definition of the identity convention, shared with the write chokepoints via
+// domain.ClassificationHint (ADR-0099). Two copies of a marker that decides what
+// counts as a document's name is how the two paths drift apart.
+const sourceDocumentMarker = domain.SourceDocumentMarker
 
 func (im *IngestionManager) persistChunks(
 	ctx context.Context,

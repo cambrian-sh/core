@@ -10,7 +10,7 @@ import (
 )
 
 // DoclingDispatcher implements memory.StructureParser by invoking the privileged,
-// deterministic docling_agent directly via the Auctioneer (no auction), exactly
+// deterministic docling_agent directly via the agent transport (no selection), exactly
 // like the kg_extractor dispatcher (ADR-0060). The agent parses a document into
 // its real hierarchy; this Go side is just dispatch + JSON parse.
 type DoclingDispatcher struct {

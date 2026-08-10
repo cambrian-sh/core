@@ -619,7 +619,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// were retired — capabilities are the ones agents declare, folded by deterministic
 	// normalization (execution.canonical_vocab). SweepTrigger stays nil (optional).
 
-	// 3c. Wire EventBus (ADR-0030). Both InterviewWorker and Auctioneer publish to it;
+	// 3c. Wire EventBus (ADR-0030). Both InterviewWorker and the Dispatcher publish to it;
 	// other subsystems subscribe. A log handler makes AgentReadyEvent observable in
 	// production without a dedicated subscriber (ADR-0023 D6A observability).
 	eventBus := domain.NewInMemoryEventBus()
@@ -770,7 +770,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	// ADR-0054 Stage B: cross-encoder rerank of the top-K Stage-A candidates via
 	// the warm reranker_agent system organ (bge cross-encoder), invoked DIRECTLY
-	// through the Auctioneer (no auction) — the same privileged-organ pattern as
+	// through the agent transport (no selection) — the same privileged-organ pattern as
 	// the kg_extractor. Opt-in via execution.reranker_enabled. Fail-soft: a
 	// down/erroring agent leaves the Stage-A order intact. The model id is the
 	// agent's RERANK_MODEL env (large = ceiling, base/v2-m3 = CPU edge).
@@ -780,7 +780,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 	if cfg.Execution.Retrieval.RerankerEnabled {
 		mem.QueryService.EnableReranker(
-			&subnetwork.RerankerDispatcher{Caller: meta.Auctioneer, AgentID: "reranker_agent"},
+			&subnetwork.RerankerDispatcher{Caller: meta.AgentTransport, AgentID: "reranker_agent"},
 			cfg.Execution.Retrieval.RerankerTopK,
 			cfg.Execution.Retrieval.RerankerWeight,
 		)
@@ -880,25 +880,19 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	aw.Planner.SetCanonicalVocab(cfg.Execution.Capability.CanonicalVocab)
 
 	// ROUTE-06 / ADR-0069: per-capability merit is read directly from ExecCfg by the
-	// Gatekeeper; here we wire the shared per-capability exploration budget that bounds
-	// the provisional L2 bypass (Gatekeeper reads Allowed; Auctioneer records wins).
+	// Gatekeeper, so there is nothing to wire here beyond announcing the arm.
+	//
+	// The bounded-provisional-exploration half of ROUTE-06 was REMOVED 2026-08-08. The
+	// budget bounded the provisional L2 bypass and the Auctioneer was its only recorder
+	// of wins; ADR-0100 P3 deleted the Auctioneer, after which Allowed always returned
+	// true. Rather than give the Dispatcher a RecordWin call, the budget was deleted:
+	// nothing had depended on the bound for months, and a bound that cannot bind is
+	// worse than no bound because the config key reads as a guarantee. The provisional
+	// bypass is now unconditional in both arm positions — the behaviour that actually
+	// shipped. If exploration needs bounding later it belongs on the Dispatcher, which
+	// is the thing that now knows a candidate was picked.
 	if cfg.Execution.Routing.PerCapabilityMerit {
-		budget := domain.NewExplorationBudget(
-			cfg.Execution.Routing.ProvisionalExplorationBudget,
-			time.Duration(cfg.Execution.Routing.ProvisionalExplorationWindowSeconds)*time.Second,
-		)
-		budget.OnExhausted = func(capability string) {
-			slog.Info("ROUTE-06: provisional exploration budget exhausted", "capability", capability)
-			if eventBus != nil {
-				_ = eventBus.Publish(domain.ExplorationBudgetExhaustedEvent{Capability: capability, At: time.Now().UTC()})
-			}
-		}
-		if meta.Gatekeeper != nil {
-			meta.Gatekeeper.ExplorationBudget = budget
-		}
-		slog.Info("ROUTE-06: per-capability merit + bounded provisional exploration active",
-			"budget", cfg.Execution.Routing.ProvisionalExplorationBudget,
-			"window_s", cfg.Execution.Routing.ProvisionalExplorationWindowSeconds)
+		slog.Info("ROUTE-06: per-capability merit active (tag-scoped L3 merit; provisional L2 bypass is unconditional)")
 	}
 
 	// ROUTE-07 / ADR-0076: load the learned gatekeeper scorer when the arm is on and a
@@ -1333,7 +1327,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// edges), stamping every chunk with its inherited section path. Opt-in.
 		if cfg.Execution.Retrieval.StructureGraphEnabled {
 			mem.IngestionManager.SetStructureGraph(
-				&subnetwork.DoclingDispatcher{Caller: meta.Auctioneer},
+				&subnetwork.DoclingDispatcher{Caller: meta.AgentTransport},
 				vec.StructureGraphStore(),
 			)
 			mem.QueryService.EnableSectionScopedRetrieval(vec)
@@ -1564,13 +1558,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 
 	// AGENTIC_RETRIEVAL_SPEC Phase 2a: wire the LLM query-planner (retrieval_agent)
-	// as the QueryService's Planner — invoked directly via the Auctioneer (no
-	// auction) with a managed LLM session, the same privileged-organ + session
+	// as the QueryService's Planner — invoked directly via the agent transport (no
+	// selection) with a managed LLM session, the same privileged-organ + session
 	// privileged-organ pattern. Default off; fail-open to the single pass when the
 	// agent is unreachable or the config flag is unset.
 	if cfg.Execution.Retrieval.AgenticRetrievalEnabled {
 		mem.QueryService.EnableAgenticRetrieval(&subnetwork.RetrievalDispatcher{
-			Caller:  meta.Auctioneer,
+			Caller:  meta.AgentTransport,
 			AgentID: "retrieval_agent",
 			Gateway: llmGateway,
 			Model:   cfg.Execution.Retrieval.AgenticPlannerModel, // "" ⇒ gateway default; a FAST model matters on the hot path
@@ -1582,12 +1576,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	// ADR-0053 D2 (revised): route write-time chunk-triplet extraction through the
 	// deterministic, NO-LLM kg_extractor system agent (metadata + spacy_patterns),
-	// invoked DIRECTLY via the Auctioneer (no auction) — the same privileged-organ
+	// invoked DIRECTLY via the agent transport (no selection) — the same privileged-organ
 	// privileged-organ pattern. Off (default) ⇒ the batcher keeps its LLM extractor.
 	// Injected before mem.Start so the swap is in place when the drain begins.
 	if cfg.Execution.Ingestion.KgExtractorEnabled && mem.ChunkTripletsBatcher != nil {
 		mem.ChunkTripletsBatcher.UseExtractor(&subnetwork.KgExtractorDispatcher{
-			Caller:  meta.Auctioneer,
+			Caller:  meta.AgentTransport,
 			AgentID: "kg_extractor_agent",
 		})
 		slog.Info("ADR-0053 D2: kg_extractor ENABLED (deterministic metadata + spacy_patterns organ, no LLM)")
@@ -2442,6 +2436,27 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 					)
 					if _, err := k.Server.Execute(mdCtx, &pb.Handoff{Payload: &pb.Object{Data: []byte(text)}}); err != nil {
 						slog.Warn("operator SendMessage execution failed", "session", sessionID, "err", err)
+						// Tell the CONSOLE, not just the log. This returns immediately and
+						// the operator watches the feed, so a turn that fails here used to
+						// deliver nothing at all: no reply, no error, and a progress line
+						// still reading "working on it". ADR-0098 D3 built the terminal
+						// update for exactly this — `Note` is documented as "the closing
+						// line a FINAL update leaves on screen instead of clearing — used
+						// to say what went wrong" — and this path simply never emitted it.
+						//
+						// It rides the progress channel rather than becoming a message on
+						// purpose (ADR-0098): a failure notice belongs in front of the user
+						// but NOT in the transcript, or "something went wrong" feeds back
+						// into the model's context next turn and a failed turn stops
+						// storing nothing.
+						if k.Progress != nil {
+							k.Progress.Progress(context.Background(), domain.ProgressUpdate{
+								ConversationID: sessionID,
+								Final:          true,
+								Note:           chatFailureNote(err),
+								UpdatedAt:      time.Now().UTC(),
+							})
+						}
 					}
 				}()
 				return nil

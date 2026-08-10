@@ -9,7 +9,7 @@ type LTMEnrichment struct {
 	Precedents []Precedent    // ADR-0049 D11: world-model transitions for the situation being planned
 	// Procedures are ADR-0094 induced routines for the situation being planned —
 	// "how has this kind of work gone here?". ADVISORY (D6): planner input, never a
-	// directive. The Gatekeeper still filters and the Auctioneer still selects, which
+	// directive. The Gatekeeper still filters and the Dispatcher still selects, which
 	// is why a routine names capabilities and never agents.
 	Procedures []Procedure
 }
@@ -30,9 +30,10 @@ type Precedent struct {
 // PlanLTMEntry carries a prior successful ExecutionPlan and its review metadata
 // for injection into the <PlanLTM> Planner prompt section. ADR-0025.
 type PlanLTMEntry struct {
-	PlanJSON    string  // serialised ExecutionPlan JSON
-	Similarity  float64 // cosine similarity to the current query
-	Confidence  float64 // mean auction confidence from Hippocampus
-	Outcome     string  // plan_outcome from PlanEvent (e.g. "success", "partial")
-	ReplanCount int     // replan_count from PlanEvent
+	PlanJSON   string  // serialised ExecutionPlan JSON
+	Similarity float64 // cosine similarity to the current query
+	Confidence float64 // mean per-step selection confidence from Hippocampus (an auction-era
+	// field name: it was the mean BID confidence until ADR-0100 P3 removed bids)
+	Outcome     string // plan_outcome from PlanEvent (e.g. "success", "partial")
+	ReplanCount int    // replan_count from PlanEvent
 }

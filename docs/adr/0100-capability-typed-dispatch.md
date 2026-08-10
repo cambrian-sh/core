@@ -25,6 +25,44 @@ depends_on:
 
 ## Status
 
+> **Amendment, 2026-08-07 — P3 shipped; P2's comparative run never happened and can no
+> longer be run.** The auction, the EFE selector and the `ResourceSelector` port were
+> excised (P3), so `internal/metabolism/dispatch/` is the only selection mechanism.
+>
+> **This ADR called that outcome in advance.** §Sequence says *"P3 is the point of no
+> return and the reason P2 exists: after it, there is no arm to compare."* P3 landed
+> first. The P2 A/B — and specifically its decisive falsification, `bid_dispersion ≈ 0`
+> on the **auction arm** — is therefore permanently unrunnable. It is recorded here as
+> **not performed**, not as passed, so nobody reads "P2" in the sequence below and infers
+> a gate that never ran.
+>
+> **What the decision actually rests on**, stated so it can be re-litigated later:
+> 1. The research verdict in `docs/research/agent-selection-mechanisms/SUMMARY.md`.
+> 2. The structural argument, which needs no benchmark: every shipped `propose()` is a
+>    hand-written keyword table returning one of six constants, so the bid space carries
+>    no learnable content; and soliciting a bid BOOTS the agent, up to five cold starts
+>    per step with four discarded.
+> 3. `bid_dispersion = 0.0` on the auction arm of `runs/p2-ab-auction` (2026-07-29) — the
+>    predicted result, but from **5 observed auctions in a run where 112 of 120 rows
+>    errored**, which is corroboration, not a gate.
+> 4. The 3-task live probe below, which found three real defects unit tests had passed.
+>
+> **What replaces the gate.** The comparative question is gone; the absolute one is not.
+> A dispatch-only baseline on the orchestration suite (`routing_accuracy`,
+> `misroute_rate`, `no_candidate`) is the regression floor future routing changes are
+> measured against. Protocol rewritten in `cambrian-benchmarks/docs/orchestration.md`.
+> Blocked at the time of writing on LLM provider quota, and — until 2026-08-07 — on the
+> ADR-0099 coinage defect that made the orchestration suite unrunnable on any deployment
+> with a classification vocabulary configured.
+>
+> **Two P2 artifacts were verified as sound and are worth keeping.** The selection-cost
+> instrumentation is wired on both paths (`agentplane` `selectionCost()` and
+> `dispatch.go`); the 0.0 boots/latency in the 2026-07-29 runs came from a binary built
+> ~4h BEFORE that wiring was committed, not from broken metrics. And ROUTE-06's arm was
+> confirmed functional by an LLM-free `PreviewRoute` probe: with capability stats present
+> the ranking flips (0.755/0.315 → 0.035/0.787). It changes nothing today only because no
+> verified `CapabilityStats` exist for it to read.
+
 **Partial** (2026-07-29). P0 and P1 implemented; P2–P8 outstanding.
 
 - **P0** — `internal/metabolism/dispatch/` wired and default-on (`execution.bid_round=false`);
@@ -415,12 +453,110 @@ If routing accuracy drops materially on the `dispatch` arm, the cause is the pla
 `required_capabilities` quality (D3's stated ceiling), not the dispatch mechanism — diagnose there
 before reverting.
 
+## P3 excision residuals (found 2026-08-08, by a documentation truth pass)
+
+Removing a mechanism removes its *callers*, and three things the auction had been feeding
+were left holding nothing. None was caught by the build, the tests, or the P3 review, because
+in each case the surviving half degrades to a silent no-op rather than an error. Recording them
+here because this ADR caused them, and because the shape is the lesson: **an excision must
+enumerate what called the deleted code, not only what it called.**
+
+1. **`ExplorationBudget` could no longer bind (ROUTE-06 / ADR-0069) — RESOLVED 2026-08-08 by
+   deleting it.** `RecordWin` was called from the Auctioneer. Nothing called it after P3, so
+   `wins` stayed empty, `Allowed` always returned true, and `ExplorationBudgetExhaustedEvent`
+   could never fire. It was harmless only because the Gatekeeper's read sat behind
+   `Routing.PerCapabilityMerit`, default off — **it would have armed itself as an unlimited
+   Layer-2 bypass the moment ROUTE-06 was switched on**, with
+   `provisional_exploration_budget` a validated, wired, unenforced setting.
+
+   The obvious repair was to give the Dispatcher a `RecordWin` call. The owner's call was to
+   **remove the budget entirely instead**, and that is the better decision: nothing had
+   depended on the bound for months, so restoring it would have introduced a behaviour change
+   under the guise of a bugfix, and *a bound that cannot bind is worse than no bound* because
+   the config key reads as a guarantee to whoever finds it. Deleted:
+   `domain/exploration_budget.go` and its test, `ExplorationBudgetExhaustedEvent`,
+   `EventTypeExplorationBudget`, `Gatekeeper.ExplorationBudget`, the `app.go` wiring, and both
+   config keys (recorded in `retiredExecutionFields` per the retirement convention this ADR
+   established; the flat→nested field-loss guard was mutation-checked against the new entries).
+   The provisional L2 bypass is now unconditional in both arm positions, which is what shipped
+   all along. **If exploration needs bounding later it belongs on the Dispatcher** — the
+   component that now knows a candidate was selected — not on the Gatekeeper, which only knows
+   who was eligible.
+2. **ROUTE-08.A was half-retired — COMPLETED 2026-08-08.** The Scout's usefulness emitter went
+   with the Scout, leaving `scout_cost_share` structurally unpopulatable: it read empty on every
+   run, which is a measured-zero trap rather than a measurement. Closed on every side:
+
+   - **Benchmark**: `scout_summary` and `scout_cost_share` deleted from the `orchestration`
+     suite, along with the feed parser and the per-row `scout_usefulness` field that fed them. A
+     parser for an op that cannot arrive is itself a claim that it might.
+   - **Kernel**: the dead `DAGExecutor.ReplanCount()` accessor removed (the `replanCount` field
+     stays — twelve internal uses).
+   - **Proto**: `ScoutUsefulnessOp` and oneof field 24 marked `deprecated = true`, with the
+     reason stated where a client author reads it. The message and the **field number are
+     retained** — the contract holds at `0093`, and reusing a number would make an old client
+     mis-decode a new op. `proto-check` and `proto-breaking` both pass (a deprecation annotation
+     is not a breaking change); `ui/proto` and `cli/proto` re-vendored byte-identical.
+
+   Two claims in the truth pass that produced this list were themselves wrong, and the
+   correction belongs here because it is the same failure mode the section documents: the
+   `scout-usefulness` capability was **not** still advertised (absent from `operatorCaps`; only
+   a stale proto comment listed it), and `EventTypeScoutUsefulness` was already gone. Both were
+   asserted from a grep whose hits were comments. Reading a doc or a comment is not reading the
+   code — the check has to be against the thing that runs.
+3. **The planner lost its absolute-path rule — RESOLVED 2026-08-08 by splitting it in two.**
+   `plannerLTMRules` instructed the model about `<DiscoveryLTM>` and its `<environment>` block,
+   which nothing produced after the Scout's retirement. The prompt's only host-path guidance —
+   *"on os=\"windows\" use backslash Windows paths … NEVER `~`, `~/Desktop`"* — lived inside
+   that dead branch, so the `~/Desktop`-on-Windows failure it was written to prevent was
+   unguarded again. It could not simply be un-conditioned: with no producer there was no
+   `desktop`/`home`/`cwd` value to build from.
+
+   The resolution is not a restoration. The rule had been in the **wrong component** all along:
+   a planner cannot see the host it plans for, whereas the agent executing the step runs as an
+   OS process *on* that host and can read it. So the knowledge was split along that line —
+   whoever can *look* owns the concrete paths, whoever can only be *told* owns the OS:
+
+   - **Planner** (`buildHostBlock`, a DYNAMIC prompt constraint): the OS, and nothing else,
+     from `runtime.GOOS`. Plus a static rule in `plannerDecisionRules`: describe the target in
+     natural language, do not construct absolute paths, do not guess a home directory, never
+     write `~`. The OS is there so a step can be phrased in terms the platform understands, not
+     so paths can be built.
+   - **Agent** (`sdk/cambrian_agent_sdk/host.py` → `host_facts`/`host_block`, appended once to
+     the ReAct prompt's loop-invariant cacheable prefix): the absolute `os`, `home`, `desktop`,
+     `cwd` and `path_separator`, discovered on the machine, carrying the path rules that make
+     them usable.
+
+   Three properties worth preserving if this is ever touched again:
+
+   - **The host block must stay out of `plannerStaticText`.** That hash is
+     `ExecutionPlan.PlannerPromptVersion`, which gates plan-cache reuse; a per-host value in it
+     gives every host a different hash and silently invalidates cached plans across a fleet.
+     `TestPlannerPromptHash_ExcludesTheHost` is mutation-checked against exactly that mistake.
+   - **The planner is deliberately not told `home`/`desktop`.** Plans are stored and replayed
+     into later planning as `<PlanLTM>` structural references, so an absolute
+     `C:\Users\<someone>\Desktop\…` in a step is wrong the moment it is recalled under another
+     account — and it writes a username into memory.
+   - **Facts are discovered, never assumed; an undeterminable value is omitted.** The model
+     treats what it is given as authoritative, so a guessed absolute path is worse than an
+     absent one. This paid for itself on the first run: the dev machine's real desktop is
+     `…\OneDrive\Desktop` (Known-Folder redirection, read from Explorer's Shell Folders
+     registry value) while `home/Desktop` *also* exists as a shadow folder — the obvious
+     `home / "Desktop"` implementation would have written files somewhere the user never looks.
+     Linux gets the same care via `XDG_DESKTOP_DIR`, since a localised desktop is
+     `~/Escritorio`, not `~/Desktop`.
+
+Two adjacent things this ADR should have said outright, now recorded: the **P2 A/B is void, not
+pending** (it was specified against the auction arm, which P3 deleted — see the dated amendment
+above; an absolute dispatch baseline replaces it), and **ADR-0037's EFE-vs-auction spike is
+likewise unrunnable**, so `internal/centralexec/` is a design artifact rather than a dormant
+feature until someone writes a new gate against dispatch.
+
 ## References
 
 - `docs/research/agent-selection-mechanisms/SUMMARY.md` — the full survey, evidence, and option space
 - `docs/research/task-routing-diagnosis/REPORT.md` — D1–D5 and the ROUTE campaign
 - MarketBench (arXiv:2604.23897), Agora (arXiv:2607.09600), ChromaFlow (arXiv:2605.14102)
-- `internal/metabolism/auctioneer/auctioneer.go` :392, :133, :163, :561
+- `internal/metabolism/auctioneer/auctioneer.go` :392, :133, :163, :561 — **the pre-P3 path; deleted.** The package is now `internal/agentplane` (`Transport`), which holds the connection pool and the typed calls and no selection at all. Line numbers here refer to the code as it stood when this ADR was written; read them in git history, not in the tree.
 - `sdk/cambrian_agent_sdk/runtime.py` :138–146
 - `internal/supervision/gatekeeper/gatekeeper.go` — `ScoreMerit` :438
 - `domain/plan.go` — `Step`, `PinSoft`/`PinHard`

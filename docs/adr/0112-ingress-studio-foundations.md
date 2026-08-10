@@ -59,6 +59,14 @@ indirection at the cost of duplicating the ingestor's ordering contract.
 Revisions are integers minted by the store (`max+1` inside a transaction); there is no update
 path for a revision row, mirroring the evidence store's structural immutability (ADR-0105).
 
+> **Amended by ADR-0119 (2026-08-09).** A `TransportSpec` revision now carries a **role** —
+> `live` or `history` — because for most real sources the thing that delivers new records is not
+> the thing that can be asked for old ones (Slack pushes events and serves history from
+> `conversations.history`). An `IngressRelease` correspondingly pins **two** transport revisions,
+> the second optional. Neither changes the shape above: the revision counter stays per ingress and
+> role-blind, so a bare revision integer still names exactly one spec, and a release is still the
+> single immutable answer to "what is live?".
+
 ### 2. The lifecycle is a server-owned state machine
 
 `DRAFT → CAPTURING → MAPPED → DRY_RUN → ARMED ⇄ PAUSED → RETIRED` (RETIRED terminal).

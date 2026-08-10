@@ -69,7 +69,7 @@ func (p *testPlugin) Register(r *Registry) error {
 	return nil
 }
 
-// A plugin's ResourceSelector folds into the effective Options (Tier-1 replace-one).
+// A plugin's SubstrateConsultant folds into the effective Options (Tier-1 replace-one).
 func TestApplyPlugins_FoldsTier1Seam(t *testing.T) {
 	c1 := stubConsultant{id: "custom"}
 	opts := Options{Plugins: []Plugin{&testPlugin{name: "p1", consultant: c1}}}

@@ -226,21 +226,25 @@ type RoutingConfig struct {
 	// "worst". Ignored on the argmax path.
 	DispatchMeritFloor float64 `json:"dispatch_merit_floor"`
 
-	// CalibratedBids (ROUTE-05 / ADR-0068) selects the auction winner by a CALIBRATED
-	// bid confidence (expected verified quality, learned per-agent from the event log)
-	// instead of the raw LLM self-report. OFF ⇒ raw confidence (byte-identical).
-	// Offline-first: enable only after an offline replay shows lift.
-	CalibratedBids bool `json:"calibrated_bids"`
-
-	// BidCalibrationMinSamples is the shrinkage threshold — an agent with fewer verified
-	// observations is blended toward the fleet-global calibration curve. Default 10.
-	BidCalibrationMinSamples int `json:"bid_calibration_min_samples"`
+	// RETIRED with the auction (ADR-0100 P3): `calibrated_bids` and
+	// `bid_calibration_min_samples` (ROUTE-05 / ADR-0068). They configured the isotonic
+	// calibration of a BID, and there are no bids — the only reader was the auctioneer's
+	// Calibrator, deleted with the mechanism. The keys are removed rather than left
+	// declared-but-unread: a config key that silently does nothing is the same trap as
+	// `resource_selector: "efe"`, which voided weeks of routing measurement because it
+	// looked like it was configuring the thing it was quietly bypassing. A stale key in
+	// someone's config file is now an unknown-key warning instead of a lie.
 
 	// PerCapabilityMerit (ROUTE-06 / ADR-0069) makes L3 merit read the agent's
-	// capability-scoped success/trust for the step's required capability (fallback to
-	// the global profile when the tag has no history), and bounds the provisional L2
-	// bypass with a per-capability exploration budget. OFF ⇒ global merit + unconditional
-	// provisional bypass (byte-identical to pre-ROUTE-06).
+	// capability-scoped success/trust for the step's required capability, falling back
+	// to the global profile when the tag has no history. OFF ⇒ global merit
+	// (byte-identical to pre-ROUTE-06).
+	//
+	// It used to ALSO bound the provisional L2 bypass with a per-capability exploration
+	// budget. That budget was removed 2026-08-08: its only recorder was the Auctioneer,
+	// so after ADR-0100 P3 it could never reach its bound, and a bound that cannot bind
+	// is worse than no bound — it reads as a guarantee. The provisional bypass is now
+	// unconditional in both arm positions, which is what actually ran the whole time.
 	PerCapabilityMerit bool `json:"per_capability_merit"`
 
 	// LearnedScorer (ROUTE-07 / ADR-0076) replaces the hand-weighted GatekeeperScore with
@@ -252,13 +256,6 @@ type RoutingConfig struct {
 	// LearnedScorerModelPath points to the JSON model the learned scorer loads at boot.
 	// Empty ⇒ no model wired (the arm stays inert even if the flag is on).
 	LearnedScorerModelPath string `json:"learned_scorer_model_path,omitempty"`
-
-	// ProvisionalExplorationBudget is the max provisional WINS allowed per capability per
-	// window before the free L2 bypass is withdrawn. Default 3.
-	ProvisionalExplorationBudget int `json:"provisional_exploration_budget"`
-
-	// ProvisionalExplorationWindowSeconds is the sliding window for that budget. Default 3600.
-	ProvisionalExplorationWindowSeconds int `json:"provisional_exploration_window_seconds"`
 
 	// ProposalTimeoutMs is the per-agent RPC timeout (ms) when calling RequestProposal.
 	// Default: 2000.
@@ -1430,19 +1427,15 @@ func DefaultConfig() *Config {
 				// them — with it off, L1 is a no-op, the D5 ladder never fires, and
 				// "dispatch" degrades to merit-ranking alone. It stops being an arm the
 				// moment selection depends on it.
-				CapabilityContract:                  true,
-				AgentPinning:                        true, // honour an explicit "use agent X" directive
-				RoutingTraceEnabled:                 true,
-				ExplorationRate:                     0.05,
-				ProposalTimeoutMs:                   2000,
-				DispatchCheapEnergyMax:              0,     // cheapest-competent branch OFF until the A/B lands (P0 = pure argmax)
-				DispatchMeritFloor:                  0.5,   // neutral prior; a candidate must be at least average to be "competent"
-				CalibratedBids:                      false, // ROUTE-05 arm toggle; OFF = raw self-reported confidence
-				BidCalibrationMinSamples:            10,
-				PerCapabilityMerit:                  false, // ROUTE-06 arm toggle; OFF = global merit + unconditional bypass
-				LearnedScorer:                       false, // ROUTE-07 arm toggle; OFF = hand-weighted GatekeeperScore
-				ProvisionalExplorationBudget:        3,
-				ProvisionalExplorationWindowSeconds: 3600,
+				CapabilityContract:     true,
+				AgentPinning:           true, // honour an explicit "use agent X" directive
+				RoutingTraceEnabled:    true,
+				ExplorationRate:        0.05,
+				ProposalTimeoutMs:      2000,
+				DispatchCheapEnergyMax: 0,     // cheapest-competent branch OFF until the A/B lands (P0 = pure argmax)
+				DispatchMeritFloor:     0.5,   // neutral prior; a candidate must be at least average to be "competent"
+				PerCapabilityMerit:     false, // ROUTE-06 arm toggle; OFF = global merit
+				LearnedScorer:          false, // ROUTE-07 arm toggle; OFF = hand-weighted GatekeeperScore
 			},
 			Capability: CapabilityConfig{
 				CapabilityClusterThreshold:       0.80,
@@ -1598,8 +1591,11 @@ func DefaultConfig() *Config {
 	return cfg
 }
 
-// LoadConfig reads configuration from an 11-layer pipeline (lowest → highest
-// priority) and returns the merged *Config. All secondary paths
+// LoadConfig reads configuration from a 12-layer pipeline (lowest → highest
+// priority) and returns the merged *Config. Layer 11 is the ADR-0101 embedded
+// store, which is where durable operator writes land; it was added after this
+// comment first said 11, so the count is stated here to match the numbered
+// layers below rather than the history. All secondary paths
 // (tuning.json, tuning.local.json, config.local.json, embedder.json,
 // embedder.local.json, providers.json, providers.local.json, mcp.json) are
 // derived relative to the directory containing the primary `path` argument —

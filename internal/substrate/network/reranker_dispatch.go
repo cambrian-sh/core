@@ -10,7 +10,7 @@ import (
 )
 
 // RerankerDispatcher implements memory.Reranker by invoking the privileged
-// `reranker_agent` system organ directly via the Auctioneer (no auction), exactly
+// `reranker_agent` system organ directly via the agent transport (no selection), exactly
 // like the kg_extractor (ADR-0053 D2 revised) and the pre-plan Scout (ADR-0051).
 //
 // The kernel hands the agent a {query, documents[]} Handoff and gets one bge

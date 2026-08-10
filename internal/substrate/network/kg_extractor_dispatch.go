@@ -9,7 +9,7 @@ import (
 )
 
 // KgExtractorDispatcher implements domain.TripletExtractor by invoking the
-// privileged, NO-LLM kg_extractor system agent directly via the Auctioneer
+// privileged, NO-LLM kg_extractor system agent directly via the agent transport
 // (no auction), exactly like the pre-plan Scout (ADR-0051 / ADR-0053 D2 revised).
 //
 // The kernel hands the agent a batch of chunk texts as a Handoff and gets the

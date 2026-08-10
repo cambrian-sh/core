@@ -745,8 +745,8 @@ message SnapshotResponse {
   // capabilities enumerates the surfaces this build supports so the UI hides the
   // rest (ADR-0047 D14). OSS: feed, snapshot, commands, steering, audit,
   // tools-read, tools-manage, skills-read, memory-read, memory-ingest, tool-exec,
-  // tool-approvals, routing-trace (ROUTE-02 auction funnel), scout-usefulness
-  // (ROUTE-08 A), chat (ADR-0084 D9 conversation lane — advertised only when the chat
+  // tool-approvals, routing-trace (ROUTE-02 selection funnel),
+  // chat (ADR-0084 D9 conversation lane — advertised only when the chat
   // worker pool is enabled, execution.chat_pool_size > 0), document-listing
   // (contract 0070 — ListDocuments enumerates documents by row, including the
   // unlabelled-only filter; advertised only when a store backs it, so a console
@@ -854,7 +854,10 @@ message OperatorEvent {
     PlanStateOp plan_state = 21;
     AuditOp audit = 22;
     TokenChunkOp token = 23; // live-only lane; seq is 0 and is never replayed
-    ScoutUsefulnessOp scout_usefulness = 24; // ROUTE-08 phase A
+    // DEPRECATED 2026-08-08 and never emitted. Its producer was the Scout, retired
+    // 2026-08-07. Field number 24 is retained and must never be reused. See
+    // ScoutUsefulnessOp below.
+    ScoutUsefulnessOp scout_usefulness = 24 [deprecated = true];
     ReactiveBudgetOp reactive_budget = 25;   // REACT-02 / ADR-0062: backpressure shed event
     AgentStepOp agent_step = 26;             // agent-loop observability (query-thrash + poisoning)
     AgentLLMExchangeOp llm_exchange = 27;    // provider-tap: full prompt+completion of every agent reasoning turn (live-only)
@@ -991,11 +994,25 @@ message RetentionDeletionOp {
   int32 count = 2;
 }
 
-// ScoutUsefulnessOp is the ROUTE-08 phase-A per-session signal: did the always-on
+// ScoutUsefulnessOp was the ROUTE-08 phase-A per-session signal: did the always-on
 // Scout's pre-plan discovery earn its cost (referenced by the plan? ran without
 // replan? what did it cost)? Logging only — training material for a later
 // invoke/skip policy.
+//
+// DEPRECATED 2026-08-08. **Nothing emits this and nothing will.** The Scout organ
+// was retired 2026-08-07 (ADR-0100 P3 residuals) and its emitter went with it;
+// ROUTE-08 phase B, the invoke/skip gate this was to train, is cancelled rather
+// than deferred because there is no organ left to gate.
+//
+// The message and field number 24 are retained deliberately: the operator contract
+// holds at 0093 and a reused field number would make an old client mis-decode a new
+// op. A client must not wait for this event, and must not treat its absence as a
+// degraded kernel — every build "supports" it in the sense that it can carry it, and
+// no build will ever send it. The matching `scout-usefulness` capability string is
+// NOT advertised in the handshake, which is the signal to read.
 message ScoutUsefulnessOp {
+  option deprecated = true;
+
   string session_id = 1;
   bool scout_ran = 2;
   int64 scout_latency_ms = 3;

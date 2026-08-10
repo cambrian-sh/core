@@ -1,10 +1,13 @@
 package llm
 
 import (
+	"bytes"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -86,6 +89,26 @@ func (rt *rateLimitRetryTransport) RoundTrip(req *http.Request) (*http.Response,
 		if !isRetryableStatus(resp.StatusCode) {
 			return resp, nil
 		}
+		// A 429 is only worth retrying when it is a RATE limit — a per-minute ceiling
+		// that clears on its own. A QUOTA exhaustion does not clear for days, and
+		// retrying it burns the full backoff ladder before failing anyway.
+		//
+		// Measured 2026-08-07: the provider returned
+		// `{"type":"error","error":{"type":"GoUsageLimitError","message":"Weekly usage
+		// limit reached. Resets in 2 days."}}` in 0.56s to curl. Through here it became
+		// five retries, then a 60s context deadline, and the planner logged NOTHING —
+		// so chat looked broken when the provider had answered immediately and clearly.
+		// Turning a fast, explicit refusal into a slow, silent one is the defect.
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if detail, exhausted := quotaExhausted(resp); exhausted {
+				slog.Warn("llm: provider refused with a NON-TRANSIENT quota limit — not retrying",
+					"host", req.URL.Host,
+					"path", req.URL.Path,
+					"attempt", attempt,
+					"provider_message", detail)
+				return resp, nil
+			}
+		}
 		// Cannot safely replay a body-less-rewind request, or retries exhausted:
 		// return the rate-limit response and let the caller's health path handle it.
 		if attempt >= llmMaxRateLimitRetries || (req.Body != nil && req.GetBody == nil) {
@@ -105,6 +128,51 @@ func (rt *rateLimitRetryTransport) RoundTrip(req *http.Request) (*http.Response,
 			return nil, req.Context().Err()
 		}
 	}
+}
+
+// quotaMarkers are body substrings that mean "this 429 will not clear on its own".
+//
+// Matched against the LOWERCASED body. Deliberately specific: "limit" alone would also
+// match an ordinary rate limit, which is exactly the case that SHOULD be retried, so a
+// loose match here would make the kernel give up on weather it used to ride out.
+var quotaMarkers = []string{
+	"usage limit",           // opencode.ai GoUsageLimitError
+	"usagelimit",            // its error TYPE, spelling-independent
+	"quota",                 // openai insufficient_quota, gemini
+	"billing",               // "billing hard limit reached"
+	"credit balance",        // anthropic
+	"exceeded your current", // openai's phrasing
+}
+
+// quotaExhausted reports whether a 429 body names a non-transient quota, and returns the
+// provider's own message for the log.
+//
+// It RESTORES resp.Body in every path — the caller (and the provider client's error
+// handling) must still be able to read it. A sniffer that consumed the body would trade a
+// slow failure for an empty one.
+func quotaExhausted(resp *http.Response) (string, bool) {
+	if resp == nil || resp.Body == nil {
+		return "", false
+	}
+	const peek = 4 << 10 // enough for any provider error envelope; bounded on purpose
+	buf, err := io.ReadAll(io.LimitReader(resp.Body, peek))
+	if err != nil && len(buf) == 0 {
+		return "", false
+	}
+	// Put the bytes back, followed by whatever remains unread.
+	rest := resp.Body
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{Reader: io.MultiReader(bytes.NewReader(buf), rest), Closer: rest}
+
+	lower := strings.ToLower(string(buf))
+	for _, m := range quotaMarkers {
+		if strings.Contains(lower, m) {
+			return strings.TrimSpace(string(buf)), true
+		}
+	}
+	return "", false
 }
 
 // retryBackoff returns the wait before the next attempt: the Retry-After header when the

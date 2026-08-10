@@ -58,9 +58,6 @@ const (
 	// queries) and context poisoning (retrievals authored by the agent itself, or
 	// pulled from a different session). Diagnostic only — zero behavior change.
 	EventTypeAgentStep = "agent.step"
-	// EventTypeExplorationBudget reports that a capability's provisional-exploration
-	// budget was exhausted (the free L2 bypass is withdrawn). ROUTE-06 / ADR-0069.
-	EventTypeExplorationBudget = "exploration.budget"
 	// EventTypeRetentionRun reports one bounded retention/compaction pass: what was
 	// deleted, whether the pass hit its cap, and whether it failed. ADR-0102 A1.
 	//
@@ -106,7 +103,7 @@ type DomainEvent interface {
 }
 
 // SelectionEventPayload reports bidding lifecycle (started / completed / failed).
-// Emitted by Auctioneer via EventBus.
+// Emitted by the Dispatcher via EventBus.
 //
 // WinnerMargin and Funnel are ROUTE-02 routing-trace fields: they make a
 // mis-routed step explainable from the persisted event alone (the candidate
@@ -166,7 +163,7 @@ type GatekeeperFunnel struct {
 	// L2Threshold is the similarity floor applied in Layer 2 (0 when L2 skipped).
 	L2Threshold float64
 	// L3 is the Merit ranking: the surviving candidates with their score and its
-	// components, in the order presented to the Auctioneer (highest first).
+	// components, in the order presented to the Dispatcher (highest first).
 	L3 []MeritResult
 	// MaxCandidates is the GatekeeperMaxCandidates cap applied after ranking
 	// (0 when uncapped).
@@ -675,15 +672,3 @@ type ReactiveBudgetEvent struct {
 
 func (ReactiveBudgetEvent) domainEvent()      {}
 func (ReactiveBudgetEvent) EventType() string { return EventTypeReactiveBudget }
-
-// ExplorationBudgetExhaustedEvent is emitted when a capability's provisional-exploration
-// budget is exhausted — provisional agents for that capability no longer get the free
-// Layer-2 bypass until the window rolls over. ROUTE-06 / ADR-0069. Observable so the
-// guard metric (provisional time-to-first-win) can tell exploration from starvation.
-type ExplorationBudgetExhaustedEvent struct {
-	Capability string
-	At         time.Time
-}
-
-func (ExplorationBudgetExhaustedEvent) domainEvent()      {}
-func (ExplorationBudgetExhaustedEvent) EventType() string { return EventTypeExplorationBudget }

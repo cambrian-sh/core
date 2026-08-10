@@ -7,7 +7,9 @@ type ProceduralMemory interface {
 	Store(ctx context.Context, plan *ExecutionPlan, meanConfidence float64) error
 	// Retrieve returns (plan, similarity, confidence, error).
 	// Similarity is the raw cosine score from vector search.
-	// Confidence is the stored mean auction confidence.
+	// Confidence is the stored mean per-step selection confidence. It held the mean
+	// BID confidence until ADR-0100 P3 deleted the bid round; historical rows still
+	// carry bid-derived values, so do not compare across that boundary.
 	// Delegates to RetrieveWithPolicy with the default policy.
 	Retrieve(ctx context.Context, userInput string) (*ExecutionPlan, float64, float64, error)
 	// RetrieveWithPolicy uses the named policy's SimilarityThreshold, ConfidenceFloor,

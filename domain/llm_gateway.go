@@ -35,7 +35,7 @@ type BudgetLeaseState struct {
 }
 
 // StepAllocation records the top-3 TraitModel candidates (winner + 2 fallbacks)
-// for a given step, produced by the Auctioneer at plan time.
+// for a given step, produced by the Dispatcher at plan time.
 type StepAllocation struct {
 	Winner    AgentDefinition
 	Fallbacks [2]AgentDefinition

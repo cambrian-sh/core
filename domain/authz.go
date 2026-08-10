@@ -63,6 +63,17 @@ func AgentPrincipal(agentID string) PrincipalRef {
 	return PrincipalRef{ID: agentID, Kind: PrincipalAgent}
 }
 
+// UserPrincipal is a human operator acting under their own identity, established
+// from the authenticated operator session — never from a request payload (INV-5).
+//
+// It exists because the operator plane had no way to say who it was: its handlers
+// resolved the operator's name for the AUDIT entry and then called downstream with a
+// bare context, so every write they performed reached the authorization chokepoint as
+// "<none>". The agent plane had the same defect and was fixed; this is its counterpart.
+func UserPrincipal(userID string) PrincipalRef {
+	return PrincipalRef{ID: userID, Kind: PrincipalUser}
+}
+
 // SystemPrincipal is the kernel-internal principal for maintenance reads. It is
 // the identity counterpart of the ScopeSystem predicate.
 var SystemPrincipal = PrincipalRef{ID: "kernel", Kind: PrincipalSystem}

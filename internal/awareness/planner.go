@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -21,12 +22,16 @@ import (
 
 const plannerRole = "You are the Cambrian Planner. Your goal: resolve requests in MINIMAL steps."
 
-const plannerLTMRules = `LTM CONTEXT RULES (applies when <FactLTM>, <PlanLTM>, <NegativeLTM>, or <DiscoveryLTM> sections appear in <Context>):
+// plannerLTMRules explains the memory sections. The <DiscoveryLTM> and
+// <environment> rules were removed 2026-08-08: the Scout was their only producer
+// and it was retired, so they described sections that could never appear. The
+// host-path rule that had been living inside that dead branch now has two
+// halves — a static division-of-labour rule in plannerDecisionRules, and the
+// dynamic <host> block built by buildHostBlock. See ADR-0100's P3 residuals.
+const plannerLTMRules = `LTM CONTEXT RULES (applies when <FactLTM>, <PlanLTM>, or <NegativeLTM> sections appear in <Context>):
 - <FactLTM> contains facts from prior sessions retrieved for relevance to this request. Use facts with high relevance scores to enrich your plan steps where applicable. Ignore facts that are not relevant — do NOT invent steps just to use a fact.
 - <PlanLTM> contains a prior successful plan for a similar request. Use it as a structural reference but adapt it to the current request; do not copy it blindly.
-- <NegativeLTM> contains failure records from prior sessions. Avoid assigning the same task to the agent that previously failed it.
-- <DiscoveryLTM> contains LIVE observations of the CURRENT world state, scanned just now, one <entity> per thing observed. SHAPE THE PLAN TO MATCH IT: if it reports N remaining items, emit a step per remaining item — do NOT collapse them into one step or guess a count. The <entity> facts are authoritative; the <interpretation> is an advisory hint, not a directive.
-- <environment> (inside <DiscoveryLTM>) gives the ACTUAL host facts: os, home, desktop, cwd. Build every file/folder path from these ABSOLUTE paths and the host's OS conventions. On os="windows" use backslash Windows paths (e.g. the desktop is the "desktop" value) — NEVER "~", "~/Desktop", or forward-slash Unix paths. A step that creates "a folder on the desktop" MUST use the absolute "desktop" path from <environment>.`
+- <NegativeLTM> contains failure records from prior sessions. Avoid assigning the same task to the agent that previously failed it.`
 
 const plannerDecisionRules = `STRICT DECISION RULES:
 - The "query" field MUST contain the full natural-language instructions for the step. NEVER truncate the user's intent; include the complete action required.
@@ -35,7 +40,8 @@ const plannerDecisionRules = `STRICT DECISION RULES:
 - IMPORTANT: The example "uppercase the Name column in data.csv" is ONLY a format example. NEVER use it as the actual task unless the user explicitly requests it.
 - Describe steps by CAPABILITY, not by agent. The runtime resolves each step to a concrete agent at execution time (discovery + selection); do not assume a particular selection mechanism. If the USER named an agent, express that with "preferred_agent" (see AGENT PINNING) — never by naming an agent inside "query" alone, and never as a capability tag.
 - When a step requires analysis, comparison, evaluation, or justification, start the query with verbs like "Analyse...", "Compare...", or "Evaluate...". Do NOT start analysis steps with "Summarise..." — that will route the task to the wrong agent.
-- NEVER set "is_thought": true for steps that require analysis, comparison, evaluation, code generation, or summarisation. These MUST be routed to the corresponding cognitive agent. Only use "is_thought": true for trivial synthesis or routing decisions that do not require domain expertise.`
+- NEVER set "is_thought": true for steps that require analysis, comparison, evaluation, code generation, or summarisation. These MUST be routed to the corresponding cognitive agent. Only use "is_thought": true for trivial synthesis or routing decisions that do not require domain expertise.
+- FILE AND FOLDER PATHS ARE THE EXECUTOR'S JOB, NOT YOURS. Describe the TARGET in natural language — "a folder named Reports on the desktop", "the project's README" — and let the step's agent resolve it. That agent runs ON the host and is given its absolute paths; you are not. So do NOT construct absolute paths, do NOT guess a home directory or a user name, and do NOT write "~" or "~/Desktop" (which the shell does not expand on every platform). The <host> section tells you the OS so you can phrase a step in terms that platform understands; it is not an invitation to build paths.`
 
 // plannerAgentPinRules is the agent-pinning instruction block, shared by both
 // planner arms. It gives the planner a legitimate field for naming an agent: the
@@ -249,6 +255,21 @@ type Planner struct {
 	// canonicalVocab (ROUTE-04 / ADR-0067) normalizes the displayed capability
 	// vocabulary deterministically (format/typo folding). Default false.
 	canonicalVocab bool
+	// goos is the OS the kernel runs on, shown to the planner in the dynamic
+	// <host> block. A field rather than a direct runtime.GOOS read so a test can
+	// pin it; EMPTY means "resolve the real host at prompt-build time", so a
+	// Planner built as a bare struct literal still reports truthfully instead of
+	// silently claiming no OS.
+	goos string
+}
+
+// hostGOOS is the OS the planner should be told about. Never hardcoded: it is
+// the live host unless a test pinned it.
+func (p *Planner) hostGOOS() string {
+	if p.goos != "" {
+		return p.goos
+	}
+	return runtime.GOOS
 }
 
 // NewPlanner creates a Planner. Pass nil for hippocampus to disable procedural
@@ -359,6 +380,7 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	// so the control arm is byte-identical.
 	constraints := []string{
 		buildCapabilityCluster(agents), // dynamic — excluded from hash
+		buildHostBlock(p.hostGOOS()),   // dynamic — per-host, MUST stay out of the hash
 		plannerLTMRules,
 		plannerDecisionRules,
 		plannerDependencyRules,
@@ -376,6 +398,7 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 			// manifest-derived vocabulary so the emitted required_capabilities
 			// match what L1 Declaration enforces (NOT the clusterer's labels).
 			clusterBlock,
+			buildHostBlock(p.hostGOOS()), // dynamic — per-host, MUST stay out of the hash
 			plannerLTMRules,
 			plannerDecisionRules,
 			plannerCapabilityRules,
@@ -395,6 +418,17 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 
 	responseStr, err := p.client.Generate(ctx, fullPrompt)
 	if err != nil {
+		// Log it HERE. A bare `return nil, err` made a provider refusal invisible
+		// server-side: on 2026-08-07 a chat turn logged "Sending full prompt to LLM"
+		// and then nothing at all, for four minutes, while the provider had already
+		// answered "Weekly usage limit reached" in half a second. The operator's only
+		// evidence was silence, which reads as "the kernel is broken" rather than
+		// "the model provider said no". The error still propagates unchanged — this
+		// only stops it leaving the kernel without a trace.
+		slog.Error("planner: LLM call failed — no plan produced",
+			"err", err,
+			"prompt_chars", len(fullPrompt),
+			"prompt_version", promptVersion)
 		return nil, err
 	}
 	slog.Debug("Received raw LLM response", "raw_response", responseStr)
@@ -702,6 +736,35 @@ func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.Ag
 		fmt.Fprintf(&sb, "- (uncategorized): %s — %q\n", a.ID, a.Description)
 	}
 	return sb.String(), vocab
+}
+
+// buildHostBlock reports the OS the kernel is running on, as a DYNAMIC prompt
+// section so the planner can phrase a step in terms the platform understands
+// ("PowerShell" vs "bash", a service name, a path separator in prose).
+//
+// It deliberately carries the OS and NOTHING else — no home directory, no
+// desktop, no cwd. Two reasons, and both are the point of ADR-0100's third P3
+// residual rather than an oversight:
+//
+//   - The planner cannot see the host it is planning for; the AGENT executing
+//     the step runs on it and is given the absolute paths (SDK `_host_facts`).
+//     Concrete paths therefore belong to the executor. plannerDecisionRules
+//     states that division of labour; this block is what makes the OS half of
+//     it available without inviting the path half.
+//   - Plans are STORED and replayed into later plans as <PlanLTM> structural
+//     references. An absolute "C:\Users\<someone>\Desktop\..." baked into a step
+//     is wrong the moment it is recalled under a different user or host, and it
+//     leaks a username into memory. The OS is a property of the deployment; a
+//     home directory is a property of one account.
+//
+// It must stay OUT of plannerStaticText: the hash gates plan-cache reuse
+// (PlannerPromptVersion), so folding a per-host value into it would give each
+// host a different hash and silently invalidate cached plans across a fleet.
+func buildHostBlock(goos string) string {
+	if goos == "" {
+		return ""
+	}
+	return "<host>\n  os: " + goos + "\n</host>"
 }
 
 func buildCapabilityCluster(agents []domain.AgentDefinition) string {

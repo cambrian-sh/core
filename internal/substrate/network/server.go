@@ -353,7 +353,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	rawInput := string(in.Payload.Data)
 
 	// ADR-0050 D1: benchmark React-baseline arm. Skips Router classification,
-	// Planner, Auctioneer, and DAGExecutor — the input goes
+	// Planner, Dispatcher, and DAGExecutor — the input goes
 	// verbatim to one configured agent through the same CallAgent seam a
 	// winning bidder would use (same priming, grants, scope, telemetry).
 	if s.ExecCfg.Routing.BypassSelection {
@@ -608,12 +608,26 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		// can call GenerateViaModelStream and log their position in the plan.
 		handoff.Context["_step_index"] = fmt.Sprintf("%d", i)
 		if s.LLMGateway != nil {
-			// ADR-0018 pending: pre-allocate with the primary model agent so
-			// StreamChunks has a non-empty Winner ID to resolve the streaming client.
+			// The step's model allocation is deliberately EMPTY here, and the gateway
+			// resolves it: an empty Winner makes StreamChunks fall through to the
+			// configured default (`SetDefaultModelID("llm:" + cfg.LLMProvider.Default)`,
+			// app.go), which it logs. So configuration decides which model an agent
+			// streams through.
+			//
+			// This previously hardcoded `llm:ollama:qwen3:8b` whenever an Ollama router
+			// was present, on the stated reason that StreamChunks needed a non-empty
+			// Winner. It does not — the default-model fallback below it has covered that
+			// since it was added. The literal therefore did not fill a gap, it OVERRODE
+			// the operator's configured default with a model named in Go, which is why
+			// "which model runs my agents" was unanswerable from config on any
+			// Ollama-equipped deployment.
+			//
+			// What is still missing is the per-STEP allocation (ADR-0018): the lease is
+			// minted here, at dispatch, BEFORE selection picks a winner, so the
+			// StepAllocation the Dispatcher computes (dispatch.go, DispatchResult) cannot
+			// be bound to it yet. See the Known Gaps entry "Per-step model allocation
+			// never reaches the lease" for the two candidate fixes.
 			sa := domain.StepAllocation{}
-			if s.ModelRouter != nil && s.ModelRouter.Ollama != nil {
-				sa.Winner = domain.AgentDefinition{ID: "llm:ollama:qwen3:8b"}
-			}
 			tokenID, _ := s.LLMGateway.Acquire(stepCtx, sa, 4096, 30*time.Second)
 			// Phase 0: record WHICH session/run/step this lease belongs to, so an agent
 			// presenting it can be resolved back to its session server-side. Without
@@ -1136,12 +1150,15 @@ func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawIn
 	handoff.Context["original_prompt"] = userInput
 
 	// Mirror stepFn's session-token acquisition so cognitive agents can call
-	// GenerateViaModelStream on the bypass arm exactly as on the auction arm.
+	// GenerateViaModelStream on the bypass arm exactly as on the dispatch arm.
 	if s.LLMGateway != nil {
+		// Empty allocation, exactly as the dispatch path above, so BOTH arms resolve the
+		// model the same way (through the gateway's configured default). The hardcoded
+		// `llm:ollama:qwen3:8b` removed here was the second copy of that literal; leaving
+		// it on one arm only would make the bypass CONTROL arm stream through a different
+		// model than the arm it is the control for, which is the one thing a control arm
+		// may not do.
 		sa := domain.StepAllocation{}
-		if s.ModelRouter != nil && s.ModelRouter.Ollama != nil {
-			sa.Winner = domain.AgentDefinition{ID: "llm:ollama:qwen3:8b"}
-		}
 		tokenID, _ := s.LLMGateway.Acquire(ctx, sa, 4096, 30*time.Second)
 		// The bypass arm runs outside a task session, so the binding carries only the
 		// agent. Registering it still matters: a KNOWN-but-unbound lease is how the

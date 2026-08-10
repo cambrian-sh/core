@@ -497,24 +497,35 @@ func TestServer_StepFn_FallbackPropagatesErrorWhenAllRunnerUpsFail(t *testing.T)
 		t.Errorf("expected _partial_plan=true in response context, got: %v", resp.Metadata)
 	}
 
-	winnerCalls := 0
+	// Written against selection ORDER, not agent names — the same convention as
+	// the sibling test above, and for the same reason: these two agents TIE on
+	// merit, so which of them the Dispatcher selects is decided by the order the
+	// registry returns them in, not by anything this test controls. Naming
+	// "winner" here asserted a tiebreak nobody specified; it passed only while
+	// the registry's map iteration happened to favour it.
+	if len(callAgentCalls) == 0 {
+		t.Fatal("no agent was called at all")
+	}
+	selected := callAgentCalls[0]
+	selectedCalls := 0
 	for _, c := range callAgentCalls {
-		if c == "winner" {
-			winnerCalls++
+		if c == selected {
+			selectedCalls++
 		}
 	}
-	if winnerCalls != 2 {
-		t.Errorf("expected 2 SelfHealer attempts for winner, got %d", winnerCalls)
+	if selectedCalls != 2 {
+		t.Errorf("expected 2 SelfHealer attempts for the selected agent %q, got %d (calls: %v)",
+			selected, selectedCalls, callAgentCalls)
 	}
 
 	foundFallback := false
 	for _, c := range callAgentCalls {
-		if c == "runner-up-a" {
+		if c != selected {
 			foundFallback = true
 			break
 		}
 	}
 	if !foundFallback {
-		t.Errorf("fallback should attempt runner-up-a, calls: %v", callAgentCalls)
+		t.Errorf("fallback should attempt the other agent, calls: %v", callAgentCalls)
 	}
 }
