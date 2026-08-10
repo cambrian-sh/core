@@ -90,6 +90,13 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 	}
 
 	actor, role, _ := PrincipalFromContext(ctx)
+
+	// No principal stamping here. The interceptor sets the domain principal for
+	// every operator-plane RPC (see authorize), so ctx already carries the
+	// authenticated operator. This handler used to do it by hand, which worked
+	// and was a workaround: the next handler that wrote anything had to remember
+	// to grow the same four lines, and the one that forgot would fail closed only
+	// on a deployment that enforces access control.
 	docID, err := s.ingestor.Ingest(ctx, IngestRequest{
 		Text:        req.GetText(),
 		Tags:        req.GetTags(),

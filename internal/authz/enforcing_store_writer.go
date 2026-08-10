@@ -72,7 +72,10 @@ func (w *EnforcingStoreWriter) classify(ctx context.Context, doc *domain.Documen
 		return nil
 	}
 	principal := domain.PrincipalFromContext(ctx)
-	final, dec := w.authz.ClassifyWrite(ctx, principal, DocTags(doc))
+	// ADR-0099: strip identity before classification. See domain.ClassificationHint —
+	// an identity term reaching a controlled vocabulary is rejected as coinage, which
+	// denies the write outright rather than ignoring a term that was never a label.
+	final, dec := w.authz.ClassifyWrite(ctx, principal, domain.ClassificationHint(DocTags(doc)))
 	if !dec.Allowed {
 		w.logger.WarnContext(ctx, "authz: write denied",
 			slog.String("event", "authz_write_deny"),

@@ -229,3 +229,35 @@ ADR-0034/0035 constrain *untrusted agents* to narrow-only, kernel-derived classi
 - **Decision:** an operator may both **add (widen)** and **remove (narrow)** a memory document's `metadata.tags`. The agent narrow-only rule does not bind the operator.
 - **Guard:** tags must come from the existing **ADR-0034 controlled `Vocabulary`** — an operator cannot coin an arbitrary tag (prevents typo-misclassification). The mutation goes through a kernel write path that re-stamps provenance with the operator as actor (controller, not back door — ID-3), never a raw DB write.
 - **Audit:** every tag mutation is recorded with before/after and the operator actor (D15); a widening is therefore always explicit in the trail. This is the semantics 0047-25 implements.
+
+## Amendment A2 (2026-08-09) — The auth interceptor establishes the DOMAIN principal, not only the role
+
+**Status: Implemented.** Amends D13, which describes the interceptor as a "role gate = RPC-access
+filter only". It has a second job, and omitting it broke the plane in exactly the deployments that
+enforce access control.
+
+D13's interceptor resolved the bearer token to `{principal, role}` and stashed it in an
+**operator-plane private** context value, which is what the plane's own audit entries read. But the
+rest of the kernel reads the **domain** principal (`domain.PrincipalFromContext`, the identity
+ADR-0085's chokepoints authorize against), and nothing set it. So every operator RPC reached the
+domain as `principal:<none>` one stack frame after the caller authenticated, and anything that
+authorized, recorded ownership or wrote provenance saw an anonymous caller.
+
+- **Decision:** `authorize()` sets `domain.WithPrincipal(ctx, domain.UserPrincipal(principal))`
+  alongside the private value it already set, once, for every operator-plane RPC — unary and
+  streaming, the stream case through the existing context-carrying wrapper. `actor`-from-identity
+  (0047-05) is unchanged; this is the same identity, published to the layer that enforces on it.
+- **No per-handler wrapping.** The operator ingest handler had grown its own four-line principal
+  stamp. That is deleted. A rule each handler must remember is a rule the next handler forgets, and
+  the one that forgets fails closed only on a customer's deployment.
+- **Why it survived so long — and the test rule that follows.** The failure direction inverts at the
+  seam by design (ADR-0085): OSS fails **open** on an unknown principal, the premium plugin fails
+  **closed**. So the broken path passed every OSS test and was broken in every deployment where
+  access control actually runs. Any change to identity plumbing therefore needs a test asserting the
+  principal is present **inside a handler** against a **fail-closed** check — asserting the RPC
+  returned OK proves nothing. `internal/substrate/operator/authz_principal_test.go` is that test.
+- **Scope of this amendment.** Operator plane only. The core AGENT plane still carries the same
+  hand-rolled stamp in `internal/substrate/network/ingest_memory.go`, and it remains load-bearing:
+  `internal/authz/surface.go` `seedAgentPrincipal` seeds a principal only for PREMIUM services
+  declared agent-facing (ADR-0118 D3), so nothing sets it for core agent-plane RPCs. Giving the agent
+  plane the same interceptor-level treatment is open work, not covered here.

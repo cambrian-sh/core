@@ -17,7 +17,7 @@ import (
 //
 // Steps name CAPABILITIES, never agents (D2). That is what keeps a retrieved routine a
 // suggested plan SHAPE rather than a pre-decided assignment: the Gatekeeper still filters
-// and the Auctioneer still selects. A routine naming agents would be the Zero-Hardcode
+// and the Dispatcher still selects. A routine naming agents would be the Zero-Hardcode
 // Rule defeated by a database row rather than by a Go switch.
 //
 // Confidence and observation count are surfaced so the planner can weigh a

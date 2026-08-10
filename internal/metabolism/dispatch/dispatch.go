@@ -29,10 +29,15 @@ import (
 // AgentCaller invokes one agent and returns its response.
 //
 // It is an interface rather than an owned implementation because the dial /
-// boot / connection-pool machinery still lives on the Auctioneer while the
-// auction remains available as the A/B arm (ADR-0100 P0). Sharing it avoids a
-// second gRPC connection pool. When the auction is deleted (P3) that machinery
-// moves into this package and the interface is satisfied in-package.
+// boot / connection-pool machinery lives on `internal/agentplane.Transport`,
+// which the privileged system organs also call directly. Sharing it avoids a
+// second gRPC connection pool.
+//
+// The original note here said this machinery would move into this package once
+// the auction was deleted (P3). P3 has happened and it deliberately did not
+// move: the transport is now the agent plane's own component and its other
+// callers are organs that must NOT depend on a selection mechanism. Keeping the
+// port is what lets invocation and selection stay separable.
 type AgentCaller interface {
 	CallAgent(ctx context.Context, agentID string, handoff *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error)
 }
@@ -351,7 +356,7 @@ func meritMargin(scored []domain.ScoredCandidate, winnerID string) float32 {
 }
 
 // selectModelCandidates runs ADR-0018 TraitModel sub-selection for the winning
-// agent. Behaviour-identical to the Auctioneer's, so model allocation is
+// agent. Behaviour-identical to the retired Auctioneer's, so model allocation is
 // unchanged across the two arms. Returns nil when no TraitModel agents exist.
 func (d *Dispatcher) selectModelCandidates(ctx context.Context, winnerAgentID string) *domain.StepAllocation {
 	if d.Manifests == nil {

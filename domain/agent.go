@@ -25,7 +25,7 @@ const (
 )
 
 // systemAgentIDs are privileged kernel-invoked organs (ADR-0051): the kernel calls them
-// DIRECTLY (e.g. the kg_extractor via Auctioneer.CallAgent), never through the auction.
+// DIRECTLY (e.g. the kg_extractor via the agent transport's CallAgent), never through selection.
 // They are therefore (a) verified by default — they bypass the Gatekeeper interview, and
 // (b) excluded from auction/EFE candidate selection — they are never assigned a user task.
 // A deterministic system exception, NOT task-to-agent routing, so the Zero-Hardcode Rule is
@@ -38,7 +38,7 @@ var systemAgentIDs = map[string]bool{
 	"kg_extractor_agent": true,
 	// reranker_agent (ADR-0054 Stage B): the warm bge cross-encoder relevance
 	// oracle. The kernel hands it {query, documents} on the recall path and gets
-	// one relevance score per document back; invoked DIRECTLY via the Auctioneer,
+	// one relevance score per document back; invoked DIRECTLY via the agent transport,
 	// never auctioned/interviewed — same privileged-organ class as the kg_extractor and
 	// the kg_extractor. DeterministicAgent: a scoring model, no generative think().
 	"reranker_agent": true,
@@ -52,7 +52,7 @@ var systemAgentIDs = map[string]bool{
 	"operator_agent": true,
 	// retrieval_agent (AGENTIC_RETRIEVAL_SPEC §2.1): the LLM steps of the agentic
 	// retrieval loop (plan_step / decide_continue / synthesize). The kernel calls
-	// it DIRECTLY via the Auctioneer on the recall path with a managed LLM session
+	// it DIRECTLY via the agent transport on the recall path with a managed LLM session
 	// (RetrievalDispatcher), never auctioned/interviewed — same privileged-organ
 	// class as the other system organs. CognitiveAgent: makes managed generate() calls.
 	"retrieval_agent": true,

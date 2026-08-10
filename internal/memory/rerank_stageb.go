@@ -19,7 +19,7 @@ const defaultRerankTopK = 50
 // Reranker is the ADR-0054 Stage-B port: a cross-encoder that scores the
 // relevance of each document to the query, returning one score per document in
 // input order. Implemented by network.RerankerDispatcher, which dispatches to the
-// warm `reranker_agent` system organ via the Auctioneer (no auction) — the same
+// warm `reranker_agent` system organ via the agent transport (no selection) — the same
 // privileged-organ pattern as the kg_extractor's domain.TripletExtractor.
 //
 // Errors are the caller's signal to fail-soft: a down/erroring reranker leaves the

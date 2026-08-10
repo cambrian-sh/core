@@ -18,6 +18,30 @@ depends_on:
 Accepted (arm-gated, default off; online enablement gated on the benchmark, per the
 offline-before-online discipline)
 
+**Amended 2026-08-08 — the "Bounded Provisional Exploration" half of this ADR is WITHDRAWN.**
+Per-capability merit stands unchanged. The `domain.ExplorationBudget` described in the Decision
+below has been deleted, along with `ExplorationBudgetExhaustedEvent`,
+`Gatekeeper.ExplorationBudget`, and the `provisional_exploration_budget` /
+`provisional_exploration_window_seconds` config keys.
+
+Why: the budget was decremented from exactly one call site, the Auctioneer's win path, and
+ADR-0100 P3 deleted the Auctioneer. From that moment `wins` stayed permanently empty, `Allowed`
+always returned `true`, and the exhaustion event could never fire — so the bound this ADR
+specified had been inert for months. It was invisible because the Gatekeeper only consults it
+when `per_capability_merit` is on, and that arm is default off; the bound would have *appeared*
+the moment the arm was enabled, as an unlimited Layer-2 bypass rather than a bounded one.
+
+Re-wiring `RecordWin` onto the Dispatcher was considered and rejected: nothing had depended on
+the bound since P3, so restoring it would have been a behaviour change disguised as a bugfix,
+and a bound that cannot bind is worse than no bound because its config key reads as a guarantee.
+**The provisional L2 bypass is now unconditional in both arm positions**, which is the behaviour
+that actually ran throughout. The guard metric this ADR wanted — provisional time-to-first-win,
+distinguishing exploration from starvation — was never built and is not lost by the removal.
+
+If exploration needs bounding again, it belongs on the **Dispatcher**: the Gatekeeper knows only
+who was *eligible*, whereas bounding exploration requires knowing who was *selected*, which is
+precisely the coupling to the auction that made this design fragile in the first place.
+
 ## Context
 
 Routing defect **D5**, two facets:

@@ -31,7 +31,7 @@ const (
 	DefaultProvisionalScore    = 0.1
 	DefaultSimilarityThreshold = 0.2 // ADR-0023: lowered from 0.5 so agent descriptions that are
 	// semantically related (but not identical) to the task still pass the Gatekeeper.
-	// The Auctioneer's proposal phase (now including tool agents) refines the match.
+	// The Dispatcher's merit ranking (over cognitive and tool agents alike) refines the match.
 )
 
 // GatekeeperProfileReader is the narrow read-only interface used to fetch
@@ -54,10 +54,6 @@ type Gatekeeper struct {
 	Embedder domain.Embedder
 	Searcher domain.InterviewSearcher
 	ExecCfg  config.ExecutionConfig
-	// ExplorationBudget bounds the provisional L2 bypass per capability (ROUTE-06 /
-	// ADR-0069). nil (or arm off) ⇒ unbounded bypass, the pre-ROUTE-06 behavior. Shared
-	// with the Auctioneer, which records provisional wins into it.
-	ExplorationBudget *domain.ExplorationBudget
 	// RouteScorer is the ROUTE-07 learned gatekeeper scorer (ADR-0076). When set AND
 	// execution.learned_scorer is on, it replaces the hand-weighted GatekeeperScore with
 	// a model learned from orchestration artifacts. nil (or arm off) ⇒ hand weights
@@ -313,25 +309,28 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 				if trace {
 					funnel.L2Threshold = DefaultSimilarityThreshold
 				}
-				// ROUTE-06 / ADR-0069: the provisional L2 bypass is bounded by the
-				// per-capability exploration budget. A provisional agent bypasses only
-				// while budget remains for the step's capability; once exhausted it must
-				// pass the semantic gate like everyone else (exploration granted, not
-				// unbounded). Arm off / nil budget ⇒ always allowed (unchanged).
-				budgetCap := ""
-				if len(task.RequiredCapabilities) > 0 {
-					budgetCap = task.RequiredCapabilities[0]
-				}
+				// A provisional agent bypasses L2 unconditionally: it has no
+				// interview history to be judged on, so gating it on description
+				// similarity would keep every new agent out of the slate it needs to
+				// enter in order to acquire a history at all.
+				//
+				// ROUTE-06 / ADR-0069 once bounded this bypass with a per-capability
+				// exploration budget, withdrawn after N provisional wins per window.
+				// That budget was DELETED 2026-08-08: the Auctioneer was its only
+				// recorder of wins, ADR-0100 P3 deleted the Auctioneer, and from then
+				// on `Allowed` always returned true — so the bound had already been
+				// inert for months and only looked like a guarantee. It was removed
+				// rather than re-wired here, because a bound that cannot bind is worse
+				// than no bound. If exploration needs bounding again it belongs on the
+				// Dispatcher, which is the component that now knows a candidate won.
 				var filtered []domain.ScoredCandidate
 				for _, c := range candidates {
-					// A soft-pinned agent bypasses the semantic gate. L2 measures
+					// A soft-pinned agent also bypasses the semantic gate. L2 measures
 					// whether an agent's DESCRIPTION reads as similar to the step,
 					// which is the wrong question once a user has named the executor:
 					// "use terminal_agent to summarise this" is a legitimate request
 					// that description similarity would veto.
-					bypass := c.Agent.ID == pinnedID ||
-						(c.Agent.Provisional &&
-							(!g.ExecCfg.Routing.PerCapabilityMerit || g.ExplorationBudget.Allowed(budgetCap)))
+					bypass := c.Agent.ID == pinnedID || c.Agent.Provisional
 					if bypass {
 						filtered = append(filtered, c)
 						if trace {
@@ -420,7 +419,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 }
 
 // FindModelCandidates returns all TraitModel agents, filtered by required capabilities
-// and ranked by merit score. Used by the Auctioneer for ADR-0018 TraitModel sub-selection.
+// and ranked by merit score. Used by the Dispatcher for ADR-0018 TraitModel sub-selection.
 func (g *Gatekeeper) FindModelCandidates(ctx context.Context, requiredCapabilities []string) ([]domain.ScoredCandidate, error) {
 	agents, err := g.Registry.GetAllAgents(ctx)
 	if err != nil {

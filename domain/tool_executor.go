@@ -725,9 +725,14 @@ func (e *ToolExecutor) grantFor(ctx context.Context, agentID, tool, sessionToken
 	if agentID == "" {
 		return ToolGrant{}, false // anonymous principal denied even when unrestricted
 	}
-	// ADR-0051 D6: a restricted principal (e.g. the Scout) may use ONLY its allowlisted
-	// (discovery-safe) tools — a hard ceiling enforced BEFORE the Unrestricted bypass, so
-	// it holds even in dev/unrestricted mode. Everything else is denied fail-closed.
+	// ADR-0051 D6: a restricted principal may use ONLY its allowlisted (discovery-safe)
+	// tools — a hard ceiling enforced BEFORE the Unrestricted bypass, so it holds even in
+	// dev/unrestricted mode. Everything else is denied fail-closed.
+	//
+	// RestrictedTools is empty in a current kernel: its only principal was the Scout,
+	// retired 2026-08-07 with the config key that populated it. An absent entry means
+	// "not a restricted principal", so an empty map is a no-op here rather than a
+	// deny-all — the ceiling stays available for the next read-only organ.
 	if allow, restricted := e.RestrictedTools[agentID]; restricted && !allow[tool] {
 		return ToolGrant{}, false
 	}

@@ -100,15 +100,23 @@ Strictly sequential, dependency-ordered:
 | **8a. LLM Gateway** | `subnetwork.NewLLMGateway` with streaming clients for **every** configured generator (Ollama + OpenAI + Anthropic). Registers `llm:<id>` clients, sets `DefaultModelID` |
 | **9. ArtifactVault** | Content-addressable storage at `dataDir/vault` |
 | **10. Server** | `kernel.ProvideServer(...)` — the consumer that ties all stacks to the gRPC surface |
-| **10a. Resource selector** | EFE selector wired when `resource_selector ∈ {efe, auto}` and Gatekeeper is present (ADR-0037) |
 | **10b. Tool system** | Native tool discovery from `tools/`, MCP connector (ADR-0043), pricing / budget / egress audit, `ToolExecutor` with grants + approval controller + scope + CAS + artifact promotion + tool output curation |
 | **10c. Tool index** | `ToolIndexer.IndexAll(...)` + `reconcileIndex` (ADR-0044 prunes orphaned tool docs) |
 | **10d. Vector retriever** | `VectorToolRetriever` on the `ToolExecutor` (semantic `find_tools`) |
-| **10e. Scout** | ADR-0051 pre-plan discovery agent — wired when `scout_enabled`; `scout_agent` confined to `discovery_safe` tools (D6) |
 | **10f. KG extractor** | ADR-0053 D2 — `kg_extractor_agent` replaces LLM residue when `kg_extractor_enabled` |
 | **10g. Skill system** | ADR-0046 — `LoadRegistry("skills", ...)` + `SkillIndexer` + scope-aware `VectorSkillRetriever` |
 | **10h. MCP sink** | `mcpToolSink` — keeps registry + retrieval index in sync as MCP servers drop / reconnect |
 | **10i. Operator effects** | `CommandEffectsFuncs` binds the operator-plane mutations: `TagMemory` (controlled vocab), `SetScope`, `RegisterSkill`, `RegisterMCP`, `TriggerConsolidation`, `SetRuntimeConfig` (hot blend-weight tuning) |
+
+**Two stages were removed on 2026-08-07 and the letters below them shifted.** *10a. Resource
+selector* wired the ADR-0037 EFE selector when `resource_selector ∈ {efe, auto}`; ADR-0100 P3
+excised the selector and the port it bound through, and `resource_selector` is a retired config
+key (it was never wired in any shipped configuration, which is how an `"efe"` short-circuit
+silently voided weeks of routing measurement). *10e. Scout* wired the ADR-0051 pre-plan discovery
+agent; the whole organ — probe registry, opt-in LLM tier, and the `scout_agent` principal with
+its `discovery_safe` tool ceiling — was retired the same day, along with nine config keys. Both
+reasons are recorded per-key in `internal/config/execution_migration_test.go`
+(`retiredExecutionFields`), which is the authoritative list of what was deliberately removed.
 
 ### 3. `startKernelServices` — the parallel workers (`app.go:1052-1292`)
 

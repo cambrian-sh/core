@@ -41,7 +41,10 @@ func NewEnforcingDocumentStore(inner domain.DocumentStore, a domain.Authorizer, 
 // SaveDocument classifies the document's tags, then delegates.
 func (w *EnforcingDocumentStore) SaveDocument(ctx context.Context, doc domain.SourceDocument) ([]string, error) {
 	principal := domain.PrincipalFromContext(ctx)
-	final, dec := w.authz.ClassifyWrite(ctx, principal, doc.Tags)
+	// ADR-0099: identity is not a classification. The caller's list carries both, and
+	// a controlled vocabulary rejects an identity term as coinage — which denied the
+	// whole write and made a document unwritable for carrying its own name.
+	final, dec := w.authz.ClassifyWrite(ctx, principal, domain.ClassificationHint(doc.Tags))
 	if !dec.Allowed {
 		w.logger.WarnContext(ctx, "authz: document write denied",
 			slog.String("event", "authz_document_write_deny"),

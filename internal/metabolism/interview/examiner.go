@@ -14,7 +14,7 @@ import (
 // EFE selector and the Gatekeeper merit score were previously missing.
 //
 // All collaborators are consumer-side interfaces (hexagonal): the concrete LLM
-// gateway, the Auctioneer's CallAgent, the VerifierPool, and the belief store are
+// gateway, the agent transport's CallAgent, the VerifierPool, and the belief store are
 // adapted to them at the composition root.
 
 // Generator is the minimal LLM text surface the examiner needs (question
@@ -25,7 +25,7 @@ type Generator interface {
 
 // ScenarioRunner executes one interview question against the agent for real and
 // returns the agent's answer — the gradeable capability signal. Backed by the
-// Auctioneer/Manager CallAgent at the composition root.
+// AgentTransport/Manager CallAgent at the composition root.
 type ScenarioRunner interface {
 	RunScenario(ctx context.Context, agent domain.AgentDefinition, question string, deadline time.Time) (answer string, latencyMs int, err error)
 }

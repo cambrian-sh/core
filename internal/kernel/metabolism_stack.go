@@ -29,19 +29,21 @@ type MetabolismStack struct {
 	rootCtx    context.Context // set by Start; scopes EnqueueVerification closures
 	Manager    *agentmgr.AgentManager
 	Gatekeeper *supgk.Gatekeeper
-	// Auctioneer owns the agent connection pool and CallAgent. Privileged system
-	// organs (Scout, kg_extractor, docling, reranker) call agents through it
+	// AgentTransport owns the agent connection pool and CallAgent. Privileged
+	// system organs (kg_extractor, docling, reranker) call agents through it
 	// DIRECTLY, bypassing selection entirely — they are kernel infrastructure,
-	// not candidates.
-	Auctioneer *agentplane.Transport
-	// Selector is the step-selection mechanism the DAG executor uses: the
-	// capability-typed Dispatcher by default, or the legacy Auctioneer when
-	// execution.bid_round is on (ADR-0100 P0 — the A/B arm, deleted in P3).
+	// not candidates. Named Auctioneer until ADR-0100 P3; it never selected
+	// anything, so the old name claimed a responsibility it did not have.
+	AgentTransport *agentplane.Transport
+	// Selector is the step-selection mechanism the DAG executor uses. Since
+	// ADR-0100 P3 there is exactly one: the capability-typed Dispatcher. The
+	// port stays an interface so a future mechanism has somewhere to land, not
+	// because a second implementation exists.
 	Selector domain.StepDispatcher
-	// Dispatcher is the concrete Selector when dispatch is active (nil under
-	// bid_round). Exposed ONLY so the composition root can finish wiring it —
-	// the EventBus is built after this stack, and a dispatcher that cannot emit
-	// SelectionEventPayload is invisible to the orchestration suite.
+	// Dispatcher is the concrete Selector, always non-nil. Exposed ONLY so the
+	// composition root can finish wiring it — the EventBus is built after this
+	// stack, and a dispatcher that cannot emit SelectionEventPayload is
+	// invisible to the orchestration suite.
 	Dispatcher         *dispatch.Dispatcher
 	InterviewWorker    *interview.InterviewWorker
 	VerificationWorker *verify.VerificationWorker
@@ -91,13 +93,13 @@ func NewMetabolismStack(
 		supgk.WithSearcher(interviewSearcher),
 	)
 
-	auctioneer := agentplane.New(manager)
+	transport := agentplane.New(manager)
 
-	iWorker.Requester = auctioneer
+	iWorker.Requester = transport
 	iWorker.EventWriter = reg
 
 	vPool := verify.NewVerifierPool(reg, profileStore, cfg.Execution.Verification.VerifierPoolThreshold, cfg.Execution.Verification.VerifierRecencyWindow)
-	vWorker := verify.NewVerificationWorker(vPool, auctioneer, reg, profileStore, profileStore, embedder, verify.VerificationWorkerConfig{
+	vWorker := verify.NewVerificationWorker(vPool, transport, reg, profileStore, profileStore, embedder, verify.VerificationWorkerConfig{
 		TrustBoostThreshold:   cfg.Execution.Verification.TrustBoostThreshold,
 		QueueCapacity:         cfg.Execution.Verification.VerificationQueueCapacity,
 		CrossVerifyRate:       cfg.Execution.Verification.CrossVerifyRate,
@@ -114,24 +116,24 @@ func NewMetabolismStack(
 	// the planner is not starved for LLM throughput; agents keep the neutral
 	// cold-start prior. Manifest capabilities (L1 + planner vocab) are unaffected.
 	if interviewGen != nil && !cfg.Execution.Agents.DisableInterviews {
-		iRunner = &scenarioRunner{caller: auctioneer}
+		iRunner = &scenarioRunner{caller: transport}
 		iWorker.Examiner = &interview.Examiner{
 			Questions: interview.LLMQuestionGenerator{Gen: interviewGen},
 			Runner:    iRunner,
 			Judge: interview.HybridJudge{
-				Pool:   poolJudge{pool: vPool, requester: auctioneer},
+				Pool:   poolJudge{pool: vPool, requester: transport},
 				Inline: &interview.InlineLLMJudge{Gen: interviewGen},
 			},
 		}
 	}
 
 	// ADR-0100: capability-typed dispatch is THE selection mechanism. The auction
-	// and the EFE selector are gone; the Auctioneer is still constructed because it
-	// owns the connection pool CallAgent needs and the privileged organs call
-	// through it, but it no longer selects anything.
+	// and the EFE selector are gone; the agent transport is still constructed because
+	// it owns the connection pool CallAgent needs and the privileged organs call
+	// through it, but it never selected anything.
 	dispatcher := &dispatch.Dispatcher{
 		Gatekeeper:      gatekeeper,
-		Caller:          auctioneer,
+		Caller:          transport,
 		Manifests:       manager,
 		Profiles:        profileStore,
 		Boots:           manager,
@@ -147,7 +149,7 @@ func NewMetabolismStack(
 	return &MetabolismStack{
 		Manager:            manager,
 		Gatekeeper:         gatekeeper,
-		Auctioneer:         auctioneer,
+		AgentTransport:     transport,
 		Selector:           selector,
 		Dispatcher:         dispatcher,
 		InterviewWorker:    iWorker,
@@ -222,7 +224,7 @@ type interviewSessionGateway interface {
 	Complete(ctx context.Context, leaseID domain.LeaseID) (llm.TokenUsage, error)
 }
 
-// scenarioRunner adapts the Auctioneer's CallAgent to interview.ScenarioRunner:
+// scenarioRunner adapts the agent transport's CallAgent to interview.ScenarioRunner:
 // it dispatches an interview question as a real task to the agent and returns the
 // answer (the gradeable capability signal). Because the agent will call the
 // budgeted GenerateViaModelStream, the runner first mints a managed LLM session

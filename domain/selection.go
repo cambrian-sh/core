@@ -5,8 +5,15 @@ import (
 	"errors"
 )
 
-// ErrNoCandidates is returned by a ResourceSelector when there is nothing to
+// ErrNoCandidates was returned by a ResourceSelector when there was nothing to
 // bind an intent to.
+//
+// DEAD as of 2026-08-07: ADR-0100 P3 deleted the ResourceSelector, and this error
+// now has no producer and no consumer anywhere in core or premium. Kept only so a
+// future selector has the sentinel already named; do NOT infer from its existence
+// that some path returns it. The Dispatcher's no-match failure is the typed
+// NoCapabilityMatchError, which names the unmatched capability and the live
+// vocabulary — that is the one a caller should handle.
 var ErrNoCandidates = errors.New("selection: no candidates")
 
 // ErrPinnedAgentUnavailable is returned when a HARD agent pin names an agent

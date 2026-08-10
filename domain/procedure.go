@@ -56,7 +56,7 @@ const (
 // recorded which agent did each step would be a learned hardcoded routing table — the
 // Zero-Hardcode Rule defeated by a database row instead of a Go switch, and not one of
 // its three sanctioned exceptions. Naming capabilities keeps a retrieved procedure as
-// planner INPUT: the Gatekeeper still filters and the Auctioneer still selects. It also
+// planner INPUT: the Gatekeeper still filters and the Dispatcher still selects. It also
 // means the routine survives fleet changes, because it says what is needed rather than
 // who once did it.
 type ProcedureStep struct {

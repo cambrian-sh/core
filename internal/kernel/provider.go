@@ -47,7 +47,7 @@ func ProvideServer(
 		meta.EnqueueVerification(),
 		// ADR-0100: the DAG executor selects through meta.Selector (dispatch by
 		// default, auction under bid_round). Privileged organs keep calling
-		// meta.Auctioneer directly — they bypass selection by construction.
+		// meta.AgentTransport directly — they bypass selection by construction.
 		meta.Selector,
 		watcher,
 		modelRouter,

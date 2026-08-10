@@ -863,6 +863,90 @@ prevent. `PgPipelineStore` persists revisions, enforces content-immutability in 
 only in the registry, and still permits the state transitions that publishing, arming and retiring
 legitimately make.
 
+### D35. One pipeline registry, owned by the reactive engine
+
+**Status: Implemented 2026-08-09** (unlike D1–D34, which this ADR records as design). Owner decision
+resolving `cambrian-premium/docs/defects/DEFECT-two-pipeline-registries.md`.
+
+D33 says an ingress owns a pipeline and D34 says its lifecycle drives that pipeline's. Neither says
+**who owns the set**. Three plugins each answered that question for themselves: `plugins/reactive`
+built a `pipeline.Registry` over bolt, `plugins/ingressstudio` built one over Postgres, and
+`plugins/driftplugin` built a third over bolt.
+
+Each was locally correct and independently tested, and the combination silently lost every delivery.
+The engine registers its stream configs from **its own** registry at start, so the pipelines the studio
+authored — the raw-delivery pipeline covering every ingress, and the generated `ingress:<id>` graphs —
+were `armed` in a store the engine never read. `configsFor` returned an empty slice, the dispatch
+loop's body never executed, and a `for` has no else branch: an ARMED ingress fetched successfully,
+advanced its cursor, and produced zero deliveries, zero runs and zero knowledge, at DEBUG, with the
+system reporting itself healthy.
+
+**The reactive engine is the single source of reactive pipelines. Anything else that uses them works
+over it and registers through it.** There is one registry; a plugin that wants pipelines takes a
+dependency on the engine rather than a store of its own.
+
+The seam is `reactive.BindPipelineRegistry` / `reactive.PipelineRegistry` in the shared premium
+`reactive` package, because that is the only place the plugins can meet:
+
+- `plugins/ingressstudio` may not import `plugins/reactive` — `scripts/check-plugin-isolation.sh`
+  forbids plugin→plugin imports (ADR-0082 D11), and rightly: plugins that reach into each other stop
+  being separable. Both may import the shared library.
+- The kernel cannot hold it either. `pipeline` is a premium package and `app.KernelServices` is OSS,
+  so a `*pipeline.Registry` on the capability bundle would put premium types in the open-source seam
+  (invariant 1 / ADR-0057). This is why "the kernel provides one registry" was **not** available as an
+  option, though it looks like the obvious fix.
+
+Same shape and lifetime as the existing `reactive.BindDurableEmitter` (§6 of ADR-0112) and
+`reactive.RegisterActionExecutor` (ADR-0104), which exist for exactly this reason.
+
+Four consequences, each a way this could have been subtly wrong:
+
+- **Binding happens at Build, not at Start.** Consumers need the registry while they are being
+  constructed. Lifecycles run after every Build, so a Start-time bind would be too late.
+- **A consumer with nothing bound REFUSES.** `plugins/ingressstudio` returns an error naming the
+  constraint rather than falling back to a private registry — the fallback *is* the defect seen from
+  inside a plugin: locally correct, and unreachable by the thing that executes.
+- **A second, different registry is refused; the owner replaces by unbinding first.** Deliberate
+  friction: you cannot take over a bound seam by accident. A kernel rebuilt in one process (the normal
+  case in tests) still works.
+- **The backing may change without a data migration.** The single registry uses Postgres when
+  `svc.SQL` is set and bolt otherwise, because it has to hold the studio's revisions, which are joined
+  against the runs in the same database (D14). Everything bolt held is derived — migrated watches and
+  generated chat graphs are both re-created idempotently at every start — but a revision an operator
+  EDITED is not, and re-deriving it as a default would be a silent edit. `pipeline.CarryOver` copies
+  whole pipelines the target does not hold, once. Whole pipelines, never individual revisions: merging
+  two histories by revision number would interleave two unrelated edit sequences under one id.
+
+**What this decision does NOT change.** The operator-plane `Register*` seams stay a fan-in over several
+sources, which is deliberate and already correct — `app.go`'s `pipelineSourceSet` collects them,
+`ListPipelines` concatenates then collapses by entry point, reads offer an id to each source until one
+recognises it, and `SavePipeline` routes by `domain.PipelineHolder` ownership *before* writing so a
+save cannot land in the wrong store. The defect report proposed making those seams refuse a second
+registration; that would have broken working behaviour and was not done. The genuine single-owner seam
+is the registry, and that one does refuse.
+
+### D36. A signal that reaches no pipeline is reported
+
+**Status: Implemented 2026-08-09.**
+
+D35's defect took hours to find rather than minutes for one reason: "nobody is listening" was
+indistinguishable from "everything is fine". The dispatch loop simply did not execute, and there is no
+`else` branch to a `for`.
+
+`ReactiveEngine` now logs at WARN when a signal arrives that no pipeline will act on, distinguishing
+"no pipeline is registered for this stream" from "every pipeline matching it is inactive", and carrying
+the count of registered streams — because the question that always follows is "registered from
+*where*?", and an engine that loaded two while the operator armed four is the whole story in one line.
+
+**Once per stream, not once per signal.** The condition is a property of the configuration, not of the
+traffic; a poller at one signal every two seconds would otherwise bury the line it is trying to write.
+Registering a config clears the mark, so a stream that goes uncovered again is reported again and the
+rule does not degrade into once-per-process.
+
+The same class of silence is closed one level down in the ingress poller: an ingress whose transport
+revision will not resolve was dropped from polling with no log at all, in both the reconcile pass and
+the poll loop, which presents as a dead source rather than a broken pinned revision.
+
 ## Budgets
 
 ADR-0113's single "1024 items" ceiling, borrowed from Airflow's `max_map_length`, is withdrawn as a

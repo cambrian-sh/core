@@ -25,7 +25,7 @@ type ScoredCandidate struct {
 type Gatekeeper interface {
 	FindCandidates(ctx context.Context, task *DispatchTask) ([]ScoredCandidate, error)
 	// FindModelCandidates returns all TraitModel agents filtered by required capabilities
-	// and ranked by merit score. Used by the Auctioneer for ADR-0018 TraitModel sub-selection.
+	// and ranked by merit score. Used by the Dispatcher for ADR-0018 TraitModel sub-selection.
 	// An empty requiredCapabilities list means no capability floor — all TraitModel agents pass.
 	FindModelCandidates(ctx context.Context, requiredCapabilities []string) ([]ScoredCandidate, error)
 }

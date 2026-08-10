@@ -180,6 +180,26 @@ var retiredExecutionFields = map[string]string{
 	// Auction vocabulary retired 2026-08-07 with the mechanism itself.
 	"auction_bid_timeout_ms": "Auction retired 2026-08-07; there is no bid round to time out.",
 	"bypass_auction":         "Renamed bypass_selection 2026-08-07 — it now bypasses dispatch, not an auction.",
+
+	// Bounded provisional exploration (ROUTE-06 / ADR-0069) retired 2026-08-08. The
+	// budget bounded the provisional L2 bypass, and its ONLY recorder of wins was the
+	// Auctioneer — deleted by ADR-0100 P3. From that moment `Allowed` always returned
+	// true, so the bound was present, wired, validated and unable to bind. Removed
+	// rather than re-wired: a bound that cannot bind is worse than no bound, because it
+	// reads as a guarantee to whoever finds the key. The provisional bypass is now
+	// unconditional in both arm positions — which is exactly what shipped all along.
+	"provisional_exploration_budget": "Bounded provisional exploration retired 2026-08-08: " +
+		"its only win-recorder was the Auctioneer (ADR-0100 P3), so the bound could never bind.",
+	"provisional_exploration_window_seconds": "Bounded provisional exploration retired 2026-08-08: " +
+		"sliding window for a budget that no longer exists.",
+
+	// ROUTE-05 bid calibration (ADR-0068) retired 2026-08-07, superseded by ADR-0100.
+	// Both keys configured the isotonic calibration of a BID; the only reader was
+	// Auctioneer.Calibrator, deleted with the mechanism. Removed rather than left
+	// declared-but-unread, because a key that silently does nothing is the trap that
+	// `resource_selector: "efe"` already sprang once.
+	"calibrated_bids":             "ROUTE-05 retired 2026-08-07 (ADR-0100 supersedes 0068): there is no bid to calibrate.",
+	"bid_calibration_min_samples": "ROUTE-05 retired 2026-08-07: shrinkage threshold for a calibration curve nothing fits any more.",
 }
 
 func TestExecutionDefaultsSurvivedNesting(t *testing.T) {

@@ -1958,8 +1958,8 @@ type SnapshotResponse struct {
 	// capabilities enumerates the surfaces this build supports so the UI hides the
 	// rest (ADR-0047 D14). OSS: feed, snapshot, commands, steering, audit,
 	// tools-read, tools-manage, skills-read, memory-read, memory-ingest, tool-exec,
-	// tool-approvals, routing-trace (ROUTE-02 auction funnel), scout-usefulness
-	// (ROUTE-08 A), chat (ADR-0084 D9 conversation lane — advertised only when the chat
+	// tool-approvals, routing-trace (ROUTE-02 selection funnel),
+	// chat (ADR-0084 D9 conversation lane — advertised only when the chat
 	// worker pool is enabled, execution.chat_pool_size > 0), document-listing
 	// (contract 0070 — ListDocuments enumerates documents by row, including the
 	// unlabelled-only filter; advertised only when a store backs it, so a console
@@ -2684,6 +2684,7 @@ func (x *OperatorEvent) GetToken() *TokenChunkOp {
 	return nil
 }
 
+// Deprecated: Marked as deprecated in operator.proto.
 func (x *OperatorEvent) GetScoutUsefulness() *ScoutUsefulnessOp {
 	if x != nil {
 		if x, ok := x.Payload.(*OperatorEvent_ScoutUsefulness); ok {
@@ -2831,7 +2832,12 @@ type OperatorEvent_Token struct {
 }
 
 type OperatorEvent_ScoutUsefulness struct {
-	ScoutUsefulness *ScoutUsefulnessOp `protobuf:"bytes,24,opt,name=scout_usefulness,json=scoutUsefulness,proto3,oneof"` // ROUTE-08 phase A
+	// DEPRECATED 2026-08-08 and never emitted. Its producer was the Scout, retired
+	// 2026-08-07. Field number 24 is retained and must never be reused. See
+	// ScoutUsefulnessOp below.
+	//
+	// Deprecated: Marked as deprecated in operator.proto.
+	ScoutUsefulness *ScoutUsefulnessOp `protobuf:"bytes,24,opt,name=scout_usefulness,json=scoutUsefulness,proto3,oneof"`
 }
 
 type OperatorEvent_ReactiveBudget struct {
@@ -3428,10 +3434,24 @@ func (x *RetentionDeletionOp) GetCount() int32 {
 	return 0
 }
 
-// ScoutUsefulnessOp is the ROUTE-08 phase-A per-session signal: did the always-on
+// ScoutUsefulnessOp was the ROUTE-08 phase-A per-session signal: did the always-on
 // Scout's pre-plan discovery earn its cost (referenced by the plan? ran without
 // replan? what did it cost)? Logging only — training material for a later
 // invoke/skip policy.
+//
+// DEPRECATED 2026-08-08. **Nothing emits this and nothing will.** The Scout organ
+// was retired 2026-08-07 (ADR-0100 P3 residuals) and its emitter went with it;
+// ROUTE-08 phase B, the invoke/skip gate this was to train, is cancelled rather
+// than deferred because there is no organ left to gate.
+//
+// The message and field number 24 are retained deliberately: the operator contract
+// holds at 0093 and a reused field number would make an old client mis-decode a new
+// op. A client must not wait for this event, and must not treat its absence as a
+// degraded kernel — every build "supports" it in the sense that it can carry it, and
+// no build will ever send it. The matching `scout-usefulness` capability string is
+// NOT advertised in the handshake, which is the signal to read.
+//
+// Deprecated: Marked as deprecated in operator.proto.
 type ScoutUsefulnessOp struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	SessionId           string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -11563,12 +11583,17 @@ type AuthoredStepOp struct {
 	Query                string                 `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
 	RequiredCapabilities []string               `protobuf:"bytes,2,rep,name=required_capabilities,json=requiredCapabilities,proto3" json:"required_capabilities,omitempty"`
 	// depends_on holds ZERO-BASED indices into the submitted step list.
-	DependsOn        []int32 `protobuf:"varint,3,rep,packed,name=depends_on,json=dependsOn,proto3" json:"depends_on,omitempty"`
-	MaxEnergy        float64 `protobuf:"fixed64,4,opt,name=max_energy,json=maxEnergy,proto3" json:"max_energy,omitempty"`
-	RecommendedModel string  `protobuf:"bytes,5,opt,name=recommended_model,json=recommendedModel,proto3" json:"recommended_model,omitempty"`
-	CheckpointAfter  bool    `protobuf:"varint,6,opt,name=checkpoint_after,json=checkpointAfter,proto3" json:"checkpoint_after,omitempty"`
-	CheckpointQuery  string  `protobuf:"bytes,7,opt,name=checkpoint_query,json=checkpointQuery,proto3" json:"checkpoint_query,omitempty"`
-	IsThought        bool    `protobuf:"varint,8,opt,name=is_thought,json=isThought,proto3" json:"is_thought,omitempty"`
+	DependsOn []int32 `protobuf:"varint,3,rep,packed,name=depends_on,json=dependsOn,proto3" json:"depends_on,omitempty"`
+	MaxEnergy float64 `protobuf:"fixed64,4,opt,name=max_energy,json=maxEnergy,proto3" json:"max_energy,omitempty"`
+	// DEPRECATED 2026-08-07 and no longer read. Model choice is the LLM Provider's,
+	// resolved from the declared need (ADR-0042 D1); a per-step model name on an
+	// authored plan overrode that decision. Field number retained, never reused.
+	//
+	// Deprecated: Marked as deprecated in operator.proto.
+	RecommendedModel string `protobuf:"bytes,5,opt,name=recommended_model,json=recommendedModel,proto3" json:"recommended_model,omitempty"`
+	CheckpointAfter  bool   `protobuf:"varint,6,opt,name=checkpoint_after,json=checkpointAfter,proto3" json:"checkpoint_after,omitempty"`
+	CheckpointQuery  string `protobuf:"bytes,7,opt,name=checkpoint_query,json=checkpointQuery,proto3" json:"checkpoint_query,omitempty"`
+	IsThought        bool   `protobuf:"varint,8,opt,name=is_thought,json=isThought,proto3" json:"is_thought,omitempty"`
 	// preferred_agent is the SOFT pin: this agent goes first, but ranking still
 	// runs behind it and the step cascades normally if it is unavailable.
 	PreferredAgent string `protobuf:"bytes,9,opt,name=preferred_agent,json=preferredAgent,proto3" json:"preferred_agent,omitempty"`
@@ -11646,6 +11671,7 @@ func (x *AuthoredStepOp) GetMaxEnergy() float64 {
 	return 0
 }
 
+// Deprecated: Marked as deprecated in operator.proto.
 func (x *AuthoredStepOp) GetRecommendedModel() string {
 	if x != nil {
 		return x.RecommendedModel
@@ -15934,7 +15960,7 @@ const file_operator_proto_rawDesc = "" +
 	"\x04goal\x18\x02 \x01(\tR\x04goal\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\"-\n" +
 	"\x10SubscribeRequest\x12\x19\n" +
-	"\blast_seq\x18\x01 \x01(\x04R\alastSeq\"\x83\r\n" +
+	"\blast_seq\x18\x01 \x01(\x04R\alastSeq\"\x87\r\n" +
 	"\rOperatorEvent\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x04R\x03seq\x12*\n" +
 	"\x02ts\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12\x1d\n" +
@@ -15959,8 +15985,8 @@ const file_operator_proto_rawDesc = "" +
 	"\n" +
 	"plan_state\x18\x15 \x01(\v2\x15.cambrian.PlanStateOpH\x00R\tplanState\x12)\n" +
 	"\x05audit\x18\x16 \x01(\v2\x11.cambrian.AuditOpH\x00R\x05audit\x12.\n" +
-	"\x05token\x18\x17 \x01(\v2\x16.cambrian.TokenChunkOpH\x00R\x05token\x12H\n" +
-	"\x10scout_usefulness\x18\x18 \x01(\v2\x1b.cambrian.ScoutUsefulnessOpH\x00R\x0fscoutUsefulness\x12E\n" +
+	"\x05token\x18\x17 \x01(\v2\x16.cambrian.TokenChunkOpH\x00R\x05token\x12L\n" +
+	"\x10scout_usefulness\x18\x18 \x01(\v2\x1b.cambrian.ScoutUsefulnessOpB\x02\x18\x01H\x00R\x0fscoutUsefulness\x12E\n" +
 	"\x0freactive_budget\x18\x19 \x01(\v2\x1a.cambrian.ReactiveBudgetOpH\x00R\x0ereactiveBudget\x126\n" +
 	"\n" +
 	"agent_step\x18\x1a \x01(\v2\x15.cambrian.AgentStepOpH\x00R\tagentStep\x12A\n" +
@@ -16017,7 +16043,7 @@ const file_operator_proto_rawDesc = "" +
 	"\x05error\x18\a \x01(\tR\x05error\"G\n" +
 	"\x13RetentionDeletionOp\x12\x1a\n" +
 	"\bcategory\x18\x01 \x01(\tR\bcategory\x12\x14\n" +
-	"\x05count\x18\x02 \x01(\x05R\x05count\"\xbb\x02\n" +
+	"\x05count\x18\x02 \x01(\x05R\x05count\"\xbf\x02\n" +
 	"\x11ScoutUsefulnessOp\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x1b\n" +
@@ -16028,7 +16054,7 @@ const file_operator_proto_rawDesc = "" +
 	"\n" +
 	"plan_steps\x18\x06 \x01(\x05R\tplanSteps\x12!\n" +
 	"\freplan_count\x18\a \x01(\x05R\vreplanCount\x12\x1c\n" +
-	"\treplanned\x18\b \x01(\bR\treplanned\"\xd4\x01\n" +
+	"\treplanned\x18\b \x01(\bR\treplanned:\x02\x18\x01\"\xd4\x01\n" +
 	"\vAgentStepOp\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x19\n" +
@@ -16747,15 +16773,15 @@ const file_operator_proto_rawDesc = "" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x18\n" +
 	"\adeduped\x18\x02 \x01(\bR\adeduped\x12:\n" +
-	"\boutcomes\x18\x03 \x03(\v2\x1e.cambrian.ConfigWriteOutcomeOpR\boutcomes\"\xc3\x03\n" +
+	"\boutcomes\x18\x03 \x03(\v2\x1e.cambrian.ConfigWriteOutcomeOpR\boutcomes\"\xc7\x03\n" +
 	"\x0eAuthoredStepOp\x12\x14\n" +
 	"\x05query\x18\x01 \x01(\tR\x05query\x123\n" +
 	"\x15required_capabilities\x18\x02 \x03(\tR\x14requiredCapabilities\x12\x1d\n" +
 	"\n" +
 	"depends_on\x18\x03 \x03(\x05R\tdependsOn\x12\x1d\n" +
 	"\n" +
-	"max_energy\x18\x04 \x01(\x01R\tmaxEnergy\x12+\n" +
-	"\x11recommended_model\x18\x05 \x01(\tR\x10recommendedModel\x12)\n" +
+	"max_energy\x18\x04 \x01(\x01R\tmaxEnergy\x12/\n" +
+	"\x11recommended_model\x18\x05 \x01(\tB\x02\x18\x01R\x10recommendedModel\x12)\n" +
 	"\x10checkpoint_after\x18\x06 \x01(\bR\x0fcheckpointAfter\x12)\n" +
 	"\x10checkpoint_query\x18\a \x01(\tR\x0fcheckpointQuery\x12\x1d\n" +
 	"\n" +

@@ -11,6 +11,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Role is the operator-plane authorization role (ADR-0047 D13).
@@ -168,7 +170,21 @@ func authorize(ctx context.Context, fullMethod string, idp OperatorIdentity, age
 	if isOperatorOnly(fullMethod) && role != RoleOperator {
 		return ctx, status.Errorf(codes.PermissionDenied, "role %q may not call %s", role, fullMethod)
 	}
-	return context.WithValue(ctx, principalCtxKey{}, principalInfo{principal: principal, role: role}), nil
+	ctx = context.WithValue(ctx, principalCtxKey{}, principalInfo{principal: principal, role: role})
+	// And the DOMAIN principal, once, for every operator-plane RPC.
+	//
+	// The line above is an operator-plane private value; the rest of the kernel
+	// reads domain.PrincipalFromContext. Setting only the private one meant every
+	// operator RPC reached the domain as an anonymous caller one stack frame after
+	// authenticating, so anything that authorizes, records ownership or writes
+	// provenance saw `principal:<none>`.
+	//
+	// The failure was asymmetric, which is what let it survive: OSS fails OPEN on
+	// an unknown principal, so every OSS test passed, while a premium deployment
+	// fails CLOSED — the documented path was broken in exactly the deployments
+	// that enforce access control. It was patched at one call site
+	// (substrate/operator ingest) instead, which is a workaround, not the fix.
+	return domain.WithPrincipal(ctx, domain.UserPrincipal(principal)), nil
 }
 
 // isOperatorOnly reports whether an OperatorConsole method is a mutating command

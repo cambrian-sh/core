@@ -17,7 +17,7 @@ const (
 )
 
 // RetrievalDispatcher implements memory.Planner (AGENTIC_RETRIEVAL_SPEC §2.1) by
-// invoking the privileged retrieval_agent directly via the Auctioneer (no
+// invoking the privileged retrieval_agent directly via the agent transport (no
 // auction), exactly like the scout dispatcher. The Go loop owns control; this is
 // just dispatch + JSON parse.
 //
