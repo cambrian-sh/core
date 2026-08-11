@@ -102,14 +102,22 @@ func TestTransportCredentials_TLSKeypairIsLoaded(t *testing.T) {
 	dir := t.TempDir()
 	cert, key := writeSelfSigned(t, dir)
 
-	for _, bind := range []string{"0.0.0.0", "127.0.0.1"} {
-		opts, mode, err := transportCredentials(cfgWith(bind, cert, key, false))
-		if err != nil {
-			t.Fatalf("bind %q: %v", bind, err)
-		}
-		if mode != "tls" || len(opts) != 1 {
-			t.Fatalf("bind %q: mode=%q opts=%d, want TLS", bind, mode, len(opts))
-		}
+	// Routable bind: pure TLS via grpc.Creds. Loopback bind: the listener-level
+	// TLS+plaintext demux (no creds) — the local agent plane keeps its insecure
+	// channel while a TLS-only forwarder gets a TLS origin.
+	opts, mode, err := transportCredentials(cfgWith("0.0.0.0", cert, key, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != "tls" || len(opts) != 1 {
+		t.Fatalf("routable: mode=%q opts=%d, want TLS with creds", mode, len(opts))
+	}
+	opts, mode, err = transportCredentials(cfgWith("127.0.0.1", cert, key, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != modeTLSPlusPlaintextLoopback || len(opts) != 0 {
+		t.Fatalf("loopback: mode=%q opts=%d, want demux with no creds", mode, len(opts))
 	}
 }
 
