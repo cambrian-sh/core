@@ -383,9 +383,18 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("network (%s unavailable): %w", addr, err)
 	}
+	// SEC-03: the loopback+TLS mode terminates TLS at the LISTENER (first-byte
+	// demux) so the same port also accepts the agent plane's plaintext h2c.
+	lis, err = secureListener(lis, cfg, transportMode)
+	if err != nil {
+		return err
+	}
 	switch transportMode {
 	case "tls":
 		slog.Info("SEC-03: operator plane serving TLS", "addr", addr)
+	case modeTLSPlusPlaintextLoopback:
+		slog.Info("SEC-03: operator plane on loopback serving TLS AND plaintext (demux)",
+			"addr", addr, "why", "TLS for the local forwarder, plaintext for the agent plane")
 	case "plaintext-insecure-optin":
 		slog.Warn("SEC-03: operator plane serving PLAINTEXT on a routable address "+
 			"(server.insecure_localhost=true)", "addr", addr,
