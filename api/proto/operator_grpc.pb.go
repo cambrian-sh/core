@@ -85,6 +85,12 @@ const (
 	OperatorConsole_ClearGeneratorKey_FullMethodName        = "/cambrian.OperatorConsole/ClearGeneratorKey"
 	OperatorConsole_SaveGenerator_FullMethodName            = "/cambrian.OperatorConsole/SaveGenerator"
 	OperatorConsole_RemoveGenerator_FullMethodName          = "/cambrian.OperatorConsole/RemoveGenerator"
+	OperatorConsole_SetRoleAssignment_FullMethodName        = "/cambrian.OperatorConsole/SetRoleAssignment"
+	OperatorConsole_SaveMCPServer_FullMethodName            = "/cambrian.OperatorConsole/SaveMCPServer"
+	OperatorConsole_RemoveMCPServer_FullMethodName          = "/cambrian.OperatorConsole/RemoveMCPServer"
+	OperatorConsole_SetMCPServerToken_FullMethodName        = "/cambrian.OperatorConsole/SetMCPServerToken"
+	OperatorConsole_ClearMCPServerToken_FullMethodName      = "/cambrian.OperatorConsole/ClearMCPServerToken"
+	OperatorConsole_TestMCPServer_FullMethodName            = "/cambrian.OperatorConsole/TestMCPServer"
 	OperatorConsole_SubmitPlan_FullMethodName               = "/cambrian.OperatorConsole/SubmitPlan"
 	OperatorConsole_GetReactiveBudget_FullMethodName        = "/cambrian.OperatorConsole/GetReactiveBudget"
 	OperatorConsole_GetTokenSeries_FullMethodName           = "/cambrian.OperatorConsole/GetTokenSeries"
@@ -479,6 +485,49 @@ type OperatorConsoleClient interface {
 	// Mutating: command_id + reason, audited, Operator-only.
 	SaveGenerator(ctx context.Context, in *SaveGeneratorOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
 	RemoveGenerator(ctx context.Context, in *RemoveGeneratorOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
+	// SetRoleAssignment binds a system organ (planner / verifier / router /
+	// interview / memory) to the generator that serves it (contract 0096). The
+	// WRITE half of ListRoleAssignments, landing on the ADR-0101 store like the
+	// generator writes above.
+	//
+	// The effect is `live`: the provider resolves roles per call, so the next
+	// call the organ makes goes to the new generator. Nothing in flight moves.
+	//
+	// The write is REFUSED when generator_id does not name a configured
+	// generator. A dangling role is a state the runtime tolerates (it falls back
+	// to the default and ListRoleAssignments reports resolved=false), but it is
+	// never a state an operator asked for — accepting the typo would silently
+	// route an organ to the default while the console shows the name they typed.
+	//
+	// Mutating: command_id + reason, audited, Operator-only.
+	SetRoleAssignment(ctx context.Context, in *SetRoleAssignmentOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
+	// SaveMCPServer / RemoveMCPServer are the WRITE half of ListMCPServers
+	// (contract 0097). They land on the ADR-0101 store — the whole server list
+	// under one key, for the same koanf reason the generator list does — and,
+	// unlike generators, apply LIVE: a save arms the server's health/reconnect
+	// loop immediately (tools appear via the ADR-0044 sink as soon as the server
+	// answers; an unreachable one is retried with backoff, exactly like a server
+	// that was down at boot), and a removal closes the session and withdraws its
+	// tools at once. The reported effect is therefore `live`, with `connected`
+	// still a separate fact the list read answers.
+	//
+	// Mutating: command_id + reason, audited, Operator-only.
+	SaveMCPServer(ctx context.Context, in *SaveMCPServerOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
+	RemoveMCPServer(ctx context.Context, in *RemoveMCPServerOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
+	// SetMCPServerToken / ClearMCPServerToken store the server's static credential
+	// (ADR-0101 D5 pattern — write-only, encrypted at rest, never echoed, never in
+	// the audit record). Setting a token also BOUNCES the server's connection when
+	// one is live: credentials are injected at connect time, so without the bounce
+	// a healthy session would keep using the old token indefinitely and "saved"
+	// would mean nothing observable.
+	SetMCPServerToken(ctx context.Context, in *SetMCPServerTokenOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
+	ClearMCPServerToken(ctx context.Context, in *ClearMCPServerTokenOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// TestMCPServer dials the SUBMITTED spec once — connect, list tools,
+	// disconnect — without touching any live session for the same id. It takes a
+	// spec rather than an id so a config can be tested BEFORE it is saved; the
+	// tool names it returns are what the server actually advertises, which is the
+	// fact nothing else on this plane can reveal before committing.
+	TestMCPServer(ctx context.Context, in *TestMCPServerOpRequest, opts ...grpc.CallOption) (*MCPServerTestResultOp, error)
 	// SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
 	//
 	// Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
@@ -1259,6 +1308,66 @@ func (c *operatorConsoleClient) RemoveGenerator(ctx context.Context, in *RemoveG
 	return out, nil
 }
 
+func (c *operatorConsoleClient) SetRoleAssignment(ctx context.Context, in *SetRoleAssignmentOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetConfigOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetRoleAssignment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SaveMCPServer(ctx context.Context, in *SaveMCPServerOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetConfigOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SaveMCPServer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RemoveMCPServer(ctx context.Context, in *RemoveMCPServerOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetConfigOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_RemoveMCPServer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SetMCPServerToken(ctx context.Context, in *SetMCPServerTokenOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetConfigOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetMCPServerToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ClearMCPServerToken(ctx context.Context, in *ClearMCPServerTokenOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_ClearMCPServerToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) TestMCPServer(ctx context.Context, in *TestMCPServerOpRequest, opts ...grpc.CallOption) (*MCPServerTestResultOp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MCPServerTestResultOp)
+	err := c.cc.Invoke(ctx, OperatorConsole_TestMCPServer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) SubmitPlan(ctx context.Context, in *SubmitPlanOpRequest, opts ...grpc.CallOption) (*SubmitPlanOpResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubmitPlanOpResponse)
@@ -1714,6 +1823,49 @@ type OperatorConsoleServer interface {
 	// Mutating: command_id + reason, audited, Operator-only.
 	SaveGenerator(context.Context, *SaveGeneratorOpRequest) (*SetConfigOpResponse, error)
 	RemoveGenerator(context.Context, *RemoveGeneratorOpRequest) (*SetConfigOpResponse, error)
+	// SetRoleAssignment binds a system organ (planner / verifier / router /
+	// interview / memory) to the generator that serves it (contract 0096). The
+	// WRITE half of ListRoleAssignments, landing on the ADR-0101 store like the
+	// generator writes above.
+	//
+	// The effect is `live`: the provider resolves roles per call, so the next
+	// call the organ makes goes to the new generator. Nothing in flight moves.
+	//
+	// The write is REFUSED when generator_id does not name a configured
+	// generator. A dangling role is a state the runtime tolerates (it falls back
+	// to the default and ListRoleAssignments reports resolved=false), but it is
+	// never a state an operator asked for — accepting the typo would silently
+	// route an organ to the default while the console shows the name they typed.
+	//
+	// Mutating: command_id + reason, audited, Operator-only.
+	SetRoleAssignment(context.Context, *SetRoleAssignmentOpRequest) (*SetConfigOpResponse, error)
+	// SaveMCPServer / RemoveMCPServer are the WRITE half of ListMCPServers
+	// (contract 0097). They land on the ADR-0101 store — the whole server list
+	// under one key, for the same koanf reason the generator list does — and,
+	// unlike generators, apply LIVE: a save arms the server's health/reconnect
+	// loop immediately (tools appear via the ADR-0044 sink as soon as the server
+	// answers; an unreachable one is retried with backoff, exactly like a server
+	// that was down at boot), and a removal closes the session and withdraws its
+	// tools at once. The reported effect is therefore `live`, with `connected`
+	// still a separate fact the list read answers.
+	//
+	// Mutating: command_id + reason, audited, Operator-only.
+	SaveMCPServer(context.Context, *SaveMCPServerOpRequest) (*SetConfigOpResponse, error)
+	RemoveMCPServer(context.Context, *RemoveMCPServerOpRequest) (*SetConfigOpResponse, error)
+	// SetMCPServerToken / ClearMCPServerToken store the server's static credential
+	// (ADR-0101 D5 pattern — write-only, encrypted at rest, never echoed, never in
+	// the audit record). Setting a token also BOUNCES the server's connection when
+	// one is live: credentials are injected at connect time, so without the bounce
+	// a healthy session would keep using the old token indefinitely and "saved"
+	// would mean nothing observable.
+	SetMCPServerToken(context.Context, *SetMCPServerTokenOpRequest) (*SetConfigOpResponse, error)
+	ClearMCPServerToken(context.Context, *ClearMCPServerTokenOpRequest) (*CommandAck, error)
+	// TestMCPServer dials the SUBMITTED spec once — connect, list tools,
+	// disconnect — without touching any live session for the same id. It takes a
+	// spec rather than an id so a config can be tested BEFORE it is saved; the
+	// tool names it returns are what the server actually advertises, which is the
+	// fact nothing else on this plane can reveal before committing.
+	TestMCPServer(context.Context, *TestMCPServerOpRequest) (*MCPServerTestResultOp, error)
 	// SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
 	//
 	// Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
@@ -2004,6 +2156,24 @@ func (UnimplementedOperatorConsoleServer) SaveGenerator(context.Context, *SaveGe
 }
 func (UnimplementedOperatorConsoleServer) RemoveGenerator(context.Context, *RemoveGeneratorOpRequest) (*SetConfigOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveGenerator not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetRoleAssignment(context.Context, *SetRoleAssignmentOpRequest) (*SetConfigOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetRoleAssignment not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SaveMCPServer(context.Context, *SaveMCPServerOpRequest) (*SetConfigOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SaveMCPServer not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RemoveMCPServer(context.Context, *RemoveMCPServerOpRequest) (*SetConfigOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveMCPServer not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetMCPServerToken(context.Context, *SetMCPServerTokenOpRequest) (*SetConfigOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetMCPServerToken not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ClearMCPServerToken(context.Context, *ClearMCPServerTokenOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClearMCPServerToken not implemented")
+}
+func (UnimplementedOperatorConsoleServer) TestMCPServer(context.Context, *TestMCPServerOpRequest) (*MCPServerTestResultOp, error) {
+	return nil, status.Error(codes.Unimplemented, "method TestMCPServer not implemented")
 }
 func (UnimplementedOperatorConsoleServer) SubmitPlan(context.Context, *SubmitPlanOpRequest) (*SubmitPlanOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitPlan not implemented")
@@ -3214,6 +3384,114 @@ func _OperatorConsole_RemoveGenerator_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_SetRoleAssignment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetRoleAssignmentOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetRoleAssignment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetRoleAssignment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetRoleAssignment(ctx, req.(*SetRoleAssignmentOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SaveMCPServer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SaveMCPServerOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SaveMCPServer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SaveMCPServer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SaveMCPServer(ctx, req.(*SaveMCPServerOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RemoveMCPServer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveMCPServerOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RemoveMCPServer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RemoveMCPServer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RemoveMCPServer(ctx, req.(*RemoveMCPServerOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SetMCPServerToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetMCPServerTokenOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetMCPServerToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetMCPServerToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetMCPServerToken(ctx, req.(*SetMCPServerTokenOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ClearMCPServerToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClearMCPServerTokenOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ClearMCPServerToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ClearMCPServerToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ClearMCPServerToken(ctx, req.(*ClearMCPServerTokenOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_TestMCPServer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TestMCPServerOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).TestMCPServer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_TestMCPServer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).TestMCPServer(ctx, req.(*TestMCPServerOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_SubmitPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubmitPlanOpRequest)
 	if err := dec(in); err != nil {
@@ -3598,6 +3876,30 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RemoveGenerator",
 			Handler:    _OperatorConsole_RemoveGenerator_Handler,
+		},
+		{
+			MethodName: "SetRoleAssignment",
+			Handler:    _OperatorConsole_SetRoleAssignment_Handler,
+		},
+		{
+			MethodName: "SaveMCPServer",
+			Handler:    _OperatorConsole_SaveMCPServer_Handler,
+		},
+		{
+			MethodName: "RemoveMCPServer",
+			Handler:    _OperatorConsole_RemoveMCPServer_Handler,
+		},
+		{
+			MethodName: "SetMCPServerToken",
+			Handler:    _OperatorConsole_SetMCPServerToken_Handler,
+		},
+		{
+			MethodName: "ClearMCPServerToken",
+			Handler:    _OperatorConsole_ClearMCPServerToken_Handler,
+		},
+		{
+			MethodName: "TestMCPServer",
+			Handler:    _OperatorConsole_TestMCPServer_Handler,
 		},
 		{
 			MethodName: "SubmitPlan",

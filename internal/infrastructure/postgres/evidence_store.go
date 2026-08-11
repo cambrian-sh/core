@@ -76,18 +76,25 @@ func (s *PgEvidenceStore) Insert(ctx context.Context, ev domain.Evidence) (domai
 	if tags == nil {
 		tags = []string{}
 	}
+	// Empty rather than NULL, matching classification: the column is NOT NULL and
+	// "nobody is a party to this" is the honest reading of a record whose source
+	// named none (ADR-0121 D2).
+	parties := ev.Parties
+	if parties == nil {
+		parties = []string{}
+	}
 
 	var gotID string
 	err = tx.QueryRow(ctx, `
 		INSERT INTO evidence (id, namespace_id, source_id, source_key, source_revision,
 			source_time, ingested_at, content_hash, content_bytes, classification,
-			cursor, trace_id, revises_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			parties, cursor, trace_id, revises_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		ON CONFLICT ON CONSTRAINT evidence_source_revision_unique DO NOTHING
 		RETURNING id`,
 		string(id), ns, ev.SourceID, ev.SourceKey, ev.SourceRevision,
 		srcTime, ingested, string(ev.ContentHash), ev.ContentBytes, tags,
-		ev.Cursor, ev.TraceID, revises,
+		parties, ev.Cursor, ev.TraceID, revises,
 	).Scan(&gotID)
 
 	switch {
@@ -135,11 +142,11 @@ func (s *PgEvidenceStore) Get(ctx context.Context, id domain.EvidenceID) (*domai
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, namespace_id, source_id, source_key, source_revision,
 			source_time, ingested_at, content_hash, content_bytes, classification,
-			cursor, trace_id, revises_id
+			parties, cursor, trace_id, revises_id
 		FROM evidence WHERE id = $1`, string(id),
 	).Scan(&gotID, &ev.NamespaceID, &ev.SourceID, &ev.SourceKey, &ev.SourceRevision,
 		&srcTime, &ev.IngestedAt, (*string)(&ev.ContentHash), &ev.ContentBytes,
-		&ev.Classification, &ev.Cursor, &ev.TraceID, &revises)
+		&ev.Classification, &ev.Parties, &ev.Cursor, &ev.TraceID, &revises)
 	if err != nil {
 		return nil, fmt.Errorf("evidence get %s: %w", id, err)
 	}

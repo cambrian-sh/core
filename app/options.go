@@ -274,6 +274,13 @@ type KernelServices struct {
 	// separate: listing and withdrawing are different powers.
 	RegisterIngressDeregistrar func(domain.IngressDeregistrar)
 
+	// RegisterIngressRegistrar contributes the CREATE half of the ADR-0090
+	// registry. It existed only as an admin RPC, so a deployment could arm five
+	// ingresses and register none — every surface then falls back to
+	// transport-derived and no policy can be scoped to an entry point at all.
+	// The absence is invisible: the registry looks correctly empty.
+	RegisterIngressRegistrar func(domain.IngressRegistrar)
+
 	// RegisterIngressPipelineRetirer contributes the removal of a pipeline armed
 	// for an entry organ that has been withdrawn.
 	RegisterIngressPipelineRetirer func(func(ctx context.Context, agentID string) error)
@@ -376,6 +383,19 @@ type KernelServices struct {
 	// name their constraint (an unregistered agent among them); nil-safe in a
 	// build with no registry, where declaring is a no-op rather than a fault.
 	DeclareIngressSchema func(ctx context.Context, agentID string, fields []domain.IngressSchemaField) error
+
+	// RegisterIngress declares an entry organ, at the moment it becomes one.
+	//
+	// Arming is that moment: it is when the outside world can first reach the
+	// ingress, and it is already an operator-gated act, so no new authority is
+	// created by registering there. What the caller must NOT do is name an
+	// arbitrary surface — an ingress registers itself under a surface derived
+	// from its own id, or a new entry point could be dressed in an existing
+	// one's policy.
+	//
+	// nil-safe in a build with no registry, where registering is a no-op rather
+	// than a fault — the same degradation as its three siblings.
+	RegisterIngress func(ctx context.Context, reg domain.IngressRegistration) error
 
 	// RetireIngressPipeline removes the pipeline armed for an entry organ that
 	// has been removed.

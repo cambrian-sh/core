@@ -32,7 +32,7 @@ shells).
 | `embedder.local.json` | gitignored | Per-machine embedder override. Lets you swap models without touching the shared `embedder.json`. |
 | `providers.json` | **gitignored** | The LLM provider list (ADR-0042). Copy from `providers.json.example`. |
 | `providers.local.json` | gitignored | Per-machine provider override. |
-| `tuning.json` | **committed** | Curated power-user starter — 13 hand-picked hyperparameters. See [§ Tuning](#tuning) below. |
+| `tuning.json` | **committed** | Curated power-user starter — deliberately **empty** since 2026-08-11: every value it used to pin was promoted into `DefaultConfig()`, and a pin equal to the default silently shadows the next default change. Add a key only to ship a baseline that deliberately differs from the Go default. See [§ Tuning](#tuning) below. |
 | `tuning.local.json` | **gitignored** | Per-machine tuning override. Wins over `tuning.json`. |
 | `mcp.json` | **gitignored** | External MCP server definitions. Copy from `mcp.json.example`. |
 | `config.example.json` | committed | Template for `config.json`. The only file that documents the user-facing schema. |

@@ -45,6 +45,15 @@ type Evidence struct {
 	// Classification as delivered by the source. Derived records inherit
 	// monotonically from it (memo §12); they never widen it.
 	Classification []string
+	// Parties are the entity identities this record is ABOUT — the customer, the
+	// assignee, the supplier (ADR-0121 D2). Classification says what a record IS;
+	// this says who it concerns, which is what lets a policy express "…and only
+	// the rows you are a party to".
+	//
+	// A fact about the record, never a policy (INV-4). Empty means nobody is a
+	// party, so a party-scoped policy admits it to no one — which is the safe
+	// direction and what every row predating this field carries.
+	Parties []string
 	// Cursor and TraceID are delivery-technical fields. The technical envelope
 	// TERMINATES at evidence (memo §19.2): derived records link here rather
 	// than copying any of this.
@@ -69,8 +78,12 @@ type RawEvidence struct {
 	SourceTime     time.Time
 	Bytes          []byte
 	Classification []string
-	Cursor         string
-	TraceID        string
+	// Parties are the entity identities this delivery is ABOUT (ADR-0121 D2),
+	// derived at the ingress from the record's own fields the same way
+	// classification is — the source already states who its parties are.
+	Parties []string
+	Cursor  string
+	TraceID string
 	// RevisesID links this delivery to the evidence row it supersedes, when the
 	// source itself declared a revision relationship.
 	RevisesID EvidenceID

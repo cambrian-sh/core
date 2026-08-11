@@ -180,6 +180,24 @@ type IngressDeregistrar interface {
 	DeregisterIngress(ctx context.Context, agentID string) error
 }
 
+// IngressRegistrar creates an entry organ's registration — the write half that
+// was missing while its withdrawal half existed, which is why a deployment could
+// have armed ingresses and not one registered entry point.
+//
+// Registering MINTS A SURFACE (ADR-0090 D2), so this is the widest of the four
+// powers and is handed only to a plugin that already owns an operator-gated
+// lifecycle. The guard is not on who holds the interface but on what may be
+// passed through it: an ingress registers ITSELF, under a surface derived from
+// its own id, and a caller that could name any surface would be able to clothe a
+// new entry point in an existing one's policy.
+//
+// Separate from IngressLister/IngressDeregistrar/IngressSchemaDeclarer for the
+// reason recorded there: these are four different powers, and bundling them hands
+// the widest to every caller that needs the narrowest.
+type IngressRegistrar interface {
+	RegisterIngress(ctx context.Context, reg IngressRegistration) error
+}
+
 // IngressSchemaDeclarer records what a REGISTERED ingress's items carry
 // (ADR-0117). A third separate power, for the deregistrar's reason: declaring
 // a schema neither reads the registry nor withdraws from it, and the plugin

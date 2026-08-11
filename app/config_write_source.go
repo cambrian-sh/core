@@ -7,9 +7,12 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
+	"github.com/cambrian-sh/core/internal/infrastructure/mcp"
 	"github.com/cambrian-sh/core/internal/storage"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
@@ -32,6 +35,32 @@ type configWriteSource struct {
 	// generatorList reports the BOOTED generator list, used as the base for a
 	// save when the store holds none yet.
 	generatorList func() []config.GeneratorConfig
+	// liveRoles reports the provider's CURRENT role map — boot config plus every
+	// hot-applied assignment since. nil ⇒ no live provider.
+	liveRoles func() map[string]string
+	// applyRole rebinds a role on the running provider. Returns false when there
+	// is no live provider, which makes the write restart-required rather than
+	// failed — the value is stored either way.
+	applyRole func(role, generatorID string) bool
+	// defaultGeneratorID reports the effective global default generator id.
+	defaultGeneratorID func() string
+
+	// ── MCP write half (contract 0097) ──
+	// mcpServerList reports the BOOTED MCP server list, the base for a save when
+	// the store holds none yet (the effectiveGenerators pattern).
+	mcpServerList func() []config.MCPServerConfig
+	// applyMCPServer arms a saved server on the running kernel (connector
+	// AddServer: drop the old session/tools, start the health loop). Returns
+	// false when there is no live connector, making the write restart-required.
+	applyMCPServer func(s config.MCPServerConfig) bool
+	// detachMCPServer stops a removed server live (session, watch, tools).
+	detachMCPServer func(id string) bool
+	// bounceMCPServer reconnects one server so a credential change is picked up
+	// (tokens are injected at connect time; a healthy session would keep the old
+	// one forever).
+	bounceMCPServer func(id string) bool
+	// probeMCPServer dials a spec once, ephemeral (TestMCPServer).
+	probeMCPServer func(ctx context.Context, s config.MCPServerConfig) operator.MCPTestResult
 }
 
 // tunableByKey indexes the catalogue for validation.
@@ -320,10 +349,39 @@ func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.
 }
 
 // RemoveGenerator drops one generator from the stored list.
+//
+// It REFUSES to remove the global default or a generator a role points at.
+// Boot validation is hard on `llm_provider.default`: storing a list without it
+// would leave a kernel that refuses to boot — and the console that could undo
+// the write needs a running kernel, so the mistake would be unrecoverable from
+// the surface that made it. A role-serving generator is refused for the softer
+// version of the same reason: the role would silently fall back to the default
+// while the console still shows the name the operator once chose.
 func (c configWriteSource) RemoveGenerator(id string) (operator.ConfigWriteOutcome, error) {
 	res := operator.ConfigWriteOutcome{Key: generatorsKey}
 	if c.store == nil {
 		return res, fmt.Errorf("no configuration store is available")
+	}
+
+	if c.defaultGeneratorID != nil && c.defaultGeneratorID() == id {
+		res.Effect = operator.EffectRejected
+		res.Error = fmt.Sprintf("generator %q is the global default (llm_provider.default); point the default elsewhere first", id)
+		return res, nil
+	}
+	if c.liveRoles != nil {
+		var serving []string
+		for role, rid := range c.liveRoles() {
+			if rid == id {
+				serving = append(serving, role)
+			}
+		}
+		if len(serving) > 0 {
+			sort.Strings(serving)
+			res.Effect = operator.EffectRejected
+			res.Error = fmt.Sprintf("generator %q serves %s; reassign the role(s) first",
+				id, strings.Join(serving, ", "))
+			return res, nil
+		}
 	}
 
 	list := c.effectiveGenerators()
@@ -353,4 +411,312 @@ func (c configWriteSource) RemoveGenerator(id string) (operator.ConfigWriteOutco
 	res.Set = true
 	res.Effect = operator.EffectRestartRequired
 	return res, nil
+}
+
+// ── Role assignment write half (contract 0096) ───────────────────────────────
+
+// rolesKeyPrefix + role is the store key for one role binding. Per-ROLE keys,
+// unlike the whole-list generatorsKey: koanf merges maps per key, so one role
+// stored here composes with roles configured in files rather than replacing the
+// whole map the way a stored list would.
+const rolesKeyPrefix = "llm_provider.roles."
+
+// assignableRoles is the closed system-organ vocabulary (ADR-0042). Deterministic
+// and Zero-Hardcode-legal — roles are organs, not agents bidding for tasks. The
+// agent_step purpose is deliberately absent: agent-step model choice belongs to
+// the EFE/dispatch preference hook, and binding it here would hardcode routing.
+var assignableRoles = map[string]bool{
+	string(domain.PurposePlanner):   true,
+	string(domain.PurposeVerifier):  true,
+	string(domain.PurposeRouter):    true,
+	string(domain.PurposeInterview): true,
+	string(domain.PurposeMemory):    true,
+}
+
+// SetRoleAssignment durably binds a system role to a generator and hot-applies
+// it to the running provider, so the change serves the organ's next call.
+func (c configWriteSource) SetRoleAssignment(role, generatorID string) (operator.ConfigWriteOutcome, error) {
+	key := rolesKeyPrefix + role
+	res := operator.ConfigWriteOutcome{Key: key}
+	if c.store == nil {
+		return res, fmt.Errorf("no configuration store is available")
+	}
+
+	if !assignableRoles[role] {
+		res.Effect = operator.EffectRejected
+		res.Error = fmt.Sprintf("unknown role %q; roles are planner, verifier, router, interview, memory", role)
+		return res, nil
+	}
+	// Refused rather than stored, like a credential against a missing generator:
+	// a dangling role binding is invisible — the ladder quietly serves the
+	// default while the console shows the name the operator typed.
+	known := false
+	for _, g := range c.effectiveGenerators() {
+		if g.ID == generatorID {
+			known = true
+			break
+		}
+	}
+	if !known {
+		res.Effect = operator.EffectRejected
+		res.Error = fmt.Sprintf("no generator with id %q is configured", generatorID)
+		return res, nil
+	}
+
+	if err := c.store.SetOverride(key, generatorID); err != nil {
+		res.Effect = operator.EffectRejected
+		res.Error = "could not write to the configuration store: " + err.Error()
+		return res, nil
+	}
+	res.Set = true
+
+	if pin := c.prov.PinnedAbove(key); pin != "" {
+		res.Effect = operator.EffectShadowed
+		res.ShadowedBy = pin
+		return res, nil
+	}
+
+	if c.applyRole != nil && c.applyRole(role, generatorID) {
+		res.Effect = operator.EffectLive
+		return res, nil
+	}
+	res.Effect = operator.EffectRestartRequired
+	return res, nil
+}
+
+// ── MCP server write half (contract 0097) ────────────────────────────────────
+
+// mcpServersKey is the store key holding the WHOLE MCP server list — one key
+// for the same koanf reason as generatorsKey: lists replace wholesale, so a
+// per-server key would leave only the last server written.
+const mcpServersKey = "mcp.servers"
+
+// validMCPTransports is the closed transport vocabulary the connector dials.
+var validMCPTransports = map[string]bool{"stdio": true, "http": true, "sse": true}
+
+// effectiveMCPServers is the list a save applies on top of: the store's, or the
+// booted config when the store holds none. Store-first is what makes two saves
+// in one process compose (the effectiveGenerators reasoning).
+func (c configWriteSource) effectiveMCPServers() []config.MCPServerConfig {
+	if c.store != nil {
+		if overrides, err := c.store.Overrides(); err == nil {
+			if raw, ok := overrides[mcpServersKey]; ok {
+				if b, mErr := json.Marshal(raw); mErr == nil {
+					var list []config.MCPServerConfig
+					if json.Unmarshal(b, &list) == nil {
+						return list
+					}
+				}
+			}
+		}
+	}
+	if c.mcpServerList != nil {
+		return c.mcpServerList()
+	}
+	return nil
+}
+
+// mcpConfigFromSpec builds the config entry an operator's spec describes,
+// preserving the fields the operator plane deliberately never carries.
+func mcpConfigFromSpec(spec operator.MCPServerSpec, prior *config.MCPServerConfig) config.MCPServerConfig {
+	entry := config.MCPServerConfig{
+		ID:                 spec.ID,
+		Transport:          spec.Transport,
+		Endpoint:           spec.Endpoint,
+		Args:               spec.Args,
+		ClassificationTags: spec.ClassificationTags,
+	}
+	entry.Auth.Type = spec.AuthType
+	entry.Auth.Header = spec.AuthHeader
+	if prior != nil {
+		// Per-tool policy (dangerous flags, pricing, per-tool tags) never crosses
+		// the operator wire; a save that echoed the console's ignorance would
+		// erase it. Same for the token env-var NAME — the credential itself
+		// travels by another route entirely.
+		entry.Tools = prior.Tools
+		entry.Auth.TokenEnv = prior.Auth.TokenEnv
+	}
+	return entry
+}
+
+// SaveMCPServer creates or replaces one server, stores the whole list, and arms
+// the server live.
+func (c configWriteSource) SaveMCPServer(spec operator.MCPServerSpec) (operator.ConfigWriteOutcome, error) {
+	res := operator.ConfigWriteOutcome{Key: mcpServersKey}
+	if c.store == nil {
+		return res, fmt.Errorf("no configuration store is available")
+	}
+	if !validMCPTransports[spec.Transport] {
+		res.Effect = operator.EffectRejected
+		res.Error = fmt.Sprintf("unknown transport %q (want stdio, http or sse)", spec.Transport)
+		return res, nil
+	}
+	if spec.AuthType == "header" && spec.AuthHeader == "" {
+		res.Effect = operator.EffectRejected
+		res.Error = `auth_type "header" requires auth_header to name the header`
+		return res, nil
+	}
+
+	list := c.effectiveMCPServers()
+	var entry config.MCPServerConfig
+	replaced := false
+	for i := range list {
+		if list[i].ID == spec.ID {
+			entry = mcpConfigFromSpec(spec, &list[i])
+			list[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		entry = mcpConfigFromSpec(spec, nil)
+		list = append(list, entry)
+	}
+
+	if err := c.store.SetOverride(mcpServersKey, list); err != nil {
+		res.Effect = operator.EffectRejected
+		res.Error = "could not write to the configuration store: " + err.Error()
+		return res, nil
+	}
+	res.Set = true
+
+	if pin := c.prov.PinnedAbove(mcpServersKey); pin != "" {
+		res.Effect = operator.EffectShadowed
+		res.ShadowedBy = pin
+		return res, nil
+	}
+	// Live when a connector exists: the health loop is armed now, and the tools
+	// appear as soon as the server answers. "live" here means the KERNEL acted;
+	// whether the server is reachable is the list read's `connected` to report.
+	if c.applyMCPServer != nil && c.applyMCPServer(entry) {
+		res.Effect = operator.EffectLive
+		return res, nil
+	}
+	res.Effect = operator.EffectRestartRequired
+	return res, nil
+}
+
+// RemoveMCPServer drops one server from the stored list and the running kernel.
+func (c configWriteSource) RemoveMCPServer(id string) (operator.ConfigWriteOutcome, error) {
+	res := operator.ConfigWriteOutcome{Key: mcpServersKey}
+	if c.store == nil {
+		return res, fmt.Errorf("no configuration store is available")
+	}
+
+	list := c.effectiveMCPServers()
+	kept := make([]config.MCPServerConfig, 0, len(list))
+	found := false
+	for _, s := range list {
+		if s.ID == id {
+			found = true
+			continue
+		}
+		kept = append(kept, s)
+	}
+	if !found {
+		res.Effect = operator.EffectRejected
+		res.Error = "no MCP server with id " + id
+		return res, nil
+	}
+
+	if err := c.store.SetOverride(mcpServersKey, kept); err != nil {
+		res.Effect = operator.EffectRejected
+		res.Error = "could not write to the configuration store: " + err.Error()
+		return res, nil
+	}
+	res.Set = true
+
+	if pin := c.prov.PinnedAbove(mcpServersKey); pin != "" {
+		res.Effect = operator.EffectShadowed
+		res.ShadowedBy = pin
+		return res, nil
+	}
+	if c.detachMCPServer != nil && c.detachMCPServer(id) {
+		res.Effect = operator.EffectLive
+		return res, nil
+	}
+	res.Effect = operator.EffectRestartRequired
+	return res, nil
+}
+
+// SetMCPServerToken stores a server credential and bounces the connection so
+// the new token is actually presented.
+func (c configWriteSource) SetMCPServerToken(id, token string) (operator.ConfigWriteOutcome, error) {
+	res := operator.ConfigWriteOutcome{Key: mcp.TokenSecretName(id)}
+	if c.store == nil {
+		return res, fmt.Errorf("no credential store is available")
+	}
+
+	var envVar string
+	known := false
+	for _, s := range c.effectiveMCPServers() {
+		if s.ID == id {
+			known = true
+			envVar = s.Auth.TokenEnv
+			break
+		}
+	}
+	if !known {
+		// The SetGeneratorKey reasoning: a credential filed against a server that
+		// does not exist is invisible — never used, never erroring, while the
+		// operator believes the integration is configured.
+		res.Effect = operator.EffectRejected
+		res.Error = fmt.Sprintf("no MCP server with id %q is configured", id)
+		return res, nil
+	}
+
+	if err := c.store.SetSecret(res.Key, token); err != nil {
+		res.Effect = operator.EffectRejected
+		res.Error = "could not write to the credential store: " + err.Error()
+		return res, nil
+	}
+	res.Set = true
+
+	if envVar != "" && os.Getenv(envVar) != "" {
+		res.Effect = operator.EffectShadowed
+		res.ShadowedBy = "env:" + envVar
+		return res, nil
+	}
+
+	// Tokens are injected at CONNECT time, so unlike a generator key a live
+	// session keeps the old one; the bounce is what makes "saved" observable.
+	if c.bounceMCPServer != nil && c.bounceMCPServer(id) {
+		res.Effect = operator.EffectLive
+		return res, nil
+	}
+	res.Effect = operator.EffectRestartRequired
+	return res, nil
+}
+
+// ClearMCPServerToken removes a stored credential and bounces the connection.
+func (c configWriteSource) ClearMCPServerToken(id string) error {
+	if c.store == nil {
+		return fmt.Errorf("no credential store is available")
+	}
+	if err := c.store.ClearSecret(mcp.TokenSecretName(id)); err != nil {
+		return err
+	}
+	if c.bounceMCPServer != nil {
+		c.bounceMCPServer(id)
+	}
+	return nil
+}
+
+// TestMCPServer dials the spec once. The probe resolves any stored token for
+// spec.ID itself, so a credential can be verified without travelling back.
+func (c configWriteSource) TestMCPServer(ctx context.Context, spec operator.MCPServerSpec) operator.MCPTestResult {
+	if c.probeMCPServer == nil {
+		return operator.MCPTestResult{Error: "this kernel cannot probe MCP servers"}
+	}
+	// A probe of a CONFIGURED server keeps its file-declared token env var, so
+	// env-supplied credentials work; an unsaved spec has none and relies on the
+	// store.
+	var prior *config.MCPServerConfig
+	for _, s := range c.effectiveMCPServers() {
+		if s.ID == spec.ID {
+			prior = &s
+			break
+		}
+	}
+	return c.probeMCPServer(ctx, mcpConfigFromSpec(spec, prior))
 }

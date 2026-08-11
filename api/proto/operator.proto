@@ -438,6 +438,53 @@ service OperatorConsole {
   rpc SaveGenerator(SaveGeneratorOpRequest) returns (SetConfigOpResponse);
   rpc RemoveGenerator(RemoveGeneratorOpRequest) returns (SetConfigOpResponse);
 
+  // SetRoleAssignment binds a system organ (planner / verifier / router /
+  // interview / memory) to the generator that serves it (contract 0096). The
+  // WRITE half of ListRoleAssignments, landing on the ADR-0101 store like the
+  // generator writes above.
+  //
+  // The effect is `live`: the provider resolves roles per call, so the next
+  // call the organ makes goes to the new generator. Nothing in flight moves.
+  //
+  // The write is REFUSED when generator_id does not name a configured
+  // generator. A dangling role is a state the runtime tolerates (it falls back
+  // to the default and ListRoleAssignments reports resolved=false), but it is
+  // never a state an operator asked for — accepting the typo would silently
+  // route an organ to the default while the console shows the name they typed.
+  //
+  // Mutating: command_id + reason, audited, Operator-only.
+  rpc SetRoleAssignment(SetRoleAssignmentOpRequest) returns (SetConfigOpResponse);
+
+  // SaveMCPServer / RemoveMCPServer are the WRITE half of ListMCPServers
+  // (contract 0097). They land on the ADR-0101 store — the whole server list
+  // under one key, for the same koanf reason the generator list does — and,
+  // unlike generators, apply LIVE: a save arms the server's health/reconnect
+  // loop immediately (tools appear via the ADR-0044 sink as soon as the server
+  // answers; an unreachable one is retried with backoff, exactly like a server
+  // that was down at boot), and a removal closes the session and withdraws its
+  // tools at once. The reported effect is therefore `live`, with `connected`
+  // still a separate fact the list read answers.
+  //
+  // Mutating: command_id + reason, audited, Operator-only.
+  rpc SaveMCPServer(SaveMCPServerOpRequest) returns (SetConfigOpResponse);
+  rpc RemoveMCPServer(RemoveMCPServerOpRequest) returns (SetConfigOpResponse);
+
+  // SetMCPServerToken / ClearMCPServerToken store the server's static credential
+  // (ADR-0101 D5 pattern — write-only, encrypted at rest, never echoed, never in
+  // the audit record). Setting a token also BOUNCES the server's connection when
+  // one is live: credentials are injected at connect time, so without the bounce
+  // a healthy session would keep using the old token indefinitely and "saved"
+  // would mean nothing observable.
+  rpc SetMCPServerToken(SetMCPServerTokenOpRequest) returns (SetConfigOpResponse);
+  rpc ClearMCPServerToken(ClearMCPServerTokenOpRequest) returns (CommandAck);
+
+  // TestMCPServer dials the SUBMITTED spec once — connect, list tools,
+  // disconnect — without touching any live session for the same id. It takes a
+  // spec rather than an id so a config can be tested BEFORE it is saved; the
+  // tool names it returns are what the server actually advertises, which is the
+  // fact nothing else on this plane can reveal before committing.
+  rpc TestMCPServer(TestMCPServerOpRequest) returns (MCPServerTestResultOp);
+
   // SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
   //
   // Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
@@ -1891,6 +1938,23 @@ message MCPServerOp {
   string last_error = 6;
   // tool_count is how many tools this server currently advertises.
   int32 tool_count = 7;
+
+  // The DECLARED half (contract 0097), so a console edit round-trips instead of
+  // being reconstructed from the display split above: `command`/`url` are
+  // renderings, `endpoint`+`args` are what the config actually holds.
+  string endpoint = 8;
+  repeated string args = 9;
+  // auth_type is "none" | "bearer" | "header"; auth_header only when "header".
+  string auth_type = 10;
+  string auth_header = 11;
+  // token_configured / token_source are the ONLY credential facts on the wire,
+  // exactly like a generator's key: the token itself has one path onto this
+  // plane (SetMCPServerToken) and no path back off it.
+  bool   token_configured = 12;
+  string token_source = 13;
+  // classification_tags apply to every tool this server advertises (ADR-0085
+  // D2) — without them, dynamically discovered tools arrive untaggable.
+  repeated string classification_tags = 14;
 }
 
 message ListMCPServersOpResponse {
@@ -2082,6 +2146,85 @@ message RemoveGeneratorOpRequest {
   string generator_id = 1;
   string command_id = 2;
   string reason = 3;
+}
+
+message SetRoleAssignmentOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  // role is one of: "planner", "verifier", "router", "interview", "memory" —
+  // the same vocabulary RoleAssignmentOp.role reports. An unknown role is
+  // rejected: the map is open in config, but a misspelled role stored durably
+  // would sit in the store forever doing nothing.
+  string role = 3;
+  string generator_id = 4;
+}
+
+// MCPServerSpecOp is the DECLARED half of an MCP server — what an operator
+// authors (contract 0097). No connection state, no tool count, no credential:
+// those are measured or write-only, and accepting them back on a write would
+// let a console send a stale reading as if it were intent.
+message MCPServerSpecOp {
+  // id is permanent — tool names are namespaced mcp:<id>/<tool>, so grants and
+  // skills refer to it.
+  string id = 1;
+  // transport is "stdio" | "http" (Streamable HTTP) | "sse" (legacy HTTP+SSE).
+  string transport = 2;
+  // endpoint is a URL for http/sse and a command for stdio.
+  string endpoint = 3;
+  repeated string args = 4;
+  // auth_type is "none" | "bearer" | "header"; auth_header names the header
+  // when type is "header". The token itself never travels here — it has
+  // exactly one path onto this plane, SetMCPServerToken.
+  string auth_type = 5;
+  string auth_header = 6;
+  // classification_tags apply to every tool this server advertises (ADR-0085
+  // D2). Without a server-level default, dynamically discovered tools arrive
+  // untagged — and an untagged tool is one no tag predicate can restrict.
+  repeated string classification_tags = 7;
+}
+
+message SaveMCPServerOpRequest {
+  MCPServerSpecOp server = 1;
+  string command_id = 2;
+  string reason = 3;
+}
+
+message RemoveMCPServerOpRequest {
+  string server_id = 1;
+  string command_id = 2;
+  string reason = 3;
+}
+
+message SetMCPServerTokenOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string server_id = 3;
+  // token is write-only. It is never returned by any RPC, never written to the
+  // audit log, and never logged.
+  string token = 4;
+}
+
+message ClearMCPServerTokenOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string server_id = 3;
+}
+
+message TestMCPServerOpRequest {
+  // The spec under test — possibly unsaved. A stored token for server.id is
+  // used when the spec declares auth, so a token can be verified without ever
+  // travelling back to the console.
+  MCPServerSpecOp server = 1;
+}
+
+message MCPServerTestResultOp {
+  bool  ok = 1;
+  int64 latency_ms = 2;
+  // tool_names is what the server ACTUALLY advertises — the fact worth one
+  // real connection. Empty with ok=true means the server answered and offers
+  // nothing, which is a different finding from a refused connection.
+  repeated string tool_names = 3;
+  string error = 4;
 }
 
 message RetryWatchDeadLetterOpRequest {

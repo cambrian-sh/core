@@ -55,6 +55,17 @@ type MCPServerInfo struct {
 	Connected bool
 	LastError string
 	ToolCount int
+
+	// The DECLARED half (contract 0097), so a console edit round-trips.
+	// TokenConfigured/TokenSource are the only credential facts — the note above
+	// about auth material still holds: no field here can carry a token.
+	Endpoint           string
+	Args               []string
+	AuthType           string
+	AuthHeader         string
+	TokenConfigured    bool
+	TokenSource        string
+	ClassificationTags []string
 }
 
 // EmbeddingReporter reports the embedding model, its dimensions and the stored
@@ -144,13 +155,20 @@ func (s *Service) ListMCPServers(_ context.Context, _ *pb.ListMCPServersOpReques
 	out := make([]*pb.MCPServerOp, 0, len(servers))
 	for _, m := range servers {
 		out = append(out, &pb.MCPServerOp{
-			Name:      m.Name,
-			Transport: m.Transport,
-			Command:   m.Command,
-			Url:       m.URL,
-			Connected: m.Connected,
-			LastError: m.LastError,
-			ToolCount: int32(m.ToolCount),
+			Name:               m.Name,
+			Transport:          m.Transport,
+			Command:            m.Command,
+			Url:                m.URL,
+			Connected:          m.Connected,
+			LastError:          m.LastError,
+			ToolCount:          int32(m.ToolCount),
+			Endpoint:           m.Endpoint,
+			Args:               m.Args,
+			AuthType:           m.AuthType,
+			AuthHeader:         m.AuthHeader,
+			TokenConfigured:    m.TokenConfigured,
+			TokenSource:        m.TokenSource,
+			ClassificationTags: m.ClassificationTags,
 		})
 	}
 	return &pb.ListMCPServersOpResponse{

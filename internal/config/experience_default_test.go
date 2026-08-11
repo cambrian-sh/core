@@ -22,11 +22,14 @@ func TestDefaults_ExperienceArms(t *testing.T) {
 			"design that was removed, not the one that was rebuilt")
 	}
 
-	// OFF: the procedural induction scheduler. It cannot produce anything until plans
-	// accumulate under the capability_contract arm, so running it is pure cost.
-	if cfg.Execution.Procedure.ProcedureInductionIntervalHours != 0 {
-		t.Errorf("procedure induction must stay disabled until there is something to "+
-			"induce from, got interval %d", cfg.Execution.Procedure.ProcedureInductionIntervalHours)
+	// ON, hourly: the procedural induction scheduler (owner default 2026-08-11,
+	// promoted from the operating config). The "nothing to induce from" era ended
+	// once capability_contract went default-on and plans accrued; an idle pass
+	// over an empty table is cheap, and a scheduler nobody remembers to enable
+	// never induces anything.
+	if cfg.Execution.Procedure.ProcedureInductionIntervalHours != 1 {
+		t.Errorf("procedure induction must default to hourly (owner decision 2026-08-11), "+
+			"got interval %d", cfg.Execution.Procedure.ProcedureInductionIntervalHours)
 	}
 
 	// The gates the enabled arm depends on must be sane, or "on" means something else.

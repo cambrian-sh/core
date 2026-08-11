@@ -13,7 +13,7 @@ import (
 // ConfigSchemaVersion versions the tunable catalogue below. Bump it when a field
 // is added, removed or changes meaning — a console caches the schema by hash and
 // this is how it learns to refetch.
-const ConfigSchemaVersion = "1"
+const ConfigSchemaVersion = "2" // 2: + execution.tools.tool_menu_k (2026-08-11)
 
 // tunable is one numerically-editable kernel setting.
 type tunable struct {
@@ -122,6 +122,14 @@ var tunables = []tunable{
 		Consequence: "Too high and a capable tool is never offered; too low and agents are handed tools that do not fit the step. Restart required.",
 	},
 	{
+		// NESTED path, unlike the flat v1 names above: this key postdates the
+		// flat schema, so no legacy alias exists to migrate a flat spelling.
+		Key: "execution.tools.tool_menu_k", Min: 0, Max: 20,
+		Title:       "Tool menu size",
+		Description: "How many tools/skills the agent SDK lists per menu query. 0 uses the SDK default (3).",
+		Consequence: "Injected into every agent's environment at spawn, so a change reaches agents on their next boot. Larger menus ground better but cost prompt tokens on every step. Restart required.",
+	},
+	{
 		Key: "execution.step_timeout_multiplier", Min: 0.1, Max: 20,
 		Title:       "Step timeout multiplier",
 		Description: "Scales the estimated latency to produce each step's timeout.",
@@ -223,6 +231,8 @@ func (c configSchemaSource) bootValue(key string) (float64, bool) {
 		return e.Memory.MemoryRelevanceThreshold, true
 	case "execution.tool_retrieval_floor":
 		return e.Tools.ToolRetrievalFloor, true
+	case "execution.tools.tool_menu_k":
+		return float64(e.Tools.ToolMenuK), true
 	case "execution.step_timeout_multiplier":
 		return e.Plan.StepTimeoutMultiplier, true
 	}

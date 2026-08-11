@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -36,6 +37,50 @@ func (s TagSet) IsZero() bool {
 	return len(s.RequiredTags) == 0 && len(s.AnyOfTags) == 0 && len(s.ForbiddenTags) == 0
 }
 
+// ErrPartyTermNotCarryable is returned by ToTagSet when a predicate carries a
+// party term (ADR-0121 D1b).
+//
+// TagSet is the AUTHORED three-set term and deliberately gains no party field: a
+// party term originates on a policy, not on a caller, and widening the carrier
+// would create three more places to write, transport and forget it. So the
+// invariant is that no projection LOSES one — enforced by refusing rather than
+// by remembering.
+//
+// The failure this prevents is the one ADR-0121 D1a exists for, arriving through
+// a carrier instead of a rule: a truncating projection keeps the broad tag grant
+// and drops the restriction, which is "restriction lost, permission kept" — a
+// widening, and INV-1 broken by a struct literal.
+var ErrPartyTermNotCarryable = errors.New(
+	"domain: this predicate is party-scoped and a TagSet cannot carry that term; " +
+		"projecting it would keep the tag grant and silently drop the restriction")
+
+// ToTagSet projects a computed predicate back into the authored three-set form,
+// refusing when the predicate carries a party term.
+//
+// AnyOfClauses flatten only when there is at most one clause: a TagSet holds ONE
+// any-of set, so two clauses (which are ANDed) cannot be represented and would
+// widen if merged into one OR.
+func (p *TagPredicate) ToTagSet() (TagSet, error) {
+	if p == nil {
+		return TagSet{}, nil
+	}
+	if len(p.PartyScopedTags) > 0 {
+		return TagSet{}, fmt.Errorf("%w (tags: %s)",
+			ErrPartyTermNotCarryable, strings.Join(p.PartyScopedTags, ", "))
+	}
+	if len(p.AnyOfClauses) > 1 {
+		return TagSet{}, fmt.Errorf(
+			"domain: this predicate has %d any-of clauses and a TagSet holds one; "+
+				"merging them would turn an AND of ORs into a single OR, which widens",
+			len(p.AnyOfClauses))
+	}
+	out := TagSet{RequiredTags: p.RequiredTags, ForbiddenTags: p.ForbiddenTags}
+	if len(p.AnyOfClauses) == 1 {
+		out.AnyOfTags = p.AnyOfClauses[0]
+	}
+	return out, nil
+}
+
 // TagPredicate is the COMPUTED, ready-to-apply form of an access decision: what
 // the decision point resolved for one principal on one surface, expressed so that
 // both an in-memory store and a SQL store can apply exactly the same rule.
@@ -50,6 +95,29 @@ type TagPredicate struct {
 	RequiredTags  []string   `json:"required_tags,omitempty"`
 	AnyOfClauses  [][]string `json:"any_of_clauses,omitempty"`
 	ForbiddenTags []string   `json:"forbidden_tags,omitempty"`
+
+	// PartyScopedTags qualifies tags with "…and only the rows you are a party to"
+	// (ADR-0121 D1). For a row carrying one of these tags, the reader must also
+	// appear in the row's parties.
+	//
+	// A RESTRICTION, and it takes ADR-0087's restriction rules: it accumulates by
+	// union, is never removable, and survives Block Inheritance. Folding it like
+	// RequiredTags would make Block Inheritance a privilege escalation, because
+	// rule 3 there strips permissions and keeps denies (D1a).
+	//
+	// It can only ever remove rows. A row the tag terms did not admit is not
+	// admitted by this, which is what keeps the algebra an intersection and
+	// INV-1 ("no code path widens an effective scope") true.
+	PartyScopedTags []string `json:"party_scoped_tags,omitempty"`
+	// PartyIdentities is WHO THE READER IS — the entity identities this principal
+	// holds, resolved by the decision point while composing (D3).
+	//
+	// The kernel never derives these. It receives them the way it receives every
+	// other term: as data it applies without interpreting. Empty, with any
+	// party-scoped tag in play, denies every row carrying that tag — fail closed
+	// (D6), because "party to nothing" and "we could not tell" must not differ in
+	// the direction of access.
+	PartyIdentities []string `json:"party_identities,omitempty"`
 
 	// Bypass, when true, admits everything. It marks either the explicit
 	// ScopeSystem sentinel (kernel-internal maintenance reads) or an unscoped
@@ -134,7 +202,73 @@ func (p *TagPredicate) Check(tags []string) (AccessDecision, bool) {
 			return AccessDecision{Reason: ReasonAnyOfUnsatisfied, Detail: strings.Join(clause, "|")}, false
 		}
 	}
+	// Party-scoped tags, tested against NO parties — see CheckRow for the
+	// substrate's row-aware form. A resource with no parties (a tool, a skill, an
+	// agent, a document) cannot have the reader as one, so a party-scoped tag it
+	// carries denies. That is fail-closed AND correct rather than merely safe: if
+	// a policy says "only the rows you are a party to", a thing nobody can be a
+	// party to is not one of them.
+	for _, t := range p.PartyScopedTags {
+		if has(t) {
+			return AccessDecision{Reason: ReasonNotAParty, Detail: t}, false
+		}
+	}
 	return AccessDecision{Allowed: true, Reason: ReasonAllowed}, true
+}
+
+// AllowsRow is Allows for a resource that HAS parties — a substrate row.
+func (p *TagPredicate) AllowsRow(tags, parties []string) bool {
+	_, ok := p.CheckRow(tags, parties)
+	return ok
+}
+
+// CheckRow is Check for a substrate row, which carries parties as well as tags
+// (ADR-0121).
+//
+// Separate from Check rather than a wider Check, deliberately. Only substrate
+// rows have parties; the other three securable kinds do not, and giving them a
+// parameter they must pass as nil is an invitation to pass nil from a call site
+// that DID have parties available. Two names, and the wrong one fails closed.
+func (p *TagPredicate) CheckRow(tags, parties []string) (AccessDecision, bool) {
+	// The tag terms first and unchanged, so a row denied by a label is denied for
+	// that reason rather than for a relationship — the explanation an operator
+	// gets should name the first thing that is actually wrong.
+	dec, ok := p.Check(tags)
+	if p == nil || p.Bypass {
+		return dec, ok
+	}
+	if !ok && dec.Reason != ReasonNotAParty {
+		return dec, ok
+	}
+	for _, t := range p.PartyScopedTags {
+		carries := false
+		for _, x := range tags {
+			if x == t {
+				carries = true
+				break
+			}
+		}
+		if !carries {
+			continue // the qualifier says nothing about a row without the tag
+		}
+		if !overlaps(parties, p.PartyIdentities) {
+			return AccessDecision{Reason: ReasonNotAParty, Detail: t}, false
+		}
+	}
+	return AccessDecision{Allowed: true, Reason: ReasonAllowed}, true
+}
+
+// overlaps reports whether the two sets share a member. Both are small — a row's
+// parties and one reader's identities — so the nested scan beats building a map.
+func overlaps(a, b []string) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // IsZero reports whether the predicate constrains nothing and is not a bypass. An
@@ -144,7 +278,18 @@ func (p *TagPredicate) IsZero() bool {
 	if p == nil {
 		return true
 	}
-	return !p.Bypass && len(p.RequiredTags) == 0 && len(p.AnyOfClauses) == 0 && len(p.ForbiddenTags) == 0
+	// PartyScopedTags counts. A predicate whose only term is party-scoping
+	// constrains a great deal, and omitting it here is not cosmetic: the empty
+	// answer is consumed at `querymemory.go`'s
+	// `case !pred.Bypass && !pred.IsZero()`, so a party-filtered zero-row result
+	// would be classed as "policy did not shape this outcome" and INV-3's
+	// policy_note would never be emitted — the silent empty ADR-0121 D6 exists to
+	// prevent, reintroduced by a helper.
+	//
+	// PartyIdentities deliberately does NOT count: identities alone constrain
+	// nothing, and a predicate carrying only "who you are" is genuinely empty.
+	return !p.Bypass && len(p.RequiredTags) == 0 && len(p.AnyOfClauses) == 0 &&
+		len(p.ForbiddenTags) == 0 && len(p.PartyScopedTags) == 0
 }
 
 // Unsatisfiable reports whether this predicate can never match any row, with a

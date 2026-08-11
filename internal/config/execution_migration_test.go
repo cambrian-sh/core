@@ -202,6 +202,49 @@ var retiredExecutionFields = map[string]string{
 	"bid_calibration_min_samples": "ROUTE-05 retired 2026-08-07: shrinkage threshold for a calibration curve nothing fits any more.",
 }
 
+// promotedExecutionDefaults are fields whose DEFAULT deliberately changed after
+// the flat→nested move, so the golden v1 snapshot no longer states their value.
+// Owner decision 2026-08-11: the operating config (the gitignored local tuning
+// that had carried the measured-best retrieval stack, chat pool, and timeout
+// values since the benchmark campaigns) was promoted wholesale into
+// DefaultConfig(), so the product ships what was actually being run. The guard
+// stays armed for every OTHER field: an unlisted change is still an accident.
+var promotedExecutionDefaults = map[string]bool{
+	"agentic_decompose_enabled":          true,
+	"agentic_max_hops":                   true,
+	"agentic_planner_model":              true,
+	"agentic_retrieval_enabled":          true,
+	"blend_enabled":                      true,
+	"blend_weight_coherence":             true,
+	"blend_weight_confidence":            true,
+	"blend_weight_cosine":                true,
+	"blend_weight_lexical":               true,
+	"chat_pool_agent_id":                 true,
+	"chat_pool_queue_size":               true,
+	"chat_pool_size":                     true,
+	"evidence_capture_enabled":           true,
+	"hnsw_ef_search":                     true,
+	"hybrid_lexical_weight":              true,
+	"hybrid_rrf_k":                       true,
+	"hybrid_search_enabled":              true,
+	"kg_extractor_enabled":               true,
+	"kg2rag_max_expanded":                true,
+	"kg2rag_max_hops":                    true,
+	"kg2rag_per_entity":                  true,
+	"plan_timeout_ms":                    true,
+	"procedure_induction_interval_hours": true,
+	"query_entity_seeding_enabled":       true,
+	"recall_over_fetch":                  true,
+	"recall_similarity_floor":            true,
+	"recall_top_k":                       true,
+	"reranker_top_k":              true,
+	"reranker_weight":             true,
+	"step_timeout_base_buffer_ms": true,
+	"drainer_enabled":             true,
+	// trace_pipeline_payloads is deliberately absent: reviewed and REVERTED to
+	// the off default on 2026-08-11 — see the field's doc comment.
+}
+
 func TestExecutionDefaultsSurvivedNesting(t *testing.T) {
 	raw, err := os.ReadFile(legacyGoldenPath)
 	if err != nil {
@@ -222,7 +265,10 @@ func TestExecutionDefaultsSurvivedNesting(t *testing.T) {
 			}
 			continue
 		}
-		if !jsonEqual(wantVal, gotVal) {
+		// promotedExecutionDefaults are DELIBERATE post-move changes (owner
+		// 2026-08-11); everything else changing is still an accident this
+		// guard exists to catch.
+		if !jsonEqual(wantVal, gotVal) && !promotedExecutionDefaults[k] {
 			changed = append(changed, k)
 		}
 	}

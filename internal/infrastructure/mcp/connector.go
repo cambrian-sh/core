@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -56,6 +55,10 @@ type Connector struct {
 	client   *mcpsdk.Client
 	mu       sync.RWMutex
 	sessions map[string]*mcpsdk.ClientSession
+	// watches tracks the per-server health/reconnect goroutine's cancel func, so
+	// a server saved or removed at RUNTIME (contract 0097) can have its loop
+	// replaced or stopped without touching the others.
+	watches map[string]context.CancelFunc
 }
 
 // NewConnector constructs an empty connector with a single shared MCP client.
@@ -63,6 +66,7 @@ func NewConnector() *Connector {
 	return &Connector{
 		client:   mcpsdk.NewClient(&mcpsdk.Implementation{Name: "cambrian", Version: "1.0.0"}, nil),
 		sessions: map[string]*mcpsdk.ClientSession{},
+		watches:  map[string]context.CancelFunc{},
 	}
 }
 
@@ -125,7 +129,9 @@ func (c *Connector) connect(ctx context.Context, s ServerConfig) (*mcpsdk.Client
 }
 
 // httpClient builds the HTTP client for an http/sse transport, injecting the
-// static credential when configured (ADR-0043 D9).
+// static credential when configured (ADR-0043 D9). The token resolves through
+// tokenFor (env first, then the ADR-0101 store), so a token saved from the
+// console is picked up on the next (re)connect without a restart.
 func (s ServerConfig) httpClient() *http.Client {
 	c := &http.Client{}
 	if s.AuthType != "" && s.AuthType != "none" {
@@ -133,7 +139,7 @@ func (s ServerConfig) httpClient() *http.Client {
 			base:     http.DefaultTransport,
 			authType: s.AuthType,
 			header:   s.AuthHeader,
-			token:    os.Getenv(s.AuthTokenEnv),
+			token:    tokenFor(s.ID, s.AuthTokenEnv),
 		}
 	}
 	return c
@@ -154,16 +160,112 @@ type ToolSink interface {
 // menu) and reconnects with exponential backoff, re-discovering and re-publishing
 // on success (sink.SetServerTools → re-registered + re-indexed, ADR-0044). A
 // server unreachable at boot is retried here until it comes up.
+//
+// It blocks on ctx rather than on the goroutines, because the server set is no
+// longer fixed at boot: AddServer (contract 0097) attaches loops under this same
+// ctx after Watch has started, and a WaitGroup taken over the boot list would
+// declare the watcher finished while runtime-added servers are still being
+// health-checked.
 func (c *Connector) Watch(ctx context.Context, servers []ServerConfig, sink ToolSink, interval time.Duration) {
-	var wg sync.WaitGroup
 	for _, s := range servers {
-		wg.Add(1)
-		go func(s ServerConfig) {
-			defer wg.Done()
-			c.watchServer(ctx, s, sink, interval)
-		}(s)
+		// armWatch, NOT AddServer: these servers were already connected by
+		// ConnectAll and their tools are registered — the teardown AddServer does
+		// for a runtime re-save would churn every healthy boot connection.
+		c.armWatch(ctx, s, sink, interval)
 	}
-	wg.Wait()
+	<-ctx.Done()
+}
+
+// AddServer arms one server under the connector's lifecycle at RUNTIME: any
+// existing loop, session and published tools for the same id are dropped first
+// (a SAVE of an existing server must reconnect with the NEW config, and its old
+// tools must not linger if the new config never comes up), then a
+// health/reconnect loop is started. The loop's first act on a server with no
+// session is to connect, so tools appear via the sink as soon as the server
+// answers — and a server that is down is retried with backoff rather than
+// failed, exactly like a server that was unreachable at boot.
+func (c *Connector) AddServer(ctx context.Context, s ServerConfig, sink ToolSink, interval time.Duration) {
+	c.dropServer(ctx, s.ID, sink)
+	c.armWatch(ctx, s, sink, interval)
+}
+
+// armWatch starts (or replaces) the health/reconnect goroutine for one server
+// without touching its session or published tools.
+func (c *Connector) armWatch(ctx context.Context, s ServerConfig, sink ToolSink, interval time.Duration) {
+	wctx, cancel := context.WithCancel(ctx)
+	c.mu.Lock()
+	if prev, ok := c.watches[s.ID]; ok {
+		prev()
+	}
+	c.watches[s.ID] = cancel
+	c.mu.Unlock()
+	go c.watchServer(wctx, s, sink, interval)
+}
+
+// RemoveServer stops a server's loop, closes its session and withdraws its
+// tools. Removing an unknown id is a no-op — the post-condition already holds.
+func (c *Connector) RemoveServer(ctx context.Context, id string, sink ToolSink) {
+	c.dropServer(ctx, id, sink)
+}
+
+// dropServer is the shared teardown half: cancel the watch, close the session,
+// withdraw the tools. Ordered so the loop cannot re-publish tools between the
+// withdrawal and its own cancellation.
+func (c *Connector) dropServer(ctx context.Context, id string, sink ToolSink) {
+	c.mu.Lock()
+	cancel := c.watches[id]
+	delete(c.watches, id)
+	sess := c.sessions[id]
+	delete(c.sessions, id)
+	c.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if sess != nil {
+		_ = sess.Close()
+	}
+	if sink != nil && (cancel != nil || sess != nil) {
+		sink.RemoveServerTools(ctx, id)
+	}
+}
+
+// ProbeResult is what one ephemeral connection attempt learned (contract 0097).
+type ProbeResult struct {
+	OK        bool
+	LatencyMs int64
+	// ToolNames is what the server actually advertises — the fact nothing else
+	// in the console can reveal before committing to a config.
+	ToolNames []string
+	Err       string
+}
+
+// Probe dials a server config once, lists its tools, and disconnects. It uses a
+// throwaway client so a live session for the same id — possibly running on the
+// OLD config the operator is about to replace — is never touched.
+func Probe(ctx context.Context, s ServerConfig) ProbeResult {
+	start := time.Now()
+	tmp := &Connector{
+		client:   mcpsdk.NewClient(&mcpsdk.Implementation{Name: "cambrian-probe", Version: "1.0.0"}, nil),
+		sessions: map[string]*mcpsdk.ClientSession{},
+		watches:  map[string]context.CancelFunc{},
+	}
+	sess, err := tmp.connect(ctx, s)
+	if err != nil {
+		return ProbeResult{Err: err.Error(), LatencyMs: time.Since(start).Milliseconds()}
+	}
+	defer func() { _ = sess.Close() }()
+
+	res, err := sess.ListTools(ctx, nil)
+	if err != nil {
+		return ProbeResult{Err: "connected, but listing tools failed: " + err.Error(),
+			LatencyMs: time.Since(start).Milliseconds()}
+	}
+	names := make([]string, 0, len(res.Tools))
+	for _, t := range res.Tools {
+		names = append(names, t.Name)
+	}
+	return ProbeResult{OK: true, ToolNames: names, LatencyMs: time.Since(start).Milliseconds()}
 }
 
 func (c *Connector) watchServer(ctx context.Context, s ServerConfig, sink ToolSink, interval time.Duration) {
@@ -211,6 +313,12 @@ func (c *Connector) watchServer(ctx context.Context, s ServerConfig, sink ToolSi
 		if derr != nil {
 			slog.Warn("ADR-0043: MCP re-discovery failed", "server", s.ID, "err", derr)
 			continue
+		}
+		// A loop cancelled mid-discovery (its server was removed or re-saved)
+		// must not publish: these would be ghost tools for a config that no
+		// longer exists, registered after the teardown withdrew them.
+		if ctx.Err() != nil {
+			return
 		}
 		sink.SetServerTools(ctx, s.ID, tools)
 		slog.Info("ADR-0043: MCP server (re)synced", "server", s.ID, "tools", len(tools))

@@ -34,6 +34,40 @@ func TestProvider_RoleResolvesToConfiguredID(t *testing.T) {
 	}
 }
 
+// SetRole rebinds resolution on the NEXT call — the live half of the operator
+// plane's SetRoleAssignment (contract 0096).
+func TestProvider_SetRoleRebindsResolutionLive(t *testing.T) {
+	p := testProvider(t)
+	p.SetRole("router", "deepseek")
+	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeRouter})
+	if err != nil || id != "deepseek" {
+		t.Fatalf("after SetRole: want deepseek, got %q (%v)", id, err)
+	}
+	if got := p.Roles()["router"]; got != "deepseek" {
+		t.Fatalf("Roles() must report the live binding, got %q", got)
+	}
+}
+
+// The map SetRole mutates must not be the caller's config map.
+func TestProvider_NewProviderCopiesTheRolesMap(t *testing.T) {
+	cfgRoles := map[string]string{"router": "qwen-local"}
+	p, err := NewProvider(config.LLMProviderConfig{
+		Default: "qwen-local",
+		Generators: []config.GeneratorConfig{
+			{ID: "qwen-local", Provider: "ollama", Model: "qwen3:8b"},
+			{ID: "deepseek", Provider: "openai", Model: "d"},
+		},
+		Roles: cfgRoles,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	p.SetRole("router", "deepseek")
+	if cfgRoles["router"] != "qwen-local" {
+		t.Fatal("SetRole mutated the caller's config map")
+	}
+}
+
 func TestProvider_AgentStepUsesHealthySuggestion(t *testing.T) {
 	p := testProvider(t)
 	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeAgentStep, SuggestedModelID: "deepseek"})

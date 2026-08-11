@@ -88,26 +88,47 @@ func (p *PgQueryPlane) Query(ctx context.Context, q domain.KnowledgeQuery, scope
 	return domain.QueryResult{Guarantee: q.Guarantee(), Rows: rows}, nil
 }
 
-// evidenceTags batch-resolves evidence ids to their classification. Ids absent
-// from the result were not resolvable and their rows must be dropped.
-func (p *PgQueryPlane) evidenceTags(ctx context.Context, ids []string) (map[string][]string, error) {
-	out := make(map[string][]string, len(ids))
+// identityArg renders a reader's identities for the SQL overlap test.
+//
+// A nil slice would be sent as NULL, and `parties && NULL` is NULL rather than
+// false — which in a WHERE clause is not-true and therefore still denies, but by
+// three-valued-logic accident rather than by intent. An empty array denies for
+// the reason we mean: this reader is a party to nothing.
+func identityArg(ids []string) []string {
+	if ids == nil {
+		return []string{}
+	}
+	return ids
+}
+
+// evidenceAccess is one evidence row's access-relevant state: what it IS and who
+// it is ABOUT (ADR-0121). Named apart from the evidenceRow QUERY SHAPE below,
+// which is a different thing that renders a row for the wire.
+type evidenceAccess struct {
+	tags    []string
+	parties []string
+}
+
+// evidenceTags batch-resolves evidence ids to their classification AND parties.
+// Ids absent from the result were not resolvable and their rows must be dropped.
+func (p *PgQueryPlane) evidenceTags(ctx context.Context, ids []string) (map[string]evidenceAccess, error) {
+	out := make(map[string]evidenceAccess, len(ids))
 	if len(ids) == 0 {
 		return out, nil
 	}
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, classification FROM evidence WHERE id = ANY($1)`, ids)
+		`SELECT id, classification, parties FROM evidence WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id string
-		var tags []string
-		if err := rows.Scan(&id, &tags); err != nil {
+		var row evidenceAccess
+		if err := rows.Scan(&id, &row.tags, &row.parties); err != nil {
 			return nil, err
 		}
-		out[id] = tags
+		out[id] = row
 	}
 	return out, rows.Err()
 }
@@ -158,7 +179,9 @@ func (p *PgQueryPlane) filterObservations(ctx context.Context, scope *domain.Tag
 	kept := obs[:0:0]
 	for i := range obs {
 		t, resolvable := tags[string(obs[i].EvidenceID)]
-		if resolvable && scope.Allows(t) {
+		// AllowsRow, not Allows: a substrate row carries parties, and testing it
+		// with the party-blind form would deny every party-scoped row (ADR-0121).
+		if resolvable && scope.AllowsRow(t.tags, t.parties) {
 			kept = append(kept, obs[i])
 		}
 	}
@@ -399,6 +422,23 @@ func evidenceScopeSQL(scope *domain.TagPredicate, startIdx int) (string, []any) 
 			add("e.classification && $%d", clause)
 		}
 	}
+	// Party-scoping (ADR-0121 D1): a material implication — if the row carries a
+	// party-scoped tag, the reader must be one of its parties.
+	//
+	// It can only ever REMOVE rows: a row without any party-scoped tag satisfies
+	// the left disjunct and is untouched, and a row with one is admitted only by
+	// the extra condition. Nothing here admits a row the tag terms above rejected,
+	// which is what keeps INV-1 (no path widens a scope) true of this clause.
+	//
+	// With no identities the right disjunct is `parties && '{}'` — always false —
+	// so every party-scoped row is denied. That is D6's fail-closed reading, and
+	// it is why "party to nothing" and "we could not resolve you" agree here.
+	if len(scope.PartyScopedTags) > 0 {
+		n += 2
+		conds += fmt.Sprintf(
+			" AND (NOT (e.classification && $%d) OR e.parties && $%d)", n-1, n)
+		args = append(args, scope.PartyScopedTags, identityArg(scope.PartyIdentities))
+	}
 	return ` AND EXISTS (SELECT 1 FROM evidence e
 		WHERE e.id = observations.evidence_id` + conds + `)`, args
 }
@@ -462,7 +502,9 @@ func (p *PgQueryPlane) filterEvents(ctx context.Context, scope *domain.TagPredic
 	kept := evs[:0:0]
 	for i := range evs {
 		t, resolvable := tags[string(evs[i].EvidenceID)]
-		if resolvable && scope.Allows(t) {
+		// AllowsRow: an event reaches scope through its evidence, which carries
+		// parties as well as tags (ADR-0121).
+		if resolvable && scope.AllowsRow(t.tags, t.parties) {
 			kept = append(kept, evs[i])
 		}
 	}
@@ -547,7 +589,10 @@ func (p *PgQueryPlane) evidenceRow(ctx context.Context, q domain.KnowledgeQuery,
 	if err != nil {
 		return nil, err
 	}
-	if !scope.Bypass && !scope.Allows(ev.Classification) {
+	// AllowsRow: this shape reads the evidence row itself, so its parties are in
+	// hand and a party-scoped tag can be answered properly rather than denied for
+	// want of the information (ADR-0121).
+	if !scope.Bypass && !scope.AllowsRow(ev.Classification, ev.Parties) {
 		return nil, nil
 	}
 	return []domain.QueryRow{{

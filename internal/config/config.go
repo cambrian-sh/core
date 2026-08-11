@@ -904,6 +904,14 @@ type ToolsConfig struct {
 	// be served by semantic retrieval. Below it, "no tool fits" ⇒ an empty menu
 	// (grounding safeguard). 0 ⇒ no floor (any top-k is returned). Tunable.
 	ToolRetrievalFloor float64 `json:"tool_retrieval_floor,omitempty"`
+
+	// ToolMenuK is how many tools/skills the SDK's ReAct loop lists per menu
+	// query. 0 ⇒ the SDK's built-in default (3). The kernel INJECTS this into
+	// every agent's environment (CAMBRIAN_TOOL_MENU_K) from config — it is a
+	// config value, not something the kernel's own .env must carry and pass
+	// through the SEC-01 allowlist (owner rule 2026-08-11: knobs never depend
+	// on .env; the env layer is for secrets and deployment overrides).
+	ToolMenuK int `json:"tool_menu_k,omitempty"`
 }
 
 // ChatConfig — Chat session worker pool.
@@ -1382,9 +1390,13 @@ func DefaultConfig() *Config {
 	cfg := &Config{
 		Execution: ExecutionConfig{
 			Plan: PlanConfig{
-				StepTimeoutMultiplier:       2.0,
-				StepTimeoutBaseBufferMs:     5000,
-				PlanTimeoutMs:               120000,
+				StepTimeoutMultiplier: 2.0,
+				// 15s buffer / 10min plan ceiling (owner defaults, 2026-08-11:
+				// promoted from the operating config — local models routinely
+				// blow a 2-minute plan ceiling, and a timeout mid-plan wastes
+				// everything already spent).
+				StepTimeoutBaseBufferMs: 15000,
+				PlanTimeoutMs:           600000,
 				ContextGrowthK:              0.001,
 				MaxRecursionDepth:           3,
 				FallbackConfidenceThreshold: 0.4,
@@ -1476,31 +1488,57 @@ func DefaultConfig() *Config {
 				ExperienceSurpriseFloor:  0.5,
 			},
 			Procedure: ProcedureConfig{
-				ProcedureInductionIntervalHours: 0, // ADR-0094: 0 = scheduler disabled (default)
+				ProcedureInductionIntervalHours: 1, // ADR-0094 scheduler ON hourly (owner default 2026-08-11); 0 disables
 				ProcedureMinSamples:             2,
 				ProcedureMaxEpisodesPerPass:     500,
 				ProcedureDeprecateBelow:         0.3, // ADR-0049 A2.3 failure-precedent gate
 			},
 			Retrieval: RetrievalConfig{
-				RetrievalFloor:           0.2,
-				RecallSpreadingEnabled:   true, // ADR-0049 D10: spreading reads the Hebbian co_activated edges
-				RecallSimilarityFloor:    0.25,
+				RetrievalFloor:         0.2,
+				RecallSpreadingEnabled: true, // ADR-0049 D10: spreading reads the Hebbian co_activated edges
+				// 0 = no similarity floor (owner default 2026-08-11, promoted with
+				// the whole tuned retrieval stack below: the floor cost recall and
+				// the blend re-ranks what a floor used to cut).
+				RecallSimilarityFloor:    0,
 				HebbianEnabled:           true,
 				HebbianLearningRate:      0.05,
 				HebbianMaxWeight:         0.9,
 				HebbianCoActivationFloor: 0.5,
 				HebbianTopN:              5,
-				HebbianDecayPerDay:       0.95,
-				HebbianBaseWeight:        0.2,
-				KG2RAGEnabled:            true,  // ADR-0053 D3: KG²RAG one-hop expansion; opt-out via config.json
-				AnchorConstraintEnabled:  true,  // ADR-0053: document-local anchor promotion; opt-out via config.json
-				StructureGraphEnabled:    true,  // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
-				AgenticRetrievalEnabled:  false, // AGENTIC_RETRIEVAL_SPEC: opt-in agentic retrieval loop; A/B via config
-				AgenticMaxHops:           1,     // Phase 2a: plan once, retrieve once
-				KG2RAGMaxHops:            1,     // one-hop, KG²RAG paper default
-				KG2RAGMaxExpanded:        20,    // cap on chunks added by expansion
-				KG2RAGMaxEntities:        30,    // cap on entities walked per hop
-				KG2RAGPerEntity:          5,     // cap on chunks pulled per entity
+				HebbianDecayPerDay:      0.95,
+				HebbianBaseWeight:       0.2,
+				KG2RAGEnabled:           true, // ADR-0053 D3: KG²RAG expansion; opt-out via config.json
+				AnchorConstraintEnabled: true, // ADR-0053: document-local anchor promotion; opt-out via config.json
+				StructureGraphEnabled:   true, // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
+
+				// ── The tuned retrieval stack, promoted to shipped defaults ──
+				// Owner decision 2026-08-11: the operating config's measured-best
+				// values become the product defaults (they had lived only in a
+				// gitignored local file). The experimental-off era of these flags
+				// ended with that call; opt-OUT is via config or the store.
+				AgenticRetrievalEnabled: true,
+				AgenticMaxHops:          4,
+				AgenticDecomposeEnabled: true, // grounded decomposition — the one agentic lever that measured a win
+				AgenticPlannerModel:     "llm:deepseek",
+				HybridSearchEnabled:     true, // dense+lexical RRF fusion (ADR-0054)
+				HybridRRFK:              60,
+				HybridLexicalWeight:     1,
+				HnswEfSearch:            120,
+				QueryEntitySeedingEnabled: true,
+				RecallTopK:                100,
+				RecallOverFetch:           100,
+				RerankerTopK:              100, // the TechQA global-rerank depth; reranker itself stays opt-in
+				RerankerWeight:            0.5,
+				BlendEnabled:              true, // ADR-0054 Stage-A blend
+				BlendWeightCosine:         0.4,
+				BlendWeightLexical:        0.2,
+				BlendWeightCoherence:      0.05,
+				BlendWeightConfidence:     0.1,
+
+				KG2RAGMaxHops:     2,
+				KG2RAGMaxExpanded: 40,
+				KG2RAGMaxEntities: 30, // cap on entities walked per hop
+				KG2RAGPerEntity:   10,
 			},
 			Workspace: WorkspaceConfig{
 				WorkspaceMinFactCosine:    0.60,
@@ -1511,6 +1549,11 @@ func DefaultConfig() *Config {
 				UseGlobalWorkspace:        true,
 			},
 			Ingestion: IngestionConfig{
+				// Owner defaults 2026-08-11: content-first evidence capture
+				// (ADR-0105) and the deterministic no-LLM triplet extractor are
+				// part of the product, not options a fresh install must discover.
+				EvidenceCaptureEnabled:     true,
+				KgExtractorEnabled:         true,
 				EdgeExtractionBatchSize:    16,
 				EdgeExtractionMaxIdleMs:    2000,
 				EdgeExtractionQueueSize:    4096,
@@ -1535,6 +1578,13 @@ func DefaultConfig() *Config {
 				HippocampusDefaultPolicy: "default",
 			},
 			Agents: AgentsConfig{
+				// AgentEnvPassthrough deliberately stays EMPTY (owner rule
+				// 2026-08-11): a knob that reaches agents through the kernel's
+				// own environment depends on .env, and knobs never do. The one
+				// entry the rig used it for (CAMBRIAN_TOOL_MENU_K) became the
+				// real config key execution.tools.tool_menu_k, which the kernel
+				// injects into agent environments itself. The seam remains for
+				// genuine deployment extras.
 				DaemonRestartMaxAttempts:   5, // REACT-04: auto-restart on, crash-loop → quarantine
 				DaemonRestartWindowSeconds: 300,
 				DaemonRestartBaseBackoffMs: 1000,
@@ -1556,6 +1606,21 @@ func DefaultConfig() *Config {
 			LLM: LLMConfig{
 				LLMGatewayMaxConcurrency: 20,
 				LLMGatewayRetryBackoffMs: 100,
+				// TracePipelinePayloads deliberately NOT promoted with the rest of
+				// the 2026-08-11 defaults: its own doc comment names the reason —
+				// item values are real deployment data, and a default that ships
+				// them to the operator plane turns a diagnostic view into an
+				// exfiltration surface. The rig keeps it on via tuning.local.json.
+			},
+			Chat: ChatConfig{
+				// ADR-0084 conversation lane ON by default (owner 2026-08-11):
+				// a kernel with chat_pool_size 0 hides the whole chat surface.
+				ChatPoolSize:      2,
+				ChatPoolQueueSize: 8,
+				ChatPoolAgentID:   "chat_agent",
+			},
+			Pipelines: PipelinesConfig{
+				DrainerEnabled: true, // owner default 2026-08-11
 			},
 			Graph: GraphConfig{
 				DecayFactor:            0.75,
@@ -1575,8 +1640,32 @@ func DefaultConfig() *Config {
 		AgentPool: AgentPoolConfig{
 			DefaultAgentTimeoutMs: 30000,
 		},
+		// A fresh install now embeds out of the box (owner default 2026-08-11:
+		// promoted from the operating embedder.json). Before this the default
+		// embedder was EMPTY and dimensions 0 — which the vector store refuses
+		// to boot on — so a kernel without an embedder.json could not start.
+		// bge-large is asymmetric: the query prefix goes on QUERY text only.
 		Embedder: EmbedderConfig{
+			Provider:            "ollama",
+			Model:               "bge-large",
+			Endpoint:            "http://localhost:11434",
+			Dimensions:          1024,
+			TimeoutMs:           10000,
+			QueryPrefix:         "Represent this sentence for searching relevant passages: ",
 			SupportsLongContext: false,
+		},
+		LLMProvider: LLMProviderConfig{
+			// The circuit-breaker values LoadConfig was already filling post-merge,
+			// stated where every other default lives; and the measured-safe global
+			// concurrency cap for local endpoints (owner default 2026-08-11).
+			// Deliberately NO default generator id and NO generator list here — a
+			// default id would boot-brick any deployment declaring generators
+			// without that id, and generators are deployment facts, not defaults.
+			Health:         HealthConfig{FailureThreshold: 3, CooldownMs: 30000},
+			MaxConcurrency: 3,
+		},
+		MCP: MCPConfig{
+			CallTimeoutMs: 60000, // owner default 2026-08-11; 0 meant NO per-call deadline
 		},
 		Chunker: ChunkerConfig{
 			Default:   "option_c",

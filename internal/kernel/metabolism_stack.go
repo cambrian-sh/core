@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -74,6 +75,12 @@ func NewMetabolismStack(
 	// SEC-01: spawned agents get a deny-by-default environment (OS essentials +
 	// the operator's non-secret passthrough); the kernel's API keys never leak.
 	manager.SetEnvPassthrough(cfg.Execution.Agents.AgentEnvPassthrough)
+	// Config-derived agent env: values the kernel SETS from config rather than
+	// passing through from its own environment — a knob must never depend on
+	// .env (owner rule 2026-08-11). 0 ⇒ the SDK's built-in default, no var set.
+	if k := cfg.Execution.Tools.ToolMenuK; k > 0 {
+		manager.SetEnvExtras([]string{fmt.Sprintf("CAMBRIAN_TOOL_MENU_K=%d", k)})
+	}
 	// SEC-01: cap agent memory (0 = disabled) so a runaway agent is killed at its
 	// cap instead of OOMing the kernel host.
 	manager.SetAgentMemoryLimitMB(cfg.Execution.Agents.AgentMemoryLimitMB)

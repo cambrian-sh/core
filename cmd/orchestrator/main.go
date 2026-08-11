@@ -31,6 +31,20 @@ func main() {
 		}
 		return
 	}
+	// ADR-0122: the binary is its own installer and lifecycle manager. `setup`
+	// bootstraps dependencies + config + migrations, then starts and
+	// health-verifies the kernel; `status`/`stop` manage the detached kernel a
+	// setup run left behind.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "setup":
+			os.Exit(app.RunSetup(context.Background(), os.Args[2:]))
+		case "status":
+			os.Exit(app.RunStatus(context.Background()))
+		case "stop":
+			os.Exit(app.RunStop(context.Background()))
+		}
+	}
 	if err := app.Run(context.Background(), app.DefaultOptions()); err != nil {
 		var cfgErr *config.ConfigError
 		if errors.As(err, &cfgErr) {
