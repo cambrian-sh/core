@@ -153,11 +153,15 @@ func (c LLMProviderConfig) validate(embedder EmbedderConfig) []string {
 		errs = append(errs, fmt.Sprintf("llm_provider.default %q is not a declared generator id", c.Default))
 	}
 
-	for role, id := range c.Roles {
-		if !ids[id] {
-			errs = append(errs, fmt.Sprintf("llm_provider.roles[%q] = %q is not a declared generator id", role, id))
-		}
-	}
+	// A role naming an unknown generator is deliberately NOT a boot error
+	// (contract 0096). The runtime tolerates it by design — the failover ladder
+	// serves the role from the default, ListRoleAssignments reports
+	// resolved=false, and NewProvider logs a warning naming the role. Refusing
+	// to boot was survivable while roles could only come from files, but roles
+	// now also live in the ADR-0101 store: a file edit that removes a generator
+	// a STORED role points at would otherwise brick the kernel, and the console
+	// that could fix the store needs the kernel up. (`llm_provider.default` and
+	// generator ids stay hard errors — the ladder cannot recover from those.)
 
 	if embedder.Model == "" {
 		errs = append(errs, "embedder.model is required when llm_provider is configured")

@@ -28,6 +28,13 @@ type GeneratorWriter interface {
 	// caller is naming a specific thing they believe exists, and silence there
 	// hides a typo that leaves the real generator running.
 	RemoveGenerator(id string) (ConfigWriteOutcome, error)
+
+	// SetRoleAssignment durably binds a system role to a generator id and, when
+	// the provider is live, applies it to the running kernel (contract 0096).
+	// The implementation must refuse an id that names no configured generator —
+	// a dangling role stored here would silently route the organ to the default
+	// while the console shows the name the operator typed.
+	SetRoleAssignment(role, generatorID string) (ConfigWriteOutcome, error)
 }
 
 // GeneratorSpec is the DECLARED half of a generator — what an operator authors.
@@ -90,6 +97,38 @@ func (s *Service) SaveGenerator(ctx context.Context, req *pb.SaveGeneratorOpRequ
 		func() error {
 			var applyErr error
 			outcome, applyErr = s.generatorWriter.SaveGenerator(spec)
+			return applyErr
+		})
+	if err != nil {
+		return nil, err
+	}
+	return &pb.SetConfigOpResponse{
+		CommandId: ack.GetCommandId(),
+		Deduped:   ack.GetDeduped(),
+		Outcomes:  outcomesToOp([]ConfigWriteOutcome{outcome}),
+	}, nil
+}
+
+// SetRoleAssignment binds a system organ to the generator that serves it.
+// Mutating: command_id + reason, audited, idempotent on command_id.
+func (s *Service) SetRoleAssignment(ctx context.Context, req *pb.SetRoleAssignmentOpRequest) (*pb.SetConfigOpResponse, error) {
+	if s.generatorWriter == nil {
+		return nil, status.Error(codes.Unimplemented, "this kernel cannot persist role assignments")
+	}
+	if req.GetRole() == "" {
+		return nil, status.Error(codes.InvalidArgument, "role is required")
+	}
+	if req.GetGeneratorId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "generator_id is required")
+	}
+
+	var outcome ConfigWriteOutcome
+	ack, err := s.runMutation(ctx, req.GetCommandId(), req.GetReason(),
+		"set_role_assignment", "role", req.GetRole(),
+		"role "+req.GetRole()+" → "+req.GetGeneratorId(),
+		func() error {
+			var applyErr error
+			outcome, applyErr = s.generatorWriter.SetRoleAssignment(req.GetRole(), req.GetGeneratorId())
 			return applyErr
 		})
 	if err != nil {

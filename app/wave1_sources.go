@@ -78,24 +78,43 @@ func (c checkpointLister) ResumableAt(runID string, stepIndex int) bool {
 // ── MCP registry ─────────────────────────────────────────────────────────────
 
 type mcpLister struct {
-	servers   []mcp.ServerConfig
+	// runtime is the LIVE list (contract 0097): boot config plus every runtime
+	// save. Reading a boot-time slice here would show a console the state it
+	// just changed.
+	runtime   *mcpRuntime
 	connector *mcp.Connector
 	// toolsFor counts the tools currently attributed to a server id.
 	toolsFor func(serverID string) int
+	// secrets answers "is a token installed, and where from?" without carrying
+	// it. nil ⇒ report env-var presence only.
+	secrets *storage.BoltConfigStore
 }
 
-func (m mcpLister) MCPConfigured() bool { return m.servers != nil }
+// MCPConfigured is true whenever the runtime exists — since contract 0097 the
+// MCP substrate is always constructed, and "zero servers" is an ordinary state
+// the console renders with its add affordance, not an absent subsystem.
+func (m mcpLister) MCPConfigured() bool { return m.runtime != nil }
 
 func (m mcpLister) MCPServers() []operator.MCPServerInfo {
-	out := make([]operator.MCPServerInfo, 0, len(m.servers))
-	for _, s := range m.servers {
+	var servers []mcp.ServerConfig
+	if m.runtime != nil {
+		servers = m.runtime.list()
+	}
+	out := make([]operator.MCPServerInfo, 0, len(servers))
+	for _, s := range servers {
 		info := operator.MCPServerInfo{
-			Name:      s.ID,
-			Transport: s.Transport,
+			Name:               s.ID,
+			Transport:          s.Transport,
+			Endpoint:           s.Endpoint,
+			Args:               s.Args,
+			AuthType:           s.AuthType,
+			AuthHeader:         s.AuthHeader,
+			ClassificationTags: s.DefaultClassificationTags,
 		}
-		// Endpoint carries a URL for http and a command for stdio. Split them so
-		// the console never renders a shell command as a link.
-		if strings.EqualFold(s.Transport, "http") {
+		info.TokenConfigured, info.TokenSource = m.tokenFacts(s)
+		// Endpoint carries a URL for http/sse and a command for stdio. Split them
+		// so the console never renders a shell command as a link.
+		if strings.EqualFold(s.Transport, "http") || strings.EqualFold(s.Transport, "sse") {
 			info.URL = s.Endpoint
 		} else {
 			info.Command = strings.TrimSpace(s.Endpoint + " " + strings.Join(s.Args, " "))
@@ -116,6 +135,19 @@ func (m mcpLister) MCPServers() []operator.MCPServerInfo {
 		out = append(out, info)
 	}
 	return out
+}
+
+// tokenFacts mirrors generatorRegistry.keyFacts: it reports the source the
+// connector will actually use (env first, store second — the mcp.tokenFor
+// precedence), never the credential.
+func (m mcpLister) tokenFacts(s mcp.ServerConfig) (configured bool, source string) {
+	if s.AuthTokenEnv != "" && os.Getenv(s.AuthTokenEnv) != "" {
+		return true, "env:" + s.AuthTokenEnv
+	}
+	if m.secrets != nil && m.secrets.Configured(mcp.TokenSecretName(s.ID)) {
+		return true, "store"
+	}
+	return false, ""
 }
 
 // ── embedding ────────────────────────────────────────────────────────────────
@@ -240,8 +272,16 @@ func (g generatorRegistry) keyFacts(gen config.GeneratorConfig) (configured bool
 }
 
 // RoleAssignments reports which generator serves each system organ.
+//
+// Read from the PROVIDER's live map when one exists, not the boot config: a
+// SetRoleAssignment hot-applies there (contract 0096), and a console that
+// re-reads after saving must see the assignment it just made, not the boot
+// state it just changed.
 func (g generatorRegistry) RoleAssignments() []operator.RoleAssignment {
 	roles := g.cfg.Roles
+	if g.provider != nil {
+		roles = g.provider.Roles()
+	}
 	out := make([]operator.RoleAssignment, 0, len(roles))
 	// Sorted so the console renders a stable order rather than Go's map order.
 	names := make([]string, 0, len(roles))

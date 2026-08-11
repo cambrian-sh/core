@@ -464,7 +464,7 @@ func TestDefaultConfig_KnownValues(t *testing.T) {
 	}{
 		{"EWMAAlpha", ex.Supervision.EWMAAlpha, 0.5},
 		{"StepTimeoutMultiplier", ex.Plan.StepTimeoutMultiplier, 2.0},
-		{"PlanTimeoutMs", ex.Plan.PlanTimeoutMs, 120000},
+		{"PlanTimeoutMs", ex.Plan.PlanTimeoutMs, 600000},
 		{"FallbackEnabled", ex.Plan.FallbackEnabled, true},
 		{"GatekeeperW1", ex.Gatekeeper.GatekeeperW1, 0.4},
 		{"GatekeeperW4", ex.Gatekeeper.GatekeeperW4, 0.15},

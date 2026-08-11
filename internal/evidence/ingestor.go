@@ -96,9 +96,16 @@ func (i *Ingestor) Ingest(ctx context.Context, raw Raw) (id domain.EvidenceID, i
 		ContentHash:    cid,
 		ContentBytes:   int64(len(raw.Bytes)),
 		Classification: raw.Classification,
-		Cursor:         raw.Cursor,
-		TraceID:        raw.TraceID,
-		RevisesID:      raw.RevisesID,
+		// Parties travels with Classification and for the same reason: both are
+		// derived at the ingress, and both are meaningless if they do not reach
+		// the row the policy filters. Omitting it here dropped every derived
+		// party silently — the rules resolved, the delivery carried them, the
+		// column existed and the INSERT bound it, and `evidence.parties` was
+		// empty on every row in the deployment (ADR-0121).
+		Parties:   raw.Parties,
+		Cursor:    raw.Cursor,
+		TraceID:   raw.TraceID,
+		RevisesID: raw.RevisesID,
 	})
 	if err != nil {
 		// The blob may now be an orphan. That is the deliberate trade (harmless

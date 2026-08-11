@@ -171,11 +171,18 @@ type Kernel struct {
 	// ADR-0039: tool grants store (operator sets grants via the admin endpoint).
 	ToolGrants *domain.InMemoryGrantsStore
 
-	// ADR-0043: live MCP server connections (nil when no servers configured).
+	// ADR-0043: live MCP server connections. Constructed UNCONDITIONALLY since
+	// contract 0097: a kernel booted with zero MCP servers must still be able to
+	// hot-attach its first one from the console, and the connector is a map and
+	// a client — the cost of always having it is nothing.
 	MCPConnector *mcp.Connector
 	// ADR-0043 D8 / ADR-0044: health/reconnect inputs for the background Watch loop.
 	MCPSink    mcp.ToolSink
 	MCPServers []mcp.ServerConfig
+	// MCPRuntime is the LIVE server list — boot config plus every runtime save
+	// (contract 0097). The operator list read and the write path share it, so a
+	// console re-read after a save shows the server it just added.
+	MCPRuntime *mcpRuntime
 
 	// ── Contract 0072 (Wave 1) sources ───────────────────────────────────────
 	// Carried on the Kernel because they are constructed in bootstrapKernel but
@@ -415,6 +422,10 @@ func Run(ctx context.Context, opts Options) error {
 	// ever read what had been saved.
 	if cfgStore != nil {
 		llm.SetSecretResolver(cfgStore)
+		// Contract 0097: MCP connectors resolve their tokens the same way (env
+		// first, store second), so a token saved from the console is presented
+		// on the very next (re)connect.
+		mcp.SetSecretResolver(cfgStore)
 		// ADR-0112: the plugin-facing named-secret seam reads the same store.
 		// Inside this guard on purpose — boxing a typed-nil *BoltConfigStore
 		// into the holder's interface would re-create the trap
@@ -1023,6 +1034,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// producer side is missing fails in the quietest possible way, which
 		// is why both halves are wired on adjacent lines now.
 		RegisterIngressDeregistrar:    func(d domain.IngressDeregistrar) { ingressDeregistrars.Store(&d) },
+		RegisterIngressRegistrar:      func(r domain.IngressRegistrar) { ingressRegistrars.Store(&r) },
 		RegisterIngressSchemaDeclarer: func(d domain.IngressSchemaDeclarer) { ingressSchemaDeclarers.Store(&d) },
 		RegisterTurnRouter:            func(r domain.TurnRouter) { turnRouters.Store(&r) },
 		RegisterAgent: func(def domain.AgentDefinition) error {
@@ -1061,6 +1073,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 				return nil // no registry in this build; nothing to declare on
 			}
 			return (*p).DeclareIngressSchema(ctx, agentID, fields)
+		},
+		// Declaring an entry organ (ADR-0090 D2), resolved at call time like its
+		// siblings. A no-op without a registry, which keeps an OSS kernel and a
+		// registry-less build working exactly as before.
+		RegisterIngress: func(ctx context.Context, reg domain.IngressRegistration) error {
+			p := ingressRegistrars.Load()
+			if p == nil || *p == nil {
+				return nil // no registry in this build; nothing to register with
+			}
+			return (*p).RegisterIngress(ctx, reg)
 		},
 		RetireIngressPipeline: func(ctx context.Context, agentID string) error {
 			p := ingressPipelineRetirers.Load()
@@ -1377,73 +1399,59 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// the registry as mcp:<server>/<tool>, and expose the MCP handler. Opt-in —
 	// no servers configured ⇒ mcpHandler stays nil and nothing changes. A server
 	// that fails to connect is skipped (graceful degradation, D8).
-	var mcpHandler domain.ToolHandler
-	var mcpConnector *mcp.Connector
-	var mcpPricing domain.ToolPricingSource
-	var mcpBudget *domain.BudgetLedger
-	var mcpAuditor domain.EgressAuditor
-	var mcpServers []mcp.ServerConfig
-	if len(cfg.MCP.Servers) > 0 || len(composed.mcpServers) > 0 {
-		mcpConnector = mcp.NewConnector()
-		servers := make([]mcp.ServerConfig, 0, len(cfg.MCP.Servers)+len(composed.mcpServers))
-		pricing := domain.MapPricingSource{}
-		// ADR-0075: plugin-contributed MCP servers connect alongside the config ones.
-		for _, s := range composed.mcpServers {
-			toolPolicy := make(map[string]mcp.ToolPolicy, len(s.Tools))
-			for _, tc := range s.Tools {
-				toolPolicy[tc.Name] = mcp.ToolPolicy{Dangerous: tc.Dangerous, DataWriteKinds: tc.DataWriteKinds}
-			}
-			servers = append(servers, mcp.ServerConfig{
-				ID: s.ID, Transport: s.Transport, Endpoint: s.Endpoint, Args: s.Args,
-				AuthType: s.AuthType, AuthHeader: s.AuthHeader, AuthTokenEnv: s.AuthTokenEnv,
-				Tools: toolPolicy,
-			})
-			slog.Info("ADR-0075: registering plugin MCP server", "id", s.ID, "transport", s.Transport)
+	// Contract 0097: the whole MCP substrate is constructed UNCONDITIONALLY —
+	// connector, handler, budget, auditor — because a kernel booted with zero
+	// servers must be able to hot-attach its first one from the console, and
+	// none of these cost anything while idle.
+	mcpConnector := mcp.NewConnector()
+	mcpPricingMap := domain.MapPricingSource{}
+	servers := make([]mcp.ServerConfig, 0, len(cfg.MCP.Servers)+len(composed.mcpServers))
+	// ADR-0075: plugin-contributed MCP servers connect alongside the config ones.
+	for _, s := range composed.mcpServers {
+		toolPolicy := make(map[string]mcp.ToolPolicy, len(s.Tools))
+		for _, tc := range s.Tools {
+			toolPolicy[tc.Name] = mcp.ToolPolicy{Dangerous: tc.Dangerous, DataWriteKinds: tc.DataWriteKinds}
 		}
-		for _, s := range cfg.MCP.Servers {
-			// ADR-0085 D2: a domain-bound integration tags every tool it advertises, so a
-			// policy has something to act on. Without this, dynamically discovered tools
-			// arrive untagged and no predicate can restrict them.
-			if len(s.ClassificationTags) > 0 {
-				slog.Info("ADR-0085: MCP server tools classified",
-					"server", s.ID, "tags", s.ClassificationTags)
-			}
-			toolPolicy := make(map[string]mcp.ToolPolicy, len(s.Tools))
-			for _, tc := range s.Tools {
-				toolPolicy[tc.Name] = mcp.ToolPolicy{
-					Dangerous:          tc.Dangerous,
-					DataWriteKinds:     tc.DataWriteKinds,
-					ClassificationTags: tc.ClassificationTags,
-				}
-				if tc.Pricing.Kind != "" {
-					pricing["mcp:"+s.ID+"/"+tc.Name] = domain.ToolPricing{
-						Kind:            domain.PricingKind(tc.Pricing.Kind),
-						UnitCost:        tc.Pricing.UnitCost,
-						MaxUnitsPerCall: tc.Pricing.MaxUnitsPerCall,
-						ChargeOnFailure: domain.FailureCharge(tc.Pricing.ChargeOnFailure),
-					}
-				}
-			}
-			servers = append(servers, mcp.ServerConfig{
-				ID: s.ID, Transport: s.Transport, Endpoint: s.Endpoint, Args: s.Args,
-				AuthType: s.Auth.Type, AuthHeader: s.Auth.Header, AuthTokenEnv: s.Auth.TokenEnv,
-				Tools:                     toolPolicy,
-				DefaultClassificationTags: s.ClassificationTags,
-			})
-		}
-		mcpServers = servers
-		for _, t := range mcpConnector.ConnectAll(ctx, servers) {
-			toolReg.Register(t)
-		}
-		mcpHandler = &mcp.Handler{
-			Sessions:    mcpConnector,
-			CallTimeout: time.Duration(cfg.MCP.CallTimeoutMs) * time.Millisecond,
-		}
-		mcpPricing = pricing
-		mcpBudget = domain.NewBudgetLedger()
-		mcpBudget.DefaultCap = cfg.MCP.DefaultSessionBudget // 0 ⇒ tracked but unbounded
-		mcpAuditor = mcp.SlogEgressAuditor{}
+		servers = append(servers, mcp.ServerConfig{
+			ID: s.ID, Transport: s.Transport, Endpoint: s.Endpoint, Args: s.Args,
+			AuthType: s.AuthType, AuthHeader: s.AuthHeader, AuthTokenEnv: s.AuthTokenEnv,
+			Tools: toolPolicy,
+		})
+		slog.Info("ADR-0075: registering plugin MCP server", "id", s.ID, "transport", s.Transport)
 	}
+	for _, s := range cfg.MCP.Servers {
+		// ADR-0085 D2: a domain-bound integration tags every tool it advertises, so a
+		// policy has something to act on. Without this, dynamically discovered tools
+		// arrive untagged and no predicate can restrict them.
+		if len(s.ClassificationTags) > 0 {
+			slog.Info("ADR-0085: MCP server tools classified",
+				"server", s.ID, "tags", s.ClassificationTags)
+		}
+		for _, tc := range s.Tools {
+			if tc.Pricing.Kind != "" {
+				mcpPricingMap["mcp:"+s.ID+"/"+tc.Name] = domain.ToolPricing{
+					Kind:            domain.PricingKind(tc.Pricing.Kind),
+					UnitCost:        tc.Pricing.UnitCost,
+					MaxUnitsPerCall: tc.Pricing.MaxUnitsPerCall,
+					ChargeOnFailure: domain.FailureCharge(tc.Pricing.ChargeOnFailure),
+				}
+			}
+		}
+		servers = append(servers, mcpServerFromConfig(s))
+	}
+	mcpServers := servers
+	mcpRT := &mcpRuntime{servers: append([]mcp.ServerConfig(nil), servers...)}
+	for _, t := range mcpConnector.ConnectAll(ctx, servers) {
+		toolReg.Register(t)
+	}
+	mcpHandler := domain.ToolHandler(&mcp.Handler{
+		Sessions:    mcpConnector,
+		CallTimeout: time.Duration(cfg.MCP.CallTimeoutMs) * time.Millisecond,
+	})
+	mcpPricing := domain.ToolPricingSource(mcpPricingMap)
+	mcpBudget := domain.NewBudgetLedger()
+	mcpBudget.DefaultCap = cfg.MCP.DefaultSessionBudget // 0 ⇒ tracked but unbounded
+	mcpAuditor := domain.EgressAuditor(mcp.SlogEgressAuditor{})
 
 	toolGrants := domain.NewInMemoryGrantsStore()
 	toolApproval := domain.NewInMemoryApprovalController(60 * time.Second)
@@ -1803,6 +1811,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		MCPConnector:       mcpConnector,
 		MCPSink:            mcpSink,
 		MCPServers:         mcpServers,
+		MCPRuntime:         mcpRT,
 	}, nil
 }
 
@@ -1846,7 +1855,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	// ADR-0043 D8 / ADR-0044: MCP server health + reconnect loop. On a drop it
 	// removes the server's tools from the menu + index; on reconnect it re-discovers
 	// and re-indexes (re-sync). No-op when no MCP servers are configured.
-	if k.MCPConnector != nil && k.MCPSink != nil && len(k.MCPServers) > 0 {
+	// Started even with ZERO configured servers (contract 0097): Watch blocks on
+	// ctx and hosts the lifecycle that runtime-saved servers attach their
+	// health loops under — gating it on the boot list would leave the first
+	// console-added server of an MCP-less kernel unwatched.
+	if k.MCPConnector != nil && k.MCPSink != nil {
 		g.Go(func() error {
 			k.MCPConnector.Watch(ctx, k.MCPServers, k.MCPSink, 30*time.Second)
 			return nil
@@ -2081,11 +2094,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if src, ok := k.CheckpointSource.(checkpointSource); ok && src != nil {
 			cpLister = checkpointLister{src: src}
 		}
-		if k.MCPServers != nil {
+		if k.MCPRuntime != nil {
 			mcpSource = mcpLister{
-				servers:   k.MCPServers,
+				runtime:   k.MCPRuntime,
 				connector: k.MCPConnector,
 				toolsFor:  k.mcpToolCounter(),
+				secrets:   k.ConfigStore,
 			}
 		}
 		embedSrc = embeddingReporter{cfg: k.Config.Embedder, counter: k.VectorCounter}
@@ -2183,6 +2197,20 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 					generatorList: func() []config.GeneratorConfig {
 						return k.Config.LLMProvider.Generators
 					},
+					defaultGeneratorID: func() string {
+						return k.Config.LLMProvider.Default
+					},
+				}
+				// Contract 0096: role writes hot-apply onto the live provider —
+				// resolution reads the role map per call, so the next call the
+				// organ makes goes to the new generator, no restart. Left nil
+				// (restart_required) when no provider is configured.
+				if k.LLMProvider != nil {
+					writer.liveRoles = k.LLMProvider.Roles
+					writer.applyRole = func(role, id string) bool {
+						k.LLMProvider.SetRole(role, id)
+						return true
+					}
 				}
 				operatorSvc.SetConfigWriter(writer)
 				operatorSvc.SetSecretWriter(writer)
@@ -2190,6 +2218,44 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				// store, same shadowing rules — the console's Save button now
 				// has somewhere to land other than a gitignored config file.
 				operatorSvc.SetGeneratorWriter(writer)
+
+				// Contract 0097: the MCP write half. The apply closures capture
+				// the KERNEL's ctx, never the RPC's — a health loop parented on
+				// a request context would die when the save returned.
+				kernelCtx := ctx
+				writer.mcpServerList = func() []config.MCPServerConfig {
+					return k.Config.MCP.Servers
+				}
+				if k.MCPConnector != nil && k.MCPRuntime != nil {
+					writer.applyMCPServer = func(s config.MCPServerConfig) bool {
+						sc := mcpServerFromConfig(s)
+						k.MCPRuntime.upsert(sc)
+						k.MCPConnector.AddServer(kernelCtx, sc, k.MCPSink, 30*time.Second)
+						return true
+					}
+					writer.detachMCPServer = func(id string) bool {
+						k.MCPRuntime.remove(id)
+						k.MCPConnector.RemoveServer(kernelCtx, id, k.MCPSink)
+						return true
+					}
+					writer.bounceMCPServer = func(id string) bool {
+						sc, ok := k.MCPRuntime.get(id)
+						if !ok {
+							// Configured in the store but not armed on this kernel —
+							// nothing live to bounce; the next boot picks the token up.
+							return false
+						}
+						k.MCPConnector.AddServer(kernelCtx, sc, k.MCPSink, 30*time.Second)
+						return true
+					}
+					writer.probeMCPServer = func(ctx context.Context, s config.MCPServerConfig) operator.MCPTestResult {
+						r := mcp.Probe(ctx, mcpServerFromConfig(s))
+						return operator.MCPTestResult{
+							OK: r.OK, LatencyMs: r.LatencyMs, ToolNames: r.ToolNames, Error: r.Err,
+						}
+					}
+				}
+				operatorSvc.SetMCPWriter(writer)
 			}
 		}
 
@@ -2401,7 +2467,18 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Logs != nil {
 			operatorSvc.SetLogRing(k.Logs)
 		}
-		operatorSvc.SetHandshake("0.6.9-alpha", "0093", operatorCaps)
+		// Contract 0096: SetRoleAssignment — the WRITE half of ListRoleAssignments.
+		// Lands on the ADR-0101 store (per-role keys, so file-configured roles
+		// compose) and hot-applies onto the live provider, so the effect is `live`.
+		// RemoveGenerator now refuses to remove the global default or a generator a
+		// role points at — the states that would refuse to boot, or silently
+		// reroute an organ, on the next restart.
+		// Contract 0097: the MCP server write half — SaveMCPServer/RemoveMCPServer
+		// on the store with LIVE attach/detach through the connector,
+		// SetMCPServerToken/ClearMCPServerToken (write-only, bounce-on-set), and
+		// TestMCPServer (ephemeral probe of a possibly-unsaved spec). MCPServerOp
+		// gains the declared half + token facts.
+		operatorSvc.SetHandshake("0.6.9-alpha", "0097", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".
@@ -3240,6 +3317,11 @@ var ingressDeregistrars atomic.Pointer[domain.IngressDeregistrar]
 // ingressSchemaDeclarers holds the schema half of the ADR-0090 registry
 // (ADR-0117): a plugin that owns an entry point declares what its items carry.
 var ingressSchemaDeclarers atomic.Pointer[domain.IngressSchemaDeclarer]
+
+// ingressRegistrars holds the CREATE half of the ADR-0090 registry. Its three
+// siblings were wired long before it, which is how a deployment ended up able to
+// withdraw an entry point it had no way to create.
+var ingressRegistrars atomic.Pointer[domain.IngressRegistrar]
 
 // ingressListers holds the ADR-0090 ingress registry a plugin registers.
 //

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
+	"sync"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -16,10 +18,15 @@ import (
 // system roles read deterministic role config; agent steps consult the EFE
 // preference hook (wired in 0042-08). The Provider only gates on health.
 type Provider struct {
-	registry  *GeneratorRegistry
-	breaker   *CircuitBreaker
-	ledger    *PriceLedger
-	roles     map[string]string // role (Purpose) -> generator id
+	registry *GeneratorRegistry
+	breaker  *CircuitBreaker
+	ledger   *PriceLedger
+	// roles maps role (Purpose) -> generator id. Guarded by rolesMu: the map is
+	// read on every system-organ call and written by the operator plane's
+	// SetRoleAssignment (contract 0096), which is what makes a role change take
+	// effect on the next call rather than the next boot.
+	roles     map[string]string
+	rolesMu   sync.RWMutex
 	defaultID string
 	allIDs    []string
 	capIndex  map[string][]string
@@ -70,11 +77,26 @@ func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger) (*Provider, err
 	if maxConc > 0 {
 		sem = make(chan struct{}, maxConc)
 	}
+	// Copied, not aliased: the map is mutated by SetRole under the Provider's
+	// own lock, and mutating the caller's config struct through a shared map
+	// would let a later config read observe a value no file ever stated.
+	roles := make(map[string]string, len(cfg.Roles))
+	for r, id := range cfg.Roles {
+		roles[r] = id
+		// A role naming an unknown generator is TOLERATED (the ladder falls back
+		// to the default, ListRoleAssignments reports resolved=false) but never
+		// silent: without this line the only symptom is the wrong model serving
+		// an organ, which reads as a quality problem rather than a config one.
+		if _, ok := reg.Lookup(id); !ok {
+			log.Warn("llm provider: role names an unknown generator; the default will serve it",
+				"role", r, "generator", id, "default", cfg.Default)
+		}
+	}
 	return &Provider{
 		registry:  reg,
 		breaker:   NewCircuitBreaker(cfg.Health.FailureThreshold, cooldown),
 		ledger:    SeedPriceLedger(cfg.Generators),
-		roles:     cfg.Roles,
+		roles:     roles,
 		defaultID: cfg.Default,
 		allIDs:    reg.IDs(),
 		capIndex:  reg.CapabilityIndex(),
@@ -237,7 +259,10 @@ func (p *Provider) preferenceFor(ctx context.Context, req domain.LLMRequest) []s
 		return nil
 	}
 	// System role: deterministic role -> id (Zero-Hardcode-legal; roles are not agents).
-	if id, ok := p.roles[string(req.Purpose)]; ok {
+	p.rolesMu.RLock()
+	id, ok := p.roles[string(req.Purpose)]
+	p.rolesMu.RUnlock()
+	if ok {
 		return []string{id}
 	}
 	return nil
@@ -349,11 +374,25 @@ func (p *Provider) BreakerState(id string) string {
 // Roles returns the role → generator-id map (planner/verifier/router/interview/
 // memory). Copied, so a caller cannot mutate the Provider's routing table.
 func (p *Provider) Roles() map[string]string {
+	p.rolesMu.RLock()
+	defer p.rolesMu.RUnlock()
 	out := make(map[string]string, len(p.roles))
-	for k, v := range p.roles {
-		out[k] = v
-	}
+	maps.Copy(out, p.roles)
 	return out
+}
+
+// SetRole rebinds one system role to a generator id, effective on the NEXT call
+// that organ makes — resolution reads this map per call, so nothing in flight
+// moves. This is the live half of the operator plane's SetRoleAssignment
+// (contract 0096); durability is the store's job, not this method's.
+//
+// Validation (does the id name a real generator?) belongs to the write path,
+// which can refuse; here an unknown id would behave exactly like one configured
+// in a file — the failover ladder falls back to the default.
+func (p *Provider) SetRole(role, generatorID string) {
+	p.rolesMu.Lock()
+	defer p.rolesMu.Unlock()
+	p.roles[role] = generatorID
 }
 
 // KnowsGenerator reports whether id names a registered generator. It backs

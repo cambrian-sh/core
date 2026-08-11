@@ -224,6 +224,15 @@ writes are themselves scoped. The invariant is:
       invalidates its cache entry → true cross-replica revocation, bounded by notify latency (not by
       process restart, not unbounded). A short safety TTL (e.g. 60s) bounds staleness even if a NOTIFY
       is missed during a reconnect.
+
+      > **Amended 2026-08-11.** "Missed during a reconnect" assumed a reconnect. There was none:
+      > `PgAgentScopeStore.Subscribe` subscribed once, and on a dropped connection the channel
+      > closed, `WatchInvalidations` returned, and cross-replica invalidation ended for the life of
+      > the process — silently, with no log. The safety TTL was therefore carrying the entire
+      > revocation guarantee, unaided and unadvertised. Fixed by the shared replication lane
+      > (`cambrian-premium/authz/replicated.go`); the resolver now resubscribes with backoff and
+      > calls the new `InvalidateAll` on every reconnect, because it cannot know which agents were
+      > revoked while it was deaf. Measured and recorded in **ADR-0087, "The replication lane"**.
     - The contract guarantees: **no hot path** (cache), and **revocation within notify latency across
       all replicas** — the honest replacement for the earlier (false) "immediate, single-process"
       claim.

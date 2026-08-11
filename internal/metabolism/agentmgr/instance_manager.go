@@ -42,6 +42,13 @@ type InstanceManager struct {
 	// wants agents to inherit beyond the OS base allowlist (SEC-01). Secrets are
 	// stripped regardless. Empty by default.
 	envPassthrough []string
+	// envExtras are explicit KEY=VALUE pairs the KERNEL sets in every agent's
+	// environment, derived from config (e.g. CAMBRIAN_TOOL_MENU_K from
+	// execution.tools.tool_menu_k). Distinct from envPassthrough on purpose: a
+	// passthrough only carries what the kernel's own environment happens to
+	// hold, which makes a config knob depend on .env — extras flow
+	// config → agent with the kernel's env not involved at all.
+	envExtras []string
 	// agentMemLimitMB is the GLOBAL default memory cap (SEC-01), used for agents
 	// that don't declare their own. 0 = no default.
 	agentMemLimitMB int
@@ -59,6 +66,13 @@ type InstanceManager struct {
 // (SEC-01). Secret-looking names are ignored even if listed.
 func (im *InstanceManager) SetEnvPassthrough(names []string) {
 	im.envPassthrough = names
+}
+
+// SetEnvExtras configures the config-derived KEY=VALUE pairs injected into
+// every agent environment. Values come from kernel CONFIG, never from the
+// kernel's own environment.
+func (im *InstanceManager) SetEnvExtras(kv []string) {
+	im.envExtras = kv
 }
 
 // SetAgentMemoryLimitMB configures the GLOBAL default memory cap (SEC-01). 0
@@ -266,13 +280,14 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 			"PYTHONIOENCODING=utf-8",
 			"PYTHONUTF8=1",
 		)
+		cmd.Env = append(cmd.Env, im.envExtras...)
 	case domain.RuntimeBinary:
 		cmd = exec.Command(def.ExecPath,
 			"--socket", sockPath,
 			"--substrate-addr", im.substrateAddr)
 		// SEC-01: a nil cmd.Env would inherit os.Environ() (all secrets) — set
 		// the allowlisted environment explicitly for native agents too.
-		cmd.Env = allowlistedAgentEnv(im.envPassthrough)
+		cmd.Env = append(allowlistedAgentEnv(im.envPassthrough), im.envExtras...)
 	default:
 		return nil, fmt.Errorf("desteklenmeyen runtime: %s", def.Runtime)
 	}

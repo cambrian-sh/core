@@ -1,35 +1,5 @@
 {
-  "_comment": "Power-user tuning starter. Copy to configs/tuning.local.json (gitignored) to customize per-machine. Any field you don't set falls through to the Go default in DefaultConfig(). The CAMBRIAN_* env-var convention (CAMBRIAN_EXECUTION__EWMA_ALPHA) overrides this file. See README 'Configuration Reference' for the full list of tunables. Curated, NOT a full mirror of all hyperparameters — new fields added to DefaultConfig() will just work because they are not pinned here.",
-  "execution": {
-    "gatekeeper": {
-      "cold_start_penalty_multiplier": 0.6,
-      "gatekeeper_max_candidates": 5,
-      "gatekeeper_w1": 0.4,
-      "gatekeeper_w2": 0.4,
-      "gatekeeper_w3": 0.2,
-      "min_auction_confidence": 0.3
-    },
-    "ingestion": {
-      "kg_extractor_enabled": true
-    },
-    "memory": {
-      "memory_relevance_threshold": 0.7
-    },
-    "plan": {
-      "fallback_confidence_threshold": 0.4,
-      "plan_timeout_ms": 120000,
-      "step_timeout_multiplier": 2
-    },
-    "retrieval": {
-      "kg2rag_enabled": true,
-      "structure_graph_enabled": true
-    },
-    "supervision": {
-      "ewma_alpha": 0.5
-    },
-    "tools": {
-      "tool_retrieval_floor": 0
-    }
-  },
+  "_comment": "Power-user tuning starter. Copy to configs/tuning.local.json (gitignored) to customize per-machine. Any field you don't set falls through to the Go default in DefaultConfig(). The CAMBRIAN_* env-var convention (CAMBRIAN_EXECUTION__EWMA_ALPHA) overrides this file, and durable console writes (the ADR-0101 store) override both. Deliberately EMPTY since 2026-08-11: every value this file used to pin was promoted into DefaultConfig() (owner decision — the operating config became the shipped defaults), and a pin equal to the default is worse than no pin, because it silently shadows the next default change. Curated, NOT a mirror: add a key here only to ship a baseline that deliberately differs from the Go default.",
+  "execution": {},
   "schema_version": 2
 }

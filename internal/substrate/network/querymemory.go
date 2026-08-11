@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"strings"
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
@@ -202,6 +203,19 @@ func (s *Server) policyNote(ctx context.Context, callerID string, resultCount in
 		return dec.Explain()
 	case dec.Reason == domain.ReasonUnsatisfiablePolicy:
 		return dec.Explain()
+	case !pred.Bypass && len(pred.PartyScopedTags) > 0 && len(pred.PartyIdentities) == 0:
+		// Party-scoped with NOBODY resolved. This is the misconfiguration case
+		// (ADR-0121 D6) and it is worth its own sentence, because the number zero
+		// is the whole diagnosis: the reader is not "party to nothing", the
+		// deployment could not say who they are, and those need different fixes.
+		// Without this it reads as an ordinary boundary and someone goes looking
+		// at the policy instead of at the resolver.
+		return "no party identities resolved for this principal, so every record scoped to " +
+			strings.Join(pred.PartyScopedTags, ", ") + " is refused; " + dec.Explain()
+	case !pred.Bypass && len(pred.PartyScopedTags) > 0:
+		// Party-scoped and the reader DOES have identities — so this is the
+		// entitlement working, and saying so distinguishes it from a tag denial.
+		return "you are a party to none of the records that match; " + dec.Explain()
 	case !pred.Bypass && !pred.IsZero():
 		// A real predicate applied and nothing came back. That may be an honest
 		// "no data", but the caller deserves to know a boundary was in play.

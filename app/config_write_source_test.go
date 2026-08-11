@@ -454,6 +454,313 @@ func TestSaveGenerator_KeepsTheConfiguredAPIKeyEnv(t *testing.T) {
 	}
 }
 
+// ── Role assignment write half (contract 0096) ───────────────────────────────
+
+func rolesSource(t *testing.T, applied map[string]string) configWriteSource {
+	t.Helper()
+	src := writeSource(t, bundle(t, map[string]string{}), nil)
+	src.generatorList = func() []config.GeneratorConfig {
+		return []config.GeneratorConfig{
+			{ID: "fast", Provider: "openai", Model: "a"},
+			{ID: "smart", Provider: "openai", Model: "b"},
+		}
+	}
+	src.defaultGeneratorID = func() string { return "fast" }
+	src.liveRoles = func() map[string]string { return map[string]string{"planner": "smart"} }
+	if applied != nil {
+		src.applyRole = func(role, id string) bool {
+			applied[role] = id
+			return true
+		}
+	}
+	return src
+}
+
+func TestSetRoleAssignment_StoresPerRoleKeyAndHotApplies(t *testing.T) {
+	applied := map[string]string{}
+	src := rolesSource(t, applied)
+
+	out, err := src.SetRoleAssignment("planner", "fast")
+	if err != nil {
+		t.Fatalf("SetRoleAssignment: %v", err)
+	}
+	if !out.Set || out.Effect != operator.EffectLive {
+		t.Fatalf("expected a stored, live write, got %+v", out)
+	}
+	if applied["planner"] != "fast" {
+		t.Fatalf("the running provider was not rebound: %+v", applied)
+	}
+	// Per-ROLE key, not the whole map: koanf merges maps per key, so this is what
+	// lets a stored role compose with roles configured in files.
+	if out.Key != "llm_provider.roles.planner" {
+		t.Fatalf("key = %q, want llm_provider.roles.planner", out.Key)
+	}
+}
+
+func TestSetRoleAssignment_NoLiveProviderIsRestartRequired(t *testing.T) {
+	src := rolesSource(t, nil) // applyRole nil ⇒ no live path
+	out, err := src.SetRoleAssignment("memory", "smart")
+	if err != nil {
+		t.Fatalf("SetRoleAssignment: %v", err)
+	}
+	if !out.Set || out.Effect != operator.EffectRestartRequired {
+		t.Fatalf("expected stored + restart_required, got %+v", out)
+	}
+}
+
+// A dangling role stored durably would silently route the organ to the default
+// while the console shows the name the operator typed.
+func TestSetRoleAssignment_RejectsAnUnknownGenerator(t *testing.T) {
+	applied := map[string]string{}
+	src := rolesSource(t, applied)
+
+	out, err := src.SetRoleAssignment("planner", "ghost")
+	if err != nil {
+		t.Fatalf("SetRoleAssignment: %v", err)
+	}
+	if out.Set || out.Effect != operator.EffectRejected {
+		t.Fatalf("expected a rejection, got %+v", out)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("a rejected write must not touch the running provider: %+v", applied)
+	}
+}
+
+// The role vocabulary is closed: a typo'd role accepted here would sit in the
+// store forever doing nothing.
+func TestSetRoleAssignment_RejectsAnUnknownRole(t *testing.T) {
+	src := rolesSource(t, nil)
+	out, err := src.SetRoleAssignment("plannner", "fast")
+	if err != nil {
+		t.Fatalf("SetRoleAssignment: %v", err)
+	}
+	if out.Set || out.Effect != operator.EffectRejected {
+		t.Fatalf("expected a rejection for a misspelled role, got %+v", out)
+	}
+}
+
+// A stored role must survive into the next boot's merged config — that is the
+// difference between this and a hot-apply alone.
+func TestSetRoleAssignment_SurvivesIntoTheNextConfigLoad(t *testing.T) {
+	dir := bundle(t, map[string]string{})
+	storePath := filepath.Join(t.TempDir(), "config.db")
+
+	store, err := storage.OpenConfigStore(storePath)
+	if err != nil {
+		t.Fatalf("OpenConfigStore: %v", err)
+	}
+	_, prov, err := config.LoadConfigWithStore(filepath.Join(dir, "config.json"), store)
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	src := configWriteSource{store: store, prov: prov}
+	src.generatorList = func() []config.GeneratorConfig {
+		return []config.GeneratorConfig{{ID: "fast", Provider: "openai", Model: "a"}}
+	}
+	if out, err := src.SetRoleAssignment("verifier", "fast"); err != nil || !out.Set {
+		t.Fatalf("SetRoleAssignment: %v %+v", err, out)
+	}
+	_ = store.Close()
+
+	store2, err := storage.OpenConfigStore(storePath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = store2.Close() }()
+	cfg2, _, err := config.LoadConfigWithStore(filepath.Join(dir, "config.json"), store2)
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if cfg2.LLMProvider.Roles["verifier"] != "fast" {
+		t.Fatalf("stored role did not survive the reload: %+v", cfg2.LLMProvider.Roles)
+	}
+}
+
+// ── Removal guards (contract 0096) ───────────────────────────────────────────
+
+// Removing the default would leave `llm_provider.default` naming a generator
+// that no longer exists — a HARD boot error, discovered only at the next
+// restart, by a kernel that then cannot serve the console that caused it.
+func TestRemoveGenerator_RefusesTheGlobalDefault(t *testing.T) {
+	src := rolesSource(t, nil)
+	out, err := src.RemoveGenerator("fast")
+	if err != nil {
+		t.Fatalf("RemoveGenerator: %v", err)
+	}
+	if out.Set || out.Effect != operator.EffectRejected {
+		t.Fatalf("expected a refusal for the default generator, got %+v", out)
+	}
+}
+
+func TestRemoveGenerator_RefusesARoleServingGenerator(t *testing.T) {
+	src := rolesSource(t, nil)
+	out, err := src.RemoveGenerator("smart") // planner points at it
+	if err != nil {
+		t.Fatalf("RemoveGenerator: %v", err)
+	}
+	if out.Set || out.Effect != operator.EffectRejected {
+		t.Fatalf("expected a refusal for a role-serving generator, got %+v", out)
+	}
+}
+
+// ── MCP server write half (contract 0097) ────────────────────────────────────
+
+func mcpSource(t *testing.T, applied map[string]config.MCPServerConfig) configWriteSource {
+	t.Helper()
+	src := writeSource(t, bundle(t, map[string]string{}), nil)
+	src.mcpServerList = func() []config.MCPServerConfig {
+		booted := config.MCPServerConfig{ID: "files", Transport: "stdio", Endpoint: "npx"}
+		booted.Auth.TokenEnv = "FILES_TOKEN"
+		booted.Tools = []config.MCPToolConfig{{Name: "scrape", Dangerous: true}}
+		return []config.MCPServerConfig{booted}
+	}
+	if applied != nil {
+		src.applyMCPServer = func(s config.MCPServerConfig) bool {
+			applied[s.ID] = s
+			return true
+		}
+	}
+	return src
+}
+
+func TestSaveMCPServer_AppendsWithoutLosingTheBootedList(t *testing.T) {
+	applied := map[string]config.MCPServerConfig{}
+	src := mcpSource(t, applied)
+
+	out, err := src.SaveMCPServer(operator.MCPServerSpec{
+		ID: "firecrawl", Transport: "http", Endpoint: "http://localhost:3002/mcp",
+	})
+	if err != nil {
+		t.Fatalf("SaveMCPServer: %v", err)
+	}
+	// LIVE, not restart_required: the connector arms the server now.
+	if !out.Set || out.Effect != operator.EffectLive {
+		t.Fatalf("expected a stored, live write, got %+v", out)
+	}
+	if _, ok := applied["firecrawl"]; !ok {
+		t.Fatalf("the running kernel was not armed: %+v", applied)
+	}
+	got := src.effectiveMCPServers()
+	if len(got) != 2 || got[0].ID != "files" || got[1].ID != "firecrawl" {
+		t.Fatalf("expected both servers, got %+v", got)
+	}
+}
+
+// Per-tool policy and the token env-var name never cross the operator wire; a
+// save that echoed the console's ignorance would erase them.
+func TestSaveMCPServer_ReplaceKeepsToolPolicyAndTokenEnv(t *testing.T) {
+	src := mcpSource(t, nil)
+
+	if _, err := src.SaveMCPServer(operator.MCPServerSpec{
+		ID: "files", Transport: "stdio", Endpoint: "npx", Args: []string{"-y", "files-mcp"},
+	}); err != nil {
+		t.Fatalf("SaveMCPServer: %v", err)
+	}
+
+	got := src.effectiveMCPServers()
+	if len(got) != 1 || len(got[0].Args) != 2 {
+		t.Fatalf("expected the edit to land, got %+v", got)
+	}
+	if got[0].Auth.TokenEnv != "FILES_TOKEN" {
+		t.Fatalf("the token env-var name was erased by a save that never carried it: %+v", got[0].Auth)
+	}
+	if len(got[0].Tools) != 1 || !got[0].Tools[0].Dangerous {
+		t.Fatalf("per-tool policy was erased: %+v", got[0].Tools)
+	}
+}
+
+func TestSaveMCPServer_RejectsAnUnknownTransport(t *testing.T) {
+	src := mcpSource(t, nil)
+	out, err := src.SaveMCPServer(operator.MCPServerSpec{
+		ID: "x", Transport: "websocket", Endpoint: "ws://nope",
+	})
+	if err != nil {
+		t.Fatalf("SaveMCPServer: %v", err)
+	}
+	if out.Set || out.Effect != operator.EffectRejected {
+		t.Fatalf("expected a rejection for an unknown transport, got %+v", out)
+	}
+}
+
+func TestRemoveMCPServer_RejectsAnUnknownID(t *testing.T) {
+	src := mcpSource(t, nil)
+	out, err := src.RemoveMCPServer("typo")
+	if err != nil {
+		t.Fatalf("RemoveMCPServer: %v", err)
+	}
+	if out.Set || out.Effect != operator.EffectRejected {
+		t.Fatalf("expected a rejection for an unknown id, got %+v", out)
+	}
+}
+
+func TestRemoveMCPServer_DropsTheEntryAndDetachesLive(t *testing.T) {
+	src := mcpSource(t, nil)
+	detached := ""
+	src.detachMCPServer = func(id string) bool { detached = id; return true }
+
+	out, err := src.RemoveMCPServer("files")
+	if err != nil {
+		t.Fatalf("RemoveMCPServer: %v", err)
+	}
+	if !out.Set || out.Effect != operator.EffectLive {
+		t.Fatalf("expected a stored, live removal, got %+v", out)
+	}
+	if detached != "files" {
+		t.Fatalf("the running kernel kept the removed server, detached=%q", detached)
+	}
+	if len(src.effectiveMCPServers()) != 0 {
+		t.Fatalf("the stored list still holds the removed server")
+	}
+}
+
+// A token filed against a server that does not exist is invisible: never used,
+// never erroring, while the operator believes the integration is configured.
+func TestSetMCPServerToken_RejectsAnUnknownServer(t *testing.T) {
+	src := mcpSource(t, nil)
+	out, err := src.SetMCPServerToken("ghost", "tok")
+	if err != nil {
+		t.Fatalf("SetMCPServerToken: %v", err)
+	}
+	if out.Set || out.Effect != operator.EffectRejected {
+		t.Fatalf("expected a rejection, got %+v", out)
+	}
+}
+
+// Tokens are injected at connect time, so the write must bounce the live
+// connection — and report live only when it did.
+func TestSetMCPServerToken_StoresAndBounces(t *testing.T) {
+	src := mcpSource(t, nil)
+	bounced := ""
+	src.bounceMCPServer = func(id string) bool { bounced = id; return true }
+
+	out, err := src.SetMCPServerToken("files", "tok-1234")
+	if err != nil {
+		t.Fatalf("SetMCPServerToken: %v", err)
+	}
+	if !out.Set || out.Effect != operator.EffectLive {
+		t.Fatalf("expected a stored, live write, got %+v", out)
+	}
+	if bounced != "files" {
+		t.Fatalf("the live connection was not bounced: %q", bounced)
+	}
+}
+
+// The env var shadowing rule bites credentials hardest: a new token stored
+// while the variable still holds the old one keeps failing auth with no
+// explanation anywhere.
+func TestSetMCPServerToken_ShadowedByTheDeclaredEnvVar(t *testing.T) {
+	src := mcpSource(t, nil)
+	t.Setenv("FILES_TOKEN", "old-token-from-env")
+
+	out, err := src.SetMCPServerToken("files", "new-token")
+	if err != nil {
+		t.Fatalf("SetMCPServerToken: %v", err)
+	}
+	if !out.Set || out.Effect != operator.EffectShadowed || out.ShadowedBy != "env:FILES_TOKEN" {
+		t.Fatalf("expected stored-but-shadowed naming the variable, got %+v", out)
+	}
+}
+
 // A generator saved from the console has NO env var by design — its credential
 // goes to the store. That combination must be storable.
 func TestSaveGenerator_AcceptsAGeneratorWithNoEnvVar(t *testing.T) {

@@ -1,6 +1,7 @@
 package agentmgr
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -101,5 +102,27 @@ func TestAllowlistedAgentEnv_PassthroughCannotOverrideSecretGuard(t *testing.T) 
 	env := allowlistedAgentEnv([]string{"SNEAKY_API_KEY"})
 	if _, ok := envHas(env, "SNEAKY_API_KEY"); ok {
 		t.Error("SECRET LEAK: a secret-named var was passed because it was allowlisted")
+	}
+}
+
+// Config-derived extras reach the agent env WITHOUT the kernel's own
+// environment carrying the variable — the owner rule (2026-08-11) is that a
+// knob never depends on .env, and the extras seam is what enforces it: the
+// value flows config → SetEnvExtras → child env, and the kernel process env is
+// never consulted.
+func TestBuildAgentCmd_EnvExtrasComeFromConfigNotKernelEnv(t *testing.T) {
+	// Deliberately NOT set in the kernel's environment.
+	os.Unsetenv("CAMBRIAN_TOOL_MENU_K")
+
+	im := NewInstanceManager("python", "localhost:50051")
+	im.SetEnvExtras([]string{"CAMBRIAN_TOOL_MENU_K=5"})
+
+	def := &domain.AgentDefinition{ID: "a", Runtime: domain.RuntimePython, ExecPath: "agent.py"}
+	cmd, err := im.buildAgentCmd(def, &domain.Instance{ID: "i1"}, "")
+	if err != nil {
+		t.Fatalf("buildAgentCmd: %v", err)
+	}
+	if v, ok := envHas(cmd.Env, "CAMBRIAN_TOOL_MENU_K"); !ok || v != "5" {
+		t.Fatalf("config-derived extra missing from agent env: got %q ok=%v", v, ok)
 	}
 }

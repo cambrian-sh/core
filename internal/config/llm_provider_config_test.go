@@ -48,9 +48,6 @@ func TestLLMProviderConfig_Validate_Errors(t *testing.T) {
 		{"default not a generator", func(p *LLMProviderConfig, _ *EmbedderConfig) {
 			p.Default = "ghost"
 		}, "default \"ghost\" is not a declared generator"},
-		{"role not a generator", func(p *LLMProviderConfig, _ *EmbedderConfig) {
-			p.Roles["verifier"] = "ghost"
-		}, "is not a declared generator id"},
 		{"missing embedder", func(_ *LLMProviderConfig, e *EmbedderConfig) {
 			e.Model = ""
 		}, "embedder.model is required"},
@@ -65,6 +62,19 @@ func TestLLMProviderConfig_Validate_Errors(t *testing.T) {
 				t.Errorf("want error containing %q, got %q", tc.want, joined)
 			}
 		})
+	}
+}
+
+// A role naming an unknown generator must NOT refuse to boot (contract 0096):
+// roles can now come from the ADR-0101 store, and a file edit that removes the
+// generator a STORED role points at would otherwise brick a kernel whose only
+// fix (the console) needs the kernel up. The runtime serves the role from the
+// default and reports resolved=false; NewProvider logs the warning.
+func TestLLMProviderConfig_Validate_DanglingRoleIsTolerated(t *testing.T) {
+	p, e := validProvider()
+	p.Roles["verifier"] = "ghost"
+	if errs := p.validate(e); len(errs) != 0 {
+		t.Fatalf("a dangling role must not be a validation error, got %v", errs)
 	}
 }
 

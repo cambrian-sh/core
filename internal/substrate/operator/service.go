@@ -95,6 +95,10 @@ type Service struct {
 	// console renders as "this kernel's generators are file-configured" rather
 	// than offering a Save button that does nothing.
 	generatorWriter GeneratorWriter
+	// mcpWriter is the write half of the MCP server surface (contract 0097).
+	// nil ⇒ Save/Remove/SetToken/Test return Unimplemented, which a console
+	// renders as "this kernel's MCP servers are file-configured".
+	mcpWriter MCPWriter
 
 	sessionOps SessionOps
 	convOps    ConversationOps // ADR-0084 D9: OSS chat lane

@@ -230,6 +230,17 @@ const (
 	// to explain further. A plugin returning this is losing the property that makes
 	// the whole mechanism usable; it exists so the enum is total.
 	ReasonNotAuthorized DecisionReason = "not_authorized"
+
+	// ReasonNotAParty: the resource carries a PARTY-SCOPED tag and the reader is
+	// not one of its parties (ADR-0121). Distinct from missing_required_tag on
+	// purpose — the reader holds every tag the policy asks for, and was refused
+	// by a relationship rather than by a label, which is a different sentence to
+	// put in front of an operator.
+	//
+	// Detail names the party-scoped tag responsible, never the reader's
+	// identities: a denial that listed who you would have to BE is a denial that
+	// enumerates other people.
+	ReasonNotAParty DecisionReason = "not_a_party"
 )
 
 // PolicyContribution records that a named policy, linked at a named container,

@@ -493,3 +493,12 @@ the same protection as the policy store itself.
 **The exception in D6 is a boundary that must be policed.** Sanctioned exceptions erode: the
 easiest future mistake is an ingress that starts choosing agents "just for this one case". The
 stated boundary — conversation and surface yes, agent no — is the thing to check in review.
+
+**Cross-replica propagation was silently broken until 2026-08-11.** Not documented here because
+it lived only in code: `IngressRegistry` kept an in-memory read model refreshed by LISTEN/NOTIFY
+on `authz_ingress_changed`, copied from the policy store. It could not reconnect — on a dropped
+connection it retried `WaitForNotification` on the dead connection every two seconds forever,
+never recovering and never releasing the pooled connection. A registration made on one replica
+therefore stopped reaching the others after the first database blip. Fixed by the shared
+replication lane (`cambrian-premium/authz/replicated.go`); measured, and recorded in full in
+**ADR-0087, "The replication lane"**.

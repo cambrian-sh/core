@@ -199,7 +199,8 @@ not cost a round-trip — and Postgres is the backing:
 - **Cross-replica propagation** rides `LISTEN/NOTIFY` on `authz_policy_changed`, so a policy
   authored on one node lands on the others without a restart. If the subscription cannot be
   established the replica logs and serves its loaded snapshot: stale-but-consistent, never
-  half-applied.
+  half-applied. **Amended 2026-08-11 — the sentence above was true only of the FIRST attempt;
+  see "The replication lane" below.**
 - **A kernel without Postgres still runs.** A nil persistence is a no-op and the store behaves
   exactly as it did before, which keeps tests and single-node demos working.
 
@@ -219,3 +220,66 @@ interface.
 system that operators switch off. The mitigations here are the small closed vocabulary, the
 five-rule precedence that fits in a paragraph, and `ResultantPolicy`. If precedence ever needs
 a diagram to explain, simplify the precedence.
+
+---
+
+## Amendment 2026-08-11 — the replication lane
+
+This ADR owns the "in-memory read model kept fresh by LISTEN/NOTIFY" pattern, so the correction
+is recorded here and cross-referenced from the ADRs that copied it: **ADR-0034** (agent scope
+invalidation), **ADR-0090** (ingress registry), **ADR-0121** (party identities), and contract
+**0077** (identity bindings).
+
+**What was wrong.** The pattern was implemented five separate times, months apart, one per ADR.
+None of them could reconnect. The bullet above says a replica that cannot subscribe logs and
+serves its snapshot — true of the first attempt, and irrelevant to the failure that actually
+occurred, which was a subscription successfully established and then **lost**. The five had
+drifted into three different answers to "what happens when the connection dies":
+
+| Shape | Who | Behaviour on a dropped connection |
+|---|---|---|
+| Give up silently | policy (`PgPolicyStore`), agent scopes (`PgAgentScopeStore`) | `WaitForNotification` errors → return → channel closes → the watch loop sees `!ok` and returns. **No log on that path.** Cross-replica updates end for the life of the process. |
+| Retry the corpse | ingress, party identities | Sleep 2s and call `WaitForNotification` again on the connection that already died — forever. Never heals, and because the loop never exits, the deferred `Release` never runs, so a pooled connection is held permanently by a goroutine that looks alive. |
+| Never listen | identity bindings | `IdentityPersistence` has no `Subscribe` at all. Loaded once at startup, never updated. |
+
+Three answers to one question means nobody chose; each author wrote something plausible because
+there was nothing to reuse and the previous copy was in another file under another noun.
+
+**Measured, not reasoned.** Against live PostgreSQL: replica A watching, replica B writes, A sees
+it. Then `pg_terminate_backend` on the listening connection — what a database restart or a pooler
+recycle does routinely. B writes again; **A never caught up**, and the pool reported
+`acquired=1`, the dead listener's connection held for good. The regression test
+(`authz/replicated_test.go`) reproduces exactly this and now passes.
+
+**The fix (`cambrian-premium/authz/replicated.go`).** One shared lane, chosen over a shared
+registry base type: the five differ in ways that are load-bearing — identity bindings write
+asynchronously because they are minted while a stranger's message is in flight, party identities
+write durable-first because they are access control — and a base type that absorbed those
+differences would be a place for one of them to be quietly flattened into the other. So only the
+part that was uniformly wrong is shared.
+
+- `listenOnce` opens ONE session and is single-shot by design: its channel closes when the session
+  ends, and the connection is **always** released, so a broken one returns to the pool to be
+  discarded instead of being held.
+- `watchReplicated` owns resubscription, with context-aware backoff from 1s to 30s (the old
+  `time.Sleep` ignored cancellation and could hold shutdown).
+- **Every session begins with a resync**, and this is the point rather than a detail.
+  Reconnecting is not enough: a notification sent while nobody was listening is *gone*, and no
+  later notification mentions it. Reload-style consumers reload; agent scopes calls the new
+  `InvalidateAll`, because it cannot know *which* agents were revoked during the gap and the only
+  sound answer is to distrust the whole cache. It runs on the first session too — one redundant
+  read at boot, in exchange for an invariant with no exception to remember.
+- Failure logging is loud once, then every tenth attempt, and recovery is logged. Silence is how
+  the old shape hid: a replica serving stale access control looked perfectly healthy.
+
+**Blast radius, honestly.** On a single-process deployment the staleness could not bite, because
+writes go through the same in-memory object; the leaked connection could, on any database blip.
+Agent-scope revocation additionally degraded to the resolver's safety TTL rather than stopping —
+slower, not broken. The staleness became real with a second replica or a direct SQL edit.
+
+**Not fixed here:** identity bindings still have no `Subscribe`, so they remain load-once. Adding
+one is a behaviour change (bindings would begin syncing across replicas) and is left as a named
+gap rather than folded into a bug fix.
+
+**The rule going forward:** a premium authz read model does not hand-roll a listener. It supplies
+a single-shot `Subscribe` and a `Reload`, and `watchReplicated` owns everything between them.
