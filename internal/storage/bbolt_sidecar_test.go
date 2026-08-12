@@ -171,9 +171,10 @@ func TestSidecar_MissingTrait_IsSkipped(t *testing.T) {
 	}
 }
 
-// Cycle 4 — Test 6:
-// A sidecar with "trait":"cognitive" is skipped (non-"tool" trait).
-func TestSidecar_NonToolTrait_IsSkipped(t *testing.T) {
+// Cycle 4 — Test 6 (rewritten for ADR-0125 D5):
+// A sidecar with "trait":"cognitive" now REGISTERS, with the trait normalized
+// to the domain zero value "" (pre-0125 behavior was to skip non-tool traits).
+func TestSidecar_CognitiveTrait_RegistersNormalized(t *testing.T) {
 	agentsDir := t.TempDir()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 
@@ -181,7 +182,9 @@ func TestSidecar_NonToolTrait_IsSkipped(t *testing.T) {
 		"trait": "cognitive",
 		"version": "1.0",
 		"exec_path": "./thinker",
-		"description": "Cognitive only."
+		"description": "Cognitive only.",
+		"runtime": "bun",
+		"capabilities": ["think"]
 	}`
 	writeSidecarFiles(t, agentsDir, "thinker", manifestJSON, "data")
 
@@ -195,8 +198,50 @@ func TestSidecar_NonToolTrait_IsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllAgentRecords: %v", err)
 	}
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent (cognitive sidecar registers, ADR-0125), got %d", len(agents))
+	}
+	got := agents[0]
+	if got.Trait != "" {
+		t.Errorf("trait: want normalized \"\" (cognitive), got %q", got.Trait)
+	}
+	if got.Runtime != "bun" {
+		t.Errorf("runtime: want %q, got %q", "bun", got.Runtime)
+	}
+	manifest, err := adapter.GetManifestRecord("thinker")
+	if err != nil {
+		t.Fatalf("GetManifestRecord: %v", err)
+	}
+	if len(manifest.Capabilities) != 1 || manifest.Capabilities[0] != "think" {
+		t.Errorf("capabilities must survive into the manifest record, got %v", manifest.Capabilities)
+	}
+}
+
+// ADR-0125 D5: an UNKNOWN trait is still skipped — the vocabulary is explicit.
+func TestSidecar_UnknownTrait_IsSkipped(t *testing.T) {
+	agentsDir := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	manifestJSON := `{
+		"trait": "wizard",
+		"version": "1.0",
+		"exec_path": "./wiz",
+		"description": "Unknown trait."
+	}`
+	writeSidecarFiles(t, agentsDir, "wiz", manifestJSON, "data")
+
+	adapter, err := NewBBoltAdapter(dbPath, agentsDir, nil)
+	if err != nil {
+		t.Fatalf("NewBBoltAdapter: %v", err)
+	}
+	defer adapter.Close()
+
+	agents, err := adapter.GetAllAgentRecords()
+	if err != nil {
+		t.Fatalf("GetAllAgentRecords: %v", err)
+	}
 	if len(agents) != 0 {
-		t.Errorf("expected 0 agents (non-tool trait skipped), got %d", len(agents))
+		t.Errorf("expected 0 agents (unknown trait skipped), got %d", len(agents))
 	}
 }
 

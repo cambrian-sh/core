@@ -77,7 +77,11 @@ bootstraps a working deployment from a single downloaded file:
    deliberately untouched here: `StaticIdentity` compares plaintext,
    non-constant-time, with no durable account store — that is ADR-0047's V1
    posture, and hardening it is an auth change, not an installer change.
-9. **Run + verify** — spawn the installed binary detached (pid file
+9. **Run** — by default fire-and-forget (owner decision: setup must not block
+   on a kernel restart): spawn detached, check only that the process survived
+   ~1.5s (an instant crash still fails loudly with the log path), and defer
+   readiness to `status`. `--wait` restores the blocking poll below, which
+   E2E/CI should use — spawn the installed binary detached (pid file
    `orchestrator.pid`, logs under `logs/`), then poll `grpc.health.v1` overall
    status. Because that status is DB-gated (ADR-0065), SERVING proves
    boot + config + database + migrations in one signal.

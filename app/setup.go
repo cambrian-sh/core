@@ -44,7 +44,9 @@ type setupState struct {
 
 	skipModels bool
 	skipPython bool
+	skipJS     bool
 	noStart    bool
+	waitReady  bool
 
 	degraded bool
 
@@ -55,6 +57,8 @@ type setupState struct {
 	ollamaOK   bool
 	uvBin      string
 	venvPy     string
+	bunBin     string
+	nodeBin    string
 	agentsDir  string
 	serverPort string
 }
@@ -72,19 +76,21 @@ func RunSetup(ctx context.Context, args []string) int {
 	fl := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fl.SetOutput(os.Stdout)
 	var (
-		yes, yShort            bool
-		home                   string
-		skipModels, skipPython bool
-		noStart                bool
+		yes, yShort                    bool
+		home                           string
+		skipModels, skipPython, skipJS bool
+		noStart, waitReady             bool
 	)
 	fl.BoolVar(&yes, "yes", false, "non-interactive: every prompt takes its default")
 	fl.BoolVar(&yShort, "y", false, "shorthand for --yes")
 	fl.StringVar(&home, "home", "", "install prefix (default $CAMBRIAN_HOME, else ~/.cambrian)")
 	fl.BoolVar(&skipModels, "skip-models", false, "skip embedder/reranker/docling model pre-fetch")
 	fl.BoolVar(&skipPython, "skip-python", false, "skip Python agent-runtime provisioning (venv/SDK/deps)")
+	fl.BoolVar(&skipJS, "skip-js", false, "skip JS agent-runtime provisioning (bun/node probe + installs, ADR-0125)")
 	fl.BoolVar(&noStart, "no-start", false, "configure and migrate, but do not start the kernel")
+	fl.BoolVar(&waitReady, "wait", false, "block until the started kernel reports DB-gated SERVING (default: fire-and-forget)")
 	fl.Usage = func() {
-		fmt.Println("usage: cambrian-orchestrator setup [--yes] [--home DIR] [--skip-models] [--skip-python] [--no-start]")
+		fmt.Println("usage: cambrian-orchestrator setup [--yes] [--home DIR] [--skip-models] [--skip-python] [--skip-js] [--no-start] [--wait]")
 		fl.PrintDefaults()
 	}
 	if err := fl.Parse(args); err != nil {
@@ -139,7 +145,9 @@ func RunSetup(ctx context.Context, args []string) int {
 		origCwd:    origCwd,
 		skipModels: skipModels,
 		skipPython: skipPython,
+		skipJS:     skipJS,
 		noStart:    noStart,
+		waitReady:  waitReady,
 		db:         db,
 		serverPort: "50051",
 	}
@@ -156,6 +164,7 @@ func RunSetup(ctx context.Context, args []string) int {
 	s.stepPreflight(ctx)
 	s.stepDatabase(ctx)
 	s.stepPython(ctx)
+	s.stepJSRuntime(ctx)
 	s.stepModels(ctx)
 	s.stepConfig()
 	s.stepMigrate(ctx)
@@ -166,8 +175,11 @@ func RunSetup(ctx context.Context, args []string) int {
 	switch {
 	case s.degraded:
 		fmt.Println(u.yellow(u.bold("  Setup finished with warnings.")) + u.dim("  Fix the items above, then re-run setup — it picks up where it left off."))
-	case running:
+	case running && s.waitReady:
 		fmt.Println(u.green(u.bold("  ✓ Cambrian is ready.")) + u.dim("  kernel serving on :"+s.serverPort))
+		fmt.Println(u.dim("     LLM provider keys can be added later from the operator console."))
+	case running:
+		fmt.Println(u.green(u.bold("  ✓ Setup complete.")) + u.dim("  kernel booting on :"+s.serverPort+" — check: cambrian-orchestrator status"))
 		fmt.Println(u.dim("     LLM provider keys can be added later from the operator console."))
 	default:
 		fmt.Println(u.green(u.bold("  ✓ Setup complete.")))

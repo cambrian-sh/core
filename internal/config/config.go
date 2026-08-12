@@ -1199,7 +1199,13 @@ type Config struct {
 
 	Metabolism struct {
 		PythonExecutable string `json:"python_executable"`
-		AgentsDir        string `json:"agents_dir"`
+		// BunExecutable / NodeExecutable are the JS agent-runtime interpreters
+		// (ADR-0125). Empty ⇒ the kernel falls back to `bun`/`node` on $PATH at
+		// spawn time; a spawn of a bun/node agent errors (naming the key) only
+		// when neither resolves. Additive keys — python_executable is untouched.
+		BunExecutable  string `json:"bun_executable"`
+		NodeExecutable string `json:"node_executable"`
+		AgentsDir      string `json:"agents_dir"`
 	} `json:"metabolism"`
 	Storage struct {
 		DataDir string `json:"data_dir"`

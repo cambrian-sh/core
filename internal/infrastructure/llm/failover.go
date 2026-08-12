@@ -31,18 +31,25 @@ func resolveModel(
 	healthy func(string) bool,
 	capIndex map[string][]string,
 ) (string, error) {
+	// Membership gate for rungs 1–3: the breaker is optimistic about UNKNOWN
+	// ids (unknown = no recorded failures = "healthy"), so without this a
+	// suggestion, role or default naming a generator that is not in the table —
+	// a typo, or one removed by a live reload — would resolve here and then
+	// hard-error in Acquire's registry lookup, instead of falling down the
+	// ladder as GeneratorForModel and the orphaned-role warning promise.
+	known := func(id string) bool { return slices.Contains(allIDs, id) }
 	// 1. suggested (prior)
-	if suggestedID != "" && healthy(suggestedID) {
+	if suggestedID != "" && known(suggestedID) && healthy(suggestedID) {
 		return suggestedID, nil
 	}
 	// 2. purpose preference, in order
 	for _, id := range preferenceIDs {
-		if id != "" && healthy(id) {
+		if id != "" && known(id) && healthy(id) {
 			return id, nil
 		}
 	}
 	// 3. global default
-	if defaultID != "" && healthy(defaultID) {
+	if defaultID != "" && known(defaultID) && healthy(defaultID) {
 		return defaultID, nil
 	}
 	// 4. any healthy generator matching capability hints

@@ -25,6 +25,22 @@ type sidecarManifest struct {
 	Description      string   `json:"description"`
 	SupportedFormats []string `json:"supported_formats"`
 	Runtime          string   `json:"runtime"`
+	// ADR-0125: standalone sidecars are no longer tool-only, so they can carry
+	// the manifest extras the Gatekeeper/SEC-01 read.
+	Capabilities  []string `json:"capabilities"`
+	Tools         []string `json:"tools"`
+	MemoryLimitMB int      `json:"memory_limit_mb"`
+}
+
+// sidecarTraits is the explicit-trait vocabulary a standalone sidecar may
+// declare (ADR-0125 D5). "cognitive" normalizes to the domain zero value "".
+// A missing trait still skips: an unrelated *.manifest.json in the agents tree
+// must not silently become a cognitive agent.
+var sidecarTraits = map[string]string{
+	"tool":      "tool",
+	"cognitive": "",
+	"model":     "model",
+	"daemon":    "daemon",
 }
 
 var agentBucket = []byte("agents")
@@ -50,6 +66,12 @@ var traversalLogBucket = []byte("traversal_log")
 var contradictionResolutionBucket = []byte("contradiction_resolutions")
 var descRegex = regexp.MustCompile(`AGENT_DESCRIPTION\s*=\s*(?:"|')([^"']+)(?:"|')`)
 var manifestRegex = regexp.MustCompile(`(?s)AGENT_MANIFEST\s*=\s*'''([\s\S]*?)'''`)
+
+// manifestRegexJS is the JS twin of manifestRegex (ADR-0125): a module-level
+// AGENT_MANIFEST assigned a backtick template literal. The sibling
+// <id>.manifest.json remains the canonical form for JS agents; this exists for
+// symmetry with the Python heredoc convenience.
+var manifestRegexJS = regexp.MustCompile("(?s)AGENT_MANIFEST\\s*=\\s*`([\\s\\S]*?)`")
 
 type BBoltAdapter struct {
 	db          *bbolt.DB
@@ -104,9 +126,11 @@ type DiscoveredAgent struct {
 // Seed creates buckets if they don't exist and populates the database from agentsDir.
 // It now runs in two phases: DiscoverFilesystemAgents does all file I/O and record
 // building outside the write transaction, then upsertDiscovered persists each record
-// idempotently (existing agents update only when SourceHash changes). Three shapes are
+// idempotently (existing agents update only when SourceHash changes). Five shapes are
 // supported: single-file `*_agent.py`, a Python package (`__init__.py` + `agent.py`),
-// and `*.manifest.json` tool sidecars. isSystemAgent (nil-safe) stamps AgentRecord.System.
+// single-file `*agent.ts`/`*agent.js`, a JS package (`package.json` + `agent.ts|js`)
+// (ADR-0125), and standalone `*.manifest.json` sidecars. isSystemAgent (nil-safe)
+// stamps AgentRecord.System.
 //
 // Separated from NewBBoltAdapter so callers that only need a DB handle (e.g. tests) can
 // construct without a filesystem scan.
@@ -174,10 +198,23 @@ func DiscoverFilesystemAgents(agentsDir string, isSystemAgent func(id string) bo
 			if walkPath == agentsDir {
 				return nil
 			}
+			// ADR-0125: a dependency may legitimately ship a file named agent.js —
+			// nothing under node_modules is an agent of ours.
+			if d.Name() == "node_modules" {
+				return fs.SkipDir
+			}
 			if isAgentPackage(walkPath) {
 				id := d.Name()
 				entry := filepath.Join(walkPath, "agent.py")
 				if da, ok := pythonAgentRecord(agentsDir, entry, id, systemID); ok {
+					out = append(out, da)
+				}
+				return fs.SkipDir
+			}
+			// JS package form (ADR-0125): package.json + agent.ts/agent.js.
+			// Checked after the Python form, so Python wins when both are present.
+			if entry := jsAgentPackageEntry(walkPath); entry != "" {
+				if da, ok := jsAgentRecord(agentsDir, entry, d.Name(), systemID); ok {
 					out = append(out, da)
 				}
 				return fs.SkipDir
@@ -191,8 +228,19 @@ func DiscoverFilesystemAgents(agentsDir string, isSystemAgent func(id string) bo
 			if da, ok := pythonAgentRecord(agentsDir, walkPath, id, systemID); ok {
 				out = append(out, da)
 			}
+		case strings.HasSuffix(name, "agent.ts"), strings.HasSuffix(name, "agent.js"):
+			id := strings.TrimSuffix(name, filepath.Ext(name))
+			if da, ok := jsAgentRecord(agentsDir, walkPath, id, systemID); ok {
+				out = append(out, da)
+			}
 		case strings.HasSuffix(name, ".manifest.json"):
 			id := strings.TrimSuffix(name, ".manifest.json")
+			// A manifest with a sibling source file is that record's manifest
+			// (sidecar-preference inside pythonAgentRecord/jsAgentRecord), not a
+			// standalone agent — processing it here would double-register the id.
+			if hasSiblingAgentSource(walkPath, id) {
+				return nil
+			}
 			if da, ok := sidecarAgentRecord(agentsDir, walkPath, id, systemID); ok {
 				out = append(out, da)
 			}
@@ -281,11 +329,12 @@ func upsertDiscovered(tx *bbolt.Tx, da DiscoveredAgent) error {
 	existing.Provisional = true
 	existing.Description = da.Agent.Description
 	existing.System = da.Agent.System
-	if da.Agent.Trait == "tool" {
-		// Sidecar tool-agents also refresh exec/runtime on change (pre-inversion behavior).
-		existing.ExecPath = da.Agent.ExecPath
-		existing.Runtime = da.Agent.Runtime
-	}
+	// Exec/runtime refresh on source change applies to EVERY record (ADR-0125).
+	// It used to be gated on trait=="tool" — the only sidecar trait before
+	// standalone sidecars opened up — which would have pinned a moved entry
+	// point or a runtime override forever for the new shapes.
+	existing.ExecPath = da.Agent.ExecPath
+	existing.Runtime = da.Agent.Runtime
 	data, err := json.Marshal(existing)
 	if err != nil {
 		return fmt.Errorf("marshal updated agent %s: %w", id, err)
@@ -304,6 +353,109 @@ func isAgentPackage(dir string) bool {
 		return false
 	}
 	return true
+}
+
+// jsAgentPackageEntry reports the entry file of a JS agent package (ADR-0125):
+// a dir shipping package.json (the JS package marker) plus agent.ts or
+// agent.js (the seeder's entry convention). Returns "" when dir is not one.
+func jsAgentPackageEntry(dir string) string {
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		return ""
+	}
+	for _, entry := range []string{"agent.ts", "agent.js"} {
+		if _, err := os.Stat(filepath.Join(dir, entry)); err == nil {
+			return filepath.Join(dir, entry)
+		}
+	}
+	return ""
+}
+
+// hasSiblingAgentSource reports whether a *.manifest.json has a sibling source
+// file it belongs to (<id>.py / <id>.ts / <id>.js) — then it is that record's
+// manifest, not a standalone sidecar agent.
+func hasSiblingAgentSource(manifestPath, id string) bool {
+	dir := filepath.Dir(manifestPath)
+	for _, ext := range []string{".py", ".ts", ".js"} {
+		if _, err := os.Stat(filepath.Join(dir, id+ext)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// jsAgentRecord builds the DiscoveredAgent for an `*agent.ts` / `*agent.js`
+// entry (ADR-0125), mirroring pythonAgentRecord: a sibling <id>.manifest.json
+// is canonical; an embedded AGENT_MANIFEST = `{…}` template literal is the
+// fallback; AGENT_DESCRIPTION parses with the shared regex (it is anchor-free).
+// Runtime: the manifest's runtime field wins; else .ts → bun, .js → node.
+func jsAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bool) (DiscoveredAgent, bool) {
+	content, readErr := os.ReadFile(fullPath)
+
+	description := "General-purpose agent."
+	if readErr == nil {
+		if m := descRegex.FindSubmatch(content); len(m) > 1 {
+			description = string(m[1])
+		}
+	}
+
+	var manifest ManifestRecord
+	sidecarUsed := false
+	sibling := filepath.Join(filepath.Dir(fullPath), id+".manifest.json")
+	if mb, e := os.ReadFile(sibling); e == nil {
+		var sm ManifestRecord
+		if json.Unmarshal(mb, &sm) == nil && sm.Trait != "tool" {
+			manifest = sm
+			sidecarUsed = true
+		} else {
+			slog.Warn("DB (BBOLT): sibling manifest ignored (parse error or trait=tool)", "id", id, "file", sibling)
+		}
+	}
+	if !sidecarUsed && readErr == nil {
+		if m := manifestRegexJS.FindSubmatch(content); len(m) > 1 {
+			if jsonErr := json.Unmarshal(m[1], &manifest); jsonErr != nil {
+				slog.Warn("DB (BBOLT): agent manifest JSON parse error", "id", id, "err", jsonErr)
+				manifest = ManifestRecord{}
+			}
+		}
+	}
+
+	runtime := "bun"
+	if strings.HasSuffix(fullPath, ".js") {
+		runtime = "node"
+	}
+	if manifest.Runtime != "" {
+		runtime = manifest.Runtime
+	}
+
+	var fileContent []byte
+	if readErr == nil {
+		fileContent = content
+	}
+	sourceHash := ComputeSourceHash(manifest.Version, fileContent)
+
+	execPath := filepath.ToSlash(fullPath)
+	// ExecPath must be relative to Dir — buildAgentCmd resolves it under
+	// cmd.Dir=def.Dir (same rule as pythonAgentRecord).
+	if rel, relErr := filepath.Rel(agentsDir, fullPath); relErr == nil && !strings.HasPrefix(rel, "..") {
+		execPath = filepath.ToSlash(rel)
+	}
+
+	return DiscoveredAgent{
+		Agent: AgentRecord{
+			ID:              id,
+			Name:            strings.ReplaceAll(strings.Title(strings.ReplaceAll(id, "_", " ")), " Agent", " Agent"),
+			Description:     description,
+			Runtime:         runtime,
+			ExecPath:        execPath,
+			Dir:             filepath.ToSlash(agentsDir),
+			SourceHash:      sourceHash,
+			ManifestVersion: manifest.Version,
+			Provisional:     true,
+			Trait:           manifest.Trait,
+			System:          isSystemAgent(id),
+		},
+		Manifest: manifest,
+	}, true
 }
 
 // checkSystemAgentLayout warns when a System=true agent lives outside the
@@ -409,9 +561,11 @@ func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string
 	}, true
 }
 
-// sidecarAgentRecord builds the DiscoveredAgent for a `*.manifest.json` tool sidecar (no
-// DB access). Returns ok=false (skips) when the manifest is unreadable/unparseable, its
-// trait is not "tool", or its binary does not exist — a health gate at discovery time.
+// sidecarAgentRecord builds the DiscoveredAgent for a standalone `*.manifest.json`
+// sidecar (no DB access). Returns ok=false (skips) when the manifest is unreadable/
+// unparseable, its trait is missing or unknown (ADR-0125: tool/cognitive/model/daemon
+// are accepted; cognitive normalizes to ""), or its exec target does not exist — a
+// health gate at discovery time.
 func sidecarAgentRecord(agentsDir, manifestPath, id string, isSystemAgent func(string) bool) (DiscoveredAgent, bool) {
 	manifestBytes, readErr := os.ReadFile(manifestPath)
 	if readErr != nil {
@@ -423,8 +577,9 @@ func sidecarAgentRecord(agentsDir, manifestPath, id string, isSystemAgent func(s
 		slog.Warn("DB (BBOLT): sidecar manifest JSON parse error, skipping", "file", manifestPath, "err", jsonErr)
 		return DiscoveredAgent{}, false
 	}
-	if sm.Trait != "tool" {
-		slog.Warn("DB (BBOLT): sidecar manifest trait is not 'tool', skipping", "file", manifestPath, "trait", sm.Trait)
+	trait, known := sidecarTraits[sm.Trait]
+	if !known {
+		slog.Warn("DB (BBOLT): sidecar manifest trait missing or unknown, skipping", "file", manifestPath, "trait", sm.Trait)
 		return DiscoveredAgent{}, false
 	}
 	manifestDir := filepath.Dir(manifestPath)
@@ -450,10 +605,18 @@ func sidecarAgentRecord(agentsDir, manifestPath, id string, isSystemAgent func(s
 			SourceHash:      ComputeSidecarSourceHash(sm.Version, manifestBytes, binaryBytes),
 			ManifestVersion: sm.Version,
 			Provisional:     true,
-			Trait:           "tool",
+			Trait:           trait,
 			System:          isSystemAgent(id),
 		},
-		Manifest: ManifestRecord{Version: sm.Version, SupportedFormats: sm.SupportedFormats, Trait: "tool"},
+		Manifest: ManifestRecord{
+			Version:          sm.Version,
+			SupportedFormats: sm.SupportedFormats,
+			Trait:            trait,
+			Runtime:          sm.Runtime,
+			Capabilities:     sm.Capabilities,
+			Tools:            sm.Tools,
+			MemoryLimitMB:    sm.MemoryLimitMB,
+		},
 	}, true
 }
 

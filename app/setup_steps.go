@@ -276,11 +276,67 @@ func (s *setupState) stepPython(ctx context.Context) {
 	s.ui.line("ok", "python runtime", s.venvPy)
 }
 
+// stepJSRuntime provisions the JS agent runtime (ADR-0125 D7): probe node,
+// probe/download bun (only downloaded when JS agent units actually exist under
+// agents/ — a ~90MB fetch is not paid for a Python-only fleet), and run
+// `bun install` for every agent package.json (agents root first — the union
+// workspace). Node is never downloaded: probing is enough, bun covers the
+// batteries-included path.
+func (s *setupState) stepJSRuntime(ctx context.Context) {
+	s.ui.section("\n5. JS agent runtime")
+	if s.skipJS {
+		s.ui.line("ok", "js runtime", "skipped (--skip-js)")
+		return
+	}
+
+	if p, err := exec.LookPath("node"); err == nil {
+		if v, ok := s.probe(ctx, "node"); ok {
+			s.nodeBin = p
+			s.ui.line("ok", "node", v)
+		}
+	}
+	if s.nodeBin == "" {
+		s.ui.line("warn", "node", "not found — needed only for runtime:\"node\" agents")
+	}
+
+	hasJS := hasJSAgents(s.agentsDir)
+	bun := s.ensureBun(ctx, hasJS)
+	switch {
+	case bun != "":
+		if v, ok := s.probe(ctx, bun); ok {
+			s.ui.line("ok", "bun", v+"  ("+bun+")")
+		} else {
+			s.ui.line("ok", "bun", bun)
+		}
+	case hasJS:
+		s.warnf("bun unavailable", "JS agents present but bun could not be provisioned — install bun and re-run setup")
+		return
+	default:
+		s.ui.line("ok", "bun", "not provisioned (no JS agents)")
+		return
+	}
+
+	for _, dir := range jsPackageDirs(s.agentsDir) {
+		args := []string{"install"}
+		if fileExists(filepath.Join(dir, "bun.lock")) || fileExists(filepath.Join(dir, "bun.lockb")) {
+			args = append(args, "--frozen-lockfile")
+		}
+		fmt.Print("  bun install (" + dir + ")… ")
+		out, ok := s.execIn(ctx, dir, 10*time.Minute, bun, args...)
+		if ok {
+			fmt.Println(s.ui.green("done"))
+		} else {
+			fmt.Println(s.ui.red("failed"))
+			s.warnf("bun install failed in "+dir, lastLines(out, 2))
+		}
+	}
+}
+
 // stepModels pre-fetches the embedder/reranker/docling models so the first
 // query isn't a multi-GB download mid-request. Everything here is non-fatal
 // and never degrades the install — models download lazily on first use.
 func (s *setupState) stepModels(ctx context.Context) {
-	s.ui.section("\n5. Models")
+	s.ui.section("\n6. Models")
 	if s.skipModels {
 		s.ui.line("ok", "model pre-fetch", "skipped (--skip-models)")
 		return
@@ -324,7 +380,7 @@ func (s *setupState) stepModels(ctx context.Context) {
 // stepConfig writes the kernel config bundle. LLM providers are intentionally
 // left unconfigured — the kernel boots without them (ADR-0122 §deferral).
 func (s *setupState) stepConfig() {
-	s.ui.section("\n6. Config")
+	s.ui.section("\n7. Config")
 	if err := s.writeConfigBundle(); err != nil {
 		s.warnf("could not write kernel config", err.Error())
 		return
@@ -361,7 +417,7 @@ func (s *setupState) stepMigrate(ctx context.Context) {
 // it exactly once. Existing .env entries are never overwritten, so re-runs
 // keep whatever the operator set (rotate by editing .env and restarting).
 func (s *setupState) stepOperator() {
-	s.ui.section("\n7. Operator account")
+	s.ui.section("\n8. Operator account")
 	envPath := filepath.Join(s.prefix, ".env")
 	existing, err := readEnvFile(envPath)
 	if err != nil {
@@ -414,11 +470,14 @@ func (s *setupState) stepOperator() {
 	}
 }
 
-// stepStart launches the installed binary detached and polls the grpc.health.v1
-// overall ("") status, which is DB-gated (ADR-0065) — SERVING proves the kernel
-// booted against a working, migrated database. Returns whether it is running.
+// stepStart launches the installed binary detached. By default it does NOT
+// wait for the boot (owner decision 2026-08-11: setup must not block on a
+// kernel restart) — it verifies only that the process survived spawning and
+// leaves readiness to `status`. With --wait it polls the grpc.health.v1
+// overall ("") status, which is DB-gated (ADR-0065) — SERVING proves the
+// kernel booted against a working, migrated database.
 func (s *setupState) stepStart(ctx context.Context) bool {
-	s.ui.section("\n8. Kernel")
+	s.ui.section("\n9. Kernel")
 	if s.noStart {
 		s.ui.line("ok", "not started (--no-start)", "start it later: "+s.binPath)
 		return false
@@ -456,6 +515,23 @@ func (s *setupState) stepStart(ctx context.Context) bool {
 	}
 	if werr := os.WriteFile(filepath.Join(s.prefix, "orchestrator.pid"), fmt.Appendf(nil, "%d\n", pid), 0o644); werr != nil {
 		s.ui.line("warn", "could not write pid file", werr.Error())
+	}
+	if !s.waitReady {
+		// Default: fire-and-forget. Setup's job ends at a successful spawn; the
+		// boot proceeds in the background and `status` answers the readiness
+		// question on demand. The one thing still checked is an INSTANT death —
+		// a kernel that exits within moments (bad config, port stolen) must not
+		// be reported as started. 3s: a config-validation refusal was measured
+		// at ~2s and slipped past a 1.5s window.
+		time.Sleep(3 * time.Second)
+		if !pidAlive(pid) {
+			s.warnf("kernel exited immediately after start",
+				"inspect: "+filepath.Join(s.prefix, "logs", "orchestrator.err.log"))
+			return false
+		}
+		s.ui.line("ok", fmt.Sprintf("kernel started (pid %d) on :%s", pid, s.serverPort),
+			"booting in the background — verify: cambrian-orchestrator status  (--wait blocks until SERVING)")
+		return true
 	}
 	fmt.Print("  waiting for readiness (grpc.health.v1)… ")
 	if s.pollHealth(ctx, addr, 90*time.Second) {

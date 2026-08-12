@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,10 +34,13 @@ type InstanceManager struct {
 	// struct so it stays 64-bit aligned on 32-bit platforms.
 	bootCount     atomic.Uint64
 	mu            sync.Mutex
-	instances     map[string]*domain.Instance
-	agentIndex    map[string][]string  // agentID → []instanceID
-	cmds          map[string]*exec.Cmd // instanceID → cmd
-	pythonPath    string
+	instances  map[string]*domain.Instance
+	agentIndex map[string][]string  // agentID → []instanceID
+	cmds       map[string]*exec.Cmd // instanceID → cmd
+	// runtimeExes maps an interpreted runtime to its executable (ADR-0125):
+	// python from metabolism.python_executable, bun/node from their config keys
+	// (empty ⇒ $PATH fallback at spawn). RuntimeBinary needs no interpreter.
+	runtimeExes   map[domain.AgentRuntime]string
 	substrateAddr string
 	// envPassthrough names extra non-secret environment variables an operator
 	// wants agents to inherit beyond the OS base allowlist (SEC-01). Secrets are
@@ -109,6 +113,18 @@ func (im *InstanceManager) effectiveMemLimitMB(agentID string) int {
 	return im.agentMemLimitMB
 }
 
+// spawnMemLimitMB is the cap actually passed to applyResourceCaps for a spawn.
+// On Linux, JS runtimes are exempted (ADR-0125 D8): the cap there is RLIMIT_AS
+// (virtual address space) and V8 reserves multi-GB virtual ranges it never
+// commits, so a limit sized for Python kills a healthy bun/node agent at boot.
+// Windows Job Objects limit COMMITTED memory and apply to JS agents unchanged.
+func (im *InstanceManager) spawnMemLimitMB(def *domain.AgentDefinition) int {
+	if goruntime.GOOS == "linux" && domain.IsJSRuntime(def.Runtime) {
+		return 0
+	}
+	return im.effectiveMemLimitMB(def.ID)
+}
+
 // NewInstanceManager creates an InstanceManager with empty maps.
 func NewInstanceManager(pythonPath, substrateAddr string) *InstanceManager {
 	return &InstanceManager{
@@ -116,9 +132,33 @@ func NewInstanceManager(pythonPath, substrateAddr string) *InstanceManager {
 		agentIndex:    make(map[string][]string),
 		cmds:          make(map[string]*exec.Cmd),
 		capCleanups:   make(map[string]func()),
-		pythonPath:    pythonPath,
+		runtimeExes:   map[domain.AgentRuntime]string{domain.RuntimePython: pythonPath},
 		substrateAddr: substrateAddr,
 	}
+}
+
+// SetRuntimeExecutable configures the interpreter for an interpreted runtime
+// (ADR-0125). An empty path clears any prior value (JS runtimes then fall back
+// to $PATH at spawn; Python keeps failing at Start as before).
+func (im *InstanceManager) SetRuntimeExecutable(rt domain.AgentRuntime, path string) {
+	if path == "" {
+		delete(im.runtimeExes, rt)
+		return
+	}
+	im.runtimeExes[rt] = path
+}
+
+// runtimeExecutable resolves the interpreter for a JS runtime: the configured
+// path wins; otherwise the runtime's own name is looked up on $PATH so a stock
+// `bun`/`node` install works with zero config. The error names the config key.
+func (im *InstanceManager) runtimeExecutable(rt domain.AgentRuntime) (string, error) {
+	if p := im.runtimeExes[rt]; p != "" {
+		return p, nil
+	}
+	if p, err := exec.LookPath(string(rt)); err == nil {
+		return p, nil
+	}
+	return "", fmt.Errorf("runtime %q has no configured executable and %q is not on PATH (set metabolism.%s_executable)", rt, rt, rt)
 }
 
 func (im *InstanceManager) getInstances() map[string]*domain.Instance {
@@ -272,13 +312,30 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 	var cmd *exec.Cmd
 	switch def.Runtime {
 	case domain.RuntimePython:
-		cmd = exec.Command(im.pythonPath, def.ExecPath,
+		cmd = exec.Command(im.runtimeExes[domain.RuntimePython], def.ExecPath,
 			"--socket", sockPath,
 			"--substrate-addr", im.substrateAddr)
 		// SEC-01: deny-by-default env — never inherit the kernel's secrets.
 		cmd.Env = append(allowlistedAgentEnv(im.envPassthrough),
 			"PYTHONIOENCODING=utf-8",
 			"PYTHONUTF8=1",
+		)
+		cmd.Env = append(cmd.Env, im.envExtras...)
+	case domain.RuntimeBun, domain.RuntimeNode:
+		// ADR-0125: same argv contract as Python; the interpreter comes from
+		// config or $PATH (runtimeExecutable errors with the config key named).
+		interp, err := im.runtimeExecutable(def.Runtime)
+		if err != nil {
+			return nil, fmt.Errorf("agent %s: %w", def.ID, err)
+		}
+		cmd = exec.Command(interp, def.ExecPath,
+			"--socket", sockPath,
+			"--substrate-addr", im.substrateAddr)
+		// SEC-01 deny-by-default env; NO_COLOR/FORCE_COLOR keep stdout as plain
+		// one-line JSON for the kernel's log forwarder (forwardPipe).
+		cmd.Env = append(allowlistedAgentEnv(im.envPassthrough),
+			"NO_COLOR=1",
+			"FORCE_COLOR=0",
 		)
 		cmd.Env = append(cmd.Env, im.envExtras...)
 	case domain.RuntimeBinary:
@@ -455,7 +512,7 @@ func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefin
 	inst := domain.NewInstance(def.ID)
 
 	// PLAT-01: fail fast with the missing dep named, not a silent spawn crash.
-	if err := im.verifyPythonDeps(ctx, def); err != nil {
+	if err := im.verifyRuntimeDeps(ctx, def); err != nil {
 		return err
 	}
 
@@ -492,7 +549,7 @@ func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefin
 	// SEC-01: cap the agent's memory after start (Windows Job Object / Unix
 	// RLIMIT_AS). A failure here is non-fatal — the agent still runs uncapped and
 	// the error is logged rather than aborting boot.
-	if cleanup, capErr := applyResourceCaps(cmd, im.effectiveMemLimitMB(def.ID)); capErr != nil {
+	if cleanup, capErr := applyResourceCaps(cmd, im.spawnMemLimitMB(def)); capErr != nil {
 		slog.Warn("SEC-01: failed to apply agent resource caps", "agent_id", def.ID, "err", capErr)
 	} else if cleanup != nil {
 		im.mu.Lock()
@@ -551,7 +608,7 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	inst.Mode = domain.ModeDaemon
 
 	// PLAT-01: fail fast with the missing dep named, not a silent spawn crash.
-	if err := im.verifyPythonDeps(ctx, def); err != nil {
+	if err := im.verifyRuntimeDeps(ctx, def); err != nil {
 		return nil, err
 	}
 
@@ -595,7 +652,7 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 		return nil, err
 	}
 	// SEC-01: daemons are the longest-lived, most-exposed agents — cap first.
-	if cleanup, capErr := applyResourceCaps(cmd, im.effectiveMemLimitMB(def.ID)); capErr != nil {
+	if cleanup, capErr := applyResourceCaps(cmd, im.spawnMemLimitMB(def)); capErr != nil {
 		slog.Warn("SEC-01: failed to apply daemon resource caps", "agent_id", def.ID, "err", capErr)
 	} else if cleanup != nil {
 		im.mu.Lock()

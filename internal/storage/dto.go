@@ -23,9 +23,13 @@ type AgentRecord struct {
 
 // ManifestRecord is the raw JSON shape stored in the bbolt manifests bucket.
 type ManifestRecord struct {
-	Version          string         `json:"version,omitempty"`
-	Trait            string         `json:"trait,omitempty"`
-	Tools            []string       `json:"tools,omitempty"`
+	Version string `json:"version,omitempty"`
+	Trait   string `json:"trait,omitempty"`
+	// Runtime optionally overrides the discovery-derived runtime for the agent a
+	// sibling manifest describes (ADR-0125: e.g. run an agent.js under bun). It
+	// is discovery-time metadata only and never surfaces in domain.AgentManifest.
+	Runtime string   `json:"runtime,omitempty"`
+	Tools   []string `json:"tools,omitempty"`
 	Capabilities     []string       `json:"capabilities,omitempty"`    // ROUTE-03: declared capability tags (manifest source of truth)
 	MemoryLimitMB    int            `json:"memory_limit_mb,omitempty"` // SEC-01: per-agent memory cap (0 = global default)
 	PythonDeps       []string       `json:"python_deps,omitempty"`     // PLAT-01: import names verified before spawn
