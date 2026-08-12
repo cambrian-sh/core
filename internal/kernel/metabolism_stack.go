@@ -72,6 +72,10 @@ func NewMetabolismStack(
 	interviewGen domain.Generator,
 ) *MetabolismStack {
 	manager := agentmgr.NewAgentManager(reg, cfg.Metabolism.PythonExecutable, "localhost:"+cfg.Server.Port, memoryAgent)
+	// ADR-0125: JS agent runtimes. Empty config values are fine — the instance
+	// manager falls back to $PATH lookup at spawn time.
+	manager.SetRuntimeExecutable(domain.RuntimeBun, cfg.Metabolism.BunExecutable)
+	manager.SetRuntimeExecutable(domain.RuntimeNode, cfg.Metabolism.NodeExecutable)
 	// SEC-01: spawned agents get a deny-by-default environment (OS essentials +
 	// the operator's non-secret passthrough); the kernel's API keys never leak.
 	manager.SetEnvPassthrough(cfg.Execution.Agents.AgentEnvPassthrough)

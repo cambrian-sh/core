@@ -208,7 +208,9 @@ func TestDeleteConfig_AbsentKeyIsNotAnError(t *testing.T) {
 func TestSetGeneratorKey_StoresEncryptedAndReportsLive(t *testing.T) {
 	dir := bundle(t, map[string]string{})
 	src := writeSource(t, dir, nil)
-	src.generators = func() map[string]string { return map[string]string{"gpt": "OPENAI_API_KEY"} }
+	src.generatorList = func() []config.GeneratorConfig {
+		return []config.GeneratorConfig{{ID: "gpt", Provider: "openai", Model: "m", APIKeyEnv: "OPENAI_API_KEY"}}
+	}
 
 	o, err := src.SetGeneratorKey("gpt", "sk-live-ABCD1234")
 	if err != nil {
@@ -231,7 +233,9 @@ func TestSetGeneratorKey_ShadowedByEnvIsReported(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-from-env")
 
 	src := writeSource(t, dir, nil)
-	src.generators = func() map[string]string { return map[string]string{"gpt": "OPENAI_API_KEY"} }
+	src.generatorList = func() []config.GeneratorConfig {
+		return []config.GeneratorConfig{{ID: "gpt", Provider: "openai", Model: "m", APIKeyEnv: "OPENAI_API_KEY"}}
+	}
 
 	o, err := src.SetGeneratorKey("gpt", "sk-live-ABCD1234")
 	if err != nil {
@@ -247,7 +251,9 @@ func TestSetGeneratorKey_ShadowedByEnvIsReported(t *testing.T) {
 func TestSetGeneratorKey_UnknownGeneratorIsRefused(t *testing.T) {
 	dir := bundle(t, map[string]string{})
 	src := writeSource(t, dir, nil)
-	src.generators = func() map[string]string { return map[string]string{"gpt": "OPENAI_API_KEY"} }
+	src.generatorList = func() []config.GeneratorConfig {
+		return []config.GeneratorConfig{{ID: "gpt", Provider: "openai", Model: "m", APIKeyEnv: "OPENAI_API_KEY"}}
+	}
 
 	o, err := src.SetGeneratorKey("nope", "sk-live-ABCD1234")
 	if err != nil {
@@ -264,7 +270,9 @@ func TestSetGeneratorKey_UnknownGeneratorIsRefused(t *testing.T) {
 func TestClearGeneratorKey_RemovesIt(t *testing.T) {
 	dir := bundle(t, map[string]string{})
 	src := writeSource(t, dir, nil)
-	src.generators = func() map[string]string { return map[string]string{"gpt": "OPENAI_API_KEY"} }
+	src.generatorList = func() []config.GeneratorConfig {
+		return []config.GeneratorConfig{{ID: "gpt", Provider: "openai", Model: "m", APIKeyEnv: "OPENAI_API_KEY"}}
+	}
 
 	if _, err := src.SetGeneratorKey("gpt", "sk-live-ABCD1234"); err != nil {
 		t.Fatalf("SetGeneratorKey: %v", err)
@@ -775,5 +783,28 @@ func TestSaveGenerator_AcceptsAGeneratorWithNoEnvVar(t *testing.T) {
 	}
 	if !out.Set {
 		t.Fatalf("a store-keyed generator must be storable, got %+v", out)
+	}
+}
+
+// The console's primary add-model flow: SAVE a new generator, then paste its
+// key — in one sitting, no restart between. Validation must therefore consult
+// the store-effective list; checking the booted config refused the key for
+// every generator added since boot, which made the paired writes impossible.
+func TestSetGeneratorKey_AcceptsAGeneratorSavedThisBoot(t *testing.T) {
+	src := writeSource(t, bundle(t, map[string]string{}), nil)
+	src.generatorList = func() []config.GeneratorConfig { return nil } // booted with none
+
+	if _, err := src.SaveGenerator(operator.GeneratorSpec{
+		ID: "deepseek-v4-flash", Provider: "openai", Model: "deepseek-v4-flash",
+	}); err != nil {
+		t.Fatalf("SaveGenerator: %v", err)
+	}
+
+	o, err := src.SetGeneratorKey("deepseek-v4-flash", "sk-live-WXYZ9876")
+	if err != nil {
+		t.Fatalf("SetGeneratorKey: %v", err)
+	}
+	if o.Effect != operator.EffectLive || !o.Set {
+		t.Fatalf("a key for a just-saved generator must store live, got %+v", o)
 	}
 }

@@ -63,8 +63,18 @@ func (im *InstanceManager) verifyPythonDeps(ctx context.Context, def *domain.Age
 	if m == nil || len(m.PythonDeps) == 0 {
 		return nil
 	}
-	if err := checkPythonDeps(ctx, im.pythonPath, m.PythonDeps); err != nil {
+	if err := checkPythonDeps(ctx, im.runtimeExes[domain.RuntimePython], m.PythonDeps); err != nil {
 		return fmt.Errorf("agent %q: %w", def.ID, err)
 	}
 	return nil
+}
+
+// verifyRuntimeDeps is the runtime-dispatching PLAT-01 pre-spawn check: Python
+// agents get the import self-check above; bun/node agents get the node_modules
+// presence check (js_deps_check.go); other runtimes have no check.
+func (im *InstanceManager) verifyRuntimeDeps(ctx context.Context, def *domain.AgentDefinition) error {
+	if domain.IsJSRuntime(def.Runtime) {
+		return im.verifyJSDeps(def)
+	}
+	return im.verifyPythonDeps(ctx, def)
 }

@@ -130,9 +130,11 @@ func TestBuildAgentCmd_ArgsInjection(t *testing.T) {
 	})
 
 	t.Run("unsupported runtime returns error", func(t *testing.T) {
+		// "node" became a supported runtime in ADR-0125; wasm still has no
+		// spawn branch.
 		def := &domain.AgentDefinition{
 			ID:      "agent-3",
-			Runtime: "node",
+			Runtime: domain.RuntimeWasm,
 		}
 		_, err := m.buildAgentCmd(def, inst, "")
 		if err == nil {

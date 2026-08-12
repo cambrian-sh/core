@@ -183,6 +183,15 @@ type Kernel struct {
 	// (contract 0097). The operator list read and the write path share it, so a
 	// console re-read after a save shows the server it just added.
 	MCPRuntime *mcpRuntime
+	// GeneratorRuntime is the LIVE generator list + default — the generator
+	// analogue of MCPRuntime (owner directive 2026-08-12: LLMs register
+	// dynamically; SaveGenerator applies live, and the console read half,
+	// TestGenerator and the removal guards all consult this).
+	GeneratorRuntime *generatorRuntime
+	// LLMGateway is the agent-plane streaming gateway, carried here so a live
+	// generator save can register the new model's streaming client (the second
+	// of the two parallel model tables; the broker registry is the first).
+	LLMGateway *subnetwork.SubstrateLLMGateway
 
 	// ── Contract 0072 (Wave 1) sources ───────────────────────────────────────
 	// Carried on the Kernel because they are constructed in bootstrapKernel but
@@ -1821,6 +1830,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		MCPSink:            mcpSink,
 		MCPServers:         mcpServers,
 		MCPRuntime:         mcpRT,
+		GeneratorRuntime:   newGeneratorRuntime(cfg.LLMProvider),
+		LLMGateway:         llmGateway,
 	}, nil
 }
 
@@ -2169,6 +2180,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			operatorSvc.SetGeneratorRegistry(generatorRegistry{
 				cfg:      k.Config.LLMProvider,
 				provider: k.LLMProvider,
+				runtime:  k.GeneratorRuntime,
 				secrets:  k.ConfigStore,
 			})
 		}
@@ -2196,19 +2208,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 					store:    k.ConfigStore,
 					prov:     k.ConfigProvenance,
 					hotApply: hotApplyFor(k.OperatorEffects),
-					generators: func() map[string]string {
-						out := map[string]string{}
-						for _, g := range k.Config.LLMProvider.Generators {
-							out[g.ID] = g.APIKeyEnv
-						}
-						return out
-					},
-					generatorList: func() []config.GeneratorConfig {
-						return k.Config.LLMProvider.Generators
-					},
-					defaultGeneratorID: func() string {
-						return k.Config.LLMProvider.Default
-					},
+					// LIVE list + default (boot + every save since), so credential/
+					// role validation and the remove/default guards judge current
+					// state — a just-saved generator is immediately a valid target.
+					generatorList:      k.GeneratorRuntime.list,
+					defaultGeneratorID: k.GeneratorRuntime.defaultGenerator,
 				}
 				// Contract 0096: role writes hot-apply onto the live provider —
 				// resolution reads the role map per call, so the next call the
@@ -2218,6 +2222,41 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 					writer.liveRoles = k.LLMProvider.Roles
 					writer.applyRole = func(role, id string) bool {
 						k.LLMProvider.SetRole(role, id)
+						return true
+					}
+					// Live generator registration (owner directive 2026-08-12):
+					// SaveGenerator/RemoveGenerator swap the broker's table, then
+					// update the three sibling tables that would otherwise drift —
+					// the runtime list (console reads + guards), the streaming
+					// gateway's model clients (agent-plane GenerateViaModelStream),
+					// and the auction's TraitModel agents (step allocation). Stale
+					// streaming clients for removed ids stay registered but stop
+					// resolving via the ladder; the reconcile evicts their agents.
+					liveGateway := k.LLMGateway
+					agentRepo, _ := k.Registry.(*kernel.AgentRepoDecorator)
+					kernelCtxGen := ctx
+					writer.applyGenerators = func(gens []config.GeneratorConfig, defaultID string) bool {
+						if err := k.LLMProvider.ReloadGenerators(gens, defaultID); err != nil {
+							slog.Warn("live generator reload failed; stored for next boot", "err", err)
+							return false
+						}
+						if k.GeneratorRuntime != nil {
+							k.GeneratorRuntime.set(gens, defaultID)
+						}
+						if liveGateway != nil {
+							streamers, serr := llm.NewStreamersFromGenerators(gens)
+							if serr != nil {
+								slog.Warn("live generator reload: some generators have no streaming client", "err", serr)
+							}
+							for id, s := range streamers {
+								liveGateway.RegisterModelClient(id, s)
+							}
+							liveGateway.SetDefaultModelID("llm:" + defaultID)
+						}
+						if agentRepo != nil {
+							registerModelAgents(agentRepo, gens)
+							reconcileModelAgents(kernelCtxGen, agentRepo, gens)
+						}
 						return true
 					}
 				}

@@ -29,11 +29,10 @@ type configWriteSource struct {
 	// has no live path, which makes the write restart-required rather than
 	// failed — the value IS stored either way.
 	hotApply func(param string, v float64) bool
-	// generators reports the configured generator ids, so a credential cannot be
-	// stored against a generator that does not exist.
-	generators func() map[string]string // id -> APIKeyEnv
-	// generatorList reports the BOOTED generator list, used as the base for a
-	// save when the store holds none yet.
+	// generatorList reports the BOOTED generator list — the base under the
+	// store's overrides. Credential and role validation always go through
+	// effectiveGenerators (store-first), so a generator saved from the console
+	// is immediately a valid target for its key.
 	generatorList func() []config.GeneratorConfig
 	// liveRoles reports the provider's CURRENT role map — boot config plus every
 	// hot-applied assignment since. nil ⇒ no live provider.
@@ -44,6 +43,13 @@ type configWriteSource struct {
 	applyRole func(role, generatorID string) bool
 	// defaultGeneratorID reports the effective global default generator id.
 	defaultGeneratorID func() string
+	// applyGenerators swaps the running provider's generator table (registry,
+	// failover ladder, capability index, default) to the given list — the live
+	// half of SaveGenerator/RemoveGenerator (owner directive 2026-08-12: models
+	// register dynamically, no restart). Returns false when there is no live
+	// provider or the rebuild fails, making the write restart-required rather
+	// than failed — the value is stored either way.
+	applyGenerators func(gens []config.GeneratorConfig, defaultID string) bool
 
 	// ── MCP write half (contract 0097) ──
 	// mcpServerList reports the BOOTED MCP server list, the base for a save when
@@ -188,11 +194,22 @@ func (c configWriteSource) SetGeneratorKey(generatorID, key string) (operator.Co
 		return res, fmt.Errorf("no credential store is available")
 	}
 
+	// Validate against the EFFECTIVE list (store-first), not the booted one:
+	// "save a generator, then paste its key" is the console's primary add-model
+	// flow, and validating against boot config refused the key for every
+	// generator added since the last restart — the paired writes could never
+	// succeed in one sitting. (The c.generators closure kept the same bug alive
+	// as a fallback and was removed with it.)
 	var envVar string
-	if c.generators != nil {
-		gens := c.generators()
-		var known bool
-		envVar, known = gens[generatorID]
+	if c.generatorList != nil || c.store != nil {
+		known := false
+		for _, g := range c.effectiveGenerators() {
+			if g.ID == generatorID {
+				known = true
+				envVar = g.APIKeyEnv
+				break
+			}
+		}
 		if !known {
 			// Refused rather than stored. A credential filed against a generator
 			// that does not exist is invisible: it never gets used, nothing errors,
@@ -282,6 +299,28 @@ func (c configWriteSource) effectiveGenerators() []config.GeneratorConfig {
 	return nil
 }
 
+// defaultGeneratorKey is the store key for the global default generator id.
+const defaultGeneratorKey = "llm_provider.default"
+
+// effectiveDefaultID returns the default a write should judge against: the
+// store's value when set, else the live/boot default. Store-first for the same
+// composition reason as effectiveGenerators.
+func (c configWriteSource) effectiveDefaultID() string {
+	if c.store != nil {
+		if overrides, err := c.store.Overrides(); err == nil {
+			if raw, ok := overrides[defaultGeneratorKey]; ok {
+				if s, ok := raw.(string); ok && s != "" {
+					return s
+				}
+			}
+		}
+	}
+	if c.defaultGeneratorID != nil {
+		return c.defaultGeneratorID()
+	}
+	return ""
+}
+
 // SaveGenerator creates or replaces one generator and stores the whole list.
 func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.ConfigWriteOutcome, error) {
 	res := operator.ConfigWriteOutcome{Key: generatorsKey}
@@ -335,15 +374,36 @@ func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.
 	}
 	res.Set = true
 
+	// First-generator auto-default. With no default configured anywhere, a
+	// stored generator list REFUSES THE NEXT BOOT (`llm_provider.default is
+	// required` is a hard validation error) — the exact chicken-egg ADR-0123
+	// constraint 2 warns about: the console that could undo the write needs a
+	// kernel that is up. Defaulting the generator being saved keeps every
+	// store-reachable state bootable. Measured in the field: a console-added
+	// generator with no default bricked a deployment on 2026-08-11.
+	def := c.effectiveDefaultID()
+	if def == "" {
+		def = spec.ID
+		if err := c.store.SetOverride(defaultGeneratorKey, def); err != nil {
+			res.Effect = operator.EffectRejected
+			res.Error = "could not store llm_provider.default: " + err.Error()
+			return res, nil
+		}
+	}
+
 	if pin := c.prov.PinnedAbove(generatorsKey); pin != "" {
 		res.Effect = operator.EffectShadowed
 		res.ShadowedBy = pin
 		return res, nil
 	}
-	// Always restart-required. Generators are constructed once, at boot, into
-	// the provider's routing table, breaker map and ledger; there is no live
-	// path, and reporting `live` would leave an operator watching traffic go to
-	// a model they believe they replaced.
+	// Live when a provider is running: the table swap makes the generator
+	// routable, assignable and testable on the next call — no restart (owner
+	// directive 2026-08-12; the generator half of contract 0096's role rule).
+	// Restart-required only when there is no live provider to apply to.
+	if c.applyGenerators != nil && c.applyGenerators(list, def) {
+		res.Effect = operator.EffectLive
+		return res, nil
+	}
 	res.Effect = operator.EffectRestartRequired
 	return res, nil
 }
@@ -363,7 +423,9 @@ func (c configWriteSource) RemoveGenerator(id string) (operator.ConfigWriteOutco
 		return res, fmt.Errorf("no configuration store is available")
 	}
 
-	if c.defaultGeneratorID != nil && c.defaultGeneratorID() == id {
+	// Judged against the EFFECTIVE default (store-first): the boot value may
+	// have been superseded by an auto-default or a stored change this lifetime.
+	if c.effectiveDefaultID() == id {
 		res.Effect = operator.EffectRejected
 		res.Error = fmt.Sprintf("generator %q is the global default (llm_provider.default); point the default elsewhere first", id)
 		return res, nil
@@ -409,6 +471,13 @@ func (c configWriteSource) RemoveGenerator(id string) (operator.ConfigWriteOutco
 		return res, nil
 	}
 	res.Set = true
+	// Live removal: the table swap drops the generator from the ladder on the
+	// next call. An in-flight call finishes on the old client (same "nothing in
+	// flight moves" tolerance as SetRole).
+	if c.applyGenerators != nil && c.applyGenerators(kept, c.effectiveDefaultID()) {
+		res.Effect = operator.EffectLive
+		return res, nil
+	}
 	res.Effect = operator.EffectRestartRequired
 	return res, nil
 }

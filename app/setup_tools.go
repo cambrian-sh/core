@@ -93,6 +93,17 @@ func (s *setupState) exec(ctx context.Context, timeout time.Duration, name strin
 	return strings.TrimSpace(string(out)), err == nil
 }
 
+// execIn is exec with an explicit working directory (bun install runs in each
+// agent package dir, ADR-0125).
+func (s *setupState) execIn(ctx context.Context, dir string, timeout time.Duration, name string, args ...string) (string, bool) {
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err == nil
+}
+
 // probe checks a tool via `--version` and returns its first output line.
 func (s *setupState) probe(ctx context.Context, name string) (string, bool) {
 	out, ok := s.exec(ctx, 8*time.Second, name, "--version")
@@ -261,6 +272,117 @@ func (s *setupState) ensureUV(ctx context.Context) string {
 	return local
 }
 
+// ---- bun bootstrap (ADR-0125) --------------------------------------------------------------
+
+const setupBunBaseURL = "https://github.com/oven-sh/bun/releases/latest/download/"
+
+// bunAsset maps GOOS/GOARCH to the official bun release asset name.
+func bunAsset(goos, goarch string) (string, bool) {
+	arch := map[string]string{"amd64": "x64", "arm64": "aarch64"}[goarch]
+	if arch == "" {
+		return "", false
+	}
+	switch goos {
+	case "linux", "darwin":
+		return "bun-" + goos + "-" + arch + ".zip", true
+	case "windows":
+		if arch != "x64" {
+			return "", false
+		}
+		return "bun-windows-x64.zip", true
+	}
+	return "", false
+}
+
+// ensureBun finds bun on PATH or in <prefix>/bin. Downloading it there happens
+// only when `download` is true (i.e. JS agent units exist — a ~90MB fetch is
+// not paid for a Python-only fleet). Returns "" when bun is unavailable.
+func (s *setupState) ensureBun(ctx context.Context, download bool) string {
+	if s.bunBin != "" {
+		return s.bunBin
+	}
+	if p, err := exec.LookPath("bun"); err == nil {
+		s.bunBin = p
+		return p
+	}
+	local := filepath.Join(s.prefix, "bin", exeName("bun"))
+	if fileExists(local) {
+		s.bunBin = local
+		return local
+	}
+	if !download {
+		return ""
+	}
+	asset, ok := bunAsset(runtime.GOOS, runtime.GOARCH)
+	if !ok {
+		return ""
+	}
+	fmt.Print("  downloading bun (JS agent runtime)… ")
+	tmp, err := downloadTemp(ctx, setupBunBaseURL+asset)
+	if err != nil {
+		fmt.Println(s.ui.yellow("failed"))
+		s.ui.line("warn", "bun download failed", err.Error())
+		return ""
+	}
+	defer os.Remove(tmp)
+	if err := extractOneFromZip(tmp, "bun", local); err != nil {
+		fmt.Println(s.ui.yellow("failed"))
+		s.ui.line("warn", "bun extract failed", err.Error())
+		return ""
+	}
+	_ = os.Chmod(local, 0o755)
+	fmt.Println(s.ui.green("done"))
+	s.bunBin = local
+	return local
+}
+
+// hasJSAgents reports whether any JS agent unit lives under agentsDir: an
+// *agent.ts / *agent.js entry file, or any package.json (node_modules skipped).
+func hasJSAgents(agentsDir string) bool {
+	found := false
+	_ = filepath.WalkDir(agentsDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if d.Name() == "node_modules" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		n := d.Name()
+		if n == "package.json" || strings.HasSuffix(n, "agent.ts") || strings.HasSuffix(n, "agent.js") {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+// jsPackageDirs returns every dir under agentsDir carrying a package.json
+// (node_modules skipped), agents root first — the union-workspace install
+// order (ADR-0125 D6).
+func jsPackageDirs(agentsDir string) []string {
+	var dirs []string
+	_ = filepath.WalkDir(agentsDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && d.Name() == "node_modules" {
+			return fs.SkipDir
+		}
+		if !d.IsDir() && d.Name() == "package.json" {
+			dirs = append(dirs, filepath.Dir(p))
+		}
+		return nil
+	})
+	// WalkDir is lexical, which already visits the root before its subtrees;
+	// the explicit sort keeps that contract obvious and deterministic.
+	slices.Sort(dirs)
+	return dirs
+}
+
 func downloadTemp(ctx context.Context, rawURL string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -362,8 +484,10 @@ func writeExecutable(dest string, r io.Reader) error {
 // ---- embedded agents ---------------------------------------------------------------------
 
 // unpackAgents materializes the embedded agent sources into dst, refreshing
-// existing files and filtering build junk (__pycache__, *.pyc). Returns the
-// number of files written.
+// existing files and filtering build junk (__pycache__, *.pyc, node_modules,
+// *.map — the JS dependency tree is provisioned by `bun install` at setup
+// time, never shipped inside the binary; ADR-0125 D7). Returns the number of
+// files written.
 func unpackAgents(dst string) (int, error) {
 	n := 0
 	err := fs.WalkDir(core.AgentsFS, "agents", func(p string, d fs.DirEntry, err error) error {
@@ -371,12 +495,12 @@ func unpackAgents(dst string) (int, error) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == "__pycache__" {
+			if d.Name() == "__pycache__" || d.Name() == "node_modules" {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		if strings.HasSuffix(p, ".pyc") {
+		if strings.HasSuffix(p, ".pyc") || strings.HasSuffix(p, ".map") {
 			return nil
 		}
 		rel := strings.TrimPrefix(p, "agents/")
@@ -469,6 +593,14 @@ func (s *setupState) writeConfigBundle() error {
 		met["python_executable"] = s.venvPy
 	} else if vp := venvPython(filepath.Join(s.prefix, "venv")); fileExists(vp) {
 		met["python_executable"] = vp
+	}
+	// ADR-0125: record the JS runtimes when resolved; absent keys keep the
+	// kernel's $PATH fallback.
+	if s.bunBin != "" {
+		met["bun_executable"] = s.bunBin
+	}
+	if s.nodeBin != "" {
+		met["node_executable"] = s.nodeBin
 	}
 	met["agents_dir"] = filepath.Join(s.prefix, "agents")
 	cfg["metabolism"] = met

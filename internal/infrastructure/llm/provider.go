@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"maps"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -18,18 +19,21 @@ import (
 // system roles read deterministic role config; agent steps consult the EFE
 // preference hook (wired in 0042-08). The Provider only gates on health.
 type Provider struct {
-	registry *GeneratorRegistry
-	breaker  *CircuitBreaker
-	ledger   *PriceLedger
+	// table holds the swappable generator state — registry, id order, capability
+	// index and the global default — as ONE atomically-replaced value, so a live
+	// reload (SaveGenerator/RemoveGenerator, owner directive 2026-08-12: "LLMs
+	// register dynamically, not at start") can never expose a torn view: a
+	// resolve either sees the whole old table or the whole new one. Reads stay
+	// lock-free on the Acquire hot path.
+	table   atomic.Pointer[generatorTable]
+	breaker *CircuitBreaker
+	ledger  *PriceLedger
 	// roles maps role (Purpose) -> generator id. Guarded by rolesMu: the map is
 	// read on every system-organ call and written by the operator plane's
 	// SetRoleAssignment (contract 0096), which is what makes a role change take
 	// effect on the next call rather than the next boot.
-	roles     map[string]string
-	rolesMu   sync.RWMutex
-	defaultID string
-	allIDs    []string
-	capIndex  map[string][]string
+	roles   map[string]string
+	rolesMu sync.RWMutex
 
 	// agentStepPreference supplies the ordered EFE/auction candidate ids for an
 	// agent step. Nil until ADR-0037 is wired (0042-08); a nil hook means the
@@ -57,6 +61,18 @@ type Provider struct {
 // max_concurrency at 0. Chosen to stay under typical hosted-endpoint rate limits while
 // preserving useful parallelism for the fan-out (planner + agents + agentic sub-queries).
 const defaultLLMMaxConcurrency = 8
+
+// generatorTable is the swappable half of the Provider: everything derived from
+// the generator LIST. Immutable once published — a reload builds a fresh one.
+type generatorTable struct {
+	registry  *GeneratorRegistry
+	allIDs    []string
+	capIndex  map[string][]string
+	defaultID string
+}
+
+// tab returns the current table. Never nil after NewProvider.
+func (p *Provider) tab() *generatorTable { return p.table.Load() }
 
 // NewProvider builds the Provider from the llm_provider config block.
 func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger) (*Provider, error) {
@@ -92,17 +108,49 @@ func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger) (*Provider, err
 				"role", r, "generator", id, "default", cfg.Default)
 		}
 	}
-	return &Provider{
+	p := &Provider{
+		breaker: NewCircuitBreaker(cfg.Health.FailureThreshold, cooldown),
+		ledger:  SeedPriceLedger(cfg.Generators),
+		roles:   roles,
+		sem:     sem,
+		log:     log,
+	}
+	p.table.Store(&generatorTable{
 		registry:  reg,
-		breaker:   NewCircuitBreaker(cfg.Health.FailureThreshold, cooldown),
-		ledger:    SeedPriceLedger(cfg.Generators),
-		roles:     roles,
-		defaultID: cfg.Default,
 		allIDs:    reg.IDs(),
 		capIndex:  reg.CapabilityIndex(),
-		sem:       sem,
-		log:       log,
-	}, nil
+		defaultID: cfg.Default,
+	})
+	return p, nil
+}
+
+// ReloadGenerators rebuilds the generator table from a new list and default,
+// LIVE — the operator plane's SaveGenerator/RemoveGenerator apply here so a
+// console-registered model is assignable and routable on the next call, no
+// restart (the generator half of what contract 0096 did for roles). The NEW
+// registry is built first: a bad spec fails the reload without touching the
+// serving table. In-flight calls hold generators from the old table and finish
+// on them — the same "nothing in flight moves" tolerance as SetRole. The
+// breaker map is deliberately untouched: it is keyed by id with unknown-ids-
+// healthy semantics, so a NEW id starts closed, and a REPLACED id keeps its
+// history (its endpoint may be unchanged; one probe re-opens or clears it).
+func (p *Provider) ReloadGenerators(gens []config.GeneratorConfig, defaultID string) error {
+	reg, err := NewGeneratorRegistry(gens)
+	if err != nil {
+		return err
+	}
+	for _, g := range gens {
+		p.ledger.Set(g.ID, g.CostPer1MInput, g.CostPer1MOutput)
+	}
+	p.table.Store(&generatorTable{
+		registry:  reg,
+		allIDs:    reg.IDs(),
+		capIndex:  reg.CapabilityIndex(),
+		defaultID: defaultID,
+	})
+	p.log.Info("llm provider: generator table reloaded live",
+		"generators", len(gens), "default", defaultID)
+	return nil
 }
 
 // SetAgentStepPreference injects the EFE/auction preference source for agent
@@ -129,10 +177,10 @@ func (p *Provider) SetHealthEventBus(bus domain.EventBus) {
 func (p *Provider) Ledger() *PriceLedger { return p.ledger }
 
 // Registry exposes the generator registry for auction agent registration.
-func (p *Provider) Registry() *GeneratorRegistry { return p.registry }
+func (p *Provider) Registry() *GeneratorRegistry { return p.tab().registry }
 
 // Default returns the global default generator id (interview-session base, etc.).
-func (p *Provider) Default() string { return p.defaultID }
+func (p *Provider) Default() string { return p.tab().defaultID }
 
 // Acquire implements domain.LLMProvider: resolve a healthy model via the ladder,
 // then return it wrapped in the health-recording decorator.
@@ -142,7 +190,7 @@ func (p *Provider) Acquire(ctx context.Context, req domain.LLMRequest) (domain.G
 		p.log.Error("llm provider: no healthy model", "purpose", req.Purpose, "suggested", req.SuggestedModelID, "err", err)
 		return nil, err
 	}
-	entry, ok := p.registry.Lookup(id)
+	entry, ok := p.tab().registry.Lookup(id)
 	if !ok {
 		return nil, fmt.Errorf("llm provider: resolved id %q not in registry", id)
 	}
@@ -237,14 +285,17 @@ func (c *concurrencyGenerator) GenerateStream(ctx context.Context, prompt string
 // resolve picks the generator id via the failover ladder, sourcing preference by
 // purpose. Separated from Acquire so the decision is unit-testable.
 func (p *Provider) resolve(ctx context.Context, req domain.LLMRequest) (string, error) {
+	// One table load for the whole decision: allIDs/default/capIndex are always
+	// from the SAME published table, even mid-reload.
+	t := p.tab()
 	return resolveModel(
 		req.SuggestedModelID,
 		req.CapabilityHints,
 		p.preferenceFor(ctx, req),
-		p.allIDs,
-		p.defaultID,
+		t.allIDs,
+		t.defaultID,
 		p.breaker.Healthy,
-		p.capIndex,
+		t.capIndex,
 	)
 }
 
@@ -399,9 +450,10 @@ func (p *Provider) SetRole(role, generatorID string) {
 // RoleAssignmentOp.resolved: a role pointing at a removed generator silently
 // falls back to the default, and nothing else in the system says so.
 func (p *Provider) KnowsGenerator(id string) bool {
-	if p.registry == nil {
+	reg := p.tab().registry
+	if reg == nil {
 		return false
 	}
-	_, ok := p.registry.Lookup(id)
+	_, ok := reg.Lookup(id)
 	return ok
 }

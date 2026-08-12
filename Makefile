@@ -358,8 +358,19 @@ agent-reqs:
 	$(PYTHON) scripts/gen_agent_requirements.py
 
 # CI drift gate: the committed requirements must match a fresh generation.
-agent-reqs-check:
+# Chains the JS twin (ADR-0125) so one target gates both fleets.
+agent-reqs-check: agent-packages-check
 	$(PYTHON) scripts/gen_agent_requirements.py --check
+
+# ADR-0125: PLAT-01 twin for JS agents — keep each unit's package.json honest
+# against its imports and maintain the union workspace agents/package.json
+# (one `bun install` at agents/ = the union-lockfile analog). No-op while no
+# JS agent units exist.
+agent-packages:
+	$(PYTHON) scripts/gen_agent_packages.py
+
+agent-packages-check:
+	$(PYTHON) scripts/gen_agent_packages.py --check
 
 # PLAT-02 / ADR-0064: DB migration runner. `migrate` applies the baseline head schema
 # + pending forward deltas; `migrate-status` prints the version table. Reads the same

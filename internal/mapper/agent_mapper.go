@@ -148,6 +148,10 @@ func toDomainRuntime(r string) domain.AgentRuntime {
 		return domain.RuntimeWasm
 	case "a2a":
 		return domain.RuntimeA2A
+	case "bun":
+		return domain.RuntimeBun
+	case "node":
+		return domain.RuntimeNode
 	default:
 		return domain.RuntimeBinary
 	}

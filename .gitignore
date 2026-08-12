@@ -88,6 +88,11 @@ kg_extractors/eval_evidence.json
 data/content_store_blobs/*
 data/agents.db.bak-1784834010
 
+# ADR-0125: JS agent dependency trees are provisioned by `bun install` (setup
+# step / dev machine), never committed — and, critically, never present in a
+# clean checkout, so `go:embed all:agents` cannot swallow one into the binary.
+node_modules/
+
 # Local secret material for agents (ADR-0090 ingress tokens etc.)
 secrets/
 *.token

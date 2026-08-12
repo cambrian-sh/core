@@ -211,22 +211,36 @@ func (c inputClassifier) Classify(ctx context.Context, text, surface string) (op
 type generatorRegistry struct {
 	cfg      config.LLMProviderConfig
 	provider *llm.Provider
+	// runtime is the LIVE list + default (boot + every save since). nil falls
+	// back to the boot cfg — but when wired, a console re-read after
+	// SaveGenerator sees the generator it just made (contract 0097's rule,
+	// applied to generators).
+	runtime *generatorRuntime
 	// secrets resolves whether a credential is installed and where it comes
 	// from, WITHOUT returning it. nil ⇒ report env-var presence only.
 	secrets *storage.BoltConfigStore
 }
 
+// liveList returns the runtime list/default when wired, else the boot config.
+func (g generatorRegistry) liveList() ([]config.GeneratorConfig, string) {
+	if g.runtime != nil {
+		return g.runtime.list(), g.runtime.defaultGenerator()
+	}
+	return g.cfg.Generators, g.cfg.Default
+}
+
 // Generators projects the configured generator list plus live breaker state.
 func (g generatorRegistry) Generators() []operator.GeneratorInfo {
-	out := make([]operator.GeneratorInfo, 0, len(g.cfg.Generators))
-	for _, gen := range g.cfg.Generators {
+	gens, def := g.liveList()
+	out := make([]operator.GeneratorInfo, 0, len(gens))
+	for _, gen := range gens {
 		info := operator.GeneratorInfo{
 			ID:        gen.ID,
 			Provider:  gen.Provider,
 			Model:     gen.Model,
 			Endpoint:  gen.Endpoint,
 			TimeoutMs: int64(gen.TimeoutMs),
-			IsDefault: gen.ID == g.cfg.Default,
+			IsDefault: gen.ID == def,
 			// Per-generator daily token accounting is not tracked by this kernel.
 			// -1, not 0: "0 calls today" is a claim about traffic, and reporting
 			// it for an untracked counter would make a busy generator look idle.
@@ -300,8 +314,10 @@ func (g generatorRegistry) RoleAssignments() []operator.RoleAssignment {
 }
 
 // TestGenerator makes one real call against the generator's live endpoint.
+// Consults the LIVE list, so a just-saved generator is probeable immediately.
 func (g generatorRegistry) TestGenerator(ctx context.Context, id string) (operator.GeneratorTestResult, error) {
-	for _, gen := range g.cfg.Generators {
+	gens, _ := g.liveList()
+	for _, gen := range gens {
 		if gen.ID != id {
 			continue
 		}

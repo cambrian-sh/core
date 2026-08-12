@@ -7,7 +7,20 @@ const (
 	RuntimeBinary AgentRuntime = "binary"
 	RuntimeWasm   AgentRuntime = "wasm"
 	RuntimeA2A    AgentRuntime = "a2a"
+	// RuntimeBun / RuntimeNode are the first-class JS agent runtimes (ADR-0125):
+	// the kernel spawns the configured interpreter (metabolism.bun_executable /
+	// metabolism.node_executable, $PATH fallback) with the same argv contract as
+	// Python agents. Kernel-side support only — the TS SDK is future work.
+	RuntimeBun  AgentRuntime = "bun"
+	RuntimeNode AgentRuntime = "node"
 )
+
+// IsJSRuntime reports whether r is one of the V8/JSC-based runtimes (ADR-0125).
+// Used where JS engines need distinct handling (e.g. the Linux RLIMIT_AS memory
+// cap, which their large virtual reservations would trip spuriously).
+func IsJSRuntime(r AgentRuntime) bool {
+	return r == RuntimeBun || r == RuntimeNode
+}
 
 type AgentTrait string
 
