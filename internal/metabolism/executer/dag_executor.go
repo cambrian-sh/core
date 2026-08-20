@@ -754,6 +754,17 @@ func (d *DAGExecutor) ExecuteFrom(
 	inFlight := 0
 	var firstErr error
 	var failedStepIdx int
+	// abortErr is the error an ABANDONED coordinator loop owes the caller verbatim —
+	// set by the exits that cannot be reconstructed from firstErr alone (a hot-swap that
+	// outran the replan budget records no step error at all, and a malformed replanned
+	// plan must surface its own topology error, not a PartialPlanError).
+	//
+	// It exists so those exits can `break coordinate` instead of returning from inside
+	// the loop. They used to return directly, which skipped the drain, the ADR-0021
+	// PlanEvent, and the ADR-0049/0095 completion write — so a plan that exhausted its
+	// replans left its episode row stuck at "running" forever and produced no telemetry
+	// and no memory of the one failure worth remembering.
+	var abortErr error
 
 	// If resuming from a checkpoint, mark completed steps.
 	for idx := 0; idx < startFromStepIndex && idx < n; idx++ {
@@ -791,6 +802,20 @@ func (d *DAGExecutor) ExecuteFrom(
 
 	// ADR-0021: Plan-level telemetry accumulator.
 	planStartTime := time.Now()
+
+	// ADR-0095 D1: open the EPISODE before the first step dispatches.
+	//
+	// Every record this plan writes hangs off a parent derived from planID, and the
+	// action records are written WHILE the plan runs — so the parent has to exist now,
+	// not at completion. It is a nullable FK resolved through a subselect, which means
+	// getting this order wrong costs nothing at write time and silently leaves the
+	// episode in pieces.
+	//
+	// Errors are swallowed for the same reason the scene write is: bookkeeping about a
+	// memory must never be able to fail the work that produced it (D5).
+	if d.MemoryRecorder != nil {
+		_ = d.MemoryRecorder.BeginExperience(ctx, planID)
+	}
 	var totalPromptTokens, totalCompletionTokens, totalTokens int
 	var fallbackCount, budgetOverrunCount int
 
@@ -898,6 +923,11 @@ func (d *DAGExecutor) ExecuteFrom(
 	// distinct from 0.0 ("predicted exactly right"). Collapsing the two would let an
 	// unscored fleet look perfectly predictable and silence the gate.
 	maxSurprise := -1.0
+	// Labelled so an abort deep inside the pause/replan handling — including from within
+	// the resume `select` — leaves the LOOP rather than the function. Everything after
+	// the loop (drain, PlanEvent, episode close, plan scene) must run exactly once per
+	// Execute, on every one of these paths.
+coordinate:
 	for inFlight > 0 || (func() bool { d.pausedMu.Lock(); defer d.pausedMu.Unlock(); return d.paused }()) {
 		// When paused and all in-flight steps have completed, block until resume.
 		if inFlight == 0 {
@@ -923,21 +953,18 @@ func (d *DAGExecutor) ExecuteFrom(
 				d.replanCount++
 				if replanErr != nil || newPlan == nil {
 					slog.Info("ReplanHandler: replan failed, aborting", "error", replanErr)
-					return nil, &PartialPlanError{
-						FailedStep:  failedStepIdx,
-						LastError:   firstErr,
-						Context:     cloneMap(masterContext),
-						ReplanCount: d.replanCount,
-					}
+					// firstErr and failedStepIdx already hold everything the caller's
+					// PartialPlanError is built from, so the completion block returns
+					// the identical error — this exit only changes WHERE it returns from.
+					break coordinate
 				}
 
 				if d.replanCount > d.MaxReplanAttempts {
-					return nil, &PartialPlanError{
-						FailedStep:  failedStepIdx,
-						LastError:   firstErr,
-						Context:     cloneMap(masterContext),
-						ReplanCount: d.replanCount,
-					}
+					// The recovery ladder is spent. Falling through is the whole point:
+					// the completion block reads the SAME counters to stamp
+					// PlanOutcomeReplanExhausted, which is what lets the failure
+					// precedent bypass the surprise gate (ADR-0049 A2.3 carve-out).
+					break coordinate
 				}
 
 				// Loop guard: refuse a replan that just restates the step that failed.
@@ -960,18 +987,20 @@ func (d *DAGExecutor) ExecuteFrom(
 				if len(newPlan.Steps) > 0 && failedQuery != "" && newPlan.Steps[0].Query == failedQuery {
 					slog.Warn("Replan dry-run: new plan repeats same faulty step query",
 						"step", newPlan.Steps[0].Query)
-					return nil, &PartialPlanError{
-						FailedStep:  failedStepIdx,
-						LastError:   fmt.Errorf("replan validation: replanned plan repeats the same step that failed: %s", newPlan.Steps[0].Query),
-						Context:     cloneMap(masterContext),
-						ReplanCount: d.replanCount,
-					}
+					// The rejection BECOMES the plan's error, exactly as the returned
+					// PartialPlanError used to report it — so the completion block
+					// records the same LastError the caller sees.
+					firstErr = fmt.Errorf("replan validation: replanned plan repeats the same step that failed: %s", newPlan.Steps[0].Query)
+					break coordinate
 				}
 
 				// Only now mutate: a rejected replan must leave the executor's state
 				// untouched rather than half-swapped.
 				if topoErr := d.applyReplannedPlan(newPlan, &plan, &n, alreadyDispatched, completed, &topoOrder); topoErr != nil {
-					return nil, topoErr
+					// Returned verbatim (a topology error, not a PartialPlanError), but
+					// still through the completion block.
+					abortErr = topoErr
+					break coordinate
 				}
 
 				firstErr = nil
@@ -997,7 +1026,8 @@ func (d *DAGExecutor) ExecuteFrom(
 
 				if hsPlan != nil && len(hsPlan.Steps) > 0 {
 					if err := d.applyReplannedPlan(hsPlan, &plan, &n, alreadyDispatched, completed, &topoOrder); err != nil {
-						return nil, err
+						abortErr = err
+						break coordinate
 					}
 				}
 
@@ -1012,17 +1042,23 @@ func (d *DAGExecutor) ExecuteFrom(
 					}
 					injPlan := d.buildInjectionPlan(injection, masterContext, plan, completedIdx)
 					if err := d.applyReplannedPlan(injPlan, &plan, &n, alreadyDispatched, completed, &topoOrder); err != nil {
-						return nil, err
+						abortErr = err
+						break coordinate
 					}
 				}
 
 				if d.replanCount > 0 && (d.MaxReplanAttempts == 0 || d.replanCount > d.MaxReplanAttempts) {
-					return nil, &PartialPlanError{
+					// Built HERE rather than left to the completion block: a hot-swap can
+					// outrun the replan budget with no step error recorded at all, so
+					// firstErr is nil and falling through would read as a success. The
+					// value is identical to what this exit returned before.
+					abortErr = &PartialPlanError{
 						FailedStep:  failedStepIdx,
 						LastError:   firstErr,
 						Context:     cloneMap(masterContext),
 						ReplanCount: d.replanCount,
 					}
+					break coordinate
 				}
 
 				dispatch()
@@ -1192,13 +1228,20 @@ func (d *DAGExecutor) ExecuteFrom(
 
 	// Drain unconditionally: goroutines may still be executing defer wg.Done()
 	// after sending to results. This prevents goroutine leaks on any exit path.
+	//
+	// "Any exit path" is only true because the replan aborts `break coordinate` rather
+	// than returning from inside the loop — they used to return past this line (and past
+	// everything below it). A new abort must break, not return.
 	wg.Wait()
 
 	// ADR-0021: Write plan-level telemetry.
 	planEndTime := time.Now()
 	planDurationMs := planEndTime.Sub(planStartTime).Milliseconds()
+	// An abandoned loop did not complete, even when no single step reported an error —
+	// a hot-swap that outran its replan budget is exactly that shape.
+	planFailed := firstErr != nil || abortErr != nil
 	outcome := domain.PlanOutcomeSuccess
-	if firstErr != nil {
+	if planFailed {
 		if d.replanCount > 0 && d.replanCount > d.MaxReplanAttempts {
 			outcome = domain.PlanOutcomeReplanExhausted
 		} else {
@@ -1240,7 +1283,7 @@ func (d *DAGExecutor) ExecuteFrom(
 		_ = d.MemoryRecorder.WritePlanScene(ctx, domain.PlanRecord{
 			PlanID:  planID,
 			Goal:    plan.Subject,
-			Success: firstErr == nil,
+			Success: !planFailed,
 			// ADR-0094 D3 clusters on the capability SHAPE, so the sequence has to
 			// reach the record. Taken from the plan rather than from what executed,
 			// so a routine describes what the work REQUIRED, not who happened to win.
@@ -1251,7 +1294,23 @@ func (d *DAGExecutor) ExecuteFrom(
 			// co-evolution branch in WritePlanScene is unreachable — the field was
 			// read but never written, so no routine ever learned from an outcome.
 			FollowedProcedures: plan.FollowedProcedures,
+			// ADR-0049 A2.2: the failure MODE, not only the situation. Both values exist
+			// here and nowhere downstream, so without this hop the failure precedent
+			// records what was being attempted and never what went wrong — it cannot warn
+			// about a repeat of the error it was written for.
+			FailedStep:     failedStepIdx,
+			FailureSummary: summarizeFailure(plan.Steps, failedStepIdx, firstErr),
+			// Read off the outcome already computed above rather than re-testing the
+			// replan counters, so the record and the PlanEvent can never disagree about
+			// whether the recovery ladder was exhausted.
+			ReplanExhausted: outcome == domain.PlanOutcomeReplanExhausted,
 		})
+	}
+
+	// An abort carries its own error verbatim — a topology error stays a topology error,
+	// and the replan-budget exit keeps the PartialPlanError it built at the exit site.
+	if abortErr != nil {
+		return nil, abortErr
 	}
 
 	if firstErr != nil {
@@ -1515,4 +1574,45 @@ func planCapabilitySequence(plan *domain.ExecutionPlan) []string {
 		out = append(out, strings.Join(st.RequiredCapabilities, "+"))
 	}
 	return out
+}
+
+const (
+	// maxFailureSummaryRunes bounds the whole rendered failure mode. Wide enough to
+	// carry a step query plus the error that identifies the failure, narrow enough that
+	// one stack-shaped error cannot dominate the record it is a field of.
+	maxFailureSummaryRunes = 300
+	// maxFailureQueryRunes bounds the step-query head inside it, so a long query cannot
+	// crowd out the error text — the error is the part a precedent is matched on.
+	maxFailureQueryRunes = 80
+)
+
+// summarizeFailure renders a plan's first error as the deterministic failure mode of its
+// precedent (ADR-0049 A2.2): "step N (<query head>): <error head>", degrading to
+// "step N: <error head>" when idx is outside the plan (a replan reassigns plan.Steps) or
+// the step carries no query.
+//
+// Pure: no clock, no LLM, and nothing stripped beyond the rune bounds, so the same
+// failure renders identically on every occurrence — which is what makes two occurrences
+// matchable. Bounds cut on rune boundaries; a byte slice would split a multi-byte rune
+// and produce a different string for the same error depending on where it landed.
+func summarizeFailure(steps []domain.Step, idx int, err error) string {
+	if err == nil {
+		return ""
+	}
+	head := fmt.Sprintf("step %d", idx)
+	if idx >= 0 && idx < len(steps) {
+		if q := strings.TrimSpace(steps[idx].Query); q != "" {
+			head += " (" + boundRunes(q, maxFailureQueryRunes) + ")"
+		}
+	}
+	return boundRunes(head+": "+err.Error(), maxFailureSummaryRunes)
+}
+
+// boundRunes caps s at n runes, cutting on a rune boundary.
+func boundRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }

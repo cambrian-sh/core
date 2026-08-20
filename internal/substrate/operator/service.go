@@ -99,6 +99,11 @@ type Service struct {
 	// nil ⇒ Save/Remove/SetToken/Test return Unimplemented, which a console
 	// renders as "this kernel's MCP servers are file-configured".
 	mcpWriter MCPWriter
+	// linkWriter is the identity plane's review lane (contract 0098, five-planes
+	// step 2). nil ⇒ Confirm/Retract/ListLinkCandidates return Unimplemented,
+	// which a console renders as "this kernel holds no assertions about identity"
+	// rather than an empty review queue — two very different states.
+	linkWriter LinkWriter
 
 	sessionOps SessionOps
 	convOps    ConversationOps // ADR-0084 D9: OSS chat lane

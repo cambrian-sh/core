@@ -237,6 +237,13 @@ type TurnMessage struct {
 	// person reading its output) can name a sender instead of citing a number.
 	Username    string
 	DisplayName string
+	// EvidenceID is the archive row this message was captured as at admission
+	// (FIVE-PLANES-BUILD Wave-3 C1, seam S7). Empty when nothing was captured —
+	// evidence capture disabled, or the archive refused — and empty is the only
+	// honest value there: a node that cites an evidence id must be citing one
+	// that exists, so an absent capture stays absent rather than becoming a
+	// plausible-looking string.
+	EvidenceID string
 }
 
 // TurnRouter shapes what happens around an admitted turn.

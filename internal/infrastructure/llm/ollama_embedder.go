@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -165,9 +166,19 @@ func (e *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 	if cap <= 0 {
 		cap = defaultMaxEmbedRunes
 	}
+	startCap := cap
 	for {
 		vecs, overflow, err := e.embedBatchOnce(ctx, texts, cap)
 		if err == nil {
+			if cap < startCap {
+				// One oversized member forced the retry, but the halved cap was
+				// applied to EVERY text in the batch — all their embeddings now
+				// cover only a prefix. Silent before; permanent (the stored text
+				// keeps the full body, only the vector is a prefix), so it must
+				// be visible in the ingest log.
+				slog.Warn("OllamaEmbedder: batch embedded at a REDUCED input cap — every vector in this batch covers a prefix only",
+					"cap_runes", cap, "start_cap_runes", startCap, "batch_size", len(texts))
+			}
 			return vecs, nil
 		}
 		if !overflow || cap <= minEmbedRunes {

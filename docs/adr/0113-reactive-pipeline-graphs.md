@@ -1,7 +1,15 @@
 # ADR-0113: Reactive pipeline graphs — composable signal → memory ingestion
 
-**Status:** Proposed (design only; no code written)
+**Status:** Implemented
 **Date:** 2026-08-02
+**Status corrected 2026-08-20.** This record read *"Proposed (design only; no code written)"*
+while the graph engine was running. The model shipped: `pipeline/graph.go`, `compile.go`,
+`loop.go` and `dryrunner.go` in cambrian-premium (node graph, branching, aggregation and
+bounded loops as specified), `app.ReactiveWatchStore` with `WriteWatchConfig`/`DeleteWatchConfig`
+in cambrian-core, the visual authoring canvas at `ui/src/screens/plan/DagBuilder.tsx`, and
+`ingress_studio_projections` in `ingressstudio/pg_store.go`. Residual items from the RP series
+and `cambrian-premium/docs/defects/` are not closed by this correction — the status flip records
+that the model exists, not that every slice landed. See ADR-0128 §8.
 **Supersedes:** two earlier drafts of this ADR, both wrong in the same direction — they shrank the
 model to what today's engine could nearly do (first: per-ingress watches over the existing arms
 model; second: a linear step list). The owner's direction is a **node graph with an item stream**,

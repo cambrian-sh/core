@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -82,6 +83,61 @@ func TestWorkspaceStage_NegativesInEnrichment(t *testing.T) {
 		if f.Document.DocumentType == domain.DocTypeNegativeEdge {
 			t.Error("negative_edge doc must NOT appear in Facts")
 		}
+	}
+}
+
+// negLaneStore captures the vector and options the negatives lane searched with. The
+// shared mockFactStore discards both, which is how the lane searched with a nil vector
+// for as long as it did.
+type negLaneStore struct {
+	fakeVectorStore
+	mu      sync.Mutex
+	negVec  []float32
+	negOpts domain.SearchOptions
+	seenNeg bool
+}
+
+func (n *negLaneStore) Search(_ context.Context, vec []float32, opts domain.SearchOptions) ([]domain.SearchResult, error) {
+	if opts.DocumentType == domain.DocTypeNegativeEdge {
+		n.mu.Lock()
+		n.negVec, n.negOpts, n.seenNeg = vec, opts, true
+		n.mu.Unlock()
+	}
+	return nil, nil
+}
+
+func (n *negLaneStore) GetBatch(_ context.Context, _ []string) ([]domain.Document, error) {
+	return nil, nil
+}
+
+// A nil query vector is not similarity-matched to anything: the pgvector adapter answers
+// it with an identical score per row ordered by last_accessed_at, so the negatives lane
+// fed the planner the three most recently touched failures whatever the task was.
+func TestWorkspaceStage_NegativesSearchedAgainstTheTask(t *testing.T) {
+	store := &negLaneStore{}
+	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.35, false, 0.7)
+
+	if _, err := ws.PrimeForPlanning(context.Background(), "auth deployment"); err != nil {
+		t.Fatalf("PrimeForPlanning failed: %v", err)
+	}
+	if !store.seenNeg {
+		t.Fatal("the negatives lane never ran")
+	}
+	want, err := (&fakeEmbedder{}).Embed(context.Background(), "auth deployment")
+	if err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	if len(store.negVec) != len(want) {
+		t.Fatalf("negatives searched with a %d-dim vector, want the %d-dim task embedding",
+			len(store.negVec), len(want))
+	}
+	for i := range want {
+		if store.negVec[i] != want[i] {
+			t.Fatalf("negatives vector != embedded task query: got %v want %v", store.negVec, want)
+		}
+	}
+	if store.negOpts.RetrievalFloor != ws.RetrievalFloor {
+		t.Errorf("RetrievalFloor: want %v got %v", ws.RetrievalFloor, store.negOpts.RetrievalFloor)
 	}
 }
 

@@ -202,9 +202,12 @@ type Registry struct {
 	transformers     []domain.EvidenceTransformer
 	kinds            []domain.KindSpec
 	authorities      []domain.ResolutionAuthority
+	relations        []domain.RelationSpec
 	agentGRPC        map[string]func(*grpc.Server)
 	substrateConsult domain.SubstrateConsultant
 	consultOwner     string
+	publishedTools   domain.PublishedToolSurface
+	publishedOwner   map[string]string
 }
 
 // SetAuthorizer installs the access-control decision point (ADR-0085). Tier-1
@@ -324,6 +327,43 @@ func (r *Registry) AddAgentGRPCService(serviceName string, f func(*grpc.Server))
 	return nil
 }
 
+// PublishTool contributes a tool to the OUTBOUND Published Tool Surface
+// (ADR-0126 D2). Distinct from AddMCPServer, which CONSUMES a foreign MCP
+// server — the two directions never mix, and nothing published here enters an
+// internal agent's tool menu.
+//
+// Tier-2 add-many, on the AddAgentGRPCService shape. A duplicate name is an
+// error naming both claimants: two handlers for one tool name is two answers to
+// one question with no way to say which held. The name is validated here rather
+// than at the transport, so a tool no client can address fails the boot instead
+// of being discovered as a 400 by whoever dialled the endpoint first.
+//
+// Entitlement needs nothing: the ADR-0082 D3 chokepoint runs before Register, so
+// an unentitled plugin never publishes — its tools cannot be listed and cannot be
+// called, by construction. Do not add a per-tool entitlement check (ADR-0082 D6).
+func (r *Registry) PublishTool(owner string, t domain.PublishedTool, h domain.PublishedToolHandler) error {
+	if !domain.ValidPublishedToolName(t.Name) {
+		return fmt.Errorf("published tool name %q must match %s", t.Name, domain.PublishedToolNamePattern)
+	}
+	if h == nil {
+		return fmt.Errorf("published tool %q needs a handler", t.Name)
+	}
+	for _, e := range t.Effects {
+		if !domain.ValidToolEffect(e) {
+			return fmt.Errorf("published tool %q declares effect %q outside the closed set %v", t.Name, e, domain.AllToolEffects)
+		}
+	}
+	if prev, dup := r.publishedOwner[t.Name]; dup {
+		return fmt.Errorf("published tool %q already published by plugin %q; %q cannot also publish it", t.Name, prev, owner)
+	}
+	if r.publishedOwner == nil {
+		r.publishedOwner = make(map[string]string)
+	}
+	r.publishedOwner[t.Name] = owner
+	r.publishedTools = append(r.publishedTools, domain.PublishedToolEntry{Owner: owner, Tool: t, Handler: h})
+	return nil
+}
+
 // SetSubstrateConsultant installs the fact-lane substrate consultant (ADR-0118
 // D5). Tier-1 replace-one: the retrieval path consults at most one substrate
 // answer per query — two consultants would attach two competing "exact"
@@ -385,6 +425,15 @@ func (r *Registry) AddKnowledgeKinds(specs ...domain.KindSpec) {
 	r.kinds = append(r.kinds, specs...)
 }
 
+// AddRelationSpecs declares link verbs this plugin produces (five-planes step 2;
+// FIVE-PLANES-BUILD.md amendment S3). Add-many, and the same referee rule as
+// AddKnowledgeKinds: a duplicate verb — or one that redeclares a built-in seed —
+// fails the boot in NewRelationRegistry rather than letting two owners disagree
+// about whether a verb is symmetric between two writes of one batch.
+func (r *Registry) AddRelationSpecs(specs ...domain.RelationSpec) {
+	r.relations = append(r.relations, specs...)
+}
+
 // AddResolutionAuthority registers a resolution policy implementation
 // (ADR-0110 D3). Add-many; a kind opts in by naming the policy in its spec.
 func (r *Registry) AddResolutionAuthority(a domain.ResolutionAuthority) {
@@ -439,6 +488,12 @@ type composedPlugins struct {
 	lifecycles   []Lifecycle
 	agentSources []AgentSource
 	mcpServers   []MCPServerSpec
+	// publishedTools is the composed Published Tool Surface (ADR-0126 D2): every
+	// tool an ENTITLED plugin published, in registration order, with its handler
+	// and owner. It is the read snapshot a renderer (the MCP endpoint, and any
+	// later transport) serves from — the composition root hands it over; nothing
+	// in internal/ reaches back into the registry for it.
+	publishedTools domain.PublishedToolSurface
 	// capabilities are the operator capability strings contributed by entitled plugins,
 	// deduped and order-stable. The kernel appends these to its own base set at handshake
 	// time without interpreting any of them (ADR-0082 D2).
@@ -739,6 +794,9 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 	// at boot by NewKindRegistry.
 	opts.KnowledgeKinds = append(opts.KnowledgeKinds, reg.kinds...)
 	opts.ResolutionAuthorities = append(opts.ResolutionAuthorities, reg.authorities...)
+	// Relation specs (five-planes step 2): same shape, validated at boot by
+	// NewRelationRegistry over the built-in seeds.
+	opts.RelationSpecs = append(opts.RelationSpecs, reg.relations...)
 	// Capabilities: dedupe, preserving first-seen order so the handshake list is stable
 	// across boots (a UI diffing capabilities should not see spurious churn).
 	var caps []string
@@ -751,13 +809,14 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 	}
 
 	return composedPlugins{
-		opts:         opts,
-		lifecycles:   reg.lifecycles,
-		agentSources: reg.agentSources,
-		mcpServers:   reg.mcpServers,
-		capabilities: caps,
-		statuses:     statuses,
-		built:        ordered,
+		opts:           opts,
+		lifecycles:     reg.lifecycles,
+		agentSources:   reg.agentSources,
+		mcpServers:     reg.mcpServers,
+		publishedTools: reg.publishedTools,
+		capabilities:   caps,
+		statuses:       statuses,
+		built:          ordered,
 	}, nil
 }
 

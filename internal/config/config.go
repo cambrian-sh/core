@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
@@ -728,6 +729,15 @@ type RetrievalConfig struct {
 	// dominant CPU-latency driver (K forward passes/query).
 	RerankerTopK int `json:"reranker_top_k,omitempty"`
 
+	// RerankerModel selects the cross-encoder the reranker_agent loads
+	// (HuggingFace id). Injected into the agent's environment as RERANK_MODEL
+	// via the SetEnvExtras seam — config-derived, never read from the kernel's
+	// own .env (owner rule 2026-08-11). Empty ⇒ the agent's built-in default
+	// (BAAI/bge-reranker-base). Production upgrade target: BAAI/bge-reranker-v2-m3
+	// on GPU (~100–200 ms/100 pairs vs ~40 s CPU for the 2023 setup that got
+	// Stage-B shelved).
+	RerankerModel string `json:"reranker_model,omitempty"`
+
 	// RerankerWeight is w_bge in FinalScore = w_bge·bge + (1-w_bge)·stageA. 0 ⇒
 	// the ADR default 0.5 (an enabled reranker with zero weight would be a no-op).
 	RerankerWeight float64 `json:"reranker_weight,omitempty"`
@@ -842,6 +852,19 @@ type IngestionConfig struct {
 
 	// IngestionBatchWaitMs is the max batcher wait before flushing (ADR-0028). Default 1000.
 	IngestionBatchWaitMs int `json:"ingestion_batch_wait_ms,omitempty"`
+
+	// ChunkContextPrepend prepends the document title and the chunk's section
+	// breadcrumb to the chunk text at ingest, before embedding and storage. A
+	// chunk whose body opens with a pronoun ("It couples proton flux to…") is
+	// otherwise embedded — and FTS-indexed — with its subject in neither index;
+	// the RAG Hardening Review (2026-08-12) identified this as the most
+	// plausible mechanism behind gold documents that are never retrieved at any
+	// depth (titles were reachable by NO retrieval lane). Because the stored
+	// text changes, the lexical GIN index gains the same tokens for free.
+	// Default false: it is a measurement-gated arm — flipping it changes what
+	// every consumer of chunk text sees, and re-ingest is required for existing
+	// corpora to benefit.
+	ChunkContextPrepend bool `json:"chunk_context_prepend,omitempty"`
 
 	// KgExtractorEnabled (ADR-0053 D2 revised) routes write-time chunk-triplet
 	// extraction through the deterministic, NO-LLM kg_extractor system agent
@@ -1253,6 +1276,12 @@ type Config struct {
 		// HealthCheckIntervalSeconds is how often the readiness probe (DB ping) runs.
 		// Default 10.
 		HealthCheckIntervalSeconds int `json:"health_check_interval_seconds"`
+		// MCP is the INBOUND Cambrian MCP endpoint (ADR-0126 D3) — the surface
+		// external agents dial. It is NOT the top-level `mcp` block, which is the
+		// OUTBOUND connector dialling foreign servers (ADR-0043); the two live
+		// apart on purpose, because reusing one name for both directions makes
+		// every comment and console label ambiguous.
+		MCP MCPEndpointConfig `json:"mcp"`
 	} `json:"server"`
 	// ADR-0042: new model-provisioning spine. Additive for now — the legacy LLM
 	// block and Models array above remain until the cutover (slice 0042-07).
@@ -1265,6 +1294,89 @@ type Config struct {
 	// absent/empty ⇒ no MCP behaviour.
 	MCP     MCPConfig     `json:"mcp,omitempty"`
 	Chunker ChunkerConfig `json:"chunker"`
+	// Relations declares the identity plane's link verbs (five-planes step 2,
+	// D-W5-1). Absent/empty is a working deployment: the built-in seeds
+	// `same_as` and `preceded_and_shares_entities` are what the kernel's own
+	// lanes need, and a verb nobody declared is refused at the write rather
+	// than admitted at some default. See relations.go.
+	Relations []RelationConfig `json:"relations,omitempty"`
+}
+
+// MCPEndpointConfig configures the inbound Cambrian MCP endpoint (ADR-0126 D3),
+// served on its own listener from the Published Tool Surface.
+//
+// DEFAULT DISABLED. The endpoint is the one surface strangers are meant to
+// reach, so it opens because a deployment said so — never because a kernel was
+// upgraded.
+type MCPEndpointConfig struct {
+	// Enabled switches the endpoint on. Off ⇒ no listener is bound and nothing
+	// else in this block is read.
+	Enabled bool `json:"enabled"`
+	// Port is the TCP port the endpoint binds, on the same interface as the
+	// gRPC plane (server.bind_address) and under the same SEC-03 discipline.
+	//
+	// There is deliberately NO implied default: which port a deployment's public
+	// front door occupies is a deployment decision, and a kernel that picked one
+	// for you would open a port nobody chose. Enabled with no port is a boot
+	// error naming this key.
+	Port int `json:"port"`
+	// Clients names the external clients allowed to dial. Each name resolves to
+	// a stored credential under the ADR-0101 named secret `mcp:client:<name>`;
+	// the VALUE never appears here or in any log.
+	//
+	// A name with no stored credential can never authenticate — that is the
+	// fail-closed direction, and it is why the list is config while the secrets
+	// are not: the roster is reviewable, the tokens are not readable.
+	Clients []string `json:"clients"`
+	// MaxConcurrentPerClient bounds in-flight requests per client credential;
+	// over-cap requests are refused with 429 rather than queued.
+	//
+	// It exists because coding agents retry aggressively and the answer tools
+	// spend LLM budget. Default 4; a value ≤ 0 falls back to that default rather
+	// than removing the cap — an unmetered public endpoint is not a mode.
+	MaxConcurrentPerClient int `json:"max_concurrent_per_client"`
+}
+
+// DefaultMCPMaxConcurrentPerClient is the per-credential in-flight bound applied
+// when server.mcp.max_concurrent_per_client is unset or non-positive.
+const DefaultMCPMaxConcurrentPerClient = 4
+
+// validate reports the endpoint's configuration errors. It is a no-op while the
+// endpoint is disabled: an unconfigured block on a kernel that never serves it
+// is not a mistake, and failing a boot over one would be.
+func (m MCPEndpointConfig) validate(grpcPort string) []string {
+	if !m.Enabled {
+		return nil
+	}
+	var errs []string
+	if m.Port <= 0 || m.Port > 65535 {
+		errs = append(errs, fmt.Sprintf(
+			"server.mcp.port must be 1..65535 when server.mcp.enabled is true (got %d); "+
+				"the endpoint is the deployment's public front door and no port is implied for it", m.Port))
+	}
+	if p, err := strconv.Atoi(strings.TrimSpace(grpcPort)); err == nil && p == m.Port {
+		errs = append(errs, fmt.Sprintf(
+			"server.mcp.port %d is server.port: the MCP endpoint gets its OWN listener (ADR-0126 D3) "+
+				"and cannot share the gRPC plane's", m.Port))
+	}
+	if len(m.Clients) == 0 {
+		errs = append(errs, "server.mcp.enabled requires at least one server.mcp.clients entry: "+
+			"the bearer token is never optional (ADR-0126 D4), so an endpoint with no named client "+
+			"could serve nobody")
+	}
+	seen := make(map[string]bool, len(m.Clients))
+	for _, c := range m.Clients {
+		name := strings.TrimSpace(c)
+		if name == "" {
+			errs = append(errs, "server.mcp.clients contains an empty name")
+			continue
+		}
+		if seen[name] {
+			errs = append(errs, fmt.Sprintf("server.mcp.clients lists %q twice", name))
+		}
+		seen[name] = true
+	}
+	return errs
 }
 
 type ChunkerConfig struct {
@@ -1683,6 +1795,11 @@ func DefaultConfig() *Config {
 	// PLAT-02 / ADR-0064: migrate-on-boot is on by default (matches the historical
 	// always-run ensureSchema behavior); set storage.auto_migrate=false to opt out.
 	cfg.Storage.AutoMigrate = true
+	// ADR-0126 D3: the inbound MCP endpoint is DEFAULT DISABLED and has no
+	// implied port. Only the storm-control cap carries a default, because a
+	// deployment that switches the endpoint on should not also have to think
+	// about concurrency before it is safe.
+	cfg.Server.MCP.MaxConcurrentPerClient = DefaultMCPMaxConcurrentPerClient
 	return cfg
 }
 
@@ -1995,6 +2112,8 @@ func (c *Config) validateSecrets() *ConfigError {
 	}
 	// ADR-0042: validate the llm_provider + embedder blocks (no-op until configured).
 	errs = append(errs, c.LLMProvider.validate(c.Embedder)...)
+	// ADR-0126 D3/D4: validate the inbound MCP endpoint (no-op until enabled).
+	errs = append(errs, c.Server.MCP.validate(c.Server.Port)...)
 
 	if len(errs) > 0 {
 		return &ConfigError{

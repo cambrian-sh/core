@@ -10,11 +10,14 @@ import (
 
 func TestExtractQueryTerms(t *testing.T) {
 	got := extractQueryTerms("When did Caroline go to the LGBTQ support group?")
-	// Content unigrams + adjacent bigrams; stopwords (when/did/the/go/to) and
-	// <3-char tokens dropped. "go"/"to" are stopwords, so adjacency is over the
-	// remaining content words.
+	// Content unigrams + adjacent bigrams + adjacent TRIGRAMS (2026-08-14: the
+	// bigram cap meant 3-word entity anchors like "stadio ciro vigorito" could
+	// never match the graph lane; affordable since the lookup became one batched
+	// query — review Q8). Stopwords (when/did/the/go/to) and <3-char tokens
+	// dropped; adjacency is over the remaining content words.
 	want := []string{
-		"caroline", "caroline lgbtq", "lgbtq", "lgbtq support",
+		"caroline", "caroline lgbtq", "caroline lgbtq support",
+		"lgbtq", "lgbtq support", "lgbtq support group",
 		"support", "support group", "group",
 	}
 	if !reflect.DeepEqual(got, want) {

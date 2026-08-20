@@ -237,6 +237,51 @@ func (i *EntityIndex) LookupTopByEmbedding(query domain.Embedding, topK int) []s
 	return out
 }
 
+// NeighborNamesOf returns the raw names of the k entities whose stored name
+// embeddings are nearest to the entity whose raw name matches `name`
+// (case-insensitive), excluding the entity itself. Returns nil when the name is
+// not indexed or carries no embedding.
+//
+// This is the query-time half of HippoRAG-style synonym linking, at ZERO extra
+// embed calls: the index already holds a name embedding for every entity it
+// knows, so alias resolution is an in-memory cosine scan (O(n) over ≤capTotal
+// keys). kgExpand uses it to widen a frontier entity ("US") to its
+// embedding-neighbors ("united states") before the chunk lookup.
+func (i *EntityIndex) NeighborNamesOf(name string, k int) []string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" || k <= 0 {
+		return nil
+	}
+	i.mu.RLock()
+	var selfKey string
+	var selfEmb domain.Embedding
+	for key, raw := range i.entityName {
+		if strings.ToLower(strings.TrimSpace(raw)) == name {
+			if emb, ok := i.entityEmbed[key]; ok && len(emb.Vector) > 0 {
+				selfKey, selfEmb = key, emb
+				break
+			}
+		}
+	}
+	i.mu.RUnlock()
+	if selfKey == "" {
+		return nil
+	}
+	keys := i.LookupTopByEmbedding(selfEmb, k+1) // +1: the entity is its own nearest neighbor
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	out := make([]string, 0, k)
+	for _, key := range keys {
+		if key == selfKey || len(out) >= k {
+			continue
+		}
+		if raw := i.entityName[key]; raw != "" {
+			out = append(out, raw)
+		}
+	}
+	return out
+}
+
 // Stats returns (total entities, total associations, top-3 entity key counts).
 // Used by the operator feed (D3) for a cheap "is the graph alive" signal.
 func (i *EntityIndex) Stats() (totalEntities, totalAssocs int, top []EntityStat) {

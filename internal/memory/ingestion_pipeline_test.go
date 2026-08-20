@@ -65,40 +65,9 @@ func testAgent() *Agent {
 	}
 }
 
-// ── Cycle 1 — Agent.EnqueueExternal appends items to pendingItems ─────────────
-
-func TestAgent_EnqueueExternal_AppendsItems(t *testing.T) {
-	a := testAgent()
-	items := []pendingItem{
-		{Embedding: []float32{0.1}, Doc: &domain.Document{ID: "d1"}},
-		{Embedding: []float32{0.2}, Doc: &domain.Document{ID: "d2"}},
-	}
-	if err := a.EnqueueExternal(context.Background(), items); err != nil {
-		t.Fatalf("EnqueueExternal: %v", err)
-	}
-	a.pendingMu.RLock()
-	defer a.pendingMu.RUnlock()
-	if len(a.pendingItems) != 2 {
-		t.Errorf("expected 2 pendingItems, got %d", len(a.pendingItems))
-	}
-}
-
-// ── Cycle 2 — Agent.EnqueueExternal drops when pendingCap is reached ─────────
-
-func TestAgent_EnqueueExternal_DropsOnFull(t *testing.T) {
-	a := testAgent()
-	a.pendingCap = 1
-	a.pendingItems = []pendingItem{{Doc: &domain.Document{ID: "existing"}}}
-
-	overflow := []pendingItem{{Embedding: []float32{0.9}, Doc: &domain.Document{ID: "overflow"}}}
-	_ = a.EnqueueExternal(context.Background(), overflow)
-
-	a.pendingMu.RLock()
-	defer a.pendingMu.RUnlock()
-	if len(a.pendingItems) != 1 {
-		t.Errorf("expected 1 item (overflow dropped), got %d", len(a.pendingItems))
-	}
-}
+// Cycles 1 and 2 covered Agent.EnqueueExternal (append + drop-on-full). The method is
+// gone: the ingestion pipeline commits chunks to the store directly and nothing but
+// these tests ever called it.
 
 // ── Cycle 3 — SceneGenerator.Generate calls LLM once for 5 docs ──────────────
 

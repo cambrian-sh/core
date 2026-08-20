@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/url"
 	"path"
@@ -24,8 +26,31 @@ type canonicalEntity struct {
 	Endpoint string // api only: the specific endpoint path observed (an attribute)
 }
 
-// Key is the store id: "kind:id". Deterministic, so the upsert dedups by real thing.
+// Key is the scene's engaged-scope id: "kind:id". Deterministic, so one real thing
+// spelled two ways accretes once.
 func (e canonicalEntity) Key() string { return e.Kind + ":" + e.ID }
+
+// containsAny reports whether s contains any of subs.
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// contentFingerprint is a deterministic hash of the content an engagement observed — the
+// by-reference baseline a scene records for a thing at first touch (ADR-0049 D6). Content
+// that changed between two engagements changes the fingerprint, which is all the scene
+// needs; the bytes themselves are never stored.
+func contentFingerprint(output []byte) string {
+	if len(output) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(output)
+	return "sha256:" + hex.EncodeToString(sum[:])[:16]
+}
 
 // canonicalPath normalizes a filesystem path so equivalent spellings collapse: Windows
 // backslashes → forward slashes, `.`/`..`/`//` cleaned away, no trailing slash, and

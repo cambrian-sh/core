@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -148,8 +149,39 @@ func runPlan(t *testing.T, a *Agent, p mockPlan) {
 	})
 }
 
+// textRecordingEmbedder records every text it is asked to embed, so a test can assert not
+// just how many embeddings a path made but WHICH ones — several legitimate embeds happen
+// during one plan, and a bare call count cannot tell them apart.
+type textRecordingEmbedder struct {
+	mu    sync.Mutex
+	texts []string
+}
+
+func (c *textRecordingEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.texts = append(c.texts, text)
+	return []float32{1, 0, 0}, nil
+}
+
+func (c *textRecordingEmbedder) count(text string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, t := range c.texts {
+		if t == text {
+			n++
+		}
+	}
+	return n
+}
+
 func lifecycleAgent(store *lifecycleStore) *Agent {
-	a := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.7, 5, 3, 64, 0, 0, 0)
+	return lifecycleAgentWith(store, &recordingEmbedder{})
+}
+
+func lifecycleAgentWith(store *lifecycleStore, emb domain.Embedder) *Agent {
+	a := NewAgent(NewMemoryManager(store, emb), nil, 0.7, 5, 3, 64, 0, 0, 0)
 	a.RecordOutcomes = true // ADR-0049 A2.2 arm ON for this test
 	a.SurpriseFloor = 0.5   // A2.3 failure-precedent gate
 	a.ProcedureDeprecateBelow = 0.3
@@ -403,6 +435,48 @@ func TestSceneDedup_RerunReinforcesRatherThanDuplicates(t *testing.T) {
 	// And the failure precedent still fires from a deduplicated occurrence.
 	if got := store.countType(domain.DocTypeNegativeEdge); got != 1 {
 		t.Errorf("a surprising failure must record a precedent even on a rerun, got %d", got)
+	}
+}
+
+// TestSceneDedup_RerunDoesNotReembedTheProjection is the COST half of dedup.
+//
+// Not storing the row twice is only half the saving; the projection embed is the
+// expensive call, and it used to run BEFORE the dedup check consumed its result — so
+// every rerun of a known situation paid an embedder round-trip for a vector that was
+// then discarded. The assertion is deliberately on the projection TEXT rather than a
+// total call count: a plan legitimately embeds other things, and a count alone would
+// pass for the wrong reason.
+func TestSceneDedup_RerunDoesNotReembedTheProjection(t *testing.T) {
+	store := newLifecycleStore()
+	emb := &textRecordingEmbedder{}
+	agent := lifecycleAgentWith(store, emb)
+
+	rerun := mockPlan{
+		goal: "ship the billing service", capabilities: []string{"build", "deploy"},
+		touches: []string{"/srv/billing/main.go"}, success: true, surprise: 0.1,
+	}
+	for _, id := range []string{"e1", "e2"} {
+		p := rerun
+		p.id = id
+		runPlan(t, agent, p)
+	}
+
+	scenes := store.ofType(domain.DocTypeMnemonicScene)
+	if len(scenes) != 1 {
+		t.Fatalf("two reruns of one situation must leave ONE scene, got %d", len(scenes))
+	}
+	// Confirms the second run really took the reinforced path — otherwise the embed
+	// assertion below would hold for the uninteresting reason.
+	if seen, _ := scenes[0].Metadata["seen_count"].(int); seen != 2 {
+		t.Fatalf("second run must have reinforced the scene, seen_count = %d", seen)
+	}
+
+	projection, _ := scenes[0].Metadata["projection"].(string)
+	if projection == "" {
+		t.Fatal("scene carries no projection to assert on")
+	}
+	if got := emb.count(projection); got != 1 {
+		t.Errorf("the scene projection must be embedded exactly once across both runs, got %d", got)
 	}
 }
 

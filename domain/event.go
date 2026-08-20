@@ -43,12 +43,6 @@ const (
 	// NEVER spooled/replayed (a reconnecting client resyncs accumulated text from
 	// the snapshot/ContentStore). ADR-0047 D5/D12.
 	EventTypeTokenChunk = "token.chunk"
-	// EventTypeWorldDelta reports that a READ observation found a world-model entity
-	// field changed from its cached value — i.e. the world moved outside our action
-	// (ADR-0049 §A1.2 / ADR-0051 D3). PASSIVE: the entity is updated and this signal
-	// emitted; there is no propagation or in-loop rescan. Durable raw material for
-	// deferred adaptive per-entity trust (ADR-0037 selection layer).
-	EventTypeWorldDelta = "world.delta"
 	// EventTypeReactiveBudget reports that a reactive backpressure budget was
 	// exhausted and load is being shed. REACT-02 / ADR-0062.
 	EventTypeReactiveBudget = "reactive.budget"
@@ -450,24 +444,6 @@ type AgentLLMExchangeEvent struct {
 
 func (AgentLLMExchangeEvent) domainEvent()      {}
 func (AgentLLMExchangeEvent) EventType() string { return EventTypeAgentLLMExchange }
-
-// WorldDeltaEvent reports a single entity field whose value a READ observation found
-// changed from its cached state (ADR-0049 §A1.2). Absolute-state: it names the entity,
-// field, and the new value (Old is carried for diagnostics). Passive — emitted after the
-// entity is updated; consumers (telemetry/operator, later adaptive-trust mining) react,
-// nothing in the write path blocks on it.
-type WorldDeltaEvent struct {
-	EntityKey  string // canonical kind:id
-	Kind       string
-	Field      string // the changed field (e.g. "content_ref", "exists")
-	OldValue   string
-	NewValue   string
-	ObservedAt time.Time
-	SessionID  string
-}
-
-func (WorldDeltaEvent) domainEvent()      {}
-func (WorldDeltaEvent) EventType() string { return EventTypeWorldDelta }
 
 func (MemoryWrittenEvent) EventType() string { return EventTypeMemoryWritten }
 func (HITLRaisedEvent) EventType() string    { return EventTypeHITLRaised }

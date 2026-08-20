@@ -50,6 +50,12 @@ mappings=(
     # the exact failure this script exists to prevent, so it is listed here now.
     "$premium/api/proto/ingress/ingress_studio.proto|$root/ui/proto/ingress/ingress_studio.proto"
     "$premium/api/proto/telemetry/telemetry_admin.proto|$root/ui/proto/telemetry/telemetry_admin.proto"
+    # The substrate plane (ADR-0108/0111/0118). Vendored in ui/ since it was
+    # written and listed here only now, which is the same omission the ingress
+    # entry above records: the copy existed, nothing checked it, and the moment
+    # five-planes step 2 added `entity`/`why`/`expand_aliases` to the source the
+    # two files were free to disagree with nobody noticing.
+    "$premium/api/proto/substrate/substrate.proto|$root/ui/proto/substrate/substrate.proto"
     # Not a proto, same problem. cambrian-benchmarks re-implements the Go chunkers
     # in Python; this fixture is what its differential test asserts the ports
     # against. Regenerate on the Go side with:

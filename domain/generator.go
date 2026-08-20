@@ -25,6 +25,18 @@ type StepResult struct {
 // ADR-0015: step results flow through the Tier-1 bounded channel before Tier-2 batched pgvector commit.
 type MemoryRecorder interface {
 	RecordExecution(ctx context.Context, result StepResult) error
+	// BeginExperience mints the EPISODE PARENT for a plan at its START (ADR-0095 D1).
+	//
+	// The id is derived from the plan id precisely "so records written mid-plan can
+	// reference a parent that already exists". Minting it only at completion made that
+	// sentence false: action records are written WHILE the plan runs, and the adapter
+	// resolves a missing parent to NULL rather than failing, so every mid-plan record
+	// silently landed unparented — the episode could not be listed, deleted or governed
+	// as one thing, which is the whole point of the row.
+	//
+	// Never fatal: an episode that cannot be opened is logged and the plan proceeds
+	// unparented (ADR-0095 D5 — a write must never fail over bookkeeping).
+	BeginExperience(ctx context.Context, planID string) error
 	// WritePlanScene materializes the ONE immutable scene for a completed plan
 	// (ADR-0049 D5/D7) — id `scene-{planID}`, holding the goal + engaged-entity scope
 	// (accreted from the plan's actions) + the outcome. Written for BOTH success and
@@ -79,4 +91,26 @@ type PlanRecord struct {
 	// the outcome to what informed the plan is the honest approximation, and the slow
 	// consolidation rate in ApplyOutcome is what keeps that approximation safe.
 	FollowedProcedures []string
+	// FailedStep is the index of the step that produced the plan's FIRST error.
+	// Meaningful only when Success is false: the executor's counter is zero-initialized
+	// and reset to 0 on replan, so a successful plan carries 0, not a sentinel. Read it
+	// together with Success or a clean plan reads as a step-0 failure.
+	FailedStep int
+	// FailureSummary is the FAILURE MODE half of A2.2's "conditions → attempt → failure
+	// mode": a bounded deterministic rendering of the first error, with the failed
+	// step's query when the executor could reach it. Empty on success and whenever no
+	// error text was available.
+	//
+	// Deterministic and never LLM-paraphrased on purpose — a precedent is only useful if
+	// two occurrences of the same failure render the same way.
+	FailureSummary string
+	// ReplanExhausted marks a failure that survived the FULL recovery ladder: the
+	// executor replanned as many times as it was allowed and the plan still failed.
+	//
+	// Carried because it is the one failure shape that is decision-relevant whether or
+	// not merit predicted it, and because the A2.3 surprise gate is structurally blind to
+	// exactly the agents that need it most: the oracle returns "unknown" for an agent
+	// with no merit history, so a NEW agent's failures can never clear the floor and the
+	// earliest, most instructive failures leave no precedent at all.
+	ReplanExhausted bool
 }

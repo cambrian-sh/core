@@ -140,8 +140,11 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	ws.ActivationThreshold = execCfg.Memory.ActivationThreshold
 	// ADR-0022: wire LRU cache capacity from config so it isn't hardcoded to 100.
 	ws.LRUCacheCapacity = execCfg.Workspace.WorkspaceLRUCacheCapacity
-	// ADR-0029: wire PolicyProvider so the episodic retrieval lane is active.
-	ws.PolicyProvider = config.NewStaticPolicyProvider(execCfg.Hippocampus.HippocampusPolicies, execCfg.Hippocampus.HippocampusDefaultPolicy)
+	// The ADR-0029 episodic retrieval lane used to be armed here by handing the
+	// WorkspaceStage a PolicyProvider. Both the lane and the field are gone: its writer
+	// (EpisodicExtractor / ConsolidatorAgent) was removed on 2026-07-18, so the lane
+	// searched a corpus nothing could add to. The "episodic" HippocampusPolicy stays in
+	// the config schema (a held-stable contract) with no consumer left.
 	// ADR-0022 Phase 2B: invalidate WorkspaceStage LRU cache on Tier-2 drain.
 	memoryAgent.RegisterCacheInvalidator(ws)
 
@@ -237,10 +240,11 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// ADR-0028: ingestion pipeline — SceneGenerator + IngestionManager + DirectoryWatcher.
 	sceneGen := memory.NewSceneGenerator(gen)
 	ingestionCfg := memory.IngestionConfig{
-		QueueSize: execCfg.Ingestion.IngestionQueueSize,
-		BatchSize: execCfg.Ingestion.IngestionBatchSize,
-		Workers:   execCfg.Ingestion.IngestionWorkers,
-		BatchWait: time.Duration(execCfg.Ingestion.IngestionBatchWaitMs) * time.Millisecond,
+		QueueSize:      execCfg.Ingestion.IngestionQueueSize,
+		BatchSize:      execCfg.Ingestion.IngestionBatchSize,
+		Workers:        execCfg.Ingestion.IngestionWorkers,
+		BatchWait:      time.Duration(execCfg.Ingestion.IngestionBatchWaitMs) * time.Millisecond,
+		ContextPrepend: execCfg.Ingestion.ChunkContextPrepend,
 	}
 	ingestionMgr := memory.NewIngestionManager(sceneGen, embed, memoryAgent, ingestionCfg, chunkerCfg)
 	// NOTE: the legacy single-directory DirectoryWatcher (ADR-0028/0031) was removed
@@ -291,7 +295,14 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 
 // Start launches the memory Agent's background workers and the ingestion pipeline.
 func (s *MemoryStack) Start(ctx context.Context) error {
-	s.Agent.StartTier2Drain(ctx)
+	// The Tier-1 channel the drain serves is filled ONLY by the raw experiential path
+	// (RecordExecution / recordReadFact), which is gated on RecordExperiential — off in
+	// production since 2026-07-18. Starting the drain regardless meant a goroutine, an
+	// idle timer and (on any drain) an LLM judge sitting on a channel nothing could
+	// write to. Gated here so the cost is paid only by a deployment that enables the arm.
+	if s.Agent.RecordExperiential {
+		s.Agent.StartTier2Drain(ctx)
+	}
 	// The ADR-0052 EdgeBatcher used to be started here. It is no longer constructed
 	// — see NewMemoryStack for why. The ADR-0053 batcher below is the one that
 	// actually receives work from the ingest path.

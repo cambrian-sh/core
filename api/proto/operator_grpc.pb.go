@@ -91,6 +91,10 @@ const (
 	OperatorConsole_SetMCPServerToken_FullMethodName        = "/cambrian.OperatorConsole/SetMCPServerToken"
 	OperatorConsole_ClearMCPServerToken_FullMethodName      = "/cambrian.OperatorConsole/ClearMCPServerToken"
 	OperatorConsole_TestMCPServer_FullMethodName            = "/cambrian.OperatorConsole/TestMCPServer"
+	OperatorConsole_ConfirmLink_FullMethodName              = "/cambrian.OperatorConsole/ConfirmLink"
+	OperatorConsole_RetractLink_FullMethodName              = "/cambrian.OperatorConsole/RetractLink"
+	OperatorConsole_RetractLinksByProducer_FullMethodName   = "/cambrian.OperatorConsole/RetractLinksByProducer"
+	OperatorConsole_ListLinkCandidates_FullMethodName       = "/cambrian.OperatorConsole/ListLinkCandidates"
 	OperatorConsole_SubmitPlan_FullMethodName               = "/cambrian.OperatorConsole/SubmitPlan"
 	OperatorConsole_GetReactiveBudget_FullMethodName        = "/cambrian.OperatorConsole/GetReactiveBudget"
 	OperatorConsole_GetTokenSeries_FullMethodName           = "/cambrian.OperatorConsole/GetTokenSeries"
@@ -528,6 +532,39 @@ type OperatorConsoleClient interface {
 	// tool names it returns are what the server actually advertises, which is the
 	// fact nothing else on this plane can reveal before committing.
 	TestMCPServer(ctx context.Context, in *TestMCPServerOpRequest, opts ...grpc.CallOption) (*MCPServerTestResultOp, error)
+	// ConfirmLink / RetractLink / RetractLinksByProducer / ListLinkCandidates are
+	// the operator's REVIEW surface over the identity plane (contract 0098;
+	// five-planes step 2, FIVE-PLANES-BUILD.md).
+	//
+	// The plane's whole design rests on a human being able to promote a proposal
+	// and to take one back. Producers may mint entities freely and propose links
+	// all day, but a mechanism below its trust ceiling — derived, scored,
+	// correlation — can only ever write a `candidate`, and until these RPCs
+	// existed there was no path anywhere in the product from candidate to
+	// confirmed. A review lane nobody can reach is a queue, not a lane.
+	//
+	// Three properties are contract, not implementation detail:
+	//
+	//   - Confirmation APPENDS. It writes a new `human`-mechanism row and leaves
+	//     the machine's proposal exactly as it was, because what the producer
+	//     said and what the reviewer decided are two assertions and overwriting
+	//     the first destroys the record of producer behaviour the lane exists to
+	//     build. Re-confirming is idempotent and returns the existing row.
+	//   - Retraction STAMPS state + retracted_at and touches nothing else — never
+	//     a DELETE (ADR-0093 D6). A rejected candidate has to stay queryable or
+	//     the producer that proposed it proposes it again forever.
+	//   - RetractLinksByProducer is BATCH revocation, and it is why every link
+	//     carries a producer at all: a pass that turns out to be wrong is undone
+	//     wholesale, not row by row. It returns the count it revoked, because
+	//     "undo that producer" with no number tells an operator nothing about
+	//     what just happened.
+	//
+	// Mutating: command_id + reason, audited, Operator-only. ListLinkCandidates is
+	// a plain read (no command_id).
+	ConfirmLink(ctx context.Context, in *ConfirmLinkOpRequest, opts ...grpc.CallOption) (*ConfirmLinkOpResponse, error)
+	RetractLink(ctx context.Context, in *RetractLinkOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	RetractLinksByProducer(ctx context.Context, in *RetractLinksByProducerOpRequest, opts ...grpc.CallOption) (*RetractLinksByProducerOpResponse, error)
+	ListLinkCandidates(ctx context.Context, in *ListLinkCandidatesOpRequest, opts ...grpc.CallOption) (*ListLinkCandidatesOpResponse, error)
 	// SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
 	//
 	// Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
@@ -1368,6 +1405,46 @@ func (c *operatorConsoleClient) TestMCPServer(ctx context.Context, in *TestMCPSe
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ConfirmLink(ctx context.Context, in *ConfirmLinkOpRequest, opts ...grpc.CallOption) (*ConfirmLinkOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConfirmLinkOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ConfirmLink_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RetractLink(ctx context.Context, in *RetractLinkOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_RetractLink_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RetractLinksByProducer(ctx context.Context, in *RetractLinksByProducerOpRequest, opts ...grpc.CallOption) (*RetractLinksByProducerOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RetractLinksByProducerOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_RetractLinksByProducer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListLinkCandidates(ctx context.Context, in *ListLinkCandidatesOpRequest, opts ...grpc.CallOption) (*ListLinkCandidatesOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListLinkCandidatesOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListLinkCandidates_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) SubmitPlan(ctx context.Context, in *SubmitPlanOpRequest, opts ...grpc.CallOption) (*SubmitPlanOpResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubmitPlanOpResponse)
@@ -1866,6 +1943,39 @@ type OperatorConsoleServer interface {
 	// tool names it returns are what the server actually advertises, which is the
 	// fact nothing else on this plane can reveal before committing.
 	TestMCPServer(context.Context, *TestMCPServerOpRequest) (*MCPServerTestResultOp, error)
+	// ConfirmLink / RetractLink / RetractLinksByProducer / ListLinkCandidates are
+	// the operator's REVIEW surface over the identity plane (contract 0098;
+	// five-planes step 2, FIVE-PLANES-BUILD.md).
+	//
+	// The plane's whole design rests on a human being able to promote a proposal
+	// and to take one back. Producers may mint entities freely and propose links
+	// all day, but a mechanism below its trust ceiling — derived, scored,
+	// correlation — can only ever write a `candidate`, and until these RPCs
+	// existed there was no path anywhere in the product from candidate to
+	// confirmed. A review lane nobody can reach is a queue, not a lane.
+	//
+	// Three properties are contract, not implementation detail:
+	//
+	//   - Confirmation APPENDS. It writes a new `human`-mechanism row and leaves
+	//     the machine's proposal exactly as it was, because what the producer
+	//     said and what the reviewer decided are two assertions and overwriting
+	//     the first destroys the record of producer behaviour the lane exists to
+	//     build. Re-confirming is idempotent and returns the existing row.
+	//   - Retraction STAMPS state + retracted_at and touches nothing else — never
+	//     a DELETE (ADR-0093 D6). A rejected candidate has to stay queryable or
+	//     the producer that proposed it proposes it again forever.
+	//   - RetractLinksByProducer is BATCH revocation, and it is why every link
+	//     carries a producer at all: a pass that turns out to be wrong is undone
+	//     wholesale, not row by row. It returns the count it revoked, because
+	//     "undo that producer" with no number tells an operator nothing about
+	//     what just happened.
+	//
+	// Mutating: command_id + reason, audited, Operator-only. ListLinkCandidates is
+	// a plain read (no command_id).
+	ConfirmLink(context.Context, *ConfirmLinkOpRequest) (*ConfirmLinkOpResponse, error)
+	RetractLink(context.Context, *RetractLinkOpRequest) (*CommandAck, error)
+	RetractLinksByProducer(context.Context, *RetractLinksByProducerOpRequest) (*RetractLinksByProducerOpResponse, error)
+	ListLinkCandidates(context.Context, *ListLinkCandidatesOpRequest) (*ListLinkCandidatesOpResponse, error)
 	// SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
 	//
 	// Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
@@ -2174,6 +2284,18 @@ func (UnimplementedOperatorConsoleServer) ClearMCPServerToken(context.Context, *
 }
 func (UnimplementedOperatorConsoleServer) TestMCPServer(context.Context, *TestMCPServerOpRequest) (*MCPServerTestResultOp, error) {
 	return nil, status.Error(codes.Unimplemented, "method TestMCPServer not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ConfirmLink(context.Context, *ConfirmLinkOpRequest) (*ConfirmLinkOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConfirmLink not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RetractLink(context.Context, *RetractLinkOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method RetractLink not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RetractLinksByProducer(context.Context, *RetractLinksByProducerOpRequest) (*RetractLinksByProducerOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RetractLinksByProducer not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListLinkCandidates(context.Context, *ListLinkCandidatesOpRequest) (*ListLinkCandidatesOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListLinkCandidates not implemented")
 }
 func (UnimplementedOperatorConsoleServer) SubmitPlan(context.Context, *SubmitPlanOpRequest) (*SubmitPlanOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitPlan not implemented")
@@ -3492,6 +3614,78 @@ func _OperatorConsole_TestMCPServer_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ConfirmLink_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConfirmLinkOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ConfirmLink(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ConfirmLink_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ConfirmLink(ctx, req.(*ConfirmLinkOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RetractLink_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RetractLinkOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RetractLink(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RetractLink_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RetractLink(ctx, req.(*RetractLinkOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RetractLinksByProducer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RetractLinksByProducerOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RetractLinksByProducer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RetractLinksByProducer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RetractLinksByProducer(ctx, req.(*RetractLinksByProducerOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListLinkCandidates_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListLinkCandidatesOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListLinkCandidates(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListLinkCandidates_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListLinkCandidates(ctx, req.(*ListLinkCandidatesOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_SubmitPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubmitPlanOpRequest)
 	if err := dec(in); err != nil {
@@ -3900,6 +4094,22 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TestMCPServer",
 			Handler:    _OperatorConsole_TestMCPServer_Handler,
+		},
+		{
+			MethodName: "ConfirmLink",
+			Handler:    _OperatorConsole_ConfirmLink_Handler,
+		},
+		{
+			MethodName: "RetractLink",
+			Handler:    _OperatorConsole_RetractLink_Handler,
+		},
+		{
+			MethodName: "RetractLinksByProducer",
+			Handler:    _OperatorConsole_RetractLinksByProducer_Handler,
+		},
+		{
+			MethodName: "ListLinkCandidates",
+			Handler:    _OperatorConsole_ListLinkCandidates_Handler,
 		},
 		{
 			MethodName: "SubmitPlan",

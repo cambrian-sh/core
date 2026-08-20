@@ -153,3 +153,121 @@ func TestScavenger_NonSourceDocumentGC(t *testing.T) {
 		})
 	}
 }
+
+// ADR-0095 D6 / ADR-0049 D2: a record that hangs from an episode
+// (Document.ExperienceID → the `exp-<planID>` parent row) is GC-exempt. Deletion
+// is the EPISODE's operation — you forget an episode by deleting the
+// `experiences` parent and letting the FK cascade take its chunks — so the
+// per-row loner heuristic must not reach a parented row.
+//
+// Experiential records are born at activation 0.1 (scenes up to 0.5 with
+// surprise) and are usually never recalled, so they satisfy the loner predicate
+// (<0.3 activation, <2 accesses) on their FIRST night.
+//
+// MUTATION RATIONALE — delete the `doc.ExperienceID != ""` early return in
+// decayLoner and every case below flips to deleted=1: the nightly pass shreds
+// the rarely-recalled half of every episode while the `experiences` parent
+// survives, leaving an episode whose transition log has holes in it. That is
+// exactly the contradiction ADR-0049 D2 ("actions are durable, the transition
+// log") forbids, and it is invisible at runtime because nothing reads a record
+// it no longer has.
+func TestScavenger_EpisodeParentedRecordsExempt(t *testing.T) {
+	cases := []struct {
+		name    string
+		docID   string
+		docType string
+	}{
+		{
+			name:    "mnemonic_action_parented_to_episode",
+			docID:   "action:p-1:step-1",
+			docType: domain.DocTypeMnemonicAction,
+		},
+		{
+			name:    "mnemonic_scene_parented_to_episode",
+			docID:   "scene:p-1",
+			docType: domain.DocTypeMnemonicScene,
+		},
+		{
+			name:    "negative_edge_parented_to_episode",
+			docID:   "negedge:p-1",
+			docType: domain.DocTypeNegativeEdge,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent, store := newScavengerTestAgent()
+			ctx := context.Background()
+
+			doc := &domain.Document{
+				ID:                 tc.docID,
+				DocumentType:       tc.docType,
+				Text:               "did a thing",
+				ActivationStrength: 0.1, // below the decayLoner threshold of 0.3
+				AccessCount:        0,   // below the decayLoner threshold of 2
+				ExperienceID:       "exp-p-1",
+				Metadata:           map[string]interface{}{"plan_id": "p-1"},
+			}
+			if err := store.Save(ctx, doc); err != nil {
+				t.Fatalf("seed Save: %v", err)
+			}
+
+			processedIDs := map[string]bool{}
+			deletedCount := 0
+			agent.decayLoner(ctx, *doc, processedIDs, false, &deletedCount)
+
+			if got := len(store.deleted); got != 0 {
+				t.Errorf("%s parented to episode %q must be GC-exempt (ADR-0095 D6: retention is the "+
+					"episode's operation, not the loner heuristic's); decayLoner deleted %d doc(s): %v",
+					tc.docType, doc.ExperienceID, got, store.deleted)
+			}
+			if deletedCount != 0 {
+				t.Errorf("decayLoner reported %d deletions; a record with a live episode parent must be exempt", deletedCount)
+			}
+			if !processedIDs[doc.ID] {
+				t.Errorf("decayLoner must still mark the parented record as processed; processedIDs=%v", processedIDs)
+			}
+		})
+	}
+}
+
+// The episode exemption is SCOPED to parentage, not to document type. An
+// experiential record with no episode parent (empty ExperienceID — a pre-ADR-0095
+// row, or a failure that was not one plan execution) has nobody to govern its
+// lifetime, so the loner heuristic remains the only thing that can ever reclaim
+// it and must keep working.
+//
+// MUTATION RATIONALE — widen the guard to `isExperientialDoc(doc)` or to a
+// document-type switch and this case flips to deleted=0: unparented experiential
+// rows become immortal, and the nightly pass silently stops reclaiming the one
+// class of row it is still responsible for. The pair (this test + the parented
+// one above) is what pins the exemption to the FK, which is the thing that
+// actually cascades.
+func TestScavenger_UnparentedExperientialRecordStillGC(t *testing.T) {
+	agent, store := newScavengerTestAgent()
+	ctx := context.Background()
+
+	doc := &domain.Document{
+		ID:                 "action:orphan",
+		DocumentType:       domain.DocTypeMnemonicAction,
+		Text:               "did a thing outside any plan",
+		ActivationStrength: 0.1, // below the decayLoner threshold of 0.3
+		AccessCount:        0,   // below the decayLoner threshold of 2
+		ExperienceID:       "",  // no episode parent — nothing else governs its lifetime
+		Metadata:           map[string]interface{}{},
+	}
+	if err := store.Save(ctx, doc); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	processedIDs := map[string]bool{}
+	deletedCount := 0
+	agent.decayLoner(ctx, *doc, processedIDs, false, &deletedCount)
+
+	if len(store.deleted) != 1 || store.deleted[0] != doc.ID {
+		t.Errorf("an unparented %s must stay GC-eligible (the exemption is parentage, not type); "+
+			"decayLoner deleted %d doc(s): %v", doc.DocumentType, len(store.deleted), store.deleted)
+	}
+	if deletedCount != 1 {
+		t.Errorf("decayLoner reported %d deletions; want 1 (the unparented experiential row)", deletedCount)
+	}
+}

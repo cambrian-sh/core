@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -18,8 +19,20 @@ func resolveActionPath(ctx context.Context, store domain.VectorStore, planID str
 	if planID == "" || store == nil {
 		return nil
 	}
-	docs, err := store.QueryByMetadata(ctx, map[string]string{"plan_id": planID}, 50)
+	// Kernel-internal read, seeded explicitly because the read chokepoint enforces
+	// by-identity reads (ADR-0095 D9) and no caller on this lane seeds ctx.
+	//
+	// The access decision has already been made ONE LEVEL UP: the SCENES arrive from a
+	// scoped Search (opts.Scope, or the caller's own predicate), so resolving the action
+	// path of a scene the caller was already allowed to see is consistent with the gate
+	// that admitted it. Action records are kernel-authored. Fail-closed here does not
+	// deny anything — it strips the actions off every precedent and leaves a situation
+	// with an outcome and no path, which is the shape that reads as "working".
+	docs, err := store.QueryByMetadata(domain.WithScope(ctx, domain.ScopeSystem),
+		map[string]string{"plan_id": planID}, 50)
 	if err != nil {
+		slog.WarnContext(ctx, "precedent: action path not resolved; precedent will carry no actions",
+			"plan_id", planID, "err", err)
 		return nil
 	}
 	return filterActionsForPlan(docs)

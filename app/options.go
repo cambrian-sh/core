@@ -138,6 +138,16 @@ type Options struct {
 	// falling back silently.
 	KnowledgeKinds        []domain.KindSpec
 	ResolutionAuthorities []domain.ResolutionAuthority
+
+	// RelationSpecs declare the link verbs of the identity plane (five-planes
+	// step 2; FIVE-PLANES-BUILD.md amendment S3), validated at boot by
+	// NewRelationRegistry over the built-in seeds `same_as` and
+	// `preceded_and_shares_entities`. Plugins contribute through
+	// Registry.AddRelationSpecs; this field is the directly-set equivalent.
+	// Empty is a working deployment — the seeds are what the kernel's own
+	// lanes need, and a verb nobody declared is refused at the write rather
+	// than admitted at some default.
+	RelationSpecs []domain.RelationSpec
 }
 
 // KernelServices is the OSS-provided capability bundle handed to every plugin's Build phase
@@ -423,6 +433,36 @@ type KernelServices struct {
 	// point lookups and history over stored rows, exact, nothing embedded.
 	// nil when no Postgres is configured.
 	Events domain.EventStore
+
+	// Entities mints and reads the identity plane's handles (five-planes step 1).
+	// Minting is cheap and idempotent by design: an entity asserts nothing beyond
+	// its own existence, so a producer meeting an unseen id mints it rather than
+	// dropping the row. nil when no Postgres is configured.
+	Entities domain.EntityStore
+
+	// Links is the assertion plane (five-planes step 2) and the enforcement point
+	// for its three refusals — undeclared verb, trust ceiling, admissibility.
+	// A plugin writes links through THIS seam rather than its own SQL precisely
+	// so that a producer cannot exempt itself from them. nil when no Postgres is
+	// configured.
+	Links domain.LinkStore
+
+	// Relations is the deployment's link-verb vocabulary (five-planes step 2,
+	// D-W5-1): the built-in seeds plus whatever plugins and the config's
+	// `relations` section declared, validated once at boot.
+	//
+	// It is here for the ONE plugin shape that needs it: a surface where a
+	// HUMAN names a verb. The store already refuses an undeclared verb, but it
+	// refuses at write time, per delivery, hours later and to nobody — so a
+	// surface that takes a verb from an operator reads this and refuses while
+	// the operator is still there. Nothing else should consult it; validation
+	// belongs behind PutLink, where no producer can skip it.
+	//
+	// nil when this kernel has no identity plane. A nil *RelationRegistry is
+	// still ANSWERABLE (it knows the seeds), so a consumer that means "the
+	// registry was never wired" must compare the pointer rather than trusting
+	// an empty answer.
+	Relations *domain.RelationRegistry
 
 	// EvidenceStore READS preserved evidence rows.
 	//

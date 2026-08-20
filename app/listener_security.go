@@ -35,11 +35,19 @@ const defaultBindAddress = "127.0.0.1"
 
 // listenAddress resolves the interface:port the gRPC plane binds.
 func listenAddress(cfg *config.Config) string {
+	return listenAddressOn(cfg, cfg.Server.Port)
+}
+
+// listenAddressOn resolves interface:port for a plane on its OWN port — the
+// ADR-0126 MCP endpoint. The interface is shared with the gRPC plane on purpose:
+// a second listener that quietly bound a wider interface than the first would
+// make the bind-address setting a half-truth.
+func listenAddressOn(cfg *config.Config, port string) string {
 	bind := strings.TrimSpace(cfg.Server.BindAddress)
 	if bind == "" {
 		bind = defaultBindAddress
 	}
-	return net.JoinHostPort(bind, cfg.Server.Port)
+	return net.JoinHostPort(bind, port)
 }
 
 // isLoopback reports whether an address is unreachable from another host.

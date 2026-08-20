@@ -20,6 +20,7 @@ import (
 
 	"github.com/doug-martin/goqu/v9"
 	_ "github.com/doug-martin/goqu/v9/dialect/postgres"
+	"github.com/doug-martin/goqu/v9/exp"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -552,10 +553,15 @@ func (p *PgVectorAdapter) Search(ctx context.Context, vector []float32, opts dom
 	if floor <= 0 {
 		floor = 0.2
 	}
+	// ADR-0015 exploration is OPT-IN: only a caller that explicitly reserves
+	// exploration slots (ExplorationRate > 0) gets them. The old behavior —
+	// defaulting to 0.05 when unset — meant every retrieval path silently had
+	// ~5% of its result slots replaced with uniformly random chunks (and, with
+	// the minimum-one-slot rule below, at least one random row per search).
+	// Those rows entered the RAG read path's primary-hit snapshot and made
+	// identical queries non-deterministic, contaminating every A/B comparison.
+	// No production caller ever set this field, so the default was the feature.
 	exploreRate := opts.ExplorationRate
-	if exploreRate <= 0 {
-		exploreRate = 0.05
-	}
 
 	// Over-fetch: get enough candidates for exploration pool (capped at 3000).
 	overFetch := opts.TopK * 20
@@ -597,9 +603,12 @@ func (p *PgVectorAdapter) Search(ctx context.Context, vector []float32, opts dom
 	})
 
 	// Exploration sampling: replace lowest-scored slots with random tail picks.
-	exploreSlots := int(math.Ceil(float64(opts.TopK) * exploreRate))
-	if exploreSlots == 0 && opts.TopK > 0 {
-		exploreSlots = 1
+	exploreSlots := 0
+	if exploreRate > 0 {
+		exploreSlots = int(math.Ceil(float64(opts.TopK) * exploreRate))
+		if exploreSlots == 0 && opts.TopK > 0 {
+			exploreSlots = 1
+		}
 	}
 	if exploreSlots > opts.TopK {
 		exploreSlots = opts.TopK
@@ -705,6 +714,19 @@ func scopeExpressionsOn(eff *domain.TagPredicate, alias string) []goqu.Expressio
 	// Forbidden: a doc must NOT carry ANY → NOT(a OR b) == (NOT a) AND (NOT b).
 	for _, f := range eff.ForbiddenTags {
 		exprs = append(exprs, goqu.L("NOT ("+col+" @> ?::jsonb)", contains(f)))
+	}
+	// Party-scoped (ADR-0121): on THIS plane, identical to forbidden. Chunks (and
+	// every other table this binds on) carry no parties column, and the
+	// authoritative in-memory form — TagPredicate.Check, NOT CheckRow — denies any
+	// party-less resource that carries a party-scoped tag ("a thing nobody can be
+	// a party to is not one of the rows you are a party to"). Until this term was
+	// added, dense/lexical/entity chunk reads returned rows the authoritative
+	// predicate refuses — the unguarded half of the mirror-divergence class that
+	// TestScopePredicateNeverTargetsDocuments pins for the documents table. The
+	// substrate plane (query_plane.go evidenceScopeSQL) keeps its row-aware
+	// parties disjunct; that is CheckRow's mirror, not this one.
+	for _, t := range eff.PartyScopedTags {
+		exprs = append(exprs, goqu.L("NOT ("+col+" @> ?::jsonb)", contains(t)))
 	}
 	return exprs
 }
@@ -1005,6 +1027,17 @@ func (p *PgVectorAdapter) GetBatch(ctx context.Context, ids []string) ([]domain.
 	return out, nil
 }
 
+// ChunksByIDs is the chunks-only batched fetch: ONE round-trip for ids that are
+// PROVABLY chunks-table ids (the expansion lanes' ids come from
+// chunk_triplets.chunk_id). GetByID/GetBatch carry no type and probe up to four
+// tables per call — pure waste on this path (review Q8).
+func (p *PgVectorAdapter) ChunksByIDs(ctx context.Context, ids []string) ([]domain.Document, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return p.getBatchFrom(ctx, TableChunks, ids)
+}
+
 func (p *PgVectorAdapter) getBatchFrom(ctx context.Context, table string, ids []string) ([]domain.Document, error) {
 	sql, args, err := dialect.From(table).
 		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
@@ -1039,10 +1072,22 @@ func (p *PgVectorAdapter) getBatchFrom(ctx context.Context, table string, ids []
 }
 
 func (p *PgVectorAdapter) GetStaleMemories(ctx context.Context, limit int) ([]domain.Document, error) {
-	// Fetches the lowest-activation, least-accessed/oldest memories
+	// Fetches the lowest-activation, least-accessed/oldest memories.
+	//
+	// Rows parented to an episode are excluded outright: their retention belongs to
+	// the `experiences` parent (ADR-0095 D6 — forget an episode = one delete, FK
+	// cascade takes the chunks), never to the per-row loner heuristic the only
+	// caller (Agent.decayLoner) applies to this result. Filtering here rather than
+	// in Go is deliberate: scanDocument's column contract is 13 fixed columns shared
+	// by Search/LexicalSearch/GetByID/GetBatch over tables that do NOT all have an
+	// experience_id column, so Document.ExperienceID comes back zero-valued from
+	// every read path in this adapter. A Go-side check alone would therefore be a
+	// guard that can never fire. decayLoner keeps one anyway, for stores that do
+	// populate the field; this predicate is what makes it true against Postgres.
 	sql, args, _ := dialect.From(TableChunks).
 		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
 		Where(goqu.Ex{"activation_strength": goqu.Op{"lt": 0.5}}).
+		Where(goqu.Ex{"experience_id": nil}).
 		Order(goqu.I("access_count").Asc(), goqu.I("last_accessed_at").Asc().NullsFirst()).
 		Limit(uint(limit)).ToSQL()
 
@@ -1332,6 +1377,188 @@ func (p *PgVectorAdapter) ChunksMentioningEntity(ctx context.Context, entity str
 			return nil, mapError("ScanChunksMentioningEntity", err)
 		}
 		out = append(out, cid)
+	}
+	return out, rows.Err()
+}
+
+// ChunksMentioningEntityRanked is ChunksMentioningEntity ordered by RELEVANCE
+// to the query vector instead of by extraction recency.
+//
+// The recency ordering was a measured defect (RAG Hardening Review Q16): for a
+// hub entity with hundreds of chunks, `MAX(extracted_at) DESC` returns the most
+// recently BACKFILLED chunks — an artifact of ingest order, uncorrelated with
+// the query — which is why raising per_entity added noise rather than recall.
+// Ordering by query→chunk cosine makes the per-entity budget spend itself on
+// the chunks the query can actually use. Same guards, same authorization JOIN,
+// same fail-closed nil-predicate contract as the recency form; a nil/empty
+// query vector falls back to the recency form so no call site can regress to
+// unordered results.
+func (p *PgVectorAdapter) ChunksMentioningEntityRanked(ctx context.Context, entity string, limit int, scope *domain.TagPredicate, queryVec []float32) ([]string, error) {
+	if len(queryVec) == 0 {
+		return p.ChunksMentioningEntity(ctx, entity, limit, scope)
+	}
+	if entity == "" {
+		return nil, nil
+	}
+	if scope == nil {
+		return nil, nil // fail-closed: no predicate ⇒ no read is authorized
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	e := strings.ToLower(strings.TrimSpace(entity))
+	vec := pgvector.NewVector(queryVec)
+	ds := dialect.From(goqu.T(TableChunkTriplets).As("ct")).
+		Join(goqu.T(TableChunks).As("c"), goqu.On(goqu.Ex{"c.id": goqu.I("ct.chunk_id")})).
+		Select("ct.chunk_id").
+		Where(goqu.ExOr{
+			"ct.h": e,
+			"ct.t": e,
+		})
+	// Distance source mirrors fetchCandidates (ADR-0107 stage 3b): under
+	// projection-read the ACTIVE model's vector lives in chunk_embeddings, and
+	// the legacy c.embedding column may hold a different model's vector — or
+	// none. Ranking on the wrong column would order by a foreign space.
+	if p.projectionRead {
+		cast := fmt.Sprintf("(ce.embedding::vector(%d))", p.dim)
+		ds = ds.Join(goqu.T("chunk_embeddings").As("ce"), goqu.On(
+			goqu.L("ce.chunk_id = c.id"),
+			goqu.L("ce.model_id = ?", p.projModelID),
+		)).Order(goqu.L("MIN("+cast+" <=> ?)", vec).Asc())
+	} else {
+		ds = ds.Where(goqu.L("c.embedding IS NOT NULL")).
+			Order(goqu.L("MIN(c.embedding <=> ?)", vec).Asc())
+	}
+	for _, expr := range scopeExpressionsOn(scope, "c") {
+		ds = ds.Where(expr)
+	}
+	if iso, ok := domain.IsolationFromContext(ctx); ok {
+		for _, expr := range isolationExpressions(iso, "c") {
+			ds = ds.Where(expr)
+		}
+	}
+	sql, args, _ := ds.
+		GroupBy("ct.chunk_id").
+		Limit(uint(limit)).ToSQL()
+	rows, err := p.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, mapError("ChunksMentioningEntityRanked", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err != nil {
+			return nil, mapError("ScanChunksMentioningEntityRanked", err)
+		}
+		out = append(out, cid)
+	}
+	return out, rows.Err()
+}
+
+// ChunksForEntities is the BATCHED expansion lookup: one round-trip for a whole
+// frontier's entity set, returning each candidate chunk with (a) how many
+// DISTINCT query entities its triplets match — graph corroboration, the KG²RAG
+// organization signal at selection time — and (b) ordered by corroboration
+// first, then query→chunk cosine.
+//
+// Replaces kgExpand's per-entity loop (up to MaxEntities sequential queries per
+// hop — a measured slice of the review's Q8 latency defect) and its
+// recency-ordered selection (Q16). Same authorization JOIN and fail-closed
+// nil-predicate contract as ChunksMentioningEntity.
+func (p *PgVectorAdapter) ChunksForEntities(ctx context.Context, entities []string, limit int, scope *domain.TagPredicate, queryVec []float32) ([]domain.EntityChunkHit, error) {
+	if len(entities) == 0 {
+		return nil, nil
+	}
+	if scope == nil {
+		return nil, nil // fail-closed: no predicate ⇒ no read is authorized
+	}
+	if limit <= 0 {
+		limit = 40
+	}
+	norm := make([]string, 0, len(entities))
+	seenEnt := make(map[string]bool, len(entities))
+	for _, e := range entities {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" || seenEnt[e] {
+			continue
+		}
+		seenEnt[e] = true
+		norm = append(norm, e)
+	}
+	if len(norm) == 0 {
+		return nil, nil
+	}
+
+	// TWO-STAGE plan (pass-timer finding, 2026-08-14): a hub entity can match
+	// thousands of triplet rows, and ordering the grouped set by vector distance
+	// computed 1024-d cosine for EVERY candidate (~300 ms/hop measured). Stage 1
+	// bounds the candidate set by corroboration + recency using the b-tree
+	// indexes only; stage 2 distance-orders just those survivors. The bound is
+	// generous (4× the requested limit, min 200) so relevance ordering still has
+	// real material to choose from.
+	preLimit := limit * 4
+	if preLimit < 200 {
+		preLimit = 200
+	}
+	inner := dialect.From(goqu.T(TableChunkTriplets).As("ct")).
+		Join(goqu.T(TableChunks).As("c"), goqu.On(goqu.Ex{"c.id": goqu.I("ct.chunk_id")})).
+		Where(goqu.ExOr{
+			"ct.h": norm,
+			"ct.t": norm,
+		}).
+		Select(goqu.I("ct.chunk_id"),
+			// Corroboration: distinct matched entities across this chunk's
+			// triplets. A row where BOTH endpoints matched counts its head only —
+			// a deliberate undercount that keeps the expression simple.
+			goqu.L("COUNT(DISTINCT CASE WHEN ct.h IN ? THEN ct.h ELSE ct.t END)", norm).As("matches"))
+	for _, expr := range scopeExpressionsOn(scope, "c") {
+		inner = inner.Where(expr)
+	}
+	if iso, ok := domain.IsolationFromContext(ctx); ok {
+		for _, expr := range isolationExpressions(iso, "c") {
+			inner = inner.Where(expr)
+		}
+	}
+	inner = inner.GroupBy("ct.chunk_id").
+		Order(goqu.L("matches").Desc(), goqu.L("MAX(ct.extracted_at)").Desc()).
+		Limit(uint(preLimit))
+
+	ds := dialect.From(inner.As("cand")).
+		Join(goqu.T(TableChunks).As("c"), goqu.On(goqu.L("c.id = cand.chunk_id"))).
+		Select(goqu.I("cand.chunk_id"), goqu.I("cand.matches"))
+	order := []exp.OrderedExpression{goqu.L("cand.matches").Desc()}
+	if len(queryVec) > 0 {
+		vec := pgvector.NewVector(queryVec)
+		// Distance source mirrors fetchCandidates (ADR-0107 stage 3b): under
+		// projection-read the ACTIVE model's vectors live in chunk_embeddings.
+		if p.projectionRead {
+			cast := fmt.Sprintf("(ce.embedding::vector(%d))", p.dim)
+			ds = ds.Join(goqu.T("chunk_embeddings").As("ce"), goqu.On(
+				goqu.L("ce.chunk_id = c.id"),
+				goqu.L("ce.model_id = ?", p.projModelID),
+			))
+			order = append(order, goqu.L(cast+" <=> ?", vec).Asc())
+		} else {
+			ds = ds.Where(goqu.L("c.embedding IS NOT NULL"))
+			order = append(order, goqu.L("c.embedding <=> ?", vec).Asc())
+		}
+	} else {
+		order = append(order, goqu.L("cand.chunk_id").Asc()) // deterministic tie-break
+	}
+	sql, args, _ := ds.Order(order...).Limit(uint(limit)).ToSQL()
+	rows, err := p.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, mapError("ChunksForEntities", err)
+	}
+	defer rows.Close()
+	var out []domain.EntityChunkHit
+	for rows.Next() {
+		var hit domain.EntityChunkHit
+		if err := rows.Scan(&hit.ChunkID, &hit.Matches); err != nil {
+			return nil, mapError("ScanChunksForEntities", err)
+		}
+		out = append(out, hit)
 	}
 	return out, rows.Err()
 }

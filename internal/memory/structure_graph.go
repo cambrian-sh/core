@@ -76,6 +76,10 @@ type StructuredDocument struct {
 	Backend    string       `json:"backend"`
 	Nodes      []StructNode `json:"nodes"`
 	OK         bool         `json:"ok"`
+	// DroppedLeaves counts content leaves the sidecar's junk filter deleted
+	// before they could become chunks. Surfaced so silent content loss at the
+	// earliest ingest stage is countable on the kernel side.
+	DroppedLeaves int `json:"dropped_leaves"`
 }
 
 const structNodeKindSection = "section"

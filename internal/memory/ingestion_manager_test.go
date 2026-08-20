@@ -13,7 +13,7 @@ import (
 
 // captureAllStore is a VectorStore that records EVERY Save call so a test
 // can pick out the source-doc entity row and the chunk rows that the
-// IngestionManager pushed through Manager.Store + Agent.EnqueueExternal.
+// IngestionManager committed through Manager.Store.
 // QA-01: this fake is written by the IngestionManager's WORKER goroutines and read
 // by the test goroutine, so every accessor is guarded.
 //

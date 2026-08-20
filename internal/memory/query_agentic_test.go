@@ -18,6 +18,7 @@ type fakePlanner struct {
 	synthStatus    string
 	synthText      string
 	synthErr       error
+	gotSynthTexts  []string
 	planCalls      int
 	decCalls       int
 	synthCalls     int
@@ -41,7 +42,8 @@ func (f *fakePlanner) DecideContinue(_ context.Context, _ string, _ []string, _ 
 	return f.stop, f.bridge, nil
 }
 
-func (f *fakePlanner) Synthesize(_ context.Context, _ string, _ []string) (string, string, error) {
+func (f *fakePlanner) Synthesize(_ context.Context, _ string, texts []string) (string, string, error) {
+	f.gotSynthTexts = texts
 	f.synthCalls++
 	if f.synthErr != nil {
 		return "answer", "", f.synthErr
@@ -166,7 +168,7 @@ func TestFinalizeAgentic_PrependsControlWithStatus(t *testing.T) {
 	q.EnableAgenticRetrieval(p, 1)
 	acc := []domain.SearchResult{doc("chunk1", "some text")}
 	hops := []hopTrace{{Hop: 0, PlannedQuery: "q", Decision: "max_hops"}}
-	got := q.finalizeAgentic(context.Background(), "q", acc, hops, nil)
+	got := q.finalizeAgentic(context.Background(), "q", acc, nil, hops, nil)
 	if len(got) != 2 {
 		t.Fatalf("expected control + 1 chunk, got %d", len(got))
 	}
@@ -192,7 +194,7 @@ func TestFinalizeAgentic_SynthErrorFailsOpenButKeepsTrace(t *testing.T) {
 	q.EnableAgenticRetrieval(p, 1)
 	acc := []domain.SearchResult{doc("chunk1", "x")}
 	hops := []hopTrace{{Hop: 0, PlannedQuery: "q", Decision: "max_hops"}}
-	got := q.finalizeAgentic(context.Background(), "q", acc, hops, nil)
+	got := q.finalizeAgentic(context.Background(), "q", acc, nil, hops, nil)
 	// Synth error still emits a control (status "answer", empty text) so the
 	// loop trace is preserved; the original chunk follows it.
 	if len(got) != 2 {
@@ -223,4 +225,25 @@ func resultIDs(rs []domain.SearchResult) []string {
 		out[i] = r.Document.ID
 	}
 	return out
+}
+
+// Q14 fix (2026-08-13): synthesis reads the hop-interleaved contextOrder, not
+// the (reranked) returned order — a global rerank scored against the surface
+// question must not starve the answer stage of mid-chain evidence — while the
+// RETURNED rows keep acc's order for the ranking win.
+func TestFinalizeAgentic_SynthesisUsesContextOrderNotWireOrder(t *testing.T) {
+	p := &fakePlanner{synthStatus: "answer", synthText: "ok"}
+	q := &QueryService{}
+	q.EnableAgenticRetrieval(p, 1)
+	reranked := []domain.SearchResult{doc("surface-hit", "surface text"), doc("bridge-hit", "bridge text")}
+	interleaved := []domain.SearchResult{doc("bridge-hit", "bridge text"), doc("surface-hit", "surface text")}
+	got := q.finalizeAgentic(context.Background(), "q", reranked, interleaved, nil, nil)
+	// Wire order: control first, then acc (reranked) order untouched.
+	if got[1].Document.ID != "surface-hit" || got[2].Document.ID != "bridge-hit" {
+		t.Fatalf("returned rows must keep acc order: %v, %v", got[1].Document.ID, got[2].Document.ID)
+	}
+	// Synthesis context: contextOrder's first text leads.
+	if len(p.gotSynthTexts) == 0 || p.gotSynthTexts[0] != "bridge text" {
+		t.Fatalf("synthesis must read contextOrder first: %v", p.gotSynthTexts)
+	}
 }

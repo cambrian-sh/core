@@ -505,9 +505,19 @@ func (q *QueryService) SetSubstrateConsultant(c domain.SubstrateConsultant) {
 // deliberately does not defend against a wedged one by spawning a goroutine per
 // query, which would convert a slow consumer into unbounded goroutine growth on
 // the hottest path in the kernel.
-func (q *QueryService) emitDecision(query, callerID, sessionID, docType string, topK int, results []domain.SearchResult, primaryIDs map[string]bool) {
+// ADR-0126 D6: the QueryID PREFERS a correlation handle seeded by the boundary
+// (the MCP endpoint mints one per tool call) over minting one, so a caller can
+// name the receipts its own question produced. Because this site fires once per
+// HOP, the seeded handle is a prefix each hop extends — `<corr>-h1`, `<corr>-h2`
+// — rather than a 1:1 id, which would make hop 2 overwrite hop 1 and leave the
+// chain reading incomplete. No context, no change: the minted id is unchanged.
+func (q *QueryService) emitDecision(ctx context.Context, query, callerID, sessionID, docType string, topK int, results []domain.SearchResult, primaryIDs map[string]bool) {
 	if q.decisionObs == nil {
 		return
+	}
+	queryID, ok := domain.NextQueryCorrelationID(ctx)
+	if !ok {
+		queryID = fmt.Sprintf("q-%d-%d", time.Now().UnixNano(), q.queryCounter.Add(1))
 	}
 	sum := sha256.Sum256([]byte(query))
 	chunks := make([]domain.RetrievedChunk, 0, len(results))
@@ -523,7 +533,7 @@ func (q *QueryService) emitDecision(query, callerID, sessionID, docType string, 
 		})
 	}
 	q.decisionObs.ObserveRetrieval(domain.RetrievalDecision{
-		QueryID:           fmt.Sprintf("q-%d-%d", time.Now().UnixNano(), q.queryCounter.Add(1)),
+		QueryID:           queryID,
 		SessionID:         sessionID,
 		PrincipalID:       callerID,
 		QueryTextHash:     hex.EncodeToString(sum[:]),
@@ -597,6 +607,7 @@ func (q *QueryService) planQuery(ctx context.Context, query, scratchpad string, 
 		return fallback
 	}
 	if strings.TrimSpace(planned) == "" {
+		slog.DebugContext(ctx, "agentic: planner returned empty rewrite; using fallback query (fail-open)")
 		return fallback
 	}
 	return planned
@@ -617,6 +628,10 @@ func (q *QueryService) agenticSearch(ctx context.Context, query, callerID, docTy
 		if _, ok := q.planner.(DecomposePlanner); ok {
 			return q.decompSearch(ctx, query, callerID, docType, spread)
 		}
+		// Decomposition is configured on but the wired planner cannot decompose —
+		// a silent downgrade to the greedy loop would make an A/B arm measure the
+		// wrong mechanism without anyone knowing.
+		slog.WarnContext(ctx, "agentic: decompose enabled but planner lacks DecomposePlanner; greedy loop (fail-open)")
 	}
 	maxHops := q.agenticMaxHops
 	if maxHops < 1 {
@@ -641,7 +656,7 @@ func (q *QueryService) agenticSearch(ctx context.Context, query, callerID, docTy
 		hits, err := q.searchByType(ctx, planned, callerID, docType, spread)
 		if err != nil {
 			if len(hopResults) > 0 {
-				return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), trace, cot), nil // fail-open to what we have
+				return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), nil, trace, cot), nil // fail-open to what we have
 			}
 			return nil, err
 		}
@@ -692,7 +707,7 @@ func (q *QueryService) agenticSearch(ctx context.Context, query, callerID, docTy
 		history = append(history, bridge) // ReAct: record the resolved entity for later hops
 		scratchpad = bridge
 	}
-	return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), trace, cot), nil
+	return q.finalizeAgentic(ctx, query, interleaveDedup(hopResults), nil, trace, cot), nil
 }
 
 // decompSearch is the UP-FRONT GROUNDED decomposition loop: decompose the whole
@@ -715,6 +730,18 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 		}
 		return q.searchByType(ctx, query, callerID, docType, spread)
 	}
+	// Bound the fan-out: each sub-question is a full retrieval pass plus an LLM
+	// extraction call, and the planner's output length is otherwise the only cap.
+	// Real multi-hop questions decompose into ≤4 sub-questions; 6 leaves headroom.
+	const maxSubQuestions = 6
+	if len(subqs) > maxSubQuestions {
+		slog.WarnContext(ctx, "decomp: planner returned too many sub-questions; truncating",
+			"got", len(subqs), "cap", maxSubQuestions)
+		subqs = subqs[:maxSubQuestions]
+		if len(refs) > maxSubQuestions {
+			refs = refs[:maxSubQuestions]
+		}
+	}
 	const maxContextChunks = 16
 	// subst[n-1] is what placeholder {n} resolves to downstream: the grounded
 	// answer when found, else the sub-question's descriptive ref (so an unfound
@@ -731,8 +758,10 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 	// Per-hop rerank is suppressed for the retrieval passes (sctx): the reranker
 	// runs ONCE on the fused union below, against the original question.
 	sctx := withSkipPerHopRerank(ctx)
+	hasOrig := false
 	if origHits, oerr := q.searchByType(sctx, query, callerID, docType, spread); oerr == nil && len(origHits) > 0 {
 		hopResults = append(hopResults, origHits)
+		hasOrig = true
 		trace = append(trace, hopTrace{Hop: -1, PlannedQuery: query, Retrieved: traceDocs(origHits), Decision: "orig_query"})
 	}
 	for i, subq := range subqs {
@@ -784,10 +813,64 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 	// stranded past the top-k window (recall@30 0.70 vs recall@100 0.83 = the
 	// ranking gap) up toward the front. One rerank over the union — the per-hop
 	// passes were suppressed above. Fail-soft: nil/unreachable reranker keeps order.
+	//
+	// The SYNTHESIS context, however, keeps the hop-interleaved order (the review's
+	// Q14 defect, measured live 2026-08-13): the cross-encoder scores every chunk
+	// against the ORIGINAL question, so a mid-chain hop's evidence — relevant to a
+	// SUB-question, not the surface question — gets buried below the synthesis
+	// window, and multi-hop answers collapse even though the evidence was retrieved
+	// (MuSiQue 2-hop 0.95→0.30 with trace recall still 0.75). Wire order gets the
+	// rerank's ranking win; the answer stage keeps round-robin's guarantee that
+	// each hop's best evidence is visible. Same philosophy as non-displacing
+	// injection: an optimizer may reorder, it must not starve.
+	// PACKET REORDER (2026-08-14, roadmap #1): the SYNTHESIS packet leads with
+	// the FINAL sub-question's results and puts the surface-question pass LAST.
+	// The final sub-question's query already contains the resolved bridge
+	// ("What award did Shaun Tan receive?"), so its top hits are the cleanest
+	// evidence for the asked fact; the surface-question pass is the trap-carrier
+	// — on an adversarial corpus its top hits include famous-but-wrong shortcut
+	// answers, and leading with them was measured to flip answers (3 of the 6
+	// constant 2-hop misses passed when asked in final-sub-question form). The
+	// WIRE order is untouched: Lever A's original-first + the global rerank keep
+	// their recall-scoring roles; only what the writer READS is reordered.
+	ctxHops := make([][]domain.SearchResult, 0, len(hopResults))
+	subLists := hopResults
+	var origList []domain.SearchResult
+	if hasOrig {
+		origList = hopResults[0]
+		subLists = hopResults[1:]
+	}
+	for i := len(subLists) - 1; i >= 0; i-- {
+		ctxHops = append(ctxHops, subLists[i])
+	}
+	if hasOrig {
+		ctxHops = append(ctxHops, origList)
+	}
+	interleaved := interleaveDedup(ctxHops)
 	if q.reranker != nil && len(union) > 0 {
 		union = q.applyStageBRerank(ctx, query, union)
 	}
-	return q.finalizeAgentic(ctx, query, union, trace, nil), nil
+	// PER-HOP synthesis budget (2026-08-13): the reading packet scales with the
+	// question's structure — 4 slots per retrieval pass, clamped to [8, 16] —
+	// instead of a flat 16. Content-dedup made every packet slot a DISTINCT
+	// passage, which widened effective context diversity: a 2-hop question's
+	// 2–3 decisive passages were drowning among ~13 unrelated ones (measured:
+	// probing the failed 2-hop questions' final sub-questions directly answered
+	// 4/8 — the loss was packet-level, not retrieval). Round-robin already puts
+	// each pass's best rows first, so a prefix cut keeps every hop represented:
+	// 2-hop (3 passes) reads 12, 4-hop (5 passes) reads 16, a 1-sub-question
+	// case reads 8. Deep questions keep their full window.
+	budget := 4 * len(hopResults)
+	if budget < 8 {
+		budget = 8
+	}
+	if budget > 16 {
+		budget = 16
+	}
+	if len(interleaved) > budget {
+		interleaved = interleaved[:budget:budget]
+	}
+	return q.finalizeAgentic(ctx, query, union, interleaved, trace, nil), nil
 }
 
 // substituteAnswers replaces {1},{2},... in a sub-question with the matching
@@ -810,8 +893,26 @@ func substituteAnswers(subq string, subst []string) string {
 // control's Text is the composed answer (helping answer matching) and its
 // Metadata carries the status for the caller. FAIL-OPEN: nil planner or a
 // synthesis error returns the chunks unchanged (implicitly "answer").
-func (q *QueryService) finalizeAgentic(ctx context.Context, query string, acc []domain.SearchResult, hops []hopTrace, cot []string) []domain.SearchResult {
+//
+// contextOrder, when non-nil, is the ordering the SYNTHESIS context is built
+// from — decompSearch passes the pre-rerank hop-interleaved union so a global
+// rerank (scored against the surface question) cannot starve synthesis of
+// mid-chain evidence. The RETURNED rows keep acc's order. nil ⇒ acc.
+func (q *QueryService) finalizeAgentic(ctx context.Context, query string, acc, contextOrder []domain.SearchResult, hops []hopTrace, cot []string) []domain.SearchResult {
+	// Honor the server-side recall window. Each hop is individually capped, but
+	// the interleaved union of N hops is not — without this, the agentic paths
+	// returned up to N×topK rows to the wire, which querymemory.go documents as
+	// impossible. The round-robin interleave (or the global rerank, when on) has
+	// already placed the best-per-hop rows first, so the prefix keeps hop
+	// diversity.
+	if topK := q.effRecallTopK(); topK > 0 && len(acc) > topK {
+		acc = acc[:topK:topK]
+	}
 	if q.planner == nil {
+		// Misconfiguration, not a normal state: the agentic paths only run when a
+		// planner was wired, so a nil planner here silently drops the typed-status
+		// contract (no control row at all). Say so once per query.
+		slog.WarnContext(ctx, "agentic: nil planner at finalize; returning chunks without control row")
 		return acc
 	}
 	const maxContextChunks = 16
@@ -821,7 +922,11 @@ func (q *QueryService) finalizeAgentic(ctx context.Context, query string, acc []
 	if len(cot) > 0 {
 		texts = append(texts, "REASONING CHAIN (prefer its conclusion when the passages support it):\n- "+strings.Join(cot, "\n- "))
 	}
-	for i, h := range acc {
+	ctxRows := acc
+	if contextOrder != nil {
+		ctxRows = contextOrder
+	}
+	for i, h := range ctxRows {
 		if i >= maxContextChunks {
 			break
 		}
@@ -912,14 +1017,23 @@ func skipPerHopRerank(ctx context.Context) bool {
 }
 
 // interleaveDedup round-robins across the per-hop result lists, deduping by
-// document ID and preserving each hop's internal rank order. Position 0 is
-// hop-1 rank-1, position 1 is hop-2 rank-1, etc. — so every hop's best hit is
-// near the front and survives top-k truncation.
+// document ID AND by content, preserving each hop's internal rank order.
+// Position 0 is hop-1 rank-1, position 1 is hop-2 rank-1, etc. — so every
+// hop's best hit is near the front and survives top-k truncation.
+//
+// Content dedup (2026-08-13): a union-ingested store carries the same text
+// under many document ids (measured live: the MuSiQue corpus is 48k rows over
+// 21k distinct texts, and only 41% of a query's retrieved window was distinct
+// content). Id-only dedup let those copies consume the hop-diversity slots
+// this function exists to protect. The FIRST copy encountered keeps its place;
+// later copies are dropped regardless of id. Empty texts are never
+// content-deduped (synthetic/control rows carry meaning in metadata, not text).
+// The former len==1 shortcut returned the caller's slice (a shared-mutation
+// trap) and skipped dedup entirely; single-hop lists now get the same
+// treatment as multi-hop ones.
 func interleaveDedup(hops [][]domain.SearchResult) []domain.SearchResult {
-	if len(hops) == 1 {
-		return hops[0]
-	}
-	seen := make(map[string]bool)
+	seenID := make(map[string]bool)
+	seenText := make(map[[32]byte]bool)
 	out := make([]domain.SearchResult, 0)
 	maxLen := 0
 	for _, h := range hops {
@@ -933,14 +1047,28 @@ func interleaveDedup(hops [][]domain.SearchResult) []domain.SearchResult {
 				continue
 			}
 			id := h[i].Document.ID
-			if seen[id] {
+			if seenID[id] {
 				continue
 			}
-			seen[id] = true
+			if t := normalizedTextHashable(h[i].Document.Text); t != "" {
+				sum := sha256.Sum256([]byte(t))
+				if seenText[sum] {
+					seenID[id] = true // the id is now represented by its twin
+					continue
+				}
+				seenText[sum] = true
+			}
+			seenID[id] = true
 			out = append(out, h[i])
 		}
 	}
 	return out
+}
+
+// normalizedTextHashable collapses whitespace and lowercases for content
+// identity, so trivial formatting differences don't defeat the dedup.
+func normalizedTextHashable(t string) string {
+	return strings.ToLower(strings.Join(strings.Fields(t), " "))
 }
 
 // applyStageABlend re-scores every candidate by the Stage-A multi-signal blend
@@ -1261,6 +1389,20 @@ func extractQueryTerms(query string) []string {
 		if i+1 < len(content) {
 			add(w + " " + content[i+1])
 		}
+		// Trigrams too (2026-08-14): multi-word entity anchors are routinely
+		// 3 words ("stadio ciro vigorito", "german aerospace center") and the
+		// old bigram cap meant the graph rescue lane could NEVER fire for them.
+		// Affordable now that the lookup is one batched query regardless of
+		// term count (review Q8), instead of one SQL round-trip per term.
+		if i+2 < len(content) {
+			add(w + " " + content[i+1] + " " + content[i+2])
+		}
+	}
+	// Bound the term set: the batched lookup makes count cheap, but an unbounded
+	// IN-list still bloats the SQL for pathological inputs.
+	const maxQueryTerms = 32
+	if len(out) > maxQueryTerms {
+		out = out[:maxQueryTerms]
 	}
 	return out
 }
@@ -1290,6 +1432,50 @@ func (q *QueryService) injectQueryEntitySeeds(ctx context.Context, results []dom
 	if budget <= 0 {
 		budget = 20
 	}
+
+	// BATCHED path (review Q8): one corroboration-counting, cosine-ranked lookup
+	// for the whole term set + one batched materialization — replacing a loop of
+	// one SQL round-trip per term (a 12-word question ≈ 23–30 terms) plus one
+	// GetByID per candidate. Candidates arrive best-first (distinct-term matches
+	// desc, then query cosine), so the budget is spent on the strongest seeds
+	// instead of whatever the first terms happened to return.
+	if batched, ok := q.chunkTriplets.(entityBatchLookup); ok {
+		hits, err := batched.ChunksForEntities(ctx, terms, budget*2, scope, vec)
+		if err != nil {
+			slog.WarnContext(ctx, "query-entity seeding: batched lookup failed", "err", err)
+			return results
+		}
+		candIDs := make([]string, 0, len(hits))
+		for _, h := range hits {
+			if !seen[h.ChunkID] {
+				candIDs = append(candIDs, h.ChunkID)
+			}
+		}
+		docs := materializeAuthorized(ctx, q.vectorStore, scope, candIDs)
+		added := 0
+		for _, h := range hits {
+			if added >= budget {
+				break
+			}
+			if seen[h.ChunkID] {
+				continue
+			}
+			seen[h.ChunkID] = true
+			doc, ok := docs[h.ChunkID]
+			if !ok {
+				continue
+			}
+			results = append(results, domain.SearchResult{
+				Document: doc,
+				// Hop-0 seeds; corroboration = distinct query terms matched.
+				Score: expandedScore(vec, doc, 0, h.Matches),
+			})
+			added++
+		}
+		return results
+	}
+
+	// Legacy per-term path for stores without the batched capability.
 	added := 0
 	for _, term := range terms {
 		if added >= budget {
@@ -1314,7 +1500,8 @@ func (q *QueryService) injectQueryEntitySeeds(ctx context.Context, results []dom
 			seen[id] = true
 			results = append(results, domain.SearchResult{
 				Document: *doc,
-				Score:    expandedScore(vec, *doc),
+				// Query-entity seeds are hop-0, single-entity routed.
+				Score: expandedScore(vec, *doc, 0, 1),
 			})
 			added++
 		}
@@ -1371,11 +1558,35 @@ var errAgenticDisabled = errors.New("agentic answer path disabled")
 // planner) — the operator handler maps that to Unimplemented behind the
 // "memory-answer" capability.
 func (q *QueryService) AnswerSystem(ctx context.Context, query string) (status, answer string, evidence []domain.SearchResult, err error) {
+	// ScopeSystem is seeded HERE and only here: it is what makes this variant the
+	// operator lane. The scoped variant below deliberately seeds nothing, so the
+	// authorizer resolves the caller's own predicate at the read chokepoint.
+	return q.answer(domain.WithScope(ctx, domain.ScopeSystem), query, "operator:system")
+}
+
+// Answer is AnswerSystem's CALLER-SCOPED counterpart (ADR-0126 E6): the same
+// agentic retrieval and the same cited synthesis, narrowed to what callerID may
+// read instead of running at system scope.
+//
+// It exists because a published `ask_memory` backed by AnswerSystem is a leak the
+// moment a real PDP is installed: every external caller would synthesize an answer
+// over the whole corpus and receive it in prose, which is a stronger disclosure
+// than the search tool beside it — the answer text survives even when the citations
+// are ones the caller could not have fetched. Search already takes a callerID and
+// resolves the predicate itself; this hands the answer lane the same parameter and
+// nothing else changes.
+func (q *QueryService) Answer(ctx context.Context, query, callerID string) (status, answer string, evidence []domain.SearchResult, err error) {
+	return q.answer(ctx, query, callerID)
+}
+
+// answer is the shared body. The two entry points differ ONLY in the scope seeded
+// on the context and the caller id — kept as one function so a change to the
+// synthesis or the abstention rule cannot land on one lane and miss the other.
+func (q *QueryService) answer(ctx context.Context, query, callerID string) (status, answer string, evidence []domain.SearchResult, err error) {
 	cs, ok := q.planner.(CitedSynthesizer)
 	if !ok {
 		return "", "", nil, errAgenticDisabled
 	}
-	ctx = domain.WithScope(ctx, domain.ScopeSystem)
 
 	// FULL MULTI-HOP AGENTIC (decompose → per-hop plan/retrieve → synthesize). The operator
 	// memory-asking panel runs the same agentic loop agents do, so a bridge question ("who
@@ -1388,7 +1599,7 @@ func (q *QueryService) AnswerSystem(ctx context.Context, query string) (status, 
 	// timeout floor (agents/system/retrieval_agent/agent.py) so an eroded inbound deadline
 	// does not strangle a hop into DEADLINE_EXCEEDED.
 	if q.agenticEnabled {
-		results, aerr := q.agenticSearch(ctx, query, "operator:system", domain.DocTypeMnemonicFact, true)
+		results, aerr := q.agenticSearch(ctx, query, callerID, domain.DocTypeMnemonicFact, true)
 		if aerr != nil {
 			return "", "", nil, aerr
 		}
@@ -1416,7 +1627,7 @@ func (q *QueryService) AnswerSystem(ctx context.Context, query string) (status, 
 		}
 		// fall through to cited synthesis over the agentic evidence.
 	} else {
-		evidence, err = q.searchByType(ctx, query, "operator:system", domain.DocTypeMnemonicFact, true)
+		evidence, err = q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicFact, true)
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -1474,59 +1685,6 @@ func (q *QueryService) SearchProcedures(ctx context.Context, query, callerID str
 	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicProcedure, false)
 }
 
-// SearchEntities is the EXACT-lookup access path (ADR-0049 D8/Issue 012): the query is a
-// canonical `kind:id` (not a semantic phrase), resolved by id to ONE entity record. The
-// returned text is the RECONSTRUCTED current state — the materialized field-LWW view,
-// which by construction already excludes superseded fields (a deleted file reads
-// exists=false). It carries the link to the most-recent engaging scene so the caller can
-// resolve that scene's baseline. Honors the read-gate: an unknown principal gets nothing.
-func (q *QueryService) SearchEntities(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	key := strings.TrimSpace(query)
-	if key == "" {
-		return []domain.SearchResult{}, nil
-	}
-	eff, dec := q.readFilter(ctx, callerID)
-	if eff == nil {
-		slog.WarnContext(ctx, "memory entity-lookup: "+dec.Explain(),
-			slog.String("event", "authz_deny"), slog.String("agent_id", callerID))
-		return []domain.SearchResult{}, nil
-	}
-	doc, err := q.vectorStore.GetByID(ctx, key)
-	if err != nil || doc == nil {
-		return []domain.SearchResult{}, nil // unknown entity → "no record", not an error
-	}
-	// A point lookup cannot push the predicate into SQL, so it is applied here.
-	// Same predicate, same answer.
-	if !eff.Allows(docTags(doc.Metadata)) {
-		return []domain.SearchResult{}, nil
-	}
-	doc.Text = reconstructEntityState(doc)
-	return []domain.SearchResult{{Document: *doc, Score: 1.0}}, nil
-}
-
-// reconstructEntityState renders the entity's current known state from its materialized
-// field-LWW cache (ADR-0049 Issue 012). The fields ARE the reconstruction: each is the
-// latest non-superseded observation, so "what's true now" is a deterministic read, not a
-// re-derivation. The most-recent engaging scene link rides along for baseline resolution.
-func reconstructEntityState(doc *domain.Document) string {
-	var sb strings.Builder
-	sb.WriteString(doc.ID)
-	fields := decodeEntityFields(doc)
-	vals := materializedValues(fields)
-	keys := make([]string, 0, len(vals))
-	for k := range vals {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Fprintf(&sb, " %s=%v", k, vals[k])
-	}
-	if ls, ok := doc.Metadata["last_scene"].(string); ok && ls != "" {
-		fmt.Fprintf(&sb, " last_scene=%s", ls)
-	}
-	return sb.String()
-}
-
 // SearchPrecedents is the world-model PULL lane (ADR-0049 D11/Issue 014): for the
 // agent's current sub-situation it retrieves prior TRANSITIONS — similar scenes plus
 // their outcome and action path — so the agent can anticipate the consequence of its
@@ -1560,7 +1718,50 @@ func (q *QueryService) SearchPrecedents(ctx context.Context, query, callerID str
 // searchByType embeds the query, searches one document type, and applies ACL +
 // same-session step-record exclusion (D1) + relevance floor (#1), optionally
 // spreading. Shared by the fact and action lanes (ADR-0049 D4).
+// passTimer records per-stage durations of one searchByType pass. Before it
+// existed (review Q8/Q17), a degraded pass and a healthy one were
+// indistinguishable in logs, and the ~100–200 sequential SQL round-trips the
+// pass used to make were invisible. Every pass logs its breakdown at DEBUG;
+// a pass slower than slowPassThreshold logs it at INFO so production surfaces
+// its own latency regressions.
+type passTimer struct {
+	started time.Time
+	last    time.Time
+	attrs   []slog.Attr
+}
+
+const slowPassThreshold = 500 * time.Millisecond
+
+func newPassTimer() *passTimer {
+	now := time.Now()
+	return &passTimer{started: now, last: now}
+}
+
+// mark records the time since the previous mark under the given stage name.
+func (t *passTimer) mark(stage string) {
+	now := time.Now()
+	t.attrs = append(t.attrs, slog.Int64(stage+"_ms", now.Sub(t.last).Milliseconds()))
+	t.last = now
+}
+
+func (t *passTimer) log(ctx context.Context, query string) {
+	total := time.Since(t.started)
+	attrs := append([]slog.Attr{
+		slog.Int64("total_ms", total.Milliseconds()),
+		slog.String("query", clip(query, 80)),
+	}, t.attrs...)
+	level := slog.LevelDebug
+	msg := "memory pass timing"
+	if total > slowPassThreshold {
+		level = slog.LevelInfo
+		msg = "memory pass timing (SLOW)"
+	}
+	slog.LogAttrs(ctx, level, msg, attrs...)
+}
+
 func (q *QueryService) searchByType(ctx context.Context, query, callerID, docType string, spread bool) ([]domain.SearchResult, error) {
+	pt := newPassTimer()
+	defer pt.log(ctx, query)
 	embedInput := query
 	// Recall side of an asymmetric embedder: if the embedder distinguishes query
 	// from document (ADR-0048, e.g. bge-large's query instruction), use EmbedQuery
@@ -1578,6 +1779,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	if err != nil {
 		return nil, fmt.Errorf("memory query: embed: %w", err)
 	}
+	pt.mark("embed")
 
 	// Over-fetch (ADR-0048 D1) so dropping the run's own step records does not shrink
 	// the returned window short of recallTopK.
@@ -1622,22 +1824,53 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	opts.Isolation = iso
 	ctx = domain.WithIsolation(ctx, iso)
 
-	results, err := q.vectorStore.Search(ctx, vec, opts)
-	if err != nil {
-		return nil, fmt.Errorf("memory query: search: %w", err)
+	// Dense and lexical are independent reads over the same opts — run them
+	// CONCURRENTLY (review Q8: they were strictly sequential, so every pass paid
+	// dense+lexical latency in sum). opts is fully built above; lex/lerr are
+	// published via the channel close (happens-before), no locks needed.
+	var lex []domain.SearchResult
+	var lerr error
+	lexDone := make(chan struct{})
+	if q.lexical != nil {
+		go func() {
+			defer close(lexDone)
+			lex, lerr = q.lexical.LexicalSearch(ctx, query, opts)
+		}()
+	} else {
+		close(lexDone)
 	}
 
-	// ADR-0054 hybrid retrieval: fuse the dense (vector) seed pool with a lexical
-	// (full-text) search via Reciprocal Rank Fusion, so exact-token chunks the
-	// embedder ranks low still enter the pool. Same opts (scope/doctype/over-fetch)
-	// → scope-safe. Lexical failure degrades to vector-only.
+	results, err := q.vectorStore.Search(ctx, vec, opts)
+	if err != nil {
+		<-lexDone // never leak the goroutine's writes past this frame
+		return nil, fmt.Errorf("memory query: search: %w", err)
+	}
+	// Pin the cosine-scale score NOW, before any later stage rewrites Score to a
+	// different scale (RRF ≈ 1/61, blend, promotion). The pgvector adapter sets
+	// RawScore itself; other VectorStore implementations may not, so backfill
+	// from Score at the one point where Score is still the store's similarity.
+	// The relevance floor in admit() below tests this value.
+	for i := range results {
+		if results[i].RawScore == 0 {
+			results[i].RawScore = results[i].Score
+		}
+	}
+	pt.mark("dense")
+
+	// ADR-0054 hybrid retrieval: fuse the dense (vector) seed pool with the
+	// lexical (full-text) results via Reciprocal Rank Fusion, so exact-token
+	// chunks the embedder ranks low still enter the pool. Same opts
+	// (scope/doctype/over-fetch) → scope-safe. Lexical failure degrades to
+	// vector-only.
+	<-lexDone
 	if q.lexical != nil {
-		if lex, lerr := q.lexical.LexicalSearch(ctx, query, opts); lerr != nil {
+		if lerr != nil {
 			slog.WarnContext(ctx, "hybrid: lexical search failed; vector-only", "err", lerr)
 		} else if len(lex) > 0 {
 			results = rrfFuse(results, lex, q.rrfK, q.effRecallOverFetch(), q.effLexicalWeight())
 		}
 	}
+	pt.mark("lexical")
 
 	// Capture the genuine dense+lexical hits BEFORE any associative injection
 	// (ADR-0052 entity seeds / ADR-0053 query-entity seeds / kgExpand). On a large
@@ -1651,6 +1884,9 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	// help on sparse stores; it just can't hurt on dense/noisy ones.
 	primaryIDs := make(map[string]bool, len(results))
 	for _, r := range results {
+		if r.Document.ID == "" {
+			continue // never let an id-less row grant primary status to all id-less injections
+		}
 		primaryIDs[r.Document.ID] = true
 	}
 
@@ -1662,6 +1898,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	if q.entityIdx != nil {
 		results = q.injectEntitySeeds(ctx, results, vec, docType, callerID)
 	}
+	pt.mark("entity_seeds")
 
 	// ADR-0053 Phase 0: KG²RAG one-hop chunk expansion. If the
 	// domain.ChunkTripletsStore is wired, walk the per-chunk triplets from the
@@ -1675,15 +1912,23 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	if q.queryEntitySeed && q.chunkTriplets != nil {
 		results = q.injectQueryEntitySeeds(ctx, results, query, vec, eff)
 	}
+	pt.mark("query_entity_seeds")
 
 	if q.chunkTriplets != nil && len(results) > 0 {
-		results = kgExpand(ctx, results, q.chunkTriplets, q.vectorStore, vec, eff, kgExpandOpts{
+		opts := kgExpandOpts{
 			Hops:        q.kgHops,
 			MaxExpanded: q.kgMaxExpanded,
 			MaxEntities: q.kgMaxEntities,
 			PerEntity:   q.kgPerEntity,
-		})
+		}
+		if q.entityIdx != nil {
+			// Query-time synonym linking over the entity-name embeddings the
+			// ADR-0052 index already holds (nil when entity routing is unwired).
+			opts.AliasIndex = q.entityIdx
+		}
+		results = kgExpand(ctx, results, q.chunkTriplets, q.vectorStore, vec, eff, opts)
 	}
+	pt.mark("kg_expand")
 
 	// ADR-0054 Stage A: re-rank ALL candidates (seeds + KG-expanded) by the
 	// multi-signal blend (cosine + recency + confidence + pagerank + activation).
@@ -1691,6 +1936,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	if q.blender.Load() != nil && q.rankSignals != nil && len(results) > 0 {
 		results = q.applyStageABlend(ctx, results, vec)
 	}
+	pt.mark("blend")
 
 	// ADR-0054 Stage B: cross-encoder rerank of the top-K Stage-A candidates,
 	// blended via FinalScore = w_bge·bge + (1-w_bge)·stageA. Flag-gated; nil
@@ -1703,6 +1949,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	if q.reranker != nil && len(results) > 0 && !skipPerHopRerank(ctx) {
 		results = q.applyStageBRerank(ctx, query, results)
 	}
+	pt.mark("rerank")
 
 	// Document-local anchor promotion: when the query names a structural anchor
 	// (Chapter 1, scene 1 / an explicit id), lift the chunks that carry it above
@@ -1710,12 +1957,14 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	if q.anchorConstraint && q.chunkTriplets != nil {
 		results = q.applyAnchorConstraint(ctx, results, query, vec, eff)
 	}
+	pt.mark("anchor")
 
 	// ADR-0060: structure-graph section scoping — promote chunks under a section
 	// the query names, resolved via the parser-derived hierarchy + ltree subtree.
 	if q.sectionStore != nil {
 		results = q.applySectionConstraint(ctx, results, query, vec)
 	}
+	pt.mark("section")
 
 	sid, _ := domain.SessionIDFromContext(ctx)
 
@@ -1735,7 +1984,17 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 		}
 		// ADR-0048 #1: drop seeds below the relevance floor so an all-irrelevant query
 		// returns EMPTY rather than padding the top-k with noise.
-		if q.floor > 0 && r.Score < q.floor {
+		//
+		// The floor is a MINIMUM COSINE (SetRelevanceFloor's contract), so it must
+		// test RawScore — the pre-multiplier cosine captured by the adapter — not
+		// Score, which by this point may have been rewritten to a wholly different
+		// scale by RRF (~1/61 ≈ 0.016), the Stage-A blend, Stage-B FinalScore, or
+		// anchor/section promotion (~1.0–2.0). Testing Score meant any floor > ~0.02
+		// with hybrid-on dropped every fused row while 0.5-floored graph injections
+		// survived — exactly inverted. Rows with no cosine (RawScore == 0: lexical-
+		// only hits, some injected rows) are not floored; they earned their slot
+		// through a different lane and the floor has nothing to measure them by.
+		if q.floor > 0 && r.RawScore > 0 && r.RawScore < q.floor {
 			return false
 		}
 		return true
@@ -1759,6 +2018,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	// 0.5-floor rows evicting real hits is the same failure that once nearly halved
 	// MuSiQue support-recall.
 	filtered := assembleLanes(results, primaryIDs, topK, laneIsExperiential(docType), admit)
+	pt.mark("assemble")
 
 	// ADR-0048 D2: optionally expand the fact seeds associatively over the memory
 	// graph. Off for the action lane.
@@ -1778,7 +2038,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	// ADR-0103 D2: emit the decision record LAST, so it describes what the caller
 	// actually received — including neighbor-window rows, which were never ranked
 	// and so are correctly reported as non-primary.
-	q.emitDecision(query, callerID, string(sid), docType, topK, filtered, primaryIDs)
+	q.emitDecision(ctx, query, callerID, string(sid), docType, topK, filtered, primaryIDs)
 	return filtered, nil
 }
 

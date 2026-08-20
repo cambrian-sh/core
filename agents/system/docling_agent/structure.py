@@ -58,6 +58,7 @@ class StructuredDocument:
     source_type: str
     backend: str                  # "markdown" | "text" | "docling"
     nodes: List[StructNode] = field(default_factory=list)
+    dropped_leaves: int = 0       # junk-filter drops — surfaced so silent content loss is countable
 
     def to_json(self) -> Dict[str, Any]:
         return {
@@ -66,6 +67,7 @@ class StructuredDocument:
             "source_type": self.source_type,
             "backend": self.backend,
             "nodes": [asdict(n) for n in self.nodes],
+            "dropped_leaves": self.dropped_leaves,
         }
 
     # convenience accessors (used by tests / callers)
@@ -88,7 +90,11 @@ _JUNK_MARKERS = (
     "pdfpipelineoptions",
     "generate_picture_images",
 )
-_WORD_RE = re.compile(r"[A-Za-z]{2,}")
+# Any run of >=2 Unicode letters counts as a word. The previous [A-Za-z]{2,}
+# matched NOTHING in Cyrillic/CJK/Arabic/Greek text, so every non-Latin-script
+# paragraph failed the word-count test and was silently deleted before it could
+# become a chunk — unrecoverable content loss in the default ingest pipeline.
+_WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 
 
 def is_junk_leaf(kind: str, text: str) -> bool:
@@ -99,7 +105,11 @@ def is_junk_leaf(kind: str, text: str) -> bool:
     if any(m in low for m in _JUNK_MARKERS):
         return True
     if kind == KIND_PARAGRAPH:
-        if len(_WORD_RE.findall(t)) < 2:
+        # Total letters across word-runs, not run COUNT: scripts written without
+        # spaces (CJK) produce one long run, which the old two-word minimum
+        # rejected wholesale. Four letters keeps any real sentence in any script
+        # while still junking "!", "! ! !", "ab".
+        if sum(len(w) for w in _WORD_RE.findall(t)) < 4:
             return True
         if sum(ch.isalpha() for ch in t) / len(t) < 0.35:
             return True
@@ -143,7 +153,8 @@ class StructureBuilder:
     def add_leaf(self, kind: str, text: str, meta: Optional[Dict[str, Any]] = None,
                  page: Optional[int] = None) -> Optional[StructNode]:
         if is_junk_leaf(kind, text):
-            return None  # OCR/layout junk — dropped before it can pollute retrieval
+            self.doc.dropped_leaves += 1
+            return None  # OCR/layout junk — dropped before it can pollute retrieval (counted, never silent)
         parent = self.stack[-1]
         order = self._order(parent.id)
         path = self._path(parent, order)
