@@ -128,34 +128,6 @@ func TestWritePlanScene_AccretesAndWritesOneScene(t *testing.T) {
 	}
 }
 
-// ADR-0049: WritePlanScene wires the world model into the graph — one FK-safe
-// scene→entity `engaged` edge per engaged thing (both endpoints persisted).
-func TestWritePlanScene_WritesSceneEntityEdges(t *testing.T) {
-	gs := &captureGraphStore{}
-	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
-	agent.RecordExperiential = true
-	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
-	agent.GraphStore = gs
-	ctx := context.Background()
-
-	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"docs/a.md"}`), Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "step-0-pe"})
-	_ = agent.WritePlanScene(ctx, domain.PlanRecord{PlanID: "pe", Goal: "build docs", Success: true, Surprise: -1})
-
-	want := map[string]bool{"file:docs/a.md": false, "dir:docs": false}
-	for _, e := range gs.edges {
-		if e.EdgeType == domain.EdgeEngaged && e.SourceID == "scene-pe" {
-			if _, ok := want[e.TargetID]; ok {
-				want[e.TargetID] = true
-			}
-		}
-	}
-	for key, seen := range want {
-		if !seen {
-			t.Errorf("expected scene→entity edge to %s; got %+v", key, gs.edges)
-		}
-	}
-}
-
 // ADR-0049: the scene embeds an inline ACTION SUMMARY (its "what I did" path) resolved
 // from the plan's action records, so a scene reads as a self-contained transition.
 func TestWritePlanScene_EmbedsInlineActionSummary(t *testing.T) {
@@ -206,25 +178,59 @@ func TestWritePlanScene_SkipsContentlessScene(t *testing.T) {
 	}
 }
 
-// ADR-0049 D6: a first-touched entity's baseline is offloaded to CAS; the scene
-// stores the ref → cid (by reference), and the scene text shows the cid pointer.
-func TestWritePlanScene_CapturesBaselineCIDs(t *testing.T) {
-	store := &captureSaveStore{}
+// ADR-0049 D6 (post-Scout): a first-touched thing's baseline rides in the scene's
+// `engaged` map as a content FINGERPRINT — not a CAS cid, and not in the scene Text.
+//
+// Three removals are pinned here at once, because they are one change: the per-engagement
+// CAS Put existed only so the retired ADR-0051 Scout could resolve the blob; the
+// `mnemonic_entity` record it fed had the same single consumer; and the "(baseline
+// cid:…)" suffix put a 64-hex digest in the one field a human and an LLM actually read.
+func TestEngagement_AccretesSceneScopeWithoutEntityOrCASWrite(t *testing.T) {
+	store := &collectStore{}
+	cs := &fakeContentStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
-	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
-	agent.ContentStore = &fakeContentStore{}
+	agent.RecordOutcomes = true
+	agent.ContentStore = cs
 	ctx := context.Background()
 
-	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`baseline body`), IsMutation: true, TaskID: "step-0-p2"})
+	// One read (discovery) and one mutation — both engagement paths.
+	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "read_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`baseline body`), IsMutation: false, TaskID: "step-0-p2"})
+	_ = agent.RecordToolOutput(ctx, domain.ToolOutputRecord{ToolName: "write_file", ArgsJSON: []byte(`{"path":"b.md"}`), Output: []byte(`written body`), IsMutation: true, TaskID: "step-1-p2"})
 	_ = agent.WritePlanScene(ctx, domain.PlanRecord{PlanID: "p2", Goal: "read docs", Success: true, Surprise: -1})
 
-	engaged, ok := store.savedDoc.Metadata["engaged"].(map[string]string)
-	if !ok || engaged["file:a.md"] != "cid-abc" {
-		t.Errorf("engaged ref must carry its baseline cid; got %v", store.savedDoc.Metadata["engaged"])
+	// The engagement path writes NOTHING to CAS. A read's payload is the largest thing
+	// flowing through here, so an unread Put per read is pure write amplification.
+	if cs.putData != nil {
+		t.Errorf("the engagement path must not offload to CAS; got a Put of %d bytes", len(cs.putData))
 	}
-	if !strings.Contains(store.savedDoc.Text, "baseline cid:cid-abc") {
-		t.Errorf("scene text must show the baseline cid pointer; got %q", store.savedDoc.Text)
+	// No mnemonic_entity document is minted by an engagement (the ingest lane's
+	// source_document entities are a different mechanism, ADR-0060 D1, and unaffected).
+	for _, d := range store.docs {
+		if d.DocumentType == domain.DocTypeMnemonicEntity {
+			t.Errorf("an engagement must mint no entity record; got %+v", d)
+		}
+	}
+
+	var scene *domain.Document
+	for _, d := range store.docs {
+		if d.DocumentType == domain.DocTypeMnemonicScene {
+			scene = d
+		}
+	}
+	if scene == nil {
+		t.Fatal("expected a plan scene (the engaged scope must still accrete)")
+	}
+	engaged, ok := scene.Metadata["engaged"].(map[string]string)
+	if !ok || engaged["file:a.md"] != contentFingerprint([]byte("baseline body")) {
+		t.Errorf("engaged ref must carry its content fingerprint; got %v", scene.Metadata["engaged"])
+	}
+	// The refs are rendered bare — the digest stays in metadata, out of the read face.
+	if !strings.Contains(scene.Text, "file:a.md") || !strings.Contains(scene.Text, "file:b.md") {
+		t.Errorf("scene text must list the engaged refs; got %q", scene.Text)
+	}
+	if strings.Contains(scene.Text, "baseline cid") || strings.Contains(scene.Text, "sha256:") {
+		t.Errorf("scene text must not render baseline digests; got %q", scene.Text)
 	}
 }
 

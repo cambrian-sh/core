@@ -43,6 +43,10 @@ func main() {
 			os.Exit(app.RunStatus(context.Background()))
 		case "stop":
 			os.Exit(app.RunStop(context.Background()))
+		// ADR-0126 E5: inbound-MCP client-token lifecycle (offline) and the
+		// stdio bridge relaying a local MCP client to the kernel's endpoint.
+		case "mcp":
+			os.Exit(app.RunMCP(context.Background(), os.Args[2:]))
 		}
 	}
 	if err := app.Run(context.Background(), app.DefaultOptions()); err != nil {

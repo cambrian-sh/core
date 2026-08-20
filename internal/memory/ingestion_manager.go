@@ -19,6 +19,9 @@ type IngestionConfig struct {
 	BatchSize int
 	Workers   int
 	BatchWait time.Duration
+	// ContextPrepend prepends "<title> › <section breadcrumb>" to each chunk's
+	// body before embedding/storage (execution.ingestion.chunk_context_prepend).
+	ContextPrepend bool
 }
 
 type IngestionManager struct {

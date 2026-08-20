@@ -50,8 +50,13 @@ type InboundService struct {
 	// router shapes what happens AROUND an admitted turn. nil ⇒ the turn runs
 	// directly, which is every deployment's behaviour today.
 	router domain.TurnRouter
-	logger *slog.Logger
-	newID  func() string
+	// capture preserves an admitted message as evidence with identity
+	// (FIVE-PLANES-BUILD seam S7). nil ⇒ chat writes nothing to the archive,
+	// which is the pre-Wave-3 behaviour and the correct one in a deployment with
+	// evidence capture disabled.
+	capture *ChatCapture
+	logger  *slog.Logger
+	newID   func() string
 	// Profile is stamped on conversations this path opens. Customer is the honest
 	// default: a message arriving through an outsider-facing entry point is not an
 	// employee's, whatever the sender claims.
@@ -75,6 +80,15 @@ func NewInboundService(convs ConversationBinder, ingresses domain.IngressResolve
 // nil is the default and means "run the turn directly" — the behaviour every
 // deployment has today.
 func (s *InboundService) SetRouter(r domain.TurnRouter) { s.router = r }
+
+// SetCapture wires chat capture (FIVE-PLANES-BUILD Wave-3 C1, seam S7).
+//
+// nil is valid and is what a deployment with evidence capture disabled gets: no
+// chat message becomes evidence, exactly as before. Naming it rather than
+// treating it as a neutral default matters, because that state is the one where
+// the deployment answers the outside world all day and can afterwards produce no
+// record of what it was told.
+func (s *InboundService) SetCapture(c *ChatCapture) { s.capture = c }
 
 // SetLogger overrides the default logger.
 func (s *InboundService) SetLogger(l *slog.Logger) {
@@ -163,9 +177,18 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 	// turn's setup and left a transcript to clean up. Dropping here is what makes
 	// "a blocked sender never reaches a policy or a plan" true rather than
 	// aspirational.
+	//
+	// The binding is KEPT rather than consulted and dropped. Seam S7 recorded the
+	// old shape — resolve, check Blocked, discard — as the reason a captured
+	// message could never say whom it was about: the one moment the deployment
+	// knows who is speaking was being spent on a single boolean.
+	var (
+		binding domain.IdentityBinding
+		bound   bool
+	)
 	if s.identities != nil {
 		surface := reg.Surface.String()
-		if binding, bound := s.identities.ResolveIdentity(ctx, surface, m.profile()); bound {
+		if binding, bound = s.identities.ResolveIdentity(ctx, surface, m.profile()); bound {
 			if binding.Blocked {
 				return domain.NewBlockedSenderError(externalID)
 			}
@@ -181,6 +204,21 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 	if err != nil {
 		return err
 	}
+
+	// FIVE-PLANES-BUILD Wave-3 C1: the message becomes evidence HERE — after
+	// admission, so nothing an unauthorised sender wrote is ever archived, and
+	// BEFORE the turn, so the id can ride into the graph the turn runs under.
+	//
+	// It cannot fail the turn. Capture returns "" for every unhappy path it has
+	// (no archive wired, encode failure, store refusal) and logs the reason; a
+	// person waiting for a reply must never be made to wait on the archive.
+	evidenceID := s.capture.Capture(ctx, chatCaptureInput{
+		conversationID: conv.ID,
+		addr:           addr,
+		surface:        reg.Surface.String(),
+		msg:            m,
+		parties:        chatParties(binding, bound),
+	})
 
 	// The message id doubles as the turn's idempotency key, so a redelivered
 	// inbound message does not run the turn twice.
@@ -204,6 +242,11 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 			SpeakerID:        m.SpeakerID,
 			Username:         m.Username,
 			DisplayName:      m.DisplayName,
+			// The archive row this turn is about (C1). A node that writes
+			// something derived from this message can now cite where it came
+			// from instead of asserting it — which is the difference between a
+			// pipeline output and a claim with provenance.
+			EvidenceID: string(evidenceID),
 		}
 		handled, rerr := s.router.RouteTurn(ctx, addr.IngressAgentID, conv.ID, msg, run)
 		if rerr != nil {

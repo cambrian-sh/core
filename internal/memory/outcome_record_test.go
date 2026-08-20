@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -175,6 +176,16 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 		}
 		return n
 	}
+	negEdge := func(t *testing.T, s *multiCaptureStore) domain.Document {
+		t.Helper()
+		for _, d := range s.saved {
+			if d.DocumentType == domain.DocTypeNegativeEdge {
+				return d
+			}
+		}
+		t.Fatal("no failure precedent written")
+		return domain.Document{}
+	}
 	engage := func(a *Agent, plan string) {
 		_ = a.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
 			ToolName: "write_file", ArgsJSON: []byte(`{"path":"/tmp/x.md"}`),
@@ -197,6 +208,110 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "p2", Goal: "shock", Success: false, Surprise: 0.9})
 		if n := negEdges(store); n != 1 {
 			t.Errorf("an unexpected failure must earn exactly one precedent, got %d", n)
+		}
+	})
+
+	// ADR-0049 A2.2 shapes the precedent as conditions → attempt → failure mode. The
+	// scene text is the conditions; without the executor's failure summary the stored
+	// record names only the goal, so every failure of one goal is the same precedent and
+	// retrieval can never say HOW it went wrong.
+	t.Run("the precedent carries the failure mode", func(t *testing.T) {
+		store, a := newAgent()
+		engage(a, "p4")
+		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+			PlanID: "p4", Goal: "migrate", Success: false, Surprise: 0.9,
+			FailedStep:     2,
+			FailureSummary: `step 2 (apply the migration): relation "documents" does not exist`,
+		})
+		edge := negEdge(t, store)
+		for _, want := range []string{"step 2", "apply the migration", "does not exist"} {
+			if !strings.Contains(edge.Text, want) {
+				t.Errorf("precedent text missing %q; got %q", want, edge.Text)
+			}
+		}
+		// The conditions half survives: the scene text is what makes the failure
+		// mode situated rather than a bare error string.
+		if !strings.Contains(edge.Text, "plan goal: migrate") {
+			t.Errorf("precedent dropped the conditions; got %q", edge.Text)
+		}
+	})
+
+	t.Run("an unrendered failure falls back to the goal", func(t *testing.T) {
+		store, a := newAgent()
+		engage(a, "p5")
+		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+			PlanID: "p5", Goal: "migrate", Success: false, Surprise: 0.9,
+		})
+		edge := negEdge(t, store)
+		if !strings.Contains(edge.Text, "unexpected plan failure: migrate") {
+			t.Errorf("empty summary must fall back to the goal; got %q", edge.Text)
+		}
+	})
+
+	// The COLD-START case, and the reason the carve-out exists. The surprise oracle
+	// returns "unknown" (-1) for an agent with no merit history, so a new agent can never
+	// clear the floor — without this branch its earliest failures, the most instructive
+	// ones there are, leave no precedent at all. Replan exhaustion means the full
+	// recovery ladder was run and still failed, which stands on its own as evidence.
+	t.Run("replan exhaustion writes a precedent with surprise unknown", func(t *testing.T) {
+		store, a := newAgent()
+		engage(a, "p6")
+		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+			PlanID: "p6", Goal: "cold start", Success: false, Surprise: -1,
+			ReplanExhausted: true,
+			FailureSummary:  `step 0 (write the file): permission denied`,
+		})
+		if n := negEdges(store); n != 1 {
+			t.Fatalf("an exhausted recovery ladder must earn exactly one precedent, got %d", n)
+		}
+		// Through the same parented helper as the surprise path: the carve-out must not
+		// be a second, unparented write.
+		edge := negEdge(t, store)
+		if !strings.Contains(edge.Text, "permission denied") {
+			t.Errorf("precedent dropped the failure mode; got %q", edge.Text)
+		}
+		if pid, _ := edge.Metadata["plan_id"].(string); pid != "p6" {
+			t.Errorf("precedent must be joinable back to its plan; plan_id=%v", edge.Metadata["plan_id"])
+		}
+	})
+
+	// And the carve-out must not depend on the floor being configured at all — an
+	// unconfigured deployment is exactly the cold-start case being fixed.
+	t.Run("replan exhaustion does not need a configured floor", func(t *testing.T) {
+		store, a := newAgent()
+		a.SurpriseFloor = 0 // never set by this deployment
+		engage(a, "p7")
+		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+			PlanID: "p7", Goal: "cold start", Success: false, Surprise: -1, ReplanExhausted: true,
+		})
+		if n := negEdges(store); n != 1 {
+			t.Errorf("the carve-out must be independent of SurpriseFloor, got %d precedents", n)
+		}
+	})
+
+	// The gate itself stays intact: without exhaustion, an under-floor failure is still
+	// silent. This is what keeps the change a carve-out rather than a failure gate.
+	t.Run("an under-floor failure without exhaustion still writes nothing", func(t *testing.T) {
+		store, a := newAgent()
+		engage(a, "p8")
+		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+			PlanID: "p8", Goal: "routine", Success: false, Surprise: 0.1, ReplanExhausted: false,
+		})
+		if n := negEdges(store); n != 0 {
+			t.Errorf("a predicted failure that never exhausted replans must stay silent, got %d", n)
+		}
+	})
+
+	// Impossible in the executor (exhaustion implies a failure) and guarded anyway: the
+	// !success clause, not the carve-out, is what makes a negative edge negative.
+	t.Run("a SUCCESS marked replan-exhausted writes no precedent", func(t *testing.T) {
+		store, a := newAgent()
+		engage(a, "p9")
+		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+			PlanID: "p9", Goal: "recovered", Success: true, Surprise: -1, ReplanExhausted: true,
+		})
+		if n := negEdges(store); n != 0 {
+			t.Errorf("a success is not a negative edge however it was reached, got %d", n)
 		}
 	})
 

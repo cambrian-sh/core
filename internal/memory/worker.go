@@ -79,6 +79,21 @@ func (a *Agent) decayLoner(ctx context.Context, doc domain.Document, processedID
 			}
 		}
 	}
+	// A row that hangs from an episode is NOT a loner — its retention is the
+	// EPISODE's operation (ADR-0095 D6: forget an episode = delete the `experiences`
+	// parent, the FK cascade takes its chunks). The reverse is the invariant this
+	// guard defends: while the episode lives, its records live. Experiential rows
+	// are born at activation 0.1 (scenes up to 0.5 with surprise), so without this
+	// the nightly pass would silently shred the rarely-recalled half of every
+	// episode and contradict ADR-0049 D2 ("actions are durable, the transition log")
+	// — leaving an `experiences` parent whose transition log has holes in it.
+	//
+	// Unparented experiential rows (empty ExperienceID) stay GC-able exactly as
+	// before: nothing owns their lifetime, so the loner heuristic is still the only
+	// thing that can reclaim them.
+	if doc.ExperienceID != "" {
+		return
+	}
 	if doc.ActivationStrength < 0.3 && doc.AccessCount < 2 {
 		if dryRun {
 			slog.Info("MemoryWorker [dry-run] will delete loner memory", "doc_id", doc.ID)

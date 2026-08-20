@@ -31,6 +31,7 @@ import (
 	"github.com/cambrian-sh/core/internal/health"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	mcp "github.com/cambrian-sh/core/internal/infrastructure/mcp"
+	"github.com/cambrian-sh/core/internal/infrastructure/mcpserve"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
 	"github.com/cambrian-sh/core/internal/ingress"
 	"github.com/cambrian-sh/core/internal/kernel"
@@ -91,6 +92,11 @@ type Kernel struct {
 	// operator plane's config writes answer Unimplemented rather than pretending
 	// to persist.
 	ConfigStore *storage.BoltConfigStore
+	// Links is the identity plane's assertion store (five-planes step 2). Held on
+	// the kernel so the operator plane can be given a REVIEW lane: the stores are
+	// otherwise local to the build, and a queue of candidates nobody can confirm
+	// is the state contract 0098 exists to end. nil without a database.
+	Links       domain.LinkStore
 	Registry    domain.AgentRegistry // domain-facing interface layer
 	Store       io.Closer            // opaque storage handle — only Close() is exposed
 	Memory      *kernel.MemoryStack
@@ -183,6 +189,15 @@ type Kernel struct {
 	// (contract 0097). The operator list read and the write path share it, so a
 	// console re-read after a save shows the server it just added.
 	MCPRuntime *mcpRuntime
+	// MCPEndpoint is the INBOUND MCP endpoint's HTTP server (ADR-0126 D3), or nil
+	// when server.mcp.enabled is false. Carried here only so Shutdown can drain
+	// it — it is started during bootstrap, before the errgroup the other HTTP
+	// servers live in exists, because it must be serving before ConnectAll.
+	MCPEndpoint *http.Server
+	// MCPCoreBackends is the endpoint's core-tool binding seam (ADR-0126 D5).
+	// Bound during bootstrap; carried here so a later phase (E6's
+	// IdentityResolver hop, a scoped answer lane) can rebind without a restart.
+	MCPCoreBackends *mcpserve.CoreBackends
 	// GeneratorRuntime is the LIVE generator list + default — the generator
 	// analogue of MCPRuntime (owner directive 2026-08-12: LLMs register
 	// dynamically; SaveGenerator applies live, and the console read half,
@@ -260,6 +275,17 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 	// 2. Close network listener
 	if k.Listener != nil {
 		_ = k.Listener.Close()
+	}
+
+	// 2a. ADR-0126: drain the inbound MCP endpoint. Before the plugin lifecycles
+	// and the stacks below, because its tool handlers call into them — stopping
+	// the stacks first would fail whatever an external agent had in flight
+	// instead of letting it finish.
+	if k.MCPEndpoint != nil {
+		slog.Info("🔌 Stopping MCP endpoint (ADR-0126)...")
+		shutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_ = k.MCPEndpoint.Shutdown(shutCtx)
+		cancel()
 	}
 
 	// 2b. ADR-0074: drain plugin lifecycles (e.g. the reactive engine's schedule timers +
@@ -420,6 +446,25 @@ func Run(ctx context.Context, opts Options) error {
 		defer logResult.File.Close()
 	}
 
+	// ADR-0112 + ADR-0126: attach the plugin-facing named-secret seam BEFORE
+	// bootstrap, not after it.
+	//
+	// The seam used to be attached with the other resolvers below, on the
+	// reasoning that its one consumer resolves credentials per delivery long
+	// after Run finishes. The MCP endpoint breaks that assumption: it starts
+	// inside bootstrapKernel — deliberately, so it is serving before the 40-45 s
+	// ConnectAll — and it authenticates every request against a stored
+	// credential. Attached afterwards, the endpoint would answer 401 to
+	// everything for the whole of boot, which is the timeout it exists to avoid
+	// wearing a different error code.
+	//
+	// The guard is load-bearing: boxing a typed-nil *BoltConfigStore into the
+	// holder's interface re-creates the trap config_store_off_test.go exists to
+	// prevent.
+	if cfgStore != nil {
+		setNamedSecretSource(cfgStore)
+	}
+
 	// REDEMPTION: Observability First. Start Kernel immediately.
 	k, err := bootstrapKernel(rootCtx, cfg, lis, opts)
 	if err != nil {
@@ -444,11 +489,8 @@ func Run(ctx context.Context, opts Options) error {
 		// first, store second), so a token saved from the console is presented
 		// on the very next (re)connect.
 		mcp.SetSecretResolver(cfgStore)
-		// ADR-0112: the plugin-facing named-secret seam reads the same store.
-		// Inside this guard on purpose — boxing a typed-nil *BoltConfigStore
-		// into the holder's interface would re-create the trap
-		// config_store_off_test.go exists to prevent.
-		setNamedSecretSource(cfgStore)
+		// The ADR-0112 named-secret seam is attached ABOVE, before bootstrap —
+		// see the comment there.
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -691,11 +733,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			time.Duration(cfg.Execution.Agents.DaemonRestartMaxBackoffMs)*time.Millisecond,
 		)
 	}
-	// ADR-0049 §A1.2: the MemoryAgent publishes passive world_delta drift signals when a
-	// read observes an entity field changed from its cached value (consumed by ADR-0051
-	// staleness + deferred ADR-0037 adaptive trust).
-	mem.Agent.EventBus = eventBus
-
 	// 4. Watcher — proactive signal processing (ADR-0009)
 	watcher := supwatcher.New(
 		meta.Manager,
@@ -989,11 +1026,31 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if kerr != nil {
 		return nil, fmt.Errorf("knowledge kind registry (ADR-0110): %w", kerr)
 	}
+	// Five-planes step 2: the link verb registry, on the same terms. A duplicate
+	// verb or a redeclared seed is a boot refusal rather than two producers
+	// disagreeing at write time about whether a verb is symmetric.
+	//
+	// Two declarers, folded here and validated once (D-W5-1). A PLUGIN declares
+	// the verbs it emits by name; the CONFIG declares the verbs a deployment's
+	// own sources carry, which no plugin could know. Config goes last so a
+	// collision between the two names the operator's entry as the duplicate —
+	// the one they can edit — rather than the plugin's.
+	relSpecs := append(append([]domain.RelationSpec(nil), opts.RelationSpecs...), cfg.RelationSpecs()...)
+	relReg, rerr := domain.NewRelationRegistry(relSpecs)
+	if rerr != nil {
+		return nil, fmt.Errorf("link relation registry (five-planes step 2; deployment verbs are declared "+
+			"in the kernel config's \"relations\" section, e.g. configs/config.json): %w", rerr)
+	}
 
 	var evIngestor *evidence.Ingestor
 	evStore := postgres.NewPgEvidenceStore(vec.Pool())
 	knowledgeStore := postgres.NewPgKnowledgeStore(vec.Pool(), kindReg)
 	eventStore := postgres.NewPgEventStore(vec.Pool(), kindReg)
+	// The identity plane (five-planes steps 1+2, migration 0016). Built here beside
+	// the other substrate stores so every lane that mints an entity or asserts a
+	// link goes through the one chokepoint that enforces the plane's refusals.
+	entityStore := postgres.NewPgEntityStore(vec.Pool())
+	linkStore := postgres.NewPgLinkStore(vec.Pool(), relReg)
 	if cfg.Execution.Ingestion.EvidenceCaptureEnabled {
 		var everr error
 		evIngestor, everr = evidence.NewIngestor(storeHandle.ContentStore, evStore)
@@ -1112,11 +1169,23 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		TracePipelinePayloads:  cfg.Execution.LLM.TracePipelinePayloads,
 		PipelineDrainerEnabled: cfg.Execution.Pipelines.DrainerEnabled,
 		Events:                 eventStore,
+		Entities:               entityStore,
+		Links:                  linkStore,
+		// The verb vocabulary, so a plugin that takes a link verb from an
+		// OPERATOR (the ingress studio's mapping confirm) can refuse an
+		// undeclared one where a human is present, instead of leaving the
+		// store to refuse every delivery later with nobody watching.
+		Relations: relReg,
 		// ADR-0111/ADR-0118: the closed query AST over all of the above, scoped.
 		// The seam takes a principal, never a predicate; the RESOLVED authorizer
 		// decides scope (same reasoning as the Documents seam above).
 		QueryKnowledge: authz.QueryKnowledgeFunc(authorizer,
-			postgres.NewPgQueryPlane(vec.Pool(), eventStore, knowledgeStore, evStore),
+			// Five-planes step 2: the plane also reads the identity plane, so
+			// `entity` / `why` / expand_aliases answer over the same stores the
+			// producers write to, and closure verbs come from the registry rather
+			// than a name in the executor.
+			postgres.NewPgQueryPlane(vec.Pool(), eventStore, knowledgeStore, evStore,
+				linkStore, entityStore, relReg),
 			slog.Default()),
 		Manager:    meta.Manager,
 		Dispatcher: meta.Selector, // plugins that select get the selector
@@ -1272,6 +1341,23 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// CALL time, so whether the plugin built before or after this line cannot
 		// silently leave chat unrouted.
 		inbound.SetRouter(deferredTurnRouter{holder: &turnRouters})
+		// FIVE-PLANES-BUILD Wave-3 C1 (seam S7): chat was the ONE entry point
+		// whose traffic never reached the archive. Wired to the same ingestor
+		// every other lane writes through, so a captured message obeys ADR-0105's
+		// ordering contract rather than a second, chat-shaped copy of it.
+		//
+		// evIngestor is nil when evidence capture is disabled; the capture is
+		// still constructed and is simply inert, because "capture is off" is a
+		// deployment's decision and not a reason for this wiring to branch.
+		if evIngestor != nil {
+			chatCapture := ingress.NewChatCapture(evIngestor.Ingest, eventStore)
+			// The identity plane, so an author and a thread are entities the
+			// `entity` op can name and not just strings inside a role edge.
+			chatCapture.SetEntityStore(entityStore)
+			inbound.SetCapture(chatCapture)
+		} else {
+			slog.Warn("five-planes C1: evidence capture is disabled, so chat messages will not be archived; the turn lane is unaffected")
+		}
 		cambrianServer.IngressInbound = inbound
 	}
 	// Which ENTRY POINT a conversation arrived on. Wired independently of the
@@ -1411,6 +1497,47 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	toolFiles, terr := tooldiscovery.LoadRegistry("tools", toolReg, cfg.Execution.Tools.ToolEffectsStrict)
 	if terr != nil {
 		slog.Warn("tool discovery failed; system tools disabled", "err", terr)
+	}
+
+	// ADR-0126 D3: the INBOUND MCP endpoint, started here — immediately before
+	// ConnectAll, and that order is the decision, not an accident. ConnectAll is
+	// synchronous and takes 40-45 s while the kernel looks up; an external agent
+	// running `claude mcp add` against a booting kernel must find a live endpoint
+	// rather than a timeout. It is also after buildPlugins, so every published
+	// handler is constructed before the first request can reach one.
+	// The four read-only core tools (ADR-0126 D5) join the plugin-published
+	// surface here. Their backends bind NOW — the memory stack and the document
+	// reader are already built well above — so the endpoint serves real answers
+	// from its first request; the CoreBackends indirection stays because
+	// mcpserve cannot import the composition root, and because a deployment
+	// missing a piece (no memory pipeline) must degrade per tool, not refuse to
+	// serve. Typed-nil discipline: an interface field is assigned only when the
+	// concrete value is non-nil, so a nil *QueryService can never masquerade as
+	// a live searcher.
+	mcpCoreBackends := mcpserve.NewCoreBackends()
+	{
+		var searchLane mcpserve.MemorySearcher
+		var answerLane mcpserve.MemoryAnswerer
+		if qs := mem.QueryService; qs != nil {
+			searchLane = qs
+			// ADR-0081: the answer lane is only meaningful when agentic retrieval
+			// is wired — the same gate the operator plane uses. Without it,
+			// ask_memory degrades to an extractive answer rather than failing.
+			if cfg.Execution.Retrieval.AgenticRetrievalEnabled {
+				answerLane = qs
+			}
+		}
+		var docLister memory.DocumentLister
+		if vec != nil {
+			docLister = vec
+		}
+		mcpCoreBackends.Bind(searchLane, answerLane, docLister, docReader)
+	}
+	mcpEndpoint, err := startMCPEndpoint(cfg,
+		append(mcpserve.CoreTools(mcpCoreBackends), composed.publishedTools...),
+		authorizer, opts.IdentityResolver)
+	if err != nil {
+		return nil, err
 	}
 
 	// ADR-0043: connect configured external MCP servers, discover their tools into
@@ -1785,6 +1912,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 
 	return &Kernel{
+		Links:           linkStore,
 		OperatorEffects: operatorEffects,
 		OperatorAudit:   operatorAudit,
 		Documents:       vec,
@@ -1830,6 +1958,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		MCPSink:            mcpSink,
 		MCPServers:         mcpServers,
 		MCPRuntime:         mcpRT,
+		MCPEndpoint:        mcpEndpoint,
+		MCPCoreBackends:    mcpCoreBackends,
 		GeneratorRuntime:   newGeneratorRuntime(cfg.LLMProvider),
 		LLMGateway:         llmGateway,
 	}, nil
@@ -2307,6 +2437,19 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			}
 		}
 
+		// Contract 0098: the identity plane's REVIEW lane (five-planes step 2,
+		// FIVE-PLANES-BUILD.md). Wired outside the ConfigStore block above
+		// deliberately — confirming a link persists to the links table, not to
+		// the ADR-0101 config store, so a kernel with no durable config store
+		// still has a review surface as long as it has a database.
+		//
+		// Producers below the trust ceiling (derived, scored, correlation) can
+		// only ever write `candidate`. Without this binding those proposals were
+		// write-only: the queue filled and nothing in the product could empty it.
+		if k.Links != nil {
+			operatorSvc.SetLinkWriter(linkWriteSource{links: k.Links})
+		}
+
 		// ADR-0047 D14: capability + version handshake. The UI hides surfaces this
 		// build does not advertise and warns on contract-version skew.
 		// ADR-0047 Amendment A2: contract bumped 0047→0048 for the CORE-OPS-1 read/
@@ -2438,6 +2581,15 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if operatorSvc.HasPlanProposer() {
 			operatorCaps = append(operatorCaps, "propose-plan")
 		}
+		// links (contract 0098): the identity plane's review lane —
+		// ListLinkCandidates + ConfirmLink/RetractLink/RetractLinksByProducer.
+		// Advertised separately from the substrate reads because a kernel can
+		// ANSWER over links without being able to review them, and a console must
+		// hide the queue in that case rather than draw one whose buttons return
+		// Unimplemented.
+		if operatorSvc.HasLinkWriter() {
+			operatorCaps = append(operatorCaps, "links")
+		}
 		// ADR-0082 D2: plugin-contributed capabilities. Each plugin declares the operator
 		// surfaces it implements in its own manifest; the kernel collects them here and
 		// advertises them WITHOUT interpreting any of them — which is what keeps downstream
@@ -2526,7 +2678,13 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// SetMCPServerToken/ClearMCPServerToken (write-only, bounce-on-set), and
 		// TestMCPServer (ephemeral probe of a possibly-unsaved spec). MCPServerOp
 		// gains the declared half + token facts.
-		operatorSvc.SetHandshake("0.6.9-alpha", "0097", operatorCaps)
+		// Contract 0098: the identity plane's review surface — ConfirmLink
+		// (appends a human-mechanism row, never overwrites the proposal),
+		// RetractLink (stamps state + retracted_at and nothing else),
+		// RetractLinksByProducer (batch revocation, returning the count) and the
+		// ListLinkCandidates read, plus `entity` / `why` / expand_aliases on the
+		// substrate query plane.
+		operatorSvc.SetHandshake("0.6.9-alpha", "0098", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".

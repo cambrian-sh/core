@@ -81,9 +81,17 @@ func NewMetabolismStack(
 	manager.SetEnvPassthrough(cfg.Execution.Agents.AgentEnvPassthrough)
 	// Config-derived agent env: values the kernel SETS from config rather than
 	// passing through from its own environment — a knob must never depend on
-	// .env (owner rule 2026-08-11). 0 ⇒ the SDK's built-in default, no var set.
+	// .env (owner rule 2026-08-11). Zero values ⇒ the agent's built-in default,
+	// no var set. One combined slice: SetEnvExtras REPLACES the list.
+	var envExtras []string
 	if k := cfg.Execution.Tools.ToolMenuK; k > 0 {
-		manager.SetEnvExtras([]string{fmt.Sprintf("CAMBRIAN_TOOL_MENU_K=%d", k)})
+		envExtras = append(envExtras, fmt.Sprintf("CAMBRIAN_TOOL_MENU_K=%d", k))
+	}
+	if m := cfg.Execution.Retrieval.RerankerModel; m != "" {
+		envExtras = append(envExtras, "RERANK_MODEL="+m)
+	}
+	if len(envExtras) > 0 {
+		manager.SetEnvExtras(envExtras)
 	}
 	// SEC-01: cap agent memory (0 = disabled) so a runaway agent is killed at its
 	// cap instead of OOMing the kernel host.

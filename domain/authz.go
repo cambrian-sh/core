@@ -111,6 +111,7 @@ const (
 	SurfaceAgent    = "agent"    // the agent-facing gRPC plane
 	SurfaceChat     = "chat"     // a conversation ingress
 	SurfaceReactive = "reactive" // unattended reactive/daemon execution
+	SurfaceMCP      = "mcp"      // the inbound Cambrian MCP endpoint (ADR-0126)
 	SurfaceInternal = "internal" // in-process kernel call path
 )
 

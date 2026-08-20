@@ -79,3 +79,32 @@ func TestScopeExpressionsOn_NilAndBypass(t *testing.T) {
 		t.Errorf("bypass predicate: expected no expressions, got %d", len(got))
 	}
 }
+
+// TestScopeExpressionsOn_PartyScopedDeniedLikeForbidden pins the ADR-0121 term on
+// the chunk plane. The authoritative in-memory form (TagPredicate.Check — the
+// party-LESS form; chunks have no parties column) denies any row carrying a
+// party-scoped tag. The SQL mirror must therefore render each party-scoped tag as
+// a NOT-containment term, exactly like a forbidden tag — before this term existed,
+// dense/lexical/entity chunk reads returned rows Check refuses (the unguarded
+// mirror-divergence the RAG Hardening Review flagged as Q2).
+func TestScopeExpressionsOn_PartyScopedDeniedLikeForbidden(t *testing.T) {
+	eff := &domain.TagPredicate{
+		PartyScopedTags: []string{"deal:acme", "deal:globex"},
+		PartyIdentities: []string{"customer:acme"}, // identities are irrelevant on this plane
+	}
+
+	got := render(t, scopeExpressionsOn(eff, "c"))
+	for _, tag := range eff.PartyScopedTags {
+		want := `NOT (c.metadata @> '{"tags":["` + tag + `"]}'`
+		if !strings.Contains(got, want) {
+			t.Errorf("missing party-scoped NOT-containment for %q in:\n%s", tag, got)
+		}
+	}
+	// Mirror agreement: the in-memory authoritative form denies the same rows.
+	if eff.Allows([]string{"deal:acme"}) {
+		t.Fatal("authoritative Check must deny a party-less row carrying a party-scoped tag")
+	}
+	if !eff.Allows([]string{"unrelated"}) {
+		t.Fatal("a row without party-scoped tags must remain admitted")
+	}
+}

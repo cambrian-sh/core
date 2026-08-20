@@ -19,10 +19,9 @@ type mockMemorySearcher struct {
 	results          []domain.SearchResult
 	actionResults    []domain.SearchResult
 	sceneResults     []domain.SearchResult
-	entityResults    []domain.SearchResult
 	precedentResults []domain.SearchResult
 	err              error
-	lastLane         string // "facts" | "actions" | "scenes" | "entity" | "precedents"
+	lastLane         string // "facts" | "actions" | "scenes" | "precedents" | "procedures"
 }
 
 func (m *mockMemorySearcher) Search(_ context.Context, _, _ string) ([]domain.SearchResult, error) {
@@ -38,11 +37,6 @@ func (m *mockMemorySearcher) SearchActions(_ context.Context, _, _ string) ([]do
 func (m *mockMemorySearcher) SearchScenes(_ context.Context, _, _ string) ([]domain.SearchResult, error) {
 	m.lastLane = "scenes"
 	return m.sceneResults, m.err
-}
-
-func (m *mockMemorySearcher) SearchEntities(_ context.Context, _, _ string) ([]domain.SearchResult, error) {
-	m.lastLane = "entity"
-	return m.entityResults, m.err
 }
 
 func (m *mockMemorySearcher) SearchPrecedents(_ context.Context, _, _ string) ([]domain.SearchResult, error) {
@@ -187,18 +181,19 @@ func TestQueryMemory_RoutesActionsLane(t *testing.T) {
 	}
 }
 
-// ADR-0049 Issue 012/014: x-lane="entity" routes to exact entity lookup and
-// x-lane="precedents" routes to the world-model transition lane.
-func TestQueryMemory_RoutesEntityAndPrecedentLanes(t *testing.T) {
+// ADR-0049 Issue 014: x-lane="precedents" routes to the world-model transition lane.
+// The retired "entity" lane is no longer a case, so it falls through to the default fact
+// lane like any other unknown value — an unknown lane must never be an error.
+func TestQueryMemory_RoutesPrecedentLane(t *testing.T) {
 	searcher := &mockMemorySearcher{
-		entityResults:    []domain.SearchResult{{Document: domain.Document{ID: "e", Text: "file:a.md exists=false"}, Score: 1}},
+		results:          []domain.SearchResult{{Document: domain.Document{ID: "f", Text: "a fact"}, Score: 0.9}},
 		precedentResults: []domain.SearchResult{{Document: domain.Document{ID: "p", Text: "SITUATION: x | OUTCOME: failure"}, Score: 0.8}},
 	}
 	srv := makeQueryMemoryServer(searcher)
 
 	resp, _ := srv.QueryMemory(ctxWithLane("agent-a", "entity"), &pb.MemoryRequest{Query: "file:a.md"})
-	if searcher.lastLane != "entity" || resp.Results[0].Text != "file:a.md exists=false" {
-		t.Errorf("x-lane=entity must route to entity lookup; got lane=%q text=%q", searcher.lastLane, resp.Results[0].Text)
+	if searcher.lastLane != "facts" || resp.Results[0].Text != "a fact" {
+		t.Errorf("a retired lane must fall through to the fact lane; got lane=%q text=%q", searcher.lastLane, resp.Results[0].Text)
 	}
 
 	resp, _ = srv.QueryMemory(ctxWithLane("agent-a", "precedents"), &pb.MemoryRequest{Query: "ship"})

@@ -485,6 +485,40 @@ service OperatorConsole {
   // fact nothing else on this plane can reveal before committing.
   rpc TestMCPServer(TestMCPServerOpRequest) returns (MCPServerTestResultOp);
 
+  // ConfirmLink / RetractLink / RetractLinksByProducer / ListLinkCandidates are
+  // the operator's REVIEW surface over the identity plane (contract 0098;
+  // five-planes step 2, FIVE-PLANES-BUILD.md).
+  //
+  // The plane's whole design rests on a human being able to promote a proposal
+  // and to take one back. Producers may mint entities freely and propose links
+  // all day, but a mechanism below its trust ceiling — derived, scored,
+  // correlation — can only ever write a `candidate`, and until these RPCs
+  // existed there was no path anywhere in the product from candidate to
+  // confirmed. A review lane nobody can reach is a queue, not a lane.
+  //
+  // Three properties are contract, not implementation detail:
+  //
+  //   * Confirmation APPENDS. It writes a new `human`-mechanism row and leaves
+  //     the machine's proposal exactly as it was, because what the producer
+  //     said and what the reviewer decided are two assertions and overwriting
+  //     the first destroys the record of producer behaviour the lane exists to
+  //     build. Re-confirming is idempotent and returns the existing row.
+  //   * Retraction STAMPS state + retracted_at and touches nothing else — never
+  //     a DELETE (ADR-0093 D6). A rejected candidate has to stay queryable or
+  //     the producer that proposed it proposes it again forever.
+  //   * RetractLinksByProducer is BATCH revocation, and it is why every link
+  //     carries a producer at all: a pass that turns out to be wrong is undone
+  //     wholesale, not row by row. It returns the count it revoked, because
+  //     "undo that producer" with no number tells an operator nothing about
+  //     what just happened.
+  //
+  // Mutating: command_id + reason, audited, Operator-only. ListLinkCandidates is
+  // a plain read (no command_id).
+  rpc ConfirmLink(ConfirmLinkOpRequest) returns (ConfirmLinkOpResponse);
+  rpc RetractLink(RetractLinkOpRequest) returns (CommandAck);
+  rpc RetractLinksByProducer(RetractLinksByProducerOpRequest) returns (RetractLinksByProducerOpResponse);
+  rpc ListLinkCandidates(ListLinkCandidatesOpRequest) returns (ListLinkCandidatesOpResponse);
+
   // SubmitPlan runs an OPERATOR-AUTHORED plan, skipping the planner.
   //
   // Every field of AuthoredStepOp maps onto domain.Step, so this is a face for
@@ -3036,4 +3070,107 @@ message PipelineOp {
   // the graph is armed either way — and that difference is the whole question
   // when a bot stops answering.
   optional bool entry_live = 16;
+}
+
+// LinkOp is one ASSERTION about two typed refs (contract 0098, five-planes
+// step 2). Not a fact: every field beyond the endpoints exists so a claim can be
+// reviewed, retracted, or revoked in a batch when its producer turns out to be
+// wrong, and a console that renders only from_ref/to_ref/relation has hidden the
+// half that decides whether to trust it.
+message LinkOp {
+  string id = 1;
+  string namespace_id = 2;
+  // family is "identity" | "relation" | "lineage".
+  string family = 3;
+  // from_ref / to_ref are TYPED refs — "entity:customer/C-1042", "event:<id>",
+  // "decision:<id>", "evidence:<id>". Identity-family endpoints are canonically
+  // ordered by the store (from_ref < to_ref), so symmetry is a read-path
+  // property rather than two rows nothing could reconcile.
+  string from_ref = 4;
+  string to_ref = 5;
+  // relation is the verb, DATA — declared by the deployment's RelationRegistry.
+  // The kernel never branches on a specific value.
+  string relation = 6;
+  // state is "candidate" | "confirmed" | "retracted" — the REVIEW lane, not a
+  // confidence bucket.
+  string state = 7;
+  // mechanism is HOW the assertion was made: declared | record | reference |
+  // shared_object | witnessed | derived | scored | human | correlation. It
+  // carries the trust ceiling — the last three may never write `confirmed`.
+  string mechanism = 8;
+  // producer is name@version of the producing pass: the batch-revocation key.
+  string producer = 9;
+  // confidence orders the review queue. It does NOT lift a mechanism's ceiling.
+  double confidence = 10;
+  string evidence_id = 11;
+  string asserted_by = 12;
+  int64 asserted_at_unix_ms = 13;
+  int64 recorded_at_unix_ms = 14;
+  // valid_from / valid_to bound when the described relation HELD, as distinct
+  // from when it was asserted — the bi-temporal pair, so "who owned this in
+  // March" survives a later reassignment. 0 = unbounded on that side.
+  int64 valid_from_unix_ms = 15;
+  int64 valid_to_unix_ms = 16;
+  // retracted_at_unix_ms is 0 for a live row.
+  int64 retracted_at_unix_ms = 17;
+  // source_ref is the producing source's native reference, UNQUALIFIED — no
+  // "@r<rev>" suffix, so a mapping-revision bump re-derives the same link as a
+  // no-op instead of duplicating the graph.
+  string source_ref = 18;
+}
+
+message ConfirmLinkOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  // namespace_id defaults to "default" when empty.
+  string namespace_id = 3;
+  string link_id = 4;
+}
+
+message ConfirmLinkOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  // link is the CONFIRMATION row that was appended — a new `human`-mechanism
+  // assertion — not the candidate that was confirmed. The candidate is still
+  // there, unchanged, and a console showing the confirmation in its place would
+  // erase exactly the producer-behaviour record the review lane accumulates.
+  LinkOp link = 3;
+}
+
+message RetractLinkOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string namespace_id = 3;
+  string link_id = 4;
+}
+
+message RetractLinksByProducerOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string namespace_id = 3;
+  // producer is the exact name@version key the bad pass wrote. It is not a
+  // prefix or a pattern: revocation is a destructive-enough act that a typo
+  // matching more than intended must be impossible to express.
+  string producer = 4;
+}
+
+message RetractLinksByProducerOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  // retracted is how many unretracted rows the revocation actually stamped. 0 is
+  // an answer — the producer key names nothing live — and it is the answer an
+  // operator needs to see before assuming the cleanup worked.
+  int32 retracted = 3;
+}
+
+message ListLinkCandidatesOpRequest {
+  string namespace_id = 1;
+  // limit 0 = the store's default page.
+  int32 limit = 2;
+}
+
+message ListLinkCandidatesOpResponse {
+  // candidates are unretracted proposals, highest confidence first — the review
+  // inbox, in the order a reviewer would work it.
+  repeated LinkOp candidates = 1;
 }

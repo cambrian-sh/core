@@ -26,6 +26,15 @@ const (
 	QueryEvents         = "events"         // events an entity participated in
 	QueryTraverse       = "traverse"       // bounded co-participation traversal
 	QueryEvidence       = "evidence"       // one evidence row, provenance fields
+
+	// The identity plane's two shapes (five-planes step 2; FIVE-PLANES-BUILD.md).
+	// They read LINKS rather than observations, and that is why they are separate
+	// kinds rather than flags on the existing ones: an answer assembled from
+	// assertions ABOUT an entity carries a different warranty from one assembled
+	// from what was observed of it, and §14 exists so the caller reads that
+	// warranty instead of inferring it.
+	QueryEntity = "entity" // one entity handle, its alias closure, and its links
+	QueryWhy    = "why"    // bounded backward walk over lineage, hop by hop
 )
 
 // MaxTraverseHops bounds traversal — high-fan-out boundedness is a §17
@@ -35,6 +44,36 @@ const MaxTraverseHops = 3
 
 // MaxQueryLimit bounds every result set.
 const MaxQueryLimit = 1000
+
+// Closure guards (five-planes step 2; FIVE-PLANES-BUILD.md "Closure guard
+// constants"). Alias expansion walks CONFIRMED identity links, and a link is an
+// assertion somebody made — a bad crosswalk, a scored producer promoted by a
+// careless reviewer, or one genuine merge too many all end the same way: a
+// question about one customer silently answered over a hundred. These four
+// numbers are where that stops.
+//
+// They are deliberately small. The point of the plane is that identity is
+// REVIEWED, and a closure that needs more than a handful of hops or members is
+// not a reviewed identity — it is a merge nobody has looked at.
+const (
+	// ClosureDefaultDepth is how far an expansion walks when the caller says
+	// nothing. Two hops covers "A is B, and B is C" — the transitive case a
+	// crosswalk actually produces — without becoming a graph walk.
+	ClosureDefaultDepth = 2
+	// ClosureMaxDepth is the hard ceiling, aligned with MaxTraverseHops on
+	// purpose: two bounded walks over the same store with two different limits is
+	// a pair somebody will eventually have to reconcile.
+	ClosureMaxDepth = MaxTraverseHops
+	// ClosureMaxEntities caps the SET. Exceeding it REFUSES the query loudly
+	// rather than truncating: a silently trimmed closure answers a different
+	// question from the one asked, and answers it without saying so.
+	ClosureMaxEntities = 8
+	// ClosureMaxLinksPerEntityPerMechanism caps fan-out from ONE entity under ONE
+	// mechanism. Exceeding it FLAGS that entity and excludes it from expansion —
+	// a single id claimed same_as sixteen others by one producer is a producer
+	// fault, and following it would spend the set cap on one bad row.
+	ClosureMaxLinksPerEntityPerMechanism = 16
+)
 
 // KnowledgeQuery is the closed AST. One struct, one Validate, no dialects.
 type KnowledgeQuery struct {
@@ -50,6 +89,27 @@ type KnowledgeQuery struct {
 	Hops       int
 	Limit      int
 	EvidenceID string
+	// ExpandAliases widens the SUBJECT of an entity-scoped op across the
+	// entity's confirmed identity closure (D-W2-3; closure verbs come from the
+	// RelationRegistry, never from a name in this package).
+	//
+	// It widens the subject and NOTHING else. Every row the widened query
+	// returns is still authorized against that row's OWN classification and
+	// parties, so a confirmed link can add rows a caller may read — it can never
+	// add rows a caller may not. See the executor's SCOPE RULE comment.
+	ExpandAliases bool
+}
+
+// SupportsAliasExpansion reports whether a kind is entity-scoped, i.e. whether
+// ExpandAliases means anything for it. Exported because the executor asks the
+// same question the validator does, and two copies of this list would drift into
+// a flag that validates on one side and is ignored on the other.
+func (q KnowledgeQuery) SupportsAliasExpansion() bool {
+	switch q.Kind {
+	case QueryPoint, QueryHistory, QueryAggregate, QueryEvents, QueryTraverse, QueryEntity:
+		return true
+	}
+	return false
 }
 
 // QueryRow is one result row. Keys are shape-specific and documented by the
@@ -62,6 +122,37 @@ type QueryRow map[string]any
 type QueryResult struct {
 	Guarantee string
 	Rows      []QueryRow
+	// ClosureSize is how many ALIASES beyond the subject the answer was drawn
+	// over — 0 for every unexpanded query. It is reported rather than left
+	// implicit because "we also counted four other ids we believe are this one"
+	// changes what the number means, and the Guarantee string says so in words
+	// (see ClosureNote) only because this field says so in a number.
+	ClosureSize int
+}
+
+// ClosureNote is the suffix a widened answer appends to its guarantee. Empty for
+// an unwidened one, so the ordinary label is untouched.
+func ClosureNote(aliases int) string {
+	if aliases <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("; across %d confirmed aliases", aliases)
+}
+
+// ClosureSetRefusal is the typed refusal for the set cap. It names the guard and
+// the number reached, because "too wide" with no figure gives an operator
+// nothing to act on — and because the fix (retract a bad link) is a different
+// act from the fix for depth (ask for fewer hops).
+func ClosureSetRefusal(reached int) error {
+	return cannot("alias closure reached %d entities, above the %d-entity cap — refused rather "+
+		"than truncated, because a trimmed closure answers a different question without saying so",
+		reached, ClosureMaxEntities)
+}
+
+// ClosureDepthRefusal is the typed refusal for the depth guard.
+func ClosureDepthRefusal(asked int) error {
+	return cannot("alias closure depth %d outside [1, %d] — an unbounded identity walk is not expressible",
+		asked, ClosureMaxDepth)
 }
 
 // ErrQueryScopeMissing is returned when a query reaches the plane with a nil
@@ -141,8 +232,40 @@ func (q KnowledgeQuery) Validate() error {
 		if q.EvidenceID == "" {
 			return cannot("evidence inspection needs evidence_id")
 		}
+	case QueryEntity:
+		if q.EntityID == "" {
+			return cannot("entity lookup needs entity_id")
+		}
+		// Hops is the CLOSURE depth for this shape (0 = ClosureDefaultDepth). An
+		// over-cap ask is refused rather than silently capped: a caller who asked
+		// for five hops and got three would read a partial closure as the whole
+		// of it, which is the same failure the set cap refuses to commit.
+		if q.Hops < 0 || q.Hops > ClosureMaxDepth {
+			return ClosureDepthRefusal(q.Hops)
+		}
+	case QueryWhy:
+		// A typed ref ("event:e-1", "entity:customer/C-1042") or a bare entity
+		// id, which the executor promotes to an entity ref. Both are accepted
+		// because the two callers differ: a console walks back from an event it
+		// is looking at, an agent walks back from the entity it was asked about.
+		if q.EntityID == "" {
+			return cannot("why needs entity_id as a typed ref (entity:|event:|decision:|evidence:) or a bare entity id")
+		}
+		// Hops reuses the traversal bound rather than inventing a second one;
+		// 0 means "the default depth", which is how every other optional bound
+		// in this AST reads.
+		if q.Hops < 0 || q.Hops > MaxTraverseHops {
+			return cannot("hops %d outside [0, %d] — an unbounded lineage walk is not expressible", q.Hops, MaxTraverseHops)
+		}
 	default:
 		return cannot("unknown query kind %q", q.Kind)
+	}
+	// A flag that is silently ignored is worse than one that is refused: the
+	// caller believes it asked a wider question and reads a narrower answer as
+	// the whole of it. Entity-scoped kinds honour ExpandAliases; the rest say so.
+	if q.ExpandAliases && !q.SupportsAliasExpansion() {
+		return cannot("expand_aliases is not expressible for kind %q — it widens an entity SUBJECT, "+
+			"and this shape has none", q.Kind)
 	}
 	return nil
 }
@@ -157,6 +280,15 @@ func (q KnowledgeQuery) Guarantee() string {
 		return "deterministic over stored interpretations; extraction uncertainty applies"
 	case QueryTraverse:
 		return "exact over stored edges; entity links epistemically uncertain"
+	case QueryEntity:
+		// "as asserted" is the whole warranty: the store is exact about WHICH
+		// assertions exist and says nothing about whether the equivalence holds.
+		return "exact over stored links; identity as asserted, see links"
+	case QueryWhy:
+		// The second clause is load-bearing. A correlation hop says two things
+		// co-occurred and share a participant; read as causation it is exactly
+		// the mistake the mechanism vocabulary exists to prevent.
+		return "each hop labelled by mechanism; correlation hops are not causal"
 	default:
 		return "exact over stored data; identity and coverage epistemically uncertain"
 	}

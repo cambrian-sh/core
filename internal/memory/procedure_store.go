@@ -217,7 +217,12 @@ func FeedProcedureOutcome(
 		if id == "" {
 			continue
 		}
-		doc, err := store.GetByID(ctx, id)
+		// Kernel-internal read on the plan-completion path — no principal is asking, and
+		// the routine ids come from the plan record, not from a query. Explicit bypass,
+		// because the read chokepoint enforces by-identity reads (ADR-0095 D9) and would
+		// otherwise report every routine as absent, so confidence would never move.
+		// The write below is unchanged: it goes through the store's own write chokepoint.
+		doc, err := store.GetByID(domain.WithScope(ctx, domain.ScopeSystem), id)
 		if err != nil || doc == nil {
 			slog.DebugContext(ctx, "procedure feedback: routine not found", "id", id, "err", err)
 			continue

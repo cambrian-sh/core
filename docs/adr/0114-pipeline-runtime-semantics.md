@@ -1,7 +1,16 @@
 # ADR-0114: Pipeline runtime semantics — the Phase-0 contract
 
-**Status:** Proposed (design only; no code written)
+**Status:** Implemented
 **Date:** 2026-08-02
+**Status corrected 2026-08-20.** This record read *"Proposed (design only; no code written)"*
+while the runtime it specifies was in production use. Shipped as `pipeline/pgstore.go`,
+`runstore.go`, `memstore.go`, `lifecyclegate.go`, `router.go`, `scheduler.go` and
+`reconcile.go` in cambrian-premium, with `ListPipelines` on the operator plane. The ADR's own
+warning about a second registry proved real and was resolved by owner decision — the reactive
+engine is the single source of reactive pipelines and everything else registers through it
+(`reactive/pipeline_registry.go`); the write-up survives at
+`cambrian-premium/docs/defects/DEFECT-two-pipeline-registries.md`, and a third registry in
+`plugins/driftplugin` remains out of scope by owner decision. See ADR-0128 §8.
 **Amends:** ADR-0113 (reactive pipeline graphs). ADR-0113 remains the record for the graph *model*;
 this ADR settles the *runtime semantics* it left open or got wrong, and must be approved before RP-1.
 **Origin:** external architecture review of `REACTIVE-ENGINE-RESEARCH.md` and

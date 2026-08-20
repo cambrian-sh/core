@@ -546,7 +546,7 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 // a formatted string for the planner prompt. TraitModel agents are excluded.
 // Agents with no capabilities fall under "(uncategorized)" with their description.
 // Cluster keys are sorted alphabetically for deterministic output.
-// buildLTMBlock produces the typed XML-tag LTM prompt section. ADR-0025, ADR-0029.
+// buildLTMBlock produces the typed XML-tag LTM prompt section. ADR-0025.
 // REQ-DEDUP-1: deduplicates facts by content hash before injection.
 func buildLTMBlock(plan *domain.PlanLTMEntry, enrichment domain.LTMEnrichment) string {
 	var sb strings.Builder
@@ -579,12 +579,9 @@ func buildLTMBlock(plan *domain.PlanLTMEntry, enrichment domain.LTMEnrichment) s
 		}
 		sb.WriteString("</NegativeLTM>\n")
 	}
-	// ADR-0029: episodic memory block — injected when past sessions are semantically relevant.
-	if len(enrichment.Episodes) > 0 {
-		if block := buildEpisodicBlock(enrichment.Episodes); block != "" {
-			sb.WriteString(block)
-		}
-	}
+	// The ADR-0029 <EpisodicMemory> block used to be rendered here. Removed with the
+	// rest of the episodic lane: nothing has written a DocTypeEpisodicMemory row since
+	// the extractor was deleted on 2026-07-18, so the block could only ever be empty.
 	// ADR-0049 D11: precedent block — prior transitions for the situation being planned,
 	// failure-weighted, for the LLM to anticipate which approach worked or failed.
 	if block := buildPrecedentBlock(enrichment.Precedents); block != "" {
@@ -622,62 +619,6 @@ func buildPrecedentBlock(precedents []domain.Precedent) string {
 	}
 	sb.WriteString("</PrecedentLTM>\n")
 	return sb.String()
-}
-
-// buildEpisodicBlock renders the <EpisodicMemory> XML block from SearchResult episodes.
-// EpisodicMemory is deserialized from Document.Metadata["episodic"] at this injection site.
-// Episodes with malformed or missing metadata are skipped with a WARN log. ADR-0029.
-func buildEpisodicBlock(episodes []domain.SearchResult) string {
-	var inner strings.Builder
-	for _, ep := range episodes {
-		em, ok := extractEpisodicMemory(ep)
-		if !ok {
-			slog.Warn("Planner: skipping episode with malformed Metadata[episodic]",
-				"doc_id", ep.Document.ID)
-			continue
-		}
-		fmt.Fprintf(&inner, "  <episode session_id=%q completed_at=%q>\n",
-			em.SessionID, em.CompletedAt.Format("2006-01-02T15:04:05Z"))
-		fmt.Fprintf(&inner, "    <goal>%s</goal>\n", em.Goal)
-		if len(em.Decisions) > 0 {
-			inner.WriteString("    <decisions>\n")
-			for _, d := range em.Decisions {
-				fmt.Fprintf(&inner, "      <decision source=%q>%s</decision>\n",
-					string(d.SourceEventType), d.Text)
-			}
-			inner.WriteString("    </decisions>\n")
-		}
-		inner.WriteString("  </episode>\n")
-	}
-	if inner.Len() == 0 {
-		return ""
-	}
-	return "<EpisodicMemory>\n" + inner.String() + "</EpisodicMemory>\n"
-}
-
-// extractEpisodicMemory deserializes an EpisodicMemory from SearchResult.Document.Metadata["episodic"].
-// Returns (zero, false) when the field is absent or cannot be decoded.
-func extractEpisodicMemory(r domain.SearchResult) (domain.EpisodicMemory, bool) {
-	raw, ok := r.Document.Metadata["episodic"]
-	if !ok {
-		return domain.EpisodicMemory{}, false
-	}
-	// The value may already be a domain.EpisodicMemory (from tests / in-process path)
-	// or a map[string]interface{} (after JSON serialization round-trip via pgvector).
-	// Marshal→Unmarshal handles both uniformly.
-	b, err := json.Marshal(raw)
-	if err != nil {
-		return domain.EpisodicMemory{}, false
-	}
-	var em domain.EpisodicMemory
-	if err := json.Unmarshal(b, &em); err != nil {
-		return domain.EpisodicMemory{}, false
-	}
-	// Require at minimum a non-empty SessionID to consider it valid.
-	if em.SessionID == "" {
-		return domain.EpisodicMemory{}, false
-	}
-	return em, true
 }
 
 // buildCapabilityClusterFromManifests groups agents by their MANIFEST-declared

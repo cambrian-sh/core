@@ -31,9 +31,13 @@ type WorkspaceStageImpl struct {
 	// PLANNERREQ REQ1: eliminates low-relevance documents that pass the broad retrieval floor.
 	MinFactCosine float64
 
-	// PolicyProvider resolves named HippocamupusPolicies for the episodic retrieval lane.
-	// When nil, the episodic lane is skipped and LTMEnrichment.Episodes stays empty. ADR-0029.
-	PolicyProvider domain.PolicyProvider
+	// The episodic retrieval lane (ADR-0029) used to live here, gated on a
+	// PolicyProvider that resolved the "episodic" HippocampusPolicy. Its WRITER — the
+	// EpisodicExtractor / ConsolidatorAgent — was removed on 2026-07-18, so nothing has
+	// written a DocTypeEpisodicMemory row since; the lane was a goroutine and a store
+	// search (with a nil query vector, which pgvector does not reject) issued on every
+	// planning pass against a corpus that could only shrink. Removed with the field:
+	// there is no configuration that makes it produce a hit.
 
 	// ActivationThreshold is the post-BFS selection floor for PrimeForStep (ADR-0022).
 	// Must NOT equal RetrievalFloor — they operate at different scales.
@@ -90,60 +94,33 @@ func (w *WorkspaceStageImpl) SetActivationThreshold(v float64) {
 	w.ActivationThreshold = v
 }
 
-// PrimeForPlanning retrieves cross-session FACT + SCENE + NegativeEdge + EpisodicMemory
-// documents for the Planner. Three parallel query lanes run concurrently.
-// ADR-0025: returns LTMEnrichment (typed). ADR-0029: adds Episodes lane.
+// PrimeForPlanning retrieves cross-session FACT + SCENE + NegativeEdge documents for the
+// Planner. ADR-0025: returns LTMEnrichment (typed).
 func (w *WorkspaceStageImpl) PrimeForPlanning(ctx context.Context, taskQuery string) (domain.LTMEnrichment, error) {
-	// Episodic lane runs in parallel with the FACT+SCENE enrichment.
-	type episodicResult struct {
-		hits []domain.SearchResult
-	}
-	episodicCh := make(chan episodicResult, 1)
-	if w.PolicyProvider != nil {
-		go func() {
-			policy, ok := w.PolicyProvider.GetPolicy("episodic")
-			if !ok {
-				policy = w.PolicyProvider.DefaultPolicy()
-			}
-			topK := 3
-			if topK < 1 {
-				topK = 1
-			}
-			results, err := w.Store.Search(ctx, nil, domain.SearchOptions{
-				DocumentType: domain.DocTypeEpisodicMemory,
-				TopK:         topK,
-				Scope:        domain.ScopeSystem, // ADR-0034: workspace enrichment is a kernel read
-			})
-			if err != nil {
-				slog.Warn("WorkspaceStage: episodic lane search failed", "err", err)
-				episodicCh <- episodicResult{}
-				return
-			}
-			var above []domain.SearchResult
-			for _, r := range results {
-				if r.Score >= policy.SimilarityThreshold {
-					above = append(above, r)
-				}
-			}
-			episodicCh <- episodicResult{hits: above}
-		}()
-	}
-
 	facts, err := w.enrich(ctx, taskQuery, w.PlanningSlots, "planning")
 	if err != nil {
 		return domain.LTMEnrichment{}, err
 	}
-	negatives, _ := w.Store.Search(ctx, nil, domain.SearchOptions{
-		DocumentType: domain.DocTypeNegativeEdge,
-		TopK:         3,
-		Scope:        domain.ScopeSystem, // ADR-0034: workspace enrichment is a kernel read
-	})
+	// The negatives lane is a SIMILARITY lane like every other one. It used to search
+	// with a nil vector, which the pgvector adapter does not reject: it scores every row
+	// identically and orders by last_accessed_at, so the three most recently touched
+	// failures entered every planner prompt whatever the task was. Scored against the
+	// situation and floored like the precedent lane, for the same reason — an unrelated
+	// failure is a fabricated analogy, and a prompt padded with one is worse than a lane
+	// that returns nothing.
+	//
+	// Best-effort, as before: a failure here costs enrichment, never the plan.
+	var negatives []domain.SearchResult
+	if negVec, embedErr := w.Embedder.Embed(ctx, taskQuery); embedErr == nil {
+		negatives, _ = w.Store.Search(ctx, negVec, domain.SearchOptions{
+			DocumentType:   domain.DocTypeNegativeEdge,
+			TopK:           3,
+			RetrievalFloor: w.RetrievalFloor,
+			Scope:          domain.ScopeSystem, // ADR-0034: workspace enrichment is a kernel read
+		})
+	}
 
 	enrichment := domain.LTMEnrichment{Facts: facts, Negatives: negatives}
-	if w.PolicyProvider != nil {
-		ep := <-episodicCh
-		enrichment.Episodes = ep.hits
-	}
 	// ADR-0049 D11 (Issue 013): the precedent lane — give the planner foresight by
 	// surfacing prior TRANSITIONS (similar past situations + their outcome + action path),
 	// failure-weighted and similarity-gated, for the LLM to reason over before it commits.

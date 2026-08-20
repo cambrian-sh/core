@@ -125,6 +125,32 @@ func (s *EnforcingVectorStore) GetBatch(ctx context.Context, ids []string) ([]do
 	return s.filter(ctx, docs, "GetBatch"), nil
 }
 
+// ChunksByIDs — ENFORCED batched by-id chunk read (review Q8: the expansion
+// lanes' per-id GetByID loops probed four tables each; their ids come from
+// chunk_triplets.chunk_id, provably chunks-table ids, so one batched
+// chunks-only query replaces up to ~160 round-trips per hop). Optional
+// capability: forwarded when the inner store implements it, else served via
+// the (4-table) GetBatch so callers can assert on THIS wrapper either way.
+// Rows the ctx predicate refuses are dropped, exactly as GetBatch drops them.
+func (s *EnforcingVectorStore) ChunksByIDs(ctx context.Context, ids []string) ([]domain.Document, error) {
+	eff, err := s.readPredicate(ctx, "ChunksByIDs")
+	if err != nil {
+		return nil, err
+	}
+	var docs []domain.Document
+	if bf, ok := s.inner.(interface {
+		ChunksByIDs(context.Context, []string) ([]domain.Document, error)
+	}); ok {
+		docs, err = bf.ChunksByIDs(ctx, ids)
+	} else {
+		docs, err = s.inner.GetBatch(ctx, ids)
+	}
+	if err != nil || eff.Bypass {
+		return docs, err
+	}
+	return s.filter(ctx, docs, "ChunksByIDs"), nil
+}
+
 // QueryByMetadata — ENFORCED. This is the primitive the experiential lane reads
 // through (precedent.go resolves an action path by plan_id), so leaving it unguarded
 // would mean ADR-0095's classification bound to nothing on that path.

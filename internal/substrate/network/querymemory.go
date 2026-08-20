@@ -12,6 +12,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/memory"
 
 	"google.golang.org/grpc/metadata"
 )
@@ -76,9 +77,6 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 		results, err = s.MemorySearcher.SearchActions(ctx, req.GetQuery(), callerID)
 	case "scenes":
 		results, err = s.MemorySearcher.SearchScenes(ctx, req.GetQuery(), callerID)
-	case "entity":
-		// ADR-0049 Issue 012: exact entity lookup — the query is a canonical kind:id.
-		results, err = s.MemorySearcher.SearchEntities(ctx, req.GetQuery(), callerID)
 	case "procedures":
 		// ADR-0094 D5: induced routines ("how has this gone here?").
 		results, err = s.MemorySearcher.SearchProcedures(ctx, req.GetQuery(), callerID)
@@ -90,6 +88,31 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	}
 	if err != nil {
 		return nil, fmt.Errorf("querymemory: %w", err)
+	}
+
+	// The agentic control row is a loop artifact, not a memory: its Text is the
+	// LLM-SYNTHESIZED answer and its metadata carries the whole hop trace. Shipping
+	// it as an ordinary ranked hit (Score 2.0, position 0) handed every agent a
+	// fabricated "memory" to ground on and inflated every hit count. It now reaches
+	// only callers that opt in via the x-agentic-control metadata header (the
+	// benchmark harness does, to read the typed status + trace); every other caller
+	// gets retrieved evidence only. The operator plane strips it separately
+	// (AnswerSystem).
+	wantControl := false
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("x-agentic-control"); len(vals) > 0 && vals[0] != "" {
+			wantControl = true
+		}
+	}
+	if !wantControl {
+		kept := make([]domain.SearchResult, 0, len(results))
+		for _, r := range results {
+			if r.Document.ID == memory.AgenticControlID {
+				continue
+			}
+			kept = append(kept, r)
+		}
+		results = kept
 	}
 
 	// Step-2 observability (diagnostic, zero behavior change): emit an AgentStepEvent so

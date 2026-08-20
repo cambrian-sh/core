@@ -29,47 +29,6 @@ func (p *programmableStore) QueryByMetadata(_ context.Context, _ map[string]stri
 	return p.byMeta, nil
 }
 
-// ADR-0049 Issue 012: exact lookup resolves a canonical kind:id to ONE entity, rendering
-// the materialized current state (a deleted file reads exists=false) + the most-recent
-// engaging scene link. This is reconstruction, not semantic search.
-func TestSearchEntities_ReconstructsCurrentState(t *testing.T) {
-	store := &programmableStore{byID: map[string]*domain.Document{
-		"file:docs/a.md": {
-			ID:           "file:docs/a.md",
-			DocumentType: domain.DocTypeMnemonicEntity,
-			Metadata: map[string]interface{}{
-				"fields":     `{"exists":{"value":false,"seq":3},"content_ref":{"value":"sha256:abc","seq":2}}`,
-				"last_scene": "scene-p7",
-			},
-		},
-	}}
-	q := NewQueryService(&fakeEmbedder{}, store, nil)
-
-	res, err := q.SearchEntities(context.Background(), "file:docs/a.md", "agent-a")
-	if err != nil || len(res) != 1 {
-		t.Fatalf("expected one entity record; got %d err=%v", len(res), err)
-	}
-	text := res[0].Document.Text
-	if !strings.Contains(text, "exists=false") {
-		t.Errorf("reconstruction must reflect the superseded (deleted) state; got %q", text)
-	}
-	if !strings.Contains(text, "content_ref=sha256:abc") {
-		t.Errorf("reconstruction must surface the current content_ref; got %q", text)
-	}
-	if !strings.Contains(text, "last_scene=scene-p7") {
-		t.Errorf("reconstruction must link the most-recent engaging scene; got %q", text)
-	}
-}
-
-func TestSearchEntities_UnknownReturnsEmpty(t *testing.T) {
-	store := &programmableStore{byID: map[string]*domain.Document{}}
-	q := NewQueryService(&fakeEmbedder{}, store, nil)
-	res, err := q.SearchEntities(context.Background(), "file:nope.md", "agent-a")
-	if err != nil || len(res) != 0 {
-		t.Errorf("unknown entity must return empty (no record), no error; got %d err=%v", len(res), err)
-	}
-}
-
 // ADR-0049 D11/Issue 014: the precedent pull lane returns failure-weighted transitions;
 // below the floor it returns "no precedent" (empty), never a fabricated analogy.
 func TestSearchPrecedents_FailureWeightedTransitions(t *testing.T) {

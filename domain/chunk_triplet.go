@@ -70,3 +70,20 @@ type ChunkTripletsStore interface {
 	// lookup is reached directly from kgExpand, with no chokepoint in front of it.
 	ChunksMentioningEntity(ctx context.Context, entity string, limit int, scope *TagPredicate) ([]string, error)
 }
+
+// EntityChunkHit is one candidate chunk from a batched entity-expansion lookup:
+// the chunk plus how many DISTINCT query entities its triplets matched (graph
+// corroboration — a chunk reached via several frontier entities is structurally
+// better evidence than one reached via a single hub entity).
+//
+// Returned by the OPTIONAL batched lookup some stores implement:
+//
+//	ChunksForEntities(ctx, entities []string, limit int, scope *TagPredicate, queryVec []float32) ([]EntityChunkHit, error)
+//
+// It is a capability (type-asserted by kgExpand), not part of ChunkTripletsStore,
+// so existing implementations and test fakes stay valid; callers fall back to
+// the per-entity form when absent.
+type EntityChunkHit struct {
+	ChunkID string
+	Matches int
+}

@@ -1,0 +1,125 @@
+[
+  {
+    "name": "ask_memory",
+    "title": "Ask memory",
+    "description": "A grounded prose answer with inline [n] citation markers, synthesized over multi-hop retrieval. Invokes an LLM under a ~90 second budget — use search_memory for simple lookups. Each [n] resolves to citations[n-1]; when no synthesis model is configured the answer degrades to the top passages verbatim (extractive: true).",
+    "read_only_hint": true,
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "description": "The question to answer from memory.",
+          "type": "string"
+        },
+        "top_k": {
+          "default": 8,
+          "description": "Maximum citations to return.",
+          "maximum": 20,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_document",
+    "title": "Get document",
+    "description": "Fetch a document's body by doc_id (as cited by search_memory, ask_memory or list_documents). Paged: offset/max_chars are in characters, and truncated=true means there is more — repeat with offset advanced by returned_chars. Not found and not readable by you are deliberately the same answer.",
+    "read_only_hint": true,
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "doc_id": {
+          "description": "The document id to fetch.",
+          "type": "string"
+        },
+        "max_chars": {
+          "default": 20000,
+          "description": "Maximum characters of body to return.",
+          "maximum": 200000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "description": "Character offset to start from, for paging through long documents.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "doc_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_documents",
+    "title": "List documents",
+    "description": "Enumerate ingested documents by row — no query text, no ranking. For the questions search cannot ask: what is here, what carries a given label, what is unlabelled. Keyset-paged via cursor/next_cursor; bodies are never included (use get_document).",
+    "read_only_hint": true,
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "Opaque next_cursor from the previous page; empty for the first page.",
+          "type": "string"
+        },
+        "id_prefix": {
+          "description": "Cheap doc_id prefix filter.",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Page size.",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tags": {
+          "description": "Only documents carrying ALL of these labels.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "unlabelled_only": {
+          "default": false,
+          "description": "Only documents carrying no labels.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "search_memory",
+    "title": "Search memory",
+    "description": "Semantic search over this deployment's memory. Cheap and fast (no LLM) — the default for lookups. Returns scored passages with doc_id, section_path and tags; follow a doc_id with get_document for the full source.",
+    "read_only_hint": true,
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "description": "What to search for, in natural language.",
+          "type": "string"
+        },
+        "top_k": {
+          "default": 8,
+          "description": "Maximum results to return.",
+          "maximum": 25,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  }
+]

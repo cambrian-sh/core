@@ -106,11 +106,42 @@ func (im *IngestionManager) persistChunks(
 		}); perr != nil {
 			slog.WarnContext(ctx, "IngestionManager: structure parse failed; flat chunking", "doc", documentID, "err", perr)
 		} else if parsed != nil {
+			// The sidecar reports degraded parses (ok=false) and every leaf its
+			// junk filter deleted. Both used to be consumed silently — a chronic
+			// sidecar failure disabled the entire default ingest strategy with no
+			// line of evidence, and filter drops were unrecoverable content loss
+			// nobody could count.
+			if !parsed.OK {
+				slog.WarnContext(ctx, "IngestionManager: structure sidecar reported a degraded parse; using its partial output",
+					"doc", documentID, "backend", parsed.Backend)
+			}
+			if parsed.DroppedLeaves > 0 {
+				slog.WarnContext(ctx, "IngestionManager: structure junk filter dropped content leaves",
+					"doc", documentID, "dropped_leaves", parsed.DroppedLeaves, "kept_nodes", len(parsed.Nodes),
+					"effect", "dropped leaves are not stored and not retrievable")
+			}
 			if lc, reps := ChunksFromLeaves(parsed); len(lc) > 0 {
 				chunks = lc
 				structuredDoc = parsed
 				structuredReps = reps
+			} else {
+				slog.WarnContext(ctx, "IngestionManager: structure parse yielded no leaves; flat chunking",
+					"doc", documentID, "backend", parsed.Backend, "dropped_leaves", parsed.DroppedLeaves)
 			}
+		} else {
+			slog.WarnContext(ctx, "IngestionManager: structure parser returned no document; flat chunking", "doc", documentID)
+		}
+	}
+
+	// Chunk-context prepend (execution.ingestion.chunk_context_prepend): give
+	// each chunk its document title + section breadcrumb IN the text, so both
+	// retrieval lanes (dense embedding AND the FTS GIN index, which covers
+	// `text` only) can reach a chunk whose body never names its own subject.
+	// Applied before embedding and before the docs loop so the stored text and
+	// the vector agree.
+	if im.cfg.ContextPrepend {
+		for i := range chunks {
+			chunks[i].Body = prependChunkContext(doc.Title, chunks[i])
 		}
 	}
 
@@ -137,6 +168,18 @@ func (im *IngestionManager) persistChunks(
 			Embedding:          domain.Embedding{Vector: vec, Model: "dynamic", Size: len(vec)},
 			Metadata:           chunkMetadata(doc, chunks, chunk, documentID, ids, i, entityID, scene),
 		})
+	}
+	// PARTIAL loss is as silent as total loss was: a batch-embed timeout mid-
+	// document falls back to per-chunk embedding, the caller's deadline expires
+	// part-way, and the tail chunks are skipped by the len(vec)==0 guard above —
+	// the document stores its first N% of content, stays retrievable, and no
+	// alarm fires. That shape produces a stable, invisible recall ceiling, so a
+	// non-zero drop count is always reported.
+	if dropped := len(chunks) - len(docs); dropped > 0 && len(docs) > 0 {
+		slog.WarnContext(ctx, "IngestionManager: PARTIAL chunk loss — chunks with no embedding were not stored",
+			"doc", documentID, "source_uri", doc.SourceURI,
+			"stored", len(docs), "dropped", dropped, "total", len(chunks),
+			"effect", "part of this document's content is not retrievable")
 	}
 	if len(docs) == 0 {
 		// A document with a body that produced NO stored chunk. Reported, not
@@ -389,6 +432,35 @@ func contentDigest(body string) string {
 
 func externalChunkID(documentID string, index int) string {
 	return fmt.Sprintf("%s-chunk-%d", documentID, index+1)
+}
+
+// prependChunkContext builds "<title> › <section breadcrumb>\n\n<body>" for a
+// chunk, skipping empty or redundant parts. The breadcrumb comes from the
+// structure parser's section_path metadata (human-readable ancestor titles);
+// flat-chunked documents get the title alone. A body that already opens with
+// the title is left untouched — re-ingesting an already-prepended chunk (the
+// upsert path) must not stack prefixes.
+func prependChunkContext(title string, c domain.Chunk) string {
+	body := c.Body
+	t := strings.TrimSpace(title)
+	sp, _ := c.Metadata["section_path"].(string)
+	sp = strings.TrimSpace(sp)
+	// Already contextualized: a re-ingest of a prepended chunk (the upsert path
+	// feeds stored text back through here) must not stack prefixes.
+	if (t != "" && strings.HasPrefix(body, t)) || (sp != "" && strings.HasPrefix(body, sp)) {
+		return body
+	}
+	var parts []string
+	if t != "" {
+		parts = append(parts, t)
+	}
+	if sp != "" && sp != t {
+		parts = append(parts, sp)
+	}
+	if len(parts) == 0 {
+		return body
+	}
+	return strings.Join(parts, " › ") + "\n\n" + body
 }
 
 func externalActivation(importance float64) float64 {

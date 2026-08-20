@@ -1,7 +1,15 @@
 # ADR-0107: Embeddings as a Versioned Projection (Knowledge Substrate Phase 3)
 
-**Status:** Proposed — design accepted for staged implementation; no code yet
+**Status:** Implemented
 **Date:** 2026-08-01
+**Status corrected 2026-08-20.** This record read *"Proposed — design accepted for staged
+implementation; no code yet"* long after the code shipped. The projection exists:
+migration `0013_chunk_embeddings.sql` (the `chunk_embeddings` table), `cmd/embed-backfill`,
+the `embedding_projection_read`/`embedding_projection_write` flags in `internal/config`
+(with `embedding_projection_flag_test.go`), `ExecutionConfig.RetrievalFingerprint`
+(`internal/config/retrieval_fingerprint.go`), and the reader in
+`internal/infrastructure/postgres/pgvector_adapter.go`. See ADR-0128 §8 for why four
+records had drifted from the code at once.
 **Relates to:** ADR-0105/0106 (the substrate so far), ADR-0093 (documents/chunks split),
 the knowledge-substrate memo §9 ("Embeddings are a projection, not a column"),
 `cambrian-debugging-playbook` (the destructive dim-migration scar)

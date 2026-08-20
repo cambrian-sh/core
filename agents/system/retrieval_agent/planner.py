@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -318,9 +319,21 @@ _DECIDE_CONTEXT_MAXCHARS = 12000
 _WORD_RE = re.compile(r"[0-9a-z]+")
 
 
+def _fold_marks(text: str) -> str:
+    """Strip combining marks so 'Krakow' and 'Kraków' compare equal.
+
+    The grounding guard tokenizes with [0-9a-z]+, which splits an accented
+    letter out of its word ('kraków' -> 'krak','w'); an LLM that returns the
+    unaccented spelling of an entity copied from context was then rejected as
+    ungrounded even though it answered correctly. Folding both sides before
+    tokenizing removes the false rejection without weakening the guard.
+    """
+    return "".join(ch for ch in unicodedata.normalize("NFD", text) if not unicodedata.combining(ch))
+
+
 def _word_set(text: str) -> set[str]:
     """Lowercased alphanumeric token set, for grounding/echo checks."""
-    return set(_WORD_RE.findall(text.lower()))
+    return set(_WORD_RE.findall(_fold_marks(text.lower())))
 
 
 def _bridge_reject_reason(bridge: str, query: str, context: str) -> str:
@@ -397,6 +410,10 @@ Decide among three cases, in this order:
 2. ABSTENTION — the QUESTION is specific but the CONTEXT does NOT contain the
    answer; the information is simply not present. Do NOT guess. Respond:
      {{"status": "abstention", "text": "not found in memory"}}
+   Abstain ONLY after checking every passage. If ANY passage plainly names the
+   thing the question asks for (even mid-passage, even phrased differently),
+   that is an ANSWER, not an abstention. Unrelated passages around it are
+   normal — ignore them; their presence is never a reason to abstain.
 3. CLARIFICATION — use this ONLY when the QUESTION points at its subject with a
    BARE GENERIC reference and gives NO description that could pin it down: "the
    manager", "the project", "the migration", "the ticket", "we", "last quarter",
@@ -411,6 +428,20 @@ in", "the country whose military contains the Air Defense Artillery" — is FULL
 SPECIFIED. It is NOT ambiguous just because resolving it takes several steps. For
 any described or multi-hop question you MUST return ANSWER (if the context has it)
 or ABSTENTION (if it does not) — NEVER clarification.
+
+CHAIN INSIDE THE CONTEXT — for a described target, resolve it in TWO reads:
+first find the passage that identifies the described thing (WHO plays at that
+stadium, WHO produced that film), then find the passage stating the asked fact
+ABOUT that thing. The two facts usually sit in DIFFERENT passages; answer only
+the FINAL question, using the intermediate silently. Answer the exact relation
+asked (grandmother ≠ mother; the mother's mother is the grandmother).
+
+CONFLICTING PASSAGES — when two passages give different values for the same
+fact (a team's league, a company's owner), they usually describe DIFFERENT
+TIMES. Prefer the passage matching the timeframe the question or its resolving
+passage implies; a passage that mentions the resolving entity or its era
+outranks a generally famous but unrelated-in-time fact. Never pick a value just
+because it is the better-known one.
 
 Examples:
 - "What did the manager approve?" (no which manager) -> clarification
@@ -615,6 +646,27 @@ SUB-QUESTION: {subq}
 CONTEXT:
 {context}"""
 
+# Second-chance extraction (bridge-binding fix). Measured on the MuSiQue full
+# run: ~72% of misses at every hop count were chains that broke when
+# answer_subquestion returned "" even though the gold evidence WAS retrieved —
+# the strict pass under-commits, the descriptive-ref fallback then sends an
+# unresolved referent phrase back into retrieval, and the chain drifts. The
+# grounded-only rule is enforced by the mechanical word-set guard below, NOT by
+# model caution, so a candidate-forcing retry cannot leak parametric knowledge:
+# an ungrounded pick is still rejected and the ref fallback still applies.
+ANSWER_SUBQ_FORCE_PROMPT = """\
+Identify the single entity in the CONTEXT that best answers the SUB-QUESTION.
+You MUST choose one entity (a name, place, org, or date) COPIED VERBATIM from
+the CONTEXT — never use outside knowledge. Only if nothing in the CONTEXT
+relates to the SUB-QUESTION at all, return "".
+
+Return ONLY JSON: {{"answer": "<entity copied from context, or empty>"}}
+
+SUB-QUESTION: {subq}
+
+CONTEXT:
+{context}"""
+
 _SUBQ_CONTEXT_MAXCHARS = 12000
 
 
@@ -623,20 +675,23 @@ def answer_subquestion(subq: str, chunks: object, llm: LLM) -> str:
 
     Grounded-only: the answer must be present in the CONTEXT — if the model
     returns something whose words are not in the retrieved text, we reject it
-    (return "") rather than let parametric knowledge leak in. Empty answer ⇒ the
-    caller substitutes nothing and the chain proceeds on the raw sub-question."""
+    (return "") rather than let parametric knowledge leak in. A strict pass runs
+    first; when it yields nothing usable, a candidate-forcing second pass asks
+    the model to commit to the best in-context entity (one extra LLM call, only
+    on failed extractions). Empty answer ⇒ the caller substitutes the
+    descriptive ref and the chain proceeds on the raw sub-question."""
     context = build_context(chunks, _SUBQ_CONTEXT_MAXCHARS)
     if not context:
         return ""
-    raw = llm(ANSWER_SUBQ_PROMPT.format(subq=subq, context=context))
-    obj = extract_json(raw) or {}
-    ans = str(obj.get("answer", "")).strip()
-    if not ans:
-        return ""
-    # grounding guard: every answer word must appear in the retrieved context
-    if not (_word_set(ans) <= _word_set(context)):
-        return ""
-    return ans
+    ctx_words = _word_set(context)
+    for prompt in (ANSWER_SUBQ_PROMPT, ANSWER_SUBQ_FORCE_PROMPT):
+        raw = llm(prompt.format(subq=subq, context=context))
+        obj = extract_json(raw) or {}
+        ans = str(obj.get("answer", "")).strip()
+        # grounding guard: every answer word must appear in the retrieved context
+        if ans and _word_set(ans) <= ctx_words:
+            return ans
+    return ""
 
 
 # --------------------------------------------------------------------------

@@ -42,6 +42,14 @@ _TEMPERATURE = 0.0
 _PLAN_MAX_TOKENS = int(os.environ.get("RETRIEVAL_PLAN_MAX_TOKENS", "400"))
 _SYNTH_MAX_TOKENS = int(os.environ.get("RETRIEVAL_SYNTH_MAX_TOKENS", "1024"))
 
+# Experimental, default-off: route ONLY the decompose op to a local ollama model
+# (the SFT-trained planner). Other ops keep the kernel's managed proxy — the
+# trained model is a query formulator, not an extractor/synthesizer. Proper
+# per-step model routing needs a GenerateOptions model field (contract change);
+# this env hook exists so the A/B can run without that.
+_DECOMPOSE_OLLAMA_MODEL = os.environ.get("RETRIEVAL_DECOMPOSE_OLLAMA_MODEL", "")
+_OLLAMA_URL = os.environ.get("RETRIEVAL_OLLAMA_URL", "http://127.0.0.1:11434")
+
 
 class RetrievalAgent(CognitiveAgent):
     role = "A precise retrieval query planner and answer synthesizer."
@@ -88,7 +96,10 @@ class RetrievalAgent(CognitiveAgent):
             state = {"query": str(obj.get("query", "")), "chunks": chunks, "cot": cot}
             return self._ok(planner.reason_step(state, llm))
         if op == "decompose":
-            llm = self._make_llm(task, _PLAN_MAX_TOKENS)
+            if _DECOMPOSE_OLLAMA_MODEL:
+                llm = self._make_ollama_llm(_PLAN_MAX_TOKENS)
+            else:
+                llm = self._make_llm(task, _PLAN_MAX_TOKENS)
             subqs, refs = planner.decompose(str(obj.get("query", "")), llm)
             return self._ok({"sub_questions": subqs, "refs": refs})
         if op == "answer_subq":
@@ -127,6 +138,28 @@ class RetrievalAgent(CognitiveAgent):
                 temperature=_TEMPERATURE,
                 timeout_ms=0,
             )
+
+        return _llm
+
+    @staticmethod
+    def _make_ollama_llm(max_tokens: int):
+        """Direct local-ollama backend for the decompose op (env-gated above)."""
+        import urllib.request
+
+        def _llm(prompt: str) -> str:
+            body = {
+                "model": _DECOMPOSE_OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"num_predict": max_tokens, "temperature": _TEMPERATURE},
+            }
+            req = urllib.request.Request(
+                _OLLAMA_URL + "/api/generate",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return str(json.loads(resp.read())["response"])
 
         return _llm
 

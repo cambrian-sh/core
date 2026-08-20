@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -27,6 +29,8 @@ type testPlugin struct {
 	lifecycle   *Lifecycle
 	agent       *domain.AgentDefinition
 	systemAgent *domain.AgentDefinition
+	// published are the outbound tools this plugin offers (ADR-0126 D2).
+	published []domain.PublishedTool
 	// order, when set, records Register/Build call order across a plugin set.
 	order *[]string
 }
@@ -66,7 +70,20 @@ func (p *testPlugin) Register(r *Registry) error {
 	if p.systemAgent != nil {
 		r.AddSystemAgent(*p.systemAgent)
 	}
+	for _, t := range p.published {
+		if err := r.PublishTool(p.name, t, stubPublishedHandler{}); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// stubPublishedHandler is a do-nothing PublishedToolHandler: the composition tests
+// care about WHICH tools survive to the snapshot, never about what they answer.
+type stubPublishedHandler struct{}
+
+func (stubPublishedHandler) Invoke(context.Context, json.RawMessage) (domain.PublishedToolResult, error) {
+	return domain.PublishedToolResult{}, nil
 }
 
 // A plugin's SubstrateConsultant folds into the effective Options (Tier-1 replace-one).
@@ -344,6 +361,112 @@ func TestApplyPlugins_UnentitledPluginContributesNothing(t *testing.T) {
 	}
 	if len(c.statuses) != 1 || c.statuses[0].State != PluginStateNotEntitled {
 		t.Fatalf("statuses = %+v, want one not_entitled", c.statuses)
+	}
+}
+
+// Two plugins publishing distinct tools compose into one surface, in registration
+// order, each entry attributed to its owner (ADR-0126 D2).
+func TestApplyPlugins_ComposesPublishedTools(t *testing.T) {
+	opts := Options{Plugins: []Plugin{
+		&testPlugin{name: "core", published: []domain.PublishedTool{
+			{Name: "search_memory", Effects: []domain.ToolEffect{domain.EffectRead}, ReadOnly: true},
+		}},
+		&testPlugin{name: "substrate", published: []domain.PublishedTool{
+			{Name: "query_knowledge", Effects: []domain.ToolEffect{domain.EffectRead}, ReadOnly: true},
+		}},
+	}}
+	c, err := applyPlugins(opts)
+	if err != nil {
+		t.Fatalf("applyPlugins: %v", err)
+	}
+	if len(c.publishedTools) != 2 {
+		t.Fatalf("publishedTools = %d, want 2", len(c.publishedTools))
+	}
+	want := []struct{ owner, name string }{{"core", "search_memory"}, {"substrate", "query_knowledge"}}
+	for i, w := range want {
+		got := c.publishedTools[i]
+		if got.Owner != w.owner || got.Tool.Name != w.name {
+			t.Errorf("entry %d = %s/%s, want %s/%s", i, got.Owner, got.Tool.Name, w.owner, w.name)
+		}
+		if got.Handler == nil {
+			t.Errorf("entry %d lost its handler", i)
+		}
+	}
+}
+
+// Two plugins claiming one tool name fails composition, and the error NAMES BOTH —
+// two handlers for one name is two answers to one question with no way to say
+// which held, so the message has to make the collision fixable without a debugger.
+func TestApplyPlugins_DuplicatePublishedToolNamesBothOwners(t *testing.T) {
+	tool := []domain.PublishedTool{{Name: "ask_memory", Effects: []domain.ToolEffect{domain.EffectRead}}}
+	opts := Options{Plugins: []Plugin{
+		&testPlugin{name: "core", published: tool},
+		&testPlugin{name: "impostor", published: tool},
+	}}
+	_, err := applyPlugins(opts)
+	if err == nil {
+		t.Fatal("expected a composition error when two plugins publish one tool name")
+	}
+	for _, want := range []string{"ask_memory", "core", "impostor"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must name %q", err, want)
+		}
+	}
+}
+
+// A name outside the D7 grammar fails at REGISTRATION, so a tool no client can
+// address is a boot error rather than a 400 the first external caller discovers.
+func TestApplyPlugins_InvalidPublishedToolNameFails(t *testing.T) {
+	opts := Options{Plugins: []Plugin{
+		&testPlugin{name: "core", published: []domain.PublishedTool{{Name: "memory.query"}}},
+	}}
+	if _, err := applyPlugins(opts); err == nil {
+		t.Fatal("expected a dotted tool name to be refused at registration")
+	}
+}
+
+// The entitlement chokepoint is the whole gate (ADR-0082 D3/D6): an unentitled
+// plugin never Registers, so its tools cannot be listed and cannot be called — and
+// no per-tool entitlement check exists anywhere to be got wrong.
+func TestApplyPlugins_UnentitledPluginPublishesNoTools(t *testing.T) {
+	opts := Options{
+		Entitlements: stubEntitlements{allow: map[string]bool{"paid": false, "free": true}},
+		Plugins: []Plugin{
+			&testPlugin{name: "paid", published: []domain.PublishedTool{{Name: "explain_access"}}},
+			&testPlugin{name: "free", published: []domain.PublishedTool{{Name: "search_memory"}}},
+		},
+	}
+	c, err := applyPlugins(opts)
+	if err != nil {
+		t.Fatalf("applyPlugins: %v", err)
+	}
+	if len(c.publishedTools) != 1 || c.publishedTools[0].Tool.Name != "search_memory" {
+		t.Fatalf("publishedTools = %+v, want only the entitled plugin's tool", c.publishedTools)
+	}
+}
+
+// An effect outside the ADR-0086 closed set is refused: a published tool whose
+// effects policy cannot reason about is un-gateable by the D8 listing filter.
+func TestRegistry_PublishToolRejectsUnknownEffect(t *testing.T) {
+	r := &Registry{}
+	err := r.PublishTool("core", domain.PublishedTool{
+		Name:    "search_memory",
+		Effects: []domain.ToolEffect{"exfiltrate"},
+	}, stubPublishedHandler{})
+	if err == nil {
+		t.Fatal("expected an out-of-set effect to be refused")
+	}
+	if len(r.publishedTools) != 0 {
+		t.Errorf("a refused tool must not land on the surface: %+v", r.publishedTools)
+	}
+}
+
+// A declaration with no handler is refused rather than published as a listable
+// tool that answers nil — an advertised tool that cannot run is worse than absent.
+func TestRegistry_PublishToolRequiresHandler(t *testing.T) {
+	r := &Registry{}
+	if err := r.PublishTool("core", domain.PublishedTool{Name: "search_memory"}, nil); err == nil {
+		t.Fatal("expected a nil handler to be refused")
 	}
 }
 

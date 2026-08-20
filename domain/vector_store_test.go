@@ -73,20 +73,10 @@ func TestDocTypeEpisodicMemory_Value(t *testing.T) {
 	}
 }
 
-// Cycle 8: LTMEnrichment.Episodes field exists alongside Facts and Negatives (ADR-0029).
-func TestLTMEnrichment_EpisodesField(t *testing.T) {
-	e := LTMEnrichment{
-		Facts:     []SearchResult{{Score: 0.9}},
-		Negatives: []SearchResult{{Score: 0.5}},
-		Episodes:  []SearchResult{{Score: 0.7}},
-	}
-	if len(e.Episodes) != 1 {
-		t.Errorf("Episodes: want 1 got %d", len(e.Episodes))
-	}
-	if e.Episodes[0].Score != 0.7 {
-		t.Errorf("Episodes[0].Score: want 0.7 got %v", e.Episodes[0].Score)
-	}
-}
+// Cycle 8 covered LTMEnrichment.Episodes. The field is gone with the episodic lane
+// (writer removed 2026-07-18, reader removed with it); the DocType constant above stays
+// because rows written before then may still exist and the lane-classification lists in
+// internal/memory/query.go still name it.
 
 // Cycle 6: Document.ActivationStrength can be set to full lifecycle range [0.0, 1.0] (ADR-0015).
 func TestDocument_ActivationStrength_Range(t *testing.T) {
