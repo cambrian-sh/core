@@ -507,6 +507,12 @@ func (a *Agent) recordActionRecord(ctx context.Context, rec domain.ToolOutputRec
 			"tool":         rec.ToolName,
 		},
 	}
+	if len(rec.ClassificationTags) > 0 {
+		// The tool's domain tags ride as the write chokepoint's narrowing hint, so
+		// the action record is classified like the artifact write already is
+		// instead of landing untagged.
+		doc.Metadata["tags"] = rec.ClassificationTags
+	}
 	if sid != "" {
 		// Metadata is an untyped, JSON-serialized edge: store the plain string, or
 		// every reader's .(string) assertion silently misses.
@@ -1160,6 +1166,11 @@ func (a *Agent) recordReadFact(ctx context.Context, rec domain.ToolOutputRecord)
 			"tool":         rec.ToolName,
 		},
 	}
+	if len(rec.ClassificationTags) > 0 {
+		// Same hint as the action lane: the tags survive the pending channel on the
+		// doc, so the Tier-2 commit classifies the fact from the tool's domain.
+		doc.Metadata["tags"] = rec.ClassificationTags
+	}
 
 	a.pendingMu.Lock()
 	defer a.pendingMu.Unlock()
@@ -1642,12 +1653,18 @@ func isToolOutputItem(doc *domain.Document) bool {
 func (a *Agent) offloadFullBody(ctx context.Context, s *scoredItem) {
 	doc := s.Item.Doc
 
-	// Offload the full body to CAS for {summary + cid} recall. Unstamped (the drain
-	// ctx carries no session) ⇒ a public blob any session may resolve via
-	// get_context_node — correct for durable cross-session LTM. Best-effort: a nil
-	// store or Put error just leaves the full text in pgvector Text.
+	// Offload the full body to CAS for {summary + cid} recall. The drain ctx carries
+	// no session, so the item's own SessionID is threaded onto the Put — an
+	// unstamped blob is owner "" and readable by ANY caller via get_context_node,
+	// while the LTM row it backs is session-scoped. An item with no session (a
+	// sessionless tool call) still writes an ownerless blob, matching its row.
+	// Best-effort: a nil store or Put error just leaves the full text in pgvector Text.
 	if a.ContentStore != nil {
-		if cid, err := a.ContentStore.Put(ctx, []byte(doc.Text), "ltm_fact", nil, s.Descriptor); err == nil {
+		putCtx := ctx
+		if s.Item.SessionID != "" {
+			putCtx = domain.WithSessionID(ctx, s.Item.SessionID)
+		}
+		if cid, err := a.ContentStore.Put(putCtx, []byte(doc.Text), "ltm_fact", nil, s.Descriptor); err == nil {
 			if doc.Metadata == nil {
 				doc.Metadata = map[string]interface{}{}
 			}

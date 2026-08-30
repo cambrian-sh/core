@@ -46,6 +46,13 @@ type PublishedTool struct {
 	ReadOnly bool
 	// Capability is the operator capability this tool rides on ("" = always).
 	Capability string
+	// MachineOnly restricts the tool to worker machines (ADR-0127 D3:
+	// poll_step/report_step are callable ONLY by machine:* principals). The
+	// transport enforces it twice — the listing filter hides the tool from
+	// everyone else, the call side refuses them — and the handler checks a
+	// third time, because a handler that trusted the menu would be trusting
+	// a filter it cannot see.
+	MachineOnly bool
 }
 
 // PublishedToolHandler serves one published tool.

@@ -128,6 +128,12 @@ type Server struct {
 	// that have no task session. Without it a chat turn from an ingress is
 	// authorised as an ordinary agent call and the ingress's policy never applies.
 	ConvSurfaces authz.ConversationSurfaceReader
+	// TaskOwners resolves a task session to its beneficiary owner principal
+	// (ADR-0126 phase 4). Read by withCallerSession so agents attending a
+	// submitted task see the beneficiary's contributed worker fleet in their
+	// menus (ADR-0127 D4) and the dispatch-side ownership check holds. nil ⇒ no
+	// task carries a beneficiary and contributed resolution stays fail-closed.
+	TaskOwners TaskBeneficiarySource
 	// Runs persists plan executions so a resume can replay against the run's OWN plan.
 	Runs domain.RunStore
 	// Checkpoints persists mid-run state. Wired EXPLICITLY at the composition root rather

@@ -5,17 +5,20 @@ Set-Location (Join-Path $PSScriptRoot "..")
 
 $ledger = "docs/published-tool-parity.md"
 $coretools = "internal/infrastructure/mcpserve/coretools.go"
+$tasktools = "internal/infrastructure/mcpserve/tasktools.go"
 
 function Fail($msg) { Write-Host "FAIL: $msg"; exit 1 }
 
 if (-not (Test-Path $ledger)) { Fail "parity ledger missing: $ledger" }
 if (-not (Test-Path $coretools)) { Fail "core tools file missing: $coretools" }
+if (-not (Test-Path $tasktools)) { Fail "task tools file missing: $tasktools" }
 
 $ledgerText = Get-Content $ledger -Raw
-$coreText = Get-Content $coretools -Raw
+$coreText = (Get-Content $coretools -Raw) + (Get-Content $tasktools -Raw)
 $tick = [char]0x60  # backtick, kept out of string literals for PS 5.1's sake
 
-# Every published core tool name must have a ledger row.
+# Every published core tool name must have a ledger row. tasktools.go joined
+# the scanned set with ADR-0126 phase 4 (submit_task / get_task_status).
 $missing = $false
 $names = [regex]::Matches($coreText, 'Name:\s+"([a-z0-9_]+)"') |
     ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique

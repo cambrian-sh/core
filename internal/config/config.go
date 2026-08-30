@@ -1442,6 +1442,25 @@ type MCPConfig struct {
 	DefaultSessionBudget float64 `json:"default_session_budget,omitempty"`
 	// CallTimeoutMs bounds each MCP tool call (ADR-0043 D8). 0 ⇒ no per-call deadline.
 	CallTimeoutMs int `json:"call_timeout_ms,omitempty"`
+
+	// The ADR-0127 CL-2 contribution-lane knobs. All three use 0 ⇒ documented
+	// fallback semantics (no DefaultConfig pin), so an explicit 0 and "unset"
+	// behave identically and a committed tuning file cannot shadow them.
+	//
+	// WorkerCallTimeoutMs bounds one relayed contributed step (dispatch →
+	// worker report). 0 ⇒ falls back to call_timeout_ms — the CL-1 behaviour
+	// (one remote call's bound) preserved exactly when unset.
+	WorkerCallTimeoutMs int `json:"worker_call_timeout_ms,omitempty"`
+	// WorkerConsentTimeoutMs bounds a consent / "which machine?" prompt
+	// awaiting a human answer on the initiating conversation surface (ADR-0127
+	// D6/D7). 0 ⇒ 120000 (2 min). Fail-closed: an unanswered prompt DENIES.
+	WorkerConsentTimeoutMs int `json:"worker_consent_timeout_ms,omitempty"`
+	// WorkerParkDeadlineMs bounds how long a contributed step targeting an
+	// offline machine stays parked awaiting its return (ADR-0127 D6). 0 ⇒
+	// 86400000 (24h). Parked steps are memory-resident with the task lane —
+	// a kernel restart drops them (the known phase-4 residual); expiry fails
+	// the step visibly with a recorded decision, never silently.
+	WorkerParkDeadlineMs int `json:"worker_park_deadline_ms,omitempty"`
 }
 
 // MCPServerConfig describes one MCP server. Auth secrets are referenced by env

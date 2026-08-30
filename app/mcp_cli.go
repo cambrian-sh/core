@@ -46,7 +46,7 @@ func RunMCP(ctx context.Context, args []string) int {
 }
 
 const mcpUsage = `usage:
-  cambrian mcp token create <client-name> [--dir <kernel-dir>] [--rotate]
+  cambrian mcp token create <client-name> [--dir <kernel-dir>] [--rotate] [--owner <owner-principal>]
   cambrian mcp token revoke <client-name> [--dir <kernel-dir>]
   cambrian mcp token list   [--dir <kernel-dir>]
   cambrian mcp bridge [--endpoint <url>]   (token via CAMBRIAN_MCP_TOKEN)
@@ -54,6 +54,11 @@ const mcpUsage = `usage:
 Token commands are OFFLINE: stop the kernel first (the config store is
 single-process). The bridge relays a local stdio MCP client to a running
 kernel's HTTP endpoint.
+
+--owner registers the credential as a WORKER MACHINE's (ADR-0127): the client
+authenticates as machine:<client-name>, owned by the named owner principal,
+and its contributed tools attach only to that principal's tasks. The binding
+is durable beside the token and revoked with it.
 `
 
 // runMCPToken handles the credential lifecycle against the ADR-0101 store.
@@ -66,6 +71,9 @@ func runMCPToken(args []string) int {
 	fs := flag.NewFlagSet("mcp token "+verb, flag.ContinueOnError)
 	dir := fs.String("dir", ".", "kernel base directory (the one holding configs/)")
 	rotate := fs.Bool("rotate", false, "replace an already-issued credential")
+	// ADR-0127 D1: ownership is bound at token issuance, nowhere else — the
+	// worker's machine principal and its owner principal are one durable fact.
+	owner := fs.String("owner", "", "owner principal this machine credential belongs to (registers a worker)")
 	// Two-phase parse, because the flag package stops at the first positional:
 	// `token create ci-bot --rotate` must mean what it says, not silently drop
 	// the flag.
@@ -100,6 +108,10 @@ func runMCPToken(args []string) int {
 			fmt.Fprintln(os.Stderr, "client name must match ^[a-z][a-z0-9-]{0,47}$ (e.g. ci-bot, afsin-laptop)")
 			return 2
 		}
+		if *owner != "" && !validOwnerPrincipal(*owner) {
+			fmt.Fprintln(os.Stderr, "--owner must be a principal id: non-empty, no whitespace, at most 128 chars")
+			return 2
+		}
 		secretName := mcpserve.ClientSecretName(name)
 		if store.Configured(secretName) && !*rotate {
 			fmt.Fprintf(os.Stderr, "a credential for %q is already issued; use --rotate to replace it\n", name)
@@ -113,6 +125,18 @@ func runMCPToken(args []string) int {
 		if err := store.SetSecret(secretName, token); err != nil {
 			fmt.Fprintf(os.Stderr, "store token: %v\n", err)
 			return 1
+		}
+		// The owner binding lands beside the token, durably (ADR-0127 D1): it
+		// survives kernel restarts exactly as the token does, and revoke clears
+		// both. A rotate WITHOUT --owner keeps an existing binding — re-issuing
+		// a machine's credential does not orphan its fleet membership; re-issue
+		// WITH --owner re-binds it, because issuance is where ownership lives.
+		if *owner != "" {
+			if err := store.SetSecret(mcpserve.WorkerOwnerSecretName(name), *owner); err != nil {
+				fmt.Fprintf(os.Stderr, "store owner binding: %v\n", err)
+				return 1
+			}
+			fmt.Printf("worker %q registered, owned by principal %q\n", name, *owner)
 		}
 		// The one and only display. The store is write-only from here (LastFour
 		// aside) — that is the ADR-0101 property, not an inconvenience.
@@ -138,6 +162,13 @@ The token survives kernel restarts. Rotate with:  cambrian mcp token create %s -
 			fmt.Fprintf(os.Stderr, "revoke: %v\n", err)
 			return 1
 		}
+		// Central revocation is the point of durable machine credentials
+		// (ADR-0127): the owner binding dies with the token, so a revoked
+		// worker can neither authenticate nor be mistaken for a fleet member.
+		if err := store.ClearSecret(mcpserve.WorkerOwnerSecretName(name)); err != nil {
+			fmt.Fprintf(os.Stderr, "revoke owner binding: %v\n", err)
+			return 1
+		}
 		fmt.Printf("credential for %q revoked. Remove it from server.mcp.clients too — a configured client with no credential is warned about at every boot.\n", name)
 		return 0
 
@@ -161,6 +192,12 @@ The token survives kernel restarts. Rotate with:  cambrian mcp token create %s -
 			if store.Configured(mcpserve.ClientSecretName(c)) {
 				state = "issued (…" + store.LastFour(mcpserve.ClientSecretName(c)) + ")"
 			}
+			// A worker's owner binding is shown in full — it is an identity, not
+			// a credential, and an operator deciding whose fleet a machine is in
+			// needs the name, not four characters of it.
+			if ownerID := store.Resolve(mcpserve.WorkerOwnerSecretName(c), ""); ownerID != "" {
+				state += "  [worker, owner: " + ownerID + "]"
+			}
 			fmt.Printf("  %-24s %s\n", c, state)
 		}
 		return 0
@@ -178,6 +215,23 @@ func newMCPToken() (string, error) {
 		return "", err
 	}
 	return "cmcp_" + base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// validOwnerPrincipal bounds the --owner value loosely on purpose: owner
+// principal ids are whatever the identity plane binds to (IdentityBinding.
+// BoundToID), which the kernel does not constrain — only the shapes that can
+// never be an id (empty, whitespace-bearing, absurdly long) are refused.
+func validOwnerPrincipal(owner string) bool {
+	if owner == "" || len(owner) > 128 {
+		return false
+	}
+	for _, r := range owner {
+		switch r {
+		case ' ', '\t', '\n', '\r':
+			return false
+		}
+	}
+	return true
 }
 
 // validMCPClientName bounds client names the same way published tool names are

@@ -61,7 +61,22 @@ func callerScopeForPrincipal(
 	principal string,
 	surface domain.SurfaceRef,
 ) domain.TagSet {
-	ref := domain.PrincipalRef{ID: principal, Kind: domain.PrincipalUser}
+	return callerScopeForRef(ctx, authz, domain.PrincipalRef{ID: principal, Kind: domain.PrincipalUser}, surface)
+}
+
+// callerScopeForRef is the kind-agnostic form: the MCP task lane (ADR-0126
+// phase 4) opens sessions for AGENT-kind principals (`mcp:<client>`, or a
+// binding's target), whose scope term comes from the same ReadFilter question
+// the operator path asks — one decision point, two authenticated surfaces.
+func callerScopeForRef(
+	ctx context.Context,
+	authz domain.Authorizer,
+	ref domain.PrincipalRef,
+	surface domain.SurfaceRef,
+) domain.TagSet {
+	if authz == nil || ref.IsZero() {
+		return domain.TagSet{}
+	}
 	pred, dec := authz.ReadFilter(ctx, ref, surface)
 
 	// A nil predicate means the decision point authorizes NO read for this
@@ -72,7 +87,7 @@ func callerScopeForPrincipal(
 	if pred == nil {
 		slog.WarnContext(ctx, "BRAIN-01: no read authorized for the session opener; "+
 			"opening without a caller_scope",
-			slog.String("principal", principal),
+			slog.String("principal", ref.String()),
 			slog.String("reason", string(dec.Reason)))
 		return domain.TagSet{}
 	}
@@ -85,7 +100,7 @@ func callerScopeForPrincipal(
 		// widening and is the safe direction.
 		slog.WarnContext(ctx, "BRAIN-01: caller predicate is not representable as a "+
 			"caller_scope term (multi-clause CNF); opening without one rather than widening it",
-			slog.String("principal", principal))
+			slog.String("principal", ref.String()))
 		return domain.TagSet{}
 	}
 	return set

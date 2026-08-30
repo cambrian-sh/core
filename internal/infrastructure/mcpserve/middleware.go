@@ -25,11 +25,12 @@ import (
 
 // authMiddleware wraps the SDK handler.
 type authMiddleware struct {
-	next     http.Handler
-	clients  []string
-	resolve  func(name string) (string, bool)
-	authz    domain.Authorizer
-	identity domain.IdentityResolver
+	next        http.Handler
+	clients     []string
+	resolve     func(name string) (string, bool)
+	authz       domain.Authorizer
+	identity    domain.IdentityResolver
+	workerOwner func(client string) (string, bool)
 	// sem holds one buffered channel per configured client, built ONCE at
 	// construction so the request path only ever sends and receives — a map
 	// grown per request would be a data race in the one place that must not
@@ -54,12 +55,13 @@ func newAuthMiddleware(opts Options, next http.Handler) (http.Handler, error) {
 		perClient = config.DefaultMCPMaxConcurrentPerClient
 	}
 	m := &authMiddleware{
-		next:     next,
-		clients:  append([]string(nil), opts.Clients...),
-		resolve:  opts.ResolveSecret,
-		authz:    opts.Authorizer,
-		identity: opts.Identity,
-		sem:      make(map[string]chan struct{}, len(opts.Clients)),
+		next:        next,
+		clients:     append([]string(nil), opts.Clients...),
+		resolve:     opts.ResolveSecret,
+		authz:       opts.Authorizer,
+		identity:    opts.Identity,
+		workerOwner: opts.WorkerOwner,
+		sem:         make(map[string]chan struct{}, len(opts.Clients)),
 	}
 	for _, c := range m.clients {
 		m.sem[c] = make(chan struct{}, perClient)
@@ -93,17 +95,37 @@ func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// (this named client) and WHERE they arrived from (the mcp surface). A policy
 	// can target either — "external agents never read finance/*" is a surface
 	// rule; "mcp:ci-bot is read-only" is a principal rule.
-	principal, ok := m.principalFor(r.Context(), client)
-	if !ok {
-		// The credential was VALID and the sender is still refused, so this is a
-		// 403 with a reason rather than the deliberately silent 401 above: an
-		// operator who blocked this client, or a surface set to refuse anyone
-		// unbound, needs the client's own logs to say which — otherwise a
-		// correctly-issued token looks like a wrong one.
-		http.Error(w, "this client is not permitted on the mcp surface", http.StatusForbidden)
-		return
+	//
+	// ADR-0127 D1: a client whose credential carries a durable owner binding is
+	// a WORKER MACHINE. It authenticates as the machine principal — its own
+	// kind, so policy can target the whole class — carrying its owner principal
+	// on the context, and it skips the identity hop: the binding was made at
+	// token issuance and is exactly the fact a registry binding would state.
+	// The owner rides as an AgentPrincipal because that is what the D4 hop
+	// resolves a bound principal to, and the fleet key must equal what a task's
+	// beneficiary resolves to or the two never meet.
+	ctx := r.Context()
+	var principal domain.PrincipalRef
+	if m.workerOwner != nil {
+		if owner, isWorker := m.workerOwner(client); isWorker && owner != "" {
+			principal = domain.MachinePrincipal(client)
+			ctx = domain.WithWorkerOwner(ctx, domain.AgentPrincipal(owner))
+		}
 	}
-	ctx := domain.WithPrincipal(r.Context(), principal)
+	if principal.IsZero() {
+		p, ok := m.principalFor(ctx, client)
+		if !ok {
+			// The credential was VALID and the sender is still refused, so this is a
+			// 403 with a reason rather than the deliberately silent 401 above: an
+			// operator who blocked this client, or a surface set to refuse anyone
+			// unbound, needs the client's own logs to say which — otherwise a
+			// correctly-issued token looks like a wrong one.
+			http.Error(w, "this client is not permitted on the mcp surface", http.StatusForbidden)
+			return
+		}
+		principal = p
+	}
+	ctx = domain.WithPrincipal(ctx, principal)
 	ctx = domain.WithSurface(ctx, domain.SurfaceRef{Kind: domain.SurfaceMCP, ID: surfaceID})
 	if m.authz != nil {
 		// Carried on the context rather than closed over, so every seam
