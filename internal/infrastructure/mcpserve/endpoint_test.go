@@ -309,3 +309,74 @@ func TestNewHandler_EmptySchemaBecomesTheEmptyObject(t *testing.T) {
 		t.Errorf("input schema = %s, want an object-typed default", schema)
 	}
 }
+
+// ADR-0127 D3: a machine-only tool exists ONLY for worker machines. An
+// ordinary client neither sees it in tools/list nor can call it (three locks:
+// the listing filter, the call-side refusal here, and the handler's own check
+// — this test proves the two transport locks); a worker client sees and calls
+// it, with its owner principal on the context.
+func TestEndpoint_MachineOnlyToolsHiddenAndRefusedForOrdinaryClients(t *testing.T) {
+	stub := &stubTool{result: domain.PublishedToolResult{Text: "step handed out"}}
+	opts := Options{
+		Surface: domain.PublishedToolSurface{{
+			Owner: "contribution-lane",
+			Tool: domain.PublishedTool{
+				Name:        "poll_step",
+				Description: "worker transport",
+				InputSchema: []byte(`{"type":"object"}`),
+				Effects:     []domain.ToolEffect{domain.EffectRead, domain.EffectWrite},
+				MachineOnly: true,
+			},
+			Handler: stub,
+		}},
+		Clients: []string{"ci-bot", "afsin-laptop"},
+		ResolveSecret: staticSecrets(map[string]string{
+			"mcp:client:ci-bot":       "token-aaaa",
+			"mcp:client:afsin-laptop": "token-mmmm",
+		}),
+		WorkerOwner: func(client string) (string, bool) {
+			if client == "afsin-laptop" {
+				return "owner-afsin", true
+			}
+			return "", false
+		},
+	}
+
+	// The ordinary client: the tool is invisible…
+	ordinary := serve(t, opts, "token-aaaa")
+	listed, err := ordinary.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	if len(listed.Tools) != 0 {
+		t.Fatalf("an ordinary client was shown the worker transport: %+v", listed.Tools)
+	}
+	// …and calling it anyway is a tool-level refusal, not a served call.
+	res, err := ordinary.CallTool(t.Context(), &mcpsdk.CallToolParams{Name: "poll_step"})
+	if err != nil {
+		t.Fatalf("tools/call: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("an ordinary client's poll_step call was served")
+	}
+	if stub.principal.ID != "" {
+		t.Fatal("the refused call reached the handler")
+	}
+
+	// The worker client: listed, served, owner on the context.
+	worker := serve(t, opts, "token-mmmm")
+	listed, err = worker.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("worker tools/list: %v", err)
+	}
+	if len(listed.Tools) != 1 || listed.Tools[0].Name != "poll_step" {
+		t.Fatalf("worker tools/list = %+v, want poll_step", listed.Tools)
+	}
+	res, err = worker.CallTool(t.Context(), &mcpsdk.CallToolParams{Name: "poll_step"})
+	if err != nil || res.IsError {
+		t.Fatalf("worker call refused: err=%v res=%+v", err, res)
+	}
+	if stub.principal.Kind != domain.PrincipalMachine || stub.principal.ID != "afsin-laptop" {
+		t.Errorf("handler saw principal %v, want machine:afsin-laptop", stub.principal)
+	}
+}

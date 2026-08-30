@@ -55,6 +55,11 @@ type InboundService struct {
 	// which is the pre-Wave-3 behaviour and the correct one in a deployment with
 	// evidence capture disabled.
 	capture *ChatCapture
+	// consent consumes a beneficiary's reply to a pending worker-consent
+	// prompt (ADR-0127 CL-2) before the turn machinery sees it. nil ⇒ the
+	// hook is inert and chat behaviour is byte-identical to a build without
+	// the bridge.
+	consent ConsentAnswerGate
 	logger  *slog.Logger
 	newID   func() string
 	// Profile is stamped on conversations this path opens. Customer is the honest
@@ -80,6 +85,12 @@ func NewInboundService(convs ConversationBinder, ingresses domain.IngressResolve
 // nil is the default and means "run the turn directly" — the behaviour every
 // deployment has today.
 func (s *InboundService) SetRouter(r domain.TurnRouter) { s.router = r }
+
+// SetConsentGate wires the ADR-0127 CL-2 conversation consent bridge into the
+// inbound path. nil is the default and leaves every message on its ordinary
+// course — the hook exists so an 'approve' aimed at a pending prompt is
+// consumed as the ANSWER rather than starting a chat turn about the word.
+func (s *InboundService) SetConsentGate(g ConsentAnswerGate) { s.consent = g }
 
 // SetCapture wires chat capture (FIVE-PLANES-BUILD Wave-3 C1, seam S7).
 //
@@ -192,6 +203,17 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 			if binding.Blocked {
 				return domain.NewBlockedSenderError(externalID)
 			}
+			// A `principal` binding names WHO IS SPEAKING, so the turn runs under
+			// that principal — mirroring the MCP middleware's identity hop. Without
+			// this the binding was spent on the Blocked boolean and the bound
+			// sender's turn executed under the chat worker's own agent identity.
+			// `group`/`room_group` bind a container the sender reaches by
+			// membership, so the sender keeps its own identity there, exactly as on
+			// the MCP path; an unbound sender is governed by the stranger policy
+			// below, unchanged.
+			if binding.BoundToKind == domain.BindPrincipal && binding.BoundToID != "" {
+				ctx = domain.WithPrincipal(ctx, domain.AgentPrincipal(binding.BoundToID))
+			}
 		} else if pol := s.identities.StrangerPolicyFor(ctx, surface); pol.Mode == domain.StrangerRefuseUntilBound {
 			// Refused, and the caller REPLIES once rather than ignoring: silent
 			// ignoring is indistinguishable from a broken bot, so the person
@@ -203,6 +225,27 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 	conv, err := s.resolveConversation(ctx, addr, m.Policy)
 	if err != nil {
 		return err
+	}
+
+	// ADR-0127 CL-2: while a worker-consent prompt is pending on THIS
+	// conversation, the beneficiary's matching reply is the prompt's answer —
+	// consumed here, before capture and before the turn, so approving a step
+	// does not also run a chat turn about the word "approve". Only a sender
+	// whose resolved principal BINDING equals the prompt's beneficiary can be
+	// consumed (the gate re-checks that invariant; nobody else can approve
+	// another owner's machines): a group binding names a container the sender
+	// reaches by membership, not the speaker, so it passes no principal here,
+	// exactly like an unbound sender. Every non-answer — wrong sender, wrong
+	// words — falls through untouched and the prompt keeps waiting on its
+	// fail-closed timeout. nil gate ⇒ this block is inert.
+	if s.consent != nil {
+		var replier domain.PrincipalRef
+		if bound && binding.BoundToKind == domain.BindPrincipal && binding.BoundToID != "" {
+			replier = domain.AgentPrincipal(binding.BoundToID)
+		}
+		if s.consent.HandleReply(ctx, conv.ID, text, replier) {
+			return nil
+		}
 	}
 
 	// FIVE-PLANES-BUILD Wave-3 C1: the message becomes evidence HERE — after

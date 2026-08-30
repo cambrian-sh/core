@@ -10,15 +10,18 @@ cd "$(dirname "$0")/.."
 
 LEDGER="docs/published-tool-parity.md"
 CORETOOLS="internal/infrastructure/mcpserve/coretools.go"
+TASKTOOLS="internal/infrastructure/mcpserve/tasktools.go"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 [ -f "$LEDGER" ] || fail "parity ledger missing: $LEDGER"
 [ -f "$CORETOOLS" ] || fail "core tools file missing: $CORETOOLS"
+[ -f "$TASKTOOLS" ] || fail "task tools file missing: $TASKTOOLS"
 
-# Every published core tool name must have a ledger row.
+# Every published core tool name must have a ledger row. tasktools.go joined
+# the scanned set with ADR-0126 phase 4 (submit_task / get_task_status).
 missing=0
-for name in $(grep -oP 'Name:\s+"\K[a-z0-9_]+' "$CORETOOLS" | sort -u); do
+for name in $(grep -hoP 'Name:\s+"\K[a-z0-9_]+' "$CORETOOLS" "$TASKTOOLS" | sort -u); do
   if ! grep -q "\`$name\`" "$LEDGER"; then
     echo "FAIL: published tool '$name' has no row in $LEDGER" >&2
     missing=1

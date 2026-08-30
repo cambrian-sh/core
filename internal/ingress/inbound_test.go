@@ -42,16 +42,20 @@ func (f *fakeBinder) CreateConversation(_ context.Context, c domain.Conversation
 type fakeTurns struct {
 	mu  sync.Mutex
 	ran []struct{ conv, text string }
-	err error
+	// prins captures the principal each turn's context carried, one per run —
+	// the zero PrincipalRef when nothing was stamped.
+	prins []domain.PrincipalRef
+	err   error
 }
 
-func (f *fakeTurns) RunTurn(_ context.Context, conv, text, _ string) error {
+func (f *fakeTurns) RunTurn(ctx context.Context, conv, text, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return f.err
 	}
 	f.ran = append(f.ran, struct{ conv, text string }{conv, text})
+	f.prins = append(f.prins, domain.PrincipalFromContext(ctx))
 	return nil
 }
 
@@ -195,5 +199,86 @@ func TestAccept_StoreFailureSurfaces(t *testing.T) {
 	s := NewInboundService(b, registered(), &fakeTurns{})
 	if err := s.Accept(context.Background(), InboundMessage{Sender: domain.AgentPrincipal(tgAgent), ExternalID: "tg:1", Text: "hi"}); err == nil {
 		t.Error("a store failure must not look like a delivered message")
+	}
+}
+
+// A sender bound to a principal speaks AS that principal: the turn context
+// carries the bound identity — the same hop the MCP middleware performs —
+// instead of the chat worker's own agent identity.
+func TestAccept_BoundSenderRunsUnderTheBoundPrincipal(t *testing.T) {
+	s, _, turns := inboundFixture(t)
+	s.SetIdentityResolver(boundIdentities{bound: true, binding: domain.IdentityBinding{
+		Surface: "chat:telegram", ExternalID: "tg:12345",
+		BoundToKind: domain.BindPrincipal, BoundToID: "afsin",
+	}})
+
+	if err := s.Accept(context.Background(), InboundMessage{Sender: domain.AgentPrincipal(tgAgent), ExternalID: "tg:12345", Text: "check my laptop"}); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if len(turns.prins) != 1 || turns.prins[0] != domain.AgentPrincipal("afsin") {
+		t.Errorf("the turn must run under the bound principal; got %+v", turns.prins)
+	}
+}
+
+// A group binding names a container, not a speaker: the sender keeps its own
+// identity and the group's terms reach it through the decision point.
+func TestAccept_GroupBindingDoesNotImpersonateTheGroup(t *testing.T) {
+	s, _, turns := inboundFixture(t)
+	s.SetIdentityResolver(boundIdentities{bound: true, binding: domain.IdentityBinding{
+		Surface: "chat:telegram", ExternalID: "tg:12345",
+		BoundToKind: domain.BindGroup, BoundToID: "support-team",
+	}})
+
+	if err := s.Accept(context.Background(), InboundMessage{Sender: domain.AgentPrincipal(tgAgent), ExternalID: "tg:12345", Text: "hello"}); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if len(turns.prins) != 1 || turns.prins[0] != (domain.PrincipalRef{}) {
+		t.Errorf("a group binding must not stamp a principal; got %+v", turns.prins)
+	}
+}
+
+// An unbound sender under the surface-default stranger policy is admitted
+// exactly as before: no principal is stamped, the surface stays the identity.
+func TestAccept_UnboundSenderKeepsSurfaceIdentity(t *testing.T) {
+	s, _, turns := inboundFixture(t)
+	s.SetIdentityResolver(boundIdentities{bound: false, mode: domain.StrangerSurfaceDefault})
+
+	if err := s.Accept(context.Background(), InboundMessage{Sender: domain.AgentPrincipal(tgAgent), ExternalID: "tg:12345", Text: "hello"}); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if len(turns.prins) != 1 || turns.prins[0] != (domain.PrincipalRef{}) {
+		t.Errorf("an unbound sender must not run under a principal; got %+v", turns.prins)
+	}
+}
+
+// refuse_until_bound still refuses an unbound sender before any conversation
+// exists — the binding hop must not soften the stranger policy.
+func TestAccept_UnboundSenderStillRefusedWhenPolicySaysSo(t *testing.T) {
+	s, b, turns := inboundFixture(t)
+	s.SetIdentityResolver(boundIdentities{bound: false, mode: domain.StrangerRefuseUntilBound})
+
+	err := s.Accept(context.Background(), InboundMessage{Sender: domain.AgentPrincipal(tgAgent), ExternalID: "tg:12345", Text: "hello"})
+	if !errors.Is(err, ErrSenderNotBound) {
+		t.Fatalf("expected ErrSenderNotBound, got %v", err)
+	}
+	if b.createN != 0 || len(turns.ran) != 0 {
+		t.Errorf("a refused sender must leave no trace: %d convs, %d turns", b.createN, len(turns.ran))
+	}
+}
+
+// A blocked binding is still dropped at the door, bound principal or not.
+func TestAccept_BlockedBindingStillRefuses(t *testing.T) {
+	s, b, turns := inboundFixture(t)
+	s.SetIdentityResolver(boundIdentities{bound: true, binding: domain.IdentityBinding{
+		Surface: "chat:telegram", ExternalID: "tg:12345",
+		BoundToKind: domain.BindPrincipal, BoundToID: "afsin", Blocked: true,
+	}})
+
+	err := s.Accept(context.Background(), InboundMessage{Sender: domain.AgentPrincipal(tgAgent), ExternalID: "tg:12345", Text: "hello"})
+	if !domain.IsBlockedSender(err) {
+		t.Fatalf("expected a blocked-sender refusal, got %v", err)
+	}
+	if b.createN != 0 || len(turns.ran) != 0 {
+		t.Errorf("a blocked sender must leave no trace: %d convs, %d turns", b.createN, len(turns.ran))
 	}
 }

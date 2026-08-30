@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 )
 
@@ -111,6 +112,16 @@ func NewInMemoryToolRegistry() *InMemoryToolRegistry {
 // an honest answer. Strict mode (which also refuses ABSENT effects) is applied by
 // the caller before it gets here — see discovery.LoadRegistry.
 func (r *InMemoryToolRegistry) Register(t SystemTool) {
+	// ADR-0127 D4: the local: namespace is RESERVED for contributed worker
+	// tools, which resolve per task from the beneficiary's fleet and are never
+	// registered here — a kernel-global registration under that prefix would be
+	// one owner's tool in every owner's dispatch path, and it would let a
+	// registered tool shadow (or be shadowed by) a contributed one.
+	if strings.HasPrefix(t.Name, LocalToolPrefix) {
+		slog.Error("ADR-0127: refusing to register a tool in the reserved local: namespace",
+			"tool", t.Name)
+		return
+	}
 	normalized, err := ValidateRegistration(t, false)
 	if err != nil {
 		slog.Error("ADR-0086: refusing to register a tool with an invalid effect declaration",

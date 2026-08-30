@@ -471,6 +471,14 @@ func TestDefaultConfig_KnownValues(t *testing.T) {
 		{"CrossVerifyRate", ex.Verification.CrossVerifyRate, 0.05},
 		{"Graph.DecayFactor", ex.Graph.DecayFactor, 0.75},
 		{"Telemetry.TraceSamplingRate", cfg.Telemetry.TraceSamplingRate, 1.0},
+		// ADR-0127 CL-2: the contribution-lane knobs default 0 with documented
+		// consumer fallbacks (worker_call_timeout_ms → call_timeout_ms;
+		// consent → 120s; park → 24h), so an explicit 0 and "unset" behave
+		// identically and a committed tuning file cannot shadow them.
+		{"MCP.CallTimeoutMs", cfg.MCP.CallTimeoutMs, 60000},
+		{"MCP.WorkerCallTimeoutMs", cfg.MCP.WorkerCallTimeoutMs, 0},
+		{"MCP.WorkerConsentTimeoutMs", cfg.MCP.WorkerConsentTimeoutMs, 0},
+		{"MCP.WorkerParkDeadlineMs", cfg.MCP.WorkerParkDeadlineMs, 0},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {

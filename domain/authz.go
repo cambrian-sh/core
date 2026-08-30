@@ -48,6 +48,13 @@ const (
 	// PrincipalSystem is the kernel itself acting on behalf of no one (maintenance
 	// reads: temporal decay & GC, spreading activation, episodic indexing).
 	PrincipalSystem PrincipalKind = "system"
+	// PrincipalMachine is a consumer-owned worker machine on the contribution
+	// lane (ADR-0127 D1) — a broker holding an outbound connection, contributing
+	// tools to the agents attending ITS OWNER's tasks. Its own kind, not an
+	// agent: policy must be able to target "every worker" as one class, and a
+	// machine principal the scope store has never heard of fails closed like
+	// any other.
+	PrincipalMachine PrincipalKind = "machine"
 )
 
 // PrincipalRef identifies WHO is asking. It is established by the kernel from the
@@ -72,6 +79,13 @@ func AgentPrincipal(agentID string) PrincipalRef {
 // "<none>". The agent plane had the same defect and was fixed; this is its counterpart.
 func UserPrincipal(userID string) PrincipalRef {
 	return PrincipalRef{ID: userID, Kind: PrincipalUser}
+}
+
+// MachinePrincipal is a named worker machine (ADR-0127 D1), established from
+// its authenticated machine credential — never from a request payload (INV-5).
+// String() renders it as `machine:<name>`, the id the ADR's vocabulary uses.
+func MachinePrincipal(machine string) PrincipalRef {
+	return PrincipalRef{ID: machine, Kind: PrincipalMachine}
 }
 
 // SystemPrincipal is the kernel-internal principal for maintenance reads. It is
@@ -242,6 +256,76 @@ const (
 	// identities: a denial that listed who you would have to BE is a denial that
 	// enumerates other people.
 	ReasonNotAParty DecisionReason = "not_a_party"
+
+	// ReasonWorkerNotOwned: a contributed local:<machine>/<tool> step named a
+	// machine that is not in the task beneficiary's fleet (ADR-0127 D1/D9 —
+	// authority owner must equal task beneficiary, per call). An unknown
+	// machine, a foreign machine, and a task with no beneficiary all refuse
+	// under this one reason on purpose: distinguishing them would let a caller
+	// probe whose fleet a machine is in, the same enumeration ReasonNotAParty
+	// declines.
+	ReasonWorkerNotOwned DecisionReason = "worker_not_owned"
+
+	// The CL-2 contributed-step reasons (ADR-0127 D6/D7). Every consent outcome
+	// and every parking event lands on the decision seam under its own reason —
+	// receipts are the point, so none of these collapse into a generic one.
+	//
+	// Consent (D7): the pre-dispatch gate's outcome for a contributed step.
+	// The first two are ALLOWS (recorded, not refused); the rest are refusals.
+	//
+	// ReasonConsentAuto: a read-only step under the `auto` knob dispatched
+	// silently — receipted, never prompted (owner ruling 2026-08-20).
+	ReasonConsentAuto DecisionReason = "consent_auto"
+	// ReasonConsentApproved: a surface answered the approve prompt yes; Detail
+	// names the approver.
+	ReasonConsentApproved DecisionReason = "consent_approved"
+	// ReasonConsentOnMachine: the machine's knob is on-machine-only — the step
+	// dispatched carrying the consent marker; the broker prompts locally and a
+	// consent-denied report is a recorded refusal (ReasonConsentDeniedOnMachine).
+	ReasonConsentOnMachine DecisionReason = "consent_on_machine"
+	// ReasonConsentDenied: a surface answered the approve prompt no.
+	ReasonConsentDenied DecisionReason = "consent_denied"
+	// ReasonConsentDeniedOnMachine: the worker's report said consent was denied
+	// at the machine (on-machine-only knob) — a refusal, not a worker error.
+	ReasonConsentDeniedOnMachine DecisionReason = "consent_denied_on_machine"
+	// ReasonConsentTimeout: the approve prompt went unanswered within the
+	// consent window (or the caller gave up waiting) — fail-closed.
+	ReasonConsentTimeout DecisionReason = "consent_timeout"
+	// ReasonConsentUnroutable: consent was required but there was no way to ask
+	// — no consent controller wired, or no surface subscribed — fail-closed.
+	ReasonConsentUnroutable DecisionReason = "consent_unroutable"
+
+	// Parking (D6): a step targeting an owned-but-offline machine. The first
+	// two are events on an eventually-dispatched step; the last two end it.
+	//
+	// ReasonStepParked: the step parked awaiting the machine; Detail names the
+	// deadline.
+	ReasonStepParked DecisionReason = "step_parked"
+	// ReasonParkDispatched: the machine polled back in and the parked step
+	// proceeded through the normal consent-checked dispatch path.
+	ReasonParkDispatched DecisionReason = "park_dispatched"
+	// ReasonParkExpired: the deadline passed with the machine still offline —
+	// the step fails VISIBLY (named error), never silently.
+	ReasonParkExpired DecisionReason = "park_expired"
+	// ReasonParkAbandoned: the caller (plan/context) gave up while the step was
+	// parked; the step never dispatched.
+	ReasonParkAbandoned DecisionReason = "park_abandoned"
+	// ReasonRelayFailed: the step reached a live machine and the relay failed
+	// anyway — the machine stopped answering, the call deadline passed, the
+	// transport broke. Recorded because a machine that vanishes MID-STEP is the
+	// lane failure an operator most needs to see, and without this the journal
+	// showed only the consent decision that preceded it.
+	ReasonRelayFailed DecisionReason = "relay_failed"
+
+	// The selection ladder (D6) on a bare local:<capability> step.
+	//
+	// ReasonMachineSelected: the ladder resolved a machine (sole capable,
+	// configured default, or a surface's answer); Detail names it and the rung.
+	ReasonMachineSelected DecisionReason = "machine_selected"
+	// ReasonWorkerUnresolved: the ladder ended without an answer (no candidate,
+	// unanswered/denied "which machine?" prompt, no way to ask) — refused,
+	// never guessed.
+	ReasonWorkerUnresolved DecisionReason = "worker_unresolved"
 )
 
 // PolicyContribution records that a named policy, linked at a named container,

@@ -150,13 +150,45 @@ func (s *Server) resolveBindingFromHandoff(ctx context.Context, meta map[string]
 	return resolver.ResolveLease(domain.LeaseID(lease))
 }
 
+// TaskBeneficiarySource resolves a task session to the beneficiary owner
+// principal the task is being done FOR (ADR-0126 phase 4 / ADR-0127 D4).
+// Implemented by the MCP task lane's in-memory index at the composition root;
+// zero means "this task carries no beneficiary", which every consumer treats
+// fail-closed (no beneficiary ⇒ no contributed fleet).
+type TaskBeneficiarySource interface {
+	BeneficiaryOf(task domain.SessionID) domain.PrincipalRef
+}
+
 // withCallerSession threads the resolved session into ctx for the read/write chokepoints
 // that look it up (scope re-derivation, content-node ownership, the same-session step
 // filter). A caller with no session leaves ctx untouched, so "no session" stays
 // distinguishable from "session with an empty ID".
+//
+// It ALSO seeds the task's beneficiary owner principal (ADR-0126 phase 4):
+// resolved lease → task session → TaskOwners index, kernel-side end to end, so
+// menu building (AvailableTools → contributedTools) and the dispatch-side
+// ownership check both start from a fact no caller header can assert (INV-5).
+// A session with no beneficiary seeds nothing and contributed resolution stays
+// fail-closed — the pre-phase-4 behaviour for every non-task session.
 func (s *Server) withCallerSession(ctx context.Context) context.Context {
-	if sid := s.resolveCallerSession(ctx); sid != "" {
-		return domain.WithSessionID(ctx, sid)
+	sid := s.resolveCallerSession(ctx)
+	if sid == "" {
+		return ctx
+	}
+	ctx = domain.WithSessionID(ctx, sid)
+	if s.TaskOwners != nil {
+		if owner := s.TaskOwners.BeneficiaryOf(sid); !owner.IsZero() {
+			ctx = domain.WithTaskBeneficiary(ctx, owner)
+		}
+	}
+	// ADR-0127 CL-2: the ordering conversation, when the lease carries one, so
+	// a consent prompt raised at the tool chokepoint can route to the
+	// conversation surface that ordered the work (ADR-0098). Same trust rule as
+	// everything above: only the lease binding is believed, never a header a
+	// caller could set. Cheap (a second lookup on the already-resolved lease);
+	// the session-record second hop stays resolveCallerConversation's business.
+	if b, known := s.resolveCallerBinding(ctx); known && b.ConversationID != "" {
+		ctx = domain.WithConversationID(ctx, b.ConversationID)
 	}
 	return ctx
 }

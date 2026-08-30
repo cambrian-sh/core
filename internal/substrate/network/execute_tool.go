@@ -91,6 +91,14 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 	s.reportProgress(ctx, domain.PhaseRunningTool)
 
 	agentID := agentIDFromMetadata(ctx)
+	// Stamp the caller principal onto ctx for the write-side chokepoints. The authz
+	// interceptor only seeds a principal for the premium agent-facing services, and
+	// this RPC sits on /cambrian.Orchestrator/ — without the stamp the memory
+	// classifier saw a zero principal on every tool-result write and the
+	// mnemonic_action row landed untagged.
+	if agentID != "" {
+		ctx = domain.WithPrincipal(ctx, domain.AgentPrincipal(agentID))
+	}
 	sessionToken := leaseIDOf(req.GetLeaseId(), req.GetSessionTokenId())
 
 	// The operator-facing counterpart, which DOES name the tool.
@@ -138,6 +146,12 @@ func (s *Server) ListTools(ctx context.Context, _ *pb.ListToolsRequest) (*pb.Lis
 	if s.ToolExecutor == nil {
 		return &pb.ListToolsResponse{}, nil
 	}
+	// ADR-0126 phase 4 / ADR-0127 D4: resolve the caller's task session from its
+	// lease and seed the task's beneficiary, so the menu built below can attach
+	// the beneficiary's live worker fleet. This is the MENU half of the
+	// contributed-tool chain; ExecuteTool re-derives the same facts at call time,
+	// so a menu miss here can never widen what dispatch allows.
+	ctx = s.withCallerSession(ctx)
 	// ADR-0044: when the caller supplies a relevance query (via x-tool-query
 	// metadata), serve the top-k task-relevant tools instead of the full menu.
 	// k from x-tool-k (default 3). No query ⇒ the full granted menu (unchanged).

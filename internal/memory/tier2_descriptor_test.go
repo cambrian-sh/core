@@ -556,3 +556,100 @@ func TestCommitItem_StepRecordGetsSummaryKeepsTextNoOffload(t *testing.T) {
 		t.Error("a non-tool memory must NOT get a content_cid")
 	}
 }
+
+// The action record carries the tool's classification tags, so the write
+// chokepoint classifies it from principal + tool domain instead of seeing a nil
+// hint and committing the row untagged.
+func TestRecordToolOutput_ActionCarriesClassificationTags(t *testing.T) {
+	store := &collectStore{}
+	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
+	agent.RecordExperiential = true
+	agent.RecordOutcomes = true
+
+	err := agent.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
+		ToolName: "write_file", ArgsJSON: []byte(`{"path":"a.md"}`), Output: []byte(`{"ok":1}`),
+		IsMutation: true, ClassificationTags: []string{"filesystem"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var action *domain.Document
+	for _, d := range store.docs {
+		if d.DocumentType == domain.DocTypeMnemonicAction {
+			action = d
+		}
+	}
+	if action == nil {
+		t.Fatalf("mutation must be saved as a mnemonic_action; got %+v", store.docs)
+	}
+	tags, _ := action.Metadata["tags"].([]string)
+	if len(tags) != 1 || tags[0] != "filesystem" {
+		t.Errorf("action record must carry the tool's classification tags; got %v", action.Metadata["tags"])
+	}
+}
+
+// The read-fact lane carries the same tags on the pending doc, so they survive
+// the Tier-1 channel into the Tier-2 commit.
+func TestRecordToolOutput_ReadFactCarriesClassificationTags(t *testing.T) {
+	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
+	agent.RecordExperiential = true
+	agent.RecordOutcomes = true
+
+	err := agent.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
+		ToolName: "web_search", Output: []byte(`{"results":["x"]}`), FactEligible: true,
+		ClassificationTags: []string{"web"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.pendingItems) != 1 {
+		t.Fatalf("read output must be pending; got %d items", len(agent.pendingItems))
+	}
+	tags, _ := agent.pendingItems[0].Doc.Metadata["tags"].([]string)
+	if len(tags) != 1 || tags[0] != "web" {
+		t.Errorf("pending fact must carry the tool's classification tags; got %v",
+			agent.pendingItems[0].Doc.Metadata["tags"])
+	}
+}
+
+// ownerCapturingCS records the session the Put context carried, so the blob's
+// owner stamp is observable.
+type ownerCapturingCS struct {
+	fakeContentStore
+	owner domain.SessionID
+}
+
+func (f *ownerCapturingCS) Put(ctx context.Context, data []byte, nodeType string, labels []string, snippet string) (domain.CID, error) {
+	f.owner, _ = domain.SessionIDFromContext(ctx)
+	return f.fakeContentStore.Put(ctx, data, nodeType, labels, snippet)
+}
+
+// The drain's CAS offload is stamped with the item's originating session — an
+// unstamped Put writes owner "" and CanReadContentNode then admits ANY caller,
+// while the LTM row the blob backs is session-scoped.
+func TestCommitItem_OffloadIsOwnedByTheItemSession(t *testing.T) {
+	store := &captureSaveStore{}
+	cs := &ownerCapturingCS{}
+	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
+	agent.RecordExperiential = true
+	agent.RecordOutcomes = true
+	agent.ContentStore = cs
+
+	s := scoredItem{
+		Item: pendingItem{
+			Doc: &domain.Document{
+				ID: "t1", DocumentType: domain.DocTypeMnemonicFact,
+				Text:     `tool[web_search]: {"big":"body"}`,
+				Metadata: map[string]interface{}{"source_agent": "ToolOutput"},
+			},
+			SessionID: "sess-42",
+		},
+		Tier:       "FACT_ONLY",
+		Descriptor: "Web search results.",
+	}
+	agent.commitItem(context.Background(), s)
+
+	if cs.owner != "sess-42" {
+		t.Errorf("offloaded blob must be owned by the item's session; got %q", cs.owner)
+	}
+}

@@ -61,6 +61,13 @@ func startMCPEndpoint(cfg *config.Config, surface domain.PublishedToolSurface,
 		// ingresses use, so a client bound here and a person bound on Telegram are
 		// one binding registry rather than two vocabularies for one question.
 		Identity: identity,
+		// ADR-0127 D1: a client with a durable owner binding beside its token is
+		// a worker machine; resolved through the same late-bound named-secret
+		// seam as the token itself, so issuance, rotation and revocation reach
+		// running requests without a restart.
+		WorkerOwner: func(client string) (string, bool) {
+			return resolveNamedSecret(mcpserve.WorkerOwnerSecretName(client))
+		},
 		// D12: the server-instructions text every client receives at initialize.
 		Instructions: mcpserve.CoreInstructions,
 		// Same literal as the operator handshake (see SetHandshake), so the two

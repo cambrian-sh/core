@@ -354,6 +354,15 @@ type KernelServices struct {
 	// ingress delivery path.
 	DeliverProgress func(ctx context.Context, conversationID, text string, final bool) error
 
+	// WorkerConsent is the ADR-0127 CL-2 consent/ladder prompt hub. A
+	// conversation-surface plugin (Telegram, chat console) subscribes through
+	// Watch to render "approve <tool> on <machine>?" / "which machine?" prompts
+	// and parking notices, and answers through Submit. The kernel-side gate is
+	// fail-closed: with nothing subscribed, every prompt-requiring contributed
+	// step refuses with a recorded decision. nil in tests and in kernels built
+	// without the lane — a plugin must degrade rather than panic.
+	WorkerConsent domain.WorkerConsentHub
+
 	SQL *pgxpool.Pool
 
 	// AgentExists reports whether an agent is registered. The policy plugin needs

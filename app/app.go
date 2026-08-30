@@ -1059,6 +1059,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		}
 	}
 
+	// ADR-0127 CL-2: the consent/ladder prompt hub. Constructed here — before
+	// the plugin seam — so a conversation-surface plugin (Telegram, console)
+	// can subscribe via Watch and answer via Submit; consulted by the tool
+	// executor pre-dispatch below. With nothing subscribed every
+	// prompt-requiring contributed step refuses: the sealed fail-closed
+	// default, not a degradation.
+	workerConsent := domain.NewInMemoryConsentController(
+		time.Duration(cfg.MCP.WorkerConsentTimeoutMs) * time.Millisecond) // 0 ⇒ 120s
+
 	kernelSvc := KernelServices{
 		// ADR-0085: the policy plugin owns its own tables and needs to tell a
 		// registered-but-unprofiled agent from an unknown principal, so it gets the
@@ -1066,6 +1075,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// nothing else about the kernel.
 		SetProgressSink: progressSink.set,
 		DeliverProgress: progressOut.deliver,
+		WorkerConsent:   workerConsent,
 		SQL:             vec.Pool(),
 		// ADR-0104 D6.2: a plugin resolves a reference by ASKING, never by holding
 		// a store. The reader runs Authorizer.ReadFilter for the plugin's principal,
@@ -1300,6 +1310,26 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		slog.Warn("ADR-0084: chat pool configured but the conversation store is unavailable; chat lane disabled")
 	}
 
+	// ADR-0127 CL-2: the conversation consent bridge — the OSS production
+	// subscriber on the worker-consent hub. It renders approve/choose_machine
+	// prompts (and parking notices) as plain text into the ORDERING
+	// conversation through the chat lane's own Emit — store first, then the
+	// ADR-0090 D8 delivery seam — and the inbound gate below consumes the
+	// beneficiary's matching reply as the answer. Pure mechanism, default-on
+	// wherever the chat lane runs; without a chat lane there is no
+	// conversation to render into and the controller's fail-closed refusals
+	// stand exactly as CL-2 shipped them.
+	var consentBridge *ingress.ConsentBridge
+	if chatTurns != nil {
+		consentBridge = ingress.NewConsentBridge(workerConsent, chatTurns,
+			time.Duration(cfg.MCP.WorkerConsentTimeoutMs)*time.Millisecond) // 0 ⇒ the controller's 120 s
+		lifecycles = append(lifecycles, Lifecycle{
+			Name:  "consent-bridge",
+			Start: consentBridge.Start,
+			Stop:  consentBridge.Stop,
+		})
+	}
+
 	var watchHandler domain.WatchConfigHandler
 	if opts.NewSignalReceiver != nil {
 		signalRcv, watchHandler = opts.NewSignalReceiver(kernelSvc)
@@ -1341,6 +1371,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// CALL time, so whether the plugin built before or after this line cannot
 		// silently leave chat unrouted.
 		inbound.SetRouter(deferredTurnRouter{holder: &turnRouters})
+		// ADR-0127 CL-2: the beneficiary's reply to a pending consent prompt
+		// is consumed as the ANSWER before the turn runs. Guarded so a nil
+		// *ConsentBridge never becomes a non-nil interface — without the
+		// bridge the hook stays nil and chat is byte-identical to today.
+		if consentBridge != nil {
+			inbound.SetConsentGate(consentBridge)
+		}
 		// FIVE-PLANES-BUILD Wave-3 C1 (seam S7): chat was the ONE entry point
 		// whose traffic never reached the archive. Wired to the same ingestor
 		// every other lane writes through, so a captured message obeys ADR-0105's
@@ -1533,8 +1570,48 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		}
 		mcpCoreBackends.Bind(searchLane, answerLane, docLister, docReader)
 	}
+	// ADR-0127 CL-1 (kernel half): the worker hub — the held-poll transport
+	// core and the live FleetSource the tool executor resolves contributed
+	// menus through. Constructed before the endpoint because poll_step /
+	// report_step (machine-only) publish over it; the fleet is EMPTY until a
+	// worker's broker polls, so no menu advertises a contributed tool that
+	// cannot be served (REC-02). The broker itself is a separate premium
+	// binary (owner ruling 2026-08-20) and is not here.
+	workerHub := domain.NewWorkerHub()
+	// CL-2: the lane-specific relay deadline (mcp.worker_call_timeout_ms);
+	// unset falls back to mcp.call_timeout_ms — the CL-1 behaviour preserved.
+	workerRelayTimeoutMs := cfg.MCP.WorkerCallTimeoutMs
+	if workerRelayTimeoutMs <= 0 {
+		workerRelayTimeoutMs = cfg.MCP.CallTimeoutMs
+	}
+	workerHub.CallTimeout = time.Duration(workerRelayTimeoutMs) * time.Millisecond
+	slog.Info("ADR-0127: contribution lane armed (CL-2: consent enforcement + selection ladder + parking; fleet empty until workers poll)",
+		"relay_timeout_ms", workerRelayTimeoutMs,
+		"consent_timeout_ms", cfg.MCP.WorkerConsentTimeoutMs,
+		"park_deadline_ms", cfg.MCP.WorkerParkDeadlineMs)
+
+	// ADR-0126 D10 phase 4: the task lane — submit_task / get_task_status. The
+	// dispatch closure is byte-for-byte the operator lane's shape (SendFn /
+	// planSubmitter): the pre-opened session rides x-session-id into the ONE
+	// Execute entrypoint, so there is no second task engine behind the endpoint.
+	// The lane's in-memory index is also the production seeder of the task
+	// beneficiary (cambrianServer.TaskOwners): lease → task session → owner
+	// principal → the owner's contributed fleet in attending agents' menus.
+	mcpTaskLane := newMCPTaskLane(sessionMgr, authorizer,
+		func(ctx context.Context, sessionID, task string) (string, map[string]string, error) {
+			mdCtx := metadata.NewIncomingContext(ctx,
+				metadata.Pairs("x-session-id", sessionID))
+			resp, execErr := cambrianServer.Execute(mdCtx, &pb.Handoff{Payload: &pb.Object{Data: []byte(task)}})
+			if execErr != nil {
+				return "", nil, execErr
+			}
+			return string(resp.GetPayload().GetData()), resp.GetMetadata(), nil
+		})
+	cambrianServer.TaskOwners = mcpTaskLane
+
 	mcpEndpoint, err := startMCPEndpoint(cfg,
-		append(mcpserve.CoreTools(mcpCoreBackends), composed.publishedTools...),
+		append(append(append(mcpserve.CoreTools(mcpCoreBackends), mcpserve.TaskTools(mcpTaskLane)...),
+			domain.ContributionLaneTools(workerHub)...), composed.publishedTools...),
 		authorizer, opts.IdentityResolver)
 	if err != nil {
 		return nil, err
@@ -1619,6 +1696,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Registry:   toolReg,
 		Grants:     toolGrants,
 		MCPHandler: mcpHandler, // ADR-0043: nil ⇒ no MCP tools (opt-in)
+		// ADR-0127: contributed local:<machine>/<tool> steps resolve through
+		// the hub's live fleet and relay through it, D8-fenced. The executor
+		// stays the reference monitor; the hub is only transport.
+		Fleet:        workerHub,
+		LocalHandler: domain.WorkerRelayHandler{Hub: workerHub},
+		// CL-2 (ADR-0127 D6/D7): the pre-dispatch consent gate and the
+		// selection ladder's ask channel; and the parking window for steps
+		// whose target machine is offline (0 ⇒ 24h).
+		Consent:      workerConsent,
+		ParkDeadline: time.Duration(cfg.MCP.WorkerParkDeadlineMs) * time.Millisecond,
 		Handler: &toolproc.ProcessHandler{
 			PythonExec:     cfg.Metabolism.PythonExecutable,
 			ToolFiles:      toolFiles,

@@ -21,15 +21,17 @@ func staticSecrets(m map[string]string) func(string) (string, bool) {
 // capture records the context the wrapped handler was reached with, so a test
 // can assert what the middleware established rather than what it logged.
 type capture struct {
-	reached   bool
-	principal domain.PrincipalRef
-	surface   domain.SurfaceRef
+	reached     bool
+	principal   domain.PrincipalRef
+	surface     domain.SurfaceRef
+	workerOwner domain.PrincipalRef
 }
 
 func (c *capture) ServeHTTP(_ http.ResponseWriter, r *http.Request) {
 	c.reached = true
 	c.principal = domain.PrincipalFromContext(r.Context())
 	c.surface = domain.SurfaceFromContext(r.Context())
+	c.workerOwner = domain.WorkerOwnerFromContext(r.Context())
 }
 
 func testMiddleware(t *testing.T, next http.Handler, maxPerClient int) http.Handler {
@@ -123,6 +125,64 @@ func TestMiddleware_ValidTokenEstablishesPrincipalAndSurface(t *testing.T) {
 	}
 	if next.surface.ID == "" {
 		t.Error("surface carries no id; it should name the entry point, as the operator plane names its console")
+	}
+}
+
+// ADR-0127 D1: a client whose credential carries a durable owner binding is a
+// worker machine — it authenticates as the machine principal (its own kind, so
+// policy can target the class) CARRYING its owner principal on the context.
+// An ordinary client with no binding is untouched by the seam.
+func TestMiddleware_MachineTokenAuthenticatesAsWorkerCarryingItsOwner(t *testing.T) {
+	next := &capture{}
+	h, err := newAuthMiddleware(Options{
+		Clients: []string{"afsin-laptop", "ci-bot"},
+		ResolveSecret: staticSecrets(map[string]string{
+			"mcp:client:afsin-laptop": "token-mmmm",
+			"mcp:client:ci-bot":       "token-aaaa",
+		}),
+		WorkerOwner: func(client string) (string, bool) {
+			if client == "afsin-laptop" {
+				return "owner-afsin", true
+			}
+			return "", false
+		},
+	}, next)
+	if err != nil {
+		t.Fatalf("newAuthMiddleware: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer token-mmmm")
+	h.ServeHTTP(rec, req)
+	if !next.reached {
+		t.Fatalf("worker credential did not reach the handler (status %d)", rec.Code)
+	}
+	if next.principal.Kind != domain.PrincipalMachine || next.principal.ID != "afsin-laptop" {
+		t.Errorf("principal = %v, want machine:afsin-laptop", next.principal)
+	}
+	if next.workerOwner != domain.AgentPrincipal("owner-afsin") {
+		t.Errorf("worker owner = %v, want the issuance binding owner-afsin", next.workerOwner)
+	}
+
+	// The ordinary client keeps the phase-1/2 identity path verbatim.
+	other := &capture{}
+	h2, err := newAuthMiddleware(Options{
+		Clients:       []string{"ci-bot"},
+		ResolveSecret: staticSecrets(map[string]string{"mcp:client:ci-bot": "token-aaaa"}),
+		WorkerOwner:   func(string) (string, bool) { return "", false },
+	}, other)
+	if err != nil {
+		t.Fatalf("newAuthMiddleware: %v", err)
+	}
+	req2 := httptest.NewRequest(http.MethodPost, "/", nil)
+	req2.Header.Set("Authorization", "Bearer token-aaaa")
+	h2.ServeHTTP(httptest.NewRecorder(), req2)
+	if other.principal.ID != "mcp:ci-bot" || other.principal.Kind != domain.PrincipalAgent {
+		t.Errorf("ordinary client principal = %v, want mcp:ci-bot (agent)", other.principal)
+	}
+	if !other.workerOwner.IsZero() {
+		t.Errorf("ordinary client carries a worker owner: %v", other.workerOwner)
 	}
 }
 

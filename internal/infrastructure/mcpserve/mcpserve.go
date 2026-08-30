@@ -59,6 +59,13 @@ const (
 	// secretPrefix is the ADR-0101 named-secret prefix a client's bearer token is
 	// stored under: `mcp:client:<name>`.
 	secretPrefix = "mcp:client:"
+	// workerOwnerPrefix is the ADR-0101 named entry a machine credential's owner
+	// principal is stored under: `mcp:worker-owner:<name>` (ADR-0127 D1, the
+	// `--owner` flag on token create). Beside the token on purpose: the owner
+	// binding must live and die with the credential — durable across kernel
+	// restarts, revoked with it — and a binding stored anywhere else could
+	// survive the token it qualifies.
+	workerOwnerPrefix = "mcp:worker-owner:"
 )
 
 // ClientSecretName is the ADR-0101 named secret holding one client's bearer
@@ -66,6 +73,12 @@ const (
 // token written under a name the endpoint does not look up is a credential that
 // exists and never works, which is the least diagnosable of failures.
 func ClientSecretName(client string) string { return secretPrefix + client }
+
+// WorkerOwnerSecretName is the ADR-0101 named entry holding one machine
+// client's owner principal id (ADR-0127 D1). Exported for the same reason
+// ClientSecretName is: the issuing side (`cambrian mcp token create --owner`)
+// and the checking side (Options.WorkerOwner) must not drift.
+func WorkerOwnerSecretName(client string) string { return workerOwnerPrefix + client }
 
 // Options is everything the endpoint needs from the composition root.
 type Options struct {
@@ -102,6 +115,16 @@ type Options struct {
 	// principal of their choosing, block one outright, or govern a client nobody
 	// bound through the surface's stranger policy.
 	Identity domain.IdentityResolver
+	// WorkerOwner resolves a client name to the owner principal id its machine
+	// credential was bound to at issuance (`cambrian mcp token create <machine>
+	// --owner <owner-principal>`, ADR-0127 D1), read through the same ADR-0101
+	// store the token lives in. A hit means this client IS a worker machine: it
+	// authenticates as the machine principal (`machine:<name>`) carrying its
+	// owner principal on the context, and the Identity hop is skipped — the
+	// owner binding was made at issuance and is exactly the fact a binding
+	// would otherwise state. nil, or a miss, means an ordinary client
+	// (phase-1/2 behaviour verbatim).
+	WorkerOwner func(client string) (owner string, ok bool)
 	// ServerName / ServerVersion are the implementation identity reported at
 	// initialize.
 	ServerName    string
@@ -153,6 +176,7 @@ func newServer(opts Options) (*mcpsdk.Server, error) {
 	srv := mcpsdk.NewServer(&mcpsdk.Implementation{Name: name, Version: version},
 		&mcpsdk.ServerOptions{Instructions: opts.Instructions})
 	effects := make(map[string][]domain.ToolEffect, len(opts.Surface))
+	machineOnly := make(map[string]bool, len(opts.Surface))
 	owners := make(map[string]string, len(opts.Surface))
 	for _, entry := range opts.Surface {
 		// Registry.PublishTool already rejects duplicates AMONG PLUGINS, but the
@@ -175,19 +199,23 @@ func newServer(opts Options) (*mcpsdk.Server, error) {
 		// have.
 		srv.AddTool(tool, invoke(entry))
 		effects[entry.Tool.Name] = entry.Tool.Effects
+		machineOnly[entry.Tool.Name] = entry.Tool.MachineOnly
 	}
 	// ADR-0126 D8, listing side. The call side (invoke) is what actually holds —
 	// a client may call a tool it was never shown — but a read-only principal
 	// being SHOWN `remember` is an invitation to a refusal, and the filter is
 	// what keeps the menu honest per caller.
-	srv.AddReceivingMiddleware(listToolsFilter(effects))
+	srv.AddReceivingMiddleware(listToolsFilter(effects, machineOnly))
 	return srv, nil
 }
 
 // listToolsFilter drops tools whose declared effects this caller may not
 // exercise from tools/list answers. Same decision point, same question as the
-// call side — one policy, asked at two moments.
-func listToolsFilter(effects map[string][]domain.ToolEffect) mcpsdk.Middleware {
+// call side — one policy, asked at two moments. A machine-only tool (ADR-0127
+// D3) is additionally dropped for every non-machine principal: the worker
+// transport is not part of any ordinary client's surface, and listing it
+// would advertise a refusal.
+func listToolsFilter(effects map[string][]domain.ToolEffect, machineOnly map[string]bool) mcpsdk.Middleware {
 	return func(next mcpsdk.MethodHandler) mcpsdk.MethodHandler {
 		return func(ctx context.Context, method string, req mcpsdk.Request) (mcpsdk.Result, error) {
 			res, err := next(ctx, method, req)
@@ -198,8 +226,12 @@ func listToolsFilter(effects map[string][]domain.ToolEffect) mcpsdk.Middleware {
 			if !ok {
 				return res, err
 			}
+			isMachine := domain.PrincipalFromContext(ctx).Kind == domain.PrincipalMachine
 			kept := make([]*mcpsdk.Tool, 0, len(listed.Tools))
 			for _, t := range listed.Tools {
+				if machineOnly[t.Name] && !isMachine {
+					continue
+				}
 				dec := authorizeCall(ctx, domain.PublishedTool{Name: t.Name, Effects: effects[t.Name]})
 				if dec.Allowed {
 					kept = append(kept, t)
@@ -244,6 +276,11 @@ func sdkTool(t domain.PublishedTool) (*mcpsdk.Tool, error) {
 // declared effects, then run, then map the result.
 func invoke(entry domain.PublishedToolEntry) mcpsdk.ToolHandler {
 	return func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		// ADR-0127 D3: a machine-only tool refuses every non-machine principal
+		// at the call side too — a client may call a tool it was never shown.
+		if entry.Tool.MachineOnly && domain.PrincipalFromContext(ctx).Kind != domain.PrincipalMachine {
+			return toolError("refused: this tool is callable only by worker machines (machine:* principals)"), nil
+		}
 		// ADR-0126 D8, call side. The listing filter is the other half; this one
 		// is what actually holds, because a client may call a tool it was never
 		// shown.
