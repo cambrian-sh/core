@@ -802,9 +802,11 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		//                      single embeddings). Self-gates on RecordExperiential,
 		//                      which stays false permanently.
 		//   WritePlanScene   — the OUTCOME RECORD. Self-gates on RecordOutcomes
-		//                      (execution.experience_records_enabled), default false.
-		// Wiring the recorder therefore does NOT restore the removed design; with both
-		// flags at their defaults this is exactly the current no-write-back behaviour.
+		//                      (execution.experience_records_enabled), default TRUE
+		//                      since the owner decision of 2026-07-28 (ADR-0095).
+		// Wiring the recorder therefore does NOT restore the removed design: at the
+		// defaults the raw path stays off and only the abstraction-only outcome
+		// record is written.
 		MemoryRecorder:         s.MemoryAgent,
 		Surprise:               s.SurpriseOracle, // ADR-0049 A2.3: may be nil ⇒ surprise unknown (-1)
 		WorkspaceStage:         s.WorkspaceStage,

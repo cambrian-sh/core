@@ -110,8 +110,10 @@ type Agent struct {
 	// purpose: that flag guards the deprecated RAW path (auto-embedded step results
 	// and tool payloads) which stays off permanently, while this one guards the
 	// abstraction-only path that replaces it. Conflating them would mean re-enabling
-	// the design that was removed on 2026-07-18. Default false — a new lever lands as
-	// a default-off arm. Set from execution.experience_records_enabled.
+	// the design that was removed on 2026-07-18. Set from
+	// execution.experience_records_enabled, whose config default is TRUE (owner
+	// decision 2026-07-28, internal/config/config.go); the field's Go zero value is
+	// false, so an Agent built without config records nothing.
 	RecordOutcomes bool
 
 	// ExperienceStore persists the episode parent row an outcome record hangs from
