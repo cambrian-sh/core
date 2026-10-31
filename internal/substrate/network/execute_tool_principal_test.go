@@ -32,6 +32,7 @@ func (h staticToolHandler) Execute(context.Context, domain.ToolCall) ([]byte, er
 // so the LTM write is classified from principal + tool domain — not committed
 // under a zero principal with a nil hint.
 func TestExecuteTool_StampsPrincipalAndClassificationTags(t *testing.T) {
+	t.Parallel()
 	reg := domain.NewInMemoryToolRegistry()
 	reg.Register(domain.SystemTool{
 		Name:               "write_file",
@@ -72,6 +73,7 @@ func TestExecuteTool_StampsPrincipalAndClassificationTags(t *testing.T) {
 // distinguishable from an authenticated one, and the authorizer decides what
 // that means.
 func TestExecuteTool_AnonymousCallerStampsNoPrincipal(t *testing.T) {
+	t.Parallel()
 	reg := domain.NewInMemoryToolRegistry()
 	reg.Register(domain.SystemTool{Name: "write_file", DataWriteKinds: []string{"filesystem"}})
 	rec := &captureToolOutput{}

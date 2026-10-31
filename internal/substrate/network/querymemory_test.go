@@ -64,6 +64,7 @@ func makeQueryMemoryServer(searcher domain.MemorySearcher) *Server {
 }
 
 func TestQueryMemory_ReturnsResults(t *testing.T) {
+	t.Parallel()
 	searcher := &mockMemorySearcher{
 		results: []domain.SearchResult{
 			{
@@ -94,6 +95,7 @@ func TestQueryMemory_ReturnsResults(t *testing.T) {
 // window (config recall_top_k), and the transport truncates the blend-ranked
 // prefix to what the caller asked for. TopK==0 (unset) returns the full window.
 func TestQueryMemory_HonorsTopK(t *testing.T) {
+	t.Parallel()
 	full := make([]domain.SearchResult, 5)
 	for i := range full {
 		full[i] = domain.SearchResult{
@@ -134,6 +136,7 @@ func TestQueryMemory_HonorsTopK(t *testing.T) {
 // the agent-facing text and exposes the full body's cid via metadata, rather than
 // shipping the full Text into the agent's context.
 func TestQueryMemory_ServesSummaryAndContentCID(t *testing.T) {
+	t.Parallel()
 	searcher := &mockMemorySearcher{
 		results: []domain.SearchResult{{
 			Document: domain.Document{
@@ -164,6 +167,7 @@ func TestQueryMemory_ServesSummaryAndContentCID(t *testing.T) {
 // A fact with no Summary falls back to its full Text (short facts are their own gist).
 // ADR-0049 D4: x-lane="actions" routes to the actions lane; default is facts.
 func TestQueryMemory_RoutesActionsLane(t *testing.T) {
+	t.Parallel()
 	searcher := &mockMemorySearcher{
 		results:       []domain.SearchResult{{Document: domain.Document{ID: "f", Text: "a fact"}, Score: 0.9}},
 		actionResults: []domain.SearchResult{{Document: domain.Document{ID: "a", Text: "write_file → ok"}, Score: 0.9}},
@@ -185,6 +189,7 @@ func TestQueryMemory_RoutesActionsLane(t *testing.T) {
 // The retired "entity" lane is no longer a case, so it falls through to the default fact
 // lane like any other unknown value — an unknown lane must never be an error.
 func TestQueryMemory_RoutesPrecedentLane(t *testing.T) {
+	t.Parallel()
 	searcher := &mockMemorySearcher{
 		results:          []domain.SearchResult{{Document: domain.Document{ID: "f", Text: "a fact"}, Score: 0.9}},
 		precedentResults: []domain.SearchResult{{Document: domain.Document{ID: "p", Text: "SITUATION: x | OUTCOME: failure"}, Score: 0.8}},
@@ -203,6 +208,7 @@ func TestQueryMemory_RoutesPrecedentLane(t *testing.T) {
 }
 
 func TestQueryMemory_NoSummaryFallsBackToText(t *testing.T) {
+	t.Parallel()
 	searcher := &mockMemorySearcher{
 		results: []domain.SearchResult{{
 			Document: domain.Document{ID: "doc-s", Text: "a short fact"},
@@ -217,6 +223,7 @@ func TestQueryMemory_NoSummaryFallsBackToText(t *testing.T) {
 }
 
 func TestQueryMemory_NoMatchesReturnsEmptyResponse(t *testing.T) {
+	t.Parallel()
 	srv := makeQueryMemoryServer(&mockMemorySearcher{results: []domain.SearchResult{}})
 	resp, err := srv.QueryMemory(ctxWithAgentID("agent-x"), &pb.MemoryRequest{Query: "test", TopK: 10})
 	if err != nil {
@@ -228,6 +235,7 @@ func TestQueryMemory_NoMatchesReturnsEmptyResponse(t *testing.T) {
 }
 
 func TestQueryMemory_NilSearcher_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	srv := makeQueryMemoryServer(nil)
 	resp, err := srv.QueryMemory(context.Background(), &pb.MemoryRequest{Query: "test"})
 	if err != nil {
@@ -239,6 +247,7 @@ func TestQueryMemory_NilSearcher_ReturnsEmpty(t *testing.T) {
 }
 
 func TestQueryMemory_SearcherError_Propagated(t *testing.T) {
+	t.Parallel()
 	srv := makeQueryMemoryServer(&mockMemorySearcher{err: fmt.Errorf("db unavailable")})
 	_, err := srv.QueryMemory(context.Background(), &pb.MemoryRequest{Query: "test"})
 	if err == nil {
@@ -247,6 +256,7 @@ func TestQueryMemory_SearcherError_Propagated(t *testing.T) {
 }
 
 func TestQueryMemory_ScoreAndMetadataMapped(t *testing.T) {
+	t.Parallel()
 	searcher := &mockMemorySearcher{
 		results: []domain.SearchResult{
 			{
@@ -280,6 +290,7 @@ func TestQueryMemory_ScoreAndMetadataMapped(t *testing.T) {
 // freshness signal. The kernel-stamped author keys (source_agent/session_id, D9) must
 // survive the fold unchanged.
 func TestQueryMemory_FoldsProvenanceAndFreshness(t *testing.T) {
+	t.Parallel()
 	created := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
 	accessed := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
 	searcher := &mockMemorySearcher{
@@ -324,6 +335,7 @@ func TestQueryMemory_FoldsProvenanceAndFreshness(t *testing.T) {
 // A zero CreatedAt/LastAccessedAt must NOT emit a bogus epoch timestamp — the SDK
 // omits the attribute when the key is absent, so the kernel must omit the key.
 func TestQueryMemory_OmitsZeroTimestamps(t *testing.T) {
+	t.Parallel()
 	searcher := &mockMemorySearcher{
 		results: []domain.SearchResult{{
 			Document: domain.Document{ID: "doc-z", Text: "f", ActivationStrength: 0.1},

@@ -34,6 +34,7 @@ func ctxWithMD(pairs ...string) context.Context {
 // A lease presented on the NEW header resolves to the session the kernel bound to it —
 // never to the lease ID itself. This is the core of the Phase-0 fix.
 func TestResolveCallerSession_LeaseHeader_ResolvesToBoundSession(t *testing.T) {
+	t.Parallel()
 	s, gw := newLeaseServer(t)
 	lease, err := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Second)
 	if err != nil {
@@ -49,6 +50,7 @@ func TestResolveCallerSession_LeaseHeader_ResolvesToBoundSession(t *testing.T) {
 // A lease the kernel never issued must NOT be reinterpreted as a session ID. Otherwise an
 // agent could name any session simply by putting a string in the header.
 func TestResolveCallerSession_UnknownLease_YieldsNoSession(t *testing.T) {
+	t.Parallel()
 	s, _ := newLeaseServer(t)
 	if got := s.resolveCallerSession(ctxWithMD(leaseHeader, "sess-forged-12345")); got != "" {
 		t.Errorf("an unknown lease must resolve to no session, got %q", got)
@@ -58,6 +60,7 @@ func TestResolveCallerSession_UnknownLease_YieldsNoSession(t *testing.T) {
 // A live but UNBOUND lease is known, so it resolves to no session — not to the lease ID.
 // This is the scout/retrieval/bypass case: real credential, no task session behind it.
 func TestResolveCallerSession_KnownButUnboundLease_YieldsNoSession(t *testing.T) {
+	t.Parallel()
 	s, gw := newLeaseServer(t)
 	lease, _ := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Second)
 
@@ -70,6 +73,7 @@ func TestResolveCallerSession_KnownButUnboundLease_YieldsNoSession(t *testing.T)
 // x-session-id header. The kernel must resolve it as a lease, never treat the lease ID as
 // a session ID — which is what silently disabled ADR-0034 D13, ADR-0048 D4 and D1.
 func TestResolveCallerSession_LegacyHeaderCarryingLease_ResolvesToSession(t *testing.T) {
+	t.Parallel()
 	s, gw := newLeaseServer(t)
 	lease, _ := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Second)
 	gw.BindLease(lease, domain.LeaseBinding{SessionID: "task-session-2"})
@@ -86,6 +90,7 @@ func TestResolveCallerSession_LegacyHeaderCarryingLease_ResolvesToSession(t *tes
 // The operator plane keeps working: it sends a REAL session ID on the legacy header, which
 // is not a known lease and must pass through untouched.
 func TestResolveCallerSession_LegacyHeaderCarryingSessionID_PassesThrough(t *testing.T) {
+	t.Parallel()
 	s, _ := newLeaseServer(t)
 	if got := s.resolveCallerSession(ctxWithMD(sessionHeader, "operator-session-7")); got != "operator-session-7" {
 		t.Errorf("operator session ID must pass through, got %q", got)
@@ -94,6 +99,7 @@ func TestResolveCallerSession_LegacyHeaderCarryingSessionID_PassesThrough(t *tes
 
 // Sending both headers (the SDK's transition posture) must agree with the lease header.
 func TestResolveCallerSession_BothHeaders_PrefersLease(t *testing.T) {
+	t.Parallel()
 	s, gw := newLeaseServer(t)
 	lease, _ := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Second)
 	gw.BindLease(lease, domain.LeaseBinding{SessionID: "task-session-3"})
@@ -105,6 +111,7 @@ func TestResolveCallerSession_BothHeaders_PrefersLease(t *testing.T) {
 }
 
 func TestResolveCallerSession_NoMetadata_IsEmpty(t *testing.T) {
+	t.Parallel()
 	s, _ := newLeaseServer(t)
 	if got := s.resolveCallerSession(context.Background()); got != "" {
 		t.Errorf("expected empty session with no metadata, got %q", got)
@@ -114,6 +121,7 @@ func TestResolveCallerSession_NoMetadata_IsEmpty(t *testing.T) {
 // A gateway that does not implement domain.LeaseResolver must not panic and must leave the
 // legacy path working.
 func TestResolveCallerSession_NoResolver_FallsBackToLegacyHeader(t *testing.T) {
+	t.Parallel()
 	s := &Server{}
 	if got := s.resolveCallerSession(ctxWithMD(sessionHeader, "operator-session-8")); got != "operator-session-8" {
 		t.Errorf("expected legacy pass-through without a resolver, got %q", got)
@@ -126,6 +134,7 @@ func TestResolveCallerSession_NoResolver_FallsBackToLegacyHeader(t *testing.T) {
 // withCallerSession must leave ctx untouched when the caller has no session, so
 // "no session" stays distinguishable from "session with an empty ID".
 func TestWithCallerSession_NoSession_LeavesCtxUnseeded(t *testing.T) {
+	t.Parallel()
 	s, _ := newLeaseServer(t)
 	out := s.withCallerSession(context.Background())
 	if sid, ok := domain.SessionIDFromContext(out); ok {
@@ -136,6 +145,7 @@ func TestWithCallerSession_NoSession_LeavesCtxUnseeded(t *testing.T) {
 // After Complete, the lease is gone from the registry, so it stops resolving. A completed
 // lease must not keep granting access to its session.
 func TestResolveCallerSession_CompletedLease_StopsResolving(t *testing.T) {
+	t.Parallel()
 	s, gw := newLeaseServer(t)
 	lease, _ := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Second)
 	gw.BindLease(lease, domain.LeaseBinding{SessionID: "task-session-4"})
@@ -152,6 +162,7 @@ func TestResolveCallerSession_CompletedLease_StopsResolving(t *testing.T) {
 // store must never recognise one. If this ever passes, the two namespaces have merged
 // again.
 func TestLeaseIDIsNeverASession(t *testing.T) {
+	t.Parallel()
 	gw := NewLLMGateway(config.ExecutionConfig{Session: config.SessionConfig{SessionTokenTTLMultiplier: 5}, LLM: config.LLMConfig{LLMGatewayMaxConcurrency: 1}})
 	lease, _ := gw.Acquire(context.Background(), domain.StepAllocation{}, 4096, time.Second)
 

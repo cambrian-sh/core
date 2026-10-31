@@ -12,6 +12,7 @@ import (
 // Cycle 1 (tracer) — Emit assigns sequence numbers 1,2,3… and ReadFrom(0)
 // returns the events in ascending Seq order.
 func TestSpool_EmitSequencesAndReadFromZeroReturnsAll(t *testing.T) {
+	t.Parallel()
 	s := operator.NewSpool(operator.SpoolConfig{})
 
 	seq1 := s.Emit(domain.AgentReadyEvent{AgentID: "a"})
@@ -39,6 +40,7 @@ func TestSpool_EmitSequencesAndReadFromZeroReturnsAll(t *testing.T) {
 // Cycle 2 — Concurrent Emit assigns strictly unique sequence numbers (the single
 // sequencer holds under contention). Run with -race.
 func TestSpool_ConcurrentEmitAssignsUniqueSeqs(t *testing.T) {
+	t.Parallel()
 	s := operator.NewSpool(operator.SpoolConfig{MaxEvents: 10000})
 
 	const n = 500
@@ -74,6 +76,7 @@ func TestSpool_ConcurrentEmitAssignsUniqueSeqs(t *testing.T) {
 
 // Cycle 3 — ReadFrom(cursor) returns only events with Seq > cursor.
 func TestSpool_ReadFromCursorReturnsOnlyNewer(t *testing.T) {
+	t.Parallel()
 	s := operator.NewSpool(operator.SpoolConfig{})
 	for i := 0; i < 5; i++ {
 		s.Emit(domain.AgentReadyEvent{})
@@ -91,6 +94,7 @@ func TestSpool_ReadFromCursorReturnsOnlyNewer(t *testing.T) {
 // Cycle 4 — When the count cap evicts the oldest events, a cursor below the
 // retained tail reports resync (and returns no partial/gapped slice).
 func TestSpool_CountCapEvictionTriggersResync(t *testing.T) {
+	t.Parallel()
 	s := operator.NewSpool(operator.SpoolConfig{MaxEvents: 2})
 	for i := 0; i < 5; i++ { // events 1..5; only 4,5 retained
 		s.Emit(domain.AgentReadyEvent{})
@@ -117,6 +121,7 @@ func TestSpool_CountCapEvictionTriggersResync(t *testing.T) {
 
 // Cycle 5 — Events older than the age window are evicted (injected clock).
 func TestSpool_AgeCapEvictsOldEvents(t *testing.T) {
+	t.Parallel()
 	s := operator.NewSpool(operator.SpoolConfig{MaxAge: 100 * time.Millisecond, MaxEvents: 1000})
 	cur := time.Unix(0, 0)
 	s.SetClock(func() time.Time { return cur })
@@ -142,6 +147,7 @@ func TestSpool_AgeCapEvictsOldEvents(t *testing.T) {
 // Cycle 6 — A caller already current (cursor >= latest seq) gets no events and
 // no resync, even at the boundary.
 func TestSpool_CurrentCallerGetsNothingNoResync(t *testing.T) {
+	t.Parallel()
 	s := operator.NewSpool(operator.SpoolConfig{})
 	s.Emit(domain.AgentReadyEvent{})
 	s.Emit(domain.AgentReadyEvent{}) // latest seq = 2
@@ -160,6 +166,7 @@ func TestSpool_CurrentCallerGetsNothingNoResync(t *testing.T) {
 // Cycle 7 — Emit never blocks on (and is never bounded by) a reader: with no one
 // draining, Emitting far past the cap completes and the spool stays bounded.
 func TestSpool_EmitNeverBlocksAndStaysBounded(t *testing.T) {
+	t.Parallel()
 	const cap = 8
 	s := operator.NewSpool(operator.SpoolConfig{MaxEvents: cap})
 
@@ -182,6 +189,7 @@ func TestSpool_EmitNeverBlocksAndStaysBounded(t *testing.T) {
 // Cycle 8 — A reader waiting on Updates() captured before an Emit is woken by
 // that Emit (no missed wakeup for an event racing the wait).
 func TestSpool_UpdatesWakesWaiterOnEmit(t *testing.T) {
+	t.Parallel()
 	s := operator.NewSpool(operator.SpoolConfig{})
 
 	ch := s.Updates() // captured before any Emit

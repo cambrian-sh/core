@@ -37,6 +37,7 @@ func postDoc(t *testing.T, handler http.Handler, doc domain.ExternalDocument, to
 
 // Cycle 4 — valid token + valid JSON → 202 Accepted, document enqueued.
 func TestWebhookReceiver_ValidRequest_Returns202(t *testing.T) {
+	t.Parallel()
 	var enqueued []domain.ExternalDocument
 	enq := func(doc domain.ExternalDocument) bool {
 		enqueued = append(enqueued, doc)
@@ -55,6 +56,7 @@ func TestWebhookReceiver_ValidRequest_Returns202(t *testing.T) {
 
 // Cycle 5 — wrong token → 401 Unauthorized.
 func TestWebhookReceiver_WrongToken_Returns401(t *testing.T) {
+	t.Parallel()
 	handler := NewWebhookReceiver("secret-token", func(_ domain.ExternalDocument) bool { return true })
 	resp := postDoc(t, handler, webhookDoc(), "wrong-token")
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -64,6 +66,7 @@ func TestWebhookReceiver_WrongToken_Returns401(t *testing.T) {
 
 // Cycle 6 — missing token → 401.
 func TestWebhookReceiver_MissingToken_Returns401(t *testing.T) {
+	t.Parallel()
 	handler := NewWebhookReceiver("secret-token", func(_ domain.ExternalDocument) bool { return true })
 	resp := postDoc(t, handler, webhookDoc(), "")
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -73,6 +76,7 @@ func TestWebhookReceiver_MissingToken_Returns401(t *testing.T) {
 
 // Cycle 7 — malformed JSON → 400 Bad Request.
 func TestWebhookReceiver_MalformedJSON_Returns400(t *testing.T) {
+	t.Parallel()
 	handler := NewWebhookReceiver("tok", func(_ domain.ExternalDocument) bool { return true })
 	req := httptest.NewRequest("POST", "/v1/ingest", strings.NewReader("{invalid"))
 	req.Header.Set("X-Ingest-Token", "tok")
@@ -85,6 +89,7 @@ func TestWebhookReceiver_MalformedJSON_Returns400(t *testing.T) {
 
 // Cycle 8 — full queue → 503 Service Unavailable.
 func TestWebhookReceiver_FullQueue_Returns503(t *testing.T) {
+	t.Parallel()
 	// Enqueue func returns false to simulate full queue.
 	handler := NewWebhookReceiver("tok", func(_ domain.ExternalDocument) bool { return false })
 	resp := postDoc(t, handler, webhookDoc(), "tok")

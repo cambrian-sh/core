@@ -15,7 +15,9 @@ import (
 // routing hint for the recall path.
 //
 // This vocabulary lived in edge_extractor.go, which was deleted with the rest of
-// the ADR-0052 LLM edge-extraction lane (superseded by ADR-0053 chunk_triplets).
+// the write-time LLM edge-extraction lane: ADR-0053 D2 as first written, superseded
+// by its 2026-06-25 revision (chunk_triplets). Core cited that lane as "ADR-0052"
+// until 2026-10-31; that number belongs to Verbal Self-Reflection, not to this.
 // It moved here because this file is its only remaining consumer: the meta-kind
 // is a property of the entity index, not of the extractor that used to fill it.
 type EntityMetaKind string

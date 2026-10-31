@@ -32,6 +32,7 @@ func (p *stubSyncProcessor) ProcessSync(_ context.Context, sig domain.Signal) (*
 
 // Cycle 1 — Execute CHAT decision with SyncProcessor-capable SignalReceiver calls ProcessSync.
 func TestServer_Execute_ChatDecision_CallsProcessSync(t *testing.T) {
+	t.Parallel()
 	wantHandoff := &domain.Handoff{
 		FromAgent: "conversation-daemon",
 		Payload:   &domain.Payload{Type: "text", Data: []byte("Hello!")},
@@ -68,6 +69,7 @@ func TestServer_Execute_ChatDecision_CallsProcessSync(t *testing.T) {
 
 // Cycle 2 — Execute CHAT decision with no SyncProcessor still returns not_implemented (graceful).
 func TestServer_Execute_ChatDecision_NoSyncProcessor_ReturnsNotImplemented(t *testing.T) {
+	t.Parallel()
 	// SignalReceiver does not implement SyncProcessor (NoOpSignalReceiver only has OnSignal).
 	noopReceiver := &reactive.NoOpSignalReceiver{}
 
@@ -92,6 +94,7 @@ func TestServer_Execute_ChatDecision_NoSyncProcessor_ReturnsNotImplemented(t *te
 
 // Cycle 3 — Execute CHAT with nil SignalReceiver falls back to not_implemented.
 func TestServer_Execute_ChatDecision_NilSignalReceiver_ReturnsNotImplemented(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		Router:         &stubChatRouter{},
 		SignalReceiver: nil,

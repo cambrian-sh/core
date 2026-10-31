@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("\n\vhandoff-007\x12\aagent-a\x1a\aagent-b\"/\n\vpayload-007\x12\x1acompletely.unknown.type.v9\x1a\x04ޭ\xbe\xef")

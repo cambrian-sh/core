@@ -10,6 +10,7 @@ import "testing"
 // but it ships with a premium plugin, so naming it in OSS core would put an ID
 // here for an agent that does not exist here.
 func TestASystemGrantCountsAsMuchAsBeingNamedInTheMap(t *testing.T) {
+	t.Parallel()
 	granted := AgentDefinition{ID: "source_discovery_agent", System: true}
 	if !IsSystemDefinition(granted) {
 		t.Error("an explicit AddSystemAgent grant must confer system status, or a plugin's kernel organ gets interviewed and auctioned")

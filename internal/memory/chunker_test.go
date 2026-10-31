@@ -32,6 +32,7 @@ func chunkOptionC(doc domain.ExternalDocument) []domain.Chunk {
 
 // Cycle 1 — tracer bullet: two paragraphs produce two chunks.
 func TestOptionCChunker_TwoParagraphs_TwoChunks(t *testing.T) {
+	t.Parallel()
 	doc := testDoc("First paragraph.\n\nSecond paragraph.")
 	chunks := chunkOptionC(doc)
 	if len(chunks) != 2 {
@@ -47,6 +48,7 @@ func TestOptionCChunker_TwoParagraphs_TwoChunks(t *testing.T) {
 
 // Cycle 2 — body with no paragraph separator produces one chunk.
 func TestOptionCChunker_NoParagraphBreak_OneChunk(t *testing.T) {
+	t.Parallel()
 	doc := testDoc("Single paragraph with no double newline.")
 	chunks := chunkOptionC(doc)
 	if len(chunks) != 1 {
@@ -59,6 +61,7 @@ func TestOptionCChunker_NoParagraphBreak_OneChunk(t *testing.T) {
 
 // Cycle 3 — paragraph exceeding maxChunkChars is split at sentence boundaries.
 func TestOptionCChunker_LongParagraph_SentenceSplit(t *testing.T) {
+	t.Parallel()
 	// Build a paragraph longer than 1000 chars using short sentences.
 	var sb strings.Builder
 	for sb.Len() < 1100 {
@@ -80,6 +83,7 @@ func TestOptionCChunker_LongParagraph_SentenceSplit(t *testing.T) {
 
 // Cycle 4 — every chunk carries the required provenance metadata.
 func TestOptionCChunker_MetadataPropagated(t *testing.T) {
+	t.Parallel()
 	doc := testDoc("Para one.\n\nPara two.")
 	chunks := chunkOptionC(doc)
 	if len(chunks) != 2 {
@@ -109,6 +113,7 @@ func TestOptionCChunker_MetadataPropagated(t *testing.T) {
 
 // Cycle 5 — buildBodyPreview returns first paragraph when ≤150 chars.
 func TestBuildBodyPreview_ShortFirstParagraph(t *testing.T) {
+	t.Parallel()
 	body := "Short first paragraph.\n\nThis should not appear."
 	got := buildBodyPreview(body, 150)
 	if got != "Short first paragraph." {
@@ -118,6 +123,7 @@ func TestBuildBodyPreview_ShortFirstParagraph(t *testing.T) {
 
 // Cycle 6 — buildBodyPreview truncates first paragraph at word boundary.
 func TestBuildBodyPreview_LongFirstParagraph_WordBoundaryTruncation(t *testing.T) {
+	t.Parallel()
 	// Build a first paragraph definitively longer than 150 chars.
 	first := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 5) // 225 chars
 	body := first + "\n\nShould not appear."
@@ -140,6 +146,7 @@ func TestBuildBodyPreview_LongFirstParagraph_WordBoundaryTruncation(t *testing.T
 
 // Cycle 7 — buildBodyPreview falls back to word-boundary truncation when no \n\n.
 func TestBuildBodyPreview_NoSeparator_FallbackTruncation(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("word ", 100) // 500 chars, all one paragraph
 	got := buildBodyPreview(long, 150)
 	if len(got) > 153 {
@@ -158,6 +165,7 @@ func TestBuildBodyPreview_NoSeparator_FallbackTruncation(t *testing.T) {
 // key, drops one, moves a chunk boundary), this fails — the regression bar for
 // T-1.4 / T-1.8 / T-1.12.
 func TestChunkRegistry_DefaultResolvesToOptionC(t *testing.T) {
+	t.Parallel()
 	doc := testDoc("First paragraph.\n\nSecond paragraph.")
 
 	reg, err := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})

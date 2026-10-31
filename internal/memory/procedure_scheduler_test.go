@@ -26,6 +26,7 @@ func (c *inductionReadStore) QueryByMetadata(_ context.Context, _ map[string]str
 // Zero interval is the DEFAULT, and default must mean no goroutine, no ticker and no
 // store reads at all — not "runs but does nothing".
 func TestProcedureScheduler_DisabledByDefault(t *testing.T) {
+	t.Parallel()
 	store := &inductionReadStore{}
 	s := &ProcedureScheduler{
 		Inducer: &ProcedureInducer{Store: store, Embedder: &recordingEmbedder{}},
@@ -41,6 +42,7 @@ func TestProcedureScheduler_DisabledByDefault(t *testing.T) {
 
 // A nil scheduler is the shape the kernel holds when the arm is off; Start must be safe.
 func TestProcedureScheduler_NilStartIsSafe(t *testing.T) {
+	t.Parallel()
 	var s *ProcedureScheduler
 	s.Start(context.Background()) // must not panic
 }
@@ -49,6 +51,7 @@ func TestProcedureScheduler_NilStartIsSafe(t *testing.T) {
 // swallowed and the loop must survive it. A scheduler that died on a transient failure
 // would stop producing procedures with no signal beyond their absence.
 func TestProcedureScheduler_SurvivesStoreErrors(t *testing.T) {
+	t.Parallel()
 	store := &inductionReadStore{err: errors.New("transient store failure")}
 	s := &ProcedureScheduler{
 		Inducer:  &ProcedureInducer{Store: store, Embedder: &recordingEmbedder{}},
@@ -66,6 +69,7 @@ func TestProcedureScheduler_SurvivesStoreErrors(t *testing.T) {
 
 // The loop must exit with the kernel rather than outliving it.
 func TestProcedureScheduler_StopsOnContextCancel(t *testing.T) {
+	t.Parallel()
 	store := &inductionReadStore{}
 	s := &ProcedureScheduler{
 		Inducer:  &ProcedureInducer{Store: store, Embedder: &recordingEmbedder{}},
@@ -87,6 +91,7 @@ func TestProcedureScheduler_StopsOnContextCancel(t *testing.T) {
 // Re-running over the same corpus must update in place, not mint a new procedure each
 // pass — a nightly job that duplicated its own output would bury the store.
 func TestProcedureID_IsStableAcrossPasses(t *testing.T) {
+	t.Parallel()
 	c := ProcedureCandidate{Signature: "build>deploy", Trigger: "goal: ship a release"}
 	first := procedureID(c)
 	for i := 0; i < 5; i++ {

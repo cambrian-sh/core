@@ -178,6 +178,12 @@ func CanonicalKey(key string) string {
 // legacyExecutionKey maps a PRE-v2 flat `execution.<key>` name to the nested
 // block that now owns it. Generated from the group structs; every field appears
 // exactly once.
+//
+// A RETIRED key has no entry here on purpose: a v1 file that still carries it is
+// not routed into a block, so the key stays at the top of `execution`, where the
+// struct decoder ignores it (unknown keys are tolerated, never an error). The
+// retired set and the reason for each is retiredExecutionFields in
+// execution_migration_test.go.
 var legacyExecutionKey = map[string]string{
 	"activation_threshold":                     "memory",
 	"agent_env_passthrough":                    "agents",
@@ -201,10 +207,6 @@ var legacyExecutionKey = map[string]string{
 	"budget_exhaustion_alarm_rate":             "plan",
 	"canonical_vocab":                          "capability",
 	"capability_aliases":                       "capability",
-	"capability_cluster_epsilon":               "capability",
-	"capability_cluster_interval_seconds":      "capability",
-	"capability_cluster_min_agents":            "capability",
-	"capability_cluster_threshold":             "capability",
 	"capability_contract":                      "routing",
 	"capability_resolution":                    "capability",
 	"capture_llm_exchanges":                    "llm",
@@ -257,14 +259,12 @@ var legacyExecutionKey = map[string]string{
 	"hybrid_lexical_weight":                    "retrieval",
 	"hybrid_rrf_k":                             "retrieval",
 	"hybrid_search_enabled":                    "retrieval",
-	"inbox_dir":                                "ingestion",
 	"ingest_token":                             "ingestion",
 	"ingestion_batch_size":                     "ingestion",
 	"ingestion_batch_wait_ms":                  "ingestion",
 	"ingestion_http_port":                      "ingestion",
 	"ingestion_queue_size":                     "ingestion",
 	"ingestion_workers":                        "ingestion",
-	"k_anonymity_floor":                        "router",
 	"kg2rag_enabled":                           "retrieval",
 	"kg2rag_max_entities":                      "retrieval",
 	"kg2rag_max_expanded":                      "retrieval",
@@ -280,7 +280,6 @@ var legacyExecutionKey = map[string]string{
 	"max_fanout_width":                         "plan",
 	"max_memory_results":                       "memory",
 	"max_neighbor_expansion":                   "memory",
-	"max_orphaned_documents":                   "memory",
 	"max_partial_context_bytes":                "plan",
 	"max_plan_cost":                            "plan",
 	"max_recursion_depth":                      "plan",
@@ -288,7 +287,6 @@ var legacyExecutionKey = map[string]string{
 	"max_session_tokens":                       "session",
 	"max_step_energy":                          "plan",
 	"memory_relevance_threshold":               "memory",
-	"min_auction_confidence":                   "gatekeeper",
 	"min_gc_age_days":                          "memory",
 	"min_step_energy":                          "plan",
 	"min_verified_events":                      "verification",

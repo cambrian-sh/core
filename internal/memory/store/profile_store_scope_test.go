@@ -34,6 +34,7 @@ func (r *recordingStore) GetByID(_ context.Context, _ string) (*domain.Document,
 // by the adapter as a RAW predicate (goqu.L), so this is the only thing standing
 // between a registered agent's self-chosen id and arbitrary SQL.
 func TestGetJudicialRecords_EscapesQuotesInFilter(t *testing.T) {
+	t.Parallel()
 	rec := &recordingStore{}
 	store := NewProfileStore(rec)
 
@@ -60,6 +61,7 @@ func TestGetJudicialRecords_EscapesQuotesInFilter(t *testing.T) {
 }
 
 func TestSQLQuoteLiteral(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"plain":     "plain",
 		"o'brien":   "o''brien",
@@ -81,6 +83,7 @@ func TestSQLQuoteLiteral(t *testing.T) {
 // seed the explicit kernel bypass itself — otherwise every Gatekeeper profile
 // lookup would fail the moment the store stopped holding the raw adapter.
 func TestGetProfile_SeedsKernelScopeThroughEnforcingStore(t *testing.T) {
+	t.Parallel()
 	enforcing := authz.NewEnforcingVectorStore(&recordingStore{}, nil)
 	store := NewProfileStore(enforcing)
 
@@ -97,6 +100,7 @@ func TestGetProfile_SeedsKernelScopeThroughEnforcingStore(t *testing.T) {
 // kernelRead fills in the absence of a predicate; it never overrides one the
 // caller already resolved.
 func TestKernelRead_DoesNotOverrideAnExistingScope(t *testing.T) {
+	t.Parallel()
 	caller := &domain.TagPredicate{ForbiddenTags: []string{"secrets"}}
 	ctx := domain.WithScope(context.Background(), caller)
 
@@ -119,6 +123,7 @@ func TestKernelRead_DoesNotOverrideAnExistingScope(t *testing.T) {
 // twice is idempotent. The previous clock-based id made a retry produce a second
 // row saying the same thing.
 func TestJudicialRecordID_IsDeterministicAndContentAddressed(t *testing.T) {
+	t.Parallel()
 	md := map[string]interface{}{"agent_id": "agent-a", "source_hash": "hash-1"}
 
 	a := judicialRecordID("the plan skipped verification", md)
@@ -151,6 +156,7 @@ func TestJudicialRecordID_IsDeterministicAndContentAddressed(t *testing.T) {
 // Two saves of the same critique must reuse one id, so the store overwrites
 // rather than accumulating duplicates.
 func TestSaveJudicialRecord_RetryIsIdempotent(t *testing.T) {
+	t.Parallel()
 	rec := &idCapturingStore{}
 	store := NewProfileStore(rec)
 	md := map[string]interface{}{"agent_id": "agent-a", "source_hash": "hash-1"}

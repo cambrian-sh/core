@@ -26,6 +26,7 @@ func seedTwoGrants(t *testing.T, svc *operator.Service) {
 
 // QueryAudit returns all entries, and filters by target id.
 func TestQueryAudit_FilterByTarget(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	seedTwoGrants(t, svc)
 
@@ -42,6 +43,7 @@ func TestQueryAudit_FilterByTarget(t *testing.T) {
 
 // Export renders entries as CSV (header + rows) and JSON.
 func TestAuditExport_CSVAndJSON(t *testing.T) {
+	t.Parallel()
 	entries := []domain.AuditEntry{
 		{ID: "1", CommandID: "c1", Actor: "alice", ActionType: "set_tool_grant", TargetID: "agent-1", Reason: "r1"},
 	}

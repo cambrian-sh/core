@@ -35,6 +35,7 @@ type contractTool struct {
 }
 
 func TestToolContract_GoldenToolsList(t *testing.T) {
+	t.Parallel()
 	// The declarations are the contract; the handlers never run here, so an
 	// unbound backend set is exactly right.
 	session := serve(t, Options{
@@ -98,6 +99,7 @@ func TestToolContract_GoldenToolsList(t *testing.T) {
 // The phase-1 contract is READ-ONLY (owner ruling, 2026-08-14): exactly four
 // tools, every one EffectRead + readOnlyHint, and none of them is `remember`.
 func TestToolContract_Phase1IsReadOnly(t *testing.T) {
+	t.Parallel()
 	surface := CoreTools(NewCoreBackends())
 	if len(surface) != 4 {
 		t.Fatalf("core tools = %d, want 4", len(surface))
@@ -120,6 +122,7 @@ func TestToolContract_Phase1IsReadOnly(t *testing.T) {
 // D12: the instructions reach the client at initialize. They are what stands
 // between a listed tool and a called one.
 func TestServerInstructions_ReachTheClient(t *testing.T) {
+	t.Parallel()
 	session := serve(t, Options{
 		Surface:      CoreTools(NewCoreBackends()),
 		Instructions: CoreInstructions,
@@ -133,6 +136,7 @@ func TestServerInstructions_ReachTheClient(t *testing.T) {
 // D8, listing side: a caller whose effects are denied is not SHOWN the tools —
 // the menu is filtered by the same decision point that would refuse the call.
 func TestToolsList_IsFilteredPerCallerEffects(t *testing.T) {
+	t.Parallel()
 	session := serve(t, Options{
 		Surface:    CoreTools(NewCoreBackends()),
 		Authorizer: denyAll{},

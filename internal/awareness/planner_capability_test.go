@@ -26,6 +26,7 @@ func capPlanJSON() string {
 }
 
 func TestPlanner_CapabilityContract_OffIsByteIdentical(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
 	p := NewPlanner(gen, &mockAgentProvider{}, nil) // contract defaults OFF
 
@@ -50,6 +51,7 @@ func TestPlanner_CapabilityContract_OffIsByteIdentical(t *testing.T) {
 }
 
 func TestPlanner_CapabilityContract_OnEmitsAndParses(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: capPlanJSON()}
 	p := NewPlanner(gen, &mockAgentProvider{}, nil)
 	p.SetCapabilityContract(true)
@@ -76,6 +78,7 @@ func TestPlanner_CapabilityContract_OnEmitsAndParses(t *testing.T) {
 }
 
 func TestPlanner_CapabilityContract_HashesDiffer(t *testing.T) {
+	t.Parallel()
 	if plannerPromptHash == plannerPromptHashCap {
 		t.Fatal("capability-arm prompt hash must differ from the base hash (provenance)")
 	}
@@ -89,6 +92,7 @@ func TestPlanner_CapabilityContract_HashesDiffer(t *testing.T) {
 // field the model has nowhere to put an agent name the user asked for, which is
 // how `terminal_agent` ended up in required_capabilities and killed the step.
 func TestPlannerSchemas_CarryAgentPinFields(t *testing.T) {
+	t.Parallel()
 	for name, schema := range map[string]string{
 		"base":       planOutputSchema,
 		"capability": planOutputSchemaCap,
@@ -138,6 +142,7 @@ func planWithCaps(caps ...string) string {
 // tag matches nothing, filters every candidate, and the step dies with "no candidates
 // found". A hallucinated tag must not be able to hard-fail a step.
 func TestPlanner_DropsInventedCapabilityTag(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: planWithCaps("file_read", "file_write")}
 	p := NewPlanner(gen, &vocabProvider{caps: []string{"file_read", "general_purpose"}}, nil)
 	p.SetCapabilityContract(true)
@@ -155,6 +160,7 @@ func TestPlanner_DropsInventedCapabilityTag(t *testing.T) {
 // The guard must not fire on an absence of knowledge: an empty vocabulary means no
 // manifest declared anything, not that every tag is invented.
 func TestPlanner_EmptyVocabularyDoesNotStripCapabilities(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: planWithCaps("file_read")}
 	p := NewPlanner(gen, &mockAgentProvider{}, nil) // no agents, no manifests
 	p.SetCapabilityContract(true)
@@ -171,6 +177,7 @@ func TestPlanner_EmptyVocabularyDoesNotStripCapabilities(t *testing.T) {
 // A step whose every tag is invented ends up unconstrained — the pre-ROUTE-03 path —
 // rather than dead. That fallback IS the decision, so it is pinned.
 func TestPlanner_AllInventedTagsLeaveStepUnconstrained(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: planWithCaps("file_write", "telepathy")}
 	p := NewPlanner(gen, &vocabProvider{caps: []string{"file_read"}}, nil)
 	p.SetCapabilityContract(true)
@@ -206,6 +213,7 @@ func (s *stubWorkspace) PrimeForStep(context.Context, string, []domain.ContextRe
 // never feed back to it. Before this, PlanRecord.FollowedProcedures was read by the
 // memory agent and written by nobody, so no routine's confidence ever moved.
 func TestPlanner_RecordsFollowedProcedures(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
 	p := NewPlanner(gen, &mockAgentProvider{}, nil)
 	p.WorkspaceStage = &stubWorkspace{enrichment: domain.LTMEnrichment{
@@ -234,6 +242,7 @@ func TestPlanner_RecordsFollowedProcedures(t *testing.T) {
 // The provenance must survive the plan freeze, or a replanned plan silently stops
 // feeding back — ExecutionPlan.Clone is field-by-field and omissions are invisible.
 func TestPlanClone_PreservesFollowedProcedures(t *testing.T) {
+	t.Parallel()
 	original := &domain.ExecutionPlan{
 		Subject:            "s",
 		Steps:              []domain.Step{{Query: "do it"}},

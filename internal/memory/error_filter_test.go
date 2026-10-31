@@ -4,6 +4,7 @@ import "testing"
 
 // Cycle 1: BLOCKED: prefix → ErrorKindBlocked (tracer bullet)
 func TestIsErrorOutput_Blocked(t *testing.T) {
+	t.Parallel()
 	ok, kind := IsErrorOutput("BLOCKED: 'write' is not in ALLOWED_COMMANDS")
 	if !ok {
 		t.Fatal("expected IsErrorOutput to return true for BLOCKED: prefix")
@@ -15,6 +16,7 @@ func TestIsErrorOutput_Blocked(t *testing.T) {
 
 // Cycle 2–9: full signal matrix via table-driven test.
 func TestIsErrorOutput_AllSignals(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		text     string

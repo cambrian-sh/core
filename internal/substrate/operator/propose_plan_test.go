@@ -40,6 +40,7 @@ func newProposeService(p PlanProposer) *Service {
 // runnable plan next to "I need to ask you something" invites approving the plan
 // and skipping the question, which is the outcome the interview exists to stop.
 func TestProposePlan_QuestionsSuppressTheProposal(t *testing.T) {
+	t.Parallel()
 	sp := &stubProposer{questions: []ProposedQuestion{{
 		Question:              "Which quarter?",
 		Kind:                  "scope",
@@ -78,6 +79,7 @@ func TestProposePlan_QuestionsSuppressTheProposal(t *testing.T) {
 // branch: an operator narrowing a scope should already know what the broad answer
 // would expose.
 func TestProposePlan_AccessConsequenceAccompaniesQuestionsToo(t *testing.T) {
+	t.Parallel()
 	sp := &stubProposer{
 		questions:   []ProposedQuestion{{Question: "Which quarter?"}},
 		consequence: "refund logs carry customer-pii",
@@ -94,6 +96,7 @@ func TestProposePlan_AccessConsequenceAccompaniesQuestionsToo(t *testing.T) {
 }
 
 func TestProposePlan_AnswerableGoalReturnsAProposal(t *testing.T) {
+	t.Parallel()
 	sp := &stubProposer{plan: ProposedPlan{
 		Steps:           []domain.Step{{Query: "read the logs"}, {Query: "summarise", DependsOn: []int{0}}},
 		EstimatedTokens: 4200,
@@ -122,6 +125,7 @@ func TestProposePlan_AnswerableGoalReturnsAProposal(t *testing.T) {
 // is a straight handoff. A field surviving one direction but not the other would
 // be silently dropped on approval.
 func TestProposePlan_StepsRoundTripThroughSubmitPlanShape(t *testing.T) {
+	t.Parallel()
 	src := 0
 	sp := &stubProposer{plan: ProposedPlan{Steps: []domain.Step{
 		{Query: "list"},
@@ -172,12 +176,14 @@ func TestProposePlan_StepsRoundTripThroughSubmitPlanShape(t *testing.T) {
 }
 
 func TestProposePlan_UnwiredReturnsUnimplemented(t *testing.T) {
+	t.Parallel()
 	if _, err := (&Service{}).ProposePlan(context.Background(), &pb.ProposePlanOpRequest{Goal: "g"}); codeOf(err) != codes.Unimplemented {
 		t.Fatalf("code = %v, want Unimplemented", codeOf(err))
 	}
 }
 
 func TestProposePlan_RequiresGoal(t *testing.T) {
+	t.Parallel()
 	s := newProposeService(&stubProposer{})
 	if _, err := s.ProposePlan(context.Background(), &pb.ProposePlanOpRequest{}); codeOf(err) != codes.InvalidArgument {
 		t.Fatalf("code = %v, want InvalidArgument", codeOf(err))
@@ -188,6 +194,7 @@ func TestProposePlan_RequiresGoal(t *testing.T) {
 // kernel and the operator's move is to rephrase, which is a different instruction
 // from "retry" or "report a bug".
 func TestProposePlan_PlannerFailureIsFailedPrecondition(t *testing.T) {
+	t.Parallel()
 	s := newProposeService(&stubProposer{proposeErr: errors.New("model returned unparseable JSON")})
 
 	if _, err := s.ProposePlan(context.Background(), &pb.ProposePlanOpRequest{Goal: "g"}); codeOf(err) != codes.FailedPrecondition {

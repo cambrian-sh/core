@@ -12,6 +12,7 @@ import (
 // Folding plan-state events yields the current in-flight set; the latest
 // absolute state wins; re-applying is idempotent.
 func TestProjection_FoldYieldsInFlightAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	p := operator.NewProjection()
 
 	p.Apply(domain.PlanStateChanged{PlanID: "p1", SessionID: "s1", Status: "running", ActiveStep: 0})
@@ -32,6 +33,7 @@ func TestProjection_FoldYieldsInFlightAndIsIdempotent(t *testing.T) {
 
 // A terminal event removes the plan from the in-flight set.
 func TestProjection_TerminalRemovesPlan(t *testing.T) {
+	t.Parallel()
 	p := operator.NewProjection()
 	p.Apply(domain.PlanStateChanged{PlanID: "p1", Status: "running"})
 	p.Apply(domain.PlanStateChanged{PlanID: "p1", Status: "completed", Terminal: true})
@@ -52,6 +54,7 @@ func (f fakeSessions) ListSessions(_ context.Context, s domain.SessionStatus) ([
 
 // Snapshot stamps a lower-bound as_of_seq and fans in plans + sessions.
 func TestService_SnapshotStampsSeqAndFansIn(t *testing.T) {
+	t.Parallel()
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	proj := operator.NewProjection()
 	svc := operator.NewService(feed)
@@ -82,6 +85,7 @@ func TestService_SnapshotStampsSeqAndFansIn(t *testing.T) {
 
 // Snapshot carries the capability + version handshake (ADR-0047 D14).
 func TestService_SnapshotCarriesHandshake(t *testing.T) {
+	t.Parallel()
 	svc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
 	svc.SetHandshake("1.2.3", "0047", []string{"feed", "commands"})
 

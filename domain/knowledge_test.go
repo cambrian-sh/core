@@ -34,6 +34,7 @@ func permutations(items []KnowledgeItem) [][]KnowledgeItem {
 }
 
 func TestResolveLatestAssertion_OrderIndependent(t *testing.T) {
+	t.Parallel()
 	t0 := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 	items := []KnowledgeItem{
 		item("po/1", "sofia", "m1", t0, false),
@@ -54,6 +55,7 @@ func TestResolveLatestAssertion_OrderIndependent(t *testing.T) {
 }
 
 func TestResolveLatestAssertion_LatestNegationMeansNoBelief(t *testing.T) {
+	t.Parallel()
 	t0 := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 	items := []KnowledgeItem{
 		item("po/1", "sofia", "m1", t0, false),
@@ -68,6 +70,7 @@ func TestResolveLatestAssertion_LatestNegationMeansNoBelief(t *testing.T) {
 }
 
 func TestResolveLatestAssertion_SimultaneousNegationLosesToAssertion(t *testing.T) {
+	t.Parallel()
 	t0 := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 	items := []KnowledgeItem{
 		item("po/1", "sofia", "", t0, true),
@@ -82,6 +85,7 @@ func TestResolveLatestAssertion_SimultaneousNegationLosesToAssertion(t *testing.
 }
 
 func TestResolveLatestAssertion_EmptySet(t *testing.T) {
+	t.Parallel()
 	if got, reason := ResolveLatestAssertion(nil); got != nil || reason != "" {
 		t.Fatalf("empty set must resolve to nothing, got %+v %q", got, reason)
 	}
@@ -93,6 +97,7 @@ func TestResolveLatestAssertion_EmptySet(t *testing.T) {
 // uniqueness at all; this pins the per-actor keying assumption the projection
 // relies on.
 func TestResolveLatestAssertion_PerActorKeysKeepContradictionAlive(t *testing.T) {
+	t.Parallel()
 	t0 := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 	slack := item("po/1", "slack", "s1", t0, false)
 	erp := item("po/1", "erp", "e1", t0.Add(time.Minute), false)

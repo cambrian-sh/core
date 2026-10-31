@@ -19,6 +19,7 @@ func partyScoped() *TagPredicate {
 
 // The case the whole ADR exists for: two readers, one record, different answers.
 func TestPartyScoping_TheSameRowAnswersDifferentlyPerReader(t *testing.T) {
+	t.Parallel()
 	row := []string{"orders"}
 	mine := []string{"acct:A-1042"}
 	theirs := []string{"acct:A-9999"}
@@ -35,6 +36,7 @@ func TestPartyScoping_TheSameRowAnswersDifferentlyPerReader(t *testing.T) {
 // something the tag terms alone rejected — INV-1, and the reason party-scoping
 // composes with an intersection algebra at all.
 func TestPartyScoping_NeverWidens(t *testing.T) {
+	t.Parallel()
 	tagsOnly := &TagPredicate{RequiredTags: []string{"orders"}}
 	withParty := partyScoped()
 
@@ -51,6 +53,7 @@ func TestPartyScoping_NeverWidens(t *testing.T) {
 // A row WITHOUT the party-scoped tag is untouched by the qualifier — the
 // implication's left disjunct.
 func TestPartyScoping_SaysNothingAboutRowsWithoutTheTag(t *testing.T) {
+	t.Parallel()
 	p := &TagPredicate{PartyScopedTags: []string{"orders"}}
 	if !p.AllowsRow([]string{"hr"}, nil) {
 		t.Error("a row that does not carry the party-scoped tag is not restricted by it")
@@ -64,6 +67,7 @@ func TestPartyScoping_SaysNothingAboutRowsWithoutTheTag(t *testing.T) {
 // "Party to nothing" and "we could not tell" must agree in the direction of
 // access (D6).
 func TestPartyScoping_NoIdentitiesReadsNothing(t *testing.T) {
+	t.Parallel()
 	p := &TagPredicate{PartyScopedTags: []string{"orders"}, PartyIdentities: nil}
 	if p.AllowsRow([]string{"orders"}, []string{"acct:A-1042"}) {
 		t.Error("a reader with no resolved identities must read no party-scoped row")
@@ -75,6 +79,7 @@ func TestPartyScoping_NoIdentitiesReadsNothing(t *testing.T) {
 // correct: if the policy says "only rows you are a party to", a thing nobody can
 // be a party to is not one of them.
 func TestPartyScoping_APartylessResourceIsRefusedNotIgnored(t *testing.T) {
+	t.Parallel()
 	p := partyScoped()
 	if p.Allows([]string{"orders"}) {
 		t.Error("the party-blind test must refuse a party-scoped tag, not ignore it")
@@ -90,6 +95,7 @@ func TestPartyScoping_APartylessResourceIsRefusedNotIgnored(t *testing.T) {
 
 // The denial must not enumerate other people.
 func TestPartyScoping_TheDenialDoesNotLeakIdentities(t *testing.T) {
+	t.Parallel()
 	dec, _ := partyScoped().CheckRow([]string{"orders"}, []string{"acct:A-9999"})
 	for _, secret := range []string{"acct:A-1042", "employee:E-42", "acct:A-9999"} {
 		if dec.Detail == secret {
@@ -101,6 +107,7 @@ func TestPartyScoping_TheDenialDoesNotLeakIdentities(t *testing.T) {
 // A tag denial outranks a party denial: the reader should be told the first
 // thing that is actually wrong, not the most specific one.
 func TestPartyScoping_ATagDenialIsReportedBeforeAPartyDenial(t *testing.T) {
+	t.Parallel()
 	p := &TagPredicate{
 		ForbiddenTags:   []string{"secret"},
 		PartyScopedTags: []string{"orders"},
@@ -117,6 +124,7 @@ func TestPartyScoping_ATagDenialIsReportedBeforeAPartyDenial(t *testing.T) {
 // Bypass admits everything, party terms included (D5a). A maintenance sweep has
 // no identities to be a party to, so the alternative is a GC that reads nothing.
 func TestPartyScoping_BypassSkipsPartyTerms(t *testing.T) {
+	t.Parallel()
 	if !ScopeSystem.AllowsRow([]string{"orders"}, nil) {
 		t.Error("bypass must admit a party-scoped row")
 	}
@@ -127,6 +135,7 @@ func TestPartyScoping_BypassSkipsPartyTerms(t *testing.T) {
 // policy_note at querymemory.go's `!pred.IsZero()` gate — the silent empty D6
 // exists to prevent.
 func TestPartyScoping_IsZeroCountsTheTerm(t *testing.T) {
+	t.Parallel()
 	p := &TagPredicate{PartyScopedTags: []string{"orders"}}
 	if p.IsZero() {
 		t.Fatal("a party-only predicate is not empty; reading it as empty suppresses the policy note")
@@ -141,6 +150,7 @@ func TestPartyScoping_IsZeroCountsTheTerm(t *testing.T) {
 // Truncating keeps the tag grant and drops the restriction — "restriction lost,
 // permission kept", which is a widening.
 func TestPartyScoping_ProjectingToATagSetRefusesRatherThanDropping(t *testing.T) {
+	t.Parallel()
 	_, err := partyScoped().ToTagSet()
 	if err == nil {
 		t.Fatal("projecting a party-scoped predicate into a TagSet must refuse")

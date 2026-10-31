@@ -60,6 +60,7 @@ func authedRequest() *http.Request {
 // No resolver installed: unchanged from phase 1. This is the OSS deployment, and
 // its behaviour is a documented product statement, not an accident.
 func TestIdentity_NoResolverBindsTheClientNameDirectly(t *testing.T) {
+	t.Parallel()
 	next := &capture{}
 	rec := httptest.NewRecorder()
 	identityMiddleware(t, next, nil).ServeHTTP(rec, authedRequest())
@@ -75,6 +76,7 @@ func TestIdentity_NoResolverBindsTheClientNameDirectly(t *testing.T) {
 // A resolver that binds the external id to a principal RE-POINTS the client: this
 // is how an operator says "the ci-bot token speaks as the build-agent principal".
 func TestIdentity_ResolverRepointsThePrincipal(t *testing.T) {
+	t.Parallel()
 	res := &stubResolver{
 		bound: true,
 		binding: domain.IdentityBinding{
@@ -110,6 +112,7 @@ func TestIdentity_ResolverRepointsThePrincipal(t *testing.T) {
 // own identity and the group's policy terms reach it through the decision point,
 // exactly as they do for an internal agent.
 func TestIdentity_GroupBindingKeepsTheClientsOwnPrincipal(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{domain.BindGroup, domain.BindRoomGroup} {
 		next := &capture{}
 		identityMiddleware(t, next, &stubResolver{
@@ -130,6 +133,7 @@ func TestIdentity_GroupBindingKeepsTheClientsOwnPrincipal(t *testing.T) {
 // 403 with a reason, not the deliberately silent 401: the credential was valid, so
 // the client's own logs must be able to tell a block from a wrong token.
 func TestIdentity_BlockedClientIsRefusedAtTheDoor(t *testing.T) {
+	t.Parallel()
 	next := &capture{}
 	rec := httptest.NewRecorder()
 	identityMiddleware(t, next, &stubResolver{
@@ -148,6 +152,7 @@ func TestIdentity_BlockedClientIsRefusedAtTheDoor(t *testing.T) {
 // The stranger policy governs a client nobody bound — the same three modes every
 // other surface has, with no MCP-specific vocabulary.
 func TestIdentity_StrangerPolicyGovernsAnUnboundClient(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		policy    domain.StrangerPolicy
@@ -216,6 +221,7 @@ func (p perPrincipalPDP) ClassifyWrite(context.Context, domain.PrincipalRef, []s
 // "Two clients with different tokens receive DIFFERENT denials" — the ADR's own
 // phase-2 exit clause, end to end over the wire.
 func TestEndpoint_TwoClientsGetDifferentOutcomesForTheSameTool(t *testing.T) {
+	t.Parallel()
 	tool := domain.PublishedToolEntry{
 		Owner: "core",
 		Tool: domain.PublishedTool{
@@ -269,6 +275,7 @@ func TestEndpoint_TwoClientsGetDifferentOutcomesForTheSameTool(t *testing.T) {
 // collision can be caught — and silently letting the second registration win
 // would mean two answers to one question with no way to say which held.
 func TestNewHandler_RefusesTwoOwnersForOneToolName(t *testing.T) {
+	t.Parallel()
 	one := domain.PublishedTool{
 		Name: "search_memory", InputSchema: []byte(`{"type":"object"}`),
 		Effects: []domain.ToolEffect{domain.EffectRead},
@@ -325,6 +332,7 @@ func correlationTool(h domain.PublishedToolHandler) domain.PublishedToolSurface 
 // extend it, and it comes back on the result's `_meta` — which is the whole of
 // what makes `get_receipt` reachable from a caller who only holds an answer.
 func TestEndpoint_MintsACorrelationHandleAndReturnsIt(t *testing.T) {
+	t.Parallel()
 	probe := &correlationProbe{}
 	session := serve(t, Options{Surface: correlationTool(probe)}, "token-aaaa")
 
@@ -358,6 +366,7 @@ func TestEndpoint_MintsACorrelationHandleAndReturnsIt(t *testing.T) {
 // handle the CALLER supplied, and overwriting it would make the tool report on
 // the wrong call.
 func TestEndpoint_HandlerSuppliedReceiptRefIsPreserved(t *testing.T) {
+	t.Parallel()
 	probe := &correlationProbe{ownRef: "mcp-supplied-by-the-handler"}
 	session := serve(t, Options{Surface: correlationTool(probe)}, "token-aaaa")
 

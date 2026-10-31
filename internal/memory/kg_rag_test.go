@@ -98,6 +98,7 @@ func (f fakeVectorSearch) GetByID(_ context.Context, id string) (*domain.Documen
 }
 
 func TestParseChunkTripletOutput_Basic(t *testing.T) {
+	t.Parallel()
 	resp := `<caroline##researched##quantum>$$<caroline##lives in##melbourne>`
 	got := parseChunkTripletOutput(resp)
 	if len(got) != 2 {
@@ -112,6 +113,7 @@ func TestParseChunkTripletOutput_Basic(t *testing.T) {
 }
 
 func TestParseChunkTripletOutput_FiltersNulls(t *testing.T) {
+	t.Parallel()
 	resp := `<caroline##researched##quantum>$$<caroline##is##no>$$<no##relation##bob>$$<alice##knows##null>`
 	got := parseChunkTripletOutput(resp)
 	if len(got) != 1 {
@@ -123,6 +125,7 @@ func TestParseChunkTripletOutput_FiltersNulls(t *testing.T) {
 }
 
 func TestParseChunkTripletOutput_FiltersSelfLoops(t *testing.T) {
+	t.Parallel()
 	resp := `<caroline##knows##caroline>$$<bob##works with##bob>`
 	got := parseChunkTripletOutput(resp)
 	if len(got) != 0 {
@@ -131,6 +134,7 @@ func TestParseChunkTripletOutput_FiltersSelfLoops(t *testing.T) {
 }
 
 func TestParseChunkTripletOutput_Dedupes(t *testing.T) {
+	t.Parallel()
 	resp := `<caroline##researched##quantum>$$<caroline##researched##quantum>$$<caroline##researched##quantum>`
 	got := parseChunkTripletOutput(resp)
 	if len(got) != 1 {
@@ -139,6 +143,7 @@ func TestParseChunkTripletOutput_Dedupes(t *testing.T) {
 }
 
 func TestParseChunkTripletOutput_LowercasesEntities(t *testing.T) {
+	t.Parallel()
 	resp := `<Caroline##lives in##Melbourne>`
 	got := parseChunkTripletOutput(resp)
 	if len(got) != 1 {
@@ -153,6 +158,7 @@ func TestParseChunkTripletOutput_LowercasesEntities(t *testing.T) {
 }
 
 func TestParseChunkTripletOutput_Empty(t *testing.T) {
+	t.Parallel()
 	got := parseChunkTripletOutput("the LLM wrote nothing useful here")
 	if len(got) != 0 {
 		t.Errorf("expected 0 triplets, got %d: %+v", len(got), got)
@@ -160,6 +166,7 @@ func TestParseChunkTripletOutput_Empty(t *testing.T) {
 }
 
 func TestKgExpand_OneHop_AddsRelatedChunks(t *testing.T) {
+	t.Parallel()
 	// Seed chunk: "caroline researched quantum"
 	// Related chunk (one hop): "quantum was developed at IBM"
 	// The expansion should add the related chunk because it shares entity "quantum".
@@ -206,6 +213,7 @@ func TestKgExpand_OneHop_AddsRelatedChunks(t *testing.T) {
 }
 
 func TestKgExpand_NoTriplets_ReturnsSeeds(t *testing.T) {
+	t.Parallel()
 	store := newFakeChunkTripletsStore() // empty
 	seeds := []domain.SearchResult{
 		{Document: domain.Document{ID: "seed-1"}, Score: 0.9},
@@ -218,6 +226,7 @@ func TestKgExpand_NoTriplets_ReturnsSeeds(t *testing.T) {
 }
 
 func TestKgExpand_OneHopLimit(t *testing.T) {
+	t.Parallel()
 	// seed mentions "quantum"; chunk-2 mentions "quantum"; chunk-3 mentions
 	// "ibm" (mentioned in chunk-2). Two-hop should reach chunk-3; one-hop
 	// should NOT.
@@ -262,6 +271,7 @@ func TestKgExpand_OneHopLimit(t *testing.T) {
 }
 
 func TestKgExpand_RespectsMaxExpanded(t *testing.T) {
+	t.Parallel()
 	// Seed mentions 5 different entities; each entity has 3 chunks. MaxExpanded=5
 	// should cap the result at seed + 5.
 	store := newFakeChunkTripletsStore()
@@ -321,6 +331,7 @@ func TestKgExpand_RespectsMaxExpanded(t *testing.T) {
 // even a denied chunk entered the pool as a stub carrying its ID — and `{docID}-chunk-{n}`
 // ids encode their source document. Both are asserted here: no content, and no bare id.
 func TestKGExpand_DropsForbiddenChunk(t *testing.T) {
+	t.Parallel()
 	store := newFakeChunkTripletsStore()
 	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []domain.ChunkTriplet{
 		{H: "caroline", R: "researched", T: "quantum"},
@@ -377,6 +388,7 @@ func TestKGExpand_DropsForbiddenChunk(t *testing.T) {
 // (readFilter's contract), so expansion must admit nothing rather than everything.
 // This is what makes the required `scope` parameter safe to forget.
 func TestKGExpand_NilPredicateFailsClosed(t *testing.T) {
+	t.Parallel()
 	store := newFakeChunkTripletsStore()
 	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []domain.ChunkTriplet{
 		{H: "caroline", R: "researched", T: "quantum"},
@@ -412,6 +424,7 @@ func TestKGExpand_NilPredicateFailsClosed(t *testing.T) {
 // stops being passed a scope — the failure mode is invisible in review, because the call
 // still compiles and still returns rows.
 func TestKGExpand_ThreadsScopeToTripletStore(t *testing.T) {
+	t.Parallel()
 	store := newFakeChunkTripletsStore()
 	_ = store.SaveChunkTriplets(context.Background(), "seed-1", []domain.ChunkTriplet{
 		{H: "caroline", R: "researched", T: "quantum"},

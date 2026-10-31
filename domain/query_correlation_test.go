@@ -7,6 +7,7 @@ import (
 )
 
 func TestQueryCorrelation_AbsentIsTheOrdinaryCase(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	if id, ok := QueryCorrelationFromContext(ctx); ok || id != "" {
 		t.Errorf("bare context reported a correlation %q", id)
@@ -24,6 +25,7 @@ func TestQueryCorrelation_AbsentIsTheOrdinaryCase(t *testing.T) {
 // THE property: hops EXTEND the prefix. A 1:1 id would put hop 2 on hop 1's
 // handle, and the chain would read incomplete without saying so.
 func TestNextQueryCorrelationID_HopsExtendThePrefix(t *testing.T) {
+	t.Parallel()
 	ctx := WithQueryCorrelation(context.Background(), "mcp-7f")
 
 	if got, _ := QueryCorrelationFromContext(ctx); got != "mcp-7f" {
@@ -44,6 +46,7 @@ func TestNextQueryCorrelationID_HopsExtendThePrefix(t *testing.T) {
 // Two calls that (legally) chose the same handle number their own hops from 1
 // rather than continuing each other's.
 func TestWithQueryCorrelation_InstallsAFreshCounter(t *testing.T) {
+	t.Parallel()
 	first := WithQueryCorrelation(context.Background(), "same")
 	if _, _ = NextQueryCorrelationID(first); true {
 		_, _ = NextQueryCorrelationID(first)
@@ -57,6 +60,7 @@ func TestWithQueryCorrelation_InstallsAFreshCounter(t *testing.T) {
 // A child context inherits the SAME counter: hops descend through the call tree,
 // and two of them must never claim one number.
 func TestNextQueryCorrelationID_SharedAcrossDerivedContexts(t *testing.T) {
+	t.Parallel()
 	root := WithQueryCorrelation(context.Background(), "c")
 	child, cancel := context.WithCancel(root)
 	defer cancel()
@@ -71,6 +75,7 @@ func TestNextQueryCorrelationID_SharedAcrossDerivedContexts(t *testing.T) {
 // Nothing forbids a future loop from retrieving two hops concurrently, so the
 // counter is atomic and the -race build proves it.
 func TestNextQueryCorrelationID_ConcurrentHopsAreDistinct(t *testing.T) {
+	t.Parallel()
 	ctx := WithQueryCorrelation(context.Background(), "c")
 	const n = 32
 	ids := make([]string, n)

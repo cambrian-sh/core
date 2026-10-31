@@ -9,6 +9,7 @@ import (
 // The in-memory approval controller is fail-closed: no subscriber and timeout
 // both deny; an approver can approve or deny a pending request (ADR-0039 D10).
 func TestInMemoryApprovalController(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("no subscriber denies (fail-closed)", func(t *testing.T) {

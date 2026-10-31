@@ -57,6 +57,7 @@ func fivePolicy() *testPolicyProvider {
 
 // Cycle 1 — codegen policy (threshold 0.92): score 0.90 is a miss.
 func TestHippocampus_RetrieveWithPolicy_Codegen_StricterThreshold(t *testing.T) {
+	t.Parallel()
 	store := &fakeHippStore{results: []domain.SearchResult{searchResultWithAge(0.90, 0.90, time.Hour)}}
 	h := NewHippocampus(store, defaultHippEmbedder(), fivePolicy())
 
@@ -71,6 +72,7 @@ func TestHippocampus_RetrieveWithPolicy_Codegen_StricterThreshold(t *testing.T) 
 
 // Cycle 2 — cognitive policy (threshold 0.85): score 0.90 is a hit.
 func TestHippocampus_RetrieveWithPolicy_Cognitive_StandardThreshold(t *testing.T) {
+	t.Parallel()
 	store := &fakeHippStore{results: []domain.SearchResult{searchResultWithAge(0.90, 0.80, time.Hour)}}
 	h := NewHippocampus(store, defaultHippEmbedder(), fivePolicy())
 
@@ -88,6 +90,7 @@ func TestHippocampus_RetrieveWithPolicy_Cognitive_StandardThreshold(t *testing.T
 
 // Cycle 3 — tool policy (threshold 0.80): score 0.82 is a hit.
 func TestHippocampus_RetrieveWithPolicy_Tool_RelaxedThreshold(t *testing.T) {
+	t.Parallel()
 	store := &fakeHippStore{results: []domain.SearchResult{searchResultWithAge(0.82, 0.65, time.Hour)}}
 	h := NewHippocampus(store, defaultHippEmbedder(), fivePolicy())
 
@@ -102,6 +105,7 @@ func TestHippocampus_RetrieveWithPolicy_Tool_RelaxedThreshold(t *testing.T) {
 
 // Cycle 4 — unknown policy name falls back to default (0.85 threshold).
 func TestHippocampus_RetrieveWithPolicy_UnknownPolicy_FallsBackToDefault(t *testing.T) {
+	t.Parallel()
 	// Score 0.87 would be a hit for default (0.85) but not codegen (0.92).
 	store := &fakeHippStore{results: []domain.SearchResult{searchResultWithAge(0.87, 0.75, time.Hour)}}
 	h := NewHippocampus(store, defaultHippEmbedder(), fivePolicy())
@@ -117,6 +121,7 @@ func TestHippocampus_RetrieveWithPolicy_UnknownPolicy_FallsBackToDefault(t *test
 
 // Cycle 5 — MaxAgeHours: template older than policy limit is a miss.
 func TestHippocampus_RetrieveWithPolicy_MaxAgeHours_Expired(t *testing.T) {
+	t.Parallel()
 	// codegen MaxAgeHours=24; store template 25h old.
 	store := &fakeHippStore{results: []domain.SearchResult{searchResultWithAge(0.95, 0.90, 25*time.Hour)}}
 	h := NewHippocampus(store, defaultHippEmbedder(), fivePolicy())
@@ -132,6 +137,7 @@ func TestHippocampus_RetrieveWithPolicy_MaxAgeHours_Expired(t *testing.T) {
 
 // Cycle 6 — MaxAgeHours: fresh template within limit is a hit.
 func TestHippocampus_RetrieveWithPolicy_MaxAgeHours_Fresh(t *testing.T) {
+	t.Parallel()
 	// codegen MaxAgeHours=24; store template 1h old.
 	store := &fakeHippStore{results: []domain.SearchResult{searchResultWithAge(0.95, 0.90, time.Hour)}}
 	h := NewHippocampus(store, defaultHippEmbedder(), fivePolicy())
@@ -147,6 +153,7 @@ func TestHippocampus_RetrieveWithPolicy_MaxAgeHours_Fresh(t *testing.T) {
 
 // Cycle 7 — Retrieve (no policy arg) has unchanged backward-compatible behaviour.
 func TestHippocampus_Retrieve_BackwardCompat_WithPolicyProvider(t *testing.T) {
+	t.Parallel()
 	// Score 0.87 hits default threshold 0.85 → should still be a hit.
 	store := &fakeHippStore{results: []domain.SearchResult{searchResultWithAge(0.87, 0.75, time.Hour)}}
 	h := NewHippocampus(store, defaultHippEmbedder(), fivePolicy())

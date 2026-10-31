@@ -41,6 +41,7 @@ func execWith(s *Server, md metadata.MD) error {
 // continuation" from "a replay", so it is wrong for at least one of them — and it is why
 // every Execute minted a session nothing ever closed.
 func TestExecute_StrictMode_RejectsMissingSession(t *testing.T) {
+	t.Parallel()
 	s, _ := strictServer(t, true)
 
 	err := execWith(s, nil)
@@ -51,6 +52,7 @@ func TestExecute_StrictMode_RejectsMissingSession(t *testing.T) {
 
 // A session ID the kernel never issued is a not-found, never a silent create.
 func TestExecute_StrictMode_RejectsUnknownSession(t *testing.T) {
+	t.Parallel()
 	s, _ := strictServer(t, true)
 
 	err := execWith(s, metadata.Pairs(sessionHeader, "never-opened"))
@@ -61,6 +63,7 @@ func TestExecute_StrictMode_RejectsUnknownSession(t *testing.T) {
 
 // A completed session is terminal: work cannot be appended to sealed work.
 func TestExecute_StrictMode_RejectsCompletedSession(t *testing.T) {
+	t.Parallel()
 	s, mgr := strictServer(t, true)
 	ctx := context.Background()
 	ses, err := mgr.CreateSession(ctx, "goal", "")
@@ -81,6 +84,7 @@ func TestExecute_StrictMode_RejectsCompletedSession(t *testing.T) {
 // itself is short-circuited by plan_preview_only, so what this asserts is precisely that the
 // request got PAST the session gate.
 func TestExecute_StrictMode_AcceptsOpenSession(t *testing.T) {
+	t.Parallel()
 	s, mgr := strictServer(t, true)
 	ses, err := mgr.CreateSession(context.Background(), "goal", "")
 	if err != nil {
@@ -95,6 +99,7 @@ func TestExecute_StrictMode_AcceptsOpenSession(t *testing.T) {
 // Default (lenient) mode is unchanged: no session presented still runs, so existing clients
 // and benchmarks keep working until they are migrated.
 func TestExecute_LenientMode_StillOpensImplicitly(t *testing.T) {
+	t.Parallel()
 	s, mgr := strictServer(t, false)
 
 	if err := execWith(s, nil); err != nil {

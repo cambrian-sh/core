@@ -25,6 +25,7 @@ func newTestAgent(store domain.VectorStore) *Agent {
 }
 
 func TestFetchContext_FiltersNeuralTrace(t *testing.T) {
+	t.Parallel()
 	store := &fakeVectorStore{
 		docs: []domain.SearchResult{
 			{
@@ -58,6 +59,7 @@ func TestFetchContext_FiltersNeuralTrace(t *testing.T) {
 }
 
 func TestFetchContext_NegativeEdge_Included(t *testing.T) {
+	t.Parallel()
 	store := &fakeVectorStore{
 		docs: []domain.SearchResult{
 			{
@@ -81,6 +83,7 @@ func TestFetchContext_NegativeEdge_Included(t *testing.T) {
 }
 
 func TestIngestNegativeEdge_SavesCorrectDoc(t *testing.T) {
+	t.Parallel()
 	store := &captureSaveStore{}
 	agent := newTestAgent(store)
 
@@ -107,6 +110,7 @@ func TestIngestNegativeEdge_SavesCorrectDoc(t *testing.T) {
 }
 
 func TestIngestNegativeEdge_StoreError_Propagated(t *testing.T) {
+	t.Parallel()
 	store := &captureSaveStore{saveErr: errStoreFailed}
 	agent := newTestAgent(store)
 

@@ -15,6 +15,7 @@ import (
 // TriggerConsolidation publishes a MemoryPressureEvent via EventBusEffects, and
 // a retried command_id applies the effect exactly once.
 func TestTriggerConsolidation_PublishesAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	svc, _, audit, _ := newCommandService()
 	bus := domain.NewInMemoryEventBus()
 	var pressures int
@@ -40,6 +41,7 @@ func TestTriggerConsolidation_PublishesAndIsIdempotent(t *testing.T) {
 
 // The remaining mutations audit through the uniform command path (NoopEffects).
 func TestRemainingMutations_AuditUniformly(t *testing.T) {
+	t.Parallel()
 	svc, _, audit, _ := newCommandService()
 	svc.SetCommandEffects(operator.NoopEffects{})
 
@@ -58,6 +60,7 @@ func TestRemainingMutations_AuditUniformly(t *testing.T) {
 // SetRuntimeConfig routes the param map to the effect, applies exactly once per
 // command_id, and audits as set_runtime_config (ADR-0054 tuning seam).
 func TestSetRuntimeConfig_AppliesAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	svc, _, audit, _ := newCommandService()
 	var got map[string]float64
 	var calls int
@@ -95,6 +98,7 @@ func TestSetRuntimeConfig_AppliesAndIsIdempotent(t *testing.T) {
 // CommandEffectsFuncs routes to bound functions and returns Unimplemented for
 // nil hooks (ADR-0047 0047-16).
 func TestCommandEffectsFuncs_RoutesAndUnimplemented(t *testing.T) {
+	t.Parallel()
 	var scopedAgent string
 	eff := operator.CommandEffectsFuncs{
 		SetScopeFn: func(_ context.Context, agentID string, _, _, _ []string) error {

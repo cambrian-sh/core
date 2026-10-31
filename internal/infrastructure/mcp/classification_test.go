@@ -23,6 +23,7 @@ func applyClassification(toolName string, policy map[string]ToolPolicy, defaultT
 }
 
 func TestClassification_ServerDefaultAppliesToEveryTool(t *testing.T) {
+	t.Parallel()
 	policy := map[string]ToolPolicy{}
 	for _, tool := range []string{"book_reservation", "cancel_reservation", "search_flights"} {
 		got := applyClassification(tool, policy, []string{"airline"})
@@ -35,6 +36,7 @@ func TestClassification_ServerDefaultAppliesToEveryTool(t *testing.T) {
 // A per-tool list REPLACES the server default rather than adding to it, so one
 // tool can leave a domain boundary without silently inheriting it.
 func TestClassification_PerToolOverridesRatherThanExtends(t *testing.T) {
+	t.Parallel()
 	policy := map[string]ToolPolicy{
 		"public_status": {ClassificationTags: []string{"public"}},
 	}
@@ -52,6 +54,7 @@ func TestClassification_PerToolOverridesRatherThanExtends(t *testing.T) {
 // it as "clear the tags" would let a policy entry written for pricing silently
 // strip a domain boundary.
 func TestClassification_EmptyPerToolListDoesNotClearTheDefault(t *testing.T) {
+	t.Parallel()
 	policy := map[string]ToolPolicy{
 		"book_reservation": {Dangerous: true}, // present, but says nothing about tags
 	}
@@ -64,6 +67,7 @@ func TestClassification_EmptyPerToolListDoesNotClearTheDefault(t *testing.T) {
 // No default and no override: untagged, which is today's behaviour for every MCP
 // server and is why the boundary was previously inexpressible.
 func TestClassification_NoTagsIsStillPossible(t *testing.T) {
+	t.Parallel()
 	if got := applyClassification("anything", map[string]ToolPolicy{}, nil); len(got) != 0 {
 		t.Errorf("expected no tags, got %v", got)
 	}
@@ -73,6 +77,7 @@ func TestClassification_NoTagsIsStillPossible(t *testing.T) {
 // A remote server classifying its own tools would be the governed choosing its
 // own governance, the same reason it does not get to declare itself safe.
 func TestClassification_IsOperatorSet(t *testing.T) {
+	t.Parallel()
 	p := ToolPolicy{ClassificationTags: []string{"airline"}}
 	if len(p.ClassificationTags) != 1 {
 		t.Fatal("ToolPolicy must carry classification tags")

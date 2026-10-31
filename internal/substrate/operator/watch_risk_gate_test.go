@@ -13,6 +13,7 @@ import (
 // REACT-03 / ADR-0063: a high-risk watch — an llm condition driving a start_plan /
 // dispatch_agent action — cannot be registered without approved=true.
 func TestRegisterWatch_HighRiskLLM_RequiresApproval(t *testing.T) {
+	t.Parallel()
 	h := newFakeWatchHandler()
 	svc := newWatchService(h)
 

@@ -9,6 +9,7 @@ import "testing"
 // carrying only `a`, which the predicate refuses. Persisting that as "what this
 // caller may see" would hand the caller access the decision point never granted.
 func TestTagSetFromPredicate_RefusesMultiClauseCNF(t *testing.T) {
+	t.Parallel()
 	p := &TagPredicate{AnyOfClauses: [][]string{{"a", "b"}, {"c", "d"}}}
 	if _, ok := TagSetFromPredicate(p); ok {
 		t.Fatal("multi-clause CNF was flattened; that widens the caller's scope")
@@ -18,12 +19,14 @@ func TestTagSetFromPredicate_RefusesMultiClauseCNF(t *testing.T) {
 // A nil predicate means "no read authorized at all". It must not become an empty
 // (unrestricted) TagSet — that is the inversion of its meaning.
 func TestTagSetFromPredicate_NilIsRefusedNotUnrestricted(t *testing.T) {
+	t.Parallel()
 	if got, ok := TagSetFromPredicate(nil); ok {
 		t.Fatalf("nil predicate converted to %+v; nil means no read is authorized", got)
 	}
 }
 
 func TestTagSetFromPredicate_RepresentableCases(t *testing.T) {
+	t.Parallel()
 	t.Run("bypass is no constraint", func(t *testing.T) {
 		got, ok := TagSetFromPredicate(&TagPredicate{Bypass: true})
 		if !ok || !got.IsZero() {
@@ -58,6 +61,7 @@ func TestTagSetFromPredicate_RepresentableCases(t *testing.T) {
 // The conversion must COPY, not alias: a caller_scope persisted on a session must
 // not change because something later mutated the predicate it came from.
 func TestTagSetFromPredicate_DoesNotAliasTheSource(t *testing.T) {
+	t.Parallel()
 	p := &TagPredicate{RequiredTags: []string{"sales"}}
 	got, ok := TagSetFromPredicate(p)
 	if !ok {

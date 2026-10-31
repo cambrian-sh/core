@@ -74,6 +74,7 @@ func serveWorker(h *WorkerHub, reg WorkerRegistration, result []byte) (served <-
 // ── Gate 1: the sole capable live machine is selected with NO prompt ──
 
 func TestRouting_SoleCapableLiveMachineSelectedWithoutAPrompt(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	ask := &neverAsk{t: t}
 	e, decisions := consentExec(h, ask)
@@ -124,6 +125,7 @@ func TestRouting_SoleCapableLiveMachineSelectedWithoutAPrompt(t *testing.T) {
 // ── Gate 2: with two capable machines, the Default claimant wins, no prompt ──
 
 func TestRouting_DefaultMachinePreferredOverPrompting(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	ask := &neverAsk{t: t}
 	e, decisions := consentExec(h, ask)
@@ -172,6 +174,7 @@ func TestRouting_DefaultMachinePreferredOverPrompting(t *testing.T) {
 // with the other layer disabled ──
 
 func TestRouting_CrossOwnerRefusedAtSelectionAndAtAttachment(t *testing.T) {
+	t.Parallel()
 	// Seam A disables the ATTACHMENT layer: bypassFleet (the CL-0 seam) makes
 	// LiveFleet answer with owner A's worker for ANY beneficiary, so the
 	// structural menu scoping is gone and the foreign tool is visibly present.
@@ -246,6 +249,7 @@ func TestRouting_CrossOwnerRefusedAtSelectionAndAtAttachment(t *testing.T) {
 // ── Gate 4: D9 normalization — one capability tag, real names still dispatch ──
 
 func TestNormalizeManifest_CollapsesSpellingsAndTagsTheOwner(t *testing.T) {
+	t.Parallel()
 	owner := AgentPrincipal("owner-a")
 	reg := WorkerRegistration{
 		Machine: "a-machine",
@@ -322,6 +326,7 @@ func TestNormalizeManifest_CollapsesSpellingsAndTagsTheOwner(t *testing.T) {
 // A capability tag reaches the ONE tool it names, whatever spelling the caller
 // used, and the step carries the REAL wire name down to the worker.
 func TestRouting_CapabilityTagReachesTheRealToolName(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	ask := &neverAsk{t: t}
 	e, _ := consentExec(h, ask)
@@ -359,6 +364,7 @@ func TestRouting_CapabilityTagReachesTheRealToolName(t *testing.T) {
 // indistinguishable at dispatch: the ambiguous TAG resolves nothing (never a
 // guess), while either exact wire name still dispatches to its own tool.
 func TestRouting_AmbiguousTagRefusesWhileExactNamesDispatch(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	e, decisions := consentExec(h, nil)
 	owner := AgentPrincipal("owner-a")
@@ -407,6 +413,7 @@ func TestRouting_AmbiguousTagRefusesWhileExactNamesDispatch(t *testing.T) {
 // ── Gate 5: the routing vocabulary is owner-scoped and fail-closed ──
 
 func TestContributedVocabulary_OwnerScopedAndFailClosed(t *testing.T) {
+	t.Parallel()
 	f := NewInMemoryFleet()
 	for _, reg := range []WorkerRegistration{
 		{Machine: "a-machine", Owner: AgentPrincipal("owner-a"), Tools: readFileManifest},
@@ -445,6 +452,7 @@ func TestContributedVocabulary_OwnerScopedAndFailClosed(t *testing.T) {
 // An offline machine is registered but contributes nothing to ROUTING either —
 // the D6 live-only rule holds at the targeting seam, not just in menus.
 func TestContributedVocabulary_OfflineMachineIsNotRoutable(t *testing.T) {
+	t.Parallel()
 	e := contributionExec(ownerFleet(t, false))
 	ctx := WithTaskBeneficiary(context.Background(), AgentPrincipal("owner-a"))
 	if got := e.ContributedVocabulary(ctx); len(got) != 0 {

@@ -67,6 +67,7 @@ func (e chanPlanExecutor) Execute(context.Context, *domain.ExecutionPlan, *domai
 // gate called ProcessSignal and OnSignal planned again: 2 planner calls, both
 // plans discarded.
 func TestSignalStream_OSSWatcherPlansOnceAndQueuesForApproval(t *testing.T) {
+	t.Parallel()
 	planner := &countingPlanner{}
 	hub := domain.NewInMemoryApprovalController(5 * time.Second)
 	reqs, cancel := hub.Watch()
@@ -104,6 +105,7 @@ func TestSignalStream_OSSWatcherPlansOnceAndQueuesForApproval(t *testing.T) {
 
 // A signal the gate rejects (bad token) never reaches the planner.
 func TestSignalStream_RejectedTokenIsNotPlanned(t *testing.T) {
+	t.Parallel()
 	planner := &countingPlanner{}
 	w := supwatcher.New(tokenManager{}, nil, planner, nil, nil, supwatcher.WatcherConfig{})
 	s := &Server{Watcher: w, SignalReceiver: w}

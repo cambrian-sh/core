@@ -239,9 +239,26 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 	// recursive path is inert here by construction. Re-homing it as a step-level
 	// declaration is tracked in the ADR; it must not be dropped by omission.
 
-	resp, err := d.Caller.CallAgent(ctx, winner.Agent.ID, in, "")
+	// ADR-0001 D5: per-step timeout = (latency * step_timeout_multiplier) +
+	// step_timeout_base_buffer_ms, bounded above by the plan ceiling the caller's
+	// ctx already carries. See stepTimeout for where the latency term comes from
+	// and why a winner without one gets no per-step deadline.
+	callCtx := ctx
+	if timeout := d.stepTimeout(ctx, winner); timeout > 0 {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	resp, err := d.Caller.CallAgent(callCtx, winner.Agent.ID, in, "")
 	if err != nil {
 		in.Context["_winning_agent_id"] = winner.Agent.ID
+		// Name the step deadline when it is what fired, so a timed-out step reads
+		// as "timed out" in the log rather than as the agent's generic failure.
+		// The parent still being alive is what tells the two apart.
+		if errors.Is(callCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			err = fmt.Errorf("dispatch: step timed out (agent %s): %w", winner.Agent.ID, err)
+		}
 		return &domain.DispatchResult{Confidence: winner.Score, RunnerUps: runnerUps}, err
 	}
 
@@ -251,6 +268,42 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 		RunnerUps:      runnerUps,
 		StepAllocation: d.selectModelCandidates(ctx, winner.Agent.ID),
 	}, nil
+}
+
+// stepTimeout is the ADR-0001 D5 per-step deadline for the winner:
+//
+//	timeout = (latency * execution.plan.step_timeout_multiplier) + step_timeout_base_buffer_ms
+//
+// ADR-0001 took `latency` from the winning bid (AgentProposal.Latency). Dispatch
+// solicits no bids (ADR-0100), so the term is the winner's OBSERVED median latency
+// from its profile (network + computation), the same figure cheapestCompetent
+// already ranks on — observed, never self-reported.
+//
+// A winner with no profile, or a profile with no latency yet, gets NO per-step
+// deadline (0) and runs under the plan ceiling alone. The formula has nothing to
+// scale for such an agent, and collapsing it to the bare buffer (15 s at the
+// defaults) would kill every first-run step on a slow local model — the exact
+// failure the owner's 2026-08-11 defaults note (config.go, PlanConfig) warns
+// about. Both settings <= 0 also disable it, so an operator can switch the step
+// deadline off without touching the profile.
+func (d *Dispatcher) stepTimeout(ctx context.Context, winner domain.ScoredCandidate) time.Duration {
+	mult := d.ExecCfg.Plan.StepTimeoutMultiplier
+	buffer := time.Duration(d.ExecCfg.Plan.StepTimeoutBaseBufferMs) * time.Millisecond
+	if mult <= 0 && buffer <= 0 {
+		return 0
+	}
+	if d.Profiles == nil {
+		return 0
+	}
+	p, err := d.Profiles.GetProfile(ctx, winner.Agent.ID, winner.Agent.SourceHash)
+	if err != nil || p == nil {
+		return 0
+	}
+	latency := time.Duration(p.NetworkLatencyMedianMs+p.ComputationLatencyMedianMs) * time.Millisecond
+	if latency <= 0 {
+		return 0
+	}
+	return time.Duration(float64(latency)*mult) + buffer
 }
 
 // selectWinner implements the ADR-0100 D4 per-step dispatch policy.

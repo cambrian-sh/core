@@ -9,6 +9,7 @@ import (
 // treat the response as incomplete". A blacklist is what the SDK loop had, and it read
 // a narrating model as a finished one.
 func TestStopReason_OnlyEndTurnIsFinished(t *testing.T) {
+	t.Parallel()
 	finished := map[StopReason]bool{
 		StopEndTurn:   true,
 		StopToolUse:   false,
@@ -28,6 +29,7 @@ func TestStopReason_OnlyEndTurnIsFinished(t *testing.T) {
 // A new or mis-mapped provider value silently meaning "done" is the whole failure
 // class this package exists to remove.
 func TestStopReason_UnknownIsNotFinished(t *testing.T) {
+	t.Parallel()
 	if StopUnknown.IsFinished() {
 		t.Fatal("an unrecognised stop reason must never count as finished")
 	}
@@ -37,6 +39,7 @@ func TestStopReason_UnknownIsNotFinished(t *testing.T) {
 }
 
 func TestModelTurn_ShouldContinue(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		turn ModelTurn
@@ -76,6 +79,7 @@ func (toolGen) GenerateWithTools(context.Context, []ModelMessage, []ToolDefiniti
 // SupportsToolCalling is the assertion every caller branches on, so both answers are
 // pinned. A capability that reports "yes" and then refuses is worse than no capability.
 func TestSupportsToolCalling(t *testing.T) {
+	t.Parallel()
 	if SupportsToolCalling(textOnlyGen{}) {
 		t.Error("a text-only generator must not report tool-calling support")
 	}

@@ -11,6 +11,7 @@ import (
 // examples.
 
 func TestToolResourcePolicy_AllowsPath(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir() // an absolute, real root
 
 	pol := ToolResourcePolicy{Filesystem: FilesystemPolicy{AllowRoots: []string{root}}}
@@ -43,6 +44,7 @@ func TestToolResourcePolicy_AllowsPath(t *testing.T) {
 }
 
 func TestToolResourcePolicy_AllowsURL(t *testing.T) {
+	t.Parallel()
 	pol := ToolResourcePolicy{Network: NetworkPolicy{AllowDomains: []string{"example.com", "api.github.com"}}}
 
 	tests := []struct {
@@ -72,6 +74,7 @@ func TestToolResourcePolicy_AllowsURL(t *testing.T) {
 }
 
 func TestToolResourcePolicy_AllowsCommand(t *testing.T) {
+	t.Parallel()
 	pol := ToolResourcePolicy{Command: CommandPolicy{
 		AllowCommands:   []string{"ls", "cat", "echo"},
 		BlockSubstrings: []string{"|", ">", "&&", "$(", "`"},
@@ -108,6 +111,7 @@ func TestToolResourcePolicy_AllowsCommand(t *testing.T) {
 // path / URL / command — a deliberate, operator-chosen bypass of the resource
 // regime, distinct from the fail-closed empty policy.
 func TestToolResourcePolicy_AllowAll(t *testing.T) {
+	t.Parallel()
 	pol := ToolResourcePolicy{AllowAll: true}
 	if !pol.AllowsPath("/anything/at/all") {
 		t.Error("AllowAll should permit any path")

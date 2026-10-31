@@ -11,6 +11,7 @@ import (
 // authoritative form. These assert the SHAPE of the predicate; the semantics are
 // pinned by the domain tests.
 func TestIsolationExpressions_NarrowsToTheSession(t *testing.T) {
+	t.Parallel()
 	got := render(t, isolationExpressions(domain.IsolateTo("sess-A"), ""))
 	if !strings.Contains(got, "session_id") {
 		t.Fatalf("predicate does not mention session_id: %s", got)
@@ -25,6 +26,7 @@ func TestIsolationExpressions_NarrowsToTheSession(t *testing.T) {
 }
 
 func TestIsolationExpressions_ExcludeUnowned(t *testing.T) {
+	t.Parallel()
 	got := render(t, isolationExpressions(&domain.SessionIsolation{SessionID: "sess-A"}, ""))
 	if strings.Contains(strings.ToUpper(got), "IS NULL") {
 		t.Fatalf("IncludeUnowned=false still admitted unowned material: %s", got)
@@ -34,6 +36,7 @@ func TestIsolationExpressions_ExcludeUnowned(t *testing.T) {
 // A nil or bypass predicate adds NO SQL — the fail-closed decision belongs to the
 // chokepoint, not to a second copy down here.
 func TestIsolationExpressions_NilAndBypassAddNothing(t *testing.T) {
+	t.Parallel()
 	if got := isolationExpressions(nil, "c"); got != nil {
 		t.Fatalf("nil produced a predicate: %v", got)
 	}
@@ -45,6 +48,7 @@ func TestIsolationExpressions_NilAndBypassAddNothing(t *testing.T) {
 // The alias must qualify the column, or a JOINed query leaves `metadata`
 // ambiguous and the query fails at runtime rather than in a test.
 func TestIsolationExpressions_AliasQualifiesTheColumn(t *testing.T) {
+	t.Parallel()
 	got := render(t, isolationExpressions(domain.IsolateTo("sess-A"), "c"))
 	if !strings.Contains(got, "c.metadata") {
 		t.Fatalf("alias not applied: %s", got)
@@ -55,6 +59,7 @@ func TestIsolationExpressions_AliasQualifiesTheColumn(t *testing.T) {
 // up inside the tag containment predicate, the two have been conflated and both
 // became unauditable.
 func TestIsolationIsNotATagPredicate(t *testing.T) {
+	t.Parallel()
 	tags := render(t, scopeExpressionsOn(&domain.TagPredicate{RequiredTags: []string{"sales"}}, ""))
 	if strings.Contains(tags, "session_id") {
 		t.Fatalf("the tag predicate is matching on session_id: %s", tags)

@@ -7,6 +7,7 @@ import "testing"
 // so the args fail to parse and every entity the tool touched is lost -- previously with
 // no signal at all. Properly escaped args, which a correct producer sends, extract fine.
 func TestEngagedEntities_WindowsPathEscaping(t *testing.T) {
+	t.Parallel()
 	got := engagedEntities("write_file", []byte(`{"path":"C:\\Users\\afsin\\Dev\\a.md"}`))
 	if len(got) == 0 {
 		t.Fatal("properly escaped Windows path must extract entities, got none")
@@ -21,6 +22,7 @@ func TestEngagedEntities_WindowsPathEscaping(t *testing.T) {
 // Both Windows spellings must canonicalise alike, or one file becomes two entities and
 // the world model fragments -- the #1 failure mode ADR-0049 D8 names.
 func TestCanonicalPath_WindowsFormsAgree(t *testing.T) {
+	t.Parallel()
 	back := canonicalPath(`C:\Users\afsin\Dev\a.md`)
 	fwd := canonicalPath("C:/Users/afsin/Dev/a.md")
 	if back != fwd {

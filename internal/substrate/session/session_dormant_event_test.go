@@ -65,6 +65,7 @@ func (r *inmemSessionRepo) ListSessions(_ context.Context, status domain.Session
 
 // Cycle 1 — TransitionStatus to Dormant publishes SessionDormantEvent.
 func TestSessionManager_TransitionToDormant_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	repo := newInmem()
 	bus := &captureEventBus{}
 
@@ -93,6 +94,7 @@ func TestSessionManager_TransitionToDormant_PublishesEvent(t *testing.T) {
 
 // Cycle 2 — Transition to non-Dormant status does NOT publish SessionDormantEvent.
 func TestSessionManager_TransitionToCompleted_DoesNotPublishDormantEvent(t *testing.T) {
+	t.Parallel()
 	repo := newInmem()
 	bus := &captureEventBus{}
 
@@ -115,6 +117,7 @@ func TestSessionManager_TransitionToCompleted_DoesNotPublishDormantEvent(t *test
 
 // Cycle 3 — Nil EventBus is safe (no panic).
 func TestSessionManager_NilEventBus_IsSafe(t *testing.T) {
+	t.Parallel()
 	repo := newInmem()
 	mgr := session.New(repo)
 	// EventBus not set (nil)
@@ -128,6 +131,7 @@ func TestSessionManager_NilEventBus_IsSafe(t *testing.T) {
 
 // Cycle 4 — TTLDuration in the event matches the configured TTL.
 func TestSessionManager_DormantEvent_IncludesTTL(t *testing.T) {
+	t.Parallel()
 	repo := newInmem()
 	bus := &captureEventBus{}
 	ttl := 7 * 24 * time.Hour

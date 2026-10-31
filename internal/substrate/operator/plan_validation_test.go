@@ -25,6 +25,7 @@ func noAgentsKnown(string) bool  { return false }
 // The reason SubmitPlan needs validation at all: the planner path cannot emit a
 // cycle, and an operator drawing a DAG by hand can.
 func TestValidateAuthoredPlan_CycleIsFatal(t *testing.T) {
+	t.Parallel()
 	steps := []domain.Step{
 		{Query: "a", DependsOn: []int{1}},
 		{Query: "b", DependsOn: []int{0}},
@@ -44,6 +45,7 @@ func TestValidateAuthoredPlan_CycleIsFatal(t *testing.T) {
 }
 
 func TestValidateAuthoredPlan_SelfDependencyIsFatal(t *testing.T) {
+	t.Parallel()
 	steps := []domain.Step{{Query: "a", DependsOn: []int{0}}}
 	issues, _ := validateAuthoredPlan(steps, allAgentsKnown)
 
@@ -53,6 +55,7 @@ func TestValidateAuthoredPlan_SelfDependencyIsFatal(t *testing.T) {
 }
 
 func TestValidateAuthoredPlan_OutOfBoundsDependencyIsFatal(t *testing.T) {
+	t.Parallel()
 	steps := []domain.Step{{Query: "a", DependsOn: []int{7}}}
 	issues, _ := validateAuthoredPlan(steps, allAgentsKnown)
 
@@ -68,6 +71,7 @@ func TestValidateAuthoredPlan_OutOfBoundsDependencyIsFatal(t *testing.T) {
 // A valid plan returns the order the executor would actually use, which is the
 // question a DAG author is asking — a drawing does not answer it past a few nodes.
 func TestValidateAuthoredPlan_ValidPlanReturnsExecutionOrder(t *testing.T) {
+	t.Parallel()
 	steps := []domain.Step{
 		{Query: "c", DependsOn: []int{1}},
 		{Query: "b", DependsOn: []int{2}},
@@ -92,6 +96,7 @@ func TestValidateAuthoredPlan_ValidPlanReturnsExecutionOrder(t *testing.T) {
 // The soft/hard pin distinction has to survive into validation, not just onto
 // the wire: they fail differently at runtime, so they must warn differently here.
 func TestValidateAuthoredPlan_HardPinOnUnknownAgentIsFatalSoftIsNot(t *testing.T) {
+	t.Parallel()
 	hard := []domain.Step{{Query: "a", PreferredAgent: "ghost", AgentPin: domain.PinHard}}
 	issues, _ := validateAuthoredPlan(hard, noAgentsKnown)
 	i, ok := issueWithCode(issues, IssueUnknownAgent)
@@ -116,6 +121,7 @@ func TestValidateAuthoredPlan_HardPinOnUnknownAgentIsFatalSoftIsNot(t *testing.T
 // An empty pin reads as SOFT, so a malformed pin degrades to the weaker,
 // non-stranding behaviour rather than killing a step on a typo.
 func TestValidateAuthoredPlan_EmptyPinStrengthDegradesToSoft(t *testing.T) {
+	t.Parallel()
 	steps := []domain.Step{{Query: "a", PreferredAgent: "ghost"}}
 	issues, _ := validateAuthoredPlan(steps, noAgentsKnown)
 
@@ -129,6 +135,7 @@ func TestValidateAuthoredPlan_EmptyPinStrengthDegradesToSoft(t *testing.T) {
 }
 
 func TestValidateAuthoredPlan_EmptyQueryIsFatalUnlessThought(t *testing.T) {
+	t.Parallel()
 	issues, _ := validateAuthoredPlan([]domain.Step{{Query: "  "}}, allAgentsKnown)
 	if i, ok := issueWithCode(issues, IssueEmptyQuery); !ok || !i.Fatal {
 		t.Fatalf("empty query: issue=%+v ok=%v, want fatal", i, ok)
@@ -145,6 +152,7 @@ func TestValidateAuthoredPlan_EmptyQueryIsFatalUnlessThought(t *testing.T) {
 // Not fatal — the executor would run it — but it is almost certainly a mistake,
 // and it is invisible until the expansion produces nothing.
 func TestValidateAuthoredPlan_FanOutWithoutDependencyWarns(t *testing.T) {
+	t.Parallel()
 	src := 0
 	steps := []domain.Step{
 		{Query: "list the files"},
@@ -172,6 +180,7 @@ func TestValidateAuthoredPlan_FanOutWithoutDependencyWarns(t *testing.T) {
 }
 
 func TestValidateAuthoredPlan_FanOutOverSelfIsFatal(t *testing.T) {
+	t.Parallel()
 	self := 0
 	steps := []domain.Step{{Query: "a", FanOutOver: &self}}
 	issues, _ := validateAuthoredPlan(steps, allAgentsKnown)
@@ -210,6 +219,7 @@ func newSubmitService(sub PlanSubmitter) *Service {
 // A dry run must not create, start or spend. The console's header promises this
 // explicitly, so a side effect here would make the product lie.
 func TestSubmitPlan_DryRunHasNoSideEffects(t *testing.T) {
+	t.Parallel()
 	sub := &stubSubmitter{}
 	s := newSubmitService(sub)
 
@@ -233,6 +243,7 @@ func TestSubmitPlan_DryRunHasNoSideEffects(t *testing.T) {
 
 // A fatal plan must not run, dry_run or not — and it must say why.
 func TestSubmitPlan_FatalPlanIsNotRun(t *testing.T) {
+	t.Parallel()
 	sub := &stubSubmitter{}
 	s := newSubmitService(sub)
 
@@ -258,6 +269,7 @@ func TestSubmitPlan_FatalPlanIsNotRun(t *testing.T) {
 }
 
 func TestSubmitPlan_ValidPlanRuns(t *testing.T) {
+	t.Parallel()
 	sub := &stubSubmitter{}
 	s := newSubmitService(sub)
 
@@ -280,6 +292,7 @@ func TestSubmitPlan_ValidPlanRuns(t *testing.T) {
 // legitimate step index. Getting this wrong turns every ordinary step into a
 // fan-out over step 0.
 func TestSubmitPlan_FanOutSentinelDistinguishesAbsentFromStepZero(t *testing.T) {
+	t.Parallel()
 	sub := &stubSubmitter{}
 	s := newSubmitService(sub)
 
@@ -302,6 +315,7 @@ func TestSubmitPlan_FanOutSentinelDistinguishesAbsentFromStepZero(t *testing.T) 
 }
 
 func TestSubmitPlan_UnwiredReturnsUnimplemented(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	if _, err := s.SubmitPlan(context.Background(), &pb.SubmitPlanOpRequest{
 		CommandId: "c", Reason: "r", Steps: []*pb.AuthoredStepOp{{Query: "a"}},
@@ -311,6 +325,7 @@ func TestSubmitPlan_UnwiredReturnsUnimplemented(t *testing.T) {
 }
 
 func TestSubmitPlan_EmptyStepsRejected(t *testing.T) {
+	t.Parallel()
 	s := newSubmitService(&stubSubmitter{})
 	if _, err := s.SubmitPlan(context.Background(), &pb.SubmitPlanOpRequest{
 		CommandId: "c", Reason: "r",

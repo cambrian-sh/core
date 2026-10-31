@@ -10,6 +10,7 @@ import (
 
 // Cycle 1 — Zero age: TemporalDecay returns baseStrength unchanged.
 func TestTemporalDecay_ZeroAge(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	got := domain.TemporalDecay(0.8, now, 0.01, now)
 	if math.Abs(got-0.8) > 1e-9 {
@@ -19,6 +20,7 @@ func TestTemporalDecay_ZeroAge(t *testing.T) {
 
 // Cycle 2 — One hour age with lambda=0.01: result is base * e^(-0.01).
 func TestTemporalDecay_OneHour(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	last := now.Add(-time.Hour)
 	want := 0.8 * math.Exp(-0.01)
@@ -30,6 +32,7 @@ func TestTemporalDecay_OneHour(t *testing.T) {
 
 // Cycle 3 — Future lastAccessed clamps to zero age (no negative decay).
 func TestTemporalDecay_FutureLastAccessed(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	future := now.Add(time.Hour)
 	got := domain.TemporalDecay(0.5, future, 0.01, now)
@@ -40,6 +43,7 @@ func TestTemporalDecay_FutureLastAccessed(t *testing.T) {
 
 // Cycle 4 — Zero base returns zero regardless of age or lambda.
 func TestTemporalDecay_ZeroBase(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	last := now.Add(-1000 * time.Hour)
 	got := domain.TemporalDecay(0, last, 0.01, now)
@@ -50,6 +54,7 @@ func TestTemporalDecay_ZeroBase(t *testing.T) {
 
 // Cycle 5 — 24 hours with default lambda=0.01: effective activation decays notably.
 func TestTemporalDecay_24Hours(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	last := now.Add(-24 * time.Hour)
 	got := domain.TemporalDecay(1.0, last, 0.01, now)
@@ -62,6 +67,7 @@ func TestTemporalDecay_24Hours(t *testing.T) {
 // Cycle 6 — Ordering: three documents with same base but different lastAccessed
 // are ranked A > B > C after re-rank (most recently accessed first).
 func TestReRankWithTemporalDecay_OrdersByRecency(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	lambda := 0.01
 
@@ -89,6 +95,7 @@ func TestReRankWithTemporalDecay_OrdersByRecency(t *testing.T) {
 
 // Cycle 7 — Re-rank preserves all results (no elements dropped).
 func TestReRankWithTemporalDecay_AllResultsPreserved(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	candidates := make([]domain.SearchResult, 10)
 	for i := range candidates {

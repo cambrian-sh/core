@@ -10,6 +10,7 @@ import (
 // ADR-0049 D8: equivalent spellings of one real path must canonicalize to one id —
 // otherwise a scene's engaged scope fragments. Windows case + separator forms collapse.
 func TestCanonicalPath_CollapsesEquivalentForms(t *testing.T) {
+	t.Parallel()
 	want := "c:/users/foo/a.md"
 	for _, raw := range []string{
 		`C:\Users\Foo\a.md`,
@@ -34,6 +35,7 @@ func TestCanonicalPath_CollapsesEquivalentForms(t *testing.T) {
 // ADR-0049 D8: an api is keyed by scheme://host; every endpoint under it collapses to
 // the same id, with the path surfaced as an attribute. Default port carries no info.
 func TestCanonicalAPI_CollapsesEndpointsAndPorts(t *testing.T) {
+	t.Parallel()
 	id1, ep1, ok1 := canonicalAPI("https://api.example.com/v1/users")
 	id2, ep2, _ := canonicalAPI("https://API.example.com:443/v1/orders")
 	if !ok1 || id1 != "https://api.example.com" {
@@ -54,6 +56,7 @@ func TestCanonicalAPI_CollapsesEndpointsAndPorts(t *testing.T) {
 // ADR-0049 D8: a file mutation yields the file AND its parent directory; granularity
 // is file/dir, never one-entity-per-endpoint.
 func TestEngagedEntities_FileYieldsFileAndParentDir(t *testing.T) {
+	t.Parallel()
 	ents := engagedEntities("write_file", []byte(`{"path":"C:\\repo\\docs\\a.md","content":"x"}`))
 	keys := map[string]bool{}
 	for _, e := range ents {
@@ -73,6 +76,7 @@ func TestEngagedEntities_FileYieldsFileAndParentDir(t *testing.T) {
 // ADR-0049 D8: the `path` arg is ambiguous — a list/dir tool names a DIRECTORY, and the
 // cwd (".") identifies nothing, so it must NOT become a "file ." entity.
 func TestEngagedEntities_ListDirectoryPathIsDirNotFile(t *testing.T) {
+	t.Parallel()
 	// path="." on a directory tool → degenerate cwd → NO entity at all.
 	if ents := engagedEntities("mcp:filesystem/list_directory_with_sizes", []byte(`{"path":"."}`)); len(ents) != 0 {
 		t.Errorf("listing the cwd must mint no entity (\".\" identifies nothing); got %v", ents)
@@ -89,6 +93,7 @@ func TestEngagedEntities_ListDirectoryPathIsDirNotFile(t *testing.T) {
 }
 
 func TestEngagedEntities_NoResourceArgs(t *testing.T) {
+	t.Parallel()
 	if engagedEntities("noop", []byte(`{"content":"x","reason":"y"}`)) != nil {
 		t.Error("no resource args → no entities")
 	}

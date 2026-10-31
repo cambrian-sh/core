@@ -10,6 +10,7 @@ import (
 )
 
 func TestHotSwapPlan_PreservesCompletedSteps(t *testing.T) {
+	t.Parallel()
 	original := []domain.Step{
 		{Query: "step-0", DependsOn: []int{}},
 		{Query: "step-1", DependsOn: []int{0}},
@@ -34,6 +35,7 @@ func TestHotSwapPlan_PreservesCompletedSteps(t *testing.T) {
 }
 
 func TestHotSwapPlan_RemapsNewStepDependencies(t *testing.T) {
+	t.Parallel()
 	original := []domain.Step{
 		{Query: "old-0", DependsOn: []int{}},
 		{Query: "old-1", DependsOn: []int{0}},
@@ -56,6 +58,7 @@ func TestHotSwapPlan_RemapsNewStepDependencies(t *testing.T) {
 }
 
 func TestHotSwapPlan_ZeroCompleted(t *testing.T) {
+	t.Parallel()
 	original := []domain.Step{
 		{Query: "old-0", DependsOn: []int{}},
 	}
@@ -74,6 +77,7 @@ func TestHotSwapPlan_ZeroCompleted(t *testing.T) {
 }
 
 func TestHotSwapPlan_AllCompleted_EmptyNew(t *testing.T) {
+	t.Parallel()
 	original := []domain.Step{
 		{Query: "step-0", DependsOn: []int{}},
 	}
@@ -86,6 +90,7 @@ func TestHotSwapPlan_AllCompleted_EmptyNew(t *testing.T) {
 }
 
 func TestHotSwapPlan_NewStepInheritsLastCompleted(t *testing.T) {
+	t.Parallel()
 	// If new root step has no deps, it should depend on the last completed step
 	// so the merged DAG remains connected.
 	original := []domain.Step{
@@ -114,6 +119,7 @@ func TestHotSwapPlan_NewStepInheritsLastCompleted(t *testing.T) {
 // --- Cycle 4: DAGExecutor CompletedIndices ---
 
 func TestDAGExecutor_TracksCompletedIndices(t *testing.T) {
+	t.Parallel()
 	dag := &executer.DAGExecutor{}
 	plan := &domain.ExecutionPlan{
 		Steps: []domain.Step{

@@ -8,6 +8,7 @@ import (
 // The identity types must survive JSON round-tripping as plain strings, because they cross
 // the storage and proto edges that way.
 func TestIDs_MarshalAsPlainStrings(t *testing.T) {
+	t.Parallel()
 	type payload struct {
 		Session SessionID `json:"session"`
 		Run     RunID     `json:"run"`
@@ -37,6 +38,7 @@ func TestIDs_MarshalAsPlainStrings(t *testing.T) {
 // Tier-2 tagging tests caught it. The rule the failure taught: convert to string when
 // writing into metadata, and DocSessionID reads it back.
 func TestSessionID_MustBeStringInDocumentMetadata(t *testing.T) {
+	t.Parallel()
 	sid := SessionID("task-session-1")
 
 	wrong := map[string]interface{}{MetaSessionID: sid}
@@ -53,6 +55,7 @@ func TestSessionID_MustBeStringInDocumentMetadata(t *testing.T) {
 // LeaseBinding's zero value must never read as an identity — an unbound lease grants
 // nothing.
 func TestLeaseBinding_IsZero(t *testing.T) {
+	t.Parallel()
 	if !(LeaseBinding{}).IsZero() {
 		t.Error("empty binding must be zero")
 	}
@@ -71,6 +74,7 @@ func TestLeaseBinding_IsZero(t *testing.T) {
 }
 
 func TestIDs_String(t *testing.T) {
+	t.Parallel()
 	if SessionID("s").String() != "s" || RunID("r").String() != "r" || LeaseID("l").String() != "l" {
 		t.Error("String() must return the underlying value")
 	}

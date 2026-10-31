@@ -9,6 +9,7 @@ import (
 
 // Cycle 1: all-empty inputs → empty string (tracer bullet).
 func TestBuildLTMContext_AllEmpty(t *testing.T) {
+	t.Parallel()
 	out := BuildLTMContext(nil, domain.LTMEnrichment{})
 	if out != "" {
 		t.Errorf("BuildLTMContext(nil, empty) = %q, want empty string", out)
@@ -17,6 +18,7 @@ func TestBuildLTMContext_AllEmpty(t *testing.T) {
 
 // Cycle 2: facts only → <FactLTM> section present, no other sections.
 func TestBuildLTMContext_FactsOnly(t *testing.T) {
+	t.Parallel()
 	enrichment := domain.LTMEnrichment{
 		Facts: []domain.SearchResult{
 			{
@@ -47,6 +49,7 @@ func TestBuildLTMContext_FactsOnly(t *testing.T) {
 
 // Cycle 3: negatives only → <NegativeLTM> section present.
 func TestBuildLTMContext_NegativesOnly(t *testing.T) {
+	t.Parallel()
 	enrichment := domain.LTMEnrichment{
 		Negatives: []domain.SearchResult{
 			{
@@ -75,6 +78,7 @@ func TestBuildLTMContext_NegativesOnly(t *testing.T) {
 
 // Cycle 4: plan only → <PlanLTM> tag with attributes.
 func TestBuildLTMContext_PlanOnly(t *testing.T) {
+	t.Parallel()
 	plan := &domain.PlanLTMEntry{
 		PlanJSON:    `{"subject":"prime numbers","steps":[]}`,
 		Similarity:  0.87,
@@ -103,6 +107,7 @@ func TestBuildLTMContext_PlanOnly(t *testing.T) {
 
 // Cycle 5: all three → all three sections present.
 func TestBuildLTMContext_AllThreeSections(t *testing.T) {
+	t.Parallel()
 	plan := &domain.PlanLTMEntry{PlanJSON: `{}`, Similarity: 0.9, Confidence: 0.8, Outcome: "success"}
 	enrichment := domain.LTMEnrichment{
 		Facts: []domain.SearchResult{
@@ -124,6 +129,7 @@ func TestBuildLTMContext_AllThreeSections(t *testing.T) {
 
 // Cycle 6: fact elements carry id and activation attributes.
 func TestBuildLTMContext_FactAttributes(t *testing.T) {
+	t.Parallel()
 	enrichment := domain.LTMEnrichment{
 		Facts: []domain.SearchResult{
 			{Document: domain.Document{ID: "f1", Text: "fact zero", ActivationStrength: 0.72}, Score: 0.9},

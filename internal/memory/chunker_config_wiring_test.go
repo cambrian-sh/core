@@ -16,6 +16,7 @@ import (
 // This test is the link between the two lists. Adding a name to
 // KnownChunkerNames without registering it now fails here.
 func TestNewDefaultChunkers_CoversEveryKnownChunkerName(t *testing.T) {
+	t.Parallel()
 	chunkers := NewDefaultChunkers(&mockEmbedder{vec: []float32{0.1}}, config.ChunkerConfig{})
 
 	for name := range config.KnownChunkerNames {
@@ -34,6 +35,7 @@ func TestNewDefaultChunkers_CoversEveryKnownChunkerName(t *testing.T) {
 // deliberately, so a route naming it is rejected loudly by NewRegistry at startup
 // rather than nil-panicking on the first document.
 func TestNewDefaultChunkers_OmitsLateWithoutEmbedder(t *testing.T) {
+	t.Parallel()
 	chunkers := NewDefaultChunkers(nil, config.ChunkerConfig{})
 	if _, ok := chunkers[lateChunkerName]; ok {
 		t.Error("late chunker must not be registered without an embedder")
@@ -57,6 +59,7 @@ func TestNewDefaultChunkers_OmitsLateWithoutEmbedder(t *testing.T) {
 // and validated, and then the ingestion manager built its registry from a Go
 // literal that always said "option_c".
 func TestNewIngestionManager_HonoursConfiguredDefault(t *testing.T) {
+	t.Parallel()
 	im := NewIngestionManager(nil, &mockEmbedder{vec: []float32{0.1}}, testAgent(),
 		IngestionConfig{}, config.ChunkerConfig{Default: "markdown_header"})
 
@@ -72,6 +75,7 @@ func TestNewIngestionManager_HonoursConfiguredDefault(t *testing.T) {
 // A sourceType route takes precedence over the default — the routing table the
 // `chunker.routes` block describes is real.
 func TestNewIngestionManager_HonoursConfiguredRoutes(t *testing.T) {
+	t.Parallel()
 	im := NewIngestionManager(nil, &mockEmbedder{vec: []float32{0.1}}, testAgent(),
 		IngestionConfig{}, config.ChunkerConfig{
 			Default:   "option_c",
@@ -94,6 +98,7 @@ func TestNewIngestionManager_HonoursConfiguredRoutes(t *testing.T) {
 // ADR-0060 D6: the late chunker is opt-in. While the gate is closed a route
 // naming it degrades to the default rather than being refused.
 func TestNewIngestionManager_LateGateFollowsConfig(t *testing.T) {
+	t.Parallel()
 	cfg := config.ChunkerConfig{
 		Default: "option_c",
 		Routes:  map[string]string{"bulk": lateChunkerName},
@@ -115,6 +120,7 @@ func TestNewIngestionManager_LateGateFollowsConfig(t *testing.T) {
 // ingest anything is a worse answer to one bad route than ingesting with the
 // documented default.
 func TestNewIngestionManager_InvalidConfigFallsBackToOptionC(t *testing.T) {
+	t.Parallel()
 	im := NewIngestionManager(nil, &mockEmbedder{vec: []float32{0.1}}, testAgent(),
 		IngestionConfig{}, config.ChunkerConfig{Default: "no_such_chunker"})
 

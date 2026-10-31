@@ -11,6 +11,7 @@ import (
 // by its auction id. The regression being locked: an openai generator (deepseek)
 // previously had NO streaming client, so cognitive agents could not generate.
 func TestNewStreamersFromGenerators_AllProvidersKeyedByID(t *testing.T) {
+	t.Parallel()
 	gens := []config.GeneratorConfig{
 		{ID: "deepseek", Provider: "openai", Model: "deepseek-v4-flash", Endpoint: "https://x/v1", APIKeyEnv: "K"},
 		{ID: "qwen-local", Provider: "ollama", Model: "qwen3:8b", Endpoint: "http://localhost:11434"},
@@ -39,6 +40,7 @@ func TestNewStreamersFromGenerators_AllProvidersKeyedByID(t *testing.T) {
 // An unknown provider is skipped (with a reported error) without dropping the
 // valid siblings — one bad generator must not disable streaming for the rest.
 func TestNewStreamersFromGenerators_UnknownProviderSkippedWithError(t *testing.T) {
+	t.Parallel()
 	gens := []config.GeneratorConfig{
 		{ID: "good", Provider: "ollama", Model: "m", Endpoint: "e"},
 		{ID: "bad", Provider: "bogus", Model: "m", Endpoint: "e"},

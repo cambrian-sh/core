@@ -40,6 +40,7 @@ func newReq(t *testing.T) *http.Request {
 // A weekly quota cannot clear inside a retry ladder — retrying it only converts a fast, clear
 // refusal into a slow, silent one.
 func TestQuotaRefusalIsNotRetried(t *testing.T) {
+	t.Parallel()
 	rt := &countingRT{
 		code: http.StatusTooManyRequests,
 		body: `{"type":"error","error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached. Resets in 2 days."}}`,
@@ -68,6 +69,7 @@ func TestQuotaRefusalIsNotRetried(t *testing.T) {
 // transient and must still ride the backoff ladder. A loose match would make the kernel give
 // up on weather it used to survive.
 func TestOrdinaryRateLimitStillRetries(t *testing.T) {
+	t.Parallel()
 	rt := &countingRT{
 		code: http.StatusTooManyRequests,
 		body: `{"error":{"message":"Rate limit reached for requests. Please try again in 1s."}}`,
@@ -84,6 +86,7 @@ func TestOrdinaryRateLimitStillRetries(t *testing.T) {
 }
 
 func TestQuotaExhaustedRestoresBodyWhenItDoesNotMatch(t *testing.T) {
+	t.Parallel()
 	const body = `{"error":{"message":"Rate limit reached"}}`
 	resp := &http.Response{
 		StatusCode: http.StatusTooManyRequests,

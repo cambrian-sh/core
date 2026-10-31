@@ -13,6 +13,7 @@ import (
 // TestSelfHealer_FirstPassSuccess: inner returns success on first call.
 // Wrap must return the result immediately.
 func TestSelfHealer_FirstPassSuccess(t *testing.T) {
+	t.Parallel()
 	sh := &SelfHealer{
 		StepIndex:   0,
 		MaxAttempts: 3,
@@ -40,6 +41,7 @@ func TestSelfHealer_FirstPassSuccess(t *testing.T) {
 // succeeds. On the retry call, handoff.Context must contain _heal_error and
 // _heal_attempt. The result from the second call is returned.
 func TestSelfHealer_LogicError_ContextInjected(t *testing.T) {
+	t.Parallel()
 	sh := &SelfHealer{
 		StepIndex:   0,
 		MaxAttempts: 3,
@@ -82,6 +84,7 @@ func TestSelfHealer_LogicError_ContextInjected(t *testing.T) {
 // DeadlineExceeded error (SystemError), then succeeds. The handoff.Context must
 // NOT be mutated with _heal_error or _heal_attempt on the retry.
 func TestSelfHealer_SystemError_HandoffUnchanged(t *testing.T) {
+	t.Parallel()
 	sh := &SelfHealer{
 		StepIndex:   0,
 		MaxAttempts: 3,
@@ -124,6 +127,7 @@ func TestSelfHealer_SystemError_HandoffUnchanged(t *testing.T) {
 // second attempt. Wrap must return HealingExhaustedError{LoopDetected: true,
 // AttemptCount: 2} and call inner exactly twice.
 func TestSelfHealer_LoopDetected_EarlyReturn(t *testing.T) {
+	t.Parallel()
 	sh := &SelfHealer{
 		StepIndex:   2,
 		MaxAttempts: 3,
@@ -162,6 +166,7 @@ func TestSelfHealer_LoopDetected_EarlyReturn(t *testing.T) {
 // each call to avoid loop detection triggering early. Wrap must return
 // HealingExhaustedError{LoopDetected: false, AttemptCount: 3}.
 func TestSelfHealer_ThreeAttempts_Exhausted(t *testing.T) {
+	t.Parallel()
 	sh := &SelfHealer{
 		StepIndex:   1,
 		MaxAttempts: 3,
@@ -202,6 +207,7 @@ func TestSelfHealer_ThreeAttempts_Exhausted(t *testing.T) {
 // TestHealingExhaustedError_ImplementsError: verifies the error type satisfies
 // the error interface, works with errors.As, and Unwrap() returns LastError.
 func TestHealingExhaustedError_ImplementsError(t *testing.T) {
+	t.Parallel()
 	sentinel := errors.New("sentinel")
 	he := &HealingExhaustedError{
 		StepIndex:    3,

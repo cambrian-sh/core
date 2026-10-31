@@ -3037,7 +3037,6 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		})
 		srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux}
 		slog.Info("🌐 Ingestion HTTP server starting", "port", port,
-			"inbox_dir", k.Config.Execution.Ingestion.InboxDir,
 			"queue_size", k.Config.Execution.Ingestion.IngestionQueueSize,
 			"workers", k.Config.Execution.Ingestion.IngestionWorkers)
 		g.Go(func() error {

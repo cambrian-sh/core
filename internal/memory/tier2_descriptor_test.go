@@ -40,6 +40,7 @@ func (c *sceneCollectStore) saved(docType string) bool {
 // ADR-0049 D3: when the eager WriteScene already produced a scene (SceneID set),
 // the Tier-2 commit must NOT write a second scene of the same snapshot.
 func TestCommitItem_SkipsTier2SceneWhenEagerSceneExists(t *testing.T) {
+	t.Parallel()
 	store := &sceneCollectStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
@@ -62,6 +63,7 @@ func TestCommitItem_SkipsTier2SceneWhenEagerSceneExists(t *testing.T) {
 
 // With no eager scene (SceneID empty), the Tier-2 scene is the fallback.
 func TestCommitItem_WritesTier2SceneWhenNoEagerScene(t *testing.T) {
+	t.Parallel()
 	store := &sceneCollectStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
@@ -93,6 +95,7 @@ func (g *captureGraphStore) UpdateEdgeWeight(context.Context, string, string, do
 }
 
 func TestPlanIDFromTaskID(t *testing.T) {
+	t.Parallel()
 	if planIDFromTaskID("step-3-abc123") != "abc123" {
 		t.Errorf("expected abc123; got %q", planIDFromTaskID("step-3-abc123"))
 	}
@@ -103,6 +106,7 @@ func TestPlanIDFromTaskID(t *testing.T) {
 
 // A plan's actions accrete engaged refs; WritePlanScene writes ONE immutable scene.
 func TestWritePlanScene_AccretesAndWritesOneScene(t *testing.T) {
+	t.Parallel()
 	store := &captureSaveStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
@@ -131,6 +135,7 @@ func TestWritePlanScene_AccretesAndWritesOneScene(t *testing.T) {
 // ADR-0049: the scene embeds an inline ACTION SUMMARY (its "what I did" path) resolved
 // from the plan's action records, so a scene reads as a self-contained transition.
 func TestWritePlanScene_EmbedsInlineActionSummary(t *testing.T) {
+	t.Parallel()
 	store := &collectStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
@@ -164,6 +169,7 @@ func TestWritePlanScene_EmbedsInlineActionSummary(t *testing.T) {
 // ADR-0049 D5/D7: a plan that engaged NO entity transitioned no world state — it must
 // NOT write a contentless goal-only scene (which would pollute situational retrieval).
 func TestWritePlanScene_SkipsContentlessScene(t *testing.T) {
+	t.Parallel()
 	store := &captureSaveStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
@@ -186,6 +192,7 @@ func TestWritePlanScene_SkipsContentlessScene(t *testing.T) {
 // `mnemonic_entity` record it fed had the same single consumer; and the "(baseline
 // cid:…)" suffix put a 64-hex digest in the one field a human and an LLM actually read.
 func TestEngagement_AccretesSceneScopeWithoutEntityOrCASWrite(t *testing.T) {
+	t.Parallel()
 	store := &collectStore{}
 	cs := &fakeContentStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
@@ -236,6 +243,7 @@ func TestEngagement_AccretesSceneScopeWithoutEntityOrCASWrite(t *testing.T) {
 
 // ADR-0049 D10: the follows-edge derivation is pure — skips empties and self-loops.
 func TestFollowsEdges(t *testing.T) {
+	t.Parallel()
 	edges := followsEdges("d1", []string{"d0", "", "d1", "d2"})
 	if len(edges) != 2 {
 		t.Fatalf("expected 2 follows edges (d0, d2), skipping empty + self; got %d", len(edges))
@@ -254,6 +262,7 @@ func TestFollowsEdges(t *testing.T) {
 // is only pending) and written ONLY once both endpoints have committed via Tier-2 —
 // never against a not-yet-persisted (or dropped) row.
 func TestRecordExecution_DefersFollowsEdgeUntilBothCommitted(t *testing.T) {
+	t.Parallel()
 	gs := &captureGraphStore{}
 	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
@@ -295,6 +304,7 @@ func TestRecordExecution_DefersFollowsEdgeUntilBothCommitted(t *testing.T) {
 
 // ADR-0049 D3: the dedup decision is a pure function of action count.
 func TestDropStepSynthesis(t *testing.T) {
+	t.Parallel()
 	if !dropStepSynthesis(1) {
 		t.Error("exactly one action → drop the synthesis")
 	}
@@ -305,6 +315,7 @@ func TestDropStepSynthesis(t *testing.T) {
 
 // A single-action step's prose synthesis is dropped (it restates the one action).
 func TestRecordExecution_DropsSingleActionSynthesis(t *testing.T) {
+	t.Parallel()
 	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
 	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
@@ -318,6 +329,7 @@ func TestRecordExecution_DropsSingleActionSynthesis(t *testing.T) {
 
 // A multi-action step keeps its synthesis, tagged with the step's task_id.
 func TestRecordExecution_KeepsMultiActionSynthesis(t *testing.T) {
+	t.Parallel()
 	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
 	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
@@ -336,6 +348,7 @@ func TestRecordExecution_KeepsMultiActionSynthesis(t *testing.T) {
 
 // An uncorrelated step (no task_id — dedup off) keeps its synthesis.
 func TestRecordExecution_UncorrelatedKeepsSynthesis(t *testing.T) {
+	t.Parallel()
 	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
 	agent.RecordOutcomes = true // ADR-0049 A2.2: the outcome-record arm this test exercises
@@ -348,6 +361,7 @@ func TestRecordExecution_UncorrelatedKeepsSynthesis(t *testing.T) {
 // ADR-0049 D1: a mutation output is saved DIRECTLY as a durable `mnemonic_action`
 // (bypassing the Tier-2 keep/drop pipeline), as the structured action line.
 func TestRecordToolOutput_MutationSavesActionDoc(t *testing.T) {
+	t.Parallel()
 	store := &collectStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
@@ -379,6 +393,7 @@ func TestRecordToolOutput_MutationSavesActionDoc(t *testing.T) {
 
 // A read output flows into the Tier-1 fact pending channel (not a direct save).
 func TestRecordToolOutput_ReadGoesToFactPending(t *testing.T) {
+	t.Parallel()
 	store := &captureSaveStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
@@ -401,6 +416,7 @@ func TestRecordToolOutput_ReadGoesToFactPending(t *testing.T) {
 }
 
 func TestHeuristicDescriptor(t *testing.T) {
+	t.Parallel()
 	got := heuristicDescriptor(`tool[mcp:firecrawl/firecrawl_search]: [{"type":"text","huge":"payload..."}]`)
 	if got != `Output of tool "mcp:firecrawl/firecrawl_search" (74 chars).` && !strings.HasPrefix(got, `Output of tool "mcp:firecrawl/firecrawl_search"`) {
 		t.Errorf("tool envelope should collapse to a named one-liner; got %q", got)
@@ -415,6 +431,7 @@ func TestHeuristicDescriptor(t *testing.T) {
 }
 
 func TestIsToolOutputItem(t *testing.T) {
+	t.Parallel()
 	tool := &domain.Document{Metadata: map[string]interface{}{"source_agent": "ToolOutput"}}
 	step := &domain.Document{Metadata: map[string]interface{}{"source_agent": "System"}}
 	if !isToolOutputItem(tool) {
@@ -428,6 +445,7 @@ func TestIsToolOutputItem(t *testing.T) {
 // A promoted tool output is stored as its DESCRIPTOR (embedded + as Text), with the
 // raw payload preserved in metadata — ADR-0048 #2.
 func TestCommitItem_ToolOutputIndexedByDescriptor(t *testing.T) {
+	t.Parallel()
 	store := &captureSaveStore{}
 	emb := &recordingEmbedder{}
 	mgr := NewMemoryManager(store, emb)
@@ -486,6 +504,7 @@ func (f *fakeContentStore) GC(context.Context, []domain.CID) error        { retu
 // With a ContentStore wired, a promoted tool output offloads its full body to CAS
 // and records the cid in metadata for {summary + cid} recall (ADR-0048 #1).
 func TestCommitItem_OffloadsFullBodyAndRecordsCID(t *testing.T) {
+	t.Parallel()
 	store := &captureSaveStore{}
 	cs := &fakeContentStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
@@ -520,6 +539,7 @@ func TestCommitItem_OffloadsFullBodyAndRecordsCID(t *testing.T) {
 // every promoted memory carries a gist), but keeps its full Text and is NOT offloaded
 // to CAS (no content_cid) — the offload is reserved for heavy tool-output bodies.
 func TestCommitItem_StepRecordGetsSummaryKeepsTextNoOffload(t *testing.T) {
+	t.Parallel()
 	store := &captureSaveStore{}
 	cs := &fakeContentStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
@@ -561,6 +581,7 @@ func TestCommitItem_StepRecordGetsSummaryKeepsTextNoOffload(t *testing.T) {
 // chokepoint classifies it from principal + tool domain instead of seeing a nil
 // hint and committing the row untagged.
 func TestRecordToolOutput_ActionCarriesClassificationTags(t *testing.T) {
+	t.Parallel()
 	store := &collectStore{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
@@ -591,6 +612,7 @@ func TestRecordToolOutput_ActionCarriesClassificationTags(t *testing.T) {
 // The read-fact lane carries the same tags on the pending doc, so they survive
 // the Tier-1 channel into the Tier-2 commit.
 func TestRecordToolOutput_ReadFactCarriesClassificationTags(t *testing.T) {
+	t.Parallel()
 	agent := NewAgent(NewMemoryManager(&captureSaveStore{}, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
 	agent.RecordExperiential = true
 	agent.RecordOutcomes = true
@@ -628,6 +650,7 @@ func (f *ownerCapturingCS) Put(ctx context.Context, data []byte, nodeType string
 // unstamped Put writes owner "" and CanReadContentNode then admits ANY caller,
 // while the LTM row the blob backs is session-scoped.
 func TestCommitItem_OffloadIsOwnedByTheItemSession(t *testing.T) {
+	t.Parallel()
 	store := &captureSaveStore{}
 	cs := &ownerCapturingCS{}
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)

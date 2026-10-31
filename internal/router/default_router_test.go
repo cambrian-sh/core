@@ -27,6 +27,7 @@ func newRouter() *router.DefaultRouter {
 
 // Cycle 1 — Tracer bullet: valid Intent bypasses all layers immediately.
 func TestLayer0_ValidIntent_ReturnedImmediately(t *testing.T) {
+	t.Parallel()
 	r := newRouter()
 	dec := resolve(t, r, domain.RouterInput{Intent: domain.DecisionPlan})
 	if dec.Type != domain.DecisionPlan {
@@ -36,6 +37,7 @@ func TestLayer0_ValidIntent_ReturnedImmediately(t *testing.T) {
 
 // Cycle 2 — All valid Intent values are honoured.
 func TestLayer0_AllValidIntents(t *testing.T) {
+	t.Parallel()
 	r := newRouter()
 	for _, want := range []domain.DecisionType{
 		domain.DecisionChat,
@@ -56,6 +58,7 @@ func TestLayer0_AllValidIntents(t *testing.T) {
 // Layer 3 — which returns an error because Generator is nil.
 // We verify by checking that the result is NOT simply the unknown intent value.
 func TestLayer0_UnknownIntent_FallsThrough(t *testing.T) {
+	t.Parallel()
 	r := newRouter()
 	_, err := r.Resolve(context.Background(), domain.RouterInput{
 		Intent: "unknown_type",
@@ -70,6 +73,7 @@ func TestLayer0_UnknownIntent_FallsThrough(t *testing.T) {
 
 // Cycle 4 — Empty Intent falls through (does not return DecisionChat by default).
 func TestLayer0_EmptyIntent_FallsThrough(t *testing.T) {
+	t.Parallel()
 	r := newRouter()
 	_, err := r.Resolve(context.Background(), domain.RouterInput{
 		Intent: "",
@@ -85,6 +89,7 @@ func TestLayer0_EmptyIntent_FallsThrough(t *testing.T) {
 
 // Cycle 5 — /watch → DecisionWatch.
 func TestLayer1_SlashWatch_ReturnsWatch(t *testing.T) {
+	t.Parallel()
 	r := newRouter()
 	dec := resolve(t, r, domain.RouterInput{Body: "/watch gold prices"})
 	if dec.Type != domain.DecisionWatch {
@@ -94,6 +99,7 @@ func TestLayer1_SlashWatch_ReturnsWatch(t *testing.T) {
 
 // Cycle 6 — /plan → DecisionPlan.
 func TestLayer1_SlashPlan_ReturnsPlan(t *testing.T) {
+	t.Parallel()
 	r := newRouter()
 	dec := resolve(t, r, domain.RouterInput{Body: "/plan refactor the auth module"})
 	if dec.Type != domain.DecisionPlan {
@@ -105,6 +111,7 @@ func TestLayer1_SlashPlan_ReturnsPlan(t *testing.T) {
 // (IngestionManager / the /v1/ingest webhook), not a router outcome. "/ingest ..."
 // falls through to Layer 3 (nil-gen → error), proving Layer 1 no longer handles it.
 func TestLayer1_SlashIngest_FallsThrough(t *testing.T) {
+	t.Parallel()
 	r := newRouter()
 	if _, err := r.Resolve(context.Background(), domain.RouterInput{Body: "/ingest https://docs.company.com"}); err == nil {
 		t.Fatal("expected /ingest to fall through to Layer 3 (nil-gen error); Layer 1 still handled it")
@@ -113,6 +120,7 @@ func TestLayer1_SlashIngest_FallsThrough(t *testing.T) {
 
 // Cycle 8 — Slash commands are case-insensitive.
 func TestLayer1_CaseInsensitive(t *testing.T) {
+	t.Parallel()
 	r := newRouter()
 	cases := []struct {
 		body string
@@ -132,6 +140,7 @@ func TestLayer1_CaseInsensitive(t *testing.T) {
 // Cycle 9 — Slash command mid-sentence does NOT match Layer 1 (prefix check only).
 // Use a body with no Layer 2 keywords so the fall-through is attributable to Layer 1.
 func TestLayer1_SlashMidSentence_FallsThrough(t *testing.T) {
+	t.Parallel()
 	r := newRouter()
 	// "/plan" is mid-sentence → Layer 1 does NOT match it (prefix only).
 	// "plan" appears as a standalone word → Layer 2 correctly classifies as PLAN.
@@ -146,6 +155,7 @@ func TestLayer1_SlashMidSentence_FallsThrough(t *testing.T) {
 
 // Cycle 10 — Body with no slash prefix falls through to Layer 2+.
 func TestLayer1_NoPrefix_FallsThrough(t *testing.T) {
+	t.Parallel()
 	r := newRouter()
 	_, err := r.Resolve(context.Background(), domain.RouterInput{
 		Body: "what is the capital of France?",

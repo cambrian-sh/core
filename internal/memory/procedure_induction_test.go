@@ -12,6 +12,7 @@ func ep(id, trigger string, caps []string, ok bool, tags ...string) EpisodeShape
 
 // Recurrence is the whole promotion rule: one occurrence is a coincidence, not a routine.
 func TestInduceCandidates_RequiresRecurrence(t *testing.T) {
+	t.Parallel()
 	caps := []string{"read_document", "summarise"}
 	one := InduceCandidates([]EpisodeShape{ep("e1", "summarise a report", caps, true, "internal")}, 2)
 	if len(one) != 0 {
@@ -29,6 +30,7 @@ func TestInduceCandidates_RequiresRecurrence(t *testing.T) {
 // Only successes are inducible: a procedure describes what works. Failures are already
 // precedents, and inducing from them would produce a reusable recipe for failing.
 func TestInduceCandidates_IgnoresFailures(t *testing.T) {
+	t.Parallel()
 	caps := []string{"deploy"}
 	got := InduceCandidates([]EpisodeShape{
 		ep("e1", "deploy the service", caps, false, "internal"),
@@ -41,6 +43,7 @@ func TestInduceCandidates_IgnoresFailures(t *testing.T) {
 
 // Either key alone over-groups, so both must participate.
 func TestInduceCandidates_NeedsBothShapeAndSituation(t *testing.T) {
+	t.Parallel()
 	sameShapeDifferentSituation := InduceCandidates([]EpisodeShape{
 		ep("e1", "summarise a report", []string{"read_document"}, true, "internal"),
 		ep("e2", "audit a contract", []string{"read_document"}, true, "internal"),
@@ -61,6 +64,7 @@ func TestInduceCandidates_NeedsBothShapeAndSituation(t *testing.T) {
 
 // ADR-0095 D9: derivation across a classification boundary is REFUSED, not unioned.
 func TestInduceCandidates_RefusesCrossBoundaryInduction(t *testing.T) {
+	t.Parallel()
 	caps := []string{"read_document"}
 	got := InduceCandidates([]EpisodeShape{
 		ep("e1", "summarise a report", caps, true, "internal"),
@@ -75,6 +79,7 @@ func TestInduceCandidates_RefusesCrossBoundaryInduction(t *testing.T) {
 // The load-bearing ADR-0094 D2 invariant: a routine names capabilities, never agents.
 // A procedure that named agents would be a learned hardcoded routing table.
 func TestToProcedure_NamesCapabilitiesNotAgents(t *testing.T) {
+	t.Parallel()
 	c := InduceCandidates([]EpisodeShape{
 		ep("e1", "ship a release", []string{"build", "deploy"}, true, "internal"),
 		ep("e2", "ship a release", []string{"build", "deploy"}, true, "internal"),
@@ -99,6 +104,7 @@ func TestToProcedure_NamesCapabilitiesNotAgents(t *testing.T) {
 
 // A batch pass that produced different procedures each night would be unusable.
 func TestInduceCandidates_IsDeterministic(t *testing.T) {
+	t.Parallel()
 	eps := []EpisodeShape{
 		ep("e1", "b situation", []string{"x"}, true, "internal"),
 		ep("e2", "b situation", []string{"x"}, true, "internal"),
@@ -134,6 +140,7 @@ func TestInduceCandidates_IsDeterministic(t *testing.T) {
 // The lesson is about seams, not arithmetic — induction and the lifecycle each behaved
 // correctly in isolation, and the defect lived in what one handed the other.
 func TestToProcedure_SeedsConfidenceFromEvidence(t *testing.T) {
+	t.Parallel()
 	c := InduceCandidates([]EpisodeShape{
 		ep("e1", "ship a release", []string{"build", "deploy"}, true, "internal"),
 		ep("e2", "ship a release", []string{"build", "deploy"}, true, "internal"),
@@ -159,6 +166,7 @@ func TestToProcedure_SeedsConfidenceFromEvidence(t *testing.T) {
 // routine on the strength of a loop repeating itself. Measured on the live store: one
 // situation appeared 8 times, which alone would clear min_samples four times over.
 func TestInduceCandidates_RerunsDoNotInflateTheCount(t *testing.T) {
+	t.Parallel()
 	caps := []string{"build", "deploy"}
 	rerun := func(id string) EpisodeShape {
 		return EpisodeShape{

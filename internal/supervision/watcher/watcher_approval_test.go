@@ -32,6 +32,7 @@ func onePlan(calls *int32) *testPlanner {
 // approval runs it through the plan executor (ADR-0009, ticket
 // T-20261031-oss-signalstream-plans-each-signal-twice-and).
 func TestWatcher_OnSignal_ApprovedPlanExecutes(t *testing.T) {
+	t.Parallel()
 	var calls int32
 	hub := domain.NewInMemoryApprovalController(5 * time.Second)
 	reqs, cancel := hub.Watch() // an operator is watching
@@ -78,6 +79,7 @@ func TestWatcher_OnSignal_ApprovedPlanExecutes(t *testing.T) {
 }
 
 func TestWatcher_OnSignal_RejectedPlanDoesNotExecute(t *testing.T) {
+	t.Parallel()
 	var calls int32
 	hub := domain.NewInMemoryApprovalController(5 * time.Second)
 	reqs, cancel := hub.Watch()
@@ -98,6 +100,7 @@ func TestWatcher_OnSignal_RejectedPlanDoesNotExecute(t *testing.T) {
 
 // No operator watching: the hub fails closed and the plan never runs.
 func TestWatcher_OnSignal_NoApproverFailsClosed(t *testing.T) {
+	t.Parallel()
 	var calls int32
 	hub := domain.NewInMemoryApprovalController(5 * time.Second)
 	exec := &recordingExecutor{ran: make(chan *domain.ExecutionPlan, 1)}
@@ -113,6 +116,7 @@ func TestWatcher_OnSignal_NoApproverFailsClosed(t *testing.T) {
 
 // A Watcher built without an approval path plans but never executes.
 func TestWatcher_OnSignal_UnwiredApprovalNeverExecutes(t *testing.T) {
+	t.Parallel()
 	var calls int32
 	w := New(nil, nil, onePlan(&calls), nil, nil, WatcherConfig{})
 	if err := w.OnSignal(t.Context(), domain.Signal{StreamID: "S"}); err != nil {
@@ -125,6 +129,7 @@ func TestWatcher_OnSignal_UnwiredApprovalNeverExecutes(t *testing.T) {
 
 // Plans awaiting a decision are bounded; the overflow is dropped, not queued.
 func TestWatcher_OnSignal_PendingPlansBounded(t *testing.T) {
+	t.Parallel()
 	var calls int32
 	hub := domain.NewInMemoryApprovalController(5 * time.Second)
 	reqs, cancel := hub.Watch()

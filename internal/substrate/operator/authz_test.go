@@ -45,6 +45,7 @@ func callUnary(idp operator.OperatorIdentity, ctx context.Context, method string
 
 // Login passes through unauthenticated.
 func TestAuth_LoginIsUnauthenticatedPassthrough(t *testing.T) {
+	t.Parallel()
 	called, err := callUnary(newIDP(), context.Background(), "/cambrian.OperatorConsole/Login")
 	if err != nil || !called {
 		t.Fatalf("Login should pass through unauthenticated: called=%v err=%v", called, err)
@@ -53,6 +54,7 @@ func TestAuth_LoginIsUnauthenticatedPassthrough(t *testing.T) {
 
 // Agent-facing (non-OperatorConsole) RPCs are never gated.
 func TestAuth_NonOperatorMethodPassesThrough(t *testing.T) {
+	t.Parallel()
 	called, err := callUnary(newIDP(), context.Background(), "/cambrian.Orchestrator/Execute")
 	if err != nil || !called {
 		t.Fatalf("agent RPC must pass through ungated: called=%v err=%v", called, err)
@@ -61,6 +63,7 @@ func TestAuth_NonOperatorMethodPassesThrough(t *testing.T) {
 
 // An unauthenticated operator RPC is rejected.
 func TestAuth_UnauthenticatedOperatorRPCRejected(t *testing.T) {
+	t.Parallel()
 	_, err := callUnary(newIDP(), context.Background(), "/cambrian.OperatorConsole/Snapshot")
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected Unauthenticated, got %v", err)
@@ -69,6 +72,7 @@ func TestAuth_UnauthenticatedOperatorRPCRejected(t *testing.T) {
 
 // A Viewer is denied a mutating command; an Operator is allowed.
 func TestAuth_ViewerDeniedCommandOperatorAllowed(t *testing.T) {
+	t.Parallel()
 	idp := newIDP()
 	const cmd = "/cambrian.OperatorConsole/SetToolGrant"
 
@@ -86,6 +90,7 @@ func TestAuth_ViewerDeniedCommandOperatorAllowed(t *testing.T) {
 
 // A Viewer is allowed read RPCs (feed/snapshot).
 func TestAuth_ViewerAllowedReads(t *testing.T) {
+	t.Parallel()
 	idp := newIDP()
 	tok := login(t, idp, "viewer", "pw")
 	called, err := callUnary(idp, ctxWithToken(tok), "/cambrian.OperatorConsole/Snapshot")
@@ -96,6 +101,7 @@ func TestAuth_ViewerAllowedReads(t *testing.T) {
 
 // The principal is resolved into the handler context (actor-from-identity).
 func TestAuth_PrincipalInContext(t *testing.T) {
+	t.Parallel()
 	idp := newIDP()
 	tok := login(t, idp, "op", "pw")
 	interceptor := operator.UnaryAuthInterceptor(idp, nil)
@@ -113,6 +119,7 @@ func TestAuth_PrincipalInContext(t *testing.T) {
 
 // Bad credentials and bad tokens are rejected.
 func TestAuth_StaticIdentityRejectsBadCreds(t *testing.T) {
+	t.Parallel()
 	idp := newIDP()
 	if _, _, _, err := idp.Login("op", "wrong"); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("bad password should be Unauthenticated, got %v", err)

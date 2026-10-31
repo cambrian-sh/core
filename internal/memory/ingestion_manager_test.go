@@ -84,6 +84,7 @@ func (c *captureAllStore) facts() []*domain.Document {
 }
 
 func TestIngestionManager_ProcessSync_savesDocumentQAChunksBeforeReturn(t *testing.T) {
+	t.Parallel()
 	// Given
 	store := &captureAllStore{}
 	agent := &Agent{
@@ -182,6 +183,7 @@ func (b *batchCountingEmbedder) EmbedBatch(_ context.Context, texts []string) ([
 }
 
 func TestIngestionManager_ProcessSync_batchesChunkEmbeddings(t *testing.T) {
+	t.Parallel()
 	store := &captureAllStore{}
 	embedder := &batchCountingEmbedder{}
 	agent := &Agent{
@@ -229,6 +231,7 @@ func TestIngestionManager_ProcessSync_batchesChunkEmbeddings(t *testing.T) {
 // stamp every chunk's Metadata["chunk_relations"] with the parent entity
 // ID, the linear neighbor IDs, and the SiblingContext payload.
 func TestIngestionPipeline_SourceDocumentEntity(t *testing.T) {
+	t.Parallel()
 	store := &captureAllStore{}
 	cs := &fakeContentStore{}
 	agent := &Agent{
@@ -348,6 +351,7 @@ func TestIngestionPipeline_SourceDocumentEntity(t *testing.T) {
 
 // Single-chunk edge case: preceding/following IDs must both be empty.
 func TestIngestionPipeline_SourceDocumentEntity_SingleChunk(t *testing.T) {
+	t.Parallel()
 	store := &captureAllStore{}
 	cs := &fakeContentStore{}
 	agent := &Agent{

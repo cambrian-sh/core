@@ -22,6 +22,7 @@ import (
 //
 // Model choice belongs to configuration. A literal here is how it stops belonging there.
 func TestServerMintsNoHardcodedModelID(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile("server.go")
 	if err != nil {
 		t.Fatalf("read server.go: %v", err)
@@ -41,6 +42,7 @@ func TestServerMintsNoHardcodedModelID(t *testing.T) {
 
 // Asserts the premise, so the guard above cannot pass because the pattern is wrong.
 func TestNoHardcodedModelGuardActuallyMatches(t *testing.T) {
+	t.Parallel()
 	lit := regexp.MustCompile(`AgentDefinition\{ID:\s*"llm:`)
 	sample := `sa.Winner = domain.AgentDefinition{ID: "llm:ollama:qwen3:8b"}`
 	if !lit.MatchString(sample) {

@@ -50,6 +50,7 @@ func testAgentWithMocks(gen domain.Generator) *Agent {
 
 // Cycle 1: FULL tier commits FACT + SCENE; FACT_ONLY commits only FACT; DROP commits nothing.
 func TestTier2_CommitTiers(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{
 		response: `[
 			{"relevance":8,"specificity":8,"explicitness":8,"tier":"FULL"},
@@ -120,6 +121,7 @@ func TestTier2_CommitTiers(t *testing.T) {
 // strip the reasoning block and parse the real array, NOT collapse to the
 // all-FACT_ONLY heuristic fallback (which would give factCount=3, sceneCount=0).
 func TestTier2_ParsesReasoningModelOutput(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{
 		response: "<think>\nLet me score these. The first is important [high relevance]; " +
 			"I'll emit an array like [{...}]. The third is noise.\n</think>\n" +
@@ -169,6 +171,7 @@ func TestTier2_ParsesReasoningModelOutput(t *testing.T) {
 
 // Cycle 2: Error pre-filter — error items routed to negative_edge; clean items still scored.
 func TestTier2_ErrorPreFilter_RoutesToNegativeEdge(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{
 		response: `[{"relevance":5,"specificity":5,"explicitness":5,"tier":"FACT_ONLY"}]`,
 	}
@@ -231,6 +234,7 @@ func TestTier2_ErrorPreFilter_RoutesToNegativeEdge(t *testing.T) {
 
 // Cycle 3: Generator timeout → entire batch committed as FACT-only via heuristic.
 func TestTier2_Timeout_FallbackToHeuristic(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{
 		err: context.DeadlineExceeded,
 	}
@@ -279,6 +283,7 @@ func TestTier2_Timeout_FallbackToHeuristic(t *testing.T) {
 
 // Cycle 3: Verify Tier-2 goroutine drains on shutdown (drains remaining items).
 func TestTier2_DrainOnShutdown(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{
 		response: `[{"relevance":8,"specificity":8,"explicitness":8,"tier":"FULL"}]`,
 	}
@@ -317,6 +322,7 @@ func TestTier2_DrainOnShutdown(t *testing.T) {
 
 // Cycle 4: Malformed JSON in LLM response → heuristic fallback.
 func TestTier2_MalformedJSON_HeuristicFallback(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{
 		response: "not valid json at all",
 	}
@@ -345,6 +351,7 @@ func TestTier2_MalformedJSON_HeuristicFallback(t *testing.T) {
 
 // Cycle 5: scoringPromptHash is computed and non-empty.
 func TestScoringPromptHash_NonEmpty(t *testing.T) {
+	t.Parallel()
 	if scoringPromptHash == "" {
 		t.Error("scoringPromptHash is empty")
 	}
@@ -358,6 +365,7 @@ func TestScoringPromptHash_NonEmpty(t *testing.T) {
 
 // Cycle 6: Tier-1 channel items carry pre-computed embeddings (RecordExecution test).
 func TestRecordExecution_EmbedsAndPlacesInChannel(t *testing.T) {
+	t.Parallel()
 	store := &capturingStore{fakeVectorStore: fakeVectorStore{docs: []domain.SearchResult{}}}
 	mgr := NewMemoryManager(store, &fakeEmbedder{})
 	agent := NewAgent(mgr, nil, 0.70, 5, 3, 64, 0, 0, 0)
@@ -395,6 +403,7 @@ func TestRecordExecution_EmbedsAndPlacesInChannel(t *testing.T) {
 
 // Cycle 7: Query merges Tier-1 channel items with pgvector results.
 func TestQuery_MergesPendingAndStore(t *testing.T) {
+	t.Parallel()
 	// Seed pgvector store with one document
 	store := &capturingStore{fakeVectorStore: fakeVectorStore{
 		docs: []domain.SearchResult{

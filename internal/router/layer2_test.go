@@ -12,6 +12,7 @@ import (
 
 // Cycle 11 — "watch" → DecisionWatch.
 func TestLayer2_Watch_ReturnsWatch(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	dec := resolve(t, r, domain.RouterInput{Body: "watch the server logs"})
 	if dec.Type != domain.DecisionWatch {
@@ -21,6 +22,7 @@ func TestLayer2_Watch_ReturnsWatch(t *testing.T) {
 
 // Cycle 12 — "monitor" → DecisionWatch.
 func TestLayer2_Monitor_ReturnsWatch(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	dec := resolve(t, r, domain.RouterInput{Body: "monitor my server"})
 	if dec.Type != domain.DecisionWatch {
@@ -30,6 +32,7 @@ func TestLayer2_Monitor_ReturnsWatch(t *testing.T) {
 
 // Cycle 13 — "track" → DecisionWatch.
 func TestLayer2_Track_ReturnsWatch(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	dec := resolve(t, r, domain.RouterInput{Body: "track gold prices"})
 	if dec.Type != domain.DecisionWatch {
@@ -39,6 +42,7 @@ func TestLayer2_Track_ReturnsWatch(t *testing.T) {
 
 // Cycle 14 — "alert" → DecisionWatch.
 func TestLayer2_Alert_ReturnsWatch(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	dec := resolve(t, r, domain.RouterInput{Body: "alert me when price drops"})
 	if dec.Type != domain.DecisionWatch {
@@ -48,6 +52,7 @@ func TestLayer2_Alert_ReturnsWatch(t *testing.T) {
 
 // Cycle 15 — "plan" → DecisionPlan.
 func TestLayer2_Plan_ReturnsPlan(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	dec := resolve(t, r, domain.RouterInput{Body: "plan the deployment"})
 	if dec.Type != domain.DecisionPlan {
@@ -57,6 +62,7 @@ func TestLayer2_Plan_ReturnsPlan(t *testing.T) {
 
 // Cycle 16 — "execute" → DecisionPlan.
 func TestLayer2_Execute_ReturnsPlan(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	dec := resolve(t, r, domain.RouterInput{Body: "execute the migration script"})
 	if dec.Type != domain.DecisionPlan {
@@ -66,6 +72,7 @@ func TestLayer2_Execute_ReturnsPlan(t *testing.T) {
 
 // Cycle 17 — "run" → DecisionPlan.
 func TestLayer2_Run_ReturnsPlan(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	dec := resolve(t, r, domain.RouterInput{Body: "run the test suite"})
 	if dec.Type != domain.DecisionPlan {
@@ -79,6 +86,7 @@ func TestLayer2_Run_ReturnsPlan(t *testing.T) {
 // memory-subsystem function, not a user-routed request). With a nil generator the
 // fall-through surfaces as a Layer-3 error, proving Layer 2 did not classify them.
 func TestLayer2_IngestKeywords_NoLongerShortCircuit(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	for _, body := range []string{"ingest this document", "import the CSV file", "upload the knowledge base"} {
 		if _, err := r.Resolve(context.Background(), domain.RouterInput{Body: body}); err == nil {
@@ -89,6 +97,7 @@ func TestLayer2_IngestKeywords_NoLongerShortCircuit(t *testing.T) {
 
 // Cycle 21 — Word-boundary enforced: "watching" must NOT trigger WATCH.
 func TestLayer2_Substring_DoesNotMatch(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	_, err := r.Resolve(context.Background(), domain.RouterInput{Body: "I am watching the game"})
 	if err == nil {
@@ -98,6 +107,7 @@ func TestLayer2_Substring_DoesNotMatch(t *testing.T) {
 
 // Cycle 22 — Word-boundary enforced: "executor" must NOT trigger PLAN.
 func TestLayer2_ExecutorSubstring_DoesNotMatch(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	_, err := r.Resolve(context.Background(), domain.RouterInput{Body: "the executor failed"})
 	if err == nil {
@@ -108,6 +118,7 @@ func TestLayer2_ExecutorSubstring_DoesNotMatch(t *testing.T) {
 // Cycle 23 — Word-boundary enforced: "planner" alone must NOT trigger PLAN.
 // Body deliberately contains no standalone "plan" word — only "planner".
 func TestLayer2_PlannerSubstring_DoesNotMatch(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	_, err := r.Resolve(context.Background(), domain.RouterInput{Body: "the planner generated something useful"})
 	if err == nil {
@@ -117,6 +128,7 @@ func TestLayer2_PlannerSubstring_DoesNotMatch(t *testing.T) {
 
 // Cycle 24 — Multi-match falls through to Layer 3 (not first-match wins).
 func TestLayer2_MultiMatch_FallsThrough(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	_, err := r.Resolve(context.Background(), domain.RouterInput{Body: "watch and plan this refactor"})
 	if err == nil {
@@ -126,6 +138,7 @@ func TestLayer2_MultiMatch_FallsThrough(t *testing.T) {
 
 // Cycle 25 — Case-insensitive: "MONITOR" → DecisionWatch.
 func TestLayer2_CaseInsensitive(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	dec := resolve(t, r, domain.RouterInput{Body: "MONITOR the server"})
 	if dec.Type != domain.DecisionWatch {
@@ -135,6 +148,7 @@ func TestLayer2_CaseInsensitive(t *testing.T) {
 
 // Cycle 26 — Empty body falls through to Layer 3.
 func TestLayer2_EmptyBody_FallsThrough(t *testing.T) {
+	t.Parallel()
 	r := router.New(nil)
 	_, err := r.Resolve(context.Background(), domain.RouterInput{Body: ""})
 	if err == nil {

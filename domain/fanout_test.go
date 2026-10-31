@@ -9,6 +9,7 @@ import (
 func iptr(i int) *int { return &i }
 
 func TestExtractFanOutItems(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		raw  string
@@ -37,6 +38,7 @@ func TestExtractFanOutItems(t *testing.T) {
 // An object with two array fields is ambiguous — we must refuse to guess and fall back to
 // lines rather than silently pick one.
 func TestExtractFanOutItems_AmbiguousObjectFallsBack(t *testing.T) {
+	t.Parallel()
 	got := ExtractFanOutItems(`{"a":["x"],"b":["y"]}`)
 	if len(got) == 1 && (got[0] == "x" || got[0] == "y") {
 		t.Errorf("ambiguous object must not be guessed; got %v", got)
@@ -46,6 +48,7 @@ func TestExtractFanOutItems_AmbiguousObjectFallsBack(t *testing.T) {
 // The canonical case: scan → parametric write → summarize. Children are APPENDED at fresh
 // indices; the parametric node stays inert; the dependent barriers over all children.
 func TestExpandFanOut_ExpandsAndRemaps(t *testing.T) {
+	t.Parallel()
 	plan := &ExecutionPlan{Steps: []Step{
 		{Query: "scan the helicopter folder"},                                          // 0
 		{Query: "write the file for {item}", FanOutOver: iptr(0), DependsOn: []int{0}}, // 1 (parametric)
@@ -89,6 +92,7 @@ func TestExpandFanOut_ExpandsAndRemaps(t *testing.T) {
 }
 
 func TestExpandFanOut_CustomVar(t *testing.T) {
+	t.Parallel()
 	plan := &ExecutionPlan{Steps: []Step{
 		{Query: "list"},
 		{Query: "patch {file} carefully", FanOutOver: iptr(0), FanOutVar: "file", DependsOn: []int{0}},
@@ -105,6 +109,7 @@ func TestExpandFanOut_CustomVar(t *testing.T) {
 // Discovery found nothing: no children are appended and the dependent drops its dependency
 // on the (now empty) node, so it proceeds rather than stalling forever.
 func TestExpandFanOut_EmptySetRemovesNode(t *testing.T) {
+	t.Parallel()
 	plan := &ExecutionPlan{Steps: []Step{
 		{Query: "scan"},
 		{Query: "write {item}", FanOutOver: iptr(0), DependsOn: []int{0}},
@@ -127,6 +132,7 @@ func TestExpandFanOut_EmptySetRemovesNode(t *testing.T) {
 
 // No silent truncation: over-width is a structured error the caller routes to replan.
 func TestExpandFanOut_WidthCap(t *testing.T) {
+	t.Parallel()
 	plan := &ExecutionPlan{Steps: []Step{
 		{Query: "scan"},
 		{Query: "write {item}", FanOutOver: iptr(0), DependsOn: []int{0}},
@@ -142,6 +148,7 @@ func TestExpandFanOut_WidthCap(t *testing.T) {
 }
 
 func TestExpandFanOut_Rejects(t *testing.T) {
+	t.Parallel()
 	plan := &ExecutionPlan{Steps: []Step{{Query: "plain"}}}
 	if _, err := ExpandFanOut(plan, 0, []string{"a"}, 0); err == nil {
 		t.Error("expanding a non-parametric step must error")
@@ -155,6 +162,7 @@ func TestExpandFanOut_Rejects(t *testing.T) {
 }
 
 func TestPendingFanOut(t *testing.T) {
+	t.Parallel()
 	plan := &ExecutionPlan{Steps: []Step{
 		{Query: "scan"},
 		{Query: "write {item}", FanOutOver: iptr(0)},
@@ -173,6 +181,7 @@ func TestPendingFanOut(t *testing.T) {
 // Clone must carry the parametric fields — a replan that dropped them would silently
 // turn a fan-out node into a literal one-step "write the file for {item}".
 func TestClone_PreservesFanOut(t *testing.T) {
+	t.Parallel()
 	plan := &ExecutionPlan{Steps: []Step{{Query: "write {x}", FanOutOver: iptr(3), FanOutVar: "x"}}}
 	c := plan.Clone()
 	if c.Steps[0].FanOutOver == nil || *c.Steps[0].FanOutOver != 3 || c.Steps[0].FanOutVar != "x" {

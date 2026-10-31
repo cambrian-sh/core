@@ -30,6 +30,7 @@ func radiusService(e BlastRadiusEstimator) *Service {
 // understating is the one direction this number must never be wrong in. A kernel
 // that cannot compute it must refuse rather than answer "nothing is affected".
 func TestBlastRadius_UnwiredRefusesRatherThanReturningEmpty(t *testing.T) {
+	t.Parallel()
 	_, err := (&Service{}).GetBlastRadiusPreview(context.Background(), &pb.BlastRadiusPreviewOpRequest{
 		Mutation: MutationSetScope, TargetId: "analyst",
 	})
@@ -41,6 +42,7 @@ func TestBlastRadius_UnwiredRefusesRatherThanReturningEmpty(t *testing.T) {
 // An unknown mutation is REFUSED, not previewed as no-change. "This affects
 // nothing" and "I do not know what this is" must not render the same.
 func TestBlastRadius_UnknownMutationIsRefused(t *testing.T) {
+	t.Parallel()
 	s := radiusService(&stubRadius{})
 
 	_, err := s.GetBlastRadiusPreview(context.Background(), &pb.BlastRadiusPreviewOpRequest{
@@ -52,6 +54,7 @@ func TestBlastRadius_UnknownMutationIsRefused(t *testing.T) {
 }
 
 func TestBlastRadius_ReportsAgentsAndPlans(t *testing.T) {
+	t.Parallel()
 	st := &stubRadius{radius: BlastRadius{
 		Complete: true,
 		CacheTTL: 30 * time.Second,
@@ -99,6 +102,7 @@ func TestBlastRadius_ReportsAgentsAndPlans(t *testing.T) {
 // A partial radius must announce itself. Rendered as total, it is exactly the
 // understatement the RPC exists to prevent.
 func TestBlastRadius_IncompleteIsReportedWithAReason(t *testing.T) {
+	t.Parallel()
 	s := radiusService(&stubRadius{radius: BlastRadius{
 		Complete:         false,
 		IncompleteReason: "this kernel does not track in-flight plans",
@@ -119,6 +123,7 @@ func TestBlastRadius_IncompleteIsReportedWithAReason(t *testing.T) {
 }
 
 func TestBlastRadius_RequiresTarget(t *testing.T) {
+	t.Parallel()
 	s := radiusService(&stubRadius{})
 	if _, err := s.GetBlastRadiusPreview(context.Background(), &pb.BlastRadiusPreviewOpRequest{
 		Mutation: MutationSetScope,

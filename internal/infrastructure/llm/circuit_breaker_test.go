@@ -17,6 +17,7 @@ func newTestBreaker(threshold int, cooldown time.Duration) (*CircuitBreaker, *fa
 }
 
 func TestCircuitBreaker_UnknownIDHealthy(t *testing.T) {
+	t.Parallel()
 	b, _ := newTestBreaker(3, time.Minute)
 	if !b.Healthy("never-seen") {
 		t.Fatal("unknown id should be optimistically healthy")
@@ -24,6 +25,7 @@ func TestCircuitBreaker_UnknownIDHealthy(t *testing.T) {
 }
 
 func TestCircuitBreaker_TripsAtThreshold(t *testing.T) {
+	t.Parallel()
 	b, _ := newTestBreaker(3, time.Minute)
 	b.Record("x", false)
 	b.Record("x", false)
@@ -37,6 +39,7 @@ func TestCircuitBreaker_TripsAtThreshold(t *testing.T) {
 }
 
 func TestCircuitBreaker_OpenBlocksUntilCooldown(t *testing.T) {
+	t.Parallel()
 	b, clk := newTestBreaker(1, time.Minute)
 	b.Record("x", false) // threshold=1 => immediately OPEN
 	if b.Healthy("x") {
@@ -53,6 +56,7 @@ func TestCircuitBreaker_OpenBlocksUntilCooldown(t *testing.T) {
 }
 
 func TestCircuitBreaker_HalfOpenRestoresOnSuccess(t *testing.T) {
+	t.Parallel()
 	b, clk := newTestBreaker(1, time.Minute)
 	b.Record("x", false)
 	clk.advance(time.Minute)
@@ -67,6 +71,7 @@ func TestCircuitBreaker_HalfOpenRestoresOnSuccess(t *testing.T) {
 }
 
 func TestCircuitBreaker_HalfOpenReopensOnFailure(t *testing.T) {
+	t.Parallel()
 	b, clk := newTestBreaker(1, time.Minute)
 	b.Record("x", false)
 	clk.advance(time.Minute)
@@ -88,6 +93,7 @@ func TestCircuitBreaker_HalfOpenReopensOnFailure(t *testing.T) {
 }
 
 func TestCircuitBreaker_SuccessResetsConsecutiveCounter(t *testing.T) {
+	t.Parallel()
 	b, _ := newTestBreaker(3, time.Minute)
 	b.Record("x", false)
 	b.Record("x", false)

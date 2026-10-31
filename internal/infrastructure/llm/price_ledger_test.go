@@ -7,6 +7,7 @@ import (
 )
 
 func TestPriceLedger_SeedAndRead(t *testing.T) {
+	t.Parallel()
 	l := SeedPriceLedger([]config.GeneratorConfig{
 		{ID: "qwen-local", CostPer1MInput: 0, CostPer1MOutput: 0},
 		{ID: "deepseek", CostPer1MInput: 0.0015, CostPer1MOutput: 0.002},
@@ -23,6 +24,7 @@ func TestPriceLedger_SeedAndRead(t *testing.T) {
 }
 
 func TestPriceLedger_UnknownIDSafe(t *testing.T) {
+	t.Parallel()
 	l := NewPriceLedger()
 	if in, out, ok := l.Cost("ghost"); ok || in != 0 || out != 0 {
 		t.Fatalf("unknown id should be (0,0,false), got (%v,%v,%v)", in, out, ok)
@@ -30,6 +32,7 @@ func TestPriceLedger_UnknownIDSafe(t *testing.T) {
 }
 
 func TestPriceLedger_SetOverridesSeed(t *testing.T) {
+	t.Parallel()
 	l := SeedPriceLedger([]config.GeneratorConfig{{ID: "deepseek", CostPer1MInput: 0.0015, CostPer1MOutput: 0.002}})
 	l.Set("deepseek", 0.005, 0.010) // runtime repricing
 	if in, out, _ := l.Cost("deepseek"); in != 0.005 || out != 0.010 {

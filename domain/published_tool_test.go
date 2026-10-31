@@ -11,6 +11,7 @@ import (
 // at registration, so every rejection here is a boot error rather than a 400 the
 // first external client discovers.
 func TestValidPublishedToolName(t *testing.T) {
+	t.Parallel()
 	maxLen := "a" + strings.Repeat("b", 47)  // 48 chars — the limit
 	tooLong := "a" + strings.Repeat("b", 48) // 49 chars — one over
 
@@ -54,6 +55,7 @@ func (h echoHandler) Invoke(_ context.Context, args json.RawMessage) (PublishedT
 // A result carries both renderings plus the receipt handle; an empty ReceiptRef is
 // the OSS default (no receipt lane), not a failure.
 func TestPublishedToolResultShape(t *testing.T) {
+	t.Parallel()
 	res, err := echoHandler{}.Invoke(context.Background(), json.RawMessage(`{"q":"x"}`))
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
@@ -73,6 +75,7 @@ func TestPublishedToolResultShape(t *testing.T) {
 // that owns each — enough for a renderer to list and dispatch without reaching
 // back into the composition root.
 func TestPublishedToolSurfaceCarriesOwnerAndHandler(t *testing.T) {
+	t.Parallel()
 	surface := PublishedToolSurface{
 		{Owner: "core", Tool: PublishedTool{Name: "ask_memory", Effects: []ToolEffect{EffectRead}, ReadOnly: true}, Handler: echoHandler{ref: "r1"}},
 	}

@@ -50,6 +50,7 @@ func newScavengerTestAgent() (*Agent, *scavengerRecordingStore) {
 // worker.go:143) with activation/access values that would otherwise satisfy
 // the "loner" GC predicate, and asserts the row is left alone.
 func TestScavenger_SourceDocumentExempt(t *testing.T) {
+	t.Parallel()
 	agent, store := newScavengerTestAgent()
 	ctx := context.Background()
 
@@ -97,6 +98,7 @@ func TestScavenger_SourceDocumentExempt(t *testing.T) {
 //   - a different kind (e.g. "entity") even WITH content_cid (the
 //     discriminator is what makes it a source doc, not the cid alone).
 func TestScavenger_NonSourceDocumentGC(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		kind  string
@@ -172,6 +174,7 @@ func TestScavenger_NonSourceDocumentGC(t *testing.T) {
 // log") forbids, and it is invisible at runtime because nothing reads a record
 // it no longer has.
 func TestScavenger_EpisodeParentedRecordsExempt(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		docID   string
@@ -243,6 +246,7 @@ func TestScavenger_EpisodeParentedRecordsExempt(t *testing.T) {
 // one above) is what pins the exemption to the FK, which is the thing that
 // actually cascades.
 func TestScavenger_UnparentedExperientialRecordStillGC(t *testing.T) {
+	t.Parallel()
 	agent, store := newScavengerTestAgent()
 	ctx := context.Background()
 

@@ -39,6 +39,7 @@ func (s *stubSessionStore) ListSessions(_ context.Context, status domain.Session
 }
 
 func TestSessionManager_CreateSession(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -65,6 +66,7 @@ func TestSessionManager_CreateSession(t *testing.T) {
 }
 
 func TestSessionManager_CreateSession_WithParent(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -79,6 +81,7 @@ func TestSessionManager_CreateSession_WithParent(t *testing.T) {
 }
 
 func TestSessionManager_GetSession(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -98,6 +101,7 @@ func TestSessionManager_GetSession(t *testing.T) {
 }
 
 func TestSessionManager_Transition_ActiveToPaused(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -115,6 +119,7 @@ func TestSessionManager_Transition_ActiveToPaused(t *testing.T) {
 }
 
 func TestSessionManager_Transition_ActiveToDormant(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -128,6 +133,7 @@ func TestSessionManager_Transition_ActiveToDormant(t *testing.T) {
 }
 
 func TestSessionManager_Transition_ActiveToCompleted(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -141,6 +147,7 @@ func TestSessionManager_Transition_ActiveToCompleted(t *testing.T) {
 }
 
 func TestSessionManager_Transition_PausedToActive(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -155,6 +162,7 @@ func TestSessionManager_Transition_PausedToActive(t *testing.T) {
 }
 
 func TestSessionManager_Transition_PausedToDormant(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -169,6 +177,7 @@ func TestSessionManager_Transition_PausedToDormant(t *testing.T) {
 }
 
 func TestSessionManager_Transition_DormantToActive(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -183,6 +192,7 @@ func TestSessionManager_Transition_DormantToActive(t *testing.T) {
 }
 
 func TestSessionManager_Transition_DormantToCompleted(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -197,6 +207,7 @@ func TestSessionManager_Transition_DormantToCompleted(t *testing.T) {
 }
 
 func TestSessionManager_Transition_Invalid_DormantToPaused(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -211,6 +222,7 @@ func TestSessionManager_Transition_Invalid_DormantToPaused(t *testing.T) {
 }
 
 func TestSessionManager_Transition_Invalid_CompletedToActive(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -225,6 +237,7 @@ func TestSessionManager_Transition_Invalid_CompletedToActive(t *testing.T) {
 }
 
 func TestSessionManager_Transition_SameStatus(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 
@@ -238,6 +251,7 @@ func TestSessionManager_Transition_SameStatus(t *testing.T) {
 }
 
 func TestSessionManager_ListSessions_FilterByStatus(t *testing.T) {
+	t.Parallel()
 	store := newStubSessionStore()
 	mgr := New(store)
 

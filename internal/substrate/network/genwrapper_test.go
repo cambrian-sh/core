@@ -16,6 +16,7 @@ func (r recordingGen) Generate(_ context.Context, _ string) (string, error) {
 
 // wrapGen is identity when no decorator is wired (OSS / Langfuse disabled).
 func TestServer_wrapGen_IdentityWhenNil(t *testing.T) {
+	t.Parallel()
 	s := &Server{}
 	inner := recordingGen{called: new(bool)}
 	if got := s.wrapGen(inner); got != domain.Generator(inner) {
@@ -25,6 +26,7 @@ func TestServer_wrapGen_IdentityWhenNil(t *testing.T) {
 
 // wrapGen applies the decorator so routed thought-step generations are traced.
 func TestServer_wrapGen_AppliesDecorator(t *testing.T) {
+	t.Parallel()
 	wrapped := false
 	s := &Server{GenWrapper: func(g domain.Generator) domain.Generator {
 		wrapped = true

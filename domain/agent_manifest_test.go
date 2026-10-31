@@ -10,6 +10,7 @@ import (
 // ── Cycle 4: AgentManifest.Dependencies ──────────────────────────────────────
 
 func TestAgentManifest_Dependencies_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	raw := `{"version":"1.0.0","tools":["sql"],"dependencies":["pandas>=2.0","numpy"]}`
 	var m domain.AgentManifest
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
@@ -27,6 +28,7 @@ func TestAgentManifest_Dependencies_JSONRoundTrip(t *testing.T) {
 }
 
 func TestAgentManifest_NoDependencies_IsEmpty(t *testing.T) {
+	t.Parallel()
 	raw := `{"version":"1.0.0","tools":["sql"]}`
 	var m domain.AgentManifest
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
@@ -38,6 +40,7 @@ func TestAgentManifest_NoDependencies_IsEmpty(t *testing.T) {
 }
 
 func TestAgentManifest_Dependencies_MarshalOmitsEmpty(t *testing.T) {
+	t.Parallel()
 	m := domain.AgentManifest{Version: "1.0.0"}
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -53,6 +56,7 @@ func TestAgentManifest_Dependencies_MarshalOmitsEmpty(t *testing.T) {
 }
 
 func TestAgentManifest_CostPer1MTokens_RoundTrip(t *testing.T) {
+	t.Parallel()
 	m := domain.AgentManifest{Version: "1.0.0", CostPer1MTokens: 5.0}
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -68,6 +72,7 @@ func TestAgentManifest_CostPer1MTokens_RoundTrip(t *testing.T) {
 }
 
 func TestAgentManifest_CostPer1MTokens_OmitsWhenZero(t *testing.T) {
+	t.Parallel()
 	m := domain.AgentManifest{Version: "1.0.0"}
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -83,6 +88,7 @@ func TestAgentManifest_CostPer1MTokens_OmitsWhenZero(t *testing.T) {
 }
 
 func TestAgentManifest_Capabilities_RoundTrip(t *testing.T) {
+	t.Parallel()
 	m := domain.AgentManifest{Version: "1.0.0", Capabilities: []string{"planning", "text-generation"}}
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -98,6 +104,7 @@ func TestAgentManifest_Capabilities_RoundTrip(t *testing.T) {
 }
 
 func TestAgentManifest_Capabilities_OmitsWhenNil(t *testing.T) {
+	t.Parallel()
 	m := domain.AgentManifest{Version: "1.0.0"}
 	b, err := json.Marshal(m)
 	if err != nil {

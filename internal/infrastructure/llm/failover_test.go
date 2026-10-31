@@ -15,6 +15,7 @@ func healthySetExcept(open ...string) func(string) bool {
 }
 
 func TestResolveModel_SuggestedHealthyShortCircuits(t *testing.T) {
+	t.Parallel()
 	got, err := resolveModel("deepseek", nil, []string{"qwen-local"}, []string{"deepseek", "qwen-local"}, "qwen-local", healthySetExcept(), nil)
 	if err != nil || got != "deepseek" {
 		t.Fatalf("want deepseek, got %q (%v)", got, err)
@@ -22,6 +23,7 @@ func TestResolveModel_SuggestedHealthyShortCircuits(t *testing.T) {
 }
 
 func TestResolveModel_SuggestedOpenFallsToPreference(t *testing.T) {
+	t.Parallel()
 	got, err := resolveModel("deepseek", nil, []string{"qwen-local", "gpt4o"}, []string{"deepseek", "qwen-local", "gpt4o"}, "qwen-local", healthySetExcept("deepseek"), nil)
 	if err != nil || got != "qwen-local" {
 		t.Fatalf("want qwen-local (first healthy preference), got %q (%v)", got, err)
@@ -29,6 +31,7 @@ func TestResolveModel_SuggestedOpenFallsToPreference(t *testing.T) {
 }
 
 func TestResolveModel_PreferenceAndDefaultOpenFallsToCapabilityMatch(t *testing.T) {
+	t.Parallel()
 	capIndex := map[string][]string{"code": {"gpt4o"}}
 	got, err := resolveModel(
 		"deepseek", []string{"code"},
@@ -44,6 +47,7 @@ func TestResolveModel_PreferenceAndDefaultOpenFallsToCapabilityMatch(t *testing.
 }
 
 func TestResolveModel_NoneHealthyReturnsTypedError(t *testing.T) {
+	t.Parallel()
 	_, err := resolveModel("deepseek", nil, []string{"qwen-local"}, []string{"deepseek", "qwen-local"}, "qwen-local", healthySetExcept("deepseek", "qwen-local"), nil)
 	if !errors.Is(err, ErrNoHealthyModel) {
 		t.Fatalf("want ErrNoHealthyModel, got %v", err)
@@ -51,6 +55,7 @@ func TestResolveModel_NoneHealthyReturnsTypedError(t *testing.T) {
 }
 
 func TestResolveModel_EmptyHintsCapabilityRungIsAnyHealthy(t *testing.T) {
+	t.Parallel()
 	// suggested, preference, default all open; no hints => capability rung
 	// considers all ids, picks first healthy (gpt4o).
 	got, err := resolveModel(
@@ -67,6 +72,7 @@ func TestResolveModel_EmptyHintsCapabilityRungIsAnyHealthy(t *testing.T) {
 }
 
 func TestResolveModel_CapabilityRequiresAllHints(t *testing.T) {
+	t.Parallel()
 	// gpt4o has only "code"; deepseek has both. Hints {code,vision} => only an id
 	// advertising both qualifies.
 	capIndex := map[string][]string{"code": {"gpt4o", "deepseek"}, "vision": {"deepseek"}}

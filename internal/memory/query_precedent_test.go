@@ -32,6 +32,7 @@ func (p *programmableStore) QueryByMetadata(_ context.Context, _ map[string]stri
 // ADR-0049 D11/Issue 014: the precedent pull lane returns failure-weighted transitions;
 // below the floor it returns "no precedent" (empty), never a fabricated analogy.
 func TestSearchPrecedents_FailureWeightedTransitions(t *testing.T) {
+	t.Parallel()
 	store := &programmableStore{
 		searched: []domain.SearchResult{
 			sceneResult("scene-good", "goal: ship | engages: 1 file", "success", 0.9),
@@ -58,6 +59,7 @@ func TestSearchPrecedents_FailureWeightedTransitions(t *testing.T) {
 }
 
 func TestSearchPrecedents_NoScenesNoPrecedent(t *testing.T) {
+	t.Parallel()
 	store := &programmableStore{searched: nil} // below floor / cold corpus → no scenes
 	q := NewQueryService(&fakeEmbedder{}, store, nil)
 	res, err := q.SearchPrecedents(context.Background(), "novel situation", "agent-a")
@@ -68,6 +70,7 @@ func TestSearchPrecedents_NoScenesNoPrecedent(t *testing.T) {
 
 // ADR-0049 Issue 013: PrimeForPlanning's enrichment carries the precedent lane.
 func TestPrimeForPlanning_IncludesPrecedentLane(t *testing.T) {
+	t.Parallel()
 	store := &programmableStore{
 		searched: []domain.SearchResult{
 			sceneResult("scene-bad", "goal: deploy | engages: 1 web resource", "failure", 0.8),

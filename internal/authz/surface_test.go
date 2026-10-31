@@ -14,6 +14,7 @@ import (
 // The surface follows the SERVICE the call was routed to, which is a property of
 // the connection rather than of anything the caller wrote in the message.
 func TestSurfaceForMethod(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		method   string
 		wantKind string
@@ -44,6 +45,7 @@ func TestSurfaceForMethod(t *testing.T) {
 // agent plane extended — SurfaceAgent, and the caller principal seeded from
 // x-agent-id (never from any surface-claiming header).
 func TestSurfaceForMethod_DeclaredAgentPlane(t *testing.T) {
+	t.Parallel()
 	agentPlane := map[string]bool{"cambrian.premium.substrate.SubstrateRetrieval": true}
 	got := authz.SurfaceForMethod("/cambrian.premium.substrate.SubstrateRetrieval/Query", agentPlane)
 	if got.Kind != domain.SurfaceAgent {
@@ -57,6 +59,7 @@ func TestSurfaceForMethod_DeclaredAgentPlane(t *testing.T) {
 }
 
 func TestSurfaceInterceptor_SeedsAgentPrincipalForDeclaredService(t *testing.T) {
+	t.Parallel()
 	agentPlane := map[string]bool{"cambrian.premium.substrate.SubstrateRetrieval": true}
 	var seen domain.PrincipalRef
 	handler := func(ctx context.Context, _ any) (any, error) {
@@ -78,6 +81,7 @@ func TestSurfaceInterceptor_SeedsAgentPrincipalForDeclaredService(t *testing.T) 
 // caller-supplied header claiming to be someone else's surface changes nothing.
 // A black box asserting its own privilege level is not a security boundary.
 func TestSurfaceInterceptor_IgnoresCallerSuppliedClaims(t *testing.T) {
+	t.Parallel()
 	var seen domain.SurfaceRef
 	handler := func(ctx context.Context, _ any) (any, error) {
 		seen = domain.SurfaceFromContext(ctx)
@@ -102,6 +106,7 @@ func TestSurfaceInterceptor_IgnoresCallerSuppliedClaims(t *testing.T) {
 // The interceptor runs unconditionally: the kernel always establishes WHERE a
 // request came from, whether or not any policy cares.
 func TestSurfaceInterceptor_AlwaysStamps(t *testing.T) {
+	t.Parallel()
 	var seen domain.SurfaceRef
 	handler := func(ctx context.Context, _ any) (any, error) {
 		seen = domain.SurfaceFromContext(ctx)
@@ -135,6 +140,7 @@ func (f fakeSessions) SessionSurface(_ context.Context, id domain.SessionID) (do
 // outsider conversation even when a later turn arrives over an internal path.
 // Widening on the way in is exactly the escalation the clamp prevents.
 func TestResolveSurface_SessionOverridesTransport(t *testing.T) {
+	t.Parallel()
 	sessions := fakeSessions{id: "sess-1", surface: domain.SurfaceRef{Kind: domain.SurfaceChat, ID: "chat:public"}}
 
 	// Arriving on the INTERNAL agent plane, but under an outsider session.
@@ -150,6 +156,7 @@ func TestResolveSurface_SessionOverridesTransport(t *testing.T) {
 // Without a session — or with one that recorded no surface — the transport's
 // answer stands. There is nothing narrower to defer to.
 func TestResolveSurface_FallsBackToTransport(t *testing.T) {
+	t.Parallel()
 	transport := domain.SurfaceRef{Kind: domain.SurfaceAgent, ID: "grpc"}
 	ctx := domain.WithSurface(context.Background(), transport)
 

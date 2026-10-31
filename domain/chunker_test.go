@@ -54,6 +54,7 @@ var _ Chunker = (*mockChunker)(nil)
 // TestChunkerInterface_CompileTime also surfaces the compile-time assertion
 // to the test report so a reader can see the port contract is being verified.
 func TestChunkerInterface_CompileTime(t *testing.T) {
+	t.Parallel()
 	var c Chunker = &mockChunker{name: "compile_time"}
 	if c == nil {
 		t.Fatal("expected non-nil Chunker after assignment")
@@ -68,6 +69,7 @@ func TestChunkerInterface_CompileTime(t *testing.T) {
 // receives the values the port advertises, and that the returned chunks
 // have the expected Body / Metadata shape.
 func TestChunkerInterface_RuntimeContract(t *testing.T) {
+	t.Parallel()
 	m := &mockChunker{
 		name: "recursive_character",
 		supports: func(sourceType, ext string) bool {
@@ -131,6 +133,7 @@ func TestChunkerInterface_RuntimeContract(t *testing.T) {
 // TestChunkerInterface_ChunkErrorPropagates asserts that a chunker
 // implementation's error return path is honoured by the port contract.
 func TestChunkerInterface_ChunkErrorPropagates(t *testing.T) {
+	t.Parallel()
 	sentinel := errors.New("chunking failed")
 	m := &mockChunker{
 		name:     "broken",
@@ -147,6 +150,7 @@ func TestChunkerInterface_ChunkErrorPropagates(t *testing.T) {
 // (the IngestionManager fills in Metadata["chunk_relations"] afterwards),
 // and reading a missing key from such a chunk must not panic.
 func TestChunkerInterface_ChunkMetadataRequired(t *testing.T) {
+	t.Parallel()
 	m := &mockChunker{
 		name:     "sparse",
 		supports: func(string, string) bool { return true },
@@ -181,6 +185,7 @@ func TestChunkerInterface_ChunkMetadataRequired(t *testing.T) {
 // (a single empty chunk, or none); the contract is just "no panic, no
 // error" so the caller can route the result through the normal pipeline.
 func TestChunkerInterface_EmptyBody(t *testing.T) {
+	t.Parallel()
 	m := &mockChunker{
 		name:     "noop",
 		supports: func(string, string) bool { return true },

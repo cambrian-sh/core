@@ -27,6 +27,7 @@ func (f *fakeDeadLetterReader) ListDeadLetters(limit int) ([]domain.ReactiveDead
 
 // REACT-01 / ADR-0061: without a reader wired (OSS build) the RPC is Unimplemented.
 func TestDeadLetters_UnimplementedWhenUnwired(t *testing.T) {
+	t.Parallel()
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	svc := operator.NewService(feed)
 	_, err := svc.ListWatchDeadLetters(context.Background(), &pb.ListWatchDeadLettersOpRequest{})
@@ -37,6 +38,7 @@ func TestDeadLetters_UnimplementedWhenUnwired(t *testing.T) {
 
 // With a reader wired, entries are mapped to the proto shape.
 func TestDeadLetters_ReturnsMappedEntries(t *testing.T) {
+	t.Parallel()
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	svc := operator.NewService(feed)
 	svc.SetDeadLetterReader(&fakeDeadLetterReader{entries: []domain.ReactiveDeadLetter{

@@ -11,6 +11,7 @@ import (
 // ADR-0089: plugin identity rides the snapshot handshake, so a console can detect
 // plugin-level skew the way it already detects contract skew.
 func TestSnapshot_ReportsDeclaredPlugins(t *testing.T) {
+	t.Parallel()
 	svc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
 	svc.SetPlugins([]operator.PluginInfo{{
 		ID:           "authz",
@@ -44,6 +45,7 @@ func TestSnapshot_ReportsDeclaredPlugins(t *testing.T) {
 // console cannot tell "this deployment has no reactive engine" from "the reactive
 // engine declined to register", and the operator who paid for it gets silence.
 func TestSnapshot_ReportsUnregisteredPluginsWithReason(t *testing.T) {
+	t.Parallel()
 	svc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
 	svc.SetPlugins([]operator.PluginInfo{
 		{ID: "reactive", DisplayName: "Reactive Engine", Version: "2.1.0", State: "not_entitled", Reason: "licence expired"},
@@ -69,6 +71,7 @@ func TestSnapshot_ReportsUnregisteredPluginsWithReason(t *testing.T) {
 // implied. An empty list is what keeps the console from inventing a skew warning
 // for a deployment that simply has no plugins.
 func TestSnapshot_OSSReportsNoPlugins(t *testing.T) {
+	t.Parallel()
 	svc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
 	svc.SetHandshake("0.6.9-alpha", "0067", []string{"feed", "snapshot"})
 

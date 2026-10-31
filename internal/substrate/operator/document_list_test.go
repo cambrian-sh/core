@@ -32,6 +32,7 @@ func (f *fakeDocLister) ListDocuments(_ context.Context, filter memory.DocumentF
 // corpus is empty, and a console that cannot tell them apart hides a broken
 // deployment behind a plausible empty state.
 func TestListDocuments_UnwiredIsUnimplemented(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 
 	_, err := svc.ListDocuments(context.Background(), &pb.ListDocumentsOpRequest{})
@@ -44,6 +45,7 @@ func TestListDocuments_UnwiredIsUnimplemented(t *testing.T) {
 }
 
 func TestListDocuments_PassesFilterAndMapsRows(t *testing.T) {
+	t.Parallel()
 	created := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
 	lister := &fakeDocLister{
 		page: []memory.DocumentSummary{
@@ -101,6 +103,7 @@ func TestListDocuments_PassesFilterAndMapsRows(t *testing.T) {
 }
 
 func TestListDocuments_StoreErrorSurfaces(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetDocumentLister(&fakeDocLister{err: errors.New("connection refused")})
 

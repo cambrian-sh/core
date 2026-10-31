@@ -9,6 +9,7 @@ import (
 
 // Cycle 1 — Tier-2 commitItem writes session_id to Document.Metadata when StepResult.SessionID is set.
 func TestTier2_SessionIDTagged_WhenSessionIDProvided(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{
 		response: `[{"relevance":8,"specificity":8,"explicitness":8,"tier":"FULL"}]`,
 	}
@@ -47,6 +48,7 @@ func TestTier2_SessionIDTagged_WhenSessionIDProvided(t *testing.T) {
 
 // Cycle 2 — Tier-2 commitItem does NOT write session_id when StepResult.SessionID is empty.
 func TestTier2_SessionIDNotTagged_WhenSessionIDEmpty(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{
 		response: `[{"relevance":8,"specificity":8,"explicitness":8,"tier":"FACT_ONLY"}]`,
 	}
@@ -73,6 +75,7 @@ func TestTier2_SessionIDNotTagged_WhenSessionIDEmpty(t *testing.T) {
 
 // Cycle 3 — session_id is propagated to SCENE doc as well as FACT doc on FULL tier.
 func TestTier2_SessionIDTagged_OnSceneDoc(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{
 		response: `[{"relevance":9,"specificity":9,"explicitness":9,"tier":"FULL"}]`,
 	}
@@ -105,6 +108,7 @@ func TestTier2_SessionIDTagged_OnSceneDoc(t *testing.T) {
 
 // Cycle 4 — existing Tier-2 FULL/FACT_ONLY/DROP routing is unaffected by session_id addition.
 func TestTier2_ExistingTierRouting_UnaffectedBySessionID(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{
 		response: `[
 			{"relevance":8,"specificity":8,"explicitness":8,"tier":"FULL"},

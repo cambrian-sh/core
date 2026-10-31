@@ -8,6 +8,7 @@ import (
 )
 
 func TestProgressPhase_ClosedVocabulary(t *testing.T) {
+	t.Parallel()
 	valid := []ProgressPhase{
 		PhaseUnderstanding, PhasePlanning, PhaseSearching,
 		PhaseRunningTool, PhaseWorking, PhaseWriting,
@@ -27,6 +28,7 @@ func TestProgressPhase_ClosedVocabulary(t *testing.T) {
 }
 
 func TestProgressUpdate_TextNeverLeaksInternals(t *testing.T) {
+	t.Parallel()
 	u := ProgressUpdate{ConversationID: "c1", Step: 2, TotalSteps: 4, Phase: PhaseRunningTool}
 	got := u.Text()
 
@@ -45,6 +47,7 @@ func TestProgressUpdate_TextNeverLeaksInternals(t *testing.T) {
 }
 
 func TestProgressUpdate_TextWithoutPlanOmitsDenominator(t *testing.T) {
+	t.Parallel()
 	// TotalSteps 0 means the plan is not known yet. Inventing "step 1 of 1" would be a lie
 	// that the next update contradicts.
 	u := ProgressUpdate{ConversationID: "c1", Phase: PhaseUnderstanding}
@@ -54,6 +57,7 @@ func TestProgressUpdate_TextWithoutPlanOmitsDenominator(t *testing.T) {
 }
 
 func TestProgressUpdate_UnknownPhaseDegradesNotLeaks(t *testing.T) {
+	t.Parallel()
 	// ADR-0098 D7: a new internal phase with no mapping degrades to the generic phrase,
 	// never to a raw internal string.
 	u := ProgressUpdate{ConversationID: "c1", Phase: ProgressPhase("kg_extractor_agent")}
@@ -67,6 +71,7 @@ func TestProgressUpdate_UnknownPhaseDegradesNotLeaks(t *testing.T) {
 }
 
 func TestProgressUpdate_Validate(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		u       ProgressUpdate
@@ -92,6 +97,7 @@ type recordingSink struct{ got []ProgressUpdate }
 func (r *recordingSink) Progress(_ context.Context, u ProgressUpdate) { r.got = append(r.got, u) }
 
 func TestEmitProgress_BestEffort(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// ADR-0098 D5: the observer must not be able to break the observed. A nil sink is the
@@ -112,6 +118,7 @@ func TestEmitProgress_BestEffort(t *testing.T) {
 }
 
 func TestEmitProgress_DropsInvalidRatherThanPropagating(t *testing.T) {
+	t.Parallel()
 	sink := &recordingSink{}
 	// Malformed updates are a programming error at the emission seam. They must not reach
 	// a user-visible surface, and must not fail the work being described.
@@ -124,6 +131,7 @@ func TestEmitProgress_DropsInvalidRatherThanPropagating(t *testing.T) {
 }
 
 func TestEmitProgress_PreservesCallerTimestamp(t *testing.T) {
+	t.Parallel()
 	sink := &recordingSink{}
 	when := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	EmitProgress(context.Background(), sink, ProgressUpdate{

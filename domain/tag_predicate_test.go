@@ -8,6 +8,7 @@ import "testing"
 // tested in the policy plugin, because that is where it lives.
 
 func TestTagPredicate_PrecedenceAndCNF(t *testing.T) {
+	t.Parallel()
 	// The ADR-0034 D12 worked example, expressed as an already-computed predicate:
 	// required{customer_789}, anyOf{published} AND anyOf{support}, forbidden{secrets,internal_only}.
 	p := &TagPredicate{
@@ -54,6 +55,7 @@ func TestTagPredicate_PrecedenceAndCNF(t *testing.T) {
 }
 
 func TestTagPredicate_NilIsFailClosed(t *testing.T) {
+	t.Parallel()
 	var p *TagPredicate
 	if p.Allows(nil) || p.Allows([]string{"anything"}) {
 		t.Fatalf("a nil predicate must allow nothing (fail-closed backstop)")
@@ -70,6 +72,7 @@ func TestTagPredicate_NilIsFailClosed(t *testing.T) {
 }
 
 func TestScopeSystem_BypassesEverything(t *testing.T) {
+	t.Parallel()
 	if !ScopeSystem.Bypass {
 		t.Fatalf("ScopeSystem.Bypass must be true — it is the greppable kernel-internal sentinel (INV-7)")
 	}
@@ -86,6 +89,7 @@ func TestScopeSystem_BypassesEverything(t *testing.T) {
 }
 
 func TestTagPredicate_Unsatisfiable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		p    *TagPredicate
@@ -117,6 +121,7 @@ func TestTagPredicate_Unsatisfiable(t *testing.T) {
 }
 
 func TestTagPredicate_IsZero(t *testing.T) {
+	t.Parallel()
 	var nilP *TagPredicate
 	if !nilP.IsZero() {
 		t.Errorf("nil predicate is zero")
@@ -132,6 +137,7 @@ func TestTagPredicate_IsZero(t *testing.T) {
 }
 
 func TestAllowAllAuthorizer_FailsOpenAndSaysSo(t *testing.T) {
+	t.Parallel()
 	// §4.2: in OSS, unrestricted is the correct and only semantics. Getting this
 	// backwards makes OSS unusable (fail-closed) or premium insecure.
 	a := AllowAllAuthorizer{}
@@ -170,6 +176,7 @@ func TestAllowAllAuthorizer_FailsOpenAndSaysSo(t *testing.T) {
 }
 
 func TestAuthorizerFromContext_DefaultsToAllowAll(t *testing.T) {
+	t.Parallel()
 	if _, ok := AuthorizerFromContext(t.Context()).(AllowAllAuthorizer); !ok {
 		t.Fatalf("an authorizer-free context must yield the allow-all default, not nil")
 	}
@@ -181,6 +188,7 @@ func TestAuthorizerFromContext_DefaultsToAllowAll(t *testing.T) {
 }
 
 func TestAccessDecision_ExplainNamesTheResponsibleTerm(t *testing.T) {
+	t.Parallel()
 	d := AccessDecision{
 		Resource:  ResourceRef{Kind: KindMemory, ID: "doc-1"},
 		Principal: AgentPrincipal("support_agent"),
@@ -201,6 +209,7 @@ func TestAccessDecision_ExplainNamesTheResponsibleTerm(t *testing.T) {
 }
 
 func TestValidToolEffect_ClosedSet(t *testing.T) {
+	t.Parallel()
 	for _, e := range AllToolEffects {
 		if !ValidToolEffect(e) {
 			t.Errorf("%q must be a member of the closed set", e)

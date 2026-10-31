@@ -24,6 +24,7 @@ func ctxAs(agentID string) context.Context {
 // kernel", SessionSurface read it, ResolveSurface preferred it — and nothing ever
 // wrote it, so the session-scoped clamp could not engage at all.
 func TestCreateSession_StampsTheIngressSurface(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 	m.SetIngressResolver(fakeIngressRegistry{
 		"telegram_ingress": {
@@ -53,6 +54,7 @@ func TestCreateSession_StampsTheIngressSurface(t *testing.T) {
 // there is — so stamping every session with whatever opened it would silently
 // widen ordinary sessions. Only registered ingresses stamp.
 func TestCreateSession_DoesNotStampAnOrdinaryCaller(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 	m.SetIngressResolver(fakeIngressRegistry{
 		"telegram_ingress": {AgentID: "telegram_ingress", Surface: domain.SurfaceRef{Kind: domain.SurfaceChat, ID: "telegram"}},
@@ -73,6 +75,7 @@ func TestCreateSession_DoesNotStampAnOrdinaryCaller(t *testing.T) {
 // With no registry wired — every OSS deployment — nothing is an ingress and
 // behaviour is exactly what it was before this change.
 func TestCreateSession_NoRegistryIsUnchangedBehaviour(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 
 	ses, err := m.CreateSession(ctxAs("telegram_ingress"), "book a flight", "")
@@ -88,6 +91,7 @@ func TestCreateSession_NoRegistryIsUnchangedBehaviour(t *testing.T) {
 // empty SurfaceRef would make SessionSurface report "absent" anyway, so treating
 // it as a stamp would only be confusing.
 func TestCreateSession_RegistrationWithoutASurfaceStampsNothing(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 	m.SetIngressResolver(fakeIngressRegistry{"half_configured": {AgentID: "half_configured"}})
 
@@ -100,6 +104,7 @@ func TestCreateSession_RegistrationWithoutASurfaceStampsNothing(t *testing.T) {
 // The scoped constructor is the one the chat path uses, so it must stamp too —
 // caller_scope and surface are both non-forgeable facts decided at open time.
 func TestCreateScopedSession_StampsAndKeepsCallerScope(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 	m.SetIngressResolver(fakeIngressRegistry{
 		"telegram_ingress": {AgentID: "telegram_ingress", Surface: domain.SurfaceRef{Kind: domain.SurfaceChat, ID: "telegram"}},
@@ -122,6 +127,7 @@ func TestCreateScopedSession_StampsAndKeepsCallerScope(t *testing.T) {
 // A principal the kernel could not establish must never resolve to an ingress —
 // otherwise an unauthenticated caller inherits an ingress's surface.
 func TestCreateSession_ZeroPrincipalIsNeverAnIngress(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 	m.SetIngressResolver(fakeIngressRegistry{
 		"": {AgentID: "", Surface: domain.SurfaceRef{Kind: domain.SurfaceChat, ID: "telegram"}},

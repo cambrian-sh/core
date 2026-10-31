@@ -28,6 +28,7 @@ func (f fakeMemory) SearchSystem(context.Context, string) ([]domain.SearchResult
 // ListTools returns the whole catalog with builtin/mcp source labels and the
 // tool→agents reverse index built from the grants store. A2.3.
 func TestListTools_SourceLabelAndGrantsIndex(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetReadSources(fakeCatalog{tools: []domain.SystemTool{
 		{Name: "web_search", Description: "search the web", Dangerous: false, DataReadKinds: []string{"web"}},
@@ -73,6 +74,7 @@ func TestListTools_SourceLabelAndGrantsIndex(t *testing.T) {
 
 // dangerous_only and source filters narrow the catalog.
 func TestListTools_Filters(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetReadSources(fakeCatalog{tools: []domain.SystemTool{
 		{Name: "web_search"},
@@ -97,6 +99,7 @@ func TestListTools_Filters(t *testing.T) {
 
 // ListTools paginates over a sorted catalog.
 func TestListTools_Pagination(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetReadSources(fakeCatalog{tools: []domain.SystemTool{
 		{Name: "c"}, {Name: "a"}, {Name: "b"}, {Name: "d"},
@@ -118,6 +121,7 @@ func TestListTools_Pagination(t *testing.T) {
 
 // ListTools with no catalog wired returns an empty page, never an error.
 func TestListTools_NoCatalog(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	resp, err := svc.ListTools(context.Background(), &pb.ListToolsOpRequest{})
 	if err != nil || resp.GetTotal() != 0 {
@@ -126,6 +130,7 @@ func TestListTools_NoCatalog(t *testing.T) {
 }
 
 func TestListSkills_ListsAndFilters(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetReadSources(nil, fakeSkills{skills: []domain.Skill{
 		{Name: "pdf_report", Description: "build a PDF report", ToolGrants: []string{"write_file"}, ScopeTags: []string{"docs"}},
@@ -147,6 +152,7 @@ func TestListSkills_ListsAndFilters(t *testing.T) {
 
 // QueryMemory maps results and applies min_importance / source / top_k filters.
 func TestQueryMemory_MapsAndFilters(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetReadSources(nil, nil, fakeMemory{results: []domain.SearchResult{
 		{Document: domain.Document{ID: "d1", Summary: "budget is 500k", Metadata: map[string]interface{}{"importance": 0.9, "source": "email", "tags": []string{"finance"}}}, Score: 0.92},
@@ -178,6 +184,7 @@ func TestQueryMemory_MapsAndFilters(t *testing.T) {
 }
 
 func TestQueryMemory_Unconfigured(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	if _, err := svc.QueryMemory(context.Background(), &pb.QueryMemoryRequest{Query: "x"}); err == nil {
 		t.Fatal("expected Unimplemented when memory source not wired")

@@ -35,6 +35,7 @@ var realScenes = []struct {
 }
 
 func TestInduction_OnRealStoredScenes(t *testing.T) {
+	t.Parallel()
 	eps := make([]EpisodeShape, 0, len(realScenes))
 	for i, s := range realScenes {
 		eps = append(eps, EpisodeShape{
@@ -100,6 +101,7 @@ func TestInduction_OnRealStoredScenes(t *testing.T) {
 }
 
 func TestCanonicalGoal_StripsVolatileSpecifics(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ in, want string }{
 		{"Create and verify notes/alpha.md in runs/rt_diag6/workspace", "Create and verify in"},
 		{"Create and verify beta.md with content 'beta record'", "Create and verify beta.md with content"},

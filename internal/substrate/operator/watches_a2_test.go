@@ -54,6 +54,7 @@ func newWatchService(h domain.WatchConfigHandler) *operator.Service {
 // In an OSS build (no watch handler wired) all four watch RPCs are Unimplemented
 // — the D14/A2.6 excisability contract.
 func TestWatches_UnimplementedInOSS(t *testing.T) {
+	t.Parallel()
 	svc := newWatchService(nil)
 	if _, err := svc.ListWatches(context.Background(), &pb.ListWatchesOpRequest{}); err == nil {
 		t.Error("ListWatches should be Unimplemented in OSS")
@@ -72,6 +73,7 @@ func TestWatches_UnimplementedInOSS(t *testing.T) {
 // With a premium handler wired, register validates dispatch_agent, then the CRUD
 // round-trips through ListWatches. A2.6.
 func TestWatches_RegisterListDeleteToggle(t *testing.T) {
+	t.Parallel()
 	h := newFakeWatchHandler()
 	svc := newWatchService(h)
 
@@ -126,6 +128,7 @@ func TestWatches_RegisterListDeleteToggle(t *testing.T) {
 
 // A replayed RegisterWatch command_id does not create a second watch (A2.6).
 func TestRegisterWatch_Idempotent(t *testing.T) {
+	t.Parallel()
 	h := newFakeWatchHandler()
 	svc := newWatchService(h)
 	req := &pb.RegisterWatchOpRequest{

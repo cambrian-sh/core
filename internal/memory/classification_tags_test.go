@@ -13,6 +13,7 @@ import (
 // a term no rule can usefully match, and one per document buries a 12-term
 // vocabulary under 710 junk entries.
 func TestClassificationTags_StripsTheIdentityPair(t *testing.T) {
+	t.Parallel()
 	got := classificationTags(
 		[]string{"tau2-knowledge", "source_document", "doc_savings_gold_010"},
 		"doc_savings_gold_010",
@@ -28,6 +29,7 @@ func TestClassificationTags_StripsTheIdentityPair(t *testing.T) {
 // tau2-knowledge scorer — which matches `metadata["document_id"]` against the
 // dataset's `required_documents` — then scores a flat 0.0 recall on every task.
 func TestClassificationTags_DoesNotChangeTheResolvedDocumentID(t *testing.T) {
+	t.Parallel()
 	doc := domain.ExternalDocument{
 		Body: "gold account terms",
 		Tags: []string{"tau2-knowledge", "source_document", "doc_savings_gold_010"},
@@ -50,6 +52,7 @@ func TestClassificationTags_DoesNotChangeTheResolvedDocumentID(t *testing.T) {
 // every tag it sent. Blindly dropping whatever follows the marker would silently
 // delete a real label.
 func TestClassificationTags_KeepsTagsThatAreNotTheID(t *testing.T) {
+	t.Parallel()
 	got := classificationTags(
 		[]string{"finance", "source_document", "confidential"},
 		"conv-26-s1:abcdef",
@@ -60,6 +63,7 @@ func TestClassificationTags_KeepsTagsThatAreNotTheID(t *testing.T) {
 }
 
 func TestClassificationTags_LeavesOrdinaryLabelsAlone(t *testing.T) {
+	t.Parallel()
 	in := []string{"finance", "internal_only"}
 	got := classificationTags(in, "doc-1")
 	if !reflect.DeepEqual(got, in) {
@@ -73,6 +77,7 @@ func TestClassificationTags_LeavesOrdinaryLabelsAlone(t *testing.T) {
 // The id can appear without the marker (a caller that tagged the document with its
 // own name). Still not a classification.
 func TestClassificationTags_StripsABareSelfID(t *testing.T) {
+	t.Parallel()
 	got := classificationTags([]string{"doc-1", "finance"}, "doc-1")
 	if want := []string{"finance"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -83,6 +88,7 @@ func TestClassificationTags_StripsABareSelfID(t *testing.T) {
 // resolving uniquely per artifact (no doc-id collision) while the label set stays
 // the corpus markers only.
 func TestClassificationTags_MultiSuiteConvention(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		tags    []string

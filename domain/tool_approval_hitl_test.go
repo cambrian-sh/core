@@ -9,6 +9,7 @@ import (
 // A raised dangerous-tool approval publishes a HITLRaisedEvent keyed by the same
 // id Submit/ResolveHITL use. ADR-0047 0047-19.
 func TestApprovalController_PublishesHITLRaised(t *testing.T) {
+	t.Parallel()
 	c := NewInMemoryApprovalController(2 * time.Second)
 	bus := NewInMemoryEventBus()
 	var got []HITLRaisedEvent

@@ -9,6 +9,7 @@ import (
 
 // ADR-0102 Amendment A1: RetentionRunEvent maps to the RetentionRunOp feed payload.
 func TestToOperatorEvent_RetentionRun(t *testing.T) {
+	t.Parallel()
 	start := time.Unix(1750000000, 0).UTC()
 	end := start.Add(2 * time.Second)
 	se := domain.SequencedEvent{
@@ -50,6 +51,7 @@ func TestToOperatorEvent_RetentionRun(t *testing.T) {
 // A FAILED pass is the one most worth surfacing: retention that quietly stops
 // working is how a table becomes the outage. The error must survive the mapping.
 func TestToOperatorEvent_RetentionRun_CarriesFailure(t *testing.T) {
+	t.Parallel()
 	se := domain.SequencedEvent{
 		Seq: 12,
 		At:  time.Unix(1750000100, 0).UTC(),
@@ -74,6 +76,7 @@ func TestToOperatorEvent_RetentionRun_CarriesFailure(t *testing.T) {
 // Retention is a background pass, not session work. Attributing it to whichever
 // session happened to be live would invent a causal link that does not exist.
 func TestToOperatorEvent_RetentionRun_HasNoSession(t *testing.T) {
+	t.Parallel()
 	se := domain.SequencedEvent{
 		Seq:   13,
 		At:    time.Unix(1750000200, 0).UTC(),
@@ -91,6 +94,7 @@ func TestToOperatorEvent_RetentionRun_HasNoSession(t *testing.T) {
 // missing from feedEventTypes. Every unit test passed the whole time. A mapper
 // case is necessary and not sufficient; this asserts the half that was missed.
 func TestRetentionRunIsBridgedToTheFeed(t *testing.T) {
+	t.Parallel()
 	for _, tp := range feedEventTypes {
 		if tp == domain.EventTypeRetentionRun {
 			return

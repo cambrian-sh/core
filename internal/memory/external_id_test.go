@@ -7,6 +7,7 @@ import (
 )
 
 func TestExternalDocumentID_ExplicitTagPreserved(t *testing.T) {
+	t.Parallel()
 	// document upload path (document-qa): source_document tag wins, so the
 	// "<doc_id>-chunk-N" evidence contract is preserved.
 	doc := domain.ExternalDocument{
@@ -20,6 +21,7 @@ func TestExternalDocumentID_ExplicitTagPreserved(t *testing.T) {
 }
 
 func TestExternalDocumentID_ThreadedTurnsAreUniqueAndStable(t *testing.T) {
+	t.Parallel()
 	// Two conversation turns sharing one SourceURI + ThreadID (the locomo bug):
 	// they must get DIFFERENT ids (no overwrite), and re-ingesting the same turn
 	// must be STABLE (same id).
@@ -43,6 +45,7 @@ func TestExternalDocumentID_ThreadedTurnsAreUniqueAndStable(t *testing.T) {
 }
 
 func TestExternalDocumentID_FileKeepsSourceURI(t *testing.T) {
+	t.Parallel()
 	// A watched file (SourceURI, no ThreadID) keeps its path as the id so a
 	// re-ingest updates in place rather than orphaning chunks.
 	doc := domain.ExternalDocument{SourceURI: "/data/report.pdf", Body: "v1"}
@@ -52,6 +55,7 @@ func TestExternalDocumentID_FileKeepsSourceURI(t *testing.T) {
 }
 
 func TestExternalDocumentID_BareTagIsGroupingNotIdentity(t *testing.T) {
+	t.Parallel()
 	// The regression this branch existed to cause. N documents sharing ONE
 	// classification tag must get N distinct ids: a tag groups, it does not
 	// identify. Before the fix all of these collapsed onto the tag itself, so
@@ -81,6 +85,7 @@ func TestExternalDocumentID_BareTagIsGroupingNotIdentity(t *testing.T) {
 }
 
 func TestExternalDocumentID_BareTagIsStableOnReingest(t *testing.T) {
+	t.Parallel()
 	// The other half of the contract: distinct bodies differ, but the SAME body
 	// re-ingested resolves to the same id, so a re-ingest updates in place rather
 	// than orphaning the old chunks.
@@ -94,6 +99,7 @@ func TestExternalDocumentID_BareTagIsStableOnReingest(t *testing.T) {
 }
 
 func TestExternalDocumentID_ExplicitIDStillBeatsDigest(t *testing.T) {
+	t.Parallel()
 	// Rule 1a is untouched: a caller that explicitly names the document via
 	// source_document still owns the id, digest or not. document-qa's
 	// "<doc_id>-chunk-N" evidence contract depends on this.

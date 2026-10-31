@@ -176,6 +176,7 @@ func (w writerProcessor) ProcessSync(ctx context.Context, doc domain.ExternalDoc
 // 0035-07 e2e: an agent that hints a broadening tag still gets only the operator
 // ceiling stamped — the broaden-to-leak vector is structurally closed end-to-end.
 func TestIngestMemoryE2E_BroadeningHintClampedToCeiling(t *testing.T) {
+	t.Parallel()
 	s, cap, _ := newIngestServer(
 		map[string]bool{"support": true},
 		map[string][]string{"support": {"public_kb"}},
@@ -202,6 +203,7 @@ func TestIngestMemoryE2E_BroadeningHintClampedToCeiling(t *testing.T) {
 // 0035-07 e2e: a coined hint (tag outside the vocabulary) is rejected before any
 // write, surfaced as InvalidArgument through the live RPC.
 func TestIngestMemoryE2E_CoinedHintIsInvalidArgument(t *testing.T) {
+	t.Parallel()
 	s, cap, _ := newIngestServer(
 		map[string]bool{"a": true},
 		map[string][]string{"a": {"public_kb"}},
@@ -221,6 +223,7 @@ func TestIngestMemoryE2E_CoinedHintIsInvalidArgument(t *testing.T) {
 // 0035-07 e2e: a principal with no scope profile is fail-closed as PermissionDenied
 // through the live RPC — no write reaches the store.
 func TestIngestMemoryE2E_UnknownPrincipalIsPermissionDenied(t *testing.T) {
+	t.Parallel()
 	s, cap, _ := newIngestServer(
 		map[string]bool{}, // no known agents
 		nil,
@@ -240,6 +243,7 @@ func TestIngestMemoryE2E_UnknownPrincipalIsPermissionDenied(t *testing.T) {
 // confidentiality) but emits a scope_write_unclassified warning so the visibility
 // collapse is diagnosable rather than a silent "nothing can read my write".
 func TestIngestMemoryE2E_NarrowToUnclassifiedLogsWarning(t *testing.T) {
+	t.Parallel()
 	s, cap, logBuf := newIngestServer(
 		map[string]bool{"a": true},
 		map[string][]string{"a": {"public_kb"}},

@@ -65,6 +65,7 @@ func (f *fakeArgCS) GC(context.Context, []CID) error        { return nil }
 // NO per-agent grant and NO approval controller — the grant, scope, and
 // dangerous-tool approval gates are all bypassed — while the handler still runs.
 func TestExecute_SystemBypassesGrantScopeAndApproval(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	// A dangerous, data-writing tool: without System this needs a grant, a scope
 	// pass, AND an approval controller (nil ⇒ fail-closed deny).
@@ -96,6 +97,7 @@ func TestExecute_SystemBypassesGrantScopeAndApproval(t *testing.T) {
 // ADR-0048 #3: a {"$cid":"…"} arg is resolved to the stored content before dispatch;
 // non-reference args pass through untouched.
 func TestExecute_HydratesPublicCIDArg(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "write_file"})
 	h := &fakeHandler{result: []byte(`{"ok":1}`)}
@@ -123,6 +125,7 @@ func TestExecute_HydratesPublicCIDArg(t *testing.T) {
 // Another session's private blob (owner != caller) must NOT be hydrated — the ref is
 // left untouched rather than leaking the content into the tool.
 func TestExecute_DoesNotHydrateUnauthorizedCID(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "write_file"})
 	h := &fakeHandler{result: []byte(`{}`)}
@@ -141,6 +144,7 @@ func TestExecute_DoesNotHydrateUnauthorizedCID(t *testing.T) {
 // AvailableTools (the ReAct prompt menu) must match what Execute will allow:
 // anonymous ⇒ nothing; granted ⇒ exactly the granted tools; unrestricted ⇒ all.
 func TestToolExecutor_AvailableToolsMatchesAuthority(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "read_file"})
 	reg.Register(SystemTool{Name: "execute_command"})
@@ -180,6 +184,7 @@ func toolNames(ts []SystemTool) []string {
 
 // Unknown tool, unknown principal, and un-granted tool are all denied (fail-closed).
 func TestToolExecutor_DenialsFailClosed(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "read_file"})
 	h := &fakeHandler{result: []byte(`{"ok":true}`)}
@@ -206,6 +211,7 @@ func TestToolExecutor_DenialsFailClosed(t *testing.T) {
 
 // The resource policy is enforced on the tool's declared path arg.
 func TestToolExecutor_ResourcePolicyEnforced(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "read_file", PathArgs: []string{"path"}})
@@ -236,6 +242,7 @@ func TestToolExecutor_ResourcePolicyEnforced(t *testing.T) {
 
 // A dangerous tool gates on approval; fail-closed when no controller is wired.
 func TestToolExecutor_DangerousApproval(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "execute_command", Dangerous: true})
 	grant := ToolGrant{Tool: "execute_command"}
@@ -276,6 +283,7 @@ func TestToolExecutor_DangerousApproval(t *testing.T) {
 // Happy path returns the handler result with audit hashes; a handler error is a
 // structured response, never a crash.
 func TestToolExecutor_ResultAndErrorContract(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "echo"})
 	grant := ToolGrant{Tool: "echo"}
@@ -306,6 +314,7 @@ func TestToolExecutor_ResultAndErrorContract(t *testing.T) {
 // allow-all policy (operator-chosen bypass). Approval for dangerous tools still
 // applies; a truly anonymous principal is still denied.
 func TestToolExecutor_UnrestrictedMode(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "read_file", PathArgs: []string{"path"}})
@@ -333,6 +342,7 @@ func TestToolExecutor_UnrestrictedMode(t *testing.T) {
 // has no operator); a non-evaluation session still hits the operator gate; and
 // an empty token is never an evaluation (fail-closed to approval).
 func TestToolExecutor_EvaluationSessionAutoApproves(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "execute_command", Dangerous: true})
 	grant := ToolGrant{Tool: "execute_command"}
@@ -385,6 +395,7 @@ func TestToolExecutor_EvaluationSessionAutoApproves(t *testing.T) {
 
 // The auto-approve controller (tools_auto_approve) approves every dangerous call.
 func TestAlwaysApproveController(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "execute_command", Dangerous: true})
 	h := &fakeHandler{result: []byte(`"ran"`)}

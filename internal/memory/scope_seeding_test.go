@@ -49,6 +49,7 @@ func strictScopeAgent(store *lifecycleStore) *Agent {
 // the row inflation A2.9 exists to prevent, where induction counts reruns as
 // confirmations.
 func TestSceneDedup_SurvivesEnforcedReads(t *testing.T) {
+	t.Parallel()
 	store := newLifecycleStore()
 	agent := strictScopeAgent(store)
 
@@ -82,6 +83,7 @@ func TestSceneDedup_SurvivesEnforcedReads(t *testing.T) {
 // degrades to a situational index with no "what I did" — silently, because a plan that
 // engaged nothing produces the same shape.
 func TestPlanScene_CarriesActionsUnderEnforcedReads(t *testing.T) {
+	t.Parallel()
 	store := newLifecycleStore()
 	agent := strictScopeAgent(store)
 
@@ -111,6 +113,7 @@ func TestPlanScene_CarriesActionsUnderEnforcedReads(t *testing.T) {
 // renders situation + outcome with no path, so the LLM is told what happened last time and
 // never what was done.
 func TestRetrievePrecedents_CarriesActionsUnderEnforcedReads(t *testing.T) {
+	t.Parallel()
 	store := newLifecycleStore()
 	agent := strictScopeAgent(store)
 
@@ -145,6 +148,7 @@ func TestRetrievePrecedents_CarriesActionsUnderEnforcedReads(t *testing.T) {
 // returns ErrScopeMissing, every routine reads as "not found", and confidence never moves
 // — the tier keeps shaping plans and stops learning from them.
 func TestFeedProcedureOutcome_SurvivesEnforcedReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := newLifecycleStore()
 	enforced := strictScopeStore(store)

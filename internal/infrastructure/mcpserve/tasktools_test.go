@@ -66,6 +66,7 @@ func alice() context.Context {
 // NEITHER is machine-only — the task lane is for every authenticated caller,
 // unlike the worker transport beside it.
 func TestTaskTools_Declarations(t *testing.T) {
+	t.Parallel()
 	surface := TaskTools(&fakeTaskLane{})
 	if len(surface) != 2 {
 		t.Fatalf("task tools = %d, want 2", len(surface))
@@ -107,6 +108,7 @@ func TestTaskTools_Declarations(t *testing.T) {
 // Fail-closed identity: an anonymous caller can neither submit nor poll —
 // whatever the (fail-open OSS) authorizer would say, the lane itself refuses.
 func TestTaskTools_AnonymousCallerIsRefused(t *testing.T) {
+	t.Parallel()
 	lane := &fakeTaskLane{}
 	submit, status := taskHandlers(t, lane)
 
@@ -124,6 +126,7 @@ func TestTaskTools_AnonymousCallerIsRefused(t *testing.T) {
 // A machine principal with no owner on the context is a wiring defect and must
 // refuse — a task nobody is the beneficiary of must not exist.
 func TestTaskTools_OwnerlessMachineIsRefused(t *testing.T) {
+	t.Parallel()
 	lane := &fakeTaskLane{}
 	submit, _ := taskHandlers(t, lane)
 	ctx := domain.WithPrincipal(context.Background(), domain.MachinePrincipal("laptop"))
@@ -136,6 +139,7 @@ func TestTaskTools_OwnerlessMachineIsRefused(t *testing.T) {
 // beneficiary; a worker machine submits FOR ITS OWNER (the ADR-0127 D1 binding
 // carried by the middleware) — never for itself.
 func TestSubmitTask_BeneficiaryDerivation(t *testing.T) {
+	t.Parallel()
 	lane := &fakeTaskLane{}
 	submit, _ := taskHandlers(t, lane)
 
@@ -162,6 +166,7 @@ func TestSubmitTask_BeneficiaryDerivation(t *testing.T) {
 }
 
 func TestSubmitTask_RequiresTaskText(t *testing.T) {
+	t.Parallel()
 	lane := &fakeTaskLane{}
 	submit, _ := taskHandlers(t, lane)
 	for _, args := range []string{`{}`, `{"task":"   "}`} {
@@ -177,6 +182,7 @@ func TestSubmitTask_RequiresTaskText(t *testing.T) {
 // The answer carries the task id and the initial state, so a caller can start
 // polling without guessing.
 func TestSubmitTask_AnswersWithTaskID(t *testing.T) {
+	t.Parallel()
 	lane := &fakeTaskLane{nextID: "ab12cd34"}
 	submit, _ := taskHandlers(t, lane)
 	res, err := submit.Invoke(alice(), json.RawMessage(`{"task":"do the thing"}`))
@@ -196,6 +202,7 @@ func TestSubmitTask_AnswersWithTaskID(t *testing.T) {
 // with BYTE-IDENTICAL errors, from submit_task's parent check and from
 // get_task_status alike.
 func TestTaskStatus_UnknownAndForeignAnswerIdentically(t *testing.T) {
+	t.Parallel()
 	lane := &fakeTaskLane{views: map[string]TaskView{
 		"bobs-task": {ID: "bobs-task", State: TaskStateRunning, Beneficiary: domain.AgentPrincipal("mcp:bob")},
 	}}
@@ -214,6 +221,7 @@ func TestTaskStatus_UnknownAndForeignAnswerIdentically(t *testing.T) {
 // A parent must be one of the caller's own tasks — with the same not-found
 // shape as the status read, for the same anti-enumeration reason.
 func TestSubmitTask_ParentMustBeCallersOwnTask(t *testing.T) {
+	t.Parallel()
 	lane := &fakeTaskLane{views: map[string]TaskView{
 		"bobs-task":   {ID: "bobs-task", State: TaskStateRunning, Beneficiary: domain.AgentPrincipal("mcp:bob")},
 		"alices-task": {ID: "alices-task", State: TaskStateSucceeded, Beneficiary: domain.AgentPrincipal("mcp:alice")},
@@ -237,6 +245,7 @@ func TestSubmitTask_ParentMustBeCallersOwnTask(t *testing.T) {
 // The status answer: state, goal, terminality, timestamps — and the result
 // once the task is terminal. The beneficiary itself is never serialized.
 func TestTaskStatus_AnswersOwnTask(t *testing.T) {
+	t.Parallel()
 	created := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
 	lane := &fakeTaskLane{views: map[string]TaskView{
 		"t1": {
@@ -270,6 +279,7 @@ func TestTaskStatus_AnswersOwnTask(t *testing.T) {
 // and an ordinary (non-machine) client is shown them — they are product
 // surface, unlike the machine-only worker transport beside them.
 func TestTaskTools_ListedOverTheEndpoint(t *testing.T) {
+	t.Parallel()
 	session := serve(t, Options{Surface: TaskTools(&fakeTaskLane{})}, "token-aaaa")
 	res, err := session.ListTools(t.Context(), nil)
 	if err != nil {
@@ -286,6 +296,7 @@ func TestTaskTools_ListedOverTheEndpoint(t *testing.T) {
 
 // A machine principal polls its OWNER's tasks — the same derivation as submit.
 func TestTaskStatus_MachineSeesItsOwnersTasks(t *testing.T) {
+	t.Parallel()
 	lane := &fakeTaskLane{views: map[string]TaskView{
 		"t1": {ID: "t1", State: TaskStateRunning, Beneficiary: domain.AgentPrincipal("mcp:alice")},
 	}}

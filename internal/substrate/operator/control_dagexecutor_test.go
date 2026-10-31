@@ -12,6 +12,7 @@ import (
 var _ operator.ExecutionControls = (*executer.DAGExecutor)(nil)
 
 func TestControlHub_RegistersAndSteersDAGExecutor(t *testing.T) {
+	t.Parallel()
 	hub := operator.NewExecutionControlHub()
 	d := &executer.DAGExecutor{}
 

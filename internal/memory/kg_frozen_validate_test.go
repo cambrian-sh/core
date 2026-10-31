@@ -156,6 +156,7 @@ func graphRecall(ctx context.Context, store domain.ChunkTripletsStore, qas []evi
 }
 
 func TestKGFrozenGraphRecall(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("CAMBRIAN_KGVALIDATE") == "" {
 		t.Skip("set CAMBRIAN_KGVALIDATE=1 to run the frozen-KG graph_recall validation")
 	}

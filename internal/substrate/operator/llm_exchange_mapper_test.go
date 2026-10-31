@@ -10,6 +10,7 @@ import (
 // ADR-0079: AgentLLMExchangeEvent maps to the AgentLLMExchangeOp feed payload — the
 // provider-tap capture of one agent reasoning turn (full prompt + completion).
 func TestToOperatorEvent_AgentLLMExchange(t *testing.T) {
+	t.Parallel()
 	se := domain.SequencedEvent{
 		Seq: 11,
 		At:  time.Unix(0, 0).UTC(),

@@ -10,6 +10,7 @@ import (
 // Cycle 1: unmarshal without "trait" key → TraitCognitive (backward compat)
 
 func TestAgentDefinition_MissingTrait_DefaultsToTraitCognitive(t *testing.T) {
+	t.Parallel()
 	raw := `{"ID":"agent-1","Name":"Writer","Runtime":"python"}`
 	var def domain.AgentDefinition
 	if err := json.Unmarshal([]byte(raw), &def); err != nil {
@@ -22,6 +23,7 @@ func TestAgentDefinition_MissingTrait_DefaultsToTraitCognitive(t *testing.T) {
 
 // Cycle 0033-01: TraitDaemon constant, JSON round-trip, and no conflict with existing traits.
 func TestAgentDefinition_TraitDaemon_Constant(t *testing.T) {
+	t.Parallel()
 	if domain.TraitDaemon == domain.TraitCognitive ||
 		domain.TraitDaemon == domain.TraitTool ||
 		domain.TraitDaemon == domain.TraitModel {
@@ -41,6 +43,7 @@ func TestAgentDefinition_TraitDaemon_Constant(t *testing.T) {
 // Cycle 2: marshal TraitTool → JSON contains "trait":"tool"
 
 func TestAgentDefinition_TraitTool_MarshalIncludesKey(t *testing.T) {
+	t.Parallel()
 	def := domain.AgentDefinition{ID: "file-writer", Trait: domain.TraitTool}
 	b, err := json.Marshal(def)
 	if err != nil {
@@ -62,6 +65,7 @@ func TestAgentDefinition_TraitTool_MarshalIncludesKey(t *testing.T) {
 // Cycle 3: marshal TraitCognitive (zero value) → "trait" key absent (omitempty)
 
 func TestAgentDefinition_TraitCognitive_MarshalOmitsKey(t *testing.T) {
+	t.Parallel()
 	def := domain.AgentDefinition{ID: "llm-agent", Trait: domain.TraitCognitive}
 	b, err := json.Marshal(def)
 	if err != nil {
@@ -79,6 +83,7 @@ func TestAgentDefinition_TraitCognitive_MarshalOmitsKey(t *testing.T) {
 // Cycle 4: TraitModel constant exists and marshals to "trait":"model"
 
 func TestAgentDefinition_TraitModel_ValueAndMarshal(t *testing.T) {
+	t.Parallel()
 	if domain.TraitModel != "model" {
 		t.Fatalf("want TraitModel=\"model\", got %q", domain.TraitModel)
 	}

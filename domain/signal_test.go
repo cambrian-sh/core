@@ -9,6 +9,7 @@ import (
 
 // Cycle 1 — WatchAction.TargetType field exists and round-trips through JSON.
 func TestWatchAction_TargetTypeField(t *testing.T) {
+	t.Parallel()
 	action := domain.WatchAction{
 		Type:       "dispatch_agent",
 		TargetType: "agent_id",
@@ -33,6 +34,7 @@ func TestWatchAction_TargetTypeField(t *testing.T) {
 
 // Cycle 2 — WatchConfig new fields compile and round-trip through JSON.
 func TestWatchConfig_NewFields(t *testing.T) {
+	t.Parallel()
 	cfg := domain.WatchConfig{
 		ID:                 "wc-1",
 		ResponseMode:       "sync",
@@ -63,6 +65,7 @@ func TestWatchConfig_NewFields(t *testing.T) {
 
 // Cycle 3 — ConditionTypeAlways constant equals "always".
 func TestConditionTypeAlways_Constant(t *testing.T) {
+	t.Parallel()
 	if domain.ConditionTypeAlways != "always" {
 		t.Errorf("ConditionTypeAlways: want %q, got %q", "always", domain.ConditionTypeAlways)
 	}
@@ -70,6 +73,7 @@ func TestConditionTypeAlways_Constant(t *testing.T) {
 
 // Cycle 4 — WatchTriggeredEvent.EventType() returns "watch.triggered" when ActionTarget is empty.
 func TestWatchTriggeredEvent_DefaultEventType(t *testing.T) {
+	t.Parallel()
 	evt := domain.WatchTriggeredEvent{
 		WatchConfigID: "wc-1",
 		StreamID:      "gold_tracker",
@@ -83,6 +87,7 @@ func TestWatchTriggeredEvent_DefaultEventType(t *testing.T) {
 
 // Cycle 5 — WatchTriggeredEvent.EventType() returns ActionTarget when set.
 func TestWatchTriggeredEvent_ActionTargetOverridesEventType(t *testing.T) {
+	t.Parallel()
 	evt := domain.WatchTriggeredEvent{
 		WatchConfigID: "wc-2",
 		StreamID:      "stream-x",
@@ -96,6 +101,7 @@ func TestWatchTriggeredEvent_ActionTargetOverridesEventType(t *testing.T) {
 
 // Cycle 6 — WatchTriggeredEvent can be published via EventBus and routes to the correct subscriber.
 func TestWatchTriggeredEvent_PublishesViaEventBus(t *testing.T) {
+	t.Parallel()
 	bus := domain.NewInMemoryEventBus()
 
 	var received domain.WatchTriggeredEvent

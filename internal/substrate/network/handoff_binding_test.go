@@ -45,6 +45,7 @@ func (r *stubLeaseResolver) ResolveLease(id domain.LeaseID) (domain.LeaseBinding
 // caller with no lease, the opened session was never linked to the conversation that
 // ordered it, and every session in the store ended up with an empty conversation_id.
 func TestResolveBindingFromHandoff_FindsLeaseInThePayload(t *testing.T) {
+	t.Parallel()
 	res := &stubLeaseResolver{
 		leaseID: "lease-abc",
 		binding: domain.LeaseBinding{ConversationID: "conv-42", OriginMessageID: "msg-7"},
@@ -68,6 +69,7 @@ func TestResolveBindingFromHandoff_FindsLeaseInThePayload(t *testing.T) {
 // The gRPC header stays authoritative: it is set by the transport, the payload by the
 // caller, so a caller must not be able to override it with a lease of its choosing.
 func TestResolveBindingFromHandoff_HeaderWinsOverPayload(t *testing.T) {
+	t.Parallel()
 	res := &stubLeaseResolver{
 		leaseID: "lease-header",
 		binding: domain.LeaseBinding{ConversationID: "conv-from-header"},
@@ -85,6 +87,7 @@ func TestResolveBindingFromHandoff_HeaderWinsOverPayload(t *testing.T) {
 }
 
 func TestResolveBindingFromHandoff_NoLeaseAnywhere(t *testing.T) {
+	t.Parallel()
 	s := &Server{LLMGateway: &stubLeaseResolver{leaseID: "x"}}
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD{})
 

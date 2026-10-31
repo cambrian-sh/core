@@ -24,6 +24,7 @@ func sampleStructuredDoc() *StructuredDocument {
 }
 
 func TestBuildStructureGraph(t *testing.T) {
+	t.Parallel()
 	doc := sampleStructuredDoc()
 	chunkIDs := []string{"bio-chunk-1", "bio-chunk-2", "bio-chunk-3"} // aligned to 3 ordered leaves
 	sections, stamps, edges := BuildStructureGraph(doc, "bio", chunkIDs, nil)
@@ -76,6 +77,7 @@ func TestBuildStructureGraph(t *testing.T) {
 }
 
 func TestBuildStructureGraph_FlatDocNoSections(t *testing.T) {
+	t.Parallel()
 	// A doc with no headings → leaves under root, no sections. Should produce no
 	// section rows and no stamps (nothing to inherit), and not panic.
 	doc := &StructuredDocument{

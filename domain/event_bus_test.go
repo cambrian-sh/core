@@ -11,6 +11,7 @@ import (
 
 // Cycle 1 — Subscribe + Publish delivers the event to the handler.
 func TestInMemoryEventBus_PublishDeliversToSubscriber(t *testing.T) {
+	t.Parallel()
 	bus := domain.NewInMemoryEventBus()
 
 	var got domain.DomainEvent
@@ -29,6 +30,7 @@ func TestInMemoryEventBus_PublishDeliversToSubscriber(t *testing.T) {
 
 // Cycle 2 — Multiple subscribers for the same type all receive the event.
 func TestInMemoryEventBus_MultipleSubscribersAllReceive(t *testing.T) {
+	t.Parallel()
 	bus := domain.NewInMemoryEventBus()
 
 	var count int32
@@ -46,6 +48,7 @@ func TestInMemoryEventBus_MultipleSubscribersAllReceive(t *testing.T) {
 
 // Cycle 3 — Publishing type A does not reach a subscriber registered for type B.
 func TestInMemoryEventBus_TypeRoutingIsIsolated(t *testing.T) {
+	t.Parallel()
 	bus := domain.NewInMemoryEventBus()
 
 	var auctionCalled bool
@@ -60,6 +63,7 @@ func TestInMemoryEventBus_TypeRoutingIsIsolated(t *testing.T) {
 
 // Cycle 4 — Concurrent publishes from multiple goroutines do not race.
 func TestInMemoryEventBus_ConcurrentPublishIsSafe(t *testing.T) {
+	t.Parallel()
 	bus := domain.NewInMemoryEventBus()
 
 	var count int32
@@ -84,6 +88,7 @@ func TestInMemoryEventBus_ConcurrentPublishIsSafe(t *testing.T) {
 
 // Cycle 5 — Publish with no subscriber registered does not error.
 func TestInMemoryEventBus_PublishWithNoSubscriberIsNoError(t *testing.T) {
+	t.Parallel()
 	bus := domain.NewInMemoryEventBus()
 	if err := bus.Publish(domain.AgentReadyEvent{AgentID: "none"}); err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -92,6 +97,7 @@ func TestInMemoryEventBus_PublishWithNoSubscriberIsNoError(t *testing.T) {
 
 // Cycle 6 — Subscribe after Publish does not receive the already-published event.
 func TestInMemoryEventBus_LateSubscriberMissesEarlierEvent(t *testing.T) {
+	t.Parallel()
 	bus := domain.NewInMemoryEventBus()
 
 	_ = bus.Publish(domain.AgentReadyEvent{AgentID: "early"})

@@ -46,6 +46,7 @@ func (f *fakeEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
 
 // ADR-0025: MemoryManager.Query now queries DocTypeMnemonicFact (DocTypeMemory retired).
 func TestMemoryManager_Query_PassesMnemonicFact(t *testing.T) {
+	t.Parallel()
 	store := &fakeVectorStore{
 		docs: []domain.SearchResult{
 			{Document: domain.Document{ID: "fact-1", Text: "a fact"}, Score: 0.9},
@@ -70,6 +71,7 @@ func TestMemoryManager_Query_PassesMnemonicFact(t *testing.T) {
 }
 
 func TestVectorStore_Search_EmptyDocumentTypeReturnsAll(t *testing.T) {
+	t.Parallel()
 	store := &fakeVectorStore{
 		docs: []domain.SearchResult{
 			{Document: domain.Document{ID: "mem-1"}, Score: 0.9},
@@ -95,6 +97,7 @@ func TestVectorStore_Search_EmptyDocumentTypeReturnsAll(t *testing.T) {
 }
 
 func TestDocTypeConstants_StringValues(t *testing.T) {
+	t.Parallel()
 	if domain.DocTypeMemory != "memory" {
 		t.Errorf("DocTypeMemory = %q, want %q", domain.DocTypeMemory, "memory")
 	}
@@ -111,6 +114,7 @@ func TestVectorStore_Interface_SearchAcceptsOptions(_ *testing.T) {
 }
 
 func TestMemoryManager_Query_EmbedError(t *testing.T) {
+	t.Parallel()
 	errStore := &fakeVectorStore{}
 	errMgr := &MemoryManager{
 		Store:    errStore,

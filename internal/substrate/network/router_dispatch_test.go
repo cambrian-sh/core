@@ -73,6 +73,7 @@ func handoffWithBody(body string) *pb.Handoff {
 
 // Cycle 38 — CHAT decision returns payload.type = "not_implemented".
 func TestServer_RouterChat_ReturnsNotImplemented(t *testing.T) {
+	t.Parallel()
 	s := serverWithRouter(routerReturning(domain.DecisionChat))
 	resp, err := s.Execute(context.Background(), handoffWithBody("what is France?"))
 	if err != nil {
@@ -85,6 +86,7 @@ func TestServer_RouterChat_ReturnsNotImplemented(t *testing.T) {
 
 // Cycle 39 — WATCH decision returns payload.type = "not_implemented".
 func TestServer_RouterWatch_ReturnsNotImplemented(t *testing.T) {
+	t.Parallel()
 	s := serverWithRouter(routerReturning(domain.DecisionWatch))
 	resp, err := s.Execute(context.Background(), handoffWithBody("watch gold prices"))
 	if err != nil {
@@ -98,6 +100,7 @@ func TestServer_RouterWatch_ReturnsNotImplemented(t *testing.T) {
 // Cycle 40 — CLARIFICATION decision returns payload.type = "clarification"
 // with valid JSON containing question and options.
 func TestServer_RouterClarification_ReturnsStructuredJSON(t *testing.T) {
+	t.Parallel()
 	s := serverWithRouter(routerReturningClarification())
 	resp, err := s.Execute(context.Background(), handoffWithBody("help me with this"))
 	if err != nil {
@@ -122,6 +125,7 @@ func TestServer_RouterClarification_ReturnsStructuredJSON(t *testing.T) {
 
 // Cycle 41 — CLARIFICATION options include Recommended=true for the first option.
 func TestServer_RouterClarification_RecommendedFlagPresent(t *testing.T) {
+	t.Parallel()
 	s := serverWithRouter(routerReturningClarification())
 	resp, _ := s.Execute(context.Background(), handoffWithBody("help me"))
 

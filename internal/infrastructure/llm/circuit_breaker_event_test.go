@@ -10,6 +10,7 @@ import (
 // The breaker publishes an LLMHealthEvent on each open↔closed transition and
 // nothing on a same-state Record. ADR-0047 0047-14.
 func TestCircuitBreaker_PublishesHealthOnTransition(t *testing.T) {
+	t.Parallel()
 	bus := domain.NewInMemoryEventBus()
 	var events []domain.LLMHealthEvent
 	bus.Subscribe(domain.EventTypeLLMHealth, func(e domain.DomainEvent) {
@@ -42,6 +43,7 @@ func TestCircuitBreaker_PublishesHealthOnTransition(t *testing.T) {
 
 // A nil bus is a no-op (breaker still functions).
 func TestCircuitBreaker_NilBusIsNoOp(t *testing.T) {
+	t.Parallel()
 	b := NewCircuitBreaker(1, time.Second) // no Bus set
 	b.Record("m1", false)                  // trips, would publish if a bus were set
 	if b.Healthy("m1") {

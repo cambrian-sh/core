@@ -51,6 +51,7 @@ func (c *steerControls) Inject(string) error {
 // durable status stayed "active" forever, so the console showed a paused session as running
 // and its Resume control was permanently unreachable.
 func TestPauseSession_PersistsStatus(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetCommandEffects(operator.NoopEffects{})
 	hub := operator.NewExecutionControlHub()
@@ -84,6 +85,7 @@ func TestPauseSession_PersistsStatus(t *testing.T) {
 }
 
 func TestResumeSession_PersistsActive(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetCommandEffects(operator.NoopEffects{})
 	hub := operator.NewExecutionControlHub()
@@ -108,6 +110,7 @@ func TestResumeSession_PersistsActive(t *testing.T) {
 
 // A retry must not transition twice.
 func TestPauseSession_IdempotentOnCommandID(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetCommandEffects(operator.NoopEffects{})
 	hub := operator.NewExecutionControlHub()
@@ -137,6 +140,7 @@ func TestPauseSession_IdempotentOnCommandID(t *testing.T) {
 // finished session impossible to close — which is how the lifecycle ended up with no
 // terminator at all.
 func TestCloseSession_CompletesWithoutLiveExecution(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetCommandEffects(operator.NoopEffects{})
 	svc.SetSteeringSources(operator.NewExecutionControlHub(), &fakeApprovalHub{}) // empty hub
@@ -161,6 +165,7 @@ func TestCloseSession_CompletesWithoutLiveExecution(t *testing.T) {
 }
 
 func TestCloseSession_ValidatesRequiredFields(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetCommandEffects(operator.NoopEffects{})
 	svc.SetSessionOps((&statusRecorder{}).ops())
@@ -178,6 +183,7 @@ func TestCloseSession_ValidatesRequiredFields(t *testing.T) {
 
 // An unwired SessionOps must say so rather than silently succeeding.
 func TestCloseSession_UnwiredIsUnimplemented(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetCommandEffects(operator.NoopEffects{})
 	svc.SetSessionOps(operator.SessionOpsFuncs{}) // no SetStatusFn

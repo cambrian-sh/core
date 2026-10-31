@@ -57,6 +57,7 @@ func stubEchoSession(t *testing.T, ctx context.Context) *mcpsdk.ClientSession {
 // ToolExecutor → MCPHandler → in-process stub and returns the stub's result; an
 // ungranted agent is denied, identically to any native system tool (ADR-0043 D1).
 func TestMCPHandler_TracerThroughToolExecutor(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sess := stubEchoSession(t, ctx)
 	h := &Handler{Sessions: staticSource{"stub": sess}}
@@ -93,6 +94,7 @@ func TestMCPHandler_TracerThroughToolExecutor(t *testing.T) {
 // A call to an MCP server that is not connected degrades to a structured error
 // (the loop can reason about it), never a panic (ADR-0043 D1 / D8 graceful).
 func TestMCPHandler_UnconnectedServerDegradesToError(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := &Handler{Sessions: staticSource{}} // no sessions wired
 
@@ -117,6 +119,7 @@ func TestMCPHandler_UnconnectedServerDegradesToError(t *testing.T) {
 // A slow MCP tool is cut off by the per-call timeout and returns an error rather
 // than hanging the agent (ADR-0043 D8).
 func TestMCPHandler_CallTimeout(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "slow", Version: "1.0.0"}, nil)
 	mcpsdk.AddTool(server, &mcpsdk.Tool{Name: "slow", Description: "slow"},
@@ -162,6 +165,7 @@ func (c *capturingAuditor) RecordEgress(agentID, toolName string, _ []string) {
 // A remote MCP call emits an egress audit event (ADR-0043 D4) — the forensic
 // record that the agent's args left the trust boundary.
 func TestMCPHandler_EmitsEgressAudit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sess := stubEchoSession(t, ctx)
 	aud := &capturingAuditor{}
@@ -215,6 +219,7 @@ func budgetedExec(t *testing.T, ctx context.Context, cap float64) *domain.ToolEx
 // A priced MCP call reserves on admission and reconciles the actual cost to the
 // session ledger (ADR-0043 D5/D6).
 func TestMCPHandler_BudgetedCallReservesAndReconciles(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	exec := budgetedExec(t, ctx, 0.10)
 
@@ -236,6 +241,7 @@ func TestMCPHandler_BudgetedCallReservesAndReconciles(t *testing.T) {
 // A call whose reservation exceeds the remaining budget is denied budget_exhausted
 // before dispatch (ADR-0043 D5).
 func TestMCPHandler_OverBudgetCallDenied(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	exec := budgetedExec(t, ctx, 0.02) // cap below the 0.03 price
 

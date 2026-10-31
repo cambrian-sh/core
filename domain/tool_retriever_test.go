@@ -18,6 +18,7 @@ func toolRegFixture() *InMemoryToolRegistry {
 
 // BuildToolDoc carries name + description + arg names, document-prefixed (D5).
 func TestBuildToolDoc(t *testing.T) {
+	t.Parallel()
 	doc := BuildToolDoc(SystemTool{
 		Name: "web_search", Description: "search the web",
 		Schema: []byte(`{"properties":{"query":{"type":"string"},"max_results":{"type":"integer"}}}`),
@@ -34,6 +35,7 @@ func TestBuildToolDoc(t *testing.T) {
 
 // The keyword retriever ranks granted tools by query overlap and returns top-k.
 func TestKeywordToolRetriever_RanksAndCaps(t *testing.T) {
+	t.Parallel()
 	r := KeywordToolRetriever{Registry: toolRegFixture()}
 	got, err := r.Rank(context.Background(), "search the web for a person", []string{"web_search", "read_file", "execute_command"}, 1)
 	if err != nil {
@@ -47,6 +49,7 @@ func TestKeywordToolRetriever_RanksAndCaps(t *testing.T) {
 // AvailableToolsRanked grant-filters first, then ranks within the authorized set;
 // no query / fits-in-k ⇒ full menu; an empty ranked result is honored.
 func TestAvailableToolsRanked(t *testing.T) {
+	t.Parallel()
 	reg := toolRegFixture()
 	exec := &ToolExecutor{
 		Registry:     reg,
@@ -82,6 +85,7 @@ func TestAvailableToolsRanked(t *testing.T) {
 // when it is granted — an ungranted/unknown name is absent (fail-closed, no
 // existence leak); an anonymous principal gets nothing.
 func TestAvailableToolsNamed(t *testing.T) {
+	t.Parallel()
 	reg := toolRegFixture()
 	grants := NewInMemoryGrantsStore()
 	grants.Set("agent1", []ToolGrant{{Tool: "web_search"}})
@@ -155,6 +159,7 @@ func (s *fakeToolStore) QueryByMetadata(context.Context, map[string]string, int)
 // The vector retriever applies the search_query prefix, the grant filter, and the
 // relevance floor (low-score candidates dropped).
 func TestVectorToolRetriever_FloorAndGrantFilter(t *testing.T) {
+	t.Parallel()
 	emb := &fakeEmbedder{}
 	store := &fakeToolStore{results: []SearchResult{
 		{Document: Document{ID: "web_search"}, RawScore: 0.70},
@@ -179,6 +184,7 @@ func TestVectorToolRetriever_FloorAndGrantFilter(t *testing.T) {
 
 // Nothing above the floor ⇒ an empty menu (the grounding safeguard).
 func TestVectorToolRetriever_EmptyWhenNothingClearsFloor(t *testing.T) {
+	t.Parallel()
 	emb := &fakeEmbedder{}
 	store := &fakeToolStore{results: []SearchResult{{Document: Document{ID: "read_file"}, RawScore: 0.10}}}
 	r := VectorToolRetriever{Store: store, Embedder: emb, Floor: 0.50}
@@ -191,6 +197,7 @@ func TestVectorToolRetriever_EmptyWhenNothingClearsFloor(t *testing.T) {
 
 // No granted names (tools_unrestricted) ⇒ no SQL filter (rank over all tools).
 func TestVectorToolRetriever_UnrestrictedNoFilter(t *testing.T) {
+	t.Parallel()
 	emb := &fakeEmbedder{}
 	store := &fakeToolStore{results: []SearchResult{{Document: Document{ID: "web_search"}, RawScore: 0.9}}}
 	r := VectorToolRetriever{Store: store, Embedder: emb}
@@ -208,6 +215,7 @@ func TestVectorToolRetriever_UnrestrictedNoFilter(t *testing.T) {
 // Indexing embeds the tool doc and upserts it as a DocTypeTool keyed by name;
 // re-indexing the same tool upserts (no duplicate). Remove drops it.
 func TestToolIndexer_IndexUpsertAndRemove(t *testing.T) {
+	t.Parallel()
 	store := &fakeToolStore{}
 	ix := &ToolIndexer{Store: store, Embedder: &fakeEmbedder{}}
 	tool := SystemTool{Name: "web_search", Description: "search the web",

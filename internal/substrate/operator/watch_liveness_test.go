@@ -49,6 +49,7 @@ func (s stubDeadLetters) ListDeadLetters(int) ([]domain.ReactiveDeadLetter, erro
 // still reads active, so a state that defaults to healthy would confirm the
 // operator's wrong assumption instead of correcting it.
 func TestWatchLiveness_NoRegistryReportsUnknownNotLive(t *testing.T) {
+	t.Parallel()
 	op := toWatchConfigOp(domain.WatchConfig{ID: "w1", Source: domain.WatchSource{StreamID: "s1"}})
 	(&Service{}).enrichWatchConfig(op)
 
@@ -61,6 +62,7 @@ func TestWatchLiveness_NoRegistryReportsUnknownNotLive(t *testing.T) {
 }
 
 func TestWatchLiveness_ReportsUnavailableStreamAndRefcount(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetWatchLiveness(stubStreams{
 		state:    map[string]string{"s1": domain.StreamUnavailable},
@@ -84,6 +86,7 @@ func TestWatchLiveness_ReportsUnavailableStreamAndRefcount(t *testing.T) {
 // console that cannot distinguish it from a failure trains an operator to loosen
 // a boundary that is doing its job.
 func TestWatchLiveness_FireHistoryDistinguishesSuppressedFromFailed(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	s := &Service{}
 	s.SetWatchLiveness(nil, stubFires{fires: []domain.WatchFire{
@@ -115,6 +118,7 @@ func TestWatchLiveness_FireHistoryDistinguishesSuppressedFromFailed(t *testing.T
 // through the console silently reverted to "skip" and stopped catching up after
 // a restart.
 func TestWatchConfig_MissedFirePolicyRoundTrips(t *testing.T) {
+	t.Parallel()
 	op := toWatchConfigOp(domain.WatchConfig{ID: "w1", MissedFirePolicy: "fire_once"})
 
 	if op.GetMissedFirePolicy() != "fire_once" {
@@ -129,6 +133,7 @@ func TestWatchConfig_MissedFirePolicyRoundTrips(t *testing.T) {
 // ── plane budget ─────────────────────────────────────────────────────────────
 
 func TestGetReactiveBudget_UnconfiguredIsUnimplemented(t *testing.T) {
+	t.Parallel()
 	if _, err := (&Service{}).GetReactiveBudget(context.Background(), &pb.GetReactiveBudgetOpRequest{}); codeOf(err) != codes.Unimplemented {
 		t.Fatalf("code = %v, want Unimplemented", codeOf(err))
 	}
@@ -138,6 +143,7 @@ func TestGetReactiveBudget_UnconfiguredIsUnimplemented(t *testing.T) {
 // and report every budget counter as -1 rather than 0, so the console says "not
 // reported" instead of drawing an idle plane.
 func TestGetReactiveBudget_UntrackedCountersAreMinusOneNotZero(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetDeadLetterReader(stubDeadLetters{n: 3})
 
@@ -154,6 +160,7 @@ func TestGetReactiveBudget_UntrackedCountersAreMinusOneNotZero(t *testing.T) {
 }
 
 func TestGetReactiveBudget_ReportsTotalsAgainstCaps(t *testing.T) {
+	t.Parallel()
 	started := time.Now().Add(-20 * time.Minute)
 	s := &Service{}
 	s.SetDeadLetterReader(stubDeadLetters{n: 0})
@@ -184,6 +191,7 @@ func TestGetReactiveBudget_ReportsTotalsAgainstCaps(t *testing.T) {
 // A watch stored before 0076 has only the singular Action. EffectiveActions must
 // keep returning it, or every existing watch stops firing on upgrade.
 func TestEffectiveActions_SingularStillWorks(t *testing.T) {
+	t.Parallel()
 	w := domain.WatchConfig{Action: domain.WatchAction{Type: "emit_event"}}
 
 	arms := w.EffectiveActions()
@@ -193,6 +201,7 @@ func TestEffectiveActions_SingularStillWorks(t *testing.T) {
 }
 
 func TestEffectiveActions_ArmsRunFirstArmFirst(t *testing.T) {
+	t.Parallel()
 	w := domain.WatchConfig{
 		Action:  domain.WatchAction{Type: "emit_event"},
 		Actions: []domain.WatchAction{{Type: "dispatch_agent"}, {Type: "start_plan"}},
@@ -215,6 +224,7 @@ func TestEffectiveActions_ArmsRunFirstArmFirst(t *testing.T) {
 // A client that only knows the plural form sends an empty Action. That must not
 // silently drop every arm.
 func TestEffectiveActions_PluralOnlyIsHonoured(t *testing.T) {
+	t.Parallel()
 	w := domain.WatchConfig{Actions: []domain.WatchAction{{Type: "emit_event"}}}
 
 	arms := w.EffectiveActions()
@@ -226,6 +236,7 @@ func TestEffectiveActions_PluralOnlyIsHonoured(t *testing.T) {
 // Arms must survive the wire in both directions, or the builder draws arms the
 // engine never receives — the exact defect the singular field caused.
 func TestWatchConfig_ExtraArmsRoundTrip(t *testing.T) {
+	t.Parallel()
 	in := domain.WatchConfig{
 		ID:      "w1",
 		Action:  domain.WatchAction{Type: "emit_event", Target: "alerts"},

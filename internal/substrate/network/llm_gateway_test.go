@@ -25,6 +25,7 @@ func newTestGateway(concurrency int) *SubstrateLLMGateway {
 // ─── CONWIP semaphore tests ───────────────────────────────────────────────────
 
 func TestCONWIP_Semaphore_AllowsUpToMax(t *testing.T) {
+	t.Parallel()
 	const maxConcurrent = 5
 	gw := newTestGateway(maxConcurrent)
 	acquired := make(chan struct{}, 100)
@@ -55,6 +56,7 @@ func TestCONWIP_Semaphore_AllowsUpToMax(t *testing.T) {
 }
 
 func TestCONWIP_Semaphore_BlocksBeyondMax(t *testing.T) {
+	t.Parallel()
 	const maxConcurrent = 3
 	gw := newTestGateway(maxConcurrent)
 	var mu sync.Mutex
@@ -90,6 +92,7 @@ func TestCONWIP_Semaphore_BlocksBeyondMax(t *testing.T) {
 }
 
 func TestCONWIP_Semaphore_LargeScale(t *testing.T) {
+	t.Parallel()
 	const maxConcurrent = 20
 	const totalCalls = 25
 
@@ -132,6 +135,7 @@ func TestCONWIP_Semaphore_LargeScale(t *testing.T) {
 // ─── Health cache fallback tests ─────────────────────────────────────────────
 
 func TestHealthCache_PrimaryUnhealthyRoutesToFallback(t *testing.T) {
+	t.Parallel()
 	gw := newTestGateway(5)
 
 	modelIDs := []string{"primary-model", "fallback-model"}
@@ -156,6 +160,7 @@ func TestHealthCache_PrimaryUnhealthyRoutesToFallback(t *testing.T) {
 }
 
 func TestHealthCache_AllCandidatesDegradedReturnsError(t *testing.T) {
+	t.Parallel()
 	gw := newTestGateway(5)
 
 	modelIDs := []string{"m1", "m2"}
@@ -169,6 +174,7 @@ func TestHealthCache_AllCandidatesDegradedReturnsError(t *testing.T) {
 }
 
 func TestHealthCache_HealthStateReflectsMarking(t *testing.T) {
+	t.Parallel()
 	gw := newTestGateway(5)
 
 	state := gw.HealthState("new-model")
@@ -186,6 +192,7 @@ func TestHealthCache_HealthStateReflectsMarking(t *testing.T) {
 // ─── Session state store tests ───────────────────────────────────────────────
 
 func TestSessionStore_Acquire_CreatesSession(t *testing.T) {
+	t.Parallel()
 	gw := newTestGateway(5)
 
 	sa := domain.StepAllocation{
@@ -210,6 +217,7 @@ func TestSessionStore_Acquire_CreatesSession(t *testing.T) {
 // a live step survives the slow auction + seed-recall that run before its first generate
 // (otherwise EvictExpired sweeps it mid-flight → "session not found").
 func TestSessionStore_Acquire_FloorsShortTTL(t *testing.T) {
+	t.Parallel()
 	gw := newTestGateway(5)
 	sa := domain.StepAllocation{Winner: domain.AgentDefinition{ID: "w"}}
 
@@ -228,6 +236,7 @@ func TestSessionStore_Acquire_FloorsShortTTL(t *testing.T) {
 }
 
 func TestSessionStore_Complete_RemovesSession(t *testing.T) {
+	t.Parallel()
 	gw := newTestGateway(5)
 
 	sa := domain.StepAllocation{
@@ -253,6 +262,7 @@ func TestSessionStore_Complete_RemovesSession(t *testing.T) {
 }
 
 func TestSessionStore_Complete_MissingSession(t *testing.T) {
+	t.Parallel()
 	gw := newTestGateway(5)
 	_, err := gw.Complete(context.TODO(), "nonexistent-sess-999")
 	if err == nil {
@@ -261,6 +271,7 @@ func TestSessionStore_Complete_MissingSession(t *testing.T) {
 }
 
 func TestSessionStore_EvictExpired_RemovesStale(t *testing.T) {
+	t.Parallel()
 	gw := newTestGateway(5)
 
 	sa := domain.StepAllocation{

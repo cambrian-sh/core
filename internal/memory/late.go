@@ -13,10 +13,12 @@
 //     (embedder not called) — a 8K cap that matches the
 //     nomic-embed-text context window
 //
-// Gating (D6 + T-2.4): the *registry* enforces chunker.late.enabled
-// AND embedder.supports_long_context. LateChunker itself is
-// unconditional — it just returns Option C when the body is too
-// big. The registry's lateGate is the operator-facing policy knob.
+// Gating (D6 + T-2.4): the *registry* enforces chunker.late.enabled.
+// (ADR-0060 D6 also named embedder.supports_long_context; that flag
+// was never read and was retired 2026-10-31, see
+// T-20261031-three-config-fields-are-parsed-and-defaulted.) LateChunker
+// itself is unconditional — it just returns Option C when the body is
+// too big. The registry's lateGate is the operator-facing policy knob.
 //
 // Each chunk's Metadata["late_embedding"] carries the mean-pooled
 // vector. Callers that don't read it (the standard path) ignore the

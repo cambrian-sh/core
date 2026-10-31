@@ -3,6 +3,7 @@ package domain
 import "testing"
 
 func TestNormalizeCapability(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"web-navigation":     "web-navigation",
 		"Web-Navigation":     "web-navigation",
@@ -25,6 +26,7 @@ func TestNormalizeCapability(t *testing.T) {
 // Deterministic normalization folds format/typo variance but must NOT merge distinct
 // words — file-read and file-write stay distinct (no wrong merges).
 func TestNormalizeCapability_NoCrossWordMerge(t *testing.T) {
+	t.Parallel()
 	if NormalizeCapability("file-read") == NormalizeCapability("file-write") {
 		t.Fatal("file-read and file-write must not normalize to the same tag")
 	}
@@ -34,6 +36,7 @@ func TestNormalizeCapability_NoCrossWordMerge(t *testing.T) {
 }
 
 func TestNormalizeCapabilities_Dedup(t *testing.T) {
+	t.Parallel()
 	out := NormalizeCapabilities([]string{"Web-Navigation", "web_navigation", "", "file read", "file read"})
 	if len(out) != 2 || out[0] != "web-navigation" || out[1] != "file-read" {
 		t.Fatalf("expected [web-navigation file-read], got %v", out)

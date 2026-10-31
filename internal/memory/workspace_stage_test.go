@@ -45,6 +45,7 @@ func factDocs(n int) []domain.SearchResult {
 
 // Cycle 1: Facts returned in LTMEnrichment.Facts.
 func TestWorkspaceStage_LTMEnrichmentFacts(t *testing.T) {
+	t.Parallel()
 	store := &mockFactStore{docs: factDocs(2)}
 	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2, false, 0.7)
 
@@ -59,6 +60,7 @@ func TestWorkspaceStage_LTMEnrichmentFacts(t *testing.T) {
 
 // Cycle 2: NegativeEdge docs appear in LTMEnrichment.Negatives, not Facts.
 func TestWorkspaceStage_NegativesInEnrichment(t *testing.T) {
+	t.Parallel()
 	store := &mockFactStore{
 		docs: factDocs(1),
 		negDocs: []domain.SearchResult{
@@ -114,6 +116,7 @@ func (n *negLaneStore) GetBatch(_ context.Context, _ []string) ([]domain.Documen
 // it with an identical score per row ordered by last_accessed_at, so the negatives lane
 // fed the planner the three most recently touched failures whatever the task was.
 func TestWorkspaceStage_NegativesSearchedAgainstTheTask(t *testing.T) {
+	t.Parallel()
 	store := &negLaneStore{}
 	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.35, false, 0.7)
 
@@ -143,6 +146,7 @@ func TestWorkspaceStage_NegativesSearchedAgainstTheTask(t *testing.T) {
 
 // Cycle 3: PrimeForExecution slot limit enforced (map format for DAGExecutor).
 func TestWorkspaceStage_SlotLimit(t *testing.T) {
+	t.Parallel()
 	store := &mockFactStore{docs: factDocs(8)}
 	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 3, 0.2, false, 0.7)
 
@@ -157,6 +161,7 @@ func TestWorkspaceStage_SlotLimit(t *testing.T) {
 
 // Cycle 4: empty FACT results → empty LTMEnrichment, no panic.
 func TestWorkspaceStage_EmptyResults(t *testing.T) {
+	t.Parallel()
 	store := &mockFactStore{docs: nil}
 	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2, false, 0.7)
 
@@ -171,6 +176,7 @@ func TestWorkspaceStage_EmptyResults(t *testing.T) {
 
 // Cycle 5: execution slots used for PrimeForExecution.
 func TestWorkspaceStage_ExecutionSlots(t *testing.T) {
+	t.Parallel()
 	store := &mockFactStore{docs: factDocs(10)}
 	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2, false, 0.7)
 

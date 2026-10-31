@@ -87,6 +87,7 @@ func TestConnector_ConfigDrivenConnectDiscoverAuth(t *testing.T) {
 // The legacy HTTP+SSE transport (transport: "sse") connects, discovers, and calls
 // end-to-end — the shape self-hosted Firecrawl's /sse endpoint serves (ADR-0043 D2).
 func TestConnector_SSETransport(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "srv", Version: "1.0.0"}, nil)
 	mcpsdk.AddTool(server, &mcpsdk.Tool{Name: "echo", Description: "echo"},
@@ -123,6 +124,7 @@ func TestConnector_SSETransport(t *testing.T) {
 // Operator per-tool policy (dangerous-flag + data-egress kinds) is applied to the
 // discovered SystemTool — not the server's own advertised metadata (ADR-0043 D4/D9).
 func TestConnector_AppliesToolPolicyToDiscoveredTools(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "srv", Version: "1.0.0"}, nil)
 	mcpsdk.AddTool(server, &mcpsdk.Tool{Name: "scrape", Description: "scrape"},
@@ -159,6 +161,7 @@ func TestConnector_AppliesToolPolicyToDiscoveredTools(t *testing.T) {
 // A server that fails to connect is skipped gracefully — it does not fail the
 // others or the kernel (ADR-0043 D8).
 func TestConnector_UnreachableServerSkippedGracefully(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	conn := NewConnector()
 	defer conn.Close()

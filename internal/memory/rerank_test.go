@@ -18,6 +18,7 @@ func mkDoc(id string, activation float64, lastAccessed time.Time) domain.Documen
 }
 
 func TestReRankWithAssociative_TwoTriggerFormula(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	fresh := mkDoc("d1", 0.8, now)
 	stale := mkDoc("d2", 0.8, now.Add(-100*24*time.Hour))
@@ -36,6 +37,7 @@ func TestReRankWithAssociative_TwoTriggerFormula(t *testing.T) {
 }
 
 func TestReRankWithAssociative_BoostsDocsWithReachability(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	highReach := mkDoc("d1", 0.5, now)
 	lowReach := mkDoc("d2", 0.5, now)
@@ -51,6 +53,7 @@ func TestReRankWithAssociative_BoostsDocsWithReachability(t *testing.T) {
 }
 
 func TestReRankWithAssociative_BetaZeroSkipsReachability(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	a := mkDoc("a", 0.5, now)
 	b := mkDoc("b", 0.5, now)
@@ -68,6 +71,7 @@ func TestReRankWithAssociative_BetaZeroSkipsReachability(t *testing.T) {
 }
 
 func TestReRankWithAssociative_NegativeBetaClampsToZero(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	cands := []domain.SearchResult{{Document: mkDoc("a", 0.5, now), Score: 0.4}}
 	got := ReRankWithAssociative(cands, map[string]float64{"a": 1.0}, 0.005, -1, now)
@@ -77,6 +81,7 @@ func TestReRankWithAssociative_NegativeBetaClampsToZero(t *testing.T) {
 }
 
 func TestReRankWithAssociative_EmptyReachability(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	a := mkDoc("a", 0.5, now)
 	b := mkDoc("b", 0.5, now)
@@ -91,6 +96,7 @@ func TestReRankWithAssociative_EmptyReachability(t *testing.T) {
 }
 
 func TestReRankWithAssociative_InputNotMutated(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	cands := []domain.SearchResult{
 		{Document: mkDoc("a", 0.5, now), Score: 0.3},
@@ -104,6 +110,7 @@ func TestReRankWithAssociative_InputNotMutated(t *testing.T) {
 }
 
 func TestComputeReachability_EmptyInputs(t *testing.T) {
+	t.Parallel()
 	if got := ComputeReachability(nil, NewEntityIndex(), []float32{1, 0}); len(got) != 0 {
 		t.Errorf("empty candidates should return empty map")
 	}
@@ -120,6 +127,7 @@ func TestComputeReachability_EmptyInputs(t *testing.T) {
 }
 
 func TestComputeReachability_AggregatesEntityCosine(t *testing.T) {
+	t.Parallel()
 	idx := NewEntityIndex()
 	idx.SetNameEmbedding("named:caroline", "Caroline", domain.Embedding{Vector: []float32{1, 0, 0}})
 	idx.SetNameEmbedding("concept:adoption", "adoption", domain.Embedding{Vector: []float32{0.9, 0.1, 0}})
@@ -150,6 +158,7 @@ func TestComputeReachability_AggregatesEntityCosine(t *testing.T) {
 }
 
 func TestComputeReachability_NoEmbeddingNoReachability(t *testing.T) {
+	t.Parallel()
 	idx := NewEntityIndex()
 	// Add an entity WITHOUT a stored embedding.
 	idx.Add("named:nobody", "d1", 0.5, MetaKindNamed, 1)

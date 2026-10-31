@@ -7,6 +7,7 @@ import "testing"
 // parse miss never fabricates a replan. Regression for the H1 gate that
 // previously grepped free-form text for REPLAN_SIGNAL and rubber-stamped.
 func TestParseCheckpointVerdict(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		raw          string

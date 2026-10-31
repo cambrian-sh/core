@@ -4,6 +4,7 @@ import "testing"
 
 // ADR-0051: the Scout is a privileged system organ; ordinary agents are not.
 func TestIsSystemAgent(t *testing.T) {
+	t.Parallel()
 	if !IsSystemAgent("retrieval_agent") {
 		t.Error("retrieval_agent must be a system agent (bypasses interview, excluded from auction)")
 	}

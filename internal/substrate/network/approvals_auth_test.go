@@ -94,6 +94,7 @@ func withMD(kv ...string) context.Context {
 // agent-reachable. Before the fix, a client that simply omitted x-agent-id
 // could approve its own dangerous tool call under any approver_id it liked.
 func TestSubmitApprovalDecision_RequiresOperatorBearer(t *testing.T) {
+	t.Parallel()
 	idp, opTok, viewerTok := approvalIDP(t)
 	hub := &recordingHub{}
 	c := startApprovalServer(t, hub, idp)
@@ -131,6 +132,7 @@ func TestSubmitApprovalDecision_RequiresOperatorBearer(t *testing.T) {
 }
 
 func TestWatchApprovals_RequiresOperatorBearer(t *testing.T) {
+	t.Parallel()
 	idp, opTok, _ := approvalIDP(t)
 	hub := &recordingHub{ch: make(chan domain.ApprovalRequest, 1)}
 	c := startApprovalServer(t, hub, idp)
@@ -168,6 +170,7 @@ func TestWatchApprovals_RequiresOperatorBearer(t *testing.T) {
 // Without the interceptor (a server assembled without it) the handler must not
 // fall back to "no x-agent-id means operator": it fails closed.
 func TestSubmitApprovalDecision_FailsClosedWithoutInterceptor(t *testing.T) {
+	t.Parallel()
 	hub := &recordingHub{}
 	s := &network.Server{ApprovalHub: hub}
 	_, err := s.SubmitApprovalDecision(context.Background(), &pb.ApprovalDecisionRequest{Id: "a1", Approve: true})

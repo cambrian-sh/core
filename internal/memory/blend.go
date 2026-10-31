@@ -97,7 +97,7 @@ func FinalScore(bge, stageA, wBGE float64) float64 {
 //
 // Defined here rather than in a shared util file: blend.go is its only consumer.
 // It previously lived in edge_extractor.go, which was deleted with the rest of the
-// ADR-0052 LLM edge-extraction lane, and a scoring helper had no business living
+// original ADR-0053 D2 LLM edge-extraction lane, and a scoring helper had no business living
 // in an extractor anyway.
 func clamp01(v float64) float64 {
 	if v < 0 {

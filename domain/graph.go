@@ -7,8 +7,10 @@ import (
 
 // EdgeType identifies the semantic relationship between two documents.
 // ADR-0017: typed causal edges encode relationships that cosine distance cannot infer.
-// ADR-0052: free-form LLM-extracted relations use EdgeExtracted with the verb
-// phrase carried in DocumentEdge.Label. The recall path does not branch on
+// ADR-0053 D2 (as first written: the write-time LLM edge lane, since revised to
+// chunk_triplets): free-form LLM-extracted relations use EdgeExtracted with the
+// verb phrase carried in DocumentEdge.Label. Core cited that lane as "ADR-0052"
+// until 2026-10-31; that number belongs to Verbal Self-Reflection, not to this. The recall path does not branch on
 // EdgeType; the spreading engine uses edge.Weight directly.
 type EdgeType string
 
@@ -20,7 +22,7 @@ const (
 	EdgeFollows     EdgeType = "follows"      // ADR-0049 D10: a step's record follows its dependency step's record
 	EdgeCoActivated EdgeType = "co_activated" // ADR-0049 D10: Hebbian — memories co-retrieved together wire together
 	EdgeEngaged     EdgeType = "engaged"      // ADR-0049: a scene engaged an entity (world-model structure; both endpoints persisted, FK-safe)
-	EdgeExtracted   EdgeType = "extracted"    // ADR-0052: LLM-extracted entity/relation edge; free-form label in DocumentEdge.Label
+	EdgeExtracted   EdgeType = "extracted"    // ADR-0053 D2: LLM-extracted entity/relation edge; free-form label in DocumentEdge.Label
 	EdgePartOf      EdgeType = "part_of"      // ADR-0060: structural child→parent (chunk/section belongs to its section)
 	EdgeContains    EdgeType = "contains"     // ADR-0060: structural parent→child (section contains chunk/section)
 	EdgeNext        EdgeType = "next"         // ADR-0060: structural sibling sequence (reading order within a parent)

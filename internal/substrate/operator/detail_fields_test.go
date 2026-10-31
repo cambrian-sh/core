@@ -24,6 +24,7 @@ func (s stubSkillLister) All() []domain.Skill { return s.skills }
 // that answers "why did the agent call this with those arguments?", and nothing
 // else on this plane carries it.
 func TestListTools_CarriesSchemaAndResourceArgs(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetReadSources(stubToolCatalog{tools: []domain.SystemTool{{
 		Name:        "write_file",
@@ -58,6 +59,7 @@ func TestListTools_CarriesSchemaAndResourceArgs(t *testing.T) {
 // A skill IS its instructions. Listing name and grants without the body describes
 // the wrapper and never the thing.
 func TestListSkills_CarriesTheInstructionBody(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetReadSources(nil, stubSkillLister{skills: []domain.Skill{{
 		Name:         "triage",
@@ -82,6 +84,7 @@ func TestListSkills_CarriesTheInstructionBody(t *testing.T) {
 // The agent detail fields ride the READY event, so the projection folds them by
 // agent id and a detail pane fills from the ordinary feed.
 func TestAgentReady_CarriesTheDetailFields(t *testing.T) {
+	t.Parallel()
 	ev := domain.AgentReadyEvent{
 		AgentID:            "analyst",
 		Capabilities:       []string{"analysis"},

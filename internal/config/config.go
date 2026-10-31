@@ -121,12 +121,11 @@ type GatekeeperConfig struct {
 	// (post-Interview but pre-verified). Default: 0.6.
 	ColdStartPenaltyMultiplier float64 `json:"cold_start_penalty_multiplier"`
 
-	// MinAuctionConfidence is the minimum bid Confidence an agent must submit to
-	// be considered for auction winner selection. Bids strictly below this threshold
-	// are discarded — the agent has signalled it cannot reliably handle the task.
-	// If all bids are discarded, the step fails with NO_WINNER and DAG cancel-on-first-error fires.
-	// Default: 0.3.
-	MinAuctionConfidence float64 `json:"min_auction_confidence"`
+	// RETIRED 2026-10-31 (T-20261031-min-auction-confidence-config-is-dead-after-the):
+	// `min_auction_confidence`. It was the bid-confidence floor of the Auctioneer,
+	// which ADR-0100 P3 deleted; nothing read it afterwards. A layer that still sets
+	// it loads unchanged (the decoder ignores keys with no field);
+	// retiredExecutionFields (execution_migration_test.go) records it.
 
 	// GatekeeperW4 is the weight for the cost-penalty term in GatekeeperScore.
 	// Set to 0 to disable cost-awareness entirely. Default: 0.15.
@@ -291,26 +290,19 @@ type RoutingConfig struct {
 	// ADR-0037: Central-Executive Planner resource selection.
 }
 
-// CapabilityConfig — Capability vocabulary, resolution and the retired clusterer knobs.
+// CapabilityConfig — Capability vocabulary and resolution.
 //
 // Split out of the former 198-field flat ExecutionConfig (config schema v2).
 // Field names, types and json tags are unchanged; only the nesting is new, so
 // each field means exactly what it meant before.
+//
+// RETIRED 2026-10-31 (T-20261031-dead-capability-cluster-config-keys-and):
+// `capability_cluster_threshold`, `capability_cluster_epsilon`,
+// `capability_cluster_min_agents`, `capability_cluster_interval_seconds`. They
+// tuned the ADR-0014 LLM CapabilityClusterer, which ADR-0067 deleted; nothing read
+// them afterwards. A layer that still sets them loads unchanged;
+// retiredExecutionFields (execution_migration_test.go) records them.
 type CapabilityConfig struct {
-	// CapabilityClusterer settings (ADR-0014).
-	// CapabilityClusterThreshold is the minimum cosine similarity for cluster membership.
-	CapabilityClusterThreshold float64 `json:"capability_cluster_threshold"`
-
-	// CapabilityClusterEpsilon is the hysteresis cushion for Sticky Representative stability.
-	CapabilityClusterEpsilon float64 `json:"capability_cluster_epsilon"`
-
-	// CapabilityClusterMinAgents is the minimum registry size before a sweep runs.
-	CapabilityClusterMinAgents int `json:"capability_cluster_min_agents"`
-
-	// CapabilityClusterIntervalSeconds is the defensive reconciliation ticker interval
-	// (reused by the ROUTE-04 canonicalizer sweep).
-	CapabilityClusterIntervalSeconds int `json:"capability_cluster_interval_seconds"`
-
 	// CanonicalVocab (ROUTE-04 / ADR-0067) applies DETERMINISTIC normalization to
 	// capability tags (lowercase, trim, collapse `-`/`_`/space to a single form) on both
 	// sides of ROUTE-03's hard L1 match and in the planner vocabulary, so format/typo
@@ -516,8 +508,10 @@ type MemoryConfig struct {
 	// does nothing reads as a control. A file, store or env layer that still sets them
 	// loads unchanged — the decoder ignores keys with no field — and
 	// retiredExecutionFields (execution_migration_test.go) records them.
-
-	MaxOrphanedDocuments int `json:"max_orphaned_documents,omitempty"`
+	//
+	// RETIRED 2026-10-31 (T-20261031-execution-memory-max-orphaned-documents-and):
+	// `max_orphaned_documents`, the ADR-0030 MemoryPressureScavenger threshold.
+	// Nothing constructed the scavenger from config, so the key had no reader.
 }
 
 // ProcedureConfig — ADR-0094 procedure induction.
@@ -854,8 +848,9 @@ type IngestionConfig struct {
 	// Empty string disables token validation (for local dev).
 	IngestToken string `json:"ingest_token,omitempty"`
 
-	// InboxDir is the directory watched by DirectoryWatcher (ADR-0028).
-	InboxDir string `json:"inbox_dir,omitempty"`
+	// RETIRED 2026-10-31 (T-20261031-three-config-fields-are-parsed-and-defaulted):
+	// `inbox_dir`. The ADR-0028 DirectoryWatcher it pointed at was removed from the
+	// boot path (see memory_stack.go); the only remaining reader was a log line.
 
 	// IngestionQueueSize is the bounded document queue depth (ADR-0028). Default 1000.
 	IngestionQueueSize int `json:"ingestion_queue_size,omitempty"`
@@ -1083,11 +1078,9 @@ type RouterConfig struct {
 	// (ForbiddenTags enforcement still applies). ADR-0034 (D8).
 	ClassificationVocabulary []string `json:"classification_vocabulary,omitempty"`
 
-	// KAnonymityFloor is the minimum number of distinct source sessions a theme
-	// cluster must aggregate before a derived insight may be promoted to a broader
-	// scope (ADR-0034 D11). Per-record promotion is forbidden — a single customer's
-	// data can never become a Tier-2 doc. Default 5 when unset (<=1 means K=5).
-	KAnonymityFloor int `json:"k_anonymity_floor,omitempty"`
+	// RETIRED 2026-10-31 (T-20261031-three-config-fields-are-parsed-and-defaulted):
+	// `k_anonymity_floor` (ADR-0034 D11). The insight-promotion pipeline it gated
+	// was removed; nothing read it afterwards.
 }
 
 // LLMConfig — LLM gateway concurrency, retry and exchange capture.
@@ -1136,7 +1129,7 @@ type ExecutionConfig struct {
 	// How a step reaches an agent: auction vs deterministic route, bidding, merit, calibration and the EFE selector.
 	Routing RoutingConfig `json:"routing"`
 
-	// Capability vocabulary, resolution and the retired clusterer knobs.
+	// Capability vocabulary and resolution.
 	Capability CapabilityConfig `json:"capability"`
 
 	// Session lifecycle: idle timeout, retention sweeps and token TTL.
@@ -1200,15 +1193,18 @@ type PipelinesConfig struct {
 }
 
 // GraphConfig defines spreading activation parameters (ADR-0017).
+//
+// RETIRED 2026-10-31 (T-20261031-graph-edge-weight-and-consolidator-timeout):
+// `weight_contradicts`, `weight_specifies`, `weight_closes`, `weight_discussed_in`
+// (ADR-0052 replaced the per-type weight map with the edge's own confidence; the
+// spreader reads DocumentEdge.Weight and the kernel only discarded these) and
+// `consolidator_llm_timeout` (its ConsolidatorAgent was removed 2026-07-18). A
+// layer that still sets them loads unchanged; retiredExecutionMapEntries
+// (execution_migration_test.go) records them.
 type GraphConfig struct {
-	DecayFactor            float64 `json:"decay_factor"`
-	MaxDepth               int     `json:"max_depth"`
-	EnergyFloor            float64 `json:"energy_floor"`
-	WeightContradicts      float64 `json:"weight_contradicts"`
-	WeightSpecifies        float64 `json:"weight_specifies"`
-	WeightCloses           float64 `json:"weight_closes"`
-	WeightDiscussedIn      float64 `json:"weight_discussed_in"`
-	ConsolidatorLLMTimeout int     `json:"consolidator_llm_timeout"`
+	DecayFactor float64 `json:"decay_factor"`
+	MaxDepth    int     `json:"max_depth"`
+	EnergyFloor float64 `json:"energy_floor"`
 }
 
 // TelemetryConfig controls runtime observability (OTel, Prometheus, OTLP).
@@ -1305,7 +1301,10 @@ type Config struct {
 	LLMProvider LLMProviderConfig `json:"llm_provider"`
 	Execution   ExecutionConfig   `json:"execution"`
 	Telemetry   TelemetryConfig   `json:"telemetry"`
-	AgentPool   AgentPoolConfig   `json:"agent_pool"`
+	// RETIRED 2026-10-31 (T-20261031-agent-pool-default-agent-timeout-ms-is): the
+	// `agent_pool` block and its only key `default_agent_timeout_ms`. No manifest
+	// field or call path ever read it. A file or env layer that still sets it loads
+	// unchanged (the decoder ignores keys with no field).
 	// ADR-0043: external MCP servers the kernel consumes tools from. Opt-in —
 	// absent/empty ⇒ no MCP behaviour.
 	MCP     MCPConfig     `json:"mcp,omitempty"`
@@ -1571,7 +1570,6 @@ func DefaultConfig() *Config {
 				GatekeeperW3:               0.2,
 				GatekeeperW4:               0.15,
 				ColdStartPenaltyMultiplier: 0.6,
-				MinAuctionConfidence:       0.3,
 			},
 			Verification: VerificationConfig{
 				VerifierPoolThreshold:      0.8,
@@ -1605,13 +1603,9 @@ func DefaultConfig() *Config {
 				LearnedScorer:          false, // ROUTE-07 arm toggle; OFF = hand-weighted GatekeeperScore
 			},
 			Capability: CapabilityConfig{
-				CapabilityClusterThreshold:       0.80,
-				CapabilityClusterEpsilon:         0.02,
-				CapabilityClusterMinAgents:       3,
-				CapabilityClusterIntervalSeconds: 3600,
-				CanonicalVocab:                   false,               // ROUTE-04 arm toggle; OFF = declared strings verbatim
-				CapabilityResolution:             true,                // ADR-0100 D5 ladder; only fires for steps that declare requirements
-				CapabilityAliases:                map[string]string{}, // authored, reviewed; add an entry only when a real step failed to route
+				CanonicalVocab:       false,               // ROUTE-04 arm toggle; OFF = declared strings verbatim
+				CapabilityResolution: true,                // ADR-0100 D5 ladder; only fires for steps that declare requirements
+				CapabilityAliases:    map[string]string{}, // authored, reviewed; add an entry only when a real step failed to route
 			},
 			Session: SessionConfig{
 				SessionTTLDays:                  7,
@@ -1714,7 +1708,6 @@ func DefaultConfig() *Config {
 				EdgeExtractionQueueSize:    4096,
 				EdgeExtractionLLMTimeoutMs: 300000,
 				IngestionHTTPPort:          0, // disabled by default; set to e.g. 8080 to enable
-				InboxDir:                   "data/inbox",
 				IngestionQueueSize:         1000,
 				IngestionBatchSize:         5,
 				IngestionWorkers:           5,
@@ -1781,22 +1774,14 @@ func DefaultConfig() *Config {
 				DrainerEnabled: true, // owner default 2026-08-11
 			},
 			Graph: GraphConfig{
-				DecayFactor:            0.75,
-				MaxDepth:               3,
-				EnergyFloor:            0.15,
-				WeightContradicts:      0.9,
-				WeightSpecifies:        0.7,
-				WeightCloses:           0.6,
-				WeightDiscussedIn:      0.5,
-				ConsolidatorLLMTimeout: 60,
+				DecayFactor: 0.75,
+				MaxDepth:    3,
+				EnergyFloor: 0.15,
 			},
 		},
 		Telemetry: TelemetryConfig{
 			TraceSamplingRate:            1.0,
 			MetricsExportIntervalSeconds: 10,
-		},
-		AgentPool: AgentPoolConfig{
-			DefaultAgentTimeoutMs: 30000,
 		},
 		// A fresh install now embeds out of the box (owner default 2026-08-11:
 		// promoted from the operating embedder.json). Before this the default
@@ -1804,13 +1789,12 @@ func DefaultConfig() *Config {
 		// to boot on — so a kernel without an embedder.json could not start.
 		// bge-large is asymmetric: the query prefix goes on QUERY text only.
 		Embedder: EmbedderConfig{
-			Provider:            "ollama",
-			Model:               "bge-large",
-			Endpoint:            "http://localhost:11434",
-			Dimensions:          1024,
-			TimeoutMs:           10000,
-			QueryPrefix:         "Represent this sentence for searching relevant passages: ",
-			SupportsLongContext: false,
+			Provider:    "ollama",
+			Model:       "bge-large",
+			Endpoint:    "http://localhost:11434",
+			Dimensions:  1024,
+			TimeoutMs:   10000,
+			QueryPrefix: "Represent this sentence for searching relevant passages: ",
 		},
 		LLMProvider: LLMProviderConfig{
 			// The circuit-breaker values LoadConfig was already filling post-merge,
@@ -2192,9 +2176,6 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Verification.CrossVerifyRate < 0 || c.Verification.CrossVerifyRate > 1 {
 		errs = append(errs, "cross_verify_rate must be in [0, 1]")
-	}
-	if c.Gatekeeper.MinAuctionConfidence < 0 || c.Gatekeeper.MinAuctionConfidence > 1 {
-		errs = append(errs, "min_auction_confidence must be in [0, 1]")
 	}
 	if c.Plan.MaxRecursionDepth < 0 {
 		errs = append(errs, "max_recursion_depth must be >= 0")

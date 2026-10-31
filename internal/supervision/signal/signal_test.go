@@ -15,6 +15,7 @@ import (
 
 // Cycle 1 — RecordInvalidSignal increments the count for an agent.
 func TestCircuitBreaker_TracksInvalidSignals(t *testing.T) {
+	t.Parallel()
 	cb := signal.NewCircuitBreaker(3, 10)
 
 	cb.RecordInvalidSignal("agent-1")
@@ -27,6 +28,7 @@ func TestCircuitBreaker_TracksInvalidSignals(t *testing.T) {
 
 // Cycle 2 — ShouldInhibit returns false below threshold, true at threshold.
 func TestCircuitBreaker_ShouldInhibit_TripsAtThreshold(t *testing.T) {
+	t.Parallel()
 	cb := signal.NewCircuitBreaker(2, 10)
 
 	cb.RecordInvalidSignal("agent-x")
@@ -42,6 +44,7 @@ func TestCircuitBreaker_ShouldInhibit_TripsAtThreshold(t *testing.T) {
 
 // Cycle 3 — ResetInvalidSignals clears the counter to zero.
 func TestCircuitBreaker_ResetClearsCount(t *testing.T) {
+	t.Parallel()
 	cb := signal.NewCircuitBreaker(3, 10)
 
 	cb.RecordInvalidSignal("agent-1")
@@ -55,6 +58,7 @@ func TestCircuitBreaker_ResetClearsCount(t *testing.T) {
 
 // Cycle 4 — Signals older than the window are not counted.
 func TestCircuitBreaker_SlidingWindowExpiresOldSignals(t *testing.T) {
+	t.Parallel()
 	cb := signal.NewCircuitBreaker(3, 1)
 
 	cb.RecordAt("agent-1", time.Now().Add(-2*time.Second))
@@ -74,6 +78,7 @@ func (noopManager) EvictInstance(_ string)                        {}
 
 // Cycle 7 — ValidateToken errors when gRPC metadata is absent.
 func TestValidateToken_MissingMetadata(t *testing.T) {
+	t.Parallel()
 	_, err := signal.ValidateToken(context.Background(), noopManager{})
 	if err == nil {
 		t.Error("expected error for missing gRPC metadata")
@@ -82,6 +87,7 @@ func TestValidateToken_MissingMetadata(t *testing.T) {
 
 // Cycle 8 — ValidateToken errors when authorization header is empty.
 func TestValidateToken_EmptyAuthHeader(t *testing.T) {
+	t.Parallel()
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", ""))
 	_, err := signal.ValidateToken(ctx, noopManager{})
 	if err == nil {
@@ -91,6 +97,7 @@ func TestValidateToken_EmptyAuthHeader(t *testing.T) {
 
 // Cycle 9 — ValidateToken errors when authorization is not Bearer format.
 func TestValidateToken_InvalidBearerFormat(t *testing.T) {
+	t.Parallel()
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Basic abc123"))
 	_, err := signal.ValidateToken(ctx, noopManager{})
 	if err == nil {
@@ -100,6 +107,7 @@ func TestValidateToken_InvalidBearerFormat(t *testing.T) {
 
 // Cycle 10 — ValidateToken errors when the token is unknown (manager returns nil).
 func TestValidateToken_UnknownToken(t *testing.T) {
+	t.Parallel()
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer unknown-token"))
 	_, err := signal.ValidateToken(ctx, noopManager{})
 	if err == nil {
@@ -109,6 +117,7 @@ func TestValidateToken_UnknownToken(t *testing.T) {
 
 // Cycle 11 — ValidateToken returns the instance when the token is recognised.
 func TestValidateToken_ValidToken(t *testing.T) {
+	t.Parallel()
 	inst := &domain.Instance{AgentID: "agent-99", ID: "inst-99"}
 	mgr := &stubManager{inst: inst, token: "valid-tok"}
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer valid-tok"))

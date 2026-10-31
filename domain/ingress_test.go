@@ -22,6 +22,7 @@ func (s *stubResolver) ResolveIngress(context.Context, domain.PrincipalRef) (dom
 // ingress may only speak for identities inside its own namespace, so a
 // compromised Telegram bridge cannot inject signals claiming to be a Slack user.
 func TestMaySpeakFor(t *testing.T) {
+	t.Parallel()
 	tg := domain.IngressRegistration{AgentID: "telegram_ingress", Namespace: []string{"tg:"}}
 
 	if !tg.MaySpeakFor("tg:12345") {
@@ -55,6 +56,7 @@ func TestMaySpeakFor(t *testing.T) {
 
 // nil resolver is the OSS default and must be a no-op rather than a panic.
 func TestIngressSurface_NilResolverIsNotAnIngress(t *testing.T) {
+	t.Parallel()
 	if _, ok := domain.IngressSurface(context.Background(), nil, domain.AgentPrincipal("a")); ok {
 		t.Error("no registry means nothing is an ingress")
 	}
@@ -63,6 +65,7 @@ func TestIngressSurface_NilResolverIsNotAnIngress(t *testing.T) {
 // A principal the kernel could not establish is never looked up at all — the
 // resolver must not even be consulted, so an empty id cannot match an empty key.
 func TestIngressSurface_ZeroPrincipalShortCircuits(t *testing.T) {
+	t.Parallel()
 	r := &stubResolver{reg: domain.IngressRegistration{AgentID: "x", Surface: domain.SurfaceRef{Kind: domain.SurfaceChat, ID: "telegram"}}, found: true}
 	if _, ok := domain.IngressSurface(context.Background(), r, domain.PrincipalRef{}); ok {
 		t.Error("a zero principal must never resolve to an ingress")
@@ -75,6 +78,7 @@ func TestIngressSurface_ZeroPrincipalShortCircuits(t *testing.T) {
 // Registered, but with no surface configured: not a stamp. An empty SurfaceRef
 // reads as "absent" downstream anyway, so returning it as found would be a lie.
 func TestIngressSurface_RegistrationWithoutSurface(t *testing.T) {
+	t.Parallel()
 	r := &stubResolver{reg: domain.IngressRegistration{AgentID: "half"}, found: true}
 	if _, ok := domain.IngressSurface(context.Background(), r, domain.AgentPrincipal("half")); ok {
 		t.Error("a registration carrying no surface must not report one")
@@ -82,6 +86,7 @@ func TestIngressSurface_RegistrationWithoutSurface(t *testing.T) {
 }
 
 func TestIngressSurface_ResolvesARegisteredIngress(t *testing.T) {
+	t.Parallel()
 	want := domain.SurfaceRef{Kind: domain.SurfaceChat, ID: "telegram"}
 	r := &stubResolver{reg: domain.IngressRegistration{AgentID: "telegram_ingress", Surface: want}, found: true}
 
@@ -93,6 +98,7 @@ func TestIngressSurface_ResolvesARegisteredIngress(t *testing.T) {
 
 // "not registered" and "registered as nothing" must both mean not an ingress.
 func TestIngressSurface_NotFoundOrZero(t *testing.T) {
+	t.Parallel()
 	notFound := &stubResolver{found: false}
 	if _, ok := domain.IngressSurface(context.Background(), notFound, domain.AgentPrincipal("a")); ok {
 		t.Error("an unregistered principal is not an ingress")

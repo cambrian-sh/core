@@ -35,6 +35,7 @@ func newIngestService() (*operator.Service, *operator.InMemoryAuditStore, *fakeI
 // IngestMemory delegates to the kernel ingest path (operator as Author), records
 // the doc_id, and a replayed command_id returns it without re-ingesting (A2.4).
 func TestIngestMemory_IngestsAuditsAndDedups(t *testing.T) {
+	t.Parallel()
 	svc, audit, ing := newIngestService()
 
 	resp, err := svc.IngestMemory(opCtx(), &pb.IngestMemoryOpRequest{
@@ -68,6 +69,7 @@ func TestIngestMemory_IngestsAuditsAndDedups(t *testing.T) {
 }
 
 func TestIngestMemory_ValidationAndUnconfigured(t *testing.T) {
+	t.Parallel()
 	svc, _, _ := newIngestService()
 	if _, err := svc.IngestMemory(opCtx(), &pb.IngestMemoryOpRequest{CommandId: "x", Reason: "r"}); err == nil {
 		t.Fatal("empty text should be InvalidArgument")

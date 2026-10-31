@@ -18,6 +18,7 @@ import (
 // max_tokens budget and returning EMPTY content at ~45s. Empty output is scored
 // as a failure by healthGenerator, so this also drove the circuit breaker open.
 func TestGeneratorRegistry_PropagatesDisableThinking(t *testing.T) {
+	t.Parallel()
 	reg, err := llm.NewGeneratorRegistry([]config.GeneratorConfig{
 		{
 			ID:              "reasoner",

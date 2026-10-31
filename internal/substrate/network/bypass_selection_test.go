@@ -36,6 +36,7 @@ func (f *fakeAuctioneer) CallAgent(_ context.Context, agentID string, h *domain.
 // single agent, strips the benchmark's "/plan " routing prefix, and maps the
 // agent's handoff straight back to the caller.
 func TestExecute_BypassAuction_DispatchesToSingleAgent(t *testing.T) {
+	t.Parallel()
 	fake := &fakeAuctioneer{
 		resp: &domain.Handoff{
 			FromAgent: "",
@@ -77,6 +78,7 @@ func TestExecute_BypassAuction_DispatchesToSingleAgent(t *testing.T) {
 }
 
 func TestExecute_BypassAuction_RequiresSingleAgentID(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		Dispatcher: &fakeAuctioneer{},
 		ExecCfg:    config.ExecutionConfig{Routing: config.RoutingConfig{BypassSelection: true}},

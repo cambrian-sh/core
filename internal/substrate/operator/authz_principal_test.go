@@ -32,6 +32,7 @@ func failClosedAuthorize(ctx context.Context) error {
 // value, and the domain never saw it — so every operator RPC reached the kernel
 // as `principal:<none>` one stack frame after authenticating.
 func TestAuth_HandlerSeesTheLoggedInPrincipal(t *testing.T) {
+	t.Parallel()
 	idp := newIDP()
 	token := login(t, idp, "op", "pw")
 
@@ -58,6 +59,7 @@ func TestAuth_HandlerSeesTheLoggedInPrincipal(t *testing.T) {
 // authorizes fail-closed must be reachable by an authenticated operator with no
 // per-call-site principal wrapping.
 func TestAuth_FailClosedHandlerAdmitsAnAuthenticatedOperator(t *testing.T) {
+	t.Parallel()
 	idp := newIDP()
 	token := login(t, idp, "op", "pw")
 
@@ -80,6 +82,7 @@ func TestAuth_FailClosedHandlerAdmitsAnAuthenticatedOperator(t *testing.T) {
 // session, so a stream handler reading an anonymous principal is the same defect
 // with a longer blast radius.
 func TestAuth_StreamHandlerSeesTheLoggedInPrincipal(t *testing.T) {
+	t.Parallel()
 	idp := newIDP()
 	token := login(t, idp, "op", "pw")
 

@@ -9,6 +9,7 @@ import (
 )
 
 func TestNewClient_Ollama(t *testing.T) {
+	t.Parallel()
 	cfg := config.ModelConfig{
 		Provider:  "ollama",
 		Model:     "llama3",
@@ -32,6 +33,7 @@ func TestNewClient_Ollama(t *testing.T) {
 }
 
 func TestNewClient_OpenAI(t *testing.T) {
+	t.Parallel()
 	cfg := config.ModelConfig{
 		Provider:        "openai",
 		Model:           "gpt-4o",
@@ -54,6 +56,7 @@ func TestNewClient_OpenAI(t *testing.T) {
 }
 
 func TestNewClient_Anthropic(t *testing.T) {
+	t.Parallel()
 	cfg := config.ModelConfig{
 		Provider:        "anthropic",
 		Model:           "claude-sonnet-4-20250514",
@@ -76,6 +79,7 @@ func TestNewClient_Anthropic(t *testing.T) {
 }
 
 func TestNewClient_UnknownProvider(t *testing.T) {
+	t.Parallel()
 	// NOTE: "gemini" used to stand in for "unknown" here, but it is a supported
 	// provider in the factory — use a provider that genuinely has no case.
 	cfg := config.ModelConfig{
@@ -91,6 +95,7 @@ func TestNewClient_UnknownProvider(t *testing.T) {
 }
 
 func TestTokenUsageExtractor_Interface(t *testing.T) {
+	t.Parallel()
 	_, extractor, err := llm.NewClient(config.ModelConfig{
 		Provider:  "ollama",
 		Model:     "llama3",
@@ -110,6 +115,7 @@ func TestTokenUsageExtractor_Interface(t *testing.T) {
 }
 
 func TestOllamaExtractor(t *testing.T) {
+	t.Parallel()
 	_, extractor, err := llm.NewClient(config.ModelConfig{Provider: "ollama", Model: "llama3", Endpoint: "http://localhost:11434", TimeoutMs: 60000})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -124,6 +130,7 @@ func TestOllamaExtractor(t *testing.T) {
 }
 
 func TestOpenAIExtractor(t *testing.T) {
+	t.Parallel()
 	_, extractor, err := llm.NewClient(config.ModelConfig{Provider: "openai", Model: "gpt-4o", Endpoint: "https://api.openai.com/v1", TimeoutMs: 30000})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -138,6 +145,7 @@ func TestOpenAIExtractor(t *testing.T) {
 }
 
 func TestAnthropicExtractor(t *testing.T) {
+	t.Parallel()
 	_, extractor, err := llm.NewClient(config.ModelConfig{Provider: "anthropic", Model: "claude", Endpoint: "https://api.anthropic.com", TimeoutMs: 30000})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -152,6 +160,7 @@ func TestAnthropicExtractor(t *testing.T) {
 }
 
 func TestCalculateCost(t *testing.T) {
+	t.Parallel()
 	usage := llm.TokenUsage{PromptTokens: 500000, CompletionTokens: 500000}
 	cost := llm.CalculateCost(usage, 5.0, 15.0)
 	if cost < 9.9 || cost > 10.1 {
@@ -160,6 +169,7 @@ func TestCalculateCost(t *testing.T) {
 }
 
 func TestCalculateCost_ZeroTokens(t *testing.T) {
+	t.Parallel()
 	cost := llm.CalculateCost(llm.TokenUsage{}, 5.0, 15.0)
 	if cost != 0.0 {
 		t.Errorf("want 0.0, got %v", cost)

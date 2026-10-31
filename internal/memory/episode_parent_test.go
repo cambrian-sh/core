@@ -56,6 +56,7 @@ func docsOfType(s *multiCaptureStore, docType string) []domain.Document {
 // tags, and marked still running — a terminal outcome here would be a claim about a
 // plan that has not executed a step yet.
 func TestBeginExperience_OpensTheEpisodeBeforeItsRecords(t *testing.T) {
+	t.Parallel()
 	_, exps, a := episodeAgent()
 	if err := a.BeginExperience(context.Background(), "p-begin"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -84,6 +85,7 @@ func TestBeginExperience_OpensTheEpisodeBeforeItsRecords(t *testing.T) {
 
 // The episode parent is part of the default-off arm, not an always-on side table.
 func TestBeginExperience_WritesNothingWhenThereIsNothingToParent(t *testing.T) {
+	t.Parallel()
 	t.Run("arm off", func(t *testing.T) {
 		store := &fakeExperienceStore{}
 		a := &Agent{ExperienceStore: store} // RecordOutcomes defaults false
@@ -118,6 +120,7 @@ func TestBeginExperience_WritesNothingWhenThereIsNothingToParent(t *testing.T) {
 // every column would receive, and it is the only place this is checkable without a
 // database.
 func TestExperience_CompletionClosesWithoutErasingItsStart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	docs, exps, a := episodeAgent()
 
@@ -152,6 +155,7 @@ func TestExperience_CompletionClosesWithoutErasingItsStart(t *testing.T) {
 // episode stuck at "running" forever, with whatever it did write hanging off a parent
 // that never reaches a terminal state.
 func TestWritePlanScene_ContentlessPlanStillClosesItsEpisode(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	docs, exps, a := episodeAgent()
 
@@ -173,6 +177,7 @@ func TestWritePlanScene_ContentlessPlanStillClosesItsEpisode(t *testing.T) {
 // plan_id in metadata and no parent at all, so the cascade that defines the episode
 // skipped the whole action path.
 func TestActionRecord_HangsFromTheEpisode(t *testing.T) {
+	t.Parallel()
 	t.Run("arm on: parented", func(t *testing.T) {
 		docs, _, a := episodeAgent()
 		_ = a.BeginExperience(context.Background(), "p-act")
@@ -206,6 +211,7 @@ func TestActionRecord_HangsFromTheEpisode(t *testing.T) {
 // one plan execution, and inventing a parent for it would be a claim about something
 // that never happened.
 func TestFailurePrecedent_HangsFromTheEpisodeAndOtherEdgesDoNot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	docs, _, a := episodeAgent()
 

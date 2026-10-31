@@ -27,6 +27,7 @@ func sensorSpec() KindSpec {
 }
 
 func TestRegistry_DeclaredKindValidates(t *testing.T) {
+	t.Parallel()
 	r, err := NewKindRegistry([]KindSpec{sensorSpec()}, nil)
 	if err != nil {
 		t.Fatalf("NewKindRegistry: %v", err)
@@ -56,6 +57,7 @@ func TestRegistry_DeclaredKindValidates(t *testing.T) {
 
 // ADR-0110 D2: adoption is monotonic — an undeclared kind passes untouched.
 func TestRegistry_UndeclaredKindPasses(t *testing.T) {
+	t.Parallel()
 	r, _ := NewKindRegistry([]KindSpec{sensorSpec()}, nil)
 	if err := r.ValidateValues("commitment",
 		[]StatementValue{{Predicate: "anything", Type: "text", Text: "x"}}); err != nil {
@@ -68,6 +70,7 @@ func TestRegistry_UndeclaredKindPasses(t *testing.T) {
 }
 
 func TestRegistry_BootRefusals(t *testing.T) {
+	t.Parallel()
 	if _, err := NewKindRegistry([]KindSpec{sensorSpec(), sensorSpec()}, nil); err == nil {
 		t.Fatal("duplicate kind must fail the boot")
 	}
@@ -86,6 +89,7 @@ func TestRegistry_BootRefusals(t *testing.T) {
 // The extracted interface resolves identically to the function it was
 // extracted from — the definition of a refactor.
 func TestLatestAssertionAuthority_MatchesTheFunction(t *testing.T) {
+	t.Parallel()
 	r, _ := NewKindRegistry([]KindSpec{sensorSpec()}, nil)
 	a, ok := r.Authority(ResolutionPolicyLatestAssertion)
 	if !ok {

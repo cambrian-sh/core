@@ -10,6 +10,7 @@ import (
 )
 
 func TestEntityIndex_AddAndDocsFor(t *testing.T) {
+	t.Parallel()
 	idx := NewEntityIndex()
 	idx.Add("named:caroline", "doc1", 0.9, MetaKindNamed, 100)
 	idx.Add("named:caroline", "doc2", 0.7, MetaKindNamed, 200)
@@ -32,6 +33,7 @@ func TestEntityIndex_AddAndDocsFor(t *testing.T) {
 }
 
 func TestEntityIndex_UpdateUpsertsWeight(t *testing.T) {
+	t.Parallel()
 	idx := NewEntityIndex()
 	idx.Add("named:eve", "d", 0.5, MetaKindNamed, 100)
 	idx.Add("named:eve", "d", 0.8, MetaKindNamed, 200) // higher
@@ -45,6 +47,7 @@ func TestEntityIndex_UpdateUpsertsWeight(t *testing.T) {
 }
 
 func TestEntityIndex_UpdateDoesNotLowerWeight(t *testing.T) {
+	t.Parallel()
 	idx := NewEntityIndex()
 	idx.Add("named:eve", "d", 0.9, MetaKindNamed, 100)
 	idx.Add("named:eve", "d", 0.5, MetaKindNamed, 200) // lower
@@ -55,6 +58,7 @@ func TestEntityIndex_UpdateDoesNotLowerWeight(t *testing.T) {
 }
 
 func TestEntityIndex_LookupTopByEmbedding(t *testing.T) {
+	t.Parallel()
 	idx := NewEntityIndex()
 	idx.SetNameEmbedding("named:caroline", "Caroline", domain.Embedding{Vector: []float32{1, 0, 0}})
 	idx.SetNameEmbedding("named:sam", "Sam", domain.Embedding{Vector: []float32{0, 1, 0}})
@@ -70,6 +74,7 @@ func TestEntityIndex_LookupTopByEmbedding(t *testing.T) {
 }
 
 func TestEntityIndex_EmptyQueryReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	idx := NewEntityIndex()
 	got := idx.LookupTopByEmbedding(domain.Embedding{Vector: []float32{1, 0}}, 3)
 	if len(got) != 0 {
@@ -78,6 +83,7 @@ func TestEntityIndex_EmptyQueryReturnsEmpty(t *testing.T) {
 }
 
 func TestEntityIndex_Stats(t *testing.T) {
+	t.Parallel()
 	idx := NewEntityIndex()
 	idx.Add("a", "1", 0.5, MetaKindNamed, 1)
 	idx.Add("a", "2", 0.5, MetaKindNamed, 1)
@@ -95,6 +101,7 @@ func TestEntityIndex_Stats(t *testing.T) {
 }
 
 func TestEntityIndex_LRUEvictionPerEntity(t *testing.T) {
+	t.Parallel()
 	idx := NewEntityIndex()
 	idx.SetCaps(3, 0) // cap 3 docs per entity
 	for i := 0; i < 5; i++ {
@@ -116,6 +123,7 @@ func TestEntityIndex_LRUEvictionPerEntity(t *testing.T) {
 }
 
 func TestEntityIndex_SetNameEmbedding(t *testing.T) {
+	t.Parallel()
 	idx := NewEntityIndex()
 	idx.SetNameEmbedding("named:x", "X", domain.Embedding{Vector: []float32{1, 0}})
 	embs := idx.SnapshotEmbeddings()
@@ -125,6 +133,7 @@ func TestEntityIndex_SetNameEmbedding(t *testing.T) {
 }
 
 func TestEntityIndex_RLockUnlock(t *testing.T) {
+	t.Parallel()
 	idx := NewEntityIndex()
 	idx.SetNameEmbedding("named:x", "X", domain.Embedding{Vector: []float32{1, 0}})
 	idx.RLock()
@@ -136,6 +145,7 @@ func TestEntityIndex_RLockUnlock(t *testing.T) {
 }
 
 func TestIsEntityKey(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want bool
@@ -157,6 +167,7 @@ func TestIsEntityKey(t *testing.T) {
 }
 
 func TestCanonicalKey(t *testing.T) {
+	t.Parallel()
 	if k := canonicalKey(MetaKindNamed, "caroline"); k != "named:caroline" {
 		t.Errorf("got %q", k)
 	}

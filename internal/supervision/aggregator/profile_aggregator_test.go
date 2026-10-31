@@ -10,6 +10,7 @@ import (
 // ─── Pure function tests ──────────────────────────────────────────────────────
 
 func TestEWMA_SingleValue(t *testing.T) {
+	t.Parallel()
 	got := EWMA([]float64{1.0}, 0.3)
 	if got != 1.0 {
 		t.Errorf("EWMA([1.0], 0.3) = %.6f, want 1.0", got)
@@ -17,6 +18,7 @@ func TestEWMA_SingleValue(t *testing.T) {
 }
 
 func TestEWMA_TwoValues(t *testing.T) {
+	t.Parallel()
 	got := EWMA([]float64{1.0, 0.0}, 0.3)
 	if got <= 0 || got >= 1.0 {
 		t.Errorf("EWMA([1.0, 0.0], 0.3) = %.6f, want (0, 1.0)", got)
@@ -24,6 +26,7 @@ func TestEWMA_TwoValues(t *testing.T) {
 }
 
 func TestEWMA_Nil(t *testing.T) {
+	t.Parallel()
 	got := EWMA(nil, 0.3)
 	if got != 0.0 {
 		t.Errorf("EWMA(nil, 0.3) = %.6f, want 0.0", got)
@@ -35,6 +38,7 @@ func TestEWMA_Nil(t *testing.T) {
 }
 
 func TestRollingMedian_SmallSlice(t *testing.T) {
+	t.Parallel()
 	got := RollingMedian([]int{10, 20, 30}, 10)
 	if got != 20.0 {
 		t.Errorf("RollingMedian([10,20,30], 10) = %.1f, want 20.0", got)
@@ -42,6 +46,7 @@ func TestRollingMedian_SmallSlice(t *testing.T) {
 }
 
 func TestRollingMedian_Window(t *testing.T) {
+	t.Parallel()
 	got := RollingMedian([]int{10, 20, 30, 40, 50}, 3)
 	if got != 40.0 {
 		t.Errorf("RollingMedian([10,20,30,40,50], 3) = %.1f, want 40.0", got)
@@ -49,6 +54,7 @@ func TestRollingMedian_Window(t *testing.T) {
 }
 
 func TestRollingMedian_Nil(t *testing.T) {
+	t.Parallel()
 	got := RollingMedian(nil, 10)
 	if got != 0.0 {
 		t.Errorf("RollingMedian(nil, 10) = %.1f, want 0.0", got)
@@ -107,6 +113,7 @@ func abs64(x float64) float64 {
 // ─── ProfileAggregator.RunOnce tests ─────────────────────────────────────────
 
 func TestRunOnce_VerifiedEventsSuccessRate(t *testing.T) {
+	t.Parallel()
 	events := []domain.TaskEvent{
 		{AgentID: "a1", SourceHash: "h1", Verified: true, VerifierScore: 1.0, BidConfidence: 0.8},
 		{AgentID: "a1", SourceHash: "h1", Verified: true, VerifierScore: 1.0, BidConfidence: 0.8},
@@ -133,6 +140,7 @@ func TestRunOnce_VerifiedEventsSuccessRate(t *testing.T) {
 }
 
 func TestRunOnce_NoVerifiedEvents_NeutralTrustScore(t *testing.T) {
+	t.Parallel()
 	events := []domain.TaskEvent{
 		{AgentID: "a2", SourceHash: "h2", Verified: false, BidConfidence: 0.7},
 		{AgentID: "a2", SourceHash: "h2", Verified: false, BidConfidence: 0.7},
@@ -158,6 +166,7 @@ func TestRunOnce_NoVerifiedEvents_NeutralTrustScore(t *testing.T) {
 }
 
 func TestRunOnce_VerifiedEvents_TrustScoreTrendsToHalf(t *testing.T) {
+	t.Parallel()
 	events := []domain.TaskEvent{
 		{AgentID: "a3", SourceHash: "h3", Verified: true, VerifierScore: 0.5, BidConfidence: 0.5},
 		{AgentID: "a3", SourceHash: "h3", Verified: true, VerifierScore: 0.5, BidConfidence: 0.5},
@@ -184,6 +193,7 @@ func TestRunOnce_VerifiedEvents_TrustScoreTrendsToHalf(t *testing.T) {
 }
 
 func TestRunOnce_SaveProfileCalledOncePerAgent(t *testing.T) {
+	t.Parallel()
 	reader := &mockTaskEventReader{
 		events: map[string][]domain.TaskEvent{
 			"a4:h4": {{AgentID: "a4", SourceHash: "h4", Verified: true, VerifierScore: 0.8, BidConfidence: 0.7}},
@@ -206,6 +216,7 @@ func TestRunOnce_SaveProfileCalledOncePerAgent(t *testing.T) {
 // ─── D1 / D3 / D5 tests ──────────────────────────────────────────────────────
 
 func TestRunOnce_TrustScore_TwoDimensionalSignal(t *testing.T) {
+	t.Parallel()
 	makeEvents := func(agentKey string, vs, bc float64) []domain.TaskEvent {
 		return []domain.TaskEvent{
 			{AgentID: agentKey, SourceHash: "h", Verified: true, VerifierScore: vs, BidConfidence: bc},
@@ -244,6 +255,7 @@ func TestRunOnce_TrustScore_TwoDimensionalSignal(t *testing.T) {
 }
 
 func TestRunOnce_MinVerifiedEvents_KeepsNeutralWhileProvisional(t *testing.T) {
+	t.Parallel()
 	events := []domain.TaskEvent{
 		{AgentID: "a", SourceHash: "h", Verified: true, VerifierScore: 0.9, BidConfidence: 0.5},
 		{AgentID: "a", SourceHash: "h", Verified: true, VerifierScore: 0.9, BidConfidence: 0.5},
@@ -272,6 +284,7 @@ func TestRunOnce_MinVerifiedEvents_KeepsNeutralWhileProvisional(t *testing.T) {
 }
 
 func TestRunOnce_MinVerifiedEvents_ClearsProvisionalAfterGate(t *testing.T) {
+	t.Parallel()
 	events := []domain.TaskEvent{
 		{AgentID: "b", SourceHash: "h", Verified: true, VerifierScore: 0.8, BidConfidence: 0.8},
 		{AgentID: "b", SourceHash: "h", Verified: true, VerifierScore: 0.8, BidConfidence: 0.8},

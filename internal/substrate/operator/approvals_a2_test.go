@@ -42,6 +42,7 @@ func (f *fakeApprovalStream) Context() context.Context    { return f.ctx }
 // (tool_name / agent_id / args_preview), and ResolveHITL resolves it over the
 // SAME ApprovalHub id-space — the intervention_id IS the approval request id (A2.5).
 func TestWatchToolApprovals_StreamsAndSharesApprovalHubIDSpace(t *testing.T) {
+	t.Parallel()
 	hub := &chanApprovalHub{ch: make(chan domain.ApprovalRequest, 1)}
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	svc := operator.NewService(feed)
@@ -77,6 +78,7 @@ func TestWatchToolApprovals_StreamsAndSharesApprovalHubIDSpace(t *testing.T) {
 }
 
 func TestWatchToolApprovals_Unconfigured(t *testing.T) {
+	t.Parallel()
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	svc := operator.NewService(feed)
 	stream := &fakeApprovalStream{ctx: context.Background(), recv: make(chan *pb.ApprovalOp, 1)}

@@ -6,6 +6,7 @@ import "testing"
 // SURPRISE gate from a FAILURE gate: a confident agent that fails and a distrusted one
 // that succeeds are equally informative, and both must score high.
 func TestSurpriseFrom_IsSymmetricAboutExpectation(t *testing.T) {
+	t.Parallel()
 	confidentButFailed := SurpriseFrom(0.9, false) // expected to succeed, didn't
 	distrustedButWorked := SurpriseFrom(0.1, true) // expected to fail, did fine
 	if confidentButFailed != distrustedButWorked {
@@ -19,6 +20,7 @@ func TestSurpriseFrom_IsSymmetricAboutExpectation(t *testing.T) {
 // A routine failure by an agent already known to fail teaches nothing, and is exactly
 // what a naive `1 - quality` failure gate would over-record.
 func TestSurpriseFrom_RoutineOutcomesScoreLow(t *testing.T) {
+	t.Parallel()
 	routineFailure := SurpriseFrom(0.05, false)
 	routineSuccess := SurpriseFrom(0.95, true)
 	for name, got := range map[string]float64{"failure": routineFailure, "success": routineSuccess} {
@@ -33,6 +35,7 @@ func TestSurpriseFrom_RoutineOutcomesScoreLow(t *testing.T) {
 }
 
 func TestSurpriseFrom_StaysInUnitRange(t *testing.T) {
+	t.Parallel()
 	for _, e := range []float64{-5, 0, 0.5, 1, 7} {
 		for _, ok := range []bool{true, false} {
 			if got := SurpriseFrom(e, ok); got < 0 || got > 1 {

@@ -10,6 +10,7 @@ import (
 // The gate's failure-mode half: everything outside the closed AST refuses
 // with ErrCannotExpress and NAMES the reason — never a guess, never SQL.
 func TestKnowledgeQuery_RefusalsAreTypedAndNamed(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	cases := map[string]KnowledgeQuery{
 		"unknown kind":        {Kind: "select_star"},
@@ -34,6 +35,7 @@ func TestKnowledgeQuery_RefusalsAreTypedAndNamed(t *testing.T) {
 }
 
 func TestKnowledgeQuery_ValidShapesPass(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	valid := []KnowledgeQuery{
 		{Kind: QueryPoint, EntityID: "e", Predicate: "p"},
@@ -56,6 +58,7 @@ func TestKnowledgeQuery_ValidShapesPass(t *testing.T) {
 // Every kind states its §14 guarantee — an answer that cannot say what it
 // guarantees invites being quoted as truth.
 func TestKnowledgeQuery_GuaranteesNamed(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{QueryPoint, QueryAsOf, QueryContradictions, QueryTraverse} {
 		q := KnowledgeQuery{Kind: kind}
 		if strings.TrimSpace(q.Guarantee()) == "" {

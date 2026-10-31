@@ -162,6 +162,7 @@ func buildGolden(t *testing.T) goldenFile {
 // behaviour change (regenerate with -update-golden and update the Python port) or
 // an accidental one (fix the code).
 func TestChunkerGolden(t *testing.T) {
+	t.Parallel()
 	got := buildGolden(t)
 	// Indented + newline-terminated so the file reviews cleanly in a diff.
 	encoded, err := json.MarshalIndent(got, "", "  ")

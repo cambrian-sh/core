@@ -90,39 +90,6 @@ func TestConfig_LoadConfig_EnvVarOverridesFileValue(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_CapabilityCluster_DefaultsApplied(t *testing.T) {
-	jsonStr := `{
-		"llm": {"endpoint":"http://localhost:11434","model":"llama3"},
-		"metabolism": {"python_executable":"python","agents_dir":"agents"},
-		"storage": {"data_dir":"data","db_name":"test.db"},
-		"database": {"host":"localhost","port":"5432","user":"u","password":"p","dbname":"d"},
-		"server": {"port":"50051"},
-		"execution": {}
-	}`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(jsonStr), 0644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	cfg, err := config.LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	ex := cfg.Execution
-	if ex.Capability.CapabilityClusterThreshold != 0.80 {
-		t.Errorf("CapabilityClusterThreshold: want 0.80, got %v", ex.Capability.CapabilityClusterThreshold)
-	}
-	if ex.Capability.CapabilityClusterEpsilon != 0.02 {
-		t.Errorf("CapabilityClusterEpsilon: want 0.02, got %v", ex.Capability.CapabilityClusterEpsilon)
-	}
-	if ex.Capability.CapabilityClusterMinAgents != 3 {
-		t.Errorf("CapabilityClusterMinAgents: want 3, got %v", ex.Capability.CapabilityClusterMinAgents)
-	}
-	if ex.Capability.CapabilityClusterIntervalSeconds != 3600 {
-		t.Errorf("CapabilityClusterIntervalSeconds: want 3600, got %v", ex.Capability.CapabilityClusterIntervalSeconds)
-	}
-}
-
 func TestExecutionConfig_Validate_ModelConfigs(t *testing.T) {
 	cfg := config.ExecutionConfig{
 		Plan: config.PlanConfig{
@@ -133,10 +100,9 @@ func TestExecutionConfig_Validate_ModelConfigs(t *testing.T) {
 			FallbackConfidenceThreshold: 0.4,
 		},
 		Gatekeeper: config.GatekeeperConfig{
-			GatekeeperW1:         0.4,
-			GatekeeperW2:         0.4,
-			GatekeeperW3:         0.2,
-			MinAuctionConfidence: 0.3,
+			GatekeeperW1: 0.4,
+			GatekeeperW2: 0.4,
+			GatekeeperW3: 0.2,
 		},
 		Verification: config.VerificationConfig{
 			TrustScoreCalWeight: 0.6,
@@ -427,30 +393,6 @@ func TestLoadConfig_FallbackEnabled_CanBeSetFalse(t *testing.T) {
 	}
 	if cfg.Execution.Plan.FallbackEnabled {
 		t.Error("FallbackEnabled: explicit false in config must not be overridden to true")
-	}
-}
-
-func TestDefaultConfig_AgentPool_DefaultTimeout(t *testing.T) {
-	cfg := config.DefaultConfig()
-	if cfg.AgentPool.DefaultAgentTimeoutMs != 30000 {
-		t.Errorf("AgentPool.DefaultAgentTimeoutMs: want 30000, got %d", cfg.AgentPool.DefaultAgentTimeoutMs)
-	}
-}
-
-func TestLoadConfig_AgentPool_EnvOverride(t *testing.T) {
-	t.Setenv("CAMBRIAN_AGENT_POOL__DEFAULT_AGENT_TIMEOUT_MS", "5000")
-	jsonStr := `{"llm":{"endpoint":"http://localhost:11434"},"database":{"host":"h","user":"u","password":"p","dbname":"d"},"server":{"port":"50051"}}`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(jsonStr), 0644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	cfg, err := config.LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if cfg.AgentPool.DefaultAgentTimeoutMs != 5000 {
-		t.Errorf("AgentPool.DefaultAgentTimeoutMs: want 5000, got %d", cfg.AgentPool.DefaultAgentTimeoutMs)
 	}
 }
 
@@ -904,10 +846,9 @@ func TestLoadConfig_ProvidersFileOverridesConfigJSON(t *testing.T) {
 }
 
 // TestChunkerConfig_Defaults verifies that DefaultConfig() populates the
-// chunker.* block (T-1.11) and embedder.supports_long_context (ADR-0060
-// D6) with the spec defaults: Default="option_c", empty Routes /
-// ExtRoutes, Late{Enabled:false, MaxDocTokens:8192}, and
-// Embedder.SupportsLongContext=false.
+// chunker.* block (T-1.11) with the spec defaults: Default="option_c", empty
+// Routes / ExtRoutes, Late{Enabled:false, MaxDocTokens:8192}.
+// (embedder.supports_long_context was retired 2026-10-31; see retired_keys_test.go.)
 func TestChunkerConfig_Defaults(t *testing.T) {
 	cfg := config.DefaultConfig()
 	if cfg.Chunker.Default != "option_c" {
@@ -924,9 +865,6 @@ func TestChunkerConfig_Defaults(t *testing.T) {
 	}
 	if cfg.Chunker.Late.MaxDocTokens != 8192 {
 		t.Errorf("Chunker.Late.MaxDocTokens: want 8192, got %d", cfg.Chunker.Late.MaxDocTokens)
-	}
-	if cfg.Embedder.SupportsLongContext != false {
-		t.Errorf("Embedder.SupportsLongContext: want false, got %v", cfg.Embedder.SupportsLongContext)
 	}
 }
 

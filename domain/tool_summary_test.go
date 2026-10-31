@@ -9,6 +9,7 @@ import (
 // strip leading markdown → first sentence-or-line → word-boundary cap → name
 // fallback. These are the cases the diffuse-embedding fix and the menu both rely on.
 func TestToolSummary(t *testing.T) {
+	t.Parallel()
 	longSentence := "Back up the configured database to a remote secure file transfer endpoint and verify the archive checksum before reporting success to the caller and operator"
 
 	cases := []struct {
@@ -70,6 +71,7 @@ func TestToolSummary(t *testing.T) {
 // ToolDisclosure renders Tier-1 (short summary + arg-names-only schema) by
 // default and Tier-2 (raw description + full schema) when full=true (ADR-0045).
 func TestToolDisclosure(t *testing.T) {
+	t.Parallel()
 	tool := SystemTool{
 		Name:        "scrape",
 		Description: "Scrape a URL and return markdown. Supports JS rendering and PDFs.",
@@ -102,6 +104,7 @@ func TestToolDisclosure(t *testing.T) {
 
 // An argless tool yields an empty Tier-1 schema (no args to show).
 func TestToolDisclosure_NoArgs(t *testing.T) {
+	t.Parallel()
 	if _, schema := ToolDisclosure(SystemTool{Name: "ping", Description: "Ping the service."}, false); schema != "" {
 		t.Errorf("argless tool should yield empty Tier-1 schema, got %q", schema)
 	}
@@ -110,6 +113,7 @@ func TestToolDisclosure_NoArgs(t *testing.T) {
 // The over-cap result must never exceed the cap (plus the single ellipsis rune)
 // and must not split a word.
 func TestToolSummary_CapBound(t *testing.T) {
+	t.Parallel()
 	got := toolSummary(SystemTool{Name: "x", Description: "word " + strings.Repeat("alpha ", 60)})
 	// runes ≤ cap + 1 ellipsis; rough byte check is sufficient for ASCII here.
 	if r := []rune(got); len(r) > toolSummaryMaxChars+1 {

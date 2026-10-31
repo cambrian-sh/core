@@ -19,6 +19,7 @@ func (b *captureEventBus) Publish(e domain.DomainEvent) error {
 
 // Cycle 1 — OnDocumentCommitted publishes MemoryPressureEvent when over threshold.
 func TestScavenger_OnDocumentCommitted_PublishesPressureEvent(t *testing.T) {
+	t.Parallel()
 	bus := &captureEventBus{}
 	s := &domain.MemoryPressureScavenger{
 		MaxOrphanedDocuments: 100,
@@ -37,6 +38,7 @@ func TestScavenger_OnDocumentCommitted_PublishesPressureEvent(t *testing.T) {
 
 // Cycle 2 — OnDocumentCommitted does NOT publish when below threshold.
 func TestScavenger_OnDocumentCommitted_BelowThreshold_NoEvent(t *testing.T) {
+	t.Parallel()
 	bus := &captureEventBus{}
 	s := &domain.MemoryPressureScavenger{
 		MaxOrphanedDocuments: 100,
@@ -52,6 +54,7 @@ func TestScavenger_OnDocumentCommitted_BelowThreshold_NoEvent(t *testing.T) {
 
 // Cycle 3 — Zero threshold disables orphaned document pressure checking.
 func TestScavenger_ZeroThreshold_NeverPublishesPressure(t *testing.T) {
+	t.Parallel()
 	bus := &captureEventBus{}
 	s := &domain.MemoryPressureScavenger{
 		MaxOrphanedDocuments: 0, // disabled
@@ -67,6 +70,7 @@ func TestScavenger_ZeroThreshold_NeverPublishesPressure(t *testing.T) {
 
 // Cycle 4 — IndexSizeBytes threshold also triggers when exceeded.
 func TestScavenger_IndexSizeThreshold_Triggers(t *testing.T) {
+	t.Parallel()
 	bus := &captureEventBus{}
 	const maxBytes = 1024 * 1024
 	s := &domain.MemoryPressureScavenger{
@@ -83,6 +87,7 @@ func TestScavenger_IndexSizeThreshold_Triggers(t *testing.T) {
 
 // Cycle 5 — Nil bus is safe.
 func TestScavenger_NilBus_IsSafe(t *testing.T) {
+	t.Parallel()
 	s := &domain.MemoryPressureScavenger{
 		MaxOrphanedDocuments: 10,
 		Bus:                  nil,

@@ -37,6 +37,7 @@ func (g *toolGateway) GenerateWithTools(_ context.Context, _ domain.LeaseID, msg
 }
 
 func TestGenerateWithTools_MapsTurnToProto(t *testing.T) {
+	t.Parallel()
 	gw := &toolGateway{turn: domain.ModelTurn{
 		Text:       "writing it",
 		StopReason: domain.StopToolUse,
@@ -80,6 +81,7 @@ func TestGenerateWithTools_MapsTurnToProto(t *testing.T) {
 // client falls back to the prompt-encoded protocol; Internal would make an ordinary
 // deployment look broken and push clients into retry loops.
 func TestGenerateWithTools_UnsupportedIsFailedPrecondition(t *testing.T) {
+	t.Parallel()
 	s := &Server{LLMGateway: &toolGateway{err: ErrToolCallingUnsupported}}
 
 	_, err := s.GenerateWithTools(context.Background(), &pb.GenerateWithToolsRequest{LeaseId: "l",
@@ -92,6 +94,7 @@ func TestGenerateWithTools_UnsupportedIsFailedPrecondition(t *testing.T) {
 // A real generation failure must NOT be mistaken for a capability answer, or an
 // outage would silently downgrade every agent to the text path.
 func TestGenerateWithTools_RealErrorIsInternal(t *testing.T) {
+	t.Parallel()
 	s := &Server{LLMGateway: &toolGateway{err: errors.New("model exploded")}}
 
 	_, err := s.GenerateWithTools(context.Background(), &pb.GenerateWithToolsRequest{LeaseId: "l",
@@ -102,6 +105,7 @@ func TestGenerateWithTools_RealErrorIsInternal(t *testing.T) {
 }
 
 func TestGenerateWithTools_RequiresLease(t *testing.T) {
+	t.Parallel()
 	s := &Server{LLMGateway: &toolGateway{}}
 	if _, err := s.GenerateWithTools(context.Background(), &pb.GenerateWithToolsRequest{}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("want Unauthenticated, got %v", status.Code(err))
@@ -112,6 +116,7 @@ func TestGenerateWithTools_RequiresLease(t *testing.T) {
 // its tool result are what let the model see that its own call happened; the first cut
 // sent one user message per round and the model re-explored forever.
 func TestGenerateWithTools_CarriesTheConversation(t *testing.T) {
+	t.Parallel()
 	gw := &toolGateway{turn: domain.ModelTurn{Text: "done", StopReason: domain.StopEndTurn}}
 	s := &Server{LLMGateway: gw}
 
@@ -147,6 +152,7 @@ func TestGenerateWithTools_CarriesTheConversation(t *testing.T) {
 // The deprecated single prompt still works, wrapped as a lone user turn — an
 // un-upgraded client must degrade, not send nothing.
 func TestGenerateWithTools_DeprecatedPromptStillWorks(t *testing.T) {
+	t.Parallel()
 	gw := &toolGateway{turn: domain.ModelTurn{StopReason: domain.StopEndTurn}}
 	s := &Server{LLMGateway: gw}
 
@@ -161,6 +167,7 @@ func TestGenerateWithTools_DeprecatedPromptStillWorks(t *testing.T) {
 }
 
 func TestGenerateWithTools_EmptyConversationIsRejected(t *testing.T) {
+	t.Parallel()
 	s := &Server{LLMGateway: &toolGateway{}}
 	_, err := s.GenerateWithTools(context.Background(), &pb.GenerateWithToolsRequest{LeaseId: "l"})
 	if status.Code(err) != codes.InvalidArgument {

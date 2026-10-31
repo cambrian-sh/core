@@ -22,6 +22,7 @@ func (f *fakeGen) Generate(_ context.Context, prompt string) (string, error) {
 // a verdict-only answer (no echo of the step output) — fixing the gate that
 // previously parroted its input and grepped for a magic token.
 func TestLLMCheckpointValidator_StructuredVerdict(t *testing.T) {
+	t.Parallel()
 	gen := &fakeGen{resp: "VERDICT: INCOHERENT\nThe recurrence is wrong."}
 	v := NewLLMCheckpointValidator(gen)
 
@@ -48,6 +49,7 @@ func TestLLMCheckpointValidator_StructuredVerdict(t *testing.T) {
 }
 
 func TestLLMCheckpointValidator_CoherentPasses(t *testing.T) {
+	t.Parallel()
 	gen := &fakeGen{resp: "VERDICT: COHERENT — the analysis is correct and justified."}
 	v := NewLLMCheckpointValidator(gen)
 	verdict, err := v.Validate(context.Background(), domain.CheckpointRequest{StepQuery: "q", StepOutput: "o"})

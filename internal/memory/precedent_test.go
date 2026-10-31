@@ -30,6 +30,7 @@ func actionDoc(text, ts string) domain.Document {
 // ADR-0049 D11: a precedent is assembled from stored data — situation (abstracted
 // projection), outcome, and the action path — never guessed.
 func TestBuildPrecedent(t *testing.T) {
+	t.Parallel()
 	scene := sceneResult("scene-p1", "goal: ship | engages: 1 file", "failure", 0.8)
 	actions := []domain.Document{actionDoc("write_file → ok", "t1"), actionDoc("deploy → err", "t2")}
 
@@ -50,6 +51,7 @@ func TestBuildPrecedent(t *testing.T) {
 
 // ADR-0049 D11: failures rank ahead of successes; within a group, higher similarity first.
 func TestSortPrecedentsFailureFirst(t *testing.T) {
+	t.Parallel()
 	ps := []domain.Precedent{
 		{SceneID: "ok-hi", Success: true, Similarity: 0.9},
 		{SceneID: "fail-lo", Success: false, Similarity: 0.5},
@@ -68,6 +70,7 @@ func TestSortPrecedentsFailureFirst(t *testing.T) {
 
 // filterActionsForPlan keeps only actions, ordered by timestamp (drops the scene/other docs).
 func TestFilterActionsForPlan(t *testing.T) {
+	t.Parallel()
 	docs := []domain.Document{
 		actionDoc("b", "2024-01-02T00:00:00Z"),
 		{DocumentType: domain.DocTypeMnemonicScene, Text: "the scene"},
@@ -80,6 +83,7 @@ func TestFilterActionsForPlan(t *testing.T) {
 }
 
 func TestPrecedentText(t *testing.T) {
+	t.Parallel()
 	txt := precedentText(domain.Precedent{Situation: "goal: x", Outcome: "failure", Actions: []string{"a1", "a2"}})
 	if !strings.Contains(txt, "SITUATION: goal: x") || !strings.Contains(txt, "OUTCOME: failure") || !strings.Contains(txt, "a1; a2") {
 		t.Errorf("transition framing must carry situation+outcome+actions; got %q", txt)

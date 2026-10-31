@@ -91,6 +91,7 @@ func collect(rs []domain.SearchResult) map[string]bool {
 // A support agent whose predicate forbids `secrets` never retrieves
 // secrets-tagged docs.
 func TestQueryService_ForbiddenTagExcluded(t *testing.T) {
+	t.Parallel()
 	store := corpus()
 	q := NewQueryService(&fakeEmbedder{}, store, &policyAuthorizer{
 		known: map[string]bool{"support": true},
@@ -112,6 +113,7 @@ func TestQueryService_ForbiddenTagExcluded(t *testing.T) {
 
 // A registered-but-unprofiled agent (empty predicate) retrieves everything.
 func TestQueryService_UnprofiledUnrestricted(t *testing.T) {
+	t.Parallel()
 	store := corpus()
 	q := NewQueryService(&fakeEmbedder{}, store, &policyAuthorizer{known: map[string]bool{"analyst": true}})
 
@@ -127,6 +129,7 @@ func TestQueryService_UnprofiledUnrestricted(t *testing.T) {
 // An unknown principal is fail-closed: empty result set. Note this is the
 // PLUGIN's decision — the kernel simply honours a nil predicate.
 func TestQueryService_UnknownPrincipalDenied(t *testing.T) {
+	t.Parallel()
 	store := corpus()
 	q := NewQueryService(&fakeEmbedder{}, store, &policyAuthorizer{known: map[string]bool{}})
 
@@ -143,6 +146,7 @@ func TestQueryService_UnknownPrincipalDenied(t *testing.T) {
 // principal — including one nobody has ever registered — reads everything. This
 // is the pairing §4.2 warns about getting backwards.
 func TestQueryService_OSSDefaultReadsEverything(t *testing.T) {
+	t.Parallel()
 	store := corpus()
 	q := NewQueryService(&fakeEmbedder{}, store, nil) // nil ⇒ allow-all
 
@@ -160,6 +164,7 @@ func TestQueryService_OSSDefaultReadsEverything(t *testing.T) {
 // could widen the result — the only inputs are (query, callerID). This test
 // documents that invariant (INV-5).
 func TestQueryService_IgnoresCallerSuppliedTags(t *testing.T) {
+	t.Parallel()
 	store := corpus()
 	q := NewQueryService(&fakeEmbedder{}, store, &policyAuthorizer{
 		known: map[string]bool{"support": true},
@@ -178,6 +183,7 @@ func TestQueryService_IgnoresCallerSuppliedTags(t *testing.T) {
 // per-caller resolution — that is how the operator plane reads at ScopeSystem
 // without impersonating an agent (ADR-0047 D13/A2).
 func TestQueryService_ContextBypassOutranksPerCallerResolution(t *testing.T) {
+	t.Parallel()
 	store := corpus()
 	q := NewQueryService(&fakeEmbedder{}, store, &policyAuthorizer{known: map[string]bool{}}) // would deny everyone
 

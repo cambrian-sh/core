@@ -7,6 +7,7 @@ type recordingObserver struct{ seen []RetrievalDecision }
 func (r *recordingObserver) ObserveRetrieval(d RetrievalDecision) { r.seen = append(r.seen, d) }
 
 func TestMultiDecisionObserver_FansOutInOrder(t *testing.T) {
+	t.Parallel()
 	a, b := &recordingObserver{}, &recordingObserver{}
 	m := MultiDecisionObserver{a, b}
 	m.ObserveRetrieval(RetrievalDecision{QueryID: "q1"})
@@ -18,6 +19,7 @@ func TestMultiDecisionObserver_FansOutInOrder(t *testing.T) {
 }
 
 func TestMultiDecisionObserver_SkipsNilEntries(t *testing.T) {
+	t.Parallel()
 	// A nil entry must not take down the retrieval path: the fan-out runs on the
 	// hottest code in the kernel, where a panic is a kernel outage, not a log line.
 	a := &recordingObserver{}
@@ -29,5 +31,6 @@ func TestMultiDecisionObserver_SkipsNilEntries(t *testing.T) {
 }
 
 func TestMultiDecisionObserver_EmptyIsNoop(t *testing.T) {
+	t.Parallel()
 	MultiDecisionObserver{}.ObserveRetrieval(RetrievalDecision{})
 }

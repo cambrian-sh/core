@@ -23,6 +23,7 @@ func (c *countingInvalidator) InvalidateContextRefCache() {
 // ── Tracer bullet: invalidator called after RegisterCacheInvalidator ────────
 
 func TestMemoryAgent_RegisterCacheInvalidator_CalledOnCommitBatch(t *testing.T) {
+	t.Parallel()
 	agent := newMinimalAgent()
 	invalidator := &countingInvalidator{}
 
@@ -39,6 +40,7 @@ func TestMemoryAgent_RegisterCacheInvalidator_CalledOnCommitBatch(t *testing.T) 
 // ── Multiple invalidators all get called ───────────────────────────────────
 
 func TestMemoryAgent_MultipleInvalidators_AllCalled(t *testing.T) {
+	t.Parallel()
 	agent := newMinimalAgent()
 	a := &countingInvalidator{}
 	b := &countingInvalidator{}
@@ -58,6 +60,7 @@ func TestMemoryAgent_MultipleInvalidators_AllCalled(t *testing.T) {
 // ── Without registration, commitBatch is a no-op for invalidators ──────────
 
 func TestMemoryAgent_NoInvalidators_CommitBatchSafe(t *testing.T) {
+	t.Parallel()
 	agent := newMinimalAgent()
 	// Must not panic with no registered invalidators.
 	agent.commitBatch(context.Background(), nil, 0)

@@ -17,8 +17,8 @@ import (
 // so a slow reasoning model can stream its body without being killed
 // mid-response). The fallback Generate is fine for test fakes and local Ollama.
 //
-// Moved here from edge_extractor.go, which was deleted with the ADR-0052 edge
-// lane; this batcher is now its only implementer-facing consumer.
+// Moved here from edge_extractor.go, which was deleted with the original ADR-0053 D2
+// LLM edge lane; this batcher is now its only implementer-facing consumer.
 type streamingGenerator interface {
 	GenerateStream(ctx context.Context, prompt string) (<-chan domain.StreamChunk, error)
 }

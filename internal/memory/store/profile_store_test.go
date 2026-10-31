@@ -39,6 +39,7 @@ func (s *stubVectorStore) QueryByMetadata(_ context.Context, _ map[string]string
 // TestSaveProfile_SetsDocTypeAgentProfile verifies that the concrete ProfileStore
 // writes DocumentType == domain.DocTypeAgentProfile when persisting a fingerprint.
 func TestSaveProfile_SetsDocTypeAgentProfile(t *testing.T) {
+	t.Parallel()
 	stub := &stubVectorStore{}
 	store := NewProfileStore(stub)
 
@@ -63,6 +64,7 @@ func TestSaveProfile_SetsDocTypeAgentProfile(t *testing.T) {
 // TestSaveProfile_SetsAgentIDAndSourceHashInMetadata verifies that the saved
 // document's Metadata contains the agentID and sourceHash.
 func TestSaveProfile_SetsAgentIDAndSourceHashInMetadata(t *testing.T) {
+	t.Parallel()
 	stub := &stubVectorStore{}
 	store := NewProfileStore(stub)
 

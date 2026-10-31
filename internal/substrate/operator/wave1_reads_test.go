@@ -24,6 +24,7 @@ func codeOf(err error) codes.Code { return status.Code(err) }
 // kernel cannot report them", and renders the same screen for a healthy
 // deployment and a broken one.
 func TestWave1_UnwiredSourcesReturnUnimplementedNotEmpty(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	ctx := context.Background()
 
@@ -52,6 +53,7 @@ func TestWave1_UnwiredSourcesReturnUnimplementedNotEmpty(t *testing.T) {
 // Capability strings must follow the sources, so the console never renders a
 // surface the kernel cannot serve — and never hides one it can.
 func TestWave1_CapabilitiesTrackWiredSources(t *testing.T) {
+	t.Parallel()
 	if caps := (&Service{}).Wave1Capabilities(); len(caps) != 0 {
 		t.Fatalf("bare service advertises %v, want none", caps)
 	}
@@ -81,6 +83,7 @@ func (s stubCheckpoints) ResumableAt(runID string, step int) bool { return s.res
 // step_index 2 meaning different points; a response that dropped run_id would
 // let a console offer a resume from the wrong plan.
 func TestListSessionCheckpoints_CarriesRunIDPerRow(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	s := &Service{}
 	s.SetWave1Reads(stubCheckpoints{
@@ -117,6 +120,7 @@ func TestListSessionCheckpoints_CarriesRunIDPerRow(t *testing.T) {
 }
 
 func TestListSessionCheckpoints_RequiresSessionID(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetWave1Reads(stubCheckpoints{}, nil, nil, nil)
 
@@ -138,6 +142,7 @@ func (s stubMCP) MCPConfigured() bool         { return s.configured }
 // The `configured` flag is what separates an intentional zero from an absent
 // subsystem. Both are empty lists; only this field tells them apart.
 func TestListMCPServers_ConfiguredSeparatesZeroFromAbsent(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetWave1Reads(nil, stubMCP{configured: true}, nil, nil)
 
@@ -165,6 +170,7 @@ func (s stubEmbedding) VectorCount(context.Context) int64 { return s.count }
 // -1 must survive to the wire. Collapsing it to 0 would tell an operator their
 // corpus is empty — a far more alarming claim than "not counted".
 func TestGetEmbeddingConfig_UncountableIsMinusOneNotZero(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetWave1Reads(nil, nil, stubEmbedding{count: -1}, nil)
 
@@ -195,6 +201,7 @@ func (s stubClassifier) Classify(context.Context, string, string) (ClassifiedInp
 // matters most: it WRITES to memory, so a plane that mapped it onto another value
 // would make an operator approve a write believing they approved a question.
 func TestClassifyInput_PassesTheFullVocabularyThrough(t *testing.T) {
+	t.Parallel()
 	for _, want := range []string{"chat", "plan", "ingest", "watch", "clarification"} {
 		s := &Service{}
 		s.SetWave1Reads(nil, nil, nil, stubClassifier{out: ClassifiedInput{
@@ -214,6 +221,7 @@ func TestClassifyInput_PassesTheFullVocabularyThrough(t *testing.T) {
 // `why` must reach the wire: an unexplained label is not something an operator
 // can sensibly overrule, and overruling is the entire point of showing it.
 func TestClassifyInput_CarriesWhyAndConfidence(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetWave1Reads(nil, nil, nil, stubClassifier{out: ClassifiedInput{
 		Classification: "plan",
@@ -234,6 +242,7 @@ func TestClassifyInput_CarriesWhyAndConfidence(t *testing.T) {
 }
 
 func TestClassifyInput_RequiresText(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetWave1Reads(nil, nil, nil, stubClassifier{})
 
@@ -260,6 +269,7 @@ func (s stubGenerators) TestGenerator(context.Context, string) (GeneratorTestRes
 // this test guards the shape: if someone adds one, the proto changes and this
 // assertion is where the conversation starts.
 func TestListGenerators_ReportsKeyFactsWithoutTheKey(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetGeneratorRegistry(stubGenerators{gens: []GeneratorInfo{{
 		ID: "gpt", KeyConfigured: true, KeyLastFour: "1234", KeySource: "env:OPENAI_API_KEY",
@@ -281,6 +291,7 @@ func TestListGenerators_ReportsKeyFactsWithoutTheKey(t *testing.T) {
 // A failed probe is a SUCCESSFUL rpc carrying ok=false. Returning a gRPC error
 // would make a working diagnostic look like a broken console.
 func TestTestGenerator_FailedProbeIsNotAnRPCError(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetGeneratorRegistry(stubGenerators{err: errors.New("connection refused")})
 
@@ -294,6 +305,7 @@ func TestTestGenerator_FailedProbeIsNotAnRPCError(t *testing.T) {
 }
 
 func TestTestGenerator_ReportsTheModelTheEndpointEchoed(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	s.SetGeneratorRegistry(stubGenerators{res: GeneratorTestResult{
 		OK: true, ModelServed: "gpt-4o-mini-2024-07-18", LatencyMs: 42,

@@ -110,6 +110,7 @@ func newArtifactServer(preds map[string]*domain.TagPredicate, writeTags map[stri
 
 // C2: an agent cannot classify an upload as anything outside its DefaultWriteTags.
 func TestUploadArtifact_CannotBroaden(t *testing.T) {
+	t.Parallel()
 	s, meta := newArtifactServer(
 		map[string]*domain.TagPredicate{"support": {}},
 		map[string][]string{"support": {"public_kb"}},
@@ -129,6 +130,7 @@ func TestUploadArtifact_CannotBroaden(t *testing.T) {
 }
 
 func TestUploadArtifact_RejectsCoinage(t *testing.T) {
+	t.Parallel()
 	s, _ := newArtifactServer(
 		map[string]*domain.TagPredicate{"a": {}},
 		map[string][]string{"a": {"public_kb"}},
@@ -142,6 +144,7 @@ func TestUploadArtifact_RejectsCoinage(t *testing.T) {
 }
 
 func TestUploadArtifact_DerivesClassificationAndStampsProvenance(t *testing.T) {
+	t.Parallel()
 	s, meta := newArtifactServer(
 		map[string]*domain.TagPredicate{"a": {}},
 		map[string][]string{"a": {"public_kb"}},
@@ -168,6 +171,7 @@ func TestUploadArtifact_DerivesClassificationAndStampsProvenance(t *testing.T) {
 }
 
 func TestGetArtifact_ScopeDeniedReportsNotFound(t *testing.T) {
+	t.Parallel()
 	s, meta := newArtifactServer(map[string]*domain.TagPredicate{
 		"support": {ForbiddenTags: []string{"secrets"}},
 	}, nil, []string{"secrets"})
@@ -183,6 +187,7 @@ func TestGetArtifact_ScopeDeniedReportsNotFound(t *testing.T) {
 }
 
 func TestListStepArtifacts_FiltersByScope(t *testing.T) {
+	t.Parallel()
 	s, meta := newArtifactServer(map[string]*domain.TagPredicate{
 		"support": {ForbiddenTags: []string{"secrets"}},
 	}, nil, []string{"secrets", "public_kb"})

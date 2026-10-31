@@ -6,6 +6,7 @@ import "testing"
 // premium's machine_token_v1 ingress verifier reaches through
 // KernelServices.VerifyMachineToken; every absence fails closed.
 func TestVerifyMachineToken(t *testing.T) {
+	t.Parallel()
 	store := staticSecrets(map[string]string{
 		ClientSecretName("laptop"):      "tok-laptop",
 		WorkerOwnerSecretName("laptop"): "owner-a",

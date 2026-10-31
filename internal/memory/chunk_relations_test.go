@@ -7,6 +7,7 @@ import (
 )
 
 func TestChunkRelations_Struct(t *testing.T) {
+	t.Parallel()
 	cr := ChunkRelations{
 		ParentEntityID:   "ent_abc123",
 		PrecedingChunkID: "chk_prev",
@@ -57,6 +58,7 @@ func TestChunkRelations_Struct(t *testing.T) {
 }
 
 func TestChunkRelations_BudgetEnforced(t *testing.T) {
+	t.Parallel()
 	big := strings.Repeat("a", 500)
 	sc := SiblingContext{
 		ParentTitle:      big,
@@ -76,6 +78,7 @@ func TestChunkRelations_BudgetEnforced(t *testing.T) {
 }
 
 func TestChunkRelations_PerFieldLimits(t *testing.T) {
+	t.Parallel()
 	big := strings.Repeat("b", 500)
 	sc := SiblingContext{
 		ParentTitle:      big,
@@ -113,6 +116,7 @@ func TestChunkRelations_PerFieldLimits(t *testing.T) {
 }
 
 func TestChunkRelations_WordBoundaryTruncation(t *testing.T) {
+	t.Parallel()
 	s := "This is a long string with several words that should be truncated at the last word boundary within the byte limit"
 	got := truncateAtWordBoundary(s, 50)
 	if len(got) > 50 {
@@ -133,6 +137,7 @@ func TestChunkRelations_WordBoundaryTruncation(t *testing.T) {
 }
 
 func TestChunkRelations_HardCutFallback(t *testing.T) {
+	t.Parallel()
 	s := strings.Repeat("a", 200)
 	got := truncateAtWordBoundary(s, 80)
 	if len(got) > 80 {
@@ -147,6 +152,7 @@ func TestChunkRelations_HardCutFallback(t *testing.T) {
 }
 
 func TestChunkRelations_EmptyContext(t *testing.T) {
+	t.Parallel()
 	sc := SiblingContext{}
 	data, err := json.Marshal(sc)
 	if err != nil {
@@ -161,6 +167,7 @@ func TestChunkRelations_EmptyContext(t *testing.T) {
 }
 
 func TestChunkRelations_OnlyIdentifiers(t *testing.T) {
+	t.Parallel()
 	cr := ChunkRelations{
 		ParentEntityID: "ent_abc123",
 	}

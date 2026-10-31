@@ -152,6 +152,7 @@ func newTestPlanner(gen Generator, hippoStore *plannerFakePlanStore) *Planner {
 // Generator.Generate contains the PRIOR SUCCESSFUL PLAN marker with the plan
 // JSON and the confidence formatted to two decimal places.
 func TestGetExecutionPlan_HippocampusInjectsPriorPlan(t *testing.T) {
+	t.Parallel()
 	prior := priorPlan()
 	conf := 0.876
 
@@ -204,6 +205,7 @@ func TestGetExecutionPlan_HippocampusInjectsPriorPlan(t *testing.T) {
 // threshold), the prompt is unchanged from the baseline (no PRIOR SUCCESSFUL
 // PLAN section).
 func TestGetExecutionPlan_HippocampusNoTemplate_PromptUnchanged(t *testing.T) {
+	t.Parallel()
 	// score 0.1 is below the 0.85 threshold — Retrieve will return nil
 	store := &plannerFakePlanStore{preset: priorPlan(), conf: 0.9, score: 0.1}
 
@@ -232,6 +234,7 @@ func TestGetExecutionPlan_HippocampusNoTemplate_PromptUnchanged(t *testing.T) {
 // Test 3: When planner.hippocampus is nil, GetExecutionPlan behaves identically
 // to its pre-hippocampus behaviour — no PRIOR SUCCESSFUL PLAN section.
 func TestGetExecutionPlan_NilHippocampus_NoInjection(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
 	// Pass nil for hippocampus — no procedural memory
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
@@ -259,6 +262,7 @@ func TestGetExecutionPlan_NilHippocampus_NoInjection(t *testing.T) {
 // This validates the acceptance criterion that the injected plan JSON is valid
 // and deserialisable.
 func TestGetExecutionPlan_InjectedPlanJSONIsDeserializable(t *testing.T) {
+	t.Parallel()
 	prior := priorPlan()
 	// score 0.95 is above 0.85 threshold; conf 0.75 is above 0.5 floor
 	store := &plannerFakePlanStore{preset: prior, conf: 0.75, score: 0.95}
@@ -296,6 +300,7 @@ func TestGetExecutionPlan_InjectedPlanJSONIsDeserializable(t *testing.T) {
 // Test 4b: REQ-CACHE-1 exact-match cache hit — similarity >= 0.95, confidence >= 0.90,
 // and PlannerPromptVersion matches current hash. LLM must NOT be called.
 func TestGetExecutionPlan_ExactMatchCacheHit(t *testing.T) {
+	t.Parallel()
 	prior := priorPlan()
 	prior.PlannerPromptVersion = plannerPromptHash // must match current template hash
 
@@ -333,6 +338,7 @@ func TestGetExecutionPlan_ExactMatchCacheHit(t *testing.T) {
 
 // Test 4c: REQ-CACHE-1 near-miss — similarity 0.94 (below 0.95) should fall through to LLM.
 func TestGetExecutionPlan_NearMiss_FallsThroughToLLM(t *testing.T) {
+	t.Parallel()
 	prior := priorPlan()
 	prior.PlannerPromptVersion = plannerPromptHash
 
@@ -354,6 +360,7 @@ func TestGetExecutionPlan_NearMiss_FallsThroughToLLM(t *testing.T) {
 
 // Test 5: Fast-path for explicit JIT reasoning signal.
 func TestGetExecutionPlan_ThoughtSignalFastPath(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: "SHOULD NOT BE CALLED"}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
 
@@ -399,6 +406,7 @@ func (p *agentProviderWithAgents) GetManifest(_ context.Context, _ string) (*dom
 
 // Cycle 2 — prompt contains no required_tools instructions.
 func TestPlannerPrompt_NoRequiredToolsInstructions(t *testing.T) {
+	t.Parallel()
 	provider := &agentProviderWithAgents{
 		agents: []domain.AgentDefinition{
 			{ID: "chunker", Description: "Splits text into overlapping chunks"},
@@ -423,6 +431,7 @@ func TestPlannerPrompt_NoRequiredToolsInstructions(t *testing.T) {
 
 // Cycle 1 — prompt contains "CHECKPOINT STEPS" heading.
 func TestPlannerPrompt_ContainsCheckpointStepsHeading(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
 
@@ -439,6 +448,7 @@ func TestPlannerPrompt_ContainsCheckpointStepsHeading(t *testing.T) {
 
 // Cycle 4 — CHECKPOINT STEPS section appears after THOUGHT STEPS section.
 func TestPlannerPrompt_CheckpointStepsAfterThoughtSteps(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
 
@@ -464,6 +474,7 @@ func TestPlannerPrompt_CheckpointStepsAfterThoughtSteps(t *testing.T) {
 
 // Cycle 3 — prompt contains "checkpoint_query" field name.
 func TestPlannerPrompt_ContainsCheckpointQuery(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
 
@@ -480,6 +491,7 @@ func TestPlannerPrompt_ContainsCheckpointQuery(t *testing.T) {
 
 // Cycle 2 — prompt contains "checkpoint_after" field name.
 func TestPlannerPrompt_ContainsCheckpointAfter(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
 

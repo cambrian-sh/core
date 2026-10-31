@@ -8,6 +8,7 @@ import (
 
 // Cycle 1: AgentDefinition legacy JSON (no new fields) deserialises with zero values.
 func TestAgentDefinition_LegacyJSON_ZeroValuesForNewFields(t *testing.T) {
+	t.Parallel()
 	raw := `{"ID":"agent-1","Name":"searcher","Description":"search agent","Runtime":"python","ExecPath":"/agents/search.py","Port":"50052","Dir":"/agents"}`
 	var got AgentDefinition
 	if err := json.Unmarshal([]byte(raw), &got); err != nil {
@@ -26,6 +27,7 @@ func TestAgentDefinition_LegacyJSON_ZeroValuesForNewFields(t *testing.T) {
 
 // Cycle 2: AgentDefinition with all new fields round-trips through JSON correctly.
 func TestAgentDefinition_NewFields_RoundTrip(t *testing.T) {
+	t.Parallel()
 	original := AgentDefinition{
 		ID:              "agent-2",
 		Name:            "analyst",
@@ -54,6 +56,7 @@ func TestAgentDefinition_NewFields_RoundTrip(t *testing.T) {
 
 // Cycle 3: DispatchTask with RequiredFormats round-trips correctly.
 func TestAuctionTask_RequiredFormats_RoundTrip(t *testing.T) {
+	t.Parallel()
 	original := DispatchTask{
 		ID:              "task-1",
 		Description:     "summarise document",
@@ -74,6 +77,7 @@ func TestAuctionTask_RequiredFormats_RoundTrip(t *testing.T) {
 
 // Cycle 4: AgentManifest round-trips correctly.
 func TestAgentManifest_RoundTrip(t *testing.T) {
+	t.Parallel()
 	original := AgentManifest{
 		Version:          "2.0.0",
 		Tools:            []string{"search", "embed"},
@@ -112,6 +116,7 @@ func TestAgentManifest_RoundTrip(t *testing.T) {
 
 // Cycle 5: AgentProfile round-trips correctly.
 func TestAgentProfile_RoundTrip(t *testing.T) {
+	t.Parallel()
 	original := AgentProfile{
 		AgentID:                    "agent-3",
 		SourceHash:                 "deadbeef",
@@ -158,6 +163,7 @@ func TestAgentProfile_RoundTrip(t *testing.T) {
 
 // Cycle 6: TaskEvent round-trips correctly including Timestamp.
 func TestTaskEvent_RoundTrip(t *testing.T) {
+	t.Parallel()
 	ts := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	original := TaskEvent{
 		TaskID:               "task-42",

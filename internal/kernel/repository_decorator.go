@@ -198,23 +198,13 @@ func (d *AgentRepoDecorator) DeleteAgent(agentID string) error {
 	return d.store.DeleteAgentRecord(agentID)
 }
 
-// ── clusterer.ClusterStore ───────────────────────────────────────────────────
+// ── capability writes ────────────────────────────────────────────────────────
+// (SetClusterName/GetClusterName, the ADR-0014 clusterer's bucket accessors, were
+// deleted 2026-10-31 with T-20261031-dead-capability-cluster-config-keys-and.)
 
 // SetCapabilities updates the Capabilities slice on an AgentRecord in the agents bucket.
 func (d *AgentRepoDecorator) SetCapabilities(agentID string, caps []string) error {
 	return d.store.SetCapabilities(agentID, caps)
-}
-
-// SetClusterName persists a cluster name keyed by representative agent ID in
-// the capability_clusters bucket.
-func (d *AgentRepoDecorator) SetClusterName(repID, name string) error {
-	return d.store.SetClusterName(repID, name)
-}
-
-// GetClusterName retrieves the cluster name for a representative agent ID.
-// Returns "", nil when no entry exists.
-func (d *AgentRepoDecorator) GetClusterName(repID string) (string, error) {
-	return d.store.GetClusterName(repID)
 }
 
 // ── session.SessionRepository ─────────────────────────────────────────────────

@@ -13,6 +13,7 @@ import (
 // 2026-08-12): a reloaded table must be visible to resolution, KnowsGenerator
 // and Default on the next call — no restart.
 func TestProvider_ReloadGeneratorsSwapsTableLive(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	if p.KnowsGenerator("claude-new") {
 		t.Fatal("precondition: claude-new must not exist yet")
@@ -56,6 +57,7 @@ func TestProvider_ReloadGeneratorsSwapsTableLive(t *testing.T) {
 
 // A bad spec must fail the reload WITHOUT touching the serving table.
 func TestProvider_ReloadGeneratorsBadSpecLeavesTableUntouched(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	err := p.ReloadGenerators([]config.GeneratorConfig{
 		{ID: "broken", Provider: "no-such-provider", Model: "m"},
@@ -72,6 +74,7 @@ func TestProvider_ReloadGeneratorsBadSpecLeavesTableUntouched(t *testing.T) {
 // must always observe a COHERENT table: the resolved id exists in whichever
 // table was current.
 func TestProvider_ReloadIsRaceFreeUnderConcurrentResolve(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	stop := make(chan struct{})
 	var wg sync.WaitGroup

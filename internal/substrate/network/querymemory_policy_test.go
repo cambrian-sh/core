@@ -24,6 +24,7 @@ func (n notePolicy) ReadFilter(context.Context, domain.PrincipalRef, domain.Surf
 // results and no error, ingest succeeds, queries return nothing, and nothing
 // anywhere reports a problem. The note is what breaks that silence.
 func TestPolicyNote_UnresolvedPrincipalIsStatedOutLoud(t *testing.T) {
+	t.Parallel()
 	s := &Server{Authz: notePolicy{
 		pred: nil,
 		dec: domain.AccessDecision{
@@ -44,6 +45,7 @@ func TestPolicyNote_UnresolvedPrincipalIsStatedOutLoud(t *testing.T) {
 // The zombie boundary: a predicate that can never match anything is a SAFE state
 // and therefore the easiest one to mistake for "there is no data".
 func TestPolicyNote_UnsatisfiablePredicateIsStated(t *testing.T) {
+	t.Parallel()
 	s := &Server{Authz: notePolicy{
 		pred: &domain.TagPredicate{RequiredTags: []string{"secrets"}, ForbiddenTags: []string{"secrets"}},
 		dec: domain.AccessDecision{
@@ -59,6 +61,7 @@ func TestPolicyNote_UnsatisfiablePredicateIsStated(t *testing.T) {
 // A real boundary that simply matched nothing still says a boundary was in play —
 // "no results here" and "no results anywhere" are different answers.
 func TestPolicyNote_RestrictedButEmptyMentionsTheBoundary(t *testing.T) {
+	t.Parallel()
 	s := &Server{Authz: notePolicy{
 		pred: &domain.TagPredicate{ForbiddenTags: []string{"secrets"}},
 		dec:  domain.AccessDecision{Allowed: true, Reason: domain.ReasonAllowed},
@@ -71,6 +74,7 @@ func TestPolicyNote_RestrictedButEmptyMentionsTheBoundary(t *testing.T) {
 // Silence in the two cases where policy played no part: otherwise callers learn
 // to ignore the field, and it stops being an alarm.
 func TestPolicyNote_QuietWhenPolicyPlayedNoPart(t *testing.T) {
+	t.Parallel()
 	unrestricted := &Server{Authz: notePolicy{
 		pred: &domain.TagPredicate{},
 		dec:  domain.AccessDecision{Allowed: true, Reason: domain.ReasonAllowed},
@@ -98,6 +102,7 @@ func TestPolicyNote_QuietWhenPolicyPlayedNoPart(t *testing.T) {
 // With no decision point installed there is no policy to blame, so the OSS build
 // never annotates — an empty corpus is just an empty corpus.
 func TestPolicyNote_SilentInOSS(t *testing.T) {
+	t.Parallel()
 	s := &Server{}
 	if note := s.policyNote(context.Background(), "a", 0); note != "" {
 		t.Errorf("an unscoped deployment must not invent a policy explanation, got %q", note)

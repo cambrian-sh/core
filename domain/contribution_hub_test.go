@@ -41,6 +41,7 @@ func waitLive(t *testing.T, h *WorkerHub, owner PrincipalRef, machine string) {
 // Holding the poll open IS the liveness signal (D3); after the poll returns,
 // the worker stays live for the window and then drops out of every menu.
 func TestWorkerHub_HeldPollDrivesLiveness(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	owner := AgentPrincipal("owner-a")
 
@@ -73,6 +74,7 @@ func TestWorkerHub_HeldPollDrivesLiveness(t *testing.T) {
 // local:a-machine/read_file → hub queues the step → the held poll returns it
 // → report_step completes it → the agent receives the result FENCED (D8).
 func TestWorkerHub_RelayRoundTripFencesResult(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	owner := AgentPrincipal("owner-a")
 	e := contributionExec(h)
@@ -119,6 +121,7 @@ func TestWorkerHub_RelayRoundTripFencesResult(t *testing.T) {
 // A worker-reported failure is fenced too, and still reads as a failure
 // downstream (the envelope's kernel-authored error key).
 func TestWorkerHub_WorkerFailureIsFenced(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	owner := AgentPrincipal("owner-a")
 	e := contributionExec(h)
@@ -159,6 +162,7 @@ func TestWorkerHub_WorkerFailureIsFenced(t *testing.T) {
 // ok and does not double-apply; a report after the call deadline answers ok
 // and is discarded.
 func TestWorkerHub_ReportIdempotentOnStepID(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	owner := AgentPrincipal("owner-a")
 
@@ -226,6 +230,7 @@ func TestWorkerHub_ReportIdempotentOnStepID(t *testing.T) {
 
 // A step may be completed only by the machine it was dispatched to.
 func TestWorkerHub_CrossMachineReportRefused(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	owner := AgentPrincipal("owner-a")
 
@@ -257,6 +262,7 @@ func TestWorkerHub_CrossMachineReportRefused(t *testing.T) {
 // A step whose caller gave up must never reach a worker: executing it anyway
 // could be an EFFECT on the consumer's machine for a plan that already failed.
 func TestWorkerHub_StaleStepNeverReachesAWorker(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	h.CallTimeout = 30 * time.Millisecond
 	owner := AgentPrincipal("owner-a")
@@ -279,6 +285,7 @@ func TestWorkerHub_StaleStepNeverReachesAWorker(t *testing.T) {
 // The manifest is untrusted: malformed tool names are dropped at the hub, and
 // the requested wait is clamped to the hub's bound.
 func TestWorkerHub_ManifestValidationAndWaitClamp(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	h.PollWait = 50 * time.Millisecond
 	owner := AgentPrincipal("owner-a")
@@ -307,6 +314,7 @@ func TestWorkerHub_ManifestValidationAndWaitClamp(t *testing.T) {
 // binding are all refused; a real worker context round-trips poll → dispatch
 // → report through the published handlers.
 func TestPublishedTransportTools_MachineOnlyAndRoundTrip(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	surface := ContributionLaneTools(h)
 	poll, report := surface[0].Handler, surface[1].Handler
@@ -385,6 +393,7 @@ func TestPublishedTransportTools_MachineOnlyAndRoundTrip(t *testing.T) {
 // is an idempotent success, while a foreign machine gets the same answer an
 // invented id gets — completion state cannot be probed across machines.
 func TestWorkerHub_CompletedStepRetryIsMachineBound(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	owner := AgentPrincipal("owner-a")
 
@@ -429,6 +438,7 @@ func TestWorkerHub_CompletedStepRetryIsMachineBound(t *testing.T) {
 // learns it failed, and report_step cannot smuggle an unbounded payload
 // through the error field.
 func TestWorkerHub_OversizedWorkerErrorTruncated(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	owner := AgentPrincipal("owner-a")
 

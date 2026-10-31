@@ -7,6 +7,7 @@ import (
 // ── Cycle 1: Single well-formed <thought> block + plan JSON ──────────────────
 
 func TestParseThoughts_SingleBlock(t *testing.T) {
+	t.Parallel()
 	raw := `<thought>I should search for music first.</thought>{"steps":[],"subject":"Music"}`
 
 	thoughts, planJSON := ParseThoughts(raw)
@@ -26,6 +27,7 @@ func TestParseThoughts_SingleBlock(t *testing.T) {
 // ── Cycle 2: Multiple <thought> blocks + plan JSON ───────────────────────────
 
 func TestParseThoughts_MultipleBlocks(t *testing.T) {
+	t.Parallel()
 	raw := `<thought>First thought.</thought><thought>Second thought.</thought>{"steps":[],"subject":"Test"}`
 
 	thoughts, planJSON := ParseThoughts(raw)
@@ -48,6 +50,7 @@ func TestParseThoughts_MultipleBlocks(t *testing.T) {
 // ── Cycle 3: No <thought> blocks → empty thoughts, full input as planJSON ────
 
 func TestParseThoughts_NoBlocks(t *testing.T) {
+	t.Parallel()
 	raw := `{"steps":[],"subject":"NoThoughts"}`
 
 	thoughts, planJSON := ParseThoughts(raw)
@@ -63,6 +66,7 @@ func TestParseThoughts_NoBlocks(t *testing.T) {
 // ── Cycle 4: Empty input → empty thoughts, empty planJSON ────────────────────
 
 func TestParseThoughts_EmptyInput(t *testing.T) {
+	t.Parallel()
 	thoughts, planJSON := ParseThoughts("")
 
 	if len(thoughts) != 0 {
@@ -76,6 +80,7 @@ func TestParseThoughts_EmptyInput(t *testing.T) {
 // ── Cycle 5: Unclosed <thought> tag → WARN logged, remainder as planJSON ─────
 
 func TestParseThoughts_UnclosedTag(t *testing.T) {
+	t.Parallel()
 	raw := `<thought>This thought is never closed... {"steps":[]}`
 
 	thoughts, planJSON := ParseThoughts(raw)
@@ -91,6 +96,7 @@ func TestParseThoughts_UnclosedTag(t *testing.T) {
 // ── Cycle 6: <thought> block with surrounding whitespace → thought trimmed ───
 
 func TestParseThoughts_WhitespaceTrimming(t *testing.T) {
+	t.Parallel()
 	raw := "<thought>  \n  inner thought text  \n  </thought>  {\"steps\":[]}"
 
 	thoughts, planJSON := ParseThoughts(raw)
@@ -110,6 +116,7 @@ func TestParseThoughts_WhitespaceTrimming(t *testing.T) {
 // ── Cycle 7: planJSON is trimmed (no leading/trailing whitespace) ─────────────
 
 func TestParseThoughts_PlanJSONTrimmed(t *testing.T) {
+	t.Parallel()
 	raw := "  \n  {\"steps\":[]}\n  "
 
 	thoughts, planJSON := ParseThoughts(raw)

@@ -46,6 +46,7 @@ func svcWithGetter(g domain.DocumentGetter) *operator.Service {
 // ranked. This is the read that joins them, and the body is the whole point — a
 // citation an operator cannot read is not a citation.
 func TestGetDocument_ReturnsTheBody(t *testing.T) {
+	t.Parallel()
 	s := svcWithGetter(&fakeDocGetter{docs: map[string]domain.Document{
 		"msg-1": {
 			ID:           "msg-1",
@@ -86,6 +87,7 @@ func TestGetDocument_ReturnsTheBody(t *testing.T) {
 // and this asserts that scope is passed EXPLICITLY rather than omitted, because a
 // forgotten predicate and a deliberate system read look identical from here.
 func TestGetDocument_AlwaysIdentifiesItsPrincipal(t *testing.T) {
+	t.Parallel()
 	g := &fakeDocGetter{docs: map[string]domain.Document{"d": {ID: "d", Text: "x"}}}
 	s := svcWithGetter(g)
 
@@ -106,6 +108,7 @@ func TestGetDocument_AlwaysIdentifiesItsPrincipal(t *testing.T) {
 // transport failure, and a console cannot tell an operator "this reference points
 // at nothing" from "the kernel is unreachable".
 func TestGetDocument_MissingIsFoundFalseNotAnError(t *testing.T) {
+	t.Parallel()
 	s := svcWithGetter(&fakeDocGetter{docs: map[string]domain.Document{}})
 
 	resp, err := s.GetDocument(context.Background(), &pb.GetDocumentOpRequest{Id: "nope"})
@@ -123,6 +126,7 @@ func TestGetDocument_MissingIsFoundFalseNotAnError(t *testing.T) {
 // Unwired must be Unimplemented, never found=false for everything: a missing
 // wiring would otherwise be indistinguishable from a corpus where nothing exists.
 func TestGetDocument_UnwiredIsUnimplemented(t *testing.T) {
+	t.Parallel()
 	s := svcWithGetter(nil)
 	_, err := s.GetDocument(context.Background(), &pb.GetDocumentOpRequest{Id: "x"})
 	if status.Code(err) != codes.Unimplemented {
@@ -131,6 +135,7 @@ func TestGetDocument_UnwiredIsUnimplemented(t *testing.T) {
 }
 
 func TestGetDocument_EmptyIDIsRejected(t *testing.T) {
+	t.Parallel()
 	s := svcWithGetter(&fakeDocGetter{docs: map[string]domain.Document{}})
 	_, err := s.GetDocument(context.Background(), &pb.GetDocumentOpRequest{Id: ""})
 	if status.Code(err) != codes.InvalidArgument {
@@ -142,6 +147,7 @@ func TestGetDocument_EmptyIDIsRejected(t *testing.T) {
 // report "this document does not exist" when the truth is "the database is down" —
 // the same silent-absence failure the four-outcome drift model exists to prevent.
 func TestGetDocument_StoreFailureIsNotReportedAsMissing(t *testing.T) {
+	t.Parallel()
 	s := svcWithGetter(&fakeDocGetter{err: errors.New("connection refused")})
 	_, err := s.GetDocument(context.Background(), &pb.GetDocumentOpRequest{Id: "msg-1"})
 	if status.Code(err) != codes.Internal {

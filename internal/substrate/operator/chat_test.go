@@ -13,6 +13,7 @@ import (
 
 // CreateSession creates exactly one session and is idempotent on command_id.
 func TestCreateSession_CreatesAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetCommandEffects(operator.NoopEffects{})
 	creates := 0
@@ -39,6 +40,7 @@ func TestCreateSession_CreatesAndIsIdempotent(t *testing.T) {
 
 // An unwired dispatch hook returns Unimplemented (honest), not a silent success.
 func TestSendMessage_UnwiredIsUnimplemented(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetCommandEffects(operator.NoopEffects{})
 	svc.SetSessionOps(operator.SessionOpsFuncs{}) // no SendFn

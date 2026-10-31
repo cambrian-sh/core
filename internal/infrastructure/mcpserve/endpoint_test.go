@@ -107,6 +107,7 @@ func serve(t *testing.T, opts Options, token string) *mcpsdk.ClientSession {
 // and answers tools/list with an empty list. E4 adds the four read-only tools;
 // until then a kernel that serves nothing must still say so in protocol.
 func TestEndpoint_ZeroToolsStillInitializesAndLists(t *testing.T) {
+	t.Parallel()
 	session := serve(t, Options{}, "token-aaaa")
 	res, err := session.ListTools(t.Context(), nil)
 	if err != nil {
@@ -120,6 +121,7 @@ func TestEndpoint_ZeroToolsStillInitializesAndLists(t *testing.T) {
 // The whole path end to end: credential → principal → surface → effect
 // authorization → handler → result mapping.
 func TestEndpoint_CallRoutesThroughToTheHandler(t *testing.T) {
+	t.Parallel()
 	stub := &stubTool{result: domain.PublishedToolResult{
 		Text:       "two results",
 		Structured: map[string]any{"hits": 2},
@@ -189,6 +191,7 @@ func TestEndpoint_CallRoutesThroughToTheHandler(t *testing.T) {
 // broken server rather than a boundary — and the "sees why" half of the week-6
 // test would have nowhere to land.
 func TestEndpoint_EffectDenialIsAToolErrorNotATransportError(t *testing.T) {
+	t.Parallel()
 	stub := &stubTool{result: domain.PublishedToolResult{Text: "should never run"}}
 	session := serve(t, Options{
 		Authorizer: denyAll{},
@@ -223,6 +226,7 @@ func TestEndpoint_EffectDenialIsAToolErrorNotATransportError(t *testing.T) {
 // A handler failure is likewise reported inside the result, so the model can
 // self-correct instead of seeing the server disappear.
 func TestEndpoint_HandlerFailureIsAToolError(t *testing.T) {
+	t.Parallel()
 	session := serve(t, Options{Surface: domain.PublishedToolSurface{{
 		Owner: "core",
 		Tool: domain.PublishedTool{
@@ -244,6 +248,7 @@ func TestEndpoint_HandlerFailureIsAToolError(t *testing.T) {
 
 // No credential, no session — the protocol handshake itself never happens.
 func TestEndpoint_ConnectWithoutACredentialFails(t *testing.T) {
+	t.Parallel()
 	handler, err := NewHandler(Options{
 		Clients:       []string{"ci-bot"},
 		ResolveSecret: staticSecrets(map[string]string{"mcp:client:ci-bot": "token-aaaa"}),
@@ -269,6 +274,7 @@ func TestEndpoint_ConnectWithoutACredentialFails(t *testing.T) {
 // composition root must not die of a plugin's mistake, and the mistake must be
 // attributable.
 func TestNewHandler_RefusesANonObjectInputSchema(t *testing.T) {
+	t.Parallel()
 	for _, schema := range []string{`{"type":"string"}`, `[1,2,3]`, `not json`} {
 		_, err := NewHandler(Options{
 			Clients:       []string{"ci-bot"},
@@ -291,6 +297,7 @@ func TestNewHandler_RefusesANonObjectInputSchema(t *testing.T) {
 // A tool declaring no arguments still needs a schema; the SDK requires the empty
 // object rather than accepting absence, so the renderer supplies it.
 func TestNewHandler_EmptySchemaBecomesTheEmptyObject(t *testing.T) {
+	t.Parallel()
 	session := serve(t, Options{Surface: domain.PublishedToolSurface{{
 		Owner:   "core",
 		Tool:    domain.PublishedTool{Name: "list_documents"},
@@ -316,6 +323,7 @@ func TestNewHandler_EmptySchemaBecomesTheEmptyObject(t *testing.T) {
 // — this test proves the two transport locks); a worker client sees and calls
 // it, with its owner principal on the context.
 func TestEndpoint_MachineOnlyToolsHiddenAndRefusedForOrdinaryClients(t *testing.T) {
+	t.Parallel()
 	stub := &stubTool{result: domain.PublishedToolResult{Text: "step handed out"}}
 	opts := Options{
 		Surface: domain.PublishedToolSurface{{

@@ -27,7 +27,7 @@ help:
 	@echo "    make lint-new          golangci-lint vs $(LINT_BASE) (the gate)     ~40s"
 	@echo "    make deadcode          Unreachable funcs across all binaries      ~20s"
 	@echo "    make integration       SystemHarness E2E tests                    ~5s"
-	@echo "    make chaos             Per-PR chaos scenarios (6, in-process)     <5s"
+	@echo "    make chaos             Per-PR chaos scenarios (in-process, Faulty* adapters wired into real consumers) ~15s"
 	@echo "    make leak              Package-level goroutine leak detection      ~3s"
 	@echo "    make bench-micro       Micro benchmarks vs git baseline           ~10s"
 	@echo ""
@@ -61,8 +61,15 @@ test:
 # 25-second tax on a pipeline that already runs integration, chaos and micro
 # benchmarks. Nightly-only was the fallback if that had been unacceptable; it was
 # not, and a race found tomorrow morning is a race that already merged.
+#
+# Scope widened 2026-10-31 (T-20261031-test-race-target-excludes-app-and-domain-and):
+# ./app/... is the composition root where enforcement is wired and ./domain/...
+# carries the event bus; both were outside the gate. `-tags integration` pulls the
+# SystemHarness suite under the detector too — it drives the real LLM gateway with
+# five concurrent plans, which is exactly the interleaving -race exists to see.
+# `make integration` stays as the verbose, targeted run of the same suite.
 test-race:
-	go test -race ./internal/...
+	go test -race -tags integration ./app/... ./domain/... ./internal/...
 
 # ─── Lint & Dead Code ────────────────────────────────────────────────────────
 
@@ -174,10 +181,17 @@ chaos-real:
 # If you retire a worker package, delete its line. If you add one, add it here
 # together with its leak_test.go.
 leak:
-	go test ./internal/supervision/aggregator/... -v
+	# Exactly the packages that carry a goleak TestMain. Regenerate the list with:
+	#   grep -rl goleak.VerifyTestMain --include=*_test.go . | xargs -n1 dirname | sort
+	go test ./internal/agentpool/... -v
+	go test ./internal/chat/... -v
+	go test ./internal/memory/... -v
+	go test ./internal/metabolism/executer/... -v
 	go test ./internal/metabolism/interview/... -v
-	go test ./internal/supervision/verify/... -v
+	go test ./internal/substrate/operator/... -v
+	go test ./internal/supervision/aggregator/... -v
 	go test ./internal/supervision/circadian/... -v
+	go test ./internal/supervision/verify/... -v
 
 # Full-kernel goroutine leak test (requires chaos tag)
 #

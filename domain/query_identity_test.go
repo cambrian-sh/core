@@ -12,6 +12,7 @@ import (
 // executor's behaviour is a separate file's problem.
 
 func TestKnowledgeQuery_IdentityShapesValidate(t *testing.T) {
+	t.Parallel()
 	t0 := time.Now()
 	valid := []KnowledgeQuery{
 		{Kind: QueryEntity, EntityID: "customer/C-1042"},
@@ -31,6 +32,7 @@ func TestKnowledgeQuery_IdentityShapesValidate(t *testing.T) {
 }
 
 func TestKnowledgeQuery_IdentityRefusalsAreTypedAndNamed(t *testing.T) {
+	t.Parallel()
 	t0 := time.Now()
 	cases := map[string]KnowledgeQuery{
 		"entity without id":  {Kind: QueryEntity},
@@ -58,6 +60,7 @@ func TestKnowledgeQuery_IdentityRefusalsAreTypedAndNamed(t *testing.T) {
 // of it. Every kind therefore either honours ExpandAliases or refuses it, and
 // this test is what stops a tenth kind arriving that does neither.
 func TestKnowledgeQuery_ExpandAliasesIsHonouredOrRefused(t *testing.T) {
+	t.Parallel()
 	all := []string{
 		QueryPoint, QueryHistory, QueryAsOf, QueryCurrent, QueryContradictions,
 		QueryAggregate, QueryEvents, QueryTraverse, QueryEvidence, QueryEntity, QueryWhy,
@@ -105,6 +108,7 @@ func TestKnowledgeQuery_ExpandAliasesIsHonouredOrRefused(t *testing.T) {
 }
 
 func TestKnowledgeQuery_IdentityGuaranteesNamed(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{QueryEntity, QueryWhy} {
 		q := KnowledgeQuery{Kind: kind}
 		if strings.TrimSpace(q.Guarantee()) == "" {
@@ -120,6 +124,7 @@ func TestKnowledgeQuery_IdentityGuaranteesNamed(t *testing.T) {
 }
 
 func TestClosureNote_OnlyWidensWhenItWidened(t *testing.T) {
+	t.Parallel()
 	if ClosureNote(0) != "" || ClosureNote(-1) != "" {
 		t.Fatal("an unwidened answer must not claim aliases")
 	}
@@ -133,6 +138,7 @@ func TestClosureNote_OnlyWidensWhenItWidened(t *testing.T) {
 // for a set breach (retract a bad link) is a different act from the fix for a
 // depth breach (ask for fewer hops).
 func TestClosureRefusalsNameTheirGuard(t *testing.T) {
+	t.Parallel()
 	set := ClosureSetRefusal(ClosureMaxEntities + 1)
 	if !errors.Is(set, ErrCannotExpress) {
 		t.Fatalf("set refusal must be typed, got %v", set)
@@ -153,6 +159,7 @@ func TestClosureRefusalsNameTheirGuard(t *testing.T) {
 // bounded walks over the same store with two different limits is a pair somebody
 // eventually has to reconcile.
 func TestClosureDepthAlignsWithTraversal(t *testing.T) {
+	t.Parallel()
 	if ClosureMaxDepth != MaxTraverseHops {
 		t.Fatalf("closure depth cap %d drifted from MaxTraverseHops %d", ClosureMaxDepth, MaxTraverseHops)
 	}

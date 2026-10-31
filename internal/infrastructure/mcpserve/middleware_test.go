@@ -51,6 +51,7 @@ func testMiddleware(t *testing.T, next http.Handler, maxPerClient int) http.Hand
 // unauthenticated request that reached a handler would be an anonymous read of
 // the whole corpus. The token is the only lock on this door.
 func TestMiddleware_MissingOrMalformedCredentialIs401(t *testing.T) {
+	t.Parallel()
 	for _, header := range []string{
 		"",                   // no header at all
 		"token-aaaa",         // the right token, no scheme
@@ -82,6 +83,7 @@ func TestMiddleware_MissingOrMalformedCredentialIs401(t *testing.T) {
 // A wrong token is the SAME answer as an unknown one: anything else enumerates
 // the client roster for whoever asks.
 func TestMiddleware_WrongTokenIs401AndSaysNothing(t *testing.T) {
+	t.Parallel()
 	for _, token := range []string{
 		"token-bbbb",  // same length, different value — the constant-time path
 		"token-aaa",   // a prefix of the real one
@@ -104,6 +106,7 @@ func TestMiddleware_WrongTokenIs401AndSaysNothing(t *testing.T) {
 // they arrived from. Neither substitutes for the other — a policy targets the
 // principal to name one client and the surface to name every outsider at once.
 func TestMiddleware_ValidTokenEstablishesPrincipalAndSurface(t *testing.T) {
+	t.Parallel()
 	next := &capture{}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -133,6 +136,7 @@ func TestMiddleware_ValidTokenEstablishesPrincipalAndSurface(t *testing.T) {
 // policy can target the class) CARRYING its owner principal on the context.
 // An ordinary client with no binding is untouched by the seam.
 func TestMiddleware_MachineTokenAuthenticatesAsWorkerCarryingItsOwner(t *testing.T) {
+	t.Parallel()
 	next := &capture{}
 	h, err := newAuthMiddleware(Options{
 		Clients: []string{"afsin-laptop", "ci-bot"},
@@ -190,6 +194,7 @@ func TestMiddleware_MachineTokenAuthenticatesAsWorkerCarryingItsOwner(t *testing
 // answer tools spend an LLM budget, so an over-cap request is REFUSED rather than
 // queued — a queue turns a burst into a latency cliff the client reads as a hang.
 func TestMiddleware_OverCapIs429(t *testing.T) {
+	t.Parallel()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var served atomic.Int64
@@ -246,6 +251,7 @@ func TestMiddleware_OverCapIs429(t *testing.T) {
 // source every request is a 401, which is a broken deployment wearing the
 // costume of a working one.
 func TestNewAuthMiddleware_RefusesToStartWithoutCredentials(t *testing.T) {
+	t.Parallel()
 	if _, err := newAuthMiddleware(Options{Clients: []string{"ci-bot"}}, &capture{}); err == nil {
 		t.Error("a middleware with no credential source was accepted")
 	}
@@ -260,6 +266,7 @@ func TestNewAuthMiddleware_RefusesToStartWithoutCredentials(t *testing.T) {
 // and, in particular, an empty presented token must not match an empty stored
 // one.
 func TestMiddleware_ClientWithNoIssuedCredentialCannotAuthenticate(t *testing.T) {
+	t.Parallel()
 	next := &capture{}
 	h, err := newAuthMiddleware(Options{
 		Clients:       []string{"never-issued"},

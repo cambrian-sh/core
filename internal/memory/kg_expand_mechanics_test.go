@@ -11,6 +11,7 @@ import (
 // Hop decay + corroboration: the floor drops with hop distance and rises with
 // distinct-entity corroboration, bounded; cosine still lifts above the floor.
 func TestExpandedScore_HopDecayAndCorroboration(t *testing.T) {
+	t.Parallel()
 	doc := domain.Document{} // no embedding ⇒ pure floor
 	if got := expandedScore(nil, doc, 0, 1); got != 0.5 {
 		t.Errorf("hop-0 single-entity floor: got %v want 0.5", got)
@@ -36,6 +37,7 @@ func TestExpandedScore_HopDecayAndCorroboration(t *testing.T) {
 }
 
 func TestLexicalAliasVariants(t *testing.T) {
+	t.Parallel()
 	cases := map[string][]string{
 		"kraków":        {"krakow"},
 		"apples":        {"apple"},
@@ -63,6 +65,7 @@ func (f *fakeAliasIdx) NeighborNamesOf(name string, k int) []string { return f.n
 // Alias expansion keeps original ranking first, adds semantic neighbors for top
 // entities and lexical variants after, dedups, and respects the cap.
 func TestExpandEntityAliases(t *testing.T) {
+	t.Parallel()
 	idx := &fakeAliasIdx{neighbors: map[string][]string{"us": {"united states"}}}
 	got := expandEntityAliases([]string{"us", "kraków"}, idx, 10)
 	if got[0] != "us" || got[1] != "kraków" {
@@ -101,6 +104,7 @@ func (f *fakeBatchedStore) ChunksForEntities(_ context.Context, entities []strin
 }
 
 func TestKgExpand_PrefersBatchedLookupAndScoresCorroboration(t *testing.T) {
+	t.Parallel()
 	inner := newFakeChunkTripletsStore()
 	_ = inner.SaveChunkTriplets(context.Background(), "seed", []domain.ChunkTriplet{
 		{H: "acme", R: "is", T: "supplier"},

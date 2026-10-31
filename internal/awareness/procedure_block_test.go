@@ -22,6 +22,7 @@ func routine() domain.Procedure {
 // directive unless the prompt says otherwise, and a planner treating a routine as
 // authority turns induced memory into a control channel (ADR-0094 D6).
 func TestProcedureBlock_IsFramedAsAdvisory(t *testing.T) {
+	t.Parallel()
 	block := buildProcedureBlock([]domain.Procedure{routine()})
 	lower := strings.ToLower(block)
 	if !strings.Contains(lower, "advisory") {
@@ -37,6 +38,7 @@ func TestProcedureBlock_IsFramedAsAdvisory(t *testing.T) {
 // the planner an agent to use. That is the Zero-Hardcode rule at the last place it
 // could leak.
 func TestProcedureBlock_NamesCapabilitiesNotAgents(t *testing.T) {
+	t.Parallel()
 	p := routine()
 	// Even if attribution is present on the record, it must not reach the prompt.
 	p.ContributingAgents = []string{"code_generator_agent", "deployer_agent"}
@@ -56,6 +58,7 @@ func TestProcedureBlock_NamesCapabilitiesNotAgents(t *testing.T) {
 // Corroboration must be visible, so a barely-seen routine can be weighed differently
 // from an established one — the same reason a precedent carries its similarity.
 func TestProcedureBlock_SurfacesCorroboration(t *testing.T) {
+	t.Parallel()
 	block := buildProcedureBlock([]domain.Procedure{routine()})
 	if !strings.Contains(block, "0.87") || !strings.Contains(block, `observed="4"`) {
 		t.Errorf("confidence and observation count must be visible to the planner:\n%s", block)
@@ -65,6 +68,7 @@ func TestProcedureBlock_SurfacesCorroboration(t *testing.T) {
 // No routines ⇒ no block. An empty section is prompt budget spent on nothing, and the
 // planner should not be told there is procedural memory when there is none.
 func TestProcedureBlock_EmptyWhenNoRoutines(t *testing.T) {
+	t.Parallel()
 	if got := buildProcedureBlock(nil); got != "" {
 		t.Errorf("expected no block, got %q", got)
 	}

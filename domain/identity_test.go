@@ -12,6 +12,7 @@ import (
 // against Postgres is a rule most test runs would skip.
 
 func TestNewRelationRegistry_SeedsAlwaysPresent(t *testing.T) {
+	t.Parallel()
 	// The two seed verbs are what the kernel's own lanes emit; a deployment that
 	// declares nothing must still carry them (the ResolutionPolicyLatestAssertion
 	// precedent).
@@ -36,6 +37,7 @@ func TestNewRelationRegistry_SeedsAlwaysPresent(t *testing.T) {
 }
 
 func TestNewRelationRegistry_BootRefusals(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		specs []RelationSpec
@@ -91,6 +93,7 @@ func TestNewRelationRegistry_BootRefusals(t *testing.T) {
 }
 
 func TestRelationRegistry_VerbSetsAreDataNotBranches(t *testing.T) {
+	t.Parallel()
 	reg, err := NewRelationRegistry([]RelationSpec{
 		{Name: "alias_of", Family: LinkFamilyIdentity, Symmetric: true, Closure: ClosureIdentity},
 		{Name: "subsidiary_of", Family: LinkFamilyRelation, Closure: ClosureRollup},
@@ -113,6 +116,7 @@ func TestRelationRegistry_VerbSetsAreDataNotBranches(t *testing.T) {
 }
 
 func TestValidateLink_Refusals(t *testing.T) {
+	t.Parallel()
 	reg := mustRegistry(t)
 	base := Link{
 		NamespaceID: "default",
@@ -223,6 +227,7 @@ func TestValidateLink_Refusals(t *testing.T) {
 }
 
 func TestValidateLink_HumanNeedsNoEvidence(t *testing.T) {
+	t.Parallel()
 	// The admissibility rule binds MACHINES. A person asserting something is the
 	// basis; requiring an evidence row would only produce fake ones.
 	reg := mustRegistry(t)
@@ -241,6 +246,7 @@ func TestValidateLink_HumanNeedsNoEvidence(t *testing.T) {
 }
 
 func TestCanonicalizeLink(t *testing.T) {
+	t.Parallel()
 	// Without canonical ordering, "A same_as B" and "B same_as A" are two rows no
 	// dedup key can reconcile — the same equivalence counted twice and reviewed
 	// twice.
@@ -270,6 +276,7 @@ func TestCanonicalizeLink(t *testing.T) {
 }
 
 func TestEntityKindFromID(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		id   string
 		want string
@@ -292,6 +299,7 @@ func TestEntityKindFromID(t *testing.T) {
 }
 
 func TestValidateEntityKind_WellFormednessOnly(t *testing.T) {
+	t.Parallel()
 	// Well-formedness ONLY (amendment S3): a deployment cannot enumerate every kind
 	// its sources will ever carry, so an undeclared-but-well-formed kind passes here
 	// and is checked where a human is present.

@@ -7,6 +7,7 @@ import "testing"
 // ============================================================
 
 func TestDetect_DifferentErrors_ReturnsFalse(t *testing.T) {
+	t.Parallel()
 	prev := Attempt{ErrorMsg: "timeout", Output: []byte("some output")}
 	curr := Attempt{ErrorMsg: "oom", Output: []byte("some output")}
 	if got := Detect(prev, curr); got != false {
@@ -19,6 +20,7 @@ func TestDetect_DifferentErrors_ReturnsFalse(t *testing.T) {
 // ============================================================
 
 func TestDetect_SameError_EmptyOutput_ReturnsTrue(t *testing.T) {
+	t.Parallel()
 	prev := Attempt{ErrorMsg: "timeout", Output: []byte("previous output")}
 	curr := Attempt{ErrorMsg: "timeout", Output: []byte{}}
 	if got := Detect(prev, curr); got != true {
@@ -31,6 +33,7 @@ func TestDetect_SameError_EmptyOutput_ReturnsTrue(t *testing.T) {
 // ============================================================
 
 func TestDetect_SameError_LargeOutput_ReturnsTrue(t *testing.T) {
+	t.Parallel()
 	large := make([]byte, 8193)
 	for i := range large {
 		large[i] = 'x'
@@ -47,6 +50,7 @@ func TestDetect_SameError_LargeOutput_ReturnsTrue(t *testing.T) {
 // ============================================================
 
 func TestDetect_SameError_NearlyIdenticalOutput_ReturnsTrue(t *testing.T) {
+	t.Parallel()
 	// 100-byte base; change 1 byte → edit distance = 1, delta = 1/100 = 0.01 < 0.05
 	base := make([]byte, 100)
 	for i := range base {
@@ -68,6 +72,7 @@ func TestDetect_SameError_NearlyIdenticalOutput_ReturnsTrue(t *testing.T) {
 // ============================================================
 
 func TestDetect_SameError_MeaningfullyDifferentOutput_ReturnsFalse(t *testing.T) {
+	t.Parallel()
 	// 100-byte outputs, 10 bytes different → delta = 10/100 = 0.10 ≥ 0.05
 	prev := make([]byte, 100)
 	curr := make([]byte, 100)
@@ -91,6 +96,7 @@ func TestDetect_SameError_MeaningfullyDifferentOutput_ReturnsFalse(t *testing.T)
 // ============================================================
 
 func TestDetect_SameError_ExactBoundary8192_UsesLevenshtein(t *testing.T) {
+	t.Parallel()
 	// Exactly 8192 bytes is within the Levenshtein window (≤ 8192 inclusive).
 	// Identical payloads → edit distance = 0 → delta = 0 < 0.05 → true (loop confirmed).
 	payload := make([]byte, 8192)

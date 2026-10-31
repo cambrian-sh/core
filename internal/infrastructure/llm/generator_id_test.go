@@ -20,6 +20,7 @@ import (
 // This test covers every construction path at once so the next field cannot be
 // half-threaded the same way.
 func TestGeneratorID_ReachesEveryClientConstruction(t *testing.T) {
+	t.Parallel()
 	generators := []config.GeneratorConfig{
 		{ID: "deepseek", Provider: "openai", Model: "deepseek-v4-flash", Endpoint: "https://x/v1"},
 		{ID: "claude", Provider: "anthropic", Model: "claude", Endpoint: "https://y"},

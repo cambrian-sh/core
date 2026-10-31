@@ -30,6 +30,7 @@ func rec(level slog.Level, component, msg string, attrs map[string]any) util.Log
 // bypasses the access-policy plane, so it is not filtered per principal the way
 // a memory read is — a Viewer must not get it.
 func TestLogRPCs_AreOperatorOnly(t *testing.T) {
+	t.Parallel()
 	for _, m := range []string{"QueryLogs", "TailLogs"} {
 		if !isOperatorOnly(operatorMethodPrefix + m) {
 			t.Fatalf("%s is open to a Viewer", m)
@@ -49,6 +50,7 @@ func TestLogRPCs_AreOperatorOnly(t *testing.T) {
 // A kernel that retains nothing says so, rather than returning an empty window
 // that reads as "the kernel has been silent".
 func TestQueryLogs_NoRingIsUnimplemented(t *testing.T) {
+	t.Parallel()
 	svc := &Service{}
 	_, err := svc.QueryLogs(context.Background(), &pb.QueryLogsOpRequest{})
 	if status.Code(err) != codes.Unimplemented {
@@ -57,6 +59,7 @@ func TestQueryLogs_NoRingIsUnimplemented(t *testing.T) {
 }
 
 func TestQueryLogs_ReturnsRecordsWithTypedAttributes(t *testing.T) {
+	t.Parallel()
 	svc, ring := logService(t)
 	ring.Append(rec(slog.LevelError, "llm", "request rejected",
 		map[string]any{"status": 504, "generator": "mimo", "ok": false}))
@@ -91,6 +94,7 @@ func TestQueryLogs_ReturnsRecordsWithTypedAttributes(t *testing.T) {
 
 // The window rides on every response so a console can state what it cannot show.
 func TestQueryLogs_ReportsTheWindowIncludingDrops(t *testing.T) {
+	t.Parallel()
 	svc := &Service{}
 	ring := util.NewLogRing(3)
 	svc.SetLogRing(ring)
@@ -115,6 +119,7 @@ func TestQueryLogs_ReportsTheWindowIncludingDrops(t *testing.T) {
 }
 
 func TestQueryLogs_FiltersByLevelComponentTextAndAttribute(t *testing.T) {
+	t.Parallel()
 	svc, ring := logService(t)
 	ring.Append(rec(slog.LevelInfo, "telegram", "ingress started", nil))
 	ring.Append(rec(slog.LevelError, "llm", "request rejected", map[string]any{"generator": "mimo"}))
@@ -150,6 +155,7 @@ func TestQueryLogs_FiltersByLevelComponentTextAndAttribute(t *testing.T) {
 // When more matches than the limit, an operator wants the RECENT ones — but
 // still in reading order.
 func TestQueryLogs_LimitKeepsTheNewestInChronologicalOrder(t *testing.T) {
+	t.Parallel()
 	svc, ring := logService(t)
 	for i := 0; i < 10; i++ {
 		ring.Append(rec(slog.LevelInfo, "kernel", "line", nil))
@@ -169,6 +175,7 @@ func TestQueryLogs_LimitKeepsTheNewestInChronologicalOrder(t *testing.T) {
 }
 
 func TestQueryLogs_AfterSeqIsTheResumeCursor(t *testing.T) {
+	t.Parallel()
 	svc, ring := logService(t)
 	for i := 0; i < 5; i++ {
 		ring.Append(rec(slog.LevelInfo, "kernel", "line", nil))
@@ -186,6 +193,7 @@ func TestQueryLogs_AfterSeqIsTheResumeCursor(t *testing.T) {
 // A filter that matches almost nothing must not pin the tail's cursor: advancing
 // only on matches would re-scan the filtered-out records forever.
 func TestTailLogs_CursorAdvancesPastNonMatches(t *testing.T) {
+	t.Parallel()
 	svc, ring := logService(t)
 	ring.Append(rec(slog.LevelInfo, "noise", "a", nil))
 	ring.Append(rec(slog.LevelInfo, "noise", "b", nil))
@@ -214,6 +222,7 @@ func TestTailLogs_CursorAdvancesPastNonMatches(t *testing.T) {
 
 // A tail resumes from a sequence and sends only what matches after it.
 func TestTailLogs_ResumesFromASequence(t *testing.T) {
+	t.Parallel()
 	svc, ring := logService(t)
 	ring.Append(rec(slog.LevelInfo, "noise", "a", nil))
 	ring.Append(rec(slog.LevelError, "llm", "boom", nil))
@@ -236,6 +245,7 @@ func TestTailLogs_ResumesFromASequence(t *testing.T) {
 }
 
 func TestTailLogs_NoRingIsUnimplemented(t *testing.T) {
+	t.Parallel()
 	svc := &Service{}
 	err := svc.TailLogs(&pb.TailLogsOpRequest{}, &fakeTailStream{ctx: context.Background()})
 	// Returns immediately: the ring check happens before the poll loop.

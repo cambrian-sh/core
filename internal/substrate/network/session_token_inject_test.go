@@ -110,6 +110,7 @@ func runOneStepPlan(t *testing.T, s *Server) {
 }
 
 func TestExecute_InjectsSessionTokenID(t *testing.T) {
+	t.Parallel()
 	gw := &capturingGateway{tokenToReturn: "tok-xyz"}
 	auc := &capturingAuctioneer{}
 	s := minimalServer(t)
@@ -129,6 +130,7 @@ func TestExecute_InjectsSessionTokenID(t *testing.T) {
 }
 
 func TestExecute_InjectsStepIndex(t *testing.T) {
+	t.Parallel()
 	auc := &capturingAuctioneer{}
 	s := minimalServer(t)
 	s.Dispatcher = auc
@@ -146,6 +148,7 @@ func TestExecute_InjectsStepIndex(t *testing.T) {
 }
 
 func TestExecute_NilGateway_NoTokenInjected(t *testing.T) {
+	t.Parallel()
 	auc := &capturingAuctioneer{}
 	s := minimalServer(t)
 	s.LLMGateway = nil
@@ -164,6 +167,7 @@ func TestExecute_NilGateway_NoTokenInjected(t *testing.T) {
 }
 
 func TestExecute_GatewayCompleteCalledAfterStep(t *testing.T) {
+	t.Parallel()
 	gw := &capturingGateway{}
 	auc := &capturingAuctioneer{}
 	s := minimalServer(t)

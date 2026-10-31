@@ -44,6 +44,7 @@ func (f *fakeArtRecorder) SaveArtifact(a Artifact) error {
 // the durable vault + metadata record AND materialized to the output dir — so it
 // survives content-store GC, is retrievable via GetArtifact, and lands on disk.
 func TestToolExecutor_persistArtifacts_PromotesAndMaterializes(t *testing.T) {
+	t.Parallel()
 	const cid = "cid-cambrian"
 	content := []byte("hello cambrian summary")
 	cs := &fakeArtCS{data: map[string][]byte{cid: content}}
@@ -87,6 +88,7 @@ func TestToolExecutor_persistArtifacts_PromotesAndMaterializes(t *testing.T) {
 
 // A malicious "../" relative path cannot escape the output directory.
 func TestToolExecutor_materialize_ContainsTraversal(t *testing.T) {
+	t.Parallel()
 	outDir := t.TempDir()
 	e := &ToolExecutor{ArtifactOutputDir: outDir}
 
@@ -103,6 +105,7 @@ func TestToolExecutor_materialize_ContainsTraversal(t *testing.T) {
 
 // No-op and nil-safe when artifact promotion is not wired (backward compatible).
 func TestToolExecutor_persistArtifacts_NoopWhenUnwired(t *testing.T) {
+	t.Parallel()
 	e := &ToolExecutor{} // no ContentStore, no vault, no output dir
 	// Must not panic and must do nothing.
 	e.persistArtifacts(context.Background(), ToolCallRequest{ToolName: "write_file"},

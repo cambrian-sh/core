@@ -38,6 +38,7 @@ func clipExecutor(a Authorizer) *ToolExecutor {
 // denied tool T, loading a skill that grants T, must NOT obtain T — the run
 // continues and a skill_grant_clipped decision is emitted.
 func TestSkillGrants_ClippedNotUnioned(t *testing.T) {
+	t.Parallel()
 	e := clipExecutor(denyTool{deny: "rotate_keys"})
 	ctx := context.Background()
 
@@ -78,6 +79,7 @@ func TestSkillGrants_ClippedNotUnioned(t *testing.T) {
 // D6 is preserved: an operator-authored skill may still confer a tool the agent
 // has no STATIC grant for. Policy is the ceiling; the static grant list is not.
 func TestSkillGrants_StillWidenBeyondStaticGrants(t *testing.T) {
+	t.Parallel()
 	e := clipExecutor(AllowAllAuthorizer{}) // no policy ⇒ nothing to clip
 	ctx := context.Background()
 
@@ -97,6 +99,7 @@ func TestSkillGrants_StillWidenBeyondStaticGrants(t *testing.T) {
 // activating a name the registry will later reject as "unknown tool" — the two
 // look identical to a caller otherwise.
 func TestSkillGrants_UnknownToolIsClipped(t *testing.T) {
+	t.Parallel()
 	e := clipExecutor(AllowAllAuthorizer{})
 	granted, clipped := e.ConferSkillGrants(context.Background(), "run1", "a", []string{"ghost_tool"})
 	if len(granted) != 0 || len(clipped) != 1 {
@@ -111,6 +114,7 @@ func TestSkillGrants_UnknownToolIsClipped(t *testing.T) {
 // loading a skill would be the way around the Scout's confinement, which is
 // exactly the shape of escalation this phase closes.
 func TestSkillGrants_RestrictedCeilingOutranksTheSkill(t *testing.T) {
+	t.Parallel()
 	e := clipExecutor(AllowAllAuthorizer{})
 	e.RestrictedTools = map[string]map[string]bool{
 		"scout": {"read_runbook": true},
@@ -133,6 +137,7 @@ func TestSkillGrants_RestrictedCeilingOutranksTheSkill(t *testing.T) {
 // property: for any skill grant list, the conferred set is a SUBSET of it, and
 // nothing outside the list ever becomes grantable.
 func TestSkillGrants_NeverWidenBeyondWhatTheSkillNamed(t *testing.T) {
+	t.Parallel()
 	e := clipExecutor(denyTool{deny: "rotate_keys"})
 	ctx := context.Background()
 

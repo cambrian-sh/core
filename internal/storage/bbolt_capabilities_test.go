@@ -6,8 +6,8 @@ import (
 )
 
 // newCapabilityTestAdapter opens a fully-initialized BBoltAdapter backed by a
-// temp DB and an empty agents dir. All buckets (including capability_clusters)
-// are created by Seed; no agents are auto-seeded.
+// temp DB and an empty agents dir. All buckets are created by Seed; no agents
+// are auto-seeded.
 func newCapabilityTestAdapter(t *testing.T) (*BBoltAdapter, func()) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "cap_test.db")
@@ -17,39 +17,6 @@ func newCapabilityTestAdapter(t *testing.T) (*BBoltAdapter, func()) {
 		t.Fatalf("NewBBoltAdapter: %v", err)
 	}
 	return adapter, func() { adapter.Close() }
-}
-
-// TestSetClusterName_GetClusterName_RoundTrip verifies that a cluster name
-// written via SetClusterName is returned intact by GetClusterName.
-func TestSetClusterName_GetClusterName_RoundTrip(t *testing.T) {
-	adapter, cleanup := newCapabilityTestAdapter(t)
-	defer cleanup()
-
-	if err := adapter.SetClusterName("agent-rep-1", "vision-processing"); err != nil {
-		t.Fatalf("SetClusterName: %v", err)
-	}
-
-	name, err := adapter.GetClusterName("agent-rep-1")
-	if err != nil {
-		t.Fatalf("GetClusterName: %v", err)
-	}
-	if name != "vision-processing" {
-		t.Errorf("GetClusterName: got %q, want %q", name, "vision-processing")
-	}
-}
-
-// TestGetClusterName_AbsentKey returns empty string without error.
-func TestGetClusterName_AbsentKey(t *testing.T) {
-	adapter, cleanup := newCapabilityTestAdapter(t)
-	defer cleanup()
-
-	name, err := adapter.GetClusterName("nonexistent-rep")
-	if err != nil {
-		t.Fatalf("expected nil error for absent key, got: %v", err)
-	}
-	if name != "" {
-		t.Errorf("expected empty string for absent key, got %q", name)
-	}
 }
 
 // TestSetCapabilities_NonExistentAgent verifies that SetCapabilities returns an

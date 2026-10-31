@@ -7,6 +7,7 @@ import "testing"
 // silent-drop shape that let the EFE selector discard the capability contract.
 // This test is the guard for the pin fields specifically.
 func TestClone_CarriesAgentPin(t *testing.T) {
+	t.Parallel()
 	plan := &ExecutionPlan{
 		Subject: "s",
 		Steps: []Step{{

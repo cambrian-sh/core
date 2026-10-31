@@ -58,6 +58,7 @@ func newWriteService(cw ConfigWriter, sw SecretWriter) *Service {
 // An unwired write path must answer Unimplemented, so a console renders a
 // read-only form rather than a Save button that silently discards the change.
 func TestConfigWrite_UnwiredReturnsUnimplemented(t *testing.T) {
+	t.Parallel()
 	s := &Service{}
 	ctx := context.Background()
 
@@ -81,6 +82,7 @@ func TestConfigWrite_UnwiredReturnsUnimplemented(t *testing.T) {
 // Mutating RPCs require command_id + reason, like every other one on this plane.
 // Without them the audit log records an action nobody can attribute or explain.
 func TestConfigWrite_RequiresCommandIDAndReason(t *testing.T) {
+	t.Parallel()
 	s := newWriteService(&stubConfigWriter{}, nil)
 
 	if _, err := s.SetConfig(context.Background(), &pb.SetConfigOpRequest{
@@ -91,6 +93,7 @@ func TestConfigWrite_RequiresCommandIDAndReason(t *testing.T) {
 }
 
 func TestConfigWrite_EmptyRequestIsRejected(t *testing.T) {
+	t.Parallel()
 	s := newWriteService(&stubConfigWriter{}, nil)
 	ctx := context.Background()
 
@@ -105,6 +108,7 @@ func TestConfigWrite_EmptyRequestIsRejected(t *testing.T) {
 // Per-key outcomes must reach the wire intact. Collapsing them into one ok/fail
 // would hide which field did not take, which is the state an operator most needs.
 func TestSetConfig_OutcomesReachTheWire(t *testing.T) {
+	t.Parallel()
 	w := &stubConfigWriter{outs: []ConfigWriteOutcome{
 		{Key: "execution.blend_weight_cosine", Set: true, Effect: EffectLive},
 		{Key: "execution.ewma_alpha", Set: true, Effect: EffectShadowed, ShadowedBy: "env:CAMBRIAN_EXECUTION__EWMA_ALPHA"},
@@ -144,6 +148,7 @@ func TestSetConfig_OutcomesReachTheWire(t *testing.T) {
 // store designed to be read and exported, so a key that reaches it is a key that
 // has left the boundary — which defeats the whole point of a write-only field.
 func TestSetGeneratorKey_KeyNeverReachesTheAuditLog(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-live-SUPERSECRET-9999"
 	s := newWriteService(nil, &stubSecretWriter{out: ConfigWriteOutcome{
 		Key: "generator:gpt:api_key", Set: true, Effect: EffectLive,
@@ -168,6 +173,7 @@ func TestSetGeneratorKey_KeyNeverReachesTheAuditLog(t *testing.T) {
 }
 
 func TestSetGeneratorKey_EmptyKeyIsRejected(t *testing.T) {
+	t.Parallel()
 	s := newWriteService(nil, &stubSecretWriter{})
 
 	// An empty key must not silently CLEAR the credential — that is a different
@@ -180,6 +186,7 @@ func TestSetGeneratorKey_EmptyKeyIsRejected(t *testing.T) {
 }
 
 func TestHasConfigWriter_TracksWiring(t *testing.T) {
+	t.Parallel()
 	if (&Service{}).HasConfigWriter() {
 		t.Fatal("bare service reports a config writer")
 	}

@@ -30,6 +30,7 @@ func newRouterWithGen(gen domain.Generator) *router.DefaultRouter {
 
 // Cycle 27 — High-confidence LLM response returns the classified decision.
 func TestLayer3_HighConfidence_ReturnsDecision(t *testing.T) {
+	t.Parallel()
 	gen := harness.NewFakeGenerator(highConfidenceResponse)
 	r := newRouterWithGen(gen)
 
@@ -44,6 +45,7 @@ func TestLayer3_HighConfidence_ReturnsDecision(t *testing.T) {
 
 // Cycle 28 — Low-confidence response returns DecisionClarification.
 func TestLayer3_LowConfidence_ReturnsClarification(t *testing.T) {
+	t.Parallel()
 	gen := harness.NewFakeGenerator(lowConfidenceResponse)
 	r := newRouterWithGen(gen)
 
@@ -59,6 +61,7 @@ func TestLayer3_LowConfidence_ReturnsClarification(t *testing.T) {
 // Cycle 29 — Top candidate has Recommended=true; it is the highest-confidence
 // option (even if it is the one that triggered clarification).
 func TestLayer3_Clarification_TopCandidateIsRecommended(t *testing.T) {
+	t.Parallel()
 	gen := harness.NewFakeGenerator(lowConfidenceResponse)
 	r := newRouterWithGen(gen)
 
@@ -84,6 +87,7 @@ func TestLayer3_Clarification_TopCandidateIsRecommended(t *testing.T) {
 
 // Cycle 30 — Alternatives with confidence >0.1 are included; ≤0.1 are dropped.
 func TestLayer3_Clarification_AlternativesFilteredByThreshold(t *testing.T) {
+	t.Parallel()
 	// tinyAlternativesResponse has: plan=0.30 (top), chat=0.60 (alt, >0.1 → included),
 	// watch=0.05 (alt, ≤0.1 → dropped).
 	gen := harness.NewFakeGenerator(tinyAlternativesResponse)
@@ -106,6 +110,7 @@ func TestLayer3_Clarification_AlternativesFilteredByThreshold(t *testing.T) {
 
 // Cycle 31 — Unknown decision string from LLM → hard error.
 func TestLayer3_UnknownDecision_ReturnsError(t *testing.T) {
+	t.Parallel()
 	gen := harness.NewFakeGenerator(unknownDecisionResponse)
 	r := newRouterWithGen(gen)
 
@@ -117,6 +122,7 @@ func TestLayer3_UnknownDecision_ReturnsError(t *testing.T) {
 
 // Cycle 32 — Invalid JSON from LLM → hard error.
 func TestLayer3_InvalidJSON_ReturnsError(t *testing.T) {
+	t.Parallel()
 	gen := harness.NewFakeGenerator(invalidJSONResponse)
 	r := newRouterWithGen(gen)
 
@@ -128,6 +134,7 @@ func TestLayer3_InvalidJSON_ReturnsError(t *testing.T) {
 
 // Cycle 33 — Generator error → hard error propagated (no silent fallback).
 func TestLayer3_GeneratorError_PropagatesError(t *testing.T) {
+	t.Parallel()
 	// Empty FakeGenerator panics; use a dedicated erroring generator instead.
 	r := newRouterWithGen(&errorGenerator{})
 
@@ -139,6 +146,7 @@ func TestLayer3_GeneratorError_PropagatesError(t *testing.T) {
 
 // Cycle 34 — Body is truncated to RouterClassificationBodyChars before prompt.
 func TestLayer3_BodyTruncation(t *testing.T) {
+	t.Parallel()
 	var capturedPrompt string
 	capturingGen := &captureGenerator{
 		response: highConfidenceResponse,
@@ -164,6 +172,7 @@ func TestLayer3_BodyTruncation(t *testing.T) {
 
 // Cycle 35 — PromptRegistry has "router.classify" entry after init().
 func TestLayer3_PromptRegistry_HasClassifyEntry(t *testing.T) {
+	t.Parallel()
 	found := false
 	for _, entry := range domain.PromptRegistry {
 		if entry.ID == "router.classify" {
@@ -180,6 +189,7 @@ func TestLayer3_PromptRegistry_HasClassifyEntry(t *testing.T) {
 
 // Cycle 36 — RouterMinClassificationConfidence default is 0.5.
 func TestConfig_RouterMinConfidence_Default(t *testing.T) {
+	t.Parallel()
 	cfg := defaultExecConfig()
 	if cfg.Router.RouterMinClassificationConfidence != 0.5 {
 		t.Fatalf("expected default 0.5, got %v", cfg.Router.RouterMinClassificationConfidence)
@@ -188,6 +198,7 @@ func TestConfig_RouterMinConfidence_Default(t *testing.T) {
 
 // Cycle 37 — RouterClassificationBodyChars default is 500.
 func TestConfig_RouterBodyChars_Default(t *testing.T) {
+	t.Parallel()
 	cfg := defaultExecConfig()
 	if cfg.Router.RouterClassificationBodyChars != 500 {
 		t.Fatalf("expected default 500, got %d", cfg.Router.RouterClassificationBodyChars)
@@ -228,6 +239,7 @@ func containsString(haystack, needle string) bool {
 // measured at 5 of 21 benchmark tasks on 2026-07-28. Every other LLM-output parser
 // in the kernel already went through domain.ExtractJSONObject; this one did not.
 func TestLayer3_WrappedJSON_IsExtracted(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"fenced":            "```json\n" + highConfidenceResponse + "\n```",
 		"fenced no lang":    "```\n" + highConfidenceResponse + "\n```",
@@ -252,6 +264,7 @@ func TestLayer3_WrappedJSON_IsExtracted(t *testing.T) {
 // Extraction must not turn genuinely unparseable output into a silent success:
 // no-JSON-at-all is still a hard error (ADR: Layer 3 never silently falls back).
 func TestLayer3_NoJSONAnywhere_StillErrors(t *testing.T) {
+	t.Parallel()
 	r := newRouterWithGen(harness.NewFakeGenerator("I am not going to answer that."))
 
 	if _, err := r.Resolve(context.Background(), domain.RouterInput{Body: "do something"}); err == nil {

@@ -8,6 +8,7 @@ import (
 // The run-scoped overlay confers tools per session, scopes them to that session,
 // and drops them on Clear (ephemeral). Nil/empty are safe no-ops.
 func TestRunGrantOverlay(t *testing.T) {
+	t.Parallel()
 	var nilO *RunGrantOverlay
 	if nilO.Granted("s", "t") {
 		t.Error("nil overlay must grant nothing")
@@ -37,6 +38,7 @@ func TestRunGrantOverlay(t *testing.T) {
 // agent lacks statically becomes grantable once a skill confers it for the run,
 // scoped to that run, and gone after Clear.
 func TestGrantFor_SkillConferred(t *testing.T) {
+	t.Parallel()
 	reg := toolRegFixture()
 	grants := NewInMemoryGrantsStore() // agent1 has NO static grants
 	overlay := NewRunGrantOverlay()

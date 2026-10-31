@@ -32,7 +32,7 @@ type MemoryStack struct {
 	Embedder             domain.Embedder
 	WorkspaceStage       domain.WorkspaceStage        // ADR-0016: may be nil
 	IngestionManager     *memory.IngestionManager     // ADR-0028: ALWAYS non-nil (a zero queue size defaults to 1000). The old "may be nil" note was false and implied a raw-write fallback that could not fire.
-	EntityIndex          *memory.EntityIndex          // ADR-0052: in-memory entity→docs index; nil = surface-only recall
+	EntityIndex          *memory.EntityIndex          // ADR-0053 (T-Mem associative hop): in-memory entity→docs index; nil = surface-only recall
 	ChunkTripletsBatcher *memory.ChunkTripletsBatcher // ADR-0053 Phase 0: batched per-chunk (h,r,t) extractor
 	// ProcedureScheduler runs the ADR-0094 induction pass. nil ⇒ disabled, which is
 	// the default (execution.procedure_induction_interval_hours = 0).
@@ -142,10 +142,12 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	var entityIdx *memory.EntityIndex
 	var chunkTripletsBatcher *memory.ChunkTripletsBatcher
 	if gs, ok := vec.(domain.GraphStore); ok {
-		// ADR-0052: the in-memory entity reverse index, built BEFORE the spreader so
+		// ADR-0053 (T-Mem associative hop; cited as "ADR-0052" until 2026-10-31): the
+		// in-memory entity reverse index, built BEFORE the spreader so
 		// queryService.EnableEntityRouting has an index to read on the first recall.
 		//
-		// The ADR-0052 EdgeBatcher/EdgeWriter pair used to be constructed here as well
+		// The EdgeBatcher/EdgeWriter pair of the original ADR-0053 D2 LLM edge lane used
+		// to be constructed here as well
 		// and described as the "production path". It was not one: nothing in the kernel
 		// ever called Enqueue on it, so it started a drain goroutine and an idle ticker
 		// that consumed an always-empty queue for the lifetime of the process. Its
@@ -180,13 +182,9 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		// the target.
 		spEngine := memory.NewSpreadingEngine(gs, scopedRead,
 			execCfg.Graph.DecayFactor, execCfg.Graph.MaxDepth, execCfg.Graph.EnergyFloor)
-		// ADR-0052: per-type weight map removed; edge.Weight is the LLM/Hebbian
-		// confidence. The 4 per-type constants are still read from config for
-		// audit visibility (see execCfg.Graph) but no longer feed the spreader.
-		_ = execCfg.Graph.WeightContradicts
-		_ = execCfg.Graph.WeightSpecifies
-		_ = execCfg.Graph.WeightCloses
-		_ = execCfg.Graph.WeightDiscussedIn
+		// ADR-0053 D2: the per-type weight map is gone; edge.Weight is the LLM/Hebbian
+		// confidence. The four `weight_*` config keys were retired 2026-10-31
+		// (T-20261031-graph-edge-weight-and-consolidator-timeout).
 		spEngine.HebbianDecayPerDay = execCfg.Retrieval.HebbianDecayPerDay // ADR-0049 D10: decay-on-spread-read
 		ws.SpreadingEngine = spEngine
 
@@ -210,7 +208,7 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		if execCfg.Retrieval.RecallSpreadingEnabled {
 			queryService.EnableSpreading(spEngine)
 		}
-		// ADR-0052: entity-aware routing. The T-Mem "first hop" — finds the
+		// ADR-0053 (T-Mem associative hop): entity-aware routing. The "first hop" — finds the
 		// top-K entity keys by query-embedding cosine and seeds the BFS with
 		// their doc associations. Flag-gated by the same RecallSpreadingEnabled
 		// knob (default on, ADR-0049 D10) — see the empty-index note above.
@@ -294,7 +292,7 @@ func (s *MemoryStack) Start(ctx context.Context) error {
 	if s.Agent.RecordExperiential {
 		s.Agent.StartTier2Drain(ctx)
 	}
-	// The ADR-0052 EdgeBatcher used to be started here. It is no longer constructed
+	// The original ADR-0053 D2 LLM-lane EdgeBatcher used to be started here. It is no longer constructed
 	// — see NewMemoryStack for why. The ADR-0053 batcher below is the one that
 	// actually receives work from the ingest path.
 	// ADR-0053 Phase 0: start the per-chunk (h, r, t) extraction batcher.

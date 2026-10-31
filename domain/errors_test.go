@@ -8,6 +8,7 @@ import (
 
 // Cycle 1: SemanticCheckpointError.Error() returns the expected formatted string.
 func TestSemanticCheckpointError_ErrorString(t *testing.T) {
+	t.Parallel()
 	err := &SemanticCheckpointError{
 		StepIndex:  3,
 		Assessment: "output is off-topic",
@@ -21,6 +22,7 @@ func TestSemanticCheckpointError_ErrorString(t *testing.T) {
 // Cycle 2: errors.As correctly unwraps a wrapped SemanticCheckpointError and
 // preserves all three fields on the extracted value.
 func TestSemanticCheckpointError_ErrorsAs_UnwrapsAndPreservesFields(t *testing.T) {
+	t.Parallel()
 	original := &SemanticCheckpointError{
 		StepIndex:      5,
 		Assessment:     "wrong format REPLAN_SIGNAL",

@@ -30,6 +30,7 @@ func (s *stubVS) QueryByMetadata(_ context.Context, _ map[string]string, _ int) 
 
 // Cycle 0033-05 — VectorStore interface includes QueryByMetadata.
 func TestVectorStore_Interface_HasQueryByMetadata(t *testing.T) {
+	t.Parallel()
 	// Compile-time assertion: stubVS satisfies domain.VectorStore.
 	var _ domain.VectorStore = (*stubVS)(nil)
 }

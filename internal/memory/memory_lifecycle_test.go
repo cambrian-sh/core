@@ -196,6 +196,7 @@ func lifecycleAgentWith(store *lifecycleStore, emb domain.Embedder) *Agent {
 // TestMemoryLifecycle_WhatTheSystemRemembers runs a plausible week of planner activity
 // and asserts what survives in memory.
 func TestMemoryLifecycle_WhatTheSystemRemembers(t *testing.T) {
+	t.Parallel()
 	store := newLifecycleStore()
 	agent := lifecycleAgent(store)
 
@@ -288,6 +289,7 @@ func TestMemoryLifecycle_WhatTheSystemRemembers(t *testing.T) {
 // TestMemoryLifecycle_InducesAndRefinesARoutine continues the story: the repeated shape
 // becomes a procedure, and the procedure then learns from how it goes.
 func TestMemoryLifecycle_InducesAndRefinesARoutine(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := newLifecycleStore()
 	agent := lifecycleAgent(store)
@@ -366,6 +368,7 @@ func TestMemoryLifecycle_InducesAndRefinesARoutine(t *testing.T) {
 // configuration the entire loop must be inert — this is the post-2026-07-18 baseline and
 // the arm every A/B measures against.
 func TestMemoryLifecycle_ArmOffRemembersNothing(t *testing.T) {
+	t.Parallel()
 	store := newLifecycleStore()
 	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.7, 5, 3, 64, 0, 0, 0)
 	agent.ExperienceStore = store // wired, but both arms default false
@@ -394,6 +397,7 @@ func TestMemoryLifecycle_ArmOffRemembersNothing(t *testing.T) {
 // the part that actually mattered — induction counted rows, so eight reruns of one
 // task read as eight independent confirmations of a routine.
 func TestSceneDedup_RerunReinforcesRatherThanDuplicates(t *testing.T) {
+	t.Parallel()
 	store := newLifecycleStore()
 	agent := lifecycleAgent(store)
 
@@ -447,6 +451,7 @@ func TestSceneDedup_RerunReinforcesRatherThanDuplicates(t *testing.T) {
 // total call count: a plan legitimately embeds other things, and a count alone would
 // pass for the wrong reason.
 func TestSceneDedup_RerunDoesNotReembedTheProjection(t *testing.T) {
+	t.Parallel()
 	store := newLifecycleStore()
 	emb := &textRecordingEmbedder{}
 	agent := lifecycleAgentWith(store, emb)
@@ -491,6 +496,7 @@ func TestSceneDedup_RerunDoesNotReembedTheProjection(t *testing.T) {
 // The chain under test: enrichment.Procedures -> plan.FollowedProcedures (planner) ->
 // PlanRecord.FollowedProcedures (executor) -> FeedProcedureOutcome (memory agent).
 func TestProcedureFeedbackLoop_ClosesEndToEnd(t *testing.T) {
+	t.Parallel()
 	store := newLifecycleStore()
 	agent := lifecycleAgent(store)
 

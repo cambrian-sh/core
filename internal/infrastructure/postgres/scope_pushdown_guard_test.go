@@ -20,6 +20,7 @@ import (
 // scoped query, this test tells them why they cannot, before the predicate silently
 // stops enforcing.
 func TestScopePredicateNeverTargetsDocuments(t *testing.T) {
+	t.Parallel()
 	for _, docType := range []string{
 		domain.DocTypeTool,
 		domain.DocTypeSkill,
@@ -40,6 +41,7 @@ func TestScopePredicateNeverTargetsDocuments(t *testing.T) {
 
 // The asymmetry itself, so the reasoning above is not just a comment.
 func TestScopeExpressions_ForbiddenIsANegation(t *testing.T) {
+	t.Parallel()
 	exprs := scopeExpressions(&domain.TagPredicate{ForbiddenTags: []string{"confidential"}})
 	if len(exprs) != 1 {
 		t.Fatalf("expected one predicate, got %d", len(exprs))

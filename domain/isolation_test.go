@@ -12,6 +12,7 @@ func meta(sid string) map[string]interface{} {
 // The failure BRAIN-01 exists to fix: another conversation's material must not be
 // readable. This is the assertion the whole issue reduces to.
 func TestIsolation_OtherSessionIsExcluded(t *testing.T) {
+	t.Parallel()
 	iso := IsolateTo("sess-A")
 	if iso.Allows(meta("sess-B")) {
 		t.Fatal("a document owned by another session was admitted")
@@ -25,6 +26,7 @@ func TestIsolation_OtherSessionIsExcluded(t *testing.T) {
 // than a store reset: an ingested corpus carries no session id and must remain
 // visible, or every deployment loses its knowledge base the day isolation ships.
 func TestIsolation_UnownedCorpusStaysVisible(t *testing.T) {
+	t.Parallel()
 	if !IsolateTo("sess-A").Allows(meta("")) {
 		t.Fatal("unowned corpus material was excluded")
 	}
@@ -38,6 +40,7 @@ func TestIsolation_UnownedCorpusStaysVisible(t *testing.T) {
 // Allows is removed, which is the point — a caller that forgot to decide must get
 // nothing, not everything.
 func TestIsolation_NilDenies(t *testing.T) {
+	t.Parallel()
 	var iso *SessionIsolation
 	for _, m := range []map[string]interface{}{meta(""), meta("sess-A"), nil} {
 		if iso.Allows(m) {
@@ -48,6 +51,7 @@ func TestIsolation_NilDenies(t *testing.T) {
 
 // Bypass is explicit and total.
 func TestIsolation_Bypass(t *testing.T) {
+	t.Parallel()
 	b := IsolationBypass()
 	for _, m := range []map[string]interface{}{meta(""), meta("sess-A"), meta("sess-B")} {
 		if !b.Allows(m) {
@@ -62,6 +66,7 @@ func TestIsolation_Bypass(t *testing.T) {
 // The zero value is a decision nobody made, and must be distinguishable from one
 // somebody did make.
 func TestIsolation_ZeroValueIsNotADecision(t *testing.T) {
+	t.Parallel()
 	var nilIso *SessionIsolation
 	if !nilIso.IsZero() {
 		t.Fatal("nil should read as no decision")
@@ -78,6 +83,7 @@ func TestIsolation_ZeroValueIsNotADecision(t *testing.T) {
 // session-shaped tag is NOT isolated by that tag — identity is not a
 // classification (ADR-0099), and this test pins the separation.
 func TestIsolation_IgnoresTags(t *testing.T) {
+	t.Parallel()
 	m := map[string]interface{}{
 		"tags":        []interface{}{"session:sess-B", "sales"},
 		MetaSessionID: "sess-A",

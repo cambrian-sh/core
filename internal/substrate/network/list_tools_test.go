@@ -12,6 +12,7 @@ import (
 // using the non-forgeable x-agent-id principal, and degrades to an empty menu —
 // never an error — when no tool registry is configured.
 func TestListTools_GrantedAgentSeesItsTools(t *testing.T) {
+	t.Parallel()
 	reg := domain.NewInMemoryToolRegistry()
 	reg.Register(domain.SystemTool{
 		Name:        "execute_command",
@@ -39,6 +40,7 @@ func TestListTools_GrantedAgentSeesItsTools(t *testing.T) {
 }
 
 func TestListTools_AnonymousSeesNothing(t *testing.T) {
+	t.Parallel()
 	reg := domain.NewInMemoryToolRegistry()
 	reg.Register(domain.SystemTool{Name: "read_file"})
 	grants := domain.NewInMemoryGrantsStore()
@@ -56,6 +58,7 @@ func TestListTools_AnonymousSeesNothing(t *testing.T) {
 }
 
 func TestListTools_NoExecutorReturnsEmptyNotError(t *testing.T) {
+	t.Parallel()
 	srv := &Server{}
 	resp, err := srv.ListTools(ctxWithAgentID("agent-a"), &pb.ListToolsRequest{})
 	if err != nil {

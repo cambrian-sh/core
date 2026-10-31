@@ -72,6 +72,7 @@ func testAgent() *Agent {
 // ── Cycle 3 — SceneGenerator.Generate calls LLM once for 5 docs ──────────────
 
 func TestSceneGenerator_Generate_BatchOf5_OneLLMCall(t *testing.T) {
+	t.Parallel()
 	gen := &mockLLMGen{response: scenesJSON(5)}
 	sg := NewSceneGenerator(gen)
 	batch := make([]domain.ExternalDocument, 5)
@@ -99,6 +100,7 @@ func TestSceneGenerator_Generate_BatchOf5_OneLLMCall(t *testing.T) {
 // ── Cycle 4 — SceneGenerator.Generate falls back to placeholders on LLM error ─
 
 func TestSceneGenerator_Generate_LLMError_FallbackPlaceholders(t *testing.T) {
+	t.Parallel()
 	gen := &mockLLMGen{err: fmt.Errorf("timeout")}
 	sg := NewSceneGenerator(gen)
 	batch := []domain.ExternalDocument{makeDoc(0), makeDoc(1)}
@@ -120,6 +122,7 @@ func TestSceneGenerator_Generate_LLMError_FallbackPlaceholders(t *testing.T) {
 // ── Cycle 5 — IngestionManager.Enqueue returns false when queue is full ───────
 
 func TestIngestionManager_Enqueue_ReturnsFalseWhenFull(t *testing.T) {
+	t.Parallel()
 	sg := NewSceneGenerator(&mockLLMGen{response: scenesJSON(5)})
 	im := NewIngestionManager(sg, &mockEmbedder{vec: []float32{0.1}}, testAgent(),
 		IngestionConfig{QueueSize: 1, BatchSize: 5, Workers: 1, BatchWait: time.Second}, config.ChunkerConfig{Default: "option_c"})
@@ -134,6 +137,7 @@ func TestIngestionManager_Enqueue_ReturnsFalseWhenFull(t *testing.T) {
 }
 
 func TestIngestionManager_EndToEnd_DocFlowsToChunkFacts(t *testing.T) {
+	t.Parallel()
 	gen := &mockLLMGen{response: scenesJSON(5)}
 	emb := &mockEmbedder{vec: []float32{0.1, 0.2}}
 	store := &captureAllStore{}

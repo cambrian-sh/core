@@ -16,6 +16,7 @@ func handoff(payload string) *domain.Handoff {
 }
 
 func TestIngressFields_CarriesTheSpeakerTheBridgeAlreadySends(t *testing.T) {
+	t.Parallel()
 	m := ingressFields(handoff(`{
 		"external_id": "tg:6484759603",
 		"text": "hello",
@@ -39,6 +40,7 @@ func TestIngressFields_CarriesTheSpeakerTheBridgeAlreadySends(t *testing.T) {
 }
 
 func TestIngressFields_SpeakerIsOptional(t *testing.T) {
+	t.Parallel()
 	// A bridge that reports no speaker is a thinner row, not a failure — the
 	// message must still be accepted and delivered.
 	m := ingressFields(handoff(`{"external_id": "ex:1", "text": "hi"}`))
@@ -52,6 +54,7 @@ func TestIngressFields_SpeakerIsOptional(t *testing.T) {
 }
 
 func TestIngressFields_StringSpeakerIDAlsoWorks(t *testing.T) {
+	t.Parallel()
 	// Not every platform numbers its users. Accepting both shapes means a bridge
 	// author does not have to know which one this decoder happened to pick.
 	m := ingressFields(handoff(`{"external_id": "x:1", "text": "hi", "speaker_id": "U0431"}`))
@@ -62,6 +65,7 @@ func TestIngressFields_StringSpeakerIDAlsoWorks(t *testing.T) {
 }
 
 func TestIngressFields_MalformedPayloadYieldsNothing(t *testing.T) {
+	t.Parallel()
 	// Not a panic and not a half-filled message: an undecodable payload is not an
 	// inbound message, and Accept rejects the empty one on its own terms.
 	if m := ingressFields(handoff(`{not json`)); m.ExternalID != "" || m.Text != "" {
@@ -74,6 +78,7 @@ func TestIngressFields_MalformedPayloadYieldsNothing(t *testing.T) {
 // worst possible failure here: the binding would still work, it would just be
 // somebody else's.
 func TestIngressFields_LargeIDSurvivesExactly(t *testing.T) {
+	t.Parallel()
 	const big = "9007199254740993" // 2^53 + 1, unrepresentable as a float64
 	m := ingressFields(handoff(`{"external_id": "tg:1", "text": "hi", "speaker_id": ` + big + `}`))
 

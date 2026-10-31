@@ -4,6 +4,7 @@ import "testing"
 
 // A task-session document reports its session and no ingest thread.
 func TestDocSessionID_StepRecord(t *testing.T) {
+	t.Parallel()
 	meta := map[string]interface{}{
 		MetaSourceAgent: "System",
 		MetaSessionID:   "task-session-1",
@@ -19,6 +20,7 @@ func TestDocSessionID_StepRecord(t *testing.T) {
 // A freshly-written ingest chunk reports its thread and — crucially — NO session, so
 // nothing that filters, counts or scopes by session mistakes corpus for a run's output.
 func TestDocIngestThreadID_NewChunk(t *testing.T) {
+	t.Parallel()
 	meta := map[string]interface{}{
 		MetaSourceAgent:    "importer",
 		MetaIngestThreadID: "musique:q17::p3",
@@ -34,6 +36,7 @@ func TestDocIngestThreadID_NewChunk(t *testing.T) {
 // Rows written before the key split kept their ingest thread in session_id. Reads still
 // understand them; the distinguishing signal is that their producer is not "System".
 func TestDocIngestThreadID_LegacyChunk(t *testing.T) {
+	t.Parallel()
 	meta := map[string]interface{}{
 		MetaSourceAgent: "importer",
 		MetaSessionID:   "musique:q17::p3",
@@ -46,6 +49,7 @@ func TestDocIngestThreadID_LegacyChunk(t *testing.T) {
 // The legacy fallback must not swallow a real step record: a System-authored document's
 // session is a session, never an ingest thread.
 func TestDocIngestThreadID_LegacyFallbackSkipsStepRecords(t *testing.T) {
+	t.Parallel()
 	meta := map[string]interface{}{
 		MetaSourceAgent: "System",
 		MetaSessionID:   "task-session-9",
@@ -56,6 +60,7 @@ func TestDocIngestThreadID_LegacyFallbackSkipsStepRecords(t *testing.T) {
 }
 
 func TestDocMetadata_NilAndEmpty(t *testing.T) {
+	t.Parallel()
 	if got := DocSessionID(nil); got != "" {
 		t.Errorf("DocSessionID(nil) = %q", got)
 	}
@@ -69,6 +74,7 @@ func TestDocMetadata_NilAndEmpty(t *testing.T) {
 
 // Non-string values must not panic or leak a bogus ID.
 func TestDocMetadata_WrongTypes(t *testing.T) {
+	t.Parallel()
 	meta := map[string]interface{}{MetaSessionID: 42, MetaIngestThreadID: []string{"x"}}
 	if got := DocSessionID(meta); got != "" {
 		t.Errorf("non-string session_id must yield \"\", got %q", got)

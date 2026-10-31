@@ -86,6 +86,7 @@ func makeWorkspace(store domain.VectorStore, threshold float64) *WorkspaceStageI
 
 // Empty seed results must return an empty slice without panicking.
 func TestPrimeForStep_EmptySeeds_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	ws := makeWorkspace(&seededStore{seeds: nil}, 0.1)
 	refs, err := ws.PrimeForStep(context.Background(), "some query", nil, nil, 0, 20)
 	if err != nil {
@@ -101,6 +102,7 @@ func TestPrimeForStep_EmptySeeds_ReturnsEmpty(t *testing.T) {
 // When SpreadingEngine is nil, seeds become ContextRefs with their cosine
 // score as Precision and their score as Activation (seed == BFS depth 0).
 func TestPrimeForStep_SeedsOnly_NoSpreadingEngine(t *testing.T) {
+	t.Parallel()
 	store := &seededStore{
 		seeds: []domain.SearchResult{
 			{Document: domain.Document{ID: "doc-a", Text: "relevant doc"}, Score: 0.85},
@@ -128,6 +130,7 @@ func TestPrimeForStep_SeedsOnly_NoSpreadingEngine(t *testing.T) {
 // ── Activation threshold filters weak results ──────────────────────────────
 
 func TestPrimeForStep_ActivationThreshold_FiltersWeakRefs(t *testing.T) {
+	t.Parallel()
 	store := &seededStore{
 		seeds: []domain.SearchResult{
 			{Document: domain.Document{ID: "strong"}, Score: 0.90},
@@ -151,6 +154,7 @@ func TestPrimeForStep_ActivationThreshold_FiltersWeakRefs(t *testing.T) {
 // ── Hard ceiling ───────────────────────────────────────────────────────────
 
 func TestPrimeForStep_HardCeiling_TruncatesAtMaxItems(t *testing.T) {
+	t.Parallel()
 	seeds := make([]domain.SearchResult, 10)
 	for i := range seeds {
 		seeds[i] = domain.SearchResult{
@@ -174,6 +178,7 @@ func TestPrimeForStep_HardCeiling_TruncatesAtMaxItems(t *testing.T) {
 // Prior step CIDs receive +0.3 activation boost.
 // A document that would otherwise be below threshold must appear after the boost.
 func TestPrimeForStep_DependsOnBoost_RaisesActivation(t *testing.T) {
+	t.Parallel()
 	// doc-prior: score=0.05 (normally below threshold=0.1), but will be boosted
 	store := &seededStore{
 		seeds: []domain.SearchResult{
@@ -206,6 +211,7 @@ func TestPrimeForStep_DependsOnBoost_RaisesActivation(t *testing.T) {
 
 // Boost must not push activation above 1.0 (clamped).
 func TestPrimeForStep_DependsOnBoost_ClampedAt1(t *testing.T) {
+	t.Parallel()
 	store := &seededStore{
 		seeds: []domain.SearchResult{
 			{Document: domain.Document{ID: "high"}, Score: 0.95},
@@ -228,6 +234,7 @@ func TestPrimeForStep_DependsOnBoost_ClampedAt1(t *testing.T) {
 
 // Results must be sorted by activation descending.
 func TestPrimeForStep_SortedByActivationDescending(t *testing.T) {
+	t.Parallel()
 	store := &seededStore{
 		seeds: []domain.SearchResult{
 			{Document: domain.Document{ID: "low"}, Score: 0.30},
@@ -257,6 +264,7 @@ func TestPrimeForStep_SortedByActivationDescending(t *testing.T) {
 // Documents discovered via BFS (not in original pgvector seeds) must carry
 // Precision=-1.0 to signal "not yet computed" to assemble_context().
 func TestPrimeForStep_BFSNodes_PrecisionSentinel(t *testing.T) {
+	t.Parallel()
 	gs := &graphStore{
 		seededStore: seededStore{
 			seeds: []domain.SearchResult{
@@ -304,6 +312,7 @@ func TestPrimeForStep_BFSNodes_PrecisionSentinel(t *testing.T) {
 // When SpreadingEngine is wired and has edges, bfs_fraction must be > 0.
 // This is the Phase 2 gate signal: if always 0, spreading activation is useless.
 func TestPrimeForStep_WithSpreadingEngine_BFSFractionPositive(t *testing.T) {
+	t.Parallel()
 	gs := &graphStore{
 		seededStore: seededStore{
 			seeds: []domain.SearchResult{

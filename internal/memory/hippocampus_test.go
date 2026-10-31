@@ -81,6 +81,7 @@ func searchResult(score, confidence float64) domain.SearchResult {
 }
 
 func TestHippocampus_Retrieve_NoResults(t *testing.T) {
+	t.Parallel()
 	h := NewHippocampus(&fakeHippStore{}, defaultHippEmbedder(), nil)
 
 	plan, sim, conf, err := h.Retrieve(context.Background(), "play KMFDM")
@@ -97,6 +98,7 @@ func TestHippocampus_Retrieve_NoResults(t *testing.T) {
 }
 
 func TestHippocampus_Retrieve_BelowSimilarityThreshold(t *testing.T) {
+	t.Parallel()
 	store := &fakeHippStore{results: []domain.SearchResult{searchResult(0.80, 0.9)}}
 	h := NewHippocampus(store, defaultHippEmbedder(), nil)
 
@@ -111,6 +113,7 @@ func TestHippocampus_Retrieve_BelowSimilarityThreshold(t *testing.T) {
 }
 
 func TestHippocampus_Retrieve_BelowConfidenceFloor(t *testing.T) {
+	t.Parallel()
 	store := &fakeHippStore{results: []domain.SearchResult{searchResult(0.90, 0.49)}}
 	h := NewHippocampus(store, defaultHippEmbedder(), nil)
 
@@ -125,6 +128,7 @@ func TestHippocampus_Retrieve_BelowConfidenceFloor(t *testing.T) {
 }
 
 func TestHippocampus_Retrieve_ReturnsMatchingPlan(t *testing.T) {
+	t.Parallel()
 	originalPlan := &domain.ExecutionPlan{Subject: "Music Playback"}
 	envelope := ProceduralTemplateV1{Version: 1, Plan: originalPlan}
 	marshaledEnvelope, _ := json.Marshal(envelope)
@@ -161,6 +165,7 @@ func TestHippocampus_Retrieve_ReturnsMatchingPlan(t *testing.T) {
 }
 
 func TestHippocampus_Retrieve_SearchError_ReturnsInfraError(t *testing.T) {
+	t.Parallel()
 	store := &fakeHippStore{searchErr: errors.New("pgvector unavailable")}
 	h := NewHippocampus(store, defaultHippEmbedder(), nil)
 
@@ -178,6 +183,7 @@ func TestHippocampus_Retrieve_SearchError_ReturnsInfraError(t *testing.T) {
 }
 
 func TestHippocampus_Store_EmbedsNormalisedCanonicalKey(t *testing.T) {
+	t.Parallel()
 	embedder := &captureEmbedder{vec: []float32{0.1}}
 	h := NewHippocampus(&fakeHippStore{}, embedder, nil)
 
@@ -206,6 +212,7 @@ func TestHippocampus_Store_EmbedsNormalisedCanonicalKey(t *testing.T) {
 }
 
 func TestHippocampus_Store_SavesCorrectDocument(t *testing.T) {
+	t.Parallel()
 	store := &fakeHippStore{}
 	h := NewHippocampus(store, &captureEmbedder{vec: []float32{0.1}}, nil)
 
@@ -237,6 +244,7 @@ func TestHippocampus_Store_SavesCorrectDocument(t *testing.T) {
 }
 
 func TestHippocampus_Store_SaveError_SilentlyReturnsNil(t *testing.T) {
+	t.Parallel()
 	store := &fakeHippStore{saveErr: errors.New("db write failed")}
 	h := NewHippocampus(store, &captureEmbedder{vec: []float32{0.1}}, nil)
 

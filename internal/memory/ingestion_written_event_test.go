@@ -42,6 +42,7 @@ func (b *captureBus) written() []domain.MemoryWrittenEvent {
 // describing the single action they took. The chunk count is detail and rides in
 // the summary.
 func TestPublishWritten_OneEventPerDocumentNotPerChunk(t *testing.T) {
+	t.Parallel()
 	bus := &captureBus{}
 	im := &IngestionManager{}
 	im.SetEventBus(bus)
@@ -74,6 +75,7 @@ func TestPublishWritten_OneEventPerDocumentNotPerChunk(t *testing.T) {
 
 // A document with no title still identifies itself.
 func TestPublishWritten_FallsBackToTheSourceURI(t *testing.T) {
+	t.Parallel()
 	bus := &captureBus{}
 	im := &IngestionManager{}
 	im.SetEventBus(bus)
@@ -89,6 +91,7 @@ func TestPublishWritten_FallsBackToTheSourceURI(t *testing.T) {
 // No bus, or no entity, publishes nothing rather than panicking — the same
 // nil-safety every other optional seam on this manager has.
 func TestPublishWritten_NilSafe(t *testing.T) {
+	t.Parallel()
 	(&IngestionManager{}).publishWritten(domain.ExternalDocument{SourceURI: "x"}, "e", 1)
 
 	bus := &captureBus{}
@@ -108,6 +111,7 @@ func TestPublishWritten_NilSafe(t *testing.T) {
 // reports writes which were refused is worse than one that reports nothing,
 // because it invites action on material that is not there.
 func TestPublishWritten_NotCalledWhenTheIngestFails(t *testing.T) {
+	t.Parallel()
 	bus := &captureBus{}
 	im := &IngestionManager{}
 	im.SetEventBus(bus)
@@ -123,6 +127,7 @@ func TestPublishWritten_NotCalledWhenTheIngestFails(t *testing.T) {
 }
 
 func TestPublishWritten_SingularChunkReadsCorrectly(t *testing.T) {
+	t.Parallel()
 	bus := &captureBus{}
 	im := &IngestionManager{}
 	im.SetEventBus(bus)

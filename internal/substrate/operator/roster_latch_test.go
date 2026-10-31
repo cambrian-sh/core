@@ -21,6 +21,7 @@ func countAgentReady(feed *Spool) map[string]int {
 }
 
 func TestRosterLatch_ReemitsCachedRoster(t *testing.T) {
+	t.Parallel()
 	feed := NewSpool(SpoolConfig{})
 	latch := NewRosterLatch(feed)
 
@@ -64,6 +65,7 @@ func (f *fakeCapSource) GetManifest(_ context.Context, id string) (*domain.Agent
 // Seeding from manifests must populate the roster even with NO AgentReadyEvents
 // (the disable_interviews case) — this is the actual empty-capabilities root cause.
 func TestRosterLatch_SeedFromManifests(t *testing.T) {
+	t.Parallel()
 	feed := NewSpool(SpoolConfig{})
 	latch := NewRosterLatch(feed)
 	src := &fakeCapSource{
@@ -87,6 +89,7 @@ func TestRosterLatch_SeedFromManifests(t *testing.T) {
 }
 
 func TestRosterLatch_ObserveIgnoresNonReady(t *testing.T) {
+	t.Parallel()
 	latch := NewRosterLatch(NewSpool(SpoolConfig{}))
 	latch.Observe(domain.SessionStateEvent{})          // wrong type — ignored
 	latch.Observe(domain.AgentReadyEvent{AgentID: ""}) // empty id — ignored
@@ -96,6 +99,7 @@ func TestRosterLatch_ObserveIgnoresNonReady(t *testing.T) {
 }
 
 func TestRosterLatch_StartHeartbeat(t *testing.T) {
+	t.Parallel()
 	feed := NewSpool(SpoolConfig{})
 	latch := NewRosterLatch(feed)
 	latch.Observe(domain.AgentReadyEvent{AgentID: "a", Capabilities: []string{"x"}})

@@ -19,6 +19,7 @@ func sr(id string, raw float64) domain.SearchResult {
 // timestamp hub + a speaker entity; a conv-44 distractor shares neither. The
 // island must score 0; the cluster chunks must score > 0.
 func TestChunkCoherence_IslandSinks(t *testing.T) {
+	t.Parallel()
 	st := newFakeChunkTripletsStore()
 	for _, id := range []string{"a", "b", "c"} {
 		_ = st.SaveChunkTriplets(context.Background(), id, []domain.ChunkTriplet{
@@ -49,6 +50,7 @@ func TestChunkCoherence_IslandSinks(t *testing.T) {
 // coherence must instead boost the low-cosine gold (because a relevant seed sits
 // in its session) and give the big irrelevant cluster ZERO (it has no seed).
 func TestChunkCoherence_SeedAnchoredBeatsSize(t *testing.T) {
+	t.Parallel()
 	st := newFakeChunkTripletsStore()
 	// Relevant session: a high-cosine seed + the low-cosine gold, sharing the
 	// session timestamp and a rare speaker entity.
@@ -96,6 +98,7 @@ func TestChunkCoherence_SeedAnchoredBeatsSize(t *testing.T) {
 // TestChunkCoherence_NoSignalCases covers the safe fallbacks: nil store, a single
 // candidate, no relevant seed, and a disjoint pool all yield an empty map.
 func TestChunkCoherence_NoSignalCases(t *testing.T) {
+	t.Parallel()
 	if m := chunkCoherence(context.Background(), nil, []domain.SearchResult{sr("a", 1), sr("b", 1)}, 10); len(m) != 0 {
 		t.Fatalf("nil store must yield no signal, got %v", m)
 	}

@@ -11,6 +11,7 @@ import (
 // ADR-0049 D7: refKind abstracts an engaged ref's prefix to an entity CATEGORY so the
 // retrieval projection matches on shape, not identity.
 func TestRefKind(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"path:a.md":        "file",
 		"file:/etc/hosts":  "file",
@@ -32,6 +33,7 @@ func TestRefKind(t *testing.T) {
 // counts, with specific IDs and the outcome deliberately EXCLUDED (those are an index
 // field / a post-match field, not part of the similarity key).
 func TestSceneProjection_AbstractsToKindCounts(t *testing.T) {
+	t.Parallel()
 	proj := sceneProjection("build docs", []string{"path:a.md", "path:b.md", "url:http://x"})
 
 	if !strings.Contains(proj, "goal: build docs") {
@@ -53,6 +55,7 @@ func TestSceneProjection_AbstractsToKindCounts(t *testing.T) {
 // ADR-0049 D7: a replan's "Replan: <orig>" goal must normalize to the original situation
 // so the failed original and its replan project to the SAME scene situation.
 func TestNormalizeSceneGoal_StripsReplanPrefix(t *testing.T) {
+	t.Parallel()
 	if got := normalizeSceneGoal("Replan: build the docs"); got != "build the docs" {
 		t.Errorf("Replan prefix must be stripped; got %q", got)
 	}
@@ -66,6 +69,7 @@ func TestNormalizeSceneGoal_StripsReplanPrefix(t *testing.T) {
 
 // A goal with no engaged refs projects to just the goal (no engages clause).
 func TestSceneProjection_NoRefs(t *testing.T) {
+	t.Parallel()
 	proj := sceneProjection("ponder", nil)
 	if proj != "goal: ponder" {
 		t.Errorf("no-ref projection must be the bare goal; got %q", proj)
@@ -75,6 +79,7 @@ func TestSceneProjection_NoRefs(t *testing.T) {
 // ADR-0049 D7: WritePlanScene embeds the ABSTRACTED projection (not the reconstruction
 // Text), and records the outcome as a metadata FIELD (read after a situational match).
 func TestWritePlanScene_EmbedsProjectionAndRecordsOutcome(t *testing.T) {
+	t.Parallel()
 	store := &captureSaveStore{}
 	emb := &recordingEmbedder{}
 	agent := NewAgent(NewMemoryManager(store, emb), nil, 0.70, 5, 3, 64, 0, 0, 0)

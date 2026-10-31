@@ -150,6 +150,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 // stand-in" — the seam mirrors InMemoryApprovalController: raise → stream to
 // subscribers → block → Submit resolves; no-subscriber and timeout fail CLOSED.
 func TestConsentHub_BothPromptKindsAnsweredThroughSubscriber(t *testing.T) {
+	t.Parallel()
 	ctrl := NewInMemoryConsentController(2 * time.Second)
 
 	// No subscriber: fail-closed before anything is even asked.
@@ -206,6 +207,7 @@ func TestConsentHub_BothPromptKindsAnsweredThroughSubscriber(t *testing.T) {
 // leaves a consent=auto decision." The subscriber is present and must see NO
 // prompt (silent means silent), and the receipt lands.
 func TestConsent_ReadOnlyAutoDispatchesSilentlyWithReceipt(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	ctrl := NewInMemoryConsentController(time.Second)
 	e, decisions := consentExec(h, ctrl)
@@ -238,6 +240,7 @@ func TestConsent_ReadOnlyAutoDispatchesSilentlyWithReceipt(t *testing.T) {
 // any-surface — a one-tap approval routed to the surface, naming the exact
 // object. Approval dispatches; the receipt names the approver.
 func TestConsent_EffectfulUnderAutoRequiresApproval(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	ctrl := NewInMemoryConsentController(2 * time.Second)
 	e, decisions := consentExec(h, ctrl)
@@ -279,6 +282,7 @@ func TestConsent_EffectfulUnderAutoRequiresApproval(t *testing.T) {
 // Under an explicit any-surface knob even a READ prompts — the machine owner
 // chose stricter than the sealed default.
 func TestConsent_AnySurfaceKnobPromptsForReads(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	ctrl := NewInMemoryConsentController(2 * time.Second)
 	e, decisions := consentExec(h, ctrl)
@@ -311,6 +315,7 @@ func TestConsent_AnySurfaceKnobPromptsForReads(t *testing.T) {
 // the step's error." Each non-consent lands under its OWN reason, and the
 // worker never sees the step.
 func TestConsent_EffectfulWithoutConsentRefusedWithDecision(t *testing.T) {
+	t.Parallel()
 	owner := AgentPrincipal("owner-a")
 	reg := WorkerRegistration{Machine: "a-machine", Owner: owner, Tools: writeFileManifest, Consent: ConsentAuto}
 
@@ -381,6 +386,7 @@ func TestConsent_EffectfulWithoutConsentRefusedWithDecision(t *testing.T) {
 // prompts locally); a consent-denied report is a recorded REFUSAL, never a
 // worker error — and a locally-approved step completes normally.
 func TestConsent_OnMachineOnlyMarkerAndDeniedReport(t *testing.T) {
+	t.Parallel()
 	owner := AgentPrincipal("owner-a")
 	reg := WorkerRegistration{Machine: "a-machine", Owner: owner, Tools: writeFileManifest, Consent: ConsentOnMachineOnly}
 
@@ -434,6 +440,7 @@ func TestConsent_OnMachineOnlyMarkerAndDeniedReport(t *testing.T) {
 // Rung 2: a bare local:<capability> resolves to the SOLE capable live machine
 // and completes end to end, receipted as machine_selected.
 func TestLadder_SoleCapableLiveMachineResolves(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	e, decisions := consentExec(h, nil)
 	owner := AgentPrincipal("owner-a")
@@ -458,6 +465,7 @@ func TestLadder_SoleCapableLiveMachineResolves(t *testing.T) {
 // Rung 3: with TWO capable live machines, the owner's configured default wins
 // without a prompt.
 func TestLadder_DefaultMachineBreaksTieWithoutPrompt(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	ctrl := NewInMemoryConsentController(time.Second)
 	e, decisions := consentExec(h, ctrl)
@@ -496,6 +504,7 @@ func TestLadder_DefaultMachineBreaksTieWithoutPrompt(t *testing.T) {
 // Rung 4: ambiguous (two capable, no default) ⇒ the surface is ASKED and its
 // answer is honored end to end.
 func TestLadder_AsksThroughSurfaceAndHonorsTheAnswer(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	ctrl := NewInMemoryConsentController(2 * time.Second)
 	e, decisions := consentExec(h, ctrl)
@@ -537,6 +546,7 @@ func TestLadder_AsksThroughSurfaceAndHonorsTheAnswer(t *testing.T) {
 // The ladder never guesses: an unanswered "which machine?" — and a capability
 // nobody live offers — refuse with a worker_unresolved decision.
 func TestLadder_EndsWithoutAnswerRefusesWithDecision(t *testing.T) {
+	t.Parallel()
 	owner := AgentPrincipal("owner-a")
 
 	t.Run("unanswered ask", func(t *testing.T) {
@@ -598,6 +608,7 @@ func parkOffline(t *testing.T, h *WorkerHub, reg WorkerRegistration) {
 // queued-until deadline; parked + dispatched-from-park + consent=auto all land
 // as decisions.
 func TestParking_OfflineTargetParksThenDispatchesOnReturn(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	ctrl := NewInMemoryConsentController(time.Second)
 	e, decisions := consentExec(h, ctrl)
@@ -645,6 +656,7 @@ func TestParking_OfflineTargetParksThenDispatchesOnReturn(t *testing.T) {
 // Gate: "An expired parked step fails visibly (named error + recorded
 // decision), never silently."
 func TestParking_ExpiredParkFailsVisibly(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	e, decisions := consentExec(h, nil)
 	e.ParkDeadline = 40 * time.Millisecond
@@ -671,6 +683,7 @@ func TestParking_ExpiredParkFailsVisibly(t *testing.T) {
 // CL-0/CL-1 refusal for an offline target: parking never degrades to a hang on
 // a source that cannot signal liveness.
 func TestParking_UnavailableWithoutWaiterKeepsTheRefusal(t *testing.T) {
+	t.Parallel()
 	e := contributionExec(ownerFleet(t, false)) // registered, NOT live, InMemoryFleet
 	ctx := WithTaskBeneficiary(context.Background(), AgentPrincipal("owner-a"))
 	resp := e.Execute(ctx, ToolCallRequest{AgentID: "agent-1", ToolName: "local:a-machine/read_file", ArgsJSON: []byte(`{}`)})
@@ -686,6 +699,7 @@ func TestParking_UnavailableWithoutWaiterKeepsTheRefusal(t *testing.T) {
 // default_machine, report_step accepts consent:"denied" — and a CL-1-shaped
 // report (no consent field) still completes a step.
 func TestTransport_ConsentWireFieldsAdditive(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	surface := ContributionLaneTools(h)
 	poll, report := surface[0].Handler, surface[1].Handler
@@ -770,6 +784,7 @@ func TestTransport_ConsentWireFieldsAdditive(t *testing.T) {
 // An unrecognised consent knob on the poll fails closed to any-surface — never
 // to silence.
 func TestPollOffer_UnknownConsentKnobFailsClosedToAnySurface(t *testing.T) {
+	t.Parallel()
 	h := hubForTest()
 	owner := AgentPrincipal("owner-a")
 	if _, got, err := h.PollOffer(context.Background(),
@@ -786,6 +801,7 @@ func TestPollOffer_UnknownConsentKnobFailsClosedToAnySurface(t *testing.T) {
 // objectOfArgs surfaces the raw path/url verbatim and nothing else — no
 // semantic parsing.
 func TestObjectOfArgs_RawVerbatimOnly(t *testing.T) {
+	t.Parallel()
 	if got := objectOfArgs([]byte(`{"path":"C:/x/y.txt","content":"z"}`)); got != "C:/x/y.txt" {
 		t.Errorf("path: %q", got)
 	}

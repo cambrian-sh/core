@@ -16,12 +16,14 @@ func sumScores(m map[string]float64) float64 {
 func approx(a, b, tol float64) bool { return math.Abs(a-b) <= tol }
 
 func TestPageRank_Empty(t *testing.T) {
+	t.Parallel()
 	if got := ComputePageRank(nil, PageRankParams{}); len(got) != 0 {
 		t.Fatalf("empty input must yield empty map, got %v", got)
 	}
 }
 
 func TestPageRank_SingleChunk(t *testing.T) {
+	t.Parallel()
 	got := ComputePageRank([]ChunkEntities{{ChunkID: "a", Entities: []string{"x"}}}, PageRankParams{})
 	if !approx(got["a"], 1.0, 1e-9) {
 		t.Fatalf("single chunk must get all the mass, got %v", got)
@@ -29,6 +31,7 @@ func TestPageRank_SingleChunk(t *testing.T) {
 }
 
 func TestPageRank_SumsToOne(t *testing.T) {
+	t.Parallel()
 	chunks := []ChunkEntities{
 		{ChunkID: "a", Entities: []string{"x", "y"}},
 		{ChunkID: "b", Entities: []string{"y", "z"}},
@@ -47,6 +50,7 @@ func TestPageRank_SumsToOne(t *testing.T) {
 }
 
 func TestPageRank_StarHubRanksHighest(t *testing.T) {
+	t.Parallel()
 	// Hub shares a DISTINCT entity with each spoke ⇒ hub has degree 3, spokes 1.
 	chunks := []ChunkEntities{
 		{ChunkID: "hub", Entities: []string{"a", "b", "c"}},
@@ -67,6 +71,7 @@ func TestPageRank_StarHubRanksHighest(t *testing.T) {
 }
 
 func TestPageRank_DFCapDropsHubEntity(t *testing.T) {
+	t.Parallel()
 	// "hub" entity is in ALL 5 chunks (df=5); "rare" only in a+b (df=2).
 	chunks := []ChunkEntities{
 		{ChunkID: "a", Entities: []string{"hub", "rare"}},
@@ -97,6 +102,7 @@ func TestPageRank_DFCapDropsHubEntity(t *testing.T) {
 }
 
 func TestPageRank_DedupsAndStable(t *testing.T) {
+	t.Parallel()
 	// Duplicate chunk id is ignored; result deterministic across runs.
 	chunks := []ChunkEntities{
 		{ChunkID: "a", Entities: []string{"x"}},
@@ -116,6 +122,7 @@ func TestPageRank_DedupsAndStable(t *testing.T) {
 }
 
 func TestChunkEntitiesFromTriplets(t *testing.T) {
+	t.Parallel()
 	rows := []struct{ ChunkID, Entity string }{
 		{"a", "x"}, {"a", "y"}, {"a", "x"}, // dup entity deduped
 		{"b", "y"},

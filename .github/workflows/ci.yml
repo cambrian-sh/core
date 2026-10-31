@@ -31,6 +31,34 @@ env:
 jobs:
   verify:
     runs-on: ubuntu-latest
+
+    # The Postgres integration tests (internal/infrastructure/postgres — tier 0 of
+    # the memory stack, the raw PgVectorAdapter, plus the conversation, session,
+    # link, event and query-plane stores — and internal/migrate's document-split
+    # test) all t.Skip without PG_TEST_DSN. Before this service existed none of
+    # them had ever run in CI, under -race or otherwise, so a DDL or locking
+    # change looked green (T-20261031-core-ci-never-runs-the-postgres-adapter-or;
+    # premium's workflow is the model, T-20261031-premium-s-postgres-tests-never-run-in-ci).
+    #
+    # pgvector/pgvector:pg16 because the baseline migration needs the `vector`
+    # (and contrib `ltree`) extensions. The database name must look disposable
+    # (`*_test`): internal/migrate's split test renames the documents table and
+    # refuses any database whose name does not say test.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: cambrian
+          POSTGRES_PASSWORD: cambrian
+          POSTGRES_DB: cambrian_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cambrian -d cambrian_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -82,8 +110,67 @@ jobs:
       - name: Gate — open-core boundary + OTel isolation
         run: make separability
 
+      # PG_TEST_DSN is deliberately NOT set here. `make test-race` runs every
+      # package in parallel, and the two Postgres-backed packages are destructive
+      # to the same database: internal/migrate's split test DROPs documents,
+      # chunks and schema_migrations, and the adapter tests DROP/CREATE chunks and
+      # conversations. Run concurrently against one database they would corrupt
+      # each other's schema mid-test. They get their own serialised step below;
+      # here they skip exactly as they did before, and the next step is what
+      # turns that skip into a failure.
       - name: Gate — unit tests under the race detector
         run: make test-race
+
+      # Core's schema is a precondition for the link, event and query-plane
+      # tests (they INSERT into evidence/entities/links and create nothing).
+      # Apply it with core's own runner — the same `orchestrator migrate up` an
+      # operator runs — rather than a copied DDL that could drift. No
+      # configs/config.json exists in a fresh checkout; the CAMBRIAN_* env layer
+      # supplies the connection. 1536 dimensions, not premium's 1024: the
+      # adapter tests build a PgVectorAdapter{dim: 1536}, and a mismatch makes
+      # ensureSchema drop and recreate `documents` (CASCADE takes `chunks` with
+      # it), which fails every adapter test that follows.
+      - name: Apply migrations to the test database
+        env:
+          CAMBRIAN_DATABASE__HOST: localhost
+          CAMBRIAN_DATABASE__PORT: "5432"
+          CAMBRIAN_DATABASE__USER: cambrian
+          CAMBRIAN_DATABASE__PASSWORD: cambrian
+          CAMBRIAN_DATABASE__DBNAME: cambrian_test
+          CAMBRIAN_EMBEDDER__DIMENSIONS: "1536"
+        run: go run ./cmd/orchestrator migrate up
+
+      # -p 1: the two packages share one database and both reshape it (see
+      # above), so their test binaries must not overlap. Package order is the
+      # sorted import path, so the adapter tests run against the migrated schema
+      # first and the split test tears it down last.
+      #
+      # A Postgres test that SKIPS in CI is a failure, not a pass: every helper
+      # skips on a missing/unreachable/non-disposable DSN, and that skip is
+      # exactly how these tests stayed silent for the life of the workflow. The
+      # scan fails the job if the log carries any of the helpers' skip messages
+      # (`go test -v` prints the message BEFORE the `--- SKIP` line, so this
+      # matches the messages, not the marker), and asserts one canary from the
+      # adapter package actually passed. A new Pg helper must keep "PG_TEST_DSN"
+      # in its skip message to stay covered.
+      - name: Gate — Postgres adapter and migrations under the race detector
+        shell: bash
+        env:
+          PG_TEST_DSN: postgres://cambrian:cambrian@localhost:5432/cambrian_test?sslmode=disable
+        run: |
+          go test -race -p 1 -v ./internal/infrastructure/postgres/... ./internal/migrate/... 2>&1 \
+            | tee "$RUNNER_TEMP/go-test-pg.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          if grep -E 'PG_TEST_DSN (not set|has no database name)|refusing to run the document-split migration' \
+               "$RUNNER_TEMP/go-test-pg.log"; then
+            echo "FAIL: Postgres tests skipped in CI (see the lines above); PG_TEST_DSN must reach the service database"
+            exit 1
+          fi
+          if ! grep -qE '^\s*--- PASS: TestBindDelivery_RoundTrips ' "$RUNNER_TEMP/go-test-pg.log"; then
+            echo "FAIL: canary TestBindDelivery_RoundTrips did not pass — the Postgres tests are not running"
+            exit 1
+          fi
+          echo "PASS: no Postgres test skipped; canary TestBindDelivery_RoundTrips ran"
 
       - name: Gate — SystemHarness integration
         run: make integration

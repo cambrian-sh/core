@@ -12,6 +12,7 @@ import (
 // ADR-0084 D2 specified this relationship and neither entity referenced the other, so
 // nothing could answer "what did this conversation set in motion?".
 func TestSaveConversationLink_AttributesTheOrderingTurn(t *testing.T) {
+	t.Parallel()
 	m, store, bus := newLifecycleMgr(t)
 	ctx := context.Background()
 	ses, _ := m.CreateSession(ctx, "book a flight", "")
@@ -37,6 +38,7 @@ func TestSaveConversationLink_AttributesTheOrderingTurn(t *testing.T) {
 // Write-once: a session belongs to the turn that STARTED it. Causation does not change
 // retroactively, so a later turn touching the same session must not rewrite its origin.
 func TestSaveConversationLink_IsWriteOnce(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 	ctx := context.Background()
 	ses, _ := m.CreateSession(ctx, "goal", "")
@@ -57,6 +59,7 @@ func TestSaveConversationLink_IsWriteOnce(t *testing.T) {
 
 // An empty conversation is a no-op, not an error: most sessions are not chat-ordered.
 func TestSaveConversationLink_EmptyConversationIsNoOp(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 	ctx := context.Background()
 	ses, _ := m.CreateSession(ctx, "goal", "")
@@ -70,6 +73,7 @@ func TestSaveConversationLink_EmptyConversationIsNoOp(t *testing.T) {
 }
 
 func TestSaveConversationLink_UnknownSessionErrors(t *testing.T) {
+	t.Parallel()
 	m, _, _ := newLifecycleMgr(t)
 	if err := m.SaveConversationLink(context.Background(), "nope", "conv-1", "msg-1"); err == nil {
 		t.Fatal("linking an unknown session must fail, not silently succeed")
@@ -79,6 +83,7 @@ func TestSaveConversationLink_UnknownSessionErrors(t *testing.T) {
 // A store that cannot index the link says so explicitly, so a caller can tell "no sessions"
 // from "this backend cannot answer that".
 func TestListSessionsForConversation_UnsupportedStoreIsExplicit(t *testing.T) {
+	t.Parallel()
 	m, _, _ := newLifecycleMgr(t) // stubSessionStore does not implement the lister
 	_, err := m.ListSessionsForConversation(context.Background(), "conv-1")
 	if !errors.Is(err, ErrConversationIndexUnsupported) {
@@ -97,6 +102,7 @@ func (l *listerStore) ListSessionsForConversation(_ context.Context, id string) 
 }
 
 func TestListSessionsForConversation_UsesTheStoreWhenSupported(t *testing.T) {
+	t.Parallel()
 	store := &listerStore{
 		stubSessionStore: newStubSessionStore(),
 		byConversation: map[string][]domain.Session{

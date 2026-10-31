@@ -9,6 +9,7 @@ import (
 )
 
 func TestExtractQueryTerms(t *testing.T) {
+	t.Parallel()
 	got := extractQueryTerms("When did Caroline go to the LGBTQ support group?")
 	// Content unigrams + adjacent bigrams + adjacent TRIGRAMS (2026-08-14: the
 	// bigram cap meant 3-word entity anchors like "stadio ciro vigorito" could
@@ -57,6 +58,7 @@ func (f *fakeVecStore) QueryByMetadata(context.Context, map[string]string, int) 
 // vector pool, but it mentions an entity present in the query ("caroline"). Query-
 // entity seeding must pull it into the pool via ChunksMentioningEntity.
 func TestInjectQueryEntitySeeds_RescuesVectorMiss(t *testing.T) {
+	t.Parallel()
 	st := newFakeChunkTripletsStore()
 	// gold-1 mentions caroline; an unrelated chunk does not.
 	_ = st.SaveChunkTriplets(context.Background(), "gold-1", []domain.ChunkTriplet{
@@ -94,6 +96,7 @@ func TestInjectQueryEntitySeeds_RescuesVectorMiss(t *testing.T) {
 // TestInjectQueryEntitySeeds_DedupAndDisabled: already-present chunks aren't
 // duplicated, and an empty/entity-less query is a no-op.
 func TestInjectQueryEntitySeeds_DedupAndNoop(t *testing.T) {
+	t.Parallel()
 	st := newFakeChunkTripletsStore()
 	_ = st.SaveChunkTriplets(context.Background(), "g", []domain.ChunkTriplet{{H: "melanie", R: "painted", T: "sunset"}})
 	vs := &fakeVecStore{docs: map[string]domain.Document{"g": {ID: "g"}}}

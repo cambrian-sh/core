@@ -28,6 +28,7 @@ func makePlan(steps ...domain.Step) *domain.ExecutionPlan {
 
 // Cycle 7: Plain error — neither constraint block is injected
 func TestReplan_PlainError_NoConstraintBlock(t *testing.T) {
+	t.Parallel()
 	gen := &capturingGenerator{}
 	h := makeHandler(gen)
 	plan := makePlan(domain.Step{Query: "do something"})
@@ -47,6 +48,7 @@ func TestReplan_PlainError_NoConstraintBlock(t *testing.T) {
 
 // Cycle 6: BudgetExceededError path is unaffected — prompt contains "BUDGET CONSTRAINT" not "CHECKPOINT FAILURE"
 func TestReplan_BudgetExceededError_UnaffectedByCheckpointBranch(t *testing.T) {
+	t.Parallel()
 	gen := &capturingGenerator{}
 	h := makeHandler(gen)
 	plan := makePlan(domain.Step{Query: "do something"})
@@ -66,6 +68,7 @@ func TestReplan_BudgetExceededError_UnaffectedByCheckpointBranch(t *testing.T) {
 
 // Cycle 5a: Empty CheckpointQuery — constraint renders without panicking, uses empty quoted string
 func TestReplan_SemanticCheckpointError_EmptyCheckpointQuery(t *testing.T) {
+	t.Parallel()
 	gen := &capturingGenerator{}
 	h := makeHandler(gen)
 	plan := makePlan(domain.Step{Query: "do something"}) // CheckpointQuery is empty
@@ -83,6 +86,7 @@ func TestReplan_SemanticCheckpointError_EmptyCheckpointQuery(t *testing.T) {
 
 // Cycle 5b: failedStep out of range — no panic, uses empty string for quoted question
 func TestReplan_SemanticCheckpointError_OutOfRangeStep_NoPanic(t *testing.T) {
+	t.Parallel()
 	gen := &capturingGenerator{}
 	h := makeHandler(gen)
 	plan := makePlan(domain.Step{Query: "only step"}) // only 1 step, index 0
@@ -104,6 +108,7 @@ func TestReplan_SemanticCheckpointError_OutOfRangeStep_NoPanic(t *testing.T) {
 
 // Cycle 4: When the failed step has CheckpointQuery set, it appears quoted in the constraint
 func TestReplan_SemanticCheckpointError_ContainsCheckpointQuery(t *testing.T) {
+	t.Parallel()
 	gen := &capturingGenerator{}
 	h := makeHandler(gen)
 	cpQuery := "Is the answer factually correct and complete?"
@@ -126,6 +131,7 @@ func TestReplan_SemanticCheckpointError_ContainsCheckpointQuery(t *testing.T) {
 
 // Cycle 3: CHECKPOINT FAILURE block contains the Assessment string
 func TestReplan_SemanticCheckpointError_ContainsAssessment(t *testing.T) {
+	t.Parallel()
 	gen := &capturingGenerator{}
 	h := makeHandler(gen)
 	plan := makePlan(domain.Step{Query: "do something"})
@@ -143,6 +149,7 @@ func TestReplan_SemanticCheckpointError_ContainsAssessment(t *testing.T) {
 
 // Cycle 2: CHECKPOINT FAILURE block contains the correct StepIndex
 func TestReplan_SemanticCheckpointError_ContainsStepIndex(t *testing.T) {
+	t.Parallel()
 	gen := &capturingGenerator{}
 	h := makeHandler(gen)
 	plan := makePlan(
@@ -163,6 +170,7 @@ func TestReplan_SemanticCheckpointError_ContainsStepIndex(t *testing.T) {
 
 // Cycle 1: SemanticCheckpointError → prompt contains "CHECKPOINT FAILURE"
 func TestReplan_SemanticCheckpointError_ContainsCheckpointFailure(t *testing.T) {
+	t.Parallel()
 	gen := &capturingGenerator{}
 	h := makeHandler(gen)
 	plan := makePlan(domain.Step{Query: "do something"})

@@ -11,6 +11,7 @@ import (
 )
 
 func TestWatcher_ValidateSignal_RejectsMissingSignalType(t *testing.T) {
+	t.Parallel()
 	w := New(nil, nil, nil, nil, nil, WatcherConfig{})
 
 	err := w.ValidateSignal(context.Background(), &domain.Handoff{
@@ -24,6 +25,7 @@ func TestWatcher_ValidateSignal_RejectsMissingSignalType(t *testing.T) {
 }
 
 func TestWatcher_ValidateSignal_AcceptsValidSignal(t *testing.T) {
+	t.Parallel()
 	w := New(nil, nil, nil, nil, nil, WatcherConfig{})
 
 	err := w.ValidateSignal(context.Background(), &domain.Handoff{
@@ -38,6 +40,7 @@ func TestWatcher_ValidateSignal_AcceptsValidSignal(t *testing.T) {
 }
 
 func TestWatcher_ValidateSignal_EmptySignalType(t *testing.T) {
+	t.Parallel()
 	w := New(nil, nil, nil, nil, nil, WatcherConfig{})
 
 	err := w.ValidateSignal(context.Background(), &domain.Handoff{
@@ -51,6 +54,7 @@ func TestWatcher_ValidateSignal_EmptySignalType(t *testing.T) {
 }
 
 func TestWatcher_BuildInspirationPrompt(t *testing.T) {
+	t.Parallel()
 	w := New(nil, nil, nil, nil, nil, WatcherConfig{})
 
 	prompt := w.BuildInspiration("STOCK_LOW", "item:GPU level:5", "Recent purchases: GPU-x500")
@@ -75,6 +79,7 @@ func (m *testMemoryAgent) FetchContext(ctx context.Context, query string) string
 }
 
 func TestWatcher_EnrichSignal_CallsMemoryAgent(t *testing.T) {
+	t.Parallel()
 	called := false
 	mem := &testMemoryAgent{
 		fetchContextFn: func(ctx context.Context, query string) string {
@@ -95,6 +100,7 @@ func TestWatcher_EnrichSignal_CallsMemoryAgent(t *testing.T) {
 }
 
 func TestWatcher_EnrichSignal_NilMemoryAgent(t *testing.T) {
+	t.Parallel()
 	w := New(nil, nil, nil, nil, nil, WatcherConfig{})
 
 	ltmCtx := w.EnrichSignal(context.Background(), "STOCK_LOW", "data")
@@ -105,6 +111,7 @@ func TestWatcher_EnrichSignal_NilMemoryAgent(t *testing.T) {
 }
 
 func TestWatcher_ValidateToken(t *testing.T) {
+	t.Parallel()
 	m := &agentmgr.AgentManager{}
 	w := New(m, nil, nil, nil, nil, WatcherConfig{})
 
@@ -137,6 +144,7 @@ func (p *testPlanner) GetExecutionPlan(ctx context.Context, userInput string) (*
 }
 
 func TestWatcher_ProcessSignal_CallsPlanner(t *testing.T) {
+	t.Parallel()
 	var receivedPrompt string
 	planner := &testPlanner{
 		planFn: func(ctx context.Context, userInput string) (*domain.ExecutionPlan, error) {
@@ -166,6 +174,7 @@ func TestWatcher_ProcessSignal_CallsPlanner(t *testing.T) {
 }
 
 func TestWatcher_ProcessSignal_EmptyPlanNoOp(t *testing.T) {
+	t.Parallel()
 	planner := &testPlanner{
 		planFn: func(ctx context.Context, userInput string) (*domain.ExecutionPlan, error) {
 			return &domain.ExecutionPlan{Subject: "no action", Steps: nil}, nil

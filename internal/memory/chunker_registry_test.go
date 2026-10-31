@@ -15,8 +15,8 @@ import (
 // and its Supports always returns false so a routing step that would
 // otherwise dispatch to "late" falls through to the default. This
 // matches the spec: the registry just registers the name; the actual
-// gate (embedder.supports_long_context, doc size, etc.) lives in
-// LateChunker itself per ADR-0060 D6.
+// gate (chunker.late.enabled via the registry's lateGate, doc size in
+// LateChunker) is per ADR-0060 D6.
 type lateChunkerStub struct{}
 
 func (lateChunkerStub) Name() string { return "late" }
@@ -48,6 +48,7 @@ func defaultChunkers() map[string]domain.Chunker {
 }
 
 func TestNewRegistry_Default(t *testing.T) {
+	t.Parallel()
 	cfg := config.ChunkerConfig{
 		Default: "option_c",
 	}
@@ -85,6 +86,7 @@ func TestNewRegistry_Default(t *testing.T) {
 }
 
 func TestNewRegistry_InvalidDefault(t *testing.T) {
+	t.Parallel()
 	cfg := config.ChunkerConfig{
 		Default: "nonexistent",
 	}
@@ -95,6 +97,7 @@ func TestNewRegistry_InvalidDefault(t *testing.T) {
 }
 
 func TestNewRegistry_InvalidRoute(t *testing.T) {
+	t.Parallel()
 	cfg := config.ChunkerConfig{
 		Default: "option_c",
 		Routes:  map[string]string{"file_drop": "nonexistent"},
@@ -106,6 +109,7 @@ func TestNewRegistry_InvalidRoute(t *testing.T) {
 }
 
 func TestNewRegistry_InvalidExtRoute(t *testing.T) {
+	t.Parallel()
 	cfg := config.ChunkerConfig{
 		Default:   "option_c",
 		ExtRoutes: map[string]string{".go": "ghost"},
@@ -117,6 +121,7 @@ func TestNewRegistry_InvalidExtRoute(t *testing.T) {
 }
 
 func TestNewRegistry_NilChunkers(t *testing.T) {
+	t.Parallel()
 	cfg := config.ChunkerConfig{Default: "option_c"}
 	if _, err := NewRegistry(nil, cfg); err == nil {
 		t.Fatal("NewRegistry with nil chunkers map returned nil error, want an error")
@@ -124,6 +129,7 @@ func TestNewRegistry_NilChunkers(t *testing.T) {
 }
 
 func TestNewRegistry_EmptyDefault(t *testing.T) {
+	t.Parallel()
 	cfg := config.ChunkerConfig{}
 	if _, err := NewRegistry(defaultChunkers(), cfg); err == nil {
 		t.Fatal("NewRegistry with empty Default returned nil error, want an error")
@@ -131,6 +137,7 @@ func TestNewRegistry_EmptyDefault(t *testing.T) {
 }
 
 func TestRegistry_Resolve_SourceTypeMatch(t *testing.T) {
+	t.Parallel()
 	cfg := config.ChunkerConfig{
 		Default: "option_c",
 		Routes:  map[string]string{"file_drop": "markdown_header"},
@@ -149,6 +156,7 @@ func TestRegistry_Resolve_SourceTypeMatch(t *testing.T) {
 }
 
 func TestRegistry_Resolve_SourceTypeMiss_ExtHit(t *testing.T) {
+	t.Parallel()
 	cfg := config.ChunkerConfig{
 		Default:   "option_c",
 		ExtRoutes: map[string]string{".go": "ast_go"},
@@ -167,6 +175,7 @@ func TestRegistry_Resolve_SourceTypeMiss_ExtHit(t *testing.T) {
 }
 
 func TestRegistry_Resolve_DefaultFallback(t *testing.T) {
+	t.Parallel()
 	cfg := config.ChunkerConfig{
 		Default: "option_c",
 	}
@@ -184,6 +193,7 @@ func TestRegistry_Resolve_DefaultFallback(t *testing.T) {
 }
 
 func TestRegistry_Resolve_SupportsFalse(t *testing.T) {
+	t.Parallel()
 	// Route "file_drop" → "markdown_header", but ask for a .go file:
 	// MarkdownHeaderChunker.Supports(.go) = false, so the registry
 	// must fall through to the default rather than dispatching to
@@ -206,6 +216,7 @@ func TestRegistry_Resolve_SupportsFalse(t *testing.T) {
 }
 
 func TestRegistry_Resolve_SourceTypeBeatsExt(t *testing.T) {
+	t.Parallel()
 	// When both sourceType and ext would route somewhere, sourceType
 	// wins (the precedence rule, ADR-0060 D5).
 	cfg := config.ChunkerConfig{
@@ -227,6 +238,7 @@ func TestRegistry_Resolve_SourceTypeBeatsExt(t *testing.T) {
 }
 
 func TestRegistry_Resolve_RegistryMap(t *testing.T) {
+	t.Parallel()
 	// The 5 known chunkers must all be present in the registry's
 	// chunker map with their stable names.
 	chunkers := defaultChunkers()
@@ -257,6 +269,7 @@ func TestRegistry_Resolve_RegistryMap(t *testing.T) {
 }
 
 func TestLateChunker_Gated(t *testing.T) {
+	t.Parallel()
 	chunkers := map[string]domain.Chunker{
 		"option_c":            OptionCChunker{},
 		"recursive_character": NewRecursiveCharacterChunker(0, 0),

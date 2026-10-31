@@ -7,6 +7,7 @@ import "testing"
 // without that name being judged against a classification vocabulary.
 
 func TestClassificationHint_StripsMarkerAndTheIdItIntroduces(t *testing.T) {
+	t.Parallel()
 	// The exact shape six benchmark suites and the operator upload lane send.
 	got := ClassificationHint([]string{"orchestration", "runbook", SourceDocumentMarker, "task_042"})
 	want := []string{"orchestration", "runbook"}
@@ -21,6 +22,7 @@ func TestClassificationHint_StripsMarkerAndTheIdItIntroduces(t *testing.T) {
 }
 
 func TestClassificationHint_KeepsClassificationsAfterTheIdentityPair(t *testing.T) {
+	t.Parallel()
 	// Regression guard: consuming the successor must not swallow the rest of the list.
 	got := ClassificationHint([]string{SourceDocumentMarker, "doc_1", "finance", "internal_only"})
 	if len(got) != 2 || got[0] != "finance" || got[1] != "internal_only" {
@@ -29,6 +31,7 @@ func TestClassificationHint_KeepsClassificationsAfterTheIdentityPair(t *testing.
 }
 
 func TestClassificationHint_TrailingMarkerConsumesNothing(t *testing.T) {
+	t.Parallel()
 	got := ClassificationHint([]string{"finance", SourceDocumentMarker})
 	if len(got) != 1 || got[0] != "finance" {
 		t.Fatalf("got %v, want [finance]", got)
@@ -36,6 +39,7 @@ func TestClassificationHint_TrailingMarkerConsumesNothing(t *testing.T) {
 }
 
 func TestClassificationHint_LeavesAPureClassificationListAlone(t *testing.T) {
+	t.Parallel()
 	in := []string{"public", "finance"}
 	got := ClassificationHint(in)
 	if len(got) != 2 || got[0] != "public" || got[1] != "finance" {
@@ -47,6 +51,7 @@ func TestClassificationHint_LeavesAPureClassificationListAlone(t *testing.T) {
 // function, every assertion above except this one would still hold for SOME input, so
 // state the property directly — no identity term survives.
 func TestClassificationHint_NoIdentityTermSurvives(t *testing.T) {
+	t.Parallel()
 	for _, tags := range [][]string{
 		{SourceDocumentMarker, "id_a"},
 		{"finance", SourceDocumentMarker, "id_b"},

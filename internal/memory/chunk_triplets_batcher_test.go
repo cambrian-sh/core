@@ -70,6 +70,7 @@ func (w testWriter) Write(b []byte) (int, error) {
 }
 
 func TestParseBatchedTripletResponse_SplitsPerChunk(t *testing.T) {
+	t.Parallel()
 	resp := `Triplets 1: <caroline##researched##quantum>$$<caroline##lives in##melbourne>
 Triplets 2: <bob##works at##ibm>$$<bob##colleague of##alice>
 Triplets 3: <eve##spoke to##frank>`
@@ -89,6 +90,7 @@ Triplets 3: <eve##spoke to##frank>`
 }
 
 func TestParseBatchedTripletResponse_HandlesMissingMarkers(t *testing.T) {
+	t.Parallel()
 	// LLM completely misses the format; treat as chunk 0.
 	resp := `<caroline##researched##quantum>`
 	got := parseBatchedTripletResponse(resp, 2)
@@ -98,6 +100,7 @@ func TestParseBatchedTripletResponse_HandlesMissingMarkers(t *testing.T) {
 }
 
 func TestChunkTripletsBatcher_PersistsAfterDrain(t *testing.T) {
+	t.Parallel()
 	store := &testBatcherStore{fakeChunkTripletsStore: newFakeChunkTripletsStore()}
 	gen := &streamingBatchGen{
 		resp: `Triplets 1: <caroline##researched##quantum>$$<caroline##lives in##melbourne>
@@ -147,6 +150,7 @@ Triplets 2: <bob##works at##ibm>`,
 }
 
 func TestChunkTripletsBatcher_UsesStreaming(t *testing.T) {
+	t.Parallel()
 	store := &testBatcherStore{fakeChunkTripletsStore: newFakeChunkTripletsStore()}
 	gen := &streamingBatchGen{
 		resp: `Triplets 1: <caroline##researched##quantum>`,
@@ -170,6 +174,7 @@ func TestChunkTripletsBatcher_UsesStreaming(t *testing.T) {
 }
 
 func TestChunkTripletsBatcher_DropsOnQueueFull(t *testing.T) {
+	t.Parallel()
 	// Use a slow LLM (never returns) so the queue fills and Enqueue drops.
 	store := &testBatcherStore{fakeChunkTripletsStore: newFakeChunkTripletsStore()}
 	blocking := &blockingGen{}
@@ -206,6 +211,7 @@ func (b *blockingGen) GenerateStream(ctx context.Context, _ string) (<-chan doma
 }
 
 func TestBuildBatchTripletPrompt_HasMarkersAndExamples(t *testing.T) {
+	t.Parallel()
 	p := buildBatchTripletPrompt([]string{"chunk 1 text", "chunk 2 text"})
 	for _, want := range []string{
 		"Triplets 1:",
@@ -228,6 +234,7 @@ func TestBuildBatchTripletPrompt_HasMarkersAndExamples(t *testing.T) {
 // with 50 chunks. The LLM records every prompt it sees; the test counts
 // calls and checks the prompt size of each.
 func TestChunkTripletsBatcher_RespectsBatchSize(t *testing.T) {
+	t.Parallel()
 	store := &testBatcherStore{fakeChunkTripletsStore: newFakeChunkTripletsStore()}
 	// gen returns one triplet per chunk (positional).
 	gen := &countingBatchGen{respTriplets: 1}

@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 )
 
 // ErrNoVerifierAvailable is returned by VerifierPool.Select when no eligible
@@ -35,6 +36,12 @@ type VerifierPool struct {
 	MinSize        int
 	ThresholdStep  float64
 	ThresholdFloor float64
+
+	// CanonicalVocab is execution.capability.canonical_vocab (ROUTE-04 / ADR-0067),
+	// handed to the gatekeeper's L1 gate so a verifier is admitted by exactly the
+	// declaration check an executor is. Set by the kernel next to the other
+	// Verification settings; false keeps the verbatim comparison.
+	CanonicalVocab bool
 }
 
 // NewVerifierPool creates a VerifierPool with the health guard disabled.
@@ -100,7 +107,14 @@ func (vp *VerifierPool) Select(
 			continue
 		}
 		manifest, _ := vp.Registry.GetManifest(ctx, agent.ID)
-		if !PassesDeclaration(manifest, task) {
+		// ONE declaration policy (AGENTS.md §4.3): the gatekeeper's L1 gate, not a
+		// local copy. A format-only copy lived here until
+		// T-20261031-verifierpool-carries-a-drifted-copy-of-the and had already
+		// drifted (no ROUTE-03 capability gate, no canonical normalisation). A
+		// verifier is therefore held to whatever the task declares — today both
+		// callers (VerificationWorker.processOne, kernel poolJudge) build a task
+		// with no formats or capabilities, so every manifest passes, as before.
+		if !gatekeeper.PassesDeclaration(manifest, task, vp.CanonicalVocab) {
 			continue
 		}
 		candidates = append(candidates, agentWithMetrics{
@@ -159,26 +173,6 @@ func buildExclusionSet(excludeAgentID string, subjectProfile *domain.AgentProfil
 		}
 	}
 	return excluded
-}
-
-// PassesDeclaration performs the Layer 1 (Declaration) hard compatibility check.
-func PassesDeclaration(manifest *domain.AgentManifest, task *domain.DispatchTask) bool {
-	if manifest == nil {
-		return true
-	}
-	if len(manifest.Tools) == 0 && len(manifest.SupportedFormats) == 0 {
-		return true
-	}
-	formatSet := make(map[string]struct{}, len(manifest.SupportedFormats))
-	for _, f := range manifest.SupportedFormats {
-		formatSet[f] = struct{}{}
-	}
-	for _, required := range task.RequiredFormats {
-		if _, ok := formatSet[required]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 func clamp(v, lo, hi float64) float64 {

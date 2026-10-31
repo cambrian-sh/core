@@ -43,6 +43,7 @@ func batchService(p domain.PolicyAdmin) *Service {
 // the wrong row, and a matrix that is silently off by one is worse than one that
 // refuses to render.
 func TestExplainAccessBatch_AnswersArePositional(t *testing.T) {
+	t.Parallel()
 	p := &perPrincipalPolicy{allow: map[string]bool{"alice": true, "bob": false, "carol": true}}
 	s := batchService(p)
 
@@ -72,6 +73,7 @@ func TestExplainAccessBatch_AnswersArePositional(t *testing.T) {
 // fail the batch. Skipping shifts every later answer; failing lets one bad cell
 // blank an otherwise correct grid.
 func TestExplainAccessBatch_MalformedCellDeniesInPlace(t *testing.T) {
+	t.Parallel()
 	p := &perPrincipalPolicy{allow: map[string]bool{"alice": true, "carol": true}}
 	s := batchService(p)
 
@@ -104,6 +106,7 @@ func TestExplainAccessBatch_MalformedCellDeniesInPlace(t *testing.T) {
 // An unknown effect class is a query error, not a policy answer — and it must
 // deny rather than fall through to an evaluation that ignores it.
 func TestExplainAccessBatch_UnknownEffectDenies(t *testing.T) {
+	t.Parallel()
 	p := &perPrincipalPolicy{allow: map[string]bool{"alice": true}}
 	s := batchService(p)
 
@@ -122,6 +125,7 @@ func TestExplainAccessBatch_UnknownEffectDenies(t *testing.T) {
 // Over-large batches are truncated and SAY SO, so a console cannot draw a partial
 // grid as though it were complete.
 func TestExplainAccessBatch_TruncatesAndReportsIt(t *testing.T) {
+	t.Parallel()
 	p := &perPrincipalPolicy{allow: map[string]bool{}}
 	s := batchService(p)
 
@@ -145,6 +149,7 @@ func TestExplainAccessBatch_TruncatesAndReportsIt(t *testing.T) {
 }
 
 func TestExplainAccessBatch_UnconfiguredAndEmpty(t *testing.T) {
+	t.Parallel()
 	if _, err := (&Service{}).ExplainAccessBatch(context.Background(), &pb.ExplainAccessBatchOpRequest{
 		Queries: []*pb.ExplainAccessOpRequest{{PrincipalId: "a"}},
 	}); codeOf(err) != codes.Unimplemented {

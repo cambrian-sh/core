@@ -12,7 +12,7 @@ import (
 
 // SpreadingEngine performs bounded BFS over the document_edges graph.
 // ADR-0017: propagates activation energy from pgvector seed hits to graph-discovered nodes.
-// ADR-0052: edge weight is read directly from DocumentEdge.Weight (LLM confidence
+// ADR-0053 D2: edge weight is read directly from DocumentEdge.Weight (LLM confidence
 // for extracted edges; Hebbian co-retrieval strength for co_activated edges). The
 // per-type weight map (contradicts/specifies/closes/discussed_in) is removed —
 // the recall path does not branch on EdgeType.
@@ -109,7 +109,7 @@ func (s *SpreadingEngine) Spread(ctx context.Context, seeds []domain.SearchResul
 				continue // cycle prevention
 			}
 
-			// ADR-0052: weight is read directly from the edge. The only special
+			// ADR-0053 D2: weight is read directly from the edge. The only special
 			// case is the Hebbian co_activated path (ADR-0049 D10), which applies
 			// decay-on-spread-read to its STORED weight before propagating.
 			weight := float64(edge.Weight)

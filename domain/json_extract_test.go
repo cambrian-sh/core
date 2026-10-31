@@ -3,6 +3,7 @@ package domain
 import "testing"
 
 func TestStripReasoning(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, in, want string
 	}{
@@ -24,6 +25,7 @@ func TestStripReasoning(t *testing.T) {
 }
 
 func TestExtractJSONObject(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, in, want string
 	}{
@@ -52,6 +54,7 @@ func TestExtractJSONObject(t *testing.T) {
 }
 
 func TestExtractJSONArray(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, in, want string
 	}{

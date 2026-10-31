@@ -21,6 +21,7 @@ func (s *staticProvider) DefaultPolicy() domain.HippocampusPolicy { return domai
 
 // Cycle 1 — prompt contains the cache_policy instruction block.
 func TestPlanner_Prompt_ContainsCachePolicyInstructions(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: `{"steps":[{"query":"q","depends_on":[]}],"subject":"s"}`}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
 
@@ -43,6 +44,7 @@ func TestPlanner_Prompt_ContainsCachePolicyInstructions(t *testing.T) {
 
 // Cycle 2 — CachePolicy is populated when the LLM emits it.
 func TestPlanner_EmitsCachePolicy_PopulatedOnPlan(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: `{"steps":[{"query":"q","depends_on":[]}],"subject":"s","cache_policy":"cognitive"}`}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
 
@@ -57,6 +59,7 @@ func TestPlanner_EmitsCachePolicy_PopulatedOnPlan(t *testing.T) {
 
 // Cycle 3 — unknown policy name is normalised to "" when PolicyProvider is wired.
 func TestPlanner_UnknownCachePolicy_NormalisedToEmpty(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: `{"steps":[{"query":"q","depends_on":[]}],"subject":"s","cache_policy":"hallucinated"}`}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
 	planner.SetPolicyProvider(&staticProvider{known: map[string]bool{
@@ -74,6 +77,7 @@ func TestPlanner_UnknownCachePolicy_NormalisedToEmpty(t *testing.T) {
 
 // Cycle 4 — valid policy name is preserved when PolicyProvider is wired.
 func TestPlanner_ValidCachePolicy_Preserved(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: `{"steps":[{"query":"q","depends_on":[]}],"subject":"s","cache_policy":"tool"}`}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
 	planner.SetPolicyProvider(&staticProvider{known: map[string]bool{
@@ -91,6 +95,7 @@ func TestPlanner_ValidCachePolicy_Preserved(t *testing.T) {
 
 // Cycle 5 — CachePolicy is copied by Clone().
 func TestExecutionPlan_Clone_CopiesCachePolicy(t *testing.T) {
+	t.Parallel()
 	original := &domain.ExecutionPlan{
 		Subject:     "s",
 		CachePolicy: "research",

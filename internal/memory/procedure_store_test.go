@@ -27,6 +27,7 @@ func proc(status domain.ProcedureStatus, samples int) domain.Procedure {
 // act on steps. Embedding the steps would match routines to each other rather than to
 // the problem in front of the planner.
 func TestProcedureDoc_EmbeddingSubjectIsTheTrigger(t *testing.T) {
+	t.Parallel()
 	p := proc(domain.ProcedureActive, 2)
 	d := procedureDoc(p, []float32{0.1, 0.2})
 	if d.Summary != "procedure: "+p.Trigger {
@@ -52,6 +53,7 @@ func TestProcedureDoc_EmbeddingSubjectIsTheTrigger(t *testing.T) {
 // Deprecation must remove a routine from CONTENTION without removing the record. A
 // routine that stopped working is evidence, the same way a rejected arm is.
 func TestProcedureActivation_DeprecatedSinksButSurvives(t *testing.T) {
+	t.Parallel()
 	active := procedureActivation(proc(domain.ProcedureActive, 3))
 	deprecated := procedureActivation(proc(domain.ProcedureDeprecated, 3))
 	superseded := procedureActivation(proc(domain.ProcedureSuperseded, 3))
@@ -71,6 +73,7 @@ func TestProcedureActivation_DeprecatedSinksButSurvives(t *testing.T) {
 // ADR-0094 D8: confidence must resist single runs, or continual adaptation erodes what
 // already worked (the capability-erosion failure).
 func TestApplyOutcome_ResistsSingleRuns(t *testing.T) {
+	t.Parallel()
 	p := proc(domain.ProcedureActive, 0)
 	p = ApplyOutcome(p, true, 0.3) // first observation seeds
 	for i := 0; i < 5; i++ {
@@ -89,6 +92,7 @@ func TestApplyOutcome_ResistsSingleRuns(t *testing.T) {
 
 // Sustained failure SHOULD deprecate — the guard is against haste, not against learning.
 func TestApplyOutcome_SustainedFailureDeprecates(t *testing.T) {
+	t.Parallel()
 	p := proc(domain.ProcedureActive, 0)
 	for i := 0; i < 25; i++ {
 		p = ApplyOutcome(p, false, 0.3)
@@ -101,6 +105,7 @@ func TestApplyOutcome_SustainedFailureDeprecates(t *testing.T) {
 
 // A single early failure is noise, not a verdict.
 func TestApplyOutcome_NoSnapJudgementOnFirstFailure(t *testing.T) {
+	t.Parallel()
 	p := ApplyOutcome(proc(domain.ProcedureActive, 0), false, 0.3)
 	if p.Status != domain.ProcedureActive {
 		t.Errorf("first observation must not deprecate, got %s", p.Status)
@@ -108,6 +113,7 @@ func TestApplyOutcome_NoSnapJudgementOnFirstFailure(t *testing.T) {
 }
 
 func TestSupersede_RetainsTheOriginal(t *testing.T) {
+	t.Parallel()
 	old := Supersede(proc(domain.ProcedureActive, 4), "proc-2")
 	if old.Status != domain.ProcedureSuperseded || old.SupersededBy != "proc-2" {
 		t.Errorf("supersession must link, not delete: %+v", old)

@@ -83,6 +83,7 @@ func convService(t *testing.T) (*operator.Service, *fakeConvOps) {
 
 // With no adapter wired, the whole surface is honestly Unimplemented.
 func TestConversation_UnwiredIsUnimplemented(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	_, err := svc.SendTurn(opCtx(), &pb.SendTurnOpRequest{CommandId: "c", Reason: "r", ConversationId: "x", Text: "hi"})
 	if status.Code(err) != codes.Unimplemented {
@@ -93,6 +94,7 @@ func TestConversation_UnwiredIsUnimplemented(t *testing.T) {
 // Open stamps the owner from the principal, defaults the profile to operator, and is
 // idempotent on the client-supplied conversation id.
 func TestOpenConversation_OwnerFromPrincipalAndIdempotent(t *testing.T) {
+	t.Parallel()
 	svc, ops := convService(t)
 	req := &pb.OpenConversationOpRequest{CommandId: "o1", Reason: "start", ConversationId: "conv-1"}
 
@@ -118,6 +120,7 @@ func TestOpenConversation_OwnerFromPrincipalAndIdempotent(t *testing.T) {
 
 // A caller-supplied owner in the body must be ignored — ownership is the principal.
 func TestOpenConversation_RejectsBadProfile(t *testing.T) {
+	t.Parallel()
 	svc, _ := convService(t)
 	_, err := svc.OpenConversation(opCtx(), &pb.OpenConversationOpRequest{
 		CommandId: "o1", Reason: "start", ConversationId: "c", Profile: "root",
@@ -130,6 +133,7 @@ func TestOpenConversation_RejectsBadProfile(t *testing.T) {
 // SendTurn returns the agent reply and is idempotent via command_id (the adapter maps it to
 // the store ClientID, so the handler must simply pass it through and not re-gate).
 func TestSendTurn_ReturnsReply(t *testing.T) {
+	t.Parallel()
 	svc, ops := convService(t)
 	if _, err := svc.OpenConversation(opCtx(), &pb.OpenConversationOpRequest{CommandId: "o", Reason: "s", ConversationId: "c"}); err != nil {
 		t.Fatalf("open: %v", err)
@@ -149,6 +153,7 @@ func TestSendTurn_ReturnsReply(t *testing.T) {
 // The ownership boundary: a second operator cannot send into, read, or close a conversation
 // they do not own — and the error is PermissionDenied, never a leak of its contents.
 func TestConversation_OwnershipEnforced(t *testing.T) {
+	t.Parallel()
 	svc, _ := convService(t)
 	if _, err := svc.OpenConversation(opCtx(), &pb.OpenConversationOpRequest{CommandId: "o", Reason: "s", ConversationId: "c"}); err != nil {
 		t.Fatalf("open by alice: %v", err)
@@ -173,6 +178,7 @@ func TestConversation_OwnershipEnforced(t *testing.T) {
 
 // A read/send against a nonexistent conversation is NotFound.
 func TestConversation_MissingIsNotFound(t *testing.T) {
+	t.Parallel()
 	svc, _ := convService(t)
 	if _, err := svc.ListConversationMessages(opCtx(), &pb.ListConversationMessagesOpRequest{ConversationId: "ghost"}); status.Code(err) != codes.NotFound {
 		t.Fatalf("want NotFound, got %v", err)
@@ -180,6 +186,7 @@ func TestConversation_MissingIsNotFound(t *testing.T) {
 }
 
 func TestSendTurn_RequiresFields(t *testing.T) {
+	t.Parallel()
 	svc, _ := convService(t)
 	if _, err := svc.SendTurn(opCtx(), &pb.SendTurnOpRequest{CommandId: "t", Reason: "r", ConversationId: "c"}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("empty text: want InvalidArgument, got %v", err)

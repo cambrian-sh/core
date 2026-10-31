@@ -9,6 +9,7 @@ import (
 
 // REACT-02 / ADR-0062: ReactiveBudgetEvent maps to the ReactiveBudgetOp feed payload.
 func TestToOperatorEvent_ReactiveBudget(t *testing.T) {
+	t.Parallel()
 	at := time.Unix(0, 1_000_000*4321).UTC()
 	se := domain.SequencedEvent{
 		Seq: 7,

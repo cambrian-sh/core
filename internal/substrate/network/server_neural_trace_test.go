@@ -63,6 +63,7 @@ func waitForDoc(t *testing.T, ch chan *domain.Document) *domain.Document {
 }
 
 func TestStoreNeuralTrace_SavesCorrectDocType(t *testing.T) {
+	t.Parallel()
 	vs := &capturingVS{saved: make(chan *domain.Document, 1)}
 
 	storeNeuralTrace(context.Background(), vs, "thought text", "trace-1", "plan-1", 0, 0, "agent-x")
@@ -78,6 +79,7 @@ func TestStoreNeuralTrace_SavesCorrectDocType(t *testing.T) {
 }
 
 func TestStoreNeuralTrace_MetadataFields(t *testing.T) {
+	t.Parallel()
 	vs := &capturingVS{saved: make(chan *domain.Document, 1)}
 
 	storeNeuralTrace(context.Background(), vs, "trace text", "trace-abc", "plan-xyz", 3, 1, "agent-foo")
@@ -107,6 +109,7 @@ func TestStoreNeuralTrace_MetadataFields(t *testing.T) {
 }
 
 func TestStoreNeuralTrace_EmptyTrace_NotCalled(t *testing.T) {
+	t.Parallel()
 	vs := &capturingVS{saved: make(chan *domain.Document, 1)}
 
 	storeNeuralTrace(context.Background(), vs, "", "trace-1", "plan-1", 0, 0, "agent-x")
@@ -120,6 +123,7 @@ func TestStoreNeuralTrace_EmptyTrace_NotCalled(t *testing.T) {
 }
 
 func TestStoreNeuralTrace_NilVectorStore_NoPanic(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if r := recover(); r != nil {
 			t.Errorf("storeNeuralTrace panicked with nil VectorStore: %v", r)
@@ -130,6 +134,7 @@ func TestStoreNeuralTrace_NilVectorStore_NoPanic(t *testing.T) {
 }
 
 func TestStoreNeuralTrace_HealAttempt_Nonzero(t *testing.T) {
+	t.Parallel()
 	vs := &capturingVS{saved: make(chan *domain.Document, 1)}
 
 	storeNeuralTrace(context.Background(), vs, "retried thought", "trace-2", "plan-2", 1, 2, "agent-y")
@@ -148,6 +153,7 @@ func TestStoreNeuralTrace_HealAttempt_Nonzero(t *testing.T) {
 // nothing downstream could tell whose run it belonged to: `trace_id` looks
 // session-shaped but is a plan or lease id.
 func TestStoreNeuralTrace_StampsTheSession(t *testing.T) {
+	t.Parallel()
 	vs := &capturingVS{saved: make(chan *domain.Document, 1)}
 	ctx := domain.WithSessionID(context.Background(), "sess-owner")
 
@@ -170,6 +176,7 @@ func TestStoreNeuralTrace_StampsTheSession(t *testing.T) {
 // invent one. An empty-string stamp would be worse than none: it is a value that
 // every predicate then has to special-case.
 func TestStoreNeuralTrace_NoSessionLeavesTheKeyAbsent(t *testing.T) {
+	t.Parallel()
 	vs := &capturingVS{saved: make(chan *domain.Document, 1)}
 
 	storeNeuralTrace(context.Background(), vs, "thought text", "trace-1", "plan-1", 0, 0, "agent-x")

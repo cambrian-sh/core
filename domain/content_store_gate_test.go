@@ -5,6 +5,7 @@ import "testing"
 // The read-gate: ownerless ⇒ open; owner match ⇒ read; owner mismatch (incl. an
 // ownerless caller against an owned node) ⇒ denied.
 func TestCanReadContentNode(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		owner, caller string
 		want          bool

@@ -10,6 +10,7 @@ import (
 // through parsing with the parametric fields intact (they unmarshal straight into
 // domain.Step — a DTO that dropped them would silently downgrade fan-out to a literal step).
 func TestPlanner_FanOut_PromptAdvertisesAndParses(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: `{"steps":[
 		{"query":"scan the folder","depends_on":[]},
 		{"query":"write the file for {item}","depends_on":[0],"fan_out_over":0},

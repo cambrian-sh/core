@@ -23,6 +23,7 @@ func healedDAGStep(fn harness.StepFunc) executer.StepFunc {
 // ── Cycle 1: step fails once then succeeds ────────────────────────────────────
 
 func TestHealedStep_FailOnceThenSucceed(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	inner := harness.StepFunc(func(_ context.Context, _ *domain.Handoff) (*domain.Handoff, error) {
 		calls++
@@ -52,6 +53,7 @@ func TestHealedStep_FailOnceThenSucceed(t *testing.T) {
 // ── Cycle 2: three failures → HealingExhaustedError propagates ───────────────
 
 func TestHealedStep_ThreeFailures_ReturnsExhaustedError(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	inner := harness.StepFunc(func(_ context.Context, _ *domain.Handoff) (*domain.Handoff, error) {
 		calls++
@@ -86,6 +88,7 @@ func TestHealedStep_ThreeFailures_ReturnsExhaustedError(t *testing.T) {
 // ── Cycle 3: LogicError injects _heal_error and _heal_attempt on retry ───────
 
 func TestHealedStep_LogicError_InjectsHealContext(t *testing.T) {
+	t.Parallel()
 	var capturedContexts []map[string]string
 	calls := 0
 
@@ -127,6 +130,7 @@ func TestHealedStep_LogicError_InjectsHealContext(t *testing.T) {
 // ── Cycle 4: HealingExhaustedError cancels sibling parallel steps ─────────────
 
 func TestHealedStep_ExhaustedError_CancelsSiblings(t *testing.T) {
+	t.Parallel()
 	step0calls := 0
 	step0Inner := harness.StepFunc(func(_ context.Context, _ *domain.Handoff) (*domain.Handoff, error) {
 		step0calls++

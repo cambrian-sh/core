@@ -10,6 +10,7 @@ import (
 // reserve — so every managed session is metered without pre-registering each one
 // (ADR-0043 D5 wiring).
 func TestBudgetLedger_DefaultCapAutoCreatesAndEnforces(t *testing.T) {
+	t.Parallel()
 	l := NewBudgetLedger()
 	l.DefaultCap = 0.05
 
@@ -30,6 +31,7 @@ func TestBudgetLedger_DefaultCapAutoCreatesAndEnforces(t *testing.T) {
 // either lacks room, nothing is held and a BudgetExhaustedError names the failing
 // account. This is the core admission guarantee of the budget regime (ADR-0043 D5).
 func TestBudgetLedger_ReserveDeniesWhenOverEitherAccount(t *testing.T) {
+	t.Parallel()
 	l := NewBudgetLedger()
 	l.SetCap("step:s1", 0.10)
 	l.SetCap("session:S", 1.00)
@@ -60,6 +62,7 @@ func TestBudgetLedger_ReserveDeniesWhenOverEitherAccount(t *testing.T) {
 // Reconcile converts a hold into actual spend that may be LESS than reserved,
 // releasing the unused remainder of the hold back to the budget (ADR-0043 D6).
 func TestBudgetLedger_ReconcileChargesActualAndReleasesHold(t *testing.T) {
+	t.Parallel()
 	l := NewBudgetLedger()
 	l.SetCap("session:S", 1.00)
 
@@ -83,6 +86,7 @@ func TestBudgetLedger_ReconcileChargesActualAndReleasesHold(t *testing.T) {
 // Release drops a hold without charging — a never-reached failure or a 0-cost
 // server-reached failure (ADR-0043 D7).
 func TestBudgetLedger_ReleaseChargesNothing(t *testing.T) {
+	t.Parallel()
 	l := NewBudgetLedger()
 	l.SetCap("session:S", 1.00)
 	id, _ := l.Reserve(0.40, "session:S")
@@ -97,6 +101,7 @@ func TestBudgetLedger_ReleaseChargesNothing(t *testing.T) {
 // Pricing estimate (the reservation) and reconcile (the actual charge) across the
 // pricing kinds — including cap-on-unmeasurable and the max_units clamp (ADR-0043 D6).
 func TestToolPricing_EstimateAndReconcile(t *testing.T) {
+	t.Parallel()
 	// Flat: reserve and reconcile are both the fixed per-call cost, regardless of usage.
 	flat := ToolPricing{Kind: PricingFlat, UnitCost: 0.005}
 	if got := flat.Reserve(); got != 0.005 {
@@ -128,6 +133,7 @@ func TestToolPricing_EstimateAndReconcile(t *testing.T) {
 // free; a server-reached failure uses reported usage, else 0 by default and the
 // cap only under the per-server ChargeCap override.
 func TestToolPricing_FailureCost(t *testing.T) {
+	t.Parallel()
 	none := ToolPricing{Kind: PricingPerUnit, UnitCost: 0.01, MaxUnitsPerCall: 10, ChargeOnFailure: ChargeNone}
 	cap := ToolPricing{Kind: PricingPerUnit, UnitCost: 0.01, MaxUnitsPerCall: 10, ChargeOnFailure: ChargeCap}
 

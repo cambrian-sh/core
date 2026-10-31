@@ -37,6 +37,7 @@ func recvOne(t *testing.T, ch chan *pb.OperatorEvent) *pb.OperatorEvent {
 // StreamEvents drains the backlog, maps domain events to the wire envelope,
 // delivers live events as they are emitted, and exits on context cancellation.
 func TestService_StreamEventsDeliversBacklogAndLive(t *testing.T) {
+	t.Parallel()
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	svc := operator.NewService(feed)
 
@@ -83,6 +84,7 @@ func TestService_StreamEventsDeliversBacklogAndLive(t *testing.T) {
 // An out-of-window cursor yields an explicit RESYNC_REQUIRED control event
 // (no silent gap), then resumes live from the head. ADR-0047 0047-02.
 func TestService_StreamEventsResyncOnStaleCursor(t *testing.T) {
+	t.Parallel()
 	feed := operator.NewSpool(operator.SpoolConfig{MaxEvents: 2})
 	svc := operator.NewService(feed)
 	for i := 0; i < 5; i++ { // events 1..5; only 4,5 retained
@@ -112,6 +114,7 @@ func TestService_StreamEventsResyncOnStaleCursor(t *testing.T) {
 
 // An in-window cursor resumes with a gap-free replay and never resyncs.
 func TestService_StreamEventsInWindowReplayNoResync(t *testing.T) {
+	t.Parallel()
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	svc := operator.NewService(feed)
 	for i := 0; i < 4; i++ {
@@ -137,6 +140,7 @@ func TestService_StreamEventsInWindowReplayNoResync(t *testing.T) {
 // Token chunks are delivered live via StreamEvents but never enter the replay
 // ring and consume no seq (ADR-0047 D12).
 func TestService_TokenChunksAreLiveOnly(t *testing.T) {
+	t.Parallel()
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	svc := operator.NewService(feed)
 
@@ -165,6 +169,7 @@ func TestService_TokenChunksAreLiveOnly(t *testing.T) {
 // SubscribeBridge wires EventBus publications into the spool, including the
 // ADR-0047 D3 event types (memory/HITL/verifier/llm-health).
 func TestSubscribeBridge_PublishedEventsReachTheFeed(t *testing.T) {
+	t.Parallel()
 	bus := domain.NewInMemoryEventBus()
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	operator.SubscribeBridge(bus, feed)
@@ -187,6 +192,7 @@ func TestSubscribeBridge_PublishedEventsReachTheFeed(t *testing.T) {
 
 // The four ADR-0047 D3 event types map to their wire payloads end-to-end.
 func TestService_StreamEventsMapsNewEventTypes(t *testing.T) {
+	t.Parallel()
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	svc := operator.NewService(feed)
 	feed.Emit(domain.MemoryWrittenEvent{DocID: "d1", DocType: "mnemonic_fact", SessionID: "s1"})

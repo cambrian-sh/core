@@ -18,6 +18,7 @@ func effectSet(es []ToolEffect) map[ToolEffect]bool {
 // matters, because an under-classified tool slips past a policy that names the
 // effect it actually has.
 func TestInferEffects_ReadsWhatTheManifestAlreadySays(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		tool SystemTool
@@ -54,6 +55,7 @@ func TestInferEffects_ReadsWhatTheManifestAlreadySays(t *testing.T) {
 // Inference never invents spend or admin — those are claims only a manifest can
 // make, and guessing them would be worse than leaving them out.
 func TestInferEffects_NeverGuessesSpendOrAdmin(t *testing.T) {
+	t.Parallel()
 	for _, tool := range []SystemTool{
 		{Name: "a", Dangerous: true, URLArgs: []string{"u"}, CommandArgs: []string{"c"}, DataWriteKinds: []string{"x"}},
 		{Name: "b"},
@@ -68,6 +70,7 @@ func TestInferEffects_NeverGuessesSpendOrAdmin(t *testing.T) {
 // A declared set always wins over inference, and is de-duplicated + risk-ordered
 // so two tools with the same effects render identically.
 func TestValidateRegistration_DeclaredWinsAndIsNormalized(t *testing.T) {
+	t.Parallel()
 	got, err := ValidateRegistration(SystemTool{
 		Name:      "payer",
 		Dangerous: true, // would have inferred write
@@ -87,6 +90,7 @@ func TestValidateRegistration_DeclaredWinsAndIsNormalized(t *testing.T) {
 // An effect outside the closed set is FATAL in both modes: silently dropping it
 // would let a policy that denies it permit the very call it named.
 func TestValidateRegistration_UnknownEffectIsAlwaysFatal(t *testing.T) {
+	t.Parallel()
 	for _, strict := range []bool{false, true} {
 		_, err := ValidateRegistration(SystemTool{Name: "x", Effects: []ToolEffect{"delete"}}, strict)
 		var unknown *ErrToolUnknownEffect
@@ -102,6 +106,7 @@ func TestValidateRegistration_UnknownEffectIsAlwaysFatal(t *testing.T) {
 // Strict mode refuses to infer — a tool that declares no effects is a
 // registration error, not an unrestricted tool.
 func TestValidateRegistration_StrictRefusesUndeclared(t *testing.T) {
+	t.Parallel()
 	_, err := ValidateRegistration(SystemTool{Name: "legacy"}, true)
 	var unclassified *ErrToolUnclassified
 	if !errors.As(err, &unclassified) {
@@ -124,6 +129,7 @@ func TestValidateRegistration_StrictRefusesUndeclared(t *testing.T) {
 // The registry is the chokepoint no path may skip: a tool registered directly
 // still comes out classified.
 func TestRegistry_NormalizesOnRegister(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "read_file", PathArgs: []string{"path"}})
 
@@ -139,6 +145,7 @@ func TestRegistry_NormalizesOnRegister(t *testing.T) {
 // An invalid effect declaration is refused outright: a downstream "unknown tool"
 // is an honest answer, and silently repairing the manifest is not.
 func TestRegistry_RefusesInvalidEffectDeclaration(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "bogus", Effects: []ToolEffect{"sudo"}})
 	if _, ok := reg.Get("bogus"); ok {
@@ -149,6 +156,7 @@ func TestRegistry_RefusesInvalidEffectDeclaration(t *testing.T) {
 // A tool presents its domain to the decision point, falling back to the data
 // kinds it already declares so an un-migrated tool is governed by something.
 func TestSystemTool_AuthzTags(t *testing.T) {
+	t.Parallel()
 	explicit := SystemTool{Name: "t", ClassificationTags: []string{"crm"}, DataReadKinds: []string{"ignored"}}
 	if got := explicit.AuthzTags(); len(got) != 1 || got[0] != "crm" {
 		t.Errorf("explicit classification wins, got %v", got)
@@ -189,6 +197,7 @@ func (d denyEffects) Authorize(_ context.Context, req AccessRequest) AccessDecis
 // "No tool may transmit outside this network" — one policy statement, enforced
 // over every tool regardless of what data it touches.
 func TestToolExecutor_EgressDeniedByEffectPolicy(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "fetch_url", URLArgs: []string{"url"}}) // infers egress
 	reg.Register(SystemTool{Name: "read_file", PathArgs: []string{"path"}})
@@ -221,6 +230,7 @@ func TestToolExecutor_EgressDeniedByEffectPolicy(t *testing.T) {
 // With no decision point installed the gate still RUNS — it simply always
 // permits. That is the OSS posture: no policy, not no check.
 func TestToolExecutor_EffectGateRunsButPermitsInOSS(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "fetch_url", URLArgs: []string{"url"}})
 	grants := NewInMemoryGrantsStore()
@@ -238,6 +248,7 @@ func TestToolExecutor_EffectGateRunsButPermitsInOSS(t *testing.T) {
 // An operator ScopeSystem execution carries its own authority and is not
 // effect-gated — the same carve-out the grant and data-store regimes already make.
 func TestToolExecutor_OperatorSystemExecutionSkipsTheEffectGate(t *testing.T) {
+	t.Parallel()
 	reg := NewInMemoryToolRegistry()
 	reg.Register(SystemTool{Name: "fetch_url", URLArgs: []string{"url"}})
 

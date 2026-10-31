@@ -50,6 +50,7 @@ func newCaptureIngestManager(t *testing.T, p StructureParser) *IngestionManager 
 // caller and the Docling backend was unreachable — a PDF could not be parsed no
 // matter how it was uploaded. Binary bytes must arrive base64-encoded.
 func TestPersistChunks_BinaryDocumentSendsDataB64(t *testing.T) {
+	t.Parallel()
 	p := &captureParser{}
 	im := newCaptureIngestManager(t, p)
 
@@ -79,6 +80,7 @@ func TestPersistChunks_BinaryDocumentSendsDataB64(t *testing.T) {
 
 // A text document must NOT pay a base64 encode or trip the Docling backend.
 func TestPersistChunks_TextDocumentSendsNoDataB64(t *testing.T) {
+	t.Parallel()
 	p := &captureParser{}
 	im := newCaptureIngestManager(t, p)
 

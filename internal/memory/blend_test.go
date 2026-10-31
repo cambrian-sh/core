@@ -11,6 +11,7 @@ import (
 func bapprox(a, b float64) bool { return math.Abs(a-b) <= 1e-9 }
 
 func TestStageAScore_AllMaxIsOne(t *testing.T) {
+	t.Parallel()
 	b := NewBlender(DefaultBlendWeights())
 	got := b.StageAScore(StageASignals{
 		Cosine: 1, Recency: 1, MeanConfidence: 2, PageRank: 1, Activation: 1, Lexical: 1, GraphCoherence: 1,
@@ -21,6 +22,7 @@ func TestStageAScore_AllMaxIsOne(t *testing.T) {
 }
 
 func TestStageAScore_AllMinIsZero(t *testing.T) {
+	t.Parallel()
 	b := NewBlender(DefaultBlendWeights())
 	got := b.StageAScore(StageASignals{
 		Cosine: 0, Recency: 0, MeanConfidence: 0, PageRank: 0, Activation: 0,
@@ -31,6 +33,7 @@ func TestStageAScore_AllMinIsZero(t *testing.T) {
 }
 
 func TestStageAScore_CosineOnlyEqualsCosine(t *testing.T) {
+	t.Parallel()
 	b := NewBlender(BlendWeights{Cosine: 1})
 	got := b.StageAScore(StageASignals{Cosine: 0.73, Recency: 0.5, MeanConfidence: 2, PageRank: 1, Activation: 1})
 	if !bapprox(got, 0.73) {
@@ -39,6 +42,7 @@ func TestStageAScore_CosineOnlyEqualsCosine(t *testing.T) {
 }
 
 func TestStageAScore_LexicalLiftsLowCosine(t *testing.T) {
+	t.Parallel()
 	// The point of the lexical term: an exact-token chunk with LOW cosine but a
 	// top lexical hit should outrank an identical chunk with no lexical match.
 	b := NewBlender(DefaultBlendWeights())
@@ -52,6 +56,7 @@ func TestStageAScore_LexicalLiftsLowCosine(t *testing.T) {
 }
 
 func TestStageAScore_CoherenceLiftsIsland(t *testing.T) {
+	t.Parallel()
 	// The point of graph coherence: a chunk in the dense same-conversation cluster
 	// (high coherence) must outrank an otherwise-identical island at the same
 	// cosine/lexical — the cross-conversation distractor sinks.
@@ -66,6 +71,7 @@ func TestStageAScore_CoherenceLiftsIsland(t *testing.T) {
 }
 
 func TestStageAScore_MonotonicInPageRank(t *testing.T) {
+	t.Parallel()
 	b := NewBlender(DefaultBlendWeights())
 	base := StageASignals{Cosine: 0.5, Recency: 0.5, MeanConfidence: 1, PageRank: 0.1, Activation: 0.2}
 	hi := base
@@ -76,6 +82,7 @@ func TestStageAScore_MonotonicInPageRank(t *testing.T) {
 }
 
 func TestStageAScore_DegenerateWeightsFallBackToCosine(t *testing.T) {
+	t.Parallel()
 	b := NewBlender(BlendWeights{}) // all zero
 	got := b.StageAScore(StageASignals{Cosine: 0.42})
 	if !bapprox(got, 0.42) {
@@ -84,6 +91,7 @@ func TestStageAScore_DegenerateWeightsFallBackToCosine(t *testing.T) {
 }
 
 func TestStageAScore_ClampsOutOfRange(t *testing.T) {
+	t.Parallel()
 	b := NewBlender(BlendWeights{Cosine: 1})
 	if got := b.StageAScore(StageASignals{Cosine: 5}); !bapprox(got, 1.0) {
 		t.Fatalf("cosine > 1 must clamp to 1, got %f", got)
@@ -91,6 +99,7 @@ func TestStageAScore_ClampsOutOfRange(t *testing.T) {
 }
 
 func TestStageAScore_MonotonicInRecency(t *testing.T) {
+	t.Parallel()
 	b := NewBlender(DefaultBlendWeights())
 	base := StageASignals{Cosine: 0.5, Recency: 0.0, MeanConfidence: 1, PageRank: 0.5}
 	newer := base
@@ -101,6 +110,7 @@ func TestStageAScore_MonotonicInRecency(t *testing.T) {
 }
 
 func TestDocEventTime_PrefersMetadataTimestamp(t *testing.T) {
+	t.Parallel()
 	// The conversation timestamp (metadata) wins over ingest time (CreatedAt).
 	d := domain.Document{Metadata: map[string]any{"timestamp": "2023-09-03T14:14:00"}, CreatedAt: time.Now()}
 	if got := docEventTime(d); got.Year() != 2023 || got.Month() != time.September {
@@ -116,6 +126,7 @@ func TestDocEventTime_PrefersMetadataTimestamp(t *testing.T) {
 // SetBlendWeights hot-swaps the live blend with no restart: CurrentBlendWeights
 // reflects the new vector and the live Blender scores by it (ADR-0054 tuning seam).
 func TestSetBlendWeights_HotSwap(t *testing.T) {
+	t.Parallel()
 	q := &QueryService{}
 	b := NewBlender(BlendWeights{Cosine: 1}) // start cosine-only
 	q.EnableBlend(&b, nil)
@@ -138,6 +149,7 @@ func TestSetBlendWeights_HotSwap(t *testing.T) {
 }
 
 func TestFinalScore_BgeBlend(t *testing.T) {
+	t.Parallel()
 	if got := FinalScore(0.9, 0.4, 0.0); !bapprox(got, 0.4) {
 		t.Fatalf("w_bge=0 must passthrough stageA, got %f", got)
 	}

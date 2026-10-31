@@ -6,6 +6,7 @@ import (
 )
 
 func TestCheckWatchRisk(t *testing.T) {
+	t.Parallel()
 	llm := func(actions ...WatchAction) WatchConfig {
 		c := WatchConfig{ID: "w", ConditionType: ConditionTypeLLM, Condition: "is it urgent?"}
 		if len(actions) == 1 {

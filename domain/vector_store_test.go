@@ -4,6 +4,7 @@ import "testing"
 
 // Cycle 1: DocType constants have the expected string values.
 func TestDocTypeConstants(t *testing.T) {
+	t.Parallel()
 	if DocTypeMemory != "memory" {
 		t.Errorf("DocTypeMemory = %q, want %q", DocTypeMemory, "memory")
 	}
@@ -26,6 +27,7 @@ func TestDocTypeConstants(t *testing.T) {
 
 // Cycle 2: SearchOptions zero-value has empty DocumentType (no filter) and zero TopK.
 func TestSearchOptions_ZeroValue(t *testing.T) {
+	t.Parallel()
 	var opts SearchOptions
 	if opts.DocumentType != "" {
 		t.Errorf("zero-value DocumentType = %q, want empty string", opts.DocumentType)
@@ -37,6 +39,7 @@ func TestSearchOptions_ZeroValue(t *testing.T) {
 
 // Cycle 3: SearchOptions can be constructed with all DocType constants.
 func TestSearchOptions_WithDocTypeMemory(t *testing.T) {
+	t.Parallel()
 	opts := SearchOptions{DocumentType: DocTypeMemory, TopK: 5}
 	if opts.DocumentType != "memory" {
 		t.Errorf("DocumentType = %q, want %q", opts.DocumentType, "memory")
@@ -48,6 +51,7 @@ func TestSearchOptions_WithDocTypeMemory(t *testing.T) {
 
 // Cycle 4: SearchOptions filter works with new mnemonic DocType constants (ADR-0015).
 func TestSearchOptions_WithMnemonicDocTypes(t *testing.T) {
+	t.Parallel()
 	factOpts := SearchOptions{DocumentType: DocTypeMnemonicFact, TopK: 3}
 	if factOpts.DocumentType != "mnemonic_fact" {
 		t.Errorf("DocumentType = %q, want %q", factOpts.DocumentType, "mnemonic_fact")
@@ -60,6 +64,7 @@ func TestSearchOptions_WithMnemonicDocTypes(t *testing.T) {
 
 // Cycle 5: Document struct has ActivationStrength field and zero-value is valid (ADR-0015).
 func TestDocument_ActivationStrength_ZeroValue(t *testing.T) {
+	t.Parallel()
 	doc := Document{ID: "test-1", Text: "test"}
 	if doc.ActivationStrength != 0.0 {
 		t.Errorf("zero-value ActivationStrength = %v, want 0.0", doc.ActivationStrength)
@@ -68,6 +73,7 @@ func TestDocument_ActivationStrength_ZeroValue(t *testing.T) {
 
 // Cycle 7: DocTypeEpisodicMemory constant has expected string value (ADR-0029).
 func TestDocTypeEpisodicMemory_Value(t *testing.T) {
+	t.Parallel()
 	if DocTypeEpisodicMemory != "episodic_memory" {
 		t.Errorf("DocTypeEpisodicMemory = %q, want %q", DocTypeEpisodicMemory, "episodic_memory")
 	}
@@ -80,6 +86,7 @@ func TestDocTypeEpisodicMemory_Value(t *testing.T) {
 
 // Cycle 6: Document.ActivationStrength can be set to full lifecycle range [0.0, 1.0] (ADR-0015).
 func TestDocument_ActivationStrength_Range(t *testing.T) {
+	t.Parallel()
 	doc := Document{ActivationStrength: 0.1}
 	if doc.ActivationStrength != 0.1 {
 		t.Errorf("after set to 0.1, got %v", doc.ActivationStrength)

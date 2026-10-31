@@ -121,6 +121,9 @@ func NewMetabolismStack(
 	iWorker.EventWriter = reg
 
 	vPool := verify.NewVerifierPool(reg, profileStore, cfg.Execution.Verification.VerifierPoolThreshold, cfg.Execution.Verification.VerifierRecencyWindow)
+	// Verifier admission runs the gatekeeper's L1 declaration gate (one policy), so
+	// it reads the same canonical-vocabulary switch the gatekeeper does.
+	vPool.CanonicalVocab = cfg.Execution.Capability.CanonicalVocab
 	vWorker := verify.NewVerificationWorker(vPool, transport, reg, profileStore, profileStore, embedder, verify.VerificationWorkerConfig{
 		TrustBoostThreshold:   cfg.Execution.Verification.TrustBoostThreshold,
 		QueueCapacity:         cfg.Execution.Verification.VerificationQueueCapacity,

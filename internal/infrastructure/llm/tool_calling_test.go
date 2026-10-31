@@ -38,6 +38,7 @@ func toolCallServer(t *testing.T, finishReason string, withCall bool) *httptest.
 }
 
 func TestOpenAI_GenerateWithTools_ParsesCall(t *testing.T) {
+	t.Parallel()
 	srv := toolCallServer(t, "tool_calls", true)
 	defer srv.Close()
 	c := &OpenAIClient{Endpoint: srv.URL, Model: "m", TimeoutMs: 5000, NativeTools: true}
@@ -76,6 +77,7 @@ func TestOpenAI_GenerateWithTools_ParsesCall(t *testing.T) {
 }
 
 func TestOpenAI_GenerateWithTools_SendsToolsInRequest(t *testing.T) {
+	t.Parallel()
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&got)
@@ -103,6 +105,7 @@ func TestOpenAI_GenerateWithTools_SendsToolsInRequest(t *testing.T) {
 // Sending tool_choice with no tools is rejected by some gateways, so it must be
 // omitted rather than sent alongside an empty list.
 func TestOpenAI_GenerateWithTools_NoToolsOmitsToolChoice(t *testing.T) {
+	t.Parallel()
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&got)
@@ -122,6 +125,7 @@ func TestOpenAI_GenerateWithTools_NoToolsOmitsToolChoice(t *testing.T) {
 }
 
 func TestNormalizeOpenAIFinishReason(t *testing.T) {
+	t.Parallel()
 	cases := map[string]domain.StopReason{
 		"tool_calls":     domain.StopToolUse,
 		"function_call":  domain.StopToolUse,
@@ -145,6 +149,7 @@ func TestNormalizeOpenAIFinishReason(t *testing.T) {
 // ── D2: the capability is declared, and absent when it is not ────────────────
 
 func TestFactory_NativeToolsDeclared_ExposesCapability(t *testing.T) {
+	t.Parallel()
 	gen, _, err := NewClient(config.ModelConfig{
 		Provider: "openai", Model: "m", Endpoint: "http://x", NativeTools: true})
 	if err != nil {
@@ -159,6 +164,7 @@ func TestFactory_NativeToolsDeclared_ExposesCapability(t *testing.T) {
 // refuse at call time — the capability must be structurally absent, or
 // SupportsToolCalling lies and callers branch onto a path that then fails.
 func TestFactory_NativeToolsUndeclared_HidesCapability(t *testing.T) {
+	t.Parallel()
 	gen, _, err := NewClient(config.ModelConfig{
 		Provider: "openai", Model: "m", Endpoint: "http://x"})
 	if err != nil {
@@ -192,6 +198,7 @@ func (plainGen) Generate(context.Context, string) (string, error) { return "text
 // EFE task rebuild dropping RequiredCapabilities and base.think() shadowing the
 // tool-round default, each of which cost a day. One test per decorator.
 func TestDecorators_ForwardToolCalling(t *testing.T) {
+	t.Parallel()
 	inner := &fakeToolGen{turn: domain.ModelTurn{
 		StopReason: domain.StopToolUse,
 		ToolCalls:  []domain.ModelToolCall{{ID: "c1", Name: "write_file"}},
@@ -226,6 +233,7 @@ func TestDecorators_ForwardToolCalling(t *testing.T) {
 // Forwarding must fail loudly when the inner cannot do it — not return an empty turn
 // that a caller would read as "the model said nothing and finished".
 func TestDecorators_PlainInnerErrorsRatherThanFakingATurn(t *testing.T) {
+	t.Parallel()
 	decorators := map[string]domain.ToolCallingGenerator{
 		"healthGenerator": newHealthGenerator("g1", plainGen{},
 			NewCircuitBreaker(3, time.Minute)).(domain.ToolCallingGenerator),
@@ -247,6 +255,7 @@ func TestDecorators_PlainInnerErrorsRatherThanFakingATurn(t *testing.T) {
 // A caller that reaches GenerateWithTools without checking SupportsToolCalling must
 // get a loud error, not a silent plain completion that never calls anything.
 func TestOpenAI_GenerateWithTools_RefusesWhenNotDeclared(t *testing.T) {
+	t.Parallel()
 	c := &OpenAIClient{Endpoint: "http://x", Model: "m", TimeoutMs: 5000}
 	if _, err := c.GenerateWithTools(context.Background(), []domain.ModelMessage{domain.UserMessage("hi")}, nil); err == nil {
 		t.Fatal("must refuse when native_tools is not declared")
@@ -262,6 +271,7 @@ func TestOpenAI_GenerateWithTools_RefusesWhenNotDeclared(t *testing.T) {
 // generator without native_tools would have silently lost streaming. Both capabilities
 // must survive independently of each other.
 func TestOpenAI_CapabilitiesAreIndependent(t *testing.T) {
+	t.Parallel()
 	for _, native := range []bool{false, true} {
 		gen, _, err := NewClient(config.ModelConfig{
 			Provider: "openai", Model: "m", Endpoint: "http://x", NativeTools: native})
@@ -279,6 +289,7 @@ func TestOpenAI_CapabilitiesAreIndependent(t *testing.T) {
 
 // A decorator must not claim tool support on behalf of an inner that has it disabled.
 func TestDecorators_DoNotOverReportDisabledInner(t *testing.T) {
+	t.Parallel()
 	disabled := &OpenAIClient{Endpoint: "http://x", Model: "m"} // NativeTools false
 	decs := map[string]domain.Generator{
 		"healthGenerator":      newHealthGenerator("g1", disabled, NewCircuitBreaker(3, time.Minute)),
@@ -300,6 +311,7 @@ func TestDecorators_DoNotOverReportDisabledInner(t *testing.T) {
 // codebase a day more than once — the EFE task rebuild, the shadowed tool-round
 // default — so the wiring is asserted rather than assumed.
 func TestGeneratorRegistry_PropagatesNativeTools(t *testing.T) {
+	t.Parallel()
 	reg, err := NewGeneratorRegistry([]config.GeneratorConfig{
 		{ID: "native", Provider: "openai", Model: "m", Endpoint: "http://x", NativeTools: true},
 		{ID: "plain", Provider: "openai", Model: "m", Endpoint: "http://x"},
@@ -322,6 +334,7 @@ func TestGeneratorRegistry_PropagatesNativeTools(t *testing.T) {
 // cannot see its own call. Sending one user turn per round is what made the first cut
 // re-explore every turn and never write a file.
 func TestOpenAI_SendsFullConversation(t *testing.T) {
+	t.Parallel()
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&got)
@@ -369,6 +382,7 @@ func TestOpenAI_SendsFullConversation(t *testing.T) {
 // A plain text completion must not gain empty tool fields — the omitempty tags keep
 // the non-tool path byte-identical to before ADR-0097.
 func TestOpenAI_TextMessagesOmitToolFields(t *testing.T) {
+	t.Parallel()
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&got)

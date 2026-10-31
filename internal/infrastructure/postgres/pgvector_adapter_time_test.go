@@ -12,6 +12,7 @@ import (
 // timestamp is recent. When CreatedAt is explicitly set, the explicit value is
 // preserved.
 func TestCreatedAtDefaultNow(t *testing.T) {
+	t.Parallel()
 	adapter, cleanup := newTestAdapter(t)
 	defer cleanup()
 

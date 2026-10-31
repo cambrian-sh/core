@@ -79,6 +79,7 @@ func newByIDFixture() (*byIDStore, *authz.EnforcingVectorStore) {
 var customer = &domain.TagPredicate{ForbiddenTags: []string{"internal"}}
 
 func TestGetByID_FiltersForbidden(t *testing.T) {
+	t.Parallel()
 	inner, s := newByIDFixture()
 	ctx := domain.WithScope(context.Background(), customer)
 
@@ -103,6 +104,7 @@ func TestGetByID_FiltersForbidden(t *testing.T) {
 // A missing ctx predicate is a dropped-predicate bug, not an unscoped deployment —
 // OSS supplies a bypass. It must fail LOUD rather than read unfiltered.
 func TestGetByID_NoPredicateFailsClosed(t *testing.T) {
+	t.Parallel()
 	_, s := newByIDFixture()
 
 	got, err := s.GetByID(context.Background(), "sec")
@@ -115,6 +117,7 @@ func TestGetByID_NoPredicateFailsClosed(t *testing.T) {
 }
 
 func TestGetByID_BypassDelegates(t *testing.T) {
+	t.Parallel()
 	_, s := newByIDFixture()
 	ctx := domain.WithScope(context.Background(), domain.ScopeSystem)
 
@@ -125,6 +128,7 @@ func TestGetByID_BypassDelegates(t *testing.T) {
 }
 
 func TestGetBatch_FiltersForbidden(t *testing.T) {
+	t.Parallel()
 	_, s := newByIDFixture()
 	ctx := domain.WithScope(context.Background(), customer)
 
@@ -140,6 +144,7 @@ func TestGetBatch_FiltersForbidden(t *testing.T) {
 // QueryByMetadata is the primitive the experiential precedent lane reads through
 // (precedent.go resolves an action path by plan_id), so it carries the same weight.
 func TestQueryByMetadata_FiltersForbidden(t *testing.T) {
+	t.Parallel()
 	_, s := newByIDFixture()
 	ctx := domain.WithScope(context.Background(), customer)
 
@@ -153,6 +158,7 @@ func TestQueryByMetadata_FiltersForbidden(t *testing.T) {
 }
 
 func TestQueryByMetadata_NoPredicateFailsClosed(t *testing.T) {
+	t.Parallel()
 	_, s := newByIDFixture()
 	if _, err := s.QueryByMetadata(context.Background(), nil, 10); !errors.Is(err, authz.ErrScopeMissing) {
 		t.Errorf("expected ErrScopeMissing, got %v", err)
@@ -164,6 +170,7 @@ func TestQueryByMetadata_NoPredicateFailsClosed(t *testing.T) {
 // ever made principal-facing, this test is the thing that should fail and force the
 // enforcement question to be reopened.
 func TestGetStaleMemories_IsDocumentedPassThrough(t *testing.T) {
+	t.Parallel()
 	_, s := newByIDFixture()
 
 	docs, err := s.GetStaleMemories(context.Background(), 10)

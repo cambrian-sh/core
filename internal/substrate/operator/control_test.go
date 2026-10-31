@@ -38,6 +38,7 @@ func (f *fakeApprovalHub) Submit(id string, approved bool, _ string) bool {
 }
 
 func TestExecutionControlHub_RegisterLookupDeregister(t *testing.T) {
+	t.Parallel()
 	hub := operator.NewExecutionControlHub()
 	c := &fakeControls{}
 	if _, ok := hub.Lookup("s1"); ok {
@@ -56,6 +57,7 @@ func TestExecutionControlHub_RegisterLookupDeregister(t *testing.T) {
 
 // PauseSession steers the live execution; a retried command is idempotent.
 func TestPauseSession_SteersAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	hub := operator.NewExecutionControlHub()
 	c := &fakeControls{}
@@ -77,6 +79,7 @@ func TestPauseSession_SteersAndIsIdempotent(t *testing.T) {
 
 // A command for a session with no live execution fails cleanly.
 func TestPauseSession_NoLiveExecution(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	svc.SetSteeringSources(operator.NewExecutionControlHub(), &fakeApprovalHub{})
 
@@ -89,6 +92,7 @@ func TestPauseSession_NoLiveExecution(t *testing.T) {
 // InjectCorrection reaches the live execution via the control hub and delivers
 // the instruction; no live execution → FailedPrecondition. ADR-0047 0047-22.
 func TestInjectCorrection_DeliversViaControlHub(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	hub := operator.NewExecutionControlHub()
 	c := &fakeControls{}
@@ -114,6 +118,7 @@ func TestInjectCorrection_DeliversViaControlHub(t *testing.T) {
 
 // ResolveHITL submits the decision to the ApprovalHub once (idempotent).
 func TestResolveHITL_SubmitsOnce(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	hub := &fakeApprovalHub{}
 	svc.SetSteeringSources(operator.NewExecutionControlHub(), hub)

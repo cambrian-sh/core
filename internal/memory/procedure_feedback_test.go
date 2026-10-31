@@ -35,6 +35,7 @@ func (r *roundTripStore) Save(_ context.Context, doc *domain.Document) error {
 // round-trips through JSONB as float64, so a naive int assertion would erase the
 // corroboration this whole tier is built on.
 func TestProcedureDoc_RoundTrips(t *testing.T) {
+	t.Parallel()
 	orig := domain.Procedure{
 		ID:      "proc-1",
 		Trigger: "goal: ship a release",
@@ -73,6 +74,7 @@ func TestProcedureDoc_RoundTrips(t *testing.T) {
 
 // The loop itself: a routine that informed a plan must learn from the outcome.
 func TestFeedProcedureOutcome_UpdatesConfidence(t *testing.T) {
+	t.Parallel()
 	store := &roundTripStore{docs: map[string]domain.Document{}}
 	emb := &recordingEmbedder{}
 	base := domain.Procedure{
@@ -94,6 +96,7 @@ func TestFeedProcedureOutcome_UpdatesConfidence(t *testing.T) {
 // Sustained failure of a followed routine must eventually retire it — that is the
 // loop actually closing rather than merely recording.
 func TestFeedProcedureOutcome_SustainedFailureRetires(t *testing.T) {
+	t.Parallel()
 	store := &roundTripStore{docs: map[string]domain.Document{}}
 	emb := &recordingEmbedder{}
 	_ = SaveProcedure(context.Background(), store, emb, domain.Procedure{
@@ -113,6 +116,7 @@ func TestFeedProcedureOutcome_SustainedFailureRetires(t *testing.T) {
 // Feedback is an enrichment of an enrichment: a missing or unreadable routine must be
 // skipped quietly, never surfaced as an error that could fail a plan.
 func TestFeedProcedureOutcome_ToleratesMissingRoutines(t *testing.T) {
+	t.Parallel()
 	store := &roundTripStore{docs: map[string]domain.Document{}}
 	FeedProcedureOutcome(context.Background(), store, &recordingEmbedder{},
 		[]string{"nope", ""}, true, 0.3) // must not panic

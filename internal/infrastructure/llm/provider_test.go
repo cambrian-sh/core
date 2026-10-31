@@ -27,6 +27,7 @@ func testProvider(t *testing.T) *Provider {
 }
 
 func TestProvider_RoleResolvesToConfiguredID(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeRouter})
 	if err != nil || id != "qwen-local" {
@@ -37,6 +38,7 @@ func TestProvider_RoleResolvesToConfiguredID(t *testing.T) {
 // SetRole rebinds resolution on the NEXT call — the live half of the operator
 // plane's SetRoleAssignment (contract 0096).
 func TestProvider_SetRoleRebindsResolutionLive(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	p.SetRole("router", "deepseek")
 	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeRouter})
@@ -50,6 +52,7 @@ func TestProvider_SetRoleRebindsResolutionLive(t *testing.T) {
 
 // The map SetRole mutates must not be the caller's config map.
 func TestProvider_NewProviderCopiesTheRolesMap(t *testing.T) {
+	t.Parallel()
 	cfgRoles := map[string]string{"router": "qwen-local"}
 	p, err := NewProvider(config.LLMProviderConfig{
 		Default: "qwen-local",
@@ -69,6 +72,7 @@ func TestProvider_NewProviderCopiesTheRolesMap(t *testing.T) {
 }
 
 func TestProvider_AgentStepUsesHealthySuggestion(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeAgentStep, SuggestedModelID: "deepseek"})
 	if err != nil || id != "deepseek" {
@@ -77,6 +81,7 @@ func TestProvider_AgentStepUsesHealthySuggestion(t *testing.T) {
 }
 
 func TestProvider_FailsOverWhenRoleModelUnhealthy(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	p.breaker.Record("qwen-local", false) // threshold 1 => qwen-local OPEN
 	// router role prefers qwen-local (open) -> default deepseek (healthy).
@@ -87,6 +92,7 @@ func TestProvider_FailsOverWhenRoleModelUnhealthy(t *testing.T) {
 }
 
 func TestProvider_NoHealthyModelReturnsError(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	p.breaker.Record("qwen-local", false)
 	p.breaker.Record("deepseek", false)
@@ -96,6 +102,7 @@ func TestProvider_NoHealthyModelReturnsError(t *testing.T) {
 }
 
 func TestProvider_AcquireReturnsGeneratorForHealthyRequest(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	gen, err := p.Acquire(context.Background(), domain.LLMRequest{Purpose: domain.PurposePlanner})
 	if err != nil || gen == nil {
@@ -104,6 +111,7 @@ func TestProvider_AcquireReturnsGeneratorForHealthyRequest(t *testing.T) {
 }
 
 func TestProvider_AcquirePropagatesNoHealthyError(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	p.breaker.Record("qwen-local", false)
 	p.breaker.Record("deepseek", false)
@@ -113,6 +121,7 @@ func TestProvider_AcquirePropagatesNoHealthyError(t *testing.T) {
 }
 
 func TestProvider_TraceWrapperAppliedPerPurpose(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	var gotSubsystem string
 	wrapped := false
@@ -135,6 +144,7 @@ func TestProvider_TraceWrapperAppliedPerPurpose(t *testing.T) {
 // An agent step carries no role preference in the Provider (its model choice is
 // the auction's StepAllocation, ADR-0018): the ladder goes suggestion -> default.
 func TestProvider_AgentStepHasNoRolePreference(t *testing.T) {
+	t.Parallel()
 	p := testProvider(t)
 	// Even a role entry keyed "agent_step" must not steer an agent step.
 	p.SetRole(string(domain.PurposeAgentStep), "qwen-local")

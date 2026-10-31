@@ -30,6 +30,7 @@ func render(t *testing.T, exprs []goqu.Expression) string {
 // ChunksMentioningEntity applies the predicate across a JOIN, where an unqualified
 // `metadata` is at best ambiguous and at worst silently resolves to the wrong table.
 func TestScopeExpressionsOn_QualifiesMetadataColumn(t *testing.T) {
+	t.Parallel()
 	eff := &domain.TagPredicate{
 		RequiredTags:  []string{"airline"},
 		ForbiddenTags: []string{"internal"},
@@ -56,6 +57,7 @@ func TestScopeExpressionsOn_QualifiesMetadataColumn(t *testing.T) {
 // with an empty alias. That path must be byte-identical to what it produced before the
 // qualifier was introduced — unqualified `metadata`, so the GIN index still applies.
 func TestScopeExpressionsOn_EmptyAliasMatchesLegacy(t *testing.T) {
+	t.Parallel()
 	eff := &domain.TagPredicate{RequiredTags: []string{"crm"}}
 
 	viaWrapper := render(t, scopeExpressions(eff))
@@ -72,6 +74,7 @@ func TestScopeExpressionsOn_EmptyAliasMatchesLegacy(t *testing.T) {
 // that is correct (the chokepoint refuses the read first). ChunksMentioningEntity does NOT
 // rely on it — it guards nil itself, because nothing sits in front of that lookup.
 func TestScopeExpressionsOn_NilAndBypass(t *testing.T) {
+	t.Parallel()
 	if got := scopeExpressionsOn(nil, "c"); got != nil {
 		t.Errorf("nil predicate: expected no expressions, got %d", len(got))
 	}
@@ -88,6 +91,7 @@ func TestScopeExpressionsOn_NilAndBypass(t *testing.T) {
 // dense/lexical/entity chunk reads returned rows Check refuses (the unguarded
 // mirror-divergence the RAG Hardening Review flagged as Q2).
 func TestScopeExpressionsOn_PartyScopedDeniedLikeForbidden(t *testing.T) {
+	t.Parallel()
 	eff := &domain.TagPredicate{
 		PartyScopedTags: []string{"deal:acme", "deal:globex"},
 		PartyIdentities: []string{"customer:acme"}, // identities are irrelevant on this plane

@@ -19,6 +19,7 @@ func stepRec(id, sid string) domain.Document {
 // The pure predicate: only the CURRENT session's auto-recorded System step
 // records match; cross-session records and deliberate remember() facts do not.
 func TestIsSameSessionStepRecord(t *testing.T) {
+	t.Parallel()
 	if !isSameSessionStepRecord(stepRec("a", "s1"), "s1") {
 		t.Error("same-session System step record should match")
 	}
@@ -48,6 +49,7 @@ func TestIsSameSessionStepRecord(t *testing.T) {
 // (the D1 exclusion stays narrow), and an unowned corpus fact carries no session
 // id and stays visible to everyone — isolation is a predicate, not a store reset.
 func TestQuerySearch_ExcludesSameSessionStepRecords(t *testing.T) {
+	t.Parallel()
 	store := &scopeApplyingStore{docs: []domain.Document{
 		stepRec("own", "s1"),   // same-session step record → DROP
 		stepRec("other", "s2"), // ANOTHER session's step record → DROP (BRAIN-01)
@@ -81,6 +83,7 @@ func TestQuerySearch_ExcludesSameSessionStepRecords(t *testing.T) {
 // predicate and a store reset, and getting it wrong would delete the knowledge
 // base the day isolation shipped.
 func TestQuerySearch_IsolationKeepsUnownedCorpus(t *testing.T) {
+	t.Parallel()
 	store := &scopeApplyingStore{docs: []domain.Document{
 		{ID: "corpus-1", Text: "a plain fact"},
 		{ID: "corpus-2", Text: "another plain fact"},
@@ -108,6 +111,7 @@ func TestQuerySearch_IsolationKeepsUnownedCorpus(t *testing.T) {
 // every unattended read return nothing, a far larger blast radius than the bleed
 // being fixed.
 func TestQuerySearch_NoSessionMeansNoNarrowing(t *testing.T) {
+	t.Parallel()
 	store := &scopeApplyingStore{docs: []domain.Document{
 		stepRec("a", "s1"),
 		stepRec("b", "s2"),
@@ -125,6 +129,7 @@ func TestQuerySearch_NoSessionMeansNoNarrowing(t *testing.T) {
 
 // The returned window is truncated to recallTopK even when the store over-returns.
 func TestQuerySearch_TruncatesToTopK(t *testing.T) {
+	t.Parallel()
 	var docs []domain.Document
 	for i := 0; i < 15; i++ {
 		docs = append(docs, domain.Document{ID: fmt.Sprintf("f%d", i), Text: "fact"})

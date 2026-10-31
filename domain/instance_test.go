@@ -5,6 +5,7 @@ import (
 )
 
 func TestInstance_NewInstance_HasUniqueID(t *testing.T) {
+	t.Parallel()
 	i1 := NewInstance("agent-1")
 	i2 := NewInstance("agent-1")
 
@@ -23,6 +24,7 @@ func TestInstance_NewInstance_HasUniqueID(t *testing.T) {
 }
 
 func TestInstance_DefaultModeIsJIT(t *testing.T) {
+	t.Parallel()
 	i := NewInstance("agent-x")
 	if i.Mode != ModeJIT {
 		t.Errorf("expected default Mode JIT, got %s", i.Mode)
@@ -30,6 +32,7 @@ func TestInstance_DefaultModeIsJIT(t *testing.T) {
 }
 
 func TestInstance_ModeConstants(t *testing.T) {
+	t.Parallel()
 	if ModeJIT == ModePool {
 		t.Error("ModeJIT and ModePool should be distinct")
 	}

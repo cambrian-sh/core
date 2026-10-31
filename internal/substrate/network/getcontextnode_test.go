@@ -41,6 +41,7 @@ func (l *leakyVS) GetByID(_ context.Context, id string) (*domain.Document, error
 // ADR-0048 D5: a cid absent from the ContentStore but present in the VectorStore
 // must NOT leak the LTM document text — the scope-bypassing fallback is removed.
 func TestGetContextNode_NoLTMFallback(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		ContentStore: &fakeCS{nodes: map[domain.CID]*domain.ContextNode{}},
 		VectorStore:  &leakyVS{&capturingVS{saved: make(chan *domain.Document, 1)}},
@@ -56,6 +57,7 @@ func TestGetContextNode_NoLTMFallback(t *testing.T) {
 
 // A genuine ContentStore cid is still served unchanged.
 func TestGetContextNode_ServesContentStoreCID(t *testing.T) {
+	t.Parallel()
 	cid := domain.CID("abc")
 	s := &Server{ContentStore: &fakeCS{nodes: map[domain.CID]*domain.ContextNode{
 		cid: {CID: cid, Type: "tool_result", Data: []byte("blob")},
@@ -71,6 +73,7 @@ func TestGetContextNode_ServesContentStoreCID(t *testing.T) {
 
 // ADR-0048 D4: an owned ContentStore node is readable only by its owning session.
 func TestGetContextNode_OwnedNode_ReadGated(t *testing.T) {
+	t.Parallel()
 	cid := domain.CID("owned")
 	s := &Server{ContentStore: &fakeCS{nodes: map[domain.CID]*domain.ContextNode{
 		cid: {CID: cid, Data: []byte("private"), OwnerSession: "sessA"},
@@ -119,6 +122,7 @@ func (c *capturingCS) GC(context.Context, []domain.CID) error        { return ni
 // ADR-0048 D4/R7: PutContextNode owner-stamps from the x-session-id metadata, and
 // the resulting node is readable only by that session.
 func TestPutContextNode_OwnerStampedAndGated(t *testing.T) {
+	t.Parallel()
 	cs := &capturingCS{}
 	s := &Server{ContentStore: cs}
 

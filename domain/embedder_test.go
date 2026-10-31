@@ -55,6 +55,7 @@ var _ BatchEmbedder = (*mockBatchEmbedder)(nil)
 // returns a known vector per input; the forwarder returns the same vectors
 // in the same order, and Embed is called exactly once per input in order.
 func TestEmbedBatchForwarder(t *testing.T) {
+	t.Parallel()
 	want := [][]float32{
 		{0.1, 0.2, 0.3},
 		{0.4, 0.5, 0.6},
@@ -102,6 +103,7 @@ func TestEmbedBatchForwarder(t *testing.T) {
 // forwarder returns [][]float32{} (non-nil, length 0) with no error, and
 // Embed is not called at all.
 func TestEmbedBatchForwarder_EmptyInput(t *testing.T) {
+	t.Parallel()
 	m := &mockEmbedder{
 		embed: func(ctx context.Context, text string) ([]float32, error) {
 			return nil, errors.New("Embed should not be called for empty input")
@@ -126,6 +128,7 @@ func TestEmbedBatchForwarder_EmptyInput(t *testing.T) {
 // the underlying Embed error with the offending index, and that the original
 // error is preserved (errors.Is) so callers can match on it.
 func TestEmbedBatchForwarder_PropagatesError(t *testing.T) {
+	t.Parallel()
 	sentinel := errors.New("backend timeout")
 	m := &mockEmbedder{
 		embed: func(ctx context.Context, text string) ([]float32, error) {
@@ -160,6 +163,7 @@ func TestEmbedBatchForwarder_PropagatesError(t *testing.T) {
 // where texts is nil (distinct from empty). The contract matches the empty
 // case: no error, no Embed call, non-nil empty result.
 func TestEmbedBatchForwarder_NilInput(t *testing.T) {
+	t.Parallel()
 	m := &mockEmbedder{
 		embed: func(ctx context.Context, text string) ([]float32, error) {
 			return nil, errors.New("Embed should not be called for nil input")
@@ -184,6 +188,7 @@ func TestEmbedBatchForwarder_NilInput(t *testing.T) {
 // to the test report so a reader can see the BatchEmbedder contract is being
 // verified, not just the Embedder port.
 func TestBatchEmbedderInterface_CompileTime(t *testing.T) {
+	t.Parallel()
 	var b BatchEmbedder = &mockBatchEmbedder{
 		mockEmbedder: mockEmbedder{
 			embed: func(ctx context.Context, text string) ([]float32, error) {

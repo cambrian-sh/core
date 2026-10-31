@@ -20,6 +20,7 @@ import (
 //     it writes a username into memory;
 //   - the planner guessing a home directory it was never shown.
 func TestBuildHostBlock_CarriesOnlyTheOS(t *testing.T) {
+	t.Parallel()
 	block := buildHostBlock("windows")
 
 	if !strings.Contains(block, "os: windows") {
@@ -38,6 +39,7 @@ func TestBuildHostBlock_CarriesOnlyTheOS(t *testing.T) {
 }
 
 func TestBuildHostBlock_EmptyGOOSSaysNothing(t *testing.T) {
+	t.Parallel()
 	// Better to omit the section than to announce an unknown platform.
 	if got := buildHostBlock(""); got != "" {
 		t.Errorf("buildHostBlock(\"\") = %q, want empty", got)
@@ -47,6 +49,7 @@ func TestBuildHostBlock_EmptyGOOSSaysNothing(t *testing.T) {
 // TestHostGOOS_IsLiveUnlessPinned covers the owner's requirement that the OS is
 // discovered dynamically rather than baked in.
 func TestHostGOOS_IsLiveUnlessPinned(t *testing.T) {
+	t.Parallel()
 	p := &Planner{}
 	if got := p.hostGOOS(); got != runtime.GOOS {
 		t.Errorf("bare Planner reported %q, want the live host %q", got, runtime.GOOS)
@@ -64,6 +67,7 @@ func TestHostGOOS_IsLiveUnlessPinned(t *testing.T) {
 // static text would give every host a different hash and silently invalidate
 // every cached plan. The host block must therefore be a DYNAMIC constraint.
 func TestPlannerPromptHash_ExcludesTheHost(t *testing.T) {
+	t.Parallel()
 	// The rule text is ALLOWED to reference the section by name ("the <host>
 	// section tells you the OS") — that is static guidance and belongs in the hash.
 	// What must never be baked in is the BLOCK, because it carries a per-host value.
@@ -97,6 +101,7 @@ func TestPlannerPromptHash_ExcludesTheHost(t *testing.T) {
 // instruction against emitting "~/Desktop" disappeared with the <environment>
 // block it lived inside — on Windows, where no shell expands "~".
 func TestPlannerRules_ForbidConstructingPaths(t *testing.T) {
+	t.Parallel()
 	if !strings.Contains(plannerDecisionRules, "~") {
 		t.Error("the decision rules must mention \"~\" in order to forbid it")
 	}
@@ -112,6 +117,7 @@ func TestPlannerRules_ForbidConstructingPaths(t *testing.T) {
 // gone, so instructing the model about sections nothing can produce is dead
 // prompt text shipped on every planning call.
 func TestPlannerRules_DropDeadDiscoverySections(t *testing.T) {
+	t.Parallel()
 	for _, dead := range []string{"<DiscoveryLTM>", "<environment>"} {
 		if strings.Contains(plannerLTMRules, dead) {
 			t.Errorf("plannerLTMRules still instructs on %s, which nothing produces since the Scout was retired", dead)

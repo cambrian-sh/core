@@ -61,6 +61,7 @@ func doc(id, text string) domain.SearchResult {
 // --- planQuery --------------------------------------------------------------
 
 func TestPlanQuery_DisabledIsIdentity(t *testing.T) {
+	t.Parallel()
 	q := &QueryService{}
 	if got := q.planQuery(context.Background(), "original", "", nil, 0); got != "original" {
 		t.Fatalf("disabled planQuery should be identity, got %q", got)
@@ -68,6 +69,7 @@ func TestPlanQuery_DisabledIsIdentity(t *testing.T) {
 }
 
 func TestPlanQuery_NilPlannerFailsOpen(t *testing.T) {
+	t.Parallel()
 	q := &QueryService{}
 	q.EnableAgenticRetrieval(nil, 1)
 	if got := q.planQuery(context.Background(), "original", "", nil, 0); got != "original" {
@@ -76,6 +78,7 @@ func TestPlanQuery_NilPlannerFailsOpen(t *testing.T) {
 }
 
 func TestPlanQuery_RewritesWhenEnabled(t *testing.T) {
+	t.Parallel()
 	p := &fakePlanner{rewrite: `"Titan migration" bob chen`}
 	q := &QueryService{}
 	q.EnableAgenticRetrieval(p, 1)
@@ -86,6 +89,7 @@ func TestPlanQuery_RewritesWhenEnabled(t *testing.T) {
 }
 
 func TestPlanQuery_ErrorFailsOpenToScratchpad(t *testing.T) {
+	t.Parallel()
 	// On a later hop (scratchpad set), a planner error falls back to the BRIDGE,
 	// not the raw query — so hop-2 still searches for the bridge.
 	p := &fakePlanner{planErr: errors.New("dispatch failed")}
@@ -97,6 +101,7 @@ func TestPlanQuery_ErrorFailsOpenToScratchpad(t *testing.T) {
 }
 
 func TestPlanQuery_EmptyRewriteFallsBackToScratchpad(t *testing.T) {
+	t.Parallel()
 	p := &fakePlanner{rewrite: "   "}
 	q := &QueryService{}
 	q.EnableAgenticRetrieval(p, 2)
@@ -108,6 +113,7 @@ func TestPlanQuery_EmptyRewriteFallsBackToScratchpad(t *testing.T) {
 // --- decideContinue ---------------------------------------------------------
 
 func TestDecideContinue_NilPlannerStops(t *testing.T) {
+	t.Parallel()
 	q := &QueryService{}
 	if stop, _ := q.decideContinue(context.Background(), "q", nil, nil); !stop {
 		t.Fatal("nil planner should stop")
@@ -115,6 +121,7 @@ func TestDecideContinue_NilPlannerStops(t *testing.T) {
 }
 
 func TestDecideContinue_ErrorStops(t *testing.T) {
+	t.Parallel()
 	p := &fakePlanner{decErr: errors.New("boom")}
 	q := &QueryService{}
 	q.EnableAgenticRetrieval(p, 2)
@@ -124,6 +131,7 @@ func TestDecideContinue_ErrorStops(t *testing.T) {
 }
 
 func TestDecideContinue_ReturnsBridge(t *testing.T) {
+	t.Parallel()
 	p := &fakePlanner{stop: false, bridge: "Bob Chen"}
 	q := &QueryService{}
 	q.EnableAgenticRetrieval(p, 2)
@@ -136,6 +144,7 @@ func TestDecideContinue_ReturnsBridge(t *testing.T) {
 // --- interleaveDedup --------------------------------------------------------
 
 func TestInterleaveDedup_SingleHopUnchanged(t *testing.T) {
+	t.Parallel()
 	hop := []domain.SearchResult{doc("a", ""), doc("b", "")}
 	got := interleaveDedup([][]domain.SearchResult{hop})
 	if len(got) != 2 || got[0].Document.ID != "a" {
@@ -144,6 +153,7 @@ func TestInterleaveDedup_SingleHopUnchanged(t *testing.T) {
 }
 
 func TestInterleaveDedup_RoundRobinAndDedup(t *testing.T) {
+	t.Parallel()
 	hop1 := []domain.SearchResult{doc("seed", ""), doc("shared", "")}
 	hop2 := []domain.SearchResult{doc("answer", ""), doc("shared", "")}
 	got := resultIDs(interleaveDedup([][]domain.SearchResult{hop1, hop2}))
@@ -163,6 +173,7 @@ func TestInterleaveDedup_RoundRobinAndDedup(t *testing.T) {
 // --- finalizeAgentic (typed status control result) --------------------------
 
 func TestFinalizeAgentic_PrependsControlWithStatus(t *testing.T) {
+	t.Parallel()
 	p := &fakePlanner{synthStatus: "abstention", synthText: "not found in memory"}
 	q := &QueryService{}
 	q.EnableAgenticRetrieval(p, 1)
@@ -189,6 +200,7 @@ func TestFinalizeAgentic_PrependsControlWithStatus(t *testing.T) {
 }
 
 func TestFinalizeAgentic_SynthErrorFailsOpenButKeepsTrace(t *testing.T) {
+	t.Parallel()
 	p := &fakePlanner{synthErr: errors.New("boom")}
 	q := &QueryService{}
 	q.EnableAgenticRetrieval(p, 1)
@@ -212,6 +224,7 @@ func TestFinalizeAgentic_SynthErrorFailsOpenButKeepsTrace(t *testing.T) {
 }
 
 func TestEnableAgenticRetrieval_ClampsMaxHops(t *testing.T) {
+	t.Parallel()
 	q := &QueryService{}
 	q.EnableAgenticRetrieval(&fakePlanner{}, 0)
 	if q.agenticMaxHops != 1 {
@@ -232,6 +245,7 @@ func resultIDs(rs []domain.SearchResult) []string {
 // question must not starve the answer stage of mid-chain evidence — while the
 // RETURNED rows keep acc's order for the ranking win.
 func TestFinalizeAgentic_SynthesisUsesContextOrderNotWireOrder(t *testing.T) {
+	t.Parallel()
 	p := &fakePlanner{synthStatus: "answer", synthText: "ok"}
 	q := &QueryService{}
 	q.EnableAgenticRetrieval(p, 1)

@@ -9,6 +9,7 @@ import (
 var _ domain.TelemetryObserver = domain.NoopTelemetryObserver{}
 
 func TestNoopTelemetryObserver_AllMethodsNoPanic(t *testing.T) {
+	t.Parallel()
 	obs := domain.NoopTelemetryObserver{}
 
 	obs.OnTaskCompleted(domain.TaskEvent{

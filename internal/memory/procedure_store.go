@@ -95,7 +95,8 @@ func SaveProcedure(ctx context.Context, store domain.VectorStore, embedder domai
 // (ADR-0094 D4/D8).
 //
 // Confidence moves on a small consolidation rate, borrowed from the stability half of
-// the CLS design in internal/centralexec/belief: a few bad runs must not
+// the CLS design of the former internal/centralexec/belief store (deleted 2026-10-31,
+// T-20261031-internal-centralexec-capabilitycatalog-ladder): a few bad runs must not
 // catastrophically overwrite an established routine, and a few good ones must not
 // enshrine a fluke. Without that damping this is the capability-erosion failure
 // arXiv:2605.09315 measures, where continual self-adaptation degrades what already

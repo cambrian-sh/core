@@ -8,6 +8,7 @@ import (
 
 // The system-skill registry registers, gets, lists, and upserts by name.
 func TestInMemorySkillRegistry(t *testing.T) {
+	t.Parallel()
 	r := NewInMemorySkillRegistry()
 	r.Register(Skill{Name: "deploy", Description: "Deploy the app."})
 
@@ -30,6 +31,7 @@ func TestInMemorySkillRegistry(t *testing.T) {
 // BuildSkillDoc carries name + the short summary (Tier-1), document-prefixed, and
 // reuses the ADR-0045 deriver — so only the first sentence is embedded.
 func TestBuildSkillDoc(t *testing.T) {
+	t.Parallel()
 	doc := BuildSkillDoc(Skill{
 		Name:        "deploy_app",
 		Description: "Deploy the app to prod. Runs migrations and health checks.",
@@ -50,6 +52,7 @@ func TestBuildSkillDoc(t *testing.T) {
 // The skill indexer tags the doc's metadata.tags with the skill's scope labels —
 // the key the ADR-0034 scope predicate filters on (option A).
 func TestSkillIndexer_TagsDocWithScope(t *testing.T) {
+	t.Parallel()
 	store := &fakeToolStore{}
 	ix := &SkillIndexer{Store: store, Embedder: &fakeEmbedder{}}
 	if err := ix.Index(context.Background(), Skill{Name: "deploy", Description: "Deploy.", ScopeTags: []string{"ops"}}); err != nil {
@@ -67,6 +70,7 @@ func TestSkillIndexer_TagsDocWithScope(t *testing.T) {
 
 // SkillDisclosure: Tier-1 is summary-only; Tier-2 adds instructions + grants.
 func TestSkillDisclosure(t *testing.T) {
+	t.Parallel()
 	s := Skill{
 		Name: "deploy", Description: "Deploy the app. Runs migrations.",
 		Instructions: "1. migrate\n2. ship", ToolGrants: []string{"execute_command"},
@@ -84,6 +88,7 @@ func TestSkillDisclosure(t *testing.T) {
 // SkillVisible: nil scope denies (fail-closed); ScopeSystem permits; otherwise
 // TagPredicate.Allows decides on the skill's tags.
 func TestSkillVisible(t *testing.T) {
+	t.Parallel()
 	s := Skill{Name: "deploy", ScopeTags: []string{"ops"}}
 	if SkillVisible(nil, s) {
 		t.Error("nil scope must be fail-closed (deny)")
@@ -105,6 +110,7 @@ func TestSkillVisible(t *testing.T) {
 // the relevance floor, and passes the agent's effective scope to the store (the
 // ADR-0034 scope-gating chokepoint).
 func TestVectorSkillRetriever_FloorAndScopePassed(t *testing.T) {
+	t.Parallel()
 	emb := &fakeEmbedder{}
 	store := &fakeToolStore{results: []SearchResult{
 		{Document: Document{ID: "deploy"}, RawScore: 0.70},

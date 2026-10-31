@@ -8,6 +8,7 @@ import (
 )
 
 func TestSessionToken_ZeroValue(t *testing.T) {
+	t.Parallel()
 	var st domain.BudgetLease
 	if st.ID != "" {
 		t.Errorf("BudgetLease.ID zero value = %q, want empty string", st.ID)
@@ -15,6 +16,7 @@ func TestSessionToken_ZeroValue(t *testing.T) {
 }
 
 func TestSessionToken_New(t *testing.T) {
+	t.Parallel()
 	st := domain.BudgetLease{ID: "abc-123"}
 	if st.ID != "abc-123" {
 		t.Errorf("BudgetLease.ID = %q, want %q", st.ID, "abc-123")
@@ -22,6 +24,7 @@ func TestSessionToken_New(t *testing.T) {
 }
 
 func TestSessionState_New(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	ss := domain.BudgetLeaseState{
 		StepAllocation:   domain.StepAllocation{},
@@ -39,6 +42,7 @@ func TestSessionState_New(t *testing.T) {
 }
 
 func TestStepAllocation_New(t *testing.T) {
+	t.Parallel()
 	winner := domain.AgentDefinition{ID: "winner-1"}
 	fb0 := domain.AgentDefinition{ID: "fallback-1"}
 	fb1 := domain.AgentDefinition{ID: "fallback-2"}
@@ -60,6 +64,7 @@ func TestStepAllocation_New(t *testing.T) {
 }
 
 func TestGenerateOptions_New(t *testing.T) {
+	t.Parallel()
 	opts := domain.GenerateOptions{
 		MaxTokens:     512,
 		Temperature:   0.7,
@@ -78,6 +83,7 @@ func TestGenerateOptions_New(t *testing.T) {
 }
 
 func TestHandoff_SessionToken_NilSafe(t *testing.T) {
+	t.Parallel()
 	h := domain.Handoff{}
 	if h.BudgetLease != nil {
 		t.Errorf("Handoff.BudgetLease zero value = %v, want nil", h.BudgetLease)
@@ -90,6 +96,7 @@ func TestHandoff_SessionToken_NilSafe(t *testing.T) {
 }
 
 func TestAgentManifest_RequiredModelCapabilities(t *testing.T) {
+	t.Parallel()
 	m := domain.AgentManifest{}
 	if len(m.RequiredModelCapabilities) != 0 {
 		t.Errorf("AgentManifest.RequiredModelCapabilities zero value = %v, want empty", m.RequiredModelCapabilities)
@@ -101,6 +108,7 @@ func TestAgentManifest_RequiredModelCapabilities(t *testing.T) {
 }
 
 func TestTaskEvent_GatewayFields(t *testing.T) {
+	t.Parallel()
 	evt := domain.TaskEvent{}
 	if evt.BudgetOverrun {
 		t.Errorf("TaskEvent.BudgetOverrun zero value = true, want false")
@@ -126,6 +134,7 @@ func TestTaskEvent_GatewayFields(t *testing.T) {
 }
 
 func TestAuctionResult_StepAllocation_NilSafe(t *testing.T) {
+	t.Parallel()
 	ar := domain.DispatchResult{}
 	if ar.StepAllocation != nil {
 		t.Errorf("DispatchResult.StepAllocation zero value = %v, want nil", ar.StepAllocation)

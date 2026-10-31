@@ -53,6 +53,7 @@ func corpusOfOne() *scopeApplyingStore {
 // row wins, the rest are unfindable, and the chain a caller fetches reads
 // incomplete without ever saying so.
 func TestEmitDecision_HopsExtendTheCorrelationPrefix(t *testing.T) {
+	t.Parallel()
 	obs := &recordingObserver{}
 	q := NewQueryService(&fakeEmbedder{}, corpusOfOne(), &recordingAuthorizer{})
 	q.SetDecisionObserver(obs, "fp-1")
@@ -76,6 +77,7 @@ func TestEmitDecision_HopsExtendTheCorrelationPrefix(t *testing.T) {
 // Without a seeded handle NOTHING changes: the minted id is what every existing
 // deployment already records, and this plumbing must not alter it.
 func TestEmitDecision_NoCorrelationStillMintsDistinctIDs(t *testing.T) {
+	t.Parallel()
 	obs := &recordingObserver{}
 	q := NewQueryService(&fakeEmbedder{}, corpusOfOne(), &recordingAuthorizer{})
 	q.SetDecisionObserver(obs, "fp-1")
@@ -101,6 +103,7 @@ func TestEmitDecision_NoCorrelationStillMintsDistinctIDs(t *testing.T) {
 // design; the published ask_memory tool must not, or a premium PDP never bites on
 // the one tool that returns prose.
 func TestAnswer_ScopesRetrievalByTheCaller(t *testing.T) {
+	t.Parallel()
 	authz := &recordingAuthorizer{}
 	q := NewQueryService(&fakeEmbedder{}, corpusOfOne(), authz)
 	q.EnableAgenticRetrieval(&citedPlanner{citedText: "grounded [1]"}, 1)
@@ -125,6 +128,7 @@ func TestAnswer_ScopesRetrievalByTheCaller(t *testing.T) {
 // The system lane is unchanged: it still runs at ScopeSystem under the kernel's
 // own caller id, so the operator answer panel keeps full visibility.
 func TestAnswerSystem_StillReadsAtSystemScope(t *testing.T) {
+	t.Parallel()
 	authz := &recordingAuthorizer{}
 	q := NewQueryService(&fakeEmbedder{}, corpusOfOne(), authz)
 	q.EnableAgenticRetrieval(&citedPlanner{citedText: "grounded [1]"}, 1)

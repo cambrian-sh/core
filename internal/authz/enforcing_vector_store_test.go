@@ -74,6 +74,7 @@ func ids(rs []domain.SearchResult) map[string]bool {
 }
 
 func TestEnforcedSearch_FailsClosedWithoutPredicate(t *testing.T) {
+	t.Parallel()
 	store := seeded()
 	sv := authz.NewEnforcingVectorStore(store, nil)
 
@@ -87,6 +88,7 @@ func TestEnforcedSearch_FailsClosedWithoutPredicate(t *testing.T) {
 }
 
 func TestEnforcedSearch_ForbiddenTagExcludesDocs(t *testing.T) {
+	t.Parallel()
 	store := seeded()
 	sv := authz.NewEnforcingVectorStore(store, nil)
 	eff := &domain.TagPredicate{ForbiddenTags: []string{"secrets"}}
@@ -105,6 +107,7 @@ func TestEnforcedSearch_ForbiddenTagExcludesDocs(t *testing.T) {
 }
 
 func TestEnforcedSearch_PredicateFromContext(t *testing.T) {
+	t.Parallel()
 	store := seeded()
 	sv := authz.NewEnforcingVectorStore(store, nil)
 	eff := &domain.TagPredicate{RequiredTags: []string{"order_db"}}
@@ -121,6 +124,7 @@ func TestEnforcedSearch_PredicateFromContext(t *testing.T) {
 }
 
 func TestEnforcedSearch_ScopeSystemBypasses(t *testing.T) {
+	t.Parallel()
 	store := seeded()
 	sv := authz.NewEnforcingVectorStore(store, nil)
 
@@ -134,6 +138,7 @@ func TestEnforcedSearch_ScopeSystemBypasses(t *testing.T) {
 }
 
 func TestEnforcedSearch_ExplicitPredicateBeatsContext(t *testing.T) {
+	t.Parallel()
 	store := seeded()
 	sv := authz.NewEnforcingVectorStore(store, nil)
 	explicit := &domain.TagPredicate{ForbiddenTags: []string{"secrets"}}
@@ -152,6 +157,7 @@ func TestEnforcedSearch_ExplicitPredicateBeatsContext(t *testing.T) {
 // policy when no plugin is installed (§4.2). This is the OSS mirror of the
 // plugin's fail-closed test.
 func TestEnforcedSearch_AllowAllAuthorizerReachesTheStore(t *testing.T) {
+	t.Parallel()
 	store := seeded()
 	sv := authz.NewEnforcingVectorStore(store, nil)
 

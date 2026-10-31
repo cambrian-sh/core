@@ -8,6 +8,7 @@ import (
 
 // prependChunkContext: title + breadcrumb reach the stored text exactly once.
 func TestPrependChunkContext(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, title, body, section, want string
 	}{

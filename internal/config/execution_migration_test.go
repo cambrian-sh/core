@@ -209,6 +209,17 @@ var retiredExecutionFields = map[string]string{
 		"its consolidator was removed 2026-07-18 and the key had no reader.",
 	"consolidation_threshold_bytes": "Episodic consolidation retired 2026-10-31 (ADR-0029/0030): " +
 		"its consolidator was removed 2026-07-18 and the key had no reader.",
+
+	// Dead-key sweep 2026-10-31 (owner approved deleting rather than wiring). Each
+	// entry names the ticket that carries the evidence that nothing read the key.
+	"capability_cluster_threshold":        "T-20261031-dead-capability-cluster-config-keys-and: the ADR-0014 clusterer was deleted by ADR-0067.",
+	"capability_cluster_epsilon":          "T-20261031-dead-capability-cluster-config-keys-and: the ADR-0014 clusterer was deleted by ADR-0067.",
+	"capability_cluster_min_agents":       "T-20261031-dead-capability-cluster-config-keys-and: the ADR-0014 clusterer was deleted by ADR-0067.",
+	"capability_cluster_interval_seconds": "T-20261031-dead-capability-cluster-config-keys-and: the ADR-0014 clusterer was deleted by ADR-0067.",
+	"min_auction_confidence":              "T-20261031-min-auction-confidence-config-is-dead-after-the: the Auctioneer was deleted by ADR-0100 P3.",
+	"k_anonymity_floor":                   "T-20261031-three-config-fields-are-parsed-and-defaulted: the ADR-0034 D11 promotion pipeline was removed.",
+	"inbox_dir":                           "T-20261031-three-config-fields-are-parsed-and-defaulted: the ADR-0028 DirectoryWatcher left the boot path; only a log line read it.",
+	"max_orphaned_documents":              "T-20261031-execution-memory-max-orphaned-documents-and: the ADR-0030 scavenger is never constructed from config.",
 }
 
 // retiredExecutionMapEntries are entries DELIBERATELY removed from a map-valued v1
@@ -220,6 +231,15 @@ var retiredExecutionMapEntries = map[string]map[string]string{
 	"hippocampus_policies": {
 		"episodic": "ADR-0029 episodic policy retired 2026-10-31 (owner decision): its only " +
 			"consumer, the WorkspaceStage episodic lane, was removed with its writer 2026-07-18.",
+	},
+	// `graph` was already a nested object in v1, so its retired leaves are map
+	// entries rather than flat fields (T-20261031-graph-edge-weight-and-consolidator-timeout).
+	"graph": {
+		"weight_contradicts":       "ADR-0052 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
+		"weight_specifies":         "ADR-0052 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
+		"weight_closes":            "ADR-0052 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
+		"weight_discussed_in":      "ADR-0052 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
+		"consolidator_llm_timeout": "The ConsolidatorAgent it bounded was removed 2026-07-18; no reader since.",
 	},
 }
 

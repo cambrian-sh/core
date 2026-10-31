@@ -16,6 +16,7 @@ func (f *fakeToolOutputRecorder) RecordToolOutput(_ context.Context, rec ToolOut
 // The pure cost pre-filter: below the floor, error, and denied are skipped;
 // a substantive non-error output is promoted.
 func TestShouldPromoteToolOutput(t *testing.T) {
+	t.Parallel()
 	pad := strings.Repeat("x", 300)
 	if shouldPromoteToolOutput([]byte("tiny"), 200) {
 		t.Error("below the size floor must be skipped")
@@ -46,6 +47,7 @@ func TestShouldPromoteToolOutput(t *testing.T) {
 // ADR-0049 D1: the action formatter renders a mutation into a compact deterministic
 // line; large arg values collapse, status reflects the outcome.
 func TestFormatActionLine(t *testing.T) {
+	t.Parallel()
 	big := strings.Repeat("x", 200)
 	line := FormatActionLine("write_file", []byte(`{"path":"a.md","content":"`+big+`"}`), []byte(`{"message":"ok"}`))
 	if !strings.HasPrefix(line, "write_file → ok") {
@@ -72,6 +74,7 @@ func TestFormatActionLine(t *testing.T) {
 // A successful, substantive tool output is fed to the recorder; an error output
 // (handler returns a result containing an error marker) is not.
 func TestToolExecutor_PromotesSubstantiveOutputOnly(t *testing.T) {
+	t.Parallel()
 	pad := strings.Repeat("x", 300)
 
 	run := func(result []byte) []ToolOutputRecord {

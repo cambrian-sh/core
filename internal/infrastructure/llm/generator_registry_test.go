@@ -20,6 +20,7 @@ type fakeGen struct {
 func (f fakeGen) Generate(_ context.Context, _ string) (string, error) { return f.out, f.err }
 
 func TestGeneratorRegistry_DistinctOpenAIIDsCoexist(t *testing.T) {
+	t.Parallel()
 	reg, err := NewGeneratorRegistry([]config.GeneratorConfig{
 		{ID: "deepseek", Provider: "openai", Model: "deepseek-v4-flash", Endpoint: "https://a/v1", APIKeyEnv: "K1"},
 		{ID: "gpt4o", Provider: "openai", Model: "gpt-4o", Endpoint: "https://b/v1", APIKeyEnv: "K2"},
@@ -38,6 +39,7 @@ func TestGeneratorRegistry_DistinctOpenAIIDsCoexist(t *testing.T) {
 }
 
 func TestHealthGenerator_EmptyResponseRecordsFailure(t *testing.T) {
+	t.Parallel()
 	b, _ := newTestBreaker(1, time.Minute) // threshold 1
 	g := newHealthGenerator("x", fakeGen{out: "", err: nil}, b)
 	_, _ = g.Generate(context.Background(), "p")
@@ -47,6 +49,7 @@ func TestHealthGenerator_EmptyResponseRecordsFailure(t *testing.T) {
 }
 
 func TestHealthGenerator_ErrorRecordsFailure(t *testing.T) {
+	t.Parallel()
 	b, _ := newTestBreaker(1, time.Minute)
 	g := newHealthGenerator("x", fakeGen{out: "", err: errors.New("boom")}, b)
 	if _, err := g.Generate(context.Background(), "p"); err == nil {
@@ -58,6 +61,7 @@ func TestHealthGenerator_ErrorRecordsFailure(t *testing.T) {
 }
 
 func TestHealthGenerator_SuccessKeepsHealthy(t *testing.T) {
+	t.Parallel()
 	b, _ := newTestBreaker(2, time.Minute)
 	g := newHealthGenerator("x", fakeGen{out: "hello", err: nil}, b)
 	if out, err := g.Generate(context.Background(), "p"); err != nil || out != "hello" {
@@ -69,6 +73,7 @@ func TestHealthGenerator_SuccessKeepsHealthy(t *testing.T) {
 }
 
 func TestOllamaClient_HTTPErrorReturnsError(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":"model 'qwen3:8b' not found"}`))
@@ -83,6 +88,7 @@ func TestOllamaClient_HTTPErrorReturnsError(t *testing.T) {
 }
 
 func TestOllamaClient_EmptyResponseReturnsError(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"response":""}`)) // 200 but empty content

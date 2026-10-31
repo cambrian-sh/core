@@ -32,6 +32,7 @@ func (f *fakeBacktester) Backtest(context.Context, domain.WatchConfig, uint64) (
 
 // REACT-05 / ADR-0071: unwired (OSS) ⇒ both observability RPCs are Unimplemented.
 func TestWatchObservability_UnimplementedWhenUnwired(t *testing.T) {
+	t.Parallel()
 	svc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
 	if _, err := svc.GetWatchMetrics(context.Background(), &pb.GetWatchMetricsOpRequest{}); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("GetWatchMetrics should be Unimplemented, got %v", err)
@@ -43,6 +44,7 @@ func TestWatchObservability_UnimplementedWhenUnwired(t *testing.T) {
 
 // Wired: metrics + verdicts are mapped to the proto shape.
 func TestWatchObservability_MapsMetricsAndVerdicts(t *testing.T) {
+	t.Parallel()
 	svc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
 	svc.SetWatchObservability(
 		&fakeMetricsReader{ms: []domain.WatchMetrics{{

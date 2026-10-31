@@ -17,8 +17,10 @@ type EmbedderConfig struct {
 	// query side and nothing on the document side (ADR-0048). Empty = no prefix
 	// (e.g. nomic, which is symmetric in our setup). The document/store path uses
 	// the plain Embed; only the recall path applies this.
-	QueryPrefix         string `json:"query_prefix,omitempty"`
-	SupportsLongContext bool   `json:"supports_long_context,omitempty"`
+	QueryPrefix string `json:"query_prefix,omitempty"`
+	// RETIRED 2026-10-31 (T-20261031-three-config-fields-are-parsed-and-defaulted):
+	// `supports_long_context` (ADR-0060 D6). The late-chunker gate reads only
+	// `chunker.late.enabled`; nothing ever read this flag.
 }
 
 // GeneratorConfig declares one LLM generator the Provider can hand out. ADR-0042:

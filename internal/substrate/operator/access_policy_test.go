@@ -34,6 +34,7 @@ func (s *stubPolicy) ExplainAccess(_ context.Context, req domain.AccessRequest) 
 // An OSS build has no policy to explain, and says so rather than answering a
 // question it cannot answer.
 func TestExplainAccess_UnimplementedWithoutPolicyPlugin(t *testing.T) {
+	t.Parallel()
 	s := NewService(nil)
 	_, err := s.ExplainAccess(context.Background(), &pb.ExplainAccessOpRequest{PrincipalId: "a"})
 	if status.Code(err) != codes.Unimplemented {
@@ -46,6 +47,7 @@ func TestExplainAccess_UnimplementedWithoutPolicyPlugin(t *testing.T) {
 }
 
 func TestExplainAccess_RequiresAPrincipal(t *testing.T) {
+	t.Parallel()
 	s := NewService(nil)
 	s.SetPolicyAdmin(&stubPolicy{})
 	if _, err := s.ExplainAccess(context.Background(), &pb.ExplainAccessOpRequest{}); status.Code(err) != codes.InvalidArgument {
@@ -57,6 +59,7 @@ func TestExplainAccess_RequiresAPrincipal(t *testing.T) {
 // silently ignored — silently ignoring it would answer a DIFFERENT question than
 // the one the administrator asked.
 func TestExplainAccess_RejectsUnknownEffectClass(t *testing.T) {
+	t.Parallel()
 	s := NewService(nil)
 	s.SetPolicyAdmin(&stubPolicy{})
 	_, err := s.ExplainAccess(context.Background(), &pb.ExplainAccessOpRequest{
@@ -70,6 +73,7 @@ func TestExplainAccess_RejectsUnknownEffectClass(t *testing.T) {
 // The denial names the specific tag AND the policy that contributed it, which is
 // the whole difference between an explanation and a shrug (ADR-0085 D8).
 func TestExplainAccess_NamesTheTagAndTheContributingPolicy(t *testing.T) {
+	t.Parallel()
 	stub := &stubPolicy{dec: domain.AccessDecision{
 		Allowed:   false,
 		Reason:    domain.ReasonForbiddenTag,
@@ -125,6 +129,7 @@ func TestExplainAccess_NamesTheTagAndTheContributingPolicy(t *testing.T) {
 }
 
 func TestListClassificationTags_ReturnsTheVocabulary(t *testing.T) {
+	t.Parallel()
 	s := NewService(nil)
 	s.SetPolicyAdmin(&stubPolicy{vocab: []string{"PII", "internal_only", "public"}})
 	resp, err := s.ListClassificationTags(context.Background(), &pb.ListClassificationTagsOpRequest{})
@@ -139,6 +144,7 @@ func TestListClassificationTags_ReturnsTheVocabulary(t *testing.T) {
 // policyNote must stay quiet when policy played no part — an annotation on every
 // response trains operators to ignore the field, which defeats INV-3.
 func TestPolicyNote_OnlyWhenPolicyShapedTheOutcome(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		dec  domain.AccessDecision
@@ -164,6 +170,7 @@ func TestPolicyNote_OnlyWhenPolicyShapedTheOutcome(t *testing.T) {
 // Every DecisionReason must survive the trip to the wire; a reason that projects
 // to the empty string is a reason an operator can never act on.
 func TestAccessDecisionToOp_CarriesEveryReason(t *testing.T) {
+	t.Parallel()
 	reasons := []domain.DecisionReason{
 		domain.ReasonAllowed, domain.ReasonBypass, domain.ReasonForbiddenTag,
 		domain.ReasonMissingRequiredTag, domain.ReasonAnyOfUnsatisfied,

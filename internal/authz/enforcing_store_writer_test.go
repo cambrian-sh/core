@@ -52,6 +52,7 @@ func hasTag(ss []string, want string) bool {
 // The chokepoint must REPLACE the authored tags with the decision point's answer.
 // A writer's tags are a request, never the answer.
 func TestEnforcingWriter_ReplacesAuthoredTagsWithClassification(t *testing.T) {
+	t.Parallel()
 	store := &recordingStore{}
 	a := &stubAuthorizer{classify: func([]string) ([]string, domain.AccessDecision) {
 		return []string{"company_wide", "provenance:source=analyst"}, domain.AccessDecision{Allowed: true, Reason: domain.ReasonAllowed}
@@ -75,6 +76,7 @@ func TestEnforcingWriter_ReplacesAuthoredTagsWithClassification(t *testing.T) {
 // INV-5: the principal handed to the decision point comes from the kernel's
 // context, never from the document.
 func TestEnforcingWriter_PassesTheContextPrincipal(t *testing.T) {
+	t.Parallel()
 	store := &recordingStore{}
 	a := &stubAuthorizer{classify: func(h []string) ([]string, domain.AccessDecision) {
 		return h, domain.AccessDecision{Allowed: true}
@@ -95,6 +97,7 @@ func TestEnforcingWriter_PassesTheContextPrincipal(t *testing.T) {
 
 // A denied classification stops the write; nothing reaches the store.
 func TestEnforcingWriter_DeniedWriteNeverReachesTheStore(t *testing.T) {
+	t.Parallel()
 	store := &recordingStore{}
 	a := &stubAuthorizer{classify: func([]string) ([]string, domain.AccessDecision) {
 		return nil, domain.AccessDecision{Allowed: false, Reason: domain.ReasonForbiddenTag, Detail: "coinage"}
@@ -113,6 +116,7 @@ func TestEnforcingWriter_DeniedWriteNeverReachesTheStore(t *testing.T) {
 // Fail-closed on batches: one rejection fails the whole batch, so a partially
 // classified batch can never be persisted.
 func TestEnforcingWriter_BatchIsAllOrNothing(t *testing.T) {
+	t.Parallel()
 	store := &recordingStore{}
 	calls := 0
 	a := &stubAuthorizer{classify: func(h []string) ([]string, domain.AccessDecision) {
@@ -136,6 +140,7 @@ func TestEnforcingWriter_BatchIsAllOrNothing(t *testing.T) {
 // A nil authorizer degrades to the OSS default rather than to nil-panic or to a
 // silent bypass of the chokepoint.
 func TestEnforcingWriter_NilAuthorizerIsAllowAll(t *testing.T) {
+	t.Parallel()
 	store := &recordingStore{}
 	w := authz.NewEnforcingStoreWriter(store, nil, nil)
 
@@ -149,6 +154,7 @@ func TestEnforcingWriter_NilAuthorizerIsAllowAll(t *testing.T) {
 }
 
 func TestDocTags_HandlesBothEncodings(t *testing.T) {
+	t.Parallel()
 	// A JSON round-trip yields []interface{}, which is the encoding that silently
 	// broke tag reads before it was handled explicitly.
 	fromJSON := &domain.Document{Metadata: map[string]interface{}{"tags": []interface{}{"a", "b", 7}}}

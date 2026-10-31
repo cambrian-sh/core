@@ -9,6 +9,7 @@ import (
 // computeCapabilityStats groups verified events by capability and computes per-tag
 // success/trust; untagged events are ignored.
 func TestComputeCapabilityStats(t *testing.T) {
+	t.Parallel()
 	cfg := AggregatorConfig{EWMAAlpha: 0.5}
 	verified := []domain.TaskEvent{
 		// browser: consistently high quality.
@@ -38,6 +39,7 @@ func TestComputeCapabilityStats(t *testing.T) {
 }
 
 func TestComputeCapabilityStats_NoTags(t *testing.T) {
+	t.Parallel()
 	cfg := AggregatorConfig{EWMAAlpha: 0.5}
 	if got := computeCapabilityStats([]domain.TaskEvent{{VerifierScore: 0.9}}, cfg, 0.6, 0.4); got != nil {
 		t.Fatalf("no tagged events should yield nil, got %v", got)

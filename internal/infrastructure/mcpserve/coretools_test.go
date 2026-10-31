@@ -102,6 +102,7 @@ func structured(t *testing.T, res domain.PublishedToolResult) map[string]any {
 // ── search_memory ────────────────────────────────────────────────────────────
 
 func TestSearchMemory_ScopesToThePrincipalAndMapsResults(t *testing.T) {
+	t.Parallel()
 	search := &fakeSearcher{results: results(3)}
 	b := NewCoreBackends()
 	b.Bind(search, nil, nil, nil)
@@ -128,6 +129,7 @@ func TestSearchMemory_ScopesToThePrincipalAndMapsResults(t *testing.T) {
 }
 
 func TestSearchMemory_CapsTopK(t *testing.T) {
+	t.Parallel()
 	search := &fakeSearcher{results: results(30)}
 	b := NewCoreBackends()
 	b.Bind(search, nil, nil, nil)
@@ -142,6 +144,7 @@ func TestSearchMemory_CapsTopK(t *testing.T) {
 }
 
 func TestSearchMemory_RequiresAQuery(t *testing.T) {
+	t.Parallel()
 	b := NewCoreBackends()
 	b.Bind(&fakeSearcher{}, nil, nil, nil)
 	if _, err := b.searchMemory(callerCtx(), json.RawMessage(`{}`)); err == nil {
@@ -150,6 +153,7 @@ func TestSearchMemory_RequiresAQuery(t *testing.T) {
 }
 
 func TestCoreTools_UnboundBackendsAnswerNotReadyPerTool(t *testing.T) {
+	t.Parallel()
 	b := NewCoreBackends() // never bound
 	for name, call := range map[string]func() (domain.PublishedToolResult, error){
 		"search_memory": func() (domain.PublishedToolResult, error) {
@@ -170,6 +174,7 @@ func TestCoreTools_UnboundBackendsAnswerNotReadyPerTool(t *testing.T) {
 // ── ask_memory ───────────────────────────────────────────────────────────────
 
 func TestAskMemory_SynthesizedAnswerCarriesNumberedCitations(t *testing.T) {
+	t.Parallel()
 	b := NewCoreBackends()
 	b.Bind(&fakeSearcher{}, &fakeAnswerer{
 		status: "ok", answer: "Paid on time [1], twice [2].", evidence: results(5),
@@ -203,6 +208,7 @@ func TestAskMemory_SynthesizedAnswerCarriesNumberedCitations(t *testing.T) {
 // when the citations are ones the caller could not have fetched. The caller id must
 // come off the context, exactly as it does for search_memory.
 func TestAskMemory_ScopesTheAnswerLaneByTheCallingPrincipal(t *testing.T) {
+	t.Parallel()
 	answerer := &fakeAnswerer{status: "ok", answer: "grounded [1]", evidence: results(1)}
 	b := NewCoreBackends()
 	b.Bind(&fakeSearcher{}, answerer, nil, nil)
@@ -219,6 +225,7 @@ func TestAskMemory_ScopesTheAnswerLaneByTheCallingPrincipal(t *testing.T) {
 }
 
 func TestAskMemory_NoModelDegradesToAnExtractiveAnswer(t *testing.T) {
+	t.Parallel()
 	// answer lane nil = no synthesis model. NEVER an error (a no-LLM kernel is a
 	// supported deployment) and never MCP sampling (deprecated, spec 2026-07-28).
 	b := NewCoreBackends()
@@ -242,6 +249,7 @@ func TestAskMemory_NoModelDegradesToAnExtractiveAnswer(t *testing.T) {
 }
 
 func TestAskMemory_ImposesTheAnswerBudget(t *testing.T) {
+	t.Parallel()
 	b := NewCoreBackends()
 	b.Bind(&fakeSearcher{}, deadlineProbe{}, nil, nil)
 	if _, err := b.askMemory(callerCtx(), json.RawMessage(`{"query":"q"}`)); err != nil {
@@ -263,6 +271,7 @@ func (deadlineProbe) Answer(ctx context.Context, _, _ string) (string, string, [
 // ── get_document ─────────────────────────────────────────────────────────────
 
 func TestGetDocument_PagesByRunesAndReportsTruncation(t *testing.T) {
+	t.Parallel()
 	// Multi-byte text, so byte-based slicing would split a rune and corrupt the
 	// page boundary — offsets are characters by contract.
 	getter := &fakeGetter{doc: domain.Document{ID: "doc-1", Text: "éééééééééé"}} // 10 runes, 20 bytes
@@ -284,6 +293,7 @@ func TestGetDocument_PagesByRunesAndReportsTruncation(t *testing.T) {
 }
 
 func TestGetDocument_NotFoundPassesThroughUnchanged(t *testing.T) {
+	t.Parallel()
 	// Absent and unreadable are the SAME answer by the port's contract; this
 	// handler must not editorialize the distinction back in.
 	getter := &fakeGetter{err: domain.ErrDocumentNotFound}
@@ -297,6 +307,7 @@ func TestGetDocument_NotFoundPassesThroughUnchanged(t *testing.T) {
 // ── list_documents ───────────────────────────────────────────────────────────
 
 func TestListDocuments_MapsTheFilterAndThePage(t *testing.T) {
+	t.Parallel()
 	lister := &fakeLister{
 		page: []memory.DocumentSummary{{
 			ID: "doc-1", Title: "Q3 invoices", SourceType: "upload",

@@ -30,6 +30,7 @@ func (f *fakeExperienceStore) SaveExperience(_ context.Context, e domain.Experie
 // that yields an untagged experience. An untagged row has no tags for any predicate to
 // act on, which is how a boundary becomes inexpressible rather than merely open.
 func TestBornTags_NeverEmpty(t *testing.T) {
+	t.Parallel()
 	for _, surface := range []domain.SurfaceRef{
 		{},
 		{Kind: domain.SurfaceChat},
@@ -55,6 +56,7 @@ func TestBornTags_NeverEmpty(t *testing.T) {
 // The surface must reach the tags, or a customer-surface episode is indistinguishable
 // from an internal one and ADR-0087's RequiredTags clamp has nothing to clamp on.
 func TestBornTags_CarriesSurfaceAndIngress(t *testing.T) {
+	t.Parallel()
 	tags := domain.BornTags(domain.SurfaceRef{Kind: domain.SurfaceChat, ID: "airline"})
 	want := map[string]bool{"internal": false, "surface:chat": false, "ingress:airline": false}
 	for _, tag := range tags {
@@ -73,6 +75,7 @@ func TestBornTags_CarriesSurfaceAndIngress(t *testing.T) {
 // filtered later". This is the post-2026-07-18 baseline and the control arm of every
 // A/B that measures the outcome record.
 func TestWritePlanScene_DefaultOffWritesNothing(t *testing.T) {
+	t.Parallel()
 	store := &fakeExperienceStore{}
 	agent := &Agent{ExperienceStore: store} // RecordOutcomes defaults false
 	if err := agent.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "plan-1", Goal: "do a thing", Success: true, Surprise: -1}); err != nil {
@@ -85,6 +88,7 @@ func TestWritePlanScene_DefaultOffWritesNothing(t *testing.T) {
 
 // A nil Manager must not panic — the gate is checked before any dereference.
 func TestWritePlanScene_NilManagerIsSafe(t *testing.T) {
+	t.Parallel()
 	agent := &Agent{RecordOutcomes: true}
 	if err := agent.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "plan-1", Goal: "goal", Success: true, Surprise: -1}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -93,6 +97,7 @@ func TestWritePlanScene_NilManagerIsSafe(t *testing.T) {
 
 // An empty plan id is not an episode.
 func TestWritePlanScene_EmptyPlanIDWritesNothing(t *testing.T) {
+	t.Parallel()
 	store := &fakeExperienceStore{}
 	agent := &Agent{RecordOutcomes: true, ExperienceStore: store}
 	if err := agent.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "", Goal: "goal", Success: true, Surprise: -1}); err != nil {
@@ -112,6 +117,7 @@ func TestWritePlanScene_EmptyPlanIDWritesNothing(t *testing.T) {
 // contentless-scene skip. Both flags were set in every existing test, so nothing caught
 // it until a live plan execution wrote zero rows.
 func TestRecordToolOutput_ArmsAreIndependent(t *testing.T) {
+	t.Parallel()
 	mutation := domain.ToolOutputRecord{
 		ToolName:   "write_file",
 		ArgsJSON:   []byte(`{"path":"/tmp/a.md"}`),
@@ -160,6 +166,7 @@ func (m *multiCaptureStore) Save(_ context.Context, doc *domain.Document) error 
 // lane. A gate that fired on every failure would be a failure gate, which is exactly
 // what A2.3 rejects.
 func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
+	t.Parallel()
 	newAgent := func() (*multiCaptureStore, *Agent) {
 		store := &multiCaptureStore{}
 		a := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.7, 5, 3, 64, 0, 0, 0)
@@ -329,6 +336,7 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 // retrievability rather than existence. Unknown surprise (-1) must take the baseline
 // and never be read as "predicted perfectly".
 func TestWritePlanScene_SurpriseStampedAndScalesActivation(t *testing.T) {
+	t.Parallel()
 	run := func(surprise float64) domain.Document {
 		store := &multiCaptureStore{}
 		a := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.7, 5, 3, 64, 0, 0, 0)

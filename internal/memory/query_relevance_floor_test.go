@@ -40,6 +40,7 @@ func fact(id string, score float64) domain.SearchResult {
 
 // Below-floor seeds are dropped; at/above-floor seeds are kept.
 func TestQuerySearch_RelevanceFloorDropsIrrelevant(t *testing.T) {
+	t.Parallel()
 	store := &scoredStore{results: []domain.SearchResult{
 		fact("relevant", 0.80),
 		fact("borderline", 0.25), // == floor → kept (not below)
@@ -67,6 +68,7 @@ func TestQuerySearch_RelevanceFloorDropsIrrelevant(t *testing.T) {
 // An all-irrelevant query returns EMPTY (the signal the agent reads as "no relevant
 // memory"), not a padded top-k of junk.
 func TestQuerySearch_RelevanceFloorEmptyWhenAllBelow(t *testing.T) {
+	t.Parallel()
 	store := &scoredStore{results: []domain.SearchResult{
 		fact("junk-a", 0.12),
 		fact("junk-b", 0.08),
@@ -85,6 +87,7 @@ func TestQuerySearch_RelevanceFloorEmptyWhenAllBelow(t *testing.T) {
 
 // Floor 0 disables the gate (legacy flat top-k): nothing is dropped on score.
 func TestQuerySearch_RelevanceFloorZeroDisabled(t *testing.T) {
+	t.Parallel()
 	store := &scoredStore{results: []domain.SearchResult{
 		fact("a", 0.9),
 		fact("b", 0.01),

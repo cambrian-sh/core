@@ -54,6 +54,7 @@ func menuNames(tools []SystemTool) map[string]bool {
 // into A's task menu — alongside the kernel tools, namespaced, locality-noted,
 // egress-stamped.
 func TestContributedMenu_OwnersFleetResolvesIntoTaskMenu(t *testing.T) {
+	t.Parallel()
 	e := contributionExec(ownerFleet(t, true))
 	ctx := WithTaskBeneficiary(context.Background(), AgentPrincipal("owner-a"))
 
@@ -85,6 +86,7 @@ func TestContributedMenu_OwnersFleetResolvesIntoTaskMenu(t *testing.T) {
 // fleet — a task for owner B, a task with no beneficiary, and a kernel with no
 // fleet source all resolve to kernel tools only.
 func TestContributedMenu_ForeignBeneficiaryNeverListsTheFleet(t *testing.T) {
+	t.Parallel()
 	e := contributionExec(ownerFleet(t, true))
 
 	for name, ctx := range map[string]context.Context{
@@ -111,6 +113,7 @@ func TestContributedMenu_ForeignBeneficiaryNeverListsTheFleet(t *testing.T) {
 // Gate 4: a machine that is not live contributes nothing to any menu — and a
 // step aimed at it is refused, not silently guessed at (parking is CL-2).
 func TestContributedMenu_NotLiveWorkerContributesNothing(t *testing.T) {
+	t.Parallel()
 	e := contributionExec(ownerFleet(t, false)) // registered, NOT live
 	ctx := WithTaskBeneficiary(context.Background(), AgentPrincipal("owner-a"))
 
@@ -128,6 +131,7 @@ func TestContributedMenu_NotLiveWorkerContributesNothing(t *testing.T) {
 // Gate 2, dispatch half: a crafted local:a-machine/read_file call on owner B's
 // task is refused at dispatch — with the refusal recorded as a decision.
 func TestDispatch_CrossOwnerLocalStepRefusedWithDecision(t *testing.T) {
+	t.Parallel()
 	e := contributionExec(ownerFleet(t, true))
 	var recorded []AccessDecision
 	e.FleetDecisions = func(d AccessDecision) { recorded = append(recorded, d) }
@@ -173,6 +177,7 @@ func (b bypassFleet) OwnerOf(ctx context.Context, machine string) (PrincipalRef,
 // foreign tool visibly present in B's menu — dispatch alone still refuses the
 // cross-owner step. One broken layer must never be one leak.
 func TestDispatch_RefusalHoldsWhenMenuScopingBypassed(t *testing.T) {
+	t.Parallel()
 	e := contributionExec(bypassFleet{real: ownerFleet(t, true)})
 	var recorded []AccessDecision
 	e.FleetDecisions = func(d AccessDecision) { recorded = append(recorded, d) }
@@ -206,6 +211,7 @@ func (c *captureEgress) RecordEgress(agentID, toolName string, _ []string) {
 }
 
 func TestDispatch_InScopeLocalStepReachesTheRelayStub(t *testing.T) {
+	t.Parallel()
 	e := contributionExec(ownerFleet(t, true))
 	egress := &captureEgress{}
 	e.EgressAuditor = egress
@@ -228,6 +234,7 @@ func TestDispatch_InScopeLocalStepReachesTheRelayStub(t *testing.T) {
 // registry refuses the reserved local: namespace outright, so the reverse
 // shadowing cannot happen either.
 func TestNoShadowing_ContributedNeverDisplacesKernelTools(t *testing.T) {
+	t.Parallel()
 	fleet := NewInMemoryFleet()
 	if err := fleet.RegisterWorker(WorkerRegistration{
 		Machine: "a-machine",
@@ -260,6 +267,7 @@ func TestNoShadowing_ContributedNeverDisplacesKernelTools(t *testing.T) {
 // mirror grantFor, so the advisory menu never promises a call Execute would
 // deny — granted namespaced names appear, ungranted ones do not.
 func TestContributedMenu_GrantMirrorWhenNotUnrestricted(t *testing.T) {
+	t.Parallel()
 	e := contributionExec(ownerFleet(t, true))
 	e.Unrestricted = false
 	e.Grants = grantStore("agent-1", ToolGrant{Tool: "local:a-machine/read_file", Policy: ToolResourcePolicy{AllowAll: true}})
@@ -277,6 +285,7 @@ func TestContributedMenu_GrantMirrorWhenNotUnrestricted(t *testing.T) {
 // note, unconditional egress, and closed-set discipline (an invalid manifest
 // effect is dropped, never trusted).
 func TestAttachContributedTool_Stamps(t *testing.T) {
+	t.Parallel()
 	w := WorkerRegistration{Machine: "m1", Owner: AgentPrincipal("o")}
 	got := AttachContributedTool(w, SystemTool{
 		Name:        "write_file",
@@ -306,6 +315,7 @@ func TestAttachContributedTool_Stamps(t *testing.T) {
 }
 
 func TestSplitContributedToolName(t *testing.T) {
+	t.Parallel()
 	if m, tool, ok := SplitContributedToolName(ContributedToolName("a-machine", "read_file")); !ok || m != "a-machine" || tool != "read_file" {
 		t.Errorf("round trip failed: %q %q %v", m, tool, ok)
 	}
@@ -319,6 +329,7 @@ func TestSplitContributedToolName(t *testing.T) {
 // The fleet source itself: registration is fail-closed (no ownerless workers),
 // liveness is explicit and revocable, and a zero owner resolves to nothing.
 func TestInMemoryFleet_FailClosedRegistrationAndLiveness(t *testing.T) {
+	t.Parallel()
 	f := NewInMemoryFleet()
 	if err := f.RegisterWorker(WorkerRegistration{Machine: "m1"}); err == nil {
 		t.Error("an ownerless registration was accepted")

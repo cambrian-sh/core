@@ -49,6 +49,7 @@ func (f *fakeMemoryWriter) Remember(_ context.Context, agentID, text string, hin
 }
 
 func TestIngestMemory_ChunkingPathThreadsTagsAndImportance(t *testing.T) {
+	t.Parallel()
 	p := &fakeIngestionProcessor{docID: "source_doc:doc"}
 	s := &Server{IngestionProcessor: p}
 
@@ -84,6 +85,7 @@ func TestIngestMemory_ChunkingPathThreadsTagsAndImportance(t *testing.T) {
 // live chunked path had no equivalent — the enforcing store only asks
 // ClassifyWrite and has no notion of "we have never heard of you".
 func TestIngestMemory_UnknownPrincipalIsPermissionDenied(t *testing.T) {
+	t.Parallel()
 	p := &fakeIngestionProcessor{docID: "source_doc:x"}
 	s := &Server{IngestionProcessor: p, Authz: denyUnknownAuthz{}}
 
@@ -121,6 +123,7 @@ func (denyUnknownAuthz) ClassifyWrite(context.Context, domain.PrincipalRef, []st
 // 0035-05: a coined narrow-only hint (tag outside the controlled vocabulary) maps
 // to InvalidArgument — the agent must learn the tag has to be added by the operator.
 func TestIngestMemory_CoinedHintIsInvalidArgument(t *testing.T) {
+	t.Parallel()
 	s := &Server{IngestionProcessor: &fakeIngestionProcessor{err: authz.ErrWriteDenied}}
 
 	_, err := s.IngestMemory(agentCtx("analyst"), &pb.IngestMemoryRequest{
@@ -134,6 +137,7 @@ func TestIngestMemory_CoinedHintIsInvalidArgument(t *testing.T) {
 // 0035-05: on success the handler threads the authenticated identity + request fields
 // to the writer and returns the new doc ID.
 func TestIngestMemory_SuccessReturnsDocIDAndThreadsIdentity(t *testing.T) {
+	t.Parallel()
 	p := &fakeIngestionProcessor{docID: "source_doc:doc-42"}
 	s := &Server{IngestionProcessor: p}
 
@@ -166,6 +170,7 @@ func TestIngestMemory_SuccessReturnsDocIDAndThreadsIdentity(t *testing.T) {
 // entity, invisible to ListDocuments. Every ingest goes through the chunker; there
 // is no second way in.
 func TestIngestMemory_NoChunkingPipelineFailsRatherThanWritingDirectly(t *testing.T) {
+	t.Parallel()
 	s := &Server{}
 	_, err := s.IngestMemory(agentCtx("a"), &pb.IngestMemoryRequest{Text: "x"})
 	if status.Code(err) != codes.FailedPrecondition {

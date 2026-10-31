@@ -13,6 +13,7 @@ import (
 // at resolution, before any grant is consulted.
 
 func TestGrantCovers(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		grant, tool string
 		want        bool
@@ -62,6 +63,7 @@ func fleetGrantExec(t *testing.T) *ToolExecutor {
 }
 
 func TestFleetGrant_HolderListsAndCallsOwnFleet(t *testing.T) {
+	t.Parallel()
 	e := fleetGrantExec(t)
 	ctx := WithTaskBeneficiary(context.Background(), AgentPrincipal("owner-a"))
 
@@ -83,6 +85,7 @@ func TestFleetGrant_HolderListsAndCallsOwnFleet(t *testing.T) {
 }
 
 func TestFleetGrant_NonHolderSeesAndGetsNothing(t *testing.T) {
+	t.Parallel()
 	e := fleetGrantExec(t)
 	ctx := WithTaskBeneficiary(context.Background(), AgentPrincipal("owner-a"))
 
@@ -100,6 +103,7 @@ func TestFleetGrant_NonHolderSeesAndGetsNothing(t *testing.T) {
 // Ownership is decided before the grant: holding `local:*` while serving owner A
 // must not reach owner B's machine.
 func TestFleetGrant_NeverReachesAnotherOwnersMachine(t *testing.T) {
+	t.Parallel()
 	e := fleetGrantExec(t)
 	var recorded []AccessDecision
 	e.FleetDecisions = func(d AccessDecision) { recorded = append(recorded, d) }
@@ -117,6 +121,7 @@ func TestFleetGrant_NeverReachesAnotherOwnersMachine(t *testing.T) {
 // The menu and the gate answer through one matcher: for every contributed tool
 // the gate would allow, the menu offers it, and vice versa.
 func TestFleetGrant_MenuMatchesGate(t *testing.T) {
+	t.Parallel()
 	e := fleetGrantExec(t)
 	ctx := WithTaskBeneficiary(context.Background(), AgentPrincipal("owner-a"))
 	for _, agent := range []string{"fleet-agent", "plain-agent"} {
@@ -132,6 +137,7 @@ func TestFleetGrant_MenuMatchesGate(t *testing.T) {
 
 // Receipts and audits name the concrete tool, never the wildcard.
 func TestFleetGrant_ReportsConcreteTool(t *testing.T) {
+	t.Parallel()
 	e := fleetGrantExec(t)
 	g, ok := e.grantFor(context.Background(), "fleet-agent", "local:a-machine/read_file", "")
 	if !ok {

@@ -47,6 +47,7 @@ func newLifecycleMgr(t *testing.T) (*SessionManager, *stubSessionStore, *recordi
 // Creation must be observable. Without this the operator feed carries no "a session now
 // exists" signal at all, so a console only learns about new sessions on the next snapshot.
 func TestCreateSession_PublishesState(t *testing.T) {
+	t.Parallel()
 	m, _, bus := newLifecycleMgr(t)
 
 	ses, err := m.CreateSession(context.Background(), "ship the thing", "")
@@ -75,6 +76,7 @@ func TestCreateSession_PublishesState(t *testing.T) {
 // Every transition emits absolute state, including the two the old per-transition events
 // never covered (paused, and the resume back to active).
 func TestTransition_PublishesStateForEveryTransition(t *testing.T) {
+	t.Parallel()
 	m, _, bus := newLifecycleMgr(t)
 	ctx := context.Background()
 	ses, _ := m.CreateSession(ctx, "goal", "")
@@ -106,6 +108,7 @@ func TestTransition_PublishesStateForEveryTransition(t *testing.T) {
 // An operator's justification travels with the state change, so the console can show WHY a
 // session moved rather than only that it did.
 func TestTransitionStatusReason_CarriesReason(t *testing.T) {
+	t.Parallel()
 	m, _, bus := newLifecycleMgr(t)
 	ctx := context.Background()
 	ses, _ := m.CreateSession(ctx, "goal", "")
@@ -126,6 +129,7 @@ func TestTransitionStatusReason_CarriesReason(t *testing.T) {
 
 // The driver the lifecycle never had: idle ACTIVE sessions become DORMANT.
 func TestSweepIdle_AgesIdleActiveSessions(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 	ctx := context.Background()
 
@@ -154,6 +158,7 @@ func TestSweepIdle_AgesIdleActiveSessions(t *testing.T) {
 
 // A non-positive window disables the sweep — no session is aged by accident.
 func TestSweepIdle_DisabledAtZero(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 	ctx := context.Background()
 	ses, _ := m.CreateSession(ctx, "goal", "")
@@ -173,6 +178,7 @@ func TestSweepIdle_DisabledAtZero(t *testing.T) {
 // The sweep only touches ACTIVE sessions — a paused session is paused deliberately by an
 // operator and must not be aged out from under them.
 func TestSweepIdle_LeavesPausedSessionsAlone(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 	ctx := context.Background()
 	ses, _ := m.CreateSession(ctx, "goal", "")
@@ -194,6 +200,7 @@ func TestSweepIdle_LeavesPausedSessionsAlone(t *testing.T) {
 
 // A completed session is terminal: the sweep must not resurrect or re-transition it.
 func TestSweepIdle_IgnoresCompleted(t *testing.T) {
+	t.Parallel()
 	m, store, _ := newLifecycleMgr(t)
 	ctx := context.Background()
 	ses, _ := m.CreateSession(ctx, "goal", "")
@@ -210,6 +217,7 @@ func TestSweepIdle_IgnoresCompleted(t *testing.T) {
 
 // A nil bus must never break a transition that already committed to the store.
 func TestPublishState_NilBusIsSafe(t *testing.T) {
+	t.Parallel()
 	m := New(newStubSessionStore())
 	ctx := context.Background()
 	ses, err := m.CreateSession(ctx, "goal", "")

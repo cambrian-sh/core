@@ -8,6 +8,7 @@ import (
 )
 
 func TestStreamChunk_New(t *testing.T) {
+	t.Parallel()
 	chunk := domain.StreamChunk{
 		Text:             "hello",
 		IsFinal:          false,
@@ -25,6 +26,7 @@ func TestStreamChunk_New(t *testing.T) {
 }
 
 func TestStreamChunk_Final(t *testing.T) {
+	t.Parallel()
 	chunk := domain.StreamChunk{
 		Text:                  "world",
 		IsFinal:               true,
@@ -41,6 +43,7 @@ func TestStreamChunk_Final(t *testing.T) {
 }
 
 func TestReconcileTokens_WithUsageField(t *testing.T) {
+	t.Parallel()
 	finalChunk := domain.StreamChunk{
 		Text:                  "final text with usage",
 		IsFinal:               true,
@@ -61,6 +64,7 @@ func TestReconcileTokens_WithUsageField(t *testing.T) {
 }
 
 func TestReconcileTokens_FallbackOnMissingUsage(t *testing.T) {
+	t.Parallel()
 	finalChunk := domain.StreamChunk{
 		Text:    "final text without usage field",
 		IsFinal: true,
@@ -73,6 +77,7 @@ func TestReconcileTokens_FallbackOnMissingUsage(t *testing.T) {
 }
 
 func TestReconcileTokens_BudgetOverrun(t *testing.T) {
+	t.Parallel()
 	finalChunk := domain.StreamChunk{
 		IsFinal:               true,
 		UsageTotalTokens:      115,

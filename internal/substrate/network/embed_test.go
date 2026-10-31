@@ -19,6 +19,7 @@ type stubEmbedder struct {
 func (s stubEmbedder) Embed(context.Context, string) ([]float32, error) { return s.vec, s.err }
 
 func TestEmbed_ReturnsVectorFromKernelEmbedder(t *testing.T) {
+	t.Parallel()
 	srv := &Server{Embedder: stubEmbedder{vec: []float32{0.1, 0.2, 0.3}}}
 	resp, err := srv.Embed(context.Background(), &pb.EmbedRequest{Text: "hello"})
 	if err != nil {
@@ -30,6 +31,7 @@ func TestEmbed_ReturnsVectorFromKernelEmbedder(t *testing.T) {
 }
 
 func TestEmbed_NilEmbedderUnimplemented(t *testing.T) {
+	t.Parallel()
 	srv := &Server{}
 	if _, err := srv.Embed(context.Background(), &pb.EmbedRequest{Text: "x"}); status.Code(err) != codes.Unimplemented {
 		t.Errorf("nil embedder must be Unimplemented, got %v", err)
@@ -37,6 +39,7 @@ func TestEmbed_NilEmbedderUnimplemented(t *testing.T) {
 }
 
 func TestEmbed_EmbedderErrorPropagated(t *testing.T) {
+	t.Parallel()
 	srv := &Server{Embedder: stubEmbedder{err: errors.New("model down")}}
 	if _, err := srv.Embed(context.Background(), &pb.EmbedRequest{Text: "x"}); status.Code(err) != codes.Internal {
 		t.Errorf("embedder error must map to Internal, got %v", err)

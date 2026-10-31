@@ -10,6 +10,7 @@ import (
 // wrong is silent: a misclassified type simply stops being protected, and the only
 // symptom is corpus recall quietly degrading once experience accumulates.
 func TestLaneClassification(t *testing.T) {
+	t.Parallel()
 	experiential := []string{
 		domain.DocTypeMnemonicScene, domain.DocTypeMnemonicAction,
 		domain.DocTypeMnemonicEntity, domain.DocTypeEpisodicMemory,
@@ -35,6 +36,7 @@ func TestLaneClassification(t *testing.T) {
 // A knowledge query asks in the corpus lane; action/precedent queries ask in the
 // experience lane. If this inverts, the guard protects exactly the wrong side.
 func TestLaneOfQuery(t *testing.T) {
+	t.Parallel()
 	if laneIsExperiential(domain.DocTypeMnemonicFact) {
 		t.Error("a fact query asks in the CORPUS lane")
 	}
@@ -51,6 +53,7 @@ func TestLaneOfQuery(t *testing.T) {
 // injection floor and outscore a genuine but low-cosine corpus hit. Before the lane
 // dimension, sorting by blended score alone let them take the window.
 func TestLaneGuard_ExperienceNeverEvictsCorpusPrimary(t *testing.T) {
+	t.Parallel()
 	topK := 2
 	results := []domain.SearchResult{
 		{Document: domain.Document{ID: "scene-1", DocumentType: domain.DocTypeMnemonicScene}, Score: 0.9},
@@ -73,6 +76,7 @@ func TestLaneGuard_ExperienceNeverEvictsCorpusPrimary(t *testing.T) {
 
 // The mirror: a precedent query must not have its precedents pushed out by corpus.
 func TestLaneGuard_CorpusNeverEvictsPrecedent(t *testing.T) {
+	t.Parallel()
 	results := []domain.SearchResult{
 		{Document: domain.Document{ID: "corpus-1", DocumentType: domain.DocTypeMnemonicFact}, Score: 0.95},
 		{Document: domain.Document{ID: "scene-1", DocumentType: domain.DocTypeMnemonicScene}, Score: 0.2},

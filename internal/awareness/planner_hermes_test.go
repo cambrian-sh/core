@@ -11,6 +11,7 @@ import (
 // across the package.
 
 func TestPlanner_WithThoughts_ExtractsPlan(t *testing.T) {
+	t.Parallel()
 	resp := `<thought>I need to use the music tool.</thought>{"steps":[{"required_tools":["music-player"],"query":"play KMFDM","depends_on":[]}],"subject":"Music"}`
 
 	gen := &mockGenerator{response: resp}
@@ -29,6 +30,7 @@ func TestPlanner_WithThoughts_ExtractsPlan(t *testing.T) {
 }
 
 func TestPlanner_WithoutThoughts_UnchangedBehaviour(t *testing.T) {
+	t.Parallel()
 	resp := `{"steps":[{"required_tools":[],"query":"do something","depends_on":[]}],"subject":"Test"}`
 
 	gen := &mockGenerator{response: resp}
@@ -47,6 +49,7 @@ func TestPlanner_WithoutThoughts_UnchangedBehaviour(t *testing.T) {
 }
 
 func TestPlanner_MultipleThoughts_AllExtracted(t *testing.T) {
+	t.Parallel()
 	resp := `<thought>First: identify the domain.</thought><thought>Second: pick the right tool.</thought>{"steps":[{"required_tools":["search"],"query":"search for cats","depends_on":[]}],"subject":"Cats"}`
 
 	gen := &mockGenerator{response: resp}
@@ -65,6 +68,7 @@ func TestPlanner_MultipleThoughts_AllExtracted(t *testing.T) {
 }
 
 func TestPlanner_ThoughtsOnly_NoJSON_ReturnsError(t *testing.T) {
+	t.Parallel()
 	resp := `<thought>some reasoning</thought>`
 
 	gen := &mockGenerator{response: resp}

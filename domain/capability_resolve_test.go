@@ -23,6 +23,7 @@ func fleetSets() [][]string {
 }
 
 func TestResolve_ExactMatch(t *testing.T) {
+	t.Parallel()
 	r := ResolveCapabilities([]string{"calculation"}, vocab(), nil, fleetSets())
 	if r.Tier != TierExact {
 		t.Errorf("tier = %q, want %q", r.Tier, TierExact)
@@ -37,6 +38,7 @@ func TestResolve_ExactMatch(t *testing.T) {
 
 // Rung 1: normalization, so casing/separator variance is not a routing failure.
 func TestResolve_NormalizationIsRungOne(t *testing.T) {
+	t.Parallel()
 	r := ResolveCapabilities([]string{"Shell-Execution"}, vocab(), nil, fleetSets())
 	if r.Tier != TierExact {
 		t.Fatalf("tier = %q, want %q (normalization should match verbatim)", r.Tier, TierExact)
@@ -48,6 +50,7 @@ func TestResolve_NormalizationIsRungOne(t *testing.T) {
 
 // Rung 2: an authored alias resolves a planner tag the fleet spells differently.
 func TestResolve_AliasRung(t *testing.T) {
+	t.Parallel()
 	aliases := map[string]string{"web_search": "research"}
 	r := ResolveCapabilities([]string{"web-search"}, vocab(), aliases, fleetSets())
 	if r.Tier != TierAlias {
@@ -60,6 +63,7 @@ func TestResolve_AliasRung(t *testing.T) {
 
 // An alias pointing at something the fleet does NOT declare is not a match.
 func TestResolve_AliasToUnknownTargetDoesNotMatch(t *testing.T) {
+	t.Parallel()
 	aliases := map[string]string{"web_search": "browser_automation"}
 	r := ResolveCapabilities([]string{"web_search"}, vocab(), aliases, fleetSets())
 	if r.Tier != TierGeneralist {
@@ -70,6 +74,7 @@ func TestResolve_AliasToUnknownTargetDoesNotMatch(t *testing.T) {
 // Rung 3: an unknown requirement falls back to generalists rather than gating
 // on a tag nobody declares (which would admit nobody).
 func TestResolve_GeneralistRung(t *testing.T) {
+	t.Parallel()
 	r := ResolveCapabilities([]string{"pdf_extract"}, vocab(), nil, fleetSets())
 	if r.Tier != TierGeneralist {
 		t.Fatalf("tier = %q, want %q", r.Tier, TierGeneralist)
@@ -88,6 +93,7 @@ func TestResolve_GeneralistRung(t *testing.T) {
 // Rung 4: nothing matches and there is no generalist ⇒ unsatisfiable, and the
 // gate keeps the ORIGINAL requirements so it admits nobody.
 func TestResolve_UnsatisfiableWithoutGeneralist(t *testing.T) {
+	t.Parallel()
 	noGeneralist := []string{"calculation", "research"}
 	r := ResolveCapabilities([]string{"pdf_extract"}, noGeneralist, nil, [][]string{{"calculation"}, {"research"}})
 	if r.Tier != TierUnsatisfiable {
@@ -101,6 +107,7 @@ func TestResolve_UnsatisfiableWithoutGeneralist(t *testing.T) {
 // The whole point of ADR-0067's rejection of fuzzy matching: semantically
 // opposite capabilities are embedding-close, so they must NEVER auto-match.
 func TestResolve_NeverFuzzyMatchesOppositeCapabilities(t *testing.T) {
+	t.Parallel()
 	fleet := []string{"file_read", GeneralistCapability}
 	r := ResolveCapabilities([]string{"file_write"}, fleet, nil, [][]string{{"file_read"}, {GeneralistCapability}})
 	for _, c := range r.Resolved {
@@ -114,6 +121,7 @@ func TestResolve_NeverFuzzyMatchesOppositeCapabilities(t *testing.T) {
 }
 
 func TestResolve_MixedRequirementsOneUnknownFallsBack(t *testing.T) {
+	t.Parallel()
 	r := ResolveCapabilities([]string{"calculation", "pdf_extract"}, vocab(), nil, fleetSets())
 	if r.Tier != TierGeneralist {
 		t.Errorf("tier = %q, want %q when any requirement is unmatched", r.Tier, TierGeneralist)
@@ -121,6 +129,7 @@ func TestResolve_MixedRequirementsOneUnknownFallsBack(t *testing.T) {
 }
 
 func TestResolve_EmptyRequirementsIsANoOp(t *testing.T) {
+	t.Parallel()
 	r := ResolveCapabilities(nil, vocab(), nil, fleetSets())
 	if r.Tier != TierExact || len(r.Resolved) != 0 {
 		t.Errorf("empty requirements should resolve to nothing, got tier=%q resolved=%v", r.Tier, r.Resolved)
@@ -128,6 +137,7 @@ func TestResolve_EmptyRequirementsIsANoOp(t *testing.T) {
 }
 
 func TestBuildCapabilityVocabulary(t *testing.T) {
+	t.Parallel()
 	ms := []*AgentManifest{
 		{Capabilities: []string{"Calculation", "general_purpose"}},
 		{Capabilities: []string{"calculation", "research"}},
@@ -151,6 +161,7 @@ func TestBuildCapabilityVocabulary(t *testing.T) {
 // A resolved capability must be usable by a VERBATIM L1 comparison, so it has to
 // come back in the fleet's declared spelling — not the normalized one.
 func TestResolve_ReturnsDeclaredSpellingNotNormalized(t *testing.T) {
+	t.Parallel()
 	fleet := []string{"Shell_Execution", GeneralistCapability}
 	r := ResolveCapabilities([]string{"shell-execution"}, fleet, nil, [][]string{{"Shell_Execution", GeneralistCapability}})
 	if r.Tier != TierExact {
@@ -167,6 +178,7 @@ func TestResolve_ReturnsDeclaredSpellingNotNormalized(t *testing.T) {
 // every candidate filtered, empty slate, `no_candidate` on 2 of 3 tasks.
 // Union membership is not eligibility.
 func TestResolve_ConjunctionNoSingleAgentSatisfiesFallsBack(t *testing.T) {
+	t.Parallel()
 	vocabulary := []string{"code_search", "file_read", GeneralistCapability}
 	split := [][]string{
 		{"code_search", GeneralistCapability}, // one agent has code_search
@@ -183,6 +195,7 @@ func TestResolve_ConjunctionNoSingleAgentSatisfiesFallsBack(t *testing.T) {
 
 // The same conjunction IS exact when one agent declares the whole set.
 func TestResolve_ConjunctionSatisfiedByOneAgentStaysExact(t *testing.T) {
+	t.Parallel()
 	vocabulary := []string{"code_search", "file_read", GeneralistCapability}
 	together := [][]string{{"code_search", "file_read", GeneralistCapability}}
 	r := ResolveCapabilities([]string{"code_search", "file_read"}, vocabulary, nil, together)
@@ -196,6 +209,7 @@ func TestResolve_ConjunctionSatisfiedByOneAgentStaysExact(t *testing.T) {
 
 // An unsatisfiable conjunction with no generalist must still fail loudly.
 func TestResolve_ConjunctionUnsatisfiableWithoutGeneralist(t *testing.T) {
+	t.Parallel()
 	vocabulary := []string{"code_search", "file_read"}
 	split := [][]string{{"code_search"}, {"file_read"}}
 	r := ResolveCapabilities([]string{"code_search", "file_read"}, vocabulary, nil, split)
@@ -209,6 +223,7 @@ func TestResolve_ConjunctionUnsatisfiableWithoutGeneralist(t *testing.T) {
 
 // D5 requires the failure to NAME the gap and the live vocabulary.
 func TestNoCapabilityMatchError_NamesGapAndVocabulary(t *testing.T) {
+	t.Parallel()
 	err := &NoCapabilityMatchError{
 		TaskID:     "task-3",
 		Unmatched:  []string{"pdf_extract"},
@@ -228,6 +243,7 @@ func TestNoCapabilityMatchError_NamesGapAndVocabulary(t *testing.T) {
 }
 
 func TestNoCapabilityMatchError_EmptyVocabularyReadsSensibly(t *testing.T) {
+	t.Parallel()
 	err := &NoCapabilityMatchError{TaskID: "t", Unmatched: []string{"x"}}
 	if strings.Contains(err.Error(), "[]") {
 		t.Errorf("empty vocabulary should read as prose, got: %s", err.Error())

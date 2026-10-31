@@ -6,6 +6,7 @@ import (
 )
 
 func TestStep_BackwardCompatibility_NilDependsOn(t *testing.T) {
+	t.Parallel()
 	raw := `{"required_tools":["search"],"query":"find results"}`
 	var s Step
 	if err := json.Unmarshal([]byte(raw), &s); err != nil {
@@ -17,6 +18,7 @@ func TestStep_BackwardCompatibility_NilDependsOn(t *testing.T) {
 }
 
 func TestStep_DependsOn_RoundTrip(t *testing.T) {
+	t.Parallel()
 	s := Step{Query: "do work", DependsOn: []int{0, 2}}
 	data, err := json.Marshal(s)
 	if err != nil {
@@ -32,6 +34,7 @@ func TestStep_DependsOn_RoundTrip(t *testing.T) {
 }
 
 func TestStep_EmptyDependsOn_OmittedFromJSON(t *testing.T) {
+	t.Parallel()
 	s := Step{Query: "do work"}
 	data, err := json.Marshal(s)
 	if err != nil {
@@ -47,6 +50,7 @@ func TestStep_EmptyDependsOn_OmittedFromJSON(t *testing.T) {
 }
 
 func TestStep_MaxEnergy_RoundTrip(t *testing.T) {
+	t.Parallel()
 	s := Step{Query: "do work", MaxEnergy: 0.05}
 	data, err := json.Marshal(s)
 	if err != nil {
@@ -64,6 +68,7 @@ func TestStep_MaxEnergy_RoundTrip(t *testing.T) {
 // Cycle 6 (ADR-0013): Legacy Step JSON without checkpoint fields deserialises
 // with zero values — CheckpointAfter=false, CheckpointQuery="".
 func TestStep_CheckpointFields_BackwardCompatibility(t *testing.T) {
+	t.Parallel()
 	raw := `{"query":"do work","depends_on":[0]}`
 	var s Step
 	if err := json.Unmarshal([]byte(raw), &s); err != nil {
@@ -79,6 +84,7 @@ func TestStep_CheckpointFields_BackwardCompatibility(t *testing.T) {
 
 // Cycle 7 (ADR-0013): Step with both checkpoint fields set round-trips through JSON.
 func TestStep_CheckpointFields_RoundTrip(t *testing.T) {
+	t.Parallel()
 	s := Step{
 		Query:           "convert CSV to JSON schema",
 		DependsOn:       []int{0},
@@ -102,6 +108,7 @@ func TestStep_CheckpointFields_RoundTrip(t *testing.T) {
 }
 
 func TestStep_OptionalFields_OmittedWhenZero(t *testing.T) {
+	t.Parallel()
 	s := Step{Query: "simple task"}
 	data, err := json.Marshal(s)
 	if err != nil {
@@ -129,6 +136,7 @@ func TestStep_OptionalFields_OmittedWhenZero(t *testing.T) {
 
 // ROUTE-03: required_capabilities round-trips and Clone deep-copies it.
 func TestStep_RequiredCapabilities_RoundTripAndClone(t *testing.T) {
+	t.Parallel()
 	s := Step{Query: "read file", DependsOn: []int{0}, RequiredCapabilities: []string{"file_read", "code_search"}}
 	data, err := json.Marshal(s)
 	if err != nil {

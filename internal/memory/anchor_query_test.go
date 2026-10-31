@@ -17,6 +17,7 @@ func hasAnchor(anchors []string, want string) bool {
 }
 
 func TestExtractQueryAnchors_ChapterScene(t *testing.T) {
+	t.Parallel()
 	got := extractQueryAnchors("What coded phrase appears in Chapter 1, scene 1?")
 	for _, want := range []string{"chapter_scene:1/1", "chapter:1", "scene:1"} {
 		if !hasAnchor(got, want) {
@@ -30,6 +31,7 @@ func TestExtractQueryAnchors_ChapterScene(t *testing.T) {
 }
 
 func TestExtractQueryAnchors_RomanAndDecimalAndId(t *testing.T) {
+	t.Parallel()
 	if a := extractQueryAnchors("In Chapter IV, scene 3, what happened?"); !hasAnchor(a, "chapter_scene:4/3") {
 		t.Fatalf("roman chapter compound missing: %v", a)
 	}
@@ -44,6 +46,7 @@ func TestExtractQueryAnchors_RomanAndDecimalAndId(t *testing.T) {
 }
 
 func TestExtractQueryAnchors_NoAnchorFallback(t *testing.T) {
+	t.Parallel()
 	if a := extractQueryAnchors("Who kept watch with the amber compass?"); len(a) != 0 {
 		t.Fatalf("a query with no reference system must yield no anchors, got %v", a)
 	}
@@ -53,6 +56,7 @@ func TestExtractQueryAnchors_NoAnchorFallback(t *testing.T) {
 // alike to the embedder). The query names its anchor; promotion must lift it to
 // the front, above the floor.
 func TestApplyAnchorConstraint_PromotesBuriedChunk(t *testing.T) {
+	t.Parallel()
 	st := newFakeChunkTripletsStore()
 	// gold carries the compound anchor for Chapter 1, scene 1 (subject = doc id).
 	_ = st.SaveChunkTriplets(context.Background(), "gold-1", []domain.ChunkTriplet{
@@ -84,6 +88,7 @@ func TestApplyAnchorConstraint_PromotesBuriedChunk(t *testing.T) {
 // A specific compound anchor must NOT drag in the ten chunks that share only the
 // broad chapter:1 atomic.
 func TestApplyAnchorConstraint_PrefersSpecific(t *testing.T) {
+	t.Parallel()
 	st := newFakeChunkTripletsStore()
 	_ = st.SaveChunkTriplets(context.Background(), "gold", []domain.ChunkTriplet{
 		{H: "gold", R: "has_anchor", T: "chapter:1"},
@@ -106,6 +111,7 @@ func TestApplyAnchorConstraint_PrefersSpecific(t *testing.T) {
 // Two cited chunk ids (multi-hop) must both be promoted so the pair lands in the
 // returned window.
 func TestApplyAnchorConstraint_MultiHopTwoIds(t *testing.T) {
+	t.Parallel()
 	st := newFakeChunkTripletsStore()
 	id5, id15 := "tidebound-archive-chunk-5", "tidebound-archive-chunk-15"
 	_ = st.SaveChunkTriplets(context.Background(), id5, []domain.ChunkTriplet{{H: id5, R: "has_anchor", T: "chapter:1"}})
@@ -131,6 +137,7 @@ func TestApplyAnchorConstraint_MultiHopTwoIds(t *testing.T) {
 }
 
 func TestApplyAnchorConstraint_NoAnchorIsNoop(t *testing.T) {
+	t.Parallel()
 	st := newFakeChunkTripletsStore()
 	_ = st.SaveChunkTriplets(context.Background(), "x", []domain.ChunkTriplet{{H: "x", R: "has_anchor", T: "chapter:1"}})
 	vs := &fakeVecStore{docs: map[string]domain.Document{"x": {ID: "x"}}}

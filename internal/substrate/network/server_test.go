@@ -52,6 +52,7 @@ func (m *mockPlanner) Generate(_ context.Context, prompt string) (string, error)
 }
 
 func TestServer_ThoughtFn(t *testing.T) {
+	t.Parallel()
 	mock := &mockPlanner{
 		genResp: "The final answer is 42.",
 	}
@@ -121,6 +122,7 @@ func validPlan() *domain.ExecutionPlan {
 }
 
 func TestPlanWithValidation_ValidPlanOnFirstCall(t *testing.T) {
+	t.Parallel()
 	mock := &mockPlanner{responses: []plannerResponse{{plan: validPlan()}}}
 
 	plan, err := planWithValidation(t.Context(), mock, "do something")
@@ -136,6 +138,7 @@ func TestPlanWithValidation_ValidPlanOnFirstCall(t *testing.T) {
 }
 
 func TestPlanWithValidation_CycleTriggersRetry(t *testing.T) {
+	t.Parallel()
 	mock := &mockPlanner{responses: []plannerResponse{
 		{plan: cyclicPlan()},
 		{plan: validPlan()},
@@ -154,6 +157,7 @@ func TestPlanWithValidation_CycleTriggersRetry(t *testing.T) {
 }
 
 func TestPlanWithValidation_RetryPromptContainsCycleDescription(t *testing.T) {
+	t.Parallel()
 	mock := &mockPlanner{responses: []plannerResponse{
 		{plan: cyclicPlan()},
 		{plan: validPlan()},
@@ -174,6 +178,7 @@ func TestPlanWithValidation_RetryPromptContainsCycleDescription(t *testing.T) {
 }
 
 func TestPlanWithValidation_HardFailAfterTwoCyclicPlans(t *testing.T) {
+	t.Parallel()
 	mock := &mockPlanner{responses: []plannerResponse{
 		{plan: cyclicPlan()},
 		{plan: cyclicPlan()},
@@ -193,6 +198,7 @@ func TestPlanWithValidation_HardFailAfterTwoCyclicPlans(t *testing.T) {
 // ============================================================
 
 func TestDAGExecutor_PerStepTimeout_CancelsSlowStep(t *testing.T) {
+	t.Parallel()
 	stepFn := func(ctx context.Context, _ int, _ *domain.Handoff) (*domain.Handoff, error) {
 		timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
 		defer cancel()
@@ -215,6 +221,7 @@ func TestDAGExecutor_PerStepTimeout_CancelsSlowStep(t *testing.T) {
 }
 
 func TestDAGExecutor_PlanLevelTimeout_CancelsInFlightSteps(t *testing.T) {
+	t.Parallel()
 	stepFn := func(ctx context.Context, _ int, _ *domain.Handoff) (*domain.Handoff, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -239,6 +246,7 @@ func TestDAGExecutor_PlanLevelTimeout_CancelsInFlightSteps(t *testing.T) {
 // ============================================================
 
 func TestPartialPlanError_RepackPattern(t *testing.T) {
+	t.Parallel()
 	partialCtx := map[string]string{
 		"step_0_result": "result_A",
 		"step_1_result": "result_B",
@@ -278,6 +286,7 @@ func TestPartialPlanError_RepackPattern(t *testing.T) {
 }
 
 func TestPartialPlanError_RepackHandlesEmptyContext(t *testing.T) {
+	t.Parallel()
 	partialErr := &executer.PartialPlanError{
 		FailedStep: 0,
 		LastError:  errors.New("startup failed"),
@@ -317,6 +326,7 @@ func (f callerFunc) CallAgent(ctx context.Context, agentID string, h *domain.Han
 }
 
 func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
+	t.Parallel()
 	reg := metabolism.NewInMemoryRegistry()
 	reg.SetAgent(domain.AgentDefinition{
 		ID:      "winner",
@@ -426,6 +436,7 @@ func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
 }
 
 func TestServer_StepFn_FallbackPropagatesErrorWhenAllRunnerUpsFail(t *testing.T) {
+	t.Parallel()
 	reg := metabolism.NewInMemoryRegistry()
 	reg.SetAgent(domain.AgentDefinition{
 		ID:      "winner",

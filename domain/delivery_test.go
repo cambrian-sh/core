@@ -12,6 +12,7 @@ import (
 // address is stored, delivery resolves it from the conversation rather than from
 // anything a caller supplies.
 func TestDeliveryFor_EnforcesTheNamespace(t *testing.T) {
+	t.Parallel()
 	tg := domain.IngressRegistration{AgentID: "telegram_ingress", Namespace: []string{"tg:"}}
 
 	addr, err := tg.DeliveryFor("tg:12345")
@@ -33,6 +34,7 @@ func TestDeliveryFor_EnforcesTheNamespace(t *testing.T) {
 }
 
 func TestDeliveryFor_UnregisteredIngressCannotAddress(t *testing.T) {
+	t.Parallel()
 	var none domain.IngressRegistration
 	if _, err := none.DeliveryFor("tg:1"); err == nil {
 		t.Error("a zero registration must not produce a deliverable address")
@@ -42,6 +44,7 @@ func TestDeliveryFor_UnregisteredIngressCannotAddress(t *testing.T) {
 // An address is only deliverable when BOTH halves are present: an ingress with no
 // recipient, or a recipient with no ingress, is nowhere.
 func TestDeliveryAddress_IsZero(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		addr domain.DeliveryAddress

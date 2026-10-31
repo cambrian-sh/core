@@ -50,7 +50,6 @@ var checkpointBucket = []byte("checkpoints")
 var sessionBucket = []byte("sessions")
 var runBucket = []byte("runs")
 var artifactBucket = []byte("artifacts")
-var clusterBucket = []byte("capability_clusters")
 var watchConfigBucket = []byte("watch_configs")
 
 // pipelineBucket holds authored reactive pipelines, keyed by pipeline id.
@@ -165,7 +164,7 @@ func (b *BBoltAdapter) Seed(agentsDir string, isSystemAgent func(id string) bool
 func createBuckets(tx *bbolt.Tx) error {
 	for _, name := range [][]byte{
 		agentBucket, manifestBucket, taskEventBucket, checkpointBucket, sessionBucket, runBucket,
-		artifactBucket, clusterBucket, planEventBucket, retrievalSessionBucket,
+		artifactBucket, planEventBucket, retrievalSessionBucket,
 		traversalLogBucket, contradictionResolutionBucket, watchConfigBucket, pipelineBucket,
 		// REACT-01 (ADR-0061): durable reactive-execution buckets.
 		reactiveJournalBucket, reactiveCursorBucket, reactiveIdempotencyBucket, reactiveDeadLetterBucket,
@@ -897,36 +896,6 @@ func (b *BBoltAdapter) SetCapabilities(agentID string, caps []string) error {
 		}
 		return bucket.Put([]byte(agentID), updated)
 	})
-}
-
-// SetClusterName writes a LLM-generated cluster name to the capability_clusters
-// bucket keyed by representativeAgentID.
-func (b *BBoltAdapter) SetClusterName(representativeAgentID string, clusterName string) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(clusterBucket)
-		if bucket == nil {
-			return fmt.Errorf("capability_clusters bucket not found")
-		}
-		return bucket.Put([]byte(representativeAgentID), []byte(clusterName))
-	})
-}
-
-// GetClusterName retrieves the cluster name for the given representativeAgentID.
-// Returns ("", nil) when the key is absent — absence is not an error.
-func (b *BBoltAdapter) GetClusterName(representativeAgentID string) (string, error) {
-	var name string
-	err := b.db.View(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(clusterBucket)
-		if bucket == nil {
-			return nil
-		}
-		v := bucket.Get([]byte(representativeAgentID))
-		if v != nil {
-			name = string(v)
-		}
-		return nil
-	})
-	return name, err
 }
 
 // checkpointKey renders the (run, step) key.

@@ -36,6 +36,7 @@ func res(id, text string, stageA float64) domain.SearchResult {
 // candidate Stage-A ranked high but the cross-encoder dislikes. FinalScore at
 // w_bge=0.5: A=0.5·0.1+0.5·0.8=0.45 ; B=0.5·0.9+0.5·0.6=0.75 ⇒ B first.
 func TestStageBRerank_PromotesCrossEncoderWinner(t *testing.T) {
+	t.Parallel()
 	q := &QueryService{}
 	q.EnableReranker(&fakeReranker{scoreByText: map[string]float64{
 		"alpha": 0.1, // high Stage-A, low relevance
@@ -55,6 +56,7 @@ func TestStageBRerank_PromotesCrossEncoderWinner(t *testing.T) {
 // untouched (the reranker is the dominant cost — don't pay it for chunks that
 // won't surface).
 func TestStageBRerank_OnlyHeadIsReranked(t *testing.T) {
+	t.Parallel()
 	f := &fakeReranker{scoreByText: map[string]float64{"x1": 0.5, "x2": 0.5}}
 	q := &QueryService{}
 	q.EnableReranker(f, 2, 0.5) // K=2
@@ -72,6 +74,7 @@ func TestStageBRerank_OnlyHeadIsReranked(t *testing.T) {
 // Fail-soft: an unreachable/erroring oracle leaves the Stage-A order intact —
 // retrieval must never fail because the reranker is down (ADR-0054 D1).
 func TestStageBRerank_FailSoftKeepsStageAOrder(t *testing.T) {
+	t.Parallel()
 	q := &QueryService{}
 	q.EnableReranker(&fakeReranker{err: errors.New("agent down")}, 0, 0.5)
 
@@ -87,6 +90,7 @@ func TestStageBRerank_FailSoftKeepsStageAOrder(t *testing.T) {
 // A short score slice (oracle returned the wrong count) is treated as a failure,
 // not silently applied — keep the Stage-A order rather than corrupt the ranking.
 func TestStageBRerank_ScoreCountMismatchFailSoft(t *testing.T) {
+	t.Parallel()
 	short := &fakeRerankerShort{}
 	q := &QueryService{}
 	q.EnableReranker(short, 0, 0.5)
@@ -108,6 +112,7 @@ func (fakeRerankerShort) Rerank(_ context.Context, _ string, _ []string) ([]floa
 
 // nil reranker is a no-op (the flag is off): order is whatever Stage-A produced.
 func TestStageBRerank_NilRerankerNoop(t *testing.T) {
+	t.Parallel()
 	q := &QueryService{} // reranker not enabled
 	in := []domain.SearchResult{res("a", "alpha", 0.8), res("b", "bravo", 0.6)}
 	out := q.applyStageBRerank(context.Background(), "q", in)

@@ -53,6 +53,7 @@ func makeWorkspaceWithCache(store *countingStore, embedder *countingEmbedder, ca
 // ── Tracer bullet: cache hit skips Store.Search ────────────────────────────
 
 func TestPrimeForStepCache_HitSkipsVectorStore(t *testing.T) {
+	t.Parallel()
 	store := &countingStore{
 		seeds: []domain.SearchResult{
 			{Document: domain.Document{ID: "doc-1"}, Score: 0.9},
@@ -85,6 +86,7 @@ func TestPrimeForStepCache_HitSkipsVectorStore(t *testing.T) {
 // ── Cache invalidation after commitBatch ───────────────────────────────────
 
 func TestPrimeForStepCache_InvalidationTriggersRefresh(t *testing.T) {
+	t.Parallel()
 	store := &countingStore{
 		seeds: []domain.SearchResult{
 			{Document: domain.Document{ID: "doc-1"}, Score: 0.9},
@@ -116,6 +118,7 @@ func TestPrimeForStepCache_InvalidationTriggersRefresh(t *testing.T) {
 // When capacity is exceeded, the least-recently-used entry is evicted.
 // The evicted query must miss on the next call (going back to Store.Search).
 func TestPrimeForStepCache_CapacityEvictsLRU(t *testing.T) {
+	t.Parallel()
 	store := &countingStore{
 		seeds: []domain.SearchResult{
 			{Document: domain.Document{ID: "doc-x"}, Score: 0.9},
@@ -161,6 +164,7 @@ func TestPrimeForStepCache_CapacityEvictsLRU(t *testing.T) {
 // Same query string must produce the same embedding vector — Embed is
 // deterministic, so the result can be cached indefinitely (no TTL).
 func TestPrimeForStepCache_EmbeddingCachedAcrossCalls(t *testing.T) {
+	t.Parallel()
 	store := &countingStore{
 		seeds: []domain.SearchResult{
 			{Document: domain.Document{ID: "doc-1"}, Score: 0.9},
@@ -188,6 +192,7 @@ func TestPrimeForStepCache_EmbeddingCachedAcrossCalls(t *testing.T) {
 // ── Different queries use separate cache entries ───────────────────────────
 
 func TestPrimeForStepCache_DifferentQueriesSeparateEntries(t *testing.T) {
+	t.Parallel()
 	store := &countingStore{
 		seeds: []domain.SearchResult{
 			{Document: domain.Document{ID: "doc-1"}, Score: 0.9},

@@ -65,6 +65,7 @@ func startWatchServer(t *testing.T, idp operator.OperatorIdentity) pb.Orchestrat
 // reaches the watch store through them, and an authenticated operator is told
 // which audited OperatorConsole command to use.
 func TestOrchestratorWatchCRUD_RetiredAndOperatorGated(t *testing.T) {
+	t.Parallel()
 	idp, opTok, _ := approvalIDP(t)
 	c := startWatchServer(t, idp)
 
@@ -111,6 +112,7 @@ func TestOrchestratorWatchCRUD_RetiredAndOperatorGated(t *testing.T) {
 // The gate is one list: the four methods are stamped operator-surface, so no
 // path can treat them as agent-plane calls.
 func TestOrchestratorWatchCRUD_AreOperatorGatedMethods(t *testing.T) {
+	t.Parallel()
 	for _, m := range []string{"RegisterWatch", "ListWatches", "DeleteWatch", "SetWatchActive"} {
 		full := "/cambrian.Orchestrator/" + m
 		if !authz.IsOperatorGatedAgentServiceMethod(full) {

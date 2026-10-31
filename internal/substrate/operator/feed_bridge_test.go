@@ -16,6 +16,7 @@ import (
 // It reads the mapper's own source rather than a hand-kept list, so a mapper
 // case added tomorrow is covered without anybody remembering to update a test.
 func TestFeedBridge_EveryMappedEventIsDelivered(t *testing.T) {
+	t.Parallel()
 	bridged := make(map[string]bool, len(feedEventTypes))
 	for _, t := range feedEventTypes {
 		bridged[t] = true

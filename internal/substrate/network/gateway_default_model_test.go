@@ -23,6 +23,7 @@ func (f *fakeStreamer) GenerateStream(_ context.Context, _ string) (<-chan domai
 // returned no TraitModel candidate), StreamChunks falls back to the configured
 // default model instead of failing with the misleading "all candidates degraded".
 func TestStreamChunks_EmptyAllocation_UsesDefaultModel(t *testing.T) {
+	t.Parallel()
 	gw := newTestGateway(5)
 	def := &fakeStreamer{}
 	gw.RegisterModelClient("llm:deepseek", def)
@@ -47,6 +48,7 @@ func TestStreamChunks_EmptyAllocation_UsesDefaultModel(t *testing.T) {
 // Without a default configured, an empty allocation fails with a clear
 // "no model allocated" error — not a misleading health/degradation message.
 func TestStreamChunks_EmptyAllocation_NoDefault_FailsClearly(t *testing.T) {
+	t.Parallel()
 	gw := newTestGateway(5)
 	gw.AddSession("s2", &domain.BudgetLeaseState{
 		StepAllocation: domain.StepAllocation{},

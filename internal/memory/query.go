@@ -43,10 +43,10 @@ type QueryService struct {
 	graphWriter      domain.GraphStore         // ADR-0049 D10: Hebbian co-activation edge writes; nil = disabled
 	heb              hebbianParams             // ADR-0049 D10: Hebbian tuning (off unless EnableHebbian wired)
 	hebInflight      chan struct{}             // ADR-0049 D10: bounds concurrent reinforcement goroutines (AGENTS.md §3.3)
-	entityIdx        *EntityIndex              // ADR-0052: in-memory entity reverse index; nil = surface-only recall
-	assocWeight      float64                   // ADR-0052: β in the re-rank formula; default 0.2
-	assocLambda      float64                   // ADR-0052: λ for the temporal-decay term in the re-rank; default 0.005
-	assocTopK        int                       // ADR-0052: top-K entity keys to seed from; default 3
+	entityIdx        *EntityIndex              // ADR-0053 (T-Mem hop): in-memory entity reverse index; nil = surface-only recall
+	assocWeight      float64                   // ADR-0053 (T-Mem hop): β in the re-rank formula; default 0.2
+	assocLambda      float64                   // ADR-0053 (T-Mem hop): λ for the temporal-decay term in the re-rank; default 0.005
+	assocTopK        int                       // ADR-0053 (T-Mem hop): top-K entity keys to seed from; default 3
 	chunkTriplets    domain.ChunkTripletsStore // ADR-0053 Phase 0: per-chunk KG; nil = no KG expansion (legacy)
 	kgHops           int                       // ADR-0053 Phase 0: KG expansion depth; default 1
 	kgMaxExpanded    int                       // ADR-0053 Phase 0: max new chunks added by KG expansion; default 20
@@ -420,7 +420,8 @@ func (q *QueryService) SetRelevanceFloor(f float64) { q.floor = f }
 // site (main.go) — nil spreader leaves recall as a flat top-k.
 func (q *QueryService) EnableSpreading(s Spreader) { q.spreader = s }
 
-// EnableEntityRouting turns on ADR-0052 entity-aware routing: the recall path
+// EnableEntityRouting turns on ADR-0053 (T-Mem associative hop) entity-aware
+// routing: the recall path
 // embeds the query, finds the top-K entity keys by name-embedding cosine, and
 // pre-loads the index's doc associations for those entities as additional
 // seeds. Re-ranking then blends BFS energy with the T-Mem associative term
@@ -1882,7 +1883,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	pt.mark("lexical")
 
 	// Capture the genuine dense+lexical hits BEFORE any associative injection
-	// (ADR-0052 entity seeds / ADR-0053 query-entity seeds / kgExpand). On a large
+	// (entity-index seeds / ADR-0053 query-entity seeds / kgExpand). On a large
 	// noisy store these injectors flood the candidate pool with entity-associated
 	// chunks scored at the expandedScore 0.5 floor, which DISPLACE genuine dense
 	// gold out of top-k — measured: kgExpand nearly halved MuSiQue support-recall
@@ -1899,7 +1900,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 		primaryIDs[r.Document.ID] = true
 	}
 
-	// ADR-0052: entity-aware seeding. If the EntityIndex is wired and has
+	// ADR-0053 (T-Mem associative hop): entity-aware seeding. If the EntityIndex is wired and has
 	// stored entity-name embeddings, find the top-K entity keys most
 	// relevant to the query and append their doc associations as additional
 	// seeds. Each appended seed carries a base score = query→entity cosine,
@@ -1932,7 +1933,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 		}
 		if q.entityIdx != nil {
 			// Query-time synonym linking over the entity-name embeddings the
-			// ADR-0052 index already holds (nil when entity routing is unwired).
+			// entity index already holds (nil when entity routing is unwired).
 			opts.AliasIndex = q.entityIdx
 		}
 		results = kgExpand(ctx, results, q.chunkTriplets, q.vectorStore, vec, eff, opts)
@@ -2221,7 +2222,7 @@ func (q *QueryService) reinforceCoActivation(ctx context.Context, results []doma
 // spreadAndRank expands seeds over the memory graph, drops the current session's
 // own step records (D1) and duplicates, then re-ranks using the T-Mem
 // two-trigger formula (cosine × (α + (1-α) × effective) + β × reachability)
-// and caps to recallTopK. ADR-0048 D2 + ADR-0052.
+// and caps to recallTopK. ADR-0048 D2 + ADR-0053 (T-Mem associative hop).
 func (q *QueryService) spreadAndRank(ctx context.Context, seeds []domain.SearchResult, sid domain.SessionID) []domain.SearchResult {
 	expansions := q.spreader.Spread(ctx, seeds)
 	seen := make(map[string]bool, len(expansions))
@@ -2233,7 +2234,7 @@ func (q *QueryService) spreadAndRank(ctx context.Context, seeds []domain.SearchR
 		seen[e.Document.ID] = true
 		out = append(out, domain.SearchResult{Document: e.Document, Score: e.ActivationEnergy})
 	}
-	// ADR-0052: re-rank with the associative term. If the entity index is
+	// ADR-0053 (T-Mem hop): re-rank with the associative term. If the entity index is
 	// not wired (or the recall missed any doc with entity neighbors), the
 	// reachability map is empty and the term is a no-op.
 	if q.entityIdx != nil && q.assocWeight > 0 && len(out) > 0 {
@@ -2247,7 +2248,7 @@ func (q *QueryService) spreadAndRank(ctx context.Context, seeds []domain.SearchR
 		// TEXT. We use the seed's text as a proxy: for the working set the
 		// proxy vector is within ~0.05 cosine of the original, which is
 		// well within the β-scaled term's noise floor.
-		// TODO(0052): pass queryVec through the BFS so reachability uses
+		// TODO(entity-routing): pass queryVec through the BFS so reachability uses
 		// the original query embedding, not the seed-text proxy. The
 		// current proxy is correct-enough for β=0.2.
 		reachability := ComputeReachabilityFromSeedText(out, q.entityIdx, seeds)
@@ -2264,7 +2265,7 @@ func (q *QueryService) spreadAndRank(ctx context.Context, seeds []domain.SearchR
 // adds their associated docs to the candidate set with a base score equal to
 // the query→entity cosine. The appended seeds are real documents (looked up
 // via VectorStore.GetByID) so the rest of the pipeline (ACL, same-session
-// exclusion, relevance floor, BFS) treats them uniformly. ADR-0052.
+// exclusion, relevance floor, BFS) treats them uniformly. ADR-0053 (T-Mem hop).
 func (q *QueryService) injectEntitySeeds(
 	ctx context.Context,
 	results []domain.SearchResult,
@@ -2375,7 +2376,7 @@ func (q *QueryService) injectEntitySeeds(
 // vector is plumbed through the BFS. It picks the first seed's embedding as
 // the query proxy, which is semantically close enough for β=0.2 re-ranking.
 //
-// TODO(0052): replace with a real queryVec parameter once the
+// TODO(entity-routing): replace with a real queryVec parameter once the
 // MemorySearcher.Search signature carries it through.
 func ComputeReachabilityFromSeedText(
 	candidates []domain.SearchResult,

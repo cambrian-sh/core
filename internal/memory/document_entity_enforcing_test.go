@@ -39,6 +39,7 @@ func (a narrowingAuthorizer) ClassifyWrite(_ context.Context, _ domain.Principal
 // could classify a document however it liked simply by ingesting it — and every chunk
 // beneath that document would inherit the classification.
 func TestEnforcingDocumentStore_DecisionPointOverridesRequestedTags(t *testing.T) {
+	t.Parallel()
 	inner := &recordingDocStore{}
 	w := NewEnforcingDocumentStore(inner, narrowingAuthorizer{classification: []string{"support"}}, nil)
 
@@ -62,6 +63,7 @@ func TestEnforcingDocumentStore_DecisionPointOverridesRequestedTags(t *testing.T
 // A refused classification must not reach the store at all. Writing the row and letting
 // the tags be wrong later is the failure this whole chokepoint exists to prevent.
 func TestEnforcingDocumentStore_DeniedWriteNeverReachesTheStore(t *testing.T) {
+	t.Parallel()
 	inner := &recordingDocStore{}
 	w := NewEnforcingDocumentStore(inner, narrowingAuthorizer{deny: true}, nil)
 
@@ -77,6 +79,7 @@ func TestEnforcingDocumentStore_DeniedWriteNeverReachesTheStore(t *testing.T) {
 // OSS has no policy plugin, and an unscoped deployment must keep working exactly as
 // before: nil authorizer ⇒ allow-all ⇒ the authored tags survive.
 func TestEnforcingDocumentStore_NilAuthorizerFailsOpen(t *testing.T) {
+	t.Parallel()
 	inner := &recordingDocStore{}
 	w := NewEnforcingDocumentStore(inner, nil, nil)
 

@@ -35,6 +35,7 @@ func newExecService() (*operator.Service, *operator.InMemoryAuditStore, *fakeRun
 // ExecuteTool runs the tool at ScopeSystem, records the result in the audit row,
 // and a replayed command_id returns the original result without re-running (A2.2).
 func TestExecuteTool_RunsAuditsAndDedupReplays(t *testing.T) {
+	t.Parallel()
 	svc, audit, runner := newExecService()
 
 	resp, err := svc.ExecuteTool(opCtx(), &pb.ExecuteToolOpRequest{
@@ -72,6 +73,7 @@ func TestExecuteTool_RunsAuditsAndDedupReplays(t *testing.T) {
 
 // A denied execution surfaces the denial and records it; command_id/reason required.
 func TestExecuteTool_DeniedAndValidation(t *testing.T) {
+	t.Parallel()
 	svc, _, runner := newExecService()
 	runner.resp = domain.ToolCallResponse{Denied: true, DenyReason: "resource policy: path"}
 
@@ -90,6 +92,7 @@ func TestExecuteTool_DeniedAndValidation(t *testing.T) {
 // SetToolPolicy binds a policy onto an existing grant; it fails when the agent has
 // no grant for the tool (A2.3).
 func TestSetToolPolicy_RequiresGrantThenBinds(t *testing.T) {
+	t.Parallel()
 	feed := operator.NewSpool(operator.SpoolConfig{})
 	audit := operator.NewInMemoryAuditStore()
 	grants := domain.NewInMemoryGrantsStore()

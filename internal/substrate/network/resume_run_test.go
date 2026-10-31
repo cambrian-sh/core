@@ -114,6 +114,7 @@ func threeStepRun(id domain.RunID, session domain.SessionID) domain.Run {
 // Resume replays the run's OWN plan and continues after its last checkpoint. This is the
 // property defect 06 lacked: the step index and the plan now come from the same run.
 func TestResumeRun_ContinuesFromLatestCheckpointOfItsOwnPlan(t *testing.T) {
+	t.Parallel()
 	s, runs, cps := resumeServer(t)
 	_ = runs.SaveRun(threeStepRun("run-1", "sess-1"))
 	_ = cps.SaveCheckpoint("run-1", 0, map[string]string{"step_0": "done"})
@@ -136,6 +137,7 @@ func TestResumeRun_ContinuesFromLatestCheckpointOfItsOwnPlan(t *testing.T) {
 
 // No checkpoints yet ⇒ start at the beginning, not at some other run's position.
 func TestResumeRun_NoCheckpointsStartsAtZero(t *testing.T) {
+	t.Parallel()
 	s, runs, _ := resumeServer(t)
 	_ = runs.SaveRun(threeStepRun("run-1", "sess-1"))
 
@@ -151,6 +153,7 @@ func TestResumeRun_NoCheckpointsStartsAtZero(t *testing.T) {
 // A run cannot be resumed into a different session — that would splice one session's work
 // into another's history.
 func TestResumeRun_RejectsCrossSessionResume(t *testing.T) {
+	t.Parallel()
 	s, runs, _ := resumeServer(t)
 	_ = runs.SaveRun(threeStepRun("run-1", "sess-1"))
 
@@ -160,6 +163,7 @@ func TestResumeRun_RejectsCrossSessionResume(t *testing.T) {
 }
 
 func TestResumeRun_RejectsUnknownRun(t *testing.T) {
+	t.Parallel()
 	s, _, _ := resumeServer(t)
 	if _, err := s.ResumeRun(context.Background(), "nope", "sess-1"); err == nil {
 		t.Fatal("resuming an unknown run must fail, not silently start a fresh one")
@@ -168,6 +172,7 @@ func TestResumeRun_RejectsUnknownRun(t *testing.T) {
 
 // A finished run is terminal.
 func TestResumeRun_RejectsCompletedRun(t *testing.T) {
+	t.Parallel()
 	s, runs, _ := resumeServer(t)
 	run := threeStepRun("run-1", "sess-1")
 	run.Status = domain.RunCompleted
@@ -181,6 +186,7 @@ func TestResumeRun_RejectsCompletedRun(t *testing.T) {
 // A run persisted without its plan cannot be resumed — a step index with no steps to index
 // into is exactly the unsound state this phase removes.
 func TestResumeRun_RejectsRunWithoutPlan(t *testing.T) {
+	t.Parallel()
 	s, runs, _ := resumeServer(t)
 	_ = runs.SaveRun(domain.Run{ID: "run-1", SessionID: "sess-1", Status: domain.RunRunning})
 
@@ -192,6 +198,7 @@ func TestResumeRun_RejectsRunWithoutPlan(t *testing.T) {
 // StartFrom is clamped to the plan length, so a checkpoint at the final step cannot produce
 // an out-of-range start.
 func TestResumeRun_ClampsStartToPlanLength(t *testing.T) {
+	t.Parallel()
 	s, runs, cps := resumeServer(t)
 	_ = runs.SaveRun(threeStepRun("run-1", "sess-1"))
 	_ = cps.SaveCheckpoint("run-1", 2, map[string]string{"done": "all"})

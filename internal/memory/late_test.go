@@ -67,6 +67,7 @@ func (m *lateMockEmbedder) isPerToken() {}
 //	chunk 0 = mean([1,1,1,1], [2,2,2,2]) = [1.5, 1.5, 1.5, 1.5]
 //	chunk 1 = mean([3,3,3,3], [4,4,4,4]) = [3.5, 3.5, 3.5, 3.5]
 func TestLateChunker_PoolingMath(t *testing.T) {
+	t.Parallel()
 	body := "aaaaaaaa\n\nbbbbbbbb"
 	doc := &domain.ExternalDocument{
 		SourceURI:  "test://pooling",
@@ -115,6 +116,7 @@ func TestLateChunker_PoolingMath(t *testing.T) {
 // 500 chars / 4 chars-per-token = 125 tokens > 100 cap → embedder
 // must NOT be called and chunks must be the OptionC output.
 func TestLateChunker_OverCapFallback(t *testing.T) {
+	t.Parallel()
 	body := "a"
 	for i := 0; i < 500; i++ {
 		body += "a"
@@ -147,6 +149,7 @@ func TestLateChunker_OverCapFallback(t *testing.T) {
 // Empty body must skip the embedder and yield the OptionC empty
 // chunk (one chunk with body "").
 func TestLateChunker_EmptyBodyFallback(t *testing.T) {
+	t.Parallel()
 	doc := &domain.ExternalDocument{
 		SourceURI:  "test://empty",
 		SourceType: "file_drop",
@@ -173,6 +176,7 @@ func TestLateChunker_EmptyBodyFallback(t *testing.T) {
 // A LateChunker constructed without an embedder must not panic;
 // the Chunk path falls back to OptionC output.
 func TestLateChunker_NilEmbedder_FallsBackToOptionC(t *testing.T) {
+	t.Parallel()
 	doc := &domain.ExternalDocument{
 		SourceURI:  "test://nil",
 		SourceType: "file_drop",
@@ -196,6 +200,7 @@ func TestLateChunker_NilEmbedder_FallsBackToOptionC(t *testing.T) {
 // TestLateChunker_DefaultMaxDocTokens.
 // NewLateChunker with maxDocTokens <= 0 → 8192 default.
 func TestLateChunker_DefaultMaxDocTokens(t *testing.T) {
+	t.Parallel()
 	c := NewLateChunker(&lateMockEmbedder{}, 0)
 	if c.maxDocTokens != 8192 {
 		t.Errorf("maxDocTokens = %d, want 8192", c.maxDocTokens)

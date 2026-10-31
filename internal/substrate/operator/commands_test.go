@@ -28,6 +28,7 @@ func opCtx() context.Context {
 // A grant command applies the mutation, records the audit row, and emits an
 // AuditEvent on the feed (write-then-emit).
 func TestSetToolGrant_AppliesAuditsAndEmits(t *testing.T) {
+	t.Parallel()
 	svc, feed, audit, grants := newCommandService()
 
 	ack, err := svc.SetToolGrant(opCtx(), &pb.SetToolGrantRequest{
@@ -62,6 +63,7 @@ func TestSetToolGrant_AppliesAuditsAndEmits(t *testing.T) {
 // A retried command_id is applied exactly once (dedup); no second mutation,
 // audit row, or feed event.
 func TestSetToolGrant_IdempotentOnCommandID(t *testing.T) {
+	t.Parallel()
 	svc, feed, audit, grants := newCommandService()
 	req := &pb.SetToolGrantRequest{
 		CommandId: "cmd-dup", Reason: "grant", AgentId: "agent-1", ToolName: "web_search", Granted: true,
@@ -94,6 +96,7 @@ func TestSetToolGrant_IdempotentOnCommandID(t *testing.T) {
 
 // A mutating command without a reason is rejected.
 func TestSetToolGrant_ReasonRequired(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := newCommandService()
 	_, err := svc.SetToolGrant(opCtx(), &pb.SetToolGrantRequest{
 		CommandId: "cmd-x", AgentId: "agent-1", ToolName: "web_search", Granted: true,
@@ -105,6 +108,7 @@ func TestSetToolGrant_ReasonRequired(t *testing.T) {
 
 // Revoke removes the tool from the grant set.
 func TestSetToolGrant_Revoke(t *testing.T) {
+	t.Parallel()
 	svc, _, _, grants := newCommandService()
 	grants.Set("agent-1", []domain.ToolGrant{{Tool: "web_search"}, {Tool: "file_read"}})
 

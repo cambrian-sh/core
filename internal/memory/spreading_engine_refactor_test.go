@@ -84,6 +84,7 @@ func (v *vecStoreWithDocs) QueryByMetadata(_ context.Context, _ map[string]strin
 }
 
 func TestSpreadingEngine_UsesEdgeWeightDirectly(t *testing.T) {
+	t.Parallel()
 	gs := &recordingGraphStore{
 		edges: []domain.DocumentEdge{
 			{SourceID: "seed", TargetID: "via-low", EdgeType: domain.EdgeExtracted, Weight: 0.3, CreatedAt: time.Now()},
@@ -113,6 +114,7 @@ func TestSpreadingEngine_UsesEdgeWeightDirectly(t *testing.T) {
 }
 
 func TestSpreadingEngine_EnergyFloorBlocksLowWeights(t *testing.T) {
+	t.Parallel()
 	gs := &recordingGraphStore{
 		edges: []domain.DocumentEdge{
 			{SourceID: "seed", TargetID: "low-w", EdgeType: domain.EdgeExtracted, Weight: 0.01, CreatedAt: time.Now()},
@@ -132,6 +134,7 @@ func TestSpreadingEngine_EnergyFloorBlocksLowWeights(t *testing.T) {
 }
 
 func TestSpreadingEngine_CoActivatedUsesStoredWeight(t *testing.T) {
+	t.Parallel()
 	gs := &recordingGraphStore{
 		edges: []domain.DocumentEdge{
 			{SourceID: "seed", TargetID: "heb", EdgeType: domain.EdgeCoActivated, Weight: 0.8, CreatedAt: time.Now()},
@@ -149,6 +152,7 @@ func TestSpreadingEngine_CoActivatedUsesStoredWeight(t *testing.T) {
 }
 
 func TestSpreadingEngine_StructuralEdgeUsesWeight(t *testing.T) {
+	t.Parallel()
 	// A structural edge (EdgeSpecifies) should propagate by its stored
 	// weight, not a per-type constant.
 	gs := &recordingGraphStore{
@@ -168,6 +172,7 @@ func TestSpreadingEngine_StructuralEdgeUsesWeight(t *testing.T) {
 }
 
 func TestSpreadingEngine_NoEdgeWeightMap(t *testing.T) {
+	t.Parallel()
 	// Confirms the per-type weight fields are gone (regression guard).
 	se := &SpreadingEngine{}
 	_ = se

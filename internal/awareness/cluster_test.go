@@ -11,6 +11,7 @@ import (
 // TestPlannerPrompt_ContainsCapabilityClusters verifies the generated system
 // prompt uses the CAPABILITY CLUSTERS block instead of the old AVAILABLE AGENTS flat list.
 func TestPlannerPrompt_ContainsCapabilityClusters(t *testing.T) {
+	t.Parallel()
 	provider := &agentProviderWithAgents{
 		agents: []domain.AgentDefinition{
 			{ID: "ocr-agent", Capabilities: []string{"vision"}},
@@ -36,6 +37,7 @@ func TestPlannerPrompt_ContainsCapabilityClusters(t *testing.T) {
 // TestPlannerPrompt_ContainsGatekeeperInstruction verifies the clarifying
 // Gatekeeper auction instruction is present in STRICT DECISION RULES.
 func TestPlannerPrompt_ContainsRuntimeSelectionInstruction(t *testing.T) {
+	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
 
@@ -57,6 +59,7 @@ func TestPlannerPrompt_ContainsRuntimeSelectionInstruction(t *testing.T) {
 // TestBuildCapabilityCluster_EmptySlice verifies an empty agent slice returns
 // only the header line with no cluster entries.
 func TestBuildCapabilityCluster_EmptySlice(t *testing.T) {
+	t.Parallel()
 	out := buildCapabilityCluster([]domain.AgentDefinition{})
 
 	if !strings.Contains(out, "CAPABILITY CLUSTERS") {
@@ -74,6 +77,7 @@ func TestBuildCapabilityCluster_EmptySlice(t *testing.T) {
 // TestBuildCapabilityCluster_AlphabeticalOrder verifies cluster headings appear
 // in alphabetical order regardless of agent registration order.
 func TestBuildCapabilityCluster_AlphabeticalOrder(t *testing.T) {
+	t.Parallel()
 	agents := []domain.AgentDefinition{
 		{ID: "z-agent", Capabilities: []string{"zygote-processing"}},
 		{ID: "a-agent", Capabilities: []string{"audio-synthesis"}},
@@ -98,6 +102,7 @@ func TestBuildCapabilityCluster_AlphabeticalOrder(t *testing.T) {
 // TestBuildCapabilityCluster_MultiCapability verifies an agent with multiple
 // Capabilities appears under each of its clusters.
 func TestBuildCapabilityCluster_MultiCapability(t *testing.T) {
+	t.Parallel()
 	agents := []domain.AgentDefinition{
 		{ID: "swiss-agent", Capabilities: []string{"vision", "text"}},
 	}
@@ -120,6 +125,7 @@ func TestBuildCapabilityCluster_MultiCapability(t *testing.T) {
 // TestBuildCapabilityCluster_TraitModelExcluded verifies TraitModel agents
 // never appear in the cluster output, even when they have Capabilities set.
 func TestBuildCapabilityCluster_TraitModelExcluded(t *testing.T) {
+	t.Parallel()
 	agents := []domain.AgentDefinition{
 		{ID: "gpt-4o", Trait: domain.TraitModel, Capabilities: []string{"reasoning"}},
 		{ID: "ocr-agent", Capabilities: []string{"vision"}},
@@ -138,6 +144,7 @@ func TestBuildCapabilityCluster_TraitModelExcluded(t *testing.T) {
 // TestBuildCapabilityCluster_Uncategorized verifies agents with no Capabilities
 // fall back to description-derived capability label (REQ-CLUSTER-3).
 func TestBuildCapabilityCluster_Uncategorized(t *testing.T) {
+	t.Parallel()
 	agents := []domain.AgentDefinition{
 		{ID: "file-writer", Description: "Generic file writer", Capabilities: nil},
 	}
@@ -159,6 +166,7 @@ func TestBuildCapabilityCluster_Uncategorized(t *testing.T) {
 // TestBuildCapabilityCluster_SingleCluster is the tracer bullet: agents sharing
 // one capability appear under that capability heading.
 func TestBuildCapabilityCluster_SingleCluster(t *testing.T) {
+	t.Parallel()
 	agents := []domain.AgentDefinition{
 		{ID: "ocr-agent", Capabilities: []string{"vision"}},
 		{ID: "screenshot-agent", Capabilities: []string{"vision"}},
