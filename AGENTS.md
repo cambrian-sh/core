@@ -9,11 +9,20 @@ Conventions for working in this repository (read alongside `CONTRIBUTING.md` and
 `docs/ARCHITECTURE.md`). Tool-specific instruction files (`CLAUDE.md`, `GEMINI.md`) are
 local-only; this is the shared, published guide.
 
+## Knowledge system (MANDATORY)
+- **All ADRs, measurements, and decisions live in `cambrian-knowledge/adrs/`.** The old
+  `docs/adr/` directory contains redirect stubs only — never write new ADRs there.
+- **Query the graph, never assume.** Use `codebase-memory-mcp` tools (`search_graph`,
+  `query_graph`, `trace_path`) to look up ADR status, decisions, and measurements before
+  making claims or building on assumed state.
+- **Record what you find.** New measurements → the ADR's `measurements:` array. Gotchas →
+  `observations:` array. New ADRs → `cambrian-knowledge/adrs/NNNN-slug.md` per
+  `cambrian-knowledge/meta/SCHEMA.md`.
+- Full rules: root [`../AGENTS.md` §0](../AGENTS.md).
+
 ## Orientation
 - Read **`docs/ARCHITECTURE.md`** first for the layering and domain terms (Substrate,
   Gatekeeper, Dispatcher, capability-typed dispatch, the Zero-Hardcode Rule).
-- Significant decisions live as ADRs in **`docs/adr/`** (see `docs/adr/README.md` for the
-  status model). ADRs are the source of truth for *why*.
 
 ## Cross-repo pointer
 This file is a sub-repo guide. The monorepo-level map, entry points, and the open-core
