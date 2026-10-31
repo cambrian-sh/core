@@ -87,7 +87,7 @@ const modeTLSPlusPlaintextLoopback = "tls+plaintext-loopback"
 //  1. Cert AND key set, loopback bind → listener-level TLS+plaintext demux
 //     (modeTLSPlusPlaintextLoopback): local agents keep their insecure channel
 //     while a TLS-only forwarder (cloudflared http2Origin) gets a TLS origin.
-//  1b. Cert AND key set, routable bind → pure TLS. Whatever the bind is, this is safe.
+//     1b. Cert AND key set, routable bind → pure TLS. Whatever the bind is, this is safe.
 //  2. Exactly one of them set → ERROR. A half-configured pair silently degrading
 //     to plaintext is the failure mode that makes people believe they have TLS.
 //  3. No TLS, loopback bind → plaintext, allowed. This is the edge profile and it

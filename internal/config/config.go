@@ -1532,8 +1532,8 @@ func DefaultConfig() *Config {
 				// promoted from the operating config — local models routinely
 				// blow a 2-minute plan ceiling, and a timeout mid-plan wastes
 				// everything already spent).
-				StepTimeoutBaseBufferMs: 15000,
-				PlanTimeoutMs:           600000,
+				StepTimeoutBaseBufferMs:     15000,
+				PlanTimeoutMs:               600000,
 				ContextGrowthK:              0.001,
 				MaxRecursionDepth:           3,
 				FallbackConfidenceThreshold: 0.4,
@@ -1642,25 +1642,25 @@ func DefaultConfig() *Config {
 				HebbianMaxWeight:         0.9,
 				HebbianCoActivationFloor: 0.5,
 				HebbianTopN:              5,
-				HebbianDecayPerDay:      0.95,
-				HebbianBaseWeight:       0.2,
-				KG2RAGEnabled:           true, // ADR-0053 D3: KG²RAG expansion; opt-out via config.json
-				AnchorConstraintEnabled: true, // ADR-0053: document-local anchor promotion; opt-out via config.json
-				StructureGraphEnabled:   true, // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
+				HebbianDecayPerDay:       0.95,
+				HebbianBaseWeight:        0.2,
+				KG2RAGEnabled:            true, // ADR-0053 D3: KG²RAG expansion; opt-out via config.json
+				AnchorConstraintEnabled:  true, // ADR-0053: document-local anchor promotion; opt-out via config.json
+				StructureGraphEnabled:    true, // ADR-0060: structure-aware ingestion (docling parse -> section graph -> structure retrieval) is the DEFAULT chunking pipeline; opt-out via config.json
 
 				// ── The tuned retrieval stack, promoted to shipped defaults ──
 				// Owner decision 2026-08-11: the operating config's measured-best
 				// values become the product defaults (they had lived only in a
 				// gitignored local file). The experimental-off era of these flags
 				// ended with that call; opt-OUT is via config or the store.
-				AgenticRetrievalEnabled: true,
-				AgenticMaxHops:          4,
-				AgenticDecomposeEnabled: true, // grounded decomposition — the one agentic lever that measured a win
-				AgenticPlannerModel:     "llm:deepseek",
-				HybridSearchEnabled:     true, // dense+lexical RRF fusion (ADR-0054)
-				HybridRRFK:              60,
-				HybridLexicalWeight:     1,
-				HnswEfSearch:            120,
+				AgenticRetrievalEnabled:   true,
+				AgenticMaxHops:            4,
+				AgenticDecomposeEnabled:   true, // grounded decomposition — the one agentic lever that measured a win
+				AgenticPlannerModel:       "llm:deepseek",
+				HybridSearchEnabled:       true, // dense+lexical RRF fusion (ADR-0054)
+				HybridRRFK:                60,
+				HybridLexicalWeight:       1,
+				HnswEfSearch:              120,
 				QueryEntitySeedingEnabled: true,
 				RecallTopK:                100,
 				RecallOverFetch:           100,

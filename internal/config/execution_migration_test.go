@@ -237,10 +237,10 @@ var promotedExecutionDefaults = map[string]bool{
 	"recall_over_fetch":                  true,
 	"recall_similarity_floor":            true,
 	"recall_top_k":                       true,
-	"reranker_top_k":              true,
-	"reranker_weight":             true,
-	"step_timeout_base_buffer_ms": true,
-	"drainer_enabled":             true,
+	"reranker_top_k":                     true,
+	"reranker_weight":                    true,
+	"step_timeout_base_buffer_ms":        true,
+	"drainer_enabled":                    true,
 	// trace_pipeline_payloads is deliberately absent: reviewed and REVERTED to
 	// the off default on 2026-08-11 — see the field's doc comment.
 }

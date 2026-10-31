@@ -9,16 +9,29 @@ Conventions for working in this repository (read alongside `CONTRIBUTING.md` and
 `docs/ARCHITECTURE.md`). Tool-specific instruction files (`CLAUDE.md`, `GEMINI.md`) are
 local-only; this is the shared, published guide.
 
-## Knowledge system (MANDATORY)
-- **All ADRs, measurements, and decisions live in `cambrian-knowledge/adrs/`.** The old
-  `docs/adr/` directory contains redirect stubs only — never write new ADRs there.
-- **Query the graph, never assume.** Use `codebase-memory-mcp` tools (`search_graph`,
-  `query_graph`, `trace_path`) to look up ADR status, decisions, and measurements before
-  making claims or building on assumed state.
-- **Record what you find.** New measurements → the ADR's `measurements:` array. Gotchas →
-  `observations:` array. New ADRs → `cambrian-knowledge/adrs/NNNN-slug.md` per
-  `cambrian-knowledge/meta/SCHEMA.md`.
-- Full rules: root [`../AGENTS.md` §0](../AGENTS.md).
+## Knowledge substrate & tickets (MANDATORY — every task)
+
+The full protocol is root [`../AGENTS.md` §0](../AGENTS.md) — read it. In short, for every
+change in this repo, however small:
+
+1. **Before editing:** `list_tickets` (`repo: "cambrian-core"`) → `create_ticket` if the work is not
+   ticketed → `update_ticket` action `claim`. Query the graph (`search_graph`, `query_graph`)
+   for the ADRs and decisions that govern the code you will touch; if one is stale, read why
+   (knowledge-board → Freshness) and verify it before relying on it.
+2. **While working:** `log` findings, dead ends and `decision:` lines on the ticket. A bug or
+   follow-up you will not fix now gets its own `create_ticket`, immediately.
+3. **Decisions:** architectural → `cambrian-knowledge/adrs/NNNN-slug.md` (`status: proposed`,
+   per `cambrian-knowledge/meta/SCHEMA.md`); operating rule → `cambrian-knowledge/decisions/`;
+   tradeoff → the ADR's `tradeoffs:`. **Never write ADRs to `docs/adr/`** — it holds redirect
+   stubs only.
+4. **Before reporting done:** numbers you produced → the ADR's `measurements:`; gotchas → `observations:`; re-verified ADRs →
+   `last_verified` + `verified_at_rev`; `CONTEXT.md` if architecture or gaps changed. Then
+   `close` the ticket with a resolution (files changed, ADRs updated, tests run and result) —
+   or, if unfinished, `log` where you stopped and `release`.
+
+Pass `by: "agent:<name>"` on ticket calls. No MCP ticket tools? Use
+`python ../cambrian-knowledge/bin/ticket … --json` — same store. Never hand-edit
+`cambrian-knowledge/tickets/`; tickets never close from commit messages.
 
 ## Orientation
 - Read **`docs/ARCHITECTURE.md`** first for the layering and domain terms (Substrate,

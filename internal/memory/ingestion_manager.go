@@ -193,6 +193,24 @@ func NewIngestionManager(sceneGen *SceneGenerator, embedder domain.Embedder, age
 	return NewIngestionManagerWithRegistry(sceneGen, embedder, agent, registry, cfg)
 }
 
+// chunkerFor resolves doc's chunker through the registry. The policy matches
+// NewIngestionManager's: a resolution failure is LOGGED and the document is
+// chunked with the documented default (option_c) rather than dropped. Resolve
+// fails only when the default chunker is unregistered, which NewRegistry already
+// refuses at construction, so this is a guard against a future registry bug, not
+// an expected path — and it must never be a silent one (AGENTS.md §3.2: a
+// discarded resolver error is how a misconfiguration degrades unseen).
+func (im *IngestionManager) chunkerFor(doc domain.ExternalDocument) domain.Chunker {
+	ext := docExt(doc.SourceURI)
+	chunker, err := im.registry.Resolve(doc.SourceType, ext)
+	if err != nil || chunker == nil {
+		slog.Error("IngestionManager: chunker resolution failed; chunking with option_c",
+			"err", err, "source_type", doc.SourceType, "ext", ext, "source_uri", doc.SourceURI)
+		return OptionCChunker{}
+	}
+	return chunker
+}
+
 func NewIngestionManagerWithRegistry(sceneGen *SceneGenerator, embedder domain.Embedder, agent *Agent, registry *Registry, cfg IngestionConfig) *IngestionManager {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 1000
@@ -259,11 +277,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	if entityID == "" {
 		return "", fmt.Errorf("ingestion manager: failed to mint source-doc entity for %q", doc.SourceURI)
 	}
-	ext := docExt(doc.SourceURI)
-	chunker, _ := im.registry.Resolve(doc.SourceType, ext)
-	if chunker == nil {
-		chunker = OptionCChunker{}
-	}
+	chunker := im.chunkerFor(doc)
 	chunks, err := chunker.Chunk(ctx, &doc)
 	if err != nil {
 		slog.Warn("IngestionManager: chunker failed, falling back to OptionC", "source_uri", doc.SourceURI, "err", err)
@@ -381,11 +395,7 @@ func (im *IngestionManager) processBatch(ctx context.Context, batch []domain.Ext
 			scene = scenes[i]
 		}
 		_, entityID := im.mintSourceDoc(ctx, doc)
-		ext := docExt(doc.SourceURI)
-		chunker, _ := im.registry.Resolve(doc.SourceType, ext)
-		if chunker == nil {
-			chunker = OptionCChunker{}
-		}
+		chunker := im.chunkerFor(doc)
 		chunks, err := chunker.Chunk(ctx, &doc)
 		if err != nil {
 			slog.Warn("IngestionManager: chunker failed, falling back to OptionC", "source_uri", doc.SourceURI, "err", err)

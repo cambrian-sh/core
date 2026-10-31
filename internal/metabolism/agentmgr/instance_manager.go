@@ -32,8 +32,8 @@ type InstanceManager struct {
 	// agent processes that decision cost — the auction booted every candidate to
 	// ask it for a bid; dispatch boots only the winner. Atomic and first in the
 	// struct so it stays 64-bit aligned on 32-bit platforms.
-	bootCount     atomic.Uint64
-	mu            sync.Mutex
+	bootCount  atomic.Uint64
+	mu         sync.Mutex
 	instances  map[string]*domain.Instance
 	agentIndex map[string][]string  // agentID → []instanceID
 	cmds       map[string]*exec.Cmd // instanceID → cmd
