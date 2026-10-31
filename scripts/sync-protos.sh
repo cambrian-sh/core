@@ -7,8 +7,9 @@
 #
 # ─── Why this exists ─────────────────────────────────────────────────────────
 #
-# operator.proto lives in four places: cambrian-core (the source of truth), ui/,
-# cli/, and — as generated Python stubs rather than .proto — cambrian-benchmarks.
+# operator.proto lives in three places: cambrian-core (the source of truth), ui/,
+# and — as generated Python stubs rather than .proto — cambrian-benchmarks. (A
+# fourth consumer, cli/, was retired; its mappings were removed 2026-10-31.)
 # Keeping them aligned was a manual step with nothing checking it, and it drifted:
 # core gained the whole GetDocument RPC (the ADR-0095 keyed read) and neither ui/
 # nor cli/ received it, so the console could not resolve a document id to its body
@@ -39,8 +40,6 @@ check_only=0
 # "source|destination" — source is always the module that OWNS the contract.
 mappings=(
     "$core/api/proto/operator.proto|$root/ui/proto/operator.proto"
-    "$core/api/proto/operator.proto|$root/cli/proto/operator.proto"
-    "$core/api/proto/cambrian.proto|$root/cli/proto/cambrian.proto"
     "$premium/api/proto/authz/access_policy.proto|$root/ui/proto/authz/access_policy.proto"
     "$premium/api/proto/records/records.proto|$root/ui/proto/records/records.proto"
     "$premium/api/proto/telegram/telegram_admin.proto|$root/ui/proto/telegram/telegram_admin.proto"

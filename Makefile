@@ -177,13 +177,31 @@ leak-integration:
 # ─── Benchmarks ──────────────────────────────────────────────────────────────
 
 bench-micro:
+	@test -d internal/benchmarks || { \
+		echo "internal/benchmarks/ is not in this checkout: .gitignore keeps the benchmarks"; \
+		echo "out of the OSS repo (ADR-0057, decisions/no-benchmark-in-oss). This target only"; \
+		echo "runs in a workspace that has them; it is not part of per-pr or CI."; \
+		exit 1; \
+	}
 	go test -bench=BenchmarkMicro -benchmem ./internal/benchmarks/...
 
 bench-macro:
+	@test -d internal/benchmarks || { \
+		echo "internal/benchmarks/ is not in this checkout: .gitignore keeps the benchmarks"; \
+		echo "out of the OSS repo (ADR-0057, decisions/no-benchmark-in-oss). This target only"; \
+		echo "runs in a workspace that has them; it is not part of per-pr or CI."; \
+		exit 1; \
+	}
 	go test -bench=BenchmarkMacro -benchmem -benchtime=10s ./internal/benchmarks/...
 
 # Run micros and diff against committed baseline
 bench-compare:
+	@test -d internal/benchmarks || { \
+		echo "internal/benchmarks/ is not in this checkout: .gitignore keeps the benchmarks"; \
+		echo "out of the OSS repo (ADR-0057, decisions/no-benchmark-in-oss). This target only"; \
+		echo "runs in a workspace that has them; it is not part of per-pr or CI."; \
+		exit 1; \
+	}
 	go test -bench=BenchmarkMicro -benchmem -count=5 ./internal/benchmarks/... > /tmp/cambrian-bench-new.txt
 	benchstat internal/benchmarks/baseline.txt /tmp/cambrian-bench-new.txt
 
@@ -233,7 +251,7 @@ export:
 # control rules while being wired into no pipeline at all — the reason a contract
 # change once reached main unbumped was that nothing ran the check, not that
 # someone bypassed it.
-per-pr: proto-check proto-breaking test-race separability integration chaos bench-micro
+per-pr: proto-check proto-breaking test-race separability integration chaos
 	@echo ""
 	@echo "=== Per-PR pipeline complete ==="
 
@@ -316,7 +334,7 @@ proto-check:
 		exit 1; \
 	fi
 
-# Propagate / verify the vendored .proto copies in ui/, cli/ and (report-only)
+# Propagate / verify the vendored .proto copies in ui/ and (report-only)
 # cambrian-benchmarks. Requires the sibling repos to be checked out alongside this
 # one, i.e. the local workspace layout — which is why this is not in `per-pr`
 # (core's own CI clones core alone). The multi-repo gate is the `proto-sync` job in
