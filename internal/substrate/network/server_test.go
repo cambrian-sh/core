@@ -123,7 +123,7 @@ func validPlan() *domain.ExecutionPlan {
 func TestPlanWithValidation_ValidPlanOnFirstCall(t *testing.T) {
 	mock := &mockPlanner{responses: []plannerResponse{{plan: validPlan()}}}
 
-	plan, err := planWithValidation(t.Context(), mock, "do something", nil)
+	plan, err := planWithValidation(t.Context(), mock, "do something")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestPlanWithValidation_CycleTriggersRetry(t *testing.T) {
 		{plan: validPlan()},
 	}}
 
-	plan, err := planWithValidation(t.Context(), mock, "do something", nil)
+	plan, err := planWithValidation(t.Context(), mock, "do something")
 	if err != nil {
 		t.Fatalf("expected success after retry, got: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestPlanWithValidation_RetryPromptContainsCycleDescription(t *testing.T) {
 		{plan: validPlan()},
 	}}
 
-	planWithValidation(t.Context(), mock, "original request", nil) //nolint:errcheck
+	planWithValidation(t.Context(), mock, "original request") //nolint:errcheck
 
 	retryPrompt := mock.calls[1]
 	if !strings.Contains(retryPrompt, "PREVIOUS PLAN ERROR") {
@@ -179,7 +179,7 @@ func TestPlanWithValidation_HardFailAfterTwoCyclicPlans(t *testing.T) {
 		{plan: cyclicPlan()},
 	}}
 
-	_, err := planWithValidation(t.Context(), mock, "do something", nil)
+	_, err := planWithValidation(t.Context(), mock, "do something")
 	if err == nil {
 		t.Fatal("expected hard error after two cyclic plans, got nil")
 	}

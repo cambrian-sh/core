@@ -385,7 +385,8 @@ func externalDocumentID(doc domain.ExternalDocument) string {
 	}
 	// 1b. A bare classification tag, used as a WEAK id. A tag is not an identity —
 	//     nothing stops a caller applying the same tag to a hundred documents, and
-	//     ADR-0035 will in any case replace caller tags with kernel classification.
+	//     under ADR-0035 the write classifier (premium Authorizer.ClassifyWrite)
+	//     may rewrite caller tags anyway.
 	//     So the tag only GROUPS; the content digest is what separates.
 	//
 	//     Without the digest this branch silently destroyed data. Ingesting N

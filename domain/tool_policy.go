@@ -10,7 +10,7 @@ import (
 // ToolResourcePolicy is the per-grant system-resource authorization regime
 // (ADR-0039 D8 Regime 2): the deterministic, fail-closed guard that bounds the
 // filesystem paths, network egress, and shell commands a system tool may touch.
-// It is distinct from EffectiveScope (which authorizes tagged documents) and is
+// It is distinct from domain.TagPredicate (which authorizes tagged documents) and is
 // enforced kernel-side in ToolExecutor BEFORE the tool runs. No LLM in this
 // boundary. Empty sub-policies deny everything.
 type ToolResourcePolicy struct {

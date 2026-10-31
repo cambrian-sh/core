@@ -4,7 +4,8 @@ import "context"
 
 // Purpose identifies why an organ needs a generator. System-organ purposes
 // (router/planner/verifier/interview/memory) resolve via deterministic role
-// config; PurposeAgentStep resolves via the EFE/auction preference layer. This
+// config; PurposeAgentStep takes no role preference — agent-step model choice
+// is the auction's StepAllocation (ADR-0018), served by the LLMGateway. This
 // split is what keeps the Provider's availability authority Zero-Hardcode-legal
 // (ADR-0042 D1).
 type Purpose string

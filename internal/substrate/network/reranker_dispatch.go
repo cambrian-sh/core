@@ -11,7 +11,7 @@ import (
 
 // RerankerDispatcher implements memory.Reranker by invoking the privileged
 // `reranker_agent` system organ directly via the agent transport (no selection), exactly
-// like the kg_extractor (ADR-0053 D2 revised) and the pre-plan Scout (ADR-0051).
+// like the kg_extractor (ADR-0053 D2 revised) — the ADR-0051 system-organ class.
 //
 // The kernel hands the agent a {query, documents[]} Handoff and gets one bge
 // cross-encoder relevance score per document back (ADR-0054 Stage B). The model

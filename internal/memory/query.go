@@ -322,7 +322,7 @@ type RankSignalStore interface {
 }
 
 // EnableBlend turns on ADR-0054 Stage-A multi-signal re-ranking. Flag-gated at
-// the wiring site (default off). nil blender or store ⇒ no-op (bare cosine).
+// the wiring site (execution.retrieval.blend_enabled, default on). nil blender or store ⇒ no-op (bare cosine).
 func (q *QueryService) EnableBlend(b *Blender, signals RankSignalStore) {
 	q.blender.Store(b)
 	q.rankSignals = signals

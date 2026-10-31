@@ -50,11 +50,11 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
 | `cmd/orchestrator/` | Thin `main` shell over `app.Run`. |
 | `internal/kernel/` | Subsystem assembly: four stacks + `ProvideServer`. The only cross-subsystem wirer. |
 | `internal/awareness/` | Planner / Cortex. Zero-Hardcode rule at the LLM layer. |
-| `internal/metabolism/` | AgentManager, Gatekeeper, dispatch, DAG executor, A2A connector. |
+| `internal/metabolism/` | AgentManager, Gatekeeper, dispatch, DAG executor, A2A connector, `yield/` (consumer of agent-yielded sub-goals: decorates the Dispatcher as `MetabolismStack.Selector`, binds the sub-goal through dispatch, resumes the yielding agent; ADR-0041 D5 / ADR-0100 D10). |
 | `internal/memory/` | LTM: pgvector, chunking pipeline, structure-aware ingestion, document entities, KG²RAG. |
 | `internal/evidence/` | Knowledge substrate evidence write path (ADR-0105). |
 | `internal/substrate/` | gRPC server, session, OperatorConsole plane, knowledge-graph extractor. |
-| `internal/supervision/` | Gatekeeper, verifier pool, watcher (signal→inspiration). |
+| `internal/supervision/` | Gatekeeper, verifier pool, watcher (gates SignalStream; in OSS plans each accepted signal once and queues the plan for operator approval on the ApprovalHub, running it via `domain.PlanExecutor` only if approved). |
 | `internal/authz/` | Access-control enforcement (ADR-0085). Fail-closed; contains no policy. |
 | `internal/infrastructure/` | Adapters: `postgres/`, `llm/`, `mcp/` (outbound), `mcpserve/` (inbound MCP endpoint). |
 | `internal/reactive/` | Reactive rule engine plug surface (premium provides the implementation). |
@@ -82,7 +82,7 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
 - **Dispatch is unconditional**: ADR-0100 P3 deleted the auction; selection is capability-typed.
 - **Config store layer 11**: durable operator writes in bbolt (ADR-0101).
 - **Contributed machine tools are opt-in per agent**: an agent reaches a user's machine only through an explicit `local:*` (or exact `local:<machine>/<tool>`) grant; ownership picks the machine (ADR-0127 CL-4, `domain/contribution.go` `grantCovers`).
-- **`app.KernelServices` is the plugin capability seam**: premium receives functions, not internals — e.g. `VerifyMachineToken` lets the `machine_token_v1` ingress verifier check a token without reading it (ADR-0127 CL-5).
+- **`app.KernelServices` is the plugin capability seam**: premium receives functions, not internals — e.g. `VerifyMachineToken` lets the `machine_token_v1` ingress verifier check a token without reading it (ADR-0127 CL-5). `PlanExecutor` (`domain.PlanExecutor`, `app/plan_executor.go`) runs a plugin-generated plan on the real DAG executor via the Orchestrator.Execute authored-plan branch — the premium `start_plan` action uses it (PREM-0032).
 - **Self-installing**: `setup` bootstraps Postgres, Python runtime, agents, config, migrations, detached start.
 
 ---
@@ -103,3 +103,6 @@ Each has a ticket; close the ticket and update this list in the same change.
 - Derived memory artifacts (`chunk_triplets`, …) carry no classification; contained only
   because their text is never surfaced — `T-20261031-derived-memory-artifacts-carry-no`
 - No customer data export — `T-20261031-customers-cannot-export-their-data`
+- ADR-0052 entity routing is armed by default (`recall_spreading_enabled`) but its in-memory
+  `EntityIndex` is never populated, so the lane is a no-op —
+  `T-20261031-entityindex-is-never-populated-so-entity`

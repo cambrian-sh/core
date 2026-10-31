@@ -8,6 +8,7 @@ package health
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,6 +26,15 @@ type Checker struct {
 	probe func(context.Context) error // nil ⇒ always ready (process-liveness only)
 	ready atomic.Bool
 	done  atomic.Bool
+
+	// mu makes "check done, then store ready" atomic against Shutdown. Without it a
+	// probe admitted before Shutdown (runProbe's done check passes, then the probe
+	// runs for up to 3s) would store ready=true AFTER Shutdown stored false, and the
+	// /healthz shim would answer 200 while draining — breaking ADR-0065's sticky
+	// NOT_SERVING (T-20261031-health-checker-can-set-ready-true-after). grpc's
+	// health.Server already ignores a SetServingStatus after its own Shutdown; only
+	// our ready flag needed the guard.
+	mu sync.Mutex
 }
 
 // New builds a Checker. probe is the readiness check (typically a DB ping); a nil probe
@@ -77,6 +87,11 @@ func (c *Checker) runProbe(ctx context.Context) {
 }
 
 func (c *Checker) set(ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.done.Load() {
+		return // a probe that finished after Shutdown must not resurrect readiness
+	}
 	c.ready.Store(ok)
 	status := healthpb.HealthCheckResponse_NOT_SERVING
 	if ok {
@@ -90,6 +105,8 @@ func (c *Checker) set(ok bool) {
 // balancers stop routing to a draining kernel. Idempotent; readiness cannot recover
 // after it.
 func (c *Checker) Shutdown() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.done.Store(true)
 	c.ready.Store(false)
 	c.srv.Shutdown() // sets every registered service to NOT_SERVING

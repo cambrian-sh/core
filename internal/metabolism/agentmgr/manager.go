@@ -61,11 +61,6 @@ func NewAgentManager(reg domain.AgentRegistry, pyPath string, substrateAddr stri
 	}
 }
 
-// Restore delegates to AgentConnector with the embedded Registry.
-func (m *AgentManager) Restore(agentID, taskID string) error {
-	return m.AgentConnector.Restore(m.Registry, agentID, taskID)
-}
-
 // GetAgentByName looks up an agent definition by name via the embedded Registry.
 func (m *AgentManager) GetAgentByName(ctx context.Context, name string) (*domain.AgentDefinition, error) {
 	return m.Registry.GetAgentByName(ctx, name)

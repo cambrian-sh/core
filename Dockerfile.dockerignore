@@ -23,6 +23,9 @@ cambrian-core/configs/providers.json
 cambrian-core/configs/providers.local.json
 cambrian-core/configs/tuning.local.json
 cambrian-core/configs/mcp.json
+# The ADR-0101 D6 store encryption key: gitignored, but present on every dev machine
+# that has booted a kernel, so a local `docker build` would bake it into a layer.
+**/secret.key
 **/.env
 
 # Other repos in the monorepo not needed by the kernel image

@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 )
 
 // Role is the operator-plane authorization role (ADR-0047 D13).
@@ -23,8 +24,10 @@ const (
 	RoleViewer   Role = "viewer"   // read + feed only; commands denied
 )
 
-// operatorMethodPrefix scopes the interceptors: only OperatorConsole RPCs are
-// gated, so agent-facing Orchestrator/AgentService RPCs (UDS) pass through.
+// operatorMethodPrefix scopes the interceptors: OperatorConsole RPCs are gated,
+// and agent-facing Orchestrator/AgentService RPCs (UDS) pass through — except
+// the operator-gated approval methods (authz.IsOperatorGatedAgentServiceMethod,
+// ADR-0039 D10), which take the bearer like the console.
 const operatorMethodPrefix = "/cambrian.OperatorConsole/"
 
 // premiumMethodPrefix covers plugin-mounted planes (ADR-0073/ADR-0118 D3).
@@ -146,7 +149,12 @@ func serviceOf(fullMethod string) string {
 // context for OperatorConsole and premium operator-plane methods, passing
 // through the agent plane (core and declared-premium alike).
 func authorize(ctx context.Context, fullMethod string, idp OperatorIdentity, agentPlane map[string]bool) (context.Context, error) {
-	operatorConsole := strings.HasPrefix(fullMethod, operatorMethodPrefix)
+	// The approval surface is declared on Orchestrator but is operator-plane
+	// (ADR-0039 D10): it takes the same bearer as the console. The list lives in
+	// authz.IsOperatorGatedAgentServiceMethod so the surface stamp and this gate
+	// cannot disagree about which methods it covers.
+	operatorConsole := strings.HasPrefix(fullMethod, operatorMethodPrefix) ||
+		authz.IsOperatorGatedAgentServiceMethod(fullMethod)
 	premium := strings.HasPrefix(fullMethod, premiumMethodPrefix)
 	// Agent-facing RPCs (core, and premium services DECLARED agent-facing) are
 	// untouched: the agent plane's own semantics apply.

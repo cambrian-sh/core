@@ -95,7 +95,7 @@ Strictly sequential, dependency-ordered:
 | **4. Watcher** | ADR-0009 proactive signal processor |
 | **5. SessionManager** | ADR-0012 episodic memory lifecycle |
 | **6. EventLogger + SynapticWatcher** | Unified event stream + high-priority → LTM ingest |
-| **7. Episodic extraction** | `EpisodicExtractor` + `episodicConsolidator` + `MemoryLifecycleManager` (ADR-0029 / 0030) |
+| ~~**7. Episodic extraction**~~ | Removed 2026-07-18 (ADR-0029 / 0030): `EpisodicExtractor`, `episodicConsolidator` and `MemoryLifecycleManager` are gone; their config keys were retired 2026-10-31 |
 | **8. CircadianRhythm** | Session token eviction (ADR-0018 sweep) |
 | **8a. LLM Gateway** | `subnetwork.NewLLMGateway` with streaming clients for **every** configured generator (Ollama + OpenAI + Anthropic). Registers `llm:<id>` clients, sets `DefaultModelID` |
 | **9. ArtifactVault** | Content-addressable storage at `dataDir/vault` |
@@ -143,7 +143,6 @@ All started in an `errgroup.Group`, so any panicking goroutine fails the whole r
 | `reconcileModelAgents` | Evicts `TraitModel` agents no longer declared in `config.Generators` (config is the source of truth; registry is upsert-only, so eviction needs an explicit reconcile pass — the "qwen-after-removal orphan bug") |
 | `reconcileFilesystemAgents` | Evicts agents whose local source file is gone. Provenance-scoped: `ExecPath != ""` AND `Runtime != A2A` AND `Trait != Model` |
 | `reconcileIndex` | Generic pruner for `DocTypeTool` / `DocTypeSkill`; `toolKeepFunc` preserves transient-unreachable MCP tools across boot outages |
-| `episodicConsolidator` | Adapts `EpisodicExtractor` to `circadian.SessionConsolidator` with the configured consolidation delay (ADR-0029 / 0030) |
 | `initTelemetry` | Opt-in OTel, silent by default |
 | `operatorBootstrapIdentity` | Seeds a single operator from `CAMBRIAN_OPERATOR_USER` / `_PASSWORD` / `_ROLE`. No env ⇒ no login (secure-by-default, ADR-0047 D13) |
 | `stringSliceFromMeta` / `applyTag` | Small utility coercers used by the `TagMemory` operator effect (ADR-0047 0047-25 / A1.2) |

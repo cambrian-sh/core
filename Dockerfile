@@ -66,7 +66,15 @@ RUN if [ "$PREFETCH_MODELS" = "1" ]; then \
 
 # data_dir (bbolt + blobs) and the agent UDS socket dir (a tmpfs is mounted here in
 # compose — PLAT-08).
-RUN mkdir -p /app/data /run/cambrian \
+#
+# /app/state holds the ADR-0101 config and secret store (compose points
+# CAMBRIAN_CONFIG_STORE at /app/state/config.db). It must be WRITABLE and must live
+# neither in the data directory (a corpus reset truncates that, silently un-configuring
+# the deployment) nor in the config bundle (compose mounts it read-only). Created here,
+# owned by the runtime user, because Docker seeds an empty named volume from the image
+# directory INCLUDING its ownership — without it the volume arrives root-owned and the
+# kernel refuses to boot. Same arrangement as cambrian-premium/Dockerfile.
+RUN mkdir -p /app/data /app/state /run/cambrian \
  && chown -R cambrian:cambrian /app /run/cambrian "$VENV"
 
 # Wiring defaults; secrets + DB/embedder endpoints come from the compose env (koanf
@@ -78,6 +86,7 @@ ENV CAMBRIAN_PYTHON="$VENV/bin/python" \
     CAMBRIAN_SERVER__HEALTHZ_PORT=8090
 
 USER cambrian
+VOLUME ["/app/state"]
 EXPOSE 50051 8090
 
 # Liveness/readiness via the PLAT-03 /healthz shim (ADR-0065).

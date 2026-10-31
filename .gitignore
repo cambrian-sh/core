@@ -104,3 +104,9 @@ secrets/
 configs/config.db
 configs/secret.key
 *.exe
+
+# Built binaries and editor/backup copies (*.exe~ escapes *.exe). bin/ is the build
+# output directory (orchestrator, maintenance tools); nothing under it is source.
+*.exe~
+/bin/
+__pycache__/

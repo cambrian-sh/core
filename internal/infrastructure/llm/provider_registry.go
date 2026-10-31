@@ -172,15 +172,6 @@ func (r *ProviderRegistry) Generator(provider, model string) (domain.Generator, 
 	}
 }
 
-// PrimaryGenerator returns the Generator for the first available model,
-// falling back to Ollama as the default local provider.
-func (r *ProviderRegistry) PrimaryGenerator() (domain.Generator, error) {
-	if r.Ollama != nil {
-		return r.Ollama, nil
-	}
-	return nil, fmt.Errorf("no LLM provider available")
-}
-
 // Embedder returns the primary embedder (Ollama-only for now).
 func (r *ProviderRegistry) Embedder() *OllamaEmbedder {
 	return r.OllamaEmbedder

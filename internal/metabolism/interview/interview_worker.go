@@ -218,7 +218,7 @@ func (w *InterviewWorker) Enqueue(agent domain.AgentDefinition) {
 }
 
 func (w *InterviewWorker) processAgent(ctx context.Context, agent domain.AgentDefinition) error {
-	// Fast-path: TraitTool / TraitDaemon and privileged SYSTEM agents (ADR-0051 Scout)
+	// Fast-path: TraitTool / TraitDaemon and privileged SYSTEM agents (ADR-0051 class)
 	// bypass LLM scenario generation. They embed Description directly so they participate
 	// in cosine-similarity capability clustering. ADR-0033: TraitDaemon; ADR-0051: a system
 	// agent is kernel-invoked directly, so it is VERIFIED BY DEFAULT (no interview).

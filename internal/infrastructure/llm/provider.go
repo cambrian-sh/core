@@ -35,11 +35,6 @@ type Provider struct {
 	roles   map[string]string
 	rolesMu sync.RWMutex
 
-	// agentStepPreference supplies the ordered EFE/auction candidate ids for an
-	// agent step. Nil until ADR-0037 is wired (0042-08); a nil hook means the
-	// ladder relies on suggestion -> default -> capability match.
-	agentStepPreference func(ctx context.Context, req domain.LLMRequest) []string
-
 	// traceWrapper decorates every acquired generator with cross-cutting
 	// observability (Langfuse), labelled by purpose. Injected from main so the
 	// Provider stays decoupled from the premium layer. Nil = no tracing. Because
@@ -151,12 +146,6 @@ func (p *Provider) ReloadGenerators(gens []config.GeneratorConfig, defaultID str
 	p.log.Info("llm provider: generator table reloaded live",
 		"generators", len(gens), "default", defaultID)
 	return nil
-}
-
-// SetAgentStepPreference injects the EFE/auction preference source for agent
-// steps (ADR-0037, wired in 0042-08).
-func (p *Provider) SetAgentStepPreference(fn func(ctx context.Context, req domain.LLMRequest) []string) {
-	p.agentStepPreference = fn
 }
 
 // SetTraceWrapper injects the observability decorator applied to every acquired
@@ -299,14 +288,16 @@ func (p *Provider) resolve(ctx context.Context, req domain.LLMRequest) (string, 
 	)
 }
 
-// preferenceFor returns the ordered preference ids for a request. The dispatch
-// chooses the preference *source* (config vs EFE) — it does not hardcode which
-// model serves a task, so the Zero-Hardcode Rule holds.
-func (p *Provider) preferenceFor(ctx context.Context, req domain.LLMRequest) []string {
+// preferenceFor returns the ordered preference ids for a request. System roles
+// resolve through the role table; an agent step has no role preference here,
+// so the ladder relies on suggestion -> default -> capability match. Agent-step
+// model choice is made upstream by the auction's StepAllocation (ADR-0018) and
+// served through the LLMGateway, not through this Provider: the ADR-0037 EFE
+// ModelSelector hook that used to sit here was never wired and was removed
+// with ADR-0037's supersession (ADR-0100). No model is hardcoded per task, so
+// the Zero-Hardcode Rule holds.
+func (p *Provider) preferenceFor(_ context.Context, req domain.LLMRequest) []string {
 	if req.Purpose == domain.PurposeAgentStep {
-		if p.agentStepPreference != nil {
-			return p.agentStepPreference(ctx, req)
-		}
 		return nil
 	}
 	// System role: deterministic role -> id (Zero-Hardcode-legal; roles are not agents).

@@ -200,6 +200,27 @@ var retiredExecutionFields = map[string]string{
 	// `resource_selector: "efe"` already sprang once.
 	"calibrated_bids":             "ROUTE-05 retired 2026-08-07 (ADR-0100 supersedes 0068): there is no bid to calibrate.",
 	"bid_calibration_min_samples": "ROUTE-05 retired 2026-08-07: shrinkage threshold for a calibration curve nothing fits any more.",
+
+	// ADR-0030 lazy consolidation retired 2026-10-31 (owner decision on
+	// T-20261031-residue-of-the-removed-episodic-memory-lane). Both keys triggered the
+	// global consolidation of the ADR-0029 episodic lane, whose consolidator was
+	// removed on 2026-07-18; nothing read either key after that.
+	"consolidation_threshold_doc_count": "Episodic consolidation retired 2026-10-31 (ADR-0029/0030): " +
+		"its consolidator was removed 2026-07-18 and the key had no reader.",
+	"consolidation_threshold_bytes": "Episodic consolidation retired 2026-10-31 (ADR-0029/0030): " +
+		"its consolidator was removed 2026-07-18 and the key had no reader.",
+}
+
+// retiredExecutionMapEntries are entries DELIBERATELY removed from a map-valued v1
+// default, keyed by the flat field name and then the map key, with the reason.
+// Only the named entry is exempt: every other entry of the map, and the map's
+// presence, is still compared — exempting the whole field (promotedExecutionDefaults)
+// would let an accidental change to a sibling policy through.
+var retiredExecutionMapEntries = map[string]map[string]string{
+	"hippocampus_policies": {
+		"episodic": "ADR-0029 episodic policy retired 2026-10-31 (owner decision): its only " +
+			"consumer, the WorkspaceStage episodic lane, was removed with its writer 2026-07-18.",
+	},
 }
 
 // promotedExecutionDefaults are fields whose DEFAULT deliberately changed after
@@ -255,6 +276,26 @@ func TestExecutionDefaultsSurvivedNesting(t *testing.T) {
 		t.Fatalf("parse snapshot: %v", err)
 	}
 	got := flattenNestedExecutionDefaults(t)
+
+	// Strip the retired map entries from the v1 side only; the snapshot itself
+	// stays untouched on disk.
+	for field, entries := range retiredExecutionMapEntries {
+		m, ok := want[field].(map[string]any)
+		if !ok {
+			t.Fatalf("retiredExecutionMapEntries names %q, which is not a map in the v1 snapshot", field)
+		}
+		for entry := range entries {
+			if _, present := m[entry]; !present {
+				t.Errorf("retiredExecutionMapEntries names %s.%s, absent from the v1 snapshot", field, entry)
+			}
+			if gm, _ := got[field].(map[string]any); gm != nil {
+				if _, back := gm[entry]; back {
+					t.Errorf("retired default %s.%s is back in DefaultConfig()", field, entry)
+				}
+			}
+			delete(m, entry)
+		}
+	}
 
 	var missing, changed []string
 	for k, wantVal := range want {

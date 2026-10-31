@@ -41,7 +41,6 @@ check_only=0
 mappings=(
     "$core/api/proto/operator.proto|$root/ui/proto/operator.proto"
     "$premium/api/proto/authz/access_policy.proto|$root/ui/proto/authz/access_policy.proto"
-    "$premium/api/proto/records/records.proto|$root/ui/proto/records/records.proto"
     "$premium/api/proto/telegram/telegram_admin.proto|$root/ui/proto/telegram/telegram_admin.proto"
     # ADR-0112. This copy was HAND-MAINTAINED and had already drifted: the UI's
     # Rust client compiles from ui/proto, so a premium-side RPC simply did not

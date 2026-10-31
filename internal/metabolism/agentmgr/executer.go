@@ -14,7 +14,6 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
-	"github.com/cambrian-sh/core/internal/substrate/harness"
 )
 
 // CallAgent routes a handoff from the Substrate (Server) to the named agent.
@@ -25,7 +24,7 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 		return nil, fmt.Errorf("agent not found: %v", err)
 	}
 
-	// A2A BRANCH — no local workspace, no CoW snapshot needed
+	// A2A BRANCH — no local workspace
 	if def.Runtime == domain.RuntimeA2A {
 		return m.AgentConnector.a2aClient.Execute(ctx, *def, handoff)
 	}
@@ -33,24 +32,6 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 	// 0. TRUTH LAYER: Pre-execution snapshot
 	preWD, _ := os.Getwd()
 	preEnv := os.Environ()
-
-	taskID := agentName
-	if handoff.Context != nil {
-		if tid, ok := handoff.Context["task_id"]; ok && tid != "" {
-			taskID = tid
-		}
-	}
-	snapshotKey := agentName + taskID
-
-	hash, snapErr := harness.Snapshot(def.Dir)
-	if snapErr != nil {
-		slog.Warn("Snapshot failed; proceeding without CoW rollback capability",
-			"agent", agentName, "dir", def.Dir, "err", snapErr)
-	} else {
-		m.AgentConnector.snapshotMu.Lock()
-		m.AgentConnector.snapshots[snapshotKey] = hash
-		m.AgentConnector.snapshotMu.Unlock()
-	}
 
 	// Boot or reuse: find an existing instance for this agent, or boot a new one.
 	inst, found := m.InstanceManager.GetInstance(agentName)
@@ -87,12 +68,6 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 	protoResp, errExec := m.executeHandoff(ctx, addr, domainToProtoHandoff(handoff))
 
 	defer m.ReleaseInstance(inst.ID)
-
-	if errExec == nil {
-		m.snapshotMu.Lock()
-		delete(m.snapshots, snapshotKey)
-		m.snapshotMu.Unlock()
-	}
 
 	if errExec != nil {
 		return nil, errExec

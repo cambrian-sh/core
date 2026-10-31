@@ -22,6 +22,10 @@ func TestSurfaceForMethod(t *testing.T) {
 		{"/cambrian.OperatorConsole/ExplainAccess", domain.SurfaceOperator},
 		{"/cambrian.Orchestrator/QueryMemory", domain.SurfaceAgent},
 		{"/cambrian.Orchestrator/ExecuteTool", domain.SurfaceAgent},
+		// The approval surface is declared on Orchestrator but is operator-plane
+		// (ADR-0039 D10): it takes the operator bearer, so it is stamped operator.
+		{"/cambrian.Orchestrator/WatchApprovals", domain.SurfaceOperator},
+		{"/cambrian.Orchestrator/SubmitApprovalDecision", domain.SurfaceOperator},
 		// A premium plane is mounted behind the SAME operator interceptors, so it is
 		// the operator plane extended — not a new privilege level.
 		{"/cambrian.premium.authz.AccessPolicyAdmin/SavePolicy", domain.SurfaceOperator},

@@ -128,7 +128,6 @@ type DAGExecutor struct {
 	ReplanHandler          ReplanHandler              // optional; nil disables plan-level replan
 	CheckpointStore        CheckpointStore            // optional; nil disables checkpointing
 	ContentStore           domain.ContentStore        // ADR-0022 Phase 1: may be nil; nil disables CAS
-	SceneWriter            domain.SceneWriter         // ADR-0025: may be nil; nil disables scene writing
 	StepCache              domain.StepCache           // ADR-0026: may be nil; nil disables step-level memoization
 	StepCachePolicies      map[string]int             // ADR-0026: operator TTL overrides; nil = use heuristic defaults
 	ContextRefSnippetChars int                        // ADR-0022: snippet length; 0 defaults to 500

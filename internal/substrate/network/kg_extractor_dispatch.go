@@ -10,12 +10,12 @@ import (
 
 // KgExtractorDispatcher implements domain.TripletExtractor by invoking the
 // privileged, NO-LLM kg_extractor system agent directly via the agent transport
-// (no auction), exactly like the pre-plan Scout (ADR-0051 / ADR-0053 D2 revised).
+// (no auction) — the ADR-0051 system-organ class (ADR-0053 D2 revised).
 //
 // The kernel hands the agent a batch of chunk texts as a Handoff and gets the
 // per-chunk (h, r, t) triplets back as a Handoff. The tiered extraction loop
 // (metadata + spacy_patterns) lives in the agent (agents/system/kg_extractor_agent/);
-// this Go side is just dispatch + parse, mirroring AgentScoutDispatcher.
+// this Go side is just dispatch + parse.
 type KgExtractorDispatcher struct {
 	Caller  domain.AgentCaller
 	AgentID string // default "kg_extractor_agent"

@@ -1,32 +1,23 @@
 package agentmgr
 
 import (
-	"context"
-	"fmt"
-	"sync"
-
-	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/metabolism/connector"
-	"github.com/cambrian-sh/core/internal/substrate/harness"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// AgentConnector manages gRPC connections, A2A protocol clients,
-// and CoW filesystem snapshots for agent sessions.
+// AgentConnector manages gRPC connections and A2A protocol clients for agent
+// sessions. It used to also hold CoW git snapshots of agent dirs (ADR-0005
+// D2b); those were removed by owner decision 2026-10-31.
 type AgentConnector struct {
 	a2aClient *connector.A2AClient
-
-	snapshotMu sync.Mutex
-	snapshots  map[string]string // key: agentID+taskID → git commit hash
 }
 
 // NewAgentConnector creates an AgentConnector with default wiring.
 func NewAgentConnector() *AgentConnector {
 	return &AgentConnector{
 		a2aClient: connector.New(),
-		snapshots: make(map[string]string),
 	}
 }
 
@@ -40,34 +31,4 @@ func (ac *AgentConnector) DialAgent(addr string) (*grpc.ClientConn, error) {
 	// NewClient defers connection establishment to the first RPC, which
 	// respects the RPC's context deadline.
 	return grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-}
-
-// Restore resets the agent's working directory to the git state captured
-// at the snapshot hash. Returns nil if no snapshot exists (graceful no-op).
-func (ac *AgentConnector) Restore(registry domain.AgentResolver, agentID, taskID string) error {
-	key := agentID + taskID
-
-	ac.snapshotMu.Lock()
-	hash := ac.snapshots[key]
-	ac.snapshotMu.Unlock()
-	ctx := context.Background()
-	if hash == "" {
-		return nil
-	}
-
-	def, err := registry.GetAgentByName(ctx, agentID)
-	if err != nil {
-		ac.snapshotMu.Lock()
-		delete(ac.snapshots, key)
-		ac.snapshotMu.Unlock()
-		return fmt.Errorf("Restore: agent lookup failed: %w", err)
-	}
-
-	restoreErr := harness.Restore(def.Dir, hash)
-
-	ac.snapshotMu.Lock()
-	delete(ac.snapshots, key)
-	ac.snapshotMu.Unlock()
-
-	return restoreErr
 }

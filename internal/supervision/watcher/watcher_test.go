@@ -11,7 +11,7 @@ import (
 )
 
 func TestWatcher_ValidateSignal_RejectsMissingSignalType(t *testing.T) {
-	w := New(nil, nil, nil, WatcherConfig{})
+	w := New(nil, nil, nil, nil, nil, WatcherConfig{})
 
 	err := w.ValidateSignal(context.Background(), &domain.Handoff{
 		FromAgent: "agent-1",
@@ -24,7 +24,7 @@ func TestWatcher_ValidateSignal_RejectsMissingSignalType(t *testing.T) {
 }
 
 func TestWatcher_ValidateSignal_AcceptsValidSignal(t *testing.T) {
-	w := New(nil, nil, nil, WatcherConfig{})
+	w := New(nil, nil, nil, nil, nil, WatcherConfig{})
 
 	err := w.ValidateSignal(context.Background(), &domain.Handoff{
 		FromAgent: "agent-1",
@@ -38,7 +38,7 @@ func TestWatcher_ValidateSignal_AcceptsValidSignal(t *testing.T) {
 }
 
 func TestWatcher_ValidateSignal_EmptySignalType(t *testing.T) {
-	w := New(nil, nil, nil, WatcherConfig{})
+	w := New(nil, nil, nil, nil, nil, WatcherConfig{})
 
 	err := w.ValidateSignal(context.Background(), &domain.Handoff{
 		FromAgent: "agent-1",
@@ -51,7 +51,7 @@ func TestWatcher_ValidateSignal_EmptySignalType(t *testing.T) {
 }
 
 func TestWatcher_BuildInspirationPrompt(t *testing.T) {
-	w := New(nil, nil, nil, WatcherConfig{})
+	w := New(nil, nil, nil, nil, nil, WatcherConfig{})
 
 	prompt := w.BuildInspiration("STOCK_LOW", "item:GPU level:5", "Recent purchases: GPU-x500")
 
@@ -82,7 +82,7 @@ func TestWatcher_EnrichSignal_CallsMemoryAgent(t *testing.T) {
 			return "relevant LTM context"
 		},
 	}
-	w := New(nil, mem, nil, WatcherConfig{})
+	w := New(nil, mem, nil, nil, nil, WatcherConfig{})
 
 	ltmCtx := w.EnrichSignal(context.Background(), "STOCK_LOW", "GPU level:5")
 
@@ -95,7 +95,7 @@ func TestWatcher_EnrichSignal_CallsMemoryAgent(t *testing.T) {
 }
 
 func TestWatcher_EnrichSignal_NilMemoryAgent(t *testing.T) {
-	w := New(nil, nil, nil, WatcherConfig{})
+	w := New(nil, nil, nil, nil, nil, WatcherConfig{})
 
 	ltmCtx := w.EnrichSignal(context.Background(), "STOCK_LOW", "data")
 
@@ -106,7 +106,7 @@ func TestWatcher_EnrichSignal_NilMemoryAgent(t *testing.T) {
 
 func TestWatcher_ValidateToken(t *testing.T) {
 	m := &agentmgr.AgentManager{}
-	w := New(m, nil, nil, WatcherConfig{})
+	w := New(m, nil, nil, nil, nil, WatcherConfig{})
 
 	t.Run("missing token metadata", func(t *testing.T) {
 		ctx := context.Background()
@@ -147,7 +147,7 @@ func TestWatcher_ProcessSignal_CallsPlanner(t *testing.T) {
 			}, nil
 		},
 	}
-	w := New(nil, nil, planner, WatcherConfig{})
+	w := New(nil, nil, planner, nil, nil, WatcherConfig{})
 
 	plan, err := w.ProcessSignal(context.Background(), "STOCK_LOW", "GPU level:5", "recent orders: GPU-x10")
 
@@ -171,7 +171,7 @@ func TestWatcher_ProcessSignal_EmptyPlanNoOp(t *testing.T) {
 			return &domain.ExecutionPlan{Subject: "no action", Steps: nil}, nil
 		},
 	}
-	w := New(nil, nil, planner, WatcherConfig{})
+	w := New(nil, nil, planner, nil, nil, WatcherConfig{})
 
 	plan, err := w.ProcessSignal(context.Background(), "STOCK_LOW", "data", "")
 

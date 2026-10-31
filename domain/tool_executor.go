@@ -290,9 +290,11 @@ type ToolExecutor struct {
 	// CEILING that overrides Unrestricted: principal id → the set of tool names it may
 	// touch. A principal absent from the map is unrestricted (normal resolution). A
 	// principal present may use ONLY its listed tools, even under the Unrestricted bypass
-	// — fail-closed for everything else. This is how the Scout principal is confined to
-	// the operator's `discovery-safe` set (never a write/dangerous tool), since it fires
-	// constantly and unattended at plan time. Generic: the executor knows nothing of Scout.
+	// — fail-closed for everything else. Its first principal was the ADR-0051 Scout
+	// (confined to the operator's `discovery-safe` set); the Scout and the config key
+	// that populated this map were removed 2026-08-07, so no production code sets it
+	// today. It is kept on purpose (owner, 2026-08-10) as the generic ceiling for the
+	// next unattended read-only organ; the executor knows nothing of any specific one.
 	RestrictedTools map[string]map[string]bool
 	// Overlay holds run-scoped grants conferred by a loaded system skill (ADR-0046
 	// D6). nil ⇒ no skill-conferred grants. Consulted in grantFor after the static
@@ -773,7 +775,7 @@ func (e *ToolExecutor) AvailableTools(ctx context.Context, agentID string) []Sys
 	// menu — resolved per task, appended here so the restricted-principal
 	// ceiling below applies to them exactly as it does to kernel tools.
 	menu = append(menu, e.contributedTools(ctx, agentID)...)
-	// ADR-0051 D6: a restricted principal (the Scout) sees only its allowlisted tools, so
+	// ADR-0051 D6: a restricted principal sees only its allowlisted tools, so
 	// the advisory menu matches what grantFor will actually allow.
 	if allow, restricted := e.RestrictedTools[agentID]; restricted {
 		filtered := menu[:0:0]
@@ -1324,7 +1326,7 @@ func (e *ToolExecutor) ConferSkillGrants(ctx context.Context, session, agentID s
 			continue
 		}
 		// ADR-0051 D6: a restricted principal's hard ceiling outranks a skill —
-		// otherwise a skill would be the way around the Scout's confinement.
+		// otherwise a skill would be the way around a restricted principal's confinement.
 		if allow, restricted := e.RestrictedTools[agentID]; restricted && !allow[name] {
 			clipped = append(clipped, AccessDecision{
 				Resource:  tool.AuthzRef(),

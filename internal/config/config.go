@@ -227,6 +227,17 @@ type RoutingConfig struct {
 	// "worst". Ignored on the argmax path.
 	DispatchMeritFloor float64 `json:"dispatch_merit_floor"`
 
+	// YieldMaxDepth bounds an agent-yielded sub-goal chain (ADR-0041 D5, ADR-0100
+	// D10; consumer internal/metabolism/yield): 1 lets a step's agent delegate but
+	// not its delegate, and so on. ≤ 0 refuses every yield — the step then FAILS
+	// with yield.ErrMaxDepth rather than returning an empty answer.
+	YieldMaxDepth int `json:"yield_max_depth"`
+
+	// YieldMaxSubgoals caps the total sub-goals one dispatched step (or one direct
+	// CallAgent) may yield, across the whole tree and every resume round — the
+	// fan-out bound that keeps a yield/resume/yield agent from looping forever.
+	YieldMaxSubgoals int `json:"yield_max_subgoals"`
+
 	// RETIRED with the auction (ADR-0100 P3): `calibrated_bids` and
 	// `bid_calibration_min_samples` (ROUTE-05 / ADR-0068). They configured the isotonic
 	// calibration of a BID, and there are no bids — the only reader was the auctioneer's
@@ -496,15 +507,17 @@ type MemoryConfig struct {
 	// ActivationThreshold is the post-BFS selection floor for PrimeForStep.
 	ActivationThreshold float64 `json:"activation_threshold"` // default 0.1
 
-	// ADR-0030: Lazy consolidation thresholds.
-	// ConsolidationThresholdDocCount triggers global consolidation when the document
-	// store exceeds this count. 0 disables count-based triggering.
-	ConsolidationThresholdDocCount int `json:"consolidation_threshold_doc_count,omitempty"`
+	// RETIRED 2026-10-31 (owner decision, ADR-0029 / ADR-0030):
+	// `consolidation_threshold_doc_count` and `consolidation_threshold_bytes`. They
+	// configured the ADR-0030 lazy global-consolidation trigger of the episodic lane,
+	// whose consolidator (EpisodicExtractor / MemoryLifecycleManager) was removed on
+	// 2026-07-18; from then on nothing read either key. Removed rather than kept as
+	// documented no-ops, for the same reason as `calibrated_bids`: a key that silently
+	// does nothing reads as a control. A file, store or env layer that still sets them
+	// loads unchanged — the decoder ignores keys with no field — and
+	// retiredExecutionFields (execution_migration_test.go) records them.
 
-	// ConsolidationThresholdBytes triggers global consolidation when the pgvector
-	// index exceeds this byte size. 0 disables size-based triggering.
-	ConsolidationThresholdBytes int64 `json:"consolidation_threshold_bytes,omitempty"`
-	MaxOrphanedDocuments        int   `json:"max_orphaned_documents,omitempty"`
+	MaxOrphanedDocuments int `json:"max_orphaned_documents,omitempty"`
 }
 
 // ProcedureConfig — ADR-0094 procedure induction.
@@ -553,8 +566,10 @@ type RetrievalConfig struct {
 
 	// RecallSpreadingEnabled turns on ADR-0048 D2: the agent's recall (QueryService)
 	// expands its seed associatively over the memory graph (SpreadingEngine) and
-	// re-ranks by activation. Default false — flag-gated so its per-recall latency
-	// and cost are opt-in. Requires a GraphStore-backed vector store.
+	// re-ranks by activation. Default TRUE since ADR-0049 D10 (spreading reads the
+	// Hebbian co_activated edges); set false to drop its per-recall latency and
+	// cost. Requires a GraphStore-backed vector store. Also arms ADR-0052 entity
+	// routing (see internal/kernel/memory_stack.go for its empty-index caveat).
 	RecallSpreadingEnabled bool `json:"recall_spreading_enabled"`
 
 	// RecallSimilarityFloor is the minimum cosine similarity a recalled
@@ -634,9 +649,10 @@ type RetrievalConfig struct {
 	// AgenticRetrievalEnabled turns on the agentic retrieval loop
 	// (AGENTIC_RETRIEVAL_SPEC): an LLM query-planner rewrites the query before
 	// the single pass (Phase 2a, hops=1), growing into the full plan/iterate/
-	// synthesize loop. Default OFF — the query path is unchanged when disabled or
-	// when the retrieval_agent is unreachable (fail-open to searchByType), so the
-	// benchmark baseline arm measures the true single pass. A/B via config.
+	// synthesize loop. Default ON (see the defaults below). The query path is
+	// unchanged when disabled or when the retrieval_agent is unreachable (fail-open
+	// to searchByType), so a baseline arm that sets it false measures the true
+	// single pass. A/B via config.
 	AgenticRetrievalEnabled bool `json:"agentic_retrieval_enabled,omitempty"`
 
 	// AgenticMaxHops bounds the retrieval loop's iterations (per-query LLM cost
@@ -695,7 +711,7 @@ type RetrievalConfig struct {
 
 	// BlendEnabled (ADR-0054 Stage A) re-ranks recall candidates by the
 	// multi-signal blend (cosine + recency + confidence + pagerank + activation)
-	// instead of bare cosine. false (default) ⇒ unchanged ranking. The bge
+	// instead of bare cosine. Default true; false ⇒ bare-cosine ranking. The bge
 	// cross-encoder (Stage B) is a separate, later flag. Reads chunk_pagerank
 	// (populated by the pagerank-recompute worker) — absent scores count as 0.
 	BlendEnabled bool `json:"blend_enabled,omitempty"`
@@ -1583,6 +1599,8 @@ func DefaultConfig() *Config {
 				ProposalTimeoutMs:      2000,
 				DispatchCheapEnergyMax: 0,     // cheapest-competent branch OFF until the A/B lands (P0 = pure argmax)
 				DispatchMeritFloor:     0.5,   // neutral prior; a candidate must be at least average to be "competent"
+				YieldMaxDepth:          3,     // step agent → delegate → delegate's delegate; deeper is a decomposition the planner should own
+				YieldMaxSubgoals:       8,     // matches the deleted YieldDriver's MaxDepth of 8 as the per-step budget
 				PerCapabilityMerit:     false, // ROUTE-06 arm toggle; OFF = global merit
 				LearnedScorer:          false, // ROUTE-07 arm toggle; OFF = hand-weighted GatekeeperScore
 			},
@@ -1709,8 +1727,11 @@ func DefaultConfig() *Config {
 					"tool":      {SimilarityThreshold: 0.80, ConfidenceFloor: 0.60, MaxAgeHours: 720},
 					"research":  {SimilarityThreshold: 0.88, ConfidenceFloor: 0.75, MaxAgeHours: 72},
 					"default":   {SimilarityThreshold: 0.85, ConfidenceFloor: 0.70, MaxAgeHours: 168},
-					// ADR-0029: episodic lane — lower threshold (narrative text) + 1-year max age.
-					"episodic": {SimilarityThreshold: 0.65, ConfidenceFloor: 0.0, MaxAgeHours: 8760},
+					// The ADR-0029 "episodic" policy was removed 2026-10-31 (owner
+					// decision): its only consumer, the WorkspaceStage episodic lane, was
+					// deleted with its writer on 2026-07-18. An operator file that still
+					// declares `hippocampus_policies.episodic` loads fine — the map takes
+					// any name — it simply has no reader.
 				},
 				HippocampusDefaultPolicy: "default",
 			},

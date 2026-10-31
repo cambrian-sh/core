@@ -147,10 +147,6 @@ type Server struct {
 	TelemetryObserver domain.TelemetryObserver // ADR-0019: may be nil
 	ContentStore      domain.ContentStore      // ADR-0022 Phase 1: may be nil; nil disables CAS
 	StepCache         domain.StepCache         // ADR-0026: may be nil; nil disables step-level memoization
-	// SceneWriterFactory produces a fresh domain.SceneWriter for each Execute call.
-	// ADR-0025: per-request because PgSceneWriter tracks lastSceneID for specifies edges.
-	// nil = scene writing disabled.
-	SceneWriterFactory func() domain.SceneWriter
 
 	// TokenRecorder taps token usage for the hourly spend series (contract 0075).
 	// nil ⇒ no tap and the resolved event writer is used unchanged, which is what
@@ -170,7 +166,8 @@ type Server struct {
 	EFETrafficPercent int
 
 	// SignalReceiver dispatches incoming signals to the condition/action pipeline.
-	// OSS build: OSS Watcher (passive LTM enrichment + Planner).
+	// OSS build: the Watcher (LTM enrichment + one Planner call; a non-empty plan
+	// is queued for operator approval and runs only if approved).
 	// Premium build: ReactiveEngine (condition evaluation + action execution). ADR-0032.
 	// nil → signals are logged and discarded.
 	SignalReceiver domain.SignalReceiver
@@ -308,7 +305,10 @@ func NewServer(
 	}
 }
 
-func validatePlan(plan *domain.ExecutionPlan, knownTools map[string]struct{}) error {
+// validatePlan checks the plan's DAG structure (ADR-0003 D4). It does NOT check the
+// capability vocabulary: ADR-0006 D2 removed that check from here on purpose, and the
+// planner drops invented required_capabilities itself (internal/awareness/planner.go).
+func validatePlan(plan *domain.ExecutionPlan) error {
 	if _, err := executer.TopologicalSort(plan.Steps); err != nil {
 		var cycleErr *executer.CyclicPlanError
 		if errors.As(err, &cycleErr) {
@@ -326,13 +326,13 @@ type TokenRecorder interface {
 	Wrap(inner domain.TaskEventWriter) domain.TaskEventReadWriter
 }
 
-func planWithValidation(ctx context.Context, planner Planner, userInput string, knownTools map[string]struct{}) (*domain.ExecutionPlan, error) {
+func planWithValidation(ctx context.Context, planner Planner, userInput string) (*domain.ExecutionPlan, error) {
 	plan, err := planner.GetExecutionPlan(ctx, userInput)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := validatePlan(plan, knownTools); err == nil {
+	if err := validatePlan(plan); err == nil {
 		return plan, nil
 	} else {
 		var valErr *PlanValidationError
@@ -347,7 +347,7 @@ func planWithValidation(ctx context.Context, planner Planner, userInput string, 
 			return nil, err
 		}
 
-		if err := validatePlan(plan, knownTools); err != nil {
+		if err := validatePlan(plan); err != nil {
 			return nil, fmt.Errorf("planner produced an invalid plan after retry: %w", err)
 		}
 		return plan, nil
@@ -510,7 +510,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		plan = &authored
 		slog.Info("📝 OPERATOR-AUTHORED PLAN", "subject", plan.Subject, "steps", len(plan.Steps))
 	default:
-		p, perr := planWithValidation(ctx, s.Planner, userInput, nil)
+		p, perr := planWithValidation(ctx, s.Planner, userInput)
 		if perr != nil {
 			return nil, perr
 		}
@@ -706,11 +706,9 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			return result.Handoff, nil
 		})
 
-		healer := &harness.SelfHealer{
-			Restorer:  s.Manager,
-			TaskID:    fmt.Sprintf("task-%d", i),
-			StepIndex: i,
-		}
+		// Retry/heal only: workspace rollback between attempts (ADR-0005 D2b/D3)
+		// was removed by owner decision 2026-10-31 — see harness.SelfHealer.
+		healer := &harness.SelfHealer{StepIndex: i}
 		resp, err := healer.Wrap(innerFn)(stepCtx, handoff)
 		if err != nil {
 			var healErr *harness.HealingExhaustedError
@@ -789,10 +787,6 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		eventWriter = s.TokenRecorder.Wrap(eventWriter)
 	}
 
-	var sceneWriter domain.SceneWriter
-	if s.SceneWriterFactory != nil {
-		sceneWriter = s.SceneWriterFactory()
-	}
 	executor := &executer.DAGExecutor{
 		EventWriter:         eventWriter,
 		EnqueueVerification: s.EnqueueVerification,
@@ -816,7 +810,6 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		Observer:               s.TelemetryObserver,
 		ContentStore:           s.ContentStore,
 		StepCache:              s.StepCache,
-		SceneWriter:            sceneWriter,
 		UseGlobalWorkspace:     s.ExecCfg.Workspace.UseGlobalWorkspace,
 		MaxContextSlots:        s.ExecCfg.Plan.MaxContextSlots,
 		ContextRefSnippetChars: s.ExecCfg.Plan.ContextRefSnippetChars,
@@ -900,7 +893,7 @@ func (s *Server) GetContextNode(ctx context.Context, req *pb.ContextNodeRequest)
 
 	// ADR-0048 D5: drill-down serves ONLY ContentStore CIDs (transient working-memory
 	// / tool-result blobs). The former pgvector fallback returned raw LTM document
-	// text via GetByID, bypassing the ScopedVectorStore that every other read goes
+	// text via GetByID, bypassing the enforcing store (today authz.EnforcingVectorStore) that every other read goes
 	// through (ADR-0034) — a scope hole. LTM is now reachable only through the
 	// scope-filtered QueryMemory path.
 	if s.ContentStore != nil {
@@ -1016,8 +1009,9 @@ func (s *Server) thoughtFn(plan *domain.ExecutionPlan) executer.StepFunc {
 }
 
 // SignalStream is the proactive neural signal endpoint. It receives Handoff
-// messages from Daemon Observer agents, validates the signal and auth token,
-// enriches with LTM context, and triggers proactive planning (OSS Watcher) or
+// messages from Daemon Observer agents, gatekeeps them through the Watcher
+// (signal shape, auth token, circuit breaker), and hands each accepted signal to
+// the SignalReceiver: proactive planning + operator approval (OSS Watcher) or
 // condition/action evaluation (premium ReactiveEngine). ADR-0032.
 func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.SymbiosisEvent]) error {
 	if s.Watcher == nil && s.SignalReceiver == nil {
@@ -1055,7 +1049,12 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 		}
 
 		if s.Watcher != nil {
-			// OSS path: Watcher validates, enriches with LTM, and presents to Planner.
+			// The Watcher is the GATE here: signal shape, daemon token, circuit
+			// breaker. It does not plan. Planning belongs to the SignalReceiver below
+			// (the OSS Watcher's OnSignal, or premium's ReactiveEngine), so a signal is
+			// planned at most once. This block used to call Watcher.ProcessSignal as
+			// well, which in OSS — where the receiver IS the Watcher — planned every
+			// signal twice and discarded both plans (ADR-0009, ADR-0032).
 
 			// 1. Validate signal
 			if valErr := s.Watcher.ValidateSignal(ctx, dHandoff); valErr != nil {
@@ -1064,25 +1063,7 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 			}
 
 			// 2. Validate auth token
-			inst, tokErr := s.Watcher.ValidateToken(ctx)
-			if tokErr != nil {
-				if dHandoff.FromAgent != "" {
-					_ = s.Watcher.HandleInvalidSignal(ctx, dHandoff)
-				}
-				continue
-			}
-
-			// 3. Enrich with LTM context
-			signalType := dHandoff.Context["_signal_type"]
-			signalData := ""
-			if dHandoff.Payload != nil {
-				signalData = string(dHandoff.Payload.Data)
-			}
-			ltmCtx := s.Watcher.EnrichSignal(ctx, signalType, signalData)
-
-			// 4. Present to Planner
-			plan, planErr := s.Watcher.ProcessSignal(ctx, signalType, signalData, ltmCtx)
-			if planErr != nil {
+			if _, tokErr := s.Watcher.ValidateToken(ctx); tokErr != nil {
 				if dHandoff.FromAgent != "" {
 					_ = s.Watcher.HandleInvalidSignal(ctx, dHandoff)
 				}
@@ -1091,28 +1072,13 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 
 			// Valid signal resets circuit breaker
 			s.Watcher.ResetInvalidSignals(dHandoff.FromAgent)
-
-			// 5. Notify stream if a plan was produced
-			if plan != nil && len(plan.Steps) > 0 {
-				event := &pb.SymbiosisEvent{
-					Payload: &pb.SymbiosisEvent_AgentLog{
-						AgentLog: &pb.AgentLog{
-							Timestamp: time.Now().Format(time.RFC3339),
-							Level:     "INFO",
-							Message:   fmt.Sprintf("Proactive plan generated from signal %s by %s (%s)", signalType, inst.AgentID, inst.ID),
-							AgentId:   inst.AgentID,
-						},
-					},
-				}
-				if sendErr := stream.Send(event); sendErr != nil {
-					return sendErr
-				}
-			}
 		}
 
-		// ADR-0032: ReactiveEngine (premium) evaluates conditions and executes actions.
-		// OnSignal is always fire-and-forget (returns nil). In OSS, SignalReceiver is
-		// a NoOpSignalReceiver that discards the signal.
+		// ADR-0032: the SignalReceiver acts on the signal. Premium: the
+		// ReactiveEngine evaluates conditions and executes actions. OSS: the Watcher
+		// plans the signal once and queues a non-empty plan for operator approval
+		// (ApprovalHub / ResolveHITL); it runs only if approved. A kernel with no
+		// Watcher falls back to the NoOpSignalReceiver.
 		if s.SignalReceiver != nil {
 			rawText := ""
 			if dHandoff.Payload != nil {

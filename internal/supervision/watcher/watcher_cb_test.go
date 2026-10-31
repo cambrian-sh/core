@@ -23,7 +23,7 @@ func (m *mockAgentManager) EvictInstance(id string) {
 
 func TestWatcher_CircuitBreaker_TracksInvalidSignals(t *testing.T) {
 	m := &agentmgr.AgentManager{}
-	w := New(m, nil, nil, WatcherConfig{
+	w := New(m, nil, nil, nil, nil, WatcherConfig{
 		SignalNoiseThreshold:  3,
 		SignalNoiseWindowSecs: 10,
 	})
@@ -39,7 +39,7 @@ func TestWatcher_CircuitBreaker_TracksInvalidSignals(t *testing.T) {
 
 func TestWatcher_CircuitBreaker_ResetsOnValidSignal(t *testing.T) {
 	m := &agentmgr.AgentManager{}
-	w := New(m, nil, nil, WatcherConfig{
+	w := New(m, nil, nil, nil, nil, WatcherConfig{
 		SignalNoiseThreshold:  3,
 		SignalNoiseWindowSecs: 10,
 	})
@@ -60,7 +60,7 @@ func TestWatcher_CircuitBreaker_InhibitsOnThreshold(t *testing.T) {
 		instances: map[string]*struct{ agentID, instanceID string }{},
 	}
 
-	w := New(mockMgr, nil, nil, WatcherConfig{
+	w := New(mockMgr, nil, nil, nil, nil, WatcherConfig{
 		SignalNoiseThreshold:  2,
 		SignalNoiseWindowSecs: 10,
 	})
@@ -78,7 +78,7 @@ func TestWatcher_CircuitBreaker_InhibitsOnThreshold(t *testing.T) {
 
 func TestWatcher_CircuitBreaker_SlidingWindow_OldSignalsDontCount(t *testing.T) {
 	m := &agentmgr.AgentManager{}
-	w := New(m, nil, nil, WatcherConfig{
+	w := New(m, nil, nil, nil, nil, WatcherConfig{
 		SignalNoiseThreshold:  3,
 		SignalNoiseWindowSecs: 1,
 	})
@@ -98,7 +98,7 @@ func TestWatcher_HandleInvalidSignal_TriggersInhibit(t *testing.T) {
 		},
 	}
 
-	w := New(mockMgr, nil, nil, WatcherConfig{
+	w := New(mockMgr, nil, nil, nil, nil, WatcherConfig{
 		SignalNoiseThreshold:  1,
 		SignalNoiseWindowSecs: 10,
 	})

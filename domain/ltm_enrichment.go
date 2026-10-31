@@ -6,7 +6,7 @@ type LTMEnrichment struct {
 	Facts     []SearchResult // DocTypeMnemonicFact results
 	Negatives []SearchResult // DocTypeNegativeEdge results
 	// Episodes (ADR-0029: DocTypeEpisodicMemory hits above the "episodic" policy
-	// threshold) is gone. Its writer was removed on 2026-07-18 and the reader — a
+	// threshold — a policy itself retired 2026-10-31) is gone. Its writer was removed on 2026-07-18 and the reader — a
 	// WorkspaceStage lane and the planner's <EpisodicMemory> block — was retired with it.
 	Precedents []Precedent // ADR-0049 D11: world-model transitions for the situation being planned
 	// Procedures are ADR-0094 induced routines for the situation being planned —

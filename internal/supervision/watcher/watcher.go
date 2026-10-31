@@ -4,13 +4,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
+	"google.golang.org/grpc/metadata"
+
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/supervision/signal"
 )
+
+// ProactivePlanApprovalKind is the ApprovalRequest.ToolName a signal-born plan is
+// raised under. The operator plane's approval surface (WatchToolApprovals ->
+// ApprovalOp.tool_name, and HITLRaisedOp.description on the feed) shows it as
+// the thing being approved; ResolveHITL on the request id decides it.
+const ProactivePlanApprovalKind = "proactive_plan"
+
+// maxPlanPreview bounds the ArgsPreview of a proactive-plan approval. The preview
+// is what the operator decides on, so it carries every step's query, but a
+// runaway plan must not turn one approval into a megabyte feed event.
+const maxPlanPreview = 4000
 
 // ErrInvalidSignal is returned when a Handoff is not a valid signal.
 var ErrInvalidSignal = errors.New("invalid signal")
@@ -22,6 +36,11 @@ var ErrSignalInhibited = errors.New("signal inhibited: neural noise detected")
 type WatcherConfig struct {
 	SignalNoiseThreshold  int
 	SignalNoiseWindowSecs int
+	// MaxPendingPlans bounds how many proactive plans may be awaiting an operator
+	// decision or running at once. A plan that arrives when the bound is reached
+	// is dropped with a warning rather than queued without limit: a chattering
+	// daemon must not grow goroutines without bound (AGENTS.md §3.3). 0 => 4.
+	MaxPendingPlans int
 }
 
 // MemoryFetcher is the consumer-side interface Watcher needs for LTM access.
@@ -45,11 +64,23 @@ type PlannerAccess interface {
 // Watcher listens on SignalStream, validates signals, enriches them with LTM
 // context, and presents them as Inspirations to the Planner.
 // In the OSS build, it is wired as the domain.SignalReceiver. ADR-0032.
+//
+// A plan born from a signal is never executed on the daemon's say-so (ADR-0009:
+// agents cannot trigger plans directly). It is queued on the operator approval
+// hub and runs through the kernel's one plan execution path only when an
+// operator approves it. Both collaborators are constructor arguments; a Watcher
+// built without them can plan but never execute, so a missing wire fails closed
+// instead of auto-running daemon-initiated work (AGENTS.md §2.3).
 type Watcher struct {
 	Manager     ManagerAccess
 	MemoryAgent MemoryFetcher
 	Planner     PlannerAccess
 	Config      WatcherConfig
+
+	approval domain.ApprovalController
+	executor domain.PlanExecutor
+	// pending is a counting semaphore over plans awaiting a decision or running.
+	pending chan struct{}
 
 	cb *signal.CircuitBreaker
 
@@ -71,18 +102,31 @@ func (w *Watcher) isReplanning() bool {
 }
 
 // New creates a new Watcher with the given dependencies.
-func New(manager ManagerAccess, memoryAgent MemoryFetcher, planner PlannerAccess, cfg WatcherConfig) *Watcher {
+//
+// approval is the operator approval hub a proactive plan waits on; executor runs
+// an approved plan. Pass the operator-gated hub, never an auto-approving
+// controller: tools_auto_approve is a decision about dangerous TOOLS, and reusing
+// it here would silently turn every daemon signal into executed work. Either nil
+// => plans are produced and dropped (logged), never run.
+func New(manager ManagerAccess, memoryAgent MemoryFetcher, planner PlannerAccess,
+	approval domain.ApprovalController, executor domain.PlanExecutor, cfg WatcherConfig) *Watcher {
 	if cfg.SignalNoiseThreshold == 0 {
 		cfg.SignalNoiseThreshold = 3
 	}
 	if cfg.SignalNoiseWindowSecs == 0 {
 		cfg.SignalNoiseWindowSecs = 10
 	}
+	if cfg.MaxPendingPlans <= 0 {
+		cfg.MaxPendingPlans = 4
+	}
 	return &Watcher{
 		Manager:     manager,
 		MemoryAgent: memoryAgent,
 		Planner:     planner,
 		Config:      cfg,
+		approval:    approval,
+		executor:    executor,
+		pending:     make(chan struct{}, cfg.MaxPendingPlans),
 		cb:          signal.NewCircuitBreaker(cfg.SignalNoiseThreshold, cfg.SignalNoiseWindowSecs),
 	}
 }
@@ -179,17 +223,97 @@ func (w *Watcher) HandleInvalidSignal(ctx context.Context, handoff *domain.Hando
 	return fmt.Errorf("%w: invalid signal from %s", ErrInvalidSignal, agentID)
 }
 
-// OnSignal implements domain.SignalReceiver for the OSS Watcher.
-// It validates the signal, enriches with LTM, and presents it to the Planner.
-// Equivalent to the SignalStream handler's per-signal processing. ADR-0032.
+// OnSignal implements domain.SignalReceiver for the OSS Watcher (ADR-0032).
+//
+// It is the ONE place a signal is planned. SignalStream gatekeeps first (signal
+// shape, daemon token, circuit breaker) and then hands the signal here. It used
+// to also call ProcessSignal itself, so every OSS signal cost two planner calls
+// and both plans were discarded.
+//
+// A non-empty plan is queued for operator approval and OnSignal returns at once:
+// the decision can take the hub's whole grace window and the plan longer still,
+// and OnSignal runs on the daemon's stream loop, which must keep receiving.
 func (w *Watcher) OnSignal(ctx context.Context, s domain.Signal) error {
-	if w.isReplanning() {
+	plan, err := w.ProcessSignal(ctx, s.StreamID, s.RawText, w.EnrichSignal(ctx, s.StreamID, s.RawText))
+	if err != nil {
+		return err
+	}
+	if plan == nil || len(plan.Steps) == 0 {
 		return nil
 	}
-	if w.Planner == nil {
-		return nil
+	w.queueForApproval(ctx, s, plan)
+	return nil
+}
+
+// queueForApproval raises plan on the operator approval hub and, if an operator
+// approves it, runs it through the kernel's plan executor (the Orchestrator
+// Execute authored-plan path, contract 0074, so session binding, run
+// persistence, checkpoints and the feed are the existing code).
+//
+// The hub is fail-closed: no operator watching, the grace window elapsing, or a
+// rejection all drop the plan. That is the "queue for operator approval"
+// semantics until a durable pending-plan surface exists: daemon-initiated work
+// never runs without a human saying so.
+func (w *Watcher) queueForApproval(ctx context.Context, s domain.Signal, plan *domain.ExecutionPlan) {
+	if w.approval == nil || w.executor == nil {
+		slog.Warn("watcher: proactive plan dropped: no operator approval path wired",
+			"signal", s.StreamID, "from", s.FromAgent, "steps", len(plan.Steps))
+		return
 	}
-	ltmCtx := w.EnrichSignal(ctx, s.StreamID, s.RawText)
-	_, err := w.Planner.GetExecutionPlan(ctx, w.BuildInspiration(s.StreamID, s.RawText, ltmCtx))
-	return err
+	select {
+	case w.pending <- struct{}{}:
+	default:
+		slog.Warn("watcher: proactive plan dropped: too many plans pending approval",
+			"signal", s.StreamID, "from", s.FromAgent, "max_pending", cap(w.pending))
+		return
+	}
+
+	// The approval wait and the run outlive this signal's stream, so cancellation
+	// is dropped while values (trace) are kept (AGENTS.md §2.7). The daemon's
+	// incoming gRPC metadata (its bearer token) is replaced with an empty set: an
+	// approved plan is operator-sanctioned work and must not execute under
+	// anything the daemon sent.
+	runCtx := metadata.NewIncomingContext(context.WithoutCancel(ctx), metadata.MD{})
+	req := domain.ApprovalRequest{
+		AgentID:     s.FromAgent,
+		ToolName:    ProactivePlanApprovalKind,
+		ArgsPreview: planPreview(s, plan),
+	}
+	go func() {
+		defer func() { <-w.pending }()
+		dec, err := w.approval.Request(runCtx, req)
+		if err != nil || !dec.Approved {
+			slog.Info("watcher: proactive plan not approved; dropped",
+				"signal", s.StreamID, "from", s.FromAgent, "err", err)
+			return
+		}
+		slog.Info("watcher: proactive plan approved; executing",
+			"signal", s.StreamID, "from", s.FromAgent, "approver", dec.ApproverID, "steps", len(plan.Steps))
+		h := &domain.Handoff{
+			FromAgent: s.FromAgent,
+			Payload:   &domain.Payload{Data: []byte(plan.Subject)},
+		}
+		if _, err := w.executor.Execute(runCtx, plan, h); err != nil {
+			slog.Warn("watcher: approved proactive plan failed",
+				"signal", s.StreamID, "from", s.FromAgent, "err", err)
+		}
+	}()
+}
+
+// planPreview renders what the operator is approving: the triggering signal and
+// every step's query, bounded by maxPlanPreview.
+func planPreview(s domain.Signal, plan *domain.ExecutionPlan) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "signal %s from %s", s.StreamID, s.FromAgent)
+	if plan.Subject != "" {
+		fmt.Fprintf(&b, "; subject: %s", plan.Subject)
+	}
+	for i, st := range plan.Steps {
+		fmt.Fprintf(&b, "\n%d. %s", i+1, st.Query)
+	}
+	out := b.String()
+	if len(out) > maxPlanPreview {
+		out = out[:maxPlanPreview] + "..."
+	}
+	return out
 }

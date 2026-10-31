@@ -21,7 +21,7 @@ const (
 	DocTypeMnemonicScene      = "mnemonic_scene"     // ADR-0015: masterContext snapshot at step completion time
 	DocTypeMnemonicEntity     = "mnemonic_entity"    // ADR-0049 D8: a first-class engaged THING (file/dir/api/…), keyed by canonical kind:id
 	DocTypeMnemonicProcedure  = "mnemonic_procedure" // ADR-0094: an INDUCED reusable routine — descriptive ("how this has gone"), not normative like a Skill
-	DocTypeEpisodicMemory     = "episodic_memory"    // ADR-0029: session narrative index (goal + decisions)
+	DocTypeEpisodicMemory     = "episodic_memory"    // ADR-0029: session narrative index; lane removed 2026-07-18 — names legacy rows only, nothing writes or reads it
 	DocTypeTool               = "tool"               // ADR-0044: tool descriptor indexed for semantic retrieval
 	DocTypeSkill              = "skill"              // ADR-0046: system-skill descriptor indexed for semantic retrieval
 	DocTypeDocSection         = "doc_section"        // ADR-0060: a structural section node (chapter/section/subsection) of an ingested document; NOT embedded, excluded from fact recall
@@ -45,7 +45,7 @@ type SearchOptions struct {
 	DecayLambda float64
 	// Scope is the effective access boundary applied to this search. It is the
 	// explicit, compiler-visible chokepoint parameter (ADR-0034 D5). The
-	// ScopedVectorStore decorator seeds it (from ctx or an explicit value) and
+	// authz.EnforcingVectorStore decorator (ADR-0085) seeds it (from ctx or an explicit value) and
 	// fails closed when it is nil; the pgvector adapter translates it into the
 	// three-set/CNF jsonb containment predicate. ScopeSystem bypasses filtering.
 	Scope *TagPredicate

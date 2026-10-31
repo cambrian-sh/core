@@ -132,14 +132,14 @@ func TestProvider_TraceWrapperAppliedPerPurpose(t *testing.T) {
 	}
 }
 
-func TestProvider_AgentStepPreferenceHookUsed(t *testing.T) {
+// An agent step carries no role preference in the Provider (its model choice is
+// the auction's StepAllocation, ADR-0018): the ladder goes suggestion -> default.
+func TestProvider_AgentStepHasNoRolePreference(t *testing.T) {
 	p := testProvider(t)
-	p.breaker.Record("deepseek", false) // suggested open
-	p.SetAgentStepPreference(func(_ context.Context, _ domain.LLMRequest) []string {
-		return []string{"qwen-local"} // EFE prefers qwen-local
-	})
-	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeAgentStep, SuggestedModelID: "deepseek"})
-	if err != nil || id != "qwen-local" {
-		t.Fatalf("EFE preference: want qwen-local, got %q (%v)", id, err)
+	// Even a role entry keyed "agent_step" must not steer an agent step.
+	p.SetRole(string(domain.PurposeAgentStep), "qwen-local")
+	id, err := p.resolve(context.Background(), domain.LLMRequest{Purpose: domain.PurposeAgentStep})
+	if err != nil || id != "deepseek" {
+		t.Fatalf("agent step: want the default deepseek, got %q (%v)", id, err)
 	}
 }

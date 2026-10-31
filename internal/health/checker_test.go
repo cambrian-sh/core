@@ -81,3 +81,37 @@ func TestChecker_ShutdownDrains(t *testing.T) {
 		t.Fatalf("Shutdown must be sticky, got %v", got)
 	}
 }
+
+// Shutdown landing while a probe is IN FLIGHT must stay sticky: the probe was admitted
+// before the drain began, but its passing result must not flip Ready() (read by the
+// /healthz shim) back to true afterwards. grpc's health.Server already ignores the late
+// SetServingStatus, so only Ready() could lie here
+// (T-20261031-health-checker-can-set-ready-true-after, ADR-0065).
+func TestChecker_ShutdownDuringInFlightProbe_StaysNotReady(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	c := health.New(func(context.Context) error {
+		close(started)
+		<-release
+		return nil // the probe PASSES, but only after the drain began
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	finished := make(chan struct{})
+	go func() {
+		c.Start(ctx, time.Hour) // runs the blocking probe synchronously
+		close(finished)
+	}()
+	<-started
+	c.Shutdown()
+	close(release)
+	<-finished
+
+	if c.Ready() {
+		t.Fatal("Ready() flipped back to true after Shutdown: /healthz would answer 200 while draining")
+	}
+	if got := status(t, c, ""); got != healthpb.HealthCheckResponse_NOT_SERVING {
+		t.Fatalf("expected NOT_SERVING after Shutdown, got %v", got)
+	}
+}

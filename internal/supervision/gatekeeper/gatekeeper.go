@@ -232,7 +232,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 		if agent.Trait == domain.TraitDaemon {
 			continue
 		}
-		// Privileged system organs (ADR-0051 Scout) are kernel-invoked directly, never
+		// Privileged system organs (ADR-0051 class: kg_extractor, reranker) are kernel-invoked directly, never
 		// auctioned/EFE-selected for a user task — exclude them from the candidate pool.
 		if domain.IsSystemDefinition(agent) {
 			continue

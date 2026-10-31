@@ -45,8 +45,31 @@ const (
 	premiumServicePrefix  = "/cambrian.premium."
 )
 
+// operatorGatedAgentServiceMethods are methods DECLARED on the agent-facing
+// Orchestrator service that are nevertheless operator-plane: the dangerous-tool
+// approval surface, which ADR-0039 D10 requires to be "operator-authenticated,
+// never agent-reachable". They stay on Orchestrator to avoid a proto break, but
+// they require the operator bearer (operator.authorize) and are stamped
+// SurfaceOperator here. Before 2026-10-31 their only guard was an ABSENT
+// self-asserted x-agent-id header, so any client reaching the port could stream
+// pending approvals and approve its own dangerous tool calls.
+//
+// This is the ONE list; the operator auth interceptor reads it through
+// IsOperatorGatedAgentServiceMethod rather than keeping its own copy.
+var operatorGatedAgentServiceMethods = map[string]bool{
+	agentServicePrefix + "WatchApprovals":         true,
+	agentServicePrefix + "SubmitApprovalDecision": true,
+}
+
+// IsOperatorGatedAgentServiceMethod reports whether fullMethod is an
+// Orchestrator method that belongs to the operator plane (ADR-0039 D10).
+func IsOperatorGatedAgentServiceMethod(fullMethod string) bool {
+	return operatorGatedAgentServiceMethods[fullMethod]
+}
+
 // SurfaceForMethod derives the surface from the gRPC method being invoked.
 //
+//   - an operator-gated Orchestrator method (the approval surface) → SurfaceOperator
 //   - the operator console  → SurfaceOperator (a human at the console)
 //   - the agent plane       → SurfaceAgent    (an agent under its own identity)
 //   - a premium plane       → SurfaceOperator (mounted behind the same operator
@@ -57,6 +80,8 @@ const (
 //   - anything else         → SurfaceInternal (an in-process kernel path)
 func SurfaceForMethod(fullMethod string, agentPlane map[string]bool) domain.SurfaceRef {
 	switch {
+	case operatorGatedAgentServiceMethods[fullMethod]:
+		return domain.SurfaceRef{Kind: domain.SurfaceOperator, ID: "console"}
 	case strings.HasPrefix(fullMethod, operatorServicePrefix):
 		return domain.SurfaceRef{Kind: domain.SurfaceOperator, ID: "console"}
 	case strings.HasPrefix(fullMethod, agentServicePrefix):

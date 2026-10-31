@@ -98,20 +98,9 @@ func TestDefaultConfig_HippocampusPolicies_AllPresent(t *testing.T) {
 	}
 }
 
-// Cycle 4b — DefaultConfig contains "episodic" policy with ADR-0029 values.
-func TestDefaultConfig_EpisodicPolicy_Present(t *testing.T) {
-	cfg := config.DefaultConfig()
-	pol, ok := cfg.Execution.Hippocampus.HippocampusPolicies["episodic"]
-	if !ok {
-		t.Fatal("DefaultConfig missing 'episodic' HippocampusPolicy (ADR-0029)")
-	}
-	if pol.SimilarityThreshold != 0.65 {
-		t.Errorf("episodic SimilarityThreshold: want 0.65 got %v", pol.SimilarityThreshold)
-	}
-	if pol.MaxAgeHours != 8760 {
-		t.Errorf("episodic MaxAgeHours: want 8760 (1 year) got %v", pol.MaxAgeHours)
-	}
-}
+// Cycle 4b (the "episodic" policy, ADR-0029) was retired 2026-10-31 with the
+// episodic lane; TestRetiredEpisodicKeys_AbsentFromSchema (retired_keys_test.go)
+// now asserts it is NOT in DefaultConfig.
 
 // Cycle 5 — Validate rejects a config where HippocampusDefaultPolicy is not in the map.
 func TestExecutionConfig_Validate_RejectsMissingDefaultPolicy(t *testing.T) {

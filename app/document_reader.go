@@ -68,8 +68,8 @@ func (r *kernelDocumentReader) GetDocument(ctx context.Context, principal domain
 // withPrincipalScope stamps the principal the enforcing store resolves against.
 //
 // The system principal maps to ScopeSystem, which is what an unadministered plugin
-// reads as — matching the record lane's own fallback (`defaultScope`: forbid every
-// closed tag) rather than inventing a second answer for the same question.
+// reads as — forbid every closed tag, the same fallback the (since removed) premium
+// record lane used — rather than inventing a second answer for the same question.
 func withPrincipalScope(ctx context.Context, p domain.PrincipalRef) context.Context {
 	if p.Kind == domain.PrincipalSystem {
 		return domain.WithScope(ctx, domain.ScopeSystem)

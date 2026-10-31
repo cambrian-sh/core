@@ -12,11 +12,6 @@ import (
 	"github.com/cambrian-sh/core/internal/substrate/harness"
 )
 
-// noopRestorer satisfies harness.Restorer with a no-op Restore.
-type noopRestorer struct{}
-
-func (n *noopRestorer) Restore(_, _ string) error { return nil }
-
 // healedDAGStep adapts a harness.StepFunc into a DAGExecutor StepFunc by
 // ignoring the step index (the harness closure already captures it).
 func healedDAGStep(fn harness.StepFunc) executer.StepFunc {
@@ -37,7 +32,7 @@ func TestHealedStep_FailOnceThenSucceed(t *testing.T) {
 		return &domain.Handoff{Payload: &domain.Payload{Data: []byte("ok")}}, nil
 	})
 
-	healer := &harness.SelfHealer{Restorer: &noopRestorer{}, StepIndex: 0}
+	healer := &harness.SelfHealer{StepIndex: 0}
 	wrapped := healer.Wrap(inner)
 
 	plan := &domain.ExecutionPlan{Steps: []domain.Step{{Query: "test step"}}}
@@ -64,7 +59,7 @@ func TestHealedStep_ThreeFailures_ReturnsExhaustedError(t *testing.T) {
 		return nil, fmt.Errorf("persistent failure attempt %d", calls)
 	})
 
-	healer := &harness.SelfHealer{Restorer: &noopRestorer{}, StepIndex: 1}
+	healer := &harness.SelfHealer{StepIndex: 1}
 	wrapped := healer.Wrap(inner)
 
 	plan := &domain.ExecutionPlan{Steps: []domain.Step{{Query: "always fails"}}}
@@ -108,7 +103,7 @@ func TestHealedStep_LogicError_InjectsHealContext(t *testing.T) {
 		return &domain.Handoff{Payload: &domain.Payload{Data: []byte("recovered")}}, nil
 	})
 
-	healer := &harness.SelfHealer{Restorer: &noopRestorer{}, StepIndex: 0}
+	healer := &harness.SelfHealer{StepIndex: 0}
 	wrapped := healer.Wrap(inner)
 
 	plan := &domain.ExecutionPlan{Steps: []domain.Step{{Query: "test"}}}
@@ -137,7 +132,7 @@ func TestHealedStep_ExhaustedError_CancelsSiblings(t *testing.T) {
 		step0calls++
 		return nil, fmt.Errorf("fail-%d", step0calls)
 	})
-	healer0 := &harness.SelfHealer{Restorer: &noopRestorer{}, StepIndex: 0}
+	healer0 := &harness.SelfHealer{StepIndex: 0}
 	wrapped0 := healer0.Wrap(step0Inner)
 
 	siblingCancelled := make(chan struct{})

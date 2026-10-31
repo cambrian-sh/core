@@ -15,6 +15,7 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/dispatch"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	"github.com/cambrian-sh/core/internal/metabolism/interview"
+	"github.com/cambrian-sh/core/internal/metabolism/yield"
 	supgk "github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 	"github.com/cambrian-sh/core/internal/supervision/verify"
 
@@ -39,9 +40,11 @@ type MetabolismStack struct {
 	// Selector is the step-selection mechanism the DAG executor uses. Since
 	// ADR-0100 P3 there is exactly one: the capability-typed Dispatcher. The
 	// port stays an interface so a future mechanism has somewhere to land, not
-	// because a second implementation exists.
+	// because a second implementation exists. The value is the Dispatcher wrapped
+	// in the yield consumer (internal/metabolism/yield, ADR-0100 D10) — a
+	// decorator, not a second selector: it binds sub-goals through the same one.
 	Selector domain.StepDispatcher
-	// Dispatcher is the concrete Selector, always non-nil. Exposed ONLY so the
+	// Dispatcher is the concrete selector inside Selector, always non-nil. Exposed ONLY so the
 	// composition root can finish wiring it — the EventBus is built after this
 	// stack, and a dispatcher that cannot emit SelectionEventPayload is
 	// invisible to the orchestration suite.
@@ -160,7 +163,16 @@ func NewMetabolismStack(
 		Observer:        observer,
 		ExplorationRate: cfg.Execution.Routing.ExplorationRate,
 	}
-	var selector domain.StepDispatcher = dispatcher
+	// ADR-0041 D5 / ADR-0100 D10: an agent may YIELD a sub-goal instead of
+	// answering. The yield consumer decorates the Dispatcher here, at the one place
+	// the Selector is built, so every caller of it (DAG step, bypass arm, runner-up
+	// fallback, plugins) resolves a yield: the sub-goal is bound by this same
+	// dispatcher and the yielding agent is resumed with the result. Without it a
+	// yield reached the DAG as an empty answer (core b0072cc deleted the old driver).
+	var selector domain.StepDispatcher = yield.NewResolver(dispatcher, yield.Limits{
+		MaxDepth:    cfg.Execution.Routing.YieldMaxDepth,
+		MaxSubgoals: cfg.Execution.Routing.YieldMaxSubgoals,
+	})
 	slog.Info("ADR-0100: selection mechanism = DISPATCH (capability-typed; zero RPCs, only the winner is booted)",
 		"capability_contract", cfg.Execution.Routing.CapabilityContract,
 		"capability_resolution", cfg.Execution.Capability.CapabilityResolution,

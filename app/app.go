@@ -734,10 +734,22 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		)
 	}
 	// 4. Watcher — proactive signal processing (ADR-0009)
+	//
+	// The operator approval hub and the plan executor are created HERE, ahead of
+	// their other consumers, because the Watcher takes both as constructor
+	// arguments: a daemon-signalled plan is queued on the hub and runs through the
+	// kernel's plan path only when an operator approves it (ResolveHITL). The hub
+	// (not toolApprovalCtrl) is passed deliberately: tools_auto_approve is a
+	// decision about dangerous tools and must not auto-run daemon-initiated plans.
+	// planExec is late-bound to the server below (planExec.bind).
+	toolApproval := domain.NewInMemoryApprovalController(60 * time.Second)
+	planExec := &kernelPlanExecutor{}
 	watcher := supwatcher.New(
 		meta.Manager,
 		mem.Agent,
 		aw.Planner,
+		toolApproval,
+		planExec,
 		supwatcher.WatcherConfig{
 			SignalNoiseThreshold:  cfg.Execution.Supervision.SignalNoiseThreshold,
 			SignalNoiseWindowSecs: cfg.Execution.Supervision.SignalNoiseWindowSecs,
@@ -800,7 +812,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 
 	// ADR-0054 Stage A: multi-signal blend re-rank (cosine + recency + confidence
-	// + pagerank + activation). Opt-in via `execution.blend_enabled`. Reads
+	// + pagerank + activation). On by default; `execution.retrieval.blend_enabled`
+	// = false turns it off. Reads
 	// chunk_pagerank (kept fresh by the pagerank-recompute worker) + per-chunk
 	// confidence; bge cross-encoder (Stage B) is a separate, later flag.
 	if cfg.Execution.Retrieval.BlendEnabled {
@@ -1007,10 +1020,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Late-bound on purpose: the ingestion processor is part of the server, which is
 	// constructed AFTER this bundle. The plugin holds this pointer from Build and
 	// calls it at request time, by which point the processor is populated — the same
-	// shape the drift plugin's action executors use. Constructing it here with a nil
+	// shape plugin-contributed reactive action executors use. Constructing it here with a nil
 	// processor and filling it in later is what keeps the bundle order-independent
 	// rather than adding a second undeclared ordering dependency.
 	memIngestor := &kernelMemoryIngestor{principal: domain.SystemPrincipal}
+	// PREM-0032 start_plan: late-bound for the same reason — the server whose
+	// Execute path runs plans is constructed after this bundle; bound below.
+	// (planExec itself is declared above the Watcher, which also runs plans.)
 	// One reader, shared by the plugin seam and the operator RPC.
 	docReader := &kernelDocumentReader{store: authz.NewEnforcingVectorStore(vec, slog.Default())}
 
@@ -1200,8 +1216,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Manager:    meta.Manager,
 		Dispatcher: meta.Selector, // plugins that select get the selector
 		Planner:    aw.Planner,
-		LLM:        aw.LLM,
-		WatchStore: reg,
+		// The real DAG executor for plugin-generated plans (PREM-0032 start_plan),
+		// reached through the Orchestrator.Execute path — see kernelPlanExecutor.
+		PlanExecutor: planExec,
+		LLM:          aw.LLM,
+		WatchStore:   reg,
 		// Authored pipelines, stored beside the watches they replace.
 		PipelineStore: reg,
 		EventBus:      eventBus,
@@ -1357,6 +1376,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		watchBacktester = bt
 	}
 	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, providers, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
+	// PREM-0032: from here a plugin's start_plan runs on this server's real DAG path.
+	planExec.bind(cambrianServer)
 	// ADR-0098: the agent-facing plane reports memory searches and tool calls against the
 	// conversation its caller's lease was issued under, so a slow turn shows movement
 	// rather than one static line. Installed unconditionally — the holder is inert until
@@ -1687,7 +1708,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	mcpAuditor := domain.EgressAuditor(mcp.SlogEgressAuditor{})
 
 	toolGrants := domain.NewInMemoryGrantsStore()
-	toolApproval := domain.NewInMemoryApprovalController(60 * time.Second)
+	// toolApproval is declared above the Watcher (it also gates proactive plans).
 	// ADR-0039: the dangerous-tool approval controller. By default it is the
 	// operator-gated controller (WatchApprovals/SubmitApprovalDecision). When
 	// tools_auto_approve is set, dangerous tools run without a human decision —
@@ -1865,7 +1886,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		})
 	}
 	// ADR-0046 D2/D4/D9: wire the system-skill plane behind ListSkills. The
-	// retriever reads through a fail-closed ScopedVectorStore so an agent only
+	// retriever reads through a fail-closed authz.EnforcingVectorStore (ADR-0085) so an agent only
 	// retrieves skills its effective scope permits (the same read path as memory).
 	cambrianServer.SkillRegistry = skillReg
 	cambrianServer.SkillRetriever = domain.VectorSkillRetriever{
@@ -2128,8 +2149,9 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	// C. gRPC Server
 	g.Go(func() error {
 		// ADR-0047: Operator Transport Plane auth (D13). The interceptors are
-		// method-scoped to /cambrian.OperatorConsole/* — agent-facing RPCs over
-		// UDS pass through ungated. A bootstrap operator is seeded from env
+		// method-scoped to /cambrian.OperatorConsole/* (plus the Orchestrator
+		// approval RPCs, ADR-0039 D10 — authz.IsOperatorGatedAgentServiceMethod)
+		// — other agent-facing RPCs over UDS pass through ungated. A bootstrap operator is seeded from env
 		// (secure-by-default: no creds ⇒ no login). The production identity
 		// backend swaps in behind the OperatorIdentity port.
 		operatorIDP := operatorBootstrapIdentity()

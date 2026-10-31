@@ -31,27 +31,12 @@ type MemoryStack struct {
 	QueryService         *memory.QueryService
 	Embedder             domain.Embedder
 	WorkspaceStage       domain.WorkspaceStage        // ADR-0016: may be nil
-	GraphStore           domain.GraphStore            // ADR-0025: may be nil; used to construct PgSceneWriter
 	IngestionManager     *memory.IngestionManager     // ADR-0028: ALWAYS non-nil (a zero queue size defaults to 1000). The old "may be nil" note was false and implied a raw-write fallback that could not fire.
 	EntityIndex          *memory.EntityIndex          // ADR-0052: in-memory entity→docs index; nil = surface-only recall
 	ChunkTripletsBatcher *memory.ChunkTripletsBatcher // ADR-0053 Phase 0: batched per-chunk (h,r,t) extractor
 	// ProcedureScheduler runs the ADR-0094 induction pass. nil ⇒ disabled, which is
 	// the default (execution.procedure_induction_interval_hours = 0).
 	ProcedureScheduler *memory.ProcedureScheduler
-}
-
-// NewPgSceneWriter constructs a per-request PgSceneWriter for DAGExecutor.
-// Returns nil when the VecDB does not support graph operations.
-// ADR-0025: one instance per plan execution — tracks lastSceneID for specifies edges.
-func (s *MemoryStack) NewPgSceneWriter() *memory.PgSceneWriter {
-	if s.VecDB == nil || s.Embedder == nil {
-		return nil
-	}
-	return &memory.PgSceneWriter{
-		Store:      s.VecDB,
-		Embedder:   s.Embedder,
-		GraphStore: s.GraphStore, // may be nil; nil disables specifies edges
-	}
 }
 
 // NewMemoryStack constructs the memory layer from infrastructure primitives.
@@ -143,8 +128,9 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// The ADR-0029 episodic retrieval lane used to be armed here by handing the
 	// WorkspaceStage a PolicyProvider. Both the lane and the field are gone: its writer
 	// (EpisodicExtractor / ConsolidatorAgent) was removed on 2026-07-18, so the lane
-	// searched a corpus nothing could add to. The "episodic" HippocampusPolicy stays in
-	// the config schema (a held-stable contract) with no consumer left.
+	// searched a corpus nothing could add to. The "episodic" HippocampusPolicy default
+	// that armed it was retired on 2026-10-31 (owner decision; an operator file that
+	// still declares it loads unchanged — see internal/config/retired_keys_test.go).
 	// ADR-0022 Phase 2B: invalidate WorkspaceStage LRU cache on Tier-2 drain.
 	memoryAgent.RegisterCacheInvalidator(ws)
 
@@ -154,7 +140,6 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	if gs, ok := vec.(domain.GraphStore); ok {
 		// ADR-0052: the in-memory entity reverse index, built BEFORE the spreader so
 		// queryService.EnableEntityRouting has an index to read on the first recall.
-		// It is rebuilt from existing edges on boot.
 		//
 		// The ADR-0052 EdgeBatcher/EdgeWriter pair used to be constructed here as well
 		// and described as the "production path". It was not one: nothing in the kernel
@@ -167,17 +152,19 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		// Removing it here changes no runtime behaviour, because there was no runtime
 		// behaviour to change: the queue never received a document.
 		//
-		// With this gone, memory.EdgeBatcher / memory.EdgeWriter / memory.EdgeExtractor
-		// have NO non-test caller left anywhere in the tree — cmd/chunk-fill builds a
-		// ChunkTripletsBatcher, not an EdgeBatcher. The types are kept for now rather
-		// than deleted in the same change, because that is a larger removal (three
-		// files plus their tests) and deleting the wiring is what stops the kernel
-		// paying for it. They are the next thing to delete.
+		// The memory.EdgeBatcher / EdgeWriter / EdgeExtractor types have since been
+		// deleted as well; cmd/chunk-fill builds a ChunkTripletsBatcher.
 		//
-		// Consequence worth stating plainly rather than discovering: on a fresh
-		// database the EntityIndex is only populated by running cmd/chunk-fill. Entity
-		// routing (execution.recall_spreading_enabled) is off by default, so this is
-		// not a regression — but it is not self-warming either.
+		// Consequence worth stating plainly rather than discovering (re-checked
+		// 2026-10-31): NOTHING populates this EntityIndex. EntityIndex.Load has no
+		// caller and no GraphStore adapter implements its loader, EntityIndex.Add has
+		// no production caller, and cmd/chunk-fill writes chunk_triplets rows, not
+		// this index. execution.retrieval.recall_spreading_enabled defaults ON
+		// (ADR-0049 D10), so EnableEntityRouting below IS armed — but against an
+		// always-empty index, where every entity lane returns its input unchanged
+		// (query.go: `len(embs) == 0` early return). Harmless (fail-open, no extra
+		// cost beyond a map snapshot), but entity routing contributes nothing until
+		// a writer exists: T-20261031-entityindex-is-never-populated-so-entity.
 		entityIdx = memory.NewEntityIndex()
 
 		spEngine := memory.NewSpreadingEngine(gs, vec,
@@ -196,7 +183,7 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		// The ChunkTripletsBatcher is the production path for back-filling
 		// the chunk_triplets table; it uses the same LLM (deepseek, via the
 		// same purposeGenerator wrapper) and the same streaming-or-Generate
-		// routing as the EdgeBatcher. Re-uses the EdgeExtraction* config knobs
+		// routing the removed EdgeBatcher used. Re-uses the EdgeExtraction* config knobs
 		// (the prompt is a similar size; 16-fact batches stream fine on
 		// the hosted reasoning model). nil = no enrichment (legacy).
 		if cts, ok := vec.(domain.ChunkTripletsStore); ok {
@@ -207,15 +194,15 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 				LLMTimeout: time.Duration(execCfg.Ingestion.EdgeExtractionLLMTimeoutMs) * time.Millisecond,
 			})
 		}
-		// ADR-0048 D2: optionally enrich the agent's PULL recall with the same
-		// associative spreading (flag-gated; default off for latency/cost control).
+		// ADR-0048 D2: enrich the agent's PULL recall with the same associative
+		// spreading. Flag-gated; default ON since ADR-0049 D10 (config.go defaults).
 		if execCfg.Retrieval.RecallSpreadingEnabled {
 			queryService.EnableSpreading(spEngine)
 		}
 		// ADR-0052: entity-aware routing. The T-Mem "first hop" — finds the
 		// top-K entity keys by query-embedding cosine and seeds the BFS with
 		// their doc associations. Flag-gated by the same RecallSpreadingEnabled
-		// knob; off for latency/cost control.
+		// knob (default on, ADR-0049 D10) — see the empty-index note above.
 		if execCfg.Retrieval.RecallSpreadingEnabled {
 			queryService.EnableEntityRouting(entityIdx)
 		}
@@ -229,12 +216,6 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		memoryAgent.GraphStore = gs
 		// ADR-0025: wire EdgeWriter for Tier-2 discussed_in edges.
 		memoryAgent.EdgeWriter = &memory.GraphStoreEdgeWriter{GraphStore: gs}
-	}
-
-	// ADR-0025: GraphStore for scene writing (nil when vec doesn't implement it).
-	var gs domain.GraphStore
-	if g, ok := vec.(domain.GraphStore); ok {
-		gs = g
 	}
 
 	// ADR-0028: ingestion pipeline — SceneGenerator + IngestionManager + DirectoryWatcher.
@@ -285,7 +266,6 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		QueryService:         queryService,
 		Embedder:             embed,
 		WorkspaceStage:       ws,
-		GraphStore:           gs,
 		IngestionManager:     ingestionMgr,
 		EntityIndex:          entityIdx,
 		ChunkTripletsBatcher: chunkTripletsBatcher,

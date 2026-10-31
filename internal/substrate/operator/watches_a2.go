@@ -155,9 +155,11 @@ func (s *Service) RegisterWatch(ctx context.Context, req *pb.RegisterWatchOpRequ
 	// unattended action (start_plan / dispatch_agent) lets untrusted signal content
 	// decide a consequential action — it must carry the operator's explicit
 	// acknowledgement. This is a deterministic security gate (ADR-0034), not routing.
-	if isHighRiskLLMWatch(cfg) && !cfg.Approved {
-		return nil, status.Error(codes.InvalidArgument,
-			"a high-risk llm-condition watch (start_plan/dispatch_agent action) requires approved=true")
+	// The predicate is domain.CheckWatchRisk — the SAME one premium's
+	// WatchHandler.RegisterWatch and pipeline arming apply — checked here as well
+	// so the operator gets InvalidArgument before an audit row is written.
+	if err := domain.CheckWatchRisk(cfg); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if s.audit == nil {
 		return nil, status.Error(codes.Unimplemented, "operator audit store not configured")
@@ -209,16 +211,6 @@ func (s *Service) SetWatchActive(ctx context.Context, req *pb.SetWatchActiveOpRe
 	}
 	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(), "set_watch_active", "watch", req.GetWatchId(),
 		boolStr(req.GetActive()), func() error { return s.watches.SetWatchActive(req.GetWatchId(), req.GetActive()) })
-}
-
-// isHighRiskLLMWatch reports whether a watch is the dangerous combination REACT-03
-// gates: an `llm` condition (untrusted signal content decides the fire) driving a
-// consequential, unattended action (`start_plan` / `dispatch_agent`).
-func isHighRiskLLMWatch(cfg domain.WatchConfig) bool {
-	if cfg.ConditionType != domain.ConditionTypeLLM {
-		return false
-	}
-	return cfg.Action.Type == "start_plan" || cfg.Action.Type == "dispatch_agent"
 }
 
 // ── mapping ───────────────────────────────────────────────────────────────────

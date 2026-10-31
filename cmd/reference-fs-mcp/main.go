@@ -1,7 +1,7 @@
 // Command reference-fs-mcp is a reference READ-ONLY filesystem MCP server for Cambrian's
 // MCP integration testing. It exposes two read-only tools —
 // list_directory and read_file — root-jailed to a single directory, over stdio. It has NO
-// write/mutating operations, so the operator can safely tag it `discovery-safe` (D6).
+// write/mutating operations, so it is safe to grant to any agent without approval.
 //
 // Configure Cambrian's MCP connector to run it as a stdio command:
 //

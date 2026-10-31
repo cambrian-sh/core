@@ -3,7 +3,6 @@ package harness
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strconv"
 
 	"github.com/cambrian-sh/core/domain"
@@ -13,12 +12,6 @@ import (
 // StepFunc is the per-step execution callback used by SelfHealer.
 // Defined locally to avoid a circular import with internal/substrate.
 type StepFunc func(ctx context.Context, handoff *domain.Handoff) (*domain.Handoff, error)
-
-// Restorer is satisfied by AgentManager (once issue #0005-06 lands) and by
-// test mocks. SelfHealer depends only on this interface, never the concrete type.
-type Restorer interface {
-	Restore(agentID, taskID string) error
-}
 
 // HealingExhaustedError is returned when SelfHealer has consumed all retry
 // attempts without a successful execution.
@@ -47,10 +40,14 @@ func (e *HealingExhaustedError) Unwrap() error { return e.LastError }
 
 // SelfHealer wraps a StepFunc with a retry loop, fault classification, and
 // loop detection. MaxAttempts defaults to 3 if zero.
+//
+// It does NOT roll the agent's workspace back between attempts. ADR-0005 D2b/D3
+// (git snapshot + restore) was removed by owner decision 2026-10-31: the
+// snapshot ran `git add -A && git commit` in the agent dir, which committed the
+// operator's enclosing repo, and no snapshot was ever taken on the path plan
+// steps use (agentplane.Transport), so the restore here never ran. A failed
+// attempt's file changes are therefore visible to the next attempt.
 type SelfHealer struct {
-	Restorer    Restorer
-	AgentID     string
-	TaskID      string
 	StepIndex   int
 	MaxAttempts int
 }
@@ -116,17 +113,6 @@ func (sh *SelfHealer) Wrap(inner StepFunc) StepFunc {
 				handoff.Context["_heal_attempt"] = strconv.Itoa(attempt + 1)
 			}
 			// For SystemError: leave handoff unchanged.
-
-			// Workspace rollback — best-effort.
-			if sh.Restorer != nil {
-				if restoreErr := sh.Restorer.Restore(sh.AgentID, sh.TaskID); restoreErr != nil {
-					slog.Warn("self-healer: workspace restore failed",
-						"step", sh.StepIndex,
-						"attempt", attempt,
-						"err", restoreErr,
-					)
-				}
-			}
 
 			prevAttempt = currAttempt
 			hasPrev = true

@@ -14,7 +14,7 @@ type SkillRetriever interface {
 // VectorSkillRetriever is the pgvector-backed SkillRetriever. It embeds the query
 // with the nomic search_query prefix, runs cosine search over DocTypeSkill, and
 // passes the agent's effective scope through SearchOptions.Scope — the
-// ScopedVectorStore / pgvector predicate enforces it, the SAME read path memory
+// authz.EnforcingVectorStore / pgvector predicate enforces it, the SAME read path memory
 // uses (no new permission logic, ADR-0046 D9). A relevance Floor returns up to k
 // names, or none when nothing clears it.
 type VectorSkillRetriever struct {

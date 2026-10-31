@@ -215,8 +215,6 @@ var legacyExecutionKey = map[string]string{
 	"circadian_stale_doc_warn_threshold":       "memory",
 	"classification_vocabulary":                "router",
 	"cold_start_penalty_multiplier":            "gatekeeper",
-	"consolidation_threshold_bytes":            "memory",
-	"consolidation_threshold_doc_count":        "memory",
 	"context_growth_k":                         "plan",
 	"context_ref_snippet_chars":                "plan",
 	"cross_verify_rate":                        "verification",

@@ -10,25 +10,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// mockRestorer counts Restore calls and can return a configured error.
-type mockRestorer struct {
-	restoreCalls int
-	err          error
-}
-
-func (m *mockRestorer) Restore(agentID, taskID string) error {
-	m.restoreCalls++
-	return m.err
-}
-
 // TestSelfHealer_FirstPassSuccess: inner returns success on first call.
-// Wrap must return the result immediately; Restorer.Restore must never be called.
+// Wrap must return the result immediately.
 func TestSelfHealer_FirstPassSuccess(t *testing.T) {
-	restorer := &mockRestorer{}
 	sh := &SelfHealer{
-		Restorer:    restorer,
-		AgentID:     "agent-1",
-		TaskID:      "task-1",
 		StepIndex:   0,
 		MaxAttempts: 3,
 	}
@@ -49,20 +34,13 @@ func TestSelfHealer_FirstPassSuccess(t *testing.T) {
 	if got != want {
 		t.Fatalf("expected returned handoff to be the same pointer")
 	}
-	if restorer.restoreCalls != 0 {
-		t.Fatalf("expected Restore to never be called, got %d calls", restorer.restoreCalls)
-	}
 }
 
 // TestSelfHealer_LogicError_ContextInjected: inner fails once (LogicError), then
 // succeeds. On the retry call, handoff.Context must contain _heal_error and
 // _heal_attempt. The result from the second call is returned.
 func TestSelfHealer_LogicError_ContextInjected(t *testing.T) {
-	restorer := &mockRestorer{}
 	sh := &SelfHealer{
-		Restorer:    restorer,
-		AgentID:     "agent-1",
-		TaskID:      "task-1",
 		StepIndex:   0,
 		MaxAttempts: 3,
 	}
@@ -104,11 +82,7 @@ func TestSelfHealer_LogicError_ContextInjected(t *testing.T) {
 // DeadlineExceeded error (SystemError), then succeeds. The handoff.Context must
 // NOT be mutated with _heal_error or _heal_attempt on the retry.
 func TestSelfHealer_SystemError_HandoffUnchanged(t *testing.T) {
-	restorer := &mockRestorer{}
 	sh := &SelfHealer{
-		Restorer:    restorer,
-		AgentID:     "agent-1",
-		TaskID:      "task-1",
 		StepIndex:   0,
 		MaxAttempts: 3,
 	}
@@ -150,11 +124,7 @@ func TestSelfHealer_SystemError_HandoffUnchanged(t *testing.T) {
 // second attempt. Wrap must return HealingExhaustedError{LoopDetected: true,
 // AttemptCount: 2} and call inner exactly twice.
 func TestSelfHealer_LoopDetected_EarlyReturn(t *testing.T) {
-	restorer := &mockRestorer{}
 	sh := &SelfHealer{
-		Restorer:    restorer,
-		AgentID:     "agent-1",
-		TaskID:      "task-1",
 		StepIndex:   2,
 		MaxAttempts: 3,
 	}
@@ -190,14 +160,9 @@ func TestSelfHealer_LoopDetected_EarlyReturn(t *testing.T) {
 
 // TestSelfHealer_ThreeAttempts_Exhausted: inner always fails; outputs differ
 // each call to avoid loop detection triggering early. Wrap must return
-// HealingExhaustedError{LoopDetected: false, AttemptCount: 3}. Restorer.Restore
-// must be called exactly 3 times.
+// HealingExhaustedError{LoopDetected: false, AttemptCount: 3}.
 func TestSelfHealer_ThreeAttempts_Exhausted(t *testing.T) {
-	restorer := &mockRestorer{}
 	sh := &SelfHealer{
-		Restorer:    restorer,
-		AgentID:     "agent-1",
-		TaskID:      "task-1",
 		StepIndex:   1,
 		MaxAttempts: 3,
 	}
@@ -231,9 +196,6 @@ func TestSelfHealer_ThreeAttempts_Exhausted(t *testing.T) {
 	}
 	if !errors.Is(err, finalErr) {
 		t.Fatalf("expected LastError to unwrap to finalErr")
-	}
-	if restorer.restoreCalls != 3 {
-		t.Fatalf("expected Restore called 3 times, got %d", restorer.restoreCalls)
 	}
 }
 

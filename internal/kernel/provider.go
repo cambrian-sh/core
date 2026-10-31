@@ -72,16 +72,10 @@ func ProvideServer(
 		slog.Warn("Phase 3: registry does not implement domain.RunStore — runs will not persist and resume is unavailable")
 	}
 
-	// ADR-0025: SceneWriterFactory produces a fresh PgSceneWriter per Execute call.
-	// The factory is nil-safe — if NewPgSceneWriter returns nil (no VecDB or embedder),
-	// SceneWriter on the DAGExecutor remains nil and scene writing is silently disabled.
-	srv.SceneWriterFactory = func() domain.SceneWriter {
-		sw := mem.NewPgSceneWriter()
-		if sw == nil {
-			return nil // nil interface, not nil-concrete-in-interface
-		}
-		return sw
-	}
+	// No per-step scene writer is wired: ADR-0025's per-step scenes were superseded by
+	// ADR-0049 D5 (one plan-wide scene via memory.Agent.WritePlanScene), and the
+	// SceneWriter port, its Pg adapter and the server factory were removed 2026-10-31
+	// (T-20261031-per-step-scenewriter-plumbing-is-wired-into).
 
 	// ADR-0026: wire step-level memoization cache.
 	srv.StepCache = stepCache

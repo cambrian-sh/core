@@ -75,8 +75,8 @@ func TestDocTypeEpisodicMemory_Value(t *testing.T) {
 
 // Cycle 8 covered LTMEnrichment.Episodes. The field is gone with the episodic lane
 // (writer removed 2026-07-18, reader removed with it); the DocType constant above stays
-// because rows written before then may still exist and the lane-classification lists in
-// internal/memory/query.go still name it.
+// only as the name of rows written before then, which may still exist in a store. No
+// code path reads or writes it any more (re-checked 2026-10-31).
 
 // Cycle 6: Document.ActivationStrength can be set to full lifecycle range [0.0, 1.0] (ADR-0015).
 func TestDocument_ActivationStrength_Range(t *testing.T) {

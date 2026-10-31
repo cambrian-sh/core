@@ -170,8 +170,15 @@ type KernelServices struct {
 	// Documents resolves a reference to its content, scope-enforced by the kernel.
 	// nil ⇒ this deployment cannot resolve references, and an action that needs one
 	// must say so rather than proceeding without evidence.
-	Documents     ReactiveDocumentReader
-	Planner       ReactivePlanner       // plan generation for start_plan actions
+	Documents ReactiveDocumentReader
+	Planner   ReactivePlanner // plan generation for start_plan actions
+	// PlanExecutor runs a generated plan through the kernel's real DAG executor —
+	// the Orchestrator.Execute path, with its per-step ADR-0018 budget leases,
+	// session/run persistence and checkpoints (PREM-0032 start_plan). Late-bound:
+	// it answers an error until the server exists, which is after plugin Build
+	// but before anything fires. nil only in a kernel built without one; a plugin
+	// must then refuse start_plan rather than accept it and run nothing.
+	PlanExecutor  domain.PlanExecutor
 	LLM           domain.Generator      // LLM condition evaluation
 	WatchStore    ReactiveWatchStore    // WatchConfig persistence (BBolt) — being retired
 	PipelineStore ReactivePipelineStore // authored pipeline persistence (BBolt)

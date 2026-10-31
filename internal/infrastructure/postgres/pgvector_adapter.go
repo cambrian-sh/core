@@ -819,10 +819,10 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 	if opts.DocumentType != "" {
 		ds = ds.Where(goqu.Ex{"document_type": opts.DocumentType})
 	}
-	// ADR-0034: apply the three-set/CNF access predicate. ScopeSystem (or nil,
-	// for legacy/system call sites not yet routed through ScopedVectorStore)
-	// adds no predicate. The ScopedVectorStore decorator is the fail-closed gate;
-	// this is the SQL-building mirror of EffectiveScope.Allows.
+	// ADR-0034: apply the three-set/CNF access predicate. A Bypass predicate (or
+	// nil, for kernel/system call sites on the raw adapter) adds no predicate. The
+	// authz.EnforcingVectorStore decorator (ADR-0085) is the fail-closed gate;
+	// this is the SQL-building mirror of domain.TagPredicate.Allows.
 	for _, expr := range scopeExpressions(opts.Scope) {
 		ds = ds.Where(expr)
 	}

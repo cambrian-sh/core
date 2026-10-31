@@ -37,7 +37,8 @@ type WorkspaceStageImpl struct {
 	// written a DocTypeEpisodicMemory row since; the lane was a goroutine and a store
 	// search (with a nil query vector, which pgvector does not reject) issued on every
 	// planning pass against a corpus that could only shrink. Removed with the field:
-	// there is no configuration that makes it produce a hit.
+	// there is no configuration that makes it produce a hit. The "episodic" policy
+	// default followed on 2026-10-31.
 
 	// ActivationThreshold is the post-BFS selection floor for PrimeForStep (ADR-0022).
 	// Must NOT equal RetrievalFloor — they operate at different scales.
@@ -335,16 +336,6 @@ func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int
 	slog.Info("WorkspaceStage: enrichment complete",
 		"caller", caller, "workspace_cold_start", false, "scene_hits", sceneHits, "fact_hits", len(results))
 	return results, nil
-}
-
-// isToolOutputDoc reports whether a document is a recorded tool output (an event
-// breadcrumb), not a knowledge fact — excluded from the contradiction guard.
-func isToolOutputDoc(d domain.Document) bool {
-	if d.DocumentType == domain.DocTypeMnemonicAction {
-		return true
-	}
-	src, _ := d.Metadata["source_agent"].(string)
-	return src == "ToolOutput"
 }
 
 // blendEmbeddings creates a simple mean of two embeddings.

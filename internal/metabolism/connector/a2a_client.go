@@ -82,7 +82,6 @@ func (c *A2AClient) FetchCard(ctx context.Context, endpoint string) (*domain.Age
 
 // Execute translates a Handoff into an A2A Task, POSTs to {agent.A2AEndpoint}/tasks,
 // and translates the response back to a Handoff.
-// A2A agents have no local workspace, so no CoW snapshot is taken.
 func (c *A2AClient) Execute(ctx context.Context, agent domain.AgentDefinition, handoff *domain.Handoff) (*domain.Handoff, error) {
 	metadata := make(map[string]string)
 	for k, v := range handoff.Context {

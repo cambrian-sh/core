@@ -186,14 +186,16 @@ func (s *Server) ListTools(ctx context.Context, _ *pb.ListToolsRequest) (*pb.Lis
 }
 
 // WatchApprovals streams pending dangerous-tool approval requests to a subscribed
-// operator (ADR-0039 D10). Operator-plane only: a caller presenting an agent
-// principal (x-agent-id) is rejected — an agent can never watch/approve tools.
+// operator (ADR-0039 D10). Operator-plane only: the operator auth interceptor
+// requires the operator bearer for this method (authz.IsOperatorGatedAgentServiceMethod,
+// operator.authorize), so an agent — or any client without an operator token —
+// is refused before it gets here. The x-agent-id check below is defence in depth.
 func (s *Server) WatchApprovals(_ *pb.WatchApprovalsRequest, stream pb.Orchestrator_WatchApprovalsServer) error {
 	if s.ApprovalHub == nil {
 		return status.Error(codes.Unimplemented, "approval channel not configured")
 	}
-	if agentIDFromMetadata(stream.Context()) != "" {
-		return status.Error(codes.PermissionDenied, "approval plane is operator-only")
+	if _, err := approvalOperator(stream.Context()); err != nil {
+		return err
 	}
 	ch, cancel := s.ApprovalHub.Watch()
 	defer cancel()
@@ -215,16 +217,40 @@ func (s *Server) WatchApprovals(_ *pb.WatchApprovalsRequest, stream pb.Orchestra
 }
 
 // SubmitApprovalDecision resolves a pending approval (ADR-0039 D10). Operator-plane
-// only — an agent principal is rejected.
+// only, behind the operator bearer like WatchApprovals.
+//
+// The approver recorded is the AUTHENTICATED operator, never the request's
+// approver_id (INV-5: identity is established by the kernel, not read from a
+// payload). The field stays in the proto for wire compatibility and is ignored;
+// honouring it would let one operator attribute an approval to another.
 func (s *Server) SubmitApprovalDecision(ctx context.Context, req *pb.ApprovalDecisionRequest) (*pb.ApprovalDecisionResponse, error) {
 	if s.ApprovalHub == nil {
 		return nil, status.Error(codes.Unimplemented, "approval channel not configured")
 	}
-	if agentIDFromMetadata(ctx) != "" {
-		return nil, status.Error(codes.PermissionDenied, "approval plane is operator-only")
+	approver, err := approvalOperator(ctx)
+	if err != nil {
+		return nil, err
 	}
-	ok := s.ApprovalHub.Submit(req.GetId(), req.GetApprove(), req.GetApproverId())
+	ok := s.ApprovalHub.Submit(req.GetId(), req.GetApprove(), approver.ID)
 	return &pb.ApprovalDecisionResponse{Ok: ok}, nil
+}
+
+// approvalOperator returns the operator principal the auth interceptor stamped.
+//
+// It does not authenticate anything — token validation is operator.authorize's
+// job alone. It refuses when that stamp is missing (the interceptor did not run,
+// e.g. a server assembled without it), so the approval plane fails CLOSED rather
+// than reverting to the old "no x-agent-id means operator" rule. A caller that
+// also presents x-agent-id is refused: an agent never approves tools.
+func approvalOperator(ctx context.Context) (domain.PrincipalRef, error) {
+	if agentIDFromMetadata(ctx) != "" {
+		return domain.PrincipalRef{}, status.Error(codes.PermissionDenied, "approval plane is operator-only")
+	}
+	p := domain.PrincipalFromContext(ctx)
+	if p.IsZero() || p.Kind != domain.PrincipalUser {
+		return domain.PrincipalRef{}, status.Error(codes.Unauthenticated, "approval plane requires an authenticated operator")
+	}
+	return p, nil
 }
 
 // reportActivity fans one activity record out, best-effort.
