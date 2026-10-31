@@ -85,6 +85,15 @@ func (vp *VerifierPool) Select(
 		if excluded[agent.ID] || agent.Provisional || agent.Trait == domain.TraitTool || agent.Trait == domain.TraitDaemon {
 			continue
 		}
+		// Privileged system organs (ADR-0051 class) are kernel-invoked directly and never
+		// serve task work, so they cannot judge it either. This used to be implied by the
+		// trait check above (the organs were DeterministicAgent → "tool"), but they now run
+		// on CognitiveAgent (T-20261031-core-system-agents-docling-kg-extractor), so system
+		// status is checked explicitly — by the same IsSystemDefinition the Gatekeeper and
+		// the interview worker use, not a parallel notion.
+		if domain.IsSystemDefinition(agent) {
+			continue
+		}
 		profile, err := vp.Profiles.GetProfile(ctx, agent.ID, agent.SourceHash)
 		if err != nil || profile == nil {
 			continue

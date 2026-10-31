@@ -281,6 +281,47 @@ func TestVerifierPool_Select_OnlyTraitDaemon_ReturnsError(t *testing.T) {
 	}
 }
 
+// A cognitive-trait system organ must never be picked as a verifier, even when its
+// profile outranks every ordinary agent; a cognitive non-system agent still is.
+// kg_extractor_agent is system by the compiled-in ID map, "plugin_organ" by the
+// explicit System grant — both routes of IsSystemDefinition are covered.
+func TestVerifierPool_Select_ExcludesCognitiveSystemAgents(t *testing.T) {
+	agents := []domain.AgentDefinition{
+		{ID: "kg_extractor_agent", SourceHash: "sk", Trait: domain.TraitCognitive},
+		{ID: "plugin_organ", SourceHash: "sp", Trait: domain.TraitCognitive, System: true},
+		{ID: "cognitive", SourceHash: "sc", Trait: domain.TraitCognitive},
+	}
+	profiles := map[string]*domain.AgentProfile{
+		"kg_extractor_agent:sk": {TrustScore: 0.99, SuccessRate: 0.99},
+		"plugin_organ:sp":       {TrustScore: 0.98, SuccessRate: 0.98},
+		"cognitive:sc":          {TrustScore: 0.85, SuccessRate: 0.85},
+	}
+	pool := newTestVerifierPool(agents, profiles, 0.8)
+	got, err := pool.Select(context.Background(), &domain.DispatchTask{ID: "t-system"}, "other", nil)
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if got.ID != "cognitive" {
+		t.Errorf("Select returned %q; system organs must never verify, the cognitive non-system agent must", got.ID)
+	}
+}
+
+func TestVerifierPool_Select_OnlySystemAgents_ReturnsError(t *testing.T) {
+	agents := []domain.AgentDefinition{
+		{ID: "reranker_agent", SourceHash: "sr", Trait: domain.TraitCognitive},
+		{ID: "docling_agent", SourceHash: "sd", Trait: domain.TraitCognitive},
+	}
+	profiles := map[string]*domain.AgentProfile{
+		"reranker_agent:sr": {TrustScore: 0.99, SuccessRate: 0.99},
+		"docling_agent:sd":  {TrustScore: 0.99, SuccessRate: 0.99},
+	}
+	pool := newTestVerifierPool(agents, profiles, 0.8)
+	got, err := pool.Select(context.Background(), &domain.DispatchTask{ID: "t-system-only"}, "other", nil)
+	if !errors.Is(err, ErrNoVerifierAvailable) {
+		t.Errorf("Select = (%v, %v); want ErrNoVerifierAvailable when only system organs exist", got, err)
+	}
+}
+
 func TestVerifierPool_Select_OnlyTraitTool_ReturnsError(t *testing.T) {
 	agents := []domain.AgentDefinition{
 		{ID: "tool1", SourceHash: "st1", Provisional: false, Trait: domain.TraitTool},
