@@ -52,9 +52,17 @@ var systemAgentIDs = map[string]bool{
 	// reranker_agent (ADR-0054 Stage B): the warm bge cross-encoder relevance
 	// oracle. The kernel hands it {query, documents} on the recall path and gets
 	// one relevance score per document back; invoked DIRECTLY via the agent transport,
-	// never auctioned/interviewed — same privileged-organ class as the kg_extractor and
-	// the kg_extractor. DeterministicAgent: a scoring model, no generative think().
+	// never auctioned/interviewed — same privileged-organ class as the kg_extractor.
+	// CognitiveAgent with run() overridden: a scoring model, no generative think().
 	"reranker_agent": true,
+	// docling_agent (ADR-0060): the document-structure parser. The kernel hands it a
+	// document (text or raw bytes) on the ingest path and gets the section tree back,
+	// invoked DIRECTLY via the agent transport (network.DoclingDispatcher), never
+	// auctioned/interviewed. It used to be kept out of the interview only by its
+	// "tool" trait (DeterministicAgent); since it runs on CognitiveAgent
+	// (T-20261031-core-system-agents-docling-kg-extractor), membership here is what
+	// keeps it out of the interview, the Gatekeeper slate and the verifier pool.
+	"docling_agent": true,
 	// operator_agent (ADR-0059): the operator's privileged answer path. The
 	// operator plane sends chat messages to the kernel via OperatorConsole.
 	// SendMessage; that path must bypass the Router/auction/Plan because the

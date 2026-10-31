@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
