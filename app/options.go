@@ -524,6 +524,15 @@ type KernelServices struct {
 	// deployment's secrets.
 	ResolveNamedSecret func(name string) (value string, ok bool)
 
+	// VerifyMachineToken checks a worker machine's ADR-0126 credential and
+	// returns the owner principal bound to it at issuance (ADR-0127 CL-5). It
+	// exists so a plugin can AUTHENTICATE with a machine token without ever
+	// READING one: premium's machine_token_v1 ingress verifier calls it, and the
+	// stored token never crosses this seam. ok=false when the store is off, the
+	// token was never issued or has been revoked, it does not match, or the
+	// client has no owner binding (not a worker).
+	VerifyMachineToken func(machine, token string) (owner domain.PrincipalRef, ok bool)
+
 	// GeneratorForModel returns a Generator that PREFERS the named generator
 	// id per call, falling down the failover ladder when it is unhealthy or
 	// unknown (ADR-0112 §15). Resolution happens on every Generate, so an

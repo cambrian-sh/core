@@ -230,6 +230,35 @@ func (m *authMiddleware) match(token string) (string, bool) {
 	return name, found
 }
 
+// VerifyMachineToken checks a presented token against ONE named worker machine's
+// stored credential and returns the owner principal bound to it at issuance
+// (ADR-0127 CL-5: the broker's single credential also authenticates its ingest
+// lane, through premium's machine_token_v1 ingress verifier). It reads the same
+// two ADR-0101 entries the endpoint does — ClientSecretName, WorkerOwnerSecretName
+// — so issuance, rotation and revocation reach both lanes at once.
+//
+// Fail-closed on every absence: no stored token (never issued, or revoked), an
+// empty presented token, a mismatch, or a client with no owner binding (an
+// ordinary MCP client is not a worker machine and may not ingest as one).
+// Constant-time, like match; the caller never sees the stored value.
+func VerifyMachineToken(resolve func(name string) (string, bool), machine, token string) (owner string, ok bool) {
+	if resolve == nil || machine == "" || token == "" {
+		return "", false
+	}
+	secret, found := resolve(ClientSecretName(machine))
+	if !found || secret == "" {
+		return "", false
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(secret)) != 1 {
+		return "", false
+	}
+	owner, found = resolve(WorkerOwnerSecretName(machine))
+	if !found || owner == "" {
+		return "", false
+	}
+	return owner, true
+}
+
 // acquire takes one of the client's concurrency slots, or reports that they are
 // all taken. The returned release is safe to call exactly once.
 func (m *authMiddleware) acquire(client string) (func(), bool) {

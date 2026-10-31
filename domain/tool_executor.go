@@ -864,7 +864,10 @@ func (e *ToolExecutor) grantFor(ctx context.Context, agentID, tool, sessionToken
 		return ToolGrant{}, false
 	}
 	for _, g := range grants {
-		if g.Tool == tool {
+		if grantCovers(g, tool) {
+			// A fleet grant is reported against the concrete tool it covered, so
+			// receipts and audits name local:<machine>/<tool>, never "local:*".
+			g.Tool = tool
 			return g, true
 		}
 	}
@@ -900,16 +903,25 @@ func (e *ToolExecutor) contributedTools(ctx context.Context, agentID string) []S
 	if owner.IsZero() {
 		return nil
 	}
-	var granted map[string]bool
+	var grants []ToolGrant
 	if !e.Unrestricted {
-		grants, err := e.Grants.GrantsFor(ctx, agentID)
+		var err error
+		grants, err = e.Grants.GrantsFor(ctx, agentID)
 		if err != nil {
 			return nil
 		}
-		granted = make(map[string]bool, len(grants))
-		for _, g := range grants {
-			granted[g.Tool] = true
+	}
+	// covered mirrors grantFor's grant loop (CL-4: one matcher, two callers).
+	covered := func(name string) bool {
+		if e.Unrestricted {
+			return true
 		}
+		for _, g := range grants {
+			if grantCovers(g, name) {
+				return true
+			}
+		}
+		return false
 	}
 	var out []SystemTool
 	for _, w := range e.Fleet.LiveFleet(ctx, owner) {
@@ -918,7 +930,7 @@ func (e *ToolExecutor) contributedTools(ctx context.Context, agentID string) []S
 			if _, shadow := e.Registry.Get(attached.Name); shadow {
 				continue
 			}
-			if granted != nil && !granted[attached.Name] {
+			if !covered(attached.Name) {
 				continue
 			}
 			out = append(out, attached)

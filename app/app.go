@@ -1236,6 +1236,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// through the late-bound holder Run attaches the config store to; before
 	// attachment (or with the store off) it answers ok=false.
 	kernelSvc.ResolveNamedSecret = resolveNamedSecret
+	// ADR-0127 CL-5: machine-token verification for the broker's ingest lane,
+	// through the same late-bound store the MCP endpoint authenticates against.
+	// The owner becomes an AgentPrincipal exactly as the endpoint's WorkerOwner
+	// hop makes it (mcpserve middleware), so both lanes name one principal.
+	kernelSvc.VerifyMachineToken = func(machine, token string) (domain.PrincipalRef, bool) {
+		owner, ok := mcpserve.VerifyMachineToken(resolveNamedSecret, machine, token)
+		if !ok {
+			return domain.PrincipalRef{}, false
+		}
+		return domain.AgentPrincipal(owner), true
+	}
 	// ADR-0112 §15: model-pinned generators for plugin lanes whose model is
 	// operator configuration (the studio's drafter), resolved per call.
 	kernelSvc.GeneratorForModel = llmProvider.GeneratorForModel

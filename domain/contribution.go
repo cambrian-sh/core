@@ -151,6 +151,33 @@ const (
 	WireConsentDenied = "denied"
 )
 
+// LocalFleetGrant is the opt-in fleet grant (ADR-0127 CL-4, owner ruling OQ-G
+// 2026-10-31): an agent holding it may call any tool on the fleet of the
+// principal it is serving. Ownership answers WHICH machine — resolveContributed
+// refuses a machine outside the beneficiary's fleet before any grant is
+// consulted — and never WHETHER an agent may reach local tools at all; that
+// stays an operator decision, made once per agent instead of once per machine
+// tool. Grant-by-construction from ownership equality was rejected: an agent
+// serving the owner (an inbound-email agent, say) would inherit the owner's
+// files, and with `auto` consent for reads a prompt-injected delivery could
+// read them silently. It is the ONLY wildcard in the grant grammar.
+const LocalFleetGrant = LocalToolPrefix + "*"
+
+// grantCovers reports whether g authorizes tool: an exact name, or the fleet
+// grant over a well-formed contributed name. The tool gate (grantFor) and the
+// advisory menu (contributedTools) both answer through here so the menu can
+// never offer what the gate refuses, or hide what it allows.
+func grantCovers(g ToolGrant, tool string) bool {
+	if g.Tool == tool {
+		return true
+	}
+	if g.Tool != LocalFleetGrant {
+		return false
+	}
+	_, _, ok := SplitContributedToolName(tool)
+	return ok
+}
+
 // ContributedToolName renders the namespaced menu name for one worker's tool.
 func ContributedToolName(machine, tool string) string {
 	return LocalToolPrefix + machine + "/" + tool
