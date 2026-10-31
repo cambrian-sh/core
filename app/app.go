@@ -2782,7 +2782,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// RetractLinksByProducer (batch revocation, returning the count) and the
 		// ListLinkCandidates read, plus `entity` / `why` / expand_aliases on the
 		// substrate query plane.
-		operatorSvc.SetHandshake("0.6.9-alpha", "0098", operatorCaps)
+		operatorSvc.SetHandshake(KernelVersion, "0098", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".

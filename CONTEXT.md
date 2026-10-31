@@ -100,8 +100,6 @@ Each has a ticket; close the ticket and update this list in the same change.
 - ADR-0128 residuals (deferred crosswalks, resolver lane) — `T-20261031-adr-0128-follow-ups-deferred-crosswalks`
 - Contribution lane never run end to end on real machines (blocked: no deployment) —
   `T-20261031-contribution-lane-has-never-run-end-to-end-on`
-- Handshake/MCP version literal (`0.6.9-alpha`) disagrees with the version above —
-  `T-20261031-kernel-reports-version-0-6-9-alpha-while`
 - Derived memory artifacts (`chunk_triplets`, …) carry no classification; contained only
   because their text is never surfaced — `T-20261031-derived-memory-artifacts-carry-no`
 - No customer data export — `T-20261031-customers-cannot-export-their-data`

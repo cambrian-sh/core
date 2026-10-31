@@ -70,9 +70,9 @@ func startMCPEndpoint(cfg *config.Config, surface domain.PublishedToolSurface,
 		},
 		// D12: the server-instructions text every client receives at initialize.
 		Instructions: mcpserve.CoreInstructions,
-		// Same literal as the operator handshake (see SetHandshake), so the two
-		// identity surfaces cannot report different kernels.
-		ServerVersion: "0.6.9-alpha",
+		// The same constant as the operator handshake (see SetHandshake), so the
+		// two identity surfaces cannot report different kernels.
+		ServerVersion: KernelVersion,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mcp endpoint: %w", err)
