@@ -1,4 +1,4 @@
-"""docling_agent (DeterministicAgent) — structure-aware document parsing sidecar.
+"""docling_agent (CognitiveAgent, run() overridden) — structure-aware document parsing sidecar.
 
 The kernel hands it a document (text and/or raw bytes + source type) and it
 returns the document's real hierarchy as a normalized `StructuredDocument`
@@ -12,8 +12,12 @@ Two backends, one contract:
     covers textbook-as-markdown and clean text.
 
 Kept WARM like the other system agents: `serve()` blocks and any model load
-(Docling's converter) is amortized across calls. Being a `DeterministicAgent` it
-has no LLM by construction — parsing is deterministic.
+(Docling's converter) is amortized across calls. It subclasses `CognitiveAgent`
+only for the AgentService runtime (the SDK deprecated `DeterministicAgent`,
+T-20261031-core-system-agents-docling-kg-extractor): `run()` is overridden and never calls
+`think()`, so no LLM is ever involved — parsing is deterministic. It is a
+privileged system organ (`domain.IsSystemAgent`): kernel-invoked directly by
+`network.DoclingDispatcher`, never interviewed, auctioned or drafted as a verifier.
 
 Request  (JSON): {doc_id, title?, source_type?, text?, data_b64?}
 Response (JSON): StructuredDocument.to_json() + {ok, error?}
@@ -23,7 +27,7 @@ from __future__ import annotations
 import base64
 import json
 
-from cambrian_agent_sdk import DeterministicAgent
+from cambrian_agent_sdk import CognitiveAgent
 from cambrian_agent_sdk._logging import configure_logging
 
 from structure import parse_document
@@ -40,7 +44,7 @@ _BINARY_TYPES = {"pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "png", "jpg
                  "jpeg", "tiff", "tif", "image", "binary"}
 
 
-class DoclingAgent(DeterministicAgent):
+class DoclingAgent(CognitiveAgent):
     """Structure-aware parsing sidecar. `run` handles one document."""
 
     def __init__(self, agent_id: str = "docling_agent", **kwargs) -> None:

@@ -1,4 +1,4 @@
-"""kg_extractor agent (DeterministicAgent) — ADR-0053 D2 (revised) tiered KG extraction.
+"""kg_extractor agent (CognitiveAgent, run() overridden) — ADR-0053 D2 (revised) tiered KG extraction.
 
 The system's write-time triplet extractor, with NO LLM. The kernel hands it a
 batch of chunk texts (a Handoff) and it returns the per-chunk (h, r, t) triplets
@@ -9,8 +9,10 @@ batch of chunk texts (a Handoff) and it returns the per-chunk (h, r, t) triplets
 
 It is a privileged system organ (``domain.IsSystemAgent``): invoked DIRECTLY by
 the kernel on the ingest path, never auctioned, gatekept, or interviewed — the
-same class as the pre-plan Scout. Being a ``DeterministicAgent`` it has no
-``think()`` / LLM by construction.
+same class as the pre-plan Scout. It subclasses ``CognitiveAgent`` only for the
+AgentService runtime (the SDK deprecated ``DeterministicAgent``,
+T-20261031-core-system-agents-docling-kg-extractor): ``run()`` is overridden
+and never calls ``think()``, so no LLM is ever involved.
 
 Each triplet carries ``sources`` (which tiers produced it) and ``confidence``
 (2=high when >=2 tiers agree, else 1=low) per ADR-0053 D2 (revised).
@@ -21,7 +23,7 @@ import json
 import os
 import re
 
-from cambrian_agent_sdk import DeterministicAgent
+from cambrian_agent_sdk import CognitiveAgent
 from cambrian_agent_sdk._logging import configure_logging
 
 from kg_extractors.common import Chunk
@@ -56,7 +58,7 @@ def _speaker_of(text: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-class KgExtractorAgent(DeterministicAgent):
+class KgExtractorAgent(CognitiveAgent):
     """No-LLM tiered triplet extractor. ``run`` handles one batch handoff."""
 
     def __init__(self, agent_id: str = "kg_extractor_agent", **kwargs) -> None:

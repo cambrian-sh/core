@@ -86,11 +86,12 @@ func (vp *VerifierPool) Select(
 			continue
 		}
 		// Privileged system organs (ADR-0051 class) are kernel-invoked directly and never
-		// serve task work, so they cannot judge it either. This used to be implied by the
-		// trait check above (the organs were DeterministicAgent → "tool"), but they now run
-		// on CognitiveAgent (T-20261031-core-system-agents-docling-kg-extractor), so system
-		// status is checked explicitly — by the same IsSystemDefinition the Gatekeeper and
-		// the interview worker use, not a parallel notion.
+		// serve task work, so they cannot judge it either. The trait check above never
+		// covered them: the organs ship no AGENT_MANIFEST, so discovery registers them with
+		// the cognitive zero-value trait whatever SDK base class they use, and they were
+		// verifier-eligible until T-20261031-core-system-agents-docling-kg-extractor. System
+		// status is checked by the same IsSystemDefinition the Gatekeeper and the interview
+		// worker use, not a parallel notion.
 		if domain.IsSystemDefinition(agent) {
 			continue
 		}

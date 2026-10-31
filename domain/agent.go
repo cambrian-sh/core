@@ -58,10 +58,10 @@ var systemAgentIDs = map[string]bool{
 	// docling_agent (ADR-0060): the document-structure parser. The kernel hands it a
 	// document (text or raw bytes) on the ingest path and gets the section tree back,
 	// invoked DIRECTLY via the agent transport (network.DoclingDispatcher), never
-	// auctioned/interviewed. It used to be kept out of the interview only by its
-	// "tool" trait (DeterministicAgent); since it runs on CognitiveAgent
-	// (T-20261031-core-system-agents-docling-kg-extractor), membership here is what
-	// keeps it out of the interview, the Gatekeeper slate and the verifier pool.
+	// auctioned/interviewed. It was missing from this map until
+	// T-20261031-core-system-agents-docling-kg-extractor: it ships no AGENT_MANIFEST,
+	// so discovery gave it the cognitive zero-value trait and it was LLM-interviewed,
+	// put on the Gatekeeper slate and verifier-eligible like an ordinary agent.
 	"docling_agent": true,
 	// operator_agent (ADR-0059): the operator's privileged answer path. The
 	// operator plane sends chat messages to the kernel via OperatorConsole.

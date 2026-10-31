@@ -1,4 +1,4 @@
-"""reranker agent (DeterministicAgent) — ADR-0054 Stage B cross-encoder rerank.
+"""reranker agent (CognitiveAgent, run() overridden) — ADR-0054 Stage B cross-encoder rerank.
 
 The system's query-time relevance oracle. The kernel hands it a Handoff of
 ``{query, documents[]}`` (the top-K Stage-A candidates) and it returns
@@ -8,9 +8,11 @@ order. The Go side blends each score with the Stage-A score via
 
 It is a privileged system organ (``domain.IsSystemAgent``): invoked DIRECTLY by
 the kernel on the recall path via the Auctioneer (no auction / gatekeeper /
-interview), the same class as the kg_extractor and the pre-plan Scout. Being a
-``DeterministicAgent`` it has no ``think()`` / generative LLM by construction —
-the cross-encoder is a scoring model, not a generator.
+interview), the same class as the kg_extractor and the pre-plan Scout. It
+subclasses ``CognitiveAgent`` only for the AgentService runtime (the SDK
+deprecated ``DeterministicAgent``, T-20261031-core-system-agents-docling-kg-extractor):
+``run()`` is overridden and never calls ``think()``, so no generative LLM is ever
+involved — the cross-encoder is a scoring model, not a generator.
 
 Why an agent (not a standalone HTTP sidecar): the agent runtime keeps the
 process WARM (``serve()`` blocks for the life of the process), so the
@@ -41,7 +43,7 @@ from __future__ import annotations
 import json
 import os
 
-from cambrian_agent_sdk import DeterministicAgent
+from cambrian_agent_sdk import CognitiveAgent
 from cambrian_agent_sdk._logging import configure_logging
 
 RERANK_MODEL = os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-base")
@@ -54,7 +56,7 @@ AGENT_DESCRIPTION = (
 )
 
 
-class RerankerAgent(DeterministicAgent):
+class RerankerAgent(CognitiveAgent):
     """Warm cross-encoder. ``run`` scores one {query, documents} handoff."""
 
     def __init__(self, agent_id: str = "reranker_agent", **kwargs) -> None:
