@@ -33,14 +33,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # buf breaking compares against `.git#branch=main`, so the full history
           # and the main ref must both be present. A shallow clone fails the gate.
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -60,7 +60,7 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1
         with:
           version: ${{ env.BUF_VERSION }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -95,7 +95,8 @@ jobs:
       # which .gitignore keeps out of the OSS repo (ADR-0057; decisions/no-benchmark-in-oss).
       # A clean checkout cannot have them, so the step could only ever fail.
 
-  # Vendored-contract drift. operator.proto is copied into ui/ and cli/, and there
+  # Vendored-contract drift. operator.proto is copied into ui/ (and the premium and
+  # benchmark trees carry their own vendored copies; cli/ no longer exists), and there
   # was nothing checking that the copies kept up: core gained the entire
   # GetDocument RPC and neither consumer received it, so the console could not
   # resolve a document id to its body and nothing reported it.
@@ -108,23 +109,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout cambrian-core
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: cambrian-core
       - name: Checkout cambrian-premium (owns the plugin-plane protos)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: cambrian-sh/premium
           path: cambrian-premium
           token: ${{ secrets.SIBLING_CHECKOUT_TOKEN || secrets.GITHUB_TOKEN }}
       - name: Checkout ui
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: cambrian-sh/ui
           path: ui
           token: ${{ secrets.SIBLING_CHECKOUT_TOKEN || secrets.GITHUB_TOKEN }}
       - name: Checkout cambrian-benchmarks (vendors the chunker golden fixture)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: cambrian-sh/benchmarking
           path: cambrian-benchmarks
@@ -140,20 +141,20 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # --new-from-rev diffs against the base branch, so the full history and
           # the base ref must both be present. A shallow clone reports every
           # pre-existing finding as new and the job is red for the wrong reason.
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
       - name: Gate — lint (new findings only)
         # v7 is the first action major that runs golangci-lint v2; v6 refuses the
         # v2.x version string outright, so this job never ran a lint until 2026-10-31.
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
           version: v2.12.2
           args: --new-from-rev=origin/${{ github.base_ref || github.event.repository.default_branch }} --timeout=5m
@@ -165,8 +166,8 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true

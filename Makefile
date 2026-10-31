@@ -133,7 +133,16 @@ separability:
 # ─── Integration Tests (SystemHarness, no external deps) ─────────────────────
 
 integration:
-	go test -tags integration ./internal/testing/harness/... -v
+	go test -race -tags integration ./internal/testing/harness/... -v
+
+# The chaos- and integration-tagged tests under app/ are reached by no `go test`
+# target on every PR (leak-integration and the multi-agent bench are release-gate
+# and manual), so a signature change in app/ bitrotted both files for months
+# without anything going red (2026-10-31 audit). Vetting them under their tags
+# is cheap and catches the compile error the day it happens.
+vet-tagged:
+	go vet -tags chaos ./app/... ./internal/...
+	go vet -tags integration ./app/... ./internal/...
 
 # ─── Per-PR Chaos Scenarios (in-process, Faulty* adapters) ───────────────────
 
@@ -171,8 +180,13 @@ leak:
 	go test ./internal/supervision/circadian/... -v
 
 # Full-kernel goroutine leak test (requires chaos tag)
+#
+# The test lives in app/ (where bootstrapKernel is), not cmd/orchestrator, which
+# has no test files; the old pattern reported "[no test files]" and exit 0 — a
+# green release gate that ran nothing. `-list` guards against that recurring.
 leak-integration:
-	go test -tags chaos ./cmd/orchestrator/... -run TestKernel_NoGoroutineLeak -v
+	@go test -tags chaos ./app/... -list TestKernel_NoGoroutineLeak | grep -q TestKernel_NoGoroutineLeak || (echo "leak-integration: TestKernel_NoGoroutineLeak not found under ./app/..." && exit 1)
+	go test -tags chaos ./app/... -run TestKernel_NoGoroutineLeak -v
 
 # ─── Benchmarks ──────────────────────────────────────────────────────────────
 
@@ -251,7 +265,7 @@ export:
 # control rules while being wired into no pipeline at all — the reason a contract
 # change once reached main unbumped was that nothing ran the check, not that
 # someone bypassed it.
-per-pr: proto-check proto-breaking test-race separability integration chaos
+per-pr: proto-check proto-breaking vet-tagged test-race separability integration chaos
 	@echo ""
 	@echo "=== Per-PR pipeline complete ==="
 

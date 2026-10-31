@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"math"
 	"testing"
 	"time"
@@ -74,7 +75,7 @@ func TestReinforceCoActivation_WritesEdges(t *testing.T) {
 	q := NewQueryService(&fakeEmbedder{}, &scopeApplyingStore{}, nil)
 	q.EnableHebbian(gs, 0.05, 0.9, 0.5, 0.95, 0.2, 5)
 
-	q.reinforceCoActivation([]domain.SearchResult{
+	q.reinforceCoActivation(context.Background(), []domain.SearchResult{
 		{Document: domain.Document{ID: "a"}, Score: 0.9},
 		{Document: domain.Document{ID: "b"}, Score: 0.8},
 	})

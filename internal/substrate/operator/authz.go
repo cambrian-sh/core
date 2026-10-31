@@ -3,6 +3,7 @@ package operator
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"strings"
 	"sync"
@@ -100,7 +101,16 @@ func (s *StaticIdentity) Login(username, password string) (string, string, Role,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.users[username]
-	if !ok || u.password != password {
+	// Constant-time compare: Login is the one unauthenticated RPC, and a `!=`
+	// on the password leaked where the mismatch occurred to a timing observer
+	// (2026-10-31 audit, T-20261031-operator-login-has-no-brute-force-limiter-non).
+	// The unknown-user branch still compares against an empty string so both
+	// failure paths cost the same.
+	var stored string
+	if ok {
+		stored = u.password
+	}
+	if subtle.ConstantTimeCompare([]byte(stored), []byte(password)) != 1 || !ok {
 		return "", "", "", status.Error(codes.Unauthenticated, "invalid credentials")
 	}
 	var b [24]byte

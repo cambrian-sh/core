@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -23,7 +24,11 @@ func NewWebhookReceiver(token string, enqueue func(domain.ExternalDocument) bool
 
 // ServeHTTP handles POST /v1/ingest requests.
 func (wr *WebhookReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if wr.token != "" && r.Header.Get("X-Ingest-Token") != wr.token {
+	// Constant-time compare (2026-10-31 audit). An empty configured token still
+	// means "no auth" — that is the documented ADR-0028 behaviour, and the
+	// listener-policy work in T-20261031-ingestion-http-server-exposes-unauthenticated
+	// is where it gets tightened.
+	if wr.token != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Ingest-Token")), []byte(wr.token)) != 1 {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}

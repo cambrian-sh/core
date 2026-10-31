@@ -139,7 +139,7 @@ func bootstrapBenchmarkKernel(b *testing.B) (*Kernel, context.CancelFunc) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	k, err := bootstrapKernel(ctx, cfg, lis)
+	k, err := bootstrapKernel(ctx, cfg, lis, Options{})
 	if err != nil {
 		cancel()
 		b.Fatalf("bootstrapKernel: %v", err)

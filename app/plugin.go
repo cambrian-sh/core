@@ -499,7 +499,8 @@ type composedPlugins struct {
 	// time without interpreting any of them (ADR-0082 D2).
 	capabilities []string
 	// statuses records every declared plugin and whether it actually registered — the
-	// data behind the future ListPlugins RPC (ADR-0082 D9).
+	// data behind the Snapshot handshake's `plugins` field (operator.proto
+	// PluginInfoOp; ADR-0082 D9 as shipped by ADR-0089, not a separate RPC).
 	statuses []PluginStatus
 	// built is the ordered set of plugins that registered, retained so the composition
 	// root can drive their optional Build phase once the kernel stacks exist (D12).

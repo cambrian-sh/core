@@ -149,7 +149,9 @@ type Kernel struct {
 	// out of the OSS core. Empty in OSS.
 	PluginCapabilities []string
 	// PluginStatuses records each declared plugin and whether it registered. Backs the
-	// future ListPlugins RPC (ADR-0082 D9). Empty in OSS.
+	// Snapshot handshake's `repeated PluginInfoOp plugins` field (operator.proto,
+	// ADR-0082 D9 as shipped by ADR-0089 — there is no separate ListPlugins RPC).
+	// Empty in OSS.
 	PluginStatuses []PluginStatus
 
 	// Conversations is the durable Conversation/Message store (ADR-0084 D1). nil when the

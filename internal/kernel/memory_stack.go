@@ -58,8 +58,12 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// model's output. Agent reads (QueryService) carry the principal's resolved
 	// predicate; kernel-internal reads carry domain.ScopeSystem explicitly.
 	//
-	// Raw vec is retained ONLY for the GraphStore assertions + the spreading engine
-	// (system components that need the concrete adapter).
+	// Raw vec is retained ONLY for the GraphStore assertions (a component that needs
+	// the concrete adapter). The spreading engine used to take it too and fetched
+	// every BFS edge target by id with no predicate — the one enrichment lane that
+	// still bypassed this chokepoint (2026-10-31 audit,
+	// T-20261031-spreading-activation-lane-fetches-graph-targets). It now takes
+	// scopedRead.
 	scopedRead := authz.NewEnforcingVectorStore(vec, slog.Default())
 	writeStore := authz.NewEnforcingStoreWriter(scopedRead, authorizer, slog.Default())
 	// The profile store writes agent profiles and JUDICIAL RECORDS — verifier
@@ -167,7 +171,14 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		// a writer exists: T-20261031-entityindex-is-never-populated-so-entity.
 		entityIdx = memory.NewEntityIndex()
 
-		spEngine := memory.NewSpreadingEngine(gs, vec,
+		// ADR-0085 D7 / ADR-0095 D9: the spreader fetches every BFS edge target by
+		// id (spreading_engine.go), and its output REPLACES the already-scoped
+		// result set in query.go, so it must read through the enforcing store —
+		// a cross-scope discussed_in/co_activated edge otherwise returns the
+		// restricted target to the caller. Reads fail closed on a missing
+		// predicate; the engine treats that like any other fetch error and skips
+		// the target.
+		spEngine := memory.NewSpreadingEngine(gs, scopedRead,
 			execCfg.Graph.DecayFactor, execCfg.Graph.MaxDepth, execCfg.Graph.EnergyFloor)
 		// ADR-0052: per-type weight map removed; edge.Weight is the LLM/Hebbian
 		// confidence. The 4 per-type constants are still read from config for

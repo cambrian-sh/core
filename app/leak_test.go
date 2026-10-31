@@ -5,8 +5,8 @@ package app
 import (
 	"context"
 	"net"
+	"os"
 	"testing"
-	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/internal/config"
@@ -15,9 +15,18 @@ import (
 )
 
 func TestKernel_NoGoroutineLeak(t *testing.T) {
-	cfg, err := config.LoadConfig("../../configs/test-config.json")
+	// A full kernel boot needs Postgres and an embedder, so the config comes from
+	// the environment rather than a checked-in file: CAMBRIAN_TEST_CONFIG names a
+	// config.json for a disposable kernel. (The old hard-coded
+	// "../../configs/test-config.json" pointed above the repo root and never
+	// existed, so the test skipped on every machine.)
+	path := os.Getenv("CAMBRIAN_TEST_CONFIG")
+	if path == "" {
+		t.Skip("set CAMBRIAN_TEST_CONFIG to a kernel config.json to run the full-kernel leak test")
+	}
+	cfg, err := config.LoadConfig(path)
 	if err != nil {
-		t.Skipf("chaos test requires test-config.json: %v", err)
+		t.Fatalf("load %s: %v", path, err)
 	}
 
 	lis, err := net.Listen("tcp", ":0")
@@ -29,7 +38,7 @@ func TestKernel_NoGoroutineLeak(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	k, err := bootstrapKernel(ctx, cfg, lis)
+	k, err := bootstrapKernel(ctx, cfg, lis, Options{})
 	if err != nil {
 		t.Fatalf("bootstrapKernel: %v", err)
 	}
@@ -45,13 +54,7 @@ func TestKernel_NoGoroutineLeak(t *testing.T) {
 
 	k.Shutdown(ctx)
 
-	// Retry with backoff: slow CI runners may need >100ms for goroutines to exit.
-	var lastErr error
-	for range 10 {
-		if lastErr = goleak.Find(); lastErr == nil {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("goroutine leak detected: %v", lastErr)
+	// goleak retries internally with backoff before reporting, so no hand-rolled
+	// sleep loop is needed.
+	goleak.VerifyNone(t)
 }

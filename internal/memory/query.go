@@ -42,6 +42,7 @@ type QueryService struct {
 	floor            float64                   // ADR-0048 #1: min cosine to return a recalled fact; 0 = disabled
 	graphWriter      domain.GraphStore         // ADR-0049 D10: Hebbian co-activation edge writes; nil = disabled
 	heb              hebbianParams             // ADR-0049 D10: Hebbian tuning (off unless EnableHebbian wired)
+	hebInflight      chan struct{}             // ADR-0049 D10: bounds concurrent reinforcement goroutines (AGENTS.md §3.3)
 	entityIdx        *EntityIndex              // ADR-0052: in-memory entity reverse index; nil = surface-only recall
 	assocWeight      float64                   // ADR-0052: β in the re-rank formula; default 0.2
 	assocLambda      float64                   // ADR-0052: λ for the temporal-decay term in the re-rank; default 0.005
@@ -390,12 +391,20 @@ type hebbianParams struct {
 	topN                              int
 }
 
+// hebbianMaxInflight caps concurrent reinforceCoActivation goroutines. Recalls
+// beyond the cap drop their reinforcement rather than queue (see the call site).
+const hebbianMaxInflight = 4
+
 // EnableHebbian turns on usage-driven `co_activated` edge reinforcement on recall
 // (ADR-0049 D10). Flag-gated at the call site (default off). Edge writes are async,
 // off the read path. The constants are operator-tuned, not asserted to one value.
 func (q *QueryService) EnableHebbian(gs domain.GraphStore, lr, maxW, floor, decayPerDay, base float64, topN int) {
 	q.graphWriter = gs
 	q.heb = hebbianParams{enabled: true, lr: lr, max: maxW, floor: floor, decayPerDay: decayPerDay, base: base, topN: topN}
+	// Resource bound, not a tuning threshold: a handful of concurrent edge writers
+	// is plenty for a best-effort signal, and the cap is what keeps a stalled
+	// GraphStore from accumulating one goroutine per recall.
+	q.hebInflight = make(chan struct{}, hebbianMaxInflight)
 }
 
 // SetRelevanceFloor sets the minimum cosine similarity a recalled fact must clear
@@ -2027,8 +2036,26 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	}
 	// ADR-0049 D10: Hebbian reinforcement of the fact lane's co-retrieved set — async,
 	// off the read path so recall latency is untouched. Off for the action lane.
+	//
+	// Bounded, not one goroutine per recall (AGENTS.md §3.3): hebInflight is a
+	// semaphore sized at EnableHebbian time; when that many reinforcements are
+	// already running the recall's pairs are dropped. Reinforcement is best-effort
+	// by design (ADR-0049 D10), so dropping under load is the right failure mode —
+	// a slow GraphStore must never turn into unbounded goroutine growth.
+	//
+	// context.WithoutCancel, not context.Background (AGENTS.md §2.7): the write
+	// must outlive the request, but trace/session values should travel with it.
 	if spread && q.heb.enabled && len(filtered) >= 2 {
-		go q.reinforceCoActivation(filtered)
+		select {
+		case q.hebInflight <- struct{}{}:
+			bg := context.WithoutCancel(ctx)
+			go func() {
+				defer func() { <-q.hebInflight }()
+				q.reinforceCoActivation(bg, filtered)
+			}()
+		default:
+			slog.DebugContext(ctx, "hebbian: reinforcement dropped, in-flight cap reached")
+		}
 	}
 	// ADR-0060: neighbor-window — append each returned chunk's document neighbors
 	// (preceding/following) for adjacent context. Runs last so ranking is untouched.
@@ -2149,7 +2176,7 @@ func hebbianEdgeKey(a, b string) string {
 // co-retrieved docs (ADR-0049 D10): read current weights, decay-by-age, add the
 // learning rate (capped), write both directions. Best-effort, async; lost updates
 // under concurrent recalls are acceptable for a statistical Hebbian signal.
-func (q *QueryService) reinforceCoActivation(results []domain.SearchResult) {
+func (q *QueryService) reinforceCoActivation(ctx context.Context, results []domain.SearchResult) {
 	if q.graphWriter == nil {
 		return
 	}
@@ -2157,7 +2184,6 @@ func (q *QueryService) reinforceCoActivation(results []domain.SearchResult) {
 	if len(pairs) == 0 {
 		return
 	}
-	ctx := context.Background()
 
 	seen := map[string]bool{}
 	var ids []string
