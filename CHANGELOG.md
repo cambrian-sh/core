@@ -11,7 +11,7 @@ only the proto + config surfaces are held stable — see `CONTRIBUTING.md`).
 - Open-core split (ADR-0057): importable `app` package (`app.Run` + `app.Options`) so a
   downstream premium binary reuses the OSS composition root and injects proprietary
   components (langfuse tracing, reactive rule engine) via hooks.
-- Source-available licensing (BSL 1.1, see `LICENSE`); `CONTRIBUTING`, `SECURITY`,
+- Source-available licensing (Elastic License 2.0, see `LICENSE`); `CONTRIBUTING`, `SECURITY`,
   `CODE_OF_CONDUCT`, `SUPPORT`, `MAINTAINERS`, `CODEOWNERS`.
 - `configs/config.example.json` user-config template; three-tier config loading
   (built-in defaults → user config → `CAMBRIAN_*` env), tolerant of a missing base file.
