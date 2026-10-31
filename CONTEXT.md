@@ -81,5 +81,27 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
 - **Memory is an Engram engine**: typed documents, two-tier write pipeline, graph layer (BFS with 0.75^depth attenuation), content-addressed `ArtifactVault`.
 - **Dispatch is unconditional**: ADR-0100 P3 deleted the auction; selection is capability-typed.
 - **Config store layer 11**: durable operator writes in bbolt (ADR-0101).
+- **Contributed machine tools are opt-in per agent**: an agent reaches a user's machine only through an explicit `local:*` (or exact `local:<machine>/<tool>`) grant; ownership picks the machine (ADR-0127 CL-4, `domain/contribution.go` `grantCovers`).
+- **`app.KernelServices` is the plugin capability seam**: premium receives functions, not internals — e.g. `VerifyMachineToken` lets the `machine_token_v1` ingress verifier check a token without reading it (ADR-0127 CL-5).
 - **Self-installing**: `setup` bootstraps Postgres, Python runtime, agents, config, migrations, detached start.
-- **`go.mod` declares `github.com/cambrian-sh/cambrian-runtime`** — a rename is pending.
+
+---
+
+## Known gaps
+
+Each has a ticket; close the ticket and update this list in the same change.
+
+- Three `cmd/` maintenance tools write through the raw vector adapter —
+  `T-20261031-three-cmd-maintenance-tools-write-through-the`
+- `nightly` and `release-gate` are not run by CI — `T-20261031-nightly-and-release-gate-checks-are-not-run-by`
+- No automated check that vendored proto copies match core —
+  `T-20261031-no-automated-check-that-vendored-proto-copies`
+- ADR-0121 residuals (D8 policy suite, `policy_note`) — `T-20261031-adr-0121-follow-ups-d8-policy-suite-and-query`
+- ADR-0128 residuals (deferred crosswalks, resolver lane) — `T-20261031-adr-0128-follow-ups-deferred-crosswalks`
+- Contribution lane never run end to end on real machines (blocked: no deployment) —
+  `T-20261031-contribution-lane-has-never-run-end-to-end-on`
+- Handshake/MCP version literal (`0.6.9-alpha`) disagrees with the version above —
+  `T-20261031-kernel-reports-version-0-6-9-alpha-while`
+- Derived memory artifacts (`chunk_triplets`, …) carry no classification; contained only
+  because their text is never surfaced — `T-20261031-derived-memory-artifacts-carry-no`
+- No customer data export — `T-20261031-customers-cannot-export-their-data`
