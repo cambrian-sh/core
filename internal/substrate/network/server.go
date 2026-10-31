@@ -182,9 +182,11 @@ type Server struct {
 	// reference" — unexecutable, and the failure was emitted as spoken dialogue.
 	IngressInbound IngressAccepter
 
-	// WatchHandler provides the 4 WatchConfig CRUD RPCs. Injected by the premium
-	// binary via the app.Options reactive hook; nil in OSS — RPC shells guard against
-	// nil and return Unimplemented. ADR-0032 / ADR-0057.
+	// WatchHandler is the premium reactive engine's WatchConfig store. Injected by
+	// the premium binary via the app.Options reactive hook; nil in OSS. It backs the
+	// OperatorConsole watch commands (app.go hands it to the operator service); the
+	// Orchestrator watch-CRUD RPCs that once served it directly are retired
+	// (watch_rpc.go). ADR-0032 / ADR-0057.
 	WatchHandler domain.WatchConfigHandler
 
 	// REQ-SDK-007c: artifact storage, gated by the decision point. Both nil → the

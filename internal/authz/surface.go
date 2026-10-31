@@ -56,9 +56,18 @@ const (
 //
 // This is the ONE list; the operator auth interceptor reads it through
 // IsOperatorGatedAgentServiceMethod rather than keeping its own copy.
+//
+// The four watch-CRUD methods are here for the same reason (2026-10-31,
+// T-20261031-orchestrator-watch-crud-registerwatch): they had no guard at all.
+// They are also RETIRED in place — the handlers refuse every call and name the
+// audited OperatorConsole equivalent — so the gate only decides who is told so.
 var operatorGatedAgentServiceMethods = map[string]bool{
 	agentServicePrefix + "WatchApprovals":         true,
 	agentServicePrefix + "SubmitApprovalDecision": true,
+	agentServicePrefix + "RegisterWatch":          true,
+	agentServicePrefix + "ListWatches":            true,
+	agentServicePrefix + "DeleteWatch":            true,
+	agentServicePrefix + "SetWatchActive":         true,
 }
 
 // IsOperatorGatedAgentServiceMethod reports whether fullMethod is an
