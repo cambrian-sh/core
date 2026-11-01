@@ -3,6 +3,8 @@ package operator
 import (
 	"sync"
 	"time"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Login hardening (ADR-0130 1f; T-20261031-operator-login-has-no-brute-force-limiter-non).
@@ -85,23 +87,11 @@ func (l *loginLimiter) Reset(source string) {
 	delete(l.failures, source)
 }
 
-// LoginAttempt is what the kernel observes about one Login call, success or
-// failure. It carries the username and source, never the password.
-type LoginAttempt struct {
-	Username string
-	Source   string
-	Success  bool
-	// LockedOut is true when the attempt was refused by the limiter without
-	// the credential being evaluated.
-	LockedOut bool
-	// Failures is the count now held against the source (0 after a success).
-	Failures int
-	At       time.Time
-}
-
-// LoginObserver receives every login attempt. ADR-0130 1f: a failed login is
-// emitted as an observation when a hook exists; the service falls back to a
-// structured WARN log when none does, so the event is never silent.
-type LoginObserver interface {
-	ObserveLogin(LoginAttempt)
-}
+// LoginAttempt and LoginObserver are the domain ports (ADR-0130 1f), aliased
+// here so the operator package's call sites read unchanged. They live in domain
+// because a plugin in cambrian-premium must be able to implement the observer,
+// and core's internal packages are not importable from another module.
+type (
+	LoginAttempt  = domain.LoginAttempt
+	LoginObserver = domain.LoginObserver
+)

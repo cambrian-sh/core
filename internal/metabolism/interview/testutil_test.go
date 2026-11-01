@@ -36,8 +36,11 @@ func newMockManifestReader(manifests map[string]*domain.AgentManifest) *testRegi
 type mockProfileStore struct {
 	savedProfiles   []savedProfileCall
 	profileToReturn *domain.AgentProfile
-	judicialRecords []string
-	embeddingDistFn func(a, b []float32) float64
+	// previousToReturn is what GetPreviousProfile answers (another version's
+	// profile); nil ⇒ the agent has no other version.
+	previousToReturn *domain.AgentProfile
+	judicialRecords  []string
+	embeddingDistFn  func(a, b []float32) float64
 }
 
 type savedProfileCall struct {
@@ -59,6 +62,13 @@ func (s *mockProfileStore) SaveProfile(_ context.Context, agentID, sourceHash st
 
 func (s *mockProfileStore) GetProfile(_ context.Context, _, _ string) (*domain.AgentProfile, error) {
 	return s.profileToReturn, nil
+}
+
+func (s *mockProfileStore) GetPreviousProfile(_ context.Context, _, current string) (*domain.AgentProfile, error) {
+	if s.previousToReturn != nil && s.previousToReturn.SourceHash == current {
+		return nil, nil // never the current version
+	}
+	return s.previousToReturn, nil
 }
 
 func (s *mockProfileStore) GetJudicialRecords(_ context.Context, _, _ string, _ int) ([]string, error) {

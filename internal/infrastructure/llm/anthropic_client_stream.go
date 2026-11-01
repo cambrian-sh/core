@@ -35,6 +35,11 @@ type anthropicStreamEvent struct {
 		Text string `json:"text"`
 	} `json:"content_block"`
 	Usage *anthropicUsage `json:"usage"`
+	// Message is set on message_start; its usage carries the INPUT side
+	// (input_tokens, cache reads/writes), which message_delta never repeats.
+	Message *struct {
+		Usage *anthropicUsage `json:"usage"`
+	} `json:"message"`
 }
 
 // GenerateStream opens a streaming message call to the Anthropic Messages endpoint.
@@ -86,6 +91,10 @@ func (c *AnthropicClient) GenerateStream(ctx context.Context, prompt string) (<-
 		buf := make([]byte, 0, 64*1024)
 		scanner.Buffer(buf, 1024*1024)
 
+		// input is message_start's usage; ADR-0131 D2 needs it on the final
+		// usage chunk, because message_delta reports output tokens only.
+		var input anthropicUsage
+
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
@@ -107,11 +116,30 @@ func (c *AnthropicClient) GenerateStream(ctx context.Context, prompt string) (<-
 				if evt.Delta != nil {
 					chunk.Text = evt.Delta.Text
 				}
+			case "message_start":
+				if evt.Message != nil && evt.Message.Usage != nil {
+					input = *evt.Message.Usage
+				}
+				continue
 			case "message_delta":
 				if evt.Usage != nil {
-					chunk.UsagePromptTokens = evt.Usage.InputTokens
-					chunk.UsageCompletionTokens = evt.Usage.OutputTokens
-					chunk.UsageTotalTokens = evt.Usage.InputTokens + evt.Usage.OutputTokens
+					merged := input
+					merged.OutputTokens = evt.Usage.OutputTokens
+					// A delta that does restate input counts is the newer figure.
+					if evt.Usage.InputTokens > 0 {
+						merged.InputTokens = evt.Usage.InputTokens
+					}
+					if evt.Usage.CacheReadInputTokens > 0 {
+						merged.CacheReadInputTokens = evt.Usage.CacheReadInputTokens
+					}
+					if evt.Usage.CacheCreationInputTokens > 0 {
+						merged.CacheCreationInputTokens = evt.Usage.CacheCreationInputTokens
+					}
+					u := merged.tokenUsage()
+					chunk.UsagePromptTokens = u.PromptTokens
+					chunk.UsageCompletionTokens = u.CompletionTokens
+					chunk.UsageTotalTokens = u.TotalTokens
+					chunk.UsageCacheReadTokens = u.CacheReadTokens
 				}
 				if evt.Delta != nil && evt.Delta.StopReason != "" {
 					chunk.IsFinal = true

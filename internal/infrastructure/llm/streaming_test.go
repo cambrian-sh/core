@@ -51,7 +51,7 @@ func TestReconcileTokens_WithUsageField(t *testing.T) {
 		UsageCompletionTokens: 25,
 		UsageTotalTokens:      75,
 	}
-	result := llm.ReconcileTokens(30, finalChunk, "full response text here")
+	result := llm.ReconcileTokens("a prompt", finalChunk, "full response text here")
 	if result.PromptTokens != 50 {
 		t.Errorf("PromptTokens = %d, want 50", result.PromptTokens)
 	}
@@ -70,7 +70,7 @@ func TestReconcileTokens_FallbackOnMissingUsage(t *testing.T) {
 		IsFinal: true,
 		// usage fields zero (provider omitted usage, e.g. Ollama streaming)
 	}
-	result := llm.ReconcileTokens(10, finalChunk, "full response text — quite long")
+	result := llm.ReconcileTokens("a prompt", finalChunk, "full response text — quite long")
 	if result.TotalTokens <= 0 {
 		t.Errorf("TotalTokens = %d, want > 0 (estimated from fullText)", result.TotalTokens)
 	}
@@ -84,7 +84,7 @@ func TestReconcileTokens_BudgetOverrun(t *testing.T) {
 		UsagePromptTokens:     30,
 		UsageCompletionTokens: 85,
 	}
-	result := llm.ReconcileTokens(90, finalChunk, "some text")
+	result := llm.ReconcileTokens("a prompt", finalChunk, "some text")
 	overrun := result.TotalTokens > 100 // simulate budget limit of 100
 	if !overrun {
 		t.Errorf("TotalTokens = %d, want > 100 for BudgetOverrun=true", result.TotalTokens)

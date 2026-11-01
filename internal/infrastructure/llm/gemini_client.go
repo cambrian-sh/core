@@ -74,12 +74,8 @@ type geminiGenerateResponse struct {
 		FinishReason string `json:"finishReason"`
 		Index        int    `json:"index"`
 	} `json:"candidates"`
-	UsageMetadata struct {
-		PromptTokenCount     int `json:"promptTokenCount"`
-		CandidatesTokenCount int `json:"candidatesTokenCount"`
-		TotalTokenCount      int `json:"totalTokenCount"`
-	} `json:"usageMetadata"`
-	ModelVersion string `json:"modelVersion"`
+	UsageMetadata geminiUsage `json:"usageMetadata"`
+	ModelVersion  string      `json:"modelVersion"`
 }
 
 // geminiStreamChunk is one chunk in the streaming response. The API returns
@@ -96,11 +92,29 @@ type geminiStreamChunk struct {
 		FinishReason string `json:"finishReason"`
 		Index        int    `json:"index"`
 	} `json:"candidates"`
-	UsageMetadata struct {
-		PromptTokenCount     int `json:"promptTokenCount"`
-		CandidatesTokenCount int `json:"candidatesTokenCount"`
-		TotalTokenCount      int `json:"totalTokenCount"`
-	} `json:"usageMetadata"`
+	UsageMetadata geminiUsage `json:"usageMetadata"`
+}
+
+// geminiUsage is the usageMetadata block. promptTokenCount already includes
+// cachedContentTokenCount, so the cache count is a breakdown (ADR-0131 D2).
+type geminiUsage struct {
+	PromptTokenCount        int `json:"promptTokenCount"`
+	CandidatesTokenCount    int `json:"candidatesTokenCount"`
+	TotalTokenCount         int `json:"totalTokenCount"`
+	CachedContentTokenCount int `json:"cachedContentTokenCount"`
+}
+
+func (u geminiUsage) tokenUsage() TokenUsage {
+	out := TokenUsage{
+		PromptTokens:     u.PromptTokenCount,
+		CompletionTokens: u.CandidatesTokenCount,
+		TotalTokens:      u.TotalTokenCount,
+		CacheReadTokens:  u.CachedContentTokenCount,
+	}
+	if out.TotalTokens == 0 {
+		out.TotalTokens = out.PromptTokens + out.CompletionTokens
+	}
+	return out
 }
 
 func (c *GeminiClient) endpoint() string {
@@ -181,6 +195,8 @@ func (c *GeminiClient) Generate(ctx context.Context, prompt string) (string, err
 	if len(parsed.Candidates) == 0 || len(parsed.Candidates[0].Content.Parts) == 0 {
 		return "", fmt.Errorf("gemini: empty response (body: %s)", truncate(string(respBody), 512))
 	}
+	// ADR-0131 D2: hand the response's own usage to whoever metered this call.
+	reportUsage(ctx, parsed.UsageMetadata.tokenUsage())
 	return parsed.Candidates[0].Content.Parts[0].Text, nil
 }
 
@@ -269,7 +285,16 @@ func (c *GeminiClient) GenerateStream(ctx context.Context, prompt string) (<-cha
 					}
 				}
 				if cand.FinishReason == "STOP" || cand.FinishReason == "MAX_TOKENS" {
-					ch <- domain.StreamChunk{IsFinal: true}
+					// ADR-0131 D2: the finishing chunk carries usageMetadata; put it
+					// on the final chunk so the gateway reconciles real usage.
+					u := chunk.UsageMetadata.tokenUsage()
+					ch <- domain.StreamChunk{
+						IsFinal:               true,
+						UsagePromptTokens:     u.PromptTokens,
+						UsageCompletionTokens: u.CompletionTokens,
+						UsageTotalTokens:      u.TotalTokens,
+						UsageCacheReadTokens:  u.CacheReadTokens,
+					}
 					return
 				}
 			}
@@ -335,9 +360,5 @@ func (geminiExtractor) Extract(body []byte) (TokenUsage, error) {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return TokenUsage{}, err
 	}
-	return TokenUsage{
-		PromptTokens:     parsed.UsageMetadata.PromptTokenCount,
-		CompletionTokens: parsed.UsageMetadata.CandidatesTokenCount,
-		TotalTokens:      parsed.UsageMetadata.TotalTokenCount,
-	}, nil
+	return parsed.UsageMetadata.tokenUsage(), nil
 }

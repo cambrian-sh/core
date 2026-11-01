@@ -27,7 +27,15 @@ type Config struct {
 	// (BudgetLeaseState.TokenLimit). 0 means 4096, the limit server.go leases at
 	// dispatch; the gateway cuts a stream at 90% of it (ADR-0018 Pass 1).
 	StepTokenLimit int
+	// MaxSessionTokens is the ADR-0131 per-session spend ceiling
+	// (execution.session.max_session_tokens) the harness meter enforces. 0 means
+	// metered, never refused — the DefaultConfig posture.
+	MaxSessionTokens int
 }
+
+// SessionID is the session every harness plan runs under, so the spend meter
+// attributes the gateway's calls the way it does for a kernel Execute.
+const SessionID domain.SessionID = "harness-session"
 
 // SystemHarness runs a one-step plan through the REAL DAGExecutor and the REAL
 // SubstrateLLMGateway, with a fake model and an in-memory registry behind them.
@@ -42,6 +50,9 @@ type SystemHarness struct {
 	Registry  *HarnessRegistry
 	Observer  *CapturingTelemetryObserver
 	ExecCfg   config.ExecutionConfig
+	// Meter is the ADR-0131 spend ledger wired into the gateway, as the kernel
+	// wires it in internal/kernel ProvideServer.
+	Meter *llm.SpendMeter
 
 	tokenLimit int
 	mu         sync.Mutex
@@ -54,6 +65,7 @@ func New(cfg Config) *SystemHarness {
 		exec.LLM.LLMGatewayMaxConcurrency = cfg.MaxConcurrentSessions
 	}
 	exec.Plan.PlanTimeoutMs = 120000
+	exec.Session.MaxSessionTokens = cfg.MaxSessionTokens
 	if cfg.StepTokenLimit == 0 {
 		cfg.StepTokenLimit = 4096
 	}
@@ -66,6 +78,8 @@ func New(cfg Config) *SystemHarness {
 	gw.Observer = obs
 	gw.RegisterModelClient(FakeModelID, streamer)
 	gw.SetDefaultModelID(FakeModelID)
+	meter := llm.NewSpendMeter(exec.Session.MaxSessionTokens, nil, nil)
+	gw.SetSpendMeter(meter)
 
 	reg := NewHarnessRegistry()
 	reg.Register(
@@ -80,6 +94,7 @@ func New(cfg Config) *SystemHarness {
 		Registry:   reg,
 		Observer:   obs,
 		ExecCfg:    exec,
+		Meter:      meter,
 		tokenLimit: cfg.StepTokenLimit,
 	}
 }
@@ -96,6 +111,7 @@ func (h *SystemHarness) StepUsages() []llm.TokenUsage {
 // registry knows, generating through the gateway under a StepTokenLimit lease.
 func (h *SystemHarness) ExecutePlan(ctx context.Context) (*domain.Handoff, []domain.TaskEvent, error) {
 	fakeWriter := &fakeTaskEventWriter{}
+	ctx = domain.WithSessionID(ctx, SessionID)
 
 	stepFn := executer.StepFunc(func(ctx context.Context, i int, handoff *domain.Handoff) (result *domain.Handoff, err error) {
 		agents, err := h.Registry.GetAllAgents(ctx)
@@ -113,6 +129,7 @@ func (h *SystemHarness) ExecutePlan(ctx context.Context) (*domain.Handoff, []dom
 		if err != nil {
 			return nil, fmt.Errorf("harness: acquire: %w", err)
 		}
+		h.Gateway.BindLease(lease, domain.LeaseBinding{SessionID: SessionID, StepIndex: i})
 		defer func() {
 			usage, cerr := h.Gateway.Complete(ctx, lease)
 			if cerr == nil {

@@ -58,8 +58,12 @@ type PlanConfig struct {
 	// the auction winner fails. Default: true.
 	FallbackEnabled bool `json:"fallback_enabled"`
 
-	// MaxReplanAttempts is the maximum number of replan cycles allowed when
-	// all intra-step retries and inter-step fallbacks are exhausted. Default: 2.
+	// MaxReplanAttempts is the maximum number of times one plan may re-ask the
+	// planner, whatever the reason: a retry after an invalid DAG and a replan after
+	// intra-step retries and inter-step fallbacks are exhausted draw on the same
+	// count, so a plan makes at most 1 + MaxReplanAttempts planner calls
+	// (T-20261101-planner-validation-retries-and-replans-compound). 0 disables
+	// both. Default: 2.
 	MaxReplanAttempts int `json:"max_replan_attempts"`
 
 	// MaxFanOutWidth caps how many concrete children a parametric fan-out step
@@ -381,7 +385,15 @@ type SessionConfig struct {
 	// keepalive TTL for a session token. Default: 5.0. ADR-0018.
 	SessionTokenTTLMultiplier float64 `json:"session_token_ttl_multiplier"`
 
-	// ADR-0030: Scavenger thresholds.
+	// MaxSessionTokens is the per-session LLM spend ceiling, in tokens (input +
+	// output, provider-reported where the provider reports usage), enforced by the
+	// ADR-0131 SpendMeter over EVERY LLM call made for the session: planner, replans,
+	// thought steps, checkpoints, agent streams and the agentic retrieval chain. A
+	// call that would take the session past it is refused with ErrSpendCeiling and
+	// the plan ends with a visible ResourceExhausted failure plus a TaskEvent record.
+	// 0 (the default) = metered but never refused, until worldsim yields a p95 to
+	// set it from (ADR-0131 status_note); the benchmark rig sets it in
+	// tuning.local.json. (Was an unread ADR-0030 scavenger threshold.)
 	MaxSessionTokens int `json:"max_session_tokens,omitempty"`
 }
 
@@ -1291,6 +1303,9 @@ type Config struct {
 		// apart on purpose, because reusing one name for both directions makes
 		// every comment and console label ambiguous.
 		MCP MCPEndpointConfig `json:"mcp"`
+		// RateLimit is the per-principal token bucket on the gRPC planes
+		// (rate_limit.go). Default on and generous.
+		RateLimit RateLimitConfig `json:"rate_limit"`
 	} `json:"server"`
 	// ADR-0042: new model-provisioning spine. Additive for now — the legacy LLM
 	// block and Models array above remain until the cutover (slice 0042-07).
@@ -1824,6 +1839,7 @@ func DefaultConfig() *Config {
 	// deployment that switches the endpoint on should not also have to think
 	// about concurrency before it is safe.
 	cfg.Server.MCP.MaxConcurrentPerClient = DefaultMCPMaxConcurrentPerClient
+	cfg.Server.RateLimit = DefaultRateLimitConfig()
 	return cfg
 }
 
@@ -2138,6 +2154,7 @@ func (c *Config) validateSecrets() *ConfigError {
 	errs = append(errs, c.LLMProvider.validate(c.Embedder)...)
 	// ADR-0126 D3/D4: validate the inbound MCP endpoint (no-op until enabled).
 	errs = append(errs, c.Server.MCP.validate(c.Server.Port)...)
+	errs = append(errs, c.Server.RateLimit.validate()...)
 
 	if len(errs) > 0 {
 		return &ConfigError{
@@ -2206,6 +2223,9 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Routing.ExplorationRate < 0 || c.Routing.ExplorationRate > 1 {
 		errs = append(errs, "exploration_rate must be in [0, 1]")
+	}
+	if c.Session.MaxSessionTokens < 0 {
+		errs = append(errs, "max_session_tokens must be >= 0 (0 disables the ADR-0131 spend ceiling)")
 	}
 	if c.Session.SessionTTLDays < 0 {
 		errs = append(errs, "session_ttl_days must be >= 0")

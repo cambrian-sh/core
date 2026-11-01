@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -58,6 +59,35 @@ type SubstrateLLMGateway struct {
 	// streaming-path analogue of the broker's default generator that serves the
 	// organs, so an agent step still runs instead of failing. Empty ⇒ no fallback.
 	defaultModelID string
+
+	// meter is the ADR-0131 D1 spend ledger — the SAME object the Provider meters
+	// the organs with, so agent streams and organ calls add up in one place.
+	// Nil = no session ceiling and no spend record (tests, maintenance tools).
+	meter atomic.Pointer[llm.SpendMeter]
+
+	// onComplete runs after a lease is completed and removed. It is the ONE place
+	// "lease finished" side effects hang, so a new lease site (the retrieval
+	// dispatcher was the third) cannot forget them: today it clears the ADR-0046
+	// D6 run-scoped skill grants keyed by the lease
+	// (T-20261101-retrieval-dispatch-lease-retrieval-dispatch-go).
+	onComplete atomic.Pointer[func(domain.LeaseID)]
+}
+
+// SetSpendMeter attaches the ADR-0131 spend ledger. Every agent stream and tool
+// turn is then admitted against the session ceiling and booked there.
+func (g *SubstrateLLMGateway) SetSpendMeter(m *llm.SpendMeter) { g.meter.Store(m) }
+
+// SpendMeter returns the attached spend ledger, or nil.
+func (g *SubstrateLLMGateway) SpendMeter() *llm.SpendMeter { return g.meter.Load() }
+
+// SetCompleteHook registers the function Complete runs for every completed
+// lease, after the lease is removed. Nil clears it.
+func (g *SubstrateLLMGateway) SetCompleteHook(fn func(domain.LeaseID)) {
+	if fn == nil {
+		g.onComplete.Store(nil)
+		return
+	}
+	g.onComplete.Store(&fn)
 }
 
 // SetDefaultModelID configures the fallback streaming model used when a step has
@@ -162,32 +192,97 @@ func (g *SubstrateLLMGateway) ResolveLease(leaseID domain.LeaseID) (domain.Lease
 	return st.Binding, true
 }
 
-// Complete reads the final reconciled token usage and removes the session.
+// Complete reads the final reconciled token usage — summed over every call made
+// under the lease, provider-reported where the provider reported it (ADR-0131
+// D2) — removes the lease, and runs the completion hook.
 func (g *SubstrateLLMGateway) Complete(_ context.Context, sessionID domain.LeaseID) (llm.TokenUsage, error) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	ss, ok := g.sessions[sessionID]
 	if !ok {
+		g.mu.Unlock()
 		return llm.TokenUsage{}, fmt.Errorf("session not found: %s", sessionID)
 	}
-	usage := llm.TokenUsage{
-		TotalTokens:      ss.ActualTokensUsed,
-		CompletionTokens: ss.ActualTokensUsed,
-		BudgetOverrun:    ss.BudgetOverrun,
-	}
+	usage := leaseUsage(ss)
 	delete(g.sessions, sessionID)
+	g.mu.Unlock()
+	// Outside the lock: the hook reaches into other subsystems (the tool
+	// executor's grant overlay) and must not run under the gateway's mutex.
+	if fn := g.onComplete.Load(); fn != nil {
+		(*fn)(sessionID)
+	}
 	return usage, nil
 }
 
-// EvictExpired removes all expired session state entries.
-func (g *SubstrateLLMGateway) EvictExpired() {
+// leaseUsage renders a lease's accumulated counters as a TokenUsage.
+func leaseUsage(ss *domain.BudgetLeaseState) llm.TokenUsage {
+	return llm.TokenUsage{
+		PromptTokens:     ss.PromptTokensUsed,
+		CompletionTokens: ss.ActualTokensUsed - ss.PromptTokensUsed,
+		TotalTokens:      ss.ActualTokensUsed,
+		CacheReadTokens:  ss.CacheReadTokensUsed,
+		Estimated:        ss.UsageEstimated,
+		BudgetOverrun:    ss.BudgetOverrun,
+	}
+}
+
+// addLeaseUsageLocked adds one call's reconciled usage to a lease. Callers hold
+// g.mu. Additive, never assigning: an agent's ReAct loop makes many calls under
+// ONE step lease, and the lease total is their sum.
+func addLeaseUsageLocked(ss *domain.BudgetLeaseState, u llm.TokenUsage) {
+	ss.ActualTokensUsed += u.TotalTokens
+	ss.PromptTokensUsed += u.PromptTokens
+	ss.CacheReadTokensUsed += u.CacheReadTokens
+	if u.Estimated {
+		ss.UsageEstimated = true
+	}
+}
+
+// ChargeLease adds usage incurred ELSEWHERE to a live lease — the agentic
+// retrieval chain runs under its own short-lived lease and is charged back to the
+// step lease of the agent whose QueryMemory started it (ADR-0131 D3: "the agentic
+// retrieval chain counted against the step's lease"). Unknown leases are ignored:
+// the step may already have completed, and charging must never resurrect it.
+//
+// Charging counts; it does not cut. The Pass-1 cut-off (BudgetOverrun) stays a
+// property of the agent's own stream — a 6-way decomposition easily exceeds a
+// 4096-token step lease, and failing every such step would turn agentic recall
+// off by accident. The hard stop for runaway spend is the session ceiling.
+func (g *SubstrateLLMGateway) ChargeLease(leaseID domain.LeaseID, u llm.TokenUsage) {
+	if g == nil || leaseID == "" || u.IsZero() {
+		return
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if ss, ok := g.sessions[leaseID]; ok {
+		addLeaseUsageLocked(ss, u)
+	}
+}
+
+// leaseSession returns the session a lease is bound to, falling back to the
+// session in ctx. The binding is authoritative: it was written by the kernel at
+// dispatch, whereas ctx on an agent RPC is whatever the transport resolved.
+func leaseSession(ctx context.Context, ss *domain.BudgetLeaseState) domain.SessionID {
+	if ss.Binding.SessionID != "" {
+		return ss.Binding.SessionID
+	}
+	sid, _ := domain.SessionIDFromContext(ctx)
+	return sid
+}
+
+// EvictExpired removes all expired session state entries, and lets the spend
+// ledger forget sessions idle for longer than the session retention window
+// (execution.session.session_retention_days; 0 keeps them for the kernel's life).
+func (g *SubstrateLLMGateway) EvictExpired() {
+	g.mu.Lock()
 	for id, ss := range g.sessions {
 		if time.Now().After(ss.ExpiresAt) {
 			slog.Warn("session_token_leaked", "session_id", id, "agent_id", ss.StepAllocation.Winner.ID)
 			delete(g.sessions, id)
 		}
+	}
+	g.mu.Unlock()
+	if days := g.cfg.Session.SessionRetentionDays; days > 0 {
+		g.meter.Load().EvictIdle(time.Now(), time.Duration(days)*24*time.Hour)
 	}
 }
 
@@ -272,6 +367,13 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		return fmt.Errorf("no model allocated for session %s and no default model configured", sessionID)
 	}
 
+	// ADR-0131 D3: the session ceiling is checked before any model is touched.
+	meter := g.meter.Load()
+	sid := leaseSession(ctx, ss)
+	if err := meter.AdmitSession(sid, string(domain.PurposeAgentStep), llm.EstimateTokens(prompt)); err != nil {
+		return err
+	}
+
 	// Find first healthy model
 	modelID, err := g.selectHealthyModel(modelIDs)
 	if err != nil {
@@ -301,10 +403,12 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 	// Pass 1: per-chunk budget enforcement
 	var fullText string
 	var accumulated int
+	var usage llm.StreamUsage
 	cutoff := int(float64(ss.TokenLimit) * 0.9)
 	overrun := false
 
 	for chunk := range chunks {
+		usage.Observe(chunk)
 		// Keepalive TTL refresh
 		g.mu.Lock()
 		if s, ok := g.sessions[sessionID]; ok {
@@ -330,16 +434,25 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		out <- chunk
 	}
 
-	// Pass 2: post-stream reconciliation
-	reconciled := llm.ReconcileTokens(accumulated, domain.StreamChunk{UsageTotalTokens: accumulated}, fullText)
+	// Providers often send usage AFTER the first final chunk (OpenAI's usage chunk
+	// trails finish_reason). On a natural end, read the rest of the stream — the
+	// agent has its answer already, nothing more is forwarded — so the usage is
+	// real rather than estimated. Not after a Pass-1 cut: waiting for a runaway
+	// generation to finish would defeat the cut.
+	if !overrun {
+		for chunk := range chunks {
+			usage.Observe(chunk)
+		}
+	}
 
-	// If the model returned usage in final chunks, try to get exact count
-	// (already handled through the chunks loop above)
-	_ = reconciled
+	// Pass 2: post-stream reconciliation. Provider usage when the stream carried
+	// it; otherwise the len/4 estimate over prompt AND response, flagged
+	// Estimated (ADR-0131 D2). This used to compute a value and discard it.
+	reconciled := llm.ReconcileTokens(prompt, usage.Chunk(), fullText)
 
 	g.mu.Lock()
 	if s, ok := g.sessions[sessionID]; ok {
-		s.ActualTokensUsed = reconciled.TotalTokens
+		addLeaseUsageLocked(s, reconciled)
 		s.ConsumedTokens = accumulated
 		// The Pass-1 cut is the server-authoritative overrun; it used to be a local
 		// that died here (T-20261031-taskevent-budgetoverrun-is-written-by-no-kernel).
@@ -348,6 +461,7 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		}
 	}
 	g.mu.Unlock()
+	meter.RecordSession(sid, string(domain.PurposeAgentStep), modelID, reconciled)
 
 	// Update health cache on success
 	g.markHealthy(modelID)
@@ -408,6 +522,13 @@ func (g *SubstrateLLMGateway) GenerateWithTools(
 		return zero, fmt.Errorf("no model allocated for session %s and no default model configured", sessionID)
 	}
 
+	meter := g.meter.Load()
+	sid := leaseSession(ctx, ss)
+	prompt := llm.MessagesText(messages)
+	if err := meter.AdmitSession(sid, string(domain.PurposeAgentStep), llm.EstimateTokens(prompt)); err != nil {
+		return zero, err
+	}
+
 	modelID, err := g.selectHealthyModel(modelIDs)
 	if err != nil {
 		return zero, err
@@ -425,7 +546,8 @@ func (g *SubstrateLLMGateway) GenerateWithTools(
 		return zero, fmt.Errorf("%w: model %s", ErrToolCallingUnsupported, modelID)
 	}
 
-	turn, err := tg.GenerateWithTools(ctx, messages, tools)
+	cctx, capture := llm.WithUsageCapture(ctx)
+	turn, err := tg.GenerateWithTools(cctx, messages, tools)
 	if err != nil {
 		slog.Error("llm_gateway: tool-calling generation failed; marking degraded for cooldown",
 			"model", modelID, "err", err)
@@ -433,22 +555,25 @@ func (g *SubstrateLLMGateway) GenerateWithTools(
 		return zero, err
 	}
 
-	// Budget accounting on the same basis as the streaming path: estimate from the
-	// text, plus the serialized arguments, since a turn that is ALL tool calls has
-	// no text and would otherwise bill as zero.
-	consumed := llm.EstimateTokens(turn.Text)
-	for _, tc := range turn.ToolCalls {
-		consumed += llm.EstimateTokens(string(tc.Arguments))
+	// Budget accounting on the same basis as the streaming path: the provider's
+	// usage when the response carried it, else the flagged len/4 estimate over the
+	// conversation and the turn — prose plus serialized arguments, since a turn
+	// that is ALL tool calls has no prose and would otherwise bill as zero.
+	turnText := llm.TurnText(turn)
+	reconciled, reported := capture.Usage()
+	if !reported {
+		reconciled = llm.EstimateUsage(prompt, turnText)
 	}
 	g.mu.Lock()
 	if st, ok := g.sessions[sessionID]; ok {
 		ttl := time.Duration(float64(time.Minute) * g.cfg.Session.SessionTokenTTLMultiplier)
 		st.ExpiresAt = time.Now().Add(ttl)
 		st.LastActivityAt = time.Now()
-		st.ConsumedTokens += consumed
-		st.ActualTokensUsed += consumed
+		st.ConsumedTokens += llm.EstimateTokens(turnText)
+		addLeaseUsageLocked(st, reconciled)
 	}
 	g.mu.Unlock()
+	meter.RecordSession(sid, string(domain.PurposeAgentStep), modelID, reconciled)
 
 	g.markHealthy(modelID)
 	return turn, nil

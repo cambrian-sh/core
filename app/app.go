@@ -41,6 +41,7 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/backfill"
 	"github.com/cambrian-sh/core/internal/metabolism/routescorer"
+	"github.com/cambrian-sh/core/internal/ratelimit"
 	ossreactive "github.com/cambrian-sh/core/internal/reactive"
 	skilldiscovery "github.com/cambrian-sh/core/internal/skill/discovery"
 	"github.com/cambrian-sh/core/internal/storage"
@@ -139,6 +140,10 @@ type Kernel struct {
 	// keyed by fully-qualified service name. The keys route auth: exempt from the
 	// operator bearer, SurfaceAgent, x-agent-id principal seeding. nil in OSS.
 	AgentGRPCServices map[string]func(*grpc.Server)
+	// LoginObserver receives every operator Login attempt (ADR-0130 1f) — the
+	// premium receipts lane chains failed ones. Observation only; nil in OSS,
+	// where the operator service's structured log line is the whole record.
+	LoginObserver domain.LoginObserver
 	// Lifecycles are background components started at boot and drained in reverse on
 	// shutdown (ADR-0074) — plugin-contributed (the reactive engine's worker pools +
 	// REACT-06 scheduler) and kernel-contributed (the ADR-0084 chat worker pool). In OSS
@@ -740,6 +745,21 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// environment (CAMBRIAN_AGENT_TOKEN + CAMBRIAN_AGENT_ID), resolved per
 	// spawn through the late-bound named-secret seam.
 	meta.Manager.InstanceManager.SetAgentCredentialSource(agentCredentialEnv)
+	// ADR-0130 D4: and HOW to reach the plane — the bound address and, on a
+	// pure-TLS routable bind, the TLS root — resolved from the same listener
+	// policy that binds it (agent_transport.go). Without this a TLS-only
+	// routable kernel could not serve its own agents: they dialled
+	// localhost:<port> in plaintext.
+	agentTr, agentTrWarn, err := agentTransport(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("ADR-0130 agent transport: %w", err)
+	}
+	if agentTrWarn != "" {
+		slog.Warn("ADR-0130: "+agentTrWarn, "tls_cert_file", cfg.Server.TLSCertFile)
+	}
+	meta.Manager.InstanceManager.SetAgentTransport(agentTr)
+	slog.Info("ADR-0130: spawned agents dial the kernel", "addr", agentTr.Addr,
+		"tls", agentTr.TLSCAFile != "", "server_name", agentTr.TLSServerName)
 	// REACT-04 / ADR-0070: daemon auto-restart with backoff + flap quarantine. Disabled
 	// when daemon_restart_max_attempts is 0 (a crashed daemon then stays down).
 	if cfg.Execution.Agents.DaemonRestartMaxAttempts > 0 {
@@ -2070,6 +2090,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		WatchBacktester:    watchBacktester,        // REACT-05 / ADR-0071
 		ExtraServices:      opts.ExtraServices,     // ADR-0073
 		AgentGRPCServices:  opts.AgentGRPCServices, // ADR-0118 D3
+		LoginObserver:      opts.LoginObserver,     // ADR-0130 1f (nil in OSS)
 		Lifecycles:         lifecycles,             // ADR-0074 (empty in OSS)
 		PluginCapabilities: composed.capabilities,  // ADR-0082 D2 (empty in OSS)
 		Conversations:      conversations,          // ADR-0084 D1 (nil until migrated)
@@ -2197,6 +2218,14 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			"secret", "agent:<id>:token", "header", "authorization: Bearer + x-agent-id")
 	}
 
+	// Per-principal token bucket on both gRPC planes
+	// (T-20261101-rate-limit-the-operator-and-agent-grpc-planes). Built here and
+	// passed to the interceptor constructors below — never attached later
+	// (AGENTS.md §2.3). Its interceptors run LAST in each chain, after agent and
+	// operator authentication, so a bucket is keyed by the principal the
+	// credential established; unauthenticated calls are keyed by peer host.
+	planeLimiter := ratelimit.New(rateLimitConfig(k.Config.Server.RateLimit), nil)
+
 	// C. gRPC Server
 	g.Go(func() error {
 		// SEC-03: recomputed from the same cfg rather than threaded through the
@@ -2232,11 +2261,13 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				grpc.ChainUnaryInterceptor(
 					authz.UnarySurfaceInterceptor(agentPlaneServices),
 					authz.UnaryAgentAuthInterceptor(agentAuth, agentPlaneServices),
-					operator.UnaryAuthInterceptor(operatorIDP, agentPlaneServices)),
+					operator.UnaryAuthInterceptor(operatorIDP, agentPlaneServices),
+					ratelimit.UnaryInterceptor(planeLimiter)),
 				grpc.ChainStreamInterceptor(
 					authz.StreamSurfaceInterceptor(agentPlaneServices),
 					authz.StreamAgentAuthInterceptor(agentAuth, agentPlaneServices),
-					operator.StreamAuthInterceptor(operatorIDP, agentPlaneServices)),
+					operator.StreamAuthInterceptor(operatorIDP, agentPlaneServices),
+					ratelimit.StreamInterceptor(planeLimiter)),
 				// The operator binary-ingest lane (IngestMemory) carries raw file bytes;
 				// gRPC's 4 MiB default rejects any PDF above it server-side before docling
 				// ever runs, so the documented upload path is unusable for real documents.
@@ -2251,7 +2282,22 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			healthpb.RegisterHealthServer(k.GRPC, k.Health.Server())
 			k.Health.Start(ctx, time.Duration(k.Config.Server.HealthCheckIntervalSeconds)*time.Second)
 			if hp := k.Config.Server.HealthzPort; hp > 0 {
-				g.Go(func() error { return k.Health.ServeHealthz(ctx, hp) })
+				// ADR-0130 D3: the shim is served under the one listener policy —
+				// server.bind_address (loopback by default, NOT every interface as
+				// the old ":port" server was), TLS when the kernel has it,
+				// timeouts, body cap. A probe on another host needs the
+				// deployment's bind_address, like every other listener.
+				g.Go(func() error {
+					srv, _, err := serveHTTP(k.Config, strconv.Itoa(hp), k.Health.HealthzHandler(), "healthz shim")
+					if err != nil {
+						// Fail the boot, as the old ListenAndServe error did.
+						return fmt.Errorf("ADR-0065 healthz shim: %w", err)
+					}
+					<-ctx.Done()
+					shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					defer cancel()
+					return srv.Shutdown(shutCtx)
+				})
 			}
 		}
 		// The sequenced operator feed for the Cambrian UI. The spool decouples the
@@ -2298,6 +2344,10 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		operatorSvc := operator.NewService(operatorFeed)
 		operatorSvc.SetSnapshotSources(operatorProjection, k.SessionMgr)
 		operatorSvc.SetIdentity(operatorIDP)
+		// ADR-0130 1f: failed logins become receipts when a plugin observes them.
+		// Wired beside SetIdentity, before Serve; it is observation, not a gate —
+		// the per-source limiter is built inside NewService and runs regardless.
+		operatorSvc.SetLoginObserver(k.LoginObserver)
 		// ADR-0047 D15/0047-24: mutating commands (audit-stamped, idempotent) over
 		// the durable Postgres operator_audit store (in-memory fallback).
 		operatorSvc.SetCommandSources(k.OperatorAudit, k.ToolGrants)

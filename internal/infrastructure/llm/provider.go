@@ -49,6 +49,13 @@ type Provider struct {
 	// rate-limited provider (HTTP 429). ADR-0042 chokepoint.
 	sem chan struct{}
 
+	// meter is the ADR-0131 D1 spend ledger, applied as the outermost decorator
+	// in Acquire. Resolved per call (atomic), so generators handed out by
+	// GeneratorFor BEFORE the composition root attached the meter are metered
+	// too — app.go builds the organ generators long before the meter's config
+	// consumer runs. Nil = no metering (maintenance binaries).
+	meter atomic.Pointer[SpendMeter]
+
 	log *slog.Logger
 }
 
@@ -162,6 +169,14 @@ func (p *Provider) SetHealthEventBus(bus domain.EventBus) {
 	}
 }
 
+// SetSpendMeter attaches the ADR-0131 spend ledger. Every generator Acquire
+// returns from then on — including those behind GeneratorFor handles created
+// earlier — books its usage there and is refused at the session ceiling.
+func (p *Provider) SetSpendMeter(m *SpendMeter) { p.meter.Store(m) }
+
+// SpendMeter returns the attached spend ledger, or nil.
+func (p *Provider) SpendMeter() *SpendMeter { return p.meter.Load() }
+
 // Ledger exposes the price ledger (read/write) for cost wiring.
 func (p *Provider) Ledger() *PriceLedger { return p.ledger }
 
@@ -193,6 +208,16 @@ func (p *Provider) Acquire(ctx context.Context, req domain.LLMRequest) (domain.G
 	// call, so a burst of direct system-organ calls cannot flood the provider.
 	if p.sem != nil {
 		gen = &concurrencyGenerator{inner: gen, sem: p.sem}
+	}
+	// Outermost of all: the ADR-0131 spend meter. Outside the concurrency cap so
+	// a call refused at the session ceiling never occupies a slot; at Acquire so
+	// every system organ is metered without any call site knowing.
+	if m := p.meter.Load(); m != nil {
+		purpose := string(req.Purpose)
+		if purpose == "" {
+			purpose = "model"
+		}
+		gen = &meteredGenerator{inner: gen, meter: m, purpose: purpose, generatorID: id}
 	}
 	return gen, nil
 }

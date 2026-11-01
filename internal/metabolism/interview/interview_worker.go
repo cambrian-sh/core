@@ -48,6 +48,9 @@ type ProfileStore interface {
 	GetJudicialRecords(ctx context.Context, agentID, sourceHash string, topK int) ([]string, error)
 	Save(ctx context.Context, text string, embedding []float32, metadata map[string]interface{}) error
 	EmbeddingDistance(a, b []float32) float64
+	// Composed, not restated (AGENTS.md §3.1): the previous VERSION's profile,
+	// which GetProfile keyed by the current hash cannot find.
+	domain.ProfileHistory
 }
 
 // AgentUpdater marks an agent as no longer Provisional in the registry.
@@ -96,6 +99,28 @@ type InterviewWorker struct {
 
 // NewInterviewWorker creates an InterviewWorker with the default pool size.
 // The Requester field is nil; scenario RPC calls are disabled.
+// priorProfile is the profile inherited merit is seeded from (ADR-0002 D2 /
+// ADR-0006 D5): this exact version's own profile when it has one (a same-hash
+// re-interview — that row is the truth for this code), otherwise the most
+// recent profile of any OTHER version. Until
+// T-20261101-interview-reinterview-never-finds-the-previous only the first
+// lookup existed, so on a real version change (new hash) the prior was always
+// nil and no merit was ever inherited. Lookup errors read as "no prior": a
+// fresh agent seeding 0 is the safe direction, and the interview itself must
+// not fail over history.
+func (w *InterviewWorker) priorProfile(ctx context.Context, agent domain.AgentDefinition) *domain.AgentProfile {
+	if p, err := w.Store.GetProfile(ctx, agent.ID, agent.SourceHash); err == nil && p != nil {
+		return p
+	}
+	p, err := w.Store.GetPreviousProfile(ctx, agent.ID, agent.SourceHash)
+	if err != nil {
+		slog.Debug("interview: previous-version profile lookup failed; seeding without inherited merit",
+			"agent", agent.ID, "err", err)
+		return nil
+	}
+	return p
+}
+
 func NewInterviewWorker(registry ManifestReader, embedder domain.Embedder, store ProfileStore, updater AgentUpdater) *InterviewWorker {
 	return &InterviewWorker{
 		Registry: registry,
@@ -286,7 +311,7 @@ func (w *InterviewWorker) processAgent(ctx context.Context, agent domain.AgentDe
 	}
 
 	var seededSuccessRate, seededTrustScore float64
-	priorProfile, _ := w.Store.GetProfile(ctx, agent.ID, agent.SourceHash)
+	priorProfile := w.priorProfile(ctx, agent)
 	if priorProfile != nil {
 		decay, decayErr := w.computeDecay(ctx, manifest, priorProfile)
 		if decayErr == nil {
@@ -388,7 +413,7 @@ func (w *InterviewWorker) processGradedInterview(ctx context.Context, agent doma
 	// this is a re-interview (so proven trust is not discarded on a minor update).
 	score := clamp(result.MeanScore, 0, 1)
 	seededSuccessRate, seededTrustScore := score, score
-	if prior, _ := w.Store.GetProfile(ctx, agent.ID, agent.SourceHash); prior != nil {
+	if prior := w.priorProfile(ctx, agent); prior != nil {
 		if decay, dErr := w.computeDecay(ctx, manifest, prior); dErr == nil {
 			seededSuccessRate = 0.5*score + 0.5*prior.SuccessRate*decay
 			seededTrustScore = 0.5*score + 0.5*prior.TrustScore*decay
@@ -501,7 +526,7 @@ func (w *InterviewWorker) processA2AAgent(ctx context.Context, agent domain.Agen
 	}
 
 	var seededSuccessRate, seededTrustScore float64
-	priorProfile, _ := w.Store.GetProfile(ctx, agent.ID, agent.SourceHash)
+	priorProfile := w.priorProfile(ctx, agent)
 	if priorProfile != nil {
 		syntheticManifest := &domain.AgentManifest{ReleaseNotes: cardText}
 		decay, decayErr := w.computeDecay(ctx, syntheticManifest, priorProfile)

@@ -17,23 +17,34 @@ import (
 // premium sibling is checked out beside it, the premium tree, and refuses any
 // `http.Server{` literal in a non-test file outside the policy file.
 //
-// The allowlist below is the RESIDUAL the 2026-10-31 implementation could not
-// reach (files owned by other work, or binaries that cannot import app without
-// a cycle). Each entry names the ticket that retires it; an entry with no
-// ticket is a defect, and so is adding one without a ticket.
+// The allowlist below holds ONLY binaries ADR-0130 D3 does not govern: D3
+// covers every listener "the kernel or a plugin opens", and these are
+// operator-run tools that never run inside a kernel (app.ServeHTTPListener
+// answers ErrListenerPolicyUnavailable outside one). Each entry cites the ADR
+// that places it outside D3, and each server still takes the policy's shape —
+// loopback default address, ReadHeaderTimeout/IdleTimeout, a body cap — with a
+// comment at the literal repeating the citation. Adding an entry without an ADR
+// citation is a defect. The four 2026-10-31 residuals were retired by
+// T-20261101-remaining-http-server-literals-outside-listener: the /healthz shim
+// and the ingress-studio webhook receiver now go through serveHTTP /
+// app.ServeHTTPListener; the two tools below stay, deliberately.
 var listenerPolicyResidual = map[string]string{
-	// internal/health cannot import app (app imports internal/*); the shim's
-	// server is constructed there. T-20261101-remaining-http-server-literals-outside-listener.
-	"internal/health/httpshim.go": "T-20261101-remaining-http-server-literals-outside-listener",
-	// Operator-run maintenance binary, not a kernel listener (AGENTS.md §6.1 shape).
-	"cmd/pagerank-recompute/main.go": "T-20261101-remaining-http-server-literals-outside-listener",
-	// Premium: the ingress-studio webhook receiver and a dev viewer binary.
-	"ingressstudio/transport_webhook.go": "T-20261101-remaining-http-server-literals-outside-listener",
-	"cmd/cambrian-runview/main.go":       "T-20261101-remaining-http-server-literals-outside-listener",
+	// ADR-0054 D2: the always-up PageRank sidecar. Its own container; the
+	// compose port mapping needs a container-wide bind, and it never links the
+	// kernel's listener policy. Default address is loopback.
+	"cmd/pagerank-recompute/main.go": "ADR-0054 D2 (operator-run sidecar, outside ADR-0130 D3)",
+	// Premium: an operator-run dev dashboard that runs BESIDE a kernel.
+	// Default -listen is loopback.
+	"cmd/cambrian-runview/main.go": "ADR-0130 D3 scope (operator-run tool, not a kernel or plugin listener)",
 }
 
 func TestListenerPolicy_OnlyListenerSecurityBuildsHTTPServers(t *testing.T) {
 	t.Parallel()
+	for path, why := range listenerPolicyResidual {
+		if !strings.Contains(why, "ADR-") {
+			t.Errorf("allowlist entry %s carries no ADR citation (%q)", path, why)
+		}
+	}
 	roots := map[string]string{"core": ".."}
 	if premium := filepath.Join("..", "..", "cambrian-premium"); dirExists(premium) {
 		roots["premium"] = premium

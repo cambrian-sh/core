@@ -30,7 +30,9 @@ type ollamaRequest struct {
 }
 
 type ollamaResponse struct {
-	Response string `json:"response"`
+	Response        string `json:"response"`
+	PromptEvalCount int    `json:"prompt_eval_count"`
+	EvalCount       int    `json:"eval_count"`
 }
 
 func (c *OllamaClient) Generate(ctx context.Context, prompt string) (string, error) {
@@ -74,6 +76,13 @@ func (c *OllamaClient) Generate(ctx context.Context, prompt string) (string, err
 	if err := json.Unmarshal(body, &oResp); err != nil {
 		return "", err
 	}
+	// ADR-0131 D2: Ollama reports eval counts on a non-streaming response; a
+	// cached prompt can report prompt_eval_count 0, which is the truth, not a gap.
+	reportUsage(ctx, TokenUsage{
+		PromptTokens:     oResp.PromptEvalCount,
+		CompletionTokens: oResp.EvalCount,
+		TotalTokens:      oResp.PromptEvalCount + oResp.EvalCount,
+	})
 	if strings.TrimSpace(oResp.Response) == "" {
 		return "", fmt.Errorf("ollama: empty response from model %q", c.Model)
 	}

@@ -124,6 +124,11 @@ type Options struct {
 	// and its outcome) keyed by the caller's session token. Operator-facing and
 	// append-only; see domain.AgentActivity for why it is not ProgressUpdate.
 	AgentActivityObserver domain.AgentActivityObserver
+	// LoginObserver receives every operator Login attempt, success or failure
+	// (ADR-0130 1f). Observation only: the login limiter runs without it.
+	// Plugins contribute through Registry.AddLoginObserver; this field is the
+	// directly-set equivalent. OSS default nil.
+	LoginObserver domain.LoginObserver
 
 	// EvidenceTransformers are the transformation-stage consumers of the
 	// evidence outbox (ADR-0108 D3). Plugins contribute through

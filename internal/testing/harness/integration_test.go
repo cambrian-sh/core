@@ -44,8 +44,11 @@ func TestE2E_TokenBudgetEnforced(t *testing.T) {
 	if len(usages) != 1 {
 		t.Fatalf("want 1 reconciled usage, got %d", len(usages))
 	}
-	if usages[0].TotalTokens == 0 || usages[0].TotalTokens > limit {
-		t.Fatalf("reconciled usage %d outside (0, %d]", usages[0].TotalTokens, limit)
+	// The fake model reports no usage, so the reconciled row is the flagged len/4
+	// fallback over prompt AND response (ADR-0131 D2); the completion share is what
+	// the lease budget bounds.
+	if usages[0].CompletionTokens == 0 || usages[0].CompletionTokens > limit || !usages[0].Estimated {
+		t.Fatalf("reconciled usage %+v: completion outside (0, %d] or not flagged estimated", usages[0], limit)
 	}
 	if len(events) != 1 || events[0].CompletionTokens != llm.EstimateTokens(got) {
 		t.Fatalf("TaskEvent should count the truncated response: events=%d", len(events))
@@ -72,7 +75,7 @@ func TestE2E_TokenBudgetNotExceededPassesThrough(t *testing.T) {
 	if len(events) != 1 || events[0].BudgetOverrun {
 		t.Fatalf("a response under the limit must not be reported as an overrun: %+v", events)
 	}
-	if u := h.StepUsages(); len(u) != 1 || u[0].TotalTokens != llm.EstimateTokens("a short answer") {
+	if u := h.StepUsages(); len(u) != 1 || u[0].CompletionTokens != llm.EstimateTokens("a short answer") || !u[0].Estimated {
 		t.Fatalf("usage %+v does not match the response", u)
 	}
 }
@@ -213,5 +216,37 @@ func TestE2E_CancelPropagatesThroughGateway(t *testing.T) {
 	}
 	if n := h.Gateway.SessionCount(); n != 0 {
 		t.Fatalf("lease leaked after cancel: %d", n)
+	}
+}
+
+// ADR-0131 gate criterion 2 through the REAL gateway: a plan whose session is
+// over execution.session.max_session_tokens fails with ErrSpendCeiling and the
+// model is never called.
+func TestE2E_SpendCeilingFailsThePlan(t *testing.T) {
+	h := harness.New(harness.Config{MaxSessionTokens: 1})
+	h.AddResponse("never streamed")
+
+	_, _, err := h.ExecutePlan(t.Context())
+	if !errors.Is(err, llm.ErrSpendCeiling) {
+		t.Fatalf("want ErrSpendCeiling, got %v", err)
+	}
+	if n := h.Streamer.Entered(); n != 0 {
+		t.Fatalf("a refused call must not reach the model, %d streams opened", n)
+	}
+	if !h.Meter.Session(harness.SessionID).Exhausted {
+		t.Fatal("the harness session must be marked exhausted")
+	}
+}
+
+// Under the ceiling the meter books the plan's calls against the session.
+func TestE2E_SpendMeterBooksTheGatewayCalls(t *testing.T) {
+	h := harness.New(harness.Config{})
+	h.AddResponse("a short answer")
+	if _, _, err := h.ExecutePlan(t.Context()); err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	got := h.Meter.Session(harness.SessionID)
+	if got.Calls != 1 || got.OutputTokens != llm.EstimateTokens("a short answer") || got.EstimatedCalls != 1 {
+		t.Fatalf("session spend = %+v", got)
 	}
 }

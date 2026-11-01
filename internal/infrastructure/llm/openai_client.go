@@ -69,6 +69,7 @@ type openAIChatResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage openaiUsage `json:"usage"`
 }
 
 func (c *OpenAIClient) Generate(ctx context.Context, prompt string) (string, error) {
@@ -114,6 +115,8 @@ func (c *OpenAIClient) Generate(ctx context.Context, prompt string) (string, err
 	if err := json.Unmarshal(body, &chatResp); err != nil {
 		return "", err
 	}
+	// ADR-0131 D2: hand the response's own usage to whoever metered this call.
+	reportUsage(ctx, chatResp.Usage.tokenUsage())
 	if len(chatResp.Choices) == 0 {
 		return "", fmt.Errorf("openai: no choices in response")
 	}
@@ -269,6 +272,10 @@ func (c *OpenAIClient) GenerateWithTools(
 	var chatResp openAIToolChatResponse
 	if err := json.Unmarshal(body, &chatResp); err != nil {
 		return zero, err
+	}
+	// ADR-0131 D2: the tool path is a billed call like any other.
+	if u, uerr := (&openaiExtractor{}).Extract(body); uerr == nil {
+		reportUsage(ctx, u)
 	}
 	if len(chatResp.Choices) == 0 {
 		return zero, fmt.Errorf("openai: no choices in response")

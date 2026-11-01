@@ -37,9 +37,17 @@ type BudgetLeaseState struct {
 	ActualTokensUsed int // reconciled at stream close via Pass 2
 	// BudgetOverrun records that Pass 1 cut the stream at the 90% cut-off of
 	// TokenLimit (ADR-0018). Set by StreamChunks, read back by Complete.
-	BudgetOverrun  bool
-	ExpiresAt      time.Time // keepalive TTL — refreshed on each chunk
-	LastActivityAt time.Time
+	BudgetOverrun bool
+	// PromptTokensUsed / CacheReadTokensUsed split ActualTokensUsed (the total)
+	// into its input share and the cached part of that input, summed over every
+	// call made under the lease (ADR-0131 D2). UsageEstimated is true when at
+	// least one of those calls had no provider usage and was counted by the
+	// len/4 fallback.
+	PromptTokensUsed    int
+	CacheReadTokensUsed int
+	UsageEstimated      bool
+	ExpiresAt           time.Time // keepalive TTL — refreshed on each chunk
+	LastActivityAt      time.Time
 	// Binding is the execution identity the kernel attached at dispatch (session, run,
 	// step, agent). It is what lets a transport resolve an agent's opaque lease back to
 	// the session that owns it, instead of trusting the agent's own header. Written
@@ -66,13 +74,19 @@ type GenerateOptions struct {
 // On the final chunk, IsFinal=true and usage fields may be non-zero if the provider
 // includes a usage field in the completion response (OpenAI, Anthropic).
 // When the provider omits usage (Ollama streaming), usage fields remain zero
-// and ReconcileTokens falls back to EstimateTokens(fullResponseText).
+// and ReconcileTokens falls back to the len/4 estimate, flagged Estimated (ADR-0131 D2).
 type StreamChunk struct {
 	Text                  string
 	IsFinal               bool
 	UsagePromptTokens     int // non-zero only on final chunk with provider usage
 	UsageCompletionTokens int // non-zero only on final chunk with provider usage
 	UsageTotalTokens      int // non-zero only on final chunk with provider usage
+	// UsageCacheReadTokens is the part of UsagePromptTokens the provider served
+	// from its prompt cache (Anthropic cache_read_input_tokens, OpenAI
+	// prompt_tokens_details.cached_tokens, Gemini cachedContentTokenCount).
+	// Already INCLUDED in UsagePromptTokens; carried separately so the ADR-0131
+	// spend ledger can report cache_read. Zero when the provider says nothing.
+	UsageCacheReadTokens int
 }
 
 // LLMStreamer is a provider client that can stream LLM responses.

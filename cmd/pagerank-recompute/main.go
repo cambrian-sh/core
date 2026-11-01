@@ -20,7 +20,7 @@
 //	PAGERANK_DAMPING        damping factor (default 0.85)
 //	PAGERANK_ITERATIONS     power-iteration rounds (default 50)
 //	PAGERANK_DF_CAP         drop entities in > N chunks (default 2000; 0 = no cap)
-//	PAGERANK_HTTP_ADDR      trigger endpoint listen addr (default ":8088"; "" disables)
+//	PAGERANK_HTTP_ADDR      trigger endpoint listen addr (default "127.0.0.1:8088"; "" disables)
 //	PAGERANK_TRIGGER_TOKEN  if set, POST /recompute requires header X-Trigger-Token
 //	RUN_ONCE                "1" ⇒ compute once and exit
 //	CAMBRIAN_CONFIG         kernel config path (default configs/config.json)
@@ -171,7 +171,19 @@ func (w *worker) serveHTTP(ctx context.Context, addr, token string) *http.Server
 		writeJSON(rw, http.StatusAccepted, map[string]string{"status": "started"})
 	})
 
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	// Deliberately NOT app.ServeHTTPListener (ADR-0130 D3 governs listeners the
+	// KERNEL or a PLUGIN opens; this is an operator-run sidecar, ADR-0054 D2,
+	// that never links the kernel and runs in its own container where the
+	// docker-compose port mapping needs a container-wide bind). Allowlisted in
+	// app/listener_policy_test.go with this citation. It still takes the policy's
+	// shape: loopback default address (see main), timeouts, and a body cap —
+	// no endpoint here reads a body, so 1 MiB is generous.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           http.MaxBytesHandler(mux, 1<<20),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() {
 		slog.Info("pagerank: trigger endpoint up", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -241,7 +253,11 @@ func main() {
 
 	// On-demand trigger endpoint (the thing the kernel calls).
 	var srv *http.Server
-	if addr := envStr("PAGERANK_HTTP_ADDR", ":8088"); addr != "" {
+	// Loopback by default (ADR-0130 D3's default, applied to the sidecar): the
+	// container deployment sets PAGERANK_HTTP_ADDR=":8088" explicitly
+	// (db/docker-compose.yml), so only a bare host run changes — and a bare host
+	// run has no business serving the trigger to the network.
+	if addr := envStr("PAGERANK_HTTP_ADDR", "127.0.0.1:8088"); addr != "" {
 		srv = w.serveHTTP(ctx, addr, os.Getenv("PAGERANK_TRIGGER_TOKEN"))
 	}
 

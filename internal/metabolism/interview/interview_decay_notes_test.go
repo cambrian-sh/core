@@ -100,3 +100,45 @@ func TestComputeDecay_PriorWithoutNotesFallsToClampFloor(t *testing.T) {
 		t.Fatalf("without prior notes the decay must be the clamp floor %.2f, got %.4f", DefaultDecayClampMin, got.SuccessRate)
 	}
 }
+
+// T-20261101-interview-reinterview-never-finds-the-previous: the prior profile
+// is keyed by hash-old while the agent now carries hash-new. GetProfile(hash-new)
+// finds nothing; the worker must still seed merit from the previous version
+// (it used to seed 0).
+func TestInterview_VersionChangeSeedsMeritFromPreviousHash(t *testing.T) {
+	agent := domain.AgentDefinition{ID: "agent-v2", SourceHash: "hash-new", Provisional: true}
+	registry := newTestRegistry(agent)
+	registry.manifests["agent-v2"] = &domain.AgentManifest{ReleaseNotes: "v2: faster"}
+	store := &mockProfileStore{
+		profileToReturn: nil, // nothing under hash-new
+		previousToReturn: &domain.AgentProfile{
+			AgentID: "agent-v2", SourceHash: "hash-old", ReleaseNotes: "v1",
+			SuccessRate: 0.8, TrustScore: 0.6,
+		},
+		embeddingDistFn: func(_, _ []float32) float64 { return 0.25 },
+	}
+	w := NewInterviewWorker(registry, &mockEmbedder{}, store, &mockUpdater{})
+	if err := w.processAgent(context.Background(), agent); err != nil {
+		t.Fatalf("processAgent: %v", err)
+	}
+	got := store.savedProfiles[0].Profile
+	if got.SuccessRate == 0 || got.TrustScore == 0 {
+		t.Fatalf("version change seeded no merit (the bug): %+v", got)
+	}
+	if abs64(got.SuccessRate-0.8*0.75) > 1e-9 || abs64(got.TrustScore-0.6*0.75) > 1e-9 {
+		t.Fatalf("seeded merit should be previous × 0.75, got success=%.4f trust=%.4f", got.SuccessRate, got.TrustScore)
+	}
+}
+
+// The same-hash profile, when present, wins over another version's.
+func TestInterview_SameHashProfileWinsOverPrevious(t *testing.T) {
+	agent := domain.AgentDefinition{ID: "a", SourceHash: "h1"}
+	store := &mockProfileStore{
+		profileToReturn:  &domain.AgentProfile{AgentID: "a", SourceHash: "h1", SuccessRate: 0.9},
+		previousToReturn: &domain.AgentProfile{AgentID: "a", SourceHash: "h0", SuccessRate: 0.1},
+	}
+	w := NewInterviewWorker(newTestRegistry(agent), &mockEmbedder{}, store, &mockUpdater{})
+	if p := w.priorProfile(context.Background(), agent); p == nil || p.SourceHash != "h1" {
+		t.Fatalf("prior = %+v, want the same-hash profile", p)
+	}
+}

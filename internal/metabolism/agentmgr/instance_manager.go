@@ -57,6 +57,11 @@ type InstanceManager struct {
 	// agentCredential resolves an agent's ADR-0130 plane credential at spawn
 	// (agent_credential_env.go). nil ⇒ agents spawn without one.
 	agentCredential func(agentID string) (string, bool)
+	// agentTLSCA / agentTLSServerName are the TLS facts a spawned agent needs to
+	// reach a pure-TLS kernel (ADR-0130 D4; SetAgentTransport). Empty ⇒ the
+	// agent dials plaintext, which is right on loopback.
+	agentTLSCA         string
+	agentTLSServerName string
 	// agentMemLimitMB is the GLOBAL default memory cap (SEC-01), used for agents
 	// that don't declare their own. 0 = no default.
 	agentMemLimitMB int
@@ -359,6 +364,8 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 	// ADR-0130 D1: the agent's own plane credential, the one credential the
 	// SEC-01 environment admits (agent_credential_env.go).
 	cmd.Env = append(cmd.Env, im.agentCredentialEnv(def.ID)...)
+	// ADR-0130 D4: and how to reach a TLS-only kernel (agent_credential_env.go).
+	cmd.Env = append(cmd.Env, im.agentTransportEnv()...)
 
 	// ADR-0033: daemon-specific flags.
 	if def.Trait == domain.TraitDaemon {

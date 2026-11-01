@@ -1,6 +1,8 @@
 package operator
 
 import (
+	"fmt"
+
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 
@@ -107,6 +109,42 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 		out.Payload = &pb.OperatorEvent_DaemonCrashed{DaemonCrashed: &pb.DaemonCrashedOp{
 			AgentId:  e.AgentID,
 			StreamId: e.StreamID,
+		}}
+
+	// ADR-0070 D2: a quarantined daemon must be operator-visible. There is no
+	// daemon-status message on the pinned contract (DaemonCrashedOp carries only
+	// agent/stream), and adding one is a contract change deferred to bump 0096
+	// (AGENTS.md §4.4). Quarantine and recovery are kernel-authored state changes
+	// on an agent, which is exactly what AuditOp records — and the console already
+	// folds AuditOp into its audit tail, de-duplicated by id. The id is derived
+	// from the feed seq (AGENTS.md §2.6: never a clock), so a replay re-delivers
+	// the same entry instead of a duplicate.
+	case domain.DaemonQuarantinedEvent:
+		out.Payload = &pb.OperatorEvent_Audit{Audit: &pb.AuditOp{
+			Id:         fmt.Sprintf("daemon.quarantined:%d", se.Seq),
+			Actor:      daemonSupervisorActor,
+			Role:       "kernel",
+			ActionType: domain.EventTypeDaemonQuarantined,
+			TargetType: "agent",
+			TargetId:   e.AgentID,
+			Before:     "crashed",
+			After:      "quarantined",
+			Reason:     daemonQuarantineReason(e),
+			Result:     "quarantined",
+		}}
+
+	case domain.DaemonRecoveredEvent:
+		out.Payload = &pb.OperatorEvent_Audit{Audit: &pb.AuditOp{
+			Id:         fmt.Sprintf("daemon.recovered:%d", se.Seq),
+			Actor:      daemonSupervisorActor,
+			Role:       "kernel",
+			ActionType: domain.EventTypeDaemonRecovered,
+			TargetType: "agent",
+			TargetId:   e.AgentID,
+			Before:     "crashed",
+			After:      "running",
+			Reason:     daemonStreamNote(e.StreamID),
+			Result:     "recovered",
 		}}
 
 	case domain.WatchTriggeredEvent:
@@ -337,6 +375,32 @@ func gatekeeperFunnelToOp(f *domain.GatekeeperFunnel) *pb.GatekeeperFunnelOp {
 
 // auditEntryToOp maps a domain.AuditEntry to its wire form. Shared by the feed
 // (AuditEvent) and the QueryAudit read RPC.
+// daemonSupervisorActor is the actor recorded on kernel-authored daemon
+// lifecycle audit entries (ADR-0070): no human or agent principal made the call.
+const daemonSupervisorActor = "kernel:agentmgr"
+
+// daemonQuarantineReason renders the quarantine cause with the restart count and
+// stream, so the audit tail alone tells the operator why the daemon will not
+// come back on its own.
+func daemonQuarantineReason(e domain.DaemonQuarantinedEvent) string {
+	r := e.Reason
+	if r == "" {
+		r = "restart budget exhausted"
+	}
+	r = fmt.Sprintf("%s after %d restart attempts", r, e.Attempts)
+	if e.StreamID != "" {
+		r += "; " + daemonStreamNote(e.StreamID)
+	}
+	return r
+}
+
+func daemonStreamNote(streamID string) string {
+	if streamID == "" {
+		return ""
+	}
+	return "stream " + streamID
+}
+
 func auditEntryToOp(a domain.AuditEntry) *pb.AuditOp {
 	return &pb.AuditOp{
 		Id:         a.ID,

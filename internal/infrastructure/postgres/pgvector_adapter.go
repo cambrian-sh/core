@@ -862,7 +862,12 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 
 	var results []domain.SearchResult
 	for rows.Next() {
-		doc, distance, err := scanDocument(rows, vector != nil)
+		// Every branch above SELECTs a distance column (the nil-vector branch
+		// appends a constant 0.0), so the scan always includes it. It used to be
+		// `vector != nil`, which made every nil-vector Search on Postgres fail
+		// with "14 field descriptions, 13 destinations" — GetJudicialRecords
+		// included (T-20261101-pgvectoradapter-search-with-a-nil-query-vector).
+		doc, distance, err := scanDocument(rows, true)
 		if err != nil {
 			return nil, mapError("ScanSearch", err)
 		}

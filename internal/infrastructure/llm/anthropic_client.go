@@ -36,6 +36,7 @@ type anthropicMessageResp struct {
 	Content []struct {
 		Text string `json:"text"`
 	} `json:"content"`
+	Usage anthropicUsage `json:"usage"`
 }
 
 func (c *AnthropicClient) Generate(ctx context.Context, prompt string) (string, error) {
@@ -82,6 +83,8 @@ func (c *AnthropicClient) Generate(ctx context.Context, prompt string) (string, 
 	if err := json.Unmarshal(body, &msgResp); err != nil {
 		return "", err
 	}
+	// ADR-0131 D2: hand the response's own usage to whoever metered this call.
+	reportUsage(ctx, msgResp.Usage.tokenUsage())
 	if len(msgResp.Content) == 0 {
 		return "", fmt.Errorf("anthropic: no content in response")
 	}

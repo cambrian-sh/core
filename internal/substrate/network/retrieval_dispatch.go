@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/memory"
+
+	"google.golang.org/grpc/metadata"
 )
 
 const (
@@ -96,7 +99,27 @@ func (d *RetrievalDispatcher) call(ctx context.Context, reqData []byte) ([]byte,
 		}
 		if tokenID, aerr := d.Gateway.Acquire(ctx, sa, retrievalPlanTokenLimit, retrievalSessionTTL); aerr == nil && tokenID != "" {
 			h.Context["_session_token_id"] = string(tokenID)
-			defer func() { _, _ = d.Gateway.Complete(ctx, tokenID) }()
+			// ADR-0131 D1/D3: bind this lease to the session whose QueryMemory
+			// started the chain. Unbound, the retrieval_agent's calls were spend
+			// with no owner — invisible to the session ceiling, which is exactly
+			// where the default-on decomposition's cost lives.
+			if r, ok := d.Gateway.(domain.LeaseResolver); ok {
+				sid, _ := domain.SessionIDFromContext(ctx)
+				r.BindLease(tokenID, domain.LeaseBinding{SessionID: sid, StepIndex: -1, AgentID: agentID})
+			}
+			parent := callerLease(ctx)
+			defer func() {
+				// Complete also runs the gateway's completion hook, which clears any
+				// skill grants conferred under this lease (ADR-0046 D6) — the third
+				// lease site no longer needs its own EndRun call.
+				usage, cerr := d.Gateway.Complete(ctx, tokenID)
+				// ADR-0131 D3: the chain is counted against the step lease of the
+				// agent that asked. Best-effort: no parent lease (operator/bench
+				// caller) or a gateway without charging leaves it on the session only.
+				if c, ok := d.Gateway.(leaseCharger); ok && cerr == nil && parent != "" && parent != tokenID {
+					c.ChargeLease(parent, usage)
+				}
+			}()
 		}
 	}
 	resp, err := d.Caller.CallAgent(ctx, agentID, h, "")
@@ -105,6 +128,26 @@ func (d *RetrievalDispatcher) call(ctx context.Context, reqData []byte) ([]byte,
 		return nil, err
 	}
 	return resp.Payload.Data, nil
+}
+
+// leaseCharger is the gateway surface that adds usage to another live lease.
+type leaseCharger interface {
+	ChargeLease(leaseID domain.LeaseID, u llm.TokenUsage)
+}
+
+// callerLease returns the BudgetLease the inbound caller presented (x-lease-id,
+// or the legacy x-session-id slot that older SDKs fill with their lease), or "".
+// Used only to charge spend to it, never to authorise anything: ChargeLease adds
+// usage and grants nothing, and it ignores a value that is not a live lease.
+func callerLease(ctx context.Context) domain.LeaseID {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	if l := firstMD(md, leaseHeader); l != "" {
+		return domain.LeaseID(l)
+	}
+	return domain.LeaseID(firstMD(md, sessionHeader))
 }
 
 // PlanQuery asks the retrieval_agent to rewrite the query into a discriminative

@@ -41,3 +41,64 @@ func (im *InstanceManager) agentCredentialEnv(agentID string) []string {
 	}
 	return []string{AgentTokenEnv + "=" + tok, AgentIDEnv + "=" + agentID}
 }
+
+// The agent's TRANSPORT to the kernel (ADR-0130 D3/D4;
+// T-20261101-kernel-spawned-agents-dial-localhost-port-and).
+//
+// The metabolism stack builds the manager with "localhost:<port>", which is
+// right only when the kernel listens on loopback in plaintext or in the
+// loopback TLS+plaintext demux. On a routable bind nothing listens on
+// localhost, and in pure-TLS mode a plaintext dial is refused. The composition
+// root therefore resolves the address and the TLS facts from the ONE listener
+// policy (app/listener_security.go) and hands them here, next to the
+// credential — the policy decision stays in one place and this package only
+// carries it to the process environment.
+
+// TLSCAEnv names the PEM root the SDK verifies the kernel against; set ⇒ the
+// SDK dials TLS (cambrian_agent_sdk/channel.py TLS_CA_ENV).
+const TLSCAEnv = "CAMBRIAN_TLS_CA"
+
+// TLSServerNameEnv overrides the name the SDK verifies the kernel's
+// certificate against (channel.py TLS_SERVER_NAME_ENV) — used when the agent
+// dials an address the certificate does not name (a wildcard bind reached on
+// loopback).
+const TLSServerNameEnv = "CAMBRIAN_TLS_SERVER_NAME"
+
+// AgentTransport is how a spawned agent reaches the kernel.
+type AgentTransport struct {
+	// Addr is the host:port passed as --substrate-addr. Empty keeps the
+	// address the manager was constructed with.
+	Addr string
+	// TLSCAFile, when set, is injected as CAMBRIAN_TLS_CA: the agent dials TLS
+	// and verifies against this root.
+	TLSCAFile string
+	// TLSServerName, when set, is injected as CAMBRIAN_TLS_SERVER_NAME.
+	TLSServerName string
+}
+
+// SetAgentTransport wires the dial facts every spawn uses. Called once by the
+// composition root before any agent spawns. It is transport plumbing, not a
+// security control: the kernel's listener enforces TLS and the agent
+// credential whether or not an agent was told how to satisfy them.
+func (im *InstanceManager) SetAgentTransport(t AgentTransport) {
+	if t.Addr != "" {
+		im.substrateAddr = t.Addr
+	}
+	im.agentTLSCA = t.TLSCAFile
+	im.agentTLSServerName = t.TLSServerName
+}
+
+// agentTransportEnv returns the TLS KEY=VALUE pairs for a spawn. Like the
+// credential, they are appended AFTER the SEC-01 allowlist (which strips
+// CAMBRIAN_* wholesale): they are the kernel telling its own agent how to
+// reach it, not a kernel secret — a CA certificate is public material.
+func (im *InstanceManager) agentTransportEnv() []string {
+	var out []string
+	if im.agentTLSCA != "" {
+		out = append(out, TLSCAEnv+"="+im.agentTLSCA)
+		if im.agentTLSServerName != "" {
+			out = append(out, TLSServerNameEnv+"="+im.agentTLSServerName)
+		}
+	}
+	return out
+}

@@ -64,3 +64,42 @@ func TestAgentConnector_TransportSelection(t *testing.T) {
 		t.Fatalf("unix dial must ignore the TLS root: %v", err)
 	}
 }
+
+// ADR-0130 D4 (T-20261101-kernel-spawned-agents-dial-localhost-port-and): under
+// a TLS transport the spawned agent is told the reachable address and the TLS
+// root (and server-name override), next to its credential.
+func TestBuildAgentCmd_TLSTransportReachesTheAgent(t *testing.T) {
+	im := NewInstanceManager("python", "localhost:50051")
+	im.SetAgentTransport(AgentTransport{Addr: "192.168.1.10:50051", TLSCAFile: "/etc/cambrian/tls.crt", TLSServerName: "kernel.lan"})
+	def := &domain.AgentDefinition{ID: "analyst_agent", Runtime: domain.RuntimePython, ExecPath: "agent.py"}
+	cmd, err := im.buildAgentCmd(def, &domain.Instance{ID: "inst-1"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "--substrate-addr 192.168.1.10:50051") {
+		t.Fatalf("agent not given the reachable address: %s", args)
+	}
+	env := strings.Join(cmd.Env, "\n")
+	if !strings.Contains(env, TLSCAEnv+"=/etc/cambrian/tls.crt") || !strings.Contains(env, TLSServerNameEnv+"=kernel.lan") {
+		t.Fatalf("TLS root/server name not injected:\n%s", env)
+	}
+}
+
+// Plaintext (loopback) transport injects no TLS variables, and an empty Addr
+// keeps the constructed address.
+func TestBuildAgentCmd_PlaintextTransportInjectsNoTLS(t *testing.T) {
+	im := NewInstanceManager("python", "localhost:50051")
+	im.SetAgentTransport(AgentTransport{TLSServerName: "ignored-without-a-root"})
+	def := &domain.AgentDefinition{ID: "a", Runtime: domain.RuntimeBinary, ExecPath: "agent"}
+	cmd, err := im.buildAgentCmd(def, &domain.Instance{ID: "inst-1"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args := strings.Join(cmd.Args, " "); !strings.Contains(args, "--substrate-addr localhost:50051") {
+		t.Fatalf("constructed address lost: %s", args)
+	}
+	if env := strings.Join(cmd.Env, "\n"); strings.Contains(env, TLSCAEnv) || strings.Contains(env, TLSServerNameEnv) {
+		t.Fatalf("plaintext transport injected TLS variables:\n%s", env)
+	}
+}

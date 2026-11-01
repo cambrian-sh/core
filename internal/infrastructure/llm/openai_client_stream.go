@@ -121,6 +121,7 @@ func (c *OpenAIClient) GenerateStream(ctx context.Context, prompt string) (<-cha
 				chunk.UsagePromptTokens = delta.Usage.PromptTokens
 				chunk.UsageCompletionTokens = delta.Usage.CompletionTokens
 				chunk.UsageTotalTokens = delta.Usage.TotalTokens
+				chunk.UsageCacheReadTokens = delta.Usage.tokenUsage().CacheReadTokens
 			}
 			ch <- chunk
 		}

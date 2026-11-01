@@ -242,6 +242,11 @@ type Server struct {
 	// Embedder backs the Embed RPC (ADR-0041) used by an agent's Local Recurrent
 	// Workspace for relevance ranking. nil → Embed returns Unimplemented.
 	Embedder domain.Embedder
+
+	// SpendMeter is the ADR-0131 LLM spend ledger (the same object the Provider and
+	// the gateway meter through). Execute reads it to end a plan visibly at the
+	// session ceiling and to report the plan's spend. nil → no ceiling, no report.
+	SpendMeter *llm.SpendMeter
 }
 
 // AgentCallLogger observes LLM calls made by cognitive agents through the
@@ -287,7 +292,7 @@ func NewServer(
 	observer domain.TelemetryObserver,
 	contentStore domain.ContentStore,
 ) *Server {
-	return &Server{
+	s := &Server{
 		Planner:             planner,
 		Manager:             manager,
 		Dispatcher:          auctioneer,
@@ -305,6 +310,15 @@ func NewServer(
 		TelemetryObserver:   observer,
 		ContentStore:        contentStore,
 	}
+	// ADR-0046 D6 ephemerality, in ONE place: every lease the gateway completes —
+	// plan steps, the bypass arm, the retrieval dispatcher, and any lease site
+	// added later — clears the run-scoped skill grants keyed by it. The executor
+	// is read at call time because the composition root attaches it after
+	// construction (T-20261101-retrieval-dispatch-lease-retrieval-dispatch-go).
+	if h, ok := llmGateway.(interface{ SetCompleteHook(func(domain.LeaseID)) }); ok {
+		h.SetCompleteHook(func(lease domain.LeaseID) { s.ToolExecutor.EndRun(string(lease)) })
+	}
+	return s
 }
 
 // validatePlan checks the plan's DAG structure (ADR-0003 D4). It does NOT check the
@@ -492,6 +506,14 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		resumed = r
 	}
 
+	// ADR-0131: the session's spend before this Execute, so the response can report
+	// what THIS plan cost (the session total also carries earlier plans).
+	spendBase := s.SpendMeter.Session(sessionID)
+
+	// One planner-call budget for the whole plan: the validation retry below and
+	// the DAG's replans draw on the same 1 + max_replan_attempts calls.
+	planBudget := newPlanCallBudget(s.ExecCfg.Plan.MaxReplanAttempts)
+
 	var plan *domain.ExecutionPlan
 	switch {
 	case resumed != nil:
@@ -512,8 +534,11 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		plan = &authored
 		slog.Info("📝 OPERATOR-AUTHORED PLAN", "subject", plan.Subject, "steps", len(plan.Steps))
 	default:
-		p, perr := planWithValidation(ctx, s.Planner, userInput)
+		p, perr := planWithValidation(ctx, planBudget.planner(s.Planner), userInput)
 		if perr != nil {
+			if errors.Is(perr, llm.ErrSpendCeiling) {
+				return nil, s.endPlanAtSpendCeiling(sessionID, "", spendBase, perr)
+			}
 			return nil, perr
 		}
 		plan = p
@@ -608,6 +633,13 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		}
 		prePwd, _ := os.Getwd()
 
+		// ADR-0131 D3: once the session is at its spend ceiling no further step is
+		// dispatched — the agent would only meet the same refusal at its first
+		// generate, after an auction and a seed recall it cannot use.
+		if err := s.SpendMeter.AdmitSession(sessionID, string(domain.PurposeAgentStep), 0); err != nil {
+			return nil, err
+		}
+
 		// Stamp task_id so AgentManager.CallAgent builds a consistent snapshot key.
 		if handoff.Context == nil {
 			handoff.Context = make(map[string]string)
@@ -667,9 +699,9 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 					stepResp.Context[domain.HandoffKeyBudgetOverrun] = "true"
 				}
 				// ADR-0046 D6 ephemerality: the grants a system skill conferred for THIS
-				// run — keyed by the lease the agent presents as x-session-token — fall
-				// away with the lease (T-20261031-skill-conferred-run-grants-are-never-cleared).
-				s.ToolExecutor.EndRun(string(tokenID))
+				// run fall away with the lease — Complete runs the gateway's completion
+				// hook, registered in NewServer, which calls ToolExecutor.EndRun
+				// (T-20261031-skill-conferred-run-grants-are-never-cleared).
 			}()
 		}
 
@@ -795,17 +827,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	planCtx, cancelPlan := context.WithTimeout(ctx, time.Duration(s.ExecCfg.Plan.PlanTimeoutMs)*time.Millisecond)
 	defer cancelPlan()
 
-	var eventWriter executer.TaskEventWriter
-	if ew, ok := s.Manager.Registry.(executer.TaskEventWriter); ok {
-		eventWriter = ew
-	}
-	// Contract 0075: tap token usage for the hourly series on its way past.
-	// Decorating the resolved writer rather than adding an emission site means
-	// the series counts exactly what the kernel recorded and cannot drift from
-	// it. Nil recorder ⇒ the original writer, unchanged.
-	if s.TokenRecorder != nil {
-		eventWriter = s.TokenRecorder.Wrap(eventWriter)
-	}
+	eventWriter := s.taskEventWriter()
 
 	executor := &executer.DAGExecutor{
 		EventWriter:         eventWriter,
@@ -834,7 +856,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		ContextRefSnippetChars: s.ExecCfg.Plan.ContextRefSnippetChars,
 		ThoughtFn:              executer.StepFunc(s.thoughtFn(plan)),
 		CheckpointValidator:    awareness.NewLLMCheckpointValidator(s.Planner),
-		ReplanHandler:          s.replanHandler(),
+		ReplanHandler:          s.replanHandler(planBudget),
 		MaxReplanAttempts:      s.ExecCfg.Plan.MaxReplanAttempts,
 		MaxFanOutWidth:         s.ExecCfg.Plan.MaxFanOutWidth,
 		MaxPlanCost:            s.ExecCfg.Plan.MaxPlanCost,
@@ -860,11 +882,24 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 
 	masterCtx, err := executor.ExecuteFrom(planCtx, plan, initialCtx, executer.StepFunc(stepFn), startFromStep)
 
+	// ADR-0131 D3: a plan that hit the session ceiling ENDS AS A FAILURE, whatever
+	// shape the executor's outcome took. A refused call can surface as a step error,
+	// a partial plan, a failed replan — or not at all, when an agent swallows its
+	// generate error and reports text. The meter's verdict is the authority.
+	if errors.Is(err, llm.ErrSpendCeiling) || s.SpendMeter.Session(sessionID).Exhausted {
+		cause := err
+		if !errors.Is(cause, llm.ErrSpendCeiling) {
+			cause = llm.ErrSpendCeiling
+		}
+		return nil, s.endPlanAtSpendCeiling(sessionID, executionID, spendBase, cause)
+	}
+
 	if err != nil {
 		var partialErr *executer.PartialPlanError
 		if errors.As(err, &partialErr) {
 			slog.Warn("⚠️ Partial plan failure", "failed_step", partialErr.FailedStep, "context_entries", len(partialErr.Context))
 			partialErr.Context["_partial_plan"] = "true"
+			s.stampSpend(partialErr.Context, sessionID, spendBase)
 			return &pb.Handoff{
 				Id:        in.Id,
 				FromAgent: "orchestrator",
@@ -883,6 +918,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	if sessionID != "" {
 		masterCtx["_session_id"] = string(sessionID)
 	}
+	s.stampSpend(masterCtx, sessionID, spendBase)
 
 	return &pb.Handoff{
 		Id:        in.Id,
@@ -964,8 +1000,28 @@ func (s *Server) PutContextNode(ctx context.Context, req *pb.PutContextNodeReque
 	return &pb.PutContextNodeResponse{Cid: string(cid)}, nil
 }
 
-func (s *Server) replanHandler() executer.ReplanHandler {
-	return awareness.NewPlannerReplanHandler(s.Planner)
+// replanHandler re-plans through the plan's shared planner-call budget, so DAG
+// replans and the validation retry draw on one count.
+func (s *Server) replanHandler(budget *planCallBudget) executer.ReplanHandler {
+	return awareness.NewPlannerReplanHandler(budget.generator(s.Planner))
+}
+
+// taskEventWriter resolves the TaskEvent sink: the registry when it can write
+// TaskEvents, decorated by the token recorder (contract 0075) when one is set.
+// Decorating the resolved writer rather than adding an emission site means the
+// hourly series counts exactly what the kernel recorded. Nil when the registry
+// cannot write TaskEvents.
+func (s *Server) taskEventWriter() executer.TaskEventWriter {
+	var eventWriter executer.TaskEventWriter
+	if s.Manager != nil {
+		if ew, ok := s.Manager.Registry.(executer.TaskEventWriter); ok {
+			eventWriter = ew
+		}
+	}
+	if s.TokenRecorder != nil {
+		eventWriter = s.TokenRecorder.Wrap(eventWriter)
+	}
+	return eventWriter
 }
 
 // wrapGen applies the optional generator decorator (Langfuse tracing) so routed
@@ -1162,9 +1218,9 @@ func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawIn
 		}
 		handoff.Context["_session_token_id"] = string(tokenID)
 		defer func() {
+			// ADR-0046 D6 ephemerality, same as the dispatch path: Complete runs the
+			// gateway's completion hook (ToolExecutor.EndRun).
 			_, _ = s.LLMGateway.Complete(ctx, tokenID)
-			// ADR-0046 D6 ephemerality, same as the dispatch path.
-			s.ToolExecutor.EndRun(string(tokenID))
 		}()
 	}
 

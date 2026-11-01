@@ -36,7 +36,7 @@ type Service struct {
 	// credential is evaluated (ADR-0130 1f). Built in NewService — always on,
 	// never attached later.
 	logins   *loginLimiter
-	loginObs LoginObserver // nil ⇒ failed logins go to a structured WARN log
+	loginObs LoginObserver // nil ⇒ only the structured log line records an attempt
 	audit    AuditStore
 	grants   GrantsStore
 	controls *ExecutionControlHub
@@ -203,13 +203,16 @@ func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 	return &pb.LoginResponse{Token: token, Role: string(role)}, nil
 }
 
-// observeLogin routes an attempt to the observer, or to a structured log when
-// there is none. Successes are INFO; failures WARN with the running count, so
-// a guessing run is visible in the log of a deployment with no receipt plane.
+// observeLogin always writes the structured log line, and additionally hands
+// the attempt to the observer when one is wired. Successes are INFO; failures
+// WARN with the running count, so a guessing run is visible in the log of every
+// deployment. The observer (the premium receipts lane, ADR-0130 1f) is the
+// durable, tamper-evident record ON TOP of the log, not a replacement for it:
+// a log line that disappears the moment a plugin is installed would make the
+// plugin's own failure modes silent.
 func (s *Service) observeLogin(a LoginAttempt) {
 	if s.loginObs != nil {
 		s.loginObs.ObserveLogin(a)
-		return
 	}
 	switch {
 	case a.LockedOut:
@@ -392,6 +395,10 @@ var feedEventTypes = []string{
 	domain.EventTypeSessionDormant,
 	domain.EventTypeMemoryPressure,
 	domain.EventTypeDaemonCrashed,
+	// ADR-0070 D2: quarantine/recovery reach the console as audit entries (see
+	// the mapper); without these two lines they were published and dropped.
+	domain.EventTypeDaemonQuarantined,
+	domain.EventTypeDaemonRecovered,
 	domain.EventTypeWatchTriggered,
 	domain.EventTypeMemoryWritten,
 	domain.EventTypeHITLRaised,

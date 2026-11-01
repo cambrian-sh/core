@@ -1,20 +1,20 @@
 package health
 
 import (
-	"context"
-	"log/slog"
 	"net/http"
-	"strconv"
-	"time"
 )
 
-// ServeHealthz runs a tiny HTTP server on :port that returns 200 when the kernel is
-// ready and 503 otherwise — for dumb probes that cannot speak gRPC. port <= 0 disables
-// it (returns nil immediately). Blocks until ctx is cancelled. PLAT-03 / ADR-0065.
-func (c *Checker) ServeHealthz(ctx context.Context, port int) error {
-	if port <= 0 {
-		return nil
-	}
+// HealthzHandler is the /healthz shim for dumb probes that cannot speak gRPC:
+// 200 when the kernel is ready, 503 otherwise. PLAT-03 / ADR-0065.
+//
+// The package returns a HANDLER, not a server. ADR-0130 D3: every TCP listener
+// the kernel opens is built by app/listener_security.go (bind address, loopback
+// default, routable-plaintext refusal, TLS, timeouts, body cap), and this
+// package cannot import app (app imports internal/*), so the composition root
+// serves this handler through serveHTTP. The shim used to build its own
+// http.Server on ":port" — every interface — which is exactly the half-truth
+// the listener policy closed (T-20261101-remaining-http-server-literals-outside-listener).
+func (c *Checker) HealthzHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if c.Ready() {
@@ -25,16 +25,5 @@ func (c *Checker) ServeHealthz(ctx context.Context, port int) error {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("not ready\n"))
 	})
-	srv := &http.Server{Addr: ":" + strconv.Itoa(port), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go func() {
-		<-ctx.Done()
-		sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(sctx)
-	}()
-	slog.Info("🩺 healthz HTTP shim listening", "port", port)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
-	}
-	return nil
+	return mux
 }

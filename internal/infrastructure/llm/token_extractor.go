@@ -7,9 +7,43 @@ type TokenUsage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	// CacheReadTokens is the part of PromptTokens the provider served from its
+	// prompt cache. Already included in PromptTokens (ADR-0131 D2).
+	CacheReadTokens int
+	// Estimated is true when the counts come from the len/4 fallback because the
+	// provider returned no usage (ADR-0131 D2: real usage first, estimate only as
+	// a flagged fallback). A sum is Estimated when any of its parts is.
+	Estimated bool
 	// BudgetOverrun is set by the gateway's Complete when its Pass-1 cut-off fired
 	// for the lease (ADR-0018). Providers never set it.
 	BudgetOverrun bool
+}
+
+// IsZero reports whether u carries no token counts at all — the shape a provider
+// response without a usage block parses to.
+func (u TokenUsage) IsZero() bool {
+	return u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0
+}
+
+// Add returns the field-wise sum of u and v. Estimated is sticky; BudgetOverrun
+// is OR-ed.
+func (u TokenUsage) Add(v TokenUsage) TokenUsage {
+	return TokenUsage{
+		PromptTokens:     u.PromptTokens + v.PromptTokens,
+		CompletionTokens: u.CompletionTokens + v.CompletionTokens,
+		TotalTokens:      u.TotalTokens + v.TotalTokens,
+		CacheReadTokens:  u.CacheReadTokens + v.CacheReadTokens,
+		Estimated:        u.Estimated || v.Estimated,
+		BudgetOverrun:    u.BudgetOverrun || v.BudgetOverrun,
+	}
+}
+
+// EstimateUsage is the len/4 fallback for one call, flagged Estimated. It is the
+// one place an estimated usage row is built, so "estimated" always means the
+// same thing (ADR-0131 D2).
+func EstimateUsage(prompt, response string) TokenUsage {
+	in, out := EstimateTokens(prompt), EstimateTokens(response)
+	return TokenUsage{PromptTokens: in, CompletionTokens: out, TotalTokens: in + out, Estimated: true}
 }
 
 // TokenUsageExtractor parses an LLM provider's HTTP response body
@@ -45,9 +79,29 @@ func (e *ollamaExtractor) Extract(responseBody []byte) (TokenUsage, error) {
 type openaiExtractor struct{}
 
 type openaiUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details,omitempty"`
+}
+
+// tokenUsage converts the OpenAI usage block. prompt_tokens already includes the
+// cached tokens, so CacheReadTokens is a breakdown, not an addition.
+func (u openaiUsage) tokenUsage() TokenUsage {
+	out := TokenUsage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+	}
+	if out.TotalTokens == 0 {
+		out.TotalTokens = out.PromptTokens + out.CompletionTokens
+	}
+	if u.PromptTokensDetails != nil {
+		out.CacheReadTokens = u.PromptTokensDetails.CachedTokens
+	}
+	return out
 }
 
 type openaiFullResp struct {
@@ -59,19 +113,30 @@ func (e *openaiExtractor) Extract(responseBody []byte) (TokenUsage, error) {
 	if err := json.Unmarshal(responseBody, &r); err != nil {
 		return TokenUsage{}, nil
 	}
-	return TokenUsage{
-		PromptTokens:     r.Usage.PromptTokens,
-		CompletionTokens: r.Usage.CompletionTokens,
-		TotalTokens:      r.Usage.TotalTokens,
-	}, nil
+	return r.Usage.tokenUsage(), nil
 }
 
 // anthropicExtractor extracts token usage from Anthropic message responses.
 type anthropicExtractor struct{}
 
 type anthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+}
+
+// tokenUsage converts the Anthropic usage block. Anthropic's input_tokens
+// EXCLUDES cache reads and cache writes, so the prompt total is the sum of all
+// three — the same "every input token" meaning PromptTokens has for OpenAI.
+func (u anthropicUsage) tokenUsage() TokenUsage {
+	in := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+	return TokenUsage{
+		PromptTokens:     in,
+		CompletionTokens: u.OutputTokens,
+		TotalTokens:      in + u.OutputTokens,
+		CacheReadTokens:  u.CacheReadInputTokens,
+	}
 }
 
 type anthropicFullResp struct {
@@ -83,11 +148,7 @@ func (e *anthropicExtractor) Extract(responseBody []byte) (TokenUsage, error) {
 	if err := json.Unmarshal(responseBody, &r); err != nil {
 		return TokenUsage{}, nil
 	}
-	return TokenUsage{
-		PromptTokens:     r.Usage.InputTokens,
-		CompletionTokens: r.Usage.OutputTokens,
-		TotalTokens:      r.Usage.InputTokens + r.Usage.OutputTokens,
-	}, nil
+	return r.Usage.tokenUsage(), nil
 }
 
 // CalculateCost computes the estimated cost of a model call.

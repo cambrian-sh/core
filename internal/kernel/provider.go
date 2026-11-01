@@ -83,6 +83,20 @@ func ProvideServer(
 	// ADR-0042: the server resolves agent-step models through the Provider.
 	srv.Provider = llmProvider
 
+	// ADR-0131 D1-D3: ONE spend ledger, shared by the two doors every LLM call
+	// passes — Provider.Acquire (every organ) and the gateway (every agent stream,
+	// including the retrieval_agent's chain). execution.session.max_session_tokens
+	// is its ceiling (0 = metered, never refused). Wired here because this is the
+	// one place that holds the Provider, the gateway and the server together; the
+	// Provider resolves the meter per call, so organ generators created earlier by
+	// GeneratorFor are covered.
+	meter := llm.NewSpendMeter(cfg.Session.MaxSessionTokens, llmProvider.Ledger(), slog.Default())
+	llmProvider.SetSpendMeter(meter)
+	if gw, ok := llmGateway.(interface{ SetSpendMeter(*llm.SpendMeter) }); ok {
+		gw.SetSpendMeter(meter)
+	}
+	srv.SpendMeter = meter
+
 	// ADR-0031 + ADR-0042: wire the universal InputRouter on its own PurposeRouter
 	// generator, Acquired from the Provider so Layer 3 classification gets live
 	// health failover (this is the path the original silent-empty-response bug

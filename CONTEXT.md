@@ -65,7 +65,8 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
 | `internal/agentplane/` | Agent-plane gRPC connection pool (renamed from auctioneer by ADR-0100 P3). |
 | `internal/agentpool/` | Bounded pool of interchangeable daemon workers (ADR-0084 D4). |
 | `internal/tool/` | System-tool lifecycle (Python, `ToolRegistry`, confined `ProcessHandler`). |
-| `internal/health/` | gRPC health check (PLAT-03 / ADR-0065). |
+| `internal/health/` | gRPC health check + the `/healthz` handler `app` serves under the listener policy (PLAT-03 / ADR-0065, ADR-0130 D3). |
+| `internal/ratelimit/` | Per-principal token-bucket interceptors on both gRPC planes (`server.rate_limit`; ADR-0047 / ADR-0130). |
 | `internal/telemetry/` | OTel bridge — the only package importing OTel. |
 | `api/proto/` | The gRPC/protobuf contract: `cambrian.proto`, `operator.proto`. |
 | `agents/` | Production Python agents auto-discovered by BBolt. |
@@ -84,7 +85,8 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
 - **Contributed machine tools are opt-in per agent**: an agent reaches a user's machine only through an explicit `local:*` (or exact `local:<machine>/<tool>`) grant; ownership picks the machine (ADR-0127 CL-4, `domain/contribution.go` `grantCovers`).
 - **`app.KernelServices` is the plugin capability seam**: premium receives functions, not internals — e.g. `VerifyMachineToken` lets the `machine_token_v1` ingress verifier check a token without reading it (ADR-0127 CL-5). `PlanExecutor` (`domain.PlanExecutor`, `app/plan_executor.go`) runs a plugin-generated plan on the real DAG executor via the Orchestrator.Execute authored-plan branch — the premium `start_plan` action uses it (PREM-0032).
 - **Self-installing**: `setup` bootstraps Postgres, Python runtime, agents, config, migrations, detached start — and, since ADR-0130, mints each discovered agent's plane credential (`agent:<id>:token`) into the ADR-0101 store.
-- **The agent plane authenticates and every listener shares one policy** (ADR-0130, 2026-11-01). Every `Orchestrator` RPC and every premium service declared agent-facing requires the per-agent named secret as `authorization: Bearer` with `x-agent-id` as the assertion it must match (`internal/authz/agent_auth.go`; one constant-time compare, `authz.VerifyNamedSecret`, shared with the MCP endpoint); the principal is established there, never from the header alone. The kernel mints missing credentials at boot and injects `CAMBRIAN_AGENT_TOKEN`/`CAMBRIAN_AGENT_ID` into each spawned agent's environment (`agentmgr/agent_credential_env.go`, the one credential SEC-01 admits). `server.insecure_localhost=true` waives agent auth (D2) — the benchmark harness runs under it. Every HTTP listener is built by `app/listener_security.go` (`serveHTTP`; plugins use `app.ServeHTTPListener`): loopback default, routable-bind refusal without TLS, header/idle timeouts, a body cap; `/v1/admin/*` takes the operator bearer through the same `OperatorIdentity` as gRPC (`app/admin_auth.go`), and `app/listener_policy_test.go` refuses any other `http.Server` literal. Operator `Login` locks a peer out after 5 failures in 15 min and tokens expire after 12 h (`operator/login_limiter.go`).
+- **The agent plane authenticates and every listener shares one policy** (ADR-0130, 2026-11-01). Every `Orchestrator` RPC and every premium service declared agent-facing requires the per-agent named secret as `authorization: Bearer` with `x-agent-id` as the assertion it must match (`internal/authz/agent_auth.go`; one constant-time compare, `authz.VerifyNamedSecret`, shared with the MCP endpoint); the principal is established there, never from the header alone. The kernel mints missing credentials at boot and injects `CAMBRIAN_AGENT_TOKEN`/`CAMBRIAN_AGENT_ID` into each spawned agent's environment (`agentmgr/agent_credential_env.go`, the one credential SEC-01 admits). `server.insecure_localhost=true` waives agent auth (D2) — the benchmark harness runs under it. Every HTTP listener is built by `app/listener_security.go` (`serveHTTP`; plugins use `app.ServeHTTPListener`): loopback default, routable-bind refusal without TLS, header/idle timeouts, a body cap; `/v1/admin/*` takes the operator bearer through the same `OperatorIdentity` as gRPC (`app/admin_auth.go`), and `app/listener_policy_test.go` refuses any other `http.Server` literal. Operator `Login` locks a peer out after 5 failures in 15 min and tokens expire after 12 h (`operator/login_limiter.go`); every attempt is logged and handed to `domain.LoginObserver` plugins (`Registry.AddLoginObserver` — the premium receipts plugin chains failures). The `/healthz` shim is a handler served by `serveHTTP`; only two operator-run tools (`cmd/pagerank-recompute`, premium `cmd/cambrian-runview`) stay on the listener allowlist, each with an ADR citation. Spawned agents dial the address the listener policy bound, and on a pure-TLS bind receive `CAMBRIAN_TLS_CA` (+ `CAMBRIAN_TLS_SERVER_NAME`) beside their token (`app/agent_transport.go`). Both gRPC planes carry a per-principal token bucket after authentication (`internal/ratelimit`, `server.rate_limit`, default 200 req/s burst 400, `ResourceExhausted` on overflow).
+- **Every LLM call is metered by one ledger** (ADR-0131 D1-D3, 2026-11-01). `llm.SpendMeter` (`internal/infrastructure/llm/spend_meter.go`) is fed by the two doors every call passes: the outermost decorator in `Provider.Acquire` (all organs) and `SubstrateLLMGateway` (all agent streams and tool turns, including the `retrieval_agent` chain, whose lease is now bound to the caller's session and charged back to the asking step's lease). Usage is provider-reported — adapters fill a ctx capture cell (`usage_capture.go`) from their own response — and `len/4` is used only as a fallback flagged `Estimated`. `execution.session.max_session_tokens` (> 0) refuses calls with `llm.ErrSpendCeiling`; the plan ends with gRPC `ResourceExhausted` and a `System_SpendCeiling` TaskEvent. Wired in `internal/kernel` `ProvideServer`. Each Execute response carries `_llm_*` spend metadata. Lease completion runs one gateway hook (`SetCompleteHook`), which clears ADR-0046 run grants for every lease site. One plan gets `1 + max_replan_attempts` planner calls in total (validation retries and replans share the budget, `plan_call_budget.go`).
 
 ---
 
@@ -99,18 +101,24 @@ Each has a ticket; close the ticket and update this list in the same change.
   `T-20261031-no-automated-check-that-vendored-proto-copies`
 - ADR-0121 residuals (D8 policy suite, `policy_note`) — `T-20261031-adr-0121-follow-ups-d8-policy-suite-and-query`
 - ADR-0128 residuals (deferred crosswalks, resolver lane) — `T-20261031-adr-0128-follow-ups-deferred-crosswalks`
-- Four `http.Server` literals still outside `listener_security.go` (health shim, webhook receiver, two cmd tools; allowlisted in `app/listener_policy_test.go`) —
-  `T-20261101-remaining-http-server-literals-outside-listener`
-- Kernel-spawned agents dial `localhost:port` with no TLS root, so a TLS-only routable bind cannot serve its own agents —
-  `T-20261101-kernel-spawned-agents-dial-localhost-port-and`
-- Failed operator logins reach only the WARN log; no plugin seam for a receipt observer —
-  `T-20261101-failed-operator-logins-reach-only-the-warn-log`
+- Spawned agents on a pure-TLS kernel get `server.tls_cert_file` as their TLS root, which fails for a CA-issued leaf (no agent-CA config key) —
+  `T-20261101-spawned-agents-get-server-tls-cert-file-as`
+- The premium ReactiveEngine ignores `DaemonQuarantinedEvent`, so `ListWatches` cannot show a quarantined stream (core now shows it on the operator feed) —
+  `T-20261101-premium-reactiveengine-ignores`
 - ADR-0130 deferrals to contract bump 0096: `/v1/admin/*` → `OperatorConsole` RPCs, an explicit `Logout` RPC.
 - Contribution lane never run end to end on real machines (blocked: no deployment) —
   `T-20261031-contribution-lane-has-never-run-end-to-end-on`
 - Derived memory artifacts (`chunk_triplets`, …) carry no classification; contained only
   because their text is never surfaced — `T-20261031-derived-memory-artifacts-carry-no`
 - No customer data export — `T-20261031-customers-cannot-export-their-data`
+- ADR-0131 D4-D6 deferred (benchmark phase): spend in receipts/operator feed/UI —
+  `T-20261101-adr-0131-d6-spend-totals-in-the-plan-end`; per-purpose ceilings —
+  `T-20261101-adr-0131-d3-per-purpose-spend-ceilings`; planner cluster cache / prefix caching —
+  `T-20261101-planner-rebuilds-the-capability-cluster-on`
+- Step TaskEvents still bill `len/4` although the step lease returns provider usage —
+  `T-20261101-step-taskevents-still-bill-len-4-although-the`
+- Router classification and async organs (verification, tier-2, interview) are metered but not attributed to a session —
+  `T-20261101-router-classification-and-async-organs`
 - ADR-0052 entity routing is armed by default (`recall_spreading_enabled`) but its in-memory
   `EntityIndex` is never populated, so the lane is a no-op —
   `T-20261031-entityindex-is-never-populated-so-entity`

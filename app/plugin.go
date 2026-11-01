@@ -200,6 +200,7 @@ type Registry struct {
 	ingressOwner     string
 	decisionObs      []domain.DecisionObserver
 	activityObs      []domain.AgentActivityObserver
+	loginObs         []domain.LoginObserver
 	transformers     []domain.EvidenceTransformer
 	kinds            []domain.KindSpec
 	authorities      []domain.ResolutionAuthority
@@ -452,6 +453,18 @@ func (r *Registry) SetSubstrateConsultant(owner string, c domain.SubstrateConsul
 func (r *Registry) AddAgentActivityObserver(o domain.AgentActivityObserver) {
 	if o != nil {
 		r.activityObs = append(r.activityObs, o)
+	}
+}
+
+// AddLoginObserver registers a receiver for operator Login attempts (ADR-0130
+// 1f). Add-many: a receipt lane and a security monitor may both want them.
+// Observation only — the per-source login limiter is constructed inside the
+// operator service and gates Login whether or not any observer is registered.
+// The implementation MUST return promptly and MUST NOT panic; it is called
+// synchronously inside the Login RPC.
+func (r *Registry) AddLoginObserver(o domain.LoginObserver) {
+	if o != nil {
+		r.loginObs = append(r.loginObs, o)
 	}
 }
 
@@ -845,6 +858,15 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 		}
 		fan = append(fan, reg.activityObs...)
 		opts.AgentActivityObserver = fan
+	}
+	// LoginObservers (ADR-0130 1f): same fan-out shape, so Login stays one nil check.
+	if len(reg.loginObs) > 0 {
+		fan := make(domain.MultiLoginObserver, 0, len(reg.loginObs)+1)
+		if opts.LoginObserver != nil {
+			fan = append(fan, opts.LoginObserver)
+		}
+		fan = append(fan, reg.loginObs...)
+		opts.LoginObserver = fan
 	}
 	// Evidence transformers (ADR-0108 D3): appended in registration order.
 	opts.EvidenceTransformers = append(opts.EvidenceTransformers, reg.transformers...)
