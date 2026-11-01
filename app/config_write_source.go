@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"sort"
@@ -21,6 +22,12 @@ import (
 // against the ADR-0101 store.
 type configWriteSource struct {
 	store *storage.BoltConfigStore
+	// configPath is the primary config file (configs/config.json). It locates the
+	// file layers for ADR-0101 D8: a write to a key a writable file already sets
+	// goes into that file instead of the store. "" disables write-through (every
+	// write lands in the store, the pre-D8 behaviour) — used by tests that have no
+	// config bundle.
+	configPath string
 	// prov is the boot provenance. It answers "is a layer ABOVE the store
 	// supplying this key?", which is how a shadowed write is detected at write
 	// time rather than left for a later read (ADR-0101 D3).
@@ -129,9 +136,9 @@ func (c configWriteSource) setOne(key string, v float64) operator.ConfigWriteOut
 		return res
 	}
 
-	if err := c.store.SetOverride(key, v); err != nil {
+	if err := c.persist(key, v, &res); err != nil {
 		res.Effect = operator.EffectRejected
-		res.Error = "could not write to the configuration store: " + err.Error()
+		res.Error = "could not write the configuration value: " + err.Error()
 		return res
 	}
 	res.Set = true
@@ -264,39 +271,171 @@ func hotApplyFor(effects interface {
 	}
 }
 
+// ── ADR-0101 D8: one write path for every config key ─────────────────────────
+
+// persist durably records key=value where ADR-0101 D8 says it belongs, and notes
+// where on res. Every config write in this file goes through here (or through
+// persistGenerator for D9's per-id generators), so the file-versus-store rule is
+// stated once rather than per RPC.
+//
+//   - A WRITABLE file layer already sets the key: the value is written into that
+//     file (the highest one that sets it) in place, and the store override is
+//     removed, so the value has one durable home and the two cannot drift.
+//     res.WrittenTo names the file.
+//   - A file sets the key but cannot be written (committed tuning.json,
+//     read-only mount, or the write failed): stored as before, and
+//     res.Overrides / OverridesValue name the file and the value it loses to.
+//   - No file sets it: stored as before.
+//
+// Secret-shaped keys are never written into a file (D5). Env still wins over
+// both (D1); the caller's D3 PinnedAbove check reports that independently.
+func (c configWriteSource) persist(key string, value any, res *operator.ConfigWriteOutcome) error {
+	if c.configPath != "" && !config.IsSecretKey(key) {
+		if o, ok := config.ResolveFileSetting(c.configPath, key); ok {
+			if o.Writable {
+				err := config.WriteFileSetting(o, key, value)
+				if err == nil {
+					if err := c.deleteStoreKey(key); err != nil {
+						return fmt.Errorf("written to %s, but the old store override could not be removed: %w", o.Source, err)
+					}
+					res.WrittenTo = o.Source
+					slog.Info("config write went to the file that sets the key (ADR-0101 D8)",
+						"key", key, "file", o.Path)
+					return nil
+				}
+				o.Reason = err.Error()
+			}
+			if err := c.store.SetOverride(key, value); err != nil {
+				return err
+			}
+			noteOverride(res, key, o)
+			return nil
+		}
+	}
+	return c.store.SetOverride(key, value)
+}
+
+// noteOverride records (and logs) that a stored value overrides a file value it
+// could not write into — the warning half of D8.
+func noteOverride(res *operator.ConfigWriteOutcome, key string, o config.FileOrigin) {
+	res.Overrides = o.Source
+	res.OverridesValue = config.DisplayValue(o.Value, config.IsSecretKey(key))
+	slog.Warn("config write stored in config.db; it OVERRIDES a file value, and edits to that file have no effect until the override is removed (ADR-0101 D8)",
+		"key", key, "file", o.Path, "file_value", res.OverridesValue,
+		"why_not_written_to_file", o.Reason)
+}
+
+// deleteStoreKey removes a store override under both spellings a legacy flat
+// execution key can have been stored as (the console writes flat v1 keys; the
+// store layer migrates them on load, so either spelling pins the key).
+func (c configWriteSource) deleteStoreKey(key string) error {
+	if err := c.store.DeleteOverride(key); err != nil {
+		return err
+	}
+	if canon := config.CanonicalKey(key); canon != key {
+		return c.store.DeleteOverride(canon)
+	}
+	return nil
+}
+
 // ── Generator write half (contract 0083) ─────────────────────────────────────
 
-// generatorsKey is the store key holding the WHOLE generator list.
-//
-// One key for the list, not one per generator, because the store layer merges
-// per key and koanf replaces a list wholesale: a per-generator key would produce
-// a list containing only the last generator written.
-const generatorsKey = "llm_provider.generators"
+// generatorsKey is the config path of the generator list. Outcomes of generator
+// writes report it; the STORE no longer holds it (ADR-0101 D9: generators are
+// stored per id under config.GeneratorOverrideKey and merged by id over the file
+// layers' list, so a stored generator can no longer hide one added to a file).
+const generatorsKey = config.GeneratorsKey
 
-// effectiveGenerators returns the generator list a save should be applied on top
-// of: what the store holds now, or the booted config when the store holds none.
-//
-// Reading the STORE first and the boot config only as a fallback is what makes
-// two saves in one process lifetime compose. Taking the boot config every time
-// would make the second save silently discard the first, since nothing reloads
-// config in between.
-func (c configWriteSource) effectiveGenerators() []config.GeneratorConfig {
-	if c.store != nil {
-		if overrides, err := c.store.Overrides(); err == nil {
-			if raw, ok := overrides[generatorsKey]; ok {
-				if b, mErr := json.Marshal(raw); mErr == nil {
-					var list []config.GeneratorConfig
-					if json.Unmarshal(b, &list) == nil {
-						return list
-					}
-				}
-			}
-		}
+// baseGenerators is the list stored generators merge over: the file layers' list
+// as it is on disk now (the same list boot merges over), or — with no config
+// bundle — the booted runtime list.
+func (c configWriteSource) baseGenerators() []config.GeneratorConfig {
+	if c.configPath != "" {
+		list, _, _ := config.FileGenerators(c.configPath)
+		return list
 	}
 	if c.generatorList != nil {
 		return c.generatorList()
 	}
 	return nil
+}
+
+// effectiveGenerators returns the generator list as the next boot would see it:
+// the base list with the store's per-id entries merged over it, exactly as
+// LoadConfigWithStore merges them (config.MergeGenerators is the one merge).
+//
+// Computed from durable state on every call rather than from a cached copy, so
+// two saves in one process lifetime compose: nothing reloads config in between,
+// and a base taken from the boot snapshot would make the second save discard the
+// first.
+func (c configWriteSource) effectiveGenerators() []config.GeneratorConfig {
+	var stored map[string]config.StoredGenerator
+	if c.store != nil {
+		if overrides, err := c.store.Overrides(); err == nil {
+			stored, _, _ = config.SplitGeneratorOverrides(overrides)
+		}
+	}
+	list := config.MergeGenerators(c.baseGenerators(), stored)
+	config.ApplyGeneratorDefaults(list)
+	return list
+}
+
+// persistGenerator is persist for one generator (ADR-0101 D8 + D9): written into
+// the file whose generator list declares the id when that file is writable
+// (replacing or deleting just that element), otherwise stored under the id's own
+// key — a tombstone for a removal the file could not take.
+func (c configWriteSource) persistGenerator(entry config.GeneratorConfig, remove bool, res *operator.ConfigWriteOutcome) error {
+	// A store still holding the pre-D9 whole list is converted first, so the
+	// per-id write below cannot be shadowed or resurrected by the old list.
+	ids, err := config.MigrateStoredGenerators(c.store)
+	if err != nil {
+		return err
+	}
+	if len(ids) > 0 {
+		slog.Info("config store: migrated the stored generator list to per-id entries (ADR-0101 D9)", "ids", ids)
+	}
+	key := config.GeneratorOverrideKey(entry.ID)
+	tombstone := config.StoredGenerator{GeneratorConfig: config.GeneratorConfig{ID: entry.ID}, Removed: true}
+
+	if c.configPath != "" {
+		if o, ok := config.ResolveGeneratorFile(c.configPath, entry.ID); ok {
+			if o.Writable {
+				werr := config.WriteFileGenerator(o, entry.ID, entry, remove)
+				if werr == nil {
+					if err := c.store.DeleteOverride(key); err != nil {
+						return fmt.Errorf("written to %s, but the old store entry could not be removed: %w", o.Source, err)
+					}
+					res.WrittenTo = o.Source
+					slog.Info("generator write went to the file that declares it (ADR-0101 D8)",
+						"generator", entry.ID, "file", o.Path, "removed", remove)
+					return nil
+				}
+				o.Reason = werr.Error()
+			}
+			var stored any = config.StoredGenerator{GeneratorConfig: entry}
+			if remove {
+				stored = tombstone
+			}
+			if err := c.store.SetOverride(key, stored); err != nil {
+				return err
+			}
+			noteOverride(res, key, o)
+			return nil
+		}
+	}
+
+	if !remove {
+		return c.store.SetOverride(key, config.StoredGenerator{GeneratorConfig: entry})
+	}
+	// Removal of a generator no file declares: drop the store entry, unless the
+	// base list (the runtime list, with no config bundle) still carries it — then
+	// only a tombstone hides it.
+	for _, g := range c.baseGenerators() {
+		if g.ID == entry.ID {
+			return c.store.SetOverride(key, tombstone)
+		}
+	}
+	return c.store.DeleteOverride(key)
 }
 
 // defaultGeneratorKey is the store key for the global default generator id.
@@ -315,13 +454,23 @@ func (c configWriteSource) effectiveDefaultID() string {
 			}
 		}
 	}
+	// D8 writes the default into the file that sets it, so the file is the next
+	// durable answer before the live value.
+	if c.configPath != "" {
+		if o, ok := config.ResolveFileSetting(c.configPath, defaultGeneratorKey); ok {
+			if s, ok := o.Value.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
 	if c.defaultGeneratorID != nil {
 		return c.defaultGeneratorID()
 	}
 	return ""
 }
 
-// SaveGenerator creates or replaces one generator and stores the whole list.
+// SaveGenerator creates or replaces one generator (ADR-0101 D8/D9: in the file
+// that declares it when writable, else under its own store key).
 func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.ConfigWriteOutcome, error) {
 	res := operator.ConfigWriteOutcome{Key: generatorsKey}
 	if c.store == nil {
@@ -367,9 +516,9 @@ func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.
 		list = append(list, entry)
 	}
 
-	if err := c.store.SetOverride(generatorsKey, list); err != nil {
+	if err := c.persistGenerator(entry, false, &res); err != nil {
 		res.Effect = operator.EffectRejected
-		res.Error = "could not write to the configuration store: " + err.Error()
+		res.Error = "could not write the generator: " + err.Error()
 		return res, nil
 	}
 	res.Set = true
@@ -384,7 +533,8 @@ func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.
 	def := c.effectiveDefaultID()
 	if def == "" {
 		def = spec.ID
-		if err := c.store.SetOverride(defaultGeneratorKey, def); err != nil {
+		var defRes operator.ConfigWriteOutcome
+		if err := c.persist(defaultGeneratorKey, def, &defRes); err != nil {
 			res.Effect = operator.EffectRejected
 			res.Error = "could not store llm_provider.default: " + err.Error()
 			return res, nil
@@ -400,6 +550,7 @@ func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.
 	// routable, assignable and testable on the next call — no restart (owner
 	// directive 2026-08-12; the generator half of contract 0096's role rule).
 	// Restart-required only when there is no live provider to apply to.
+	config.ApplyGeneratorDefaults(list) // the entry just saved may omit timeout_ms
 	if c.applyGenerators != nil && c.applyGenerators(list, def) {
 		res.Effect = operator.EffectLive
 		return res, nil
@@ -408,7 +559,8 @@ func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.
 	return res, nil
 }
 
-// RemoveGenerator drops one generator from the stored list.
+// RemoveGenerator drops one generator: from the file that declares it when that
+// file is writable, otherwise by a per-id store tombstone (ADR-0101 D8/D9).
 //
 // It REFUSES to remove the global default or a generator a role points at.
 // Boot validation is hard on `llm_provider.default`: storing a list without it
@@ -465,9 +617,9 @@ func (c configWriteSource) RemoveGenerator(id string) (operator.ConfigWriteOutco
 		return res, nil
 	}
 
-	if err := c.store.SetOverride(generatorsKey, kept); err != nil {
+	if err := c.persistGenerator(config.GeneratorConfig{ID: id}, true, &res); err != nil {
 		res.Effect = operator.EffectRejected
-		res.Error = "could not write to the configuration store: " + err.Error()
+		res.Error = "could not remove the generator: " + err.Error()
 		return res, nil
 	}
 	res.Set = true
@@ -484,8 +636,8 @@ func (c configWriteSource) RemoveGenerator(id string) (operator.ConfigWriteOutco
 
 // ── Role assignment write half (contract 0096) ───────────────────────────────
 
-// rolesKeyPrefix + role is the store key for one role binding. Per-ROLE keys,
-// unlike the whole-list generatorsKey: koanf merges maps per key, so one role
+// rolesKeyPrefix + role is the store key for one role binding. Per-ROLE keys:
+// koanf merges maps per key, so one role
 // stored here composes with roles configured in files rather than replacing the
 // whole map the way a stored list would.
 const rolesKeyPrefix = "llm_provider.roles."
@@ -532,9 +684,9 @@ func (c configWriteSource) SetRoleAssignment(role, generatorID string) (operator
 		return res, nil
 	}
 
-	if err := c.store.SetOverride(key, generatorID); err != nil {
+	if err := c.persist(key, generatorID, &res); err != nil {
 		res.Effect = operator.EffectRejected
-		res.Error = "could not write to the configuration store: " + err.Error()
+		res.Error = "could not write the role assignment: " + err.Error()
 		return res, nil
 	}
 	res.Set = true
@@ -556,26 +708,41 @@ func (c configWriteSource) SetRoleAssignment(role, generatorID string) (operator
 // ── MCP server write half (contract 0097) ────────────────────────────────────
 
 // mcpServersKey is the store key holding the WHOLE MCP server list — one key
-// for the same koanf reason as generatorsKey: lists replace wholesale, so a
-// per-server key would leave only the last server written.
+// because koanf replaces lists wholesale, so a per-server key would leave only
+// the last server written. (Generators moved to per-id keys merged by id in
+// ADR-0101 D9; MCP servers did not — D9 is scoped to generators. Under D8 a save
+// is written into mcp.json when that file sets mcp.servers.)
 const mcpServersKey = "mcp.servers"
 
 // validMCPTransports is the closed transport vocabulary the connector dials.
 var validMCPTransports = map[string]bool{"stdio": true, "http": true, "sse": true}
 
-// effectiveMCPServers is the list a save applies on top of: the store's, or the
-// booted config when the store holds none. Store-first is what makes two saves
-// in one process compose (the effectiveGenerators reasoning).
+// effectiveMCPServers is the list a save applies on top of: the store's; else the
+// file that sets mcp.servers (D8 writes saves there, so after the first save it
+// is the durable answer); else the booted config. Durable-first is what makes
+// two saves in one process compose (the effectiveGenerators reasoning).
 func (c configWriteSource) effectiveMCPServers() []config.MCPServerConfig {
+	decode := func(raw any) ([]config.MCPServerConfig, bool) {
+		b, err := json.Marshal(raw)
+		if err != nil {
+			return nil, false
+		}
+		var list []config.MCPServerConfig
+		return list, json.Unmarshal(b, &list) == nil
+	}
 	if c.store != nil {
 		if overrides, err := c.store.Overrides(); err == nil {
 			if raw, ok := overrides[mcpServersKey]; ok {
-				if b, mErr := json.Marshal(raw); mErr == nil {
-					var list []config.MCPServerConfig
-					if json.Unmarshal(b, &list) == nil {
-						return list
-					}
+				if list, ok := decode(raw); ok {
+					return list
 				}
+			}
+		}
+	}
+	if c.configPath != "" {
+		if o, ok := config.ResolveFileSetting(c.configPath, mcpServersKey); ok {
+			if list, ok := decode(o.Value); ok {
+				return list
 			}
 		}
 	}
@@ -642,9 +809,9 @@ func (c configWriteSource) SaveMCPServer(spec operator.MCPServerSpec) (operator.
 		list = append(list, entry)
 	}
 
-	if err := c.store.SetOverride(mcpServersKey, list); err != nil {
+	if err := c.persist(mcpServersKey, list, &res); err != nil {
 		res.Effect = operator.EffectRejected
-		res.Error = "could not write to the configuration store: " + err.Error()
+		res.Error = "could not write the MCP server list: " + err.Error()
 		return res, nil
 	}
 	res.Set = true
@@ -688,9 +855,9 @@ func (c configWriteSource) RemoveMCPServer(id string) (operator.ConfigWriteOutco
 		return res, nil
 	}
 
-	if err := c.store.SetOverride(mcpServersKey, kept); err != nil {
+	if err := c.persist(mcpServersKey, kept, &res); err != nil {
 		res.Effect = operator.EffectRejected
-		res.Error = "could not write to the configuration store: " + err.Error()
+		res.Error = "could not write the MCP server list: " + err.Error()
 		return res, nil
 	}
 	res.Set = true

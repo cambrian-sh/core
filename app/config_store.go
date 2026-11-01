@@ -2,8 +2,7 @@ package app
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
+	"log/slog"
 
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/storage"
@@ -35,12 +34,9 @@ const ConfigStoreEnv = "CAMBRIAN_CONFIG_STORE"
 // outcome ADR-0101 exists to prevent. The error names the file so the fix is
 // obvious.
 func OpenConfigStore(baseDir string) (*storage.BoltConfigStore, error) {
-	path := os.Getenv(ConfigStoreEnv)
-	if path == "off" {
+	path, off := configStorePath(baseDir)
+	if off {
 		return nil, nil
-	}
-	if path == "" {
-		path = filepath.Join(baseDir, "configs", "config.db")
 	}
 	store, err := storage.OpenConfigStore(path)
 	if err != nil {
@@ -76,4 +72,33 @@ func configStoreOrNil(s *storage.BoltConfigStore) config.Store {
 		return nil
 	}
 	return s
+}
+
+// warnStoreOverrides logs one WARN per store override that beats a DIFFERENT
+// value in a file layer (ADR-0101 D8), naming the key, the file, the file value
+// and the store value. This is the boot half of "loud both ways": D3 makes a
+// store write that env shadows loud at write time; this makes a file edit that
+// the store shadows loud at the next boot, instead of silently ineffective.
+//
+// An override equal to the file value is not a problem (the file edit and the
+// store agree) and is not logged. Secret-shaped keys are reported without values.
+// `orchestrator config overrides list|unset` is the remedy the message names.
+func warnStoreOverrides(configPath string, store *storage.BoltConfigStore) {
+	if store == nil {
+		return
+	}
+	overrides, err := store.Overrides()
+	if err != nil || len(overrides) == 0 {
+		return
+	}
+	for _, o := range config.StoreOverrideReport(configPath, overrides) {
+		if !o.Differs {
+			continue
+		}
+		slog.Warn("config store overrides a different value in a config file; edits to that file have no effect for this key (ADR-0101 D8). Inspect with `orchestrator config overrides list`, clear with `orchestrator config overrides unset <key>` or the console's revert",
+			"key", o.Key,
+			"file", o.FilePath,
+			"file_value", config.DisplayValue(o.FileValue, o.Secret),
+			"store_value", config.DisplayValue(o.StoreValue, o.Secret))
+	}
 }

@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	OperatorConsole_Login_FullMethodName                    = "/cambrian.OperatorConsole/Login"
+	OperatorConsole_Logout_FullMethodName                   = "/cambrian.OperatorConsole/Logout"
 	OperatorConsole_StreamEvents_FullMethodName             = "/cambrian.OperatorConsole/StreamEvents"
 	OperatorConsole_Snapshot_FullMethodName                 = "/cambrian.OperatorConsole/Snapshot"
 	OperatorConsole_SetToolGrant_FullMethodName             = "/cambrian.OperatorConsole/SetToolGrant"
@@ -117,6 +118,12 @@ type OperatorConsoleClient interface {
 	// Login authenticates a human operator (username/password) and returns a
 	// token bound to {principal, role}. The only unauthenticated RPC. ADR-0047 D13.
 	Login(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*LoginResponse, error)
+	// Logout revokes the bearer token this call carries (ADR-0130 D5 / 1f; contract
+	// 0099). Every later call with that token is UNAUTHENTICATED, exactly like an
+	// expired or never-issued one. Open to every authenticated role: a Viewer must be
+	// able to end its own session. A second Logout with the revoked token is refused
+	// at the auth gate, and the token stays revoked. Capability "logout".
+	Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutResponse, error)
 	// StreamEvents drains the sequenced operator feed. The client resumes from
 	// last_seq; every OperatorEvent carries a global monotonic seq (the cursor).
 	StreamEvents(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[OperatorEvent], error)
@@ -201,11 +208,11 @@ type OperatorConsoleClient interface {
 	// it ranked. That is not a retrieval-quality problem a larger top-k fixes: there
 	// is no question to rank against. It was a missing primitive.
 	//
-	// Two callers need it. A drift alert cites a message id, and a console that
-	// cannot open that message shows a citation nobody can follow. And a watch whose
-	// signal carries REFERENCES ONLY (the ingress contract) must resolve the
-	// reference to content it can read — which is the property that makes a replayed
-	// signal resolve today's document rather than a stale copy in the payload.
+	// A console that cannot open a cited document id shows a citation nobody can
+	// follow. And a watch whose signal carries REFERENCES ONLY (the ingress contract)
+	// must resolve the reference to content it can read — which is the property that
+	// makes a replayed signal resolve today's document rather than a stale copy in
+	// the payload.
 	GetDocument(ctx context.Context, in *GetDocumentOpRequest, opts ...grpc.CallOption) (*GetDocumentOpResponse, error)
 	// AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
 	// composed answer with inline [n] citation markers, plus the evidence each marker
@@ -662,6 +669,16 @@ func (c *operatorConsoleClient) Login(ctx context.Context, in *LoginRequest, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(LoginResponse)
 	err := c.cc.Invoke(ctx, OperatorConsole_Login_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LogoutResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_Logout_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1528,6 +1545,12 @@ type OperatorConsoleServer interface {
 	// Login authenticates a human operator (username/password) and returns a
 	// token bound to {principal, role}. The only unauthenticated RPC. ADR-0047 D13.
 	Login(context.Context, *LoginRequest) (*LoginResponse, error)
+	// Logout revokes the bearer token this call carries (ADR-0130 D5 / 1f; contract
+	// 0099). Every later call with that token is UNAUTHENTICATED, exactly like an
+	// expired or never-issued one. Open to every authenticated role: a Viewer must be
+	// able to end its own session. A second Logout with the revoked token is refused
+	// at the auth gate, and the token stays revoked. Capability "logout".
+	Logout(context.Context, *LogoutRequest) (*LogoutResponse, error)
 	// StreamEvents drains the sequenced operator feed. The client resumes from
 	// last_seq; every OperatorEvent carries a global monotonic seq (the cursor).
 	StreamEvents(*SubscribeRequest, grpc.ServerStreamingServer[OperatorEvent]) error
@@ -1612,11 +1635,11 @@ type OperatorConsoleServer interface {
 	// it ranked. That is not a retrieval-quality problem a larger top-k fixes: there
 	// is no question to rank against. It was a missing primitive.
 	//
-	// Two callers need it. A drift alert cites a message id, and a console that
-	// cannot open that message shows a citation nobody can follow. And a watch whose
-	// signal carries REFERENCES ONLY (the ingress contract) must resolve the
-	// reference to content it can read — which is the property that makes a replayed
-	// signal resolve today's document rather than a stale copy in the payload.
+	// A console that cannot open a cited document id shows a citation nobody can
+	// follow. And a watch whose signal carries REFERENCES ONLY (the ingress contract)
+	// must resolve the reference to content it can read — which is the property that
+	// makes a replayed signal resolve today's document rather than a stale copy in
+	// the payload.
 	GetDocument(context.Context, *GetDocumentOpRequest) (*GetDocumentOpResponse, error)
 	// AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
 	// composed answer with inline [n] citation markers, plus the evidence each marker
@@ -2072,6 +2095,9 @@ type UnimplementedOperatorConsoleServer struct{}
 func (UnimplementedOperatorConsoleServer) Login(context.Context, *LoginRequest) (*LoginResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Login not implemented")
 }
+func (UnimplementedOperatorConsoleServer) Logout(context.Context, *LogoutRequest) (*LogoutResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Logout not implemented")
+}
 func (UnimplementedOperatorConsoleServer) StreamEvents(*SubscribeRequest, grpc.ServerStreamingServer[OperatorEvent]) error {
 	return status.Error(codes.Unimplemented, "method StreamEvents not implemented")
 }
@@ -2353,6 +2379,24 @@ func _OperatorConsole_Login_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OperatorConsoleServer).Login(ctx, req.(*LoginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_Logout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LogoutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).Logout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_Logout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).Logout(ctx, req.(*LogoutRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3822,6 +3866,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Login",
 			Handler:    _OperatorConsole_Login_Handler,
+		},
+		{
+			MethodName: "Logout",
+			Handler:    _OperatorConsole_Logout_Handler,
 		},
 		{
 			MethodName: "Snapshot",

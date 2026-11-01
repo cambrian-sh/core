@@ -43,7 +43,7 @@ func (p *PgVectorAdapter) RetagDocument(ctx context.Context, documentID string, 
 
 	err = pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
 		if _, terr := tx.Exec(ctx,
-			`UPDATE `+TableDocuments+` SET tags = $2, updated_at = NOW() WHERE id = $1`,
+			`UPDATE `+TableDocuments+` SET tags = $2, updated_at = (now() AT TIME ZONE 'UTC') WHERE id = $1`, // UTC wall clock (0019_event_time.sql)
 			documentID, tags); terr != nil {
 			return terr
 		}

@@ -24,13 +24,42 @@ type ExternalDocument struct {
 	// instead of a flattened text approximation. Empty for text documents, which
 	// travel in Body. When set, Body may be empty — the parser's leaves become the
 	// chunk set.
-	Data        []byte
-	Author      string
+	Data   []byte
+	Author string
+	// Timestamp is the document's EVENT time — when the content happened
+	// (ADR-0134), in UTC. An ingest with no stated time sets it to the ingest
+	// clock and TimeSource to TimeSourceIngestDefault, so the two are never
+	// confused. The fields after it qualify it; ResolveIngestEventTime fills them.
 	Timestamp   time.Time
 	ThreadID    string
 	Attachments []Attachment
 	Tags        []string
 	Importance  float64
+
+	// EventTimeEnd is the span end of a multi-part document (latest part time);
+	// zero for a single instant.
+	EventTimeEnd time.Time
+	// TimeSource says where Timestamp came from; empty reads as ingest_default.
+	TimeSource TimeSource
+	// TimePrecision is how precise Timestamp is; empty reads as second.
+	TimePrecision TimePrecision
+	// ClaimedTime is the caller's stated time when it was clamped
+	// (TimeSource == TimeSourceClampedFuture); zero otherwise.
+	ClaimedTime time.Time
+	// Parts locates each timed part of a multi-part body (a chat session's turns)
+	// inside Body, so a chunk can take the earliest time of the parts it covers and
+	// record the latest as its span end (ADR-0134 Q5). Empty for a single-part body.
+	Parts []DocumentPart
+}
+
+// ApplyEventTime copies a resolved event time onto the document.
+func (d *ExternalDocument) ApplyEventTime(et IngestEventTime) {
+	d.Timestamp = et.EventTime
+	d.EventTimeEnd = et.EventTimeEnd
+	d.TimeSource = et.Source
+	d.TimePrecision = et.Precision
+	d.ClaimedTime = et.ClaimedTime
+	d.Parts = et.Parts
 }
 
 // Attachment is a binary or text file associated with an ExternalDocument.

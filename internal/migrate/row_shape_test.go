@@ -16,6 +16,8 @@ var documentSelectColumns = []string{
 	"id", "text", "metadata", "access_count", "activation_strength",
 	"scoring_prompt_version", "last_accessed_at", "created_at", "document_type",
 	"version", "embedding", "summary", "section_path",
+	// ADR-0134, migration 0019.
+	"event_time", "event_time_end", "time_source", "time_precision", "claimed_time",
 }
 
 // retrievableTables must all satisfy that SELECT list, because GetByID/GetBatch/Delete
@@ -35,7 +37,7 @@ var retrievableTables = []string{"chunks", "tools", "skills", "agent_profiles"}
 func TestRowShape_EveryRetrievableTableSatisfiesTheDocumentSelect(t *testing.T) {
 	ctx, pool := splitTestPool(t)
 	freshSchema(ctx, t, pool)
-	applyThrough(ctx, t, pool, 8)
+	applyThrough(ctx, t, pool, 19) // the select includes the 0019 event-time columns
 
 	list := ""
 	for i, c := range documentSelectColumns {

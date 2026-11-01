@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -117,6 +118,44 @@ type PgVectorAdapter struct {
 	colDim int
 }
 
+// documentColumnNames is the ONE column list every retrievable-row read selects and
+// scanDocument scans, in this order. Every table GetByID consults (idLookupTables)
+// must carry all of them; internal/migrate/row_shape_test.go holds an independent copy
+// and proves each table satisfies it against the real schema.
+var documentColumnNames = []string{
+	"id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version",
+	"last_accessed_at", "created_at", "document_type", "version", "embedding", "summary",
+	"section_path",
+	// ADR-0134 (migration 0019): the event-time stamp. Nullable; NULL = not stated.
+	"event_time", "event_time_end", "time_source", "time_precision", "claimed_time",
+}
+
+// documentColumns returns documentColumnNames as goqu identifiers, qualified by
+// table when the query JOINs ("" = unqualified).
+func documentColumns(table string) []any {
+	out := make([]any, len(documentColumnNames))
+	for i, c := range documentColumnNames {
+		if table != "" {
+			c = table + "." + c
+		}
+		out[i] = goqu.I(c)
+	}
+	return out
+}
+
+// documentColumnsWithEmbedding is documentColumns(table) with the embedding column
+// replaced by expr — the ADR-0107 projection read hydrates the ACTIVE model's vector
+// from chunk_embeddings instead of the legacy column.
+func documentColumnsWithEmbedding(table string, expr any) []any {
+	out := documentColumns(table)
+	for i, c := range documentColumnNames {
+		if c == "embedding" {
+			out[i] = expr
+		}
+	}
+	return out
+}
+
 // scanDocument is the central data-integrity gate.
 func scanDocument(row pgx.Row, includeDistance bool) (domain.Document, float64, error) {
 	var doc domain.Document
@@ -124,12 +163,16 @@ func scanDocument(row pgx.Row, includeDistance bool) (domain.Document, float64, 
 	var distance float64
 	var lastAccessedAt *time.Time
 	var embeddingVec *pgvector.Vector
+	var eventTime, eventTimeEnd, claimedTime *time.Time
+	var timeSource, timePrecision *string
 
 	dest := []any{
 		&doc.ID, &doc.Text, &metadataBytes, &doc.AccessCount,
 		&doc.ActivationStrength, &doc.ScoringPromptVersion, &lastAccessedAt, &doc.CreatedAt, &doc.DocumentType, &doc.Version,
 		&embeddingVec, &doc.Summary, // ADR-0048 #1: summary is the 12th SELECT column (before the appended distance)
 		&doc.SectionPath, // ADR-0060: 13th column; NOT NULL DEFAULT '' in the baseline, so no null guard
+		// ADR-0134: 14th-18th, all nullable.
+		&eventTime, &eventTimeEnd, &timeSource, &timePrecision, &claimedTime,
 	}
 
 	if includeDistance {
@@ -138,6 +181,25 @@ func scanDocument(row pgx.Row, includeDistance bool) (domain.Document, float64, 
 
 	if err := row.Scan(dest...); err != nil {
 		return domain.Document{}, 0, err
+	}
+	// created_at is a UTC wall clock in a TIMESTAMP column (0019_event_time.sql); pgx
+	// returns it in UTC already, and TIMESTAMPTZ values come back in the local zone, so
+	// normalise both to UTC for every reader.
+	doc.CreatedAt = doc.CreatedAt.UTC()
+	if eventTime != nil {
+		doc.EventTime = eventTime.UTC()
+	}
+	if eventTimeEnd != nil {
+		doc.EventTimeEnd = eventTimeEnd.UTC()
+	}
+	if claimedTime != nil {
+		doc.ClaimedTime = claimedTime.UTC()
+	}
+	if timeSource != nil {
+		doc.TimeSource = domain.TimeSource(*timeSource)
+	}
+	if timePrecision != nil {
+		doc.TimePrecision = domain.TimePrecision(*timePrecision)
 	}
 
 	if embeddingVec != nil {
@@ -185,12 +247,18 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (adapter *PgVec
 	if efSearch <= 0 {
 		efSearch = 100
 	}
+	hnswSettings := hnswSessionSettings(efSearch,
+		cfg.Execution.Retrieval.HnswIterativeScan, cfg.Execution.Retrieval.HnswMaxScanTuples)
 	pgxCfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		if err := pgxvector.RegisterTypes(ctx, conn); err != nil {
 			return err
 		}
-		_, err := conn.Exec(ctx, fmt.Sprintf("SET hnsw.ef_search = %d", efSearch))
-		return err
+		for _, stmt := range hnswSettings {
+			if _, err := conn.Exec(ctx, stmt); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, pgxCfg)
@@ -279,6 +347,33 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (adapter *PgVec
 	}
 
 	return p, nil
+}
+
+// hnswSessionSettings are the per-connection pgvector GUCs (set in AfterConnect,
+// because a GUC is per session and a pool has many).
+//
+//   - hnsw.ef_search — candidate breadth (ADR-0054 recall tuning).
+//   - hnsw.iterative_scan / hnsw.max_scan_tuples (pgvector >= 0.8;
+//     execution.retrieval.hnsw_iterative_scan / hnsw_max_scan_tuples): without an
+//     iterative scan an HNSW index scan yields at most ef_search tuples and the
+//     WHERE predicates (read scope, session isolation, event window) are applied
+//     AFTER it, so a selective predicate on a large shared store returns far fewer
+//     than the requested rows — filtered-ANN underfill
+//     (T-20261101-scoped-recall-may-underfill-top-k-on-a-large; measured in
+//     scoped_underfill_pg_test.go). "relaxed_order" keeps scanning the graph until
+//     enough rows pass the filter; its slightly-out-of-order output is harmless here
+//     because Search re-sorts every candidate by score. "" / "off" leaves pgvector's
+//     default (off). The value was validated at config load.
+func hnswSessionSettings(efSearch int, iterative string, maxScanTuples int) []string {
+	out := []string{fmt.Sprintf("SET hnsw.ef_search = %d", efSearch)}
+	switch iterative {
+	case "relaxed_order", "strict_order":
+		out = append(out, "SET hnsw.iterative_scan = "+iterative)
+		if maxScanTuples > 0 {
+			out = append(out, fmt.Sprintf("SET hnsw.max_scan_tuples = %d", maxScanTuples))
+		}
+	}
+	return out
 }
 
 // ChunkTripletsStore returns the adapter itself as a domain.ChunkTripletsStore.
@@ -449,7 +544,7 @@ func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) *goqu.InsertDat
 	// DEFAULT NOW() fires for new inserts. Go zero-value would store 0001-01-01,
 	// breaking Ebbinghaus decay GC age predicates.
 	if !doc.CreatedAt.IsZero() {
-		record["created_at"] = doc.CreatedAt
+		record["created_at"] = doc.CreatedAt.UTC()
 	}
 	update := goqu.Record{
 		"text":                   goqu.L("EXCLUDED.text"),
@@ -463,6 +558,23 @@ func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) *goqu.InsertDat
 		// FROM-clause error at runtime — invisible to any test that does not upsert a
 		// descriptor against the real schema, which is how it reached a live boot.
 		"version": goqu.L(tableFor(doc.DocumentType) + ".version + 1"), // Optimistic Concurrency
+	}
+	// ADR-0134: the event-time stamp. Only a writer that STATES one touches the
+	// columns; any other writer (an activation update, a re-save of a loaded row)
+	// leaves the stored stamp alone because the columns are absent from its UPDATE.
+	if !doc.EventStamp.IsZero() {
+		table := tableFor(doc.DocumentType)
+		for col, v := range eventStampValues(doc.EventStamp) {
+			record[col] = v
+			update[col] = goqu.L(keepStatedTime(table, col))
+		}
+		// "ingested_at always updates" (owner decision Q6): a writer that states an
+		// event time is an ingest, and created_at is the record clock (ADR-0134 D2).
+		// Only such a writer moves it, so a component that re-saves a row it read
+		// cannot rewrite when that row was recorded.
+		if !doc.CreatedAt.IsZero() {
+			update["created_at"] = goqu.L("EXCLUDED.created_at")
+		}
 	}
 	// ADR-0107 stage 3c: the typed legacy column only takes vectors of its own
 	// dimension. Under projection coexistence (active model's dims differ) the
@@ -500,6 +612,48 @@ func (p *PgVectorAdapter) getUpsertBuilder(doc *domain.Document) *goqu.InsertDat
 	return dialect.Insert(tableFor(doc.DocumentType)).Rows(record).OnConflict(
 		goqu.DoUpdate("id", update),
 	)
+}
+
+// eventStampValues maps a stated stamp onto its five columns (NULL for an unset part).
+// Times are sent in UTC; goqu renders them as RFC3339 literals with a zone, which a
+// TIMESTAMPTZ column stores exactly.
+func eventStampValues(s domain.EventStamp) map[string]any {
+	t := func(v time.Time) any {
+		if v.IsZero() {
+			return nil
+		}
+		return v.UTC()
+	}
+	str := func(v string) any {
+		if v == "" {
+			return nil
+		}
+		return v
+	}
+	return map[string]any{
+		"event_time":     t(s.EventTime),
+		"event_time_end": t(s.EventTimeEnd),
+		"time_source":    str(string(s.TimeSource)),
+		"time_precision": str(string(s.TimePrecision)),
+		"claimed_time":   t(s.ClaimedTime),
+	}
+}
+
+// keepStatedTime is the ON CONFLICT value of one event-stamp column: owner decision
+// ADR-0134 Q6, "re-ingest keeps event time unless restated".
+//
+// A re-ingest that states NO time arrives as ingest_default (or NULL). If the stored
+// row has a REAL time — explicit, source_metadata, inferred, clamped_future — the whole
+// stored stamp is kept: an ingest default must never overwrite a real event time. In
+// every other case the incoming stamp wins: a restated time replaces the old one
+// (with its new source), and an ingest default replaces an older ingest default
+// (that time IS the ingest time, which moved). All five columns use the same test, so
+// a stamp is never half-replaced.
+func keepStatedTime(table, col string) string {
+	def := string(domain.TimeSourceIngestDefault)
+	keep := "(EXCLUDED.time_source IS NULL OR EXCLUDED.time_source = '" + def + "')" +
+		" AND " + table + ".time_source IS NOT NULL AND " + table + ".time_source <> '" + def + "'"
+	return "CASE WHEN " + keep + " THEN " + table + "." + col + " ELSE EXCLUDED." + col + " END"
 }
 
 // projectionUpsert mirrors a chunk's embedding into chunk_embeddings under the
@@ -778,6 +932,41 @@ func isolationExpressions(iso *domain.SessionIsolation, alias string) []goqu.Exp
 	)}
 }
 
+// eventColumnRef matches the column names inside migrate.EventStartExpr/EventEndExpr,
+// so they can be qualified for a JOIN (chunk_embeddings has its own created_at).
+var eventColumnRef = regexp.MustCompile(`\b(event_time_end|event_time|created_at)\b`)
+
+// eventWindowExpressions is the SQL form of the ADR-0134 event-time window, added to
+// the SAME query as the read scope so it narrows the candidate set BEFORE the LIMIT —
+// never a filter after top-k (which is what would underfill a selective window).
+//
+// Span-overlap semantics, the wire contract (contract 0099): a row whose span
+// [start, end] overlaps [since, until) matches — end >= since (event_after
+// inclusive) AND start < until (event_before exclusive). start/end are
+// migrate.EventStartExpr / EventEndExpr VERBATIM (qualified only by table), because
+// the b-tree indexes are built on those expressions and the planner uses an
+// expression index only for the identical expression. domain.EventTimeQuery.Admits
+// is the in-memory mirror.
+//
+// Zero bounds add nothing. Times are rendered as RFC3339 UTC literals (goqu's
+// non-prepared mode), compared as timestamptz.
+func eventWindowExpressions(since, until time.Time, table string) []goqu.Expression {
+	qualify := func(expr string) string {
+		if table == "" {
+			return expr
+		}
+		return eventColumnRef.ReplaceAllString(expr, table+".$1")
+	}
+	var out []goqu.Expression
+	if !since.IsZero() {
+		out = append(out, goqu.L(qualify(migrate.EventEndExpr)+" >= ?::timestamptz", since.UTC()))
+	}
+	if !until.IsZero() {
+		out = append(out, goqu.L(qualify(migrate.EventStartExpr)+" < ?::timestamptz", until.UTC()))
+	}
+	return out
+}
+
 // filterExpressions translates a typed domain.SearchFilter into predicates whose
 // VALUES travel as real bind parameters ($1, $2, …) next to the SQL, never inside
 // it. It replaced `ds.Where(goqu.L(opts.Filter))`, which spliced a caller-built
@@ -866,17 +1055,12 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 			// (blend coherence, rerank) must see the ACTIVE model's vector, and
 			// under coexistence the legacy column may hold a different model's —
 			// or, for chunks written since the switch, none at all.
-			Select(goqu.I(TableChunks+".id"), goqu.I(TableChunks+".text"), goqu.I(TableChunks+".metadata"),
-				goqu.I(TableChunks+".access_count"), goqu.I(TableChunks+".activation_strength"),
-				goqu.I(TableChunks+".scoring_prompt_version"), goqu.I(TableChunks+".last_accessed_at"),
-				goqu.I(TableChunks+".created_at"), goqu.I(TableChunks+".document_type"),
-				goqu.I(TableChunks+".version"), goqu.L(cast).As("embedding"),
-				goqu.I(TableChunks+".summary"), goqu.I(TableChunks+".section_path")).
+			Select(documentColumnsWithEmbedding(TableChunks, goqu.L(cast).As("embedding"))...).
 			SelectAppend(goqu.L(cast+" <=> ?", vec).As("distance")).
 			Order(goqu.L(cast+" <=> ?", vec).Asc())
 	} else {
 		ds = dialect.From(table).
-			Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path")
+			Select(documentColumns("")...)
 		if vector != nil {
 			vec := pgvector.NewVector(vector)
 			ds = ds.SelectAppend(goqu.L("embedding <=> ?", vec).As("distance")).
@@ -907,6 +1091,16 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 	qualifier := ""
 	if useProjection {
 		qualifier = TableChunks + "."
+	}
+	// ADR-0134 P2: the event-time window, in the same WHERE as Scope and before the
+	// LIMIT. Qualified under the projection JOIN, where chunk_embeddings also has a
+	// created_at.
+	windowTable := ""
+	if useProjection {
+		windowTable = TableChunks
+	}
+	for _, expr := range eventWindowExpressions(opts.Since, opts.Until, windowTable) {
+		ds = ds.Where(expr)
 	}
 	filterExprs, filterArgs := filterExpressions(opts.Filter, qualifier)
 	for _, expr := range filterExprs {
@@ -964,7 +1158,7 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 	// OR-tsquery: plainto -> text (' & ' joined lexemes) -> swap & for | -> tsquery.
 	orQuery := goqu.L("replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery", queryText)
 	ds := dialect.From(tableFor(opts.DocumentType)).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
+		Select(documentColumns("")...).
 		SelectAppend(goqu.L("ts_rank_cd(to_tsvector('english', text), replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery)", queryText).As("distance")).
 		Where(goqu.L("to_tsvector('english', text) @@ ?", orQuery)).
 		Order(goqu.C("distance").Desc())
@@ -976,6 +1170,11 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 		ds = ds.Where(expr)
 	}
 	for _, expr := range isolationExpressions(opts.Isolation, "") {
+		ds = ds.Where(expr)
+	}
+	// ADR-0134 P2: the event-time window, beside Scope, before the LIMIT — the
+	// lexical lane must not return out-of-window rows the dense lane excluded.
+	for _, expr := range eventWindowExpressions(opts.Since, opts.Until, "") {
 		ds = ds.Where(expr)
 	}
 	filterExprs, filterArgs := filterExpressions(opts.Filter, "")
@@ -1021,7 +1220,7 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 func (p *PgVectorAdapter) GetByID(ctx context.Context, id string) (*domain.Document, error) {
 	for _, table := range idLookupTables {
 		sql, args, _ := dialect.From(table).
-			Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
+			Select(documentColumns("")...).
 			Where(goqu.Ex{"id": id}).ToSQL()
 
 		doc, _, err := scanDocument(p.pool.QueryRow(ctx, sql, args...), false)
@@ -1130,7 +1329,7 @@ func (p *PgVectorAdapter) ChunksByIDs(ctx context.Context, ids []string) ([]doma
 
 func (p *PgVectorAdapter) getBatchFrom(ctx context.Context, table string, ids []string) ([]domain.Document, error) {
 	sql, args, err := dialect.From(table).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
+		Select(documentColumns("")...).
 		Where(goqu.Ex{"id": ids}).ToSQL()
 
 	if err != nil {
@@ -1175,7 +1374,7 @@ func (p *PgVectorAdapter) GetStaleMemories(ctx context.Context, limit int) ([]do
 	// guard that can never fire. decayLoner keeps one anyway, for stores that do
 	// populate the field; this predicate is what makes it true against Postgres.
 	sql, args, _ := dialect.From(TableChunks).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
+		Select(documentColumns("")...).
 		Where(goqu.Ex{"activation_strength": goqu.Op{"lt": 0.5}}).
 		Where(goqu.Ex{"experience_id": nil}).
 		Order(goqu.I("access_count").Asc(), goqu.I("last_accessed_at").Asc().NullsFirst()).
@@ -1239,7 +1438,7 @@ func (p *PgVectorAdapter) QueryByMetadata(ctx context.Context, filter map[string
 	}
 
 	q := dialect.From(TableChunks).
-		Select("id", "text", "metadata", "access_count", "activation_strength", "scoring_prompt_version", "last_accessed_at", "created_at", "document_type", "version", "embedding", "summary", "section_path").
+		Select(documentColumns("")...).
 		Where(goqu.L("metadata @> ?::jsonb", string(filterBytes))).
 		Order(goqu.I("created_at").Asc())
 	if limit > 0 {

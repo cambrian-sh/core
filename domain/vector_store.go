@@ -35,12 +35,22 @@ type SearchOptions struct {
 	// raw SQL string that the adapter spliced in with goqu.L and its producers had
 	// to hand-escape; values here are bound as query parameters by the adapter.
 	Filter          SearchFilter
-	RetrievalFloor  float64   // ADR-0015: α in floor-multiplier formula; 0 disables re-ranking
-	ExplorationRate float64   // ADR-0015: fraction of returned slots reserved for random exploration
-	Since           time.Time // ADR-0017: temporal filter (lower bound); zero = no filter
-	// Until is the upper temporal bound (exclusive) — the companion to Since so a
+	RetrievalFloor  float64 // ADR-0015: α in floor-multiplier formula; 0 disables re-ranking
+	ExplorationRate float64 // ADR-0015: fraction of returned slots reserved for random exploration
+	// Since is the lower EVENT-time bound (inclusive; ADR-0017, ADR-0134 D4 —
+	// the wire's event_after). Zero = no filter.
+	Since time.Time
+	// Until is the upper event-time bound (exclusive) — the companion to Since so a
 	// bounded range [Since, Until) can be expressed (AGENTIC_RETRIEVAL_SPEC
-	// filter-first enumeration: "what happened in June"). Zero = no upper bound.
+	// filter-first enumeration: "what happened in June"; the wire's event_before).
+	// Zero = no upper bound. A row matches when its event-time span
+	// [event_time, event_time_end] overlaps [Since, Until).
+	//
+	// QueryService fills Since/Until from domain.EventTimeQuery on the context; the
+	// pgvector adapter pushes them into the SAME query as Scope, before top-k
+	// (ADR-0134 P2), over the span expressions migrate.EventStartExpr/EventEndExpr
+	// that the out-of-band b-tree indexes are built on. A row with no stated event
+	// time is windowed by its ingest clock (created_at).
 	Until time.Time
 	// DecayLambda is the temporal decay rate λ (per hour) applied at query time:
 	// effective_activation = activation_strength × e^(-λ × age_hours).
@@ -139,6 +149,10 @@ type Document struct {
 	// memory because its parentage could not be recorded would be far worse than
 	// losing the link (ADR-0095 D5 / ADR-0093 D5).
 	ExperienceID string `json:"experience_id,omitempty"`
+	// EventStamp is the row's event time (ADR-0134 D2): when the content happened,
+	// where that time came from and how exact it is — the typed columns of migration
+	// 0019. Zero for a writer that states no time; read it through HitEventTime.
+	EventStamp
 }
 
 // SearchResult holds the search hit containing the document and its similarity score.

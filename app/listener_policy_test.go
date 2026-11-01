@@ -201,6 +201,15 @@ func TestRequireOperatorBearer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A logged-out token (Logout, contract 0099) must close the HTTP door too:
+	// both planes resolve through the one identity.
+	goneTok, _, _, err := idp.Login("op", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idp.Revoke(goneTok); err != nil {
+		t.Fatal(err)
+	}
 	called := 0
 	h := requireOperatorBearer(idp, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { called++ }))
 	cases := []struct {
@@ -210,13 +219,14 @@ func TestRequireOperatorBearer(t *testing.T) {
 		{"no header", "", http.StatusUnauthorized},
 		{"not bearer", "Basic abc", http.StatusUnauthorized},
 		{"unknown token", "Bearer nope", http.StatusUnauthorized},
+		{"revoked token", "Bearer " + goneTok, http.StatusUnauthorized},
 		{"viewer", "Bearer " + viewTok, http.StatusForbidden},
 		{"operator", "Bearer " + opTok, http.StatusOK},
 		{"operator, scheme case-insensitive", "bearer " + opTok, http.StatusOK},
 	}
 	for _, c := range cases {
 		rec := &recorder{header: http.Header{}}
-		req, _ := http.NewRequest(http.MethodPost, "/v1/admin/consolidate", nil)
+		req, _ := http.NewRequest(http.MethodPost, "/v1/admin/agents/a1/write-tags", nil)
 		if c.auth != "" {
 			req.Header.Set("Authorization", c.auth)
 		}

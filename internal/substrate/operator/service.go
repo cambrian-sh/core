@@ -48,25 +48,27 @@ type Service struct {
 	effects CommandEffects
 
 	// ADR-0047 Amendment A2 read sources (CORE-OPS-1).
-	tools             ToolCatalog
-	skills            SkillLister
-	memory            MemoryQuerier
-	documents         memory.DocumentLister // nil ⇒ ListDocuments Unimplemented
-	docGetter         memory.DocumentGetter // nil ⇒ GetDocument Unimplemented
-	answerer          MemoryAnswerer        // ADR-0081; nil ⇒ AnswerMemory Unimplemented
-	toolRunner        ToolRunner
-	ingestor          MemoryIngestor
-	watches           domain.WatchConfigHandler
-	pipelines         domain.PipelineLister
-	pipelineDryRun    domain.PipelineDryRunner
-	pipelineAuthor    domain.PipelineAuthor
-	pipelineWriter    domain.PipelineWriter
-	pipelineLifecycle domain.PipelineLifecycle
-	deadletters       domain.WatchDeadLetterReader // REACT-01 / ADR-0061
-	watchMetrics      domain.WatchMetricsReader    // REACT-05 / ADR-0071
-	watchBacktest     domain.WatchBacktester       // REACT-05 / ADR-0071
-	routePreview      RoutePreviewer               // ROUTE-07 / ADR-0077
-	policy            domain.PolicyAdmin           // ADR-0085; nil ⇒ access-policy RPCs Unimplemented
+	tools      ToolCatalog
+	skills     SkillLister
+	memory     MemoryQuerier
+	documents  memory.DocumentLister // nil ⇒ ListDocuments Unimplemented
+	docGetter  memory.DocumentGetter // nil ⇒ GetDocument Unimplemented
+	answerer   MemoryAnswerer        // ADR-0081; nil ⇒ AnswerMemory Unimplemented
+	toolRunner ToolRunner
+	ingestor   MemoryIngestor
+	// eventTimeTolerance is the ADR-0134 future-time clamp tolerance; nil = default.
+	eventTimeTolerance *time.Duration
+	watches            domain.WatchConfigHandler
+	pipelines          domain.PipelineLister
+	pipelineDryRun     domain.PipelineDryRunner
+	pipelineAuthor     domain.PipelineAuthor
+	pipelineWriter     domain.PipelineWriter
+	pipelineLifecycle  domain.PipelineLifecycle
+	deadletters        domain.WatchDeadLetterReader // REACT-01 / ADR-0061
+	watchMetrics       domain.WatchMetricsReader    // REACT-05 / ADR-0071
+	watchBacktest      domain.WatchBacktester       // REACT-05 / ADR-0071
+	routePreview       RoutePreviewer               // ROUTE-07 / ADR-0077
+	policy             domain.PolicyAdmin           // ADR-0085; nil ⇒ access-policy RPCs Unimplemented
 
 	// Contract 0072 (Wave 1). Each is nil-able and its RPC then answers
 	// Unimplemented — never an empty success, so a console can distinguish
@@ -201,6 +203,28 @@ func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 	s.logins.Reset(source)
 	s.observeLogin(LoginAttempt{Username: req.GetUsername(), Source: source, Success: true, At: time.Now()})
 	return &pb.LoginResponse{Token: token, Role: string(role)}, nil
+}
+
+// Logout revokes the bearer token this call carries (ADR-0130 D5 / 1f, contract
+// 0099). The auth interceptor has already resolved that token — an unknown or
+// expired one never reaches here — so the principal is known and the revoke is of
+// a live token. Afterwards every call with it, on the gRPC plane and the HTTP admin
+// routes alike (both resolve through the same OperatorIdentity), is
+// Unauthenticated.
+func (s *Service) Logout(ctx context.Context, _ *pb.LogoutRequest) (*pb.LogoutResponse, error) {
+	if s.idp == nil {
+		return nil, status.Error(codes.Unimplemented, "operator identity not configured")
+	}
+	token := bearerToken(ctx)
+	if token == "" {
+		return nil, status.Error(codes.Unauthenticated, "no bearer token to revoke")
+	}
+	principal, role, _ := PrincipalFromContext(ctx)
+	if err := s.idp.Revoke(token); err != nil {
+		return nil, status.Errorf(codes.Internal, "revoke token: %v", err)
+	}
+	slog.Info("operator logout", "user", principal, "role", string(role))
+	return &pb.LogoutResponse{}, nil
 }
 
 // observeLogin always writes the structured log line, and additionally hands

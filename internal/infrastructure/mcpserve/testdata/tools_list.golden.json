@@ -7,8 +7,23 @@
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "event_after": {
+          "description": "Only evidence whose event-time span reaches this instant or later (inclusive; RFC 3339 with a zone offset).",
+          "format": "date-time",
+          "type": "string"
+        },
+        "event_before": {
+          "description": "Only evidence whose event-time span starts before this instant (exclusive; RFC 3339 with a zone offset).",
+          "format": "date-time",
+          "type": "string"
+        },
         "query": {
           "description": "The question to answer from memory.",
+          "type": "string"
+        },
+        "reference_time": {
+          "description": "The asker's now (RFC 3339 with a zone offset, e.g. 2023-05-30T12:00:00Z); facts dated after it get no recency preference. Default: the server clock.",
+          "format": "date-time",
           "type": "string"
         },
         "top_k": {
@@ -104,8 +119,23 @@
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "event_after": {
+          "description": "Only passages whose event-time span reaches this instant or later (inclusive; RFC 3339 with a zone offset).",
+          "format": "date-time",
+          "type": "string"
+        },
+        "event_before": {
+          "description": "Only passages whose event-time span starts before this instant (exclusive; RFC 3339 with a zone offset).",
+          "format": "date-time",
+          "type": "string"
+        },
         "query": {
           "description": "What to search for, in natural language.",
+          "type": "string"
+        },
+        "reference_time": {
+          "description": "The asker's now (RFC 3339 with a zone offset, e.g. 2023-05-30T12:00:00Z); facts dated after it get no recency preference. Default: the server clock.",
+          "format": "date-time",
           "type": "string"
         },
         "top_k": {

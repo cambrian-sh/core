@@ -28,10 +28,6 @@ const (
 	Orchestrator_GenerateWithTools_FullMethodName      = "/cambrian.Orchestrator/GenerateWithTools"
 	Orchestrator_GetContextNode_FullMethodName         = "/cambrian.Orchestrator/GetContextNode"
 	Orchestrator_PutContextNode_FullMethodName         = "/cambrian.Orchestrator/PutContextNode"
-	Orchestrator_RegisterWatch_FullMethodName          = "/cambrian.Orchestrator/RegisterWatch"
-	Orchestrator_ListWatches_FullMethodName            = "/cambrian.Orchestrator/ListWatches"
-	Orchestrator_DeleteWatch_FullMethodName            = "/cambrian.Orchestrator/DeleteWatch"
-	Orchestrator_SetWatchActive_FullMethodName         = "/cambrian.Orchestrator/SetWatchActive"
 	Orchestrator_UploadArtifact_FullMethodName         = "/cambrian.Orchestrator/UploadArtifact"
 	Orchestrator_GetArtifact_FullMethodName            = "/cambrian.Orchestrator/GetArtifact"
 	Orchestrator_ListStepArtifacts_FullMethodName      = "/cambrian.Orchestrator/ListStepArtifacts"
@@ -83,15 +79,6 @@ type OrchestratorClient interface {
 	// and carry a {gist + cid} pointer; the blob is owner-stamped with the caller's
 	// session so reads are gated (GetContextNode). Idempotent (content-addressed).
 	PutContextNode(ctx context.Context, in *PutContextNodeRequest, opts ...grpc.CallOption) (*PutContextNodeResponse, error)
-	// WatchConfig CRUD — premium build only. ADR-0032.
-	// Create or replace a reactive rule. Returns the persisted config ID.
-	RegisterWatch(ctx context.Context, in *RegisterWatchRequest, opts ...grpc.CallOption) (*RegisterWatchResponse, error)
-	// List all registered WatchConfigs.
-	ListWatches(ctx context.Context, in *ListWatchesRequest, opts ...grpc.CallOption) (*ListWatchesResponse, error)
-	// Delete a WatchConfig by ID.
-	DeleteWatch(ctx context.Context, in *DeleteWatchRequest, opts ...grpc.CallOption) (*DeleteWatchResponse, error)
-	// Enable or disable a WatchConfig without deleting it.
-	SetWatchActive(ctx context.Context, in *SetWatchActiveRequest, opts ...grpc.CallOption) (*SetWatchActiveResponse, error)
 	// Artifact storage with ADR-0034 tag-based access scoping. REQ-SDK-007c.
 	// Upload validates classification tags against the writer's scope + controlled
 	// vocabulary and kernel-stamps provenance before persisting.
@@ -234,46 +221,6 @@ func (c *orchestratorClient) PutContextNode(ctx context.Context, in *PutContextN
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PutContextNodeResponse)
 	err := c.cc.Invoke(ctx, Orchestrator_PutContextNode_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *orchestratorClient) RegisterWatch(ctx context.Context, in *RegisterWatchRequest, opts ...grpc.CallOption) (*RegisterWatchResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RegisterWatchResponse)
-	err := c.cc.Invoke(ctx, Orchestrator_RegisterWatch_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *orchestratorClient) ListWatches(ctx context.Context, in *ListWatchesRequest, opts ...grpc.CallOption) (*ListWatchesResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListWatchesResponse)
-	err := c.cc.Invoke(ctx, Orchestrator_ListWatches_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *orchestratorClient) DeleteWatch(ctx context.Context, in *DeleteWatchRequest, opts ...grpc.CallOption) (*DeleteWatchResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(DeleteWatchResponse)
-	err := c.cc.Invoke(ctx, Orchestrator_DeleteWatch_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *orchestratorClient) SetWatchActive(ctx context.Context, in *SetWatchActiveRequest, opts ...grpc.CallOption) (*SetWatchActiveResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SetWatchActiveResponse)
-	err := c.cc.Invoke(ctx, Orchestrator_SetWatchActive_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -428,15 +375,6 @@ type OrchestratorServer interface {
 	// and carry a {gist + cid} pointer; the blob is owner-stamped with the caller's
 	// session so reads are gated (GetContextNode). Idempotent (content-addressed).
 	PutContextNode(context.Context, *PutContextNodeRequest) (*PutContextNodeResponse, error)
-	// WatchConfig CRUD — premium build only. ADR-0032.
-	// Create or replace a reactive rule. Returns the persisted config ID.
-	RegisterWatch(context.Context, *RegisterWatchRequest) (*RegisterWatchResponse, error)
-	// List all registered WatchConfigs.
-	ListWatches(context.Context, *ListWatchesRequest) (*ListWatchesResponse, error)
-	// Delete a WatchConfig by ID.
-	DeleteWatch(context.Context, *DeleteWatchRequest) (*DeleteWatchResponse, error)
-	// Enable or disable a WatchConfig without deleting it.
-	SetWatchActive(context.Context, *SetWatchActiveRequest) (*SetWatchActiveResponse, error)
 	// Artifact storage with ADR-0034 tag-based access scoping. REQ-SDK-007c.
 	// Upload validates classification tags against the writer's scope + controlled
 	// vocabulary and kernel-stamps provenance before persisting.
@@ -506,18 +444,6 @@ func (UnimplementedOrchestratorServer) GetContextNode(context.Context, *ContextN
 }
 func (UnimplementedOrchestratorServer) PutContextNode(context.Context, *PutContextNodeRequest) (*PutContextNodeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PutContextNode not implemented")
-}
-func (UnimplementedOrchestratorServer) RegisterWatch(context.Context, *RegisterWatchRequest) (*RegisterWatchResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method RegisterWatch not implemented")
-}
-func (UnimplementedOrchestratorServer) ListWatches(context.Context, *ListWatchesRequest) (*ListWatchesResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ListWatches not implemented")
-}
-func (UnimplementedOrchestratorServer) DeleteWatch(context.Context, *DeleteWatchRequest) (*DeleteWatchResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method DeleteWatch not implemented")
-}
-func (UnimplementedOrchestratorServer) SetWatchActive(context.Context, *SetWatchActiveRequest) (*SetWatchActiveResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method SetWatchActive not implemented")
 }
 func (UnimplementedOrchestratorServer) UploadArtifact(context.Context, *UploadArtifactRequest) (*UploadArtifactResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UploadArtifact not implemented")
@@ -699,78 +625,6 @@ func _Orchestrator_PutContextNode_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OrchestratorServer).PutContextNode(ctx, req.(*PutContextNodeRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Orchestrator_RegisterWatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RegisterWatchRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(OrchestratorServer).RegisterWatch(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Orchestrator_RegisterWatch_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(OrchestratorServer).RegisterWatch(ctx, req.(*RegisterWatchRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Orchestrator_ListWatches_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ListWatchesRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(OrchestratorServer).ListWatches(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Orchestrator_ListWatches_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(OrchestratorServer).ListWatches(ctx, req.(*ListWatchesRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Orchestrator_DeleteWatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DeleteWatchRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(OrchestratorServer).DeleteWatch(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Orchestrator_DeleteWatch_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(OrchestratorServer).DeleteWatch(ctx, req.(*DeleteWatchRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Orchestrator_SetWatchActive_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SetWatchActiveRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(OrchestratorServer).SetWatchActive(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Orchestrator_SetWatchActive_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(OrchestratorServer).SetWatchActive(ctx, req.(*SetWatchActiveRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -978,22 +832,6 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PutContextNode",
 			Handler:    _Orchestrator_PutContextNode_Handler,
-		},
-		{
-			MethodName: "RegisterWatch",
-			Handler:    _Orchestrator_RegisterWatch_Handler,
-		},
-		{
-			MethodName: "ListWatches",
-			Handler:    _Orchestrator_ListWatches_Handler,
-		},
-		{
-			MethodName: "DeleteWatch",
-			Handler:    _Orchestrator_DeleteWatch_Handler,
-		},
-		{
-			MethodName: "SetWatchActive",
-			Handler:    _Orchestrator_SetWatchActive_Handler,
 		},
 		{
 			MethodName: "UploadArtifact",

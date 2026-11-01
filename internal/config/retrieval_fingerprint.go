@@ -47,6 +47,17 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 	fmt.Fprintf(&b, "recall_top_k=%d\n", c.Retrieval.RecallTopK)
 	fmt.Fprintf(&b, "recall_over_fetch=%d\n", c.Retrieval.RecallOverFetch)
 	fmt.Fprintf(&b, "recall_similarity_floor=%g\n", c.Retrieval.RecallSimilarityFloor)
+	// Which candidates a filtered dense scan can reach at all (ADR-0134 P2): with an
+	// iterative HNSW scan a selective scope/window no longer underfills, so the same
+	// query returns a different set. "" and "off" are the same function.
+	iterative := c.Retrieval.HnswIterativeScan
+	if iterative == "" {
+		iterative = "off"
+	}
+	fmt.Fprintf(&b, "hnsw_iterative_scan=%s\n", iterative)
+	if iterative != "off" {
+		fmt.Fprintf(&b, "hnsw_max_scan_tuples=%d\n", c.Retrieval.HnswMaxScanTuples)
+	}
 
 	// Stage toggles, in pipeline order.
 	fmt.Fprintf(&b, "hybrid=%t\n", c.Retrieval.HybridSearchEnabled)

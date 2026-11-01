@@ -47,6 +47,10 @@ func main() {
 		// stdio bridge relaying a local MCP client to the kernel's endpoint.
 		case "mcp":
 			os.Exit(app.RunMCP(context.Background(), os.Args[2:]))
+		// ADR-0101 D8: list and clear config.db overrides offline (the store
+		// beats every config file, so an override is why a file edit "didn't take").
+		case "config":
+			os.Exit(app.RunConfig(context.Background(), os.Args[2:]))
 		}
 	}
 	if err := app.Run(context.Background(), app.DefaultOptions()); err != nil {

@@ -19,10 +19,11 @@ type fakeSearcher struct {
 	err       error
 	gotQuery  string
 	gotCaller string
+	gotCtx    context.Context
 }
 
-func (f *fakeSearcher) Search(_ context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	f.gotQuery, f.gotCaller = query, callerID
+func (f *fakeSearcher) Search(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
+	f.gotQuery, f.gotCaller, f.gotCtx = query, callerID, ctx
 	return f.results, f.err
 }
 
@@ -33,10 +34,11 @@ type fakeAnswerer struct {
 	err       error
 	gotQuery  string
 	gotCaller string
+	gotCtx    context.Context
 }
 
-func (f *fakeAnswerer) Answer(_ context.Context, query, callerID string) (string, string, []domain.SearchResult, error) {
-	f.gotQuery, f.gotCaller = query, callerID
+func (f *fakeAnswerer) Answer(ctx context.Context, query, callerID string) (string, string, []domain.SearchResult, error) {
+	f.gotQuery, f.gotCaller, f.gotCtx = query, callerID, ctx
 	return f.status, f.answer, f.evidence, f.err
 }
 
@@ -334,5 +336,59 @@ func TestListDocuments_MapsTheFilterAndThePage(t *testing.T) {
 	row := m["documents"].([]any)[0].(map[string]any)
 	if row["id"] != "doc-1" || row["chunk_count"].(float64) != 4 || row["created_at_unix_ms"].(float64) != 1_755_000_000_000 {
 		t.Errorf("row = %v", row)
+	}
+}
+
+// ── ADR-0134 event time ──────────────────────────────────────────────────────
+
+// search_memory / ask_memory take the same event-time parameters as the gRPC planes
+// and carry them to the memory stack on the context; a naive (zone-less) time and an
+// inverted window are refused; every hit and citation reports its event time.
+func TestMemoryTools_EventTimeParameters(t *testing.T) {
+	t.Parallel()
+	hit := domain.SearchResult{Document: domain.Document{ID: "c1", Text: "t", EventStamp: domain.EventStamp{
+		EventTime: time.Date(2023, 5, 20, 7, 0, 0, 0, time.UTC), TimeSource: domain.TimeSourceExplicit,
+		TimePrecision: domain.TimePrecisionDay,
+	}}}
+	search := &fakeSearcher{results: []domain.SearchResult{hit}}
+	ans := &fakeAnswerer{status: "answered", answer: "a [1]", evidence: []domain.SearchResult{hit}}
+	b := NewCoreBackends()
+	b.Bind(search, ans, nil, nil)
+
+	res, err := b.searchMemory(callerCtx(), json.RawMessage(
+		`{"query":"q","reference_time":"2023-06-01T00:00:00Z","event_after":"2023-05-01T00:00:00+02:00","event_before":"2023-06-01T00:00:00Z"}`))
+	if err != nil {
+		t.Fatalf("searchMemory: %v", err)
+	}
+	q, ok := domain.EventTimeQueryFromContext(search.gotCtx)
+	if !ok || !q.ReferenceTime.Equal(time.Date(2023, 6, 1, 0, 0, 0, 0, time.UTC)) ||
+		!q.EventAfter.Equal(time.Date(2023, 4, 30, 22, 0, 0, 0, time.UTC)) || q.EventBefore.IsZero() {
+		t.Fatalf("event-time query did not reach the searcher: %+v %v", q, ok)
+	}
+	row := structured(t, res)["results"].([]any)[0].(map[string]any)
+	if row["event_time"] != "2023-05-20T07:00:00Z" || row["time_source"] != "explicit" || row["time_precision"] != "day" {
+		t.Fatalf("hit time = %v", row)
+	}
+
+	res, err = b.askMemory(callerCtx(), json.RawMessage(`{"query":"q","event_before":"2023-06-01T00:00:00Z"}`))
+	if err != nil {
+		t.Fatalf("askMemory: %v", err)
+	}
+	if q, ok := domain.EventTimeQueryFromContext(ans.gotCtx); !ok || q.EventBefore.IsZero() {
+		t.Fatalf("window did not reach the answer lane: %+v", q)
+	}
+	cite := structured(t, res)["citations"].([]any)[0].(map[string]any)
+	if cite["event_time"] != "2023-05-20T07:00:00Z" || cite["time_source"] != "explicit" {
+		t.Fatalf("citation time = %v", cite)
+	}
+
+	for name, args := range map[string]string{
+		"naive time":      `{"query":"q","event_after":"2023-05-01T00:00:00"}`,
+		"inverted window": `{"query":"q","event_after":"2023-06-01T00:00:00Z","event_before":"2023-05-01T00:00:00Z"}`,
+		"not a time":      `{"query":"q","reference_time":"last week"}`,
+	} {
+		if _, err := b.searchMemory(callerCtx(), json.RawMessage(args)); err == nil {
+			t.Errorf("%s: accepted, want an error", name)
+		}
 	}
 }

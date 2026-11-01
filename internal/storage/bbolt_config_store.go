@@ -47,10 +47,19 @@ type BoltConfigStore struct {
 // container volume, a bug report), not against an attacker who already holds
 // both the file and the running process's environment.
 func OpenConfigStore(dbPath string) (*BoltConfigStore, error) {
+	return OpenConfigStoreTimeout(dbPath, 5*time.Second)
+}
+
+// OpenConfigStoreTimeout is OpenConfigStore with an explicit wait for the file
+// lock. bbolt is single-process: while the kernel runs it holds the lock, and an
+// offline tool (`orchestrator config overrides unset`) should give up quickly
+// with a clear message rather than wait the boot path's 5 s. IsConfigStoreLocked
+// recognises the resulting error.
+func OpenConfigStoreTimeout(dbPath string, timeout time.Duration) (*BoltConfigStore, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return nil, fmt.Errorf("config store: create directory: %w", err)
 	}
-	db, err := bbolt.Open(dbPath, 0o600, &bbolt.Options{Timeout: 5 * time.Second})
+	db, err := bbolt.Open(dbPath, 0o600, &bbolt.Options{Timeout: timeout})
 	if err != nil {
 		return nil, fmt.Errorf("config store: open %s: %w", dbPath, err)
 	}
@@ -88,6 +97,28 @@ func OpenConfigStore(dbPath string) (*BoltConfigStore, error) {
 	return &BoltConfigStore{db: db, aead: aead}, nil
 }
 
+// OpenConfigStoreReadOnly opens an EXISTING config store for reading overrides
+// only (`orchestrator config overrides list`). It creates nothing — no buckets,
+// no schema marker, no secret.key — and writes nothing, so inspecting an
+// operator's store cannot change it. Secret operations on the returned store
+// fail (it holds no decryption key); Configured still answers.
+func OpenConfigStoreReadOnly(dbPath string, timeout time.Duration) (*BoltConfigStore, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf("config store: %w", err)
+	}
+	db, err := bbolt.Open(dbPath, 0o600, &bbolt.Options{Timeout: timeout, ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("config store: open %s read-only: %w", dbPath, err)
+	}
+	return &BoltConfigStore{db: db}, nil
+}
+
+// IsConfigStoreLocked reports whether an open failed because another process —
+// almost always the running kernel — holds the store's file lock.
+func IsConfigStoreLocked(err error) bool {
+	return errors.Is(err, bbolt.ErrTimeout)
+}
+
 // Close releases the underlying file.
 func (s *BoltConfigStore) Close() error { return s.db.Close() }
 
@@ -101,7 +132,11 @@ func (s *BoltConfigStore) Close() error { return s.db.Close() }
 func (s *BoltConfigStore) Overrides() (map[string]any, error) {
 	out := map[string]any{}
 	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(configOverrideBucket).ForEach(func(k, v []byte) error {
+		b := tx.Bucket(configOverrideBucket)
+		if b == nil {
+			return nil // a read-only open of a store that never held overrides
+		}
+		return b.ForEach(func(k, v []byte) error {
 			var val any
 			if err := json.Unmarshal(v, &val); err != nil {
 				return nil
@@ -163,7 +198,9 @@ func (s *BoltConfigStore) ClearSecret(name string) error {
 func (s *BoltConfigStore) Configured(name string) bool {
 	var found bool
 	_ = s.db.View(func(tx *bbolt.Tx) error {
-		found = tx.Bucket(secretBucket).Get([]byte(name)) != nil
+		if b := tx.Bucket(secretBucket); b != nil {
+			found = b.Get([]byte(name)) != nil
+		}
 		return nil
 	})
 	return found
@@ -207,7 +244,11 @@ func (s *BoltConfigStore) Resolve(name, envVar string) string {
 func (s *BoltConfigStore) reveal(name string) (string, error) {
 	var sealed []byte
 	if err := s.db.View(func(tx *bbolt.Tx) error {
-		v := tx.Bucket(secretBucket).Get([]byte(name))
+		b := tx.Bucket(secretBucket)
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte(name))
 		if v != nil {
 			sealed = append([]byte(nil), v...)
 		}
@@ -226,6 +267,9 @@ func (s *BoltConfigStore) reveal(name string) (string, error) {
 }
 
 func (s *BoltConfigStore) seal(plain []byte) ([]byte, error) {
+	if s.aead == nil {
+		return nil, errors.New("config store: opened read-only; secrets cannot be written")
+	}
 	nonce := make([]byte, s.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("config store: nonce: %w", err)
@@ -234,6 +278,9 @@ func (s *BoltConfigStore) seal(plain []byte) ([]byte, error) {
 }
 
 func (s *BoltConfigStore) open(sealed []byte) ([]byte, error) {
+	if s.aead == nil {
+		return nil, errors.New("config store: opened read-only; secrets cannot be read")
+	}
 	n := s.aead.NonceSize()
 	if len(sealed) < n {
 		return nil, errors.New("config store: sealed value truncated")

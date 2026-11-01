@@ -3,6 +3,7 @@ package config
 import (
 	stdjson "encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -672,6 +673,15 @@ type RetrievalConfig struct {
 	// lookups, no model. Default off.
 	NeighborWindowEnabled bool `json:"neighbor_window_enabled,omitempty"`
 
+	// ChronologicalContextEnabled orders the passages handed to the FINAL answer
+	// synthesis by event time, each prefixed with its date, its precision and its
+	// source (ADR-0134 D5a): the cited synthesis of AnswerMemory / ask_memory and the
+	// agentic loop's closing synthesis. Retrieval and ranking are unchanged — the
+	// same passages are selected by relevance; only their order and dating in the
+	// reader's context change. Default off until a LongMemEval temporal-reasoning A/B
+	// is recorded (D5: each behaviour measured before it is turned on).
+	ChronologicalContextEnabled bool `json:"chronological_context_enabled,omitempty"`
+
 	// Recall sizing (ADR-0054 retrieval tuning). The seed vector/ANN search and
 	// the returned window were hardcoded (over-fetch 25 → return 10), so the
 	// request top_k had no effect and the candidate pool was too small for the
@@ -684,6 +694,19 @@ type RetrievalConfig struct {
 	RecallTopK      int `json:"recall_top_k,omitempty"`
 	RecallOverFetch int `json:"recall_over_fetch,omitempty"`
 	HnswEfSearch    int `json:"hnsw_ef_search,omitempty"`
+	// HnswIterativeScan turns on pgvector's iterative HNSW index scan (pgvector
+	// >= 0.8): "" or "off" (default — pgvector's own default), "relaxed_order", or
+	// "strict_order". Without it an HNSW scan yields at most hnsw_ef_search tuples
+	// and the read-scope / session / event-window predicates filter AFTER the
+	// scan, so a selective predicate on a large shared store underfills top_k
+	// (ADR-0134 P2, T-20261101-scoped-recall-may-underfill-top-k-on-a-large; the
+	// measurement is recorded on ADR-0134). Read by the pgvector adapter's
+	// per-connection settings. Part of the retrieval fingerprint.
+	HnswIterativeScan string `json:"hnsw_iterative_scan,omitempty"`
+	// HnswMaxScanTuples caps the tuples an iterative scan visits
+	// (hnsw.max_scan_tuples); 0 = pgvector's default (20000). Only read when
+	// HnswIterativeScan is on.
+	HnswMaxScanTuples int `json:"hnsw_max_scan_tuples,omitempty"`
 
 	// EmbeddingProjectionWrite dual-writes every chunk embedding into the
 	// chunk_embeddings projection under the active embedder's (model, dims) —
@@ -866,6 +889,16 @@ type IngestionConfig struct {
 
 	// IngestionBatchWaitMs is the max batcher wait before flushing (ADR-0028). Default 1000.
 	IngestionBatchWaitMs int `json:"ingestion_batch_wait_ms,omitempty"`
+
+	// EventTimeFutureToleranceMs is how far past the ingest clock a stated event
+	// time (IngestMemory occurred_at / part times, ADR-0134 Q4) may lie before it is
+	// treated as skewed: a later time is still accepted, but its event time is
+	// clamped to the ingest time, the claimed time is kept, and time_source becomes
+	// "clamped_future". Source clocks are caller-controlled (ADR-0105 two-clock
+	// discipline), so a future-dated memory must not outrank everything real on
+	// recency. Read by both ingest planes through domain.ResolveIngestEventTime.
+	// Default 300000 (5 minutes); 0 clamps anything later than the ingest clock.
+	EventTimeFutureToleranceMs int `json:"event_time_future_tolerance_ms"`
 
 	// ChunkContextPrepend prepends the document title and the chunk's section
 	// breadcrumb to the chunk text at ingest, before embedding and storage. A
@@ -1727,6 +1760,7 @@ func DefaultConfig() *Config {
 				IngestionBatchSize:         5,
 				IngestionWorkers:           5,
 				IngestionBatchWaitMs:       1000,
+				EventTimeFutureToleranceMs: 300000, // ADR-0134 Q4: 5 minutes
 			},
 			Hippocampus: HippocampusConfig{
 				HippocampusPolicies: map[string]domain.HippocampusPolicy{
@@ -1923,11 +1957,9 @@ func LoadConfig(path string) (*Config, error) {
 // that re-applied precedence separately could, and a provenance report that
 // disagrees with the running config is worse than none.
 func LoadConfigWithStore(path string, store Store) (*Config, Provenance, error) {
-	// All secondary paths are derived from the directory of the primary `path`,
-	// not from the process CWD. This keeps the layering deterministic across
-	// invocation contexts (tests, systemd, dev shells).
-	dir := filepath.Dir(path)
-
+	// All secondary paths are derived from the directory of the primary `path`
+	// (FileLayers), not from the process CWD. This keeps the layering
+	// deterministic across invocation contexts (tests, systemd, dev shells).
 	k := koanf.New(".")
 	t := newTracker()
 
@@ -1943,63 +1975,49 @@ func LoadConfigWithStore(path string, store Store) (*Config, Provenance, error) 
 	}
 	t.claim(scratchBytes(defaultBytes), SourceDefault)
 
-	// Layer 2: tuning.json (committed curated power-user starter). Absent ⇒ skip.
-	// Curated, NOT a full mirror of all hyperparameters — see configs/tuning.json
-	// header comment and ADR-0024 §Curated tuning.json.
-	loadIfPresent(k, filepath.Join(dir, "tuning.json"))
-	t.claim(scratchFile(filepath.Join(dir, "tuning.json")), SourceTuning)
-
-	// Layer 3: tuning.local.json (gitignored, per-machine). Wins over tuning.json.
-	loadIfPresent(k, filepath.Join(dir, "tuning.local.json"))
-	t.claim(scratchFile(filepath.Join(dir, "tuning.local.json")), SourceTuningLocal)
-
-	// Layer 4: the primary `path` argument (configs/config.json in production).
-	// ADR-0057: the OSS repo ships config.example.json (gitignored config.json
-	// holds real user values). A missing primary file is fine: built-in
-	// defaults + the other layers still produce a valid config.
-	loadIfPresent(k, path)
-	t.claim(scratchFile(path), SourceConfig)
-
-	// Layer 5: config.local.json — silently skipped when absent.
-	// Convention: .json → .local.json (e.g. config.json → config.local.json).
-	localPath := strings.TrimSuffix(path, ".json") + ".local.json"
-	loadIfPresent(k, localPath)
-	t.claim(scratchFile(localPath), SourceConfigLocal)
-
-	// Layer 6: embedder.json (gitignored, the embedding model). Absent ⇒ default
-	// embedder from DefaultConfig() (bge-large via Ollama, localhost:11434).
-	// If both config.json and embedder.json define an `embedder` block, embedder.json wins.
-	loadIfPresent(k, filepath.Join(dir, "embedder.json"))
-	t.claim(scratchFile(filepath.Join(dir, "embedder.json")), SourceEmbedder)
-
-	// Layer 7: embedder.local.json (gitignored, per-machine embedder override).
-	loadIfPresent(k, filepath.Join(dir, "embedder.local.json"))
-	t.claim(scratchFile(filepath.Join(dir, "embedder.local.json")), SourceEmbedderLocal)
-
-	// Layer 8: providers.json (gitignored, the LLM provider list). Absent ⇒
-	// DefaultConfig() applies (empty generators, validate skipped). If both
-	// config.json and providers.json define an `llm_provider` block, providers.json wins.
-	loadIfPresent(k, filepath.Join(dir, "providers.json"))
-	t.claim(scratchFile(filepath.Join(dir, "providers.json")), SourceProviders)
-
-	// Layer 9: providers.local.json (gitignored, per-machine LLM provider override).
-	loadIfPresent(k, filepath.Join(dir, "providers.local.json"))
-	t.claim(scratchFile(filepath.Join(dir, "providers.local.json")), SourceProvidersLocal)
-
-	// Layer 10: mcp.json (gitignored MCP servers). Absent ⇒ no MCP behavior.
-	// If both config.json and mcp.json define an `mcp` block, mcp.json wins.
-	// WARNING: an empty mcp.json ({"mcp": {}}) will silently wipe the `mcp`
-	// block from config.json because Koanf merges per-key. Operators who
-	// don't use MCP should simply not create mcp.json.
-	loadIfPresent(k, filepath.Join(dir, "mcp.json"))
-	t.claim(scratchFile(filepath.Join(dir, "mcp.json")), SourceMCP)
+	// Layers 2-10: the JSON files, in the precedence order FileLayers states —
+	// tuning.json (committed curated starter, ADR-0024 §Curated tuning.json) →
+	// tuning.local.json → the primary `path` (config.json; ADR-0057 ships
+	// config.example.json) → config.local.json → embedder{,.local}.json →
+	// providers{,.local}.json → mcp.json. Each is skipped when absent. A later
+	// file wins per key, so e.g. providers.json's `llm_provider` block beats one in
+	// config.json.
+	//
+	// WARNING (mcp.json): an empty mcp.json ({"mcp": {}}) silently wipes the `mcp`
+	// block from config.json because Koanf merges per-key. Operators who don't use
+	// MCP should simply not create mcp.json.
+	//
+	// The SAME list drives the ADR-0101 D8 write-time resolver
+	// (ResolveFileSetting), so the merge and "which file supplies this key" share
+	// one statement of precedence.
+	for _, layer := range FileLayers(path) {
+		loadIfPresent(k, layer.Path)
+		t.claim(scratchFile(layer.Path), layer.Source)
+	}
 
 	// Layer 11 (ADR-0101 D1): the embedded store — durable operator writes.
 	// Above every file so a console edit survives a restart and outranks the
 	// shipped defaults; below the environment so a deployment still wins.
+	//
+	// Generators are the exception to "the store is one more layer" (ADR-0101 D9):
+	// they are stored per id and merged BY ID over the file list after unmarshal
+	// (storedGens below), because a stored list would replace the file list
+	// wholesale and hide every generator added to a file.
+	var storedGens map[string]StoredGenerator
 	if store != nil {
 		if overrides, err := store.Overrides(); err == nil && len(overrides) > 0 {
-			if b, mErr := stdjson.Marshal(expand(overrides)); mErr == nil {
+			gens, rest, legacy := SplitGeneratorOverrides(overrides)
+			if legacy {
+				// Normally migrated (persisted) at boot by app.Run; a read-only
+				// reader (CLI) still sees the right merge from the in-memory split.
+				slog.Info("config store holds the pre-ADR-0101-D9 generator list; merging it per id",
+					slog.Int("generators", len(gens)))
+			}
+			storedGens = gens
+			if len(gens) > 0 {
+				t.prov[GeneratorsKey] = SourceStore
+			}
+			if b, mErr := stdjson.Marshal(expand(rest)); mErr == nil && len(rest) > 0 {
 				// The store is migrated exactly like a file layer. It holds keys an
 				// operator wrote through the console, and a store populated before v2
 				// holds them FLAT — so skipping it here would silently drop every
@@ -2057,12 +2075,16 @@ func LoadConfigWithStore(path string, store Store) (*Config, Provenance, error) 
 		return nil, nil, &ConfigError{Field: "unmarshal", Message: err.Error()}
 	}
 
-	// ADR-0042 defaults for the llm_provider block.
-	for i := range cfg.LLMProvider.Generators {
-		if cfg.LLMProvider.Generators[i].TimeoutMs == 0 {
-			cfg.LLMProvider.Generators[i].TimeoutMs = 60000
-		}
+	// ADR-0101 D9: stored generators merge by id over the file layers' list. An
+	// env var pinning the whole list (not a realistic deployment, but the D1 rule)
+	// still wins: the merge is skipped when the env layer claimed the key.
+	if len(storedGens) > 0 && !strings.HasPrefix(t.prov[GeneratorsKey], SourceEnvPrefix) {
+		cfg.LLMProvider.Generators = MergeGenerators(cfg.LLMProvider.Generators, storedGens)
+		t.prov[GeneratorsKey] = SourceStore
 	}
+
+	// ADR-0042 defaults for the llm_provider block.
+	ApplyGeneratorDefaults(cfg.LLMProvider.Generators)
 	if cfg.LLMProvider.configured() {
 		if cfg.LLMProvider.Health.FailureThreshold == 0 {
 			cfg.LLMProvider.Health.FailureThreshold = 3
@@ -2244,6 +2266,14 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Memory.MaxNeighborExpansion < 0 {
 		errs = append(errs, "max_neighbor_expansion must be >= 0")
+	}
+	switch c.Retrieval.HnswIterativeScan {
+	case "", "off", "relaxed_order", "strict_order":
+	default:
+		errs = append(errs, fmt.Sprintf("retrieval.hnsw_iterative_scan must be one of off, relaxed_order, strict_order (got %q)", c.Retrieval.HnswIterativeScan))
+	}
+	if c.Retrieval.HnswMaxScanTuples < 0 {
+		errs = append(errs, "retrieval.hnsw_max_scan_tuples must be >= 0")
 	}
 	if c.Hippocampus.HippocampusDefaultPolicy != "" {
 		if _, ok := c.Hippocampus.HippocampusPolicies[c.Hippocampus.HippocampusDefaultPolicy]; !ok {

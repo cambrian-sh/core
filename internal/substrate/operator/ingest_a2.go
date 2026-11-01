@@ -2,10 +2,12 @@ package operator
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
@@ -32,6 +34,12 @@ type IngestRequest struct {
 	// Context is the operator's note about this document, folded into the body at
 	// ingest so it is chunked and embedded with the content.
 	Context string
+	// EventTime is the resolved ADR-0134 event time (contract 0099): when the
+	// content happened, where that came from, its precision, and — for a
+	// multi-part upload — the assembled body (EventTime.Body, which replaces Text)
+	// and the part offsets. Always set by IngestMemory; an upload that states no
+	// time carries the ingest clock labelled ingest_default.
+	EventTime domain.IngestEventTime
 }
 
 // MemoryIngestor requests a kernel document ingest and returns the assigned
@@ -52,6 +60,55 @@ func (f MemoryIngestorFunc) Ingest(ctx context.Context, req IngestRequest) (stri
 // SetMemoryIngestor wires the operator IngestMemory path (A2.4). nil ⇒ Unimplemented.
 func (s *Service) SetMemoryIngestor(ing MemoryIngestor) { s.ingestor = ing }
 
+// SetEventTimeFutureTolerance sets how far past the ingest clock a stated event
+// time may lie before it is clamped (ADR-0134 Q4; config
+// execution.ingestion.event_time_future_tolerance_ms). Unset means
+// domain.DefaultEventTimeFutureTolerance.
+func (s *Service) SetEventTimeFutureTolerance(d time.Duration) { s.eventTimeTolerance = &d }
+
+func (s *Service) eventTimeFutureTolerance() time.Duration {
+	if s.eventTimeTolerance == nil {
+		return domain.DefaultEventTimeFutureTolerance
+	}
+	return *s.eventTimeTolerance
+}
+
+// resolveOpEventTime validates the ADR-0134 event-time fields of an operator
+// ingest and resolves them through domain.ResolveIngestEventTime, the one
+// implementation both planes share.
+func (s *Service) resolveOpEventTime(req *pb.IngestMemoryOpRequest) (domain.IngestEventTime, error) {
+	occurredAt, err := opWireTime("occurred_at", req.GetOccurredAt())
+	if err != nil {
+		return domain.IngestEventTime{}, err
+	}
+	parts := make([]domain.MemoryPartInput, 0, len(req.GetParts()))
+	for i, p := range req.GetParts() {
+		t, err := opWireTime(fmt.Sprintf("parts[%d].occurred_at", i), p.GetOccurredAt())
+		if err != nil {
+			return domain.IngestEventTime{}, err
+		}
+		parts = append(parts, domain.MemoryPartInput{Text: p.GetText(), OccurredAt: t})
+	}
+	et, err := domain.ResolveIngestEventTime(occurredAt, parts, req.GetTimePrecision(), time.Now(), s.eventTimeFutureTolerance())
+	if err != nil {
+		return domain.IngestEventTime{}, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return et, nil
+}
+
+// opWireTime converts an optional wire Timestamp (an absolute UTC instant, so no
+// zone can be missing); an out-of-range value is the caller's error.
+func opWireTime(field string, ts *timestamppb.Timestamp) (*time.Time, error) {
+	if ts == nil {
+		return nil, nil
+	}
+	if err := ts.CheckValid(); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%s: %v", field, err)
+	}
+	t := ts.AsTime().UTC()
+	return &t, nil
+}
+
 // IngestMemory requests a kernel document ingest on the operator's authority
 // (A2.4). The operator principal is stamped as Author; the kernel derives
 // classification (tags are a narrow-only hint). Idempotent on command_id: a
@@ -61,17 +118,28 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 	if req.GetCommandId() == "" || req.GetReason() == "" {
 		return nil, status.Error(codes.InvalidArgument, "command_id and reason are required")
 	}
-	// Exactly one body lane: text OR bytes. Both set is ambiguous (which one is the
-	// document?); neither is empty. Bytes with no filename cannot be chunker-routed,
-	// so the extension is mandatory on the binary lane.
-	hasText, hasContent := req.GetText() != "", len(req.GetContent()) > 0
+	// Exactly one body lane: text, bytes, or timed parts (ADR-0134, contract 0099).
+	// More than one is ambiguous (which one is the document?); none is empty. Bytes
+	// with no filename cannot be chunker-routed, so the extension is mandatory on
+	// the binary lane.
+	hasText, hasContent, hasParts := req.GetText() != "", len(req.GetContent()) > 0, len(req.GetParts()) > 0
+	lanes := 0
+	for _, b := range []bool{hasText, hasContent, hasParts} {
+		if b {
+			lanes++
+		}
+	}
 	switch {
-	case !hasText && !hasContent:
-		return nil, status.Error(codes.InvalidArgument, "one of text or content is required")
-	case hasText && hasContent:
-		return nil, status.Error(codes.InvalidArgument, "text and content are mutually exclusive")
+	case lanes == 0:
+		return nil, status.Error(codes.InvalidArgument, "one of text, content or parts is required")
+	case lanes > 1:
+		return nil, status.Error(codes.InvalidArgument, "text, content and parts are mutually exclusive")
 	case hasContent && req.GetFilename() == "":
 		return nil, status.Error(codes.InvalidArgument, "filename is required when content is set")
+	}
+	et, err := s.resolveOpEventTime(req)
+	if err != nil {
+		return nil, err
 	}
 	if s.audit == nil {
 		return nil, status.Error(codes.Unimplemented, "operator audit store not configured")
@@ -108,6 +176,7 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 		Filename:    req.GetFilename(),
 		ContentType: req.GetContentType(),
 		Context:     req.GetContext(),
+		EventTime:   et,
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "ingest memory: %v", err)

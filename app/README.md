@@ -130,7 +130,7 @@ All started in an `errgroup.Group`, so any panicking goroutine fails the whole r
 | B++. MCP | `MCPConnector.Watch(...)` — health / reconnect (ADR-0043 D8) |
 | B+++. Backfill | `backfill.RunInterviewBackfill` — brain integrity verification |
 | C. gRPC | `grpc.NewServer` with method-scoped `UnaryAuthInterceptor` / `StreamAuthInterceptor` (ADR-0047 D13), registers `OrchestratorServer` + `OperatorConsoleServer`, hooks `TokenSink` for managed-proxy chunk streaming |
-| D. Ingestion HTTP | opt-in via `IngestionHTTPPort > 0` — `/v1/ingest`, `/v1/admin/consolidate`, `/v1/admin/agents/{id}/{scope\|write-tags\|tool-grants}` (ADR-0028 / 0034 / 0035 / 0039) |
+| D. Ingestion HTTP | opt-in via `IngestionHTTPPort > 0` — `/v1/ingest` (ADR-0028) and `/v1/admin/agents/{id}/write-tags` (ADR-0035, operator bearer). Consolidate, scope and tool-grants moved to `OperatorConsole` in contract 0099 |
 
 ---
 

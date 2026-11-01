@@ -3,7 +3,9 @@ package app
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
@@ -96,5 +98,40 @@ func TestOperatorIngestDoc_ContextSurvivesBinaryUpload(t *testing.T) {
 	})
 	if !strings.Contains(doc.Body, "weekly management report") {
 		t.Errorf("context must survive on the binary lane, Body=%q", doc.Body)
+	}
+}
+
+// ADR-0134 (contract 0099): a multi-part upload becomes a text-lane document whose
+// body is the assembled parts, dated by the resolved event time; a context note is
+// prepended, and the part offsets move with it so they still point at each part.
+func TestOperatorIngestDoc_PartsCarryEventTimeAndShiftedOffsets(t *testing.T) {
+	a := time.Date(2023, 5, 20, 7, 0, 0, 0, time.UTC)
+	et, err := domain.ResolveIngestEventTime(nil, []domain.MemoryPartInput{
+		{Text: "user: hi", OccurredAt: &a},
+		{Text: "assistant: hello"},
+	}, "minute", time.Now(), 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := operatorIngestDoc(operator.IngestRequest{Context: "a chat export", EventTime: et})
+	if !strings.HasSuffix(doc.Body, "user: hi\n\nassistant: hello") || !strings.HasPrefix(doc.Body, "## Context") {
+		t.Fatalf("body = %q", doc.Body)
+	}
+	if !doc.Timestamp.Equal(a) || doc.TimeSource != domain.TimeSourceExplicit || doc.TimePrecision != domain.TimePrecisionMinute {
+		t.Fatalf("doc time = %v %q %q", doc.Timestamp, doc.TimeSource, doc.TimePrecision)
+	}
+	for i, want := range []string{"user: hi", "assistant: hello"} {
+		p := doc.Parts[i]
+		if got := doc.Body[p.Offset : p.Offset+p.Length]; got != want {
+			t.Fatalf("part %d points at %q, want %q", i, got, want)
+		}
+	}
+}
+
+// A request that never went through the handler is still dated, and labelled.
+func TestOperatorIngestDoc_ZeroEventTimeIsIngestDefault(t *testing.T) {
+	doc := operatorIngestDoc(operator.IngestRequest{Text: "x"})
+	if doc.Timestamp.IsZero() || doc.TimeSource != domain.TimeSourceIngestDefault {
+		t.Fatalf("doc time = %v %q", doc.Timestamp, doc.TimeSource)
 	}
 }

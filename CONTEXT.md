@@ -19,6 +19,9 @@ This file is the *current shape* of cambrian-core. It is not where decisions or 
 - **What is being done, and what is broken** — tickets: `list_tickets` (`repo: "cambrian-core"`), or the
   knowledge-board Tickets view. Every change is ticketed, claimed, and closed with a
   resolution — the protocol is root [`AGENTS.md`](../AGENTS.md) §0.
+- **What has been measured** — benchmark runs in `../cambrian-knowledge/benchmarks/`
+  (`list_benchmarks` by `tag`/`adr`, or the knowledge-board Benchmarks page). Every benchmark
+  run is recorded there, with a verdict — the procedure is root [`AGENTS.md`](../AGENTS.md) §0.5.
 - **Every gap listed in this file should have a ticket.** Put its id next to the gap
   (`— T-20261031-…`); when the ticket closes, update or remove the gap here in the same change.
 
@@ -81,12 +84,34 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
 - **Premium never leaks in**: `check-no-premium.sh` audits imports.
 - **Memory is an Engram engine**: typed documents, two-tier write pipeline, graph layer (BFS with 0.75^depth attenuation), content-addressed `ArtifactVault`.
 - **Dispatch is unconditional**: ADR-0100 P3 deleted the auction; selection is capability-typed.
-- **Config store layer 11**: durable operator writes in bbolt (ADR-0101).
+- **Config store layer 11**: durable operator writes in bbolt (ADR-0101). Since D8/D9 (2026-11-01) a console write to a key a writable file layer already sets goes INTO that file (format-preserving, atomic; `internal/config/file_layers.go` `ResolveFileSetting`/`WriteFileSetting`, one `persist()` in `app/config_write_source.go` for every write RPC) and the store override is removed; committed `tuning.json` and read-only files are never rewritten — the value is stored and the ack/log names the file it overrides. Boot WARNs once per store key that beats a different file value (`config.StoreOverrideReport`, `app/config_store.go` `warnStoreOverrides`); `orchestrator config overrides list|unset` (`app/config_cli.go`, offline, `list` opens the store read-only) inspects and clears overrides. Generators are stored per id (`llm_provider.generator_overrides.<id>`, tombstone `removed:true`) and merged by id over the file list (`config.MergeGenerators`); a pre-D9 stored whole list is migrated at boot. The console marker / ack fields need a proto bump — T-20261101-config-write-outcome-does-not-carry-d8-written.
 - **Contributed machine tools are opt-in per agent**: an agent reaches a user's machine only through an explicit `local:*` (or exact `local:<machine>/<tool>`) grant; ownership picks the machine (ADR-0127 CL-4, `domain/contribution.go` `grantCovers`).
 - **`app.KernelServices` is the plugin capability seam**: premium receives functions, not internals — e.g. `VerifyMachineToken` lets the `machine_token_v1` ingress verifier check a token without reading it (ADR-0127 CL-5). `PlanExecutor` (`domain.PlanExecutor`, `app/plan_executor.go`) runs a plugin-generated plan on the real DAG executor via the Orchestrator.Execute authored-plan branch — the premium `start_plan` action uses it (PREM-0032).
 - **Self-installing**: `setup` bootstraps Postgres, Python runtime, agents, config, migrations, detached start — and, since ADR-0130, mints each discovered agent's plane credential (`agent:<id>:token`) into the ADR-0101 store.
 - **The agent plane authenticates and every listener shares one policy** (ADR-0130, 2026-11-01). Every `Orchestrator` RPC and every premium service declared agent-facing requires the per-agent named secret as `authorization: Bearer` with `x-agent-id` as the assertion it must match (`internal/authz/agent_auth.go`; one constant-time compare, `authz.VerifyNamedSecret`, shared with the MCP endpoint); the principal is established there, never from the header alone. The kernel mints missing credentials at boot and injects `CAMBRIAN_AGENT_TOKEN`/`CAMBRIAN_AGENT_ID` into each spawned agent's environment (`agentmgr/agent_credential_env.go`, the one credential SEC-01 admits). `server.insecure_localhost=true` waives agent auth (D2) — the benchmark harness runs under it. Every HTTP listener is built by `app/listener_security.go` (`serveHTTP`; plugins use `app.ServeHTTPListener`): loopback default, routable-bind refusal without TLS, header/idle timeouts, a body cap; `/v1/admin/*` takes the operator bearer through the same `OperatorIdentity` as gRPC (`app/admin_auth.go`), and `app/listener_policy_test.go` refuses any other `http.Server` literal. Operator `Login` locks a peer out after 5 failures in 15 min and tokens expire after 12 h (`operator/login_limiter.go`); every attempt is logged and handed to `domain.LoginObserver` plugins (`Registry.AddLoginObserver` — the premium receipts plugin chains failures). The `/healthz` shim is a handler served by `serveHTTP`; only two operator-run tools (`cmd/pagerank-recompute`, premium `cmd/cambrian-runview`) stay on the listener allowlist, each with an ADR citation. Spawned agents dial the address the listener policy bound, and on a pure-TLS bind receive `CAMBRIAN_TLS_CA` (+ `CAMBRIAN_TLS_SERVER_NAME`) beside their token (`app/agent_transport.go`). Both gRPC planes carry a per-principal token bucket after authentication (`internal/ratelimit`, `server.rate_limit`, default 200 req/s burst 400, `ResourceExhausted` on overflow).
 - **Every LLM call is metered by one ledger** (ADR-0131 D1-D3, 2026-11-01). `llm.SpendMeter` (`internal/infrastructure/llm/spend_meter.go`) is fed by the two doors every call passes: the outermost decorator in `Provider.Acquire` (all organs) and `SubstrateLLMGateway` (all agent streams and tool turns, including the `retrieval_agent` chain, whose lease is now bound to the caller's session and charged back to the asking step's lease). Usage is provider-reported — adapters fill a ctx capture cell (`usage_capture.go`) from their own response — and `len/4` is used only as a fallback flagged `Estimated`. `execution.session.max_session_tokens` (> 0) refuses calls with `llm.ErrSpendCeiling`; the plan ends with gRPC `ResourceExhausted` and a `System_SpendCeiling` TaskEvent. Wired in `internal/kernel` `ProvideServer`. Each Execute response carries `_llm_*` spend metadata, router classification included. Attribution is a property of the call's ctx on the same meter (owner decision 2026-11-01): a session in ctx is booked and enforced; `domain.WithBackgroundSpend` + the originating session (tier-2 scoring per session, the verifier call via `VerificationRequest.SessionID`) is booked, never refused — for gateway calls that property rides the lease: a lease `Acquire`d under the marker is `BudgetLeaseState.Background`, admitted without the ceiling check and booked to its bound session, which is how each verifier call's lease (minted by `VerificationWorker` through the constructor-injected gateway, bound to the originating session, completed after the call) is metered; Execute routes under the caller's existing live session (`liveCallerSession`, never creates one) or on an `llm.WithSpendTab` tab settled into the session it opens; anything else lands in the reported, unenforced kernel bucket `llm.NoSessionBucket` (`kernel:no-session`, logged by the gateway's eviction sweep). Step TaskEvents bill the step lease's provider usage (`llm.StampStepUsage` → `domain.HandoffKeyStep*` → DAG executor), with `TaskEvent.UsageEstimated` flagging the `len/4` fallback. Lease completion runs one gateway hook (`SetCompleteHook`), which clears ADR-0046 run grants for every lease site. One plan gets `1 + max_replan_attempts` planner calls in total (validation retries and replans share the budget, `plan_call_budget.go`).
+- **Operator contract 0099** (2026-11-01, the bundled bump; `app/app.go` `SetHandshake`). Agent plane: the retired
+  `Orchestrator` watch-CRUD RPCs and their messages are deleted. Operator plane: `Logout` (ADR-0130 D5;
+  `OperatorIdentity.Revoke`), ADR-0101 D8 file facts on `ConfigWriteOutcomeOp`, and ADR-0134 event time. The HTTP
+  `/v1/admin` routes with an OperatorConsole equivalent (consolidate, scope, tool-grants) are gone.
+- **Event time in memory is one vocabulary and one reader** (ADR-0134, `domain/event_time.go`). `time_source` /
+  `time_precision` are defined there and only there; both ingest planes resolve `occurred_at` / `parts` /
+  `time_precision` through `ResolveIngestEventTime` (UTC, future times clamped beyond
+  `execution.ingestion.event_time_future_tolerance_ms`, default 5 min) onto `ExternalDocument.Timestamp` + qualifiers;
+  every hit mapping and the Stage-A recency term read `HitEventTime`. Storage (P0): migration `0019_event_time.sql`
+  adds nullable `event_time`, `event_time_end`, `time_source`, `time_precision`, `claimed_time` to documents, chunks and
+  the descriptor tables (no backfill; a NULL reads as `created_at AT TIME ZONE 'UTC'`, the ingest clock, labelled
+  `ingest_default`); `domain.EventStamp` rides `Document`/`SourceDocument`; every chunk (structure leaves included) gets
+  the earliest/latest time of the parts it covers (`LocateChunkSpans` + `ChunkStamps`); the upsert keeps a stated time
+  over an ingest default (`keepStatedTime`, owner Q6). The two window b-trees are built CONCURRENTLY by the migration
+  runner's out-of-transaction step (`migrate.ensureConcurrentIndexes`). Query (P2): `reference_time` / `event_after` /
+  `event_before` ride the context (`WithEventTimeQuery`); the window goes into SQL beside the read scope on the dense
+  and lexical lanes (`eventWindowExpressions`, span overlap, from `migrate.EventStartExpr/EventEndExpr`) and is
+  re-asserted where every lane converges (`EventTimeQuery.Admits`); `reference_time` anchors the recency term (a fact
+  after the asker's now gets no recency credit). MCP `search_memory`/`ask_memory` take the same parameters. Retrieval
+  decisions carry the event-time query (`RetrievalDecision.EventTime`, for receipts). Default-off:
+  `execution.retrieval.chronological_context_enabled` (D5a: final-synthesis passages ordered and dated by event time)
+  and `execution.retrieval.hnsw_iterative_scan` (pgvector iterative scan against filtered-HNSW underfill).
 
 ---
 
@@ -105,7 +130,13 @@ Each has a ticket; close the ticket and update this list in the same change.
   `T-20261101-spawned-agents-get-server-tls-cert-file-as`
 - The premium ReactiveEngine ignores `DaemonQuarantinedEvent`, so `ListWatches` cannot show a quarantined stream (core now shows it on the operator feed) —
   `T-20261101-premium-reactiveengine-ignores`
-- ADR-0130 deferrals to contract bump 0096: `/v1/admin/*` → `OperatorConsole` RPCs, an explicit `Logout` RPC.
+- `/v1/admin/agents/{id}/write-tags` is the one HTTP admin route left (no OperatorConsole RPC sets write tags yet) —
+  `T-20261101-write-tags-admin-route-has-no-operatorconsole`
+- ADR-0134: relative time phrases in a question ("last month") are not resolved into an event window —
+  `T-20261101-relative-time-phrases-in-a-memory-question-are`; filtered-HNSW underfill is measured only at 10k chunks
+  (none on natural plans; the iterative-scan remedy is config-gated, default off) —
+  `T-20261101-scoped-recall-may-underfill-top-k-on-a-large`; D5a chronological context and the recency term on real
+  event times are unmeasured (LongMemEval A/B pending)
 - Contribution lane never run end to end on real machines (blocked: no deployment) —
   `T-20261031-contribution-lane-has-never-run-end-to-end-on`
 - Derived memory artifacts (`chunk_triplets`, …) carry no classification; contained only

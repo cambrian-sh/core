@@ -16,6 +16,13 @@ service OperatorConsole {
   // token bound to {principal, role}. The only unauthenticated RPC. ADR-0047 D13.
   rpc Login(LoginRequest) returns (LoginResponse);
 
+  // Logout revokes the bearer token this call carries (ADR-0130 D5 / 1f; contract
+  // 0099). Every later call with that token is UNAUTHENTICATED, exactly like an
+  // expired or never-issued one. Open to every authenticated role: a Viewer must be
+  // able to end its own session. A second Logout with the revoked token is refused
+  // at the auth gate, and the token stays revoked. Capability "logout".
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
   // StreamEvents drains the sequenced operator feed. The client resumes from
   // last_seq; every OperatorEvent carries a global monotonic seq (the cursor).
   rpc StreamEvents(SubscribeRequest) returns (stream OperatorEvent);
@@ -117,11 +124,11 @@ service OperatorConsole {
   // it ranked. That is not a retrieval-quality problem a larger top-k fixes: there
   // is no question to rank against. It was a missing primitive.
   //
-  // Two callers need it. A drift alert cites a message id, and a console that
-  // cannot open that message shows a citation nobody can follow. And a watch whose
-  // signal carries REFERENCES ONLY (the ingress contract) must resolve the
-  // reference to content it can read — which is the property that makes a replayed
-  // signal resolve today's document rather than a stale copy in the payload.
+  // A console that cannot open a cited document id shows a citation nobody can
+  // follow. And a watch whose signal carries REFERENCES ONLY (the ingress contract)
+  // must resolve the reference to content it can read — which is the property that
+  // makes a replayed signal resolve today's document rather than a stale copy in
+  // the payload.
   rpc GetDocument(GetDocumentOpRequest) returns (GetDocumentOpResponse);
 
   // AnswerMemory (ADR-0081) runs the agentic retrieval loop and returns a GROUNDED
@@ -813,6 +820,10 @@ message LoginResponse {
   string role = 2;  // "operator" | "viewer"
 }
 
+// LogoutRequest carries nothing: the token to revoke is the call's own bearer.
+message LogoutRequest {}
+message LogoutResponse {}
+
 message SnapshotRequest {}
 
 message SnapshotResponse {
@@ -836,6 +847,10 @@ message SnapshotResponse {
   // watches-crud (A2), watch-deadletter, reactive-backpressure, watch-condition-guard,
   // watch-observability, watch-schedule (REACT-06 cron-driven watches). route-preview
   // (ROUTE-07 gatekeeper scoring) is core. contract 0062 (ADR-0084 + ListConversations sidebar).
+  // Contract 0099 adds, unconditionally: logout (the Logout RPC, ADR-0130) and
+  // memory-event-time (ADR-0134: occurred_at / parts / time_precision on
+  // IngestMemory, reference_time + event window on QueryMemory / AnswerMemory,
+  // event_time / time_source / time_precision on MemoryOp and MemoryCitation).
   repeated string capabilities = 6;
   // plugins enumerates every plugin this build DECLARED, registered or not, with
   // its own version line (ADR-0089). Capabilities tell the UI which surfaces
@@ -1042,13 +1057,13 @@ message PipelineNodeMeterOp {
 // own plane. Deletion you can only discover by knowing to go looking for it is
 // too close to silent for a product whose argument is auditability.
 //
-// SOURCE-AGNOSTIC on purpose. The record compactor (REC-03) and the
-// reactive-journal GC (GOV-02) are the same shape, so one message serves both and
-// the second caller costs no contract bump. It also keeps the OSS contract from
-// naming a premium plugin's tables, which ADR-0057 D5 forbids.
+// SOURCE-AGNOSTIC on purpose: any retention pass (today the reactive-journal GC,
+// GOV-02) has the same shape, so one message serves every source and a new one
+// costs no contract bump. It also keeps the OSS contract from naming a premium
+// plugin's tables, which ADR-0057 D5 forbids.
 message RetentionRunOp {
-  // source is the retention domain that ran, e.g. "records". Free-form: an OSS
-  // enum here would have to enumerate premium plugins to be useful.
+  // source is the retention domain that ran, e.g. "reactive_journal". Free-form:
+  // an OSS enum here would have to enumerate premium plugins to be useful.
   string source = 1;
   // run_id is the source's own id for the pass, so a feed entry joins to the
   // durable row behind it.
@@ -1500,6 +1515,20 @@ message QueryMemoryRequest {
   string source = 3;
   string session = 4;
   double min_importance = 5;
+  // Event-time query parameters (ADR-0134 D4, contract 0099), with the same
+  // meaning as on the agent plane's MemoryRequest. All optional.
+  //
+  // reference_time is the asker's "now" for relative expressions; unset = the
+  // server's clock. It does not filter anything by itself. NOT named as_of: as_of
+  // is reserved for transaction time, as on the substrate plane.
+  google.protobuf.Timestamp reference_time = 6;
+  // event_after (inclusive) / event_before (exclusive) bound the event-time
+  // window: a hit is kept when its span [event_time, event_time_end] overlaps it.
+  // Either bound may be unset. event_after >= event_before is INVALID_ARGUMENT.
+  // Applied inside retrieval beside the read scope, never after top-k; a kernel
+  // that cannot apply it answers UNIMPLEMENTED rather than ignoring it.
+  google.protobuf.Timestamp event_after = 7;
+  google.protobuf.Timestamp event_before = 8;
 }
 message MemoryOp {
   string doc_id = 1;
@@ -1515,6 +1544,21 @@ message MemoryOp {
   // The retrieved chunk body verbatim. `summary` is a <=200-char first-line preview
   // and is NOT quotable; a grounded citation needs the passage the answer came from.
   string text = 8;
+  // Event time of the hit (ADR-0134, contract 0099). event_time is when the
+  // content happened, falling back to the ingest time when nothing was known.
+  // event_time_end is the span end for a chunk covering several timed parts
+  // (unset for a single instant). time_source / time_precision use the shared
+  // vocabulary:
+  //   time_source    "explicit" | "source_metadata" | "inferred" |
+  //                  "ingest_default" | "clamped_future"
+  //   time_precision "year" | "month" | "day" | "hour" | "minute" | "second"
+  // A UI must label an "ingest_default" time as the ingest time, never as when
+  // the content happened. The kernel's single definition is cambrian-core
+  // domain/event_time.go.
+  google.protobuf.Timestamp event_time = 9;
+  google.protobuf.Timestamp event_time_end = 10;
+  string time_source = 11;
+  string time_precision = 12;
 }
 message QueryMemoryResponse {
   repeated MemoryOp results = 1;
@@ -1532,6 +1576,20 @@ message AnswerMemoryRequest {
   string source = 3;        // optional filter on the evidence pool
   string session = 4;       // optional filter
   double min_importance = 5;// optional filter
+  // Event-time query parameters (ADR-0134 D4, contract 0099), with the same
+  // meaning as on the agent plane's MemoryRequest. All optional.
+  //
+  // reference_time is the asker's "now" for relative expressions; unset = the
+  // server's clock. It does not filter anything by itself. NOT named as_of: as_of
+  // is reserved for transaction time, as on the substrate plane.
+  google.protobuf.Timestamp reference_time = 6;
+  // event_after (inclusive) / event_before (exclusive) bound the event-time
+  // window: a hit is kept when its span [event_time, event_time_end] overlaps it.
+  // Either bound may be unset. event_after >= event_before is INVALID_ARGUMENT.
+  // Applied inside retrieval beside the read scope, never after top-k; a kernel
+  // that cannot apply it answers UNIMPLEMENTED rather than ignoring it.
+  google.protobuf.Timestamp event_after = 7;
+  google.protobuf.Timestamp event_before = 8;
 }
 // MemoryCitation is one piece of evidence the answer's [n] markers point to.
 message MemoryCitation {
@@ -1543,6 +1601,11 @@ message MemoryCitation {
   double score = 6;
   double importance = 7;
   repeated string tags = 8;
+  // Event time of the cited evidence; same fields and vocabulary as MemoryOp.
+  google.protobuf.Timestamp event_time = 9;
+  google.protobuf.Timestamp event_time_end = 10;
+  string time_source = 11;
+  string time_precision = 12;
 }
 message AnswerMemoryResponse {
   // answer | abstention | clarification. Abstention means the evidence does not
@@ -1616,6 +1679,33 @@ message IngestMemoryOpRequest {
   // embedded, and retrievable/citable like any other content — a metadata-only
   // field would never reach the index and so could never affect an answer.
   string context = 11;
+  // Event time (ADR-0134 D1, contract 0099). Same semantics as the agent plane's
+  // IngestMemoryRequest; all optional, and an upload that sends none of them is
+  // dated by the ingest clock and labelled "ingest_default".
+  //
+  // occurred_at is when the content happened (UTC instant; a client must refuse a
+  // zone-less local time rather than guess). A time later than ingest +
+  // execution.ingestion.event_time_future_tolerance_ms (default 5 min) is clamped
+  // to the ingest time, the claimed time is kept, and time_source becomes
+  // "clamped_future". An invalid Timestamp is INVALID_ARGUMENT.
+  google.protobuf.Timestamp occurred_at = 12;
+  // parts is multi-message content (a chat transcript) with a time per part. It
+  // is a third body lane: exactly one of `text`, `content` or `parts` must be set.
+  // The parts' text is joined in order with a blank line between parts; chunk
+  // boundaries are not forced at part boundaries; a chunk takes the earliest time
+  // of the parts it covers and records the latest as its span end. With
+  // occurred_at unset the document time is the earliest part time.
+  repeated MemoryPartOp parts = 13;
+  // time_precision: "year" | "month" | "day" | "hour" | "minute" | "second".
+  // Empty means "second" when a time is given. Unknown is INVALID_ARGUMENT.
+  string time_precision = 14;
+}
+// MemoryPartOp is one timed part of a multi-part upload (ADR-0134 D1). The
+// operator-plane twin of the agent plane's MemoryPart (distinct messages per
+// plane, ADR-0047 D1).
+message MemoryPartOp {
+  string text = 1;
+  google.protobuf.Timestamp occurred_at = 2; // optional
 }
 message IngestMemoryOpResponse {
   string command_id = 1;
@@ -2365,6 +2455,22 @@ message ConfigWriteOutcomeOp {
   // the whole request, so a console built against a newer or older kernel cannot
   // lose the writes that were valid.
   string error = 5;
+
+  // ADR-0101 D8 (contract 0099): where a STORED value lives relative to the
+  // config files. shadowed_by above is the opposite direction (a higher layer
+  // beats the store); these say what the write did to, or against, a file.
+  //
+  // written_to names the config file the value was written INTO (write-through:
+  // the file already set the key and is writable, so the store override was
+  // removed and the file is the value's one durable home). Empty otherwise.
+  string written_to = 6;
+  // overrides_file names the file layer the stored value now OVERRIDES: the file
+  // sets the key but is not writable (committed, read-only), so a later edit of
+  // that file is ignored while the store value exists. overrides_value is that
+  // file's value. A console marks the key "overrides <file>" and offers "revert
+  // to file" (DeleteConfig). Both empty when no file sets the key.
+  string overrides_file = 7;
+  string overrides_value = 8;
 }
 
 message SetConfigOpResponse {

@@ -33,17 +33,32 @@ func (p *PgVectorAdapter) SaveDocument(ctx context.Context, doc domain.SourceDoc
 	}
 	// Re-ingesting a document must not silently drop its classification, so tags are
 	// updated with the incoming set. The caller owns them; this is the only writer.
-	_, err := p.pool.Exec(ctx, `
-		INSERT INTO `+TableDocuments+` (id, title, source_type, text, tags, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-		ON CONFLICT (id) DO UPDATE SET
+	//
+	// ADR-0134: the event-time stamp follows the same keep-unless-restated rule as the
+	// chunk upsert (keepStatedTime, owner decision Q6): an ingest default never
+	// overwrites a stored real time; a restated time wins. updated_at is the record
+	// clock of the latest ingest ("ingested_at always updates"); created_at keeps the
+	// first. A writer that states no stamp at all leaves the stored one alone.
+	st := eventStampValues(doc.EventStamp)
+	set := `
 			title       = EXCLUDED.title,
 			source_type = EXCLUDED.source_type,
 			text        = EXCLUDED.text,
 			tags        = EXCLUDED.tags,
 			metadata    = EXCLUDED.metadata,
-			updated_at  = NOW()`,
-		doc.ID, doc.Title, doc.SourceType, doc.Text, tags, string(meta))
+			updated_at  = (now() AT TIME ZONE 'UTC')`
+	if !doc.EventStamp.IsZero() {
+		for _, col := range []string{"event_time", "event_time_end", "time_source", "time_precision", "claimed_time"} {
+			set += ",\n\t\t\t" + col + " = " + keepStatedTime(TableDocuments, col)
+		}
+	}
+	_, err := p.pool.Exec(ctx, `
+		INSERT INTO `+TableDocuments+` (id, title, source_type, text, tags, metadata,
+			event_time, event_time_end, time_source, time_precision, claimed_time)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
+		ON CONFLICT (id) DO UPDATE SET`+set,
+		doc.ID, doc.Title, doc.SourceType, doc.Text, tags, string(meta),
+		st["event_time"], st["event_time_end"], st["time_source"], st["time_precision"], st["claimed_time"])
 	if err != nil {
 		return nil, mapError("SaveDocument", err)
 	}

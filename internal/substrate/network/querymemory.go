@@ -14,12 +14,23 @@ import (
 	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/memory"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // QueryMemory handles the QueryMemory RPC: delegates to the MemorySearcher (which
 // owns embedding, ACL filtering, and vector search) and translates results to proto.
 func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.MemoryResponse, error) {
+	// ADR-0134 D4 (contract 0099): the event-time parameters. Checked first, so an
+	// inverted window or one this kernel cannot apply is refused before any work.
+	tq, err := eventTimeQueryOf(req.GetReferenceTime(), req.GetEventAfter(), req.GetEventBefore())
+	if err != nil {
+		return nil, err
+	}
+	ctx = domain.WithEventTimeQuery(ctx, tq)
+
 	callerID := ""
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		if vals := md.Get("x-agent-id"); len(vals) > 0 {
@@ -67,7 +78,6 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	// ADR-0049 D4: x-lane="actions" routes to the "what did I do" lane (action
 	// records); anything else is the default fact lane ("what do I know").
 	var results []domain.SearchResult
-	var err error
 	lane := ""
 	if md, ok := metadata.FromIncomingContext(ctx); ok && len(md.Get("x-lane")) > 0 {
 		lane = md.Get("x-lane")[0]
@@ -174,10 +184,15 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 		if r.Document.Summary != "" {
 			text = r.Document.Summary
 		}
+		ht := domain.HitEventTime(r.Document)
 		pbResults = append(pbResults, &pb.MemoryResult{
-			Text:     text,
-			Score:    float32(r.Score),
-			Metadata: string(metaJSON),
+			Text:          text,
+			Score:         float32(r.Score),
+			Metadata:      string(metaJSON),
+			EventTime:     pbTime(ht.EventTime),
+			EventTimeEnd:  pbTime(ht.EventTimeEnd),
+			TimeSource:    string(ht.Source),
+			TimePrecision: string(ht.Precision),
 		})
 	}
 
@@ -246,4 +261,37 @@ func (s *Server) policyNote(ctx context.Context, callerID string, resultCount in
 	default:
 		return "" // unrestricted read, genuinely empty corpus
 	}
+}
+
+// eventTimeQueryOf converts and checks the wire event-time query (ADR-0134 D4)
+// through domain.EventTimeQuery.Validate, the one check both planes share: an
+// inverted or empty window is INVALID_ARGUMENT. The window is applied in SQL beside
+// the read scope (ADR-0134 P2).
+func eventTimeQueryOf(ref, after, before *timestamppb.Timestamp) (domain.EventTimeQuery, error) {
+	var q domain.EventTimeQuery
+	for _, f := range []struct {
+		name string
+		ts   *timestamppb.Timestamp
+		dst  *time.Time
+	}{{"reference_time", ref, &q.ReferenceTime}, {"event_after", after, &q.EventAfter}, {"event_before", before, &q.EventBefore}} {
+		t, err := wireTime(f.name, f.ts)
+		if err != nil {
+			return domain.EventTimeQuery{}, err
+		}
+		if t != nil {
+			*f.dst = *t
+		}
+	}
+	if err := q.Validate(); err != nil {
+		return domain.EventTimeQuery{}, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return q, nil
+}
+
+// pbTime converts a time for the wire; the zero time is "unset".
+func pbTime(t time.Time) *timestamppb.Timestamp {
+	if t.IsZero() {
+		return nil
+	}
+	return timestamppb.New(t.UTC())
 }

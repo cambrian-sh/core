@@ -55,7 +55,7 @@ func (p *PgVectorProfileStore) SaveProfile(ctx context.Context, agentID, sourceH
 		},
 	}
 
-	if err := p.store.Save(ctx, doc); err != nil {
+	if err := p.store.Save(kernelWrite(ctx), doc); err != nil {
 		return fmt.Errorf("pgVectorProfileStore: save profile for agent %s: %w", agentID, err)
 	}
 	return nil
@@ -106,7 +106,7 @@ func (p *PgVectorProfileStore) Save(ctx context.Context, text string, embedding 
 		},
 		Metadata: metadata,
 	}
-	return p.store.Save(ctx, doc)
+	return p.store.Save(kernelWrite(ctx), doc)
 }
 
 // GetProfile retrieves the AgentProfile stored for (agentID, sourceHash).
@@ -230,6 +230,30 @@ func kernelRead(ctx context.Context) context.Context {
 		return ctx
 	}
 	return domain.WithScope(ctx, domain.ScopeSystem)
+}
+
+// kernelWrite attributes a profile or judicial-record write to the kernel
+// (domain.SystemPrincipal). It is the write-side twin of kernelRead.
+//
+// The store is built on the tier-2 EnforcingStoreWriter (memory_stack.go), which
+// classifies every write by the principal on the context (ADR-0085). Its writers
+// are all background workers whose context never carried one: the InterviewWorker
+// pool, the VerificationWorker and the ProfileAggregator ticker. In OSS the
+// AllowAll authorizer let that through; under the premium authorizer a zero
+// principal fails closed (`no_principal`), so every interview's profile was denied
+// and the agent never became routable
+// (T-20261101-interviewworker-saves-agent-profiles-with-no).
+//
+// The kernel principal is set unconditionally, REPLACING any principal the caller
+// carries. These rows are kernel-authored artifacts about an agent, not that
+// agent's memory (ADR-0034): classifying them under a caller agent's write ceiling
+// and stamping `provenance:source=<agent>` would make an agent's own judicial
+// critiques readable to it through an own-writes scope (ADR-0118). Premium's
+// ClassifyWrite recognises SystemPrincipal as the kernel-curation bypass and keeps
+// the kernel-derived tags; the decision is still made at the chokepoint, not here.
+// Reads stay on kernelRead (ScopeSystem), so nothing widens what agents can read.
+func kernelWrite(ctx context.Context) context.Context {
+	return domain.WithPrincipal(ctx, domain.SystemPrincipal)
 }
 
 // GetJudicialRecords returns the top-K critique texts stored as judicial_record

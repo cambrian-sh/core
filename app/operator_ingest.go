@@ -108,16 +108,41 @@ func operatorIngestDoc(req operator.IngestRequest) domain.ExternalDocument {
 		sourceURI = strings.TrimSuffix(sourceURI, "/") + "/" + req.Filename
 	}
 
+	// A multi-part upload (ADR-0134 D1) arrives with its body already assembled
+	// from the parts; it is the text lane from here on.
+	text := req.Text
+	if len(req.EventTime.Parts) > 0 {
+		text = req.EventTime.Body
+		req.Text = text
+	}
 	doc := domain.ExternalDocument{
 		SourceURI:  sourceURI,
 		SourceType: operatorIngestSourceType(req.Filename),
 		Title:      operatorIngestTitle(req),
-		Body:       applyIngestContext(req.Text, req.Context),
+		Body:       applyIngestContext(text, req.Context),
 		Author:     req.Author,
-		Timestamp:  time.Now().UTC(),
 		ThreadID:   req.SessionID,
 		Tags:       req.Tags,
 		Importance: req.Importance,
+	}
+	// ADR-0134: the event time the operator handler resolved (validated, clamped,
+	// labelled). A request that never went through the handler (a zero EventTime)
+	// is dated by the ingest clock and labelled so, never left undated.
+	et := req.EventTime
+	if et.EventTime.IsZero() {
+		et = domain.IngestEventTime{EventTime: time.Now().UTC(),
+			Source: domain.TimeSourceIngestDefault, Precision: domain.TimePrecisionSecond}
+	}
+	doc.ApplyEventTime(et)
+	// The context note is PREPENDED to the body, so part offsets computed over the
+	// parts alone would point at the wrong bytes. Shift them by what was prepended.
+	if shift := len(doc.Body) - len(text); shift > 0 && len(doc.Parts) > 0 {
+		parts := make([]domain.DocumentPart, len(doc.Parts))
+		for i, p := range doc.Parts {
+			p.Offset += shift
+			parts[i] = p
+		}
+		doc.Parts = parts
 	}
 	if len(req.Content) > 0 {
 		doc.Data = req.Content

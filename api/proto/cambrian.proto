@@ -90,15 +90,12 @@ service Orchestrator {
   // session so reads are gated (GetContextNode). Idempotent (content-addressed).
   rpc PutContextNode(PutContextNodeRequest) returns (PutContextNodeResponse);
 
-  // WatchConfig CRUD — premium build only. ADR-0032.
-  // Create or replace a reactive rule. Returns the persisted config ID.
-  rpc RegisterWatch(RegisterWatchRequest) returns (RegisterWatchResponse);
-  // List all registered WatchConfigs.
-  rpc ListWatches(ListWatchesRequest) returns (ListWatchesResponse);
-  // Delete a WatchConfig by ID.
-  rpc DeleteWatch(DeleteWatchRequest) returns (DeleteWatchResponse);
-  // Enable or disable a WatchConfig without deleting it.
-  rpc SetWatchActive(SetWatchActiveRequest) returns (SetWatchActiveResponse);
+  // Contract 0099: the four Orchestrator watch-CRUD RPCs (RegisterWatch,
+  // ListWatches, DeleteWatch, SetWatchActive) and their messages were REMOVED.
+  // They duplicated the OperatorConsole watch commands on the agent plane with no
+  // authentication, audit row, reason or command-id dedup, and were retired in place
+  // on 2026-10-31. Use OperatorConsole/{Register,List,Delete}Watch and
+  // SetWatchActive, which are authenticated and audited.
 
   // Artifact storage with ADR-0034 tag-based access scoping. REQ-SDK-007c.
   // Upload validates classification tags against the writer's scope + controlled
@@ -212,12 +209,56 @@ message ApprovalDecisionResponse {
 }
 
 // ADR-0035 memory write-back.
+//
+// Event time (ADR-0134 D1, contract 0099). Every field below `session_id` is
+// optional; a client that sends none of them gets today's behaviour.
+//
+// The shared time vocabulary (also used by MemoryResult and the operator plane):
+//   time_source    "explicit"        the caller stated the time (occurred_at / part times)
+//                  "source_metadata" read from the source itself by a declared rule
+//                  "inferred"        derived by a declared rule
+//                  "ingest_default"  nothing was known; the time IS the ingest time
+//                  "clamped_future"  the caller stated a time too far in the future;
+//                                    the event time was clamped to the ingest time
+//   time_precision "year" | "month" | "day" | "hour" | "minute" | "second"
+// The kernel's single definition is cambrian-core domain/event_time.go.
 message IngestMemoryRequest {
   string text       = 1;
   repeated string tags = 2; // narrow-only classification hint (can only restrict)
   double importance = 3;
   string source     = 4;
   string session_id = 5;
+  // occurred_at is when the content HAPPENED (valid time), as opposed to when
+  // Cambrian records it (the ingest time). Unset means unknown: the kernel uses the
+  // ingest clock and labels it "ingest_default", never as a real time.
+  //
+  // A Timestamp is an absolute UTC instant, so a zone-less ("naive") local time
+  // cannot be expressed on the wire: a client converts a zone-aware time and must
+  // REFUSE a naive one rather than guess its zone (the Python SDK does). A time
+  // later than ingest + execution.ingestion.event_time_future_tolerance_ms (default
+  // 5 minutes) is accepted but clamped to the ingest time; the claimed time is kept
+  // beside it and time_source becomes "clamped_future". An invalid Timestamp
+  // (outside years 1-9999, bad nanos) is INVALID_ARGUMENT.
+  google.protobuf.Timestamp occurred_at = 6;
+  // parts carries multi-message content, e.g. a chat session's turns, each with its
+  // own time. Mutually exclusive with `text` (both set is INVALID_ARGUMENT). The
+  // kernel joins the parts' text in order, separated by a blank line, into the
+  // document body. Chunk boundaries are NOT forced at part boundaries: a chunk's
+  // event time is the earliest time of the parts it covers, and its span end
+  // (event_time_end on a hit) the latest. When occurred_at is unset, the
+  // document's event time is the earliest part time.
+  repeated MemoryPart parts = 7;
+  // time_precision states how precise occurred_at and the part times are, from the
+  // vocabulary above, so a date-only source is never shown as an exact instant.
+  // Empty means "second" when a time is given. An unknown value is INVALID_ARGUMENT.
+  string time_precision = 8;
+}
+// MemoryPart is one timed part of a multi-part memory (ADR-0134 D1).
+message MemoryPart {
+  string text = 1;
+  // occurred_at is this part's event time. Optional: a part with no time
+  // contributes text but no time.
+  google.protobuf.Timestamp occurred_at = 2;
 }
 message IngestMemoryResponse {
   string doc_id = 1;
@@ -431,6 +472,22 @@ message VerifyResponse {
 message MemoryRequest {
   string query = 1;
   int32 top_k = 2;
+  // Event-time query parameters (ADR-0134 D4, contract 0099). All optional.
+  //
+  // reference_time is the asker's "now": relative expressions in the question
+  // ("last month", "most recently") resolve against it. Unset means the server's
+  // clock. For a benchmark it is the dataset's question date. It does not filter
+  // anything by itself. NOT named as_of: as_of is reserved for transaction time
+  // ("what did our records hold at T"), as on the premium substrate plane.
+  google.protobuf.Timestamp reference_time = 3;
+  // event_after / event_before bound the event-time window: a hit is kept when its
+  // event-time span [event_time, event_time_end] overlaps [event_after,
+  // event_before) — event_after inclusive, event_before exclusive. Either bound
+  // may be unset (open). event_after >= event_before is INVALID_ARGUMENT. The
+  // window is applied INSIDE retrieval beside the read scope, never after top-k;
+  // a kernel that cannot apply it answers UNIMPLEMENTED rather than ignoring it.
+  google.protobuf.Timestamp event_after = 4;
+  google.protobuf.Timestamp event_before = 5;
 }
 
 // Single LTM search result
@@ -438,6 +495,15 @@ message MemoryResult {
   string text = 1;
   float score = 2;
   string metadata = 3;
+  // Event time of the hit (ADR-0134, contract 0099); vocabulary on
+  // IngestMemoryRequest. event_time is when the content happened, falling back to
+  // the ingest time when nothing was known (then time_source = "ingest_default").
+  // event_time_end is the span end for a chunk covering several timed parts;
+  // unset for a single instant.
+  google.protobuf.Timestamp event_time = 4;
+  google.protobuf.Timestamp event_time_end = 5;
+  string time_source = 6;
+  string time_precision = 7;
 }
 
 // LTM semantic query response
@@ -547,62 +613,4 @@ message GenerateChunk {
   int32 token_count = 2;
   bool is_final = 3;
   int32 usage_tokens = 4; // populated only on final chunk when provider supplies usage
-}
-
-// ── WatchConfig CRUD — ADR-0032 (premium build only) ─────────────────────────
-
-// WatchActionProto mirrors domain.WatchAction.
-message WatchActionProto {
-  string type = 1;        // "dispatch_agent" | "emit_event" | "start_plan" | "ingest"
-  string target_type = 2; // "agent_id" | "capability" — required for dispatch_agent
-  string target = 3;
-  string payload = 4;
-}
-
-// WatchConfigProto mirrors domain.WatchConfig.
-message WatchConfigProto {
-  string id = 1;
-  string name = 2;
-  string description = 3;
-  string source_type = 4;
-  string source_stream_id = 5;
-  string condition = 6;
-  string condition_type = 7;
-  WatchActionProto action = 8;
-  bool active = 9;
-  string response_mode = 10;
-  map<string, string> daemon_params = 11; // simplified: string values only
-  int32 max_concurrent_plans = 12;
-}
-
-message RegisterWatchRequest {
-  WatchConfigProto config = 1;
-}
-
-message RegisterWatchResponse {
-  string id = 1;
-}
-
-message ListWatchesRequest {}
-
-message ListWatchesResponse {
-  repeated WatchConfigProto configs = 1;
-}
-
-message DeleteWatchRequest {
-  string id = 1;
-}
-
-message DeleteWatchResponse {
-  string id = 1;
-}
-
-message SetWatchActiveRequest {
-  string id = 1;
-  bool active = 2;
-}
-
-message SetWatchActiveResponse {
-  string id = 1;
-  bool active = 2;
 }

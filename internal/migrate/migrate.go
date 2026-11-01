@@ -13,14 +13,17 @@ package migrate
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"path"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -77,6 +80,89 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dim int) error {
 		if err := applyMigration(ctx, pool, m); err != nil {
 			return fmt.Errorf("apply migration %04d_%s: %w", m.version, m.name, err)
 		}
+		applied[m.version] = true
+	}
+	return ensureConcurrentIndexes(ctx, pool, applied)
+}
+
+// Event-time expressions (ADR-0134). The span of a row is
+// [EventStartExpr, EventEndExpr]; a NULL event_time (every row written before 0019,
+// and every writer that states no time) reads as the ingest clock, created_at, which is
+// a UTC wall clock in a TIMESTAMP WITHOUT TIME ZONE column (see 0019_event_time.sql).
+//
+// They live HERE, beside the indexes built on them, and the pgvector adapter builds its
+// window predicate from these same constants: an expression index serves a query only
+// when the query's expression is the indexed one, so two hand-typed copies that drifted
+// by one parenthesis would turn every windowed read into a sequential scan with no error.
+// The adapter qualifies the column names for its JOIN; qualification does not affect
+// the match.
+const (
+	EventStartExpr = "COALESCE(event_time, (created_at AT TIME ZONE 'UTC'))"
+	EventEndExpr   = "COALESCE(event_time_end, event_time, (created_at AT TIME ZONE 'UTC'))"
+)
+
+// concurrentIndex is an index that must be built OUTSIDE a transaction
+// (CREATE INDEX CONCURRENTLY), so it cannot live in a migration file: the runner applies
+// each file inside one transaction (applyMigration), and a plain CREATE INDEX on the
+// largest table would hold a write-blocking lock for the whole build.
+type concurrentIndex struct {
+	name  string
+	table string
+	// using is everything after "ON <table>" — the method and the key expression.
+	using string
+	// requires is the migration version that creates the indexed columns; the build is
+	// skipped until it is applied.
+	requires int64
+}
+
+// concurrentIndexes is the out-of-band index list, built after every migration file.
+//
+// ADR-0134 P2: the event-time window is a span-overlap test (event_after inclusive,
+// event_before exclusive) — `EventEndExpr >= after AND EventStartExpr < before` — so one
+// bound reads each end of the span, and each gets its own b-tree. The metadata JSONB
+// GIN index cannot serve a range predicate, which is why the times are typed columns.
+var concurrentIndexes = []concurrentIndex{
+	{name: "idx_chunks_event_start", table: "chunks", using: "(" + EventStartExpr + ")", requires: 19},
+	{name: "idx_chunks_event_end", table: "chunks", using: "(" + EventEndExpr + ")", requires: 19},
+}
+
+// ensureConcurrentIndexes builds every concurrentIndex that is missing or INVALID.
+//
+// Idempotent and safe to run on every boot: a valid index is a single catalog lookup.
+// An interrupted CONCURRENTLY build leaves an INVALID index behind, which CREATE INDEX
+// IF NOT EXISTS would then skip forever while the planner ignores it — so an invalid
+// one is dropped (also concurrently) and rebuilt. Runs on the pool, never in a tx.
+func ensureConcurrentIndexes(ctx context.Context, pool *pgxpool.Pool, applied map[int64]bool) error {
+	for _, ix := range concurrentIndexes {
+		if !applied[ix.requires] {
+			continue
+		}
+		var valid *bool
+		err := pool.QueryRow(ctx, `
+			SELECT i.indisvalid
+			FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+			WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace`, ix.name).Scan(&valid)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("inspect index %s: %w", ix.name, err)
+		}
+		if valid != nil && *valid {
+			continue
+		}
+		if valid != nil {
+			slog.Warn("migrate: rebuilding an INVALID index (an earlier concurrent build was interrupted)",
+				"index", ix.name)
+			if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+ix.name); err != nil {
+				return fmt.Errorf("drop invalid index %s: %w", ix.name, err)
+			}
+		}
+		started := time.Now()
+		slog.Info("migrate: building index concurrently (writes are not blocked)",
+			"index", ix.name, "table", ix.table)
+		if _, err := pool.Exec(ctx, fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s %s",
+			ix.name, ix.table, ix.using)); err != nil {
+			return fmt.Errorf("build index %s concurrently: %w", ix.name, err)
+		}
+		slog.Info("migrate: index built", "index", ix.name, "took", time.Since(started).String())
 	}
 	return nil
 }

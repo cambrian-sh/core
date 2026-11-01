@@ -53,6 +53,10 @@ type OperatorIdentity interface {
 	Login(username, password string) (token, principal string, role Role, err error)
 	// Resolve maps a previously-issued token to its principal and role.
 	Resolve(token string) (principal string, role Role, err error)
+	// Revoke invalidates a previously-issued token (Logout, ADR-0130 D5 / 1f), so
+	// every later Resolve of it is Unauthenticated. Revoking an unknown or already
+	// revoked token is not an error: the outcome the caller wants already holds.
+	Revoke(token string) error
 }
 
 type principalCtxKey struct{}
@@ -75,7 +79,7 @@ func PrincipalFromContext(ctx context.Context) (principal string, role Role, ok 
 // from issue, checked lazily on use. Before this a token was valid until the
 // process restarted — a leaked one had no horizon at all. Expiry is absolute,
 // not sliding: a token kept warm by a background poller would otherwise never
-// expire. An explicit Logout RPC is contract bump 0096.
+// expire. The explicit Logout RPC (contract 0099) ends a token before its horizon.
 const OperatorTokenTTL = 12 * time.Hour
 
 // StaticIdentity is the V1 OperatorIdentity stub: a fixed user table and an
@@ -154,6 +158,15 @@ func (s *StaticIdentity) Resolve(token string) (string, Role, error) {
 		return "", "", status.Error(codes.Unauthenticated, "invalid or expired token")
 	}
 	return v.principal, v.role, nil
+}
+
+// Revoke implements OperatorIdentity: the token is forgotten, so the next Resolve
+// answers exactly as for a token that never existed.
+func (s *StaticIdentity) Revoke(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.tokens, token)
+	return nil
 }
 
 // bearerToken extracts the token from "authorization: Bearer <token>" metadata.
@@ -251,7 +264,9 @@ func isOperatorOnly(fullMethod string) bool {
 		name = fullMethod[i+1:]
 	}
 	switch name {
-	case "Login", "StreamEvents", "Snapshot":
+	// Logout is open to every role: a Viewer must be able to end its own session,
+	// and the token it revokes is the caller's own.
+	case "Login", "Logout", "StreamEvents", "Snapshot":
 		return false
 	}
 	// Checked BEFORE the naming convention, so a read cannot open itself to a

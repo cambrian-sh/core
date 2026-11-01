@@ -165,7 +165,10 @@ var searchMemoryTool = domain.PublishedTool{
   "required": ["query"],
   "properties": {
     "query": {"type": "string", "description": "What to search for, in natural language."},
-    "top_k": {"type": "integer", "minimum": 1, "maximum": 25, "default": 8, "description": "Maximum results to return."}
+    "top_k": {"type": "integer", "minimum": 1, "maximum": 25, "default": 8, "description": "Maximum results to return."},
+    "reference_time": {"type": "string", "format": "date-time", "description": "The asker's now (RFC 3339 with a zone offset, e.g. 2023-05-30T12:00:00Z); facts dated after it get no recency preference. Default: the server clock."},
+    "event_after": {"type": "string", "format": "date-time", "description": "Only passages whose event-time span reaches this instant or later (inclusive; RFC 3339 with a zone offset)."},
+    "event_before": {"type": "string", "format": "date-time", "description": "Only passages whose event-time span starts before this instant (exclusive; RFC 3339 with a zone offset)."}
   }
 }`),
 	Effects:  []domain.ToolEffect{domain.EffectRead},
@@ -185,7 +188,10 @@ var askMemoryTool = domain.PublishedTool{
   "required": ["query"],
   "properties": {
     "query": {"type": "string", "description": "The question to answer from memory."},
-    "top_k": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8, "description": "Maximum citations to return."}
+    "top_k": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8, "description": "Maximum citations to return."},
+    "reference_time": {"type": "string", "format": "date-time", "description": "The asker's now (RFC 3339 with a zone offset, e.g. 2023-05-30T12:00:00Z); facts dated after it get no recency preference. Default: the server clock."},
+    "event_after": {"type": "string", "format": "date-time", "description": "Only evidence whose event-time span reaches this instant or later (inclusive; RFC 3339 with a zone offset)."},
+    "event_before": {"type": "string", "format": "date-time", "description": "Only evidence whose event-time span starts before this instant (exclusive; RFC 3339 with a zone offset)."}
   }
 }`),
 	Effects:  []domain.ToolEffect{domain.EffectRead},
@@ -244,6 +250,69 @@ type searchHit struct {
 	SectionPath string   `json:"section_path,omitempty"`
 	Score       float64  `json:"score"`
 	Tags        []string `json:"tags,omitempty"`
+	hitTime
+}
+
+// hitTime is a passage's event time (ADR-0134), from domain.HitEventTime — the one
+// reader every plane's hit mapping shares. time_source says where it came from
+// ("ingest_default" = only the ingest clock is known) and time_precision how exact
+// it is, so a date-only source is never read as an exact instant.
+type hitTime struct {
+	EventTime     string `json:"event_time,omitempty"`
+	EventTimeEnd  string `json:"event_time_end,omitempty"`
+	TimeSource    string `json:"time_source,omitempty"`
+	TimePrecision string `json:"time_precision,omitempty"`
+}
+
+func hitTimeOf(d domain.Document) hitTime {
+	h := domain.HitEventTime(d)
+	out := hitTime{TimeSource: string(h.Source), TimePrecision: string(h.Precision)}
+	if !h.EventTime.IsZero() {
+		out.EventTime = h.EventTime.UTC().Format(time.RFC3339)
+	}
+	if !h.EventTimeEnd.IsZero() {
+		out.EventTimeEnd = h.EventTimeEnd.UTC().Format(time.RFC3339)
+	}
+	return out
+}
+
+// eventTimeArgs are the optional event-time arguments of search_memory and
+// ask_memory (ADR-0134 D4), mirroring the gRPC planes' reference_time /
+// event_after / event_before.
+type eventTimeArgs struct {
+	ReferenceTime string `json:"reference_time"`
+	EventAfter    string `json:"event_after"`
+	EventBefore   string `json:"event_before"`
+}
+
+// withEventTime parses the arguments and carries them on ctx to the memory stack
+// (domain.WithEventTimeQuery), exactly as the gRPC handlers do. A time with no zone
+// offset is refused (owner decision ADR-0134 Q3: reject naive times) — RFC 3339
+// requires one.
+func (a eventTimeArgs) withEventTime(ctx context.Context) (context.Context, error) {
+	var q domain.EventTimeQuery
+	for _, f := range []struct {
+		name, v string
+		dst     *time.Time
+	}{
+		{"reference_time", a.ReferenceTime, &q.ReferenceTime},
+		{"event_after", a.EventAfter, &q.EventAfter},
+		{"event_before", a.EventBefore, &q.EventBefore},
+	} {
+		v := strings.TrimSpace(f.v)
+		if v == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			return ctx, fmt.Errorf("%s must be an RFC 3339 time with a zone offset (e.g. 2023-05-30T12:00:00Z): %w", f.name, err)
+		}
+		*f.dst = t.UTC()
+	}
+	if err := q.Validate(); err != nil {
+		return ctx, err
+	}
+	return domain.WithEventTimeQuery(ctx, q), nil
 }
 
 func (b *CoreBackends) searchMemory(ctx context.Context, args json.RawMessage) (domain.PublishedToolResult, error) {
@@ -254,6 +323,7 @@ func (b *CoreBackends) searchMemory(ctx context.Context, args json.RawMessage) (
 	var in struct {
 		Query string `json:"query"`
 		TopK  int    `json:"top_k"`
+		eventTimeArgs
 	}
 	if err := parseArgs(args, &in); err != nil {
 		return domain.PublishedToolResult{}, err
@@ -262,6 +332,10 @@ func (b *CoreBackends) searchMemory(ctx context.Context, args json.RawMessage) (
 		return domain.PublishedToolResult{}, fmt.Errorf("query is required")
 	}
 	topK := clamp(in.TopK, searchDefaultTopK, searchMaxTopK)
+	ctx, err := in.withEventTime(ctx)
+	if err != nil {
+		return domain.PublishedToolResult{}, err
+	}
 
 	// The caller id is the PRINCIPAL, off the context the middleware built —
 	// never an argument (D4). It is what a scoped deployment narrows on.
@@ -277,6 +351,7 @@ func (b *CoreBackends) searchMemory(ctx context.Context, args json.RawMessage) (
 			SectionPath: r.Document.SectionPath,
 			Score:       r.Score,
 			Tags:        docTags(r.Document),
+			hitTime:     hitTimeOf(r.Document),
 		})
 		if len(hits) >= topK {
 			break
@@ -296,6 +371,7 @@ type citation struct {
 	SectionPath string   `json:"section_path,omitempty"`
 	Score       float64  `json:"score"`
 	Tags        []string `json:"tags,omitempty"`
+	hitTime
 }
 
 func (b *CoreBackends) askMemory(ctx context.Context, args json.RawMessage) (domain.PublishedToolResult, error) {
@@ -306,6 +382,7 @@ func (b *CoreBackends) askMemory(ctx context.Context, args json.RawMessage) (dom
 	var in struct {
 		Query string `json:"query"`
 		TopK  int    `json:"top_k"`
+		eventTimeArgs
 	}
 	if err := parseArgs(args, &in); err != nil {
 		return domain.PublishedToolResult{}, err
@@ -314,6 +391,10 @@ func (b *CoreBackends) askMemory(ctx context.Context, args json.RawMessage) (dom
 		return domain.PublishedToolResult{}, fmt.Errorf("query is required")
 	}
 	topK := clamp(in.TopK, askDefaultTopK, askMaxTopK)
+	ctx, err := in.withEventTime(ctx)
+	if err != nil {
+		return domain.PublishedToolResult{}, err
+	}
 
 	// The synthesis stream reads its timeout from the remaining deadline; give
 	// it the same well-defined budget the operator lane uses, shortening only
@@ -347,6 +428,7 @@ func (b *CoreBackends) askMemory(ctx context.Context, args json.RawMessage) (dom
 			SectionPath: r.Document.SectionPath,
 			Score:       r.Score,
 			Tags:        docTags(r.Document),
+			hitTime:     hitTimeOf(r.Document),
 		})
 		if len(cites) >= topK {
 			break
@@ -381,6 +463,7 @@ func (b *CoreBackends) extractiveAnswer(ctx context.Context, search MemorySearch
 		cites = append(cites, citation{
 			N: n, DocID: r.Document.ID, Snippet: snippet,
 			SectionPath: r.Document.SectionPath, Score: r.Score, Tags: docTags(r.Document),
+			hitTime: hitTimeOf(r.Document),
 		})
 		if len(cites) >= extractivePassages {
 			break

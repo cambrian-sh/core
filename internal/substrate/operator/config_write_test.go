@@ -144,6 +144,33 @@ func TestSetConfig_OutcomesReachTheWire(t *testing.T) {
 	}
 }
 
+// ADR-0101 D8 (contract 0099): the file facts reach the wire in their own fields,
+// never folded into shadowed_by (which means the opposite direction).
+func TestSetConfig_D8FileFactsReachTheWire(t *testing.T) {
+	t.Parallel()
+	w := &stubConfigWriter{outs: []ConfigWriteOutcome{
+		{Key: "execution.a", Set: true, Effect: EffectLive, WrittenTo: "configs/tuning.local.json"},
+		{Key: "execution.b", Set: true, Effect: EffectLive, Overrides: "configs/tuning.json", OverridesValue: "0.3"},
+	}}
+	s := newWriteService(w, nil)
+	resp, err := s.SetConfig(context.Background(), &pb.SetConfigOpRequest{
+		CommandId: "d8", Reason: "r", Values: map[string]float64{"execution.a": 1, "execution.b": 2},
+	})
+	if err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	byKey := map[string]*pb.ConfigWriteOutcomeOp{}
+	for _, o := range resp.GetOutcomes() {
+		byKey[o.GetKey()] = o
+	}
+	if a := byKey["execution.a"]; a.GetWrittenTo() != "configs/tuning.local.json" || a.GetOverridesFile() != "" || a.GetShadowedBy() != "" {
+		t.Fatalf("written_to lost: %+v", a)
+	}
+	if b := byKey["execution.b"]; b.GetOverridesFile() != "configs/tuning.json" || b.GetOverridesValue() != "0.3" || b.GetWrittenTo() != "" {
+		t.Fatalf("overrides lost: %+v", b)
+	}
+}
+
 // The credential must not land in the audit record. The audit log is the one
 // store designed to be read and exported, so a key that reaches it is a key that
 // has left the boundary — which defeats the whole point of a write-only field.

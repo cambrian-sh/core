@@ -24,6 +24,9 @@ type SourceDocument struct {
 	// are a derived cache and must never be written independently of this.
 	Tags     []string
 	Metadata map[string]any
+	// EventStamp is the document's event time (ADR-0134 D2). A re-ingest that states
+	// no time (ingest_default) keeps a stored stated one (owner decision Q6).
+	EventStamp
 }
 
 // SourceDocumentMarker is the literal tag that introduces a document's IDENTITY in

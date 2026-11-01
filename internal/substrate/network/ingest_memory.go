@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	pb "github.com/cambrian-sh/core/api/proto"
@@ -11,6 +12,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // IngestionProcessor is the chunking-pipeline entry point. The gRPC
@@ -61,22 +63,33 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 		}
 	}
 
+	// ADR-0134 D1 (contract 0099): resolve the event time BEFORE any work, so a
+	// malformed time is the caller's INVALID_ARGUMENT and never a half-done ingest.
+	et, err := s.resolveIngestEventTime(req)
+	if err != nil {
+		return nil, err
+	}
+
 	if s.IngestionProcessor != nil {
 		sourceURI := req.GetSource()
 		if sourceURI == "" {
 			sourceURI = "ingest_memory://" + req.GetSessionId()
 		}
+		body := req.GetText()
+		if len(req.GetParts()) > 0 {
+			body = et.Body
+		}
 		doc := domain.ExternalDocument{
 			SourceURI:  sourceURI,
 			SourceType: "ingest_memory",
-			Title:      firstLine(req.GetText(), 80),
-			Body:       req.GetText(),
+			Title:      firstLine(body, 80),
+			Body:       body,
 			Author:     callerAgentID(ctx),
-			Timestamp:  time.Now().UTC(),
 			ThreadID:   req.GetSessionId(),
 			Tags:       append([]string(nil), req.GetTags()...),
 			Importance: float64(req.GetImportance()),
 		}
+		doc.ApplyEventTime(et)
 		// Stamp the authenticated principal, exactly as the Remember path below does.
 		// Without it every write this ingest performs reaches the chokepoint with no
 		// identity: OSS fails open and never notices, while a premium deployment fails
@@ -122,6 +135,48 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 	return nil, status.Error(codes.FailedPrecondition,
 		"ingestion pipeline not configured: every memory ingest must go through the "+
 			"chunker, and there is no raw-store-write path")
+}
+
+// resolveIngestEventTime validates the ADR-0134 event-time fields of an agent-plane
+// ingest and resolves them through domain.ResolveIngestEventTime — the one
+// implementation the operator plane shares — with the configured future-time
+// tolerance (execution.ingestion.event_time_future_tolerance_ms).
+func (s *Server) resolveIngestEventTime(req *pb.IngestMemoryRequest) (domain.IngestEventTime, error) {
+	if len(req.GetParts()) > 0 && req.GetText() != "" {
+		return domain.IngestEventTime{}, status.Error(codes.InvalidArgument, "text and parts are mutually exclusive")
+	}
+	occurredAt, err := wireTime("occurred_at", req.GetOccurredAt())
+	if err != nil {
+		return domain.IngestEventTime{}, err
+	}
+	parts := make([]domain.MemoryPartInput, 0, len(req.GetParts()))
+	for i, p := range req.GetParts() {
+		t, err := wireTime(fmt.Sprintf("parts[%d].occurred_at", i), p.GetOccurredAt())
+		if err != nil {
+			return domain.IngestEventTime{}, err
+		}
+		parts = append(parts, domain.MemoryPartInput{Text: p.GetText(), OccurredAt: t})
+	}
+	tolerance := time.Duration(s.ExecCfg.Ingestion.EventTimeFutureToleranceMs) * time.Millisecond
+	et, err := domain.ResolveIngestEventTime(occurredAt, parts, req.GetTimePrecision(), time.Now(), tolerance)
+	if err != nil {
+		return domain.IngestEventTime{}, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return et, nil
+}
+
+// wireTime converts an optional wire Timestamp. A Timestamp is an absolute UTC
+// instant, so there is no zone to reject here; what can be wrong is the value
+// itself (outside years 1-9999, bad nanos), and that is the caller's error.
+func wireTime(field string, ts *timestamppb.Timestamp) (*time.Time, error) {
+	if ts == nil {
+		return nil, nil
+	}
+	if err := ts.CheckValid(); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%s: %v", field, err)
+	}
+	t := ts.AsTime().UTC()
+	return &t, nil
 }
 
 func firstLine(s string, max int) string {

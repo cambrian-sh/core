@@ -55,6 +55,23 @@ type ConfigWriteOutcome struct {
 	// variable: "something is pinning this" leaves an operator hunting.
 	ShadowedBy string
 	Error      string
+
+	// ADR-0101 D8 — where the value went relative to the file layers.
+	//
+	// WrittenTo names the config file the value was written into (write-through:
+	// the file already set the key and is writable, so the store override was
+	// removed and the file is the value's one durable home).
+	//
+	// Overrides names the file layer the STORED value now overrides (the file sets
+	// the key but is not writable — committed, read-only), and OverridesValue is
+	// that file's value, so the operator learns their file edit will be ignored.
+	//
+	// On the wire since contract 0099 as ConfigWriteOutcomeOp.written_to /
+	// overrides_file / overrides_value (outcomesToOp). shadowed_by is the opposite
+	// direction and stays separate. The kernel also logs both at write time.
+	WrittenTo      string
+	Overrides      string
+	OverridesValue string
 }
 
 // SecretWriter stores provider credentials (ADR-0101 D5). Write-only by
@@ -196,6 +213,11 @@ func outcomesToOp(in []ConfigWriteOutcome) []*pb.ConfigWriteOutcomeOp {
 			Effect:     o.Effect,
 			ShadowedBy: o.ShadowedBy,
 			Error:      o.Error,
+			// ADR-0101 D8 (contract 0099): the file facts reach the console, which
+			// marks the key "overrides <file>" and offers "revert to file".
+			WrittenTo:      o.WrittenTo,
+			OverridesFile:  o.Overrides,
+			OverridesValue: o.OverridesValue,
 		})
 	}
 	return out

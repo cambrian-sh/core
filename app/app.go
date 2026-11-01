@@ -94,6 +94,10 @@ type Kernel struct {
 	// operator plane's config writes answer Unimplemented rather than pretending
 	// to persist.
 	ConfigStore *storage.BoltConfigStore
+	// ConfigPath is the primary config file (<baseDir>/configs/config.json). The
+	// config write path locates the file layers from it (ADR-0101 D8: a console
+	// write to a key a writable file sets goes into that file).
+	ConfigPath string
 	// Links is the identity plane's assertion store (five-planes step 2). Held on
 	// the kernel so the operator plane can be given a REVIEW lane: the stores are
 	// otherwise local to the build, and a queue of candidates nobody can confirm
@@ -372,10 +376,24 @@ func Run(ctx context.Context, opts Options) error {
 		defer func() { _ = cfgStore.Close() }()
 	}
 
-	cfg, prov, err := config.LoadConfigWithStore(filepath.Join(baseDir, "configs", "config.json"), configStoreOrNil(cfgStore))
+	// ADR-0101 D9: a store written before generators were stored per id holds
+	// one whole `llm_provider.generators` list. Convert it to per-id entries
+	// before the load, persisted, so the write path never sees the old layout.
+	if cfgStore != nil {
+		if ids, mErr := config.MigrateStoredGenerators(cfgStore); mErr != nil {
+			slog.Warn("config store: could not migrate the stored generator list to per-id entries; load merges it in memory", "err", mErr)
+		} else if len(ids) > 0 {
+			slog.Info("config store: migrated the stored generator list to per-id entries (ADR-0101 D9); generators declared only in files are visible again",
+				"ids", ids)
+		}
+	}
+
+	configPath := filepath.Join(baseDir, "configs", "config.json")
+	cfg, prov, err := config.LoadConfigWithStore(configPath, configStoreOrNil(cfgStore))
 	if err != nil {
 		return err // ConfigError is already structured; wrapping breaks errors.As in main()
 	}
+	warnStoreOverrides(configPath, cfgStore)
 
 	// Anchor the remaining relative boot paths to the same base as the config
 	// bundle. Otherwise a kernel spawned from another cwd loads its config but
@@ -489,6 +507,7 @@ func Run(ctx context.Context, opts Options) error {
 	// because they are resolved before it runs — the store IS a config layer.
 	k.ConfigProvenance = prov
 	k.ConfigStore = cfgStore
+	k.ConfigPath = configPath
 	// ADR-0130 D1: every registered agent has a credential before the first
 	// spawn. Guarded against the typed-nil trap (see setNamedSecretSource).
 	if cfgStore != nil {
@@ -900,6 +919,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if cfg.Execution.Retrieval.NeighborWindowEnabled {
 		mem.QueryService.EnableNeighborWindow()
 		slog.Info("ADR-0060: neighbor-window expansion ENABLED")
+	}
+	if cfg.Execution.Retrieval.ChronologicalContextEnabled {
+		mem.QueryService.EnableChronologicalContext()
+		slog.Info("ADR-0134 D5a: chronological answer context ENABLED (passages ordered and dated by event time)")
 	}
 	if cfg.Execution.Retrieval.RerankerEnabled {
 		mem.QueryService.EnableReranker(
@@ -2402,6 +2425,10 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// the same chunking-pipeline / write-back path the agent plane and benchmarks
 		// use — never a raw store write. The operator principal is stamped as Author;
 		// the kernel derives classification (tags are a narrow-only hint).
+		// ADR-0134 Q4: the operator plane clamps future event times with the same
+		// configured tolerance the agent plane reads from ExecCfg.
+		operatorSvc.SetEventTimeFutureTolerance(
+			time.Duration(k.Config.Execution.Ingestion.EventTimeFutureToleranceMs) * time.Millisecond)
 		operatorSvc.SetMemoryIngestor(operator.MemoryIngestorFunc(func(ctx context.Context, req operator.IngestRequest) (string, error) {
 			if k.Server.IngestionProcessor != nil {
 				doc := operatorIngestDoc(req)
@@ -2565,9 +2592,10 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			// it reports success for a change that vanishes on restart.
 			if k.ConfigStore != nil {
 				writer := configWriteSource{
-					store:    k.ConfigStore,
-					prov:     k.ConfigProvenance,
-					hotApply: hotApplyFor(k.OperatorEffects),
+					store:      k.ConfigStore,
+					configPath: k.ConfigPath,
+					prov:       k.ConfigProvenance,
+					hotApply:   hotApplyFor(k.OperatorEffects),
 					// LIVE list + default (boot + every save since), so credential/
 					// role validation and the remove/default guards judge current
 					// state — a just-saved generator is immediately a valid target.
@@ -2734,6 +2762,14 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			// agent-steps: per-memory_query AgentStepOp on the feed — agent-loop
 			// observability (query-thrash + retrieval-provenance poisoning signals).
 			"agent-steps",
+			// logout (contract 0099, ADR-0130 D5): the Logout RPC revokes the
+			// caller's own bearer token. Unconditional: every build serves it.
+			"logout",
+			// memory-event-time (contract 0099, ADR-0134): the event-time fields on
+			// ingest, query and hits. Unconditional because every build carries and
+			// validates them; an event WINDOW this kernel cannot apply yet is refused
+			// with Unimplemented, so a console never shows a filter that did nothing.
+			"memory-event-time",
 		}
 		// llm-exchange: full prompt+completion of every agent reasoning turn on the feed
 		// (ADR-0079), advertised only when execution.capture_llm_exchanges is on so a
@@ -2914,7 +2950,17 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// RetractLinksByProducer (batch revocation, returning the count) and the
 		// ListLinkCandidates read, plus `entity` / `why` / expand_aliases on the
 		// substrate query plane.
-		operatorSvc.SetHandshake(KernelVersion, "0098", operatorCaps)
+		// Contract 0099: the bundled bump (owner decision 2026-11-01, ADR-0134 Q1).
+		// BREAKING on the agent plane: the retired Orchestrator watch-CRUD RPCs and
+		// their messages are deleted. Additive on the operator plane: Logout
+		// (ADR-0130 D5), ADR-0134 event time (occurred_at / parts / time_precision on
+		// IngestMemory; reference_time + event_after / event_before on QueryMemory and
+		// AnswerMemory; event_time / event_time_end / time_source / time_precision on
+		// MemoryOp and MemoryCitation, and on the agent plane's MemoryResult), and the
+		// ADR-0101 D8 file facts on ConfigWriteOutcomeOp. Also: the /v1/admin HTTP
+		// routes with an OperatorConsole equivalent are gone (write-tags remains).
+		// Capabilities "logout" and "memory-event-time".
+		operatorSvc.SetHandshake(KernelVersion, "0099", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".
@@ -3049,111 +3095,63 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	// ADR-0130 D3: served by the one listener policy (serveHTTP): bound on
 	// server.bind_address rather than ":port" (every interface), refused in
 	// plaintext on a routable bind, TLS when the kernel has it, header/idle
-	// timeouts, every body capped. The /v1/admin/* routes — tool grants, scope
-	// and write-tag mutations, consolidation — require the OPERATOR bearer,
-	// validated through the same OperatorIdentity the gRPC interceptor uses;
-	// before this they were reachable by anyone who could reach the port.
-	// /v1/ingest keeps its own X-Ingest-Token (constant-time, ADR-0028).
-	// Moving the admin routes onto OperatorConsole RPCs is contract bump 0096.
+	// timeouts, every body capped. /v1/ingest keeps its own X-Ingest-Token
+	// (constant-time, ADR-0028).
+	//
+	// Contract 0099 removed the /v1/admin routes that have an OperatorConsole
+	// equivalent, so each mutation has ONE door, and it is audited:
+	//   /v1/admin/consolidate              -> OperatorConsole/TriggerConsolidation
+	//   /v1/admin/agents/{id}/scope        -> OperatorConsole/SetScope
+	//   /v1/admin/agents/{id}/tool-grants  -> OperatorConsole/SetToolGrant + SetToolPolicy
+	// One route remains: /v1/admin/agents/{id}/write-tags (ADR-0035 C2,
+	// PolicyAdmin.SetAgentWriteTags) has NO operator-plane RPC yet, and the access
+	// policy is inert without a write ceiling (premium cmd/cambrian-apply and the
+	// access_policy benchmark's out-of-band setup depend on it). It requires the
+	// OPERATOR bearer, validated through the same OperatorIdentity the gRPC
+	// interceptor uses, so a Logout or an expired token closes it too. Moving it
+	// onto OperatorConsole is T-20261101-write-tags-admin-route-has-no-operatorconsole.
 	if port := k.Config.Execution.Ingestion.IngestionHTTPPort; port > 0 {
 		mux := http.NewServeMux()
 		mux.Handle("/v1/ingest", memory.NewWebhookReceiver(
 			k.Config.Execution.Ingestion.IngestToken,
 			k.Memory.IngestionManager.Enqueue,
 		))
-		admin := func(h http.HandlerFunc) http.Handler { return requireOperatorBearer(operatorIDP, h) }
-		// ADR-0030: explicit consolidation trigger endpoint.
-		mux.Handle("/v1/admin/consolidate", admin(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("/v1/admin/agents/", requireOperatorBearer(operatorIDP, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			_ = k.EventBus.Publish(domain.MemoryPressureEvent{
-				Trigger: string(domain.ConsolidationTriggerExplicit),
-			})
-			w.WriteHeader(http.StatusAccepted)
-		}))
-		// ADR-0034 (D9): set an agent's intrinsic genotype scope profile.
-		// POST /v1/admin/agents/{id}/scope  body: {"required_tags":[],"any_of_tags":[],"forbidden_tags":[]}
-		mux.Handle("/v1/admin/agents/", admin(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			// Path: /v1/admin/agents/{id}/scope  OR  /v1/admin/agents/{id}/write-tags
+			// Path: /v1/admin/agents/{id}/write-tags
 			rest := strings.TrimPrefix(r.URL.Path, "/v1/admin/agents/")
 			agentID, suffix, ok := strings.Cut(rest, "/")
-			if !ok || agentID == "" || (suffix != "scope" && suffix != "write-tags" && suffix != "tool-grants") {
-				http.Error(w, "expected /v1/admin/agents/{id}/{scope|write-tags|tool-grants}", http.StatusNotFound)
+			if !ok || agentID == "" || suffix != "write-tags" {
+				http.Error(w, "expected /v1/admin/agents/{id}/write-tags (scope and tool grants moved to "+
+					"OperatorConsole SetScope / SetToolGrant / SetToolPolicy in contract 0099)", http.StatusNotFound)
 				return
 			}
-			if suffix == "tool-grants" {
-				// ADR-0039: set an agent's tool grants (operator-plane).
-				// Body: {"grants":[{"tool":"read_file","policy":{"filesystem":{"allow_roots":["/data"]}}}]}
-				if k.ToolGrants == nil {
-					http.Error(w, "tool grants store unavailable", http.StatusServiceUnavailable)
-					return
-				}
-				var body struct {
-					Grants []domain.ToolGrant `json:"grants"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-					http.Error(w, "invalid tool-grants body: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-				for _, gr := range body.Grants {
-					// A1.5: an operator grant must not use the AllowAll bypass sentinel
-					// (that is reserved for the global tools_unrestricted mode).
-					if gr.Policy.AllowAll {
-						http.Error(w, "grant policy.allow_all is not permitted on a per-agent grant", http.StatusBadRequest)
-						return
-					}
-				}
-				k.ToolGrants.Set(agentID, body.Grants)
-				slog.Info("ADR-0039: agent tool grants updated", "agent_id", agentID, "count", len(body.Grants))
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			// Scope + write-tags are POLICY administration, so they exist only when a
-			// policy plugin is installed. An OSS build answers 501 rather than
-			// pretending to have stored a boundary it will never enforce.
+			// Write-tags are POLICY administration, so they exist only when a policy
+			// plugin is installed. An OSS build answers 501 rather than pretending to
+			// have stored a boundary it will never enforce.
 			if k.PolicyAdmin == nil {
 				http.Error(w, "access-policy plugin not installed; scope administration unavailable", http.StatusNotImplemented)
 				return
 			}
-			if suffix == "write-tags" {
-				// ADR-0035 C2: set the agent's DefaultWriteTags (write classification).
-				// Body: {"default_write_tags":["company_wide","analytics"]}
-				var body struct {
-					DefaultWriteTags []string `json:"default_write_tags"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-					http.Error(w, "invalid write-tags body: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-				if err := k.PolicyAdmin.SetAgentWriteTags(r.Context(), agentID, body.DefaultWriteTags); err != nil {
-					http.Error(w, "write-tags rejected: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-				slog.Info("ADR-0035: agent DefaultWriteTags updated", "agent_id", agentID, "tags", body.DefaultWriteTags)
-				w.WriteHeader(http.StatusOK)
+			// ADR-0035 C2: set the agent's DefaultWriteTags (write classification).
+			// Body: {"default_write_tags":["company_wide","analytics"]}
+			var body struct {
+				DefaultWriteTags []string `json:"default_write_tags"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid write-tags body: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-			var cfg domain.TagSet
-			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-				http.Error(w, "invalid scope body: "+err.Error(), http.StatusBadRequest)
+			if err := k.PolicyAdmin.SetAgentWriteTags(r.Context(), agentID, body.DefaultWriteTags); err != nil {
+				http.Error(w, "write-tags rejected: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-			// The decision point validates and rejects unsatisfiable / conflicting
-			// profiles BEFORE persisting: an administrator learns at save time, not
-			// through an empty result three days later (ADR-0085 D14).
-			if err := k.PolicyAdmin.SetAgentScope(r.Context(), agentID, cfg.RequiredTags, cfg.AnyOfTags, cfg.ForbiddenTags); err != nil {
-				http.Error(w, "scope rejected: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			slog.Info("ADR-0085: agent scope profile updated", "agent_id", agentID)
+			slog.Info("ADR-0035: agent DefaultWriteTags updated", "agent_id", agentID, "tags", body.DefaultWriteTags)
 			w.WriteHeader(http.StatusOK)
-		}))
+		})))
 		srv, addr, err := serveHTTP(k.Config, strconv.Itoa(port), mux, "ingestion http server")
 		if err != nil {
 			// FAIL the boot, never degrade: the only degradation available is the

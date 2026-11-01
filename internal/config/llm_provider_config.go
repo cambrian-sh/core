@@ -55,6 +55,19 @@ type GeneratorConfig struct {
 	NativeTools bool `json:"native_tools,omitempty"`
 }
 
+// ApplyGeneratorDefaults fills the ADR-0042 per-generator defaults in place
+// (timeout_ms 0 ⇒ 60 s). One function for boot and for the console write path's
+// effective list, so a generator hot-applied from a file entry that omits
+// timeout_ms gets the same timeout it would get after a restart — not 0, which
+// the HTTP clients read as "no timeout".
+func ApplyGeneratorDefaults(gens []GeneratorConfig) {
+	for i := range gens {
+		if gens[i].TimeoutMs == 0 {
+			gens[i].TimeoutMs = 60000
+		}
+	}
+}
+
 // HealthConfig tunes the per-id circuit-breaker (ADR-0042 D4). Zero values are
 // replaced with safe defaults by LoadConfig.
 type HealthConfig struct {

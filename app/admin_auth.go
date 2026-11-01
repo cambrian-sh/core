@@ -10,15 +10,15 @@ import (
 
 // The HTTP admin surface's credential (ADR-0130 D3).
 //
-// /v1/admin/* on the ingestion server mutates tool grants, scope profiles and
-// write tags and triggers consolidation — operator-plane actions that, until
+// /v1/admin/* on the ingestion server once mutated tool grants, scope profiles and
+// write tags and triggered consolidation — operator-plane actions that, until
 // 2026-10-31, nobody authenticated: the server bound every interface and the
 // routes checked nothing (T-20261031-ingestion-http-server-exposes-unauthenticated).
-// They now take the SAME operator bearer the gRPC console takes, resolved
-// through the SAME OperatorIdentity instance, so there is one operator token
-// vocabulary and one place it is minted (Login) and expires (ADR-0130 1f).
-// Moving these routes onto OperatorConsole RPCs — where the scope mutation
-// already exists — is contract bump 0096; this is the credential until then.
+// Contract 0099 removed every route with an OperatorConsole equivalent; the one
+// left, /v1/admin/agents/{id}/write-tags, has no RPC yet. It takes the SAME
+// operator bearer the gRPC console takes, resolved through the SAME
+// OperatorIdentity instance, so there is one operator token vocabulary and one
+// place it is minted (Login), expires (ADR-0130 1f) and is revoked (Logout).
 
 // requireOperatorBearer gates an HTTP handler on `Authorization: Bearer
 // <operator token>` and the operator ROLE. A viewer is refused: every route

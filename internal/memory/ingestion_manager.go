@@ -451,16 +451,19 @@ func (im *IngestionManager) mintSourceDoc(ctx context.Context, doc domain.Extern
 		}
 	}
 	entityID := sourceDocEntityID(doc)
-	meta := map[string]interface{}{"kind": "source_document", "canonical_id": doc.SourceURI, "source_uri": doc.SourceURI, "source_type": doc.SourceType, "title": doc.Title, "author": doc.Author, "timestamp": doc.Timestamp.Format(time.RFC3339), "document_id": externalDocumentID(doc)}
+	meta := map[string]interface{}{"kind": "source_document", "canonical_id": doc.SourceURI, "source_uri": doc.SourceURI, "source_type": doc.SourceType, "title": doc.Title, "author": doc.Author, "document_id": externalDocumentID(doc)}
 	if len(doc.Tags) > 0 {
 		meta["tags"] = append([]string(nil), doc.Tags...)
 	}
 	if cid != "" {
 		meta["content_cid"] = cid
 	}
+	// ADR-0134: the entity carries the DOCUMENT's event stamp (its time and whole
+	// span) in the typed columns, like its chunks; no metadata copy.
 	if err := im.agent.Manager.Save(ctx, &domain.Document{
 		ID: entityID, DocumentType: domain.DocTypeMnemonicEntity,
 		Text: doc.Title, ActivationStrength: 0.1, Metadata: meta,
+		EventStamp: doc.StampOf(), CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		return cid, "", fmt.Errorf("mint source-doc entity: %w", err)
 	}

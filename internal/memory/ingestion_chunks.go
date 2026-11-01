@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -44,6 +45,10 @@ func (im *IngestionManager) persistChunks(
 		return 0, fmt.Errorf("ingestion manager: vector store is not configured")
 	}
 	documentID := externalDocumentID(doc)
+	// ADR-0134 D2: the record clock of this ingest. created_at of every chunk written
+	// below; on a re-ingest it moves ("ingested_at always updates", owner Q6) while a
+	// stated event time is kept unless restated (the adapter's keepStatedTime).
+	ingestedAt := time.Now().UTC()
 
 	// The tag list is overloaded: it carries a CLASSIFICATION *and*, by the
 	// `source_document` convention above, an IDENTITY. Only the first is a label.
@@ -77,6 +82,7 @@ func (im *IngestionManager) persistChunks(
 			SourceType: doc.SourceType,
 			Text:       doc.Body,
 			Tags:       doc.Tags,
+			EventStamp: doc.StampOf(),
 		})
 		if derr != nil {
 			slog.WarnContext(ctx, "IngestionManager: document entity not recorded; chunks will have no parent",
@@ -143,6 +149,17 @@ func (im *IngestionManager) persistChunks(
 		}
 	}
 
+	// ADR-0134 Q5: every chunk's own event time — the earliest timed part it covers
+	// and the latest as its span end — located against the body BEFORE the context
+	// prepend below rewrites chunk text. This runs on the FINAL chunk set, so
+	// structure-parser leaves are stamped exactly like flat chunks (they used to carry
+	// no time at all and fell back to created_at). Chunk boundaries are not touched.
+	bodies := make([]string, len(chunks))
+	for i := range chunks {
+		bodies[i] = chunks[i].Body
+	}
+	stamps := domain.ChunkStamps(doc, domain.LocateChunkSpans(doc.Body, bodies))
+
 	// Chunk-context prepend (execution.ingestion.chunk_context_prepend): give
 	// each chunk its document title + section breadcrumb IN the text, so both
 	// retrieval lanes (dense embedding AND the FTS GIN index, which covers
@@ -177,6 +194,8 @@ func (im *IngestionManager) persistChunks(
 			ActivationStrength: externalActivation(doc.Importance),
 			Embedding:          domain.Embedding{Vector: vec, Model: "dynamic", Size: len(vec)},
 			Metadata:           chunkMetadata(doc, chunks, chunk, documentID, ids, i, entityID, scene),
+			CreatedAt:          ingestedAt,
+			EventStamp:         stamps[i],
 		})
 	}
 	// PARTIAL loss is as silent as total loss was: a batch-embed timeout mid-
@@ -334,6 +353,12 @@ func chunkMetadata(
 	if len(doc.Tags) > 0 {
 		meta["tags"] = append([]string(nil), doc.Tags...)
 	}
+	// ADR-0134: the event time lives in the typed columns (Document.EventStamp, set by
+	// persistChunks per chunk). The chunker's own "timestamp" key is the DOCUMENT time,
+	// which for a multi-part chunk is wrong, and a second copy that a re-ingest could
+	// rewrite while the column keeps the stated time would disagree with it — so it is
+	// not stored. domain.HitEventTime still reads it from rows written before 0019.
+	delete(meta, domain.MetaEventTimestamp)
 	data, _ := json.Marshal(ChunkRelations{
 		ParentEntityID:   entityID,
 		PrecedingChunkID: prevID,

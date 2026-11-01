@@ -56,6 +56,7 @@ type QueryService struct {
 	anchorConstraint bool                      // recall: promote chunks carrying the query's document-local anchors (companion to the anchor tier)
 	sectionStore     SectionScopedStore        // ADR-0060: structure-graph section-scoped retrieval; nil = disabled
 	neighborWindow   bool                      // ADR-0060: expand each returned chunk with its document neighbors
+	chronoContext    bool                      // ADR-0134 D5a: order + date the final synthesis context by event time (chronological_context.go)
 	blender          atomic.Pointer[Blender]   // ADR-0054 Stage A: nil = no blend re-rank; hot-swappable at runtime (SetBlendWeights ← operator SetRuntimeConfig)
 	rankSignals      RankSignalStore           // ADR-0054 Stage A: pagerank + per-chunk confidence source
 	recallTopK       int                       // ADR-0054: results returned to caller; 0 ⇒ defaultRecallTopK
@@ -551,8 +552,17 @@ func (q *QueryService) emitDecision(ctx context.Context, query, callerID, sessio
 		TopK:              topK,
 		Retrieved:         chunks,
 		ConfigFingerprint: q.cfgFingerprint,
+		EventTime:         eventTimeOfDecision(ctx),
 		At:                time.Now().UTC(),
 	})
+}
+
+// eventTimeOfDecision is the event-time part of the query the decision answered
+// (ADR-0134 D4/P3): the asker's reference time and the window, as the caller stated
+// them, so a receipt says which "now" and which window produced the ranking.
+func eventTimeOfDecision(ctx context.Context) domain.EventTimeQuery {
+	q, _ := domain.EventTimeQueryFromContext(ctx)
+	return q
 }
 
 // EnableAuthorization was removed. The decision point and the fail-closed read
@@ -936,12 +946,11 @@ func (q *QueryService) finalizeAgentic(ctx context.Context, query string, acc, c
 	if contextOrder != nil {
 		ctxRows = contextOrder
 	}
-	for i, h := range ctxRows {
-		if i >= maxContextChunks {
-			break
-		}
-		texts = append(texts, h.Document.Text)
-	}
+	// ADR-0134 D5a: the loop's closing synthesis (what an agent's QueryMemory gets as
+	// the answer) sees the same chronological, dated context as the cited answer
+	// lane when the flag is on. The returned acc keeps its ranked order.
+	_, passages := q.synthesisContext(ctxRows, maxContextChunks)
+	texts = append(texts, passages...)
 	status, text, err := q.planner.Synthesize(ctx, query, texts)
 	if err != nil {
 		// FAIL-OPEN: keep the accumulated chunks (implicitly "answer"), but still
@@ -1149,10 +1158,27 @@ func (q *QueryService) applyStageABlend(ctx context.Context, results []domain.Se
 	// discriminative even when every fact is old relative to now (the LoCoMo case,
 	// where an absolute now-relative decay would be uniformly ~0). Zero range (all
 	// same date, or a single candidate) ⇒ no recency signal.
+	//
+	// ADR-0134 D4: the asker's "now" (reference_time) anchors the term. A candidate
+	// dated AFTER it had not happened yet from the asker's point of view, so it gets
+	// no recency credit and is left out of the min-max range — otherwise a question
+	// asked "as of" May would rank a June fact as the most recent one. Without a
+	// reference time the term is unchanged (the server clock is later than every
+	// stored time, so nothing is "after now").
+	var refNow time.Time
+	if tq, ok := domain.EventTimeQueryFromContext(ctx); ok {
+		refNow = tq.ReferenceTime
+	}
 	recMin, recMax := math.Inf(1), math.Inf(-1)
 	evtUnix := make(map[string]float64, len(results))
+	afterNow := make(map[string]bool)
 	for i := range results {
-		u := float64(docEventTime(results[i].Document).Unix())
+		et := docEventTime(results[i].Document)
+		if !refNow.IsZero() && et.After(refNow) {
+			afterNow[results[i].Document.ID] = true
+			continue
+		}
+		u := float64(et.Unix())
 		evtUnix[results[i].Document.ID] = u
 		if u < recMin {
 			recMin = u
@@ -1163,7 +1189,7 @@ func (q *QueryService) applyStageABlend(ctx context.Context, results []domain.Se
 	}
 	recRange := recMax - recMin
 	normRecency := func(id string) float64 {
-		if recRange <= 0 {
+		if recRange <= 0 || afterNow[id] {
 			return 0
 		}
 		return (evtUnix[id] - recMin) / recRange
@@ -1199,16 +1225,10 @@ func (q *QueryService) applyStageABlend(ctx context.Context, results []domain.Se
 // degrades to the prior behaviour rather than breaking. Accepts a few layouts so a
 // date-only stamp still parses.
 func docEventTime(d domain.Document) time.Time {
-	if d.Metadata != nil {
-		if v, ok := d.Metadata["timestamp"].(string); ok && v != "" {
-			for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02"} {
-				if t, err := time.Parse(layout, v); err == nil {
-					return t
-				}
-			}
-		}
-	}
-	return d.CreatedAt
+	// ADR-0134: one reader for "what time is this chunk" — the same function every
+	// plane's hit mapping uses, so the recency term and the reported event time
+	// cannot disagree.
+	return domain.HitEventTime(d).EventTime
 }
 
 // defaultCoherenceSeedN is how many query-relevant candidates anchor the
@@ -1644,13 +1664,11 @@ func (q *QueryService) answer(ctx context.Context, query, callerID string) (stat
 	}
 
 	const maxAnswerChunks = 16
-	texts := make([]string, 0, maxAnswerChunks)
-	for i, h := range evidence {
-		if i >= maxAnswerChunks {
-			break
-		}
-		texts = append(texts, h.Document.Text)
-	}
+	// ADR-0134 D5a: with chronological context on, the cited passages are reordered
+	// by event time and dated; evidence is reordered WITH them so [n] still resolves
+	// to evidence[n-1] (ADR-0081). Off: unchanged.
+	var texts []string
+	evidence, texts = q.synthesisContext(evidence, maxAnswerChunks)
 	if len(texts) == 0 {
 		return "abstention", "not found in memory", evidence, nil
 	}
@@ -1805,6 +1823,16 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 		return []domain.SearchResult{}, nil
 	}
 	opts.Scope = eff
+	// ADR-0134 P2: the event-time window the transport handlers put on the context,
+	// carried the same two ways as the read scope — on opts, so the adapter pushes it
+	// into SQL BESIDE Scope before top-k (dense and lexical), and as `window`, which
+	// admit() below re-asserts where every lane converges, so the by-id enrichment
+	// lanes (entity seeds, query-entity seeds, kgExpand, anchor/section promotion)
+	// cannot reintroduce an out-of-window row. The reference time is read by the
+	// Stage-A blend from the context (applyStageABlend), not from opts: it ranks,
+	// it does not filter.
+	window, _ := domain.EventTimeQueryFromContext(ctx)
+	opts.Since, opts.Until = window.EventAfter, window.EventBefore
 	// Carry the resolved predicate on the CONTEXT as well, not just on opts. Search
 	// pushes opts.Scope down into SQL, but the enrichment stages below reach chunks
 	// BY ID (anchor promotion, neighbour window, entity seeding, kgExpand), and those
@@ -1992,6 +2020,11 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 		if !iso.Allows(r.Document.Metadata) {
 			return false
 		}
+		// ADR-0134 P2: the event-time window's in-memory mirror, for the same
+		// reason — injected rows never passed through the SQL that applied it.
+		if !window.Admits(r.Document) {
+			return false
+		}
 		// ADR-0048 #1: drop seeds below the relevance floor so an all-irrelevant query
 		// returns EMPTY rather than padding the top-k with noise.
 		//
@@ -2033,7 +2066,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	// ADR-0048 D2: optionally expand the fact seeds associatively over the memory
 	// graph. Off for the action lane.
 	if spread && q.spreader != nil && len(filtered) > 0 {
-		filtered = q.spreadAndRank(ctx, filtered, sid)
+		filtered = keepInWindow(q.spreadAndRank(ctx, filtered, sid), window)
 	}
 	// ADR-0049 D10: Hebbian reinforcement of the fact lane's co-retrieved set — async,
 	// off the read path so recall latency is untouched. Off for the action lane.
@@ -2061,7 +2094,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	// ADR-0060: neighbor-window — append each returned chunk's document neighbors
 	// (preceding/following) for adjacent context. Runs last so ranking is untouched.
 	if q.neighborWindow {
-		filtered = q.applyNeighborWindow(ctx, filtered)
+		filtered = keepInWindow(q.applyNeighborWindow(ctx, filtered), window)
 	}
 	// ADR-0103 D2: emit the decision record LAST, so it describes what the caller
 	// actually received — including neighbor-window rows, which were never ranked
@@ -2552,6 +2585,22 @@ func assembleLanes(
 			if keep(r) && admit(r) {
 				out = append(out, r)
 			}
+		}
+	}
+	return out
+}
+
+// keepInWindow drops the rows outside the event-time window (ADR-0134 P2) from a lane
+// that runs AFTER assembly and adds rows by its own reads — spreading activation and
+// the neighbour window. A query with no window returns rs unchanged.
+func keepInWindow(rs []domain.SearchResult, window domain.EventTimeQuery) []domain.SearchResult {
+	if !window.HasWindow() {
+		return rs
+	}
+	out := rs[:0:0]
+	for _, r := range rs {
+		if window.Admits(r.Document) {
+			out = append(out, r)
 		}
 	}
 	return out

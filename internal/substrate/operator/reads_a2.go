@@ -9,6 +9,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
@@ -233,6 +234,12 @@ func (s *Service) QueryMemory(ctx context.Context, req *pb.QueryMemoryRequest) (
 	if s.memory == nil {
 		return nil, status.Error(codes.Unimplemented, "operator memory query not configured")
 	}
+	// ADR-0134 D4 (contract 0099): event-time parameters, checked before any work.
+	tq, err := opEventTimeQuery(req.GetReferenceTime(), req.GetEventAfter(), req.GetEventBefore())
+	if err != nil {
+		return nil, err
+	}
+	ctx = domain.WithEventTimeQuery(ctx, tq)
 	results, err := s.memory.SearchSystem(ctx, req.GetQuery())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "query memory: %v", err)
@@ -262,7 +269,7 @@ func (s *Service) QueryMemory(ctx context.Context, req *pb.QueryMemoryRequest) (
 		if f := req.GetSession(); f != "" && domain.DocSessionID(r.Document.Metadata) != f {
 			continue
 		}
-		resp.Results = append(resp.Results, &pb.MemoryOp{
+		op := &pb.MemoryOp{
 			DocId:      r.Document.ID,
 			Summary:    docSummary(r.Document),
 			Score:      r.Score,
@@ -274,7 +281,9 @@ func (s *Service) QueryMemory(ctx context.Context, req *pb.QueryMemoryRequest) (
 			// passage itself to quote, and the breadcrumb to name where it came from.
 			SectionPath: r.Document.SectionPath,
 			Text:        r.Document.Text,
-		})
+		}
+		setHitTime(r.Document, &op.EventTime, &op.EventTimeEnd, &op.TimeSource, &op.TimePrecision)
+		resp.Results = append(resp.Results, op)
 		if topK > 0 && len(resp.Results) >= topK {
 			break
 		}
@@ -289,6 +298,13 @@ func (s *Service) AnswerMemory(ctx context.Context, req *pb.AnswerMemoryRequest)
 	if s.answerer == nil {
 		return nil, status.Error(codes.Unimplemented, "operator answer lane not configured (memory-answer)")
 	}
+	// ADR-0134 D4 (contract 0099): the event-time parameters ride the context into
+	// every search the agentic loop issues for this answer.
+	tq, err := opEventTimeQuery(req.GetReferenceTime(), req.GetEventAfter(), req.GetEventBefore())
+	if err != nil {
+		return nil, err
+	}
+	ctx = domain.WithEventTimeQuery(ctx, tq)
 	// The synthesis LLM call reads its timeout from the remaining ctx deadline. An
 	// operator answer runs retrieval + one grounded synthesis, so give it a
 	// generous, well-defined budget: an unbounded inbound ctx would otherwise leave
@@ -331,7 +347,7 @@ func (s *Service) AnswerMemory(ctx context.Context, req *pb.AnswerMemoryRequest)
 			continue
 		}
 		marker++
-		resp.Citations = append(resp.Citations, &pb.MemoryCitation{
+		c := &pb.MemoryCitation{
 			Marker:      marker,
 			DocId:       r.Document.ID,
 			Text:        r.Document.Text,
@@ -340,7 +356,9 @@ func (s *Service) AnswerMemory(ctx context.Context, req *pb.AnswerMemoryRequest)
 			Score:       r.Score,
 			Importance:  imp,
 			Tags:        metaStringSlice(r.Document.Metadata, "tags"),
-		})
+		}
+		setHitTime(r.Document, &c.EventTime, &c.EventTimeEnd, &c.TimeSource, &c.TimePrecision)
+		resp.Citations = append(resp.Citations, c)
 		if topK > 0 && int(marker) >= topK {
 			break
 		}
@@ -349,6 +367,45 @@ func (s *Service) AnswerMemory(ctx context.Context, req *pb.AnswerMemoryRequest)
 }
 
 // ── mapping / pagination helpers ──────────────────────────────────────────────
+
+// opEventTimeQuery converts and checks the wire event-time query (ADR-0134 D4)
+// through domain.EventTimeQuery.Validate, the one check both planes share: an
+// inverted or empty window is INVALID_ARGUMENT. The window is applied in SQL beside
+// the read scope (ADR-0134 P2).
+func opEventTimeQuery(ref, after, before *timestamppb.Timestamp) (domain.EventTimeQuery, error) {
+	var q domain.EventTimeQuery
+	for _, f := range []struct {
+		name string
+		ts   *timestamppb.Timestamp
+		dst  *time.Time
+	}{{"reference_time", ref, &q.ReferenceTime}, {"event_after", after, &q.EventAfter}, {"event_before", before, &q.EventBefore}} {
+		t, err := opWireTime(f.name, f.ts)
+		if err != nil {
+			return domain.EventTimeQuery{}, err
+		}
+		if t != nil {
+			*f.dst = *t
+		}
+	}
+	if err := q.Validate(); err != nil {
+		return domain.EventTimeQuery{}, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return q, nil
+}
+
+// setHitTime fills a hit's ADR-0134 event-time fields from domain.HitEventTime, the
+// one reader every plane shares (MemoryOp and MemoryCitation carry the same four).
+func setHitTime(d domain.Document, start, end **timestamppb.Timestamp, source, precision *string) {
+	ht := domain.HitEventTime(d)
+	if !ht.EventTime.IsZero() {
+		*start = timestamppb.New(ht.EventTime.UTC())
+	}
+	if !ht.EventTimeEnd.IsZero() {
+		*end = timestamppb.New(ht.EventTimeEnd.UTC())
+	}
+	*source = string(ht.Source)
+	*precision = string(ht.Precision)
+}
 
 // toolSource labels a tool builtin vs mcp:<serverID>, derived from the ADR-0043
 // name prefix "mcp:<server>/<tool>" (A2.3) — no SystemTool schema field needed.

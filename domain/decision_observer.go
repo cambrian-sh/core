@@ -72,6 +72,13 @@ type RetrievalDecision struct {
 	// ranking (ADR-0103 D7). Without it a record of what was retrieved cannot
 	// answer why it was ranked that way, and cannot be reproduced.
 	ConfigFingerprint string
+	// EventTime is the event-time part of the query (ADR-0134 D4): the asker's
+	// reference time and the event window, exactly as stated (zero = not given;
+	// the reference time then defaulted to the server clock, which At records).
+	// Without it an answer computed "as of" a date is not reproducible from its
+	// record: the same question with another reference time or window ranks
+	// differently (owner decision ADR-0134 Q7).
+	EventTime EventTimeQuery
 	// At is the emission time.
 	At time.Time
 }
