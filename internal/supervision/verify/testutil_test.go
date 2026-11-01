@@ -103,10 +103,15 @@ type vwMockVerifyRequester struct {
 	callCount   int
 	returnScore float32
 	returnCrit  string
+	// spend attribution of the last call's ctx (ADR-0131)
+	lastSession    domain.SessionID
+	lastBackground bool
 }
 
-func (m *vwMockVerifyRequester) VerifyOutput(_ context.Context, _ domain.AgentDefinition, req domain.VerifyRequest) (domain.VerifyResponse, error) {
+func (m *vwMockVerifyRequester) VerifyOutput(ctx context.Context, _ domain.AgentDefinition, req domain.VerifyRequest) (domain.VerifyResponse, error) {
 	m.mu.Lock()
+	m.lastSession, _ = domain.SessionIDFromContext(ctx)
+	m.lastBackground = domain.IsBackgroundSpend(ctx)
 	m.lastReq = &req
 	m.callCount++
 	m.mu.Unlock()

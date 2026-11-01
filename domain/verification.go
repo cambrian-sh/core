@@ -47,6 +47,11 @@ type VerificationRequest struct {
 	BidConfidence float64
 	Request       *Handoff
 	Response      *Handoff
+	// SessionID is the session whose step is being verified, carried as job data
+	// because the worker runs long after the request ctx is gone; the worker puts
+	// it back on the verifier call ctx so that spend is booked to the session
+	// (ADR-0131, owner decision 2026-11-01). "" = no originating session.
+	SessionID SessionID
 }
 
 // ProposalRequester sends a RequestProposal RPC to a specific agent.

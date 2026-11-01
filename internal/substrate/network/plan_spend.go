@@ -17,11 +17,14 @@ import (
 // (ADR-0131 gate criterion 1: tokens_in, tokens_out, cache_read and $ per
 // Execute, from provider usage). The figures are the session's spend between
 // the start and the end of the Execute, so they include the planner, every
-// step's agent stream, thought steps, checkpoints, replans, tier-2 scoring and
-// the agentic retrieval chain of this plan. Router classification runs before
-// the session is resolved and is booked unattributed (see ADR-0131
-// observations). _llm_estimated_calls > 0 means part of the figure is the
-// len/4 fallback, not provider usage.
+// step's agent stream, thought steps, checkpoints, replans and the agentic
+// retrieval chain of this plan, and the router classification that admitted it
+// (Execute routes under the caller's session, or on a tab settled into the new
+// session; owner decision 2026-11-01). Background organs (tier-2 scoring,
+// verification) are booked to the session too, but only the part that finished
+// before Execute returned can be in these figures — the rest lands in the
+// session total afterwards. _llm_estimated_calls > 0 means part of the figure
+// is the len/4 fallback, not provider usage.
 const (
 	MetaLLMCalls           = "_llm_calls"
 	MetaLLMInputTokens     = "_llm_input_tokens"

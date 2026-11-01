@@ -282,3 +282,24 @@ func (s *Server) reportProgress(ctx context.Context, phase domain.ProgressPhase)
 		Phase:          phase,
 	})
 }
+
+// liveCallerSession is resolveCallerSession narrowed to a session that exists
+// and is still open — the session Execute will continue — WITHOUT creating
+// one. Execute uses it to put router classification under the caller's
+// session (ADR-0131, owner decision 2026-11-01) before the full resolution
+// below it, which may open a new session; "" when the caller presents none, or
+// one that is unknown or completed.
+func (s *Server) liveCallerSession(ctx context.Context) domain.SessionID {
+	if s.SessionMgr == nil {
+		return ""
+	}
+	sid := s.resolveCallerSession(ctx)
+	if sid == "" {
+		return ""
+	}
+	ses, err := s.SessionMgr.GetSession(ctx, sid)
+	if err != nil || ses == nil || ses.Status == domain.SessionCompleted {
+		return ""
+	}
+	return ses.ID
+}

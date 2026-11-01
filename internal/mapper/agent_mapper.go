@@ -112,6 +112,7 @@ func (m *AgentMapper) TaskEventToDomain(rec storage.TaskEventRecord) domain.Task
 		BudgetOverrun:        rec.BudgetOverrun,
 		FallbackModelUsed:    rec.FallbackModelUsed,
 		ActualModelID:        rec.ActualModelID,
+		UsageEstimated:       rec.UsageEstimated,
 	}
 }
 
@@ -136,6 +137,7 @@ func (m *AgentMapper) TaskEventToRecord(event domain.TaskEvent) storage.TaskEven
 		BudgetOverrun:        event.BudgetOverrun,
 		FallbackModelUsed:    event.FallbackModelUsed,
 		ActualModelID:        event.ActualModelID,
+		UsageEstimated:       event.UsageEstimated,
 	}
 }
 

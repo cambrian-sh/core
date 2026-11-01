@@ -236,9 +236,15 @@ func (s *MetabolismStack) Shutdown(ctx context.Context) {
 // verification requests. It is a method so the caller does not reach into
 // MetabolismStack's internals.
 func (s *MetabolismStack) EnqueueVerification() executer.EnqueueVerification {
-	return func(taskID, agentID string, req, resp *domain.Handoff) {
+	return func(stepCtx context.Context, taskID, agentID string, req, resp *domain.Handoff) {
+		// The enqueue is bounded by the KERNEL ctx, not the step ctx (the step may
+		// already be ending); only the originating session is carried over, so the
+		// verifier's spend is booked to it (ADR-0131, owner decision 2026-11-01).
 		ctx, cancel := context.WithTimeout(s.rootCtx, 5*time.Second)
 		defer cancel()
+		if sid, ok := domain.SessionIDFromContext(stepCtx); ok && sid != "" {
+			ctx = domain.WithSessionID(ctx, sid)
+		}
 		s.VerificationWorker.Enqueue(ctx, taskID, agentID, req, resp)
 	}
 }

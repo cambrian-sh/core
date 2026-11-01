@@ -28,6 +28,22 @@ type BudgetLease struct {
 // convention as `_session_token_id`: kernel-internal, never agent-settable.
 const HandoffKeyBudgetOverrun = "_budget_overrun"
 
+// Step-usage handoff keys: the step function stamps the step lease's reconciled
+// provider usage (the gateway's Complete — every agent stream and tool turn of the
+// step, plus the agentic retrieval chain charged back to it) on the step response,
+// and the DAGExecutor prefers it over its len/4 estimate when it writes the
+// step's TaskEvent (ADR-0131 D2; T-20261101-step-taskevents-still-bill-len-4-although-the).
+// Kernel-internal like HandoffKeyBudgetOverrun: the step function deletes any
+// agent-supplied value before stamping, and the executor consumes them.
+const (
+	HandoffKeyStepPromptTokens     = "_step_prompt_tokens"
+	HandoffKeyStepCompletionTokens = "_step_completion_tokens"
+	HandoffKeyStepCacheReadTokens  = "_step_cache_read_tokens"
+	// HandoffKeyStepUsageEstimated is "true" when part of the stamped usage is the
+	// gateway's len/4 fallback (the provider reported none for some call).
+	HandoffKeyStepUsageEstimated = "_step_usage_estimated"
+)
+
 // BudgetLeaseState holds the server-side mutable accounting state for a single BudgetLease.
 // Keyed by the lease's opaque UUID in a server-side map.
 type BudgetLeaseState struct {

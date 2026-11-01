@@ -1399,17 +1399,55 @@ func (a *Agent) drainBatch(ctx context.Context) {
 		return
 	}
 
-	scored, err := a.scoreBatch(ctx, clean)
-	if err != nil {
-		slog.Warn("MemoryAgent: Tier-2 LLM scoring failed, using heuristic", "err", err)
-		a.tier2FallbackCount.Add(1)
-		scored = a.scoreBatchHeuristic(clean)
-		slog.Info("MemoryAgent: Tier-2 heuristic fallback",
-			"batch_size", channelDepth,
-			"tier2_llm_fallback_count", a.tier2FallbackCount.Load())
+	// ADR-0131 (owner decision 2026-11-01): the judge's spend belongs to the
+	// session whose output it scores, so the batch is scored once per
+	// originating session, under that session and the background marker —
+	// booked to it, never refused at its ceiling (a refusal would silently drop
+	// the scoring). A batch from one session — the usual case — is still one
+	// call; items with no session form their own group and land in the kernel
+	// no-session bucket.
+	var scored []scoredItem
+	for _, group := range groupBySession(clean) {
+		gctx := domain.WithBackgroundSpend(ctx)
+		if group.sid != "" {
+			gctx = domain.WithSessionID(gctx, group.sid)
+		}
+		s, err := a.scoreBatch(gctx, group.items)
+		if err != nil {
+			slog.Warn("MemoryAgent: Tier-2 LLM scoring failed, using heuristic", "err", err)
+			a.tier2FallbackCount.Add(1)
+			s = a.scoreBatchHeuristic(group.items)
+			slog.Info("MemoryAgent: Tier-2 heuristic fallback",
+				"batch_size", len(group.items),
+				"tier2_llm_fallback_count", a.tier2FallbackCount.Load())
+		}
+		scored = append(scored, s...)
 	}
 
 	a.commitBatch(ctx, scored, channelDepth)
+}
+
+// sessionGroup is the Tier-2 items of one originating session.
+type sessionGroup struct {
+	sid   domain.SessionID
+	items []pendingItem
+}
+
+// groupBySession partitions items by originating session, keeping the order in
+// which each session first appears and each item's order within its session.
+func groupBySession(items []pendingItem) []sessionGroup {
+	var groups []sessionGroup
+	idx := make(map[domain.SessionID]int)
+	for _, it := range items {
+		i, ok := idx[it.SessionID]
+		if !ok {
+			i = len(groups)
+			idx[it.SessionID] = i
+			groups = append(groups, sessionGroup{sid: it.SessionID})
+		}
+		groups[i].items = append(groups[i].items, it)
+	}
+	return groups
 }
 
 // commitErrorItem writes a standardised negative_edge document for a pre-filter match. ADR-0025.

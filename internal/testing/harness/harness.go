@@ -144,6 +144,13 @@ func (h *SystemHarness) ExecutePlan(ctx context.Context) (*domain.Handoff, []dom
 					}
 					result.Context[domain.HandoffKeyBudgetOverrun] = "true"
 				}
+				// Mirrors server.go: the lease usage rides to the TaskEvent (ADR-0131 D2).
+				if result != nil {
+					if !usage.IsZero() && result.Context == nil {
+						result.Context = make(map[string]string)
+					}
+					llm.StampStepUsage(result.Context, usage)
+				}
 			}
 		}()
 

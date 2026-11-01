@@ -133,10 +133,10 @@ func TestSpendMeter_CeilingRefusesBeforeTheProvider(t *testing.T) {
 		t.Fatalf("other session refused: %v", err)
 	}
 	if _, err := gen.Generate(context.Background(), "x"); err != nil {
-		t.Fatalf("unattributed call refused: %v", err)
+		t.Fatalf("no-session call refused: %v", err)
 	}
-	if u := meter.Unattributed(); u.Calls != 1 {
-		t.Fatalf("unattributed bucket = %+v, want 1 call", u)
+	if u := meter.NoSession(); u.Calls != 1 {
+		t.Fatalf("no-session bucket = %+v, want 1 call", u)
 	}
 }
 

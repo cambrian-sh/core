@@ -73,7 +73,12 @@ const finalResultKey = "_dag_final_result"
 // so the VerificationWorker can decide whether to sample the task. It never
 // blocks — the implementation must perform any queuing asynchronously.
 // A nil value disables verification sampling for this executor.
-type EnqueueVerification func(taskID, agentID string, req, resp *domain.Handoff)
+//
+// ctx is the step's ctx: the implementation reads the originating session from
+// it so the verifier's spend is booked to that session (ADR-0131, owner decision
+// 2026-11-01). It must not keep ctx for the asynchronous work — the request ends
+// long before verification does.
+type EnqueueVerification func(ctx context.Context, taskID, agentID string, req, resp *domain.Handoff)
 
 // Create checkpoint stores a snapshot of the master context after a successful
 // step merge. It is a lightweight in-memory record; persistence is handled
@@ -289,6 +294,11 @@ func (d *DAGExecutor) executeStep(
 		return stepResult{index: stepIndex, resp: nil, err: nil}
 	}
 
+	// The step lease's provider usage (ADR-0131 D2), consumed BEFORE the growth
+	// measurement so kernel bookkeeping keys never count as context the step
+	// added, and never merge into the plan context.
+	usage, haveUsage := llm.StepUsageFrom(resp.Context)
+	llm.ClearStepUsage(resp.Context)
 	sizeAfter := contextByteSize(resp.Context)
 	growthBytes := sizeAfter - sizeBefore
 	if growthBytes < 0 {
@@ -309,14 +319,23 @@ func (d *DAGExecutor) executeStep(
 	d.completedMu.Unlock()
 
 	taskID := formatTaskID(stepIndex, planID)
-	promptTokens := llm.EstimateTokens(plan.Steps[stepIndex].Query)
-	respText := ""
-	if resp.Payload != nil {
-		respText = string(resp.Payload.Data)
+	// ADR-0131 D2: bill the step from the provider usage its lease reconciled
+	// (stamped by the step function, llm.StampStepUsage), and fall back to the
+	// len/4 estimate only when there is none — a thought step, a step whose agent
+	// made no gateway call, a step function without a gateway — flagging the
+	// TaskEvent UsageEstimated so a reader knows which figure it holds. Priced with
+	// the default generator's ledger prices either way: agent steps stream through
+	// the configured default model until per-step allocation reaches the lease.
+	if !haveUsage {
+		respText := ""
+		if resp.Payload != nil {
+			respText = string(resp.Payload.Data)
+		}
+		usage = llm.EstimateUsage(plan.Steps[stepIndex].Query, respText)
 	}
-	responseTokens := llm.EstimateTokens(respText)
-	estimatedCost := llm.EstimateCostFromText(plan.Steps[stepIndex].Query, respText,
-		d.DefaultInputCostPer1M, d.DefaultOutputCostPer1M)
+	promptTokens := usage.PromptTokens
+	responseTokens := usage.CompletionTokens
+	estimatedCost := llm.CalculateCost(usage, d.DefaultInputCostPer1M, d.DefaultOutputCostPer1M)
 
 	if d.EventWriter != nil || d.Observer != nil {
 		// ROUTE-06 / ADR-0069: stamp the step's (first) required capability so the
@@ -336,6 +355,7 @@ func (d *DAGExecutor) executeStep(
 			EstimatedCost:      estimatedCost,
 			BudgetOverrun:      budgetOverrun,
 			Capability:         stepCap,
+			UsageEstimated:     usage.Estimated,
 		}
 		if d.EventWriter != nil {
 			if err := d.EventWriter.WriteTaskEvent(event); err != nil {
@@ -351,7 +371,7 @@ func (d *DAGExecutor) executeStep(
 	// the agent's TrustScore. ADR-0023 Fix 5.
 	isBudgetSignal := resp.Payload != nil && resp.Payload.Type == "budget_signal"
 	if d.EnqueueVerification != nil && !isBudgetSignal {
-		d.EnqueueVerification(taskID, agentID, &domain.Handoff{
+		d.EnqueueVerification(ctx, taskID, agentID, &domain.Handoff{
 			Payload: &domain.Payload{Data: []byte(plan.Steps[stepIndex].Query)},
 			Context: snapshot,
 		}, resp)

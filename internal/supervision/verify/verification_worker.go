@@ -87,6 +87,7 @@ func (w *VerificationWorker) Enqueue(ctx context.Context, taskID, agentID string
 		BidConfidence: handoffConfidence(resp),
 		Request:       req,
 		Response:      resp,
+		SessionID:     sessionOf(ctx),
 	}
 
 	select {
@@ -184,7 +185,7 @@ func (w *VerificationWorker) processOne(ctx context.Context, vreq domain.Verific
 		return
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	callCtx, cancel := context.WithTimeout(spendCtx(ctx, vreq), 10*time.Second)
 	defer cancel()
 
 	originalQuery := ""
@@ -256,7 +257,7 @@ func (w *VerificationWorker) crossVerify(
 		return
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	callCtx, cancel := context.WithTimeout(spendCtx(ctx, vreq), 10*time.Second)
 	defer cancel()
 
 	crossVerifyPrompt := buildCrossVerificationPrompt(vreq, primaryVerifier.ID, primaryVerifierConfidence)
@@ -426,4 +427,25 @@ func buildVerificationPrompt(vreq domain.VerificationRequest) string {
 		resp = string(vreq.Response.Payload.Data)
 	}
 	return fmt.Sprintf("Verify the following task completion. Score 0-1 and provide a critique.\nTask: %s\nResponse: %s", req, resp)
+}
+
+// sessionOf reads the originating session from the enqueuing ctx ("" if none).
+func sessionOf(ctx context.Context) domain.SessionID {
+	sid, _ := domain.SessionIDFromContext(ctx)
+	return sid
+}
+
+// spendCtx is the ctx of a verifier call: the worker's own ctx (never the
+// long-gone request ctx, never context.Background()) carrying the originating
+// session and the background-spend marker, so whatever LLM spend the call
+// causes is booked to that session and never refused at its ceiling — a
+// refusal would silently drop the verification (ADR-0131, owner decision
+// 2026-11-01). Only the verifier call gets it: the judicial/profile writes
+// keep the worker ctx, so their scope and stamping are unchanged.
+func spendCtx(ctx context.Context, vreq domain.VerificationRequest) context.Context {
+	ctx = domain.WithBackgroundSpend(ctx)
+	if vreq.SessionID != "" {
+		ctx = domain.WithSessionID(ctx, vreq.SessionID)
+	}
+	return ctx
 }

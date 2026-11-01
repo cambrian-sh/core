@@ -3,6 +3,7 @@ package circadian
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -59,7 +60,13 @@ type CircadianRhythm struct {
 	SessionRetention       time.Duration
 	RetentionSweepInterval time.Duration
 
+	// stop cancels the sweep context; wg tracks every sweep goroutine Start launched so
+	// Stop can drain them (AGENTS.md §3.3: one owner per background goroutine, started by
+	// Start, drained by Stop). Before 2026-11-01 Stop only cancelled and returned while a
+	// sweep could still be mid-tick, which made the package's goleak check flaky
+	// (T-20261101-circadian-package-goleak-flake-retention-sweep).
 	stop context.CancelFunc
+	wg   sync.WaitGroup
 }
 
 func New(sessionMgr DormantSessionManager, _ int) *CircadianRhythm {
@@ -85,7 +92,9 @@ func (r *CircadianRhythm) startRetentionSweep(ctx context.Context) {
 		return
 	}
 	ticker := time.NewTicker(r.RetentionSweepInterval)
+	r.wg.Add(1)
 	go func() {
+		defer r.wg.Done()
 		defer ticker.Stop()
 		for {
 			select {
@@ -118,7 +127,9 @@ func (r *CircadianRhythm) startLeaseSweep(ctx context.Context) {
 		return
 	}
 	sweepTicker := time.NewTicker(r.SessionSweepInterval)
+	r.wg.Add(1)
 	go func() {
+		defer r.wg.Done()
 		defer sweepTicker.Stop()
 		for {
 			select {
@@ -139,7 +150,9 @@ func (r *CircadianRhythm) startIdleSessionSweep(ctx context.Context) {
 		return
 	}
 	ticker := time.NewTicker(r.SessionIdleSweepInterval)
+	r.wg.Add(1)
 	go func() {
+		defer r.wg.Done()
 		defer ticker.Stop()
 		for {
 			select {
@@ -160,9 +173,13 @@ func (r *CircadianRhythm) startIdleSessionSweep(ctx context.Context) {
 	}()
 }
 
-// Stop signals the sweep goroutine to exit.
+// Stop cancels the sweeps and blocks until every sweep goroutine has returned, so no
+// tick runs (or logs) after Stop returns. A sweep that is mid-call when Stop is invoked
+// sees its context cancelled and finishes that call first. Safe on a rhythm that was
+// never started, and safe to call more than once.
 func (r *CircadianRhythm) Stop() {
 	if r.stop != nil {
 		r.stop()
 	}
+	r.wg.Wait()
 }

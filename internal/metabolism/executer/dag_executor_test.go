@@ -1511,7 +1511,7 @@ func TestRunCheckpoint_EventWriter_CalledWithCorrectFields(t *testing.T) {
 // Cycle 7: EnqueueVerification is never called during runCheckpoint.
 func TestRunCheckpoint_EnqueueVerification_NeverCalled(t *testing.T) {
 	var enqueueCallCount int
-	capturingEnqueue := EnqueueVerification(func(taskID, agentID string, req, resp *domain.Handoff) {
+	capturingEnqueue := EnqueueVerification(func(_ context.Context, taskID, agentID string, req, resp *domain.Handoff) {
 		enqueueCallCount++
 	})
 	d := &DAGExecutor{CheckpointValidator: cleanValidator(), EnqueueVerification: capturingEnqueue}

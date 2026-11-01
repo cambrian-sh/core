@@ -60,6 +60,7 @@ type TaskEventRecord struct {
 	BudgetOverrun        bool    `json:"budget_overrun,omitempty"`
 	FallbackModelUsed    bool    `json:"fallback_model_used,omitempty"`
 	ActualModelID        string  `json:"actual_model_id,omitempty"`
+	UsageEstimated       bool    `json:"usage_estimated,omitempty"` // ADR-0131 D2
 }
 
 // SessionRecord is the raw JSON shape stored in the bbolt sessions bucket.

@@ -31,8 +31,24 @@ import (
 // reconciled usage the meter records.
 //
 // The meter keys spend by the session id carried in ctx (domain.WithSessionID).
-// A call made with no session in ctx is counted in an unattributed bucket and
-// is never refused: there is no session whose ceiling it could exceed.
+// Properties of the call's ctx decide where it is booked and whether the
+// ceiling applies (owner decision 2026-11-01,
+// T-20261101-router-classification-and-async-organs):
+//
+//   - a session in ctx: booked to it, refused over the ceiling (the request
+//     path — router, planner, agent steps, replans, checkpoints, thoughts);
+//   - a session plus domain.WithBackgroundSpend: booked to the ORIGINATING session but
+//     never refused (verification, tier-2 scoring — work that outlives the
+//     request, where a refusal would silently drop the organ's job);
+//   - a SpendTab (WithSpendTab) and no session: the session is not known yet
+//     (router classification before Execute opens one); the tab is enforced
+//     against its own total and SettleTab later moves it into the session;
+//   - none of these: the explicit kernel no-session bucket (NoSessionBucket —
+//     registration-triggered interviews, maintenance), reported by
+//     ReportNoSession and never refused: there is no session whose ceiling it
+//     could exceed.
+//
+// These are properties of a call on the one meter, not a second ledger.
 //
 // The ceiling (execution.session.max_session_tokens) is enforced at ADMISSION:
 // a call is refused with ErrSpendCeiling when the session's recorded total plus
@@ -47,10 +63,17 @@ type SpendMeter struct {
 	prices  PriceReader
 	log     *slog.Logger
 
-	mu           sync.Mutex
-	sessions     map[domain.SessionID]*sessionSpend
-	unattributed SessionSpend
+	mu        sync.Mutex
+	sessions  map[domain.SessionID]*sessionSpend
+	noSession SessionSpend
+	// noSessionReported is the noSession total at the last ReportNoSession.
+	noSessionReported SessionSpend
 }
+
+// NoSessionBucket names the kernel no-session spend bucket in logs and
+// reports: LLM calls with no originating session (ADR-0131; owner decision
+// 2026-11-01). Metered and reported, never enforced.
+const NoSessionBucket = "kernel:no-session"
 
 type sessionSpend struct {
 	SessionSpend
@@ -140,14 +163,39 @@ func (m *SpendMeter) Ceiling() int {
 // in ctx. It returns a *SpendCeilingError (matching ErrSpendCeiling) when the
 // session is over its ceiling. Nil-safe: a nil meter admits everything.
 func (m *SpendMeter) Admit(ctx context.Context, purpose string, promptTokens int) error {
-	if m == nil {
+	if m == nil || domain.IsBackgroundSpend(ctx) {
+		// Background organs are booked, never refused (owner decision 2026-11-01).
 		return nil
 	}
-	sid, ok := domain.SessionIDFromContext(ctx)
-	if !ok {
+	if sid, ok := domain.SessionIDFromContext(ctx); ok && sid != "" {
+		return m.AdmitSession(sid, purpose, promptTokens)
+	}
+	if tab := spendTabFrom(ctx); tab != nil {
+		return m.admitTab(tab, purpose, promptTokens)
+	}
+	return nil
+}
+
+// admitTab enforces the ceiling for calls made before the session exists: a
+// session that does not exist yet starts at zero, so the tab is checked against
+// its own total. Once settled, the tab's calls are the session's.
+func (m *SpendMeter) admitTab(tab *SpendTab, purpose string, promptTokens int) error {
+	if m.ceiling <= 0 {
 		return nil
 	}
-	return m.AdmitSession(sid, purpose, promptTokens)
+	tab.mu.Lock()
+	if tab.settled {
+		sid := tab.settledTo
+		tab.mu.Unlock()
+		return m.AdmitSession(sid, purpose, promptTokens)
+	}
+	defer tab.mu.Unlock()
+	used := tab.spend.TotalTokens()
+	if !tab.spend.Exhausted && used+promptTokens <= m.ceiling {
+		return nil
+	}
+	tab.spend.Exhausted = true
+	return &SpendCeilingError{Purpose: purpose, Used: used, Requested: promptTokens, Ceiling: m.ceiling}
 }
 
 // AdmitSession is Admit for a caller that resolved the session itself (the
@@ -178,10 +226,23 @@ func (m *SpendMeter) Record(ctx context.Context, purpose, generatorID string, u 
 		return
 	}
 	sid, _ := domain.SessionIDFromContext(ctx)
+	if sid == "" {
+		if tab := spendTabFrom(ctx); tab != nil {
+			tab.mu.Lock()
+			if !tab.settled {
+				tab.spend.add(u, m.cost(generatorID, u))
+				tab.mu.Unlock()
+				return
+			}
+			sid = tab.settledTo
+			tab.mu.Unlock()
+		}
+	}
 	m.RecordSession(sid, purpose, generatorID, u)
 }
 
-// RecordSession books one finished call against sid ("" = unattributed).
+// RecordSession books one finished call against sid ("" = the kernel
+// no-session bucket, NoSessionBucket).
 func (m *SpendMeter) RecordSession(sid domain.SessionID, purpose, generatorID string, u TokenUsage) {
 	if m == nil {
 		return
@@ -190,20 +251,17 @@ func (m *SpendMeter) RecordSession(sid domain.SessionID, purpose, generatorID st
 	m.mu.Lock()
 	var s *SessionSpend
 	if sid == "" {
-		s = &m.unattributed
+		s = &m.noSession
 	} else {
 		s = &m.sessionLocked(sid).SessionSpend
 	}
-	s.Calls++
-	s.InputTokens += u.PromptTokens
-	s.OutputTokens += u.CompletionTokens
-	s.CacheReadTokens += u.CacheReadTokens
-	s.CostUSD += cost
-	if u.Estimated {
-		s.EstimatedCalls++
-	}
+	s.add(u, cost)
 	m.mu.Unlock()
-	m.log.Debug("llm spend recorded", "session", sid, "purpose", purpose, "generator", generatorID,
+	bucket := string(sid)
+	if sid == "" {
+		bucket = NoSessionBucket
+	}
+	m.log.Debug("llm spend recorded", "session", bucket, "purpose", purpose, "generator", generatorID,
 		"input", u.PromptTokens, "output", u.CompletionTokens, "cache_read", u.CacheReadTokens,
 		"cost_usd", cost, "estimated", u.Estimated)
 }
@@ -221,14 +279,130 @@ func (m *SpendMeter) Session(sid domain.SessionID) SessionSpend {
 	return SessionSpend{}
 }
 
-// Unattributed returns the total of calls that carried no session.
-func (m *SpendMeter) Unattributed() SessionSpend {
+// NoSession returns the kernel no-session bucket (NoSessionBucket): the total
+// of calls that had no originating session.
+func (m *SpendMeter) NoSession() SessionSpend {
 	if m == nil {
 		return SessionSpend{}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.unattributed
+	return m.noSession
+}
+
+// ReportNoSession logs what the kernel no-session bucket accrued since the last
+// report and returns that delta. The bucket is reported, never enforced; the
+// gateway's periodic eviction sweep calls this so the figure reaches the log
+// without a per-call line. Nothing accrued: zero delta, no log.
+func (m *SpendMeter) ReportNoSession() SessionSpend {
+	if m == nil {
+		return SessionSpend{}
+	}
+	m.mu.Lock()
+	d := m.noSession.Sub(m.noSessionReported)
+	m.noSessionReported = m.noSession
+	m.mu.Unlock()
+	if d.Calls == 0 {
+		return d
+	}
+	m.log.Info("llm spend outside any session", "bucket", NoSessionBucket,
+		"calls", d.Calls, "input", d.InputTokens, "output", d.OutputTokens,
+		"cache_read", d.CacheReadTokens, "cost_usd", d.CostUSD,
+		"estimated_calls", d.EstimatedCalls, "adr", "ADR-0131")
+	return d
+}
+
+// SettleTab moves a pending tab's spend into sid — the session Execute resolved
+// or opened after the calls were made — or into the no-session bucket when sid
+// is "" (a CHAT or clarification turn that never gets a session). Calls made
+// under the tab's ctx after settlement are booked to sid directly. Idempotent;
+// nil-safe.
+func (m *SpendMeter) SettleTab(tab *SpendTab, sid domain.SessionID) {
+	if m == nil || tab == nil {
+		return
+	}
+	tab.mu.Lock()
+	if tab.settled {
+		tab.mu.Unlock()
+		return
+	}
+	tab.settled, tab.settledTo = true, sid
+	pending := tab.spend
+	tab.mu.Unlock()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sid == "" {
+		pending.Exhausted = false // the bucket is never enforced
+		m.noSession.merge(pending)
+		return
+	}
+	m.sessionLocked(sid).merge(pending)
+}
+
+func (s *SessionSpend) add(u TokenUsage, cost float64) {
+	s.Calls++
+	s.InputTokens += u.PromptTokens
+	s.OutputTokens += u.CompletionTokens
+	s.CacheReadTokens += u.CacheReadTokens
+	s.CostUSD += cost
+	if u.Estimated {
+		s.EstimatedCalls++
+	}
+}
+
+func (s *SessionSpend) merge(o SessionSpend) {
+	s.Calls += o.Calls
+	s.InputTokens += o.InputTokens
+	s.OutputTokens += o.OutputTokens
+	s.CacheReadTokens += o.CacheReadTokens
+	s.CostUSD += o.CostUSD
+	s.EstimatedCalls += o.EstimatedCalls
+	s.Exhausted = s.Exhausted || o.Exhausted
+}
+
+// ── Attribution properties carried in ctx ───────────────────────────────────
+
+// The background-organ marker (book to the originating session, never refuse)
+// is domain.WithBackgroundSpend, beside domain.WithSessionID, so the organs
+// that set it need no import of this package.
+
+type spendTabKey struct{}
+
+// SpendTab collects request-path spend made before the session is known:
+// router classification runs before Execute resolves or opens the session, and
+// opening one first would create sessions for CHAT turns. Settle it with
+// SpendMeter.SettleTab once the session is known.
+type SpendTab struct {
+	mu        sync.Mutex
+	spend     SessionSpend
+	settled   bool
+	settledTo domain.SessionID
+}
+
+// Spend returns what the tab holds while unsettled (zero once settled).
+func (t *SpendTab) Spend() SessionSpend {
+	if t == nil {
+		return SessionSpend{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.settled {
+		return SessionSpend{}
+	}
+	return t.spend
+}
+
+// WithSpendTab returns a child ctx whose session-less calls are booked to a
+// fresh tab. A session id in ctx still wins over the tab.
+func WithSpendTab(ctx context.Context) (context.Context, *SpendTab) {
+	t := &SpendTab{}
+	return context.WithValue(ctx, spendTabKey{}, t), t
+}
+
+func spendTabFrom(ctx context.Context) *SpendTab {
+	t, _ := ctx.Value(spendTabKey{}).(*SpendTab)
+	return t
 }
 
 // EvictIdle forgets sessions with no recorded or refused call for longer than

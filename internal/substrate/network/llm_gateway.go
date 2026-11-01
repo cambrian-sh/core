@@ -284,6 +284,10 @@ func (g *SubstrateLLMGateway) EvictExpired() {
 	if days := g.cfg.Session.SessionRetentionDays; days > 0 {
 		g.meter.Load().EvictIdle(time.Now(), time.Duration(days)*24*time.Hour)
 	}
+	// ADR-0131: the kernel no-session bucket is reported, never enforced; this
+	// periodic sweep is where its accrual reaches the log (nil-safe, silent when
+	// nothing accrued).
+	g.meter.Load().ReportNoSession()
 }
 
 // AddSession adds a pre-existing session state (for testing/setup).

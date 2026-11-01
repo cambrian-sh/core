@@ -2,6 +2,8 @@ package circadian
 
 import (
 	"context"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -50,6 +52,20 @@ func (noSessions) TransitionStatus(context.Context, domain.SessionID, domain.Ses
 	return nil
 }
 
+// liveSweepGoroutines returns the stacks of any goroutine currently running a
+// CircadianRhythm sweep, from ONE runtime.Stack snapshot with no retry, or "" if none.
+func liveSweepGoroutines() string {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	var live []string
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "circadian.(*CircadianRhythm).start") {
+			live = append(live, g)
+		}
+	}
+	return strings.Join(live, "\n\n")
+}
+
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -86,11 +102,15 @@ func TestCircadianRhythm_StartRunsAllSweeps_StopLeavesNoGoroutines(t *testing.T)
 	waitFor(t, "retention sweep tick", func() bool { return purger.n.Load() > 0 })
 
 	r.Stop()
-	goleak.VerifyNone(t)
-
-	// A stopped rhythm stays stopped: no tick may arrive after Stop returns and
-	// the goroutines are gone.
+	// Checked with a single, immediate stack snapshot rather than goleak.VerifyNone:
+	// goleak retries until goroutines exit, so it masks a Stop that returns before
+	// draining (the cause of the 2026-11-01 flake). Stop itself must drain.
+	if live := liveSweepGoroutines(); live != "" {
+		t.Fatalf("sweep goroutine still running after Stop returned:\n%s", live)
+	}
 	e, s, p := evictor.n.Load(), sweeper.n.Load(), purger.n.Load()
+	r.Stop() // idempotent
+	goleak.VerifyNone(t)
 	time.Sleep(10 * time.Millisecond)
 	if evictor.n.Load() != e || sweeper.n.Load() != s || purger.n.Load() != p {
 		t.Fatal("a sweep ticked after Stop")
@@ -109,8 +129,8 @@ func TestCircadianRhythm_DisabledSweepsStartNothing(t *testing.T) {
 	unstarted.Stop() // never started: stop must be safe
 }
 
-// Cancelling the parent context stops the sweeps without Stop being called —
-// the kernel's shutdown path.
+// Cancelling the parent context stops the sweeps — the kernel's shutdown path,
+// which cancels its root context and then calls Stop.
 func TestCircadianRhythm_ParentCancelStopsSweeps(t *testing.T) {
 	evictor := &countingEvictor{}
 	r := New(noSessions{}, 0)
@@ -121,5 +141,11 @@ func TestCircadianRhythm_ParentCancelStopsSweeps(t *testing.T) {
 	r.Start(ctx)
 	waitFor(t, "lease sweep tick", func() bool { return evictor.n.Load() > 0 })
 	cancel()
+	// The kernel calls Stop after cancelling its root context (app.go); Stop must still
+	// drain the goroutines that already observed the cancellation, and must not block.
+	r.Stop()
+	if live := liveSweepGoroutines(); live != "" {
+		t.Fatalf("sweep goroutine still running after Stop returned:\n%s", live)
+	}
 	goleak.VerifyNone(t)
 }

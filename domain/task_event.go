@@ -70,4 +70,9 @@ type TaskEvent struct {
 	// "auction" or "efe" (ADR-0037). The A/B benchmark harness partitions all
 	// falsification metrics by this field without external bookkeeping.
 	Mechanism string `json:"mechanism,omitempty"`
+	// UsageEstimated is true when the token counts and EstimatedCost are an
+	// estimate rather than provider-reported usage: either the len/4 fallback of
+	// the DAG executor (the step had no lease usage) or a lease whose usage was
+	// partly the gateway's len/4 fallback (ADR-0131 D2). False = provider usage.
+	UsageEstimated bool `json:"usage_estimated,omitempty"`
 }

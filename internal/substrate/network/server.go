@@ -387,6 +387,29 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	// route the plan's own text to CHAT and answer instead of executing it.
 	authoredPlanJSON := in.GetMetadata()[AuthoredPlanMetadataKey]
 
+	// ADR-0131 (owner decision 2026-11-01): router classification is request-path
+	// spend — it counts against the session ceiling and in this Execute's _llm_*
+	// figures. The router runs before the session is resolved below, and opening
+	// one here would create sessions for CHAT turns, so: a caller presenting an
+	// existing live session routes under it (and is refused when it is over the
+	// ceiling); otherwise the router's calls go on a spend tab that is settled
+	// into the session once it exists, or into the kernel no-session bucket when
+	// the turn never gets one (CHAT, clarification, errors).
+	var callerSession domain.SessionID
+	if s.Router != nil && authoredPlanJSON == "" && s.SpendMeter != nil {
+		callerSession = s.liveCallerSession(ctx)
+	}
+	routeCtx := ctx
+	var routeTab *llm.SpendTab
+	if callerSession != "" {
+		routeCtx = domain.WithSessionID(ctx, callerSession)
+	} else {
+		routeCtx, routeTab = llm.WithSpendTab(ctx)
+	}
+	routeBase := s.SpendMeter.Session(callerSession)
+	var sessionID domain.SessionID
+	defer func() { s.SpendMeter.SettleTab(routeTab, sessionID) }() // early returns; no-op once settled
+
 	// ADR-0031: Route through InputRouter when configured.
 	// The Router classifies raw input before any enrichment (mood, LTM, etc.).
 	if s.Router != nil && authoredPlanJSON == "" {
@@ -395,8 +418,12 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			SourceType: "grpc",
 			Metadata:   in.GetMetadata(),
 		}
-		decision, err := s.Router.Resolve(ctx, routerInput)
+		decision, err := s.Router.Resolve(routeCtx, routerInput)
 		if err != nil {
+			if errors.Is(err, llm.ErrSpendCeiling) && callerSession != "" {
+				// The visible ADR-0131 D3 ending, with its TaskEvent record.
+				return nil, s.endPlanAtSpendCeiling(callerSession, "", routeBase, err)
+			}
 			return nil, fmt.Errorf("router: %w", err)
 		}
 		switch decision.Type {
@@ -440,7 +467,6 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 
 	userInput := rawInput
 
-	var sessionID domain.SessionID
 	if s.SessionMgr != nil {
 		// Phase 2 strict mode: refuse to invent a session. The caller must have opened one
 		// (CreateSession) and must present it, so "new work" and "continuation" are the
@@ -507,8 +533,15 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	}
 
 	// ADR-0131: the session's spend before this Execute, so the response can report
-	// what THIS plan cost (the session total also carries earlier plans).
+	// what THIS plan cost (the session total also carries earlier plans). The base
+	// is taken BEFORE routing when the caller's session already existed, and the
+	// router's tab is settled AFTER the base otherwise, so router classification
+	// is part of this Execute's figures either way.
 	spendBase := s.SpendMeter.Session(sessionID)
+	if callerSession != "" && callerSession == sessionID {
+		spendBase = routeBase
+	}
+	s.SpendMeter.SettleTab(routeTab, sessionID)
 
 	// One planner-call budget for the whole plan: the validation retry below and
 	// the DAG's replans draw on the same 1 + max_replan_attempts calls.
@@ -697,6 +730,20 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 						stepResp.Context = make(map[string]string)
 					}
 					stepResp.Context[domain.HandoffKeyBudgetOverrun] = "true"
+				}
+				// ADR-0131 D2: the lease's provider usage (every stream and tool turn of
+				// the step, plus the retrieval chain charged back to it) rides to the
+				// step's TaskEvent the same way, replacing the executor's len/4 estimate.
+				// Stamp clears any agent-echoed value first; a failed Complete clears too.
+				if stepResp != nil {
+					if cerr == nil && !usage.IsZero() && stepResp.Context == nil {
+						stepResp.Context = make(map[string]string)
+					}
+					if cerr == nil {
+						llm.StampStepUsage(stepResp.Context, usage)
+					} else {
+						llm.ClearStepUsage(stepResp.Context)
+					}
 				}
 				// ADR-0046 D6 ephemerality: the grants a system skill conferred for THIS
 				// run fall away with the lease — Complete runs the gateway's completion
