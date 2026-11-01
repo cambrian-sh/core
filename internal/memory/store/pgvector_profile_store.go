@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"strings"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -147,7 +146,7 @@ const previousProfileScan = 150
 // A Search with no query vector and DocumentType=agent_profile reads the
 // agent_profiles table (ADR-0093 tableFor); QueryByMetadata would not — it reads
 // only chunks, which is why the ticket's first sketch needed an adapter change.
-// The agent filter is applied in SQL (Filter, quoted as in GetJudicialRecords)
+// The agent filter is applied in SQL (a typed, parameter-bound Filter)
 // AND re-checked here, because a store that does not honour Filter must not
 // hand back another agent's profile. Ordering is by created_at, which the
 // upsert never rewrites: it is when that VERSION was first interviewed, so a
@@ -156,7 +155,7 @@ func (p *PgVectorProfileStore) GetPreviousProfile(ctx context.Context, agentID, 
 	results, err := p.store.Search(kernelRead(ctx), nil, domain.SearchOptions{
 		DocumentType: domain.DocTypeAgentProfile,
 		TopK:         previousProfileScan,
-		Filter:       fmt.Sprintf("metadata->>'agent_id' = '%s'", sqlQuoteLiteral(agentID)),
+		Filter:       domain.SearchFilter{Metadata: map[string]string{"agent_id": agentID}},
 		Scope:        domain.ScopeSystem, // kernel read, mirrored on ctx by kernelRead
 	})
 	if err != nil {
@@ -233,29 +232,17 @@ func kernelRead(ctx context.Context) context.Context {
 	return domain.WithScope(ctx, domain.ScopeSystem)
 }
 
-// sqlQuoteLiteral escapes a value for interpolation into a SearchOptions.Filter.
-//
-// Filter is applied by the adapter as `goqu.L(opts.Filter)` — a RAW SQL literal
-// with no parameter binding — so a value carrying a single quote terminates the
-// string and the remainder is parsed as SQL. agentID is not a trusted constant:
-// it comes from an agent's own manifest at registration, so an agent registering
-// itself as `x' OR '1'='1` would have read every judicial record in the store.
-//
-// Doubling embedded quotes is the standard PostgreSQL escape and is sufficient
-// here because the value is always interpolated INSIDE a single-quoted literal.
-func sqlQuoteLiteral(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
-}
-
 // GetJudicialRecords returns the top-K critique texts stored as judicial_record
 // documents for (agentID, sourceHash). Returns nil when no records exist.
 func (p *PgVectorProfileStore) GetJudicialRecords(ctx context.Context, agentID, sourceHash string, topK int) ([]string, error) {
 	results, err := p.store.Search(kernelRead(ctx), nil, domain.SearchOptions{
 		DocumentType: domain.DocTypeJudicialRecord,
 		TopK:         topK,
-		Filter: fmt.Sprintf("metadata->>'agent_id' = '%s' AND metadata->>'source_hash' = '%s'",
-			sqlQuoteLiteral(agentID), sqlQuoteLiteral(sourceHash)),
-		Scope: domain.ScopeSystem, // ADR-0034: judicial-record retrieval is a kernel read
+		// agentID comes from an agent's own manifest: the typed filter makes the
+		// adapter bind it as a parameter, so a self-chosen id like `x' OR '1'='1`
+		// is just a value that matches nothing.
+		Filter: domain.SearchFilter{Metadata: map[string]string{"agent_id": agentID, "source_hash": sourceHash}},
+		Scope:  domain.ScopeSystem, // ADR-0034: judicial-record retrieval is a kernel read
 	})
 	if err != nil {
 		return nil, fmt.Errorf("pgVectorProfileStore: get judicial records for agent %s: %w", agentID, err)

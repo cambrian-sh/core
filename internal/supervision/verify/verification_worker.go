@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
 
 // convergenceBound is the number of verified events needed for a fully dishonest
@@ -25,6 +26,23 @@ type VerificationWorkerConfig struct {
 	VerifierRecencyWindow int
 	TrustBoostThreshold   float64
 	CrossVerifyRate       float64
+	// LeaseTokenLimit / LeaseDuration size the lease minted for each verifier
+	// call. The kernel sets them to the agent step lease's sizing
+	// (network.StepLeaseTokenLimit / StepLeaseDuration): a verifier call is one
+	// agent turn, so it is budgeted like one.
+	LeaseTokenLimit int
+	LeaseDuration   time.Duration
+}
+
+// LeaseGateway is the managed-LLM lease lifecycle the worker needs — a narrow
+// view of the substrate LLM gateway, the SAME Acquire → BindLease → Complete
+// path every other lease site uses (agent steps, interview, chat, retrieval
+// dispatch). Complete runs the gateway's completion hook, so a verifier lease
+// is cleaned up exactly like a step lease.
+type LeaseGateway interface {
+	Acquire(ctx context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (domain.LeaseID, error)
+	BindLease(leaseID domain.LeaseID, b domain.LeaseBinding)
+	Complete(ctx context.Context, leaseID domain.LeaseID) (llm.TokenUsage, error)
 }
 
 // VerificationWorker is the background component that receives sampled task
@@ -41,12 +59,18 @@ type VerificationWorker struct {
 	// EventBus is optional (ADR-0047 D3); when set, a completed verification
 	// round publishes a VerifierRoundEvent for the operator feed. nil ⇒ no-op.
 	EventBus domain.EventBus
+	// leases mints the managed-LLM lease each verifier call carries (ADR-0131;
+	// T-20261101-verification-mints-no-lease-so-verifier-llm). Constructor-
+	// injected; nil only where no gateway exists (unit tests, maintenance
+	// tools), and then the verifier is called without a lease as before.
+	leases LeaseGateway
 
 	queue        chan domain.VerificationRequest
 	droppedCount atomic.Int64
 }
 
 // NewVerificationWorker creates a VerificationWorker with a buffered queue.
+// leases may be nil (no gateway): verifier calls then carry no lease.
 func NewVerificationWorker(
 	pool *VerifierPool,
 	requester domain.VerifyRequester,
@@ -54,6 +78,7 @@ func NewVerificationWorker(
 	judicial domain.JudicialStore,
 	profiles domain.VerifierProfileStore,
 	embedder domain.Embedder,
+	leases LeaseGateway,
 	cfg VerificationWorkerConfig,
 ) *VerificationWorker {
 	cap := cfg.QueueCapacity
@@ -68,6 +93,7 @@ func NewVerificationWorker(
 		ProfileStore:  profiles,
 		Embedder:      embedder,
 		Config:        cfg,
+		leases:        leases,
 		queue:         make(chan domain.VerificationRequest, cap),
 	}
 }
@@ -187,6 +213,8 @@ func (w *VerificationWorker) processOne(ctx context.Context, vreq domain.Verific
 
 	callCtx, cancel := context.WithTimeout(spendCtx(ctx, vreq), 10*time.Second)
 	defer cancel()
+	lease, endLease := w.mintLease(callCtx, vreq, verifier.ID)
+	defer endLease()
 
 	originalQuery := ""
 	if vreq.Request != nil && vreq.Request.Payload != nil {
@@ -203,6 +231,7 @@ func (w *VerificationWorker) processOne(ctx context.Context, vreq domain.Verific
 		WinnerOutput:  winnerOutput,
 		WinnerAgentID: vreq.AgentID,
 		BidConfidence: float32(vreq.BidConfidence),
+		LeaseID:       lease,
 	})
 	if err != nil {
 		slog.Warn("VerificationWorker: verifier call failed",
@@ -259,6 +288,8 @@ func (w *VerificationWorker) crossVerify(
 
 	callCtx, cancel := context.WithTimeout(spendCtx(ctx, vreq), 10*time.Second)
 	defer cancel()
+	lease, endLease := w.mintLease(callCtx, vreq, crossVerifier.ID)
+	defer endLease()
 
 	crossVerifyPrompt := buildCrossVerificationPrompt(vreq, primaryVerifier.ID, primaryVerifierConfidence)
 	originalQuery := ""
@@ -272,6 +303,7 @@ func (w *VerificationWorker) crossVerify(
 		WinnerOutput:  crossVerifyPrompt,
 		WinnerAgentID: primaryVerifier.ID,
 		BidConfidence: float32(primaryVerifierConfidence),
+		LeaseID:       lease,
 	})
 	if err != nil {
 		slog.Warn("VerificationWorker: cross-verifier call failed",
@@ -433,6 +465,38 @@ func buildVerificationPrompt(vreq domain.VerificationRequest) string {
 func sessionOf(ctx context.Context) domain.SessionID {
 	sid, _ := domain.SessionIDFromContext(ctx)
 	return sid
+}
+
+// mintLease issues the managed-LLM lease one verifier call carries, through the
+// gateway's one lease path: Acquire under callCtx (which carries the
+// background-spend marker, so the gateway books the lease's calls to the
+// session and never refuses them at its ceiling), BindLease to the ORIGINATING
+// session — the binding is what the gateway attributes the verifier's
+// generate calls to, since the verifier calls back over its own RPC and no
+// kernel ctx crosses that hop; an empty session books to the kernel no-session
+// bucket — and the returned end func Completes it, which also runs the
+// gateway's completion hook. A failed Acquire degrades to a lease-less call
+// (the pre-fix behaviour), logged, never a dropped verification.
+func (w *VerificationWorker) mintLease(callCtx context.Context, vreq domain.VerificationRequest, verifierID string) (domain.LeaseID, func()) {
+	if w.leases == nil {
+		return "", func() {}
+	}
+	// Empty StepAllocation ⇒ the gateway's configured default model, as for
+	// chat and retrieval-dispatch leases.
+	lease, err := w.leases.Acquire(callCtx, domain.StepAllocation{}, w.Config.LeaseTokenLimit, w.Config.LeaseDuration)
+	if err != nil || lease == "" {
+		slog.Warn("VerificationWorker: lease acquire failed; verifier called without a lease",
+			"task_id", vreq.TaskID, "verifier_id", verifierID, "err", err)
+		return "", func() {}
+	}
+	w.leases.BindLease(lease, domain.LeaseBinding{SessionID: vreq.SessionID, StepIndex: -1, AgentID: verifierID})
+	return lease, func() {
+		// WithoutCancel: the call ctx may already be past its deadline, and the
+		// lease must be completed regardless (AGENTS.md §2.7).
+		if _, err := w.leases.Complete(context.WithoutCancel(callCtx), lease); err != nil {
+			slog.Debug("VerificationWorker: lease complete failed", "lease", lease, "err", err)
+		}
+	}
 }
 
 // spendCtx is the ctx of a verifier call: the worker's own ctx (never the

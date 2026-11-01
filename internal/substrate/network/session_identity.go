@@ -20,7 +20,7 @@ import (
 //     `x-session-id`), and
 //   - the operator plane puts a REAL session ID there (app.go SendMessage).
 const (
-	leaseHeader   = "x-lease-id"
+	leaseHeader   = domain.LeaseHeader
 	sessionHeader = "x-session-id"
 )
 

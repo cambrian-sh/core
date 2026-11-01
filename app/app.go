@@ -698,7 +698,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	pp := config.NewStaticPolicyProvider(cfg.Execution.Hippocampus.HippocampusPolicies, cfg.Execution.Hippocampus.HippocampusDefaultPolicy)
 	aw := kernel.NewAwarenessStack(awarenessGen, reg, mem.Hippocampus, mem.WorkspaceStage, pp)
-	meta := kernel.NewMetabolismStack(reg, embedder, vec, mem.ProfileStore, mem.Agent, cfg, observer, metabolismGen)
+	// ADR-0018: the LLM Gateway is constructed HERE, before the metabolism stack,
+	// so the verification worker receives it as a constructor argument and mints
+	// a lease for every verifier call (ADR-0131;
+	// T-20261101-verification-mints-no-lease-so-verifier-llm). It needs only
+	// cfg to exist; its streaming clients, observer and meter are attached
+	// further down, before any lease is used.
+	llmGateway := subnetwork.NewLLMGateway(cfg.Execution)
+	meta := kernel.NewMetabolismStack(reg, embedder, vec, mem.ProfileStore, mem.Agent, cfg, observer, metabolismGen, llmGateway)
 	sup := kernel.NewSupervisionStack(reg, mem.ProfileStore, mem.VecDB, supervisionGen, cfg, observer)
 
 	// 3. Wire storage callback so newly-registered agents are enqueued for interview.
@@ -920,8 +927,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// CircadianRhythm now only handles session token eviction (ADR-0018 sweep).
 	circadianRhythm := circadian.New(sessionMgr, 0)
 
-	// ADR-0018: Construct LLM Gateway and wire lifecycle consumers.
-	llmGateway := subnetwork.NewLLMGateway(cfg.Execution)
+	// ADR-0018: wire the LLM Gateway (constructed above, before the metabolism
+	// stack) and its lifecycle consumers.
 	llmGateway.Observer = observer
 	// ADR-0018 + ADR-0042: register a streaming client for EVERY configured
 	// generator (keyed "llm:<id>"), not just the local Ollama one. OpenAIClient and

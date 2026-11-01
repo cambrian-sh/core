@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -154,6 +155,13 @@ func (a *Transport) VerifyOutput(ctx context.Context, agent domain.AgentDefiniti
 	client, err := a.getOrDialClient(ctx, agent, "")
 	if err != nil {
 		return domain.VerifyResponse{}, fmt.Errorf("VerifyOutput: %w", err)
+	}
+	// The verifier's lease rides as gRPC metadata (pb.VerifyRequest has no lease
+	// field): the agent reads it from its invocation metadata and presents it
+	// back on GenerateViaModelStream / GenerateWithTools (ADR-0131;
+	// T-20261101-verification-mints-no-lease-so-verifier-llm).
+	if req.LeaseID != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, domain.LeaseHeader, string(req.LeaseID))
 	}
 	protoResp, err := client.VerifyOutput(ctx, &pb.VerifyRequest{
 		TaskId:        req.TaskID,

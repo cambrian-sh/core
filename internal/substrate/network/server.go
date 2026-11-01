@@ -703,7 +703,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			// be bound to it yet. See the Known Gaps entry "Per-step model allocation
 			// never reaches the lease" for the two candidate fixes.
 			sa := domain.StepAllocation{}
-			tokenID, _ := s.LLMGateway.Acquire(stepCtx, sa, 4096, 30*time.Second)
+			tokenID, _ := s.LLMGateway.Acquire(stepCtx, sa, StepLeaseTokenLimit, StepLeaseDuration)
 			// Phase 0: record WHICH session/run/step this lease belongs to, so an agent
 			// presenting it can be resolved back to its session server-side. Without
 			// this the kernel has no way to answer "whose lease is this?" and has to
@@ -1255,7 +1255,7 @@ func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawIn
 		// model than the arm it is the control for, which is the one thing a control arm
 		// may not do.
 		sa := domain.StepAllocation{}
-		tokenID, _ := s.LLMGateway.Acquire(ctx, sa, 4096, 30*time.Second)
+		tokenID, _ := s.LLMGateway.Acquire(ctx, sa, StepLeaseTokenLimit, StepLeaseDuration)
 		// The bypass arm runs outside a task session, so the binding carries only the
 		// agent. Registering it still matters: a KNOWN-but-unbound lease is how the
 		// transport tells "an agent sent its lease" from "the operator sent a session

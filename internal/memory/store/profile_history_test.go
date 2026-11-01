@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -76,13 +75,17 @@ func TestGetPreviousProfile_NoOtherVersionIsNil(t *testing.T) {
 	}
 }
 
-func TestGetPreviousProfile_EscapesAgentID(t *testing.T) {
+// The agent id reaches the store as a typed filter VALUE (bound as a parameter
+// by the adapter), verbatim — no SQL is built here, so there is nothing to escape.
+func TestGetPreviousProfile_AgentIDIsATypedFilterValue(t *testing.T) {
 	t.Parallel()
 	ls := &listingStore{}
-	if _, err := NewProfileStore(ls).GetPreviousProfile(context.Background(), "x' OR '1'='1", "h"); err != nil {
+	payload := "x' OR '1'='1"
+	if _, err := NewProfileStore(ls).GetPreviousProfile(context.Background(), payload, "h"); err != nil {
 		t.Fatal(err)
 	}
-	if f := ls.lastOpts.Filter; !strings.Contains(f, "x'' OR ''1''=''1") || strings.Count(f, "'")%2 != 0 {
-		t.Fatalf("agent id not escaped: %q", f)
+	f := ls.lastOpts.Filter
+	if len(f.IDs) != 0 || len(f.Metadata) != 1 || f.Metadata["agent_id"] != payload {
+		t.Fatalf("filter = %+v, want exactly {agent_id: %q}", f, payload)
 	}
 }

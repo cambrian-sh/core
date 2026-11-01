@@ -1,5 +1,11 @@
 package domain
 
+// LeaseHeader is the gRPC metadata key that carries a BudgetLease, in both
+// directions: an agent presents its lease to the kernel under it, and the kernel
+// hands a lease to an agent under it on RPCs whose request message has no lease
+// field (VerifyOutput). One name, so the two directions cannot drift apart.
+const LeaseHeader = "x-lease-id"
+
 // LeaseBinding is the execution identity the kernel attaches to a BudgetLease at step
 // dispatch. It is the server-side half of the Phase-0 identity fix: an agent presents only
 // the opaque lease it was handed, and the kernel resolves the lease to WHO and WHAT it

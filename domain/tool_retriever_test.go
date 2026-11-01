@@ -116,7 +116,7 @@ func (f *fakeEmbedder) Embed(_ context.Context, text string) ([]float32, error) 
 }
 
 type fakeToolStore struct {
-	lastFilter  string
+	lastFilter  SearchFilter
 	lastDocType string
 	lastScope   *TagPredicate
 	results     []SearchResult
@@ -177,8 +177,8 @@ func TestVectorToolRetriever_FloorAndGrantFilter(t *testing.T) {
 	if !strings.HasPrefix(emb.lastText, "search_query: ") {
 		t.Errorf("query must carry the asymmetric query prefix, got %q", emb.lastText)
 	}
-	if !strings.Contains(store.lastFilter, "id IN") || !strings.Contains(store.lastFilter, "web_search") {
-		t.Errorf("grant filter should restrict to granted ids, got %q", store.lastFilter)
+	if ids := store.lastFilter.IDs; len(ids) != 2 || ids[0] != "web_search" || ids[1] != "read_file" {
+		t.Errorf("grant filter should restrict to granted ids, got %+v", store.lastFilter)
 	}
 }
 
@@ -205,8 +205,8 @@ func TestVectorToolRetriever_UnrestrictedNoFilter(t *testing.T) {
 	if _, err := r.Rank(context.Background(), "x", nil, 3); err != nil {
 		t.Fatal(err)
 	}
-	if store.lastFilter != "" {
-		t.Errorf("unrestricted (no granted names) should set no filter, got %q", store.lastFilter)
+	if !store.lastFilter.IsZero() {
+		t.Errorf("unrestricted (no granted names) should set no filter, got %+v", store.lastFilter)
 	}
 }
 

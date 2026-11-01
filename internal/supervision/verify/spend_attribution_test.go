@@ -24,7 +24,7 @@ func TestVerificationWorker_VerifierCallCarriesOriginatingSessionAsBackgroundSpe
 	}
 	req := &vwMockVerifyRequester{called: make(chan struct{}, 10)}
 	w := NewVerificationWorker(pool, req, &vwMockTaskEventRW{events: map[string]domain.TaskEvent{}},
-		&vwMockJudicialStore{}, &vwMockProfileStore{profiles: map[string]*domain.AgentProfile{"subject:sh1": {TrustScore: 0.2}}}, &mockEmbedder{},
+		&vwMockJudicialStore{}, &vwMockProfileStore{profiles: map[string]*domain.AgentProfile{"subject:sh1": {TrustScore: 0.2}}}, &mockEmbedder{}, nil,
 		VerificationWorkerConfig{QueueCapacity: 4, VerifierRecencyWindow: 3, TrustBoostThreshold: 0.4})
 
 	// A Surveillance-mode subject (trust 0.2 < 0.4) is always sampled.

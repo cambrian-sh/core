@@ -2,7 +2,6 @@ package domain
 
 import (
 	"context"
-	"strings"
 )
 
 // VectorToolRetriever is the pgvector-backed ToolRetriever (ADR-0044 D3/D4/D6).
@@ -27,10 +26,11 @@ func (r VectorToolRetriever) Rank(ctx context.Context, query string, grantedName
 	if err != nil {
 		return nil, err
 	}
-	opts := SearchOptions{DocumentType: DocTypeTool, TopK: k}
-	if f := toolIDFilter(grantedNames); f != "" {
-		opts.Filter = f // restrict ranking to the authorized set (grant filter in the query)
-	}
+	// Restrict ranking to the authorized set (grant filter in the query). The
+	// names are bound as parameters by the adapter, never spliced into SQL — an
+	// mcp:<server>/<tool> name is chosen by an external MCP server. No names
+	// (tools_unrestricted) leaves IDs empty, which ranks over all tools.
+	opts := SearchOptions{DocumentType: DocTypeTool, TopK: k, Filter: SearchFilter{IDs: grantedNames}}
 	results, err := r.Store.Search(ctx, vec, opts)
 	if err != nil {
 		return nil, err
@@ -58,21 +58,6 @@ func (r VectorToolRetriever) Rank(ctx context.Context, query string, grantedName
 		}
 	}
 	return out, nil
-}
-
-// toolIDFilter builds a SQL predicate restricting the search to the granted tool
-// identities (their Document.ID). Empty when no names are given (unrestricted ⇒
-// rank over all tools). Tool identities are operator/discovery-controlled, but
-// single quotes are escaped defensively.
-func toolIDFilter(names []string) string {
-	if len(names) == 0 {
-		return ""
-	}
-	quoted := make([]string, len(names))
-	for i, n := range names {
-		quoted[i] = "'" + strings.ReplaceAll(n, "'", "''") + "'"
-	}
-	return "id IN (" + strings.Join(quoted, ", ") + ")"
 }
 
 var _ ToolRetriever = VectorToolRetriever{}

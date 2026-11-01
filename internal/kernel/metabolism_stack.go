@@ -16,6 +16,7 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	"github.com/cambrian-sh/core/internal/metabolism/interview"
 	"github.com/cambrian-sh/core/internal/metabolism/yield"
+	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	supgk "github.com/cambrian-sh/core/internal/supervision/gatekeeper"
 	"github.com/cambrian-sh/core/internal/supervision/verify"
 
@@ -64,6 +65,9 @@ type MetabolismStack struct {
 //   - profileStore: agent cognitive fingerprints (from MemoryStack)
 //   - memoryAgent: for the Memory Barrier in AgentManager
 //   - cfg: execution + metabolism parameters
+//   - leases: the substrate LLM gateway's lease lifecycle; the verification
+//     worker mints one lease per verifier call through it (ADR-0131). nil ⇒
+//     verifier calls carry no lease (tests).
 func NewMetabolismStack(
 	reg *AgentRepoDecorator,
 	embedder domain.Embedder,
@@ -73,6 +77,7 @@ func NewMetabolismStack(
 	cfg *config.Config,
 	observer domain.TelemetryObserver,
 	interviewGen domain.Generator,
+	leases verify.LeaseGateway,
 ) *MetabolismStack {
 	manager := agentmgr.NewAgentManager(reg, cfg.Metabolism.PythonExecutable, "localhost:"+cfg.Server.Port, memoryAgent)
 	// ADR-0125: JS agent runtimes. Empty config values are fine — the instance
@@ -124,11 +129,14 @@ func NewMetabolismStack(
 	// Verifier admission runs the gatekeeper's L1 declaration gate (one policy), so
 	// it reads the same canonical-vocabulary switch the gatekeeper does.
 	vPool.CanonicalVocab = cfg.Execution.Capability.CanonicalVocab
-	vWorker := verify.NewVerificationWorker(vPool, transport, reg, profileStore, profileStore, embedder, verify.VerificationWorkerConfig{
+	vWorker := verify.NewVerificationWorker(vPool, transport, reg, profileStore, profileStore, embedder, leases, verify.VerificationWorkerConfig{
 		TrustBoostThreshold:   cfg.Execution.Verification.TrustBoostThreshold,
 		QueueCapacity:         cfg.Execution.Verification.VerificationQueueCapacity,
 		CrossVerifyRate:       cfg.Execution.Verification.CrossVerifyRate,
 		VerifierRecencyWindow: cfg.Execution.Verification.VerifierRecencyWindow,
+		// A verifier call is one agent turn: sized like the agent step lease.
+		LeaseTokenLimit: subnetwork.StepLeaseTokenLimit,
+		LeaseDuration:   subnetwork.StepLeaseDuration,
 	})
 
 	// ADR-0037 interview grading: an LLM generates questions, the agent answers

@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
@@ -29,16 +28,16 @@ func (r *recordingStore) GetByID(_ context.Context, _ string) (*domain.Document,
 	return nil, nil
 }
 
-// A judicial-record lookup must not let an agent id carrying a quote break out of
-// the SQL string literal it is interpolated into. SearchOptions.Filter is applied
-// by the adapter as a RAW predicate (goqu.L), so this is the only thing standing
-// between a registered agent's self-chosen id and arbitrary SQL.
-func TestGetJudicialRecords_EscapesQuotesInFilter(t *testing.T) {
+// A judicial-record lookup carries the agent's self-chosen id as a typed filter
+// VALUE, never as SQL. The adapter binds it as a parameter
+// (postgres.TestPgSearchFilter_InjectionValuesAreInert proves that end to end),
+// so a payload that closes a literal and ORs a tautology is just a string that
+// matches no row.
+func TestGetJudicialRecords_AgentIDIsATypedFilterValue(t *testing.T) {
 	t.Parallel()
 	rec := &recordingStore{}
 	store := NewProfileStore(rec)
 
-	// The classic payload: close the literal, OR a tautology, comment out the rest.
 	malicious := "x' OR '1'='1"
 	if _, err := store.GetJudicialRecords(context.Background(), malicious, "hash", 5); err != nil {
 		t.Fatalf("GetJudicialRecords: %v", err)
@@ -46,34 +45,10 @@ func TestGetJudicialRecords_EscapesQuotesInFilter(t *testing.T) {
 	if !rec.searchSeen {
 		t.Fatal("expected the lookup to reach the store")
 	}
-
 	got := rec.lastOpts.Filter
-	// Escaped, the payload's quotes are doubled and it stays one literal.
-	if !strings.Contains(got, "x'' OR ''1''=''1") {
-		t.Errorf("agent id was not escaped into the filter; got %q", got)
-	}
-	// Unescaped, the filter would contain an odd number of quotes and the
-	// tautology would be live SQL. Counting quotes is the property that matters:
-	// every quote must be part of a balanced, doubled pair.
-	if strings.Count(got, "'")%2 != 0 {
-		t.Errorf("filter has unbalanced quotes, so the literal is escapable: %q", got)
-	}
-}
-
-func TestSQLQuoteLiteral(t *testing.T) {
-	t.Parallel()
-	cases := map[string]string{
-		"plain":     "plain",
-		"o'brien":   "o''brien",
-		"''":        "''''",
-		"":          "",
-		"a'b'c":     "a''b''c",
-		"no-quotes": "no-quotes",
-	}
-	for in, want := range cases {
-		if got := sqlQuoteLiteral(in); got != want {
-			t.Errorf("sqlQuoteLiteral(%q) = %q, want %q", in, got, want)
-		}
+	if len(got.IDs) != 0 || len(got.Metadata) != 2 ||
+		got.Metadata["agent_id"] != malicious || got.Metadata["source_hash"] != "hash" {
+		t.Errorf("filter = %+v, want {agent_id: %q, source_hash: \"hash\"} verbatim", got, malicious)
 	}
 }
 

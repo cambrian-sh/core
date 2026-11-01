@@ -29,9 +29,12 @@ const (
 
 // SearchOptions carries all optional parameters for a VectorStore.Search call.
 type SearchOptions struct {
-	DocumentType    string // empty string means no filter (returns all)
-	TopK            int
-	Filter          string    // Optional: Additional SQL filter
+	DocumentType string // empty string means no filter (returns all)
+	TopK         int
+	// Filter is an optional typed row restriction (see SearchFilter). It replaced a
+	// raw SQL string that the adapter spliced in with goqu.L and its producers had
+	// to hand-escape; values here are bound as query parameters by the adapter.
+	Filter          SearchFilter
 	RetrievalFloor  float64   // ADR-0015: α in floor-multiplier formula; 0 disables re-ranking
 	ExplorationRate float64   // ADR-0015: fraction of returned slots reserved for random exploration
 	Since           time.Time // ADR-0017: temporal filter (lower bound); zero = no filter
@@ -60,6 +63,36 @@ type SearchOptions struct {
 	// decision belongs to the chokepoint (internal/authz), and duplicating it in
 	// the SQL builder would put one security decision in two places.
 	Isolation *SessionIsolation
+}
+
+// SearchFilter is a typed, parameter-bound restriction on a Search, ANDed with
+// every other predicate (DocumentType, Scope, Isolation). It is deliberately
+// small: an id set and metadata equality are the only shapes any caller needs
+// (the ADR-0044 tool-grant restriction; the agent-profile and judicial-record
+// lookups keyed by agent id / source hash).
+//
+// It exists because SearchOptions.Filter used to be a raw SQL string that the
+// pgvector adapter applied as goqu.L(filter). Both producers hand-escaped single
+// quotes, which is safe only under standard_conforming_strings=on and invited a
+// third, unescaped caller — while one of the inputs (MCP tool names) comes from
+// external servers. A typed filter carries VALUES, never SQL; the adapter binds
+// every value (ids, metadata keys and metadata values) as a query parameter.
+//
+// It is NOT an access control: Scope (ADR-0034) and Isolation (BRAIN-01) remain
+// the security predicates, enforced by internal/authz. A backend that cannot
+// apply a Filter must not be relied on to — callers that use it as a narrowing
+// re-check the rows they get back.
+type SearchFilter struct {
+	// IDs, when non-empty, restricts results to documents whose id is in the
+	// set. Empty means no id restriction (NOT "match nothing").
+	IDs []string
+	// Metadata, when non-empty, requires metadata->>key = value for every entry.
+	Metadata map[string]string
+}
+
+// IsZero reports whether the filter restricts nothing.
+func (f SearchFilter) IsZero() bool {
+	return len(f.IDs) == 0 && len(f.Metadata) == 0
 }
 
 // Embedding represents the vector data and its associated metadata.

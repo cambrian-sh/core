@@ -30,6 +30,12 @@ type VerifyRequest struct {
 	WinnerOutput  string
 	WinnerAgentID string
 	BidConfidence float32
+	// LeaseID is the managed-LLM BudgetLease the kernel minted for this verifier
+	// call, so the verifier can generate through the kernel's models
+	// (GenerateViaModelStream / GenerateWithTools refuse a call without one) and
+	// its spend reaches the ADR-0131 ledger. It is not a proto field: the agent
+	// transport sends it as the LeaseHeader gRPC metadata. Empty ⇒ no lease.
+	LeaseID LeaseID
 }
 
 // VerifyResponse is the domain-layer mirror of proto's VerifyResponse.

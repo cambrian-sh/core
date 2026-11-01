@@ -11,7 +11,7 @@ import (
 // be the yield consumer around the Dispatcher. Core b0072cc dropped the old
 // consumer silently; this pins the production wiring so it cannot happen again.
 func TestMetabolismStack_SelectorResolvesYields(t *testing.T) {
-	meta := NewMetabolismStack(&AgentRepoDecorator{}, nil, nil, nil, nil, config.DefaultConfig(), nil, nil)
+	meta := NewMetabolismStack(&AgentRepoDecorator{}, nil, nil, nil, nil, config.DefaultConfig(), nil, nil, nil)
 	if _, ok := meta.Selector.(*yield.Resolver); !ok {
 		t.Fatalf("MetabolismStack.Selector = %T, want *yield.Resolver wrapping the Dispatcher", meta.Selector)
 	}

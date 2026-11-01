@@ -214,7 +214,7 @@ func newTestVerificationWorker(t *testing.T, queueCap int) *VerificationWorker {
 		&vwMockTaskEventRW{events: map[string]domain.TaskEvent{}},
 		&vwMockJudicialStore{},
 		&vwMockProfileStore{profiles: map[string]*domain.AgentProfile{}},
-		&mockEmbedder{},
+		&mockEmbedder{}, nil,
 		VerificationWorkerConfig{
 			QueueCapacity:         queueCap,
 			VerifierRecencyWindow: 3,

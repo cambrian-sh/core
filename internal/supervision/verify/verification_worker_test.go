@@ -130,7 +130,7 @@ func TestVerificationWorker_CrossVerification_WritesVerifierTaskEvent(t *testing
 		events,
 		&vwMockJudicialStore{},
 		&vwMockProfileStore{profiles: map[string]*domain.AgentProfile{}},
-		&mockEmbedder{},
+		&mockEmbedder{}, nil,
 		VerificationWorkerConfig{
 			QueueCapacity: 256, VerifierRecencyWindow: 3,
 			TrustBoostThreshold: 0.4, CrossVerifyRate: 1.0,
@@ -185,7 +185,7 @@ func TestVerificationWorker_CrossVerification_IsTerminal(t *testing.T) {
 		events,
 		&vwMockJudicialStore{},
 		&vwMockProfileStore{profiles: map[string]*domain.AgentProfile{}},
-		&mockEmbedder{},
+		&mockEmbedder{}, nil,
 		VerificationWorkerConfig{
 			QueueCapacity: 256, VerifierRecencyWindow: 3,
 			TrustBoostThreshold: 0.4, CrossVerifyRate: 1.0,
@@ -306,7 +306,7 @@ func TestVerificationWorker_VerifyOutput_CalledOnVerifier(t *testing.T) {
 		events,
 		&vwMockJudicialStore{},
 		&vwMockProfileStore{profiles: map[string]*domain.AgentProfile{}},
-		&mockEmbedder{},
+		&mockEmbedder{}, nil,
 		VerificationWorkerConfig{
 			QueueCapacity: 256, VerifierRecencyWindow: 3,
 			TrustBoostThreshold: 0.4, CrossVerifyRate: 0.0,
@@ -363,7 +363,7 @@ func TestVerificationWorker_VerifyOutput_ScoreWrittenToTaskEvent(t *testing.T) {
 		events,
 		&vwMockJudicialStore{},
 		&vwMockProfileStore{profiles: map[string]*domain.AgentProfile{}},
-		&mockEmbedder{},
+		&mockEmbedder{}, nil,
 		VerificationWorkerConfig{
 			QueueCapacity: 256, VerifierRecencyWindow: 3,
 			TrustBoostThreshold: 0.4, CrossVerifyRate: 0.0,
@@ -420,7 +420,7 @@ func TestVerificationWorker_VerifyOutput_CritiqueStoredAsJudicialRecord(t *testi
 		events,
 		judicialStore,
 		&vwMockProfileStore{profiles: map[string]*domain.AgentProfile{}},
-		&mockEmbedder{},
+		&mockEmbedder{}, nil,
 		VerificationWorkerConfig{
 			QueueCapacity: 256, VerifierRecencyWindow: 3,
 			TrustBoostThreshold: 0.4, CrossVerifyRate: 0.0,
@@ -477,7 +477,7 @@ func TestVerificationWorker_VerifyOutput_CrossVerifyAlsoUsesVerifyOutput(t *test
 		events,
 		&vwMockJudicialStore{},
 		&vwMockProfileStore{profiles: map[string]*domain.AgentProfile{}},
-		&mockEmbedder{},
+		&mockEmbedder{}, nil,
 		VerificationWorkerConfig{
 			QueueCapacity: 256, VerifierRecencyWindow: 3,
 			TrustBoostThreshold: 0.4, CrossVerifyRate: 1.0,

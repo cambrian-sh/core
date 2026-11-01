@@ -134,8 +134,23 @@ func (g *SubstrateLLMGateway) RegisterModelClient(agentID string, client domain.
 // window once streaming starts; this floor only has to cover dispatch→first-generate.
 const minSessionTTL = 10 * time.Minute
 
+// StepLeaseTokenLimit and StepLeaseDuration size the lease an agent step is
+// dispatched with (ADR-0018: the token limit drives the Pass-1 cut at 90%; the
+// duration is the estimate the TTL is derived from, floored at minSessionTTL).
+// Named once so a lease that must be sized "like a step" — the verifier call's —
+// reuses these instead of restating the literals.
+const (
+	StepLeaseTokenLimit = 4096
+	StepLeaseDuration   = 30 * time.Second
+)
+
 // Acquire creates a new session for a step, allocating a session token UUID.
-func (g *SubstrateLLMGateway) Acquire(_ context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (domain.LeaseID, error) {
+//
+// A lease acquired under a domain.WithBackgroundSpend ctx is a background lease
+// (ADR-0131, owner decision 2026-11-01): its calls are booked to the session it
+// is bound to, never refused at that session's ceiling. The marker is read here,
+// from the kernel-side ctx that mints the lease, so no agent can claim it.
+func (g *SubstrateLLMGateway) Acquire(ctx context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (domain.LeaseID, error) {
 	sessionID := domain.LeaseID(fmt.Sprintf("lease-%d-%d", time.Now().UnixNano(), rand.Int63()%10000))
 	now := time.Now()
 	ttl := time.Duration(float64(estimatedDuration) * g.cfg.Session.SessionTokenTTLMultiplier)
@@ -148,6 +163,7 @@ func (g *SubstrateLLMGateway) Acquire(_ context.Context, sa domain.StepAllocatio
 		TokenLimit:     tokenLimit,
 		ExpiresAt:      now.Add(ttl),
 		LastActivityAt: now,
+		Background:     ctx != nil && domain.IsBackgroundSpend(ctx),
 	}
 	g.mu.Unlock()
 	return sessionID, nil
@@ -269,6 +285,17 @@ func leaseSession(ctx context.Context, ss *domain.BudgetLeaseState) domain.Sessi
 	return sid
 }
 
+// admitLease is the ADR-0131 D3 session-ceiling check for one call under a
+// lease. A background lease is admitted unconditionally — booked to its session
+// by the caller's RecordSession, never refused (owner decision 2026-11-01): a
+// refusal would silently drop the organ's job (a verification, here).
+func admitLease(meter *llm.SpendMeter, ss *domain.BudgetLeaseState, sid domain.SessionID, prompt string) error {
+	if ss.Background {
+		return nil
+	}
+	return meter.AdmitSession(sid, string(domain.PurposeAgentStep), llm.EstimateTokens(prompt))
+}
+
 // EvictExpired removes all expired session state entries, and lets the spend
 // ledger forget sessions idle for longer than the session retention window
 // (execution.session.session_retention_days; 0 keeps them for the kernel's life).
@@ -374,7 +401,7 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 	// ADR-0131 D3: the session ceiling is checked before any model is touched.
 	meter := g.meter.Load()
 	sid := leaseSession(ctx, ss)
-	if err := meter.AdmitSession(sid, string(domain.PurposeAgentStep), llm.EstimateTokens(prompt)); err != nil {
+	if err := admitLease(meter, ss, sid, prompt); err != nil {
 		return err
 	}
 
@@ -529,7 +556,7 @@ func (g *SubstrateLLMGateway) GenerateWithTools(
 	meter := g.meter.Load()
 	sid := leaseSession(ctx, ss)
 	prompt := llm.MessagesText(messages)
-	if err := meter.AdmitSession(sid, string(domain.PurposeAgentStep), llm.EstimateTokens(prompt)); err != nil {
+	if err := admitLease(meter, ss, sid, prompt); err != nil {
 		return zero, err
 	}
 

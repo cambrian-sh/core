@@ -69,6 +69,12 @@ type BudgetLeaseState struct {
 	// the session that owns it, instead of trusting the agent's own header. Written
 	// server-side only; the zero value means "never bound". See LeaseBinding.
 	Binding LeaseBinding
+	// Background marks a lease minted for a background organ (verification): its
+	// calls are booked to the bound session but never refused at that session's
+	// spend ceiling (ADR-0131, owner decision 2026-11-01). Set by the gateway at
+	// Acquire from the domain.WithBackgroundSpend ctx marker — never from the
+	// wire — and deliberately NOT part of Binding, which BindLease replaces whole.
+	Background bool
 }
 
 // StepAllocation records the top-3 TraitModel candidates (winner + 2 fallbacks)

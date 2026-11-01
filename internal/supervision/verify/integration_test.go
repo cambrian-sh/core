@@ -44,7 +44,7 @@ func TestIntegration_VerifierPoolEmptyDegradation(t *testing.T) {
 		&vwMockProfileStore{profiles: map[string]*domain.AgentProfile{
 			"winner:ws1": {TrustScore: 0.2},
 		}},
-		&mockEmbedder{},
+		&mockEmbedder{}, nil,
 		VerificationWorkerConfig{
 			QueueCapacity: 256, VerifierRecencyWindow: 3, TrustBoostThreshold: 0.4,
 		},

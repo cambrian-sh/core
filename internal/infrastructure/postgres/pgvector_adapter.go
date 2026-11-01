@@ -778,6 +778,67 @@ func isolationExpressions(iso *domain.SessionIsolation, alias string) []goqu.Exp
 	)}
 }
 
+// filterExpressions translates a typed domain.SearchFilter into predicates whose
+// VALUES travel as real bind parameters ($1, $2, …) next to the SQL, never inside
+// it. It replaced `ds.Where(goqu.L(opts.Filter))`, which spliced a caller-built
+// SQL string into the query and relied on every producer hand-escaping quotes
+// (safe only under standard_conforming_strings=on; one producer fed it MCP tool
+// names chosen by external servers).
+//
+// Why explicit $n and not goqu placeholders: the search datasets are built in
+// goqu's default NON-prepared mode, where `?` arguments are interpolated as
+// escaped literals. Flipping the whole query to Prepared(true) would also turn the
+// projection's `ce.model_id = '<model>'` into a parameter, and the per-model
+// partial HNSW index (ADR-0107 D2) can only be matched against a literal — a
+// generic plan would fall back to an exact scan. So only the filter's values are
+// parameterised: in non-prepared mode goqu passes `$n` through verbatim and
+// returns no args of its own, and bindFilterArgs checks that before the query
+// runs. Metadata keys are parameters too (`metadata ->> $n`), so no part of the
+// filter is ever SQL text.
+//
+// qualifier prefixes the columns (e.g. "chunks.") for queries that JOIN.
+func filterExpressions(f domain.SearchFilter, qualifier string) ([]goqu.Expression, []any) {
+	if f.IsZero() {
+		return nil, nil
+	}
+	var exprs []goqu.Expression
+	var args []any
+	next := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if len(f.IDs) > 0 {
+		ids := append([]string(nil), f.IDs...)
+		exprs = append(exprs, goqu.L(qualifier+"id = ANY("+next(ids)+"::text[])"))
+	}
+	keys := make([]string, 0, len(f.Metadata))
+	for k := range f.Metadata {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // deterministic SQL text, so the statement cache can reuse it
+	for _, k := range keys {
+		kp := next(k)
+		vp := next(f.Metadata[k])
+		exprs = append(exprs, goqu.L(qualifier+"metadata ->> "+kp+"::text = "+vp+"::text"))
+	}
+	return exprs, args
+}
+
+// bindFilterArgs merges the dataset's own args with the filter's bind
+// parameters. The filter's $n placeholders are numbered from 1 on the
+// assumption that the dataset is non-prepared and contributes no args; if that
+// ever stops holding (someone flips a search to Prepared(true)), the numbering
+// would collide, so refuse rather than run a query whose parameters are shuffled.
+func bindFilterArgs(dsArgs, filterArgs []any) ([]any, error) {
+	if len(filterArgs) == 0 {
+		return dsArgs, nil
+	}
+	if len(dsArgs) != 0 {
+		return nil, fmt.Errorf("search filter: dataset produced %d bind args; filter placeholders assume a non-prepared dataset", len(dsArgs))
+	}
+	return filterArgs, nil
+}
+
 func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32, opts domain.SearchOptions, limit int) ([]domain.SearchResult, error) {
 	table := tableFor(opts.DocumentType)
 	// ADR-0107 stage 3b: dense chunk retrieval through the projection. The
@@ -841,9 +902,15 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 	for _, expr := range isolationExpressions(opts.Isolation, "") {
 		ds = ds.Where(expr)
 	}
-	// Wire the previously-dead SearchOptions.Filter as a raw additional predicate.
-	if opts.Filter != "" {
-		ds = ds.Where(goqu.L(opts.Filter))
+	// The typed caller filter, bound as parameters (filterExpressions). Qualified
+	// under the projection JOIN so `id`/`metadata` can never turn ambiguous.
+	qualifier := ""
+	if useProjection {
+		qualifier = TableChunks + "."
+	}
+	filterExprs, filterArgs := filterExpressions(opts.Filter, qualifier)
+	for _, expr := range filterExprs {
+		ds = ds.Where(expr)
 	}
 	if limit > 0 {
 		ds = ds.Limit(uint(limit))
@@ -851,6 +918,9 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 
 	sql, args, err := ds.ToSQL()
 	if err != nil {
+		return nil, mapError("BuildSearch", err)
+	}
+	if args, err = bindFilterArgs(args, filterArgs); err != nil {
 		return nil, mapError("BuildSearch", err)
 	}
 
@@ -908,8 +978,9 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 	for _, expr := range isolationExpressions(opts.Isolation, "") {
 		ds = ds.Where(expr)
 	}
-	if opts.Filter != "" {
-		ds = ds.Where(goqu.L(opts.Filter))
+	filterExprs, filterArgs := filterExpressions(opts.Filter, "")
+	for _, expr := range filterExprs {
+		ds = ds.Where(expr)
 	}
 	if opts.TopK > 0 {
 		ds = ds.Limit(uint(opts.TopK))
@@ -917,6 +988,9 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 
 	sql, args, err := ds.ToSQL()
 	if err != nil {
+		return nil, mapError("BuildLexicalSearch", err)
+	}
+	if args, err = bindFilterArgs(args, filterArgs); err != nil {
 		return nil, mapError("BuildLexicalSearch", err)
 	}
 	rows, err := p.pool.Query(ctx, sql, args...)
