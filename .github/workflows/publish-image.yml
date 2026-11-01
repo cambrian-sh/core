@@ -33,11 +33,11 @@ jobs:
     steps:
       # The build context is the monorepo root; lay out cambrian-core/ + sdk/ under it.
       - name: Checkout cambrian-core
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: cambrian-core
       - name: Checkout sdk (sibling repo the agents import)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: cambrian-sh/sdk
           path: sdk
