@@ -586,7 +586,9 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	var confMu sync.Mutex
 	var confValues []float64
 
-	stepFn := func(stepCtx context.Context, i int, handoff *domain.Handoff) (*domain.Handoff, error) {
+	// Named results: the lease's deferred Complete stamps the gateway's overrun
+	// verdict on the handoff this function hands back (see the defer below).
+	stepFn := func(stepCtx context.Context, i int, handoff *domain.Handoff) (stepResp *domain.Handoff, stepErr error) {
 		// The DAGExecutor may replan (ADR-0005) or fan-out expand (ADR-0078) its plan
 		// mid-run, growing it beyond the `plan` this closure captured, and then dispatch
 		// a step whose index is out of range HERE. The executor builds the handoff from
@@ -652,7 +654,23 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 				})
 			}
 			handoff.Context["_session_token_id"] = string(tokenID)
-			defer func() { _, _ = s.LLMGateway.Complete(stepCtx, tokenID) }()
+			defer func() {
+				usage, cerr := s.LLMGateway.Complete(stepCtx, tokenID)
+				// The gateway's Pass-1 cut is the server-authoritative budget overrun
+				// (ADR-0018). Complete used to discard it; it now rides to the
+				// DAGExecutor's TaskEvent on the handoff
+				// (T-20261031-taskevent-budgetoverrun-is-written-by-no-kernel).
+				if cerr == nil && usage.BudgetOverrun && stepResp != nil {
+					if stepResp.Context == nil {
+						stepResp.Context = make(map[string]string)
+					}
+					stepResp.Context[domain.HandoffKeyBudgetOverrun] = "true"
+				}
+				// ADR-0046 D6 ephemerality: the grants a system skill conferred for THIS
+				// run — keyed by the lease the agent presents as x-session-token — fall
+				// away with the lease (T-20261031-skill-conferred-run-grants-are-never-cleared).
+				s.ToolExecutor.EndRun(string(tokenID))
+			}()
 		}
 
 		// healingOccurred is set true by innerFn when SelfHealer injects _heal_attempt,
@@ -813,7 +831,6 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		ContentStore:           s.ContentStore,
 		StepCache:              s.StepCache,
 		UseGlobalWorkspace:     s.ExecCfg.Workspace.UseGlobalWorkspace,
-		MaxContextSlots:        s.ExecCfg.Plan.MaxContextSlots,
 		ContextRefSnippetChars: s.ExecCfg.Plan.ContextRefSnippetChars,
 		ThoughtFn:              executer.StepFunc(s.thoughtFn(plan)),
 		CheckpointValidator:    awareness.NewLLMCheckpointValidator(s.Planner),
@@ -1144,7 +1161,11 @@ func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawIn
 			r.BindLease(tokenID, domain.LeaseBinding{StepIndex: 0, AgentID: agentID})
 		}
 		handoff.Context["_session_token_id"] = string(tokenID)
-		defer func() { _, _ = s.LLMGateway.Complete(ctx, tokenID) }()
+		defer func() {
+			_, _ = s.LLMGateway.Complete(ctx, tokenID)
+			// ADR-0046 D6 ephemerality, same as the dispatch path.
+			s.ToolExecutor.EndRun(string(tokenID))
+		}()
 	}
 
 	slog.Info("⚡ BYPASS AUCTION (ADR-0050 D1)", "agent", agentID)

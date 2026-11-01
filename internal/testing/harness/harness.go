@@ -97,7 +97,7 @@ func (h *SystemHarness) StepUsages() []llm.TokenUsage {
 func (h *SystemHarness) ExecutePlan(ctx context.Context) (*domain.Handoff, []domain.TaskEvent, error) {
 	fakeWriter := &fakeTaskEventWriter{}
 
-	stepFn := executer.StepFunc(func(ctx context.Context, i int, handoff *domain.Handoff) (*domain.Handoff, error) {
+	stepFn := executer.StepFunc(func(ctx context.Context, i int, handoff *domain.Handoff) (result *domain.Handoff, err error) {
 		agents, err := h.Registry.GetAllAgents(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("harness: registry: %w", err)
@@ -119,6 +119,14 @@ func (h *SystemHarness) ExecutePlan(ctx context.Context) (*domain.Handoff, []dom
 				h.mu.Lock()
 				h.usages = append(h.usages, usage)
 				h.mu.Unlock()
+				// Mirrors server.go: the gateway's overrun verdict rides to the
+				// DAGExecutor's TaskEvent on the handoff.
+				if usage.BudgetOverrun && result != nil {
+					if result.Context == nil {
+						result.Context = make(map[string]string)
+					}
+					result.Context[domain.HandoffKeyBudgetOverrun] = "true"
+				}
 			}
 		}()
 

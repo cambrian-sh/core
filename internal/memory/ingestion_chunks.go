@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -14,6 +15,15 @@ import (
 )
 
 const defaultExternalActivation = 0.5
+
+// ErrNoChunksStored is returned (wrapped) by persistChunks, and so by
+// ProcessSync, when a document that chunked into content stored NONE of it:
+// every chunk lost its embedding (embedder down, stalled past the caller's
+// deadline, or returning empty vectors). An ingest that stored no content is a
+// FAILED ingest, and the gRPC caller is told so instead of receiving OK
+// (T-20261031-processsync-reports-success-when-every-chunk). Callers match it
+// with errors.Is.
+var ErrNoChunksStored = errors.New("ingestion: no chunk stored (every chunk lost its embedding)")
 
 // sourceDocumentMarker announces that the NEXT tag is the caller's document id
 // (see externalDocumentID rule 1). It is wire protocol, not a classification, and
@@ -182,8 +192,8 @@ func (im *IngestionManager) persistChunks(
 			"effect", "part of this document's content is not retrievable")
 	}
 	if len(docs) == 0 {
-		// A document with a body that produced NO stored chunk. Reported, not
-		// swallowed.
+		// A document with a body that produced NO stored chunk. Reported AND
+		// returned as an error.
 		//
 		// This returned `0, nil` silently, and the caller treats a zero count as
 		// success — so an ingest could mint its source-doc entity, store no content
@@ -196,6 +206,12 @@ func (im *IngestionManager) persistChunks(
 		// Every chunk was dropped by the `len(vec) == 0` guard above, which skips a
 		// chunk whose embedding came back empty WITHOUT an error — so neither of the
 		// embed-failure warnings fired either. Silence at three layers.
+		//
+		// The log line was added first; the RETURN VALUE still said success, so a
+		// harness or operator polling the RPC could not tell an embedder outage from
+		// a working ingest. It is now ErrNoChunksStored, and ProcessSync mints no
+		// entity for a document whose content did not land
+		// (T-20261031-processsync-reports-success-when-every-chunk).
 		if len(chunks) > 0 {
 			empty := 0
 			for _, v := range vectors {
@@ -206,8 +222,9 @@ func (im *IngestionManager) persistChunks(
 			slog.WarnContext(ctx, "IngestionManager: document produced NO stored chunks",
 				"doc", documentID, "source_uri", doc.SourceURI, "source_type", doc.SourceType,
 				"chunks", len(chunks), "empty_embeddings", empty, "body_len", len(doc.Body),
-				"effect", "the source-doc entity exists but the CONTENT is not stored, "+
-					"so this document is not retrievable")
+				"effect", "the CONTENT is not stored, so this document is not retrievable")
+			return 0, fmt.Errorf("ingestion manager: %w: %d chunk(s), %d with an empty embedding (%s)",
+				ErrNoChunksStored, len(chunks), empty, doc.SourceURI)
 		}
 		return 0, nil
 	}

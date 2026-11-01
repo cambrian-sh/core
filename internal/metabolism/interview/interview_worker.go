@@ -339,6 +339,8 @@ func (w *InterviewWorker) processAgent(ctx context.Context, agent domain.AgentDe
 		Provisional: false,
 		SuccessRate: seededSuccessRate,
 		TrustScore:  seededTrustScore,
+		// Kept for the NEXT version's decay (see computeDecay).
+		ReleaseNotes: manifest.ReleaseNotes,
 	}
 
 	if err := w.Store.SaveProfile(ctx, agent.ID, agent.SourceHash, embedding, profile); err != nil {
@@ -419,6 +421,8 @@ func (w *InterviewWorker) processGradedInterview(ctx context.Context, agent doma
 		Provisional: false,
 		SuccessRate: seededSuccessRate,
 		TrustScore:  seededTrustScore,
+		// Kept for the NEXT version's decay (see computeDecay).
+		ReleaseNotes: manifest.ReleaseNotes,
 	}
 	if err := w.Store.SaveProfile(ctx, agent.ID, agent.SourceHash, embedding, profile); err != nil {
 		return fmt.Errorf("interview_worker: save profile for agent %s: %w", agent.ID, err)
@@ -450,17 +454,25 @@ func buildScenarios(manifest *domain.AgentManifest) []string {
 	return out
 }
 
+// computeDecay is the ADR-0002 D2 / ADR-0006 D5 merit decay: 1 − the embedding
+// distance between the PRIOR version's release notes (persisted on its profile,
+// AgentProfile.ReleaseNotes) and the NEW version's, clamped. Text against text.
+// With no notes on either side there is no basis for a comparison and the
+// conservative clamp floor applies — the same answer as "the agent changed
+// completely". Until 2026-11-01 this embedded priorProfile.SourceHash, a hash
+// string, as the old text, so the distance was semantically meaningless
+// (T-20261031-interview-merit-decay-compares-release-notes).
 func (w *InterviewWorker) computeDecay(ctx context.Context, newManifest *domain.AgentManifest, priorProfile *domain.AgentProfile) (float64, error) {
-	if newManifest.ReleaseNotes == "" {
+	if newManifest.ReleaseNotes == "" || priorProfile == nil || priorProfile.ReleaseNotes == "" {
 		return DefaultDecayClampMin, nil
 	}
 	newVec, err := w.Embedder.Embed(ctx, newManifest.ReleaseNotes)
 	if err != nil {
 		return DefaultDecayClampMin, fmt.Errorf("computeDecay: embed new release notes: %w", err)
 	}
-	oldVec, err := w.Embedder.Embed(ctx, priorProfile.SourceHash)
+	oldVec, err := w.Embedder.Embed(ctx, priorProfile.ReleaseNotes)
 	if err != nil {
-		return DefaultDecayClampMin, fmt.Errorf("computeDecay: embed prior source hash: %w", err)
+		return DefaultDecayClampMin, fmt.Errorf("computeDecay: embed prior release notes: %w", err)
 	}
 	distance := w.Store.EmbeddingDistance(oldVec, newVec)
 	return clamp(1.0-distance, DefaultDecayClampMin, DefaultDecayClampMax), nil
@@ -505,6 +517,8 @@ func (w *InterviewWorker) processA2AAgent(ctx context.Context, agent domain.Agen
 		Provisional: true,
 		SuccessRate: seededSuccessRate,
 		TrustScore:  seededTrustScore,
+		// Kept for the NEXT version's decay (see computeDecay).
+		ReleaseNotes: cardText,
 	}
 
 	if err := w.Store.SaveProfile(ctx, agent.ID, agent.SourceHash, embedding, profile); err != nil {

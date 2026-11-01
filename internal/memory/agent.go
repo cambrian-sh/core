@@ -196,8 +196,6 @@ type Agent struct {
 
 	// ADR-0022 Phase 2B: notified after every Tier-2 commitBatch so
 	// WorkspaceStageImpl can clear its query → []ContextRef LRU cache.
-	invalidatorsMu sync.Mutex
-	invalidators   []domain.CacheInvalidator
 }
 
 // pendingItem is a pre-embedded step result waiting for Tier-2 drain.
@@ -1549,15 +1547,6 @@ func heuristicDescriptor(text string) string {
 // toolOutputPrefixRE matches the "tool[name]: …" envelope RecordToolOutput writes.
 var toolOutputPrefixRE = regexp.MustCompile(`^tool\[([^\]]+)\]:`)
 
-// RegisterCacheInvalidator registers an invalidator to be called after every
-// Tier-2 pgvector commit. WorkspaceStageImpl uses this to clear its LRU cache
-// so stale query→ContextRef entries don't outlive the next pgvector drain.
-func (a *Agent) RegisterCacheInvalidator(inv domain.CacheInvalidator) {
-	a.invalidatorsMu.Lock()
-	defer a.invalidatorsMu.Unlock()
-	a.invalidators = append(a.invalidators, inv)
-}
-
 func (a *Agent) commitBatch(ctx context.Context, scored []scoredItem, channelDepth int) {
 	var dropped int
 	for _, s := range scored {
@@ -1577,13 +1566,6 @@ func (a *Agent) commitBatch(ctx context.Context, scored []scoredItem, channelDep
 		"tier2_drop_rate", fmt.Sprintf("%.2f", dropRate),
 		"tier2_llm_fallback_count", a.tier2FallbackCount.Load())
 
-	// Notify cache invalidators — new documents in pgvector may change PrimeForStep results.
-	a.invalidatorsMu.Lock()
-	invs := a.invalidators
-	a.invalidatorsMu.Unlock()
-	for _, inv := range invs {
-		inv.InvalidateContextRefCache()
-	}
 }
 
 func (a *Agent) commitItem(ctx context.Context, s scoredItem) {

@@ -58,7 +58,12 @@ func TestSurfaceForMethod_DeclaredAgentPlane(t *testing.T) {
 	}
 }
 
-func TestSurfaceInterceptor_SeedsAgentPrincipalForDeclaredService(t *testing.T) {
+// ADR-0130: the surface interceptor establishes NO principal. The agent
+// principal for a declared agent-facing premium service is seeded by the agent
+// credential interceptor (agent_auth_test.go), after the credential is checked;
+// a bare x-agent-id header reaching the handler through the surface stamp alone
+// would be the self-asserted identity the ADR removed.
+func TestSurfaceInterceptor_DoesNotSeedPrincipalFromHeader(t *testing.T) {
 	t.Parallel()
 	agentPlane := map[string]bool{"cambrian.premium.substrate.SubstrateRetrieval": true}
 	var seen domain.PrincipalRef
@@ -72,8 +77,8 @@ func TestSurfaceInterceptor_SeedsAgentPrincipalForDeclaredService(t *testing.T) 
 		&grpc.UnaryServerInfo{FullMethod: "/cambrian.premium.substrate.SubstrateRetrieval/Query"}, handler); err != nil {
 		t.Fatal(err)
 	}
-	if seen.ID != "analyst_agent" || seen.Kind != domain.PrincipalAgent {
-		t.Fatalf("principal = %+v, want agent principal analyst_agent", seen)
+	if !seen.IsZero() {
+		t.Fatalf("principal = %+v, want none — the surface interceptor must not trust x-agent-id", seen)
 	}
 }
 

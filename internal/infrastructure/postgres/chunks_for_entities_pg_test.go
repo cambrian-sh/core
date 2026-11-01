@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
@@ -13,29 +14,48 @@ import (
 // ChunksForEntities end-to-end: the batched corroboration + relevance query must
 // actually RUN in Postgres — the goqu `IN ?` expansion inside a CASE and the
 // grouped vector-distance ORDER are exactly the constructs a rendered-shape
-// assertion cannot vouch for. Runs against PG_TEST_DSN (pointed at a scratch
-// database: it creates the real-named chunks/chunk_triplets tables) or skips.
+// assertion cannot vouch for. Runs against PG_TEST_DSN or skips.
+//
+// The fixture lives in its OWN SCHEMA (`cfe_test`), put first on the pool's
+// search_path, so the adapter's unqualified `chunks` / `chunk_triplets` resolve
+// to 3-dimensional scratch tables instead of the migrated ones. It used to
+// `DROP TABLE chunks` in the public schema, which on a database provisioned by
+// `orchestrator migrate up` fails with SQLSTATE 2BP01 (chunk_embeddings,
+// document_sections and the 0009 edge FK depend on chunks) — and a CASCADE
+// would have torn down the schema every later test in this package needs
+// (T-20261031-four-core-postgres-adapter-tests-fail-against).
 func TestChunksForEntities_LivePG(t *testing.T) {
 	dsn := os.Getenv("PG_TEST_DSN")
 	if dsn == "" {
 		t.Skip("PG_TEST_DSN not set; skipping integration test that requires PostgreSQL")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	const scratchSchema = "cfe_test"
+	pgxCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse PG_TEST_DSN: %v", err)
+	}
+	// Every pooled connection must see the scratch schema first; search_path is
+	// per-session, so it is set on connect rather than once on the pool.
+	pgxCfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET search_path TO "+scratchSchema+", public")
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, pgxCfg)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
 
 	if _, err := pool.Exec(ctx, `
-DROP TABLE IF EXISTS chunk_triplets;
-DROP TABLE IF EXISTS chunks;
-CREATE TABLE chunks (
+DROP SCHEMA IF EXISTS `+scratchSchema+` CASCADE;
+CREATE SCHEMA `+scratchSchema+`;
+CREATE TABLE `+scratchSchema+`.chunks (
   id TEXT PRIMARY KEY,
   metadata JSONB NOT NULL DEFAULT '{}',
   embedding vector(3)
 );
-CREATE TABLE chunk_triplets (
+CREATE TABLE `+scratchSchema+`.chunk_triplets (
   chunk_id TEXT NOT NULL,
   h TEXT NOT NULL, r TEXT NOT NULL, t TEXT NOT NULL,
   weight DOUBLE PRECISION NOT NULL DEFAULT 1,
@@ -45,7 +65,7 @@ CREATE TABLE chunk_triplets (
 		t.Fatalf("schema: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS chunk_triplets; DROP TABLE IF EXISTS chunks;`)
+		_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+scratchSchema+" CASCADE")
 	})
 
 	// c-both matches two query entities; c-acme and c-far match one each.

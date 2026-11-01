@@ -118,6 +118,11 @@ var retiredKeys2026_10_31 = map[string]string{
 	"embedder.supports_long_context":                           "T-20261031-three-config-fields-are-parsed-and-defaulted",
 	"agent_pool.default_agent_timeout_ms":                      "T-20261031-agent-pool-default-agent-timeout-ms-is",
 	"execution.memory.max_orphaned_documents":                  "T-20261031-execution-memory-max-orphaned-documents-and",
+	// 2026-11-01, same owner decision sheet: the three tunables of the unwired
+	// PrimeForStep path (ADR-0048 D3), deleted with it.
+	"execution.memory.activation_threshold":            "T-20261031-primeforstep-is-unwired-so-activation-threshold",
+	"execution.plan.max_context_slots":                 "T-20261031-primeforstep-is-unwired-so-activation-threshold",
+	"execution.workspace.workspace_lru_cache_capacity": "T-20261031-primeforstep-is-unwired-so-activation-threshold",
 }
 
 // TestRemovedExecutionKeysAreIgnored is the operator-facing guarantee for the

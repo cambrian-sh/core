@@ -57,6 +57,13 @@ func main() {
 	}
 
 	ctx := context.Background()
+	// Raw PgVectorAdapter (tier 0, AGENTS.md §2.2 "kernel-authored artifact
+	// writer"): this is an operator-run, one-off maintenance tool that back-fills
+	// the ADR-0053 D2 chunk_triplets lane for already-stored chunks. It serves no
+	// principal — there is no agent or operator scope to enforce — and it is not
+	// part of the kernel's object graph, so MemoryStack (§2.1) does not apply.
+	// Recorded as AGENTS.md §6 open gap 1
+	// (T-20261031-three-cmd-maintenance-tools-write-through-the).
 	pg, err := postgres.NewPgVectorAdapter(ctx, cfg)
 	if err != nil {
 		slog.Error("pgvector connect failed", "err", err)

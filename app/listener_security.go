@@ -3,9 +3,13 @@ package app
 import (
 	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -28,6 +32,11 @@ import (
 // has, so authentication without transport security is a weaker guarantee than it
 // appears — which is exactly the sort of claim this project has been careful not
 // to make elsewhere.
+//
+// ADR-0130 D3 extended the same policy to every HTTP listener the kernel or a
+// plugin opens (serveHTTP / ServeHTTPListener below), and D1 closed the other
+// half of SEC-03 — client authentication on the agent plane
+// (internal/authz/agent_auth.go).
 
 // defaultBindAddress is LOOPBACK. The zero-config edge profile wants localhost,
 // and a deployment that genuinely serves other machines should have to say so.
@@ -39,9 +48,10 @@ func listenAddress(cfg *config.Config) string {
 }
 
 // listenAddressOn resolves interface:port for a plane on its OWN port — the
-// ADR-0126 MCP endpoint. The interface is shared with the gRPC plane on purpose:
-// a second listener that quietly bound a wider interface than the first would
-// make the bind-address setting a half-truth.
+// ADR-0126 MCP endpoint, the ADR-0028 ingestion server, a plugin's HTTP
+// ingress. The interface is shared with the gRPC plane on purpose: a second
+// listener that quietly bound a wider interface than the first would make the
+// bind-address setting a half-truth.
 func listenAddressOn(cfg *config.Config, port string) string {
 	bind := strings.TrimSpace(cfg.Server.BindAddress)
 	if bind == "" {
@@ -95,6 +105,11 @@ const modeTLSPlusPlaintextLoopback = "tls+plaintext-loopback"
 //  4. No TLS, routable bind, InsecureLocalhost → plaintext, allowed, and said out
 //     loud so it appears in the boot log of the deployment that chose it.
 //  5. No TLS, routable bind, no opt-in → ERROR at boot.
+//
+// Note that TLS here is SERVER-side only: it protects the link, not the
+// identity of the client. Who the client is, on the agent plane, is decided by
+// the per-agent credential (ADR-0130 D1), which the loopback demux does not
+// relax — only server.insecure_localhost does (D2).
 func transportCredentials(cfg *config.Config) ([]grpc.ServerOption, string, error) {
 	cert, key := strings.TrimSpace(cfg.Server.TLSCertFile), strings.TrimSpace(cfg.Server.TLSKeyFile)
 
@@ -203,3 +218,159 @@ type peekConn struct {
 }
 
 func (p *peekConn) Read(b []byte) (int, error) { return p.r.Read(b) }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// One listener policy for HTTP as well (ADR-0130 D3; the operating rule
+// decisions/all-listeners-share-the-grpc-listener-policy.md).
+//
+// The gRPC plane got the loopback default, the routable-bind refusal and TLS
+// above. The three HTTP listeners the 2026-10-31 audit found — the ingestion
+// and admin server, the premium chat ingress and the ingress-studio webhook
+// receiver — each built their own http.Server from env or config and
+// inherited none of it. Everything below exists so that a TCP listener,
+// gRPC or HTTP, kernel or plugin, is built in exactly one place: the same
+// bind address, the same transport decision, the same timeouts and the same
+// body cap. An http.Server literal written anywhere else is a review blocker
+// and app/listener_policy_test.go asserts it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	// httpReadHeaderTimeout bounds how long a client may take to send its
+	// headers — the Slowloris guard. Generous, because an agent on a loaded
+	// host is not an attacker.
+	httpReadHeaderTimeout = 10 * time.Second
+	// httpIdleTimeout reclaims keep-alive connections nobody is using.
+	httpIdleTimeout = 120 * time.Second
+	// defaultHTTPMaxBodyBytes caps a request body on every policy-built HTTP
+	// listener. 64 MiB matches the operator binary-ingest lane's gRPC limit,
+	// so the documented upload path keeps working while a 1 GiB POST does not
+	// get buffered.
+	defaultHTTPMaxBodyBytes int64 = 64 << 20
+)
+
+// newHTTPServer is the ONE http.Server shape. No Addr: the listener is bound
+// separately (listenAddressOn + secureListener), so a server can never bind an
+// interface the policy did not resolve.
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
+}
+
+// limitBody wraps a handler so every request body reads through
+// http.MaxBytesReader. A handler that decodes JSON straight from r.Body (as all
+// three audited listeners did) otherwise has no cap at all.
+func limitBody(next http.Handler, maxBytes int64) http.Handler {
+	if maxBytes <= 0 {
+		maxBytes = defaultHTTPMaxBodyBytes
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// serveHTTP binds port on the kernel's bind address under the kernel's
+// transport decision and serves handler on it, returning the running server
+// (for shutdown) and the bound address (for the activation log line).
+//
+// The sequence is the gRPC plane's, in the same order: decide the transport
+// BEFORE binding so a refusable configuration fails before the port is open;
+// resolve the interface from server.bind_address; terminate TLS at the
+// listener in the loopback demux mode, or with ServeTLS in pure-TLS mode.
+// label names the listener in errors and logs.
+func serveHTTP(cfg *config.Config, port string, handler http.Handler, label string) (*http.Server, string, error) {
+	if cfg == nil {
+		return nil, "", fmt.Errorf("%s: listener policy needs a config", label)
+	}
+	_, mode, err := transportCredentials(cfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: %w", label, err)
+	}
+	addr := listenAddressOn(cfg, strings.TrimPrefix(strings.TrimSpace(port), ":"))
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s (%s unavailable): %w", label, addr, err)
+	}
+	lis, err = secureListener(lis, cfg, mode)
+	if err != nil {
+		_ = lis.Close()
+		return nil, "", fmt.Errorf("%s: %w", label, err)
+	}
+	// The BOUND address, not the requested one: a ":0" test port resolves here.
+	addr = lis.Addr().String()
+	srv := newHTTPServer(limitBody(handler, defaultHTTPMaxBodyBytes))
+	go func() {
+		var serveErr error
+		switch mode {
+		case "tls":
+			// Pure TLS. On the gRPC plane this mode rides grpc.Creds and
+			// secureListener hands the listener back untouched; for an HTTP
+			// server ServeTLS is the equivalent, and it also negotiates ALPN for
+			// both HTTP/1.1 and h2.
+			serveErr = srv.ServeTLS(lis,
+				strings.TrimSpace(cfg.Server.TLSCertFile), strings.TrimSpace(cfg.Server.TLSKeyFile))
+		default:
+			// Plaintext, or the loopback TLS+plaintext demux, which terminates
+			// TLS at the listener. In the demux mode the listener is reachable
+			// in PLAINTEXT on loopback by construction — the bind is loopback.
+			serveErr = srv.Serve(lis)
+		}
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			slog.Error("ADR-0130: listener stopped serving", "listener", label, "addr", addr, "err", serveErr)
+		}
+	}()
+	slog.Info("ADR-0130: listener serving", "listener", label, "addr", addr, "transport", mode)
+	return srv, addr, nil
+}
+
+// The plugin-facing seam. Premium plugins cannot import internal/config, so the
+// policy is attached once from Run (setListenerPolicy) and reached through
+// ServeHTTPListener — the same late-bound-holder shape as the named-secret
+// seam (secret_seam.go), for the same reason: plugins build in bootstrapKernel
+// and serve from their lifecycle Start, long after Run has the config.
+var (
+	listenerPolicyMu  sync.RWMutex
+	listenerPolicyCfg *config.Config
+)
+
+// setListenerPolicy attaches the kernel config the HTTP listeners resolve
+// their bind address and transport from. Called from Run; nil detaches.
+func setListenerPolicy(cfg *config.Config) {
+	listenerPolicyMu.Lock()
+	defer listenerPolicyMu.Unlock()
+	listenerPolicyCfg = cfg
+}
+
+// ErrListenerPolicyUnavailable is returned by ServeHTTPListener before Run has
+// attached the kernel config (a plugin started outside a kernel, or a test).
+var ErrListenerPolicyUnavailable = errors.New("listener policy unavailable: no kernel config attached (ADR-0130 D3)")
+
+// ServeHTTPListener serves handler on port under the kernel's listener policy
+// (ADR-0130 D3): bound on server.bind_address (loopback by default), refused
+// in plaintext on a routable bind unless server.insecure_localhost=true, TLS
+// when the kernel has it, ReadHeaderTimeout/IdleTimeout set, every body capped.
+// It is the ONLY way a plugin may open an HTTP listener; the returned server is
+// what the plugin's Stop drains. label names the listener in logs.
+//
+// A port is all a plugin may choose. A plugin that wants a different interface
+// than the kernel's is asking to widen the deployment's exposure from a
+// plugin's environment variable, which is exactly the half-truth the gRPC
+// policy closed (see listenAddressOn).
+func ServeHTTPListener(port string, handler http.Handler, label string) (*http.Server, error) {
+	listenerPolicyMu.RLock()
+	cfg := listenerPolicyCfg
+	listenerPolicyMu.RUnlock()
+	if cfg == nil {
+		return nil, ErrListenerPolicyUnavailable
+	}
+	if handler == nil {
+		return nil, fmt.Errorf("%s: nil handler", label)
+	}
+	srv, _, err := serveHTTP(cfg, port, handler, label)
+	return srv, err
+}

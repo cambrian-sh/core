@@ -125,18 +125,17 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 
 	// PLANNERREQ REQ1: wire MinFactCosine — raw cosine floor before Planner injection.
 	ws.MinFactCosine = execCfg.Workspace.WorkspaceMinFactCosine
-	// ADR-0022: wire ActivationThreshold (distinct from RetrievalFloor).
-	ws.ActivationThreshold = execCfg.Memory.ActivationThreshold
-	// ADR-0022: wire LRU cache capacity from config so it isn't hardcoded to 100.
-	ws.LRUCacheCapacity = execCfg.Workspace.WorkspaceLRUCacheCapacity
+	// PrimeForStep, its ActivationThreshold / LRU-cache tunables and the
+	// RegisterCacheInvalidator hook were deleted 2026-11-01 (owner decision,
+	// T-20261031-primeforstep-is-unwired-so-activation-threshold): ADR-0048 D3 had
+	// left the executor-push path unwired since agent-pull replaced it (ADR-0036),
+	// so the three config keys configured nothing live.
 	// The ADR-0029 episodic retrieval lane used to be armed here by handing the
 	// WorkspaceStage a PolicyProvider. Both the lane and the field are gone: its writer
 	// (EpisodicExtractor / ConsolidatorAgent) was removed on 2026-07-18, so the lane
 	// searched a corpus nothing could add to. The "episodic" HippocampusPolicy default
 	// that armed it was retired on 2026-10-31 (owner decision; an operator file that
 	// still declares it loads unchanged — see internal/config/retired_keys_test.go).
-	// ADR-0022 Phase 2B: invalidate WorkspaceStage LRU cache on Tier-2 drain.
-	memoryAgent.RegisterCacheInvalidator(ws)
 
 	// ADR-0017: Spreading activation layer (optional — depends on GraphStore).
 	var entityIdx *memory.EntityIndex

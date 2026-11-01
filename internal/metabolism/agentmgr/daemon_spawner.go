@@ -93,10 +93,13 @@ func (m *AgentManager) SpawnDaemon(agentID, streamID string, params map[string]a
 	}
 	m.daemons.mu.Unlock()
 
-	// Launch crash-watcher goroutine. ADR-0033.
+	// Launch crash-watcher goroutine. ADR-0033. It consumes the one Wait the
+	// boot path started (process_exit.go); a second cmd.Wait would return
+	// "Wait was already called" immediately and read as an instant crash.
 	if cmd != nil {
+		exited := m.InstanceManager.awaitExit(instanceID, cmd)
 		go func() {
-			_ = cmd.Wait()
+			<-exited
 			unexpected := !m.isExpectedStop(instanceID)
 			if unexpected {
 				slog.Warn("daemon crashed unexpectedly",

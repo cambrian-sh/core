@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -299,10 +300,63 @@ func (r *Registry) SetSignalReceiver(owner string, f func(KernelServices) (domai
 
 // AddGRPCService contributes an extra gRPC service registrar, mounted on the kernel
 // server (behind the operator auth interceptors) before Serve. ADR-0073.
+//
+// Every service it registers must live in package `cambrian.premium.`; any other
+// name is a startup error (checkOperatorPlaneServiceNames). An agent-plane
+// service declares itself with AddAgentGRPCService instead.
 func (r *Registry) AddGRPCService(f func(*grpc.Server)) {
 	if f != nil {
 		r.grpcServices = append(r.grpcServices, f)
 	}
+}
+
+// premiumServicePackage is the proto package every operator-plane premium service
+// lives in. It mirrors premiumMethodPrefix in internal/substrate/operator/authz.go
+// ("/cambrian.premium."), which is what the operator auth interceptor actually
+// authenticates; the two are the same fact stated at the mount and at the gate.
+// Keep them equal.
+const premiumServicePackage = "cambrian.premium."
+
+// checkOperatorPlaneServiceNames refuses to mount, through AddGRPCService or
+// Options.ExtraServices, a gRPC service whose fully-qualified name is outside
+// premiumServicePackage.
+//
+// ADR-0073 promises that such a service "sits behind the same operator
+// authentication". The interceptor that keeps that promise authenticates
+// OperatorConsole plus `/cambrian.premium.` and lets every OTHER method through
+// as agent plane — so a plugin that registered `acme.Thing` would be reachable
+// with no credential at all, and nothing would say so. Fail closed at startup
+// instead (T-20261031-extraservices-mounts-outside-package-cambrian).
+//
+// The names are discovered by running the same registrars against a scratch
+// server and reading its service table: nothing is inferred by reflection on the
+// plugin and no premium name is hardcoded in OSS (ADR-0118 D3 rule). A registrar
+// is therefore invoked twice (scratch, then the kernel server); registrars are
+// plain pb.RegisterXServer calls, for which that is idempotent. Agent-plane
+// services never pass through here — AddAgentGRPCService declares them by name
+// and they are mounted separately.
+func checkOperatorPlaneServiceNames(registrars ...func(*grpc.Server)) error {
+	scratch := grpc.NewServer()
+	defer scratch.Stop()
+	for _, reg := range registrars {
+		if reg != nil {
+			reg(scratch)
+		}
+	}
+	var outside []string
+	for name := range scratch.GetServiceInfo() {
+		if !strings.HasPrefix(name, premiumServicePackage) {
+			outside = append(outside, name)
+		}
+	}
+	if len(outside) == 0 {
+		return nil
+	}
+	sort.Strings(outside)
+	return fmt.Errorf("gRPC service(s) %v mounted on the operator plane outside package %q: "+
+		"the operator auth interceptor would pass them through UNAUTHENTICATED; "+
+		"name the service %s<Plugin>.<Service> or declare it an agent-plane service with AddAgentGRPCService",
+		outside, strings.TrimSuffix(premiumServicePackage, "."), premiumServicePackage)
 }
 
 // AddAgentGRPCService contributes a premium gRPC service mounted on the AGENT
@@ -742,6 +796,9 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 	if len(reg.grpcServices) > 0 {
 		base := opts.ExtraServices
 		services := reg.grpcServices
+		if err := checkOperatorPlaneServiceNames(append([]func(*grpc.Server){base}, services...)...); err != nil {
+			return composedPlugins{opts: opts}, err
+		}
 		opts.ExtraServices = func(s *grpc.Server) {
 			if base != nil {
 				base(s)

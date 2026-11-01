@@ -2,8 +2,12 @@ package operator
 
 import (
 	"context"
+	"log/slog"
+	"net"
+	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/cambrian-sh/core/api/proto"
@@ -28,9 +32,14 @@ type Service struct {
 	projection *Projection
 	sessions   SessionLister
 	idp        OperatorIdentity
-	audit      AuditStore
-	grants     GrantsStore
-	controls   *ExecutionControlHub
+	// logins is the per-source failure window Login consults BEFORE the
+	// credential is evaluated (ADR-0130 1f). Built in NewService — always on,
+	// never attached later.
+	logins   *loginLimiter
+	loginObs LoginObserver // nil ⇒ failed logins go to a structured WARN log
+	audit    AuditStore
+	grants   GrantsStore
+	controls *ExecutionControlHub
 	// logs is the kernel's in-process retention window (contract 0082). nil ⇒
 	// QueryLogs/TailLogs answer Unimplemented rather than an empty window, which
 	// would read as "the kernel has been silent".
@@ -143,23 +152,75 @@ type PluginPanel struct {
 // session lister are optional (set via SetSnapshotSources) — without them
 // Snapshot still returns a consistent as_of_seq with empty state.
 func NewService(feed *Spool) *Service {
-	return &Service{feed: feed, projection: NewProjection()}
+	return &Service{feed: feed, projection: NewProjection(), logins: newLoginLimiter()}
 }
 
 // SetIdentity wires the OperatorIdentity backing the Login RPC (ADR-0047 D13).
 func (s *Service) SetIdentity(idp OperatorIdentity) { s.idp = idp }
 
+// SetLoginObserver wires the hook failed (and successful) logins are reported
+// to — a receipt or decision-observation plane when the deployment has one
+// (ADR-0130 1f). Observation only: the limiter runs with or without it.
+func (s *Service) SetLoginObserver(o LoginObserver) { s.loginObs = o }
+
+// loginSource is the limiter key: the peer address the kernel observed on the
+// connection, host only (a port changes per connection and would make every
+// attempt a new source). "unknown" when there is no peer info, which is only
+// the in-process test path — those attempts share one bucket.
+func loginSource(ctx context.Context) string {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.Addr == nil {
+		return "unknown"
+	}
+	if host, _, err := net.SplitHostPort(p.Addr.String()); err == nil && host != "" {
+		return host
+	}
+	return p.Addr.String()
+}
+
 // Login authenticates a human operator and returns a token bound to its role.
-// The interceptor lets this RPC through unauthenticated.
-func (s *Service) Login(_ context.Context, req *pb.LoginRequest) (*pb.LoginResponse, error) {
+// The interceptor lets this RPC through unauthenticated, which is why the
+// per-source limiter runs here, before the credential is looked at.
+func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginResponse, error) {
 	if s.idp == nil {
 		return nil, status.Error(codes.Unimplemented, "operator identity not configured")
 	}
+	source := loginSource(ctx)
+	if ok, wait := s.logins.Allow(source); !ok {
+		s.observeLogin(LoginAttempt{Username: req.GetUsername(), Source: source, LockedOut: true,
+			Failures: loginMaxFailures, At: time.Now()})
+		return nil, status.Errorf(codes.ResourceExhausted,
+			"too many failed logins from this source; retry in %s", wait.Round(time.Second))
+	}
 	token, _, role, err := s.idp.Login(req.GetUsername(), req.GetPassword())
 	if err != nil {
+		n := s.logins.Fail(source)
+		s.observeLogin(LoginAttempt{Username: req.GetUsername(), Source: source, Failures: n, At: time.Now()})
 		return nil, err
 	}
+	s.logins.Reset(source)
+	s.observeLogin(LoginAttempt{Username: req.GetUsername(), Source: source, Success: true, At: time.Now()})
 	return &pb.LoginResponse{Token: token, Role: string(role)}, nil
+}
+
+// observeLogin routes an attempt to the observer, or to a structured log when
+// there is none. Successes are INFO; failures WARN with the running count, so
+// a guessing run is visible in the log of a deployment with no receipt plane.
+func (s *Service) observeLogin(a LoginAttempt) {
+	if s.loginObs != nil {
+		s.loginObs.ObserveLogin(a)
+		return
+	}
+	switch {
+	case a.LockedOut:
+		slog.Warn("ADR-0130: operator login refused — source locked out", "user", a.Username, "source", a.Source,
+			"window", loginFailureWindow.String())
+	case !a.Success:
+		slog.Warn("ADR-0130: operator login failed", "user", a.Username, "source", a.Source,
+			"failures", a.Failures, "lockout_at", loginMaxFailures)
+	default:
+		slog.Info("operator login", "user", a.Username, "source", a.Source)
+	}
 }
 
 // SetSnapshotSources wires the live-plan projection and the session lister used

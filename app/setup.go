@@ -169,6 +169,7 @@ func RunSetup(ctx context.Context, args []string) int {
 	s.stepConfig()
 	s.stepMigrate(ctx)
 	s.stepOperator()
+	s.stepAgentCredentials(ctx)
 	running := s.stepStart(ctx)
 
 	fmt.Println()

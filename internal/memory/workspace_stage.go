@@ -40,19 +40,6 @@ type WorkspaceStageImpl struct {
 	// there is no configuration that makes it produce a hit. The "episodic" policy
 	// default followed on 2026-10-31.
 
-	// ActivationThreshold is the post-BFS selection floor for PrimeForStep (ADR-0022).
-	// Must NOT equal RetrievalFloor — they operate at different scales.
-	// Default 0.1; wired from config.ActivationThreshold at composition root.
-	ActivationThreshold float64
-	// LRUCacheCapacity is the maximum number of cached query entries in PrimeForStep's
-	// embedding and ContextRef LRU caches. 0 falls back to the hardcoded default (100).
-	// Wired from config.WorkspaceLRUCacheCapacity at composition root. ADR-0022.
-	LRUCacheCapacity int
-
-	// ADR-0022 Phase 2B: caches.
-	cacheMu    sync.Mutex
-	refCache   *lruCache[string, []domain.ContextRef] // query → refs (invalidated on Tier-2 drain)
-	embedCache *lruCache[string, []float32]           // query → embedding (TTL-free: deterministic)
 }
 
 // NewWorkspaceStage creates a new WorkspaceStageImpl.
@@ -87,12 +74,6 @@ func NewWorkspaceStage(
 		DriftGuard:     driftGuard,
 		DriftThreshold: driftThreshold,
 	}
-}
-
-// SetActivationThreshold updates the BFS selection floor at runtime.
-// Used by the threshold sensitivity sweep benchmark (phase2_validation_test.go).
-func (w *WorkspaceStageImpl) SetActivationThreshold(v float64) {
-	w.ActivationThreshold = v
 }
 
 // PrimeForPlanning retrieves cross-session FACT + SCENE + NegativeEdge documents for the

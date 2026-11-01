@@ -14,11 +14,11 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// mockWorkspaceStage implements domain.WorkspaceStage with a configurable
-// PrimeForStep that returns controlled ContextRefs.
+// mockWorkspaceStage implements domain.WorkspaceStage. primeResult is what an
+// LTM lane WOULD have offered; the tests prove the executor never asks for it
+// (agents pull their own LTM, ADR-0036).
 type mockWorkspaceStage struct {
 	primeResult []domain.ContextRef
-	primeCalls  int
 }
 
 func (m *mockWorkspaceStage) PrimeForPlanning(_ context.Context, _ string) (domain.LTMEnrichment, error) {
@@ -26,10 +26,6 @@ func (m *mockWorkspaceStage) PrimeForPlanning(_ context.Context, _ string) (doma
 }
 func (m *mockWorkspaceStage) PrimeForExecution(_ context.Context, _ *domain.ExecutionPlan, ctx map[string]string) (map[string]string, error) {
 	return ctx, nil
-}
-func (m *mockWorkspaceStage) PrimeForStep(_ context.Context, _ string, _ []domain.ContextRef, _ []domain.SearchResult, _ float64, _ int) ([]domain.ContextRef, error) {
-	m.primeCalls++
-	return m.primeResult, nil
 }
 
 // ── Tracer bullet ──────────────────────────────────────────────────────────
@@ -78,10 +74,6 @@ func TestUseGlobalWorkspace_FalseUsesContextFilter(t *testing.T) {
 	if _, ok := step1HandoffContext["step_0_result"]; !ok {
 		t.Errorf("use_global_workspace=false: Context must have step_0_result, got %v", step1HandoffContext)
 	}
-	// PrimeForStep must NOT have been called when flag=false.
-	if mock.primeCalls > 0 {
-		t.Errorf("use_global_workspace=false: PrimeForStep must not be called, got %d calls", mock.primeCalls)
-	}
 }
 
 // UseGlobalWorkspace=true → step receives Handoff.WorkingMemory with prior step
@@ -93,7 +85,6 @@ func TestUseGlobalWorkspace_TruePopulatesWorkingMemory(t *testing.T) {
 	ex := &DAGExecutor{
 		WorkspaceStage:     mock,
 		UseGlobalWorkspace: true, // Phase 3 active
-		MaxContextSlots:    20,
 	}
 
 	plan := &domain.ExecutionPlan{
@@ -132,10 +123,6 @@ func TestUseGlobalWorkspace_TruePopulatesWorkingMemory(t *testing.T) {
 		if !strings.HasPrefix(k, "_") {
 			t.Errorf("use_global_workspace=true: Context must hold no masterContext keys, got %q", k)
 		}
-	}
-	// PrimeForStep must NOT have been called — agents retrieve LTM themselves.
-	if mock.primeCalls > 0 {
-		t.Errorf("use_global_workspace=true: PrimeForStep must NOT be called, got %d calls", mock.primeCalls)
 	}
 }
 

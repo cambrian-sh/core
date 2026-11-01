@@ -83,7 +83,8 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
 - **Config store layer 11**: durable operator writes in bbolt (ADR-0101).
 - **Contributed machine tools are opt-in per agent**: an agent reaches a user's machine only through an explicit `local:*` (or exact `local:<machine>/<tool>`) grant; ownership picks the machine (ADR-0127 CL-4, `domain/contribution.go` `grantCovers`).
 - **`app.KernelServices` is the plugin capability seam**: premium receives functions, not internals — e.g. `VerifyMachineToken` lets the `machine_token_v1` ingress verifier check a token without reading it (ADR-0127 CL-5). `PlanExecutor` (`domain.PlanExecutor`, `app/plan_executor.go`) runs a plugin-generated plan on the real DAG executor via the Orchestrator.Execute authored-plan branch — the premium `start_plan` action uses it (PREM-0032).
-- **Self-installing**: `setup` bootstraps Postgres, Python runtime, agents, config, migrations, detached start.
+- **Self-installing**: `setup` bootstraps Postgres, Python runtime, agents, config, migrations, detached start — and, since ADR-0130, mints each discovered agent's plane credential (`agent:<id>:token`) into the ADR-0101 store.
+- **The agent plane authenticates and every listener shares one policy** (ADR-0130, 2026-11-01). Every `Orchestrator` RPC and every premium service declared agent-facing requires the per-agent named secret as `authorization: Bearer` with `x-agent-id` as the assertion it must match (`internal/authz/agent_auth.go`; one constant-time compare, `authz.VerifyNamedSecret`, shared with the MCP endpoint); the principal is established there, never from the header alone. The kernel mints missing credentials at boot and injects `CAMBRIAN_AGENT_TOKEN`/`CAMBRIAN_AGENT_ID` into each spawned agent's environment (`agentmgr/agent_credential_env.go`, the one credential SEC-01 admits). `server.insecure_localhost=true` waives agent auth (D2) — the benchmark harness runs under it. Every HTTP listener is built by `app/listener_security.go` (`serveHTTP`; plugins use `app.ServeHTTPListener`): loopback default, routable-bind refusal without TLS, header/idle timeouts, a body cap; `/v1/admin/*` takes the operator bearer through the same `OperatorIdentity` as gRPC (`app/admin_auth.go`), and `app/listener_policy_test.go` refuses any other `http.Server` literal. Operator `Login` locks a peer out after 5 failures in 15 min and tokens expire after 12 h (`operator/login_limiter.go`).
 
 ---
 
@@ -98,6 +99,13 @@ Each has a ticket; close the ticket and update this list in the same change.
   `T-20261031-no-automated-check-that-vendored-proto-copies`
 - ADR-0121 residuals (D8 policy suite, `policy_note`) — `T-20261031-adr-0121-follow-ups-d8-policy-suite-and-query`
 - ADR-0128 residuals (deferred crosswalks, resolver lane) — `T-20261031-adr-0128-follow-ups-deferred-crosswalks`
+- Four `http.Server` literals still outside `listener_security.go` (health shim, webhook receiver, two cmd tools; allowlisted in `app/listener_policy_test.go`) —
+  `T-20261101-remaining-http-server-literals-outside-listener`
+- Kernel-spawned agents dial `localhost:port` with no TLS root, so a TLS-only routable bind cannot serve its own agents —
+  `T-20261101-kernel-spawned-agents-dial-localhost-port-and`
+- Failed operator logins reach only the WARN log; no plugin seam for a receipt observer —
+  `T-20261101-failed-operator-logins-reach-only-the-warn-log`
+- ADR-0130 deferrals to contract bump 0096: `/v1/admin/*` → `OperatorConsole` RPCs, an explicit `Logout` RPC.
 - Contribution lane never run end to end on real machines (blocked: no deployment) —
   `T-20261031-contribution-lane-has-never-run-end-to-end-on`
 - Derived memory artifacts (`chunk_triplets`, …) carry no classification; contained only

@@ -2,13 +2,13 @@ package mcpserve
 
 import (
 	"context"
-	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
 
+	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/config"
 )
 
@@ -209,21 +209,17 @@ func (m *authMiddleware) principalFor(ctx context.Context, client string) (domai
 
 // match resolves a presented token to the client that owns it.
 //
-// Constant-time comparison, and no early exit on a hit: returning as soon as a
-// credential matched would make the response time report WHICH configured
-// client the token belongs to, which is a smaller leak than the token itself but
-// a leak that costs nothing to close.
+// Constant-time comparison (authz.VerifyNamedSecret — the ONE compare the
+// kernel has for bearer-shaped credentials, shared with the agent plane per
+// ADR-0130), and no early exit on a hit: returning as soon as a credential
+// matched would make the response time report WHICH configured client the
+// token belongs to, which is a smaller leak than the token itself but a leak
+// that costs nothing to close. An unissued (absent or empty) secret is never
+// matched, by an empty token or any other.
 func (m *authMiddleware) match(token string) (string, bool) {
-	presented := []byte(token)
 	name, found := "", false
 	for _, c := range m.clients {
-		secret, ok := m.resolve(ClientSecretName(c))
-		if !ok || secret == "" {
-			// No credential issued for this name. Skipped rather than compared,
-			// so an empty stored secret can never be matched by an empty token.
-			continue
-		}
-		if subtle.ConstantTimeCompare(presented, []byte(secret)) == 1 {
+		if authz.VerifyNamedSecret(m.resolve, ClientSecretName(c), token) {
 			name, found = c, true
 		}
 	}
@@ -240,19 +236,16 @@ func (m *authMiddleware) match(token string) (string, bool) {
 // Fail-closed on every absence: no stored token (never issued, or revoked), an
 // empty presented token, a mismatch, or a client with no owner binding (an
 // ordinary MCP client is not a worker machine and may not ingest as one).
-// Constant-time, like match; the caller never sees the stored value.
+// Constant-time through authz.VerifyNamedSecret, like match; the caller never
+// sees the stored value.
 func VerifyMachineToken(resolve func(name string) (string, bool), machine, token string) (owner string, ok bool) {
-	if resolve == nil || machine == "" || token == "" {
+	if resolve == nil || machine == "" {
 		return "", false
 	}
-	secret, found := resolve(ClientSecretName(machine))
-	if !found || secret == "" {
+	if !authz.VerifyNamedSecret(resolve, ClientSecretName(machine), token) {
 		return "", false
 	}
-	if subtle.ConstantTimeCompare([]byte(token), []byte(secret)) != 1 {
-		return "", false
-	}
-	owner, found = resolve(WorkerOwnerSecretName(machine))
+	owner, found := resolve(WorkerOwnerSecretName(machine))
 	if !found || owner == "" {
 		return "", false
 	}

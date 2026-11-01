@@ -4,7 +4,7 @@ import "context"
 
 // The kernel carries three authorization facts on the context so that the
 // intermediate OSS helpers whose signatures must not be churned
-// (memory.Manager.Query, WorkspaceStage.PrimeForStep, Agent.FetchContext) do not
+// (memory.Manager.Query, Agent.FetchContext) do not
 // each have to grow a parameter: WHO is asking (principal), WHERE they arrived
 // from (surface), and the already-resolved read predicate. The boundary injects
 // once; the chokepoints read back. ADR-0034 (D5) / ADR-0085.

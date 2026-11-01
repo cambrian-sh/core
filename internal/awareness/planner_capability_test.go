@@ -203,10 +203,6 @@ func (s *stubWorkspace) PrimeForExecution(context.Context, *domain.ExecutionPlan
 	return nil, nil
 }
 
-func (s *stubWorkspace) PrimeForStep(context.Context, string, []domain.ContextRef, []domain.SearchResult, float64, int) ([]domain.ContextRef, error) {
-	return nil, nil
-}
-
 // TestPlanner_RecordsFollowedProcedures is the first hop of the ADR-0094 D8 loop.
 //
 // A routine the planner was SHOWN must be recorded on the plan, or the outcome can

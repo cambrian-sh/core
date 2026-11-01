@@ -44,13 +44,6 @@ func CanReadContentNode(ownerSession, callerSession SessionID) bool {
 	return ownerSession == "" || ownerSession == callerSession
 }
 
-// CacheInvalidator is notified after every Tier-2 pgvector drain so that
-// query → []ContextRef caches can be cleared. ADR-0022 Phase 2B.
-// WorkspaceStageImpl implements this interface.
-type CacheInvalidator interface {
-	InvalidateContextRefCache()
-}
-
 // ContentStore is the content-addressed key-value layer. ADR-0022 Phase 1.
 // Put/Get/Has/GC form the minimal surface that DAGExecutor needs.
 type ContentStore interface {

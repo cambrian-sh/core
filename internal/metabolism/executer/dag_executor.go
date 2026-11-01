@@ -132,11 +132,11 @@ type DAGExecutor struct {
 	StepCachePolicies      map[string]int             // ADR-0026: operator TTL overrides; nil = use heuristic defaults
 	ContextRefSnippetChars int                        // ADR-0022: snippet length; 0 defaults to 500
 	// ADR-0022 Phase 3: circuit-breaker flag.
-	// true  → PrimeForStep called per step; Handoff.WorkingMemory populated; Handoff.Context empty.
-	// false → filterSnapshotForStep into Handoff.Context; PrimeForStep NOT called (Phase 0 behavior).
-	// Default false for backward compat; set true after Phase 3 validation passes.
+	// true  → Handoff.WorkingMemory populated from the step's DependsOn outputs; Handoff.Context empty.
+	// false → filterSnapshotForStep into Handoff.Context (Phase 0 behavior).
+	// (PrimeForStep, the executor-push LTM path this once selected, was deleted
+	// 2026-11-01 — ADR-0048 D3 / T-20261031-primeforstep-is-unwired-so-activation-threshold.)
 	UseGlobalWorkspace      bool
-	MaxContextSlots         int              // ADR-0022: hard ceiling for PrimeForStep; 0 defaults to 20
 	StepFactCosineThreshold float64          // AGENTCONTEXTREQ REQ2: min cosine for forwarding a planning fact to a step (default 0.55)
 	MaxReplanAttempts       int              // max replan attempts; 0 disables replan
 	MaxFanOutWidth          int              // ADR-0078 R2: cap on parametric fan-out expansion; 0 disables the cap
@@ -298,6 +298,9 @@ func (d *DAGExecutor) executeStep(
 	if plan.Steps[stepIndex].IsThought {
 		agentID = "System_Thought"
 	}
+	// Server-authoritative: stamped by the step function from the gateway's
+	// reconciled lease, never by the agent (ADR-0018; domain.HandoffKeyBudgetOverrun).
+	budgetOverrun := resp.Context[domain.HandoffKeyBudgetOverrun] == "true"
 
 	slog.Info("✅ Step Completed", "index", stepIndex, "agent", agentID)
 
@@ -331,6 +334,7 @@ func (d *DAGExecutor) executeStep(
 			CompletionTokens:   responseTokens,
 			TotalTokens:        promptTokens + responseTokens,
 			EstimatedCost:      estimatedCost,
+			BudgetOverrun:      budgetOverrun,
 			Capability:         stepCap,
 		}
 		if d.EventWriter != nil {
@@ -367,6 +371,7 @@ func (d *DAGExecutor) executeStep(
 		resp:             resp,
 		err:              nil,
 		estimatedCost:    estimatedCost,
+		budgetOverrun:    budgetOverrun,
 		promptTokens:     promptTokens,
 		completionTokens: responseTokens,
 		totalTokens:      promptTokens + responseTokens,

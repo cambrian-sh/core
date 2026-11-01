@@ -87,6 +87,13 @@ func main() {
 	}
 
 	ctx := context.Background()
+	// Raw PgVectorAdapter (tier 0, AGENTS.md §2.2 "kernel-authored artifact
+	// writer"): ADR-0099 names this tool as the offline application of the
+	// identity-vs-classification rule, writing only through
+	// PgVectorAdapter.RetagDocument. It is operator-run, serves no principal, and
+	// is not part of the kernel's object graph, so MemoryStack (§2.1) does not
+	// apply. Recorded as AGENTS.md §6 open gap 1
+	// (T-20261031-three-cmd-maintenance-tools-write-through-the).
 	pg, err := postgres.NewPgVectorAdapter(ctx, cfg)
 	if err != nil {
 		slog.Error("pgvector connect failed", "err", err)

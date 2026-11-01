@@ -1286,6 +1286,19 @@ func (e *ToolExecutor) recordFleetDecision(dec AccessDecision) {
 	}
 }
 
+// EndRun drops every grant a system skill conferred for the run identified by
+// session — the ADR-0046 D6 ephemerality backstop ("the overlay falls away when
+// the task completes"). The kernel calls it when the step lease the agent
+// presented as its session token is completed (server.go), so a conferred
+// capability never outlives the run and the overlay cannot grow unbounded
+// (T-20261031-skill-conferred-run-grants-are-never-cleared). Nil-safe.
+func (e *ToolExecutor) EndRun(session string) {
+	if e == nil {
+		return
+	}
+	e.Overlay.Clear(session)
+}
+
 // ConferSkillGrants activates a loaded system skill's tool grants run-scoped
 // (ADR-0046 D6), INTERSECTED with what policy permits the principal (ADR-0085 D4).
 //

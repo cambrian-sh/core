@@ -2,6 +2,19 @@ module github.com/cambrian-sh/core
 
 go 1.25.5
 
+// Core's git history was rewritten and force-pushed on 2026-10-31 to purge
+// premium build artifacts (orchestrator-premium.exe~, bin/orchestrator-premium.exe~,
+// cambrian_diag.exe~, bin/cambrian.exe~, bin/cambrian-orchestrator-linux-amd64)
+// that had been committed by mistake. Pseudo-versions of the OLD history had
+// already been fetched through proxy.golang.org, which caches permanently, so the
+// public mirror still serves 37 versions whose zips contain those binaries. Every
+// such version lies in this closed range (verified 2026-11-01 against the
+// pre-rewrite backup: first contaminated v0.0.0-20260722012507-1812ec34944f, last
+// v0.0.0-20261031064451-0b4cfb6627b7; everything from the rewritten history is
+// later). ADR-0057 open-core boundary;
+// T-20261031-public-go-module-mirror-still-serves-core.
+retract [v0.0.0-20260722012507-1812ec34944f, v0.0.0-20261031064451-0b4cfb6627b7] // pre-purge history contains premium binaries
+
 require (
 	github.com/doug-martin/goqu/v9 v9.19.0
 	github.com/go-viper/mapstructure/v2 v2.4.0

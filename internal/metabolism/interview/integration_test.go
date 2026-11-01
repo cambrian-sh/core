@@ -39,10 +39,11 @@ func TestIntegration_ReinterviewMeritDecay(t *testing.T) {
 
 	store := &mockProfileStore{
 		profileToReturn: &domain.AgentProfile{
-			AgentID:     "agent-v1",
-			SourceHash:  "old-hash",
-			TrustScore:  priorTrustScore,
-			SuccessRate: priorSuccessRate,
+			AgentID:      "agent-v1",
+			SourceHash:   "old-hash",
+			ReleaseNotes: "First release of the SQL engine",
+			TrustScore:   priorTrustScore,
+			SuccessRate:  priorSuccessRate,
 		},
 		embeddingDistFn: func(_, _ []float32) float64 { return embedDist },
 	}

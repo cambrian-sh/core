@@ -154,6 +154,12 @@ func isExecutionGroup(name string) bool {
 // record of what v1 actually had, and rewriting history is the one thing that would
 // make this guard meaningless.
 var retiredExecutionFields = map[string]string{
+	// PrimeForStep (ADR-0022 Phase 2) was never wired — ADR-0048 D3 — and was
+	// deleted 2026-11-01 with the three keys that configured only it (owner
+	// decision, T-20261031-primeforstep-is-unwired-so-activation-threshold).
+	"activation_threshold":         "PrimeForStep deleted 2026-11-01; the key configured only that unwired path.",
+	"max_context_slots":            "PrimeForStep deleted 2026-11-01; threaded to DAGExecutor.MaxContextSlots, which nothing read.",
+	"workspace_lru_cache_capacity": "PrimeForStep deleted 2026-11-01; its LRU caches went with it.",
 	"hyde_enabled": "HyDE removed 2026-08-07: the hypothetical-passage lane was off by " +
 		"default and prior benchmarking showed no recall gain.",
 
@@ -235,10 +241,10 @@ var retiredExecutionMapEntries = map[string]map[string]string{
 	// `graph` was already a nested object in v1, so its retired leaves are map
 	// entries rather than flat fields (T-20261031-graph-edge-weight-and-consolidator-timeout).
 	"graph": {
-		"weight_contradicts":       "ADR-0052 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
-		"weight_specifies":         "ADR-0052 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
-		"weight_closes":            "ADR-0052 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
-		"weight_discussed_in":      "ADR-0052 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
+		"weight_contradicts":       "ADR-0053 D2 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
+		"weight_specifies":         "ADR-0053 D2 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
+		"weight_closes":            "ADR-0053 D2 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
+		"weight_discussed_in":      "ADR-0053 D2 replaced the per-type weight map with the edge's own confidence; the kernel only discarded the value.",
 		"consolidator_llm_timeout": "The ConsolidatorAgent it bounded was removed 2026-07-18; no reader since.",
 	},
 }
@@ -272,7 +278,6 @@ var promotedExecutionDefaults = map[string]bool{
 	"kg2rag_max_expanded":                true,
 	"kg2rag_max_hops":                    true,
 	"kg2rag_per_entity":                  true,
-	"plan_timeout_ms":                    true,
 	"procedure_induction_interval_hours": true,
 	"query_entity_seeding_enabled":       true,
 	"recall_over_fetch":                  true,

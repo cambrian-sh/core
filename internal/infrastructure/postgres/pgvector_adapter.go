@@ -156,7 +156,7 @@ func scanDocument(row pgx.Row, includeDistance bool) (domain.Document, float64, 
 }
 
 // NewPgVectorAdapter establishes a connection pool to the PostgreSQL database.
-func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (*PgVectorAdapter, error) {
+func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (adapter *PgVectorAdapter, err error) {
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName,
 	)
@@ -197,6 +197,17 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (*PgVectorAdapt
 	if err != nil {
 		return nil, err
 	}
+	// Every refusal below (zero dims, projection misconfiguration, ensureSchema's
+	// dimension guard) used to return without closing the pool, leaving MinConns
+	// dialling connections and the health-check goroutine alive per attempt: a
+	// leak per boot retry, cmd/ tool run and test
+	// (T-20261031-newpgvectoradapter-leaks-the-pgx-pool-on-its). The named error
+	// result is what lets one deferred close cover all of them.
+	defer func() {
+		if err != nil {
+			pool.Close()
+		}
+	}()
 
 	// Eagerly establish the warm floor at boot (pgxpool fills MinConns lazily via
 	// its background health check, which would not help the very first auction).

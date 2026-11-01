@@ -51,16 +51,6 @@ type WorkspaceStage interface {
 	// ADR-0025: return type changed from map[string]string to LTMEnrichment.
 	PrimeForPlanning(ctx context.Context, taskQuery string) (LTMEnrichment, error)
 	PrimeForExecution(ctx context.Context, plan *ExecutionPlan, initialContext map[string]string) (map[string]string, error)
-	// PrimeForStep selects a capacity-limited working set for a single step dispatch.
-	// ADR-0022 Phase 2: uses spreading activation + precision to rank LTM content.
-	// priorStepRefs are CIDs for steps in DependsOn — they receive an activation boost.
-	// planningFacts are pre-validated facts from the Planner (AGENTCONTEXTREQ REQ1-3);
-	// they are filtered by per-step cosine similarity and merged ahead of speculative BFS nodes.
-	// maxItems is the hard ceiling (config.MaxContextSlots).
-	// stepFactCosineThreshold is the per-step relevance floor (default 0.55).
-	// Returns refs sorted by activation descending; BFS-discovered refs carry Precision=-1.0.
-	// May return (nil, nil) when the graph is empty and pgvector returns no seeds.
-	PrimeForStep(ctx context.Context, query string, priorStepRefs []ContextRef, planningFacts []SearchResult, stepFactCosineThreshold float64, maxItems int) ([]ContextRef, error)
 }
 
 // PlanRecord is everything the memory layer needs about a completed plan (ADR-0049

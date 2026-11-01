@@ -205,6 +205,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Raw PgVectorAdapter (tier 0, AGENTS.md §2.2 "kernel-authored artifact
+	// writer"): ADR-0054 D2 makes this always-up worker the sole WRITER of
+	// chunk_pagerank, which the kernel only reads. It serves no principal and runs
+	// in its own container outside the kernel's object graph, so MemoryStack
+	// (§2.1) does not apply. Recorded as AGENTS.md §6 open gap 1
+	// (T-20261031-three-cmd-maintenance-tools-write-through-the).
 	pg, err := postgres.NewPgVectorAdapter(ctx, cfg)
 	if err != nil {
 		slog.Error("pagerank-recompute: pg connect failed", "err", err)

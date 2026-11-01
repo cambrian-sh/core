@@ -185,7 +185,6 @@ func CanonicalKey(key string) string {
 // retired set and the reason for each is retiredExecutionFields in
 // execution_migration_test.go.
 var legacyExecutionKey = map[string]string{
-	"activation_threshold":                     "memory",
 	"agent_env_passthrough":                    "agents",
 	"agent_memory_limit_mb":                    "agents",
 	"agent_pinning":                            "routing",
@@ -276,7 +275,6 @@ var legacyExecutionKey = map[string]string{
 	"learned_scorer_model_path":                "routing",
 	"llm_gateway_max_concurrency":              "llm",
 	"llm_gateway_retry_backoff_ms":             "llm",
-	"max_context_slots":                        "plan",
 	"max_fanout_width":                         "plan",
 	"max_memory_results":                       "memory",
 	"max_neighbor_expansion":                   "memory",
@@ -351,7 +349,6 @@ var legacyExecutionKey = map[string]string{
 	"workspace_drift_threshold":                "workspace",
 	"workspace_enable_drift_guard":             "workspace",
 	"workspace_execution_slots":                "workspace",
-	"workspace_lru_cache_capacity":             "workspace",
 	"workspace_min_fact_cosine":                "workspace",
 	"workspace_planning_slots":                 "workspace",
 }

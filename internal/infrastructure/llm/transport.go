@@ -89,6 +89,25 @@ func (rt *rateLimitRetryTransport) RoundTrip(req *http.Request) (*http.Response,
 		if !isRetryableStatus(resp.StatusCode) {
 			return resp, nil
 		}
+		// A 500 is only weather when it is TRANSIENT. Ollama rejects an embed whose
+		// input exceeds the model's context window with a 500 whose body says so
+		// ("the input length exceeds the context length"), and that rejection is
+		// deterministic for the input: replaying it five times with 0.5-8 s backoff
+		// (up to 15.5 s, no Retry-After from Ollama) can never succeed; it only
+		// delays the embedder's own halving fallback (ollama_embedder.go), which is
+		// the thing that CAN succeed. Classified by body, not status, so a genuine
+		// transient 500 is still retried
+		// (T-20261031-embedder-context-overflow-500-is-replayed-5x-by).
+		if resp.StatusCode == http.StatusInternalServerError {
+			if detail, overflow := contextOverflowResponse(resp); overflow {
+				slog.Debug("llm: provider rejected the input as exceeding its context window; not retrying",
+					"host", req.URL.Host,
+					"path", req.URL.Path,
+					"attempt", attempt,
+					"provider_message", detail)
+				return resp, nil
+			}
+		}
 		// A 429 is only worth retrying when it is a RATE limit — a per-minute ceiling
 		// that clears on its own. A QUOTA exhaustion does not clear for days, and
 		// retrying it burns the full backoff ladder before failing anyway.
@@ -144,20 +163,32 @@ var quotaMarkers = []string{
 	"exceeded your current", // openai's phrasing
 }
 
-// quotaExhausted reports whether a 429 body names a non-transient quota, and returns the
-// provider's own message for the log.
-//
-// It RESTORES resp.Body in every path — the caller (and the provider client's error
-// handling) must still be able to read it. A sniffer that consumed the body would trade a
-// slow failure for an empty one.
-func quotaExhausted(resp *http.Response) (string, bool) {
-	if resp == nil || resp.Body == nil {
+// contextOverflowResponse reports whether a 500 body is a context-window overflow
+// (the embedder's isContextOverflow markers), returning the provider's message for
+// the log. Same peek-and-restore contract as quotaExhausted: the caller still reads
+// the body, and the embedder's halving loop classifies the SAME bytes.
+func contextOverflowResponse(resp *http.Response) (string, bool) {
+	buf, ok := peekBody(resp)
+	if !ok {
 		return "", false
+	}
+	if isContextOverflow(buf) {
+		return strings.TrimSpace(string(buf)), true
+	}
+	return "", false
+}
+
+// peekBody reads up to 4 KiB of resp.Body and puts it back, so a sniffer can
+// classify an error envelope without consuming it. ok=false when there is no
+// body to peek at.
+func peekBody(resp *http.Response) ([]byte, bool) {
+	if resp == nil || resp.Body == nil {
+		return nil, false
 	}
 	const peek = 4 << 10 // enough for any provider error envelope; bounded on purpose
 	buf, err := io.ReadAll(io.LimitReader(resp.Body, peek))
 	if err != nil && len(buf) == 0 {
-		return "", false
+		return nil, false
 	}
 	// Put the bytes back, followed by whatever remains unread.
 	rest := resp.Body
@@ -165,6 +196,20 @@ func quotaExhausted(resp *http.Response) (string, bool) {
 		io.Reader
 		io.Closer
 	}{Reader: io.MultiReader(bytes.NewReader(buf), rest), Closer: rest}
+	return buf, true
+}
+
+// quotaExhausted reports whether a 429 body names a non-transient quota, and returns the
+// provider's own message for the log.
+//
+// It RESTORES resp.Body in every path — the caller (and the provider client's error
+// handling) must still be able to read it. A sniffer that consumed the body would trade a
+// slow failure for an empty one.
+func quotaExhausted(resp *http.Response) (string, bool) {
+	buf, ok := peekBody(resp)
+	if !ok {
+		return "", false
+	}
 
 	lower := strings.ToLower(string(buf))
 	for _, m := range quotaMarkers {

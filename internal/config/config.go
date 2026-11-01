@@ -76,7 +76,6 @@ type PlanConfig struct {
 	// Set to 0 to disable budget enforcement. Default: 0.0.
 	MaxPlanCost            float64 `json:"max_plan_cost"`
 	PlanDriftDays          int     `json:"plan_drift_days"`
-	MaxContextSlots        int     `json:"max_context_slots"`         // default 20
 	ContextRefSnippetChars int     `json:"context_ref_snippet_chars"` // default 500
 
 	// BudgetExhaustionAlarmRate is the threshold above which PLAN_BUDGET_INSUFFICIENT
@@ -495,10 +494,6 @@ type MemoryConfig struct {
 	// RecallSimilarityFloor / RetrievalFloor). Range [0,1]; 0 reproduces legacy behavior.
 	RememberDefaultActivation float64 `json:"remember_default_activation"`
 
-	// ADR-0022: Global Workspace capacity model.
-	// ActivationThreshold is the post-BFS selection floor for PrimeForStep.
-	ActivationThreshold float64 `json:"activation_threshold"` // default 0.1
-
 	// RETIRED 2026-10-31 (owner decision, ADR-0029 / ADR-0030):
 	// `consolidation_threshold_doc_count` and `consolidation_threshold_bytes`. They
 	// configured the ADR-0030 lazy global-consolidation trigger of the episodic lane,
@@ -562,7 +557,7 @@ type RetrievalConfig struct {
 	// expands its seed associatively over the memory graph (SpreadingEngine) and
 	// re-ranks by activation. Default TRUE since ADR-0049 D10 (spreading reads the
 	// Hebbian co_activated edges); set false to drop its per-recall latency and
-	// cost. Requires a GraphStore-backed vector store. Also arms ADR-0052 entity
+	// cost. Requires a GraphStore-backed vector store. Also arms the ADR-0053 (T-Mem associative hop) entity
 	// routing (see internal/kernel/memory_stack.go for its empty-index caveat).
 	RecallSpreadingEnabled bool `json:"recall_spreading_enabled"`
 
@@ -781,10 +776,6 @@ type WorkspaceConfig struct {
 	// detection between top-K FACT results. Default: 0.7. ADR-0016.
 	WorkspaceDriftThreshold float64 `json:"workspace_drift_threshold"`
 
-	// WorkspaceLRUCacheCapacity is the number of distinct query strings held in
-	// PrimeForStep's embedding and ContextRef LRU caches. Default: 256. ADR-0022.
-	WorkspaceLRUCacheCapacity int `json:"workspace_lru_cache_capacity"`
-
 	// ADR-0022 Phase 3: circuit-breaker flag.
 	// When true, DAGExecutor populates Handoff.WorkingMemory from PrimeForStep.
 	// When false, falls back to Phase 0 filterSnapshotForStep into Handoff.Context.
@@ -798,7 +789,7 @@ type WorkspaceConfig struct {
 // each field means exactly what it meant before.
 type IngestionConfig struct {
 	// EdgeExtractionBatchSize is the load-driven drain trigger for the
-	// LLM-based entity+relation extractor (ADR-0052). One LLM call extracts
+	// LLM-based entity+relation extractor (ADR-0053 D2). One LLM call extracts
 	// entities+relations for the whole batch; the per-fact sync path was
 	// ~Nx slower. Default: 16. With streaming (the EdgeExtractor prefers
 	// streaming when the Generator supports it), the prompt can be larger
@@ -1196,7 +1187,7 @@ type PipelinesConfig struct {
 //
 // RETIRED 2026-10-31 (T-20261031-graph-edge-weight-and-consolidator-timeout):
 // `weight_contradicts`, `weight_specifies`, `weight_closes`, `weight_discussed_in`
-// (ADR-0052 replaced the per-type weight map with the edge's own confidence; the
+// (ADR-0053 D2 replaced the per-type weight map with the edge's own confidence; the
 // spreader reads DocumentEdge.Weight and the kernel only discarded these) and
 // `consolidator_llm_timeout` (its ConsolidatorAgent was removed 2026-07-18). A
 // layer that still sets them loads unchanged; retiredExecutionMapEntries
@@ -1280,6 +1271,12 @@ type Config struct {
 		//
 		// Named for the case it is meant to cover — a trusted single host — and
 		// deliberately awkward to reach for on a server.
+		//
+		// ADR-0130 D2: the flag ALSO DISABLES AGENT-PLANE AUTHENTICATION. With it
+		// set, x-agent-id is trusted as the principal and no per-agent credential
+		// (agent:<id>:token) is required — any process that reaches the port can
+		// act as any agent. The loopback benchmark harness and the integration
+		// tests run under it; a deployment should not.
 		InsecureLocalhost bool `json:"insecure_localhost"`
 		// HealthzPort, when > 0, starts an HTTP /healthz shim on that port for dumb
 		// probes (PLAT-03 / ADR-0065). Off by default; the gRPC grpc.health.v1 service
@@ -1547,8 +1544,14 @@ func DefaultConfig() *Config {
 				// promoted from the operating config — local models routinely
 				// blow a 2-minute plan ceiling, and a timeout mid-plan wastes
 				// everything already spent).
-				StepTimeoutBaseBufferMs:     15000,
-				PlanTimeoutMs:               600000,
+				StepTimeoutBaseBufferMs: 15000,
+				// 120 s is the PRODUCT default (owner decision 2026-10-31, ADR-0131 D7;
+				// T-20261031-plan-timeout-default-is-the-10-minute-benchmark). The
+				// 10-minute value promoted here on 2026-08-11 was the benchmark rig's:
+				// a wedged provider held leases, pool connections and goroutines for
+				// ten minutes per plan. The rig keeps 600000 in its gitignored
+				// configs/tuning.local.json.
+				PlanTimeoutMs:               120000,
 				ContextGrowthK:              0.001,
 				MaxRecursionDepth:           3,
 				FallbackConfidenceThreshold: 0.4,
@@ -1557,7 +1560,6 @@ func DefaultConfig() *Config {
 				MaxFanOutWidth:              64,
 				MaxPartialContextBytes:      51200,
 				PlanDriftDays:               7,
-				MaxContextSlots:             20,
 				ContextRefSnippetChars:      500,
 				BudgetExhaustionAlarmRate:   0.05,
 				MinStepEnergy:               256,
@@ -1629,7 +1631,6 @@ func DefaultConfig() *Config {
 				Tier1ChannelCapacity:           4096,
 				CircadianStaleDocWarnThreshold: 50,
 				RememberDefaultActivation:      0.5,
-				ActivationThreshold:            0.1,
 				// ADR-0049 A2.2 outcome records: ON (owner decision 2026-07-28). The RAW
 				// path stays off — see ExperientialMemoryEnabled, which is deliberately
 				// absent from this block and therefore false.
@@ -1690,12 +1691,11 @@ func DefaultConfig() *Config {
 				KG2RAGPerEntity:   10,
 			},
 			Workspace: WorkspaceConfig{
-				WorkspaceMinFactCosine:    0.60,
-				WorkspacePlanningSlots:    5,
-				WorkspaceExecutionSlots:   5,
-				WorkspaceDriftThreshold:   0.7,
-				WorkspaceLRUCacheCapacity: 256,
-				UseGlobalWorkspace:        true,
+				WorkspaceMinFactCosine:  0.60,
+				WorkspacePlanningSlots:  5,
+				WorkspaceExecutionSlots: 5,
+				WorkspaceDriftThreshold: 0.7,
+				UseGlobalWorkspace:      true,
 			},
 			Ingestion: IngestionConfig{
 				// Owner defaults 2026-08-11: content-first evidence capture

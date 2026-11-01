@@ -417,9 +417,10 @@ func chaosDocument() domain.ExternalDocument {
 
 func TestChaos_IngestionOnFailingVectorStore(t *testing.T) {
 	inner := newMemStore()
-	// The source-doc entity Save succeeds; the chunk SaveBatch is the 2nd store
-	// call and fails — a disk-full / connection-reset mid-document.
-	fvs := chaos.NewFaultyVectorStore(inner, chaos.FaultConfig{AfterSuccesses: 1, Error: chaos.ErrDiskFull})
+	// The chunk SaveBatch is the FIRST store call — chunks land before the
+	// source-doc entity is minted (T-20261031-processsync-leaves-the-source-doc-entity-stub)
+	// — and it fails: a disk-full / connection-reset mid-document.
+	fvs := chaos.NewFaultyVectorStore(inner, chaos.FaultConfig{AfterSuccesses: 0, Error: chaos.ErrDiskFull})
 	emb := chaos.NewFaultyEmbedder(nil, chaos.FaultConfig{AfterSuccesses: 1 << 20})
 	im := chaosIngestionManager(t, fvs, emb)
 
@@ -430,8 +431,8 @@ func TestChaos_IngestionOnFailingVectorStore(t *testing.T) {
 	if !errors.Is(err, chaos.ErrDiskFull) {
 		t.Fatalf("the store error must be wrapped (%%w) so callers can match it; got %v", err)
 	}
-	if fvs.Calls() != 2 {
-		t.Fatalf("expected Save(entity) + SaveBatch(chunks) = 2 store calls, got %d", fvs.Calls())
+	if fvs.Calls() != 1 {
+		t.Fatalf("expected SaveBatch(chunks) = 1 store call (the entity is minted only after the chunks land), got %d", fvs.Calls())
 	}
 	if facts := inner.byType(domain.DocTypeMnemonicFact); len(facts) != 0 {
 		t.Fatalf("no chunk may be observable after the batch failed, found %d", len(facts))
@@ -439,10 +440,13 @@ func TestChaos_IngestionOnFailingVectorStore(t *testing.T) {
 
 	t.Run("no partial document remains", func(t *testing.T) {
 		// A source-doc entity without its chunks is a document the caller was
-		// told FAILED but that a reader can still find. See the ticket for the
-		// decision on whether ProcessSync should roll it back.
-		if entityID != "" || len(inner.byType(domain.DocTypeMnemonicEntity)) != 0 {
-			t.Skip("known defect: T-20261031-processsync-leaves-the-source-doc-entity-stub — the source_doc entity stub survives a failed chunk SaveBatch")
+		// told FAILED but that a reader can still find. ProcessSync now mints the
+		// entity AFTER the chunks land, so a failed chunk write leaves nothing.
+		if entityID != "" {
+			t.Fatalf("a failed ingest must not hand back an entity id, got %q", entityID)
+		}
+		if ents := inner.byType(domain.DocTypeMnemonicEntity); len(ents) != 0 {
+			t.Fatalf("the source_doc entity stub must not survive a failed chunk SaveBatch, found %d", len(ents))
 		}
 	})
 }

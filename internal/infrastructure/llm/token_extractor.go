@@ -7,6 +7,9 @@ type TokenUsage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	// BudgetOverrun is set by the gateway's Complete when its Pass-1 cut-off fired
+	// for the lease (ADR-0018). Providers never set it.
+	BudgetOverrun bool
 }
 
 // TokenUsageExtractor parses an LLM provider's HTTP response body

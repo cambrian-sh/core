@@ -173,6 +173,7 @@ func (g *SubstrateLLMGateway) Complete(_ context.Context, sessionID domain.Lease
 	usage := llm.TokenUsage{
 		TotalTokens:      ss.ActualTokensUsed,
 		CompletionTokens: ss.ActualTokensUsed,
+		BudgetOverrun:    ss.BudgetOverrun,
 	}
 	delete(g.sessions, sessionID)
 	return usage, nil
@@ -340,6 +341,11 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 	if s, ok := g.sessions[sessionID]; ok {
 		s.ActualTokensUsed = reconciled.TotalTokens
 		s.ConsumedTokens = accumulated
+		// The Pass-1 cut is the server-authoritative overrun; it used to be a local
+		// that died here (T-20261031-taskevent-budgetoverrun-is-written-by-no-kernel).
+		if overrun {
+			s.BudgetOverrun = true
+		}
 	}
 	g.mu.Unlock()
 

@@ -44,15 +44,21 @@ func newTestAdapter(t *testing.T) (*PgVectorAdapter, func()) {
 		t.Fatalf("ensureSchema failed: %v", err)
 	}
 
+	// Post-0007 (ADR-0093) the vectorised rows the adapter saves and searches live
+	// in `chunks`; `documents` is the entity table and never held these rows.
+	// Deleting from `documents` here was a silent no-op that let `test-%` chunks
+	// leak across tests — TestRetrievalFloor_Guarantee then found an AS=0.8 row
+	// from TestFloorMultiplier and scored 0.84 instead of ~0.2
+	// (T-20261031-four-core-postgres-adapter-tests-fail-against).
 	t.Cleanup(func() {
 		ctx := context.Background()
-		_, _ = pool.Exec(ctx, "DELETE FROM documents WHERE id LIKE 'test-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM chunks WHERE id LIKE 'test-%'")
 		pool.Close()
 	})
 
 	return adapter, func() {
 		ctx := context.Background()
-		_, _ = pool.Exec(ctx, "DELETE FROM documents WHERE id LIKE 'test-%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM chunks WHERE id LIKE 'test-%'")
 		pool.Close()
 	}
 }
@@ -423,9 +429,11 @@ func TestEbbinghausDecay_GC_Fires(t *testing.T) {
 
 	ctx := testCtx()
 
-	// Insert a document manually with an old created_at timestamp.
+	// Insert a chunk manually with an old created_at timestamp. `chunks` is the
+	// table apply_ebbinghaus_decay() decays and GCs since 0007 (ADR-0093);
+	// the entity table `documents` has no activation_strength column.
 	_, err := adapter.pool.Exec(ctx,
-		"INSERT INTO documents (id, text, activation_strength, access_count, created_at, document_type, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+		"INSERT INTO chunks (id, text, activation_strength, access_count, created_at, document_type, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7)",
 		"test-gc-fire-001", "stale garbage doc", 0.03, 0, "2025-01-01T00:00:00Z", domain.DocTypeMemory, "{}")
 	if err != nil {
 		t.Fatalf("manual insert failed: %v", err)
@@ -455,7 +463,7 @@ func TestEbbinghausDecay_GC_MinAgeGate(t *testing.T) {
 
 	// Insert with recent created_at (now).
 	_, err := adapter.pool.Exec(ctx,
-		"INSERT INTO documents (id, text, activation_strength, access_count, created_at, document_type, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+		"INSERT INTO chunks (id, text, activation_strength, access_count, created_at, document_type, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7)",
 		"test-gc-protected-001", "recent document", 0.03, 0,
 		"NOW()", domain.DocTypeMemory, "{}")
 	if err != nil {

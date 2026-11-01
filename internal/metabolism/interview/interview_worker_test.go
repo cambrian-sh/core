@@ -112,16 +112,17 @@ func TestProcessAgent_ReinterviewDecay(t *testing.T) {
 		results: [][]float32{
 			{0.1, 0.2, 0.3}, // scenarios embedding (call 0)
 			{0.5, 0.5, 0.5}, // new release notes embedding (call 1)
-			{0.0, 0.0, 0.0}, // prior source hash proxy (call 2)
+			{0.0, 0.0, 0.0}, // prior release notes embedding (call 2)
 		},
 	}
 
 	store := &mockProfileStore{
 		profileToReturn: &domain.AgentProfile{
-			AgentID:     "agent-3",
-			SourceHash:  "hash-old",
-			SuccessRate: 0.8,
-			TrustScore:  0.6,
+			AgentID:      "agent-3",
+			SourceHash:   "hash-old",
+			ReleaseNotes: "Initial SQL support",
+			SuccessRate:  0.8,
+			TrustScore:   0.6,
 		},
 		embeddingDistFn: func(_, _ []float32) float64 { return 0.5 },
 	}
@@ -169,10 +170,11 @@ func TestProcessAgent_DecayClampMin(t *testing.T) {
 
 	store := &mockProfileStore{
 		profileToReturn: &domain.AgentProfile{
-			AgentID:     "agent-4",
-			SourceHash:  "hash-old2",
-			SuccessRate: 1.0,
-			TrustScore:  1.0,
+			AgentID:      "agent-4",
+			SourceHash:   "hash-old2",
+			ReleaseNotes: "The old design",
+			SuccessRate:  1.0,
+			TrustScore:   1.0,
 		},
 		embeddingDistFn: func(_, _ []float32) float64 { return 1.0 },
 	}
@@ -417,10 +419,11 @@ func TestProcessAgent_A2A_ComputeDecayApplied(t *testing.T) {
 
 	store := &mockProfileStore{
 		profileToReturn: &domain.AgentProfile{
-			AgentID:     agent.ID,
-			SourceHash:  "card-hash-old",
-			SuccessRate: 0.8,
-			TrustScore:  0.6,
+			AgentID:      agent.ID,
+			SourceHash:   "card-hash-old",
+			ReleaseNotes: "An older agent card",
+			SuccessRate:  0.8,
+			TrustScore:   0.6,
 		},
 		embeddingDistFn: func(_, _ []float32) float64 { return 0.5 },
 	}

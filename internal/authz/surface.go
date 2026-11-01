@@ -7,7 +7,6 @@ import (
 	"github.com/cambrian-sh/core/domain"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,13 +26,15 @@ import (
 // and never taken from a daemon's claim about itself. A daemon is a black box; a
 // black box asserting its own privilege level is not a security boundary.
 //
-// RESIDUAL RISK, stated plainly: deriving the surface from the transport is only
-// as trustworthy as the transport. Until SEC-03 lands TLS + client authentication
-// on the operator plane, a remote attacker who can reach the port can present
-// themselves on whichever plane they like. On localhost (the shipped default) the
-// transport is the process boundary and the derivation holds. Do not rely on the
-// surface clamp as a security boundary on a remotely-reachable deployment until
-// SEC-03 is done — the spec says so, and so does this comment.
+// The surface is a fact about the TRANSPORT and nothing more: this interceptor
+// stamps where a request arrived, and it establishes no principal. WHO is
+// asking is decided by the credential interceptors that run after it — the
+// operator bearer (operator.UnaryAuthInterceptor) for the console and premium
+// operator planes, the per-agent named secret (UnaryAgentAuthInterceptor,
+// ADR-0130 D1) for the agent plane. Until ADR-0130 the agent principal was
+// seeded here from the self-asserted x-agent-id header, which is the residual
+// risk this comment used to describe; with server.insecure_localhost=true that
+// pre-0130 behaviour is restored deliberately (D2), and the boot log says so.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // gRPC service prefixes the kernel serves. The surface follows the SERVICE, which
@@ -114,36 +115,20 @@ func serviceNameOf(fullMethod string) string {
 	return rest
 }
 
-// seedAgentPrincipal stamps the caller principal from x-agent-id metadata for
-// agent-facing premium services (ADR-0118 D3) — the interceptor equivalent of
-// what individual core handlers (ingest_memory) already do by hand. Kernel-side
-// on purpose (INV-5): the handler never reads its own identity claims. The
-// metadata itself is as trustworthy as the agent plane's transport (the SEC-03
-// residual), no more and no less.
-func seedAgentPrincipal(ctx context.Context, fullMethod string, agentPlane map[string]bool) context.Context {
-	if len(agentPlane) == 0 || !strings.HasPrefix(fullMethod, premiumServicePrefix) ||
-		!agentPlane[serviceNameOf(fullMethod)] {
-		return ctx
-	}
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return ctx
-	}
-	if vals := md.Get("x-agent-id"); len(vals) > 0 && vals[0] != "" {
-		return domain.WithPrincipal(ctx, domain.AgentPrincipal(vals[0]))
-	}
-	return ctx
-}
-
 // UnarySurfaceInterceptor stamps the transport-derived surface onto every unary
-// request context (and, for declared agent-facing premium services, the caller
-// principal). It runs unconditionally — the kernel always establishes WHERE a
-// request came from, and whether that constrains anything is the decision
-// point's business.
+// request context. It runs unconditionally — the kernel always establishes
+// WHERE a request came from, and whether that constrains anything is the
+// decision point's business.
+//
+// It no longer seeds the agent principal. Until ADR-0130 it stamped
+// domain.AgentPrincipal(x-agent-id) for declared agent-facing premium
+// services, which made an unverified header the identity; the principal is
+// now established by UnaryAgentAuthInterceptor (agent_auth.go) for the whole
+// agent plane, after the credential is checked.
 func UnarySurfaceInterceptor(agentPlane map[string]bool) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		ctx = domain.WithSurface(ctx, SurfaceForMethod(info.FullMethod, agentPlane))
-		return handler(seedAgentPrincipal(ctx, info.FullMethod, agentPlane), req)
+		return handler(ctx, req)
 	}
 }
 
@@ -151,7 +136,6 @@ func UnarySurfaceInterceptor(agentPlane map[string]bool) grpc.UnaryServerInterce
 func StreamSurfaceInterceptor(agentPlane map[string]bool) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		ctx := domain.WithSurface(ss.Context(), SurfaceForMethod(info.FullMethod, agentPlane))
-		ctx = seedAgentPrincipal(ctx, info.FullMethod, agentPlane)
 		return handler(srv, &surfaceStream{ServerStream: ss, ctx: ctx})
 	}
 }

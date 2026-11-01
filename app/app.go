@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -466,6 +467,11 @@ func Run(ctx context.Context, opts Options) error {
 	if cfgStore != nil {
 		setNamedSecretSource(cfgStore)
 	}
+	// ADR-0130 D3: the one listener policy, attached for the plugin-facing
+	// ServeHTTPListener before any plugin builds, so a premium HTTP ingress
+	// binds exactly as the kernel's own listeners do.
+	setListenerPolicy(cfg)
+	defer setListenerPolicy(nil)
 
 	// REDEMPTION: Observability First. Start Kernel immediately.
 	k, err := bootstrapKernel(rootCtx, cfg, lis, opts)
@@ -478,6 +484,11 @@ func Run(ctx context.Context, opts Options) error {
 	// because they are resolved before it runs — the store IS a config layer.
 	k.ConfigProvenance = prov
 	k.ConfigStore = cfgStore
+	// ADR-0130 D1: every registered agent has a credential before the first
+	// spawn. Guarded against the typed-nil trap (see setNamedSecretSource).
+	if cfgStore != nil {
+		ensureAgentCredentials(rootCtx, cfgStore, k.Registry)
+	}
 	// ADR-0101 D5: let the LLM clients READ the credentials this store holds.
 	//
 	// Without this the store was write-only in the worst sense: SetGeneratorKey
@@ -725,6 +736,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	meta.VerificationWorker.EventBus = eventBus // ADR-0047 D3: VerifierRoundEvent → operator feed
 	// ADR-0033: crash detection publishes DaemonCrashedEvent to this bus.
 	meta.Manager.EventBus = eventBus
+	// ADR-0130 D1: each spawned agent receives ITS credential in its process
+	// environment (CAMBRIAN_AGENT_TOKEN + CAMBRIAN_AGENT_ID), resolved per
+	// spawn through the late-bound named-secret seam.
+	meta.Manager.InstanceManager.SetAgentCredentialSource(agentCredentialEnv)
 	// REACT-04 / ADR-0070: daemon auto-restart with backoff + flap quarantine. Disabled
 	// when daemon_restart_max_attempts is 0 (a crashed daemon then stays down).
 	if cfg.Execution.Agents.DaemonRestartMaxAttempts > 0 {
@@ -2148,15 +2163,42 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		return nil
 	})
 
+	// ADR-0047: Operator Transport Plane auth (D13). The interceptors are
+	// method-scoped to /cambrian.OperatorConsole/* (plus the Orchestrator
+	// approval RPCs, ADR-0039 D10 — authz.IsOperatorGatedAgentServiceMethod).
+	// A bootstrap operator is seeded from env (secure-by-default: no creds ⇒ no
+	// login). The production identity backend swaps in behind the
+	// OperatorIdentity port.
+	//
+	// ONE identity for the process: the ingestion server's /v1/admin routes
+	// (below) validate the same bearer through the same instance, so a token
+	// minted by the gRPC Login is the token the HTTP admin surface accepts.
+	operatorIDP := operatorBootstrapIdentity()
+
+	// ADR-0130 D1/D2: agent-plane client authentication. Every Orchestrator RPC
+	// (and every premium service declared agent-facing) requires the per-agent
+	// named secret `agent:<id>:token` as a bearer, with x-agent-id as the
+	// assertion it must match — UNLESS server.insecure_localhost=true, which
+	// waives it along with the transport refusal it already waives (the
+	// benchmark harness runs under that flag). Constructor-injected; nothing
+	// attaches it later (AGENTS.md §2.3).
+	agentAuth := authz.NewAgentCredentialVerifier(resolveNamedSecret, k.Config.Server.InsecureLocalhost)
+	switch {
+	case agentAuth.Waived():
+		slog.Warn("ADR-0130: agent-plane authentication DISABLED by server.insecure_localhost=true",
+			"effect", "x-agent-id is trusted as the principal; any process reaching the port can act as any agent")
+	case k.ConfigStore == nil:
+		slog.Warn("ADR-0130: agent plane requires per-agent credentials but the config store is off — "+
+			"no agent can authenticate", "fix",
+			"enable the ADR-0101 store (CAMBRIAN_CONFIG_STORE) so `setup`/boot can mint agent:<id>:token, "+
+				"or set server.insecure_localhost=true on a trusted host")
+	default:
+		slog.Info("ADR-0130: agent plane requires per-agent credentials",
+			"secret", "agent:<id>:token", "header", "authorization: Bearer + x-agent-id")
+	}
+
 	// C. gRPC Server
 	g.Go(func() error {
-		// ADR-0047: Operator Transport Plane auth (D13). The interceptors are
-		// method-scoped to /cambrian.OperatorConsole/* (plus the Orchestrator
-		// approval RPCs, ADR-0039 D10 — authz.IsOperatorGatedAgentServiceMethod)
-		// — other agent-facing RPCs over UDS pass through ungated. A bootstrap operator is seeded from env
-		// (secure-by-default: no creds ⇒ no login). The production identity
-		// backend swaps in behind the OperatorIdentity port.
-		operatorIDP := operatorBootstrapIdentity()
 		// SEC-03: recomputed from the same cfg rather than threaded through the
 		// signature. transportCredentials is pure, so the two calls cannot disagree,
 		// and Run has already failed the boot if this configuration is refusable.
@@ -2183,9 +2225,18 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				// ADR-0085 D7: stamp the surface FIRST, from the transport, so every
 				// downstream handler knows where the request arrived from. It runs
 				// unconditionally — the kernel always establishes the entry point; whether
-				// that constrains anything is the decision point's business.
-				grpc.ChainUnaryInterceptor(authz.UnarySurfaceInterceptor(agentPlaneServices), operator.UnaryAuthInterceptor(operatorIDP, agentPlaneServices)),
-				grpc.ChainStreamInterceptor(authz.StreamSurfaceInterceptor(agentPlaneServices), operator.StreamAuthInterceptor(operatorIDP, agentPlaneServices)),
+				// that constrains anything is the decision point's business. Then the
+				// credential interceptors: the agent plane's (ADR-0130 D1), which
+				// establishes the agent principal, and the operator plane's (ADR-0047
+				// D13), which gates the console and premium operator planes.
+				grpc.ChainUnaryInterceptor(
+					authz.UnarySurfaceInterceptor(agentPlaneServices),
+					authz.UnaryAgentAuthInterceptor(agentAuth, agentPlaneServices),
+					operator.UnaryAuthInterceptor(operatorIDP, agentPlaneServices)),
+				grpc.ChainStreamInterceptor(
+					authz.StreamSurfaceInterceptor(agentPlaneServices),
+					authz.StreamAgentAuthInterceptor(agentAuth, agentPlaneServices),
+					operator.StreamAuthInterceptor(operatorIDP, agentPlaneServices)),
 				// The operator binary-ingest lane (IngestMemory) carries raw file bytes;
 				// gRPC's 4 MiB default rejects any PDF above it server-side before docling
 				// ever runs, so the documented upload path is unusable for real documents.
@@ -2937,14 +2988,25 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	})
 
 	// D. Ingestion HTTP server (ADR-0028) — opt-in via IngestionHTTPPort > 0.
+	//
+	// ADR-0130 D3: served by the one listener policy (serveHTTP): bound on
+	// server.bind_address rather than ":port" (every interface), refused in
+	// plaintext on a routable bind, TLS when the kernel has it, header/idle
+	// timeouts, every body capped. The /v1/admin/* routes — tool grants, scope
+	// and write-tag mutations, consolidation — require the OPERATOR bearer,
+	// validated through the same OperatorIdentity the gRPC interceptor uses;
+	// before this they were reachable by anyone who could reach the port.
+	// /v1/ingest keeps its own X-Ingest-Token (constant-time, ADR-0028).
+	// Moving the admin routes onto OperatorConsole RPCs is contract bump 0096.
 	if port := k.Config.Execution.Ingestion.IngestionHTTPPort; port > 0 {
 		mux := http.NewServeMux()
 		mux.Handle("/v1/ingest", memory.NewWebhookReceiver(
 			k.Config.Execution.Ingestion.IngestToken,
 			k.Memory.IngestionManager.Enqueue,
 		))
+		admin := func(h http.HandlerFunc) http.Handler { return requireOperatorBearer(operatorIDP, h) }
 		// ADR-0030: explicit consolidation trigger endpoint.
-		mux.HandleFunc("/v1/admin/consolidate", func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("/v1/admin/consolidate", admin(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
@@ -2953,10 +3015,10 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				Trigger: string(domain.ConsolidationTriggerExplicit),
 			})
 			w.WriteHeader(http.StatusAccepted)
-		})
+		}))
 		// ADR-0034 (D9): set an agent's intrinsic genotype scope profile.
 		// POST /v1/admin/agents/{id}/scope  body: {"required_tags":[],"any_of_tags":[],"forbidden_tags":[]}
-		mux.HandleFunc("/v1/admin/agents/", func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("/v1/admin/agents/", admin(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
@@ -3034,17 +3096,18 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			}
 			slog.Info("ADR-0085: agent scope profile updated", "agent_id", agentID)
 			w.WriteHeader(http.StatusOK)
-		})
-		srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux}
-		slog.Info("🌐 Ingestion HTTP server starting", "port", port,
+		}))
+		srv, addr, err := serveHTTP(k.Config, strconv.Itoa(port), mux, "ingestion http server")
+		if err != nil {
+			// FAIL the boot, never degrade: the only degradation available is the
+			// ":port"-on-every-interface server this replaced.
+			g.Go(func() error { return fmt.Errorf("ADR-0130: %w", err) })
+			return
+		}
+		slog.Info("🌐 Ingestion HTTP server started", "addr", addr,
 			"queue_size", k.Config.Execution.Ingestion.IngestionQueueSize,
-			"workers", k.Config.Execution.Ingestion.IngestionWorkers)
-		g.Go(func() error {
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				return err
-			}
-			return nil
-		})
+			"workers", k.Config.Execution.Ingestion.IngestionWorkers,
+			"admin_auth", "operator bearer (ADR-0130 D3)")
 		g.Go(func() error {
 			<-ctx.Done()
 			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

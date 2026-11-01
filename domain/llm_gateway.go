@@ -18,15 +18,28 @@ type BudgetLease struct {
 	ID string
 }
 
+// HandoffKeyBudgetOverrun is the Handoff.Context key on which a step function
+// reports that the gateway's Pass-1 cut-off fired for the step's lease
+// (BudgetLeaseState.BudgetOverrun, reconciled by Complete). The DAGExecutor
+// reads it when it writes the step's TaskEvent — the one place TaskEvents are
+// written — so TaskEvent.BudgetOverrun is server-authoritative, never
+// agent-reported (ADR-0018;
+// T-20261031-taskevent-budgetoverrun-is-written-by-no-kernel). Same `_`
+// convention as `_session_token_id`: kernel-internal, never agent-settable.
+const HandoffKeyBudgetOverrun = "_budget_overrun"
+
 // BudgetLeaseState holds the server-side mutable accounting state for a single BudgetLease.
 // Keyed by the lease's opaque UUID in a server-side map.
 type BudgetLeaseState struct {
 	StepAllocation   StepAllocation
-	TokenLimit       int       // maps to Step.MaxEnergy (ADR-0011)
-	ConsumedTokens   int       // running real-time estimate from Pass 1
-	ActualTokensUsed int       // reconciled at stream close via Pass 2
-	ExpiresAt        time.Time // keepalive TTL — refreshed on each chunk
-	LastActivityAt   time.Time
+	TokenLimit       int // maps to Step.MaxEnergy (ADR-0011)
+	ConsumedTokens   int // running real-time estimate from Pass 1
+	ActualTokensUsed int // reconciled at stream close via Pass 2
+	// BudgetOverrun records that Pass 1 cut the stream at the 90% cut-off of
+	// TokenLimit (ADR-0018). Set by StreamChunks, read back by Complete.
+	BudgetOverrun  bool
+	ExpiresAt      time.Time // keepalive TTL — refreshed on each chunk
+	LastActivityAt time.Time
 	// Binding is the execution identity the kernel attached at dispatch (session, run,
 	// step, agent). It is what lets a transport resolve an agent's opaque lease back to
 	// the session that owns it, instead of trusting the agent's own header. Written

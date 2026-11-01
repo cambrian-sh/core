@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -70,18 +71,31 @@ func PrincipalFromContext(ctx context.Context) (principal string, role Role, ok 
 	return v.principal, v.role, true
 }
 
+// OperatorTokenTTL bounds an operator token's life (ADR-0130 1f): 12 hours
+// from issue, checked lazily on use. Before this a token was valid until the
+// process restarted — a leaked one had no horizon at all. Expiry is absolute,
+// not sliding: a token kept warm by a background poller would otherwise never
+// expire. An explicit Logout RPC is contract bump 0096.
+const OperatorTokenTTL = 12 * time.Hour
+
 // StaticIdentity is the V1 OperatorIdentity stub: a fixed user table and an
 // in-memory token store. Concurrency-safe. The production backend swaps in
 // behind the OperatorIdentity port with no interceptor change.
 type StaticIdentity struct {
 	mu     sync.Mutex
-	users  map[string]staticUser    // username → {password, role}
-	tokens map[string]principalInfo // token → {principal, role}
+	users  map[string]staticUser  // username → {password, role}
+	tokens map[string]issuedToken // token → {principal, role, expiry}
+	now    func() time.Time
 }
 
 type staticUser struct {
 	password string
 	role     Role
+}
+
+type issuedToken struct {
+	principalInfo
+	expires time.Time
 }
 
 // NewStaticIdentity builds a StaticIdentity from a username→(password,role) table.
@@ -93,7 +107,7 @@ func NewStaticIdentity(users map[string]struct {
 	for u, c := range users {
 		m[u] = staticUser{password: c.Password, role: c.Role}
 	}
-	return &StaticIdentity{users: m, tokens: make(map[string]principalInfo)}
+	return &StaticIdentity{users: m, tokens: make(map[string]issuedToken), now: time.Now}
 }
 
 // Login implements OperatorIdentity.
@@ -118,15 +132,24 @@ func (s *StaticIdentity) Login(username, password string) (string, string, Role,
 		return "", "", "", status.Error(codes.Internal, "token generation failed")
 	}
 	token := hex.EncodeToString(b[:])
-	s.tokens[token] = principalInfo{principal: username, role: u.role}
+	s.tokens[token] = issuedToken{
+		principalInfo: principalInfo{principal: username, role: u.role},
+		expires:       s.now().Add(OperatorTokenTTL),
+	}
 	return token, username, u.role, nil
 }
 
-// Resolve implements OperatorIdentity.
+// Resolve implements OperatorIdentity. Expiry is LAZY: an expired token is
+// deleted on the first use after its horizon, and the answer is the same
+// Unauthenticated a token that never existed gets.
 func (s *StaticIdentity) Resolve(token string) (string, Role, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, ok := s.tokens[token]
+	if ok && !s.now().Before(v.expires) {
+		delete(s.tokens, token)
+		ok = false
+	}
 	if !ok {
 		return "", "", status.Error(codes.Unauthenticated, "invalid or expired token")
 	}

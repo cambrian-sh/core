@@ -8,8 +8,16 @@ package domain
 // a fresh Interview; Merit is seeded from the previous version's history with
 // trust decay proportional to the embedding distance between release notes.
 type AgentProfile struct {
-	AgentID                    string  `json:"agent_id,omitempty"`
-	SourceHash                 string  `json:"source_hash,omitempty"`
+	AgentID    string `json:"agent_id,omitempty"`
+	SourceHash string `json:"source_hash,omitempty"`
+	// ReleaseNotes is the manifest release-notes text (or, for an A2A agent, the
+	// Agent Card text) this version was interviewed against. Persisted so the
+	// NEXT version's inherited merit can decay by the embedding distance between
+	// its notes and these (ADR-0002 D2 / ADR-0006 D5). Until 2026-11-01 the
+	// worker embedded the prior profile's SourceHash — a hash string — as the
+	// "old" text, so the distance was meaningless
+	// (T-20261031-interview-merit-decay-compares-release-notes).
+	ReleaseNotes               string  `json:"release_notes,omitempty"`
 	SuccessRate                float64 `json:"success_rate,omitempty"`
 	TrustScore                 float64 `json:"trust_score,omitempty"`
 	NetworkLatencyMedianMs     int     `json:"network_latency_median_ms,omitempty"`

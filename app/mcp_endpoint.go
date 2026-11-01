@@ -3,10 +3,8 @@ package app
 import (
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
@@ -16,13 +14,13 @@ import (
 // The inbound Cambrian MCP endpoint's listener (ADR-0126 D3).
 //
 // It is its OWN listener rather than a mount on the ADR-0028 ingestion HTTP
-// server, which is built as `&http.Server{Addr: ":port"}` — plaintext, every
-// interface, no TLS decision, no bind address honoured. Hanging the product's
-// public front door on that mux would silently un-do SEC-03 for the one surface
-// strangers are meant to reach. So the endpoint binds through the same
-// transportCredentials + secureListener path as the operator plane and inherits
-// its refusal: no cert and no explicit opt-in on a routable address is a boot
-// error, not a plaintext port.
+// server: that server used to be built as `&http.Server{Addr: ":port"}` —
+// plaintext, every interface, no TLS decision, no bind address honoured — and
+// hanging the product's public front door on that mux would silently have
+// un-done SEC-03 for the one surface strangers are meant to reach. Both now
+// bind through the same serveHTTP path as the operator plane (ADR-0130 D3)
+// and inherit its refusal: no cert and no explicit opt-in on a routable
+// address is a boot error, not a plaintext port.
 
 // startMCPEndpoint serves the Published Tool Surface over MCP, returning the
 // running server so shutdown can drain it. A disabled endpoint returns (nil,
@@ -39,11 +37,12 @@ func startMCPEndpoint(cfg *config.Config, surface domain.PublishedToolSurface,
 		return nil, nil
 	}
 
-	// SEC-03, decided BEFORE binding and on the same rules as the gRPC plane, so
-	// a configuration that would serve this endpoint in plaintext to the network
-	// fails at boot rather than after the port is open.
-	_, mode, err := transportCredentials(cfg)
-	if err != nil {
+	// SEC-03: the transport decision is made inside serveHTTP, BEFORE binding
+	// and on the same rules as the gRPC plane, so a configuration that would
+	// serve this endpoint in plaintext to the network fails at boot rather than
+	// after the port is open. It is made here too, first, so a refusable
+	// configuration is reported before the handler is built.
+	if _, _, err := transportCredentials(cfg); err != nil {
 		return nil, fmt.Errorf("mcp endpoint: %w", err)
 	}
 
@@ -93,46 +92,19 @@ func startMCPEndpoint(cfg *config.Config, surface domain.PublishedToolSurface,
 			"clients", unissued, "fix", "store one under the named secret mcp:client:<name>")
 	}
 
-	addr := listenAddressOn(cfg, strconv.Itoa(m.Port))
-	lis, err := net.Listen("tcp", addr)
+	// ADR-0130 D3: bound and served by the one listener policy — the same
+	// bind address, transport decision, timeouts and body cap as every other
+	// HTTP listener the kernel opens.
+	srv, addr, err := serveHTTP(cfg, strconv.Itoa(m.Port), handler, "mcp endpoint")
 	if err != nil {
-		return nil, fmt.Errorf("mcp endpoint (%s unavailable): %w", addr, err)
+		return nil, err
 	}
-	lis, err = secureListener(lis, cfg, mode)
-	if err != nil {
-		_ = lis.Close()
-		return nil, fmt.Errorf("mcp endpoint: %w", err)
-	}
-
-	srv := &http.Server{Handler: handler}
-	go func() {
-		var serveErr error
-		switch mode {
-		case "tls":
-			// Pure TLS. On the gRPC plane this mode rides grpc.Creds and
-			// secureListener hands the listener back untouched; for an HTTP
-			// server ServeTLS is the equivalent, and it also negotiates ALPN for
-			// both HTTP/1.1 and h2.
-			serveErr = srv.ServeTLS(lis,
-				strings.TrimSpace(cfg.Server.TLSCertFile), strings.TrimSpace(cfg.Server.TLSKeyFile))
-		default:
-			// Plaintext, or the loopback TLS+plaintext demux, which terminates
-			// TLS at the listener. In the demux mode this endpoint is reachable
-			// in PLAINTEXT on loopback: the demux advertises h2 only, because it
-			// exists so a TLS-only local forwarder gets a gRPC origin — nothing
-			// dials MCP over h2c, and the bind is loopback by construction.
-			serveErr = srv.Serve(lis)
-		}
-		if serveErr != nil && serveErr != http.ErrServerClosed {
-			slog.Error("ADR-0126: mcp endpoint stopped serving", "addr", addr, "err", serveErr)
-		}
-	}()
 
 	// The activation line: ADR-tagged so a live run can be grepped for proof the
 	// endpoint is really up, rather than trusted. Tool count included because
 	// "serving with zero tools" is a legal state and the one most likely to be
 	// mistaken for a broken deployment.
 	slog.Info("ADR-0126: mcp endpoint serving", "addr", addr, "tools", len(surface),
-		"clients", len(m.Clients), "transport", mode)
+		"clients", len(m.Clients))
 	return srv, nil
 }

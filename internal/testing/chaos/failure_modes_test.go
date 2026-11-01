@@ -2,11 +2,13 @@ package chaos_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/testing/chaos"
 )
 
@@ -51,13 +53,22 @@ func TestFailureMode_IngestionEmbedEndpointStall(t *testing.T) {
 	if facts := inner.byType(domain.DocTypeMnemonicFact); len(facts) != 0 {
 		t.Fatalf("no chunk may be stored without an embedding, found %d", len(facts))
 	}
-	if entityID == "" {
-		t.Fatal("the source-doc entity id is minted before embedding and must be returned")
-	}
-
 	t.Run("embed outage is surfaced to the caller", func(t *testing.T) {
+		// T-20261031-processsync-reports-success-when-every-chunk: an ingest that
+		// stored no content is a FAILED ingest.
 		if err == nil {
-			t.Skip("known defect: T-20261031-processsync-reports-success-when-every-chunk — ProcessSync returns (entityID, nil) when every chunk embed failed")
+			t.Fatal("ProcessSync must return an error when every chunk embed failed, not (entityID, nil)")
+		}
+		if !errors.Is(err, memory.ErrNoChunksStored) {
+			t.Fatalf("the error must wrap memory.ErrNoChunksStored so callers can match it, got %v", err)
+		}
+		if entityID != "" {
+			t.Fatalf("a failed ingest must not hand back an entity id, got %q", entityID)
+		}
+		// T-20261031-processsync-leaves-the-source-doc-entity-stub: and no stub
+		// either — the entity is minted only after the chunks land.
+		if ents := inner.byType(domain.DocTypeMnemonicEntity); len(ents) != 0 {
+			t.Fatalf("no source-doc entity stub may remain after a failed ingest, found %d", len(ents))
 		}
 	})
 }

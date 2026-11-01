@@ -35,8 +35,9 @@ type InstanceManager struct {
 	bootCount  atomic.Uint64
 	mu         sync.Mutex
 	instances  map[string]*domain.Instance
-	agentIndex map[string][]string  // agentID → []instanceID
-	cmds       map[string]*exec.Cmd // instanceID → cmd
+	agentIndex map[string][]string     // agentID → []instanceID
+	cmds       map[string]*exec.Cmd    // instanceID → cmd
+	exits      map[string]*processExit // instanceID → the one Wait per child (process_exit.go)
 	// runtimeExes maps an interpreted runtime to its executable (ADR-0125):
 	// python from metabolism.python_executable, bun/node from their config keys
 	// (empty ⇒ $PATH fallback at spawn). RuntimeBinary needs no interpreter.
@@ -53,6 +54,9 @@ type InstanceManager struct {
 	// hold, which makes a config knob depend on .env — extras flow
 	// config → agent with the kernel's env not involved at all.
 	envExtras []string
+	// agentCredential resolves an agent's ADR-0130 plane credential at spawn
+	// (agent_credential_env.go). nil ⇒ agents spawn without one.
+	agentCredential func(agentID string) (string, bool)
 	// agentMemLimitMB is the GLOBAL default memory cap (SEC-01), used for agents
 	// that don't declare their own. 0 = no default.
 	agentMemLimitMB int
@@ -131,6 +135,7 @@ func NewInstanceManager(pythonPath, substrateAddr string) *InstanceManager {
 		instances:     make(map[string]*domain.Instance),
 		agentIndex:    make(map[string][]string),
 		cmds:          make(map[string]*exec.Cmd),
+		exits:         make(map[string]*processExit),
 		capCleanups:   make(map[string]func()),
 		runtimeExes:   map[domain.AgentRuntime]string{domain.RuntimePython: pythonPath},
 		substrateAddr: substrateAddr,
@@ -213,6 +218,7 @@ func (im *InstanceManager) EvictInstance(instanceID string) {
 		_ = cmd.Process.Kill()
 	}
 	delete(im.cmds, instanceID)
+	delete(im.exits, instanceID)
 	// SEC-01: close the Job Object (Windows kill-on-close reaps grandchildren the
 	// bare Process.Kill above cannot reach) / release the rlimit handle.
 	if cleanup, ok := im.capCleanups[instanceID]; ok {
@@ -254,6 +260,7 @@ func (im *InstanceManager) killAllInstances() {
 	im.instances = make(map[string]*domain.Instance)
 	im.agentIndex = make(map[string][]string)
 	im.cmds = make(map[string]*exec.Cmd)
+	im.exits = make(map[string]*processExit)
 }
 
 // maxSocketPathLen is the sockaddr_un limit every gRPC implementation enforces.
@@ -349,6 +356,9 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 		return nil, fmt.Errorf("desteklenmeyen runtime: %s", def.Runtime)
 	}
 	cmd.Dir = def.Dir
+	// ADR-0130 D1: the agent's own plane credential, the one credential the
+	// SEC-01 environment admits (agent_credential_env.go).
+	cmd.Env = append(cmd.Env, im.agentCredentialEnv(def.ID)...)
 
 	// ADR-0033: daemon-specific flags.
 	if def.Trait == domain.TraitDaemon {
@@ -421,6 +431,7 @@ func (im *InstanceManager) ReleaseInstance(instanceID string) {
 			_ = cmd.Process.Kill()
 		}
 		delete(im.cmds, instanceID)
+		delete(im.exits, instanceID)
 		if inst.SocketPath != "" {
 			_ = os.Remove(inst.SocketPath)
 		}
@@ -460,6 +471,7 @@ func (im *InstanceManager) EvictAgent(agentID string) {
 			_ = cmd.Process.Kill()
 		}
 		delete(im.cmds, id)
+		delete(im.exits, id)
 		delete(im.instances, id)
 	}
 	delete(im.agentIndex, agentID)
@@ -496,6 +508,7 @@ func (im *InstanceManager) KillAllAgents(ctx context.Context) error {
 		im.instances = make(map[string]*domain.Instance)
 		im.agentIndex = make(map[string][]string)
 		im.cmds = make(map[string]*exec.Cmd)
+		im.exits = make(map[string]*processExit)
 		return nil
 	case <-cleanupCtx.Done():
 		return fmt.Errorf("agent cleanup timed out: %w", cleanupCtx.Err())
@@ -559,24 +572,13 @@ func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefin
 	go forwardPipe(ctx, stdout, def.ID, false)
 	go forwardPipe(ctx, stderr, def.ID, true)
 
-	// Phase 1: Poll for the UDS socket file to appear (fast inode-level check).
-	const pollInterval = 50 * time.Millisecond
-	const bootTimeout = 10 * time.Second
-	deadline := time.Now().Add(bootTimeout)
-	for {
-		if _, statErr := os.Stat(inst.SocketPath); statErr == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			return fmt.Errorf("agent %s: socket %s did not appear within %s", def.ID, inst.SocketPath, bootTimeout)
-		}
-		select {
-		case <-ctx.Done():
-			_ = cmd.Process.Kill()
-			return ctx.Err()
-		case <-time.After(pollInterval):
-		}
+	// Phase 1: wait for the UDS socket (fast inode-level check) — or for the boot
+	// timeout, the caller's ctx, or the child EXITING, whichever comes first
+	// (process_exit.go).
+	exit := im.watchExit(inst.ID, cmd)
+	if err := awaitSocket(ctx, cmd, exit, inst.SocketPath, "agent "+def.ID); err != nil {
+		im.forgetExit(inst.ID)
+		return err
 	}
 
 	// Phase 2: gRPC health check — confirms the gRPC stack is SERVING, not just
@@ -662,24 +664,13 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	go forwardPipe(ctx, stdout, def.ID, false)
 	go forwardPipe(ctx, stderr, def.ID, true)
 
-	// Wait for socket file.
-	const pollInterval = 50 * time.Millisecond
-	const bootTimeout = 10 * time.Second
-	deadline := time.Now().Add(bootTimeout)
-	for {
-		if _, statErr := os.Stat(inst.SocketPath); statErr == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			return nil, fmt.Errorf("daemon %s: socket %s did not appear within %s", def.ID, inst.SocketPath, bootTimeout)
-		}
-		select {
-		case <-ctx.Done():
-			_ = cmd.Process.Kill()
-			return nil, ctx.Err()
-		case <-time.After(pollInterval):
-		}
+	// Wait for the socket file — or for the child exiting first (process_exit.go).
+	// The crash watcher in daemon_spawner.go consumes the SAME exit, so the
+	// child is waited on exactly once.
+	exit := im.watchExit(inst.ID, cmd)
+	if err := awaitSocket(ctx, cmd, exit, inst.SocketPath, "daemon "+def.ID); err != nil {
+		im.forgetExit(inst.ID)
+		return nil, err
 	}
 	if err := waitHealthy(ctx, inst.SocketPath, 5*time.Second); err != nil {
 		slog.Warn("daemon health check inconclusive", "agent", def.ID, "err", err)

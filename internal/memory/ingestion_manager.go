@@ -273,10 +273,17 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 			scene = scenes[0]
 		}
 	}
-	_, entityID := im.mintSourceDoc(ctx, doc)
-	if entityID == "" {
-		return "", fmt.Errorf("ingestion manager: failed to mint source-doc entity for %q", doc.SourceURI)
-	}
+	// Chunks FIRST, entity LAST (T-20261031-processsync-leaves-the-source-doc-entity-stub).
+	// The entity id is deterministic (source_doc:<uri>) and the chunks carry it as a
+	// string, not a foreign key, so the order is free — and this order means a
+	// failed chunk write (store down, every embed failed) leaves NOTHING behind: no
+	// entity stub that a reader could find for a document the caller was told
+	// FAILED. The inverse partial state (chunks stored, entity mint failed) is
+	// returned as an error below and is self-healing on retry, because every id
+	// involved is deterministic and a retry overwrites both. Rolling the entity
+	// back after a failed chunk write was the rejected alternative: it is one more
+	// store call against a store that just failed.
+	entityID := sourceDocEntityID(doc)
 	chunker := im.chunkerFor(doc)
 	chunks, err := chunker.Chunk(ctx, &doc)
 	if err != nil {
@@ -285,7 +292,14 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	}
 	chunkCount, err := im.persistChunks(ctx, doc, chunks, entityID, scene)
 	if err != nil {
-		return entityID, err
+		// Includes ErrNoChunksStored: an ingest that stored no content is a FAILED
+		// ingest, and the caller is told so rather than handed an entity id
+		// (T-20261031-processsync-reports-success-when-every-chunk).
+		return "", err
+	}
+	if _, _, err := im.mintSourceDoc(ctx, doc); err != nil {
+		return "", fmt.Errorf("ingestion manager: source-doc entity for %q (its %d chunk(s) are stored; a retry overwrites both by id): %w",
+			doc.SourceURI, chunkCount, err)
 	}
 	if chunkCount == 0 {
 		return entityID, nil
@@ -394,7 +408,8 @@ func (im *IngestionManager) processBatch(ctx context.Context, batch []domain.Ext
 		if i < len(scenes) {
 			scene = scenes[i]
 		}
-		_, entityID := im.mintSourceDoc(ctx, doc)
+		// Same order as ProcessSync: chunks first, entity last.
+		entityID := sourceDocEntityID(doc)
 		chunker := im.chunkerFor(doc)
 		chunks, err := chunker.Chunk(ctx, &doc)
 		if err != nil {
@@ -406,13 +421,28 @@ func (im *IngestionManager) processBatch(ctx context.Context, batch []domain.Ext
 			slog.Warn("IngestionManager: failed to persist chunks", "source_uri", doc.SourceURI, "err", err)
 			continue
 		}
+		if _, _, err := im.mintSourceDoc(ctx, doc); err != nil {
+			slog.Warn("IngestionManager: failed to mint source-doc entity", "source_uri", doc.SourceURI, "err", err)
+			continue
+		}
 		slog.Info("ExternalDocumentIngested", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", chunkCount)
 	}
 }
 
-func (im *IngestionManager) mintSourceDoc(ctx context.Context, doc domain.ExternalDocument) (string, string) {
+// sourceDocEntityID is the deterministic id of a document's source-doc entity.
+// It is computed, not looked up, so persistChunks can stamp it on every chunk
+// BEFORE the entity row exists (see ProcessSync for why that order matters).
+func sourceDocEntityID(doc domain.ExternalDocument) string {
+	return "source_doc:" + doc.SourceURI
+}
+
+// mintSourceDoc writes the source-doc entity (and its CAS body). It returns the
+// content id, the entity id, and an error when the entity could not be saved —
+// callers decide whether that is fatal (ProcessSync: yes, the caller is told)
+// or logged (processBatch).
+func (im *IngestionManager) mintSourceDoc(ctx context.Context, doc domain.ExternalDocument) (string, string, error) {
 	if im.agent == nil || im.agent.Manager == nil || im.agent.Manager.Store == nil {
-		return "", ""
+		return "", "", fmt.Errorf("ingestion manager: no memory manager configured")
 	}
 	var cid string
 	if im.agent.ContentStore != nil && len(doc.Body) > 0 {
@@ -420,7 +450,7 @@ func (im *IngestionManager) mintSourceDoc(ctx context.Context, doc domain.Extern
 			cid = string(c)
 		}
 	}
-	entityID := "source_doc:" + doc.SourceURI
+	entityID := sourceDocEntityID(doc)
 	meta := map[string]interface{}{"kind": "source_document", "canonical_id": doc.SourceURI, "source_uri": doc.SourceURI, "source_type": doc.SourceType, "title": doc.Title, "author": doc.Author, "timestamp": doc.Timestamp.Format(time.RFC3339), "document_id": externalDocumentID(doc)}
 	if len(doc.Tags) > 0 {
 		meta["tags"] = append([]string(nil), doc.Tags...)
@@ -432,10 +462,9 @@ func (im *IngestionManager) mintSourceDoc(ctx context.Context, doc domain.Extern
 		ID: entityID, DocumentType: domain.DocTypeMnemonicEntity,
 		Text: doc.Title, ActivationStrength: 0.1, Metadata: meta,
 	}); err != nil {
-		slog.Warn("IngestionManager: failed to mint source-doc entity", "err", err)
-		return cid, ""
+		return cid, "", fmt.Errorf("mint source-doc entity: %w", err)
 	}
-	return cid, entityID
+	return cid, entityID, nil
 }
 
 func docExt(uri string) string {

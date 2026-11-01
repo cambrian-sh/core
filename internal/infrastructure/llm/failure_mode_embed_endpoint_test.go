@@ -142,7 +142,13 @@ func TestFailureMode_OllamaEmbedder_ContextOverflowHalvesAndRetries(t *testing.T
 	if len(single) != len(want) || single[0] != want[0] || single[1] != want[1] || single[2] != want[2] {
 		t.Fatalf("Embed input sizes should halve 2000→1000→500, saw %v", single)
 	}
-	t.Logf("Embed: %d endpoint attempts across %d sizes (the shared transport replays an overflow 500 before the embedder halves it)", singleAttempts, len(single))
+	// One attempt per size: the shared retry transport must NOT replay a
+	// context-overflow 500 (deterministic for the input) before the embedder
+	// halves it. Before T-20261031-embedder-context-overflow-500-is-replayed-5x-by
+	// this was 13 attempts (6 x 2000, 6 x 1000, 1 x 500).
+	if singleAttempts != len(want) {
+		t.Fatalf("Embed made %d endpoint attempts for %d sizes; an overflow 500 must not be replayed by the transport (sizes seen: %v)", singleAttempts, len(want), s.single)
+	}
 
 	vecs, err := e.EmbedBatch(context.Background(), []string{long, "short"})
 	if err != nil || len(vecs) != 2 {
@@ -150,9 +156,13 @@ func TestFailureMode_OllamaEmbedder_ContextOverflowHalvesAndRetries(t *testing.T
 	}
 	s.mu.Lock()
 	batches := distinct(s.batches)
+	batchAttempts := len(s.batches)
 	s.mu.Unlock()
 	if len(batches) != len(want) || batches[0] != want[0] || batches[1] != want[1] || batches[2] != want[2] {
 		t.Fatalf("EmbedBatch per-input cap should halve 2000→1000→500, saw %v", batches)
+	}
+	if batchAttempts != len(want) {
+		t.Fatalf("EmbedBatch made %d endpoint attempts for %d cap sizes; an overflow 500 must not be replayed by the transport", batchAttempts, len(want))
 	}
 }
 

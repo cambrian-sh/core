@@ -50,6 +50,11 @@ func TestE2E_TokenBudgetEnforced(t *testing.T) {
 	if len(events) != 1 || events[0].CompletionTokens != llm.EstimateTokens(got) {
 		t.Fatalf("TaskEvent should count the truncated response: events=%d", len(events))
 	}
+	// The cut-off is reported on the event itself, server-authoritatively
+	// (T-20261031-taskevent-budgetoverrun-is-written-by-no-kernel).
+	if !events[0].BudgetOverrun {
+		t.Fatalf("TaskEvent.BudgetOverrun must carry the gateway's Pass-1 cut, got %+v", events[0])
+	}
 }
 
 // Under the limit the stream passes untouched and usage matches the response.
@@ -57,12 +62,15 @@ func TestE2E_TokenBudgetNotExceededPassesThrough(t *testing.T) {
 	h := harness.New(harness.Config{StepTokenLimit: 4096})
 	h.AddResponse("a short answer")
 
-	final, _, err := h.ExecutePlan(t.Context())
+	final, events, err := h.ExecutePlan(t.Context())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
 	}
 	if got := string(final.Payload.Data); got != "a short answer" {
 		t.Fatalf("response altered: %q", got)
+	}
+	if len(events) != 1 || events[0].BudgetOverrun {
+		t.Fatalf("a response under the limit must not be reported as an overrun: %+v", events)
 	}
 	if u := h.StepUsages(); len(u) != 1 || u[0].TotalTokens != llm.EstimateTokens("a short answer") {
 		t.Fatalf("usage %+v does not match the response", u)
