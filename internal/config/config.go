@@ -734,6 +734,15 @@ type RetrievalConfig struct {
 	AgenticIrcotEnabled     bool    `json:"agentic_ircot_enabled,omitempty"`     // IRCoT: reason-then-retrieve loop (CoT step drives next retrieval)
 	AgenticDecomposeEnabled bool    `json:"agentic_decompose_enabled,omitempty"` // up-front grounded decomposition: decompose whole question, retrieve+answer each sub-question
 
+	// AgenticSubQuestionConcurrency bounds how many decomposition retrieval passes
+	// run at once: the coverage-floor pass plus every sub-question whose {n}
+	// placeholders are already resolved (dependent ones still wait for the answers
+	// they substitute). Results are assembled in plan order, so the ranking is the
+	// sequential loop's. <=1 ⇒ sequential. Default 4. The extraction LLM calls of
+	// parallel passes still queue at the single-threaded retrieval_agent
+	// (ADR-0036 D2); the saving is the retrieval passes.
+	AgenticSubQuestionConcurrency int `json:"agentic_subquestion_concurrency,omitempty"`
+
 	// BlendEnabled (ADR-0054 Stage A) re-ranks recall candidates by the
 	// multi-signal blend (cosine + recency + confidence + pagerank + activation)
 	// instead of bare cosine. Default true; false ⇒ bare-cosine ranking. The bge
@@ -913,6 +922,23 @@ type IngestionConfig struct {
 	// every consumer of chunk text sees, and re-ingest is required for existing
 	// corpora to benefit.
 	ChunkContextPrepend bool `json:"chunk_context_prepend,omitempty"`
+
+	// StructureJunkFilterBackends names the structure-parser backends whose
+	// OCR/layout-junk leaves are DROPPED at ingest (ADR-0060). The docling_agent
+	// only classifies a leaf as junk (a Docling layout marker such as "image not
+	// available", or a prose paragraph with almost no letters); the kernel drops a
+	// classified leaf only when the backend that produced it is listed here, and
+	// logs every drop with a hash and a sample.
+	//
+	// Default ["docling"]: the classifier was built for Docling's extraction of
+	// binary documents (PDF/DOCX/images). The "markdown" and "text" backends parse
+	// chat sessions and every other text ingest, where a "paragraph" with few
+	// letters is a markdown table, terminal output or a list of numbers — user
+	// content, not noise — so they are NOT listed and drop nothing
+	// (T-20261102-ingestion-structure-junk-filter-silently-drops: the filter had
+	// been deleting such turns from LongMemEval chat sessions). [] disables
+	// dropping everywhere. Valid names: docling, markdown, text.
+	StructureJunkFilterBackends []string `json:"structure_junk_filter_backends"`
 
 	// KgExtractorEnabled (ADR-0053 D2 revised) routes write-time chunk-triplet
 	// extraction through the deterministic, NO-LLM kg_extractor system agent
@@ -1715,14 +1741,15 @@ func DefaultConfig() *Config {
 				// values become the product defaults (they had lived only in a
 				// gitignored local file). The experimental-off era of these flags
 				// ended with that call; opt-OUT is via config or the store.
-				AgenticRetrievalEnabled: true,
-				AgenticMaxHops:          4,
-				AgenticDecomposeEnabled: true, // grounded decomposition — the one agentic lever that measured a win
-				AgenticPlannerModel:     "llm:deepseek",
-				HybridSearchEnabled:     true, // dense+lexical RRF fusion (ADR-0054)
-				HybridRRFK:              60,
-				HybridLexicalWeight:     1,
-				HnswEfSearch:            120,
+				AgenticRetrievalEnabled:       true,
+				AgenticMaxHops:                4,
+				AgenticDecomposeEnabled:       true, // grounded decomposition — the one agentic lever that measured a win
+				AgenticSubQuestionConcurrency: 4,    // T-20261102: independent sub-questions retrieved in parallel
+				AgenticPlannerModel:           "llm:deepseek",
+				HybridSearchEnabled:           true, // dense+lexical RRF fusion (ADR-0054)
+				HybridRRFK:                    60,
+				HybridLexicalWeight:           1,
+				HnswEfSearch:                  120,
 				// Owner decision 2026-11-02 (ADR-0134 P2): ON by default. Every principal
 				// read carries a scope predicate, which filters after an HNSW scan, so
 				// without the iterative scan a selective scope underfills top_k silently.
@@ -1771,6 +1798,9 @@ func DefaultConfig() *Config {
 				IngestionWorkers:           5,
 				IngestionBatchWaitMs:       1000,
 				EventTimeFutureToleranceMs: 300000, // ADR-0134 Q4: 5 minutes
+				// Drop OCR/layout junk only from Docling output; chat and other text
+				// ingests keep every leaf (T-20261102-ingestion-structure-junk-filter-silently-drops).
+				StructureJunkFilterBackends: []string{"docling"},
 			},
 			Hippocampus: HippocampusConfig{
 				HippocampusPolicies: map[string]domain.HippocampusPolicy{
@@ -2253,6 +2283,9 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	if c.Plan.MaxPlanCost < 0 {
 		errs = append(errs, "max_plan_cost must be >= 0")
 	}
+	if c.Retrieval.AgenticSubQuestionConcurrency < 0 {
+		errs = append(errs, "agentic_subquestion_concurrency must be >= 0 (<=1 retrieves sub-questions sequentially)")
+	}
 	if c.Routing.ExplorationRate < 0 || c.Routing.ExplorationRate > 1 {
 		errs = append(errs, "exploration_rate must be in [0, 1]")
 	}
@@ -2281,6 +2314,13 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	case "", "off", "relaxed_order", "strict_order":
 	default:
 		errs = append(errs, fmt.Sprintf("retrieval.hnsw_iterative_scan must be one of off, relaxed_order, strict_order (got %q)", c.Retrieval.HnswIterativeScan))
+	}
+	for _, b := range c.Ingestion.StructureJunkFilterBackends {
+		switch b {
+		case "docling", "markdown", "text":
+		default:
+			errs = append(errs, fmt.Sprintf("ingestion.structure_junk_filter_backends: unknown backend %q (valid: docling, markdown, text)", b))
+		}
 	}
 	if c.Retrieval.HnswMaxScanTuples < 0 {
 		errs = append(errs, "retrieval.hnsw_max_scan_tuples must be >= 0")

@@ -77,8 +77,9 @@ type StructuredDocument struct {
 	Nodes      []StructNode `json:"nodes"`
 	OK         bool         `json:"ok"`
 	// DroppedLeaves counts content leaves the sidecar's junk filter deleted
-	// before they could become chunks. Surfaced so silent content loss at the
-	// earliest ingest stage is countable on the kernel side.
+	// before they could become chunks. Since junk_mode "mark" the sidecar drops
+	// nothing and this stays 0; it is non-zero only from a legacy sidecar, and
+	// applyStructureJunkFilter still reports and counts it.
 	DroppedLeaves int `json:"dropped_leaves"`
 }
 
@@ -122,6 +123,10 @@ type StructureParseRequest struct {
 	SourceType string
 	Text       string
 	DataB64    string
+	// JunkMode "mark" makes the sidecar keep every leaf and tag OCR/layout junk
+	// with meta.junk_reason, so the kernel decides what to drop (structure_junk.go).
+	// Empty = the sidecar's legacy in-process drop.
+	JunkMode string
 }
 
 // ── persisted primitives ─────────────────────────────────────────────────────

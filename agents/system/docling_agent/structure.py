@@ -78,13 +78,23 @@ class StructuredDocument:
         return [n for n in self.nodes if n.kind in LEAF_KINDS]
 
 
-# Junk-leaf filter (OCR / layout artifacts). Two characterizable kinds:
+# Junk-leaf CLASSIFIER (OCR / layout artifacts). Built for the Docling backend:
 #  * deterministic layout markers — Docling's fixed "image not available" template
 #    for un-rasterized pictures;
 #  * OCR garbage — near-empty / punctuation-only fragments ("!", "! ! !") with no
 #    real words. The letter-ratio/word-count check is applied ONLY to prose
 #    paragraphs, never to tables/code (a numeric table legitimately has few
-#    letters). Keeps junk out of the chunk set entirely (it never becomes a node).
+#    letters).
+#
+# It only CLASSIFIES. Whether a classified leaf is dropped is the kernel's decision
+# (execution.ingestion.structure_junk_filter_backends, T-20261102-ingestion-
+# structure-junk-filter-silently-drops): under junk_mode "mark" every leaf is
+# kept and a junk leaf carries meta["junk_reason"]. The text/markdown parser
+# turns EVERY non-fenced block into a "paragraph" leaf, so on chat sessions the
+# letter-ratio rule deleted markdown tables, terminal output, number and colour
+# lists and an assistant turn listing the user's own receipts — user data, not
+# OCR noise. junk_mode "drop" (the legacy behaviour) is kept only for a kernel
+# that does not send junk_mode, so an older kernel binary sees no change.
 _JUNK_MARKERS = (
     "image not available",
     "pdfpipelineoptions",
@@ -96,32 +106,46 @@ _JUNK_MARKERS = (
 # become a chunk — unrecoverable content loss in the default ingest pipeline.
 _WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 
+JUNK_LAYOUT_MARKER = "layout_marker"
+JUNK_FEW_LETTERS = "few_letters"
+JUNK_LOW_LETTER_RATIO = "low_letter_ratio"
 
-def is_junk_leaf(kind: str, text: str) -> bool:
+JUNK_MODE_DROP = "drop"   # legacy: classified leaves never become nodes (counted)
+JUNK_MODE_MARK = "mark"   # keep every leaf; tag junk with meta["junk_reason"]
+
+
+def junk_reason(kind: str, text: str) -> str:
+    """Why `text` looks like an OCR/layout artifact, or "" if it does not."""
     t = (text or "").strip()
     if not t:
-        return True
+        return ""  # empty is not content; callers skip it before classifying
     low = t.lower()
     if any(m in low for m in _JUNK_MARKERS):
-        return True
+        return JUNK_LAYOUT_MARKER
     if kind == KIND_PARAGRAPH:
         # Total letters across word-runs, not run COUNT: scripts written without
         # spaces (CJK) produce one long run, which the old two-word minimum
         # rejected wholesale. Four letters keeps any real sentence in any script
-        # while still junking "!", "! ! !", "ab".
+        # while still flagging "!", "! ! !", "ab".
         if sum(len(w) for w in _WORD_RE.findall(t)) < 4:
-            return True
+            return JUNK_FEW_LETTERS
         if sum(ch.isalpha() for ch in t) / len(t) < 0.35:
-            return True
-    return False
+            return JUNK_LOW_LETTER_RATIO
+    return ""
+
+
+def is_junk_leaf(kind: str, text: str) -> bool:
+    return not (text or "").strip() or junk_reason(kind, text) != ""
 
 
 class StructureBuilder:
     """Builds a StructuredDocument by streaming heading/leaf events. Maintains the
     open-section stack, assigns sibling order, ordinal paths, and breadcrumbs."""
 
-    def __init__(self, doc_id: str, title: str, source_type: str, backend: str) -> None:
+    def __init__(self, doc_id: str, title: str, source_type: str, backend: str,
+                 junk_mode: str = JUNK_MODE_DROP) -> None:
         self.doc = StructuredDocument(doc_id=doc_id, title=title, source_type=source_type, backend=backend)
+        self.junk_mode = junk_mode
         self.root = StructNode(id="doc", kind=KIND_DOCUMENT, level=0, title=title)
         self.doc.nodes.append(self.root)
         self.stack: List[StructNode] = [self.root]      # open sections, root first
@@ -152,9 +176,15 @@ class StructureBuilder:
 
     def add_leaf(self, kind: str, text: str, meta: Optional[Dict[str, Any]] = None,
                  page: Optional[int] = None) -> Optional[StructNode]:
-        if is_junk_leaf(kind, text):
-            self.doc.dropped_leaves += 1
-            return None  # OCR/layout junk — dropped before it can pollute retrieval (counted, never silent)
+        if not (text or "").strip():
+            return None  # nothing to store: not content, not a drop
+        reason = junk_reason(kind, text)
+        if reason:
+            if self.junk_mode != JUNK_MODE_MARK:
+                self.doc.dropped_leaves += 1
+                return None  # legacy drop mode (an older kernel): counted, never silent
+            meta = dict(meta or {})
+            meta["junk_reason"] = reason  # the kernel decides, logs and counts
         parent = self.stack[-1]
         order = self._order(parent.id)
         path = self._path(parent, order)
@@ -204,7 +234,8 @@ def _detect_text_heading(line: str):
     return None
 
 
-def parse_document(doc_id: str, text: str, source_type: str = "text", title: str = "") -> StructuredDocument:
+def parse_document(doc_id: str, text: str, source_type: str = "text", title: str = "",
+                   junk_mode: str = JUNK_MODE_DROP) -> StructuredDocument:
     """Dependency-free structural parse of Markdown or plain text.
 
     Markdown `#` headings drive the hierarchy when present; otherwise conservative
@@ -214,7 +245,7 @@ def parse_document(doc_id: str, text: str, source_type: str = "text", title: str
     """
     lines = text.splitlines()
     is_md = any(_MD_HEADING.match(l) for l in lines[:400])
-    b = StructureBuilder(doc_id, title or doc_id, source_type, "markdown" if is_md else "text")
+    b = StructureBuilder(doc_id, title or doc_id, source_type, "markdown" if is_md else "text", junk_mode)
 
     buf: List[str] = []
     in_fence = False

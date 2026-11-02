@@ -114,6 +114,23 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
   Default-ON since 2026-11-02 (owner decision): `execution.retrieval.hnsw_iterative_scan = relaxed_order` (pgvector
   iterative scan against filtered-HNSW underfill, because every principal read is scope-filtered) and
   `execution.retrieval.blend_weight_recency = 0.1` (was 0; a starting value for the event-time A/B to tune).
+- **Ingestion never silently drops content** (2026-11-02, T-20261102-ingestion-structure-junk-filter-silently-drops,
+  ADR-0060). The `docling_agent` only CLASSIFIES OCR/layout junk (`junk_mode=mark` → `meta.junk_reason`); the kernel
+  (`internal/memory/structure_junk.go` `applyStructureJunkFilter`) drops a classified leaf only when its parser backend
+  is listed in `execution.ingestion.structure_junk_filter_backends` (default `["docling"]`; `markdown`/`text`, i.e.
+  every chat ingest, keep everything). Each drop is logged with doc id, kind, reason, length, sha256 and a sample
+  (WARN per document, DEBUG per leaf) and counted (`dropped_leaves` on the ingest-complete INFO line,
+  `IngestionManager.StructureLeavesDropped()`). A sidecar request without `junk_mode` keeps the legacy drop.
+- **Agentic decomposition spends only what a caller reads** (2026-11-02, ADR-0054 observations, prerequisites of
+  ADR-0135). `decompSearch` (`internal/memory/query.go`, helpers in `query_decomp.go`): an echo plan (one sub-question,
+  no `{n}`, equal to the question after normalisation, `isEchoPlan`) runs the single pass with no extraction call
+  (trace `echo_single_pass`); the closing `Synthesize` call and the `_agentic_control` row are produced only when ctx
+  carries `memory.WithAgenticSynthesis` — set by `QueryMemory` for `x-agentic-control` callers and by
+  `QueryService.answer` (operator/scoped Answer); independent sub-questions (no unresolved `{n}`) run in parallel
+  with the coverage-floor pass, bounded by `execution.retrieval.agentic_subquestion_concurrency` (default 4, `<=1`
+  sequential), dependent ones after their answers, outcomes assembled in plan order so ranking equals the
+  sequential loop. The extraction calls still queue at the single-threaded `retrieval_agent`
+  (T-20261102-parallel-decomposition-extraction-calls-queue).
 
 ---
 
@@ -144,6 +161,8 @@ Each has a ticket; close the ticket and update this list in the same change.
 - Derived memory artifacts (`chunk_triplets`, …) carry no classification; contained only
   because their text is never surfaced — `T-20261031-derived-memory-artifacts-carry-no`
 - No customer data export — `T-20261031-customers-cannot-export-their-data`
+- The LongMemEval harness does not yet count structure-leaf drops per question (the kernel logs `dropped_leaves`
+  per ingested document) — `T-20261102-longmemeval-harness-does-not-count-structure`
 - ADR-0131 D4-D6 deferred (benchmark phase): spend in receipts/operator feed/UI —
   `T-20261101-adr-0131-d6-spend-totals-in-the-plan-end`; per-purpose ceilings —
   `T-20261101-adr-0131-d3-per-purpose-spend-ceilings`; planner cluster cache / prefix caching —

@@ -179,7 +179,7 @@ func TestFinalizeAgentic_PrependsControlWithStatus(t *testing.T) {
 	q.EnableAgenticRetrieval(p, 1)
 	acc := []domain.SearchResult{doc("chunk1", "some text")}
 	hops := []hopTrace{{Hop: 0, PlannedQuery: "q", Decision: "max_hops"}}
-	got := q.finalizeAgentic(context.Background(), "q", acc, nil, hops, nil)
+	got := q.finalizeAgentic(WithAgenticSynthesis(context.Background()), "q", acc, nil, hops, nil)
 	if len(got) != 2 {
 		t.Fatalf("expected control + 1 chunk, got %d", len(got))
 	}
@@ -206,7 +206,7 @@ func TestFinalizeAgentic_SynthErrorFailsOpenButKeepsTrace(t *testing.T) {
 	q.EnableAgenticRetrieval(p, 1)
 	acc := []domain.SearchResult{doc("chunk1", "x")}
 	hops := []hopTrace{{Hop: 0, PlannedQuery: "q", Decision: "max_hops"}}
-	got := q.finalizeAgentic(context.Background(), "q", acc, nil, hops, nil)
+	got := q.finalizeAgentic(WithAgenticSynthesis(context.Background()), "q", acc, nil, hops, nil)
 	// Synth error still emits a control (status "answer", empty text) so the
 	// loop trace is preserved; the original chunk follows it.
 	if len(got) != 2 {
@@ -251,7 +251,7 @@ func TestFinalizeAgentic_SynthesisUsesContextOrderNotWireOrder(t *testing.T) {
 	q.EnableAgenticRetrieval(p, 1)
 	reranked := []domain.SearchResult{doc("surface-hit", "surface text"), doc("bridge-hit", "bridge text")}
 	interleaved := []domain.SearchResult{doc("bridge-hit", "bridge text"), doc("surface-hit", "surface text")}
-	got := q.finalizeAgentic(context.Background(), "q", reranked, interleaved, nil, nil)
+	got := q.finalizeAgentic(WithAgenticSynthesis(context.Background()), "q", reranked, interleaved, nil, nil)
 	// Wire order: control first, then acc (reranked) order untouched.
 	if got[1].Document.ID != "surface-hit" || got[2].Document.ID != "bridge-hit" {
 		t.Fatalf("returned rows must keep acc order: %v, %v", got[1].Document.ID, got[2].Document.ID)

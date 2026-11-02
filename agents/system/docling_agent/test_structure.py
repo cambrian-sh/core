@@ -86,6 +86,52 @@ check("plain-text Chapter 2 detected", any(t.startswith("Chapter 2") for t in t2
 check("prose 'in chapter 1 we saw' NOT a heading",
       not any("we saw" in (n.title or "") for n in doc2.sections()))
 
+# ── junk classification: chat content is kept under junk_mode="mark" ───────
+# T-20261102-ingestion-structure-junk-filter-silently-drops: the text parser emits
+# every block as a "paragraph", and the OCR letter-ratio rule used to DELETE tables,
+# terminal output and number/colour/receipt lists from chat sessions.
+from structure import JUNK_MODE_MARK, StructureBuilder, KIND_TABLE
+CHAT = """user: I compared the plans, here is the table.
+
+| Plan | Price | GB |
+|------|-------|----|
+| A    | $10   | 5  |
+| B    | $20   | 50 |
+
+$ ls -la /tmp
+-rw-r--r-- 1 me 4096 11-02 10:00 a.txt
+
+1. 42
+2. 17
+3. 3.14
+
+- Walmart: $120.00
+- TJ's: $85.40
+- 7-11: $12.99
+"""
+marked = parse_document("chat", CHAT, source_type="text", junk_mode=JUNK_MODE_MARK)
+texts = [n.text for n in marked.leaves()]
+check("mark mode drops nothing", marked.dropped_leaves == 0)
+for needle in ("| Plan | Price", "$ ls -la", "3. 3.14", "Walmart: $120.00", "I compared the plans"):
+    check(f"mark mode keeps {needle!r}", any(needle in t for t in texts))
+reasons = {n.text.split(chr(10))[0]: n.meta.get("junk_reason") for n in marked.leaves()}
+check("table classified (tagged, not dropped)", reasons.get("| Plan | Price | GB |") == "low_letter_ratio")
+check("prose not classified", reasons.get("user: I compared the plans, here is the table.") is None)
+
+legacy = parse_document("chat", CHAT, source_type="text")
+check("legacy drop mode still drops (older kernels unchanged)", legacy.dropped_leaves >= 3)
+
+b = StructureBuilder("pdf", "pdf", "pdf", "docling", JUNK_MODE_MARK)
+b.add_leaf(KIND_PARAGRAPH, "<!-- image not available -->")
+b.add_leaf(KIND_PARAGRAPH, "! ! !")
+b.add_leaf(KIND_TABLE, "| 1 | 2 |")
+b.add_leaf(KIND_PARAGRAPH, "   ")
+lv = b.doc.leaves()
+check("docling layout marker tagged", lv[0].meta.get("junk_reason") == "layout_marker")
+check("OCR punctuation tagged", lv[1].meta.get("junk_reason") == "few_letters")
+check("numeric table never tagged", "junk_reason" not in lv[2].meta)
+check("empty leaf skipped, not counted", len(lv) == 3 and b.doc.dropped_leaves == 0)
+
 print()
 if FAILS:
     print(f"{len(FAILS)} FAILED: {FAILS}"); raise SystemExit(1)

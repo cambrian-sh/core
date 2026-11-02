@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -22,6 +23,10 @@ type IngestionConfig struct {
 	// ContextPrepend prepends "<title> › <section breadcrumb>" to each chunk's
 	// body before embedding/storage (execution.ingestion.chunk_context_prepend).
 	ContextPrepend bool
+	// JunkFilterBackends lists the structure-parser backends whose junk-classified
+	// leaves are dropped (execution.ingestion.structure_junk_filter_backends). Empty
+	// = drop nothing anywhere: content is kept unless the operator opted in.
+	JunkFilterBackends []string
 }
 
 type IngestionManager struct {
@@ -58,6 +63,9 @@ type IngestionManager struct {
 	// before ANY semantic processing — including scene generation — touches it.
 	// nil = the substrate's evidence foundation is disabled (the default).
 	evidenceCapture EvidenceCapture
+	// structureLeavesDropped counts structure leaves dropped as junk since start
+	// (StructureLeavesDropped). See structure_junk.go.
+	structureLeavesDropped atomic.Int64
 }
 
 // EvidenceCapture is the evidence foundation's write seam (ADR-0105 D6).
@@ -290,7 +298,8 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 		slog.Warn("IngestionManager: chunker failed, falling back to OptionC", "source_uri", doc.SourceURI, "err", err)
 		chunks, _ = OptionCChunker{}.Chunk(ctx, &doc)
 	}
-	chunkCount, err := im.persistChunks(ctx, doc, chunks, entityID, scene)
+	outcome, err := im.persistChunks(ctx, doc, chunks, entityID, scene)
+	chunkCount := outcome.Stored
 	if err != nil {
 		// Includes ErrNoChunksStored: an ingest that stored no content is a FAILED
 		// ingest, and the caller is told so rather than handed an entity id
@@ -304,7 +313,8 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	if chunkCount == 0 {
 		return entityID, nil
 	}
-	slog.Info("IngestionManager: sync ingest complete", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", chunkCount)
+	slog.Info("IngestionManager: sync ingest complete", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", chunkCount,
+		"dropped_leaves", outcome.DroppedLeaves)
 	im.publishWritten(doc, entityID, chunkCount)
 	return entityID, nil
 }
@@ -416,7 +426,7 @@ func (im *IngestionManager) processBatch(ctx context.Context, batch []domain.Ext
 			slog.Warn("IngestionManager: chunker failed, falling back to OptionC", "source_uri", doc.SourceURI, "err", err)
 			chunks, _ = OptionCChunker{}.Chunk(ctx, &doc)
 		}
-		chunkCount, err := im.persistChunks(ctx, doc, chunks, entityID, scene)
+		outcome, err := im.persistChunks(ctx, doc, chunks, entityID, scene)
 		if err != nil {
 			slog.Warn("IngestionManager: failed to persist chunks", "source_uri", doc.SourceURI, "err", err)
 			continue
@@ -425,7 +435,8 @@ func (im *IngestionManager) processBatch(ctx context.Context, batch []domain.Ext
 			slog.Warn("IngestionManager: failed to mint source-doc entity", "source_uri", doc.SourceURI, "err", err)
 			continue
 		}
-		slog.Info("ExternalDocumentIngested", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", chunkCount)
+		slog.Info("ExternalDocumentIngested", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", outcome.Stored,
+			"dropped_leaves", outcome.DroppedLeaves)
 	}
 }
 

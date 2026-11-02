@@ -89,7 +89,8 @@ def _page_of(item) -> Optional[int]:
     return None
 
 
-def parse_with_docling(doc_id: str, data: bytes, source_type: str = "", title: str = "") -> StructuredDocument:
+def parse_with_docling(doc_id: str, data: bytes, source_type: str = "", title: str = "",
+                       junk_mode: str = "drop") -> StructuredDocument:
     """Convert a binary/rich document to a StructuredDocument via Docling.
 
     `data` is the raw document bytes. Raises DoclingUnavailable if docling is
@@ -114,7 +115,7 @@ def parse_with_docling(doc_id: str, data: bytes, source_type: str = "", title: s
     result = converter.convert(stream)
     ddoc = result.document
 
-    b = StructureBuilder(doc_id, title or (getattr(ddoc, "name", "") or doc_id), source_type or "binary", "docling")
+    b = StructureBuilder(doc_id, title or (getattr(ddoc, "name", "") or doc_id), source_type or "binary", "docling", junk_mode)
 
     # iterate_items yields (item, level) in reading order with hierarchy depth.
     # We translate Docling depth into our section levels: a section header at

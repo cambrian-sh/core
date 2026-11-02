@@ -34,15 +34,25 @@ var ErrNoChunksStored = errors.New("ingestion: no chunk stored (every chunk lost
 // counts as a document's name is how the two paths drift apart.
 const sourceDocumentMarker = domain.SourceDocumentMarker
 
+// persistOutcome is what one document's ingest stored and lost.
+type persistOutcome struct {
+	// Stored is the number of chunks written.
+	Stored int
+	// DroppedLeaves is the number of structure leaves dropped as junk before
+	// chunking (structure_junk.go). Zero for chat/text ingests by default.
+	DroppedLeaves int
+}
+
 func (im *IngestionManager) persistChunks(
 	ctx context.Context,
 	doc domain.ExternalDocument,
 	chunks []domain.Chunk,
 	entityID string,
 	scene string,
-) (int, error) {
+) (persistOutcome, error) {
+	var outcome persistOutcome
 	if im.agent == nil || im.agent.Manager == nil || im.agent.Manager.Store == nil {
-		return 0, fmt.Errorf("ingestion manager: vector store is not configured")
+		return outcome, fmt.Errorf("ingestion manager: vector store is not configured")
 	}
 	documentID := externalDocumentID(doc)
 	// ADR-0134 D2: the record clock of this ingest. created_at of every chunk written
@@ -119,23 +129,22 @@ func (im *IngestionManager) persistChunks(
 		if parsed, perr := im.structureParser.Parse(ctx, StructureParseRequest{
 			DocID: documentID, Title: doc.Title, SourceType: doc.SourceType,
 			Text: doc.Body, DataB64: dataB64,
+			// The sidecar classifies junk; the kernel decides (applyStructureJunkFilter).
+			JunkMode: structureJunkModeMark,
 		}); perr != nil {
 			slog.WarnContext(ctx, "IngestionManager: structure parse failed; flat chunking", "doc", documentID, "err", perr)
 		} else if parsed != nil {
-			// The sidecar reports degraded parses (ok=false) and every leaf its
-			// junk filter deleted. Both used to be consumed silently — a chronic
-			// sidecar failure disabled the entire default ingest strategy with no
-			// line of evidence, and filter drops were unrecoverable content loss
-			// nobody could count.
+			// The sidecar reports degraded parses (ok=false) and classifies junk
+			// leaves. Both used to be consumed silently — a chronic sidecar failure
+			// disabled the entire default ingest strategy with no line of evidence,
+			// and junk drops were unrecoverable content loss nobody could audit.
 			if !parsed.OK {
 				slog.WarnContext(ctx, "IngestionManager: structure sidecar reported a degraded parse; using its partial output",
 					"doc", documentID, "backend", parsed.Backend)
 			}
-			if parsed.DroppedLeaves > 0 {
-				slog.WarnContext(ctx, "IngestionManager: structure junk filter dropped content leaves",
-					"doc", documentID, "dropped_leaves", parsed.DroppedLeaves, "kept_nodes", len(parsed.Nodes),
-					"effect", "dropped leaves are not stored and not retrievable")
-			}
+			// Drops only for backends in structure_junk_filter_backends (default:
+			// docling); logs each drop with hash + sample and counts it.
+			outcome.DroppedLeaves = im.applyStructureJunkFilter(ctx, documentID, parsed)
 			if lc, reps := ChunksFromLeaves(parsed); len(lc) > 0 {
 				chunks = lc
 				structuredDoc = parsed
@@ -178,7 +187,7 @@ func (im *IngestionManager) persistChunks(
 	}
 	vectors, err := im.embedChunkBodies(ctx, doc, chunks)
 	if err != nil {
-		return 0, err
+		return outcome, err
 	}
 
 	docs := make([]*domain.Document, 0, len(chunks))
@@ -242,13 +251,13 @@ func (im *IngestionManager) persistChunks(
 				"doc", documentID, "source_uri", doc.SourceURI, "source_type", doc.SourceType,
 				"chunks", len(chunks), "empty_embeddings", empty, "body_len", len(doc.Body),
 				"effect", "the CONTENT is not stored, so this document is not retrievable")
-			return 0, fmt.Errorf("ingestion manager: %w: %d chunk(s), %d with an empty embedding (%s)",
+			return outcome, fmt.Errorf("ingestion manager: %w: %d chunk(s), %d with an empty embedding (%s)",
 				ErrNoChunksStored, len(chunks), empty, doc.SourceURI)
 		}
-		return 0, nil
+		return outcome, nil
 	}
 	if err := im.agent.Manager.SaveBatch(ctx, docs); err != nil {
-		return 0, fmt.Errorf("ingestion manager: save chunk batch: %w", err)
+		return outcome, fmt.Errorf("ingestion manager: save chunk batch: %w", err)
 	}
 	// ADR-0053: enqueue each saved chunk for per-chunk (h, r, t) + anchor
 	// extraction. Non-blocking + nil-safe; the chunk doc is already persisted, so
@@ -264,7 +273,8 @@ func (im *IngestionManager) persistChunks(
 	if structuredDoc != nil && im.structureStore != nil {
 		im.persistStructure(ctx, structuredDoc, documentID, ids, structuredReps)
 	}
-	return len(docs), nil
+	outcome.Stored = len(docs)
+	return outcome, nil
 }
 
 // persistStructure persists the structure graph (section nodes + PART_OF/NEXT

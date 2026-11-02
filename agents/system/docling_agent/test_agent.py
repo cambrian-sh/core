@@ -34,6 +34,22 @@ check("binary path reports backend", out2.get("backend") in ("docling", "text", 
 out3 = json.loads(a.run(types.SimpleNamespace(data=b"not json", text="")))
 check("malformed request handled", isinstance(out3.get("nodes"), list))
 
+# 4) junk_mode: the kernel sends "mark" — every leaf comes back, junk is tagged.
+#    Absent (an older kernel) keeps the legacy in-sidecar drop.
+chat = """user: my receipts
+
+- Walmart: $120.00
+- TJ's: $85.40
+- 7-11: $12.99
+"""
+out4 = json.loads(a.run(task({"doc_id": "c1", "source_type": "text", "text": chat, "junk_mode": "mark"})))
+leaves4 = [n for n in out4["nodes"] if n["kind"] == "paragraph"]
+check("mark: receipts list returned", any("Walmart" in n["text"] for n in leaves4))
+check("mark: receipts list tagged junk_reason", any(n["meta"].get("junk_reason") for n in leaves4 if "Walmart" in n["text"]))
+check("mark: dropped_leaves is 0", out4.get("dropped_leaves") == 0)
+out5 = json.loads(a.run(task({"doc_id": "c1", "source_type": "text", "text": chat})))
+check("legacy: receipts dropped and counted", out5.get("dropped_leaves") == 1 and not any("Walmart" in n["text"] for n in out5["nodes"]))
+
 print()
 if FAILS:
     print(f"{len(FAILS)} FAILED: {FAILS}"); raise SystemExit(1)

@@ -19,8 +19,13 @@ T-20261031-core-system-agents-docling-kg-extractor): `run()` is overridden and n
 privileged system organ (`domain.IsSystemAgent`): kernel-invoked directly by
 `network.DoclingDispatcher`, never interviewed, auctioned or drafted as a verifier.
 
-Request  (JSON): {doc_id, title?, source_type?, text?, data_b64?}
+Request  (JSON): {doc_id, title?, source_type?, text?, data_b64?, junk_mode?}
 Response (JSON): StructuredDocument.to_json() + {ok, error?}
+
+junk_mode "mark" (sent by every current kernel) keeps every leaf and tags OCR/layout
+artifacts with meta.junk_reason; the KERNEL decides what to drop, per backend
+(execution.ingestion.structure_junk_filter_backends). Absent or "drop" is the legacy
+behaviour, kept so an older kernel binary sees no change.
 """
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ import json
 from cambrian_agent_sdk import CognitiveAgent
 from cambrian_agent_sdk._logging import configure_logging
 
-from structure import parse_document
+from structure import JUNK_MODE_DROP, JUNK_MODE_MARK, parse_document
 from docling_backend import DoclingUnavailable, docling_available, parse_with_docling
 
 AGENT_DESCRIPTION = (
@@ -58,9 +63,10 @@ class DoclingAgent(CognitiveAgent):
         source_type = (req.get("source_type") or "").lower().lstrip(".")
         text = req.get("text") or ""
         data_b64 = req.get("data_b64") or ""
+        junk_mode = JUNK_MODE_MARK if req.get("junk_mode") == JUNK_MODE_MARK else JUNK_MODE_DROP
 
         try:
-            structured, error = self._parse(doc_id, title, source_type, text, data_b64)
+            structured, error = self._parse(doc_id, title, source_type, text, data_b64, junk_mode)
         except Exception as e:  # never crash the ingest path
             payload = {"ok": False, "error": f"{type(e).__name__}: {e}",
                        "doc_id": doc_id, "title": title, "source_type": source_type,
@@ -84,26 +90,26 @@ class DoclingAgent(CognitiveAgent):
             return {}
         return obj if isinstance(obj, dict) else {}
 
-    def _parse(self, doc_id, title, source_type, text, data_b64):
+    def _parse(self, doc_id, title, source_type, text, data_b64, junk_mode=JUNK_MODE_DROP):
         """Route to the right backend. Returns (StructuredDocument, error_str)."""
         want_docling = bool(data_b64) and (source_type in _BINARY_TYPES or not text)
         if want_docling:
             if self._docling:
                 try:
                     data = base64.b64decode(data_b64)
-                    return parse_with_docling(doc_id, data, source_type, title), ""
+                    return parse_with_docling(doc_id, data, source_type, title, junk_mode), ""
                 except DoclingUnavailable as e:
                     # fall through to text if we have any, else report
                     if not text:
-                        return parse_document(doc_id, "", source_type, title), f"docling unavailable: {e}"
+                        return parse_document(doc_id, "", source_type, title, junk_mode), f"docling unavailable: {e}"
                 except Exception as e:
                     if not text:
-                        return parse_document(doc_id, "", source_type, title), f"docling parse failed: {e}"
+                        return parse_document(doc_id, "", source_type, title, junk_mode), f"docling parse failed: {e}"
             elif not text:
-                return (parse_document(doc_id, "", source_type, title),
+                return (parse_document(doc_id, "", source_type, title, junk_mode),
                         "docling not installed and no text provided (pip install docling for PDF/DOCX)")
         # text/markdown path (always available)
-        return parse_document(doc_id, text, source_type or "text", title), ""
+        return parse_document(doc_id, text, source_type or "text", title, junk_mode), ""
 
 
 agent = DoclingAgent(agent_id="docling_agent")

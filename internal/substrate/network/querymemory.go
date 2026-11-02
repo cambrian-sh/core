@@ -66,6 +66,27 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 
 	slog.Info("QueryMemory called", "caller", callerID, "query", req.GetQuery())
 
+	// The agentic control row is a loop artifact, not a memory: its Text is the
+	// LLM-SYNTHESIZED answer and its metadata carries the whole hop trace. Shipping
+	// it as an ordinary ranked hit (Score 2.0, position 0) handed every agent a
+	// fabricated "memory" to ground on and inflated every hit count. It reaches
+	// only callers that opt in via the x-agentic-control metadata header (the
+	// benchmark harness does, to read the typed status + trace); every other caller
+	// gets retrieved evidence only. The opt-in rides the context into the agentic
+	// loop so the closing synthesis LLM call — whose only output is that row — runs
+	// only for callers that will see it
+	// (T-20261102-agentic-synthesis-llm-call-is-computed-for). The operator plane
+	// opts in separately (QueryService.answer).
+	wantControl := false
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("x-agentic-control"); len(vals) > 0 && vals[0] != "" {
+			wantControl = true
+		}
+	}
+	if wantControl {
+		ctx = memory.WithAgenticSynthesis(ctx)
+	}
+
 	// ADR-0098: an agent searching memory is the single most common reason a turn takes
 	// time. Reporting it is the difference between a status line that moves and one that
 	// reads as a hang.
@@ -100,20 +121,8 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 		return nil, fmt.Errorf("querymemory: %w", err)
 	}
 
-	// The agentic control row is a loop artifact, not a memory: its Text is the
-	// LLM-SYNTHESIZED answer and its metadata carries the whole hop trace. Shipping
-	// it as an ordinary ranked hit (Score 2.0, position 0) handed every agent a
-	// fabricated "memory" to ground on and inflated every hit count. It now reaches
-	// only callers that opt in via the x-agentic-control metadata header (the
-	// benchmark harness does, to read the typed status + trace); every other caller
-	// gets retrieved evidence only. The operator plane strips it separately
-	// (AnswerSystem).
-	wantControl := false
-	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		if vals := md.Get("x-agentic-control"); len(vals) > 0 && vals[0] != "" {
-			wantControl = true
-		}
-	}
+	// Defence in depth: without the opt-in the loop no longer builds the row, but
+	// any path that still produces one must not hand it to an ordinary caller.
 	if !wantControl {
 		kept := make([]domain.SearchResult, 0, len(results))
 		for _, r := range results {

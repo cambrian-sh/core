@@ -24,6 +24,7 @@ type doclingRequest struct {
 	SourceType string `json:"source_type,omitempty"`
 	Text       string `json:"text,omitempty"`
 	DataB64    string `json:"data_b64,omitempty"`
+	JunkMode   string `json:"junk_mode,omitempty"`
 }
 
 // Parse sends the document to the docling_agent and returns the structured tree.
@@ -40,7 +41,7 @@ func (d *DoclingDispatcher) Parse(ctx context.Context, req memory.StructureParse
 	}
 	reqData, err := json.Marshal(doclingRequest{
 		DocID: req.DocID, Title: req.Title, SourceType: req.SourceType,
-		Text: req.Text, DataB64: req.DataB64,
+		Text: req.Text, DataB64: req.DataB64, JunkMode: req.JunkMode,
 	})
 	if err != nil {
 		return nil, err

@@ -66,6 +66,7 @@ type QueryService struct {
 	lexicalWeight    float64                   // hybrid: multiplier on the lexical lane's RRF contribution (entity-anchoring); ≤0 ⇒ 1.0
 	ircotEnabled     bool                      // IRCoT: reason-then-retrieve loop (generate CoT step, retrieve on it)
 	decompEnabled    bool                      // up-front grounded decomposition: decompose the whole question, retrieve+answer each sub-question
+	subqConcurrency  int                       // decomposition: independent sub-questions retrieved in parallel, bounded; <=1 = sequential (execution.retrieval.agentic_subquestion_concurrency)
 	reranker         Reranker                  // ADR-0054 Stage B: nil = no cross-encoder rerank (Stage-A order kept)
 	rerankTopK       int                       // ADR-0054 Stage B: candidates rescored by the cross-encoder; 0 ⇒ defaultRerankTopK
 	rerankWeight     float64                   // ADR-0054 Stage B: w_bge in FinalScore; ≤0 ⇒ 0.5
@@ -377,6 +378,12 @@ func (q *QueryService) SetIrcotEnabled(on bool) { q.ircotEnabled = on }
 // SetDecomposeEnabled toggles up-front grounded decomposition (needs a planner
 // that implements DecomposePlanner; absence ⇒ falls back to the greedy loop).
 func (q *QueryService) SetDecomposeEnabled(on bool) { q.decompEnabled = on }
+
+// SetSubQuestionConcurrency bounds how many decomposition passes (the
+// coverage-floor pass plus sub-questions with no unresolved {n} dependency) run
+// at once. n <= 1 keeps the sequential loop. Read from
+// execution.retrieval.agentic_subquestion_concurrency at wiring.
+func (q *QueryService) SetSubQuestionConcurrency(n int) { q.subqConcurrency = n }
 
 func (q *QueryService) effLexicalWeight() float64 {
 	if q.lexicalWeight > 0 {
@@ -762,13 +769,21 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 			refs = refs[:maxSubQuestions]
 		}
 	}
-	const maxContextChunks = 16
-	// subst[n-1] is what placeholder {n} resolves to downstream: the grounded
-	// answer when found, else the sub-question's descriptive ref (so an unfound
-	// sub-answer does NOT blank out later queries — the don't-break-on-empty fix).
-	subst := make([]string, 0, len(subqs))
-	hopResults := make([][]domain.SearchResult, 0, len(subqs)+1)
-	trace := make([]hopTrace, 0, len(subqs)+1)
+	// Echo plan (T-20261102-decomposition-re-runs-the-original-question): the
+	// planner returned the question itself as its only sub-question. Running the
+	// plan would retrieve the same question twice (coverage floor + sub-question)
+	// and spend an extraction call whose answer nothing substitutes. Fall back to
+	// the single pass — with its own per-hop rerank, so the rows are exactly what
+	// the non-agentic path returns — and record the echo in the trace.
+	if isEchoPlan(query, subqs) {
+		slog.InfoContext(ctx, "agentic-trace decompose echo; single pass", "query", query, "sub_question", subqs[0])
+		hits, serr := q.searchByType(ctx, query, callerID, docType, spread)
+		if serr != nil {
+			return nil, serr
+		}
+		trace := []hopTrace{{Hop: -1, PlannedQuery: query, Retrieved: traceDocs(hits), Decision: "echo_single_pass"}}
+		return q.withControlRow(ctx, query, hits, nil, trace, nil), nil
+	}
 	// LEVER A (coverage floor): always retrieve the FULL original question as a
 	// guaranteed pass, placed FIRST, so decomposition can only ADD coverage — it
 	// can never retrieve more narrowly than a plain single-pass search. Round-robin
@@ -777,52 +792,41 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 	// never retrieved because decomposition narrowed the query away from them.
 	// Per-hop rerank is suppressed for the retrieval passes (sctx): the reranker
 	// runs ONCE on the fused union below, against the original question.
+	//
+	// The passes run through runDecompPasses: sequentially, or — when
+	// subqConcurrency > 1 — independent ones in parallel (T-20261102-independent-
+	// decomposition-sub-questions-are). Either way the outcomes come back in plan
+	// order and are assembled below exactly as the sequential loop did.
 	sctx := withSkipPerHopRerank(ctx)
+	run := q.runDecompPasses(ctx, sctx, dp, query, subqs, refs, callerID, docType, spread)
+	hopResults := make([][]domain.SearchResult, 0, len(subqs)+1)
+	trace := make([]hopTrace, 0, len(subqs)+1)
 	hasOrig := false
-	if origHits, oerr := q.searchByType(sctx, query, callerID, docType, spread); oerr == nil && len(origHits) > 0 {
-		hopResults = append(hopResults, origHits)
+	if run.origErr == nil && len(run.orig) > 0 {
+		hopResults = append(hopResults, run.orig)
 		hasOrig = true
-		trace = append(trace, hopTrace{Hop: -1, PlannedQuery: query, Retrieved: traceDocs(origHits), Decision: "orig_query"})
+		trace = append(trace, hopTrace{Hop: -1, PlannedQuery: query, Retrieved: traceDocs(run.orig), Decision: "orig_query"})
 	}
-	for i, subq := range subqs {
-		resolved := substituteAnswers(subq, subst)
-		// NOTE: an experiment that lexically "tightened" this into a quoted-entity
-		// keyword query (`"Benevento Calcio" league`) REGRESSED results (answer
-		// 0.78→0.65) — forcing exact-phrase quoting hurts the dense lane, which
-		// retrieves the natural-language sub-question better. Kept the NL query.
-		hits, serr := q.searchByType(sctx, resolved, callerID, docType, spread)
-		if serr != nil {
-			if len(hopResults) > 0 {
-				break // fail-open to what we have
+	for i, o := range run.subs {
+		if i >= run.firstErr {
+			// The sequential loop stopped at the first failed sub-question: keep
+			// what came before it (fail-open), or surface the error when nothing
+			// was retrieved at all.
+			if len(hopResults) == 0 {
+				return nil, run.subs[run.firstErr].err
 			}
-			return nil, serr
+			break
 		}
-		hopResults = append(hopResults, hits)
-		texts := make([]string, 0, maxContextChunks)
-		for j, h := range hits {
-			if j >= maxContextChunks {
-				break
-			}
-			texts = append(texts, h.Document.Text)
-		}
-		ans, aerr := dp.AnswerSubQuestion(ctx, resolved, texts)
-		if aerr != nil {
-			ans = ""
-		}
-		ans = strings.TrimSpace(ans)
-		// Downstream substitution for {i+1}: the grounded answer, or — if empty —
-		// the descriptive ref (its own earlier placeholders resolved) so the chain
-		// stays coherent instead of collapsing to "… over ?".
-		resolution := ans
-		if resolution == "" && i < len(refs) {
-			resolution = substituteAnswers(refs[i], subst)
-		}
-		subst = append(subst, resolution)
+		// NOTE: an experiment that lexically "tightened" the sub-question into a
+		// quoted-entity keyword query (`"Benevento Calcio" league`) REGRESSED
+		// results (answer 0.78→0.65) — forcing exact-phrase quoting hurts the dense
+		// lane, which retrieves the natural-language sub-question better. Kept the NL query.
+		hopResults = append(hopResults, o.hits)
 		dec := "subq"
-		if ans == "" {
+		if o.ans == "" {
 			dec = "subq_ref_fallback"
 		}
-		trace = append(trace, hopTrace{Hop: i, PlannedQuery: resolved, Retrieved: traceDocs(hits), Bridge: ans, Decision: dec})
+		trace = append(trace, hopTrace{Hop: i, PlannedQuery: o.resolved, Retrieved: traceDocs(o.hits), Bridge: o.ans, Decision: dec})
 	}
 	// Round-robin interleave: RRF fusion was tried here and REGRESSED the ceiling
 	// (recall@100 0.83→0.79) — pure-rank RRF discards cosine magnitude and demotes
@@ -928,11 +932,31 @@ func (q *QueryService) finalizeAgentic(ctx context.Context, query string, acc, c
 	if topK := q.effRecallTopK(); topK > 0 && len(acc) > topK {
 		acc = acc[:topK:topK]
 	}
+	return q.withControlRow(ctx, query, acc, contextOrder, hops, cot)
+}
+
+// withControlRow is finalizeAgentic minus the recall-window truncation: it
+// prepends the typed-status control row — and runs the synthesis LLM call that
+// fills it — ONLY for a caller that will read that row (AgenticSynthesisWanted:
+// an x-agentic-control QueryMemory caller, or the answer lane). Every other
+// caller has the row stripped before it leaves the kernel, so for them the
+// synthesis was pure cost (T-20261102-agentic-synthesis-llm-call-is-computed-for);
+// they get acc unchanged and no row at all. The echo path calls this directly so
+// its rows stay exactly the single pass's.
+func (q *QueryService) withControlRow(ctx context.Context, query string, acc, contextOrder []domain.SearchResult, hops []hopTrace, cot []string) []domain.SearchResult {
 	if q.planner == nil {
 		// Misconfiguration, not a normal state: the agentic paths only run when a
 		// planner was wired, so a nil planner here silently drops the typed-status
 		// contract (no control row at all). Say so once per query.
 		slog.WarnContext(ctx, "agentic: nil planner at finalize; returning chunks without control row")
+		return acc
+	}
+	if !AgenticSynthesisWanted(ctx) {
+		// Nobody downstream reads the row: QueryMemory strips it for callers
+		// without x-agentic-control, and the MCP search tools would otherwise
+		// surface it as an ordinary hit. Skip the row and its LLM call; the
+		// per-hop trace is still logged at debug level.
+		slog.DebugContext(ctx, "agentic: synthesis skipped (caller did not opt in to the control row)", "hops", len(hops))
 		return acc
 	}
 	const maxContextChunks = 16
@@ -1629,7 +1653,10 @@ func (q *QueryService) answer(ctx context.Context, query, callerID string) (stat
 	// timeout floor (agents/system/retrieval_agent/agent.py) so an eroded inbound deadline
 	// does not strangle a hop into DEADLINE_EXCEEDED.
 	if q.agenticEnabled {
-		results, aerr := q.agenticSearch(ctx, query, callerID, domain.DocTypeMnemonicFact, true)
+		// This lane READS the control row (its status drives the abstention rule
+		// below), so it opts in to the loop's synthesis — QueryMemory callers
+		// without x-agentic-control do not pay for it.
+		results, aerr := q.agenticSearch(WithAgenticSynthesis(ctx), query, callerID, domain.DocTypeMnemonicFact, true)
 		if aerr != nil {
 			return "", "", nil, aerr
 		}

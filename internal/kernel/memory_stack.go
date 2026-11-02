@@ -228,14 +228,7 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 
 	// ADR-0028: ingestion pipeline — SceneGenerator + IngestionManager + DirectoryWatcher.
 	sceneGen := memory.NewSceneGenerator(gen)
-	ingestionCfg := memory.IngestionConfig{
-		QueueSize:      execCfg.Ingestion.IngestionQueueSize,
-		BatchSize:      execCfg.Ingestion.IngestionBatchSize,
-		Workers:        execCfg.Ingestion.IngestionWorkers,
-		BatchWait:      time.Duration(execCfg.Ingestion.IngestionBatchWaitMs) * time.Millisecond,
-		ContextPrepend: execCfg.Ingestion.ChunkContextPrepend,
-	}
-	ingestionMgr := memory.NewIngestionManager(sceneGen, embed, memoryAgent, ingestionCfg, chunkerCfg)
+	ingestionMgr := memory.NewIngestionManager(sceneGen, embed, memoryAgent, ingestionConfigFrom(execCfg.Ingestion), chunkerCfg)
 	// NOTE: the legacy single-directory DirectoryWatcher (ADR-0028/0031) was removed
 	// from the boot path — it delivered file events to a NoOpSignalReceiver (dead
 	// weight) and its fixed-dir fsnotify watch errored at startup when InboxDir was
@@ -318,5 +311,21 @@ func (s *MemoryStack) Shutdown(_ context.Context) {
 	// tail-flush is logged inside the batcher, not surfaced here.
 	if s.ChunkTripletsBatcher != nil {
 		s.ChunkTripletsBatcher.Stop()
+	}
+}
+
+// ingestionConfigFrom maps the operator's execution.ingestion block onto the
+// IngestionManager's settings. A function of its own so a test can prove each
+// field is read (AGENTS.md §3.4: a validated-but-unread setting is a defect).
+func ingestionConfigFrom(c config.IngestionConfig) memory.IngestionConfig {
+	return memory.IngestionConfig{
+		QueueSize:      c.IngestionQueueSize,
+		BatchSize:      c.IngestionBatchSize,
+		Workers:        c.IngestionWorkers,
+		BatchWait:      time.Duration(c.IngestionBatchWaitMs) * time.Millisecond,
+		ContextPrepend: c.ChunkContextPrepend,
+		// T-20261102-ingestion-structure-junk-filter-silently-drops: junk leaves are
+		// dropped only for these parser backends (default ["docling"]; chat keeps all).
+		JunkFilterBackends: append([]string(nil), c.StructureJunkFilterBackends...),
 	}
 }
