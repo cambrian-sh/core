@@ -260,7 +260,6 @@ var promotedExecutionDefaults = map[string]bool{
 	"agentic_decompose_enabled":          true,
 	"agentic_max_hops":                   true,
 	"agentic_planner_model":              true,
-	"agentic_retrieval_enabled":          true,
 	"blend_enabled":                      true,
 	"blend_weight_coherence":             true,
 	"blend_weight_confidence":            true,

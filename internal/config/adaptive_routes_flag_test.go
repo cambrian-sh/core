@@ -31,12 +31,16 @@ func TestLoadConfig_AgenticAdaptiveRoutesKey(t *testing.T) {
 // fingerprint — but only where it can take effect: a flag-off configuration keeps
 // the fingerprint it had before the flag existed.
 func TestRetrievalFingerprint_AdaptiveRoutes(t *testing.T) {
+	// Agentic retrieval is opted into explicitly: it is default OFF since the
+	// 2026-11-02 owner decision, and the property under test is the fingerprint,
+	// not the default.
 	off := DefaultConfig().Execution
-	on := DefaultConfig().Execution
-	on.Retrieval.AgenticAdaptiveRoutesEnabled = true
-	if !off.Retrieval.AgenticRetrievalEnabled || !off.Retrieval.AgenticDecomposeEnabled {
-		t.Fatal("test assumes agentic retrieval and decomposition default on")
+	off.Retrieval.AgenticRetrievalEnabled = true
+	if !off.Retrieval.AgenticDecomposeEnabled {
+		t.Fatal("test assumes decomposition is the default agentic mode")
 	}
+	on := off
+	on.Retrieval.AgenticAdaptiveRoutesEnabled = true
 	if on.RetrievalFingerprint("e") == off.RetrievalFingerprint("e") {
 		t.Fatal("turning adaptive routes on must change the fingerprint")
 	}

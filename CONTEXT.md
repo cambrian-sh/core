@@ -159,6 +159,11 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
   three times during kernel boot). Root cause and live numbers: ADR-0053 observations/measurements. Known noise: the
   interview backfill now WARNs `agent boot failed … exec: no command` for `llm:*` model agents (pre-existing, was
   silent; T-20261102-interview-backfill-tries-to-boot-llm-model).
+- **Agentic retrieval is OFF by default** (owner decision 2026-11-02,
+  `cambrian-knowledge/decisions/agentic-retrieval-default-off.md`): `execution.retrieval.agentic_retrieval_enabled`
+  defaults to false (`DefaultConfig`, `internal/config/config.go`); every recall is one plain pass unless a deployment
+  opts in. `agentic_decompose_enabled` stays true so opting in restores decomposition. Re-deciding it needs a
+  multi-hop dataset, not LongMemEval (ADR-0135 gate: off 7/10 at p50 0.58 s vs adaptive 8/10 at 5.7 s).
 - **Agentic decomposition spends only what a caller reads** (2026-11-02, ADR-0054 observations, prerequisites of
   ADR-0135). `decompSearch` (`internal/memory/query.go`, helpers in `query_decomp.go`): an echo plan (one sub-question,
   no `{n}`, equal to the question after normalisation, `isEchoPlan`) runs the single pass with no extraction call

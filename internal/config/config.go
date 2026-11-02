@@ -651,7 +651,8 @@ type RetrievalConfig struct {
 	// AgenticRetrievalEnabled turns on the agentic retrieval loop
 	// (AGENTIC_RETRIEVAL_SPEC): an LLM query-planner rewrites the query before
 	// the single pass (Phase 2a, hops=1), growing into the full plan/iterate/
-	// synthesize loop. Default ON (see the defaults below). The query path is
+	// synthesize loop. Default OFF since 2026-11-02 (owner decision; it was ON from
+	// 2026-08-11). The query path is
 	// unchanged when disabled or when the retrieval_agent is unreachable (fail-open
 	// to searchByType), so a baseline arm that sets it false measures the true
 	// single pass. A/B via config.
@@ -1799,7 +1800,11 @@ func DefaultConfig() *Config {
 				// values become the product defaults (they had lived only in a
 				// gitignored local file). The experimental-off era of these flags
 				// ended with that call; opt-OUT is via config or the store.
-				AgenticRetrievalEnabled:       true,
+				// Owner decision 2026-11-02 (decisions/agentic-retrieval-default-off.md):
+				// OFF until a multi-hop dataset shows it earns its cost. The ADR-0135 gate
+				// measured a plain pass ~10x faster at equal accuracy within noise on
+				// LongMemEval-S. Opting in restores decomposition (the flag below).
+				AgenticRetrievalEnabled:       false,
 				AgenticMaxHops:                4,
 				AgenticDecomposeEnabled:       true, // grounded decomposition — the one agentic lever that measured a win
 				AgenticSubQuestionConcurrency: 4,    // T-20261102: independent sub-questions retrieved in parallel
