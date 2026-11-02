@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/memory"
@@ -61,6 +62,11 @@ func (d *DoclingDispatcher) Parse(ctx context.Context, req memory.StructureParse
 	if err := json.Unmarshal(resp.Payload.Data, &sd); err != nil {
 		slog.WarnContext(ctx, "docling dispatch: bad response JSON", "err", err)
 		return nil, err
+	}
+	// The sidecar's own processing time, for the ingest timing line: the caller
+	// times the whole round-trip, and the difference is queue wait + IPC.
+	if sd.ParseMs > 0 {
+		domain.StageClockFrom(ctx).Add(memory.StageStructureAgent, time.Duration(sd.ParseMs*float64(time.Millisecond)))
 	}
 	return &sd, nil
 }

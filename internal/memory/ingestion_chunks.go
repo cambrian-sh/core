@@ -41,6 +41,11 @@ type persistOutcome struct {
 	// DroppedLeaves is the number of structure leaves dropped as junk before
 	// chunking (structure_junk.go). Zero for chat/text ingests by default.
 	DroppedLeaves int
+	// KGWait completes when this document's chunks have their triplets
+	// extracted and persisted. Set only when the caller asked to track the KG
+	// lane (ProcessSync with execution.ingestion.sync_ingest_wait_for_kg) and a
+	// triplets batcher is wired; nil otherwise.
+	KGWait *TripletsWait
 }
 
 func (im *IngestionManager) persistChunks(
@@ -49,6 +54,7 @@ func (im *IngestionManager) persistChunks(
 	chunks []domain.Chunk,
 	entityID string,
 	scene string,
+	trackKG bool,
 ) (persistOutcome, error) {
 	var outcome persistOutcome
 	if im.agent == nil || im.agent.Manager == nil || im.agent.Manager.Store == nil {
@@ -85,7 +91,9 @@ func (im *IngestionManager) persistChunks(
 	// A failure here is logged and not fatal: losing the ingest of a whole document
 	// because its entity row could not be written would be a worse outcome than chunks
 	// with an unresolved parent, which still retrieve correctly.
+	clock := domain.StageClockFrom(ctx)
 	if im.documentStore != nil {
+		t := time.Now()
 		stored, derr := im.documentStore.SaveDocument(ctx, domain.SourceDocument{
 			ID:         documentID,
 			Title:      doc.Title,
@@ -94,6 +102,7 @@ func (im *IngestionManager) persistChunks(
 			Tags:       doc.Tags,
 			EventStamp: doc.StampOf(),
 		})
+		clock.Since(StageDocumentRow, t)
 		if derr != nil {
 			slog.WarnContext(ctx, "IngestionManager: document entity not recorded; chunks will have no parent",
 				"doc", documentID, "err", derr)
@@ -126,12 +135,16 @@ func (im *IngestionManager) persistChunks(
 		if len(doc.Data) > 0 {
 			dataB64 = base64.StdEncoding.EncodeToString(doc.Data)
 		}
-		if parsed, perr := im.structureParser.Parse(ctx, StructureParseRequest{
+		t := time.Now()
+		parsed, perr := im.structureParser.Parse(ctx, StructureParseRequest{
 			DocID: documentID, Title: doc.Title, SourceType: doc.SourceType,
 			Text: doc.Body, DataB64: dataB64,
 			// The sidecar classifies junk; the kernel decides (applyStructureJunkFilter).
 			JunkMode: structureJunkModeMark,
-		}); perr != nil {
+		})
+		clock.Since(StageStructureParse, t)
+		t = time.Now()
+		if perr != nil {
 			slog.WarnContext(ctx, "IngestionManager: structure parse failed; flat chunking", "doc", documentID, "err", perr)
 		} else if parsed != nil {
 			// The sidecar reports degraded parses (ok=false) and classifies junk
@@ -156,7 +169,9 @@ func (im *IngestionManager) persistChunks(
 		} else {
 			slog.WarnContext(ctx, "IngestionManager: structure parser returned no document; flat chunking", "doc", documentID)
 		}
+		clock.Since(StageStructureLeaves, t)
 	}
+	tPrep := time.Now()
 
 	// ADR-0134 Q5: every chunk's own event time — the earliest timed part it covers
 	// and the latest as its span end — located against the body BEFORE the context
@@ -185,7 +200,11 @@ func (im *IngestionManager) persistChunks(
 	for i := range chunks {
 		ids[i] = externalChunkID(documentID, i)
 	}
+	clock.Since(StagePrepare, tPrep)
+	tEmbed := time.Now()
 	vectors, err := im.embedChunkBodies(ctx, doc, chunks)
+	clock.Since(StageEmbed, tEmbed)
+	clock.Count(CountChunks, len(chunks))
 	if err != nil {
 		return outcome, err
 	}
@@ -256,22 +275,36 @@ func (im *IngestionManager) persistChunks(
 		}
 		return outcome, nil
 	}
+	tSave := time.Now()
 	if err := im.agent.Manager.SaveBatch(ctx, docs); err != nil {
+		clock.Since(StageChunkSave, tSave)
 		return outcome, fmt.Errorf("ingestion manager: save chunk batch: %w", err)
 	}
+	clock.Since(StageChunkSave, tSave)
 	// ADR-0053: enqueue each saved chunk for per-chunk (h, r, t) + anchor
 	// extraction. Non-blocking + nil-safe; the chunk doc is already persisted, so
 	// a dropped enqueue only loses KG enrichment, never the chunk itself.
+	// trackKG (sync ingest with sync_ingest_wait_for_kg) enqueues the same chunks
+	// with a per-document completion signal the caller waits on; the async path
+	// enqueues untracked exactly as before.
 	if im.tripletsBatcher != nil {
-		for _, d := range docs {
-			im.tripletsBatcher.Enqueue(d)
+		t := time.Now()
+		if trackKG {
+			outcome.KGWait = im.tripletsBatcher.EnqueueTracked(docs)
+		} else {
+			for _, d := range docs {
+				im.tripletsBatcher.Enqueue(d)
+			}
 		}
+		clock.Since(StageTripletsEnqueue, t)
 	}
 	// ADR-0060: build the document-structure graph and stamp each chunk with its
 	// inherited section path. Best-effort — parse/persist failures log and leave
 	// the (already-saved) chunks without structure.
 	if structuredDoc != nil && im.structureStore != nil {
+		t := time.Now()
 		im.persistStructure(ctx, structuredDoc, documentID, ids, structuredReps)
+		clock.Since(StageStructurePersist, t)
 	}
 	outcome.Stored = len(docs)
 	return outcome, nil
@@ -304,7 +337,9 @@ func (im *IngestionManager) embedChunkBodies(ctx context.Context, doc domain.Ext
 	for i, chunk := range chunks {
 		texts[i] = chunk.Body
 	}
+	clock := domain.StageClockFrom(ctx)
 	if batch, ok := im.embedder.(domain.BatchEmbedder); ok {
+		clock.Count(CountEmbedCalls, 1)
 		vectors, err := batch.EmbedBatch(ctx, texts)
 		if err == nil && len(vectors) == len(texts) {
 			return vectors, nil
@@ -313,6 +348,7 @@ func (im *IngestionManager) embedChunkBodies(ctx context.Context, doc domain.Ext
 	}
 	vectors := make([][]float32, len(chunks))
 	for i, chunk := range chunks {
+		clock.Count(CountEmbedCalls, 1)
 		vec, err := im.embedder.Embed(ctx, chunk.Body)
 		if err != nil {
 			slog.Warn("IngestionManager: embed failed, skipping chunk", "source_uri", doc.SourceURI, "err", err)

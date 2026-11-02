@@ -20,7 +20,7 @@ privileged system organ (`domain.IsSystemAgent`): kernel-invoked directly by
 `network.DoclingDispatcher`, never interviewed, auctioned or drafted as a verifier.
 
 Request  (JSON): {doc_id, title?, source_type?, text?, data_b64?, junk_mode?}
-Response (JSON): StructuredDocument.to_json() + {ok, error?}
+Response (JSON): StructuredDocument.to_json() + {ok, error?, parse_ms}
 
 junk_mode "mark" (sent by every current kernel) keeps every leaf and tags OCR/layout
 artifacts with meta.junk_reason; the KERNEL decides what to drop, per backend
@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 
 from cambrian_agent_sdk import CognitiveAgent
 from cambrian_agent_sdk._logging import configure_logging
@@ -65,18 +66,25 @@ class DoclingAgent(CognitiveAgent):
         data_b64 = req.get("data_b64") or ""
         junk_mode = JUNK_MODE_MARK if req.get("junk_mode") == JUNK_MODE_MARK else JUNK_MODE_DROP
 
+        # parse_ms is this agent's own processing time. The kernel subtracts it from
+        # its round-trip to split the structure stage into "waiting for / talking to
+        # the sidecar" vs "parsing" in its ingest timing line
+        # (T-20261102-ingestion-logs-no-per-stage-timing-so-the-1-s). Diagnostic only.
+        started = time.perf_counter()
         try:
             structured, error = self._parse(doc_id, title, source_type, text, data_b64, junk_mode)
         except Exception as e:  # never crash the ingest path
             payload = {"ok": False, "error": f"{type(e).__name__}: {e}",
                        "doc_id": doc_id, "title": title, "source_type": source_type,
-                       "backend": "none", "nodes": []}
+                       "backend": "none", "nodes": [],
+                       "parse_ms": (time.perf_counter() - started) * 1000.0}
             return json.dumps(payload).encode("utf-8")
 
         out = structured.to_json()
         out["ok"] = error == ""
         if error:
             out["error"] = error
+        out["parse_ms"] = (time.perf_counter() - started) * 1000.0
         return json.dumps(out).encode("utf-8")
 
     # ── internals ────────────────────────────────────────────────────────────

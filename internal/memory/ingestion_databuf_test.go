@@ -62,7 +62,7 @@ func TestPersistChunks_BinaryDocumentSendsDataB64(t *testing.T) {
 		Data:       raw,
 	}
 
-	if _, err := im.persistChunks(context.Background(), doc, nil, "entity-1", ""); err != nil {
+	if _, err := im.persistChunks(context.Background(), doc, nil, "entity-1", "", false); err != nil {
 		t.Fatalf("persistChunks: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestPersistChunks_TextDocumentSendsNoDataB64(t *testing.T) {
 		Body:       "# Notes\n\nthe sprint slipped",
 	}
 
-	if _, err := im.persistChunks(context.Background(), doc, nil, "entity-1", ""); err != nil {
+	if _, err := im.persistChunks(context.Background(), doc, nil, "entity-1", "", false); err != nil {
 		t.Fatalf("persistChunks: %v", err)
 	}
 

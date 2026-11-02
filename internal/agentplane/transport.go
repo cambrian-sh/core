@@ -10,14 +10,16 @@ import (
 
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // AgentDialer boots agent instances and provides gRPC connections.
 // Defined at the consumer side so AgentManager can be mocked in tests.
 type AgentDialer interface {
-	GetOrBootInstance(ctx context.Context, def *domain.AgentDefinition, excludeInstanceID string) *domain.Instance
+	GetOrBootInstance(ctx context.Context, def *domain.AgentDefinition, excludeInstanceID string) (*domain.Instance, error)
 	DialAgent(addr string) (*grpc.ClientConn, error)
 	GetAgentByName(ctx context.Context, name string) (*domain.AgentDefinition, error)
 	GetManifest(ctx context.Context, agentID string) (*domain.AgentManifest, error)
@@ -90,9 +92,12 @@ func (a *Transport) getOrDialClient(ctx context.Context, agent domain.AgentDefin
 
 // bootDialRegister boots (or reuses) an instance, dials it, and caches the client.
 func (a *Transport) bootDialRegister(ctx context.Context, agent domain.AgentDefinition, excludeInstanceID string) (pb.AgentServiceClient, error) {
-	inst := a.Manager.GetOrBootInstance(ctx, &agent, excludeInstanceID)
+	inst, err := a.Manager.GetOrBootInstance(ctx, &agent, excludeInstanceID)
+	if err != nil {
+		return nil, fmt.Errorf("getOrDialClient: %w", err)
+	}
 	if inst == nil {
-		return nil, fmt.Errorf("getOrDialClient: boot agent %s failed", agent.ID)
+		return nil, fmt.Errorf("getOrDialClient: boot agent %s returned no instance", agent.ID)
 	}
 
 	addr := "unix:" + inst.SocketPath
@@ -263,7 +268,30 @@ func (a *Transport) CallAgent(ctx context.Context, agentID string, handoff *doma
 	}
 	protoResp, err := client.Execute(ctx, domainToProtoHandoff(handoff))
 	if err != nil {
+		if status.Code(err) == codes.Unavailable {
+			// The cached connection points at an agent that is gone (crashed or
+			// killed). Drop it so the next call goes back through
+			// GetOrBootInstance, which replaces an exited instance; without this a
+			// dead agent stayed unreachable for the life of the kernel
+			// (T-20261102-kg-extractor-cold-start-drops-the-first-kg).
+			a.forgetAgentClient(agent.ID, client)
+		}
 		return nil, err
 	}
 	return protoToDomainHandoff(protoResp), nil
+}
+
+// forgetAgentClient removes agentID's cached client if it is still client (a
+// concurrent caller may already have replaced it) and closes its connection.
+func (a *Transport) forgetAgentClient(agentID string, client pb.AgentServiceClient) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if cur, ok := a.agentClients[agentID]; !ok || cur != client {
+		return
+	}
+	if conn, ok := a.agentConns[agentID]; ok && conn != nil {
+		_ = conn.Close() // best-effort: the peer is already gone
+	}
+	delete(a.agentClients, agentID)
+	delete(a.agentConns, agentID)
 }

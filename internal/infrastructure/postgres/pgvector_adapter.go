@@ -695,22 +695,38 @@ func (p *PgVectorAdapter) Save(ctx context.Context, doc *domain.Document) error 
 }
 
 func (p *PgVectorAdapter) SaveBatch(ctx context.Context, docs []*domain.Document) error {
+	// The ingest timing line splits chunk_save into what only this adapter sees:
+	// the row upserts, the ADR-0107 projection upserts and the commit (memory.
+	// StageChunkSave*). Without a clock on ctx this costs a few time.Now calls.
+	clock := domain.StageClockFrom(ctx)
+	t := time.Now()
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return mapError("BeginBatch", err)
 	}
 	defer tx.Rollback(ctx)
+	clock.Since(memory.StageChunkSaveBegin, t)
 
+	var upsert, projection time.Duration
 	for _, doc := range docs {
 		sql, args, _ := p.getUpsertBuilder(doc).ToSQL()
+		t = time.Now()
 		if _, err := tx.Exec(ctx, sql, args...); err != nil {
 			return mapError("ExecBatch", err)
 		}
+		upsert += time.Since(t)
+		t = time.Now()
 		if err := p.projectEmbedding(ctx, tx, doc); err != nil {
 			return mapError("ExecBatchProjection", err)
 		}
+		projection += time.Since(t)
 	}
-	return tx.Commit(ctx)
+	clock.Add(memory.StageChunkSaveUpsert, upsert)
+	clock.Add(memory.StageChunkSaveProject, projection)
+	t = time.Now()
+	err = tx.Commit(ctx)
+	clock.Since(memory.StageChunkSaveCommit, t)
+	return err
 }
 
 func (p *PgVectorAdapter) Search(ctx context.Context, vector []float32, opts domain.SearchOptions) ([]domain.SearchResult, error) {

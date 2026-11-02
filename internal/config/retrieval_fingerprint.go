@@ -68,6 +68,13 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 	fmt.Fprintf(&b, "structure=%t\n", c.Retrieval.StructureGraphEnabled)
 	fmt.Fprintf(&b, "neighbor_window=%t\n", c.Retrieval.NeighborWindowEnabled)
 	fmt.Fprintf(&b, "agentic=%t\n", c.Retrieval.AgenticRetrievalEnabled)
+	// ADR-0135: executing the planner's route changes which passes run (direct is
+	// one pass, not the decomposition's union). Written only when it can take
+	// effect, so every fingerprint of a flag-off configuration — whose ranking is
+	// unchanged — stays what it was.
+	if c.Retrieval.AgenticRetrievalEnabled && c.Retrieval.AgenticDecomposeEnabled && c.Retrieval.AgenticAdaptiveRoutesEnabled {
+		fmt.Fprintf(&b, "agentic_adaptive_routes=%t\n", true)
+	}
 
 	// Stage-A blend.
 	fmt.Fprintf(&b, "blend=%t\n", c.Retrieval.BlendEnabled)

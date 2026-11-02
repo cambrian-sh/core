@@ -8,9 +8,11 @@ import (
 	"time"
 )
 
-// agentBootTimeout bounds how long a boot waits for the child's UDS socket. One
-// value for both boot paths (it was a const duplicated in bootAgent and
-// bootDaemonAgent, free to drift); a var so a test can shorten it.
+// agentBootTimeout bounds how long a boot waits for the child's UDS socket when
+// no execution.agents.agent_boot_timeout_ms is configured
+// (InstanceManager.SetAgentBootTimeout). One value for both boot paths (it was a
+// const duplicated in bootAgent and bootDaemonAgent, free to drift); a var so a
+// test can shorten it.
 var agentBootTimeout = 10 * time.Second
 
 // processExit is the ONE Wait a child process gets. done closes when the child
@@ -58,8 +60,8 @@ func (im *InstanceManager) awaitExit(instanceID string, cmd *exec.Cmd) <-chan st
 	return im.watchExit(instanceID, cmd).done
 }
 
-// awaitSocket waits for the agent's UDS socket to appear, giving up on
-// agentBootTimeout, on ctx, or on the child exiting first.
+// awaitSocket waits for the agent's UDS socket to appear, giving up on timeout,
+// on ctx, or on the child exiting first. timeout <= 0 means agentBootTimeout.
 //
 // A child that dies at import time (missing dependency, bad entrypoint, unknown
 // flag) used to be reported only after the full timeout, as "socket did not
@@ -67,13 +69,16 @@ func (im *InstanceManager) awaitExit(instanceID string, cmd *exec.Cmd) <-chan st
 // earlier — and made every step routed to such an agent pay the whole timeout
 // before dispatch fell back
 // (T-20261031-bootagent-waits-the-full-10-s-boottimeout-even).
-func awaitSocket(ctx context.Context, cmd *exec.Cmd, exit *processExit, socketPath, who string) error {
+func awaitSocket(ctx context.Context, cmd *exec.Cmd, exit *processExit, socketPath, who string, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = agentBootTimeout
+	}
 	const pollInterval = 50 * time.Millisecond
 	exited := func() error {
 		return fmt.Errorf("%s: process exited before opening socket %s: %s (its stderr was forwarded to the log)",
 			who, socketPath, exitStatus(exit.err))
 	}
-	deadline := time.Now().Add(agentBootTimeout)
+	deadline := time.Now().Add(timeout)
 	for {
 		if _, statErr := os.Stat(socketPath); statErr == nil {
 			return nil
@@ -85,7 +90,7 @@ func awaitSocket(ctx context.Context, cmd *exec.Cmd, exit *processExit, socketPa
 		}
 		if time.Now().After(deadline) {
 			_ = cmd.Process.Kill()
-			return fmt.Errorf("%s: socket %s did not appear within %s", who, socketPath, agentBootTimeout)
+			return fmt.Errorf("%s: socket %s did not appear within %s", who, socketPath, timeout)
 		}
 		select {
 		case <-ctx.Done():

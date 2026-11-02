@@ -743,6 +743,16 @@ type RetrievalConfig struct {
 	// (ADR-0036 D2); the saving is the retrieval passes.
 	AgenticSubQuestionConcurrency int `json:"agentic_subquestion_concurrency,omitempty"`
 
+	// AgenticAdaptiveRoutesEnabled executes the route the decomposition planner
+	// chooses with its plan (ADR-0135): direct runs the single pass with no
+	// extraction call, facets runs the coverage floor plus independent
+	// sub-questions in one parallel wave, chain runs today's grounded chain; a
+	// missing, unknown or inconsistent route runs as chain. false ⇒ the route is
+	// logged per recall but every plan executes as before. Default off until the
+	// ADR-0135 gate passes. Read only when agentic retrieval and decomposition are
+	// on. Part of the retrieval fingerprint when on.
+	AgenticAdaptiveRoutesEnabled bool `json:"agentic_adaptive_routes_enabled,omitempty"`
+
 	// BlendEnabled (ADR-0054 Stage A) re-ranks recall candidates by the
 	// multi-signal blend (cosine + recency + confidence + pagerank + activation)
 	// instead of bare cosine. Default true; false ⇒ bare-cosine ranking. The bge
@@ -946,6 +956,45 @@ type IngestionConfig struct {
 	// (legacy default); true ⇒ the rule-stack organ. The kg_extractor_agent
 	// process must be registered + serving for true to take effect.
 	KgExtractorEnabled bool `json:"kg_extractor_enabled,omitempty"`
+
+	// SyncIngestWaitForKG makes a SYNC ingest (IngestMemory, the operator
+	// IngestDocument plane — every IngestionManager.ProcessSync) return only after
+	// its own chunks' KG triplets are extracted and persisted: read-your-writes
+	// for the ADR-0053 KG lane (owner decision 2026-11-02). Without it the triplet
+	// batcher catches up asynchronously, and under concurrent ingest (~50
+	// chunks/s against ~30 chunks/s for the kg_extractor) a query issued right
+	// after an ingest can see a partial chunk_triplets graph (KG2RAG expansion,
+	// query-entity seeding, anchors). The batcher still batches across documents;
+	// a waited document only makes it drain at once instead of idling. Async
+	// ingests are unaffected. Default false: the product's ingest latency is
+	// unchanged unless an operator (or a benchmark) asks for the guarantee.
+	SyncIngestWaitForKG bool `json:"sync_ingest_wait_for_kg,omitempty"`
+
+	// SyncIngestKGWaitTimeoutMs bounds the SyncIngestWaitForKG wait. On expiry
+	// the ingest still SUCCEEDS (the content is stored; the KG lane is
+	// enrichment) with a WARN and kg_pending in the ingest-timing line and
+	// trailer. Default 30000; <=0 falls back to 30000.
+	SyncIngestKGWaitTimeoutMs int `json:"sync_ingest_kg_wait_timeout_ms,omitempty"`
+
+	// KgExtractorCallAttempts is the total number of times one triplet batch's
+	// call to the kg_extractor agent is attempted when the agent cannot be
+	// booted, dialled or called (T-20261102-kg-extractor-cold-start-drops-the-first-kg:
+	// the agent boots lazily and a cold spaCy load can miss the 10 s agent boot
+	// timeout). The same retry covers the start-up readiness probe. Default 3;
+	// <=0 means 1 (no retry). Read only when KgExtractorEnabled.
+	KgExtractorCallAttempts int `json:"kg_extractor_call_attempts,omitempty"`
+
+	// KgExtractorRetryBackoffMs is the sleep before the second call attempt,
+	// doubled for each further one. Default 2000; <=0 retries at once.
+	KgExtractorRetryBackoffMs int `json:"kg_extractor_retry_backoff_ms,omitempty"`
+
+	// KgTripletsMaxRequeues bounds how many times a chunk whose triplet batch
+	// failed because the extractor was UNAVAILABLE (after the call attempts
+	// above) is put back into the batcher's pending buffer before it settles as
+	// failed (kg_failed in the ingest-timing trailer, one WARN per batch). Re-
+	// queueing re-appends items already accepted, so it adds no queue growth and
+	// no goroutine. Default 1; 0 never re-queues.
+	KgTripletsMaxRequeues int `json:"kg_triplets_max_requeues,omitempty"`
 }
 
 // HippocampusConfig — Hippocampus retrieval policies.
@@ -1053,6 +1102,15 @@ type AgentsConfig struct {
 	// instead of taking down the kernel host. 0 = disabled (default) — opt-in so
 	// legitimately memory-heavy agents are not capped by surprise.
 	AgentMemoryLimitMB int `json:"agent_memory_limit_mb,omitempty"`
+
+	// AgentBootTimeoutMs bounds how long the kernel waits for a spawned agent to
+	// open its socket before it kills the child and fails the boot. A child that
+	// exits early fails at once regardless; this bounds one that is alive but slow.
+	// Default 30000: the built-in 10 s killed the kg_extractor agent (spaCy load)
+	// three boots in a row while the kernel was booting its other agents, so the
+	// KG lane had no extractor until the machine went idle
+	// (T-20261102-kg-extractor-cold-start-drops-the-first-kg). <= 0 = 10 s.
+	AgentBootTimeoutMs int `json:"agent_boot_timeout_ms,omitempty"`
 
 	// AgentEnvPassthrough lists extra NON-SECRET environment variable names that
 	// spawned agents may inherit beyond the OS base allowlist (SEC-01). Secret-
@@ -1798,6 +1856,15 @@ func DefaultConfig() *Config {
 				IngestionWorkers:           5,
 				IngestionBatchWaitMs:       1000,
 				EventTimeFutureToleranceMs: 300000, // ADR-0134 Q4: 5 minutes
+				// Owner decision 2026-11-02: read-your-writes for the KG lane is an
+				// option, off by default; the benchmark turns it on.
+				SyncIngestWaitForKG:       false,
+				SyncIngestKGWaitTimeoutMs: 30000,
+				// T-20261102-kg-extractor-cold-start-drops-the-first-kg: absorb a
+				// cold kg_extractor boot instead of dropping the first batches.
+				KgExtractorCallAttempts:   3,
+				KgExtractorRetryBackoffMs: 2000,
+				KgTripletsMaxRequeues:     1,
 				// Drop OCR/layout junk only from Docling output; chat and other text
 				// ingests keep every leaf (T-20261102-ingestion-structure-junk-filter-silently-drops).
 				StructureJunkFilterBackends: []string{"docling"},
@@ -1829,6 +1896,9 @@ func DefaultConfig() *Config {
 				DaemonRestartWindowSeconds: 300,
 				DaemonRestartBaseBackoffMs: 1000,
 				DaemonRestartMaxBackoffMs:  30000,
+				// T-20261102-kg-extractor-cold-start-drops-the-first-kg: 10 s killed
+				// the kg_extractor (spaCy load) while the kernel booted its agents.
+				AgentBootTimeoutMs: 30000,
 			},
 			Supervision: SupervisionConfig{
 				ProfileAggregatorIntervalSeconds: 300,

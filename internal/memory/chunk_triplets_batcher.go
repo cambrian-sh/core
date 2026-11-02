@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -48,13 +49,34 @@ type ChunkTripletsBatcher struct {
 	// machinery is unchanged — only the producer of triplets differs.
 	extractor domain.TripletExtractor
 
-	queue   chan *domain.Document
-	pending []*domain.Document
-	mu      sync.Mutex
+	queue   chan tripletItem
+	pending []tripletItem
+	// waitedPending counts pending items that carry a TripletsWait. While it is
+	// non-zero the drain loop drains at once instead of waiting for a full batch
+	// or the idle timer: a sync ingest is blocked on those items
+	// (execution.ingestion.sync_ingest_wait_for_kg). Guarded by mu like pending.
+	waitedPending int
+	mu            sync.Mutex
+
+	// closeMu + closed make "enqueue after the drain loop exited" impossible to
+	// lose silently: enqueue sends (non-blocking) under the read lock, and the
+	// drain loop takes the write lock to mark the batcher closed before it
+	// releases whatever is still queued. Without it a tracked item could land in
+	// the channel after the final sweep and its waiter would block until timeout.
+	closeMu sync.RWMutex
+	closed  bool
 
 	batchSize  int
 	maxIdle    time.Duration
 	llmTimeout time.Duration
+	// maxRequeues bounds how many times a chunk whose batch failed because the
+	// extractor was UNAVAILABLE is put back into pending before it settles as
+	// failed (execution.ingestion.kg_triplets_max_requeues).
+	maxRequeues int
+
+	// probeCancel cancels the start-up readiness probe, so Stop during a cold
+	// extractor boot does not wait out the probe's retries. Set by Start.
+	probeCancel context.CancelFunc
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -66,6 +88,10 @@ type ChunkTripletsBatcher struct {
 	drained  uint64 // total chunks drained (for which the LLM ran)
 	llmCalls uint64 // total LLM calls made
 	triplets uint64 // total triplets persisted
+	// extractFailed counts chunks settled as failed because extraction errored
+	// (after any re-queues); requeued counts re-queue events.
+	extractFailed uint64
+	requeued      uint64
 }
 
 // ChunkTripletsBatcherConfig is the constructor input. All fields required.
@@ -74,6 +100,10 @@ type ChunkTripletsBatcherConfig struct {
 	BatchSize  int           // load-driven drain trigger
 	MaxIdle    time.Duration // time-driven drain trigger
 	LLMTimeout time.Duration // per-batch LLM call timeout
+	// MaxRequeues is how many times a chunk whose batch failed with
+	// domain.ErrTripletExtractorUnavailable is re-queued before it settles as
+	// failed. 0 = never re-queue; negative is treated as 0.
+	MaxRequeues int
 }
 
 // NewChunkTripletsBatcher builds the batcher but does NOT start the drain
@@ -91,16 +121,20 @@ func NewChunkTripletsBatcher(gen domain.Generator, store domain.ChunkTripletsSto
 	if cfg.LLMTimeout <= 0 {
 		cfg.LLMTimeout = 5 * time.Minute
 	}
+	if cfg.MaxRequeues < 0 {
+		cfg.MaxRequeues = 0
+	}
 	return &ChunkTripletsBatcher{
-		gen:        gen,
-		store:      store,
-		extractor:  &llmTripletExtractor{gen: gen}, // default: LLM residue tier
-		queue:      make(chan *domain.Document, cfg.QueueSize),
-		batchSize:  cfg.BatchSize,
-		maxIdle:    cfg.MaxIdle,
-		llmTimeout: cfg.LLMTimeout,
-		stopCh:     make(chan struct{}),
-		doneCh:     make(chan struct{}),
+		gen:         gen,
+		store:       store,
+		extractor:   &llmTripletExtractor{gen: gen}, // default: LLM residue tier
+		queue:       make(chan tripletItem, cfg.QueueSize),
+		batchSize:   cfg.BatchSize,
+		maxIdle:     cfg.MaxIdle,
+		llmTimeout:  cfg.LLMTimeout,
+		maxRequeues: cfg.MaxRequeues,
+		stopCh:      make(chan struct{}),
+		doneCh:      make(chan struct{}),
 	}
 }
 
@@ -122,13 +156,59 @@ func (b *ChunkTripletsBatcher) Enqueue(doc *domain.Document) {
 	if b == nil || doc == nil {
 		return
 	}
+	b.enqueue(tripletItem{doc: doc})
+}
+
+// EnqueueTracked enqueues one document's chunks and returns a TripletsWait that
+// completes when every one of them has been extracted and its triplets
+// persisted, or has definitively failed (dropped on a full queue, a save error,
+// or the batcher stopping). It is the read-your-writes half of
+// execution.ingestion.sync_ingest_wait_for_kg (owner decision 2026-11-02):
+// ProcessSync waits on it so a query issued after the ingest returns sees that
+// document's chunk_triplets.
+//
+// Enqueueing stays non-blocking and tracked items share the queue with
+// untracked ones, so the batcher still batches across documents; the only
+// behavioural difference is that a pending tracked item makes the drain loop
+// drain at once rather than wait for a full batch or the idle timer. nil docs
+// are skipped. A nil batcher returns a wait that is already complete.
+func (b *ChunkTripletsBatcher) EnqueueTracked(docs []*domain.Document) *TripletsWait {
+	n := 0
+	for _, d := range docs {
+		if d != nil {
+			n++
+		}
+	}
+	w := newTripletsWait(n)
+	if b == nil {
+		w.settle(n, false)
+		return w
+	}
+	for _, d := range docs {
+		if d != nil {
+			b.enqueue(tripletItem{doc: d, wait: w})
+		}
+	}
+	return w
+}
+
+func (b *ChunkTripletsBatcher) enqueue(it tripletItem) {
+	b.closeMu.RLock()
+	defer b.closeMu.RUnlock()
+	if b.closed {
+		// The drain loop has exited: nothing will ever read this item.
+		atomic.AddUint64(&b.dropped, 1)
+		it.wait.stop(1)
+		return
+	}
 	select {
-	case b.queue <- doc:
+	case b.queue <- it:
 		atomic.AddUint64(&b.enqueued, 1)
 	default:
 		atomic.AddUint64(&b.dropped, 1)
+		it.wait.settle(1, false)
 		slog.Warn("ChunkTripletsBatcher: queue full, dropping enrichment",
-			"doc_id", doc.ID, "queue_size", cap(b.queue))
+			"doc_id", it.doc.ID, "queue_size", cap(b.queue))
 	}
 }
 
@@ -140,7 +220,12 @@ func (b *ChunkTripletsBatcher) Start(ctx context.Context) {
 	if !b.started.CompareAndSwap(false, true) {
 		return
 	}
-	go b.drainLoop(context.WithoutCancel(ctx))
+	base := context.WithoutCancel(ctx)
+	probeCtx, cancel := context.WithCancel(base)
+	b.mu.Lock()
+	b.probeCancel = cancel
+	b.mu.Unlock()
+	go b.drainLoop(base, probeCtx)
 }
 
 // Stop signals the drain goroutine to flush the tail and exit. Blocks
@@ -149,8 +234,47 @@ func (b *ChunkTripletsBatcher) Stop() {
 	if b == nil {
 		return
 	}
-	b.stopOnce.Do(func() { close(b.stopCh) })
+	b.stopOnce.Do(func() {
+		b.mu.Lock()
+		cancel := b.probeCancel
+		b.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		close(b.stopCh)
+	})
 	<-b.doneCh
+}
+
+// FailureStats returns (extractFailed, requeued): chunks settled as failed
+// because extraction errored, and re-queue events — for the operator feed and
+// tests (T-20261102-kg-extractor-cold-start-drops-the-first-kg).
+func (b *ChunkTripletsBatcher) FailureStats() (extractFailed, requeued uint64) {
+	return atomic.LoadUint64(&b.extractFailed), atomic.LoadUint64(&b.requeued)
+}
+
+// probeReady runs once, at the top of the drain goroutine, when the extractor
+// can report readiness (domain.ReadinessProber — the kg_extractor dispatcher).
+// It boots the lazily started extractor agent at kernel start instead of inside
+// the first ingest's batch, and says so: "KG extractor READY", or a WARN with
+// the cause. Items enqueued meanwhile wait in the queue, so the first batches
+// wait for the agent — bounded by the probe's own retries and the batch timeout
+// — and then fail visibly if it never comes up. It never blocks kernel boot (it
+// runs on the drain goroutine), and Stop cancels it.
+func (b *ChunkTripletsBatcher) probeReady(ctx context.Context) {
+	p, ok := b.extractor.(domain.ReadinessProber)
+	if !ok {
+		return
+	}
+	t := time.Now()
+	pctx, cancel := context.WithTimeout(ctx, b.llmTimeout)
+	defer cancel()
+	if err := p.Ready(pctx); err != nil {
+		slog.Warn("KG extractor NOT READY: chunk-triplet extraction will retry per batch; failed chunks settle as kg_failed",
+			"elapsed_ms", time.Since(t).Milliseconds(), "cause", err)
+		return
+	}
+	slog.Info("KG extractor READY", "elapsed_ms", time.Since(t).Milliseconds())
 }
 
 // Stats returns (enqueued, dropped, drained, llmCalls, tripletsPersisted) —
@@ -169,14 +293,16 @@ func (b *ChunkTripletsBatcher) Stats() (enqueued, dropped, drained, llmCalls, tr
 // can be 60-180s per call) leaves the channel unread, the bounded queue
 // fills, and Enqueue drops the enrichment. With this, Enqueue only sees
 // backpressure when pending is itself at a sane cap.
-func (b *ChunkTripletsBatcher) drainLoop(ctx context.Context) {
+func (b *ChunkTripletsBatcher) drainLoop(ctx, probeCtx context.Context) {
 	defer close(b.doneCh)
+	b.probeReady(probeCtx)
 	timer := time.NewTimer(b.maxIdle)
 	defer timer.Stop()
 
 	stopRequested := func() {
 		b.drainQueueToPending()
 		b.drain(ctx)
+		b.releaseRemaining()
 	}
 
 	for {
@@ -184,8 +310,11 @@ func (b *ChunkTripletsBatcher) drainLoop(ctx context.Context) {
 
 		b.mu.Lock()
 		n := len(b.pending)
+		waited := b.waitedPending
 		b.mu.Unlock()
-		if n >= b.batchSize {
+		// A tracked item means a sync ingest is blocked on it: drain now, with
+		// whatever has accumulated (up to batchSize), instead of idling.
+		if n >= b.batchSize || waited > 0 {
 			b.drain(ctx)
 			resetTripletsTimer(timer, b.maxIdle)
 			continue
@@ -198,8 +327,8 @@ func (b *ChunkTripletsBatcher) drainLoop(ctx context.Context) {
 		case <-ctx.Done():
 			stopRequested()
 			return
-		case doc := <-b.queue:
-			b.appendPending(doc)
+		case it := <-b.queue:
+			b.appendPending(it)
 		case <-timer.C:
 			if n > 0 {
 				b.drain(ctx)
@@ -222,16 +351,43 @@ func resetTripletsTimer(t *time.Timer, d time.Duration) {
 func (b *ChunkTripletsBatcher) drainQueueToPending() {
 	for {
 		select {
-		case doc := <-b.queue:
-			b.appendPending(doc)
+		case it := <-b.queue:
+			b.appendPending(it)
 		default:
 			return
 		}
 	}
 }
 
-func (b *ChunkTripletsBatcher) appendPending(doc *domain.Document) {
-	b.pending = append(b.pending, doc)
+func (b *ChunkTripletsBatcher) appendPending(it tripletItem) {
+	b.mu.Lock()
+	b.pending = append(b.pending, it)
+	if it.wait != nil {
+		b.waitedPending++
+	}
+	b.mu.Unlock()
+}
+
+// releaseRemaining runs once, as the drain loop exits. The loop keeps draining
+// while a full batch or a tracked item is pending, and the exit path flushes one
+// more batch (the existing tail behaviour); anything still pending or queued
+// after that is not extracted, and any sync ingest waiting on it is released with
+// ErrTripletsBatcherStopped instead of blocking until its timeout. Marking the
+// batcher closed first (under the write lock) guarantees no tracked item can be
+// enqueued after the final sweep.
+func (b *ChunkTripletsBatcher) releaseRemaining() {
+	b.closeMu.Lock()
+	b.closed = true
+	b.closeMu.Unlock()
+	b.drainQueueToPending()
+	b.mu.Lock()
+	rest := b.pending
+	b.pending = nil
+	b.waitedPending = 0
+	b.mu.Unlock()
+	for _, it := range rest {
+		it.wait.stop(1)
+	}
 }
 
 // drain consumes at most batchSize items from the pending buffer in one LLM
@@ -250,9 +406,14 @@ func (b *ChunkTripletsBatcher) drain(parentCtx context.Context) {
 	if n > len(b.pending) {
 		n = len(b.pending)
 	}
-	batch := make([]*domain.Document, n)
+	batch := make([]tripletItem, n)
 	copy(batch, b.pending[:n])
 	b.pending = b.pending[n:]
+	for _, it := range batch {
+		if it.wait != nil {
+			b.waitedPending--
+		}
+	}
 	b.mu.Unlock()
 
 	atomic.AddUint64(&b.drained, uint64(len(batch)))
@@ -261,34 +422,92 @@ func (b *ChunkTripletsBatcher) drain(parentCtx context.Context) {
 	// positional so blank-text positions get an empty extraction).
 	texts := make([]string, len(batch))
 	ids := make([]string, len(batch))
-	for i, doc := range batch {
-		texts[i] = doc.Text
-		ids[i] = doc.ID
+	for i, it := range batch {
+		texts[i] = it.doc.Text
+		ids[i] = it.doc.ID
 	}
 
 	llmCtx, cancel := context.WithTimeout(parentCtx, b.llmTimeout)
 	defer cancel()
-	tripletsPerChunk := b.extractor.ExtractBatch(llmCtx, texts, ids)
+	tripletsPerChunk, extractErr := b.extractor.ExtractBatch(llmCtx, texts, ids)
 	atomic.AddUint64(&b.llmCalls, 1)
+	if extractErr != nil {
+		b.failBatch(batch, extractErr)
+		return
+	}
 
 	// Persist each chunk's triplets. Best-effort: a per-chunk save error
 	// is logged and the enrichment for that chunk is dropped; the doc
 	// itself is already saved upstream.
+	//
+	// Every item of the batch is settled exactly once, whether it produced
+	// triplets or not: a chunk with no extractable triplets is COMPLETE (there is
+	// nothing to read), and an extractor that returned fewer rows than the batch
+	// leaves the tail complete-and-empty, as before.
 	saved := 0
-	for i, triplets := range tripletsPerChunk {
-		if i >= len(batch) || len(triplets) == 0 {
+	for i, it := range batch {
+		var triplets []domain.ChunkTriplet
+		if i < len(tripletsPerChunk) {
+			triplets = tripletsPerChunk[i]
+		}
+		if len(triplets) == 0 {
+			it.wait.settle(1, true)
 			continue
 		}
-		if err := b.store.SaveChunkTriplets(parentCtx, batch[i].ID, triplets); err != nil {
+		if err := b.store.SaveChunkTriplets(parentCtx, it.doc.ID, triplets); err != nil {
 			slog.Warn("ChunkTripletsBatcher: save failed",
-				"doc_id", batch[i].ID, "err", err, "triplets", len(triplets))
+				"doc_id", it.doc.ID, "err", err, "triplets", len(triplets))
+			it.wait.settle(1, false)
 			continue
 		}
 		saved++
 		atomic.AddUint64(&b.triplets, uint64(len(triplets)))
+		it.wait.settle(1, true)
 	}
 	slog.Info("ChunkTripletsBatcher: drained batch",
 		"batch_size", len(batch), "with_triplets", saved, "llm_calls_total", atomic.LoadUint64(&b.llmCalls))
+}
+
+// failBatch handles a batch the extractor did not extract
+// (T-20261102-kg-extractor-cold-start-drops-the-first-kg). Before the port could
+// return an error such a batch settled every chunk as complete-and-empty, so a
+// cold-start boot failure was indistinguishable from "no triplets in this text".
+//
+// When the extractor was unavailable (domain.ErrTripletExtractorUnavailable) a
+// chunk still under maxRequeues goes back to the tail of pending for another
+// pass; everything else settles as FAILED, so a sync ingest waiting on it
+// reports kg_failed. Re-queueing only re-appends items already accepted, so
+// pending cannot grow beyond what was enqueued, and no goroutine is started.
+// One WARN per batch, with the cause — never one per chunk.
+func (b *ChunkTripletsBatcher) failBatch(batch []tripletItem, err error) {
+	retryable := errors.Is(err, domain.ErrTripletExtractorUnavailable)
+	var again []tripletItem
+	failed := 0
+	for _, it := range batch {
+		if retryable && it.attempts < b.maxRequeues {
+			it.attempts++
+			again = append(again, it)
+			continue
+		}
+		failed++
+		it.wait.settle(1, false)
+	}
+	if len(again) > 0 {
+		b.mu.Lock()
+		for _, it := range again {
+			b.pending = append(b.pending, it)
+			if it.wait != nil {
+				b.waitedPending++
+			}
+		}
+		b.mu.Unlock()
+		atomic.AddUint64(&b.requeued, uint64(len(again)))
+	}
+	atomic.AddUint64(&b.extractFailed, uint64(failed))
+	slog.Warn("ChunkTripletsBatcher: triplet extraction failed for a batch",
+		"batch_size", len(batch), "requeued", len(again), "failed", failed,
+		"max_requeues", b.maxRequeues, "unavailable", retryable, "cause", err,
+		"effect", "failed chunks have no KG triplets (kg_failed); their content is stored")
 }
 
 // buildBatchTripletPrompt builds the batched extraction prompt. Format:

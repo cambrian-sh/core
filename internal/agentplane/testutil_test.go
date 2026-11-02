@@ -105,8 +105,8 @@ type mockDialer struct {
 	agents map[string]*domain.AgentDefinition
 }
 
-func (m *mockDialer) GetOrBootInstance(_ context.Context, _ *domain.AgentDefinition, _ string) *domain.Instance {
-	return nil
+func (m *mockDialer) GetOrBootInstance(_ context.Context, def *domain.AgentDefinition, _ string) (*domain.Instance, error) {
+	return nil, fmt.Errorf("boot agent %s: not available in test", def.ID)
 }
 
 func (m *mockDialer) DialAgent(_ string) (*grpc.ClientConn, error) {

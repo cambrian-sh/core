@@ -121,6 +121,44 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
   every chat ingest, keep everything). Each drop is logged with doc id, kind, reason, length, sha256 and a sample
   (WARN per document, DEBUG per leaf) and counted (`dropped_leaves` on the ingest-complete INFO line,
   `IngestionManager.StructureLeavesDropped()`). A sidecar request without `junk_mode` keeps the legacy drop.
+- **Per-stage ingest timing** (2026-11-02, T-20261102-ingestion-logs-no-per-stage-timing-so-the-1-s, ADR-0060).
+  `domain.StageClock` rides ctx (nil-safe); `ProcessSync` and the async `processBatchDoc` log one `ingest timing` line
+  per document (DEBUG; INFO `(SLOW)` over 1 s or `(FAILED)`) with `<stage>_ms` for evidence, scene, chunk,
+  document_row, structure_parse / structure_agent (the docling_agent's own `parse_ms`) / structure_wait, prepare,
+  embed, chunk_save (the pg adapter adds begin/upsert/projection/commit), triplets_enqueue, structure_persist, entity,
+  publish, plus `embed_calls` / `embed_requests` / `chunks` (`internal/memory/ingestion_timing.go`). `IngestMemory`
+  returns the same breakdown as the `cambrian-ingest-timing` gRPC trailer (diagnostic, not a contract). Measured: a
+  LongMemEval session costs 1076 ms with `database.host=localhost` vs 433 ms with `127.0.0.1` — on Windows Docker
+  Desktop `::1` goes through wslrelay, where every client write over ~16 KB (each chunk upsert) stalls ~50 ms.
+- **KG read-your-writes for sync ingest** (2026-11-02, T-20261102-async-kg-triplet-extraction-30-chunks-s-lags,
+  ADR-0053). `execution.ingestion.sync_ingest_wait_for_kg` (default **false**) makes `IngestionManager.ProcessSync`
+  return only after its own chunks' triplets are persisted: `persistChunks(..., trackKG)` enqueues them with
+  `ChunkTripletsBatcher.EnqueueTracked`, which returns a per-document `TripletsWait`
+  (`internal/memory/chunk_triplets_wait.go`; counter + done channel, no goroutine) that the existing drain loop settles
+  per chunk. A pending tracked chunk makes the loop drain at once (up to batch_size, still across documents); untracked
+  (async) enqueues are unchanged. The wait is bounded by ctx and `sync_ingest_kg_wait_timeout_ms` (30000); on timeout,
+  caller cancel or batcher stop the ingest still succeeds with a WARN and `kg_pending#` / `kg_failed#` on the timing
+  line and trailer; the wait itself is the `kg_wait` stage. Stop drains the backlog as before and releases anything
+  left with `ErrTripletsBatcherStopped`. Boot log `SYNC_INGEST_WAIT_FOR_KG: ENABLED` (benchmark arm check). Measured
+  (20 LongMemEval sessions, 2x2 concurrent): off 3.08 sessions/s and 0/249 chunks with triplets at return; on 1.80
+  sessions/s, kg_wait mean 1.5 s, 248/248.
+- **KG extraction failures are visible and retried** (2026-11-02,
+  T-20261102-kg-extractor-cold-start-drops-the-first-kg, ADR-0053). `domain.TripletExtractor.ExtractBatch` returns
+  `([][]ChunkTriplet, error)`; an error (wrapping `domain.ErrTripletExtractorUnavailable` when the agent could not be
+  booted/dialled/called) settles the batch's chunks as FAILED in `TripletsWait` (`kg_failed#` on the timing line and
+  trailer), never as "no triplets"; one WARN per batch (`ChunkTripletsBatcher: triplet extraction failed for a batch`).
+  Unavailable chunks are re-queued to the tail of pending at most `execution.ingestion.kg_triplets_max_requeues` (1)
+  times. `KgExtractorDispatcher` retries a failed call `kg_extractor_call_attempts` (3) times with
+  `kg_extractor_retry_backoff_ms` (2000, doubling) under the batch ctx; bad/empty replies are not retried. The drain
+  goroutine probes the extractor once at start (optional `domain.ReadinessProber`, an empty-batch round trip) and logs
+  `KG extractor READY elapsed_ms=…` or WARN `KG extractor NOT READY` + cause; Stop cancels the probe; boot is never
+  blocked. `InstanceManager.GetOrBootInstance` returns `(inst, error)` and WARNs `agent boot failed` with the cause
+  (it used to return a bare nil); a tracked JIT instance whose process exited is evicted and re-booted, and an
+  `Unavailable` Execute drops the transport's cached client, so a killed agent recovers on the next call. The agent
+  boot timeout is `execution.agents.agent_boot_timeout_ms` (default 30000; the fixed 10 s killed the cold kg_extractor
+  three times during kernel boot). Root cause and live numbers: ADR-0053 observations/measurements. Known noise: the
+  interview backfill now WARNs `agent boot failed … exec: no command` for `llm:*` model agents (pre-existing, was
+  silent; T-20261102-interview-backfill-tries-to-boot-llm-model).
 - **Agentic decomposition spends only what a caller reads** (2026-11-02, ADR-0054 observations, prerequisites of
   ADR-0135). `decompSearch` (`internal/memory/query.go`, helpers in `query_decomp.go`): an echo plan (one sub-question,
   no `{n}`, equal to the question after normalisation, `isEchoPlan`) runs the single pass with no extraction call
@@ -131,6 +169,16 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
   sequential), dependent ones after their answers, outcomes assembled in plan order so ranking equals the
   sequential loop. The extraction calls still queue at the single-threaded `retrieval_agent`
   (T-20261102-parallel-decomposition-extraction-calls-queue).
+- **Adaptive decomposition routes** (2026-11-02, ADR-0135, behind `execution.retrieval.agentic_adaptive_routes_enabled`,
+  default off, gate pending). With the flag on, `decompSearch` asks the planner for a routed plan
+  (`RetrievalDispatcher.DecomposeRouted` → the `decompose` op with `"routes": true` → `planner.decompose_routed`, which
+  returns `{route, sub_questions, refs}`; optional port `memory.RoutedDecomposePlanner`, composing `DecomposePlanner`)
+  and executes it: `direct` = the single pass (trace `direct_single_pass`, no extraction), `facets` = floor plus
+  independent sub-questions in one parallel wave, `chain` = today's grounded chain; a missing, unknown or inconsistent
+  route (facets with `{n}`, direct with several sub-questions) runs as chain (`resolveDecompRoute`, `query_decomp.go`).
+  The route is logged per recall (`agentic-trace decompose route`) and, for opted-in callers, written to the control
+  row (`_agentic_route`, `_agentic_route_planned`, `_agentic_route_fallback`) and its trace. Flag off: the planner is
+  sent today's request (legacy prompt, no route) and nothing else changes. The operator Answer path routes too.
 
 ---
 
@@ -161,6 +209,11 @@ Each has a ticket; close the ticket and update this list in the same change.
 - Derived memory artifacts (`chunk_triplets`, …) carry no classification; contained only
   because their text is never surfaced — `T-20261031-derived-memory-artifacts-carry-no`
 - No customer data export — `T-20261031-customers-cannot-export-their-data`
+- `database.host=localhost` on Windows Docker Desktop costs ~50 ms per Postgres write over 16 KB (use `127.0.0.1`) —
+  `T-20261102-kernel-postgres-writes-over-16-kb-stall-50-ms`; chunk upserts are one ~20 KB literal statement per row —
+  `T-20261102-chunk-upserts-are-one-20-kb-literal`
+- The async KG lane (one kg_extractor, ~30 chunks/s) lags concurrent sync ingest (~50 chunks/s), so a query right
+  after ingest can see a partial KG — `T-20261102-async-kg-triplet-extraction-30-chunks-s-lags`
 - The LongMemEval harness does not yet count structure-leaf drops per question (the kernel logs `dropped_leaves`
   per ingested document) — `T-20261102-longmemeval-harness-does-not-count-structure`
 - ADR-0131 D4-D6 deferred (benchmark phase): spend in receipts/operator feed/UI —

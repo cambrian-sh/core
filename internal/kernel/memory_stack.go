@@ -195,12 +195,7 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		// (the prompt is a similar size; 16-fact batches stream fine on
 		// the hosted reasoning model). nil = no enrichment (legacy).
 		if cts, ok := vec.(domain.ChunkTripletsStore); ok {
-			chunkTripletsBatcher = memory.NewChunkTripletsBatcher(gen, cts, memory.ChunkTripletsBatcherConfig{
-				QueueSize:  execCfg.Ingestion.EdgeExtractionQueueSize,
-				BatchSize:  execCfg.Ingestion.EdgeExtractionBatchSize,
-				MaxIdle:    time.Duration(execCfg.Ingestion.EdgeExtractionMaxIdleMs) * time.Millisecond,
-				LLMTimeout: time.Duration(execCfg.Ingestion.EdgeExtractionLLMTimeoutMs) * time.Millisecond,
-			})
+			chunkTripletsBatcher = memory.NewChunkTripletsBatcher(gen, cts, chunkTripletsBatcherConfigFrom(execCfg.Ingestion))
 		}
 		// ADR-0048 D2: enrich the agent's PULL recall with the same associative
 		// spreading. Flag-gated; default ON since ADR-0049 D10 (config.go defaults).
@@ -314,6 +309,22 @@ func (s *MemoryStack) Shutdown(_ context.Context) {
 	}
 }
 
+// chunkTripletsBatcherConfigFrom maps the execution.ingestion block onto the
+// ChunkTripletsBatcher's settings. A function of its own so a test can prove
+// each field is read (AGENTS.md §3.4).
+func chunkTripletsBatcherConfigFrom(c config.IngestionConfig) memory.ChunkTripletsBatcherConfig {
+	return memory.ChunkTripletsBatcherConfig{
+		QueueSize:  c.EdgeExtractionQueueSize,
+		BatchSize:  c.EdgeExtractionBatchSize,
+		MaxIdle:    time.Duration(c.EdgeExtractionMaxIdleMs) * time.Millisecond,
+		LLMTimeout: time.Duration(c.EdgeExtractionLLMTimeoutMs) * time.Millisecond,
+		// T-20261102-kg-extractor-cold-start-drops-the-first-kg: chunks whose
+		// batch failed because the extractor was unavailable get this many more
+		// passes before they settle as kg_failed.
+		MaxRequeues: c.KgTripletsMaxRequeues,
+	}
+}
+
 // ingestionConfigFrom maps the operator's execution.ingestion block onto the
 // IngestionManager's settings. A function of its own so a test can prove each
 // field is read (AGENTS.md §3.4: a validated-but-unread setting is a defect).
@@ -327,5 +338,9 @@ func ingestionConfigFrom(c config.IngestionConfig) memory.IngestionConfig {
 		// T-20261102-ingestion-structure-junk-filter-silently-drops: junk leaves are
 		// dropped only for these parser backends (default ["docling"]; chat keeps all).
 		JunkFilterBackends: append([]string(nil), c.StructureJunkFilterBackends...),
+		// T-20261102-async-kg-triplet-extraction-30-chunks-s-lags: a sync ingest
+		// may wait for its own chunks' KG triplets (default off).
+		SyncWaitForKG:     c.SyncIngestWaitForKG,
+		SyncKGWaitTimeout: time.Duration(c.SyncIngestKGWaitTimeoutMs) * time.Millisecond,
 	}
 }

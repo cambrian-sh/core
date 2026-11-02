@@ -40,7 +40,10 @@ type RetrievalDispatcher struct {
 	Model   string // planner model id; "" ⇒ gateway default
 }
 
-var _ memory.Planner = (*RetrievalDispatcher)(nil)
+var (
+	_ memory.Planner                = (*RetrievalDispatcher)(nil)
+	_ memory.RoutedDecomposePlanner = (*RetrievalDispatcher)(nil) // ADR-0135
+)
 
 type planStepRequest struct {
 	Op         string   `json:"op"`
@@ -66,6 +69,9 @@ type synthRequest struct {
 type decomposeRequest struct {
 	Op    string `json:"op"`
 	Query string `json:"query"`
+	// Routes asks for the ADR-0135 routed plan ({route, sub_questions, refs}).
+	// Omitted ⇒ the agent uses its unchanged legacy prompt and response.
+	Routes bool `json:"routes,omitempty"`
 }
 
 type answerSubqRequest struct {
@@ -313,30 +319,46 @@ func (d *RetrievalDispatcher) SynthesizeCited(ctx context.Context, query string,
 
 // Decompose asks the retrieval_agent to split a multi-hop question into ordered
 // sub-questions (with {n} placeholders for earlier answers). Returns nil (⇒ the
-// loop falls back to a single pass) on any failure.
+// loop falls back to a single pass) on any failure. It asks for no route, so the
+// agent runs its legacy decomposition prompt unchanged.
 func (d *RetrievalDispatcher) Decompose(ctx context.Context, question string) ([]string, []string, error) {
-	reqData, err := json.Marshal(decomposeRequest{Op: "decompose", Query: question})
+	plan, err := d.decompose(ctx, question, false)
+	return plan.SubQuestions, plan.Refs, err
+}
+
+// DecomposeRouted asks for the routed plan: the same single planning call, with
+// the planner choosing direct|facets|chain (ADR-0135 D1;
+// memory.RoutedDecomposePlanner). The route is the agent's raw word: an older
+// retrieval_agent ignores the request field and sends none, which the executor
+// treats as chain, so this stays compatible in both directions.
+func (d *RetrievalDispatcher) DecomposeRouted(ctx context.Context, question string) (memory.DecompositionPlan, error) {
+	return d.decompose(ctx, question, true)
+}
+
+func (d *RetrievalDispatcher) decompose(ctx context.Context, question string, routes bool) (memory.DecompositionPlan, error) {
+	reqData, err := json.Marshal(decomposeRequest{Op: "decompose", Query: question, Routes: routes})
 	if err != nil {
-		return nil, nil, err
+		return memory.DecompositionPlan{}, err
 	}
 	data, err := d.call(ctx, reqData)
 	if err != nil || len(data) == 0 {
-		return nil, nil, err
+		return memory.DecompositionPlan{}, err
 	}
 	obj := domain.ExtractJSONObject(string(data))
 	if obj == "" {
-		return nil, nil, nil
+		return memory.DecompositionPlan{}, nil
 	}
 	var dr struct {
+		Route        string   `json:"route"`
 		SubQuestions []string `json:"sub_questions"`
 		Refs         []string `json:"refs"`
 	}
 	if err := json.Unmarshal([]byte(obj), &dr); err != nil {
 		slog.WarnContext(ctx, "retrieval dispatch: bad decompose JSON; fail-open", "err", err)
-		return nil, nil, err
+		return memory.DecompositionPlan{}, err
 	}
-	slog.InfoContext(ctx, "agentic-trace decompose", "sub_questions", dr.SubQuestions, "refs", dr.Refs)
-	return dr.SubQuestions, dr.Refs, nil
+	slog.InfoContext(ctx, "agentic-trace decompose", "route", dr.Route, "sub_questions", dr.SubQuestions, "refs", dr.Refs)
+	return memory.DecompositionPlan{Route: dr.Route, SubQuestions: dr.SubQuestions, Refs: dr.Refs}, nil
 }
 
 // AnswerSubQuestion asks the retrieval_agent to extract the GROUNDED answer to one

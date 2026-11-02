@@ -22,6 +22,7 @@ secs = [n for n in out["nodes"] if n["kind"] == "section"]
 check("has chapter 1 + 1.1 sections", any(n["title"] == "Chapter 1" for n in secs) and any("1.1" in n["title"] for n in secs))
 leaf = next((n for n in out["nodes"] if n["kind"] == "paragraph" and "Intro text" in n["text"]), None)
 check("intro leaf carries section breadcrumb", leaf is not None and leaf["section_path"].endswith("1.1 Intro"))
+check("reports its own parse time (parse_ms)", isinstance(out.get("parse_ms"), (int, float)) and out["parse_ms"] >= 0)
 check("nodes have ltree-safe paths", all(n["path"] == "" or n["path"].startswith("n") for n in out["nodes"]))
 
 # 2) Binary doc (pdf) with bytes but no docling installed → graceful (no crash)

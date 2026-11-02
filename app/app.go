@@ -1571,6 +1571,19 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		if mem.ChunkTripletsBatcher != nil {
 			mem.IngestionManager.SetChunkTripletsBatcher(mem.ChunkTripletsBatcher)
 		}
+		// T-20261102-async-kg-triplet-extraction-30-chunks-s-lags: say whether sync
+		// ingests wait for their KG triplets, so a benchmark arm's boot-log check
+		// can confirm the flag took. The setting itself reached the IngestionManager
+		// through ingestionConfigFrom; this line only reports it, and warns when it
+		// cannot take effect because no triplets batcher exists.
+		if ing := cfg.Execution.Ingestion; ing.SyncIngestWaitForKG {
+			if mem.ChunkTripletsBatcher != nil {
+				slog.Info("SYNC_INGEST_WAIT_FOR_KG: ENABLED (a sync ingest returns after its chunks' KG triplets are persisted)",
+					"timeout_ms", ing.SyncIngestKGWaitTimeoutMs, "kg_extractor", ing.KgExtractorEnabled)
+			} else {
+				slog.Warn("SYNC_INGEST_WAIT_FOR_KG: set but has NO EFFECT: no chunk-triplets batcher (the vector store is not a ChunkTripletsStore)")
+			}
+		}
 		// ADR-0093: record the source-document entity on every ingest. Deliberately NOT
 		// behind the structure-graph flag below — a document exists whether or not its
 		// hierarchy was parsed, and it is the row that owns the classification tags, so
@@ -1911,7 +1924,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		mem.QueryService.SetIrcotEnabled(cfg.Execution.Retrieval.AgenticIrcotEnabled)
 		mem.QueryService.SetDecomposeEnabled(cfg.Execution.Retrieval.AgenticDecomposeEnabled)
 		mem.QueryService.SetSubQuestionConcurrency(cfg.Execution.Retrieval.AgenticSubQuestionConcurrency)
-		slog.Info("AGENTIC_RETRIEVAL_SPEC: agentic retrieval query-planner ENABLED (retrieval_agent)", "ircot", cfg.Execution.Retrieval.AgenticIrcotEnabled, "decompose", cfg.Execution.Retrieval.AgenticDecomposeEnabled, "subquestion_concurrency", cfg.Execution.Retrieval.AgenticSubQuestionConcurrency)
+		mem.QueryService.SetAdaptiveRoutesEnabled(cfg.Execution.Retrieval.AgenticAdaptiveRoutesEnabled) // ADR-0135
+		slog.Info("AGENTIC_RETRIEVAL_SPEC: agentic retrieval query-planner ENABLED (retrieval_agent)", "ircot", cfg.Execution.Retrieval.AgenticIrcotEnabled, "decompose", cfg.Execution.Retrieval.AgenticDecomposeEnabled, "subquestion_concurrency", cfg.Execution.Retrieval.AgenticSubQuestionConcurrency, "adaptive_routes", cfg.Execution.Retrieval.AgenticAdaptiveRoutesEnabled)
 	}
 
 	// ADR-0053 D2 (revised): route write-time chunk-triplet extraction through the
@@ -1920,11 +1934,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// privileged-organ pattern. Off (default) ⇒ the batcher keeps its LLM extractor.
 	// Injected before mem.Start so the swap is in place when the drain begins.
 	if cfg.Execution.Ingestion.KgExtractorEnabled && mem.ChunkTripletsBatcher != nil {
-		mem.ChunkTripletsBatcher.UseExtractor(&subnetwork.KgExtractorDispatcher{
-			Caller:  meta.AgentTransport,
-			AgentID: "kg_extractor_agent",
-		})
-		slog.Info("ADR-0053 D2: kg_extractor ENABLED (deterministic metadata + spacy_patterns organ, no LLM)")
+		ing := cfg.Execution.Ingestion
+		mem.ChunkTripletsBatcher.UseExtractor(kgExtractorDispatcherFrom(ing, meta.AgentTransport))
+		slog.Info("ADR-0053 D2: kg_extractor ENABLED (deterministic metadata + spacy_patterns organ, no LLM)",
+			"call_attempts", ing.KgExtractorCallAttempts, "retry_backoff_ms", ing.KgExtractorRetryBackoffMs,
+			"max_requeues", ing.KgTripletsMaxRequeues)
 	}
 
 	// ADR-0046: discover authored system skills from skills/<name>/SKILL.md and
@@ -4035,4 +4049,18 @@ func (d deferredTurnRouter) RouteTurn(
 		return false, nil
 	}
 	return (*p).RouteTurn(ctx, ingressAgentID, conversationID, msg, run)
+}
+
+// kgExtractorDispatcherFrom builds the kg_extractor triplet extractor from the
+// execution.ingestion block. A function of its own so a test can prove the
+// retry settings are read (AGENTS.md §3.4;
+// T-20261102-kg-extractor-cold-start-drops-the-first-kg: a failed
+// boot/dial/call is retried, bounded, before the batch fails visibly).
+func kgExtractorDispatcherFrom(ing config.IngestionConfig, caller domain.AgentCaller) *subnetwork.KgExtractorDispatcher {
+	return &subnetwork.KgExtractorDispatcher{
+		Caller:   caller,
+		AgentID:  "kg_extractor_agent",
+		Attempts: ing.KgExtractorCallAttempts,
+		Backoff:  time.Duration(ing.KgExtractorRetryBackoffMs) * time.Millisecond,
+	}
 }

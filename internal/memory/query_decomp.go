@@ -264,3 +264,138 @@ func (q *QueryService) runSubQuestion(ctx, sctx context.Context, dp DecomposePla
 	out.ans = strings.TrimSpace(ans)
 	return out
 }
+
+// ── Adaptive routes (ADR-0135) ──
+
+// The routes a planner may choose (ADR-0135 D1).
+const (
+	DecompRouteDirect = "direct" // one lookup: the single pass, no extraction
+	DecompRouteFacets = "facets" // independent pieces: floor + sub-questions, no {n}, one parallel wave
+	DecompRouteChain  = "chain"  // dependent steps: floor + sub-questions with {n} — today's behaviour
+)
+
+// Control-row metadata keys carrying the route, set only when adaptive routes are
+// on. The benchmark harness reads them through x-agentic-control for the gate's
+// per-question review (planner route vs hand label).
+const (
+	AgenticRouteKey         = "_agentic_route"          // the route executed
+	AgenticRoutePlannedKey  = "_agentic_route_planned"  // the planner's raw route ("" when it gave none)
+	AgenticRouteFallbackKey = "_agentic_route_fallback" // why the planner's route was not used ("" when it was)
+)
+
+// Fallback reasons (ADR-0135 D3). Each one executes as chain.
+const (
+	routeFallbackMissing       = "missing_route"
+	routeFallbackUnknown       = "unknown_route"
+	routeFallbackFacetsPlaceh  = "facets_with_placeholders"
+	routeFallbackDirectMultiSQ = "direct_with_multiple_sub_questions"
+)
+
+// decompRoute is one recall's route decision. Applied is the flag: when false the
+// route is only logged and the plan executes as chain, unannotated.
+type decompRoute struct {
+	Planned  string // planner's route, trimmed and lower-cased
+	Route    string // route to execute when Applied
+	Fallback string // non-empty when Route != Planned
+	Applied  bool   // execution.retrieval.agentic_adaptive_routes_enabled
+}
+
+// decomposePlan makes the one planning call. The routed form is asked for only
+// when routing will be executed (adaptive): with the flag off the planner gets
+// exactly today's request, so its prompt — part of the measured retrieval organ —
+// is unchanged and the flag-off arm measures today's plans. A planner without the
+// routed form yields a plan with no route (⇒ chain).
+func decomposePlan(ctx context.Context, dp DecomposePlanner, query string, adaptive bool) (DecompositionPlan, error) {
+	if rp, ok := dp.(RoutedDecomposePlanner); ok && adaptive {
+		return rp.DecomposeRouted(ctx, query)
+	}
+	subqs, refs, err := dp.Decompose(ctx, query)
+	return DecompositionPlan{SubQuestions: subqs, Refs: refs}, err
+}
+
+// resolveDecompRoute validates the planner's route against its own plan (D3): a
+// missing or unknown route, facets carrying {n} placeholders (in a sub-question
+// or its ref — either makes it a dependency), and direct with more than one
+// sub-question are all treated as chain, with the reason recorded. A chain with
+// no placeholders is NOT a fallback: it executes identically to facets anyway.
+func resolveDecompRoute(p DecompositionPlan, applied bool) decompRoute {
+	planned := strings.ToLower(strings.TrimSpace(p.Route))
+	rt := decompRoute{Planned: planned, Route: DecompRouteChain, Applied: applied}
+	switch planned {
+	case DecompRouteChain:
+	case DecompRouteDirect:
+		if len(p.SubQuestions) > 1 {
+			rt.Fallback = routeFallbackDirectMultiSQ
+		} else {
+			rt.Route = DecompRouteDirect
+		}
+	case DecompRouteFacets:
+		if planHasPlaceholder(p) {
+			rt.Fallback = routeFallbackFacetsPlaceh
+		} else {
+			rt.Route = DecompRouteFacets
+		}
+	case "":
+		rt.Fallback = routeFallbackMissing
+	default:
+		rt.Fallback = routeFallbackUnknown
+	}
+	return rt
+}
+
+func planHasPlaceholder(p DecompositionPlan) bool {
+	for _, s := range p.SubQuestions {
+		if placeholderRE.MatchString(s) {
+			return true
+		}
+	}
+	for _, s := range p.Refs {
+		if placeholderRE.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
+// logDecompRoute writes the per-recall INFO line the gate review greps for. With
+// the flag off it still names the planner's route, marked not applied.
+func (q *QueryService) logDecompRoute(ctx context.Context, query string, rt decompRoute, nSubqs int) {
+	slog.InfoContext(ctx, "agentic-trace decompose route",
+		"query", query, "route_planned", rt.Planned, "route", rt.Route,
+		"route_fallback", rt.Fallback, "applied", rt.Applied, "sub_questions", nSubqs)
+}
+
+// singlePassPlan is the one-pass execution shared by echo plans and the direct
+// route: the ordinary single pass (with its own per-hop rerank, so the rows are
+// exactly what the non-agentic path returns), and a control row with a one-hop
+// trace only for an opted-in caller.
+func (q *QueryService) singlePassPlan(ctx context.Context, query, callerID, docType string, spread bool, decision string) ([]domain.SearchResult, error) {
+	hits, err := q.searchByType(ctx, query, callerID, docType, spread)
+	if err != nil {
+		return nil, err
+	}
+	trace := []hopTrace{{Hop: -1, PlannedQuery: query, Retrieved: traceDocs(hits), Decision: decision}}
+	return q.withControlRow(ctx, query, hits, nil, trace, nil), nil
+}
+
+// annotate records the route on the control row — its metadata keys and its
+// trace — when adaptive routes are on. Flag off, or no control row (the caller
+// did not opt in), the results pass through untouched.
+func (rt decompRoute) annotate(rs []domain.SearchResult, err error) ([]domain.SearchResult, error) {
+	if !rt.Applied || err != nil || len(rs) == 0 || rs[0].Document.ID != AgenticControlID {
+		return rs, err
+	}
+	md := make(map[string]interface{}, len(rs[0].Document.Metadata)+3)
+	for k, v := range rs[0].Document.Metadata {
+		md[k] = v
+	}
+	md[AgenticRouteKey] = rt.Route
+	md[AgenticRoutePlannedKey] = rt.Planned
+	md[AgenticRouteFallbackKey] = rt.Fallback
+	if tr, ok := md[AgenticTraceKey].(agenticTrace); ok {
+		tr.Route, tr.RoutePlanned, tr.RouteFallback = rt.Route, rt.Planned, rt.Fallback
+		md[AgenticTraceKey] = tr
+	}
+	rs[0].Document.Metadata = md
+	return rs, nil
+}

@@ -105,6 +105,7 @@ func (e *OllamaEmbedder) embedOnce(ctx context.Context, text string) (vec []floa
 		return nil, false, err
 	}
 
+	domain.StageClockFrom(ctx).Count("embed_requests", 1)
 	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/api/embeddings", e.BaseURL), &buf)
 	if err != nil {
 		return nil, false, err
@@ -211,6 +212,9 @@ func (e *OllamaEmbedder) embedBatchOnce(ctx context.Context, texts []string, max
 	// returns `embeddings`); /api/embeddings is the legacy SINGLE endpoint that
 	// only understands `prompt` and silently ignores `input` (returning 0
 	// embeddings) — using it here was the "got 0 embeddings" bug.
+	// Counted for the ingest timing line (memory.CountEmbedRequests): a context-
+	// overflow retry re-sends the whole batch, which an embed_calls count hides.
+	domain.StageClockFrom(ctx).Count("embed_requests", 1)
 	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/api/embed", e.BaseURL), &buf)
 	if err != nil {
 		return nil, false, err

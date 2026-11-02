@@ -81,6 +81,10 @@ type StructuredDocument struct {
 	// nothing and this stays 0; it is non-zero only from a legacy sidecar, and
 	// applyStructureJunkFilter still reports and counts it.
 	DroppedLeaves int `json:"dropped_leaves"`
+	// ParseMs is the sidecar's own processing time for this document. Diagnostic
+	// only: the ingest timing line subtracts it from the dispatch round-trip to
+	// separate queue wait + IPC from parsing. 0 from a sidecar that predates it.
+	ParseMs float64 `json:"parse_ms,omitempty"`
 }
 
 const structNodeKindSection = "section"

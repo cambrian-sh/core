@@ -105,7 +105,7 @@ func TestStructureJunk_ChatSessionKeepsEveryLeaf(t *testing.T) {
 		SourceURI: "longmemeval://session-1", SourceType: "chat", Title: "chat",
 		Body: strings.Join([]string{chatProse, chatTable, chatTerminal, chatNumbers, chatReceipts}, "\n\n"),
 	}
-	out, err := im.persistChunks(context.Background(), doc, nil, "e1", "")
+	out, err := im.persistChunks(context.Background(), doc, nil, "e1", "", false)
 	if err != nil {
 		t.Fatalf("persistChunks: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestStructureJunk_DoclingJunkDroppedWhenConfigured(t *testing.T) {
 	}
 	im, store := newJunkTestManager(t, &fixedParser{make: mk}, []string{"docling"})
 	doc := domain.ExternalDocument{SourceURI: "operator_ingest://bio.pdf", SourceType: "pdf", Title: "bio", Data: []byte("%PDF")}
-	out, err := im.persistChunks(context.Background(), doc, nil, "e1", "")
+	out, err := im.persistChunks(context.Background(), doc, nil, "e1", "", false)
 	if err != nil {
 		t.Fatalf("persistChunks: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestStructureJunk_DoclingJunkDroppedWhenConfigured(t *testing.T) {
 
 	// The same Docling parse with the filter disabled ([]) keeps everything.
 	im2, store2 := newJunkTestManager(t, &fixedParser{make: mk}, nil)
-	if out, err := im2.persistChunks(context.Background(), doc, nil, "e1", ""); err != nil || out.DroppedLeaves != 0 {
+	if out, err := im2.persistChunks(context.Background(), doc, nil, "e1", "", false); err != nil || out.DroppedLeaves != 0 {
 		t.Fatalf("filter off: dropped=%d err=%v", out.DroppedLeaves, err)
 	}
 	if !strings.Contains(storedText(store2), "image not available") {

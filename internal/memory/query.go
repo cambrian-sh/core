@@ -67,6 +67,7 @@ type QueryService struct {
 	ircotEnabled     bool                      // IRCoT: reason-then-retrieve loop (generate CoT step, retrieve on it)
 	decompEnabled    bool                      // up-front grounded decomposition: decompose the whole question, retrieve+answer each sub-question
 	subqConcurrency  int                       // decomposition: independent sub-questions retrieved in parallel, bounded; <=1 = sequential (execution.retrieval.agentic_subquestion_concurrency)
+	adaptiveRoutes   bool                      // ADR-0135: execute the planner's route (direct|facets|chain); false = route logged only, chain semantics (execution.retrieval.agentic_adaptive_routes_enabled)
 	reranker         Reranker                  // ADR-0054 Stage B: nil = no cross-encoder rerank (Stage-A order kept)
 	rerankTopK       int                       // ADR-0054 Stage B: candidates rescored by the cross-encoder; 0 ⇒ defaultRerankTopK
 	rerankWeight     float64                   // ADR-0054 Stage B: w_bge in FinalScore; ≤0 ⇒ 0.5
@@ -140,6 +141,28 @@ type DecomposePlanner interface {
 	// so the downstream sub-question stays coherent rather than becoming "… over ?".
 	Decompose(ctx context.Context, question string) (subqs []string, refs []string, err error)
 	AnswerSubQuestion(ctx context.Context, subq string, chunks []string) (string, error)
+}
+
+// DecompositionPlan is one planner response with the route the planner chose for
+// it (ADR-0135 D1). Route is the planner's raw word, lower-cased: "direct",
+// "facets", "chain", or anything else / "" when the planner gave none — the
+// executor validates it (resolveDecompRoute) and treats every unusable route as
+// chain, today's behaviour (ADR-0135 D3).
+type DecompositionPlan struct {
+	Route        string
+	SubQuestions []string
+	Refs         []string
+}
+
+// RoutedDecomposePlanner is an OPTIONAL extension of DecomposePlanner (ADR-0135):
+// the same single planning call, also returning the route. decompSearch
+// type-asserts for it; a DecomposePlanner without it yields a plan with no route,
+// which executes as chain. Composed rather than restated (AGENTS.md §3.1), and a
+// separate capability rather than a changed Decompose signature, so every
+// existing DecomposePlanner keeps compiling and keeps today's semantics.
+type RoutedDecomposePlanner interface {
+	DecomposePlanner
+	DecomposeRouted(ctx context.Context, question string) (DecompositionPlan, error)
 }
 
 // AgenticControlID is the id of the synthetic control result agenticSearch
@@ -252,6 +275,12 @@ type agenticTrace struct {
 	HopsUsed    int        `json:"hops_used"`
 	FinalStatus string     `json:"final_status"`
 	FinalAnswer string     `json:"final_answer"`
+	// ADR-0135 (only when adaptive routes are on; omitted otherwise, so a
+	// flag-off trace is byte-identical to before): the route executed, the
+	// planner's raw route, and why the planner's route was not used.
+	Route         string `json:"route,omitempty"`
+	RoutePlanned  string `json:"route_planned,omitempty"`
+	RouteFallback string `json:"route_fallback,omitempty"`
 }
 
 // traceDocs snapshots the top retrieved chunks of a hop for the loop trace.
@@ -384,6 +413,12 @@ func (q *QueryService) SetDecomposeEnabled(on bool) { q.decompEnabled = on }
 // at once. n <= 1 keeps the sequential loop. Read from
 // execution.retrieval.agentic_subquestion_concurrency at wiring.
 func (q *QueryService) SetSubQuestionConcurrency(n int) { q.subqConcurrency = n }
+
+// SetAdaptiveRoutesEnabled turns on ADR-0135 routing: decompSearch executes the
+// planner's chosen route instead of always running the decomposition. Off, the
+// route is still logged but every plan runs as today. Read from
+// execution.retrieval.agentic_adaptive_routes_enabled at wiring.
+func (q *QueryService) SetAdaptiveRoutesEnabled(on bool) { q.adaptiveRoutes = on }
 
 func (q *QueryService) effLexicalWeight() float64 {
 	if q.lexicalWeight > 0 {
@@ -745,16 +780,34 @@ func (q *QueryService) agenticSearch(ctx context.Context, query, callerID, docTy
 // derails the chain, whereas each sub-question here is retrieved independently
 // (the direct-retrieval probe showed each is individually retrievable).
 // FAIL-OPEN to a single pass on any planner failure.
+//
+// ADR-0135: the plan carries the planner's route. With adaptive routes on, direct
+// runs the single pass (no extraction), facets and chain run the floor plus the
+// sub-question passes below (facets have no {n}, so they form one parallel wave),
+// and a missing, unknown or inconsistent route runs as chain (resolveDecompRoute).
 func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docType string, spread bool) ([]domain.SearchResult, error) {
 	dp, ok := q.planner.(DecomposePlanner)
 	if !ok {
 		return q.searchByType(ctx, query, callerID, docType, spread)
 	}
-	subqs, refs, err := dp.Decompose(ctx, query)
-	if err != nil || len(subqs) == 0 {
-		if err != nil {
-			slog.WarnContext(ctx, "decomp: decompose failed; single pass (fail-open)", "err", err)
-		}
+	plan, err := decomposePlan(ctx, dp, query, q.adaptiveRoutes)
+	if err != nil {
+		slog.WarnContext(ctx, "decomp: decompose failed; single pass (fail-open)", "err", err)
+		return q.searchByType(ctx, query, callerID, docType, spread)
+	}
+	subqs, refs := plan.SubQuestions, plan.Refs
+	// ADR-0135: with adaptive routes on, the planner chose a route in the same
+	// call. Resolved and logged on every recall; EXECUTED only when adaptive routes
+	// are on — off, the planner was asked for no route, every plan runs exactly as
+	// before and the trace is unchanged.
+	rt := resolveDecompRoute(plan, q.adaptiveRoutes)
+	q.logDecompRoute(ctx, query, rt, len(subqs))
+	if rt.Applied && rt.Route == DecompRouteDirect {
+		// D2 direct: the original question is the query. One ordinary pass, no
+		// extraction, synthesis only for an opted-in caller — the echo path's rows.
+		return rt.annotate(q.singlePassPlan(ctx, query, callerID, docType, spread, "direct_single_pass"))
+	}
+	if len(subqs) == 0 {
 		return q.searchByType(ctx, query, callerID, docType, spread)
 	}
 	// Bound the fan-out: each sub-question is a full retrieval pass plus an LLM
@@ -777,12 +830,7 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 	// the non-agentic path returns — and record the echo in the trace.
 	if isEchoPlan(query, subqs) {
 		slog.InfoContext(ctx, "agentic-trace decompose echo; single pass", "query", query, "sub_question", subqs[0])
-		hits, serr := q.searchByType(ctx, query, callerID, docType, spread)
-		if serr != nil {
-			return nil, serr
-		}
-		trace := []hopTrace{{Hop: -1, PlannedQuery: query, Retrieved: traceDocs(hits), Decision: "echo_single_pass"}}
-		return q.withControlRow(ctx, query, hits, nil, trace, nil), nil
+		return rt.annotate(q.singlePassPlan(ctx, query, callerID, docType, spread, "echo_single_pass"))
 	}
 	// LEVER A (coverage floor): always retrieve the FULL original question as a
 	// guaranteed pass, placed FIRST, so decomposition can only ADD coverage — it
@@ -894,7 +942,7 @@ func (q *QueryService) decompSearch(ctx context.Context, query, callerID, docTyp
 	if len(interleaved) > budget {
 		interleaved = interleaved[:budget:budget]
 	}
-	return q.finalizeAgentic(ctx, query, union, interleaved, trace, nil), nil
+	return rt.annotate(q.finalizeAgentic(ctx, query, union, interleaved, trace, nil), nil)
 }
 
 // substituteAnswers replaces {1},{2},... in a sub-question with the matching

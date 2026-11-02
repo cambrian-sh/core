@@ -104,6 +104,9 @@ func NewMetabolismStack(
 	// SEC-01: cap agent memory (0 = disabled) so a runaway agent is killed at its
 	// cap instead of OOMing the kernel host.
 	manager.SetAgentMemoryLimitMB(cfg.Execution.Agents.AgentMemoryLimitMB)
+	// T-20261102-kg-extractor-cold-start-drops-the-first-kg: how long a spawned
+	// agent may take to open its socket before its boot fails.
+	manager.SetAgentBootTimeout(time.Duration(cfg.Execution.Agents.AgentBootTimeoutMs) * time.Millisecond)
 	// Wire default model pricing for token cost estimation. ADR-0042: the default
 	// generator's cost is the single source of truth (was cfg.Models[0]).
 	if def := cfg.LLMProvider.DefaultGenerator(); def != nil {

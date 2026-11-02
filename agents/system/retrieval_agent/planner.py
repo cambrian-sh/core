@@ -633,6 +633,123 @@ def decompose(query: str, llm: LLM, max_subqs: int = 4) -> tuple[list[str], list
     return subqs[:max_subqs], refs[:max_subqs]
 
 
+# --------------------------------------------------------------------------
+# ADR-0135: the planner chooses a ROUTE with its plan, in the same single call.
+# Used only when the kernel asks for it (decompose op with "routes": true, sent
+# when execution.retrieval.agentic_adaptive_routes_enabled is on); every other
+# caller gets DECOMPOSE_PROMPT above unchanged, so the flag-off path plans exactly
+# as before. The kernel validates the route (missing/unknown/inconsistent ⇒ chain).
+# --------------------------------------------------------------------------
+
+DECOMPOSE_ROUTE_PROMPT = """\
+You plan how to search a person's MEMORY (their past conversations and notes) to
+answer a QUESTION. First choose a ROUTE, then give the SUB-QUESTIONS that route needs.
+
+ROUTES
+- "direct": ONE lookup answers it. The question already names what to find; a
+  single search with the question itself is the best query. sub_questions is [].
+- "facets": it needs SEVERAL INDEPENDENT pieces that are found separately and then
+  combined — counting, listing, totalling or comparing things spread across
+  different conversations or time periods. No piece depends on another piece's
+  answer, so the sub-questions use NO placeholders.
+- "chain": a LATER lookup needs an EARLIER ANSWER — you cannot even phrase step 2
+  until step 1 is answered. Later sub-questions refer to earlier answers with
+  placeholders {{1}}, {{2}}, ... (1-indexed by position). The LAST sub-question's
+  answer is the final answer.
+
+When unsure between direct and the others, choose "direct" only if one search
+could plausibly find the whole answer in one place.
+
+For EACH sub-question also give a short "ref": a NOUN PHRASE naming what its
+answer IS, so later steps can still refer to it if the answer is not found
+(e.g. "the friend I went hiking with"). A chain ref may use earlier placeholders.
+
+EXAMPLES
+Q: "Where do I take yoga classes?"
+-> {{"route": "direct", "sub_questions": []}}
+Q: "What is the name of my cat?"
+-> {{"route": "direct", "sub_questions": []}}
+Q: "How many graduation ceremonies have I attended in the past three months?"
+-> {{"route": "facets", "sub_questions": [
+     {{"q": "Which graduation ceremonies did I attend?", "ref": "the graduation ceremonies I attended"}},
+     {{"q": "When did each graduation ceremony I attended take place?", "ref": "the dates of those ceremonies"}}]}}
+Q: "Which did I buy first, the blender or the toaster?"
+-> {{"route": "facets", "sub_questions": [
+     {{"q": "When did I buy the blender?", "ref": "the date I bought the blender"}},
+     {{"q": "When did I buy the toaster?", "ref": "the date I bought the toaster"}}]}}
+Q: "Where does the friend I went hiking with work?"
+-> {{"route": "chain", "sub_questions": [
+     {{"q": "Which friend did I go hiking with?", "ref": "the friend I went hiking with"}},
+     {{"q": "Where does {{1}} work?", "ref": "the workplace of {{1}}"}}]}}
+Q: "Who is the president of the other country that, with Kiwil's birth country,
+    formed a Commission of Truth and Friendship?"
+-> {{"route": "chain", "sub_questions": [
+     {{"q": "What is Kiwil's birth country?", "ref": "Kiwil's birth country"}},
+     {{"q": "Which other country formed a Commission of Truth and Friendship with {{1}}?",
+       "ref": "the other country that formed a Commission of Truth and Friendship with {{1}}"}},
+     {{"q": "Who is the president of {{2}}?", "ref": "the president of {{2}}"}}]}}
+
+RULES
+- Each sub-question asks for exactly ONE thing; keep the original names/anchors.
+- facets: 2-4 sub-questions, NO {{n}}. chain: 2-4 sub-questions, each later one
+  uses an earlier {{n}}. direct: no sub-questions.
+- Do NOT answer anything. Return ONLY a JSON object:
+  {{"route": "direct" | "facets" | "chain", "sub_questions": [{{"q": "...", "ref": "..."}}]}}
+
+Question: {query}"""
+
+
+def _subq_pairs(items: object, max_subqs: int) -> tuple[list[str], list[str]]:
+    """Sub-question/ref pairs from a parsed list; tolerates bare strings and junk."""
+    subqs: list[str] = []
+    refs: list[str] = []
+    if not isinstance(items, list):
+        return subqs, refs
+    for x in items:
+        if isinstance(x, dict):
+            sq = str(x.get("q", "") or x.get("question", "")).strip()
+            rf = str(x.get("ref", "")).strip()
+        elif isinstance(x, (str, int, float)):
+            sq, rf = str(x).strip(), ""
+        else:
+            continue
+        if sq:
+            subqs.append(sq)
+            refs.append(rf)
+    return subqs[:max_subqs], refs[:max_subqs]
+
+
+def decompose_routed(query: str, llm: LLM, max_subqs: int = 4) -> dict:
+    """ADR-0135 D1: one planning call returning ``{"route", "sub_questions", "refs"}``.
+
+    Parsed defensively:
+      * the expected object → its route (lower-cased, passed through even if
+        unknown — the kernel decides what an unusable route means and logs it);
+      * a bare JSON list (the legacy shape) → that plan with route "" (⇒ chain);
+      * nothing parseable → route "" and the question as its single sub-question,
+        today's fail-safe (an echo plan ⇒ the kernel runs one pass).
+    A "direct" route with no sub-questions carries the question itself as its one
+    sub-question, so a kernel that does not execute routes sees an echo plan.
+    """
+    q = query.strip()
+    if not q:
+        return {"route": "", "sub_questions": [], "refs": []}
+    raw = llm(DECOMPOSE_ROUTE_PROMPT.format(query=q))
+    route = ""
+    subqs: list[str] = []
+    refs: list[str] = []
+    obj = extract_json(raw)
+    if obj is not None and ("route" in obj or "sub_questions" in obj):
+        r = obj.get("route", "")
+        route = r.strip().lower() if isinstance(r, str) else ""
+        subqs, refs = _subq_pairs(obj.get("sub_questions"), max_subqs)
+    else:
+        subqs, refs = _subq_pairs(_extract_json_list(raw), max_subqs)
+    if not subqs:
+        subqs, refs = [q], [""]
+    return {"route": route, "sub_questions": subqs, "refs": refs}
+
+
 ANSWER_SUBQ_PROMPT = """\
 Answer the SUB-QUESTION using ONLY the CONTEXT retrieved from memory. Return the
 single specific entity (a name, place, org, or date) that answers it, copied from

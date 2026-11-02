@@ -17,8 +17,8 @@ import (
 // lazy gRPC conn (IDLE until an RPC, so no server is needed).
 type countingDialer struct{ dials atomic.Int32 }
 
-func (d *countingDialer) GetOrBootInstance(_ context.Context, def *domain.AgentDefinition, _ string) *domain.Instance {
-	return &domain.Instance{SocketPath: "/tmp/" + def.ID + ".sock"}
+func (d *countingDialer) GetOrBootInstance(_ context.Context, def *domain.AgentDefinition, _ string) (*domain.Instance, error) {
+	return &domain.Instance{SocketPath: "/tmp/" + def.ID + ".sock"}, nil
 }
 func (d *countingDialer) DialAgent(_ string) (*grpc.ClientConn, error) {
 	d.dials.Add(1)

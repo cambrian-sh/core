@@ -65,6 +65,9 @@ type InstanceManager struct {
 	// agentMemLimitMB is the GLOBAL default memory cap (SEC-01), used for agents
 	// that don't declare their own. 0 = no default.
 	agentMemLimitMB int
+	// bootTimeout bounds the wait for a spawned agent's socket
+	// (execution.agents.agent_boot_timeout_ms); 0 ⇒ agentBootTimeout.
+	bootTimeout time.Duration
 	// manifestFor resolves an agent's manifest so its per-agent memory_limit_mb
 	// can override the global default (SEC-01). nil ⇒ only the global default is
 	// used. Set by NewAgentManager (which holds the registry).
@@ -92,6 +95,16 @@ func (im *InstanceManager) SetEnvExtras(kv []string) {
 // disables the default; per-agent manifest limits still apply.
 func (im *InstanceManager) SetAgentMemoryLimitMB(mb int) {
 	im.agentMemLimitMB = mb
+}
+
+// SetAgentBootTimeout sets how long a boot waits for the agent's socket before
+// it kills the child and fails (execution.agents.agent_boot_timeout_ms). <= 0
+// keeps the built-in agentBootTimeout. A child that exits early still fails at
+// once; this only bounds a child that is alive but slow to serve — e.g. the
+// kg_extractor's spaCy load while the kernel boots its other agents
+// (T-20261102-kg-extractor-cold-start-drops-the-first-kg).
+func (im *InstanceManager) SetAgentBootTimeout(d time.Duration) {
+	im.bootTimeout = d
 }
 
 // SetManifestResolver wires the per-agent manifest lookup used to honor an
@@ -393,22 +406,46 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 	return cmd, nil
 }
 
-// GetOrBootInstance returns a running Instance for an agent.
-func (im *InstanceManager) GetOrBootInstance(ctx context.Context, def *domain.AgentDefinition, excludeInstanceID string) *domain.Instance {
+// GetOrBootInstance returns a running Instance for an agent, booting one if
+// none is tracked. A failed boot returns its cause (socket timeout, the child
+// exiting first, a missing runtime dependency) and logs it at WARN: it used to
+// return nil with the error discarded, so callers could only say "boot agent
+// failed", and the kg_extractor's cold-start timeouts were invisible
+// (T-20261102-kg-extractor-cold-start-drops-the-first-kg).
+//
+// A tracked JIT instance whose process has exited is evicted and replaced, not
+// returned: before, a crashed or killed agent stayed "running" for the life of
+// the kernel and every call to it failed against its dead socket.
+func (im *InstanceManager) GetOrBootInstance(ctx context.Context, def *domain.AgentDefinition, excludeInstanceID string) (*domain.Instance, error) {
 	im.mu.Lock()
+	var dead []string
 	for _, id := range im.agentIndex[def.ID] {
 		if excludeInstanceID != "" && id == excludeInstanceID {
 			continue
 		}
-		if inst, ok := im.instances[id]; ok {
-			im.mu.Unlock()
-			return inst
+		inst, ok := im.instances[id]
+		if !ok {
+			continue
 		}
+		if inst.Mode != domain.ModeDaemon && im.exitedLocked(id) {
+			dead = append(dead, id) // daemons are restarted by their crash watcher
+			continue
+		}
+		im.mu.Unlock()
+		return inst, nil
 	}
 	im.mu.Unlock()
+	for _, id := range dead {
+		slog.WarnContext(ctx, "agent instance has exited; evicting it and booting a new one",
+			"agent_id", def.ID, "instance_id", id)
+		im.EvictInstance(id)
+	}
 
+	t := time.Now()
 	if err := im.bootAgent(ctx, def); err != nil {
-		return nil
+		slog.WarnContext(ctx, "agent boot failed", "agent_id", def.ID,
+			"elapsed_ms", time.Since(t).Milliseconds(), "cause", err)
+		return nil, fmt.Errorf("boot agent %s: %w", def.ID, err)
 	}
 
 	im.mu.Lock()
@@ -418,10 +455,25 @@ func (im *InstanceManager) GetOrBootInstance(ctx context.Context, def *domain.Ag
 			if excludeInstanceID != "" && id == excludeInstanceID {
 				continue
 			}
-			return im.instances[id]
+			return im.instances[id], nil
 		}
 	}
-	return nil
+	return nil, fmt.Errorf("boot agent %s: booted but no instance is tracked", def.ID)
+}
+
+// exitedLocked reports whether the child registered under instanceID has
+// exited. Callers hold im.mu.
+func (im *InstanceManager) exitedLocked(instanceID string) bool {
+	pe, ok := im.exits[instanceID]
+	if !ok {
+		return false
+	}
+	select {
+	case <-pe.done:
+		return true
+	default:
+		return false
+	}
 }
 
 // ReleaseInstance conditionally evicts a JIT instance.
@@ -583,7 +635,7 @@ func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefin
 	// timeout, the caller's ctx, or the child EXITING, whichever comes first
 	// (process_exit.go).
 	exit := im.watchExit(inst.ID, cmd)
-	if err := awaitSocket(ctx, cmd, exit, inst.SocketPath, "agent "+def.ID); err != nil {
+	if err := awaitSocket(ctx, cmd, exit, inst.SocketPath, "agent "+def.ID, im.bootTimeout); err != nil {
 		im.forgetExit(inst.ID)
 		return err
 	}
@@ -675,7 +727,7 @@ func (im *InstanceManager) bootDaemonAgent(ctx context.Context, def *domain.Agen
 	// The crash watcher in daemon_spawner.go consumes the SAME exit, so the
 	// child is waited on exactly once.
 	exit := im.watchExit(inst.ID, cmd)
-	if err := awaitSocket(ctx, cmd, exit, inst.SocketPath, "daemon "+def.ID); err != nil {
+	if err := awaitSocket(ctx, cmd, exit, inst.SocketPath, "daemon "+def.ID, im.bootTimeout); err != nil {
 		im.forgetExit(inst.ID)
 		return nil, err
 	}

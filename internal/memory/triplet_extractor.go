@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -13,10 +14,15 @@ type llmTripletExtractor struct {
 	gen domain.Generator
 }
 
-func (e *llmTripletExtractor) ExtractBatch(ctx context.Context, texts []string, _ []string) [][]domain.ChunkTriplet {
+func (e *llmTripletExtractor) ExtractBatch(ctx context.Context, texts []string, _ []string) ([][]domain.ChunkTriplet, error) {
 	out := make([][]domain.ChunkTriplet, len(texts))
-	if e.gen == nil || len(texts) == 0 {
-		return out
+	if len(texts) == 0 {
+		return out, nil
+	}
+	if e.gen == nil {
+		// No generator wired: nothing can extract this batch. An error, not an
+		// empty result, so the chunks settle as failed rather than "no triplets".
+		return nil, fmt.Errorf("llm triplet extractor: no generator: %w", domain.ErrTripletExtractorUnavailable)
 	}
 	// Filter blanks, remember the index map (same as the prior batcher logic).
 	var nonEmpty []string
@@ -29,12 +35,12 @@ func (e *llmTripletExtractor) ExtractBatch(ctx context.Context, texts []string, 
 		origIdx = append(origIdx, i)
 	}
 	if len(nonEmpty) == 0 {
-		return out
+		return out, nil
 	}
 	prompt := buildBatchTripletPrompt(nonEmpty)
 	resp, err := callTripletsLLM(ctx, e.gen, prompt)
 	if err != nil {
-		return out
+		return nil, fmt.Errorf("llm triplet extractor: %w", err)
 	}
 	perChunk := parseBatchedTripletResponse(resp, len(nonEmpty))
 	for j, triplets := range perChunk {
@@ -43,7 +49,7 @@ func (e *llmTripletExtractor) ExtractBatch(ctx context.Context, texts []string, 
 		}
 		out[origIdx[j]] = stampSource(triplets, "llm", confFiller)
 	}
-	return out
+	return out, nil
 }
 
 // Confidence tiers (ADR-0053 D2 revised). Pointer helpers so the nullable

@@ -42,7 +42,7 @@ func TestPersistChunks_StampsEachChunkFromItsParts(t *testing.T) {
 	doc := chatDoc(t, times, []string{"user: we booked Lisbon", "assistant: noted", "user: trip cancelled"})
 
 	chunks, _ := OptionCChunker{}.Chunk(context.Background(), &doc)
-	if _, err := im.persistChunks(context.Background(), doc, chunks, "e1", ""); err != nil {
+	if _, err := im.persistChunks(context.Background(), doc, chunks, "e1", "", false); err != nil {
 		t.Fatal(err)
 	}
 	saved := im.agent.Manager.Store.(*captureAllStore).snapshot()
@@ -80,7 +80,7 @@ func TestPersistChunks_StampsStructureLeafChunks(t *testing.T) {
 		{ID: "l3", Kind: "paragraph", ParentID: "s2", Text: turns[2]},
 	}}
 	im := newCaptureIngestManager(t, p)
-	if _, err := im.persistChunks(context.Background(), doc, nil, "e1", ""); err != nil {
+	if _, err := im.persistChunks(context.Background(), doc, nil, "e1", "", false); err != nil {
 		t.Fatal(err)
 	}
 	saved := im.agent.Manager.Store.(*captureAllStore).snapshot()
@@ -108,7 +108,7 @@ func TestPersistChunks_IngestDefaultIsLabelled(t *testing.T) {
 	doc := domain.ExternalDocument{SourceURI: "file://a.txt", Body: "plain text"}
 	doc.ApplyEventTime(et)
 	chunks, _ := OptionCChunker{}.Chunk(context.Background(), &doc)
-	if _, err := im.persistChunks(context.Background(), doc, chunks, "e1", ""); err != nil {
+	if _, err := im.persistChunks(context.Background(), doc, chunks, "e1", "", false); err != nil {
 		t.Fatal(err)
 	}
 	d := im.agent.Manager.Store.(*captureAllStore).snapshot()[0]

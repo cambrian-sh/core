@@ -10,10 +10,18 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
 
+	"github.com/cambrian-sh/core/internal/memory"
+
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// IngestTimingTrailer is the gRPC trailer key carrying a sync ingest's per-stage
+// timing (memory.FormatStageClock). Diagnostic, not a contract: keys may change.
+const IngestTimingTrailer = "cambrian-ingest-timing"
 
 // IngestionProcessor is the chunking-pipeline entry point. The gRPC
 // IngestMemory handler routes through this when the Server has it
@@ -99,7 +107,15 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 		if agentID := callerAgentID(ctx); agentID != "" {
 			ictx = domain.WithPrincipal(ctx, domain.AgentPrincipal(agentID))
 		}
+		// The per-stage breakdown of this ingest goes back to the caller as the
+		// "cambrian-ingest-timing" trailer ("stage=ms,...,count#=n"), so a harness
+		// can attribute ingest cost without parsing kernel logs and without a proto
+		// change (T-20261102-ingestion-logs-no-per-stage-timing-so-the-1-s).
+		clock := domain.NewStageClock()
+		ictx = domain.WithStageClock(ictx, clock)
+		started := time.Now()
 		entityID, err := s.IngestionProcessor.ProcessSync(ictx, doc)
+		_ = grpc.SetTrailer(ctx, metadata.Pairs(IngestTimingTrailer, memory.FormatStageClock(clock, time.Since(started)))) // best-effort diagnostic; fails only outside a gRPC call (tests)
 		if err != nil {
 			// Map the CAUSE, not the layer. Collapsing everything to Internal is how a
 			// denied write or a coined tag surfaced as

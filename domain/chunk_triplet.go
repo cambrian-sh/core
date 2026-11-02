@@ -1,6 +1,9 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // ChunkTriplet is one (h, r, t) triple extracted from a chunk's text. This is the
 // per-chunk KG that the KG²RAG retrieval pattern walks. The h and t are free-form
@@ -33,11 +36,39 @@ type ChunkTriplet struct {
 // tiers, injected at bootstrap.
 //
 // ExtractBatch returns one []ChunkTriplet per input text, positionally aligned
-// (texts[i] -> out[i]); a blank/failed position yields an empty slice. ids[i] is
-// the chunk's document id, positionally aligned with texts — the deterministic
-// adapter uses it to anchor structural (metadata) triplets to the real chunk.
+// (texts[i] -> out[i]); a blank position, or a text with nothing extractable,
+// yields an empty slice. ids[i] is the chunk's document id, positionally aligned
+// with texts — the deterministic adapter uses it to anchor structural (metadata)
+// triplets to the real chunk.
+//
+// A non-nil error means the batch was NOT extracted (the extractor was
+// unreachable, the call failed, or its reply was unusable), and the returned
+// slice must be ignored. It is deliberately distinct from a successful empty
+// result: the batcher settles an empty result as complete ("this text has no
+// triplets") but an error as failed, so execution.ingestion.sync_ingest_wait_for_kg
+// and the ingest-timing kg_failed count can tell the two apart
+// (T-20261102-kg-extractor-cold-start-drops-the-first-kg). Before that change the
+// port had no error, and a cold-start boot failure settled 32 chunks as
+// "complete, no triplets".
 type TripletExtractor interface {
-	ExtractBatch(ctx context.Context, texts []string, ids []string) [][]ChunkTriplet
+	ExtractBatch(ctx context.Context, texts []string, ids []string) ([][]ChunkTriplet, error)
+}
+
+// ErrTripletExtractorUnavailable marks an extraction error caused by the
+// extractor not being reachable (its agent could not be booted, dialled or
+// called), as opposed to an unusable reply. Adapters wrap their cause with it so
+// a caller can tell an outage (worth retrying later) from a bad response.
+var ErrTripletExtractorUnavailable = errors.New("triplet extractor unavailable")
+
+// ReadinessProber is an optional capability of an adapter whose backing process
+// starts lazily (a system agent booted on first use). Ready returns nil once the
+// adapter can serve a call, and the cause otherwise. The chunk-triplet batcher
+// probes its extractor once when its drain loop starts, so the kg_extractor
+// agent is booted at kernel start rather than by the first ingest's batch, and
+// logs "KG extractor READY" (or a WARN with the cause). Type-asserted, so
+// adapters and fakes without it stay valid.
+type ReadinessProber interface {
+	Ready(ctx context.Context) error
 }
 
 // ChunkTripletsStore is the storage port for the per-chunk triplets produced at

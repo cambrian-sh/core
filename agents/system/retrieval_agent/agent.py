@@ -10,6 +10,8 @@ Ops (dispatched in :meth:`run`):
   * ``plan_step``      → {query} → the lexical QuerySpec (Phase 2a).
   * ``decide_continue``→ {state} → the stop/continue decision (stub → later phase).
   * ``synthesize``     → {chunks} → the typed answer (stub → later phase).
+  * ``decompose``      → {query[, routes]} → {sub_questions, refs}; with
+    ``"routes": true`` (ADR-0135) also the planner's ``route`` (direct|facets|chain).
 
 LLM access: a kernel-invoked agent receives a valid ``session_token_id`` on the
 task (from the Handoff), so ``self.substrate.generate(token, prompt)`` reaches
@@ -100,6 +102,10 @@ class RetrievalAgent(CognitiveAgent):
                 llm = self._make_ollama_llm(_PLAN_MAX_TOKENS)
             else:
                 llm = self._make_llm(task, _PLAN_MAX_TOKENS)
+            if obj.get("routes") is True:
+                # ADR-0135: the kernel executes routes and asked for one.
+                return self._ok(planner.decompose_routed(str(obj.get("query", "")), llm))
+            # Every other caller (flag off, older kernels): today's prompt and shape.
             subqs, refs = planner.decompose(str(obj.get("query", "")), llm)
             return self._ok({"sub_questions": subqs, "refs": refs})
         if op == "answer_subq":

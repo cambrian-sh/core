@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -27,7 +28,21 @@ type IngestionConfig struct {
 	// leaves are dropped (execution.ingestion.structure_junk_filter_backends). Empty
 	// = drop nothing anywhere: content is kept unless the operator opted in.
 	JunkFilterBackends []string
+	// SyncWaitForKG makes ProcessSync return only after its own chunks' KG
+	// triplets are extracted and persisted (read-your-writes for the KG lane;
+	// execution.ingestion.sync_ingest_wait_for_kg, owner decision 2026-11-02).
+	// false = the async lane as before: ProcessSync returns once chunks are
+	// stored and extraction catches up in the background.
+	SyncWaitForKG bool
+	// SyncKGWaitTimeout bounds that wait (execution.ingestion.
+	// sync_ingest_kg_wait_timeout_ms). On expiry the ingest still SUCCEEDS — the
+	// content is stored and the KG lane is enrichment — with a WARN and
+	// kg_pending in the timing line. <=0 means the 30 s default.
+	SyncKGWaitTimeout time.Duration
 }
+
+// defaultSyncKGWaitTimeout is the fallback for IngestionConfig.SyncKGWaitTimeout.
+const defaultSyncKGWaitTimeout = 30 * time.Second
 
 type IngestionManager struct {
 	queue    chan domain.ExternalDocument
@@ -232,6 +247,9 @@ func NewIngestionManagerWithRegistry(sceneGen *SceneGenerator, embedder domain.E
 	if cfg.BatchWait <= 0 {
 		cfg.BatchWait = time.Second
 	}
+	if cfg.SyncKGWaitTimeout <= 0 {
+		cfg.SyncKGWaitTimeout = defaultSyncKGWaitTimeout
+	}
 	if registry == nil {
 		registry = fallbackRegistry()
 	}
@@ -261,19 +279,30 @@ func (im *IngestionManager) Enqueue(doc domain.ExternalDocument) bool {
 // (ADR-0028) still feeds the same manager via Enqueue, so both
 // paths share the chunker registry + scene generator + agent
 // write path.
-func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.ExternalDocument) (string, error) {
+func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.ExternalDocument) (entityID string, err error) {
+	// One timing line per document (ingestion_timing.go). The clock rides ctx so
+	// the structure dispatcher and the store adapter can add what only they see.
+	started := time.Now()
+	ctx, clock := ingestClock(ctx)
+	stored := 0
+	defer func() { logIngestTiming(ctx, clock, time.Since(started), doc.SourceURI, stored, err) }()
 	// Evidence first (ADR-0105 D2): the original bytes must be durable and
 	// published as evidence before chunking, scene generation or any other
 	// semantic step — so a failure anywhere downstream still leaves source
 	// material that can be reprocessed.
 	if im.evidenceCapture != nil {
-		if err := im.captureEvidence(ctx, doc); err != nil {
+		t := time.Now()
+		err := im.captureEvidence(ctx, doc)
+		clock.Since(StageEvidence, t)
+		if err != nil {
 			return "", fmt.Errorf("ingestion manager: evidence capture: %w", err)
 		}
 	}
 	scene := ""
 	if im.sceneGenEnabled && im.sceneGen != nil {
+		t := time.Now()
 		scenes, err := im.sceneGen.Generate(ctx, []domain.ExternalDocument{doc})
+		clock.Since(StageScene, t)
 		if err != nil {
 			return "", fmt.Errorf("ingestion manager: scene generate: %w", err)
 		}
@@ -291,31 +320,43 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	// involved is deterministic and a retry overwrites both. Rolling the entity
 	// back after a failed chunk write was the rejected alternative: it is one more
 	// store call against a store that just failed.
-	entityID := sourceDocEntityID(doc)
+	entityID = sourceDocEntityID(doc)
+	t := time.Now()
 	chunker := im.chunkerFor(doc)
 	chunks, err := chunker.Chunk(ctx, &doc)
 	if err != nil {
 		slog.Warn("IngestionManager: chunker failed, falling back to OptionC", "source_uri", doc.SourceURI, "err", err)
 		chunks, _ = OptionCChunker{}.Chunk(ctx, &doc)
 	}
-	outcome, err := im.persistChunks(ctx, doc, chunks, entityID, scene)
+	clock.Since(StageChunk, t)
+	outcome, err := im.persistChunks(ctx, doc, chunks, entityID, scene, im.cfg.SyncWaitForKG)
 	chunkCount := outcome.Stored
+	stored = chunkCount
 	if err != nil {
 		// Includes ErrNoChunksStored: an ingest that stored no content is a FAILED
 		// ingest, and the caller is told so rather than handed an entity id
 		// (T-20261031-processsync-reports-success-when-every-chunk).
 		return "", err
 	}
-	if _, _, err := im.mintSourceDoc(ctx, doc); err != nil {
+	t = time.Now()
+	_, _, err = im.mintSourceDoc(ctx, doc)
+	clock.Since(StageEntity, t)
+	if err != nil {
 		return "", fmt.Errorf("ingestion manager: source-doc entity for %q (its %d chunk(s) are stored; a retry overwrites both by id): %w",
 			doc.SourceURI, chunkCount, err)
 	}
 	if chunkCount == 0 {
 		return entityID, nil
 	}
+	// Read-your-writes for the KG lane (sync_ingest_wait_for_kg): return only once
+	// this document's chunks have their triplets. After the entity mint, so the
+	// wait overlaps nothing the caller still needs and a failed mint never waits.
+	im.waitForKG(ctx, clock, doc.SourceURI, outcome.KGWait)
 	slog.Info("IngestionManager: sync ingest complete", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", chunkCount,
 		"dropped_leaves", outcome.DroppedLeaves)
+	t = time.Now()
 	im.publishWritten(doc, entityID, chunkCount)
+	clock.Since(StagePublish, t)
 	return entityID, nil
 }
 
@@ -418,26 +459,89 @@ func (im *IngestionManager) processBatch(ctx context.Context, batch []domain.Ext
 		if i < len(scenes) {
 			scene = scenes[i]
 		}
-		// Same order as ProcessSync: chunks first, entity last.
-		entityID := sourceDocEntityID(doc)
-		chunker := im.chunkerFor(doc)
-		chunks, err := chunker.Chunk(ctx, &doc)
-		if err != nil {
-			slog.Warn("IngestionManager: chunker failed, falling back to OptionC", "source_uri", doc.SourceURI, "err", err)
-			chunks, _ = OptionCChunker{}.Chunk(ctx, &doc)
-		}
-		outcome, err := im.persistChunks(ctx, doc, chunks, entityID, scene)
-		if err != nil {
-			slog.Warn("IngestionManager: failed to persist chunks", "source_uri", doc.SourceURI, "err", err)
-			continue
-		}
-		if _, _, err := im.mintSourceDoc(ctx, doc); err != nil {
-			slog.Warn("IngestionManager: failed to mint source-doc entity", "source_uri", doc.SourceURI, "err", err)
-			continue
-		}
-		slog.Info("ExternalDocumentIngested", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", outcome.Stored,
-			"dropped_leaves", outcome.DroppedLeaves)
+		im.processBatchDoc(ctx, doc, scene)
 	}
+}
+
+// processBatchDoc is one document of processBatch, with its own timing line.
+// Same order as ProcessSync: chunks first, entity last.
+func (im *IngestionManager) processBatchDoc(ctx context.Context, doc domain.ExternalDocument, scene string) {
+	started := time.Now()
+	// A fresh clock per document: the batch shares one ctx across documents.
+	clock := domain.NewStageClock()
+	dctx := domain.WithStageClock(ctx, clock)
+	var (
+		outcome persistOutcome
+		err     error
+	)
+	defer func() { logIngestTiming(dctx, clock, time.Since(started), doc.SourceURI, outcome.Stored, err) }()
+	entityID := sourceDocEntityID(doc)
+	t := time.Now()
+	chunker := im.chunkerFor(doc)
+	chunks, cerr := chunker.Chunk(dctx, &doc)
+	if cerr != nil {
+		slog.Warn("IngestionManager: chunker failed, falling back to OptionC", "source_uri", doc.SourceURI, "err", cerr)
+		chunks, _ = OptionCChunker{}.Chunk(dctx, &doc)
+	}
+	clock.Since(StageChunk, t)
+	outcome, err = im.persistChunks(dctx, doc, chunks, entityID, scene, false) // async path: never waits for the KG lane
+	if err != nil {
+		slog.Warn("IngestionManager: failed to persist chunks", "source_uri", doc.SourceURI, "err", err)
+		return
+	}
+	t = time.Now()
+	_, _, err = im.mintSourceDoc(dctx, doc)
+	clock.Since(StageEntity, t)
+	if err != nil {
+		slog.Warn("IngestionManager: failed to mint source-doc entity", "source_uri", doc.SourceURI, "err", err)
+		return
+	}
+	slog.Info("ExternalDocumentIngested", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", outcome.Stored,
+		"dropped_leaves", outcome.DroppedLeaves)
+}
+
+// waitForKG blocks until w completes, ctx is done, or SyncKGWaitTimeout expires,
+// and records the wait as the kg_wait stage. It never fails the ingest: the
+// chunks are already stored and the KG lane is enrichment, so an incomplete
+// wait is a WARN plus kg_pending (chunks not yet settled) and kg_failed (chunks
+// whose triplets were not persisted) on the timing line and trailer. Cancelling
+// ctx (a client disconnect) ends the wait; the chunks stay queued and are
+// extracted as usual. w == nil (flag off, or no batcher) is a no-op, so the
+// flag-off path records no stage at all.
+func (im *IngestionManager) waitForKG(ctx context.Context, clock *domain.StageClock, sourceURI string, w *TripletsWait) {
+	if w == nil {
+		return
+	}
+	t := time.Now()
+	wctx, cancel := context.WithTimeout(ctx, im.cfg.SyncKGWaitTimeout)
+	err := w.Wait(wctx)
+	cancel()
+	clock.Since(StageKGWait, t)
+	pending, failed := w.Pending(), w.Failed()
+	if pending > 0 {
+		clock.Count(CountKGPending, pending)
+	}
+	if failed > 0 {
+		clock.Count(CountKGFailed, failed)
+	}
+	if err == nil && failed == 0 {
+		return
+	}
+	reason := "incomplete"
+	switch {
+	case errors.Is(err, ErrTripletsBatcherStopped):
+		reason = "batcher_stopped"
+	case ctx.Err() != nil:
+		reason = "caller_cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		reason = "timeout"
+	case failed > 0:
+		reason = "extraction_failed"
+	}
+	slog.WarnContext(ctx, "IngestionManager: sync ingest returned before its KG triplets were complete",
+		"source_uri", sourceURI, "reason", reason, "kg_pending", pending, "kg_failed", failed,
+		"waited_ms", time.Since(t).Milliseconds(), "timeout_ms", im.cfg.SyncKGWaitTimeout.Milliseconds(),
+		"effect", "the content is stored; KG2RAG, entity seeding and anchors see this document's graph once extraction catches up")
 }
 
 // sourceDocEntityID is the deterministic id of a document's source-doc entity.
