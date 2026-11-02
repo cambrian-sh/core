@@ -287,6 +287,9 @@ var promotedExecutionDefaults = map[string]bool{
 	"reranker_weight":                    true,
 	"step_timeout_base_buffer_ms":        true,
 	"drainer_enabled":                    true,
+	// blend_weight_recency 0 -> 0.1: owner decision 2026-11-02 (ADR-0134 Q8,
+	// corrected), a starting value the LongMemEval event-time A/B will tune.
+	"blend_weight_recency": true,
 	// trace_pipeline_payloads is deliberately absent: reviewed and REVERTED to
 	// the off default on 2026-08-11 — see the field's doc comment.
 }

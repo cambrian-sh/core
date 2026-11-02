@@ -13,8 +13,10 @@ import (
 func TestHnswIterativeScan_ValidatedAndFingerprinted(t *testing.T) {
 	t.Parallel()
 	base := config.DefaultConfig().Execution
-	if base.Retrieval.HnswIterativeScan != "" {
-		t.Fatalf("default must be off (pgvector's own default), got %q", base.Retrieval.HnswIterativeScan)
+	// Owner decision 2026-11-02: on by default, because every principal read is
+	// scope-filtered and would otherwise underfill on a large shared store.
+	if base.Retrieval.HnswIterativeScan != "relaxed_order" {
+		t.Fatalf("default must be relaxed_order, got %q", base.Retrieval.HnswIterativeScan)
 	}
 	for _, ok := range []string{"", "off", "relaxed_order", "strict_order"} {
 		c := base
@@ -36,6 +38,7 @@ func TestHnswIterativeScan_ValidatedAndFingerprinted(t *testing.T) {
 
 	off, empty, on := base, base, base
 	off.Retrieval.HnswIterativeScan = "off"
+	empty.Retrieval.HnswIterativeScan = "" // explicit: the shipped default is now relaxed_order
 	on.Retrieval.HnswIterativeScan = "relaxed_order"
 	if off.RetrievalFingerprint("e") != empty.RetrievalFingerprint("e") {
 		t.Error(`"" and "off" are the same ranking function and must fingerprint alike`)

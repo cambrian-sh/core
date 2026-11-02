@@ -695,8 +695,9 @@ type RetrievalConfig struct {
 	RecallOverFetch int `json:"recall_over_fetch,omitempty"`
 	HnswEfSearch    int `json:"hnsw_ef_search,omitempty"`
 	// HnswIterativeScan turns on pgvector's iterative HNSW index scan (pgvector
-	// >= 0.8): "" or "off" (default — pgvector's own default), "relaxed_order", or
-	// "strict_order". Without it an HNSW scan yields at most hnsw_ef_search tuples
+	// >= 0.8): "" or "off" (pgvector's own default), "relaxed_order" (the shipped
+	// default since 2026-11-02, owner decision), or "strict_order". Without it an
+	// HNSW scan yields at most hnsw_ef_search tuples
 	// and the read-scope / session / event-window predicates filter AFTER the
 	// scan, so a selective predicate on a large shared store underfills top_k
 	// (ADR-0134 P2, T-20261101-scoped-recall-may-underfill-top-k-on-a-large; the
@@ -1714,14 +1715,18 @@ func DefaultConfig() *Config {
 				// values become the product defaults (they had lived only in a
 				// gitignored local file). The experimental-off era of these flags
 				// ended with that call; opt-OUT is via config or the store.
-				AgenticRetrievalEnabled:   true,
-				AgenticMaxHops:            4,
-				AgenticDecomposeEnabled:   true, // grounded decomposition — the one agentic lever that measured a win
-				AgenticPlannerModel:       "llm:deepseek",
-				HybridSearchEnabled:       true, // dense+lexical RRF fusion (ADR-0054)
-				HybridRRFK:                60,
-				HybridLexicalWeight:       1,
-				HnswEfSearch:              120,
+				AgenticRetrievalEnabled: true,
+				AgenticMaxHops:          4,
+				AgenticDecomposeEnabled: true, // grounded decomposition — the one agentic lever that measured a win
+				AgenticPlannerModel:     "llm:deepseek",
+				HybridSearchEnabled:     true, // dense+lexical RRF fusion (ADR-0054)
+				HybridRRFK:              60,
+				HybridLexicalWeight:     1,
+				HnswEfSearch:            120,
+				// Owner decision 2026-11-02 (ADR-0134 P2): ON by default. Every principal
+				// read carries a scope predicate, which filters after an HNSW scan, so
+				// without the iterative scan a selective scope underfills top_k silently.
+				HnswIterativeScan:         "relaxed_order",
 				QueryEntitySeedingEnabled: true,
 				RecallTopK:                100,
 				RecallOverFetch:           100,
@@ -1732,6 +1737,11 @@ func DefaultConfig() *Config {
 				BlendWeightLexical:        0.2,
 				BlendWeightCoherence:      0.05,
 				BlendWeightConfidence:     0.1,
+				// Owner decision 2026-11-02 (ADR-0134 Q8, corrected): recency was 0 here
+				// (memory.DefaultBlendWeights' 0.05 is only the all-zero fallback). It
+				// now reads event_time, and 0.1 is a starting value to be tuned by the
+				// LongMemEval event-time A/B, not a measured optimum.
+				BlendWeightRecency: 0.1,
 
 				KG2RAGMaxHops:     2,
 				KG2RAGMaxExpanded: 40,

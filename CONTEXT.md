@@ -110,8 +110,10 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
   re-asserted where every lane converges (`EventTimeQuery.Admits`); `reference_time` anchors the recency term (a fact
   after the asker's now gets no recency credit). MCP `search_memory`/`ask_memory` take the same parameters. Retrieval
   decisions carry the event-time query (`RetrievalDecision.EventTime`, for receipts). Default-off:
-  `execution.retrieval.chronological_context_enabled` (D5a: final-synthesis passages ordered and dated by event time)
-  and `execution.retrieval.hnsw_iterative_scan` (pgvector iterative scan against filtered-HNSW underfill).
+  `execution.retrieval.chronological_context_enabled` (D5a: final-synthesis passages ordered and dated by event time).
+  Default-ON since 2026-11-02 (owner decision): `execution.retrieval.hnsw_iterative_scan = relaxed_order` (pgvector
+  iterative scan against filtered-HNSW underfill, because every principal read is scope-filtered) and
+  `execution.retrieval.blend_weight_recency = 0.1` (was 0; a starting value for the event-time A/B to tune).
 
 ---
 
@@ -134,7 +136,7 @@ Each has a ticket; close the ticket and update this list in the same change.
   `T-20261101-write-tags-admin-route-has-no-operatorconsole`
 - ADR-0134: relative time phrases in a question ("last month") are not resolved into an event window —
   `T-20261101-relative-time-phrases-in-a-memory-question-are`; filtered-HNSW underfill is measured only at 10k chunks
-  (none on natural plans; the iterative-scan remedy is config-gated, default off) —
+  (none on natural plans; the iterative-scan remedy is on by default since 2026-11-02, ~2x query latency at 10k) —
   `T-20261101-scoped-recall-may-underfill-top-k-on-a-large`; D5a chronological context and the recency term on real
   event times are unmeasured (LongMemEval A/B pending)
 - Contribution lane never run end to end on real machines (blocked: no deployment) —
