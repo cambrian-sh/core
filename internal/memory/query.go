@@ -58,6 +58,7 @@ type QueryService struct {
 	neighborWindow   bool                      // ADR-0060: expand each returned chunk with its document neighbors
 	chronoContext    bool                      // ADR-0134 D5a: order + date the final synthesis context by event time (chronological_context.go)
 	blender          atomic.Pointer[Blender]   // ADR-0054 Stage A: nil = no blend re-rank; hot-swappable at runtime (SetBlendWeights ← operator SetRuntimeConfig)
+	recencyCurve     RecencyCurve              // Stage-A recency curve (SetRecencyCurve); zero = pool min-max
 	rankSignals      RankSignalStore           // ADR-0054 Stage A: pagerank + per-chunk confidence source
 	recallTopK       int                       // ADR-0054: results returned to caller; 0 ⇒ defaultRecallTopK
 	recallOverFetch  int                       // ADR-0054: seed/ANN fetch size; 0 ⇒ defaultRecallOverFetch
@@ -364,6 +365,23 @@ func (q *QueryService) EnableBlend(b *Blender, signals RankSignalStore) {
 // (ADR-0054 tuning seam, driven by the operator SetRuntimeConfig command). The
 // swap is atomic — in-flight recalls finish on the old Blender, later ones see
 // the new weights. Ephemeral: config.json stays the boot default.
+// RecencyCurve is how Stage-A recency is computed (config
+// execution.retrieval.blend_recency_mode / _half_life_hours). The zero value is the
+// original pool-relative min-max.
+type RecencyCurve struct {
+	Decay    bool          // false = min-max over the candidate pool
+	HalfLife time.Duration // decay mode only; > 0
+}
+
+// SetRecencyCurve selects the recency curve. Set once at composition, next to
+// EnableBlend; a ranking option, not a control.
+func (q *QueryService) SetRecencyCurve(c RecencyCurve) {
+	if c.Decay && c.HalfLife <= 0 {
+		c.Decay = false // config validation refuses this; never divide by zero here
+	}
+	q.recencyCurve = c
+}
+
 func (q *QueryService) SetBlendWeights(w BlendWeights) {
 	nb := NewBlender(w)
 	q.blender.Store(&nb)
@@ -1265,6 +1283,29 @@ func (q *QueryService) applyStageABlend(ctx context.Context, results []domain.Se
 			return 0
 		}
 		return (evtUnix[id] - recMin) / recRange
+	}
+	if curve := q.recencyCurve; curve.Decay {
+		// Fixed-scale decay (T-20261102-stage-a-recency-is-min-max-over-the-candidate).
+		// Age is measured from the asker's now when given (ADR-0134 D4), else from the
+		// newest candidate — so, unlike an absolute now-relative decay, an all-old pool
+		// still ranks by relative age (the property the min-max comment above protects),
+		// but a week of age costs the same credit whatever the pool's spread is.
+		anchor := recMax
+		if !refNow.IsZero() {
+			anchor = float64(refNow.Unix())
+		}
+		halfLife := curve.HalfLife.Seconds()
+		normRecency = func(id string) float64 {
+			u, ok := evtUnix[id]
+			if !ok || afterNow[id] || math.IsInf(recMax, -1) {
+				return 0
+			}
+			age := anchor - u
+			if age < 0 {
+				age = 0
+			}
+			return math.Exp2(-age / halfLife)
+		}
 	}
 
 	for i := range results {

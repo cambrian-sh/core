@@ -82,27 +82,51 @@ func (c *Connector) Session(serverID string) (*mcpsdk.ClientSession, bool) {
 // as namespaced SystemTools (mcp:<id>/<tool>) for registration. A server that
 // fails to connect or discover is logged and skipped — it never fails the others
 // or the kernel (ADR-0043 D8).
+//
+// Servers are dialled CONCURRENTLY (T-20261102-kernel-boot-connects-mcp-servers-one-after):
+// each connect + discovery is independent, and sequentially they cost every boot the
+// SUM of the servers' start-up times (stdio servers spawn a process; 4-6 s each, ~25 s
+// for five). The result is still assembled in configured order, so tool registration
+// order is deterministic and identical to the sequential loop's.
 func (c *Connector) ConnectAll(ctx context.Context, servers []ServerConfig) []domain.SystemTool {
+	perServer := make([][]domain.SystemTool, len(servers))
+	var wg sync.WaitGroup
+	for i, s := range servers {
+		wg.Add(1)
+		go func(i int, s ServerConfig) {
+			defer wg.Done()
+			perServer[i] = c.connectAndDiscover(ctx, s)
+		}(i, s)
+	}
+	wg.Wait()
 	var tools []domain.SystemTool
-	for _, s := range servers {
-		sess, err := c.connect(ctx, s)
-		if err != nil {
-			slog.Warn("ADR-0043: MCP server connect failed (skipping)", "server", s.ID, "err", err)
-			continue
-		}
-		c.mu.Lock()
-		c.sessions[s.ID] = sess
-		c.mu.Unlock()
-
-		discovered, derr := discover(ctx, s.ID, sess, s.Tools, s.DefaultClassificationTags)
-		if derr != nil {
-			slog.Warn("ADR-0043: MCP tool discovery failed", "server", s.ID, "err", derr)
-			continue
-		}
-		slog.Info("ADR-0043: MCP server connected", "server", s.ID, "tools", len(discovered))
-		tools = append(tools, discovered...)
+	for _, ts := range perServer {
+		tools = append(tools, ts...)
 	}
 	return tools
+}
+
+// connectAndDiscover is one server's boot connection: dial, store the session, discover
+// its tools. A failure at either step is logged and yields no tools (ADR-0043 D8).
+func (c *Connector) connectAndDiscover(ctx context.Context, s ServerConfig) []domain.SystemTool {
+	start := time.Now()
+	sess, err := c.connect(ctx, s)
+	if err != nil {
+		slog.Warn("ADR-0043: MCP server connect failed (skipping)", "server", s.ID, "err", err)
+		return nil
+	}
+	c.mu.Lock()
+	c.sessions[s.ID] = sess
+	c.mu.Unlock()
+
+	discovered, derr := discover(ctx, s.ID, sess, s.Tools, s.DefaultClassificationTags)
+	if derr != nil {
+		slog.Warn("ADR-0043: MCP tool discovery failed", "server", s.ID, "err", derr)
+		return nil
+	}
+	slog.Info("ADR-0043: MCP server connected", "server", s.ID, "tools", len(discovered),
+		"elapsed_ms", time.Since(start).Milliseconds())
+	return discovered
 }
 
 func (c *Connector) connect(ctx context.Context, s ServerConfig) (*mcpsdk.ClientSession, error) {

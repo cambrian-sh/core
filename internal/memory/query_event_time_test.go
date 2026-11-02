@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -192,5 +193,64 @@ func TestEmitDecision_CarriesEventTimeQuery(t *testing.T) {
 	}
 	if len(obs.got) != 1 || obs.got[0].EventTime != want {
 		t.Fatalf("decision event time = %+v", obs.got)
+	}
+}
+
+// T-20261102-stage-a-recency-is-min-max-over-the-candidate: decay recency is a FIXED
+// scale. Under min-max, the same two dates a week apart score 0 and 1 in a tight pool
+// (a large gap a recency weight of 0.1 turns into an eviction), and a document's
+// credit depends on what else is in the pool; under decay a document's credit
+// depends only on its own age (from the reference time, else from the newest
+// candidate), so adding an older document to the pool changes nobody else's score.
+func TestStageABlend_RecencyDecayIsFixedScale(t *testing.T) {
+	t.Parallel()
+	week := 7 * 24 * time.Hour
+	newest := time.Date(2023, 2, 14, 0, 0, 0, 0, time.UTC)
+	scoreOf := func(q *QueryService, ctx context.Context, pool []domain.SearchResult, id string) float64 {
+		for _, r := range q.applyStageABlend(ctx, pool, nil) {
+			if r.Document.ID == id {
+				return r.Score
+			}
+		}
+		t.Fatalf("%s missing", id)
+		return 0
+	}
+	tight := func() []domain.SearchResult {
+		return []domain.SearchResult{{Document: timedDoc("new", newest)}, {Document: timedDoc("week-old", newest.Add(-week))}}
+	}
+	wide := func() []domain.SearchResult {
+		return append(tight(), domain.SearchResult{Document: timedDoc("year-old", newest.Add(-365*24*time.Hour))})
+	}
+
+	mm := &QueryService{}
+	b := NewBlender(BlendWeights{Recency: 1})
+	mm.EnableBlend(&b, zeroSignals{})
+	if got := scoreOf(mm, context.Background(), tight(), "week-old"); got != 0 {
+		t.Fatalf("min-max (default): the older of two is stretched to 0, got %v", got)
+	}
+
+	dq := &QueryService{}
+	dq.EnableBlend(&b, zeroSignals{})
+	dq.SetRecencyCurve(RecencyCurve{Decay: true, HalfLife: 90 * 24 * time.Hour})
+	inTight := scoreOf(dq, context.Background(), tight(), "week-old")
+	inWide := scoreOf(dq, context.Background(), wide(), "week-old")
+	want := math.Exp2(-7.0 / 90.0)
+	if math.Abs(inTight-want) > 1e-9 || math.Abs(inWide-want) > 1e-9 {
+		t.Fatalf("decay: a week-old doc scores 2^(-7/90)=%.4f whatever the pool; got tight %.4f wide %.4f", want, inTight, inWide)
+	}
+	if got := scoreOf(dq, context.Background(), tight(), "new"); math.Abs(got-1) > 1e-9 {
+		t.Fatalf("decay without a reference time anchors at the newest candidate (score 1), got %v", got)
+	}
+	ref := domain.WithEventTimeQuery(context.Background(), domain.EventTimeQuery{ReferenceTime: newest.Add(90 * 24 * time.Hour)})
+	if got := scoreOf(dq, ref, tight(), "new"); math.Abs(got-0.5) > 1e-9 {
+		t.Fatalf("with a reference time one half-life later the newest scores 0.5, got %v", got)
+	}
+
+	// A non-positive half-life never reaches the formula (config refuses it; the
+	// setter falls back to min-max rather than divide by zero).
+	z := &QueryService{}
+	z.SetRecencyCurve(RecencyCurve{Decay: true})
+	if z.recencyCurve.Decay {
+		t.Fatal("a zero half-life must fall back to min-max")
 	}
 }

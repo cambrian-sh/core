@@ -31,18 +31,27 @@ def run_checks() -> None:
     #    route definitions plus the memory-style examples.
     p = planner.DECOMPOSE_ROUTE_PROMPT.format(query="Q?")
     check("routed prompt formats", p.endswith("Question: Q?"))
-    for needle in ('"direct"', '"facets"', '"chain"', "Where do I take yoga classes?",
-                   "How many graduation ceremonies have I attended in the past three months?",
-                   "Where does the friend I went hiking with work?", "{1}"):
+    for needle in ('"direct"', '"facets"', '"chain"', "Where did I park my car at the airport?",
+                   "How many concerts did I go to this summer?",
+                   "Where does the friend I went hiking with work?", "{1}",
+                   "EACH ONE STANDS ALONE", "the route is chain, not facets"):
         check(f"routed prompt mentions {needle!r}", needle in p)
+    # T-20261102-retrieval-agent-planner-prompts-use-benchmark: few-shot examples must
+    # never be benchmark test questions (these five were: 3 LongMemEval-S, 2 MuSiQue dev).
+    every_prompt = " ".join(v for k, v in vars(planner).items() if k.endswith("_PROMPT") and isinstance(v, str))
+    for leaked in ("Where do I take yoga classes?", "What is the name of my cat?",
+                   "How many graduation ceremonies have I attended",
+                   "Kiwil", "Commission of Truth and Friendship", "Stadio Ciro Vigorito",
+                   "Air Defense Artillery", "Genesis's advantages", "the Rams' league"):
+        check(f"no prompt carries the benchmark question {leaked!r}", leaked not in every_prompt)
     check("legacy prompt has no route", '"route"' not in planner.DECOMPOSE_PROMPT)
 
     # 2) Well-formed object per route.
     direct = planner.decompose_routed(
-        "Where do I take yoga classes?", const('{"route": "direct", "sub_questions": []}'))
+        "Where did I park my car at the airport?", const('{"route": "direct", "sub_questions": []}'))
     check("direct route", direct["route"] == "direct")
     check("direct carries the question as its one sub-question",
-          direct["sub_questions"] == ["Where do I take yoga classes?"] and direct["refs"] == [""])
+          direct["sub_questions"] == ["Where did I park my car at the airport?"] and direct["refs"] == [""])
 
     facets = planner.decompose_routed("How many?", const(json.dumps({
         "route": "facets",
@@ -91,7 +100,7 @@ def run_checks() -> None:
         prompts.append(prompt)
         if '"route"' in prompt:
             return '{"route": "direct", "sub_questions": []}'
-        return '[{"q": "Where do I take yoga classes?", "ref": ""}]'
+        return '[{"q": "Where did I park my car at the airport?", "ref": ""}]'
 
     a.substrate = types.SimpleNamespace(generate=gen)
 
@@ -99,7 +108,7 @@ def run_checks() -> None:
         return types.SimpleNamespace(data=json.dumps(obj).encode("utf-8"), text="",
                                      session_token_id="tok", deadline_remaining_ms=0)
 
-    q = "Where do I take yoga classes?"
+    q = "Where did I park my car at the airport?"
     routed = json.loads(a.run(task({"op": "decompose", "query": q, "routes": True})))
     check("op routes=true -> route in response", routed.get("route") == "direct" and routed.get("sub_questions") == [q])
     check("op routes=true used the routed prompt", '"route"' in prompts[-1])

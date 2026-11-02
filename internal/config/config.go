@@ -776,6 +776,22 @@ type RetrievalConfig struct {
 	// disambiguator (ADR-0054 / ADR-0053). Zero = off.
 	BlendWeightCoherence float64 `json:"blend_weight_coherence,omitempty"`
 
+	// BlendRecencyMode chooses how the Stage-A recency signal is computed
+	// (T-20261102-stage-a-recency-is-min-max-over-the-candidate, ADR-0054 A?):
+	//   "minmax" (default, "" = minmax): (t - oldest) / (newest - oldest) over THIS
+	//            candidate pool — the newest candidate scores 1, the oldest 0, however
+	//            close their dates are;
+	//   "decay": 2^(-age / BlendRecencyHalfLifeHours), age measured from the asker's
+	//            reference_time when one is given, else from the NEWEST candidate — a
+	//            fixed scale, so a session a week older loses the same credit whatever
+	//            else is in the pool.
+	// Min-max stretches a tight cluster of relevant dates to the full 0..1 range,
+	// which let recency at weight 0.1 outvote cosine ~4:1 and evict the oldest
+	// relevant session (LongMemEval gpt4_f420262c). Default unchanged until measured.
+	BlendRecencyMode string `json:"blend_recency_mode,omitempty"`
+	// BlendRecencyHalfLifeHours is the decay mode's half-life (default 2160 = 90 d).
+	BlendRecencyHalfLifeHours float64 `json:"blend_recency_half_life_hours,omitempty"`
+
 	// RerankerEnabled (ADR-0054 Stage B) turns on cross-encoder reranking of the
 	// top-K Stage-A candidates via the warm reranker_agent system organ. false
 	// (default) ⇒ Stage-A order kept. A down/erroring reranker fail-softs to the
@@ -1831,7 +1847,9 @@ func DefaultConfig() *Config {
 				// (memory.DefaultBlendWeights' 0.05 is only the all-zero fallback). It
 				// now reads event_time, and 0.1 is a starting value to be tuned by the
 				// LongMemEval event-time A/B, not a measured optimum.
-				BlendWeightRecency: 0.1,
+				BlendWeightRecency:        0.1,
+				BlendRecencyMode:          "minmax",
+				BlendRecencyHalfLifeHours: 2160, // 90 days; read only in decay mode
 
 				KG2RAGMaxHops:     2,
 				KG2RAGMaxExpanded: 40,
@@ -2384,6 +2402,15 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Memory.MaxNeighborExpansion < 0 {
 		errs = append(errs, "max_neighbor_expansion must be >= 0")
+	}
+	switch c.Retrieval.BlendRecencyMode {
+	case "", "minmax":
+	case "decay":
+		if c.Retrieval.BlendRecencyHalfLifeHours <= 0 {
+			errs = append(errs, "retrieval.blend_recency_half_life_hours must be > 0 when blend_recency_mode is decay")
+		}
+	default:
+		errs = append(errs, fmt.Sprintf("retrieval.blend_recency_mode must be minmax or decay (got %q)", c.Retrieval.BlendRecencyMode))
 	}
 	switch c.Retrieval.HnswIterativeScan {
 	case "", "off", "relaxed_order", "strict_order":

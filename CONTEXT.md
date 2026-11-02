@@ -159,6 +159,13 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
   three times during kernel boot). Root cause and live numbers: ADR-0053 observations/measurements. Known noise: the
   interview backfill now WARNs `agent boot failed … exec: no command` for `llm:*` model agents (pre-existing, was
   silent; T-20261102-interview-backfill-tries-to-boot-llm-model).
+- **Stage-A recency curve is selectable** (2026-11-02, ADR-0054 Amendment A1, proposed):
+  `execution.retrieval.blend_recency_mode` = `minmax` (default, unchanged: pool-relative) | `decay`
+  (`2^(-age/blend_recency_half_life_hours)`, default 2160 h; age from `reference_time`, else from the newest
+  candidate). `QueryService.SetRecencyCurve` (`internal/memory/query.go`), wired in `app/app.go` next to
+  `EnableBlend`; the boot line "Stage-A multi-signal blend ENABLED" logs `recency_mode`. Min-max evicted the
+  oldest relevant session on LongMemEval gpt4_f420262c; measured by temporal-ku arms g/e/f before any default
+  change.
 - **Agentic retrieval is OFF by default** (owner decision 2026-11-02,
   `cambrian-knowledge/decisions/agentic-retrieval-default-off.md`): `execution.retrieval.agentic_retrieval_enabled`
   defaults to false (`DefaultConfig`, `internal/config/config.go`); every recall is one plain pass unless a deployment

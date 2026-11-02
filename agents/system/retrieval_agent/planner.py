@@ -137,9 +137,10 @@ a concrete identifier (a proper noun, name, title, place, date). Build a query t
 find THAT entity ONLY: use its distinctive identifying tokens, and DROP the outer
 attributes/relations that depend on it (the final answer's property) plus all filler.
 
-Example: "What league does the team that plays in Stadio Ciro Vigorito play for?"
-  -> innermost entity = the team, anchored by "Stadio Ciro Vigorito"
-  -> {{"phrases": ["Stadio Ciro Vigorito"], "must_terms": ["team"], "should_terms": []}}
+Example (invented; not a benchmark question):
+  "What league does the team that plays in Halverson Park Stadium play for?"
+  -> innermost entity = the team, anchored by "Halverson Park Stadium"
+  -> {{"phrases": ["Halverson Park Stadium"], "must_terms": ["team"], "should_terms": []}}
      (DROP "league" / "play for" — that resolves on the NEXT hop.)
 
 Return ONLY JSON, no prose:
@@ -422,9 +423,9 @@ Decide among three cases, in this order:
 
 CRITICAL — do NOT confuse a MULTI-HOP question with an ambiguous one. A question
 that DESCRIBES its target through a relationship, a defining clause, or a chain of
-them — "the team that plays in Stadio Ciro Vigorito", "the game system with a
-3-letter abbreviation that features a game named after the league the Rams play
-in", "the country whose military contains the Air Defense Artillery" — is FULLY
+them — "the team that plays in Halverson Park Stadium", "the band whose
+drummer grew up in the town where the festival started", "the country whose navy
+operates the frigate Calder Ridge" — is FULLY
 SPECIFIED. It is NOT ambiguous just because resolving it takes several steps. For
 any described or multi-hop question you MUST return ANSWER (if the context has it)
 or ABSTENTION (if it does not) — NEVER clarification.
@@ -446,10 +447,10 @@ because it is the better-known one.
 Examples:
 - "What did the manager approve?" (no which manager) -> clarification
 - "What did Devon Park approve?" (context says he approved Aurora) -> answer: "Aurora"
-- "What is the league of the team that plays in Stadio Ciro Vigorito?"
+- "What is the league of the team that plays in Halverson Park Stadium?"
     -> answer if the context resolves it, else abstention; NEVER clarification
-- "What were the Genesis's advantages over the 3-letter game system featuring a
-    game named after the Rams' league?" -> answer or abstention; NEVER clarification
+- "Which instrument does the founder of the band whose drummer grew up in the
+    festival's home town play?" -> answer or abstention; NEVER clarification
 - "What did Bob Chen say about Project Zephyr?" (no Zephyr in context) -> abstention
 
 Return ONLY JSON.
@@ -571,16 +572,15 @@ answer is the final answer to the whole question.
 
 For EACH sub-question also give a short "ref": a NOUN PHRASE naming what its answer
 IS, so that if the answer can't be found, later steps can still refer to it
-descriptively (e.g. "the country that formed a Commission with {{1}}"). The ref may
-use earlier placeholders too.
+descriptively (e.g. "the country where {{1}} was born"). The ref may use earlier
+placeholders too.
 
-Example:
-Q: "Who is the president of the other country that, with Kiwil's birth country,
-    formed a Commission of Truth and Friendship?"
--> [{{"q": "What is Kiwil's birth country?", "ref": "Kiwil's birth country"}},
-    {{"q": "Which other country formed a Commission of Truth and Friendship with {{1}}?",
-      "ref": "the other country that formed a Commission of Truth and Friendship with {{1}}"}},
-    {{"q": "Who is the president of {{2}}?", "ref": "the president of {{2}}"}}]
+Example (invented; not a benchmark question):
+Q: "Which language is spoken in the country where the author of The Glass Orchard
+    was born?"
+-> [{{"q": "Who wrote The Glass Orchard?", "ref": "the author of The Glass Orchard"}},
+    {{"q": "In which country was {{1}} born?", "ref": "the country where {{1}} was born"}},
+    {{"q": "Which language is spoken in {{2}}?", "ref": "the language spoken in {{2}}"}}]
 
 Rules:
 - Each sub-question asks for exactly ONE entity/fact.
@@ -664,15 +664,17 @@ For EACH sub-question also give a short "ref": a NOUN PHRASE naming what its
 answer IS, so later steps can still refer to it if the answer is not found
 (e.g. "the friend I went hiking with"). A chain ref may use earlier placeholders.
 
-EXAMPLES
-Q: "Where do I take yoga classes?"
+EXAMPLES (invented; none is a benchmark question)
+Q: "Where did I park my car at the airport?"
 -> {{"route": "direct", "sub_questions": []}}
-Q: "What is the name of my cat?"
+Q: "What did I name my sourdough starter?"
 -> {{"route": "direct", "sub_questions": []}}
-Q: "How many graduation ceremonies have I attended in the past three months?"
+Q: "How many concerts did I go to this summer?"
 -> {{"route": "facets", "sub_questions": [
-     {{"q": "Which graduation ceremonies did I attend?", "ref": "the graduation ceremonies I attended"}},
-     {{"q": "When did each graduation ceremony I attended take place?", "ref": "the dates of those ceremonies"}}]}}
+     {{"q": "Which concerts did I go to this summer?", "ref": "the concerts I went to this summer"}},
+     {{"q": "On what dates did I go to concerts this summer?", "ref": "the dates of the concerts I went to this summer"}}]}}
+   NOT {{"q": "When did each of those concerts take place?"}}: "those" points at another
+   sub-question's answer, and facets are searched separately, so it would be searched blind.
 Q: "Which did I buy first, the blender or the toaster?"
 -> {{"route": "facets", "sub_questions": [
      {{"q": "When did I buy the blender?", "ref": "the date I bought the blender"}},
@@ -681,18 +683,21 @@ Q: "Where does the friend I went hiking with work?"
 -> {{"route": "chain", "sub_questions": [
      {{"q": "Which friend did I go hiking with?", "ref": "the friend I went hiking with"}},
      {{"q": "Where does {{1}} work?", "ref": "the workplace of {{1}}"}}]}}
-Q: "Who is the president of the other country that, with Kiwil's birth country,
-    formed a Commission of Truth and Friendship?"
+Q: "Which language is spoken in the country where the author of The Glass Orchard was born?"
 -> {{"route": "chain", "sub_questions": [
-     {{"q": "What is Kiwil's birth country?", "ref": "Kiwil's birth country"}},
-     {{"q": "Which other country formed a Commission of Truth and Friendship with {{1}}?",
-       "ref": "the other country that formed a Commission of Truth and Friendship with {{1}}"}},
-     {{"q": "Who is the president of {{2}}?", "ref": "the president of {{2}}"}}]}}
+     {{"q": "Who wrote The Glass Orchard?", "ref": "the author of The Glass Orchard"}},
+     {{"q": "In which country was {{1}} born?", "ref": "the country where {{1}} was born"}},
+     {{"q": "Which language is spoken in {{2}}?", "ref": "the language spoken in {{2}}"}}]}}
 
 RULES
 - Each sub-question asks for exactly ONE thing; keep the original names/anchors.
-- facets: 2-4 sub-questions, NO {{n}}. chain: 2-4 sub-questions, each later one
-  uses an earlier {{n}}. direct: no sub-questions.
+- facets: 2-4 sub-questions, NO {{n}}, and EACH ONE STANDS ALONE: it must make
+  sense searched by itself, without the other sub-questions. Never refer to another
+  sub-question or its answer ("those", "these", "them", "each of them", "that one",
+  "the same"); repeat the full noun phrase instead. If a piece can only be phrased by
+  pointing at another piece's answer, the route is chain, not facets.
+- chain: 2-4 sub-questions, each later one uses an earlier {{n}}. direct: no
+  sub-questions.
 - Do NOT answer anything. Return ONLY a JSON object:
   {{"route": "direct" | "facets" | "chain", "sub_questions": [{{"q": "...", "ref": "..."}}]}}
 

@@ -894,7 +894,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		}
 		blender := memory.NewBlender(w)
 		mem.QueryService.EnableBlend(&blender, vec) // *PgVectorAdapter implements RankSignalStore
-		slog.Info("ADR-0054: Stage-A multi-signal blend ENABLED", "weights", w)
+		curve := memory.RecencyCurve{
+			Decay:    cfg.Execution.Retrieval.BlendRecencyMode == "decay",
+			HalfLife: time.Duration(cfg.Execution.Retrieval.BlendRecencyHalfLifeHours * float64(time.Hour)),
+		}
+		mem.QueryService.SetRecencyCurve(curve)
+		slog.Info("ADR-0054: Stage-A multi-signal blend ENABLED", "weights", w,
+			"recency_mode", map[bool]string{false: "minmax", true: "decay"}[curve.Decay],
+			"recency_half_life_h", cfg.Execution.Retrieval.BlendRecencyHalfLifeHours)
 	}
 
 	// ADR-0054 hybrid retrieval: fuse dense (vector) + sparse (lexical/full-text)
@@ -1650,7 +1657,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	// ADR-0126 D3: the INBOUND MCP endpoint, started here — immediately before
 	// ConnectAll, and that order is the decision, not an accident. ConnectAll is
-	// synchronous and takes 40-45 s while the kernel looks up; an external agent
+	// synchronous (it dials the servers concurrently since 2026-11-02, so it lasts
+	// as long as the SLOWEST server, not their sum; it was 25-45 s sequential) while
+	// the kernel looks up; an external agent
 	// running `claude mcp add` against a booting kernel must find a live endpoint
 	// rather than a timeout. It is also after buildPlugins, so every published
 	// handler is constructed before the first request can reach one.

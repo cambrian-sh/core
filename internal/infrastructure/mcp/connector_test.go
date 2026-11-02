@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -174,5 +176,62 @@ func TestConnector_UnreachableServerSkippedGracefully(t *testing.T) {
 	}
 	if _, ok := conn.Session("dead"); ok {
 		t.Error("an unreachable server should have no session")
+	}
+}
+
+// Boot connects servers concurrently (T-20261102-kernel-boot-connects-mcp-servers-one-after):
+// three servers that each take 400 ms to answer their first request connect in well under
+// the 1.2 s a sequential loop needs, the tools come back in CONFIGURED order, and a dead
+// server among them is still skipped without affecting the others.
+func TestConnector_ConnectAllIsConcurrentAndOrdered(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const delay = 400 * time.Millisecond
+	slow := func(name string) *httptest.Server {
+		server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: name, Version: "1.0.0"}, nil)
+		mcpsdk.AddTool(server, &mcpsdk.Tool{Name: "t_" + name, Description: name},
+			func(_ context.Context, _ *mcpsdk.CallToolRequest, in echoIn) (*mcpsdk.CallToolResult, echoOut, error) {
+				return nil, echoOut{Echo: in.Value}, nil
+			})
+		h := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return server }, nil)
+		var once sync.Once
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			once.Do(func() { time.Sleep(delay) }) // the server's start-up cost
+			h.ServeHTTP(w, r)
+		}))
+	}
+	a, b, c := slow("a"), slow("b"), slow("c")
+	defer a.Close()
+	defer b.Close()
+	defer c.Close()
+
+	conn := NewConnector()
+	defer conn.Close()
+	start := time.Now()
+	tools := conn.ConnectAll(ctx, []ServerConfig{
+		{ID: "a", Transport: "http", Endpoint: a.URL},
+		{ID: "dead", Transport: "http", Endpoint: "http://127.0.0.1:1/nope"},
+		{ID: "b", Transport: "http", Endpoint: b.URL},
+		{ID: "c", Transport: "http", Endpoint: c.URL},
+	})
+	elapsed := time.Since(start)
+	if elapsed >= 3*delay {
+		t.Errorf("ConnectAll took %v; three %v servers connected sequentially, want concurrently", elapsed, delay)
+	}
+	var names []string
+	for _, tl := range tools {
+		names = append(names, tl.Name)
+	}
+	want := []string{"mcp:a/t_a", "mcp:b/t_b", "mcp:c/t_c"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Errorf("tools = %v, want %v in configured order", names, want)
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		if _, ok := conn.Session(id); !ok {
+			t.Errorf("no session stored for %s", id)
+		}
+	}
+	if _, ok := conn.Session("dead"); ok {
+		t.Error("the dead server must not get a session")
 	}
 }

@@ -85,6 +85,10 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 	fmt.Fprintf(&b, "w_pagerank=%g\n", c.Retrieval.BlendWeightPageRank)
 	fmt.Fprintf(&b, "w_recency=%g\n", c.Retrieval.BlendWeightRecency)
 	fmt.Fprintf(&b, "w_activation=%g\n", c.Retrieval.BlendWeightActivation)
+	// Written only off the default, so every existing (minmax) fingerprint is unchanged.
+	if c.Retrieval.BlendRecencyMode == "decay" {
+		fmt.Fprintf(&b, "recency_mode=decay\nrecency_half_life_h=%g\n", c.Retrieval.BlendRecencyHalfLifeHours)
+	}
 
 	// Stage-B cross-encoder. The model id lives in the reranker agent's environment,
 	// not in kernel config, so the fingerprint can only attest that reranking was on
