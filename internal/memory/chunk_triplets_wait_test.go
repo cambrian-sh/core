@@ -154,6 +154,11 @@ func TestTripletsWait_SignalledPerDocumentAcrossMixedBatches(t *testing.T) {
 	if isDone(wb) {
 		t.Fatal("B completed although two of its chunks are still unextracted")
 	}
+	// Batch 1 settles item by item, so A can wake before B0 (the same batch's
+	// last item) is settled: give batch 1 a moment to finish before asserting.
+	for deadline := time.Now().Add(2 * time.Second); wb.Pending() != 2 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
 	if wb.Pending() != 2 {
 		t.Fatalf("B pending = %d, want 2", wb.Pending())
 	}
@@ -209,10 +214,13 @@ func TestTripletsWait_CtxCancelStopsWaitNotExtraction(t *testing.T) {
 		QueueSize: 64, BatchSize: 16, MaxIdle: time.Hour, LLMTimeout: 5 * time.Second,
 	})
 	b.UseExtractor(ext)
+	// Enqueue before Start so both chunks form ONE batch: release() frees a
+	// single ExtractBatch call, and a tracked item makes the loop drain at once,
+	// so enqueueing after Start could split 1+1 and leave the second batch gated.
+	w := b.EnqueueTracked(chunkDocs("c", 2))
 	b.Start(context.Background())
 	defer b.Stop()
 
-	w := b.EnqueueTracked(chunkDocs("c", 2))
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- w.Wait(ctx) }()

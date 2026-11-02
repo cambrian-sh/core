@@ -113,10 +113,10 @@ func TestChunkTripletsBatcher_UnavailableRequeuedThenSucceeds(t *testing.T) {
 	store := newLockedTripletStore()
 	ext := &scriptedExtractor{failFirst: 1, err: errUnavailable}
 	b := newFailureBatcher(ext, store, 1)
+	docs := chunkDocs("c", 4)
+	w := b.EnqueueTracked(docs) // before Start: one batch (see FailureWarnOncePerBatch)
 	b.Start(context.Background())
 	defer b.Stop()
-	docs := chunkDocs("c", 4)
-	w := b.EnqueueTracked(docs)
 	if err := w.Wait(waitCtx(t)); err != nil {
 		t.Fatalf("wait: %v", err)
 	}
@@ -141,9 +141,9 @@ func TestChunkTripletsBatcher_UnavailableRequeuedThenSucceeds(t *testing.T) {
 func TestChunkTripletsBatcher_RequeuesBounded(t *testing.T) {
 	ext := &scriptedExtractor{failFirst: 1 << 30, err: errUnavailable}
 	b := newFailureBatcher(ext, newLockedTripletStore(), 2)
+	w := b.EnqueueTracked(chunkDocs("p", 5)) // before Start: one batch (see FailureWarnOncePerBatch)
 	b.Start(context.Background())
 	defer b.Stop()
-	w := b.EnqueueTracked(chunkDocs("p", 5))
 	if err := w.Wait(waitCtx(t)); err != nil {
 		t.Fatalf("wait: %v", err)
 	}
@@ -162,9 +162,9 @@ func TestChunkTripletsBatcher_RequeuesBounded(t *testing.T) {
 func TestChunkTripletsBatcher_BadReplyNotRequeued(t *testing.T) {
 	ext := &scriptedExtractor{failFirst: 1 << 30, err: errors.New("bad response JSON")}
 	b := newFailureBatcher(ext, newLockedTripletStore(), 3)
+	w := b.EnqueueTracked(chunkDocs("j", 2)) // before Start: one batch (see FailureWarnOncePerBatch)
 	b.Start(context.Background())
 	defer b.Stop()
-	w := b.EnqueueTracked(chunkDocs("j", 2))
 	if err := w.Wait(waitCtx(t)); err != nil {
 		t.Fatalf("wait: %v", err)
 	}
@@ -177,8 +177,13 @@ func TestChunkTripletsBatcher_BadReplyNotRequeued(t *testing.T) {
 func TestChunkTripletsBatcher_FailureWarnOncePerBatch(t *testing.T) {
 	read := captureWarn(t)
 	b := newFailureBatcher(&scriptedExtractor{failFirst: 1 << 30, err: errUnavailable}, newLockedTripletStore(), 0)
-	b.Start(context.Background())
+	// Enqueue BEFORE Start: a pending tracked item makes the drain loop drain
+	// at once with whatever has arrived, so enqueueing after Start races the
+	// worker and the 10 chunks can split into two batches (seen on CI as 3+7,
+	// two WARNs). With all 10 queued first, the first drain takes them as one
+	// batch (BatchSize 16).
 	w := b.EnqueueTracked(chunkDocs("w", 10)) // one batch of 10
+	b.Start(context.Background())
 	if err := w.Wait(waitCtx(t)); err != nil {
 		t.Fatalf("wait: %v", err)
 	}

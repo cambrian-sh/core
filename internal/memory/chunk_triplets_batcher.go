@@ -481,17 +481,16 @@ func (b *ChunkTripletsBatcher) drain(parentCtx context.Context) {
 // One WARN per batch, with the cause — never one per chunk.
 func (b *ChunkTripletsBatcher) failBatch(batch []tripletItem, err error) {
 	retryable := errors.Is(err, domain.ErrTripletExtractorUnavailable)
-	var again []tripletItem
-	failed := 0
+	var again, failedItems []tripletItem
 	for _, it := range batch {
 		if retryable && it.attempts < b.maxRequeues {
 			it.attempts++
 			again = append(again, it)
 			continue
 		}
-		failed++
-		it.wait.settle(1, false)
+		failedItems = append(failedItems, it)
 	}
+	failed := len(failedItems)
 	if len(again) > 0 {
 		b.mu.Lock()
 		for _, it := range again {
@@ -508,6 +507,13 @@ func (b *ChunkTripletsBatcher) failBatch(batch []tripletItem, err error) {
 		"batch_size", len(batch), "requeued", len(again), "failed", failed,
 		"max_requeues", b.maxRequeues, "unavailable", retryable, "cause", err,
 		"effect", "failed chunks have no KG triplets (kg_failed); their content is stored")
+	// Settle LAST: settling wakes a waiting sync ingest, which may read
+	// FailureStats or the log at once, so the counters and the WARN must
+	// already reflect this batch (a settle-first order let a waiter observe
+	// extractFailed=0 for chunks it had just seen fail).
+	for _, it := range failedItems {
+		it.wait.settle(1, false)
+	}
 }
 
 // buildBatchTripletPrompt builds the batched extraction prompt. Format:
