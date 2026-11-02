@@ -241,7 +241,7 @@ jobs:
       - name: Gate — lint (new findings only)
         # v7 is the first action major that runs golangci-lint v2; v6 refuses the
         # v2.x version string outright, so this job never ran a lint until 2026-10-31.
-        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.12.2
           args: --new-from-rev=origin/${{ github.base_ref || github.event.repository.default_branch }} --timeout=5m
