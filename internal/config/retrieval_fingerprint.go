@@ -89,6 +89,28 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 	if c.Retrieval.BlendRecencyMode == "decay" {
 		fmt.Fprintf(&b, "recency_mode=decay\nrecency_half_life_h=%g\n", c.Retrieval.BlendRecencyHalfLifeHours)
 	}
+	// ADR-0136 ranking v2: each line only when its switch is on (the A1 pattern), so
+	// every fingerprint of a flags-off configuration — whose ranking is unchanged —
+	// stays what it was. A switch's tunables are written with it, because they are
+	// read only when it is on.
+	if c.Retrieval.StageACalibrated {
+		fmt.Fprintf(&b, "stage_a_calibrated=true\nlexical_saturation_k=%g\nrecency_half_life_h=%g\n",
+			c.Retrieval.LexicalSaturationK, c.Retrieval.BlendRecencyHalfLifeHours)
+	}
+	if c.Retrieval.TemporalIntentEnabled {
+		fmt.Fprintf(&b, "temporal_intent=true\ntemporal_fit_weight=%g\n", c.Retrieval.TemporalFitWeight)
+	}
+	// ADR-0136 D4/D5: the fact lane and supersession change the ranking function
+	// (fact-reached primary hits, fact_match, current_fact). Extraction alone changes
+	// the corpus, not the function, so extract_enabled is not written — the same
+	// reason the embedding-projection WRITE flag is absent above.
+	if c.Facts.LaneEnabled {
+		fmt.Fprintf(&b, "facts_lane=true\nfacts_lane_top_k=%d\nfact_match_weight=%g\n",
+			c.Facts.LaneTopK, c.Facts.FactMatchWeight)
+		if c.Facts.SupersessionEnabled {
+			fmt.Fprintf(&b, "facts_supersession=true\ncurrent_fact_weight=%g\n", c.Facts.CurrentFactWeight)
+		}
+	}
 
 	// Stage-B cross-encoder. The model id lives in the reranker agent's environment,
 	// not in kernel config, so the fingerprint can only attest that reranking was on

@@ -82,7 +82,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dim int) error {
 		}
 		applied[m.version] = true
 	}
-	return ensureConcurrentIndexes(ctx, pool, applied)
+	return ensureConcurrentIndexes(ctx, pool, applied, concurrentIndexesFor(dim))
 }
 
 // Event-time expressions (ADR-0134). The span of a row is
@@ -126,14 +126,44 @@ var concurrentIndexes = []concurrentIndex{
 	{name: "idx_chunks_event_end", table: "chunks", using: "(" + EventEndExpr + ")", requires: 19},
 }
 
+// ItemEmbeddingIndexName is the per-dimension partial HNSW index of the ADR-0136 A1 item
+// projection (knowledge_item_embeddings, 0022). The fact lane's SQL names the same cast
+// and the same `dims = <dim>` predicate (postgres.PgFactItemReader), because a partial
+// expression index serves only a query that repeats its expression and implies its
+// predicate.
+func ItemEmbeddingIndexName(dim int) string {
+	return fmt.Sprintf("idx_knowledge_item_embeddings_hnsw_d%d", dim)
+}
+
+// concurrentIndexesFor is concurrentIndexes plus the indexes whose shape depends on the
+// deployment's embedding dimension. The item projection's column is an UNTYPED vector
+// (ADR-0107 D1/D2), so its HNSW index is a partial index over a cast to the active
+// dimension. It is built here — the migration's companion step — rather than by a
+// backfill tool, so the fact lane is never an exact scan by accident (A1.5). A
+// deployment that changes its embedder dimension gets a second index on the next boot;
+// the old one keeps serving rows of the old dimension.
+func concurrentIndexesFor(dim int) []concurrentIndex {
+	out := append([]concurrentIndex(nil), concurrentIndexes...)
+	if dim > 0 {
+		out = append(out, concurrentIndex{
+			name:  ItemEmbeddingIndexName(dim),
+			table: "knowledge_item_embeddings",
+			using: fmt.Sprintf("USING hnsw ((embedding::vector(%d)) vector_cosine_ops) WITH (m = 16, ef_construction = 64) WHERE dims = %d", dim, dim),
+			// 0022_fact_items creates the table.
+			requires: 22,
+		})
+	}
+	return out
+}
+
 // ensureConcurrentIndexes builds every concurrentIndex that is missing or INVALID.
 //
 // Idempotent and safe to run on every boot: a valid index is a single catalog lookup.
 // An interrupted CONCURRENTLY build leaves an INVALID index behind, which CREATE INDEX
 // IF NOT EXISTS would then skip forever while the planner ignores it — so an invalid
 // one is dropped (also concurrently) and rebuilt. Runs on the pool, never in a tx.
-func ensureConcurrentIndexes(ctx context.Context, pool *pgxpool.Pool, applied map[int64]bool) error {
-	for _, ix := range concurrentIndexes {
+func ensureConcurrentIndexes(ctx context.Context, pool *pgxpool.Pool, applied map[int64]bool, indexes []concurrentIndex) error {
+	for _, ix := range indexes {
 		if !applied[ix.requires] {
 			continue
 		}

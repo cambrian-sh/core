@@ -39,7 +39,19 @@ type IngestionConfig struct {
 	// content is stored and the KG lane is enrichment — with a WARN and
 	// kg_pending in the timing line. <=0 means the 30 s default.
 	SyncKGWaitTimeout time.Duration
+	// SyncWaitForFacts makes ProcessSync return only after its document's ADR-0136
+	// facts are extracted and stored (execution.ingestion.sync_ingest_wait_for_facts):
+	// read-your-writes for the fact lane, for benchmarks that must measure stored
+	// facts. false = async, as the KG lane. A no-op without a fact extractor.
+	SyncWaitForFacts bool
+	// SyncFactsWaitTimeout bounds that wait (sync_ingest_facts_wait_timeout_ms). On
+	// expiry the ingest still SUCCEEDS with a WARN. <=0 means the 120 s default.
+	SyncFactsWaitTimeout time.Duration
 }
+
+// defaultSyncFactsWaitTimeout is the fallback for IngestionConfig.SyncFactsWaitTimeout:
+// one LLM call per extraction window (ADR-0136 A2.3), so it is longer than the KG wait.
+const defaultSyncFactsWaitTimeout = 120 * time.Second
 
 // defaultSyncKGWaitTimeout is the fallback for IngestionConfig.SyncKGWaitTimeout.
 const defaultSyncKGWaitTimeout = 30 * time.Second
@@ -56,6 +68,9 @@ type IngestionManager struct {
 	// uploaded-document chunks never populate chunk_triplets, so KG2RAG expansion,
 	// query-entity seeding, and anchor promotion all no-op on the ingest path.
 	tripletsBatcher *ChunkTripletsBatcher
+	// factExtractor queues each stored document for ADR-0136 D4 fact extraction (one
+	// async LLM call per document). nil = the fact layer is off (the default).
+	factExtractor *FactExtractor
 	// structureParser + structureStore build the document-structure graph
 	// (ADR-0060): section nodes + PART_OF/NEXT edges, and every chunk inherits
 	// its section path. Both nil = structure graph disabled.
@@ -148,6 +163,16 @@ func (im *IngestionManager) publishWritten(doc domain.ExternalDocument, entityID
 func (im *IngestionManager) SetChunkTripletsBatcher(b *ChunkTripletsBatcher) {
 	if im != nil {
 		im.tripletsBatcher = b
+	}
+}
+
+// SetFactExtractor wires the ADR-0136 D4 fact extractor onto the ingest path (the
+// SetChunkTripletsBatcher pattern: an enrichment lane, not an enforcement point - the
+// extractor writes through the enforcing fact store it was constructed with). Call
+// before Start; nil is ignored.
+func (im *IngestionManager) SetFactExtractor(e *FactExtractor) {
+	if im != nil && e != nil {
+		im.factExtractor = e
 	}
 }
 
@@ -250,6 +275,9 @@ func NewIngestionManagerWithRegistry(sceneGen *SceneGenerator, embedder domain.E
 	if cfg.SyncKGWaitTimeout <= 0 {
 		cfg.SyncKGWaitTimeout = defaultSyncKGWaitTimeout
 	}
+	if cfg.SyncFactsWaitTimeout <= 0 {
+		cfg.SyncFactsWaitTimeout = defaultSyncFactsWaitTimeout
+	}
 	if registry == nil {
 		registry = fallbackRegistry()
 	}
@@ -292,11 +320,15 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	// material that can be reprocessed.
 	if im.evidenceCapture != nil {
 		t := time.Now()
-		err := im.captureEvidence(ctx, doc)
+		evID, err := im.captureEvidence(ctx, doc)
 		clock.Since(StageEvidence, t)
 		if err != nil {
 			return "", fmt.Errorf("ingestion manager: evidence capture: %w", err)
 		}
+		// ADR-0136 A1.6: the evidence id rides ctx to the fact job, so every
+		// memory_fact item links to the evidence revision it was extracted from (a
+		// changed document is a new revision, ADR-0105 D4).
+		ctx = withIngestEvidence(ctx, evID)
 	}
 	scene := ""
 	if im.sceneGenEnabled && im.sceneGen != nil {
@@ -329,7 +361,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 		chunks, _ = OptionCChunker{}.Chunk(ctx, &doc)
 	}
 	clock.Since(StageChunk, t)
-	outcome, err := im.persistChunks(ctx, doc, chunks, entityID, scene, im.cfg.SyncWaitForKG)
+	outcome, err := im.persistChunksTracked(ctx, doc, chunks, entityID, scene, im.cfg.SyncWaitForKG, im.cfg.SyncWaitForFacts)
 	chunkCount := outcome.Stored
 	stored = chunkCount
 	if err != nil {
@@ -352,6 +384,8 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	// this document's chunks have their triplets. After the entity mint, so the
 	// wait overlaps nothing the caller still needs and a failed mint never waits.
 	im.waitForKG(ctx, clock, doc.SourceURI, outcome.KGWait)
+	// Read-your-writes for the fact lane (sync_ingest_wait_for_facts), the same shape.
+	im.waitForFacts(ctx, clock, doc.SourceURI, outcome.FactsWait)
 	slog.Info("IngestionManager: sync ingest complete", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", chunkCount,
 		"dropped_leaves", outcome.DroppedLeaves)
 	t = time.Now()
@@ -367,20 +401,22 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 // replayed identical delivery dedupes, while the SAME key arriving with CHANGED
 // bytes becomes a NEW evidence revision rather than an update (ADR-0105 D4) —
 // which is exactly the re-ingest-a-changed-file case.
-func (im *IngestionManager) captureEvidence(ctx context.Context, doc domain.ExternalDocument) error {
+func (im *IngestionManager) captureEvidence(ctx context.Context, doc domain.ExternalDocument) (domain.EvidenceID, error) {
 	body := doc.Data
 	if len(body) == 0 {
 		body = []byte(doc.Body)
 	}
 	if len(body) == 0 {
-		return fmt.Errorf("document carries no bytes")
+		return "", fmt.Errorf("document carries no bytes")
 	}
 	sourceID := doc.SourceType
 	if sourceID == "" {
 		sourceID = "unknown"
 	}
 	digest := sha256.Sum256(body)
-	_, _, err := im.evidenceCapture.Ingest(ctx, evidence.Raw{
+	// The id is returned (ADR-0136 A1.6): it used to be discarded here, which left the
+	// fact layer no way to link an item to its evidence.
+	id, _, err := im.evidenceCapture.Ingest(ctx, evidence.Raw{
 		SourceID:       sourceID,
 		SourceKey:      externalDocumentID(doc),
 		SourceRevision: hex.EncodeToString(digest[:]),
@@ -388,7 +424,7 @@ func (im *IngestionManager) captureEvidence(ctx context.Context, doc domain.Exte
 		Bytes:          body,
 		Classification: doc.Tags,
 	})
-	return err
+	return id, err
 }
 
 func (im *IngestionManager) Start(ctx context.Context) {
@@ -542,6 +578,45 @@ func (im *IngestionManager) waitForKG(ctx context.Context, clock *domain.StageCl
 		"source_uri", sourceURI, "reason", reason, "kg_pending", pending, "kg_failed", failed,
 		"waited_ms", time.Since(t).Milliseconds(), "timeout_ms", im.cfg.SyncKGWaitTimeout.Milliseconds(),
 		"effect", "the content is stored; KG2RAG, entity seeding and anchors see this document's graph once extraction catches up")
+}
+
+// waitForFacts is waitForKG for the ADR-0136 fact extractor: it blocks until this
+// document's facts are stored, ctx is done, or SyncFactsWaitTimeout expires, records
+// facts_wait, and never fails the ingest (the content is stored; facts are keys).
+// w == nil (flag off, or no extractor) is a no-op.
+func (im *IngestionManager) waitForFacts(ctx context.Context, clock *domain.StageClock, sourceURI string, w *FactsWait) {
+	if w == nil {
+		return
+	}
+	t := time.Now()
+	wctx, cancel := context.WithTimeout(ctx, im.cfg.SyncFactsWaitTimeout)
+	err := w.Wait(wctx)
+	cancel()
+	clock.Since(StageFactsWait, t)
+	if !w.Done() {
+		clock.Count(CountFactsPending, 1)
+	}
+	if w.Failed() {
+		clock.Count(CountFactsFailed, 1)
+	}
+	if err == nil && !w.Failed() {
+		return
+	}
+	reason := "incomplete"
+	switch {
+	case errors.Is(err, ErrFactExtractorStopped):
+		reason = "extractor_stopped"
+	case ctx.Err() != nil:
+		reason = "caller_cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		reason = "timeout"
+	case w.Failed():
+		reason = "extraction_failed"
+	}
+	slog.WarnContext(ctx, "IngestionManager: sync ingest returned before its facts were stored",
+		"source_uri", sourceURI, "reason", reason, "waited_ms", time.Since(t).Milliseconds(),
+		"timeout_ms", im.cfg.SyncFactsWaitTimeout.Milliseconds(),
+		"effect", "the content is stored; the fact lane sees this document once extraction catches up")
 }
 
 // sourceDocEntityID is the deterministic id of a document's source-doc entity.

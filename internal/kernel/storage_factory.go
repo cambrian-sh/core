@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"io"
+	"log/slog"
 	"path/filepath"
 
 	"github.com/cambrian-sh/core/domain"
@@ -40,12 +41,42 @@ func (s *StorageHandle) Close() error {
 // so it doesn't contend with the agent-registry bbolt file lock.
 func BootstrapStorage(cfg *config.Config) (*StorageHandle, *AgentRepoDecorator, error) {
 	dbPath := filepath.Join(cfg.Storage.DataDir, cfg.Storage.DBName)
+
+	// ADR-0061 A2.8: bbolt never returns freed pages to the file system, so a file
+	// that once held a large backlog stays at its high-water mark (3.2 GB for 17 MB
+	// of live data on 2026-11-02). Rewriting it is only possible while nothing has
+	// it open, so it happens here, before the store opens, and only past both
+	// thresholds. A failure is logged and the file is opened as it is: an
+	// oversized store is a disk problem, a store that will not open is an outage.
+	compacted := false
+	if rep, cerr := storage.CompactBBoltFileIfBloated(dbPath, cfg.Storage.CompactMinBytes, cfg.Storage.CompactFreeRatio); cerr != nil {
+		slog.Warn("DB (BBOLT): boot compaction failed; opening the file as it is",
+			"path", dbPath, "err", cerr)
+	} else if rep.Compacted {
+		compacted = true
+		slog.Info("DB (BBOLT): compacted the store before opening it (ADR-0061 A2.8)",
+			"path", dbPath, "before_bytes", rep.FileBytes, "after_bytes", rep.AfterBytes,
+			"free_ratio", rep.FreeRatio, "duration", rep.Duration,
+			"previous_file", dbPath+storage.PreCompactSuffix)
+	}
+
 	// ADR-0075: the store no longer scans the agents directory itself — the composition
 	// root registers the filesystem agents through a FilesystemAgentSource (with manifests)
 	// so the built-in scan is one AgentSource among many, uniform with plugin sources.
 	store, err := storage.NewBBoltAdapterNoScan(dbPath)
 	if err != nil {
 		return nil, nil, err
+	}
+	// A2.8 keeps the pre-compaction file until the next successful boot: this one,
+	// if it opened the store without compacting.
+	if !compacted {
+		if removed, rerr := storage.RemoveStalePreCompact(dbPath); rerr != nil {
+			slog.Warn("DB (BBOLT): could not remove the previous pre-compaction file",
+				"path", dbPath+storage.PreCompactSuffix, "err", rerr)
+		} else if removed {
+			slog.Info("DB (BBOLT): removed the previous pre-compaction file after a successful boot",
+				"path", dbPath+storage.PreCompactSuffix)
+		}
 	}
 
 	// ADR-0022 Phase 1: content store uses a separate bbolt file — same directory,

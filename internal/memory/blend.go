@@ -29,6 +29,24 @@ type BlendWeights struct {
 	// spreading activation pointed at the live KG (entity/document_edges path
 	// deferred), the graph-native conversation disambiguator.
 	GraphCoherence float64
+	// TemporalFit weights ADR-0136 D3's query-conditioned temporal-fit feature: how
+	// close the chunk's event time is to the time band the QUERY names ("two weeks
+	// ago"). Config never puts it in the live weights: QueryService adds it per query
+	// (execution.retrieval.temporal_fit_weight), and only when the query has a target
+	// band, so a query with no time phrase scores exactly as if the feature did not
+	// exist (it is out of the denominator too).
+	//
+	// ADR-0136 D4/D5 add their features (fact_match, current_fact) the same way: one
+	// field here, one in StageASignals, one term appended to total() and StageAScore.
+	TemporalFit float64
+	// FactMatch and CurrentFact weight ADR-0136 D4/D5's fact features. Like
+	// TemporalFit, config never puts them in the live weights: QueryService adds them
+	// per query (execution.facts.fact_match_weight / current_fact_weight) — FactMatch
+	// only when the fact lane returned a hit for the query, CurrentFact only when the
+	// query asks for the current/latest value (D3 order) — so every other query scores
+	// exactly as before (out of the denominator too).
+	FactMatch   float64
+	CurrentFact float64
 }
 
 // DefaultBlendWeights mirrors ADR-0054's Stage-A defaults (the bge 0.50 lives in
@@ -39,19 +57,24 @@ func DefaultBlendWeights() BlendWeights {
 }
 
 func (w BlendWeights) total() float64 {
-	return w.Cosine + w.Recency + w.Confidence + w.PageRank + w.Activation + w.Lexical + w.GraphCoherence
+	// New terms are APPENDED: float addition is order-sensitive, and a zero weight
+	// added at the end leaves the pre-ADR-0136 sum bit-identical.
+	return w.Cosine + w.Recency + w.Confidence + w.PageRank + w.Activation + w.Lexical + w.GraphCoherence + w.TemporalFit + w.FactMatch + w.CurrentFact
 }
 
 // StageASignals are the per-chunk inputs to the blend. The Blender normalizes
 // confidence into [0,1] internally; the other signals are already [0,1].
 type StageASignals struct {
 	Cosine         float64 // query→chunk cosine, [0,1] (clamped)
-	Recency        float64 // pre-normalized recency [0,1], 1=most recent; min-max over the candidate set from the conversation timestamp (applyStageABlend), NOT an absolute decay
+	Recency        float64 // pre-normalized recency [0,1], 1=most recent: min-max over the candidate set, the A1 decay, or (ADR-0136 D1) a decay from reference_time only — see applyStageABlend
 	MeanConfidence float64 // mean of the chunk's triplet confidences, [0,2]
 	PageRank       float64 // precomputed structural prior, [0,1]
 	Activation     float64 // documents.activation_strength, [0,1]
 	Lexical        float64 // hybrid full-text/RRF rank signal, [0,1] (0 = not lexically matched)
 	GraphCoherence float64 // chunk_triplets connectivity to the rest of the pool, [0,1] (0 = island)
+	TemporalFit    float64 // ADR-0136 D3: exp(-(Δ/σ)²), Δ = distance of the chunk's event time to the query's time band, [0,1]
+	FactMatch      float64 // ADR-0136 D4: best cosine of a fact extracted from this chunk to the query, [0,1] (0 = no fact hit)
+	CurrentFact    float64 // ADR-0136 D5: 1 when the chunk states the CURRENT (open, unsuperseded) value of a matched single fact
 }
 
 // Blender holds normalized Stage-A weights.
@@ -72,7 +95,7 @@ func (b Blender) StageAScore(s StageASignals) float64 {
 	if b.sum <= 0 {
 		return clamp01(s.Cosine)
 	}
-	recency := clamp01(s.Recency)           // pre-normalized by the caller (min-max over candidates)
+	recency := clamp01(s.Recency)           // pre-normalized by the caller (applyStageABlend)
 	conf := clamp01(s.MeanConfidence / 2.0) // confidence tiers are 0/1/2 → [0,1]
 	raw := b.w.Cosine*clamp01(s.Cosine) +
 		b.w.Recency*recency +
@@ -80,7 +103,10 @@ func (b Blender) StageAScore(s StageASignals) float64 {
 		b.w.PageRank*clamp01(s.PageRank) +
 		b.w.Activation*clamp01(s.Activation) +
 		b.w.Lexical*clamp01(s.Lexical) +
-		b.w.GraphCoherence*clamp01(s.GraphCoherence)
+		b.w.GraphCoherence*clamp01(s.GraphCoherence) +
+		b.w.TemporalFit*clamp01(s.TemporalFit) + // appended last, see total()
+		b.w.FactMatch*clamp01(s.FactMatch) +
+		b.w.CurrentFact*clamp01(s.CurrentFact)
 	return raw / b.sum
 }
 

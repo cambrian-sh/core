@@ -1165,8 +1165,9 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 // answers "what books has X read" may not contain the word "books"). plainto_tsquery
 // keeps it injection-safe; the text is a bound parameter. Scope + doc-type are the
 // SAME predicates as the vector search (scopeExpressions), so this is not a scope hole.
-// Results are ordered best-lexical-first; the caller uses the ORDER (RRF), not the
-// raw rank value.
+// Results are ordered best-lexical-first. RRF fusion uses the ORDER; the raw
+// ts_rank_cd value (Score) is carried as SearchResult.LexicalRaw and read only by the
+// calibrated Stage A (ADR-0136 D1, execution.retrieval.stage_a_calibrated).
 func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, opts domain.SearchOptions) ([]domain.SearchResult, error) {
 	if strings.TrimSpace(queryText) == "" {
 		return nil, nil
@@ -1215,8 +1216,9 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 	defer rows.Close()
 	var results []domain.SearchResult
 	for rows.Next() {
-		// hasDistance=true scans the appended ts_rank column; we keep it as Score
-		// only for monotonicity (RRF re-scores by rank position, ignores the value).
+		// hasDistance=true scans the appended ts_rank_cd column into Score. RRF
+		// re-scores by rank position; the value itself feeds ADR-0136 D1's calibrated
+		// lexical feature (s/(s+k)), so it must stay the unnormalised ts_rank_cd.
 		doc, rank, scanErr := scanDocument(rows, true)
 		if scanErr != nil {
 			return nil, mapError("ScanLexicalSearch", scanErr)

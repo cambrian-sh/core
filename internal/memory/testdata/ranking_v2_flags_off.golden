@@ -1,0 +1,28 @@
+## decay=false ref=0001-01-01T00:00:00Z
+a1 score=0.752750802888 raw=0.9 lex=0.25
+b1 score=0.646243813832 raw=0.8 lex=0.5
+a2 score=0.561185617961 raw=0.85 lex=0
+d2 score=0.539428897246 raw=0 lex=1
+a3 score=0.516891631729 raw=0.75 lex=0
+a4 score=0.507646153085 raw=0.7 lex=0
+## decay=false ref=2023-05-03T00:00:00Z
+a1 score=0.752750802888 raw=0.9 lex=0.25
+b1 score=0.646243813832 raw=0.8 lex=0.5
+a2 score=0.561185617961 raw=0.85 lex=0
+d2 score=0.539428897246 raw=0 lex=1
+a3 score=0.516891631729 raw=0.75 lex=0
+a4 score=0.507646153085 raw=0.7 lex=0
+## decay=true ref=0001-01-01T00:00:00Z
+a1 score=0.752750802888 raw=0.9 lex=0.25
+b1 score=0.684607314015 raw=0.8 lex=0.5
+a2 score=0.561185617961 raw=0.85 lex=0
+d2 score=0.54483746773 raw=0 lex=1
+c2 score=0.542434918436 raw=0 lex=0.333333333333
+b2 score=0.532732723243 raw=0.6 lex=0
+## decay=true ref=2023-05-03T00:00:00Z
+a1 score=0.751541752398 raw=0.9 lex=0.25
+b1 score=0.683521844705 raw=0.8 lex=0.5
+a2 score=0.559976567472 raw=0.85 lex=0
+d2 score=0.543646897876 raw=0 lex=1
+c2 score=0.541475294427 raw=0 lex=0.333333333333
+b2 score=0.531647253934 raw=0.6 lex=0

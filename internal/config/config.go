@@ -790,7 +790,41 @@ type RetrievalConfig struct {
 	// relevant session (LongMemEval gpt4_f420262c). Default unchanged until measured.
 	BlendRecencyMode string `json:"blend_recency_mode,omitempty"`
 	// BlendRecencyHalfLifeHours is the decay mode's half-life (default 2160 = 90 d).
+	// Also the half-life of the calibrated Stage A's recency (StageACalibrated),
+	// which always decays.
 	BlendRecencyHalfLifeHours float64 `json:"blend_recency_half_life_hours,omitempty"`
+
+	// ADR-0136 "Ranking v2", Phase 0. Every switch defaults to the pre-ADR-0136
+	// ranking; each is measured on its own before any default moves.
+	//
+	// StageACalibrated (D1) scores Stage A as a convex combination of
+	// POOL-INDEPENDENT features, with the blend weights above: lexical = the
+	// adapter's ts_rank_cd saturated s/(s+LexicalSaturationK) instead of 1/RRF-rank;
+	// coherence = IDF seed overlap over a fixed cap instead of min-max; PageRank = a
+	// corpus-relative fixed scale instead of min-max; recency = the decay curve from
+	// reference_time, active only when TemporalIntentEnabled finds an order in the
+	// query. Default false.
+	StageACalibrated bool `json:"stage_a_calibrated,omitempty"`
+	// LexicalSaturationK is k in the calibrated lexical feature s/(s+k). Default 1.5:
+	// half credit at the ts_rank_cd of a strong match, fitted to the legacy 1/rank
+	// scale (memory.DefaultLexicalSaturationK says how). The first default, 0.1, gave
+	// one matched word half the credit and lowered evidence recall on the ADR-0136
+	// gate. Read only when StageACalibrated.
+	LexicalSaturationK float64 `json:"lexical_saturation_k,omitempty"`
+	// (ADR-0136 D2's max_per_document lived here; the owner rejected it on
+	// 2026-11-03 and it was removed. A file or env var that still sets it is an
+	// unknown key and is ignored.)
+	// TemporalIntentEnabled (D3) parses the query's time phrase (go-dateparser)
+	// against the request's reference_time into a target band (the temporal-fit
+	// feature), an order (latest|current = recency decay, earliest = inverted,
+	// history|none = recency off) and, for an absolute range only, a hard event-time
+	// window. A query with no time phrase gets no time signal. Default false.
+	TemporalIntentEnabled bool `json:"temporal_intent_enabled,omitempty"`
+	// TemporalFitWeight is the Stage-A weight of the temporal-fit feature, applied
+	// only to queries that name a time band. Default 0.2 — the lexical weight's
+	// size, so a band match can lift a chunk past cosine near-ties without
+	// overriding a clear relevance gap. Read only when TemporalIntentEnabled.
+	TemporalFitWeight float64 `json:"temporal_fit_weight,omitempty"`
 
 	// RerankerEnabled (ADR-0054 Stage B) turns on cross-encoder reranking of the
 	// top-K Stage-A candidates via the warm reranker_agent system organ. false
@@ -992,6 +1026,17 @@ type IngestionConfig struct {
 	// enrichment) with a WARN and kg_pending in the ingest-timing line and
 	// trailer. Default 30000; <=0 falls back to 30000.
 	SyncIngestKGWaitTimeoutMs int `json:"sync_ingest_kg_wait_timeout_ms,omitempty"`
+
+	// SyncIngestWaitForFacts is SyncIngestWaitForKG for the ADR-0136 D4 fact layer:
+	// a SYNC ingest returns only after its document's facts are extracted and stored,
+	// so a benchmark that measures the fact lane measures stored facts, not a race
+	// with the extraction queue. No-op unless execution.facts.extract_enabled.
+	// Default false: product ingest latency is unchanged.
+	SyncIngestWaitForFacts bool `json:"sync_ingest_wait_for_facts,omitempty"`
+	// SyncIngestFactsWaitTimeoutMs bounds that wait (one LLM call per extraction window, ADR-0136 A2.3). On
+	// expiry the ingest still SUCCEEDS with a WARN and facts_pending in the timing
+	// line. Default 120000; <=0 falls back to 120000.
+	SyncIngestFactsWaitTimeoutMs int `json:"sync_ingest_facts_wait_timeout_ms,omitempty"`
 
 	// KgExtractorCallAttempts is the total number of times one triplet batch's
 	// call to the kg_extractor agent is attempted when the agent cannot be
@@ -1314,6 +1359,96 @@ type ExecutionConfig struct {
 
 	// Pipelines holds reactive-pipeline execution settings (ADR-0114).
 	Pipelines PipelinesConfig `json:"pipelines"`
+
+	// Facts is the ADR-0136 D4/D5 fact layer: per-document fact extraction, the fact
+	// retrieval lane and valid-time supersession. Every switch defaults off.
+	Facts FactsConfig `json:"facts"`
+}
+
+// FactsConfig is the ADR-0136 fact layer (D4 fact-augmented keys into chunks, D5
+// valid-time supersession). Owner-assumed defaults (2026-11-03): the whole layer is
+// DEFAULT OFF (its extraction spends one LLM call per ingested document, ADR-0131), the
+// attribute registry is empty so every attribute is multi (nothing supersedes until an
+// operator declares it single).
+type FactsConfig struct {
+	// ExtractEnabled runs asynchronous LLM extraction (one call per A2.3 window) per ingested document after
+	// its chunks are stored (never on the ingest RPC path), writing each fact as a
+	// memory_fact knowledge item (ADR-0136 A1) through the write chokepoint. The generator is the "facts" system role
+	// (llm_provider.roles.facts; unset = the default generator). Default false.
+	ExtractEnabled bool `json:"extract_enabled,omitempty"`
+	// LaneEnabled adds the fact lane to retrieval: a fact vector search under the
+	// caller's read predicate whose hits contribute their SOURCE CHUNKS as primary hits,
+	// plus the fact_match Stage-A feature and the fact text as hit metadata. Default false.
+	LaneEnabled bool `json:"lane_enabled,omitempty"`
+	// SupersessionEnabled (D5, as amended by A1) seeds the declared predicate profiles,
+	// lets a change-language cue (supersedes_prior) give an undated fact the session time
+	// as its start, and lets the lane rank by the derived chains — the substrate's
+	// valid_time_supersession authority closes an older value by dates, never deleting
+	// it. The judge call is a separate switch (assessments_enabled). The lane ranking
+	// is current_fact for current/latest queries and the value chain for
+	// history/earliest ones (those need
+	// retrieval.temporal_intent_enabled). Default false.
+	SupersessionEnabled bool `json:"supersession_enabled,omitempty"`
+
+	// QueueSize is the extraction queue bound (documents). Full = the document's facts
+	// are dropped with a WARN; its chunks are stored. Default 1024.
+	QueueSize int `json:"queue_size"`
+	// Workers is the extraction worker count (concurrent LLM calls). Default 2.
+	Workers int `json:"workers"`
+	// LLMTimeoutMs bounds one extraction call. Default 120000.
+	LLMTimeoutMs int `json:"llm_timeout_ms"`
+	// MaxFactsPerDocument caps the facts kept from ONE extraction call — one window of
+	// a source (ADR-0136 A2.3; the name predates windows). Default 64.
+	MaxFactsPerDocument int `json:"max_facts_per_document"`
+	// MaxPromptChars caps one extraction prompt. A2.3: a longer source is packed in order
+	// into several windows of at most this size, one call each (up to
+	// max_calls_per_document). Default 48000.
+	MaxPromptChars int `json:"max_prompt_chars"`
+	// MaxCallsPerDocument caps the extraction windows (LLM calls) one source costs per
+	// run (A2.3, owner answer A2-Q1). A source with more windows is extracted up to the
+	// cap and recorded as a PARTIAL extraction marker that cmd/facts-backfill resumes
+	// from the first uncovered window. 0 = no cap. Default 8 (about 384k characters).
+	MaxCallsPerDocument int `json:"max_calls_per_document"`
+	// MaxFactsPerSource bounds the facts kept from one source across all its windows
+	// (A2.3); once reached, the rest of the source is not extracted. Default 512
+	// (64 x 8).
+	MaxFactsPerSource int `json:"max_facts_per_source"`
+	// LaneTopK is how many facts the lane fetches per query. Default 20.
+	LaneTopK int `json:"lane_top_k"`
+	// FactMatchWeight is the Stage-A weight of fact_match (needs blend_enabled), joined
+	// only for a query the lane matched. Default 0.2.
+	FactMatchWeight float64 `json:"fact_match_weight"`
+	// CurrentFactWeight is the Stage-A weight of current_fact, joined only for a
+	// current/latest query with supersession on. Default 0.1.
+	CurrentFactWeight float64 `json:"current_fact_weight"`
+	// SingleAttributes declares predicates that hold one value at a time and therefore
+	// supersede ("home_city", "employer"). Matched after normalisation (lower case, words
+	// joined by '_'). ADR-0136 A1.4: seeded at boot as DECLARED predicate profiles
+	// (predicate_profiles, source=declared), which learned votes never overrule — config
+	// is v1's only override channel (A1-Q5). An undeclared predicate's cardinality is
+	// learned from assessments, and is `unknown` until then. Read only with
+	// supersession_enabled.
+	SingleAttributes []string `json:"single_attributes"`
+	// MultiAttributes declares predicates whose values accumulate ("likes", "owns_pet")
+	// — the same seeding as SingleAttributes with cardinality multi. A name in both lists
+	// is multi. Default [].
+	MultiAttributes []string `json:"multi_attributes"`
+	// AssessmentsEnabled (ADR-0136 A1.2 rules 2-4, gate arm F2b) adds at most ONE
+	// batched judge call per session over the candidate pairs the cues and profiles
+	// cannot decide — exact-key pairs of an unknown-cardinality predicate and
+	// fuzzy_candidates same-subject facts under other predicates. Each verdict is stored
+	// as a keyed assessment (knowledge_assessments) before it has any effect, so a replay
+	// over the same candidates makes no call; exact-key verdicts vote on the predicate's
+	// learned cardinality. Needs supersession_enabled. Default false (F2a: cues + exact
+	// match + declared/learned cardinality, no judge call).
+	AssessmentsEnabled bool `json:"assessments_enabled,omitempty"`
+	// FuzzyCandidates is k of A1.2 rule 3 — same-subject candidates per new fact for the
+	// batched assessment call. 0 = exact-key pairs only. Default 10.
+	FuzzyCandidates int `json:"fuzzy_candidates"`
+	// CardinalityMinVotes is the A1.4 learning threshold: a predicate becomes learned
+	// single (or multi) once that many assessments voted that way with no opposing vote;
+	// a split vote stays unknown. Default 3.
+	CardinalityMinVotes int `json:"cardinality_min_votes"`
 }
 
 // PipelinesConfig governs whether authored pipelines actually EXECUTE.
@@ -1388,6 +1523,14 @@ type Config struct {
 		// is ahead of the binary). Default true — set false to manage migrations only
 		// via the `migrate` CLI / external tooling.
 		AutoMigrate bool `json:"auto_migrate"`
+		// CompactMinBytes / CompactFreeRatio gate the boot-time offline compaction
+		// of the bbolt file (ADR-0061 A2.8): before the store is opened, a file
+		// larger than CompactMinBytes of which more than CompactFreeRatio is free
+		// pages is rewritten (bbolt never returns freed pages to the file system,
+		// so this is the only way the file shrinks). Defaults 256 MiB / 0.5;
+		// CompactMinBytes <= 0 disables it. Read by kernel.BootstrapStorage.
+		CompactMinBytes  int64   `json:"compact_min_bytes"`
+		CompactFreeRatio float64 `json:"compact_free_ratio"`
 	} `json:"storage"`
 	Database struct {
 		Host     string `json:"host"`
@@ -1843,13 +1986,21 @@ func DefaultConfig() *Config {
 				BlendWeightLexical:        0.2,
 				BlendWeightCoherence:      0.05,
 				BlendWeightConfidence:     0.1,
-				// Owner decision 2026-11-02 (ADR-0134 Q8, corrected): recency was 0 here
-				// (memory.DefaultBlendWeights' 0.05 is only the all-zero fallback). It
-				// now reads event_time, and 0.1 is a starting value to be tuned by the
-				// LongMemEval event-time A/B, not a measured optimum.
-				BlendWeightRecency:        0.1,
+				// Owner decision 2026-11-03: recency 0. The pool-relative (min-max)
+				// recency term cost retrieval recall on LongMemEval-S temporal +
+				// knowledge-update (benchmark longmemeval-s-temporal-ku: weight 0 =
+				// 195/211, recall 0.9749; 0.1 = 188-190, 0.9528; 0.3 = 164), and no
+				// variant (decay curves incl.) beat 0. It was 0.1 for one day
+				// (2026-11-02); memory.DefaultBlendWeights' 0.05 is only the all-zero
+				// fallback. The ranking redesign is
+				// T-20261102-research-and-redesign-stage-a-ranking-improve.
+				BlendWeightRecency:        0,
 				BlendRecencyMode:          "minmax",
-				BlendRecencyHalfLifeHours: 2160, // 90 days; read only in decay mode
+				BlendRecencyHalfLifeHours: 2160, // 90 days; read in decay mode and by the calibrated Stage A
+				// ADR-0136 Phase 0: all off. The two values below are read only
+				// when their switch is on.
+				LexicalSaturationK: 1.5, // memory.DefaultLexicalSaturationK; was 0.1 (T-20261103-adr-0136-d1-stage-a-calibrated-lowers-evidence)
+				TemporalFitWeight:  0.2,
 
 				KG2RAGMaxHops:     2,
 				KG2RAGMaxExpanded: 40,
@@ -1883,6 +2034,9 @@ func DefaultConfig() *Config {
 				// option, off by default; the benchmark turns it on.
 				SyncIngestWaitForKG:       false,
 				SyncIngestKGWaitTimeoutMs: 30000,
+				// ADR-0136 D4: same option for the fact layer, off by default.
+				SyncIngestWaitForFacts:       false,
+				SyncIngestFactsWaitTimeoutMs: 120000,
 				// T-20261102-kg-extractor-cold-start-drops-the-first-kg: absorb a
 				// cold kg_extractor boot instead of dropping the first batches.
 				KgExtractorCallAttempts:   3,
@@ -1960,6 +2114,24 @@ func DefaultConfig() *Config {
 				MaxDepth:    3,
 				EnergyFloor: 0.15,
 			},
+			// ADR-0136 D4/D5: the fact layer is off; the tunables below are read only
+			// when a switch is on.
+			Facts: FactsConfig{
+				QueueSize:           1024,
+				Workers:             2,
+				LLMTimeoutMs:        120000,
+				MaxFactsPerDocument: 64,
+				MaxPromptChars:      48000,
+				MaxCallsPerDocument: 8,
+				MaxFactsPerSource:   512,
+				LaneTopK:            20,
+				FactMatchWeight:     0.2,
+				CurrentFactWeight:   0.1,
+				SingleAttributes:    []string{},
+				MultiAttributes:     []string{},
+				FuzzyCandidates:     10,
+				CardinalityMinVotes: 3,
+			},
 		},
 		Telemetry: TelemetryConfig{
 			TraceSamplingRate:            1.0,
@@ -2001,6 +2173,10 @@ func DefaultConfig() *Config {
 	// PLAT-02 / ADR-0064: migrate-on-boot is on by default (matches the historical
 	// always-run ensureSchema behavior); set storage.auto_migrate=false to opt out.
 	cfg.Storage.AutoMigrate = true
+	// ADR-0061 A2.8: compact the bbolt file at boot when it is over 256 MiB and
+	// more than half free pages.
+	cfg.Storage.CompactMinBytes = 256 << 20
+	cfg.Storage.CompactFreeRatio = 0.5
 	// ADR-0126 D3: the inbound MCP endpoint is DEFAULT DISABLED and has no
 	// implied port. Only the storm-control cap carries a default, because a
 	// deployment that switches the endpoint on should not also have to think
@@ -2411,6 +2587,68 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 		}
 	default:
 		errs = append(errs, fmt.Sprintf("retrieval.blend_recency_mode must be minmax or decay (got %q)", c.Retrieval.BlendRecencyMode))
+	}
+	// ADR-0136: a value the consumer would silently replace is refused instead.
+	if c.Retrieval.StageACalibrated && c.Retrieval.LexicalSaturationK <= 0 {
+		errs = append(errs, "retrieval.lexical_saturation_k must be > 0 when stage_a_calibrated is on")
+	}
+	if c.Retrieval.StageACalibrated && c.Retrieval.BlendRecencyHalfLifeHours <= 0 {
+		errs = append(errs, "retrieval.blend_recency_half_life_hours must be > 0 when stage_a_calibrated is on")
+	}
+	if c.Retrieval.TemporalFitWeight < 0 {
+		errs = append(errs, "retrieval.temporal_fit_weight must be >= 0")
+	}
+	// ADR-0136 D4/D5: the fact layer's tunables. Each is checked only when the switch
+	// that reads it is on, as the consumer would otherwise silently replace it.
+	if f := c.Facts; f.ExtractEnabled {
+		if f.QueueSize <= 0 {
+			errs = append(errs, "facts.queue_size must be > 0 when extract_enabled is on")
+		}
+		if f.Workers <= 0 {
+			errs = append(errs, "facts.workers must be > 0 when extract_enabled is on")
+		}
+		if f.LLMTimeoutMs <= 0 {
+			errs = append(errs, "facts.llm_timeout_ms must be > 0 when extract_enabled is on")
+		}
+		if f.MaxFactsPerDocument <= 0 {
+			errs = append(errs, "facts.max_facts_per_document must be > 0 when extract_enabled is on")
+		}
+		if f.MaxPromptChars < 2000 {
+			errs = append(errs, "facts.max_prompt_chars must be >= 2000 when extract_enabled is on")
+		}
+		if f.FuzzyCandidates < 0 {
+			errs = append(errs, "facts.fuzzy_candidates must be >= 0 (0 = exact supersession only)")
+		}
+		if f.MaxCallsPerDocument < 0 {
+			errs = append(errs, "facts.max_calls_per_document must be >= 0 (0 = no cap)")
+		}
+		if f.MaxFactsPerSource <= 0 {
+			errs = append(errs, "facts.max_facts_per_source must be > 0 when extract_enabled is on")
+		}
+	}
+	if f := c.Facts; f.LaneEnabled && f.LaneTopK <= 0 {
+		errs = append(errs, "facts.lane_top_k must be > 0 when lane_enabled is on")
+	}
+	if c.Facts.FactMatchWeight < 0 || c.Facts.CurrentFactWeight < 0 {
+		errs = append(errs, "facts.fact_match_weight and facts.current_fact_weight must be >= 0")
+	}
+	for _, a := range c.Facts.SingleAttributes {
+		if strings.TrimSpace(a) == "" {
+			errs = append(errs, "facts.single_attributes must not contain an empty name")
+			break
+		}
+	}
+	for _, a := range c.Facts.MultiAttributes {
+		if strings.TrimSpace(a) == "" {
+			errs = append(errs, "facts.multi_attributes must not contain an empty name")
+			break
+		}
+	}
+	if c.Facts.CardinalityMinVotes < 0 {
+		errs = append(errs, "facts.cardinality_min_votes must be >= 0 (0 = the default 3)")
+	}
+	if c.Ingestion.SyncIngestFactsWaitTimeoutMs < 0 {
+		errs = append(errs, "ingestion.sync_ingest_facts_wait_timeout_ms must be >= 0")
 	}
 	switch c.Retrieval.HnswIterativeScan {
 	case "", "off", "relaxed_order", "strict_order":

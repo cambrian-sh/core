@@ -667,6 +667,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	// Each organ Acquires a purpose-bound generator (live failover + tracing per call).
 	memoryGen := llmProvider.GeneratorFor(domain.PurposeMemory)
+	factsGen := llmProvider.GeneratorFor(domain.PurposeFacts) // ADR-0136 D4: read only when execution.facts.extract_enabled
 	awarenessGen := llmProvider.GeneratorFor(domain.PurposePlanner)
 	supervisionGen := llmProvider.GeneratorFor(domain.PurposeVerifier)
 	metabolismGen := llmProvider.GeneratorFor(domain.PurposeInterview) // ADR-0037 interview grading
@@ -689,8 +690,38 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// longer exists on disk; A2A/dynamic agents are spared.
 	reconcileFilesystemAgents(ctx, reg, func(p string) bool { _, err := os.Stat(p); return err == nil })
 
+	// ADR-0110: the kind registry, validated as a unit — a malformed spec, a
+	// duplicate kind, or a policy nobody registered refuses the boot rather
+	// than silently deriving under a different policy than a kind declared.
+	//
+	// ADR-0136 A1.6: built HERE, above NewMemoryStack, because the kernel's own fact
+	// layer lives on the substrate. Core declares its memory_fact kind and the
+	// valid_time_supersession authority itself, appended to the plugin-contributed
+	// ones (plugins were composed at the top of bootstrapKernel), so the OSS binary
+	// carries them with no premium import (ADR-0057). A plugin that also declares
+	// memory_fact fails boot here (duplicate kind).
+	kindReg, kerr := domain.NewKindRegistry(
+		append(append([]domain.KindSpec(nil), opts.KnowledgeKinds...), domain.MemoryFactKindSpec()),
+		append(append([]domain.ResolutionAuthority(nil), opts.ResolutionAuthorities...), domain.ValidTimeSupersessionAuthority{}))
+	if kerr != nil {
+		return nil, fmt.Errorf("knowledge kind registry (ADR-0110): %w", kerr)
+	}
+	// ADR-0106: the substrate store, ONE instance shared by the kernel fact path (wrapped
+	// in the enforcing writer/reader inside NewMemoryStack) and the plugin seam
+	// (KernelServices.Knowledge, below).
+	knowledgeStore := postgres.NewPgKnowledgeStore(vec.Pool(), kindReg)
+	factsSubstrate := kernel.FactSubstrate{
+		Store:         knowledgeStore,
+		Reader:        postgres.NewPgFactItemReader(knowledgeStore, "default", cfg.Embedder.Model, cfg.Embedder.Dimensions),
+		Lister:        knowledgeStore,
+		EmbedModelID:  cfg.Embedder.Model,
+		AssessorModel: factsAssessorModel(llmProvider.Roles()),
+		// ADR-0136 A2.4: the extractor version on every marker names this model.
+		GeneratorModel: kernel.FactsGeneratorModel(cfg.LLMProvider, llmProvider.Roles()),
+	}
+
 	// 2. Domain stacks — sequential construction (dependency order)
-	mem := kernel.NewMemoryStack(vec, memoryGen, embedder, cfg.Execution, authorizer, cfg.Chunker)
+	mem := kernel.NewMemoryStack(vec, memoryGen, embedder, cfg.Execution, authorizer, cfg.Chunker, factsGen, factsSubstrate)
 	// ADR-0103 D3/D7: wire the decision-provenance seam. nil observer (the OSS default)
 	// leaves the emit site a nil check. The fingerprint is computed ONCE here, not per
 	// query: it describes configuration that cannot change without a restart, so hashing
@@ -904,6 +935,86 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			"recency_half_life_h", cfg.Execution.Retrieval.BlendRecencyHalfLifeHours)
 	}
 
+	// ADR-0136 ranking v2 (Phase 0): D1 calibrated Stage A and D3 query-conditioned
+	// time (D2, a per-document cap, was rejected by the owner 2026-11-03 and removed).
+	// Wired unconditionally — every switch defaults off and the zero RankingV2 is the
+	// old ranking — so the boot line below states the EFFECTIVE value of each, which
+	// is what an experiment arm's expect_log checks. D1 and the D3 features act inside
+	// Stage A, so they need blend_enabled; D3's explicit window acts without it. The
+	// line says which applies.
+	rv2 := cfg.Execution.Retrieval
+	fc := cfg.Execution.Facts
+	mem.QueryService.SetRankingV2(memory.RankingV2{
+		Calibrated:         rv2.StageACalibrated,
+		LexicalSaturationK: rv2.LexicalSaturationK,
+		TemporalIntent:     rv2.TemporalIntentEnabled,
+		TemporalFitWeight:  rv2.TemporalFitWeight,
+		// ADR-0136 D4/D5: the fact lane and its features (execution.facts).
+		FactLane:          fc.LaneEnabled,
+		FactLaneTopK:      fc.LaneTopK,
+		FactMatchWeight:   fc.FactMatchWeight,
+		Supersession:      fc.SupersessionEnabled,
+		CurrentFactWeight: fc.CurrentFactWeight,
+	})
+	slog.Info(fmt.Sprintf("ranking v2: stage_a_calibrated=%t temporal_intent_enabled=%t",
+		rv2.StageACalibrated, rv2.TemporalIntentEnabled),
+		"lexical_saturation_k", rv2.LexicalSaturationK,
+		"temporal_fit_weight", rv2.TemporalFitWeight,
+		"blend_enabled", rv2.BlendEnabled)
+	if (rv2.StageACalibrated || rv2.TemporalIntentEnabled) && !rv2.BlendEnabled {
+		slog.Warn("ranking v2: stage_a_calibrated / temporal_intent_enabled change Stage-A scoring, which is OFF (blend_enabled=false); only the explicit-range window of temporal intent applies")
+	}
+	if rv2.TemporalIntentEnabled && rv2.BlendWeightRecency == 0 {
+		slog.Info("ranking v2: temporal intent order (latest/current/earliest) sets the recency direction, but blend_weight_recency=0, so only the temporal-fit feature and explicit windows take effect")
+	}
+	// ADR-0136 D4/D5: the fact layer's boot line, the expect_log anchor of the fact arms.
+	// It states the EFFECTIVE switches: extraction needs the adapter's fact store, the
+	// lane needs the fact reader, so a switch that cannot act is logged false with why.
+	factsExtract := fc.ExtractEnabled && mem.FactExtractor != nil
+	factsLane := fc.LaneEnabled && mem.QueryService.HasFactReader()
+	factsStore := "none"
+	if mem.FactWriter != nil {
+		factsStore = "substrate"
+	}
+	// ADR-0136 A1.11: the boot line carries store=substrate and the effective
+	// assessments switch (it needs supersession), the expect_log anchors of the
+	// adr0136-gate-facts arms.
+	factsAssess := fc.AssessmentsEnabled && fc.SupersessionEnabled && factsExtract
+	slog.Info(fmt.Sprintf("fact layer: extract_enabled=%t lane_enabled=%t supersession_enabled=%t assessments_enabled=%t store=%s",
+		factsExtract, factsLane, fc.SupersessionEnabled, factsAssess, factsStore),
+		"single_attributes", fc.SingleAttributes,
+		"multi_attributes", fc.MultiAttributes,
+		"cardinality_min_votes", fc.CardinalityMinVotes,
+		"item_embedding_model", cfg.Embedder.Model,
+		"item_embedding_dims", cfg.Embedder.Dimensions,
+		"lane_top_k", fc.LaneTopK,
+		"fact_match_weight", fc.FactMatchWeight,
+		"current_fact_weight", fc.CurrentFactWeight,
+		"fuzzy_candidates", fc.FuzzyCandidates,
+		"sync_ingest_wait_for_facts", cfg.Execution.Ingestion.SyncIngestWaitForFacts,
+		"generator_role", string(domain.PurposeFacts))
+	if (fc.ExtractEnabled && !factsExtract) || (fc.LaneEnabled && !factsLane) {
+		slog.Warn("fact layer: a switch is on but no knowledge substrate was composed; it has no effect")
+	}
+	if fc.AssessmentsEnabled && !factsAssess {
+		slog.Warn("fact layer: assessments_enabled needs extract_enabled and supersession_enabled; no assessment call is made")
+	}
+	if fc.SupersessionEnabled && len(fc.SingleAttributes) == 0 && !fc.AssessmentsEnabled {
+		slog.Info("fact layer: supersession_enabled with no declared single_attributes and assessments off: only change-language cues and negations close a value (no cardinality can be learned without assessments)")
+	}
+	if fc.SupersessionEnabled && !fc.ExtractEnabled {
+		slog.Info("fact layer: supersession runs inside extraction, which is off; only the lane's reading of already-stored chains applies")
+	}
+	if fc.LaneEnabled && fc.SupersessionEnabled && !rv2.TemporalIntentEnabled {
+		slog.Info("fact layer: current_fact and the history chain need retrieval.temporal_intent_enabled (D3 order); without it the lane only annotates supersession")
+	}
+	if fc.LaneEnabled && !rv2.BlendEnabled {
+		slog.Info("fact layer: fact_match / current_fact are Stage-A features and blend_enabled=false; fact-reached chunks still enter as primary hits")
+	}
+	if rv2.StageACalibrated && rv2.BlendWeightPageRank > 0 {
+		slog.Info("ranking v2: calibrated PageRank is the interim corpus-relative scale x*N/(x*N+1), not a global percentile (T-20261103-adr-0136-d1-pagerank-feature-is-an-interim-x-n)")
+	}
+
 	// ADR-0054 hybrid retrieval: fuse dense (vector) + sparse (lexical/full-text)
 	// via RRF so exact-token chunks the embedder misses enter the pool. Opt-in via
 	// execution.hybrid_search_enabled. *PgVectorAdapter implements LexicalSearcher.
@@ -1109,13 +1220,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ingestor and one store. Construction is fail-loud: with the flag on, a
 	// kernel that cannot preserve evidence must not boot into silently-not-
 	// preserving it.
-	// ADR-0110: the kind registry, validated as a unit — a malformed spec, a
-	// duplicate kind, or a policy nobody registered refuses the boot rather
-	// than silently deriving under a different policy than a kind declared.
-	kindReg, kerr := domain.NewKindRegistry(opts.KnowledgeKinds, opts.ResolutionAuthorities)
-	if kerr != nil {
-		return nil, fmt.Errorf("knowledge kind registry (ADR-0110): %w", kerr)
-	}
+	// The kind registry (kindReg) and the substrate store (knowledgeStore) are built
+	// above NewMemoryStack (ADR-0136 A1.6).
+	//
 	// Five-planes step 2: the link verb registry, on the same terms. A duplicate
 	// verb or a redeclared seed is a boot refusal rather than two producers
 	// disagreeing at write time about whether a verb is symmetric.
@@ -1134,7 +1241,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	var evIngestor *evidence.Ingestor
 	evStore := postgres.NewPgEvidenceStore(vec.Pool())
-	knowledgeStore := postgres.NewPgKnowledgeStore(vec.Pool(), kindReg)
 	eventStore := postgres.NewPgEventStore(vec.Pool(), kindReg)
 	// The identity plane (five-planes steps 1+2, migration 0016). Built here beside
 	// the other substrate stores so every lane that mints an entity or asserts a
@@ -1227,7 +1333,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// ADR-0106: the substrate's typed item/resolution boundary. A plugin
 		// producing or consuming knowledge items goes through this port so no
 		// consumer ever grows SQL against substrate tables.
-		Knowledge: knowledgeStore,
+		//
+		// ADR-0136 A1: the kernel-reserved memory_fact kind is fenced off this raw
+		// seam (it would bypass both fact chokepoints); plugins read memory_fact
+		// resolutions through the SCOPED query plane (A1-Q6). The general gap — this
+		// seam stores a caller's classification verbatim — is
+		// T-20261103-kernelservices-knowledge-hands-plugins-the-raw.
+		Knowledge: authz.NewReservedKindGuard(knowledgeStore, domain.KindMemoryFact),
 		// ADR-0108 D2: the typed event/observation boundary — exact reads over
 		// stored rows, nothing embedded.
 		// Withdrawing an entry organ (ADR-0090). Resolved at CALL time through the
@@ -1589,6 +1701,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 					"timeout_ms", ing.SyncIngestKGWaitTimeoutMs, "kg_extractor", ing.KgExtractorEnabled)
 			} else {
 				slog.Warn("SYNC_INGEST_WAIT_FOR_KG: set but has NO EFFECT: no chunk-triplets batcher (the vector store is not a ChunkTripletsStore)")
+			}
+		}
+		// ADR-0136 D4: the same report for the fact layer's read-your-writes flag, the
+		// expect_log anchor of a fact-ingest arm (adr0136-gate G1).
+		if ing := cfg.Execution.Ingestion; ing.SyncIngestWaitForFacts {
+			if mem.FactExtractor != nil {
+				slog.Info("SYNC_INGEST_WAIT_FOR_FACTS: ENABLED (a sync ingest returns after its document's facts are stored)",
+					"timeout_ms", ing.SyncIngestFactsWaitTimeoutMs)
+			} else {
+				slog.Warn("SYNC_INGEST_WAIT_FOR_FACTS: set but has NO EFFECT: no fact extractor (execution.facts.extract_enabled is off, or no knowledge substrate was composed)")
 			}
 		}
 		// ADR-0093: record the source-document entity on every ingest. Deliberately NOT

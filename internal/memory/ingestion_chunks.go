@@ -46,8 +46,14 @@ type persistOutcome struct {
 	// lane (ProcessSync with execution.ingestion.sync_ingest_wait_for_kg) and a
 	// triplets batcher is wired; nil otherwise.
 	KGWait *TripletsWait
+	// FactsWait completes when this document's ADR-0136 facts are stored. Set only
+	// when the caller asked to track the fact lane (ProcessSync with
+	// execution.ingestion.sync_ingest_wait_for_facts) and an extractor is wired.
+	FactsWait *FactsWait
 }
 
+// persistChunks is persistChunksTracked without tracking the fact lane (the async
+// batch path, and every caller that predates ADR-0136 D4).
 func (im *IngestionManager) persistChunks(
 	ctx context.Context,
 	doc domain.ExternalDocument,
@@ -55,6 +61,18 @@ func (im *IngestionManager) persistChunks(
 	entityID string,
 	scene string,
 	trackKG bool,
+) (persistOutcome, error) {
+	return im.persistChunksTracked(ctx, doc, chunks, entityID, scene, trackKG, false)
+}
+
+func (im *IngestionManager) persistChunksTracked(
+	ctx context.Context,
+	doc domain.ExternalDocument,
+	chunks []domain.Chunk,
+	entityID string,
+	scene string,
+	trackKG bool,
+	trackFacts bool,
 ) (persistOutcome, error) {
 	var outcome persistOutcome
 	if im.agent == nil || im.agent.Manager == nil || im.agent.Manager.Store == nil {
@@ -297,6 +315,17 @@ func (im *IngestionManager) persistChunks(
 			}
 		}
 		clock.Since(StageTripletsEnqueue, t)
+	}
+	// ADR-0136 D4: queue the stored document for fact extraction - async LLM calls (one
+	// per A2.3 window), never on this path. Non-blocking and nil-safe (nil = the fact
+	// layer is off). A2.1: the source's metadata travels as data — its type, title,
+	// author (else the writing principal) and reference time with its basis (the stated
+	// event time, else this ingest's clock, labelled "ingested").
+	if im.factExtractor != nil {
+		t := time.Now()
+		src := domain.SourceMetaOf(doc, ingestedAt, domain.PrincipalFromContext(ctx).ID)
+		outcome.FactsWait = im.factExtractor.Enqueue(ctx, documentID, src, docs, trackFacts)
+		clock.Since(StageFactsEnqueue, t)
 	}
 	// ADR-0060: build the document-structure graph and stamp each chunk with its
 	// inherited section path. Best-effort — parse/persist failures log and leave

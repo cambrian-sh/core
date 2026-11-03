@@ -165,6 +165,12 @@ type SearchResult struct {
 	// the lexical list (1.0 = top lexical hit, 0 = not lexically matched). Fed into
 	// the Stage-A blend so an exact-token chunk gets credit even at low cosine.
 	LexicalScore float64
+	// LexicalRaw is the lexical lane's own relevance score for the chunk — the
+	// pgvector adapter's ts_rank_cd — carried through RRF fusion unchanged (0 = not
+	// lexically matched). LexicalScore above is a RANK and depends on what else the
+	// lexical list holds; this is a per-chunk SCORE, so ADR-0136 D1's calibrated
+	// Stage A can map it onto a fixed scale (s/(s+k)) that does not depend on the pool.
+	LexicalRaw float64
 }
 
 // VectorStore defines the interface for underlying vector database operations.

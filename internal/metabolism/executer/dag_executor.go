@@ -438,6 +438,14 @@ func mergeStepResult(ctx context.Context, masterContext map[string]string, r ste
 	return cid
 }
 
+// snippetChars is ContextRefSnippetChars with mergeStepResult's default (500).
+func (d *DAGExecutor) snippetChars() int {
+	if d.ContextRefSnippetChars <= 0 {
+		return 500
+	}
+	return d.ContextRefSnippetChars
+}
+
 // buildSnippet returns the first snippetChars of data as a string.
 // Returns "" for non-UTF-8 content (binary payloads) — a garbled snippet
 // is worse than no snippet (would inject corrupt bytes into agent prompts).
@@ -713,13 +721,63 @@ func (d *DAGExecutor) ExecuteFrom(
 
 	// ADR-0022 Phase 1: collect CIDs for plan-scoped GC.
 	// defer ensures GC fires even on panic — orphaned CIDs accumulate otherwise.
+	//
+	// A store that tracks live plans (domain.PlanScratchTracker — the production
+	// BBoltContentStore does) is given this plan's lifetime instead: its EndPlan
+	// collects only scratch no other live plan can need, so this plan finishing
+	// never evicts a concurrent plan's step/tool results, and after the last live
+	// plan ends all scratch is gone, this plan's own step results included
+	// (T-20261103-a-plan-s-content-store-gc-evicts-a-concurrently). A store
+	// without it falls back to GC(keep = this plan's step CIDs).
 	var planCIDs []domain.CID
 	if d.ContentStore != nil {
+		tracker, tracked := d.ContentStore.(domain.PlanScratchTracker)
+		var lease domain.PlanLease
+		if tracked {
+			var berr error
+			if lease, berr = tracker.BeginPlan(ctx); berr != nil {
+				// Without a lease this plan's scratch is unprotected from other
+				// plans' GC; fall back rather than fail the plan.
+				slog.Warn("ContentStore BeginPlan failed; falling back to GC(keep)", "err", berr)
+				tracked = false
+			}
+		}
 		defer func() {
-			if err := d.ContentStore.GC(context.Background(), planCIDs); err != nil {
+			// WithoutCancel: GC must run even when the plan's ctx was cancelled,
+			// but keeps the caller's values (scope, session, trace) — AGENTS.md §2.7.
+			// Both paths only evict plan-scoped scratch types (domain.IsPlanScopedNodeType).
+			gcCtx := context.WithoutCancel(ctx)
+			var err error
+			if tracked {
+				err = tracker.EndPlan(gcCtx, lease)
+			} else {
+				err = d.ContentStore.GC(gcCtx, planCIDs)
+			}
+			if err != nil {
 				slog.Warn("ContentStore GC failed", "err", err)
 			}
 		}()
+		// A resumed plan's completed steps were written to CAS by an earlier
+		// execution whose GC may since have evicted them; re-Put each result whose
+		// step_N_cid the resumed context still carries, so dependents' ContextRefs
+		// resolve. Same bytes ⇒ same CID; inside the lease, so it is protected.
+		for i := 0; i < startFromStepIndex; i++ {
+			cidStr, hasCID := initialContext[fmt.Sprintf("step_%d_cid", i)]
+			res, hasRes := initialContext[fmt.Sprintf("step_%d_result", i)]
+			if !hasCID || !hasRes || cidStr == "" {
+				continue
+			}
+			cid, perr := d.ContentStore.Put(ctx, []byte(res), domain.NodeTypeStepResult,
+				[]string{fmt.Sprintf("step_%d", i), "result"}, buildSnippet([]byte(res), d.snippetChars()))
+			if perr != nil {
+				slog.Warn("ContentStore re-Put of resumed step failed", "step", i, "err", perr)
+				continue
+			}
+			if string(cid) != cidStr {
+				slog.Warn("resumed step result does not hash to its recorded cid", "step", i, "recorded", cidStr, "computed", cid)
+			}
+			planCIDs = append(planCIDs, cid)
+		}
 	}
 
 	// Initialize per-execution pause state.

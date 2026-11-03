@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.etcd.io/bbolt"
@@ -73,9 +74,13 @@ var manifestRegex = regexp.MustCompile(`(?s)AGENT_MANIFEST\s*=\s*'''([\s\S]*?)''
 var manifestRegexJS = regexp.MustCompile("(?s)AGENT_MANIFEST\\s*=\\s*`([\\s\\S]*?)`")
 
 type BBoltAdapter struct {
-	db          *bbolt.DB
-	CardFetcher A2ACardFetcher // for A2A agent registration; nil means RegisterA2AAgent disabled
-	Enqueuer    Enqueuer       // for Interview enqueue after registration
+	db *bbolt.DB
+	// journalAppenders counts AppendReactiveSignal calls in flight, so a lone
+	// appender commits directly instead of waiting out bbolt's batch window
+	// (ADR-0061 A2.7; see AppendReactiveSignal).
+	journalAppenders atomic.Int32
+	CardFetcher      A2ACardFetcher // for A2A agent registration; nil means RegisterA2AAgent disabled
+	Enqueuer         Enqueuer       // for Interview enqueue after registration
 }
 
 func NewBBoltAdapter(dbPath string, agentsDir string, isSystemAgent func(id string) bool) (*BBoltAdapter, error) {
@@ -90,6 +95,11 @@ func NewBBoltAdapter(dbPath string, agentsDir string, isSystemAgent func(id stri
 	if err := adapter.Seed(agentsDir, isSystemAgent); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("bbolt seed failed: %w", err)
+	}
+	// ADR-0061 A2.10: move a pre-A2 flat journal into per-stream buckets.
+	if _, _, err := migrateReactiveJournal(db); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	return adapter, nil
@@ -108,6 +118,11 @@ func NewBBoltAdapterNoScan(dbPath string) (*BBoltAdapter, error) {
 	if err := db.Update(createBuckets); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("bbolt bucket init failed: %w", err)
+	}
+	// ADR-0061 A2.10: move a pre-A2 flat journal into per-stream buckets.
+	if _, _, err := migrateReactiveJournal(db); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return adapter, nil
 }
@@ -166,7 +181,9 @@ func createBuckets(tx *bbolt.Tx) error {
 		agentBucket, manifestBucket, taskEventBucket, checkpointBucket, sessionBucket, runBucket,
 		artifactBucket, planEventBucket, retrievalSessionBucket,
 		traversalLogBucket, contradictionResolutionBucket, watchConfigBucket, pipelineBucket,
-		// REACT-01 (ADR-0061): durable reactive-execution buckets.
+		// REACT-01 (ADR-0061): durable reactive-execution buckets. The journal is
+		// the A2 per-stream parent; the legacy flat bucket is never created, only
+		// migrated (migrateReactiveJournal).
 		reactiveJournalBucket, reactiveCursorBucket, reactiveIdempotencyBucket, reactiveDeadLetterBucket,
 	} {
 		if _, err := tx.CreateBucketIfNotExists(name); err != nil {

@@ -15,7 +15,8 @@ import (
 // at the app.ReactiveServices{Journal: reg} literal.
 
 // AppendSignal durably records a signal before condition evaluation and returns its
-// monotonic sequence number. A zero/negative ttl stores no expiry (never pruned by TTL).
+// monotonic sequence number. A zero/negative ttl stores no expiry: the record is then
+// governed by its stream's cursor floor alone (PruneReactiveJournal).
 func (d *AgentRepoDecorator) AppendSignal(sig domain.Signal, ttl time.Duration) (uint64, error) {
 	data, err := json.Marshal(sig)
 	if err != nil {
@@ -34,9 +35,11 @@ func (d *AgentRepoDecorator) AppendSignal(sig domain.Signal, ttl time.Duration) 
 	})
 }
 
-// ReplayFrom returns journaled signals with seq strictly greater than afterSeq.
-func (d *AgentRepoDecorator) ReplayFrom(afterSeq uint64) ([]domain.JournaledSignal, error) {
-	recs, err := d.store.ReplayReactiveFrom(afterSeq)
+// ReplayStreams returns the journaled signals with seq > afterSeq on the streams
+// match selects, in seq order (ADR-0061 A2.1). The signal is decoded once — the
+// record header and the stream are not JSON (A2.3).
+func (d *AgentRepoDecorator) ReplayStreams(match func(stream string) bool, afterSeq uint64) ([]domain.JournaledSignal, error) {
+	recs, err := d.store.ReplayReactiveStreams(match, afterSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -59,6 +62,11 @@ func (d *AgentRepoDecorator) GetCursor(watchID string) (uint64, error) {
 // SetCursor advances a watch's ack cursor.
 func (d *AgentRepoDecorator) SetCursor(watchID string, seq uint64) error {
 	return d.store.SetReactiveCursor(watchID, seq)
+}
+
+// DeleteCursor removes a watch's cursor when the watch is removed (A2.9).
+func (d *AgentRepoDecorator) DeleteCursor(watchID string) error {
+	return d.store.DeleteReactiveCursor(watchID)
 }
 
 // MarkExecutedOnce is the exactly-once primitive: true only the first time key is seen.
@@ -106,15 +114,21 @@ func (d *AgentRepoDecorator) ListDeadLetters(limit int) ([]domain.ReactiveDeadLe
 	return out, nil
 }
 
-// Prune drops up to limit journal records at/below minAcked whose TTL has expired,
-// reporting whether more remained at the cap (GOV-02).
-func (d *AgentRepoDecorator) Prune(minAcked uint64, limit int) (int, bool, error) {
-	return d.store.PruneReactiveJournal(minAcked, time.Now().UTC(), limit)
+// Prune drops up to limit TTL-expired journal records at or below their stream's
+// floor (ADR-0061 A2.2), reporting whether more remained at the cap (GOV-02).
+func (d *AgentRepoDecorator) Prune(floor func(stream string) (uint64, bool), now time.Time, limit int) (int, bool, error) {
+	return d.store.PruneReactiveJournal(floor, now, limit)
 }
 
-// RetainedWindow reports the journal's remaining seq range and record count, so a
-// backtest can state the history it actually had rather than implying it saw all
-// of it.
-func (d *AgentRepoDecorator) RetainedWindow() (uint64, uint64, int, error) {
-	return d.store.ReactiveJournalWindow()
+// PruneIdempotency drops up to limit exactly-once markers executed before
+// olderThan (A2.6), reporting whether more remained at the cap.
+func (d *AgentRepoDecorator) PruneIdempotency(olderThan time.Time, limit int) (int, bool, error) {
+	return d.store.PruneReactiveIdempotency(olderThan, limit)
+}
+
+// RetainedWindow reports the journal's remaining seq range and record count on the
+// streams match selects (nil ⇒ all), so a backtest can state the history it
+// actually had rather than implying it saw all of it.
+func (d *AgentRepoDecorator) RetainedWindow(match func(stream string) bool) (uint64, uint64, int, error) {
+	return d.store.ReactiveJournalWindow(match)
 }

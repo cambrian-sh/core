@@ -34,6 +34,27 @@ type MemoryStack struct {
 	IngestionManager     *memory.IngestionManager     // ADR-0028: ALWAYS non-nil (a zero queue size defaults to 1000). The old "may be nil" note was false and implied a raw-write fallback that could not fire.
 	EntityIndex          *memory.EntityIndex          // ADR-0053 (T-Mem associative hop): in-memory entity→docs index; nil = surface-only recall
 	ChunkTripletsBatcher *memory.ChunkTripletsBatcher // ADR-0053 Phase 0: batched per-chunk (h,r,t) extractor
+	// FactWriter is the ENFORCING write side of the ADR-0136 A1 fact layer
+	// (authz.EnforcingKnowledgeWriter over the raw knowledge substrate), the only write
+	// handle on memory_fact items in the kernel. FactReader is the enforcing read side
+	// (authz.EnforcingFactItemReader over postgres.PgFactItemReader). Both nil when no
+	// substrate was handed in (a test fake). They are built whether or not the fact
+	// layer is on, so the QueryService always holds the enforcing reader; the flags
+	// decide use.
+	FactWriter domain.FactSubstrateWriter
+	FactReader domain.FactItemReader
+	// FactExtractor runs ADR-0136 D4 extraction off the ingest path, writing items and
+	// (with assessments on) keyed assessments. nil unless execution.facts.extract_enabled
+	// and a substrate exists.
+	FactExtractor *memory.FactExtractor
+	// FactBackfill feeds stored documents without a memory_fact extraction marker
+	// through FactExtractor (cmd/facts-backfill). nil exactly when FactExtractor is nil
+	// or no lister was handed in.
+	FactBackfill *memory.FactBackfill
+	// FactReset is the ADR-0136 A2-Q3 hard reset of the fact layer for a re-run
+	// (cmd/facts-reset): FactSubstrate.Resetter, handed through unchanged. nil unless a
+	// maintenance command handed one in — the kernel never resets facts.
+	FactReset domain.FactResetter
 	// ProcedureScheduler runs the ADR-0094 induction pass. nil ⇒ disabled, which is
 	// the default (execution.procedure_induction_interval_hours = 0).
 	ProcedureScheduler *memory.ProcedureScheduler
@@ -51,7 +72,16 @@ type MemoryStack struct {
 // (config.Config.Chunker, ADR-0060 D7). Threading it here is what makes the block
 // take effect at all: it was parsed, defaulted and validated, and then never
 // reached the ingestion pipeline, which built its routing table from a Go literal.
-func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.Embedder, execCfg config.ExecutionConfig, authorizer domain.Authorizer, chunkerCfg config.ChunkerConfig) *MemoryStack {
+//
+// factGen is the generator of the ADR-0136 fact extractor (the "facts" system role);
+// nil falls back to gen. It is read only when execution.facts.extract_enabled.
+//
+// facts is the RAW knowledge substrate the ADR-0136 A1 fact layer is built on. It is a
+// constructor argument (AGENTS.md §2.1, §2.3): this function wraps it in the enforcing
+// writer and reader and hands only those to the extractor and the QueryService. The
+// zero value means no fact layer (every fact switch is then inert, and the boot line
+// says so).
+func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.Embedder, execCfg config.ExecutionConfig, authorizer domain.Authorizer, chunkerCfg config.ChunkerConfig, factGen domain.Generator, facts FactSubstrate) *MemoryStack {
 	// ADR-0085: every read passes the fail-closed read chokepoint and every write
 	// passes the classification chokepoint — including LLM-driven writes. There is
 	// no "trusted in-process" carve-out: process membership does not constrain a
@@ -107,7 +137,21 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// the one boot path that remembered to call it, and silently unguarded anywhere
 	// else. The enforcing store and the decision point are constructor arguments now,
 	// so there is no order of operations that yields an unenforced QueryService.
-	queryService := memory.NewQueryService(embed, scopedRead, authorizer)
+	//
+	// ADR-0136 A1: the fact layer's chokepoints are composed HERE and nowhere else — the
+	// classified writer (ClassifyWrite per item) and the fail-closed reader over the raw
+	// substrate — and the extractor and the QueryService receive them as constructor
+	// arguments, the same discipline as the chunk read store. Nothing in the kernel
+	// reads or writes memory_fact items through the raw store.
+	var factWriter domain.FactSubstrateWriter
+	var factItemReader domain.FactItemReader
+	var laneReader memory.FactReader
+	if facts.Store != nil && facts.Reader != nil {
+		factWriter = authz.NewEnforcingKnowledgeWriter(facts.Store, authorizer, slog.Default())
+		efr := authz.NewEnforcingFactItemReader(facts.Reader, slog.Default())
+		factItemReader, laneReader = efr, efr
+	}
+	queryService := memory.NewQueryServiceWithFacts(embed, scopedRead, authorizer, laneReader)
 	// ADR-0048 #1: gate agent recall on a relevance floor so irrelevant promoted
 	// facts (a prior task's web search, a stray shell error) are dropped instead of
 	// padding the top-k — and an all-irrelevant query returns empty, which the agent
@@ -224,6 +268,25 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// ADR-0028: ingestion pipeline — SceneGenerator + IngestionManager + DirectoryWatcher.
 	sceneGen := memory.NewSceneGenerator(gen)
 	ingestionMgr := memory.NewIngestionManager(sceneGen, embed, memoryAgent, ingestionConfigFrom(execCfg.Ingestion), chunkerCfg)
+	// ADR-0136 D4/A1: the fact extractor, constructed only when the operator turned
+	// extraction on, so the default deployment carries no queue and no goroutine. It
+	// writes through the enforcing writer above, never the raw substrate. The backfill
+	// (cmd/facts-backfill) schedules the SAME extractor over stored documents, reading
+	// chunk text through the enforcing read store.
+	var factExtractor *memory.FactExtractor
+	var factBackfill *memory.FactBackfill
+	if execCfg.Facts.ExtractEnabled && factWriter != nil {
+		if factGen == nil {
+			factGen = gen
+		}
+		fcfg := factExtractorConfigFrom(execCfg.Facts)
+		fcfg.EmbedModelID, fcfg.AssessorModel, fcfg.GeneratorModel = facts.EmbedModelID, facts.AssessorModel, facts.GeneratorModel
+		factExtractor = memory.NewFactExtractor(factGen, embed, factWriter, factItemReader, fcfg)
+		ingestionMgr.SetFactExtractor(factExtractor)
+		if facts.Lister != nil {
+			factBackfill = memory.NewFactBackfill(facts.Lister, scopedRead, factExtractor)
+		}
+	}
 	// NOTE: the legacy single-directory DirectoryWatcher (ADR-0028/0031) was removed
 	// from the boot path — it delivered file events to a NoOpSignalReceiver (dead
 	// weight) and its fixed-dir fsnotify watch errored at startup when InboxDir was
@@ -265,6 +328,11 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		IngestionManager:     ingestionMgr,
 		EntityIndex:          entityIdx,
 		ChunkTripletsBatcher: chunkTripletsBatcher,
+		FactWriter:           factWriter,
+		FactReader:           factItemReader,
+		FactExtractor:        factExtractor,
+		FactBackfill:         factBackfill,
+		FactReset:            facts.Resetter,
 		ProcedureScheduler:   procScheduler,
 	}
 }
@@ -286,6 +354,8 @@ func (s *MemoryStack) Start(ctx context.Context) error {
 	if s.ChunkTripletsBatcher != nil {
 		s.ChunkTripletsBatcher.Start(ctx)
 	}
+	// ADR-0136 D4: the fact extractor's workers (nil-safe; nil unless extract_enabled).
+	s.FactExtractor.Start(ctx)
 	// ADR-0028: start the ingestion pipeline. (The legacy DirectoryWatcher that
 	// used to start here was removed — see NewMemoryStack.)
 	if s.IngestionManager != nil {
@@ -307,6 +377,76 @@ func (s *MemoryStack) Shutdown(_ context.Context) {
 	if s.ChunkTripletsBatcher != nil {
 		s.ChunkTripletsBatcher.Stop()
 	}
+	// ADR-0136 D4: let in-flight extractions finish; queued ones are released (their
+	// documents' chunks are stored, only their facts are missing). nil-safe.
+	s.FactExtractor.Stop()
+}
+
+// factExtractorConfigFrom maps execution.facts onto the FactExtractor's settings. A
+// function of its own so a test can prove each field is read (AGENTS.md §3.4).
+func factExtractorConfigFrom(c config.FactsConfig) memory.FactExtractorConfig {
+	return memory.FactExtractorConfig{
+		QueueSize:           c.QueueSize,
+		Workers:             c.Workers,
+		LLMTimeout:          time.Duration(c.LLMTimeoutMs) * time.Millisecond,
+		MaxFactsPerDocument: c.MaxFactsPerDocument,
+		MaxPromptChars:      c.MaxPromptChars,
+		MaxCallsPerDocument: c.MaxCallsPerDocument,
+		MaxFactsPerSource:   c.MaxFactsPerSource,
+		SingleAttributes:    append([]string(nil), c.SingleAttributes...),
+		MultiAttributes:     append([]string(nil), c.MultiAttributes...),
+		Supersession:        c.SupersessionEnabled,
+		Assessments:         c.SupersessionEnabled && c.AssessmentsEnabled,
+		FuzzyCandidates:     c.FuzzyCandidates,
+		CardinalityMinVotes: c.CardinalityMinVotes,
+	}
+}
+
+// FactSubstrate is the RAW knowledge substrate NewMemoryStack builds the ADR-0136 A1
+// fact layer on: app.go constructs it (the kind registry carries core's memory_fact
+// declaration) and NewMemoryStack wraps it. The zero value means no fact layer.
+type FactSubstrate struct {
+	// Store is postgres.PgKnowledgeStore (items, assessments, profiles, item
+	// embeddings, extraction markers).
+	Store domain.FactSubstrateStore
+	// Reader is postgres.PgFactItemReader (SQL-side scope).
+	Reader domain.FactItemReader
+	// Lister selects backfill candidates (postgres.PgKnowledgeStore); nil = no backfill.
+	Lister domain.FactBackfillLister
+	// Resetter is the fact layer's hard reset (postgres.PgKnowledgeStore.ResetFacts),
+	// handed in only by cmd/facts-reset; nil everywhere else.
+	Resetter domain.FactResetter
+	// EmbedModelID is the embedder identity of the item projection.
+	EmbedModelID string
+	// AssessorModel is the generator id of the facts role, part of every assessment's
+	// authority_version.
+	AssessorModel string
+	// GeneratorModel is the facts generator's model (FactsGeneratorModel), part of the
+	// extractor version on every extraction marker (ADR-0136 A2.4).
+	GeneratorModel string
+}
+
+// FactsGeneratorModel names the model behind the "facts" system role for the ADR-0136
+// A2.4 extractor version: the generator the role names (else the provider's default
+// generator), reported by its configured model, else by its id, else "default". A
+// different model is a different extractor, so its markers read as pending.
+func FactsGeneratorModel(p config.LLMProviderConfig, roles map[string]string) string {
+	id := roles[string(domain.PurposeFacts)]
+	if id == "" {
+		id = p.Roles[string(domain.PurposeFacts)]
+	}
+	if id == "" {
+		id = p.Default
+	}
+	for _, g := range p.Generators {
+		if g.ID == id && g.Model != "" {
+			return g.Model
+		}
+	}
+	if id == "" {
+		return "default"
+	}
+	return id
 }
 
 // chunkTripletsBatcherConfigFrom maps the execution.ingestion block onto the
@@ -342,5 +482,8 @@ func ingestionConfigFrom(c config.IngestionConfig) memory.IngestionConfig {
 		// may wait for its own chunks' KG triplets (default off).
 		SyncWaitForKG:     c.SyncIngestWaitForKG,
 		SyncKGWaitTimeout: time.Duration(c.SyncIngestKGWaitTimeoutMs) * time.Millisecond,
+		// ADR-0136 D4: a sync ingest may wait for its document's facts (default off).
+		SyncWaitForFacts:     c.SyncIngestWaitForFacts,
+		SyncFactsWaitTimeout: time.Duration(c.SyncIngestFactsWaitTimeoutMs) * time.Millisecond,
 	}
 }

@@ -33,6 +33,8 @@ const (
 	StageChunkSaveCommit  = "chunk_save_commit"     // COMMIT inside chunk_save (reported by the adapter)
 	StageTripletsEnqueue  = "triplets_enqueue"      // ADR-0053 non-blocking enqueue; extraction is async
 	StageKGWait           = "kg_wait"               // sync_ingest_wait_for_kg: wait for this document's triplets (sync path only)
+	StageFactsEnqueue     = "facts_enqueue"         // ADR-0136 D4 non-blocking enqueue; extraction is async
+	StageFactsWait        = "facts_wait"            // sync_ingest_wait_for_facts: wait for this document's facts (sync path only)
 	StageStructurePersist = "structure_persist"     // ADR-0060 sections + PART_OF/NEXT edges + chunk stamps
 	StageEntity           = "entity"                // source-doc entity: content-store put + upsert
 	StagePublish          = "publish"               // operator feed event
@@ -43,6 +45,8 @@ const (
 	CountChunks        = "chunks"         // chunks embedded
 	CountKGPending     = "kg_pending"     // chunks whose triplets were not yet extracted when the kg_wait ended
 	CountKGFailed      = "kg_failed"      // chunks whose triplets will not be persisted (queue full, save error, batcher stopped)
+	CountFactsPending  = "facts_pending"  // 1 when the document's facts were not yet extracted when the facts_wait ended
+	CountFactsFailed   = "facts_failed"   // 1 when the document's facts will not be stored (queue full, extraction error, extractor stopped)
 )
 
 // slowIngestThreshold promotes an ingest's timing line from DEBUG to INFO, the

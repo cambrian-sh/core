@@ -16,6 +16,11 @@ const (
 	PurposeVerifier  Purpose = "verifier"
 	PurposeInterview Purpose = "interview"
 	PurposeMemory    Purpose = "memory"
+	// PurposeFacts is the ADR-0136 D4/D5 fact extractor (one call per ingested
+	// document, plus at most one supersession call). Its own role, so an operator can
+	// route this high-volume organ to a cheap generator (ADR-0131 D5: cost routing
+	// lives in roles) without moving the memory organ.
+	PurposeFacts     Purpose = "facts"
 	PurposeAgentStep Purpose = "agent_step"
 )
 

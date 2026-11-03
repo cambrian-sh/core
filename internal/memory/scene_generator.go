@@ -54,12 +54,18 @@ func (sg *SceneGenerator) Generate(ctx context.Context, batch []domain.ExternalD
 	return scenes, nil
 }
 
+// buildPrompt renders the scene prompt. Its fixed text is source-agnostic (ADR-0136 A2.5;
+// decisions/ingestion-prompts-are-source-agnostic.md): it names no source kind and asks
+// for no source-specific dimension; every per-source detail — type, title, author, time
+// and what that time is (its reference basis) — arrives as data in the context block.
+// TestScenePrompt_SourceAgnostic holds the fixed text to that.
 func (sg *SceneGenerator) buildPrompt(batch []domain.ExternalDocument) string {
 	var contextBlocks string
 	for i, doc := range batch {
 		contextBlocks += fmt.Sprintf(
-			"<Document index=%d>\n  <SourceType>%s</SourceType>\n  <Title>%s</Title>\n  <Author>%s</Author>\n  <Timestamp>%s</Timestamp>\n  <BodyPreview>%s</BodyPreview>\n</Document>\n",
+			"<Source index=%d>\n  <SourceType>%s</SourceType>\n  <Title>%s</Title>\n  <Author>%s</Author>\n  <Time basis=%q>%s</Time>\n  <BodyPreview>%s</BodyPreview>\n</Source>\n",
 			i, doc.SourceType, doc.Title, doc.Author,
+			string(domain.ReferenceBasisOf(doc.TimeSource, doc.Timestamp)),
 			doc.Timestamp.Format("2006-01-02T15:04:05Z"),
 			buildBodyPreview(doc.Body, previewMaxChars),
 		)
@@ -70,13 +76,13 @@ func (sg *SceneGenerator) buildPrompt(batch []domain.ExternalDocument) string {
 	return domain.PromptBuild(
 		domain.PromptSystem(
 			"You are Cambrian's episodic context extractor.",
-			"Generate a concise SCENE description capturing WHO, WHERE, WHEN, WHY, and social dynamics.",
-			"Max 2 sentences. No explanation. No bullet points.",
+			"Generate a concise SCENE description of the context the information appeared in: who produced it or is involved, where and when it originated, and why it exists, as far as the metadata and the preview show.",
+			"Max 2 sentences. No explanation. No bullet points. Do not invent context the metadata and the preview do not support.",
 			"SCENE answers: 'In what context did this information appear?' not 'What does it say?'.",
-			fmt.Sprintf("Return a JSON array of exactly %d scene strings, one per document.", len(batch)),
+			fmt.Sprintf("Return a JSON array of exactly %d scene strings, one per source, in the order given.", len(batch)),
 		),
 		domain.PromptContext(contextBlocks),
-		domain.PromptTask("Generate one SCENE per document in the order given."),
+		domain.PromptTask("Generate one SCENE per source in the order given."),
 		domain.PromptOutputSchemaJSON(schema),
 	)
 }

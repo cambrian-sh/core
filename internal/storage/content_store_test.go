@@ -155,7 +155,10 @@ func TestContentStore_GC_NoOp_WhenAllKept(t *testing.T) {
 func TestContentStore_LargeData_FilesystemRouting(t *testing.T) {
 	cs := newTestContentStore(t)
 	large := bytes.Repeat([]byte("x"), 64*1024)
-	cid, err := cs.Put(bg, large, "agent_artifact", []string{"large"}, "")
+	// A plan-scoped type: this test is about filesystem routing and GC deleting
+	// the blob file. Durable types are never evicted by GC
+	// (TestContentStore_GC_NeverEvictsDurableNodeTypes).
+	cid, err := cs.Put(bg, large, domain.NodeTypeStepResult, []string{"large"}, "")
 	if err != nil {
 		t.Fatalf("Put large: %v", err)
 	}
@@ -231,5 +234,69 @@ func TestContentStore_OwnerSessionRoundTrip(t *testing.T) {
 	node2, _ := cs.Get(bg, cid2)
 	if node2.OwnerSession != "" {
 		t.Errorf("system write should be ownerless, got %q", node2.OwnerSession)
+	}
+}
+
+// T-20261103-plan-scoped-contentstore-gc-evicts-evidence: the store is shared by
+// plan scratch and durable writers (evidence ADR-0105, source documents ADR-0060
+// D8, memory descriptors, tool artifacts). A plan's GC must evict only scratch.
+func TestContentStore_GC_NeverEvictsDurableNodeTypes(t *testing.T) {
+	cs := newTestContentStore(t)
+	durable := map[string]domain.CID{}
+	for _, typ := range []string{"evidence", "source_document", "ltm_fact", "tool_artifact", "agent_artifact", "some_future_type"} {
+		cid, err := cs.Put(bg, []byte("durable bytes of "+typ), typ, nil, "")
+		if err != nil {
+			t.Fatalf("Put %s: %v", typ, err)
+		}
+		durable[typ] = cid
+	}
+	step, _ := cs.Put(bg, []byte("scratch step"), domain.NodeTypeStepResult, nil, "")
+	tool, _ := cs.Put(bg, []byte("scratch tool"), domain.NodeTypeToolResult, nil, "")
+	big := bytes.Repeat([]byte("e"), 64*1024) // filesystem-routed durable blob
+	bigCID, _ := cs.Put(bg, big, "evidence", nil, "")
+
+	if err := cs.GC(bg, nil); err != nil { // the worst case: a plan that kept nothing
+		t.Fatalf("GC: %v", err)
+	}
+	for typ, cid := range durable {
+		if _, err := cs.Get(bg, cid); err != nil {
+			t.Errorf("durable %s node evicted by plan GC: %v", typ, err)
+		}
+	}
+	if _, err := cs.Get(bg, bigCID); err != nil {
+		t.Errorf("filesystem-routed evidence blob evicted by plan GC: %v", err)
+	}
+	for name, cid := range map[string]domain.CID{"step_result": step, "tool_result": tool} {
+		if _, err := cs.Get(bg, cid); err == nil {
+			t.Errorf("plan-scoped %s node should be evicted", name)
+		}
+	}
+}
+
+// A durable writer storing bytes a plan already stored as scratch must not lose
+// them to the next GC through the dedup.
+func TestContentStore_Put_DedupPromotesScratchToDurable(t *testing.T) {
+	cs := newTestContentStore(t)
+	data := []byte("same bytes, first as a step result, then as evidence")
+	cid1, _ := cs.Put(bg, data, domain.NodeTypeStepResult, nil, "")
+	cid2, err := cs.Put(bg, data, "evidence", nil, "")
+	if err != nil || cid1 != cid2 {
+		t.Fatalf("dedup Put: cid1=%s cid2=%s err=%v", cid1, cid2, err)
+	}
+	node, _ := cs.Get(bg, cid1)
+	if node.Type != "evidence" {
+		t.Errorf("type after durable dedup = %q, want evidence", node.Type)
+	}
+	if err := cs.GC(bg, nil); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if _, err := cs.Get(bg, cid1); err != nil {
+		t.Errorf("promoted node evicted by GC: %v", err)
+	}
+	// The reverse never demotes: scratch after durable stays durable.
+	cid3, _ := cs.Put(bg, []byte("durable first"), "source_document", nil, "")
+	_, _ = cs.Put(bg, []byte("durable first"), domain.NodeTypeStepResult, nil, "")
+	if n, _ := cs.Get(bg, cid3); n.Type != "source_document" {
+		t.Errorf("scratch Put demoted a durable node to %q", n.Type)
 	}
 }

@@ -583,12 +583,18 @@ type ReactiveJournal interface {
 	// AppendSignal durably records a signal BEFORE condition evaluation and returns
 	// its monotonic sequence number. ttl bounds how long the record is replay-eligible.
 	AppendSignal(sig domain.Signal, ttl time.Duration) (seq uint64, err error)
-	// ReplayFrom returns journaled signals with seq strictly greater than afterSeq.
-	ReplayFrom(afterSeq uint64) ([]domain.JournaledSignal, error)
+	// ReplayStreams returns the journaled signals with seq strictly greater than
+	// afterSeq on every stream match accepts (nil ⇒ every stream), in seq order.
+	// The journal is stored per stream (ADR-0061 A2.1), so a stream match rejects
+	// is never read. match must not call back into the journal.
+	ReplayStreams(match func(stream string) bool, afterSeq uint64) ([]domain.JournaledSignal, error)
 	// GetCursor returns the last-acked journal seq for a watch (0 if none).
 	GetCursor(watchID string) (uint64, error)
 	// SetCursor advances a watch's ack cursor.
 	SetCursor(watchID string, seq uint64) error
+	// DeleteCursor removes a watch's cursor; called when the watch is removed
+	// (A2.9). Deleting an absent cursor is not an error.
+	DeleteCursor(watchID string) error
 	// MarkExecutedOnce is the exactly-once primitive: it returns true only the first
 	// time key is seen (atomic check-and-set), false on every replay/retry thereafter.
 	MarkExecutedOnce(key string) (firstTime bool, err error)
@@ -596,18 +602,28 @@ type ReactiveJournal interface {
 	RecordDeadLetter(dl domain.ReactiveDeadLetter) error
 	// ListDeadLetters returns dead-letter entries newest-first (limit <= 0 ⇒ all).
 	ListDeadLetters(limit int) ([]domain.ReactiveDeadLetter, error)
-	// Prune drops up to limit journal records at/below minAcked whose TTL has
-	// expired. Returns the count removed and whether more remained at the cap
-	// (limit <= 0 ⇒ unbounded).
+	// Prune drops up to limit journal records that are TTL-expired (as of now)
+	// and at or below their stream's floor. floor reports, per stream, the lowest
+	// cursor among the watches consuming it and whether any watch does; a stream
+	// with no consumer is governed by TTL alone (ADR-0061 A2.2, replacing A1.2's
+	// global floor, which let an idle watch pin every other stream). Returns the
+	// count removed and whether more remained at the cap (limit <= 0 ⇒ unbounded).
+	// floor runs inside the store's write transaction and must not call back into
+	// the journal.
 	//
 	// Bounded since GOV-02: an unbounded first prune over a journal that has grown
 	// for months holds the store's write lock for the whole pass, which is itself
 	// the outage the GC exists to prevent.
-	Prune(minAcked uint64, limit int) (removed int, more bool, err error)
-	// RetainedWindow reports the oldest and newest seq the journal still holds and
-	// how many records remain. Pruning shortens what a backtest can replay, so the
-	// window must be reportable rather than assumed.
-	RetainedWindow() (oldestSeq, newestSeq uint64, count int, err error)
+	Prune(floor func(stream string) (seq uint64, hasConsumer bool), now time.Time, limit int) (removed int, more bool, err error)
+	// PruneIdempotency drops up to limit exactly-once markers whose execution is
+	// older than olderThan (A2.6). The caller's cutoff must be older than both the
+	// dedup window and the journal TTL, past which no duplicate can arrive.
+	PruneIdempotency(olderThan time.Time, limit int) (removed int, more bool, err error)
+	// RetainedWindow reports the oldest and newest seq the journal still holds on
+	// the streams match accepts (nil ⇒ all) and how many records remain. Pruning
+	// shortens what a backtest can replay, so the window must be reportable rather
+	// than assumed, and it describes the streams the backtested watch reads.
+	RetainedWindow(match func(stream string) bool) (oldestSeq, newestSeq uint64, count int, err error)
 }
 
 // ReactiveAgentDispatcher is the agent-manager surface reactive needs:

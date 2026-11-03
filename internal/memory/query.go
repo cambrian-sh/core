@@ -59,6 +59,8 @@ type QueryService struct {
 	chronoContext    bool                      // ADR-0134 D5a: order + date the final synthesis context by event time (chronological_context.go)
 	blender          atomic.Pointer[Blender]   // ADR-0054 Stage A: nil = no blend re-rank; hot-swappable at runtime (SetBlendWeights ← operator SetRuntimeConfig)
 	recencyCurve     RecencyCurve              // Stage-A recency curve (SetRecencyCurve); zero = pool min-max
+	rankingV2        RankingV2                 // ADR-0136 D1-D5 switches (SetRankingV2); zero value = the pre-ADR-0136 ranking
+	facts            FactReader                // ADR-0136 D4: the ENFORCING fact reader (NewQueryServiceWithFacts); nil = no fact lane
 	rankSignals      RankSignalStore           // ADR-0054 Stage A: pagerank + per-chunk confidence source
 	recallTopK       int                       // ADR-0054: results returned to caller; 0 ⇒ defaultRecallTopK
 	recallOverFetch  int                       // ADR-0054: seed/ANN fetch size; 0 ⇒ defaultRecallOverFetch
@@ -361,10 +363,6 @@ func (q *QueryService) EnableBlend(b *Blender, signals RankSignalStore) {
 	q.rankSignals = signals
 }
 
-// SetBlendWeights hot-swaps the live Stage-A blend weights with no restart
-// (ADR-0054 tuning seam, driven by the operator SetRuntimeConfig command). The
-// swap is atomic — in-flight recalls finish on the old Blender, later ones see
-// the new weights. Ephemeral: config.json stays the boot default.
 // RecencyCurve is how Stage-A recency is computed (config
 // execution.retrieval.blend_recency_mode / _half_life_hours). The zero value is the
 // original pool-relative min-max.
@@ -382,6 +380,10 @@ func (q *QueryService) SetRecencyCurve(c RecencyCurve) {
 	q.recencyCurve = c
 }
 
+// SetBlendWeights hot-swaps the live Stage-A blend weights with no restart
+// (ADR-0054 tuning seam, driven by the operator SetRuntimeConfig command). The
+// swap is atomic — in-flight recalls finish on the old Blender, later ones see
+// the new weights. Ephemeral: config.json stays the boot default.
 func (q *QueryService) SetBlendWeights(w BlendWeights) {
 	nb := NewBlender(w)
 	q.blender.Store(&nb)
@@ -1208,6 +1210,32 @@ func (q *QueryService) applyStageABlend(ctx context.Context, results []domain.Se
 		return results
 	}
 
+	// ADR-0136 D3: this query's time intent (put on ctx by searchByType when
+	// temporal_intent_enabled). It decides which query-conditioned features join the
+	// combination for THIS query (stageAWeightsFor); with every ranking-v2 flag off
+	// the weights are unchanged and the shared Blender is used as before.
+	ti, haveIntent := timeIntentFromContext(ctx)
+	w, changed := q.stageAWeightsFor(blender.w, ti, haveIntent)
+	// ADR-0136 D4/D5: the fact features join only for a query the fact lane matched.
+	facts := factHitsFromContext(ctx)
+	if fw, fchanged := q.factWeightsFor(w, facts, ti, haveIntent); fchanged {
+		w, changed = fw, true
+	}
+	if changed {
+		nb := NewBlender(w)
+		blender = &nb
+	}
+	if q.rankingV2.Calibrated {
+		return q.applyCalibratedStageA(ctx, results, queryVec, *blender, pageranks, confidences, ti, haveIntent)
+	}
+	// D3 without D1: the order flips or keeps the existing recency curve (the weight
+	// is already 0 when the query asks for no order), and the temporal-fit feature
+	// joins when the query names a band.
+	recencyDir := 1
+	if q.rankingV2.TemporalIntent && haveIntent {
+		recencyDir = ti.RecencyDirection()
+	}
+
 	// PageRank is a normalized probability distribution (~1/N ≈ 1e-4 per chunk),
 	// orders of magnitude below the other [0,1] signals — fed raw it contributes
 	// ~nothing to the blend. Min-max normalize it across THIS query's candidate set
@@ -1317,14 +1345,26 @@ func (q *QueryService) applyStageABlend(ctx context.Context, results []domain.Se
 		if len(queryVec) > 0 && len(d.Embedding.Vector) > 0 {
 			cos = cosineSimilarity(queryVec, d.Embedding.Vector)
 		}
+		rec := normRecency(d.ID) // conversation timestamp: min-max over candidates, or the A1 decay
+		if _, dated := evtUnix[d.ID]; recencyDir < 0 && dated {
+			rec = 1 - rec // ADR-0136 D3 "earliest": older is better
+		}
+		var fit float64
+		if blender.w.TemporalFit > 0 {
+			start, end := domain.StoredSpan(d)
+			fit = ti.Fit(start, end)
+		}
 		results[i].Score = blender.StageAScore(StageASignals{
 			Cosine:         cos,
-			Recency:        normRecency(d.ID), // conversation timestamp, min-max over candidates
+			Recency:        rec,
 			MeanConfidence: confidences[d.ID],
 			PageRank:       normPageRank(d.ID),
 			Activation:     d.ActivationStrength,
 			Lexical:        results[i].LexicalScore, // hybrid: full-text/RRF rank signal
 			GraphCoherence: coherence[d.ID],         // chunk_triplets connectivity to the pool
+			TemporalFit:    fit,                     // ADR-0136 D3; 0 unless the query names a band
+			FactMatch:      facts.match(d.ID),       // ADR-0136 D4; weight 0 unless the fact lane matched
+			CurrentFact:    facts.current(d.ID),     // ADR-0136 D5; weight 0 unless a current/latest query
 		})
 	}
 	sort.SliceStable(results, func(i, j int) bool { return results[i].Score > results[j].Score })
@@ -1375,8 +1415,25 @@ const defaultCoherenceSeedN = 10
 // empty map (the blend silently falls back to its other terms).
 func chunkCoherence(ctx context.Context, store domain.ChunkTripletsStore, results []domain.SearchResult, seedN int) map[string]float64 {
 	out := make(map[string]float64, len(results))
+	raw, maxRaw := chunkCoherenceRaw(ctx, store, results, seedN, legacySeedRelevance)
+	if maxRaw <= 0 {
+		return out // no overlap with any seed ⇒ no signal
+	}
+	for id, s := range raw {
+		out[id] = s / maxRaw
+	}
+	return out
+}
+
+// chunkCoherenceRaw is chunkCoherence before its per-pool min-max: each candidate's
+// raw IDF-weighted overlap with the seeds, and the pool maximum. ADR-0136 D1's
+// calibrated Stage A divides the raw value by a fixed cap instead
+// (calibratedCoherence), so a candidate's coherence no longer depends on how well
+// connected the BEST candidate in the pool happens to be. Empty map + 0 on every
+// no-signal path. relevance orders the seed candidates (see legacySeedRelevance).
+func chunkCoherenceRaw(ctx context.Context, store domain.ChunkTripletsStore, results []domain.SearchResult, seedN int, relevance func(domain.SearchResult) float64) (map[string]float64, float64) {
 	if store == nil || len(results) < 2 {
-		return out
+		return map[string]float64{}, 0
 	}
 	if seedN <= 0 {
 		seedN = defaultCoherenceSeedN
@@ -1390,7 +1447,7 @@ func chunkCoherence(ctx context.Context, store domain.ChunkTripletsStore, result
 	byChunk, err := store.ForChunks(ctx, ids)
 	if err != nil {
 		slog.Warn("coherence: ForChunks failed; coherence signal disabled this query", "err", err)
-		return out
+		return map[string]float64{}, 0
 	}
 	// Per-candidate de-duplicated entity set + df (candidates mentioning each
 	// entity) for IDF. Entities are stored lowercase; trim to match kgExpand.
@@ -1422,11 +1479,7 @@ func chunkCoherence(ctx context.Context, store domain.ChunkTripletsStore, result
 		if r.Document.ID == "" {
 			continue
 		}
-		s := r.RawScore
-		if r.LexicalScore > s {
-			s = r.LexicalScore
-		}
-		if s > 0 {
+		if s := relevance(r); s > 0 {
 			rels = append(rels, rel{r.Document.ID, s})
 		}
 	}
@@ -1440,7 +1493,7 @@ func chunkCoherence(ctx context.Context, store domain.ChunkTripletsStore, result
 		rels = rels[:seedN]
 	}
 	if len(rels) == 0 {
-		return out // no query-relevant anchor ⇒ no signal
+		return map[string]float64{}, 0 // no query-relevant anchor ⇒ no signal
 	}
 	type seed struct {
 		id   string
@@ -1476,13 +1529,19 @@ func chunkCoherence(ctx context.Context, store domain.ChunkTripletsStore, result
 			maxRaw = s
 		}
 	}
-	if maxRaw <= 0 {
-		return out // no overlap with any seed ⇒ no signal
+	return raw, maxRaw
+}
+
+// legacySeedRelevance is the coherence seeds' relevance in the ADR-0054 blend:
+// max(cosine RawScore, the lexical lane's reciprocal RANK). The rank depends on the
+// rest of the lexical list, which is why ADR-0136 D1 seeds by a pool-independent
+// relevance instead (calibratedSeedRelevance).
+func legacySeedRelevance(r domain.SearchResult) float64 {
+	s := r.RawScore
+	if r.LexicalScore > s {
+		s = r.LexicalScore
 	}
-	for id, s := range raw {
-		out[id] = s / maxRaw
-	}
-	return out
+	return s
 }
 
 // queryStopwords are function/interrogative words that never name an entity;
@@ -1948,6 +2007,25 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	// Stage-A blend from the context (applyStageABlend), not from opts: it ranks,
 	// it does not filter.
 	window, _ := domain.EventTimeQueryFromContext(ctx)
+	// ADR-0136 D3: the query's own time intent, read against the asker's reference
+	// time (ADR-0134 D4; none on the request ⇒ no relative target). An EXPLICIT
+	// absolute range ("in March 2023") becomes the hard window when the caller gave
+	// none — a caller's explicit window always wins over one parsed from text. A
+	// relative phrase never hard-filters; it only feeds the temporal-fit feature. The
+	// widened window goes back on ctx, so admit() below, the by-id lanes and the
+	// decision record all see the window that was actually applied.
+	if q.rankingV2.TemporalIntent {
+		ti := TemporalIntent(query, window.ReferenceTime)
+		if hw, ok := ti.hardWindow(); ok && !window.HasWindow() {
+			window.EventAfter, window.EventBefore = hw.EventAfter, hw.EventBefore
+			ctx = domain.WithEventTimeQuery(ctx, window)
+		}
+		ctx = withTimeIntent(ctx, ti)
+		if ti.Target != nil || ti.Order != OrderNone {
+			slog.DebugContext(ctx, "ranking v2: temporal intent", "order", string(ti.Order),
+				"phrase", ti.Phrase, "explicit", ti.Explicit, "has_target", ti.Target != nil)
+		}
+	}
 	opts.Since, opts.Until = window.EventAfter, window.EventBefore
 	// Carry the resolved predicate on the CONTEXT as well, not just on opts. Search
 	// pushes opts.Scope down into SQL, but the enrichment stages below reach chunks
@@ -2025,6 +2103,18 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 		}
 	}
 	pt.mark("lexical")
+
+	// ADR-0136 D4: the fact lane. Its source chunks are PRIMARY hits (owner-assumed
+	// Q3), so it runs BEFORE the primaryIDs snapshot below; the hits ride on ctx to
+	// Stage A (fact_match / current_fact) and are stamped onto the returned rows.
+	var factHits factLaneHits
+	if q.rankingV2.FactLane && q.facts != nil && docType == domain.DocTypeMnemonicFact {
+		results, factHits = q.injectFactHits(ctx, results, vec, eff, docType)
+		if len(factHits) > 0 {
+			ctx = withFactHits(ctx, factHits)
+		}
+	}
+	pt.mark("facts")
 
 	// Capture the genuine dense+lexical hits BEFORE any associative injection
 	// (entity-index seeds / ADR-0053 query-entity seeds / kgExpand). On a large
@@ -2212,6 +2302,8 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	if q.neighborWindow {
 		filtered = keepInWindow(q.applyNeighborWindow(ctx, filtered), window)
 	}
+	// ADR-0136 D4: the matched fact text (and supersession notes) for the reader.
+	filtered = annotateFactHits(filtered, factHits)
 	// ADR-0103 D2: emit the decision record LAST, so it describes what the caller
 	// actually received — including neighbor-window rows, which were never ranked
 	// and so are correctly reported as non-primary.
@@ -2236,9 +2328,10 @@ func rrfFuse(vectorList, lexicalList []domain.SearchResult, k, limit int, lexWei
 		lexWeight = 1.0
 	}
 	type acc struct {
-		res   domain.SearchResult
-		score float64
-		lex   float64 // reciprocal lexical rank in [0,1] (0 = not in the lexical list)
+		res    domain.SearchResult
+		score  float64
+		lex    float64 // reciprocal lexical rank in [0,1] (0 = not in the lexical list)
+		lexRaw float64 // the lexical lane's own score (ts_rank_cd); ADR-0136 D1 reads it
 	}
 	byID := make(map[string]*acc, len(vectorList)+len(lexicalList))
 	order := make([]string, 0, len(vectorList)+len(lexicalList))
@@ -2257,6 +2350,9 @@ func rrfFuse(vectorList, lexicalList []domain.SearchResult, k, limit int, lexWei
 			a.score += weight * (1.0 / float64(k+rank+1))
 			if lexical {
 				a.lex = 1.0 / float64(rank+1) // top lexical hit ⇒ 1.0, decays by rank
+				// The adapter returns ts_rank_cd as the lexical row's Score. Keep it:
+				// the rank above is pool-relative, the score is not (ADR-0136 D1).
+				a.lexRaw = r.Score
 			}
 		}
 	}
@@ -2269,6 +2365,7 @@ func rrfFuse(vectorList, lexicalList []domain.SearchResult, k, limit int, lexWei
 		r := a.res
 		r.Score = a.score
 		r.LexicalScore = a.lex // carried into the Stage-A blend
+		r.LexicalRaw = a.lexRaw
 		out = append(out, r)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
@@ -2673,6 +2770,11 @@ func laneIsExperiential(docType string) bool {
 // Out-of-lane rows are NOT excluded. Cross-lane association is the point of a shared
 // store — "I hit this error before, and the docs say X" — they simply never displace an
 // in-lane hit. `admit` is the session/floor filter; nil admits everything.
+//
+// There is deliberately no per-document cap here: ADR-0136 D2 added one and the
+// owner rejected it on 2026-11-03 after the gate re-run (benchmark adr0136-gate,
+// A1r 0.966 → D2r 0.9266) — at recency 0 the dominant session is usually the
+// evidence session, so capping it pushed evidence out. See ADR-0136 D2.
 func assembleLanes(
 	results []domain.SearchResult,
 	primaryIDs map[string]bool,

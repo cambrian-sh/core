@@ -62,7 +62,7 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
 | `internal/infrastructure/` | Adapters: `postgres/`, `llm/`, `mcp/` (outbound), `mcpserve/` (inbound MCP endpoint). |
 | `internal/reactive/` | Reactive rule engine plug surface (premium provides the implementation). |
 | `internal/chat/` | OSS turn path: pool-dispatched, retry-safe, planner-free. |
-| `internal/storage/` | BBolt adapter + durable reactive journal (ADR-0061). |
+| `internal/storage/` | BBolt adapter + durable reactive journal (ADR-0061). Since A2 (2026-11-03) the journal is `reactive_journal_v2/<stream>/<seq>` (16-byte header + signal JSON; a legacy flat `reactive_journal` is migrated on open), pruned per stream, with idempotency pruning and offline compaction before open (`bbolt_compact.go`; `storage.compact_min_bytes` / `storage.compact_free_ratio`; `cmd/bbolt-compact`). Gate: `bbolt_reactive_gate_test.go` (`CAMBRIAN_JOURNAL_GATE=1`), benchmark `reactive-journal-a2-gate`. |
 | `internal/config/` | Koanf 12-layer loader (ADR-0024). |
 | `internal/migrate/` | Pure-Go DB migration runner (ADR-0064). |
 | `internal/agentplane/` | Agent-plane gRPC connection pool (renamed from auctioneer by ADR-0100 P3). |
@@ -159,6 +159,7 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
   three times during kernel boot). Root cause and live numbers: ADR-0053 observations/measurements. Known noise: the
   interview backfill now WARNs `agent boot failed … exec: no command` for `llm:*` model agents (pre-existing, was
   silent; T-20261102-interview-backfill-tries-to-boot-llm-model).
+- **Stage-A recency weight is 0 by default** (owner decision 2026-11-03; benchmark longmemeval-s-temporal-ku: weight 0 = 195/211 vs 0.1 = 188-190, 0.3 = 164). The term still exists and is configurable (`blend_weight_recency`, `blend_recency_mode`).
 - **Stage-A recency curve is selectable** (2026-11-02, ADR-0054 Amendment A1, proposed):
   `execution.retrieval.blend_recency_mode` = `minmax` (default, unchanged: pool-relative) | `decay`
   (`2^(-age/blend_recency_half_life_hours)`, default 2160 h; age from `reference_time`, else from the newest
@@ -166,6 +167,76 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
   `EnableBlend`; the boot line "Stage-A multi-signal blend ENABLED" logs `recency_mode`. Min-max evicted the
   oldest relevant session on LongMemEval gpt4_f420262c; measured by temporal-ku arms g/e/f before any default
   change.
+- **Ranking v2 Phase 0** (2026-11-03, ADR-0136 D1 + D3, proposed; both switches default OFF, gate pending).
+  `memory.RankingV2` (`internal/memory/ranking_v2.go`), installed by `QueryService.SetRankingV2` in `app/app.go`,
+  which logs `ranking v2: stage_a_calibrated=<b> temporal_intent_enabled=<b>` at boot.
+  - D1 `execution.retrieval.stage_a_calibrated` (+ `lexical_saturation_k`, default 1.5 — was 0.1, which made any
+    one query word worth half the lexical credit and lowered gate evidence recall; see ADR-0136 observations;
+    `logCalibratedFeatures` logs per-query feature means at DEBUG): `applyStageABlend` hands off
+    to `applyCalibratedStageA` / `calibratedFeatures` — pool-independent features: lexical = the adapter's
+    `ts_rank_cd` (now carried through `rrfFuse` as `domain.SearchResult.LexicalRaw`) saturated s/(s+k); coherence =
+    raw IDF seed overlap (`chunkCoherenceRaw`) over a fixed cap, seeds ranked without RRF rank; PageRank = interim
+    x·N/(x·N+1) from `PageRankMeta`; recency = decay from `reference_time` only, and only when D3 asks for an order.
+  - D2 (a per-document cap, `execution.retrieval.max_per_document`) was **rejected by the owner 2026-11-03 and
+    removed**: once it bound it lowered gate evidence recall (A1r 0.966 → D2r 0.9266; TK-Ar 0.9749 → TK-Cr 0.9253,
+    benchmark `adr0136-gate`). `assembleLanes` is back to its pre-D2 shape and `reassertDocumentCap` is gone. A
+    config that still sets the key has it ignored as an unknown key (no warning). MMR is noted in ADR-0136 as a
+    possible future soft-diversity option, not built.
+  - D3 `execution.retrieval.temporal_intent_enabled` (+ `temporal_fit_weight`, default 0.2): `memory.TemporalIntent`
+    (`temporal_intent.go`, go-dateparser v1.2.4 behind a mutex — the library is not concurrency-safe) reads a target
+    band, an order and `explicit` from the query against `reference_time`. Band → temporal-fit feature exp(-(Δ/σ)²);
+    order → recency direction (needs `blend_weight_recency` > 0 to matter); an absolute range → hard window via
+    `SearchOptions.Since/Until` when the caller sent none. Query-inactive features leave the combination entirely,
+    so a query with no time phrase ranks as with the flag off. Fingerprint lines only when a switch is on.
+- **Fact layer on the knowledge substrate** (2026-11-03, ADR-0136 D4 + D5 as amended by A1 and A2, proposed; every switch
+  default OFF, gate pending; the memory_facts build of the same day is retired). Block `execution.facts`
+  (`config.FactsConfig`): `extract_enabled`, `lane_enabled`, `supersession_enabled`, `assessments_enabled` + tunables
+  (`queue_size` 1024, `workers` 2, `llm_timeout_ms` 120000, `max_facts_per_document` 64 (per window), `max_prompt_chars`
+  48000 (per window), `max_calls_per_document` 8 (windows per source per run; 0 = no cap), `max_facts_per_source` 512,
+  `lane_top_k` 20, `fact_match_weight` 0.2, `current_fact_weight` 0.1, `single_attributes` [] / `multi_attributes` []
+  = DECLARED profiles, `fuzzy_candidates` 10, `cardinality_min_votes` 3); `execution.ingestion.sync_ingest_wait_for_facts`
+  (+ `_timeout_ms` 120000). Boot line `fact layer: extract_enabled=<b> lane_enabled=<b> supersession_enabled=<b>
+  assessments_enabled=<b> store=<substrate|none>` (effective values), plus `SYNC_INGEST_WAIT_FOR_FACTS: ENABLED`.
+  - Data: a fact is one append-only `memory_fact` knowledge item (core-declared kind, `domain.MemoryFactKindSpec`,
+    appended in `app.go` before `NewKindRegistry`); entity id `<scope_key>/<subject_key>/<predicate_key>`, actor = the
+    writing principal (chunk `source_agent_id`, else the ctx principal), id `ki_fact:<sha256(evidence|chunk|subject|
+    predicate|value)>`, evidence id threaded from `ProcessSync`. Its chain is DERIVED by the pure, order-independent
+    `domain.ValidTimeSupersessionAuthority` (an `InputResolutionAuthority`) from the key's items + stored assessments +
+    the predicate profile; `resolutions` versions the answer (with `valid_to`).
+  - Schema: `0021_drop_memory_facts.sql` (drops memory_facts / memory_fact_extractions; 0020 kept), `0022_fact_items.sql`
+    (`resolutions.valid_to`, `idx_statement_values_entity`, `knowledge_assessments` — keyed judge verdicts,
+    `predicate_profiles` — versioned learned/declared cardinality, `knowledge_item_embeddings` — item projection,
+    `knowledge_extractions` — re-ingest marker), `0024_extraction_versions.sql` (A2.4: `extractor_version`
+    `<prompt id>/<generator model>`, `passages_covered`/`passages_total`; 0023 is reserved for ADR-0137 erasure).
+    Per-dimension partial HNSW `idx_knowledge_item_embeddings_hnsw_d<dim>` built by `migrate.ensureConcurrentIndexes`.
+    After this binary boots on a database, older binaries refuse it.
+  - Chokepoints (composed ONLY in `kernel.NewMemoryStack`, which takes the raw substrate as `kernel.FactSubstrate`):
+    `authz.EnforcingKnowledgeWriter` (ClassifyWrite per item, memory_fact re-keyed on the final tags) and
+    `authz.EnforcingFactItemReader` (fail closed) over `postgres.PgKnowledgeStore` / `postgres.PgFactItemReader` (scope IN
+    SQL on the item classification). The plugin seam `KernelServices.Knowledge` is `authz.ReservedKindGuard` (no
+    memory_fact through the raw seam).
+  - Ingest: `memory.FactExtractor` on its own worker pool (Start/Stop, goleak), items + embeddings through the writer.
+    A2 (source-agnostic, `decisions/ingestion-prompts-are-source-agnostic.md`): the prompt (`fact-extract-v2`,
+    `fact_prompt.go`) names no source kind; per-source data arrives as `domain.SourceMeta` (type, title, author, reference
+    time + basis event|authored|ingested from the document's `TimeSource`, `domain.SourceMetaOf` / the lister) and only an
+    event/authored time dates "now" facts or bounds a cue; guarded by `TestFactPrompt_SourceAgnostic` (and
+    `TestScenePrompt_SourceAgnostic` for the scene prompt). A2.3 sectioned extraction: chunks over 6000 chars are split at
+    sentence/whitespace boundaries, passages packed in order into windows of `max_prompt_chars`, one call per window up
+    to `max_calls_per_document`; the marker records coverage after every window, and a partial, legacy or other-version
+    marker is PENDING (backfill resumes at the first uncovered window). The prompt carries `supersedes_prior` cues and
+    `speaker`. With assessments: at most ONE batched judge call per window over unknown-cardinality exact-key pairs and fuzzy same-subject candidates
+    asserted earlier; each verdict stored as a keyed assessment first (a replay reuses it, no call); exact-key verdicts
+    vote on the profile (learned single/multi at `cardinality_min_votes`, declared always wins).
+  - Query: unchanged lane (`fact_lane.go`, `FactReader` port) over the substrate reader; `fact_match` / `current_fact`,
+    `fact_matches` metadata, history/earliest chains.
+  - Backfill: `memory.FactBackfill` (`MemoryStack.FactBackfill`) + `cmd/facts-backfill` (lister
+    `PgKnowledgeStore.ListFactBackfillCandidates`, told the running extractor version).
+  - Reset (A2-Q3): `cmd/facts-reset` (`-namespace` principal prefix, `-principal`, `-all`, `-dry-run`, `-keep-learned`) →
+    `MemoryStack.FactReset` → `PgKnowledgeStore.ResetFacts`: one transaction deleting the selected principals' items,
+    their resolutions, citing assessments, their documents' markers and (default) learned profiles, then re-deriving
+    surviving keys. A hard reset for re-runs, NOT ADR-0137 erasure (no sentinels).
+  - Erasure: `PgKnowledgeStore.EraseItems` deletes assessments citing erased items and leaves targeted content-free
+    sentinels so a closed value stays closed (ADR-0137 Q5).
 - **Agentic retrieval is OFF by default** (owner decision 2026-11-02,
   `cambrian-knowledge/decisions/agentic-retrieval-default-off.md`): `execution.retrieval.agentic_retrieval_enabled`
   defaults to false (`DefaultConfig`, `internal/config/config.go`); every recall is one plain pass unless a deployment
@@ -201,6 +272,8 @@ Each has a ticket; close the ticket and update this list in the same change.
 - Three `cmd/` maintenance tools write through the raw vector adapter —
   `T-20261031-three-cmd-maintenance-tools-write-through-the`
 - `nightly` and `release-gate` are not run by CI — `T-20261031-nightly-and-release-gate-checks-are-not-run-by`
+- ADR-0061 A2 journal: a lone producer appends ~8% slower than the pre-A2 layout (owner to accept) —
+  `T-20261103-adr-0061-a2-journal-single-producer-append-is-8`
 - No automated check that vendored proto copies match core —
   `T-20261031-no-automated-check-that-vendored-proto-copies`
 - ADR-0121 residuals (D8 policy suite, `policy_note`) — `T-20261031-adr-0121-follow-ups-d8-policy-suite-and-query`
@@ -211,7 +284,17 @@ Each has a ticket; close the ticket and update this list in the same change.
   `T-20261101-premium-reactiveengine-ignores`
 - `/v1/admin/agents/{id}/write-tags` is the one HTTP admin route left (no OperatorConsole RPC sets write tags yet) —
   `T-20261101-write-tags-admin-route-has-no-operatorconsole`
-- ADR-0134: relative time phrases in a question ("last month") are not resolved into an event window —
+- ADR-0136 A1: principal-initiated erasure of fact items needs ADR-0137 S2 (`EraseItemsTx`, `EvidenceIDs` selector);
+  F2a vs F2b needs two facts-on ingestions (`T-20261103-adr-0136-f2a-vs-f2b-cannot-be-told-apart-from`); out-of-order
+  sessions are not assessed against newer facts (`T-20261103-fact-assessments-skip-sessions-ingested-out-of`); learned
+  aliases are not recorded (`T-20261103-learned-predicate-aliases-same-predicate`); the plugin knowledge seam is still
+  raw for other kinds (`T-20261103-kernelservices-knowledge-hands-plugins-the-raw`);
+  QueryMemory returns the fact text as hit metadata, but no reader prompt renders it yet
+- ADR-0136 D1's PageRank feature is an interim corpus-relative scale, not the global percentile the ADR specifies —
+  `T-20261103-adr-0136-d1-pagerank-feature-is-an-interim-x-n`; Stage-A coherence sums over a Go map, so scores vary
+  in the last bit run to run — `T-20261103-chunkcoherence-float-sum-depends-on-go-map`
+- ADR-0134: relative time phrases in a question ("last month") are resolved only behind ADR-0136 D3's
+  `temporal_intent_enabled` (default off, as a soft temporal-fit feature, never a window; unmeasured) —
   `T-20261101-relative-time-phrases-in-a-memory-question-are`; filtered-HNSW underfill is measured only at 10k chunks
   (none on natural plans; the iterative-scan remedy is on by default since 2026-11-02, ~2x query latency at 10k) —
   `T-20261101-scoped-recall-may-underfill-top-k-on-a-large`; D5a chronological context and the recency term on real
@@ -239,3 +322,9 @@ Each has a ticket; close the ticket and update this list in the same change.
 - ADR-0052 entity routing is armed by default (`recall_spreading_enabled`) but its in-memory
   `EntityIndex` is never populated, so the lane is a no-op —
   `T-20261031-entityindex-is-never-populated-so-entity`
+- ContentStore GC is live-plan aware since 2026-11-03: `domain.PlanScratchTracker` (BeginPlan/EndPlan, optional
+  capability on `domain.ContentStore`, implemented by `BBoltContentStore`) means a plan ending evicts only plan-scoped
+  scratch (step_result, tool_result) no still-live plan can need, by write-sequence watermark; after the last live plan
+  ends all scratch is gone. `DAGExecutor.ExecuteFrom` leases it; stores without it fall back to `GC(keep)` (ADR-0022
+  observation) — `T-20261103-a-plan-s-content-store-gc-evicts-a-concurrently`; folding it into the port —
+  `T-20261103-domain-planscratchtracker-is-an-optional`
