@@ -851,6 +851,12 @@ message SnapshotResponse {
   // memory-event-time (ADR-0134: occurred_at / parts / time_precision on
   // IngestMemory, reference_time + event window on QueryMemory / AnswerMemory,
   // event_time / time_source / time_precision on MemoryOp and MemoryCitation).
+  // Contract 0100 adds upload-replace (ADR-0138 Amendment B1): an operator upload is
+  // keyed by (operator, classification scope, normalised file name), so a changed
+  // re-upload replaces the earlier version and an exact one is a no-op
+  // (IngestMemoryOpResponse.duplicate_of / version), and ListDocuments answers the
+  // upload_name lookup. Advertised when the kernel keeps document identity v2 and a
+  // lifecycle store backs it.
   repeated string capabilities = 6;
   // plugins enumerates every plugin this build DECLARED, registered or not, with
   // its own version line (ADR-0089). Capabilities tell the UI which surfaces
@@ -1709,8 +1715,23 @@ message MemoryPartOp {
 }
 message IngestMemoryOpResponse {
   string command_id = 1;
+  // deduped: a replayed command_id (a client retry) — nothing was re-ingested. Not a
+  // content duplicate; that is duplicate_of.
   bool deduped = 2;
   string doc_id = 3;
+  // Contract 0100 (ADR-0138 Amendment B1.1). Set when this upload was an EXACT
+  // duplicate — the same revision bytes — of a document the same operator already
+  // stores, in any session and under any tags: nothing was written (no chunks, no
+  // derivatives), the new session and scope were recorded on the existing document,
+  // and this is that document's id (doc_id carries the same id). Empty otherwise.
+  // The duplicate's tags do not change who may read the stored document.
+  string duplicate_of = 4;
+  // Contract 0100 (ADR-0138 D3 / B1.2): the document's version after this ingest —
+  // 1 for a new document, greater than 1 when this upload REPLACED an earlier
+  // version of the same operator's upload of the same file name in the same
+  // classification scope (the earlier version and everything derived from it were
+  // retired). 0 when the kernel keeps no version chain.
+  int32 version = 5;
 }
 
 // ApprovalOp mirrors the ADR-0039 dangerous-tool ApprovalRequest (A2.5): the
@@ -1988,6 +2009,17 @@ message ListDocumentsOpRequest {
   // filter.
   bool   unlabelled_only = 3;
   string id_prefix = 4;  // cheap prefix filter; full-text search is QueryMemory's job
+  // Contract 0100 (ADR-0138 Amendment B1.3): the replace-by-name lookup behind the
+  // console's "Replace <name>?" prompt. When upload_name is set, the other filters are
+  // ignored and the response lists AT MOST ONE document: the caller's own stored upload
+  // that an IngestMemory of a file named upload_name with tags upload_tags would
+  // replace — the same normalised name (path stripped, case and whitespace folded) in
+  // the same classification scope (the tag set). The kernel answers with the ingest's
+  // own identity code, so the prompt and the write cannot disagree. An empty list
+  // means the upload is a new document. Another operator's document is never listed.
+  // Capability "upload-replace"; a kernel without it ignores these fields.
+  string upload_name = 5;
+  repeated string upload_tags = 6;
 }
 
 // DocumentSummaryOp is a LISTING row, not a document: no body, no chunks. Enough to
@@ -1999,6 +2031,11 @@ message DocumentSummaryOp {
   repeated string tags = 4;
   int32  chunk_count = 5;
   int64  created_at_unix_ms = 6;
+  // Contract 0100 (ADR-0138 D3): when the stored version was written (the latest
+  // ingest) and the document's version. Set on the upload_name lookup; 0 when the
+  // listing does not report them.
+  int64  updated_at_unix_ms = 7;
+  int32  version = 8;
 }
 
 message ListDocumentsOpResponse {

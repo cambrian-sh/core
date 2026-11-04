@@ -2604,6 +2604,20 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			return "", fmt.Errorf("ingestion pipeline not configured: every memory ingest " +
 				"must go through the chunker, and there is no raw-store-write path")
 		}))
+		// ADR-0138 Amendment B1.3 (contract 0100): the console's "Replace <name>?" lookup,
+		// answered by the ingestion manager's own identity resolution over the same
+		// operatorIngestDoc the ingest builds, so the prompt and the write cannot
+		// disagree. Wired only when the manager keeps document identity v2 with a
+		// lifecycle store — under document_identity=legacy uploads are not keyed by
+		// name, and advertising the prompt would promise a replace that never happens.
+		if um, ok := k.Server.IngestionProcessor.(interface {
+			UploadReplaceEnabled() bool
+			MatchUpload(context.Context, domain.ExternalDocument) (domain.DocumentRecord, error)
+		}); ok && um.UploadReplaceEnabled() {
+			operatorSvc.SetUploadMatcher(operator.UploadMatcherFunc(func(ctx context.Context, req operator.IngestRequest) (domain.DocumentRecord, error) {
+				return um.MatchUpload(ctx, operatorIngestDoc(req))
+			}))
+		}
 		// ADR-0047 A2.6: watch CRUD is premium capability-gated. k.Server.WatchHandler
 		// is nil in an OSS build (⇒ Unimplemented, WatchTriggered never publishes) and
 		// the premium binary injects a real handler via Options.NewSignalReceiver.
@@ -2950,6 +2964,14 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if operatorSvc.HasDocumentLister() {
 			operatorCaps = append(operatorCaps, "document-listing")
 		}
+		// upload-replace (contract 0100, ADR-0138 Amendment B1): uploads are keyed by
+		// name (replace / exact-duplicate no-op) and ListDocuments answers the
+		// upload_name lookup. Advertised only when the lookup is wired (identity v2 +
+		// a lifecycle store), so a console never asks "Replace?" of a kernel that would
+		// keep both anyway.
+		if operatorSvc.HasUploadMatcher() {
+			operatorCaps = append(operatorCaps, "upload-replace")
+		}
 		// Contract 0072 capabilities. Each is advertised only when a source backs
 		// it, so a console never renders a surface against a kernel that answers
 		// Unimplemented — and, just as importantly, can tell "this deployment has
@@ -3122,7 +3144,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// ADR-0101 D8 file facts on ConfigWriteOutcomeOp. Also: the /v1/admin HTTP
 		// routes with an OperatorConsole equivalent are gone (write-tags remains).
 		// Capabilities "logout" and "memory-event-time".
-		operatorSvc.SetHandshake(KernelVersion, "0099", operatorCaps)
+		// Contract 0100 (ADR-0138 Amendment B1, additive): IngestMemoryOpResponse gains
+		// duplicate_of + version, ListDocumentsOpRequest gains the upload_name /
+		// upload_tags replace-by-name lookup, DocumentSummaryOp gains updated_at_unix_ms
+		// + version. Capability "upload-replace". (ADR-0137's erasure surface, which
+		// planned 0100, takes the next number.)
+		operatorSvc.SetHandshake(KernelVersion, "0100", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".

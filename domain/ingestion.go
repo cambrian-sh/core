@@ -58,6 +58,12 @@ type ExternalDocument struct {
 	// ClaimedTime is the caller's stated time when it was clamped
 	// (TimeSource == TimeSourceClampedFuture); zero otherwise.
 	ClaimedTime time.Time
+	// UploadName is the file name of an OPERATOR UPLOAD (set only by the operator
+	// door, from the uploaded filename). It makes the upload a named source: the
+	// document is keyed by (writer, classification scope, normalised name), so a
+	// changed re-upload is a new version of it and an identical one is a no-op
+	// (ADR-0138 Amendment B1). Empty for every other ingest.
+	UploadName string
 	// Parts locates each timed part of a multi-part body (a chat session's turns)
 	// inside Body, so a chunk can take the earliest time of the parts it covers and
 	// record the latest as its span end (ADR-0134 Q5). Empty for a single-part body.

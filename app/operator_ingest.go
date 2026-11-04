@@ -124,6 +124,11 @@ func operatorIngestDoc(req operator.IngestRequest) domain.ExternalDocument {
 		ThreadID:   req.SessionID,
 		Tags:       req.Tags,
 		Importance: req.Importance,
+		// ADR-0138 Amendment B1: an uploaded file is a NAMED source — keyed by (the
+		// operator, the classification scope, the normalised file name) — so a changed
+		// re-upload replaces its earlier version and an identical one is a no-op. A
+		// console's "Keep both" reaches the kernel as a different name ("report (2).pdf").
+		UploadName: req.Filename,
 	}
 	// ADR-0134: the event time the operator handler resolved (validated, clamped,
 	// labelled). A request that never went through the handler (a zero EventTime)

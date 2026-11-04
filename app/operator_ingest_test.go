@@ -135,3 +135,16 @@ func TestOperatorIngestDoc_ZeroEventTimeIsIngestDefault(t *testing.T) {
 		t.Fatalf("doc time = %v %q", doc.Timestamp, doc.TimeSource)
 	}
 }
+
+// ADR-0138 Amendment B1: an upload carries its file name as UploadName (the name key);
+// a pasted text with no filename does not, so it is never keyed or deduplicated by name.
+func TestOperatorIngestDoc_UploadNameIsTheFilename(t *testing.T) {
+	up := operatorIngestDoc(operator.IngestRequest{Content: []byte("%PDF"), Filename: "Report (2).pdf", Author: "alice", Tags: []string{"finance"}})
+	if up.UploadName != "Report (2).pdf" || up.Author != "alice" {
+		t.Errorf("upload: UploadName %q Author %q", up.UploadName, up.Author)
+	}
+	paste := operatorIngestDoc(operator.IngestRequest{Text: "a note", Author: "alice"})
+	if paste.UploadName != "" {
+		t.Errorf("paste: UploadName %q", paste.UploadName)
+	}
+}

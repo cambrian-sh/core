@@ -2045,6 +2045,12 @@ type SnapshotResponse struct {
 	// memory-event-time (ADR-0134: occurred_at / parts / time_precision on
 	// IngestMemory, reference_time + event window on QueryMemory / AnswerMemory,
 	// event_time / time_source / time_precision on MemoryOp and MemoryCitation).
+	// Contract 0100 adds upload-replace (ADR-0138 Amendment B1): an operator upload is
+	// keyed by (operator, classification scope, normalised file name), so a changed
+	// re-upload replaces the earlier version and an exact one is a no-op
+	// (IngestMemoryOpResponse.duplicate_of / version), and ListDocuments answers the
+	// upload_name lookup. Advertised when the kernel keeps document identity v2 and a
+	// lifecycle store backs it.
 	Capabilities []string `protobuf:"bytes,6,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	// plugins enumerates every plugin this build DECLARED, registered or not, with
 	// its own version line (ADR-0089). Capabilities tell the UI which surfaces
@@ -7378,10 +7384,25 @@ func (x *MemoryPartOp) GetOccurredAt() *timestamppb.Timestamp {
 }
 
 type IngestMemoryOpResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
-	Deduped       bool                   `protobuf:"varint,2,opt,name=deduped,proto3" json:"deduped,omitempty"`
-	DocId         string                 `protobuf:"bytes,3,opt,name=doc_id,json=docId,proto3" json:"doc_id,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	// deduped: a replayed command_id (a client retry) — nothing was re-ingested. Not a
+	// content duplicate; that is duplicate_of.
+	Deduped bool   `protobuf:"varint,2,opt,name=deduped,proto3" json:"deduped,omitempty"`
+	DocId   string `protobuf:"bytes,3,opt,name=doc_id,json=docId,proto3" json:"doc_id,omitempty"`
+	// Contract 0100 (ADR-0138 Amendment B1.1). Set when this upload was an EXACT
+	// duplicate — the same revision bytes — of a document the same operator already
+	// stores, in any session and under any tags: nothing was written (no chunks, no
+	// derivatives), the new session and scope were recorded on the existing document,
+	// and this is that document's id (doc_id carries the same id). Empty otherwise.
+	// The duplicate's tags do not change who may read the stored document.
+	DuplicateOf string `protobuf:"bytes,4,opt,name=duplicate_of,json=duplicateOf,proto3" json:"duplicate_of,omitempty"`
+	// Contract 0100 (ADR-0138 D3 / B1.2): the document's version after this ingest —
+	// 1 for a new document, greater than 1 when this upload REPLACED an earlier
+	// version of the same operator's upload of the same file name in the same
+	// classification scope (the earlier version and everything derived from it were
+	// retired). 0 when the kernel keeps no version chain.
+	Version       int32 `protobuf:"varint,5,opt,name=version,proto3" json:"version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7435,6 +7456,20 @@ func (x *IngestMemoryOpResponse) GetDocId() string {
 		return x.DocId
 	}
 	return ""
+}
+
+func (x *IngestMemoryOpResponse) GetDuplicateOf() string {
+	if x != nil {
+		return x.DuplicateOf
+	}
+	return ""
+}
+
+func (x *IngestMemoryOpResponse) GetVersion() int32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
 }
 
 // ApprovalOp mirrors the ADR-0039 dangerous-tool ApprovalRequest (A2.5): the
@@ -9578,8 +9613,19 @@ type ListDocumentsOpRequest struct {
 	// filter.
 	UnlabelledOnly bool   `protobuf:"varint,3,opt,name=unlabelled_only,json=unlabelledOnly,proto3" json:"unlabelled_only,omitempty"`
 	IdPrefix       string `protobuf:"bytes,4,opt,name=id_prefix,json=idPrefix,proto3" json:"id_prefix,omitempty"` // cheap prefix filter; full-text search is QueryMemory's job
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Contract 0100 (ADR-0138 Amendment B1.3): the replace-by-name lookup behind the
+	// console's "Replace <name>?" prompt. When upload_name is set, the other filters are
+	// ignored and the response lists AT MOST ONE document: the caller's own stored upload
+	// that an IngestMemory of a file named upload_name with tags upload_tags would
+	// replace — the same normalised name (path stripped, case and whitespace folded) in
+	// the same classification scope (the tag set). The kernel answers with the ingest's
+	// own identity code, so the prompt and the write cannot disagree. An empty list
+	// means the upload is a new document. Another operator's document is never listed.
+	// Capability "upload-replace"; a kernel without it ignores these fields.
+	UploadName    string   `protobuf:"bytes,5,opt,name=upload_name,json=uploadName,proto3" json:"upload_name,omitempty"`
+	UploadTags    []string `protobuf:"bytes,6,rep,name=upload_tags,json=uploadTags,proto3" json:"upload_tags,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListDocumentsOpRequest) Reset() {
@@ -9640,6 +9686,20 @@ func (x *ListDocumentsOpRequest) GetIdPrefix() string {
 	return ""
 }
 
+func (x *ListDocumentsOpRequest) GetUploadName() string {
+	if x != nil {
+		return x.UploadName
+	}
+	return ""
+}
+
+func (x *ListDocumentsOpRequest) GetUploadTags() []string {
+	if x != nil {
+		return x.UploadTags
+	}
+	return nil
+}
+
 // DocumentSummaryOp is a LISTING row, not a document: no body, no chunks. Enough to
 // decide what to label and nothing more, so paging a large corpus stays cheap.
 type DocumentSummaryOp struct {
@@ -9650,6 +9710,11 @@ type DocumentSummaryOp struct {
 	Tags            []string               `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`
 	ChunkCount      int32                  `protobuf:"varint,5,opt,name=chunk_count,json=chunkCount,proto3" json:"chunk_count,omitempty"`
 	CreatedAtUnixMs int64                  `protobuf:"varint,6,opt,name=created_at_unix_ms,json=createdAtUnixMs,proto3" json:"created_at_unix_ms,omitempty"`
+	// Contract 0100 (ADR-0138 D3): when the stored version was written (the latest
+	// ingest) and the document's version. Set on the upload_name lookup; 0 when the
+	// listing does not report them.
+	UpdatedAtUnixMs int64 `protobuf:"varint,7,opt,name=updated_at_unix_ms,json=updatedAtUnixMs,proto3" json:"updated_at_unix_ms,omitempty"`
+	Version         int32 `protobuf:"varint,8,opt,name=version,proto3" json:"version,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -9722,6 +9787,20 @@ func (x *DocumentSummaryOp) GetChunkCount() int32 {
 func (x *DocumentSummaryOp) GetCreatedAtUnixMs() int64 {
 	if x != nil {
 		return x.CreatedAtUnixMs
+	}
+	return 0
+}
+
+func (x *DocumentSummaryOp) GetUpdatedAtUnixMs() int64 {
+	if x != nil {
+		return x.UpdatedAtUnixMs
+	}
+	return 0
+}
+
+func (x *DocumentSummaryOp) GetVersion() int32 {
+	if x != nil {
+		return x.Version
 	}
 	return 0
 }
@@ -18022,12 +18101,14 @@ const file_operator_proto_rawDesc = "" +
 	"\fMemoryPartOp\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12;\n" +
 	"\voccurred_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAt\"h\n" +
+	"occurredAt\"\xa5\x01\n" +
 	"\x16IngestMemoryOpResponse\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x18\n" +
 	"\adeduped\x18\x02 \x01(\bR\adeduped\x12\x15\n" +
-	"\x06doc_id\x18\x03 \x01(\tR\x05docId\"\x9e\x01\n" +
+	"\x06doc_id\x18\x03 \x01(\tR\x05docId\x12!\n" +
+	"\fduplicate_of\x18\x04 \x01(\tR\vduplicateOf\x12\x18\n" +
+	"\aversion\x18\x05 \x01(\x05R\aversion\"\x9e\x01\n" +
 	"\n" +
 	"ApprovalOp\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
@@ -18215,12 +18296,16 @@ const file_operator_proto_rawDesc = "" +
 	"\bdecision\x18\x01 \x01(\v2\x1a.cambrian.AccessDecisionOpR\bdecision\"!\n" +
 	"\x1fListClassificationTagsOpRequest\"6\n" +
 	" ListClassificationTagsOpResponse\x12\x12\n" +
-	"\x04tags\x18\x01 \x03(\tR\x04tags\"\x8c\x01\n" +
+	"\x04tags\x18\x01 \x03(\tR\x04tags\"\xce\x01\n" +
 	"\x16ListDocumentsOpRequest\x12\x14\n" +
 	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12\x16\n" +
 	"\x06cursor\x18\x02 \x01(\tR\x06cursor\x12'\n" +
 	"\x0funlabelled_only\x18\x03 \x01(\bR\x0eunlabelledOnly\x12\x1b\n" +
-	"\tid_prefix\x18\x04 \x01(\tR\bidPrefix\"\xbc\x01\n" +
+	"\tid_prefix\x18\x04 \x01(\tR\bidPrefix\x12\x1f\n" +
+	"\vupload_name\x18\x05 \x01(\tR\n" +
+	"uploadName\x12\x1f\n" +
+	"\vupload_tags\x18\x06 \x03(\tR\n" +
+	"uploadTags\"\x83\x02\n" +
 	"\x11DocumentSummaryOp\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1f\n" +
@@ -18229,7 +18314,9 @@ const file_operator_proto_rawDesc = "" +
 	"\x04tags\x18\x04 \x03(\tR\x04tags\x12\x1f\n" +
 	"\vchunk_count\x18\x05 \x01(\x05R\n" +
 	"chunkCount\x12+\n" +
-	"\x12created_at_unix_ms\x18\x06 \x01(\x03R\x0fcreatedAtUnixMs\"\x9c\x01\n" +
+	"\x12created_at_unix_ms\x18\x06 \x01(\x03R\x0fcreatedAtUnixMs\x12+\n" +
+	"\x12updated_at_unix_ms\x18\a \x01(\x03R\x0fupdatedAtUnixMs\x12\x18\n" +
+	"\aversion\x18\b \x01(\x05R\aversion\"\x9c\x01\n" +
 	"\x17ListDocumentsOpResponse\x129\n" +
 	"\tdocuments\x18\x01 \x03(\v2\x1b.cambrian.DocumentSummaryOpR\tdocuments\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +

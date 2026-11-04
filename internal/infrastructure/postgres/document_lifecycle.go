@@ -59,8 +59,10 @@ func (l *PgDocumentLifecycle) DocumentRecord(ctx context.Context, id string) (do
 		return rec, nil
 	}
 	var digest *string
-	err := l.k.pool.QueryRow(ctx, `SELECT `+writerOfRecordSQL+`, d.content_digest, d.version
-		FROM `+TableDocuments+` d WHERE d.id = $1`, id).Scan(&rec.WrittenBy, &digest, &rec.Version)
+	err := l.k.pool.QueryRow(ctx, `SELECT `+writerOfRecordSQL+`, d.content_digest, d.version,
+			d.title, d.created_at, d.updated_at
+		FROM `+TableDocuments+` d WHERE d.id = $1`, id).
+		Scan(&rec.WrittenBy, &digest, &rec.Version, &rec.Title, &rec.CreatedAt, &rec.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return rec, nil
 	}
@@ -72,6 +74,61 @@ func (l *PgDocumentLifecycle) DocumentRecord(ctx context.Context, id string) (do
 		rec.ContentDigest = *digest
 	}
 	return rec, nil
+}
+
+// FindByContent implements domain.DocumentLifecycleStore (ADR-0138 B1.1).
+//
+// Served by idx_documents_writer_digest (built concurrently, migrate.concurrentIndexes).
+// A row must still hold content (a chunk) to count: a documents row whose chunk write
+// failed would otherwise turn every later upload of the same bytes into a no-op against
+// nothing. The oldest match wins, ties by id, so the answer is deterministic.
+func (l *PgDocumentLifecycle) FindByContent(ctx context.Context, writer, digest string) (domain.DocumentRecord, error) {
+	rec := domain.DocumentRecord{}
+	if writer == "" || digest == "" {
+		return rec, nil
+	}
+	err := l.k.pool.QueryRow(ctx, `SELECT d.id, d.written_by, d.content_digest, d.version,
+			d.title, d.created_at, d.updated_at
+		FROM `+TableDocuments+` d
+		WHERE d.written_by = $1 AND d.content_digest = $2
+		  AND EXISTS (SELECT 1 FROM `+TableChunks+` c WHERE c.document_id = d.id)
+		ORDER BY d.created_at, d.id LIMIT 1`, writer, digest).
+		Scan(&rec.ID, &rec.WrittenBy, &rec.ContentDigest, &rec.Version, &rec.Title, &rec.CreatedAt, &rec.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.DocumentRecord{}, nil
+	}
+	if err != nil {
+		return domain.DocumentRecord{}, mapError("FindByContent", err)
+	}
+	rec.Exists = true
+	return rec, nil
+}
+
+// RecordAssociation implements domain.DocumentLifecycleStore (ADR-0138 B1.1): one row
+// per (document, writer, session, scope), keyed naturally so a retry or a repeat upload
+// updates the same row (AGENTS.md §2.6) — last_seen_at moves and deliveries counts.
+// The FK cascades from documents, so ADR-0137's forget removes these rows with the
+// document.
+func (l *PgDocumentLifecycle) RecordAssociation(ctx context.Context, a domain.DocumentAssociation) error {
+	if a.DocumentID == "" {
+		return nil
+	}
+	scope := a.Scope
+	if scope == nil {
+		scope = []string{}
+	}
+	_, err := l.k.pool.Exec(ctx, `INSERT INTO document_associations
+			(document_id, writer, session_id, scope, upload_name)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (document_id, writer, session_id, scope) DO UPDATE SET
+			upload_name  = EXCLUDED.upload_name,
+			last_seen_at = now(),
+			deliveries   = document_associations.deliveries + 1`,
+		a.DocumentID, a.Writer, a.SessionID, scope, a.UploadName)
+	if err != nil {
+		return mapError("RecordAssociation", err)
+	}
+	return nil
 }
 
 // ReviseDocument implements domain.DocumentLifecycleStore (ADR-0138 D3).

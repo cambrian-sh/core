@@ -38,6 +38,10 @@ const sourceDocumentMarker = domain.SourceDocumentMarker
 type persistOutcome struct {
 	// Stored is the number of chunks written.
 	Stored int
+	// Version is the document's version after this write (ADR-0138 D3; 0 when no
+	// lifecycle is wired) and Replaced is true when the write retired a stored version.
+	Version  int
+	Replaced bool
 	// DroppedLeaves is the number of structure leaves dropped as junk before
 	// chunking (structure_junk.go). Zero for chat/text ingests by default.
 	DroppedLeaves int
@@ -119,6 +123,7 @@ func (im *IngestionManager) persistChunksTracked(
 		if lerr != nil {
 			return outcome, fmt.Errorf("ingestion manager: document %q: %w", documentID, lerr)
 		}
+		outcome.Version, outcome.Replaced = rev.Version, rev.Retired
 		if rev.Retired {
 			slog.InfoContext(ctx, "IngestionManager: changed document retired its previous version",
 				"doc", documentID, "retired_version", rev.Previous.Version, "version", rev.Version, "deleted", rev.Counts)

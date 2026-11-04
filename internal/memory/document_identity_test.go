@@ -154,6 +154,26 @@ type fakeLifecycle struct {
 	revised []domain.DocumentRevision
 	refuse  bool
 	events  *[]string
+	// byContent answers FindByContent, keyed writer + "|" + digest (ADR-0138 B1.1).
+	byContent   map[string]domain.DocumentRecord
+	contentHits int
+	assocs      []domain.DocumentAssociation
+}
+
+func (f *fakeLifecycle) FindByContent(_ context.Context, writer, digest string) (domain.DocumentRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.contentHits++
+	r, ok := f.byContent[writer+"|"+digest]
+	r.Exists = ok
+	return r, nil
+}
+
+func (f *fakeLifecycle) RecordAssociation(_ context.Context, a domain.DocumentAssociation) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.assocs = append(f.assocs, a)
+	return nil
 }
 
 func (f *fakeLifecycle) DocumentRecord(_ context.Context, id string) (domain.DocumentRecord, error) {

@@ -309,6 +309,12 @@ var concurrentIndexes = []concurrentIndex{
 	// row per fact. 0022_fact_items is the version whose memory_fact kind writes it.
 	{name: "idx_statement_values_source_document", table: "statement_values",
 		using: "(value_text) WHERE predicate = 'source_document'", requires: 22},
+	// ADR-0138 B1.1: an operator upload looks up (writer, revision digest) before it
+	// writes, so an exact re-upload is a no-op (postgres.PgDocumentLifecycle
+	// FindByContent). 0026_document_lifecycle creates both columns. Partial: rows
+	// written before 0026 carry no digest and can never match.
+	{name: "idx_documents_writer_digest", table: "documents",
+		using: "(written_by, content_digest) WHERE content_digest IS NOT NULL", requires: 26},
 }
 
 // ItemEmbeddingIndexName is the per-dimension partial HNSW index of the ADR-0136 A1 item

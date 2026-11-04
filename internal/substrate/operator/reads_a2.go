@@ -90,6 +90,9 @@ func (s *Service) SetMemoryAnswerer(a MemoryAnswerer) { s.answerer = a }
 // not denied, it is invisible to the policy model, and until this existed the
 // console could not enumerate the invisible set at all.
 func (s *Service) ListDocuments(ctx context.Context, req *pb.ListDocumentsOpRequest) (*pb.ListDocumentsOpResponse, error) {
+	if req.GetUploadName() != "" {
+		return s.matchUpload(ctx, req) // contract 0100, ADR-0138 B1.3
+	}
 	if s.documents == nil {
 		return nil, status.Error(codes.Unimplemented, "document listing not configured")
 	}

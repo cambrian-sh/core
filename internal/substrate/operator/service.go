@@ -56,6 +56,9 @@ type Service struct {
 	answerer   MemoryAnswerer        // ADR-0081; nil ⇒ AnswerMemory Unimplemented
 	toolRunner ToolRunner
 	ingestor   MemoryIngestor
+	// uploads answers the ADR-0138 B1.3 replace-by-name lookup (ListDocuments
+	// upload_name). nil ⇒ that lookup is Unimplemented and "upload-replace" is withheld.
+	uploads UploadMatcher
 	// eventTimeTolerance is the ADR-0134 future-time clamp tolerance; nil = default.
 	eventTimeTolerance *time.Duration
 	watches            domain.WatchConfigHandler

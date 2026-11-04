@@ -325,6 +325,21 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	defer func() { logIngestTiming(ctx, clock, time.Since(started), doc.SourceURI, stored, err) }()
 	// ADR-0138 D1.4: the document's identity, resolved ONCE for every step below.
 	ident := im.resolveDocumentID(ctx, doc)
+	report := domain.IngestOutcomeFrom(ctx)
+	// ADR-0138 B1.1: an operator upload this writer already stores byte for byte is a
+	// no-op — no evidence, no chunks, no derivatives — so the same file uploaded in
+	// another session or under another tag is one document, not a second copy that
+	// crowds retrieval. Only the association (session, scope) is recorded. Checked
+	// before evidence capture: nothing of a duplicate is written anywhere.
+	if dup := im.uploadDuplicate(ctx, ident); dup.Exists {
+		im.recordUpload(ctx, doc, ident, dup.ID)
+		if report != nil {
+			report.DocumentID, report.DuplicateOf, report.Version = dup.ID, dup.ID, dup.Version
+		}
+		slog.InfoContext(ctx, "IngestionManager: duplicate upload; nothing written",
+			"upload", doc.UploadName, "duplicate_of", dup.ID, "resolved", ident.ID)
+		return dup.ID, nil
+	}
 	// Evidence first (ADR-0105 D2): the original bytes must be durable and
 	// published as evidence before chunking, scene generation or any other
 	// semantic step — so a failure anywhere downstream still leaves source
@@ -387,6 +402,10 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	if err != nil {
 		return "", fmt.Errorf("ingestion manager: source-doc entity for %q (its %d chunk(s) are stored; a retry overwrites both by id): %w",
 			doc.SourceURI, chunkCount, err)
+	}
+	im.recordUpload(ctx, doc, ident, ident.ID)
+	if report != nil {
+		report.DocumentID, report.Version, report.Replaced = ident.ID, max(outcome.Version, 1), outcome.Replaced
 	}
 	if chunkCount == 0 {
 		return entityID, nil
@@ -524,6 +543,14 @@ func (im *IngestionManager) processBatchDoc(ctx context.Context, doc domain.Exte
 	defer func() { logIngestTiming(dctx, clock, time.Since(started), doc.SourceURI, outcome.Stored, err) }()
 	entityID := sourceDocEntityID(doc)
 	ident := im.resolveDocumentID(dctx, doc) // ADR-0138 D1.4: once per document
+	// ADR-0138 B1.1, the same rule as ProcessSync (only operator uploads carry an
+	// UploadName, and they arrive synchronously; kept here so the rule is the
+	// document's, not the path's).
+	if dup := im.uploadDuplicate(dctx, ident); dup.Exists {
+		im.recordUpload(dctx, doc, ident, dup.ID)
+		slog.Info("IngestionManager: duplicate upload; nothing written", "upload", doc.UploadName, "duplicate_of", dup.ID)
+		return
+	}
 	t := time.Now()
 	chunker := im.chunkerFor(doc)
 	chunks, cerr := chunker.Chunk(dctx, &doc)
@@ -544,6 +571,7 @@ func (im *IngestionManager) processBatchDoc(ctx context.Context, doc domain.Exte
 		slog.Warn("IngestionManager: failed to mint source-doc entity", "source_uri", doc.SourceURI, "err", err)
 		return
 	}
+	im.recordUpload(dctx, doc, ident, ident.ID)
 	slog.Info("ExternalDocumentIngested", "source_uri", doc.SourceURI, "entity_id", entityID, "chunk_count", outcome.Stored,
 		"dropped_leaves", outcome.DroppedLeaves)
 }

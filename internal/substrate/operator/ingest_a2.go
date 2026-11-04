@@ -61,6 +61,57 @@ func (f MemoryIngestorFunc) Ingest(ctx context.Context, req IngestRequest) (stri
 // SetMemoryIngestor wires the operator IngestMemory path (A2.4). nil ⇒ Unimplemented.
 func (s *Service) SetMemoryIngestor(ing MemoryIngestor) { s.ingestor = ing }
 
+// UploadMatcher answers ADR-0138 Amendment B1.3: which stored document of the caller an
+// upload of req (its Filename, Tags and Author) would REPLACE. Bound by the composition
+// root to the kernel ingest's own identity resolution, so the console's prompt and the
+// write agree. Exists=false is "a new document".
+type UploadMatcher interface {
+	MatchUpload(ctx context.Context, req IngestRequest) (domain.DocumentRecord, error)
+}
+
+// UploadMatcherFunc adapts a function to UploadMatcher.
+type UploadMatcherFunc func(ctx context.Context, req IngestRequest) (domain.DocumentRecord, error)
+
+func (f UploadMatcherFunc) MatchUpload(ctx context.Context, req IngestRequest) (domain.DocumentRecord, error) {
+	return f(ctx, req)
+}
+
+// SetUploadMatcher wires the replace-by-name lookup. nil (the default) leaves the
+// ListDocuments upload_name lookup Unimplemented and withholds "upload-replace".
+func (s *Service) SetUploadMatcher(m UploadMatcher) { s.uploads = m }
+
+// HasUploadMatcher reports whether the lookup is wired (the "upload-replace" gate).
+func (s *Service) HasUploadMatcher() bool { return s.uploads != nil }
+
+// matchUpload serves ListDocuments with upload_name set (contract 0100): at most one
+// row, the caller's own document. The writer is the authenticated operator — the same
+// principal IngestMemory stamps as Author — never a field of the request.
+func (s *Service) matchUpload(ctx context.Context, req *pb.ListDocumentsOpRequest) (*pb.ListDocumentsOpResponse, error) {
+	if s.uploads == nil {
+		return nil, status.Error(codes.Unimplemented, "upload replace lookup not configured")
+	}
+	actor, _, _ := PrincipalFromContext(ctx)
+	rec, err := s.uploads.MatchUpload(ctx, IngestRequest{
+		Filename: req.GetUploadName(), Tags: req.GetUploadTags(), Author: actor,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "match upload: %v", err)
+	}
+	resp := &pb.ListDocumentsOpResponse{}
+	if !rec.Exists {
+		return resp, nil
+	}
+	row := &pb.DocumentSummaryOp{Id: rec.ID, Title: rec.Title, Version: int32(rec.Version)}
+	if !rec.CreatedAt.IsZero() {
+		row.CreatedAtUnixMs = rec.CreatedAt.UnixMilli()
+	}
+	if !rec.UpdatedAt.IsZero() {
+		row.UpdatedAtUnixMs = rec.UpdatedAt.UnixMilli()
+	}
+	resp.Documents, resp.TotalMatching = []*pb.DocumentSummaryOp{row}, 1
+	return resp, nil
+}
+
 // SetEventTimeFutureTolerance sets how far past the ingest clock a stated event
 // time may lie before it is clamped (ADR-0134 Q4; config
 // execution.ingestion.event_time_future_tolerance_ms). Unset means
@@ -166,6 +217,10 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 	// and was a workaround: the next handler that wrote anything had to remember
 	// to grow the same four lines, and the one that forgot would fail closed only
 	// on a deployment that enforces access control.
+	// ADR-0138 B1: the ingest reports what it did (an exact duplicate, a new version)
+	// through ctx; the id alone cannot say it.
+	outcome := &domain.IngestOutcome{}
+	ctx = domain.WithIngestOutcome(ctx, outcome)
 	docID, err := s.ingestor.Ingest(ctx, IngestRequest{
 		Text:        req.GetText(),
 		Tags:        req.GetTags(),
@@ -197,5 +252,6 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 	if _, err := s.recordAndEmit(ctx, entry); err != nil {
 		return nil, err
 	}
-	return &pb.IngestMemoryOpResponse{CommandId: req.GetCommandId(), Deduped: false, DocId: docID}, nil
+	return &pb.IngestMemoryOpResponse{CommandId: req.GetCommandId(), Deduped: false, DocId: docID,
+		DuplicateOf: outcome.DuplicateOf, Version: int32(outcome.Version)}, nil
 }
