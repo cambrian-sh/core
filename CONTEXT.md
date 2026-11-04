@@ -188,6 +188,19 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
     order → recency direction (needs `blend_weight_recency` > 0 to matter); an absolute range → hard window via
     `SearchOptions.Since/Until` when the caller sent none. Query-inactive features leave the combination entirely,
     so a query with no time phrase ranks as with the flag off. Fingerprint lines only when a switch is on.
+- **Document identity and version chain** (2026-11-04, ADR-0138, proposed; on by default). The natural key of an
+  ingested document is (writer, source key); the writer is the kernel-stamped `ExternalDocument.Author`. v2 ids
+  (`internal/memory/document_identity.go` `documentIdentityOf`): a `source_document` name verbatim; tag / thread /
+  unnamed ids `<group>:<16 hex of sha256(writer, Body[, Data])>`; a named SourceURI `<uri>#w=<writer hash>`; a
+  writer-less text ingest keeps its legacy id. Binaries digest `Data`; a bare `scheme://` URI is not a source. Resolved
+  ONCE per ingest (`resolveDocumentID`), with a grandfathering lookup: a stored legacy id written by the same writer is
+  reused, never re-keyed. `execution.ingestion.document_identity` = `v2` (default) | `legacy` (old ids, WARN).
+  Before any write, `DocumentLifecycleStore.ReviseDocument` (`postgres.PgDocumentLifecycle`, composed in
+  `NewMemoryStack` from `FactSubstrate.Documents`) refuses another writer of a held id
+  (`domain.ErrDocumentOwnedByAnotherWriter` → `PermissionDenied`) and, when the content digest changed, retires the
+  stored version in one transaction (`retireDocumentsTx`: memory_fact items via `EraseItemsTx`, assessments, markers,
+  extraction journal, triplets, PageRank, edges, sections, chunks) and records a content-free `document_versions` row.
+  Migration 0026 (`documents.written_by/content_digest/version`, `document_versions`).
 - **Fact layer on the knowledge substrate** (2026-11-03, ADR-0136 D4 + D5 as amended by A1 and A2, proposed; every switch
   default OFF, gate pending; the memory_facts build of the same day is retired). Block `execution.facts`
   (`config.FactsConfig`): `extract_enabled`, `lane_enabled`, `supersession_enabled`, `assessments_enabled` + tunables
@@ -294,6 +307,11 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
 
 Each has a ticket; close the ticket and update this list in the same change.
 
+- ADR-0138: an in-flight KG/fact job of a retired document version can write onto the reused chunk ids —
+  `T-20261104-async-kg-triplet-and-fact-jobs-of-a-retired`; operator re-uploads with a session are new documents, not
+  versions — `T-20261104-operator-upload-cannot-replace-a-document-a-re`; undated facts of different uploads close each
+  other in upload order — `T-20261104-undated-facts-from-different-uploads-close-each`
+
 - Three `cmd/` maintenance tools write through the raw vector adapter —
   `T-20261031-three-cmd-maintenance-tools-write-through-the`
 - `nightly` and `release-gate` are not run by CI — `T-20261031-nightly-and-release-gate-checks-are-not-run-by`
@@ -309,7 +327,9 @@ Each has a ticket; close the ticket and update this list in the same change.
   `T-20261101-premium-reactiveengine-ignores`
 - `/v1/admin/agents/{id}/write-tags` is the one HTTP admin route left (no OperatorConsole RPC sets write tags yet) —
   `T-20261101-write-tags-admin-route-has-no-operatorconsole`
-- ADR-0136 A1: principal-initiated erasure of fact items needs ADR-0137 S2 (`EraseItemsTx`, `EvidenceIDs` selector);
+- ADR-0136 A1: principal-initiated erasure (forget) is unbuilt — ADR-0137's RPCs, authz, tombstones and fences
+  (`T-20261103-build-a-principal-initiated-memory-erasure-path`); its substrate part (`EraseItemsTx`, `EvidenceIDs`) and
+  the document cascade exist since ADR-0138;
   F2a vs F2b needs two facts-on ingestions (`T-20261103-adr-0136-f2a-vs-f2b-cannot-be-told-apart-from`); out-of-order
   sessions are not assessed against newer facts (`T-20261103-fact-assessments-skip-sessions-ingested-out-of`); learned
   aliases are not recorded (`T-20261103-learned-predicate-aliases-same-predicate`); the plugin knowledge seam is still

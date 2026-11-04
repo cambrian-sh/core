@@ -165,4 +165,21 @@ type KnowledgeStore interface {
 type KnowledgeErasure struct {
 	Entities       []string
 	ValueEntityRef string
+	// EvidenceIDs selects items derived from these ADR-0105 evidence rows
+	// (knowledge_items.evidence_id) — ADR-0137 S2: erasing a source document erases the
+	// interpretations of its evidence.
+	EvidenceIDs []string
+	// ValuePredicate + ValueTexts select items carrying a TEXT statement value under
+	// ValuePredicate equal to one of ValueTexts (ADR-0138 D4). It is how a document
+	// cascade reaches derived items when evidence capture is off (the default), e.g.
+	// memory_fact items by their source_document value. Both must be set to match.
+	ValuePredicate string
+	ValueTexts     []string
+}
+
+// IsEmpty reports whether the selector names nothing (an empty selector matches
+// nothing, by contract).
+func (e KnowledgeErasure) IsEmpty() bool {
+	return len(e.Entities) == 0 && e.ValueEntityRef == "" && len(e.EvidenceIDs) == 0 &&
+		(e.ValuePredicate == "" || len(e.ValueTexts) == 0)
 }

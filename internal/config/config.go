@@ -893,6 +893,12 @@ type WorkspaceConfig struct {
 // Split out of the former 198-field flat ExecutionConfig (config schema v2).
 // Field names, types and json tags are unchanged; only the nesting is new, so
 // each field means exactly what it meant before.
+// Document identity schemes (execution.ingestion.document_identity, ADR-0138 D2).
+const (
+	DocumentIdentityV2     = "v2"
+	DocumentIdentityLegacy = "legacy"
+)
+
 type IngestionConfig struct {
 	// EdgeExtractionBatchSize is the load-driven drain trigger for the
 	// LLM-based entity+relation extractor (ADR-0053 D2). One LLM call extracts
@@ -1037,6 +1043,16 @@ type IngestionConfig struct {
 	// expiry the ingest still SUCCEEDS with a WARN and facts_pending in the timing
 	// line. Default 120000; <=0 falls back to 120000.
 	SyncIngestFactsWaitTimeoutMs int `json:"sync_ingest_facts_wait_timeout_ms,omitempty"`
+
+	// DocumentIdentity selects how an ingested document's id is derived (ADR-0138 D1/D2):
+	//   - "v2" (default): the natural key is (writer, source key). Content-addressed ids
+	//     digest the writer and the binary payload (Data) too, so two principals, or two
+	//     PDFs with the same tag or session, never share an id; a stored legacy id written
+	//     by the same writer is reused (grandfathered), never re-keyed.
+	//   - "legacy": the pre-ADR-0138 derivation byte for byte, to reproduce an old run's
+	//     ids. It brings back both collisions and is logged as a WARN at boot.
+	// "" reads as "v2". Read by NewIngestionManager through kernel.ingestionConfigFrom.
+	DocumentIdentity string `json:"document_identity,omitempty"`
 
 	// ADR-0136 Amendment A3.1: caps on the agent-plane IngestMemory's DESCRIPTIVE
 	// source metadata (source_kind, title, author, and each part's speaker). The
@@ -2070,6 +2086,8 @@ func DefaultConfig() *Config {
 				// ADR-0136 D4: same option for the fact layer, off by default.
 				SyncIngestWaitForFacts:       false,
 				SyncIngestFactsWaitTimeoutMs: 120000,
+				// ADR-0138 D2: writer-qualified, binary-aware document ids.
+				DocumentIdentity: DocumentIdentityV2,
 				// ADR-0136 A3.1: descriptive source-metadata caps (agent-plane ingest).
 				SourceKindMaxChars:   DefaultSourceKindMaxChars,
 				SourceTitleMaxChars:  DefaultSourceTitleMaxChars,
@@ -2718,6 +2736,11 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	case "", "off", "relaxed_order", "strict_order":
 	default:
 		errs = append(errs, fmt.Sprintf("retrieval.hnsw_iterative_scan must be one of off, relaxed_order, strict_order (got %q)", c.Retrieval.HnswIterativeScan))
+	}
+	switch c.Ingestion.DocumentIdentity {
+	case "", DocumentIdentityV2, DocumentIdentityLegacy:
+	default:
+		errs = append(errs, fmt.Sprintf("ingestion.document_identity must be %q or %q (got %q)", DocumentIdentityV2, DocumentIdentityLegacy, c.Ingestion.DocumentIdentity))
 	}
 	for _, b := range c.Ingestion.StructureJunkFilterBackends {
 		switch b {

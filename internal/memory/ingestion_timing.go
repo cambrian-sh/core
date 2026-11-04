@@ -20,6 +20,7 @@ const (
 	StageEvidence         = "evidence"              // ADR-0105 blob put + verify + evidence row + outbox
 	StageScene            = "scene"                 // ADR-0049 scene LLM call (default off)
 	StageChunk            = "chunk"                 // flat chunker (its output is replaced when structure parsing yields leaves)
+	StageDocumentRevise   = "document_revise"       // ADR-0138 D3 identity claim + retirement of a changed previous version
 	StageDocumentRow      = "document_row"          // ADR-0093 source-document row, via the write chokepoint
 	StageStructureParse   = "structure_parse"       // ADR-0060 docling_agent round-trip, as the kernel sees it
 	StageStructureAgent   = "structure_agent"       // the sidecar's own parse time (reported by it); subset of structure_parse

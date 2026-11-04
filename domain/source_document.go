@@ -27,6 +27,13 @@ type SourceDocument struct {
 	// are a derived cache and must never be written independently of this.
 	Tags     []string
 	Metadata map[string]any
+	// WrittenBy is the kernel-stamped writer of record (ExternalDocument.Author), stored in
+	// documents.written_by (ADR-0138 D3; the document-level writer ADR-0137 D3 asks for).
+	// "" for a writer-less ingest, which never overwrites a recorded writer.
+	WrittenBy string
+	// ContentDigest is the ADR-0138 D1.3 revision digest of Text/Data; a re-ingest
+	// compares against it to decide whether the stored version must be retired.
+	ContentDigest string
 	// EventStamp is the document's event time (ADR-0134 D2). A re-ingest that states
 	// no time (ingest_default) keeps a stored stated one (owner decision Q6).
 	EventStamp

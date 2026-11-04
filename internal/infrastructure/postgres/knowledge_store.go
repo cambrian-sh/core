@@ -496,12 +496,41 @@ func loadItems(ctx context.Context, q pgxQuerier, where string, args ...any) ([]
 // closed (in its own key or, through a contradictory assessment, in another) receives a
 // content-free sentinel (domain.FactErasedSentinel), so it stays closed on re-derivation
 // instead of becoming current again.
-// (ADR-0137 S2 will add the tx-taking EraseItemsTx and the EvidenceIDs selector.)
+//
+// The selector matches items ABOUT the named entities, items carrying an entity value
+// equal to ValueEntityRef, items derived from the named evidence rows (EvidenceIDs,
+// ADR-0137 S2) and items carrying a text value ValueTexts under ValuePredicate (ADR-0138
+// D4: the document cascade's selector when evidence capture is off).
 func (s *PgKnowledgeStore) EraseItems(ctx context.Context, namespace, kind string, sel domain.KnowledgeErasure) (int, error) {
 	if kind == "" {
 		return 0, fmt.Errorf("knowledge erase: kind is required")
 	}
-	if len(sel.Entities) == 0 && sel.ValueEntityRef == "" {
+	if sel.IsEmpty() {
+		return 0, nil // an empty selector matches nothing, by contract
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+	n, err := s.EraseItemsTx(ctx, tx, namespace, kind, sel)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// EraseItemsTx is EraseItems inside the CALLER's transaction (ADR-0137 D4 step 7, S2),
+// so an erasure that also deletes chunks, triplets and documents (ADR-0138 D4) commits
+// or rolls back as one unit. Same rules as EraseItems; the caller commits.
+func (s *PgKnowledgeStore) EraseItemsTx(ctx context.Context, tx pgx.Tx, namespace, kind string, sel domain.KnowledgeErasure) (int, error) {
+	if kind == "" {
+		return 0, fmt.Errorf("knowledge erase: kind is required")
+	}
+	if sel.IsEmpty() {
 		return 0, nil // an empty selector matches nothing, by contract
 	}
 	if namespace == "" {
@@ -511,12 +540,14 @@ func (s *PgKnowledgeStore) EraseItems(ctx context.Context, namespace, kind strin
 	if entities == nil {
 		entities = []string{}
 	}
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return 0, err
+	evidenceIDs := sel.EvidenceIDs
+	if evidenceIDs == nil {
+		evidenceIDs = []string{}
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+	valueTexts := sel.ValueTexts
+	if valueTexts == nil || sel.ValuePredicate == "" {
+		valueTexts = []string{}
+	}
 
 	// The victims, and the (entity, actor) keys they belong to — collected
 	// BEFORE deletion, because afterwards there is nothing left to ask.
@@ -524,13 +555,16 @@ func (s *PgKnowledgeStore) EraseItems(ctx context.Context, namespace, kind strin
 		WHERE ki.id IN (SELECT DISTINCT k2.id FROM knowledge_items k2
 			LEFT JOIN statement_values sv ON sv.item_id = k2.id AND sv.value_type = 'entity'
 			WHERE k2.namespace_id = $1 AND k2.kind = $2
-			  AND (k2.entity_id = ANY($3) OR ($4 <> '' AND sv.value_entity_id = $4)))`,
-		namespace, kind, entities, sel.ValueEntityRef)
+			  AND (k2.entity_id = ANY($3) OR ($4 <> '' AND sv.value_entity_id = $4)
+			       OR k2.evidence_id = ANY($5)
+			       OR EXISTS (SELECT 1 FROM statement_values st
+			                  WHERE st.item_id = k2.id AND st.predicate = $6 AND st.value_text = ANY($7))))`,
+		namespace, kind, entities, sel.ValueEntityRef, evidenceIDs, sel.ValuePredicate, valueTexts)
 	if err != nil {
 		return 0, err
 	}
 	if len(victims) == 0 {
-		return 0, tx.Commit(ctx)
+		return 0, nil
 	}
 	var ids []string
 	keys := map[resolutionKey]bool{}
@@ -635,9 +669,6 @@ func (s *PgKnowledgeStore) EraseItems(ctx context.Context, namespace, kind strin
 		if err := s.rederive(ctx, tx, namespace, kind, k.entity, k.actor); err != nil {
 			return 0, err
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, err
 	}
 	return int(tag.RowsAffected()), nil
 }

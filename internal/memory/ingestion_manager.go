@@ -47,6 +47,10 @@ type IngestionConfig struct {
 	// SyncFactsWaitTimeout bounds that wait (sync_ingest_facts_wait_timeout_ms). On
 	// expiry the ingest still SUCCEEDS with a WARN. <=0 means the 120 s default.
 	SyncFactsWaitTimeout time.Duration
+	// LegacyDocumentIdentity derives document ids exactly as before ADR-0138
+	// (execution.ingestion.document_identity = "legacy"): no writer, Body-only digest,
+	// no grandfathering lookup. Default false (scheme v2).
+	LegacyDocumentIdentity bool
 }
 
 // defaultSyncFactsWaitTimeout is the fallback for IngestionConfig.SyncFactsWaitTimeout:
@@ -78,6 +82,11 @@ type IngestionManager struct {
 	structureStore  StructureGraphStore
 	// documentStore records the source-document entity (ADR-0093). Optional.
 	documentStore domain.DocumentStore
+	// lifecycle owns document identity checks and the version chain (ADR-0138 D2–D4):
+	// the grandfathering lookup, the cross-writer refusal and the retirement of a changed
+	// document's previous version. nil (tests, tools without a database) = ids are derived
+	// without a lookup and nothing is retired, logged once at boot by the composer.
+	lifecycle domain.DocumentLifecycleStore
 	// sceneGenEnabled gates the per-item scene-generation LLM call on the ingest
 	// hot path (ADR-0049 episodic scenes). Default OFF: it stalls ingest when no
 	// LLM is reachable and is not needed for document/structure retrieval.
@@ -314,13 +323,15 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 	ctx, clock := ingestClock(ctx)
 	stored := 0
 	defer func() { logIngestTiming(ctx, clock, time.Since(started), doc.SourceURI, stored, err) }()
+	// ADR-0138 D1.4: the document's identity, resolved ONCE for every step below.
+	ident := im.resolveDocumentID(ctx, doc)
 	// Evidence first (ADR-0105 D2): the original bytes must be durable and
 	// published as evidence before chunking, scene generation or any other
 	// semantic step — so a failure anywhere downstream still leaves source
 	// material that can be reprocessed.
 	if im.evidenceCapture != nil {
 		t := time.Now()
-		evID, err := im.captureEvidence(ctx, doc)
+		evID, err := im.captureEvidence(ctx, doc, ident.ID)
 		clock.Since(StageEvidence, t)
 		if err != nil {
 			return "", fmt.Errorf("ingestion manager: evidence capture: %w", err)
@@ -361,7 +372,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 		chunks, _ = OptionCChunker{}.Chunk(ctx, &doc)
 	}
 	clock.Since(StageChunk, t)
-	outcome, err := im.persistChunksTracked(ctx, doc, chunks, entityID, scene, im.cfg.SyncWaitForKG, im.cfg.SyncWaitForFacts)
+	outcome, err := im.persistChunksTracked(ctx, doc, ident, chunks, entityID, scene, im.cfg.SyncWaitForKG, im.cfg.SyncWaitForFacts)
 	chunkCount := outcome.Stored
 	stored = chunkCount
 	if err != nil {
@@ -371,7 +382,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 		return "", err
 	}
 	t = time.Now()
-	_, _, err = im.mintSourceDoc(ctx, doc)
+	_, _, err = im.mintSourceDoc(ctx, doc, ident.ID)
 	clock.Since(StageEntity, t)
 	if err != nil {
 		return "", fmt.Errorf("ingestion manager: source-doc entity for %q (its %d chunk(s) are stored; a retry overwrites both by id): %w",
@@ -401,7 +412,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 // replayed identical delivery dedupes, while the SAME key arriving with CHANGED
 // bytes becomes a NEW evidence revision rather than an update (ADR-0105 D4) —
 // which is exactly the re-ingest-a-changed-file case.
-func (im *IngestionManager) captureEvidence(ctx context.Context, doc domain.ExternalDocument) (domain.EvidenceID, error) {
+func (im *IngestionManager) captureEvidence(ctx context.Context, doc domain.ExternalDocument, documentID string) (domain.EvidenceID, error) {
 	body := doc.Data
 	if len(body) == 0 {
 		body = []byte(doc.Body)
@@ -418,7 +429,7 @@ func (im *IngestionManager) captureEvidence(ctx context.Context, doc domain.Exte
 	// fact layer no way to link an item to its evidence.
 	id, _, err := im.evidenceCapture.Ingest(ctx, evidence.Raw{
 		SourceID:       sourceID,
-		SourceKey:      externalDocumentID(doc),
+		SourceKey:      documentID,
 		SourceRevision: hex.EncodeToString(digest[:]),
 		SourceTime:     doc.Timestamp,
 		Bytes:          body,
@@ -512,6 +523,7 @@ func (im *IngestionManager) processBatchDoc(ctx context.Context, doc domain.Exte
 	)
 	defer func() { logIngestTiming(dctx, clock, time.Since(started), doc.SourceURI, outcome.Stored, err) }()
 	entityID := sourceDocEntityID(doc)
+	ident := im.resolveDocumentID(dctx, doc) // ADR-0138 D1.4: once per document
 	t := time.Now()
 	chunker := im.chunkerFor(doc)
 	chunks, cerr := chunker.Chunk(dctx, &doc)
@@ -520,13 +532,13 @@ func (im *IngestionManager) processBatchDoc(ctx context.Context, doc domain.Exte
 		chunks, _ = OptionCChunker{}.Chunk(dctx, &doc)
 	}
 	clock.Since(StageChunk, t)
-	outcome, err = im.persistChunks(dctx, doc, chunks, entityID, scene, false) // async path: never waits for the KG lane
+	outcome, err = im.persistChunksTracked(dctx, doc, ident, chunks, entityID, scene, false, false) // async path: never waits for the KG or fact lane
 	if err != nil {
 		slog.Warn("IngestionManager: failed to persist chunks", "source_uri", doc.SourceURI, "err", err)
 		return
 	}
 	t = time.Now()
-	_, _, err = im.mintSourceDoc(dctx, doc)
+	_, _, err = im.mintSourceDoc(dctx, doc, ident.ID)
 	clock.Since(StageEntity, t)
 	if err != nil {
 		slog.Warn("IngestionManager: failed to mint source-doc entity", "source_uri", doc.SourceURI, "err", err)
@@ -630,7 +642,7 @@ func sourceDocEntityID(doc domain.ExternalDocument) string {
 // content id, the entity id, and an error when the entity could not be saved —
 // callers decide whether that is fatal (ProcessSync: yes, the caller is told)
 // or logged (processBatch).
-func (im *IngestionManager) mintSourceDoc(ctx context.Context, doc domain.ExternalDocument) (string, string, error) {
+func (im *IngestionManager) mintSourceDoc(ctx context.Context, doc domain.ExternalDocument, documentID string) (string, string, error) {
 	if im.agent == nil || im.agent.Manager == nil || im.agent.Manager.Store == nil {
 		return "", "", fmt.Errorf("ingestion manager: no memory manager configured")
 	}
@@ -641,7 +653,7 @@ func (im *IngestionManager) mintSourceDoc(ctx context.Context, doc domain.Extern
 		}
 	}
 	entityID := sourceDocEntityID(doc)
-	meta := map[string]interface{}{"kind": "source_document", "canonical_id": doc.SourceURI, "source_uri": doc.SourceURI, "source_type": doc.SourceType, "title": doc.Title, "author": doc.Author, "document_id": externalDocumentID(doc)}
+	meta := map[string]interface{}{"kind": "source_document", "canonical_id": doc.SourceURI, "source_uri": doc.SourceURI, "source_type": doc.SourceType, "title": doc.Title, "author": doc.Author, "document_id": documentID}
 	if len(doc.Tags) > 0 {
 		meta["tags"] = append([]string(nil), doc.Tags...)
 	}

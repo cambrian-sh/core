@@ -718,6 +718,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		AssessorModel: factsAssessorModel(llmProvider.Roles()),
 		// ADR-0136 A2.4: the extractor version on every marker names this model.
 		GeneratorModel: kernel.FactsGeneratorModel(cfg.LLMProvider, llmProvider.Roles()),
+		// ADR-0138: document identity checks and the version chain, over the same pool;
+		// its retirement erases fact items through this knowledge store in one transaction.
+		Documents: postgres.NewPgDocumentLifecycle(knowledgeStore),
 	}
 
 	// 2. Domain stacks — sequential construction (dependency order)

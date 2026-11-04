@@ -268,6 +268,18 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// ADR-0028: ingestion pipeline — SceneGenerator + IngestionManager + DirectoryWatcher.
 	sceneGen := memory.NewSceneGenerator(gen)
 	ingestionMgr := memory.NewIngestionManager(sceneGen, embed, memoryAgent, ingestionConfigFrom(execCfg.Ingestion), chunkerCfg)
+	// ADR-0138 D2-D4: the document lifecycle is composed HERE, with the manager, so no
+	// ingest path can run without it once a database is wired. Its writer check is
+	// computed inside the store's transaction (the writer of record against the
+	// kernel-stamped Author), not attached as a policy.
+	if facts.Documents != nil {
+		ingestionMgr.SetDocumentLifecycle(facts.Documents)
+	} else {
+		slog.Info("ADR-0138: no document lifecycle store: re-ingesting a changed document does not retire its previous version, and a caller-named document id is not protected from another writer")
+	}
+	if execCfg.Ingestion.DocumentIdentity == config.DocumentIdentityLegacy {
+		slog.Warn("ADR-0138: execution.ingestion.document_identity=legacy: document ids omit the writer and a binary's bytes, so two principals, or two binary uploads with one tag or session, can share an id")
+	}
 	// ADR-0136 D4/A1: the fact extractor, constructed only when the operator turned
 	// extraction on, so the default deployment carries no queue and no goroutine. It
 	// writes through the enforcing writer above, never the raw substrate. The backfill
@@ -424,6 +436,13 @@ type FactSubstrate struct {
 	// GeneratorModel is the facts generator's model (FactsGeneratorModel), part of the
 	// extractor version on every extraction marker (ADR-0136 A2.4).
 	GeneratorModel string
+	// Documents is the ADR-0138 document lifecycle (postgres.PgDocumentLifecycle): the
+	// identity lookup, the cross-writer refusal and the retirement of a changed
+	// document's previous version. It is carried here because its cascade erases the
+	// document's fact items through this substrate's EraseItemsTx in the SAME
+	// transaction as its chunks. nil = ids are derived with no lookup and nothing is
+	// retired (logged by NewMemoryStack).
+	Documents domain.DocumentLifecycleStore
 }
 
 // FactsGeneratorModel names the model behind the "facts" system role for the ADR-0136
@@ -485,5 +504,7 @@ func ingestionConfigFrom(c config.IngestionConfig) memory.IngestionConfig {
 		// ADR-0136 D4: a sync ingest may wait for its document's facts (default off).
 		SyncWaitForFacts:     c.SyncIngestWaitForFacts,
 		SyncFactsWaitTimeout: time.Duration(c.SyncIngestFactsWaitTimeoutMs) * time.Millisecond,
+		// ADR-0138 D2: the document-id scheme ("" reads as v2).
+		LegacyDocumentIdentity: c.DocumentIdentity == config.DocumentIdentityLegacy,
 	}
 }

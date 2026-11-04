@@ -146,6 +146,10 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 			switch {
 			case errors.Is(err, authz.ErrWriteDenied):
 				return nil, status.Error(codes.InvalidArgument, err.Error())
+			case errors.Is(err, domain.ErrDocumentOwnedByAnotherWriter):
+				// ADR-0138 Q1: another writer holds this caller-named document id. Refused,
+				// never taken over — the earlier writer keeps read access to its content.
+				return nil, status.Error(codes.PermissionDenied, err.Error())
 			default:
 				return nil, status.Error(codes.Internal, "ingestion manager: "+err.Error())
 			}

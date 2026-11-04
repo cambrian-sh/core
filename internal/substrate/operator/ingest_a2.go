@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -179,6 +180,11 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 		EventTime:   et,
 	})
 	if err != nil {
+		// ADR-0138 Q1: a caller-named document id held by another writer is refused, not
+		// taken over; the operator is told why rather than handed an Internal.
+		if errors.Is(err, domain.ErrDocumentOwnedByAnotherWriter) {
+			return nil, status.Errorf(codes.PermissionDenied, "ingest memory: %v", err)
+		}
 		return nil, status.Errorf(codes.Internal, "ingest memory: %v", err)
 	}
 

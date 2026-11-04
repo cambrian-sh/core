@@ -52,22 +52,13 @@ type persistOutcome struct {
 	FactsWait *FactsWait
 }
 
-// persistChunks is persistChunksTracked without tracking the fact lane (the async
-// batch path, and every caller that predates ADR-0136 D4).
-func (im *IngestionManager) persistChunks(
-	ctx context.Context,
-	doc domain.ExternalDocument,
-	chunks []domain.Chunk,
-	entityID string,
-	scene string,
-	trackKG bool,
-) (persistOutcome, error) {
-	return im.persistChunksTracked(ctx, doc, chunks, entityID, scene, trackKG, false)
-}
-
+// persistChunksTracked stores one document under its resolved identity (ADR-0138 D1.4:
+// resolved once by the caller, resolveDocumentID). trackFacts tracks the fact lane for
+// a sync ingest (ADR-0136 D4); the async batch path passes false.
 func (im *IngestionManager) persistChunksTracked(
 	ctx context.Context,
 	doc domain.ExternalDocument,
+	ident docIdentity,
 	chunks []domain.Chunk,
 	entityID string,
 	scene string,
@@ -78,7 +69,7 @@ func (im *IngestionManager) persistChunksTracked(
 	if im.agent == nil || im.agent.Manager == nil || im.agent.Manager.Store == nil {
 		return outcome, fmt.Errorf("ingestion manager: vector store is not configured")
 	}
-	documentID := externalDocumentID(doc)
+	documentID := ident.ID
 	// ADR-0134 D2: the record clock of this ingest. created_at of every chunk written
 	// below; on a re-ingest it moves ("ingested_at always updates", owner Q6) while a
 	// stated event time is kept unless restated (the adapter's keepStatedTime).
@@ -110,16 +101,42 @@ func (im *IngestionManager) persistChunksTracked(
 	// because its entity row could not be written would be a worse outcome than chunks
 	// with an unresolved parent, which still retrieve correctly.
 	clock := domain.StageClockFrom(ctx)
+
+	// ADR-0138 D3: before ANYTHING of this version is written, claim the id. Another
+	// writer's id is refused (nothing is written); a changed version retires the stored
+	// one — its chunks, KG triplets, PageRank, structure, fact items, assessments and
+	// markers — in one transaction. It must run before the chunk save: the triplet
+	// batcher and the fact extractor are asynchronous and keyed by chunk id, so a delete
+	// after the save would race them. Failure is fatal: writing over a version that could
+	// not be retired would leave its tail chunks and derivatives behind.
+	if im.lifecycle != nil {
+		t := time.Now()
+		rev, lerr := im.lifecycle.ReviseDocument(ctx, domain.DocumentRevision{
+			ID: documentID, Writer: ident.Writer, ContentDigest: ident.ContentDigest,
+			Text: doc.Body, HasData: len(doc.Data) > 0,
+		})
+		clock.Since(StageDocumentRevise, t)
+		if lerr != nil {
+			return outcome, fmt.Errorf("ingestion manager: document %q: %w", documentID, lerr)
+		}
+		if rev.Retired {
+			slog.InfoContext(ctx, "IngestionManager: changed document retired its previous version",
+				"doc", documentID, "retired_version", rev.Previous.Version, "version", rev.Version, "deleted", rev.Counts)
+		}
+	}
+
 	if im.documentStore != nil {
 		t := time.Now()
 		stored, derr := im.documentStore.SaveDocument(ctx, domain.SourceDocument{
-			ID:         documentID,
-			Title:      doc.Title,
-			SourceType: doc.SourceType,
-			Text:       doc.Body,
-			Tags:       doc.Tags,
-			Metadata:   domain.SourceDocumentMetadata(doc),
-			EventStamp: doc.StampOf(),
+			ID:            documentID,
+			Title:         doc.Title,
+			SourceType:    doc.SourceType,
+			Text:          doc.Body,
+			Tags:          doc.Tags,
+			Metadata:      domain.SourceDocumentMetadata(doc),
+			WrittenBy:     ident.Writer,
+			ContentDigest: ident.ContentDigest,
+			EventStamp:    doc.StampOf(),
 		})
 		clock.Since(StageDocumentRow, t)
 		if derr != nil {
@@ -505,12 +522,18 @@ func classificationTags(tags []string, documentID string) []string {
 	return out
 }
 
-// externalDocumentID derives the STABLE, UNIQUE document id an item's chunks hang
+// legacyExternalDocumentID is the document-id derivation as it stood before ADR-0138,
+// kept byte for byte: execution.ingestion.document_identity = "legacy" uses it, and the
+// v2 scheme uses it to find (and grandfather) rows a store already holds (ADR-0138 D2).
+// It omits the writer and digests only Body, so it collides across principals and across
+// binaries whose bytes travel in Data — see documentIdentityOf for the current rules.
+//
+// It derives the STABLE, UNIQUE document id an item's chunks hang
 // off of (chunk ids are "<documentID>-chunk-<n>"). "Unique" so two distinct items
 // never collide onto the same chunk id and overwrite each other; "stable" so
 // re-ingesting the same item resolves to the same id (idempotent — the sibling of
 // content dedup).
-func externalDocumentID(doc domain.ExternalDocument) string {
+func legacyExternalDocumentID(doc domain.ExternalDocument) string {
 	// 1. Explicit caller-supplied id (multi-chunk uploads tagged source_document).
 	//    Preserves the "<doc_id>-chunk-N" contract downstream consumers match on.
 	for i, tag := range doc.Tags {
