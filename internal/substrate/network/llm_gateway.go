@@ -164,6 +164,9 @@ func (g *SubstrateLLMGateway) Acquire(ctx context.Context, sa domain.StepAllocat
 		ExpiresAt:      now.Add(ttl),
 		LastActivityAt: now,
 		Background:     ctx != nil && domain.IsBackgroundSpend(ctx),
+		// The request that minted the lease counts the calls made under it, even
+		// though they arrive later over the agent's own RPC (domain.LLMUsageTally).
+		Tally: domain.LLMUsageTallyFrom(ctx),
 	}
 	g.mu.Unlock()
 	return sessionID, nil
@@ -283,6 +286,21 @@ func leaseSession(ctx context.Context, ss *domain.BudgetLeaseState) domain.Sessi
 	}
 	sid, _ := domain.SessionIDFromContext(ctx)
 	return sid
+}
+
+// leasePurpose labels a gateway call for the spend log and the per-request
+// tally: "agent_step", or "agent_step:<agent id>" when the kernel bound the lease
+// to an agent (e.g. "agent_step:retrieval_agent" for the agentic retrieval
+// chain), so a request's report says WHICH agent's calls it paid for. Read under
+// g.mu: BindLease writes Binding under it.
+func (g *SubstrateLLMGateway) leasePurpose(ss *domain.BudgetLeaseState) string {
+	g.mu.RLock()
+	agent := ss.Binding.AgentID
+	g.mu.RUnlock()
+	if agent == "" {
+		return string(domain.PurposeAgentStep)
+	}
+	return string(domain.PurposeAgentStep) + ":" + agent
 }
 
 // admitLease is the ADR-0131 D3 session-ceiling check for one call under a
@@ -492,7 +510,7 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		}
 	}
 	g.mu.Unlock()
-	meter.RecordSession(sid, string(domain.PurposeAgentStep), modelID, reconciled)
+	meter.RecordSessionTally(sid, ss.Tally, g.leasePurpose(ss), modelID, reconciled)
 
 	// Update health cache on success
 	g.markHealthy(modelID)
@@ -604,7 +622,7 @@ func (g *SubstrateLLMGateway) GenerateWithTools(
 		addLeaseUsageLocked(st, reconciled)
 	}
 	g.mu.Unlock()
-	meter.RecordSession(sid, string(domain.PurposeAgentStep), modelID, reconciled)
+	meter.RecordSessionTally(sid, ss.Tally, g.leasePurpose(ss), modelID, reconciled)
 
 	g.markHealthy(modelID)
 	return turn, nil

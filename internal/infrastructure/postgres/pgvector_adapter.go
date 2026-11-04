@@ -100,6 +100,9 @@ type PgVectorAdapter struct {
 	pool        *pgxpool.Pool
 	dim         int  // Dynamic dimension support (ADR-0012)
 	autoMigrate bool // PLAT-02 / ADR-0064: run the migration runner at boot (default true)
+	// migrations is the boot-time guard (database.migrations): which databases boot may
+	// not migrate on its own. Zero value = apply, nothing protected (pre-guard behaviour).
+	migrations migrate.Policy
 	// ADR-0107 stage 3a: dual-write chunk embeddings into the chunk_embeddings
 	// projection under the active embedder's identity. Write-only — nothing in
 	// this adapter READS the projection until stage 3b — so the flag cannot
@@ -308,10 +311,19 @@ func NewPgVectorAdapter(ctx context.Context, cfg *config.Config) (adapter *PgVec
 				"set embedder.dimensions explicitly (e.g. 1024 for bge-large)")
 	}
 
+	migMode, err := migrate.ParseMode(cfg.Database.Migrations.Mode)
+	if err != nil {
+		return nil, fmt.Errorf("database.migrations.mode: %w", err)
+	}
 	p := &PgVectorAdapter{
-		pool:            pool,
-		dim:             dims,
-		autoMigrate:     cfg.Storage.AutoMigrate,
+		pool:        pool,
+		dim:         dims,
+		autoMigrate: cfg.Storage.AutoMigrate,
+		migrations: migrate.Policy{
+			Mode:             migMode,
+			ProtectedDBNames: cfg.Database.Migrations.ProtectedDBNames,
+			AllowPending:     cfg.Database.Migrations.AllowPending,
+		},
 		projectionWrite: cfg.Execution.Retrieval.EmbeddingProjectionWrite,
 		projectionRead:  cfg.Execution.Retrieval.EmbeddingProjectionRead,
 		projModelID:     cfg.Embedder.Model,
@@ -482,12 +494,14 @@ func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 // runMigrations creates the schema by applying the migration runner (baseline 0001 +
 // pending deltas) after the dimension guard has run (PLAT-02 / ADR-0064). Gated by
 // storage.auto_migrate (default true); when off, boot skips schema creation entirely
-// and the operator must run `migrate up` / manage migrations externally.
+// and the operator must run `migrate up` / manage migrations externally. When on, the
+// database.migrations guard decides whether pending changes may be applied here
+// (migrate.Boot refuses a protected or refuse_pending database before any write).
 func (p *PgVectorAdapter) runMigrations(ctx context.Context) error {
 	if !p.autoMigrate {
 		return nil
 	}
-	return migrate.Migrate(ctx, p.pool, p.dim)
+	return migrate.Boot(ctx, p.pool, p.dim, p.migrations)
 }
 
 // migrationPool opens a plain pool for the CLI migration paths (no vector-type

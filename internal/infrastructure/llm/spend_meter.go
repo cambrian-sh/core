@@ -230,24 +230,36 @@ func (m *SpendMeter) Record(ctx context.Context, purpose, generatorID string, u 
 		if tab := spendTabFrom(ctx); tab != nil {
 			tab.mu.Lock()
 			if !tab.settled {
-				tab.spend.add(u, m.cost(generatorID, u))
+				cost := m.cost(generatorID, u)
+				tab.spend.add(u, cost)
 				tab.mu.Unlock()
+				addToTally(domain.LLMUsageTallyFrom(ctx), purpose, u, cost)
 				return
 			}
 			sid = tab.settledTo
 			tab.mu.Unlock()
 		}
 	}
-	m.RecordSession(sid, purpose, generatorID, u)
+	m.RecordSessionTally(sid, domain.LLMUsageTallyFrom(ctx), purpose, generatorID, u)
 }
 
 // RecordSession books one finished call against sid ("" = the kernel
 // no-session bucket, NoSessionBucket).
 func (m *SpendMeter) RecordSession(sid domain.SessionID, purpose, generatorID string, u TokenUsage) {
+	m.RecordSessionTally(sid, nil, purpose, generatorID, u)
+}
+
+// RecordSessionTally is RecordSession that also adds the call to a per-request
+// tally (domain.LLMUsageTally; nil = none). The tally is fed here and nowhere
+// else, so a request's reported call count and the ledger cannot disagree about
+// which calls happened. The gateway passes the tally captured on the lease; the
+// Acquire door passes the one on the call's ctx (Record).
+func (m *SpendMeter) RecordSessionTally(sid domain.SessionID, tally *domain.LLMUsageTally, purpose, generatorID string, u TokenUsage) {
 	if m == nil {
 		return
 	}
 	cost := m.cost(generatorID, u)
+	addToTally(tally, purpose, u, cost)
 	m.mu.Lock()
 	var s *SessionSpend
 	if sid == "" {
@@ -264,6 +276,19 @@ func (m *SpendMeter) RecordSession(sid domain.SessionID, purpose, generatorID st
 	m.log.Debug("llm spend recorded", "session", bucket, "purpose", purpose, "generator", generatorID,
 		"input", u.PromptTokens, "output", u.CompletionTokens, "cache_read", u.CacheReadTokens,
 		"cost_usd", cost, "estimated", u.Estimated)
+}
+
+// addToTally books one call on a per-request tally (nil-safe).
+func addToTally(t *domain.LLMUsageTally, purpose string, u TokenUsage, cost float64) {
+	if t == nil {
+		return
+	}
+	one := domain.LLMUsage{Calls: 1, InputTokens: u.PromptTokens, OutputTokens: u.CompletionTokens,
+		CacheReadTokens: u.CacheReadTokens, CostUSD: cost}
+	if u.Estimated {
+		one.EstimatedCalls = 1
+	}
+	t.Add(purpose, one)
 }
 
 // Session returns a copy of sid's running total (zero for an unknown session).

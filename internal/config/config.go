@@ -1423,8 +1423,20 @@ type FactsConfig struct {
 	QueueSize int `json:"queue_size"`
 	// Workers is the extraction worker count (concurrent LLM calls). Default 2.
 	Workers int `json:"workers"`
-	// LLMTimeoutMs bounds one extraction call. Default 120000.
+	// LLMTimeoutMs is the base bound of one extraction (or judge) call. Default 120000.
 	LLMTimeoutMs int `json:"llm_timeout_ms"`
+	// LLMTimeoutPerKCharMs adds this much per 1000 prompt characters to llm_timeout_ms,
+	// so a full max_prompt_chars window gets the time its longer answer needs (a 48k
+	// window ran past a flat 120 s even alone, T-20261104-fact-extractor-fails-
+	// permanently-on-some). 0 = a flat llm_timeout_ms. Default 2500.
+	LLMTimeoutPerKCharMs int `json:"llm_timeout_per_kchar_ms"`
+	// LLMTimeoutMaxMs caps the scaled timeout, so a call stays bounded. Must be >=
+	// llm_timeout_ms. Default 300000.
+	LLMTimeoutMaxMs int `json:"llm_timeout_max_ms"`
+	// ParseRetries is how many times an extraction call whose answer cannot be parsed
+	// is asked again with the same prompt (the model intermittently wraps or trails the
+	// object; a plain re-ask fixed 6 of 7). 0 = no retry; at most 3. Default 1.
+	ParseRetries int `json:"parse_retries"`
 	// MaxFactsPerDocument caps the facts kept from ONE extraction call — one window of
 	// a source (ADR-0136 A2.3; the name predates windows). Default 64.
 	MaxFactsPerDocument int `json:"max_facts_per_document"`
@@ -1587,6 +1599,8 @@ type Config struct {
 		User     string `json:"user"`
 		Password string `json:"password"`
 		DBName   string `json:"dbname"`
+		// Migrations is the boot-time migration guard (see MigrationsConfig).
+		Migrations MigrationsConfig `json:"migrations"`
 	} `json:"database"`
 	Server struct {
 		Port string `json:"port"`
@@ -2173,21 +2187,24 @@ func DefaultConfig() *Config {
 			// ADR-0136 D4/D5: the fact layer is off; the tunables below are read only
 			// when a switch is on.
 			Facts: FactsConfig{
-				QueueSize:           1024,
-				Workers:             2,
-				LLMTimeoutMs:        120000,
-				MaxFactsPerDocument: 64,
-				MaxPromptChars:      48000,
-				MaxCallsPerDocument: 8,
-				MaxFactsPerSource:   512,
-				LaneTopK:            20,
-				LaneScopedTopK:      20,
-				FactMatchWeight:     0.2,
-				CurrentFactWeight:   0.1,
-				SingleAttributes:    []string{},
-				MultiAttributes:     []string{},
-				FuzzyCandidates:     10,
-				CardinalityMinVotes: 3,
+				QueueSize:            1024,
+				Workers:              2,
+				LLMTimeoutMs:         120000,
+				LLMTimeoutPerKCharMs: 2500,
+				LLMTimeoutMaxMs:      300000,
+				ParseRetries:         1,
+				MaxFactsPerDocument:  64,
+				MaxPromptChars:       48000,
+				MaxCallsPerDocument:  8,
+				MaxFactsPerSource:    512,
+				LaneTopK:             20,
+				LaneScopedTopK:       20,
+				FactMatchWeight:      0.2,
+				CurrentFactWeight:    0.1,
+				SingleAttributes:     []string{},
+				MultiAttributes:      []string{},
+				FuzzyCandidates:      10,
+				CardinalityMinVotes:  3,
 				// T-20261103-fact-backfill-processes-each-principal-s: 1 = the serial
 				// ordered backfill, unchanged.
 				BackfillGroupConcurrency: 1,
@@ -2233,6 +2250,10 @@ func DefaultConfig() *Config {
 	// PLAT-02 / ADR-0064: migrate-on-boot is on by default (matches the historical
 	// always-run ensureSchema behavior); set storage.auto_migrate=false to opt out.
 	cfg.Storage.AutoMigrate = true
+	// The boot-time guard defaults to the historical behaviour (apply, nothing
+	// protected); an operator protects a database by naming it in
+	// database.migrations.protected_dbnames (ADR-0064 amendment, 2026-11-04).
+	cfg.Database.Migrations.Mode = "auto"
 	// ADR-0061 A2.8: compact the bbolt file at boot when it is over 256 MiB and
 	// more than half free pages.
 	cfg.Storage.CompactMinBytes = 256 << 20
@@ -2541,6 +2562,7 @@ func (c *Config) validateSecrets() *ConfigError {
 	if c.Database.Password == "" {
 		errs = append(errs, "database.password is required (set CAMBRIAN_DATABASE__PASSWORD)")
 	}
+	errs = append(errs, c.Database.Migrations.validate()...)
 	// ADR-0042: validate the llm_provider + embedder blocks (no-op until configured).
 	errs = append(errs, c.LLMProvider.validate(c.Embedder)...)
 	// ADR-0126 D3/D4: validate the inbound MCP endpoint (no-op until enabled).
@@ -2669,6 +2691,15 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 		}
 		if f.LLMTimeoutMs <= 0 {
 			errs = append(errs, "facts.llm_timeout_ms must be > 0 when extract_enabled is on")
+		}
+		if f.LLMTimeoutPerKCharMs < 0 {
+			errs = append(errs, "facts.llm_timeout_per_kchar_ms must be >= 0 (0 = a flat llm_timeout_ms)")
+		}
+		if f.LLMTimeoutMaxMs < f.LLMTimeoutMs {
+			errs = append(errs, "facts.llm_timeout_max_ms must be >= llm_timeout_ms when extract_enabled is on")
+		}
+		if f.ParseRetries < 0 || f.ParseRetries > 3 {
+			errs = append(errs, "facts.parse_retries must be in [0, 3]")
 		}
 		if f.MaxFactsPerDocument <= 0 {
 			errs = append(errs, "facts.max_facts_per_document must be > 0 when extract_enabled is on")

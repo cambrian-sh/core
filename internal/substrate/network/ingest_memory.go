@@ -134,9 +134,14 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 		// change (T-20261102-ingestion-logs-no-per-stage-timing-so-the-1-s).
 		clock := domain.NewStageClock()
 		ictx = domain.WithStageClock(ictx, clock)
+		// The kernel's own LLM calls for this ingest (fact extraction, assessment, any
+		// organ the pipeline reaches) go back as the "cambrian-llm-usage" trailer,
+		// counted by the ADR-0131 SpendMeter (LLMUsageTrailer).
+		ictx, sendLLMUsage := withLLMUsageTally(ictx)
 		started := time.Now()
 		entityID, err := s.IngestionProcessor.ProcessSync(ictx, doc)
 		_ = grpc.SetTrailer(ctx, metadata.Pairs(IngestTimingTrailer, memory.FormatStageClock(clock, time.Since(started)))) // best-effort diagnostic; fails only outside a gRPC call (tests)
+		sendLLMUsage()
 		if err != nil {
 			// Map the CAUSE, not the layer. Collapsing everything to Internal is how a
 			// denied write or a coined tag surfaced as

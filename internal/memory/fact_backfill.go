@@ -122,7 +122,8 @@ type FactBackfillReport struct {
 	Chunks      int // content chunks of the pending documents
 	Groups      int // work units (classification groups when Ordered, else Pending)
 	// Cost: MaxLLMCallsPerDocument is the per-document bound of one run
-	// (max_calls_per_document windows x (1 + an assessment call); 0 = no window cap);
+	// (max_calls_per_document windows x (1 + parse_retries + an assessment call); 0 =
+	// no window cap);
 	// EstimatedLLMCalls sums each pending document's windows from its text length
 	// (A2.3), counting an assessment call per window although one is made only when a
 	// window has candidate pairs with no stored verdict.
@@ -130,12 +131,19 @@ type FactBackfillReport struct {
 	EstimatedLLMCalls      int
 
 	// Execution (zero on a dry run).
-	Extracted           int // documents run through the model and marked
-	Skipped             int // found marked at run time (a concurrent run or ingest did it)
-	Failed              int // extraction failed; left unmarked for the next run
-	Missing             int // no chunk text could be read; left unmarked
-	Cancelled           int // not finished because the run was cancelled
-	Partial             int // extracted, but stopped before the end of the source (a later run resumes it)
+	Extracted int // documents run through the model and marked
+	Skipped   int // found marked at run time (a concurrent run or ingest did it)
+	Failed    int // extraction failed; left unmarked for the next run
+	Missing   int // no chunk text could be read; left unmarked
+	Cancelled int // not finished because the run was cancelled
+	Partial   int // extracted, but stopped before the end of the source (a later run resumes it)
+	// FailedParse and FailedTimeout split Failed by FactErrorKind (the rest are
+	// "other": transport, store); ParseRetries counts re-asks after an unreadable
+	// answer and ParseRepaired the windows they recovered.
+	FailedParse         int
+	FailedTimeout       int
+	ParseRetries        int
+	ParseRepaired       int
 	LLMCalls            int
 	AssessmentCalls     int
 	AssessmentsReplayed int
@@ -379,11 +387,12 @@ func (r *backfillRun) one(ctx context.Context, c domain.FactBackfillCandidate) {
 	}
 	if err != nil {
 		r.log.WarnContext(ctx, "facts-backfill: extraction failed; left unmarked for the next run",
-			"document_id", c.DocumentID, "err", err)
+			"document_id", c.DocumentID, "err_kind", FactErrorKind(err), "err", err)
 	}
 	r.finish(ctx, func(rep *FactBackfillReport) {
 		rep.LLMCalls += res.LLMCalls
 		rep.AssessmentCalls += res.AssessmentCalls
+		rep.countParse(res, err)
 		if res.AssessmentReplayed {
 			rep.AssessmentsReplayed++
 		}
@@ -400,6 +409,18 @@ func (r *backfillRun) one(ctx context.Context, c domain.FactBackfillCandidate) {
 			}
 		}
 	})
+}
+
+// countParse adds one document's parse re-asks and, when it failed, its failure kind.
+func (rep *FactBackfillReport) countParse(res FactDocumentResult, err error) {
+	rep.ParseRetries += res.ParseRetries
+	rep.ParseRepaired += res.ParseRepaired
+	switch FactErrorKind(err) {
+	case FactErrKindParse:
+		rep.FailedParse++
+	case FactErrKindTimeout:
+		rep.FailedTimeout++
+	}
 }
 
 // finish applies one document's outcome and logs progress every r.every documents.
@@ -461,7 +482,8 @@ func (b *FactBackfill) readChunks(ctx context.Context, ids []string) ([]*domain.
 func reportAttrs(r FactBackfillReport) []any {
 	return []any{
 		"candidates", r.Candidates, "already_done", r.AlreadyDone, "pending", r.Pending,
-		"extracted", r.Extracted, "skipped", r.Skipped, "failed", r.Failed, "missing", r.Missing,
+		"extracted", r.Extracted, "skipped", r.Skipped, "failed", r.Failed, "failed_parse", r.FailedParse,
+		"failed_timeout", r.FailedTimeout, "parse_retries", r.ParseRetries, "parse_repaired", r.ParseRepaired, "missing", r.Missing,
 		"cancelled", r.Cancelled, "partial", r.Partial, "llm_calls", r.LLMCalls, "assessment_calls", r.AssessmentCalls,
 		"assessments_replayed", r.AssessmentsReplayed, "facts_inserted", r.FactsInserted, "elapsed", r.Elapsed.Round(time.Second).String(),
 		"two_phase", r.TwoPhase, "journal_windows_replayed", r.JournalWindowsReplayed,

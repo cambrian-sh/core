@@ -2,7 +2,6 @@ package memory
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -347,23 +346,20 @@ type factParseStats struct {
 	OverCap       int
 }
 
-// errFactResponseNotJSON is a response with no JSON object in it.
-var errFactResponseNotJSON = errors.New("fact extraction: response holds no JSON object")
-
 // parseFactResponse validates the model's answer against the passages it was given.
 // It is strict on shape and grounding and lenient only on wrapping: a code fence or
-// prose around the one JSON object is stripped.
+// prose around the one JSON object, or after it, is ignored (decodeKeyedJSONObject).
 func parseFactResponse(resp string, passages []string, maxFacts int) ([]extractedFact, factParseStats, error) {
 	var st factParseStats
-	start, end := strings.Index(resp, "{"), strings.LastIndex(resp, "}")
-	if start < 0 || end <= start {
-		return nil, st, errFactResponseNotJSON
+	raw, err := decodeKeyedJSONObject(resp, "facts")
+	if err != nil {
+		return nil, st, err
 	}
 	var payload struct {
-		Facts []rawExtractedFact `json:"facts"`
+		Facts []rawExtractedFact
 	}
-	if err := json.Unmarshal([]byte(resp[start:end+1]), &payload); err != nil {
-		return nil, st, fmt.Errorf("fact extraction: response is not the expected JSON: %w", err)
+	if err := json.Unmarshal(raw, &payload.Facts); err != nil {
+		return nil, st, fmt.Errorf("fact extraction: response is not the expected JSON: %w (%w)", err, errFactResponseUnparseable)
 	}
 	st.Returned = len(payload.Facts)
 	normPassages := make([]string, len(passages))
@@ -548,19 +544,19 @@ var assessmentVerdicts = map[string]string{
 // ignored; a pair the model left out has no verdict (the authority then decides it by
 // cardinality and cues alone).
 func parseAssessmentResponse(resp string, items []contradictionItem) ([]domain.AssessmentVerdict, error) {
-	start, end := strings.Index(resp, "{"), strings.LastIndex(resp, "}")
-	if start < 0 || end <= start {
-		return nil, errFactResponseNotJSON
+	raw, err := decodeKeyedJSONObject(resp, "verdicts")
+	if err != nil {
+		return nil, err
 	}
 	var payload struct {
 		Verdicts []struct {
 			New       string `json:"new"`
 			Candidate string `json:"candidate"`
 			Verdict   string `json:"verdict"`
-		} `json:"verdicts"`
+		}
 	}
-	if err := json.Unmarshal([]byte(resp[start:end+1]), &payload); err != nil {
-		return nil, fmt.Errorf("fact assessment: response is not the expected JSON: %w", err)
+	if err := json.Unmarshal(raw, &payload.Verdicts); err != nil {
+		return nil, fmt.Errorf("fact assessment: response is not the expected JSON: %w (%w)", err, errFactResponseUnparseable)
 	}
 	var out []domain.AssessmentVerdict
 	seen := map[[2]int]bool{}

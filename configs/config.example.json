@@ -15,7 +15,8 @@
     "port": "5432",
     "user": "cambrian",
     "password": "",
-    "dbname": "cambrian_db"
+    "dbname": "cambrian_db",
+    "migrations": { "mode": "auto", "protected_dbnames": [], "allow_pending": false }
   },
   "server": { "port": "50051" },
   "telemetry": {

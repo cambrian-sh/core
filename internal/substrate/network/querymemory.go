@@ -92,6 +92,13 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	// reads as a hang.
 	s.reportProgress(ctx, domain.PhaseSearching)
 
+	// The kernel's own LLM calls for this recall (the agentic retrieval chain's
+	// retrieval_agent stream, any memory organ) go back as the "cambrian-llm-usage"
+	// trailer, counted by the ADR-0131 SpendMeter (LLMUsageTrailer). Deferred, so a
+	// failed recall still reports what it spent.
+	ctx, sendLLMUsage := withLLMUsageTally(ctx)
+	defer sendLLMUsage()
+
 	if s.MemorySearcher == nil {
 		return &pb.MemoryResponse{Results: []*pb.MemoryResult{}}, nil
 	}

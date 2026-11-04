@@ -75,6 +75,12 @@ type BudgetLeaseState struct {
 	// Acquire from the domain.WithBackgroundSpend ctx marker — never from the
 	// wire — and deliberately NOT part of Binding, which BindLease replaces whole.
 	Background bool
+	// Tally is the per-request LLM usage tally (LLMUsageTally) of the ctx the lease
+	// was acquired in — e.g. the QueryMemory whose agentic retrieval chain minted
+	// it — so calls an agent makes under the lease over its own RPC are counted to
+	// the request that started them. Set by the gateway at Acquire, never from the
+	// wire, and like Background outside Binding. Nil = no request is counting.
+	Tally *LLMUsageTally
 }
 
 // StepAllocation records the top-3 TraitModel candidates (winner + 2 fallbacks)

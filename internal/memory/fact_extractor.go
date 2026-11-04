@@ -72,13 +72,25 @@ type FactExtractor struct {
 	assessReplayed  atomic.Uint64 // candidate sets whose stored verdict was reused (no call)
 	stored          atomic.Uint64 // items inserted
 	learned         atomic.Uint64 // profile cardinality changes from votes
+	parseFailures   atomic.Uint64 // extraction answers that could not be read
+	parseRetries    atomic.Uint64 // re-asks after an unreadable answer (fact_llm_call.go)
+	parseRepaired   atomic.Uint64 // windows whose re-ask was read
+	timeouts        atomic.Uint64 // extraction calls that ran out of time
 }
 
 // FactExtractorConfig is execution.facts, mapped by kernel.factExtractorConfigFrom.
 type FactExtractorConfig struct {
-	QueueSize  int
-	Workers    int
-	LLMTimeout time.Duration
+	QueueSize int
+	Workers   int
+	// LLMTimeout is the base bound of one call; LLMTimeoutPerKChar is added per 1000
+	// prompt characters, and the sum is capped at LLMTimeoutMax (callTimeout). A cap
+	// below LLMTimeout is raised to it, so a zero cap means a flat LLMTimeout.
+	LLMTimeout         time.Duration
+	LLMTimeoutPerKChar time.Duration
+	LLMTimeoutMax      time.Duration
+	// ParseRetries is the re-asks of the same prompt after an unreadable extraction
+	// answer (0 = none; negative reads as 0).
+	ParseRetries int
 	// MaxFactsPerDocument caps the facts kept from ONE window (A2.3: per call).
 	MaxFactsPerDocument int
 	MaxPromptChars      int
@@ -115,6 +127,10 @@ type FactExtractorConfig struct {
 // FactExtractorStats is a snapshot of the counters.
 type FactExtractorStats struct {
 	Enqueued, Dropped, Skipped, Extracted, FailedDocs, LLMCalls, AssessmentCalls, AssessmentsReplayed, Stored, ProfilesLearned uint64
+	// ParseFailures counts unreadable extraction answers, ParseRetries the re-asks they
+	// caused, ParseRepaired the windows a re-ask recovered, Timeouts the calls that ran
+	// out of time.
+	ParseFailures, ParseRetries, ParseRepaired, Timeouts uint64
 }
 
 type factJob struct {
@@ -145,6 +161,15 @@ func NewFactExtractor(gen domain.Generator, embed domain.Embedder, sink domain.F
 	}
 	if cfg.LLMTimeout <= 0 {
 		cfg.LLMTimeout = 2 * time.Minute
+	}
+	if cfg.LLMTimeoutPerKChar < 0 {
+		cfg.LLMTimeoutPerKChar = 0
+	}
+	if cfg.LLMTimeoutMax < cfg.LLMTimeout {
+		cfg.LLMTimeoutMax = cfg.LLMTimeout
+	}
+	if cfg.ParseRetries < 0 {
+		cfg.ParseRetries = 0
 	}
 	if cfg.MaxFactsPerDocument <= 0 {
 		cfg.MaxFactsPerDocument = 64
@@ -297,6 +322,8 @@ func (e *FactExtractor) Stats() FactExtractorStats {
 		Extracted: e.extracted.Load(), FailedDocs: e.failedDocs.Load(), LLMCalls: e.llmCalls.Load(),
 		AssessmentCalls: e.assessmentCalls.Load(), AssessmentsReplayed: e.assessReplayed.Load(),
 		Stored: e.stored.Load(), ProfilesLearned: e.learned.Load(),
+		ParseFailures: e.parseFailures.Load(), ParseRetries: e.parseRetries.Load(),
+		ParseRepaired: e.parseRepaired.Load(), Timeouts: e.timeouts.Load(),
 	}
 }
 
@@ -374,6 +401,10 @@ type FactDocumentResult struct {
 	// on the marker for a later resume.
 	Windows int
 	Partial bool
+	// ParseRetries is the re-asks made after an unreadable answer (counted in LLMCalls
+	// too); ParseRepaired the windows such a re-ask recovered.
+	ParseRetries  int
+	ParseRepaired int
 	// Facts is the number of facts built from the model's answer; Stats is what the
 	// store did with them.
 	Facts int
@@ -444,15 +475,19 @@ func (e *FactExtractor) MaxLLMCallsPerDocument() int {
 	return e.cfg.MaxCallsPerDocument * e.callsPerWindow()
 }
 
+// callsPerWindow is the upper bound of one window's calls: the extraction call, its
+// parse re-asks, and the judge call when assessing.
 func (e *FactExtractor) callsPerWindow() int {
+	n := 1 + e.cfg.ParseRetries
 	if e.cfg.Supersession && e.cfg.Assessments {
-		return 2
+		n++
 	}
-	return 1
+	return n
 }
 
 // EstimateLLMCalls estimates one document's calls from its text length (A2.3: about
-// ceil(chars / window capacity) windows, capped), times the per-window upper bound.
+// ceil(chars / window capacity) windows, capped), times the calls of a window whose
+// answer parses (the extraction call, plus the judge call when assessing).
 func (e *FactExtractor) EstimateLLMCalls(textChars int) int {
 	if e == nil {
 		return 1
@@ -465,7 +500,10 @@ func (e *FactExtractor) EstimateLLMCalls(textChars int) int {
 	if e.cfg.MaxCallsPerDocument > 0 {
 		windows = min(windows, e.cfg.MaxCallsPerDocument)
 	}
-	return windows * e.callsPerWindow()
+	// Parse re-asks are rare (7 unreadable answers in the 2026-11-04 strat-100 v3
+	// backfill) and not
+	// estimated; MaxLLMCallsPerDocument is the bound that counts them.
+	return windows * (e.callsPerWindow() - e.cfg.ParseRetries)
 }
 
 // process runs one document (A2.3): its chunks are split into passages, packed in order
@@ -600,16 +638,8 @@ func (e *FactExtractor) extractWindow(j factJob, win []factPassage, w, of, maxFa
 	prompt := buildFactPrompt(factExtractionInput{
 		Source: j.source, Passages: texts, Speakers: speakers, CanonicalPredicates: e.canonical, Section: w + 1, Sections: of,
 	})
-	llmCtx, cancel := context.WithTimeout(ctx, e.cfg.LLMTimeout)
-	resp, err := callTripletsLLM(llmCtx, e.gen, prompt)
-	cancel()
-	e.llmCalls.Add(1)
-	res.LLMCalls++
 	res.Windows++
-	if err != nil {
-		return FactSaveStats{}, 0, nil, nil, err
-	}
-	parsed, pst, err := parseFactResponse(resp, texts, maxFacts)
+	parsed, pst, err := e.extractCall(ctx, j.documentID, w, prompt, texts, maxFacts, res)
 	if err != nil {
 		return FactSaveStats{}, 0, nil, nil, err
 	}
@@ -920,7 +950,7 @@ func (e *FactExtractor) planAssessment(ctx context.Context, facts []domain.Fact,
 
 // askJudge makes the plan's one judge call. It stores nothing.
 func (e *FactExtractor) askJudge(ctx context.Context, p *assessPlan) (string, error) {
-	llmCtx, cancel := context.WithTimeout(ctx, e.cfg.LLMTimeout)
+	llmCtx, cancel := context.WithTimeout(ctx, e.callTimeout(len(p.prompt)))
 	resp, err := callTripletsLLM(llmCtx, e.gen, p.prompt)
 	cancel()
 	e.llmCalls.Add(1)

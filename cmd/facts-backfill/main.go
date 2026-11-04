@@ -178,8 +178,8 @@ func run() error {
 		mem.FactExtractor.ExtractorVersion(), rep.Candidates, rep.AlreadyDone, rep.Pending, rep.Chunks, rep.Groups,
 		*ordered, *concurrency, groupConcurrency, rep.MaxLLMCallsPerDocument, rep.EstimatedLLMCalls)
 	if !*dryRun {
-		fmt.Printf("facts-backfill: extracted=%d partial=%d skipped=%d failed=%d missing=%d cancelled=%d llm_calls=%d assessment_calls=%d assessments_replayed=%d facts_inserted=%d two_phase=%t journal_windows_replayed=%d assessment_calls_discarded=%d speculation_waves=%d elapsed=%s\n",
-			rep.Extracted, rep.Partial, rep.Skipped, rep.Failed, rep.Missing, rep.Cancelled, rep.LLMCalls, rep.AssessmentCalls,
+		fmt.Printf("facts-backfill: extracted=%d partial=%d skipped=%d failed=%d failed_parse=%d failed_timeout=%d parse_retries=%d parse_repaired=%d missing=%d cancelled=%d llm_calls=%d assessment_calls=%d assessments_replayed=%d facts_inserted=%d two_phase=%t journal_windows_replayed=%d assessment_calls_discarded=%d speculation_waves=%d elapsed=%s\n",
+			rep.Extracted, rep.Partial, rep.Skipped, rep.Failed, rep.FailedParse, rep.FailedTimeout, rep.ParseRetries, rep.ParseRepaired, rep.Missing, rep.Cancelled, rep.LLMCalls, rep.AssessmentCalls,
 			rep.AssessmentsReplayed, rep.FactsInserted, rep.TwoPhase, rep.JournalWindowsReplayed, rep.AssessmentCallsDiscarded,
 			rep.SpeculationWaves, rep.Elapsed)
 	}

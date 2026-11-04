@@ -1,0 +1,51 @@
+package config
+
+import (
+	"fmt"
+	"strings"
+)
+
+// MigrationsConfig is the boot-time migration guard, config block database.migrations
+// (ADR-0064 amendment 2026-11-04, T-20261104-kernel-binaries-auto-apply-migrations-to-the).
+//
+// Boot used to apply every pending migration to whatever database the config named. On
+// 2026-11-03 a smoke-test build booted on the owner's working database by mistake and
+// moved its schema forward, after which every older binary refused it as "ahead". The
+// guard lets an operator say which databases a boot may not migrate on its own.
+//
+// It is read by postgres.NewPgVectorAdapter (every kernel and every cmd/ tool that opens
+// the vector store) and handed to migrate.Boot. The explicit `migrate up` subcommand is
+// the deliberate path and is not guarded. storage.auto_migrate=false still turns the
+// boot runner off entirely and wins over Mode.
+type MigrationsConfig struct {
+	// Mode: "auto" (default — apply pending migrations at boot, the historical
+	// behaviour), "refuse_pending" (boot only when nothing is pending; otherwise exit
+	// before any write, naming the pending changes), or "off" (skip the runner at boot).
+	Mode string `json:"mode"`
+	// ProtectedDBNames are databases treated as refuse_pending whatever Mode says.
+	// Matched case-insensitively against the database actually connected. Default empty.
+	// The owner protects the working database with e.g. ["cambrian_db"] in configs/config.json.
+	ProtectedDBNames []string `json:"protected_dbnames"`
+	// AllowPending is the explicit one-boot opt-in that lets a guarded boot apply its
+	// pending changes: CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_PENDING=true. Do not leave it
+	// set in a file — that disables the guard permanently.
+	AllowPending bool `json:"allow_pending"`
+}
+
+// MigrationModes are the accepted values of database.migrations.mode. The runner
+// (internal/migrate.ParseMode) accepts the same set; config does not import the runner.
+var MigrationModes = []string{"auto", "refuse_pending", "off"}
+
+func (m MigrationsConfig) validate() []string {
+	mode := strings.ToLower(strings.TrimSpace(m.Mode))
+	if mode == "" {
+		return nil
+	}
+	for _, ok := range MigrationModes {
+		if mode == ok {
+			return nil
+		}
+	}
+	return []string{fmt.Sprintf("database.migrations.mode %q is not one of %s",
+		m.Mode, strings.Join(MigrationModes, " | "))}
+}

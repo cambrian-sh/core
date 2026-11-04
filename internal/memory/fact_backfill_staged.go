@@ -504,11 +504,12 @@ feed:
 		ss.finishStagedDoc(ctx, d)
 		if d.err != nil {
 			r.log.WarnContext(ctx, "facts-backfill: extraction failed; left unmarked for the next run",
-				"document_id", d.c.DocumentID, "err", d.err)
+				"document_id", d.c.DocumentID, "err_kind", FactErrorKind(d.err), "err", d.err)
 		}
 		dd := d
 		r.finish(ctx, func(rep *FactBackfillReport) {
 			rep.LLMCalls += dd.res.LLMCalls
+			rep.countParse(dd.res, dd.err)
 			rep.JournalWindowsReplayed += dd.replayedWindows
 			if dd.res.AssessmentReplayed {
 				rep.AssessmentsReplayed++

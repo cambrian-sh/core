@@ -81,12 +81,13 @@ func TestMemoryStack_FactSubstrateIsEnforcedAndExtractorGated(t *testing.T) {
 
 func TestFactExtractorConfigFrom_Threads(t *testing.T) {
 	got := factExtractorConfigFrom(config.FactsConfig{
-		QueueSize: 9, Workers: 3, LLMTimeoutMs: 1500, MaxFactsPerDocument: 7, MaxPromptChars: 9000,
+		QueueSize: 9, Workers: 3, LLMTimeoutMs: 1500, LLMTimeoutPerKCharMs: 40, LLMTimeoutMaxMs: 9000, ParseRetries: 2, MaxFactsPerDocument: 7, MaxPromptChars: 9000,
 		SingleAttributes: []string{"home_city"}, MultiAttributes: []string{"likes"}, SupersessionEnabled: true,
 		AssessmentsEnabled: true, FuzzyCandidates: 4, CardinalityMinVotes: 5,
 		MaxCallsPerDocument: 3, MaxFactsPerSource: 99,
 	})
 	if got.QueueSize != 9 || got.Workers != 3 || got.LLMTimeout != 1500*time.Millisecond ||
+		got.LLMTimeoutPerKChar != 40*time.Millisecond || got.LLMTimeoutMax != 9000*time.Millisecond || got.ParseRetries != 2 ||
 		got.MaxFactsPerDocument != 7 || got.MaxPromptChars != 9000 || !got.Supersession || !got.Assessments ||
 		got.FuzzyCandidates != 4 || got.CardinalityMinVotes != 5 ||
 		got.MaxCallsPerDocument != 3 || got.MaxFactsPerSource != 99 ||

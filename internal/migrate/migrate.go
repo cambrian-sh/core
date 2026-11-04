@@ -48,10 +48,123 @@ type migration struct {
 	sql     string
 }
 
+// Mode is the boot-time migration policy, config key database.migrations.mode
+// (T-20261104-kernel-binaries-auto-apply-migrations-to-the).
+//
+// It exists because applying migrations is the one boot step that changes a database
+// for every OTHER binary too: on 2026-11-03 a smoke-test build booted on the owner's
+// working database by mistake, applied 0020-0022 on its way up, and every older binary
+// then refused that database as "ahead" (T-20261103-smoke-test-agent-accidentally-booted-the-a1).
+type Mode string
+
+const (
+	// ModeAuto applies every pending migration at boot (the historical behaviour and the
+	// default) — except on a database named in Policy.ProtectedDBNames.
+	ModeAuto Mode = "auto"
+	// ModeRefusePending boots only when nothing is pending; otherwise it fails before
+	// writing anything and names the pending changes.
+	ModeRefusePending Mode = "refuse_pending"
+	// ModeOff skips the runner at boot entirely (the same as storage.auto_migrate=false);
+	// schema is then managed by `migrate up` or external tooling.
+	ModeOff Mode = "off"
+)
+
+// ParseMode validates a configured mode. Empty is ModeAuto.
+func ParseMode(s string) (Mode, error) {
+	switch m := Mode(strings.ToLower(strings.TrimSpace(s))); m {
+	case "":
+		return ModeAuto, nil
+	case ModeAuto, ModeRefusePending, ModeOff:
+		return m, nil
+	default:
+		return "", fmt.Errorf("unknown migration mode %q (want auto | refuse_pending | off)", s)
+	}
+}
+
+// Policy is what the boot path may do to the schema of the database it connected to.
+// The zero value is ModeAuto with nothing protected — the pre-guard behaviour.
+type Policy struct {
+	Mode Mode
+	// ProtectedDBNames are databases on which a pending schema change is refused at
+	// boot whatever Mode says (ModeOff still skips the runner). Matched case-insensitively
+	// against current_database() — the database actually connected, not the config string.
+	ProtectedDBNames []string
+	// AllowPending is the explicit, per-boot opt-in that lets a guarded boot apply its
+	// pending changes (CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_PENDING=true).
+	AllowPending bool
+}
+
+// protects reports whether db is on the protected list.
+func (p Policy) protects(db string) bool {
+	for _, n := range p.ProtectedDBNames {
+		if strings.EqualFold(strings.TrimSpace(n), db) {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrPendingRefused is returned (wrapped) when the policy refuses a pending schema change.
+var ErrPendingRefused = errors.New("migration policy refuses to change this database's schema at boot")
+
+// Boot is the boot-time entry point: it applies Policy, then runs the runner. A refusal
+// is decided by reads only — before schema_migrations is created, before any migration
+// and before any concurrent index build — so a refused boot leaves the database exactly
+// as it found it.
+func Boot(ctx context.Context, pool *pgxpool.Pool, dim int, p Policy) error {
+	mode := p.Mode
+	if mode == "" {
+		mode = ModeAuto
+	}
+	if mode == ModeOff {
+		return nil
+	}
+	db, err := currentDatabase(ctx, pool)
+	if err != nil {
+		return err
+	}
+	protected := p.protects(db)
+	if mode != ModeRefusePending && !protected {
+		return migrate(ctx, pool, dim, db)
+	}
+	reason := "database.migrations.mode is refuse_pending"
+	if protected {
+		reason = "database.migrations.protected_dbnames lists it"
+	}
+	pending, err := pendingChanges(ctx, pool, dim)
+	if err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return migrate(ctx, pool, dim, db) // nothing to apply: the runner only re-checks
+	}
+	if !p.AllowPending {
+		return fmt.Errorf("%w: database %q has %d pending schema change(s) [%s] that this binary "+
+			"would apply (%s). Nothing was written. If %q is the database you meant to upgrade, "+
+			"run `<binary> migrate up` with the same config, or boot once with "+
+			"CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_PENDING=true; otherwise point database.dbname "+
+			"(CAMBRIAN_DATABASE__DBNAME) at the database this binary is meant for",
+			ErrPendingRefused, db, len(pending), strings.Join(pending, ", "), reason, db)
+	}
+	slog.Warn("migrate: applying pending schema changes to a guarded database by explicit opt-in "+
+		"(database.migrations.allow_pending)", "database", db, "pending", pending, "guard", reason)
+	return migrate(ctx, pool, dim, db)
+}
+
 // Migrate brings schema_migrations up to date: it creates the table if absent, refuses
 // when the DB is ahead of this binary, and applies every pending migration in version
 // order (each in its own transaction). dim substitutes ${EMBEDDING_DIM} in the SQL.
+// It applies no Policy: it is the deliberate `migrate up` path (and the tests' entry
+// point). Boot goes through Boot.
 func Migrate(ctx context.Context, pool *pgxpool.Pool, dim int) error {
+	db, err := currentDatabase(ctx, pool)
+	if err != nil {
+		return err
+	}
+	return migrate(ctx, pool, dim, db)
+}
+
+func migrate(ctx context.Context, pool *pgxpool.Pool, dim int, db string) error {
 	if err := ensureMigrationsTable(ctx, pool); err != nil {
 		return err
 	}
@@ -63,26 +176,92 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dim int) error {
 	if err != nil {
 		return err
 	}
-
-	// Refuse if the DB carries a version this binary does not know — an older binary
-	// against a DB migrated by a newer one (PLAT-02: "refuse to start when DB is ahead").
-	known, maxKnown := knownVersions(migs)
-	if v, ahead := unknownApplied(applied, known); ahead {
-		return fmt.Errorf("database is ahead of this binary: schema_migrations has version %d "+
-			"which this build does not know (highest known %d) — upgrade the binary", v, maxKnown)
+	if err := refuseAhead(migs, applied); err != nil {
+		return err
 	}
 
 	// Apply every pending migration in version order, each in its own transaction.
+	// WARN, with the database name: a schema change is visible to every other binary
+	// that uses this database, so it must never be a quiet line in a boot log.
 	for _, m := range migs {
 		if applied[m.version] {
 			continue
 		}
+		slog.Warn("migrate: applying schema migration", "database", db,
+			"version", m.version, "name", m.name)
 		if err := applyMigration(ctx, pool, m); err != nil {
 			return fmt.Errorf("apply migration %04d_%s: %w", m.version, m.name, err)
 		}
 		applied[m.version] = true
 	}
-	return ensureConcurrentIndexes(ctx, pool, applied, concurrentIndexesFor(dim))
+	return ensureConcurrentIndexes(ctx, pool, db, applied, concurrentIndexesFor(dim))
+}
+
+// refuseAhead refuses if the DB carries a version this binary does not know — an older
+// binary against a DB migrated by a newer one (PLAT-02: "refuse to start when DB is ahead").
+func refuseAhead(migs []migration, applied map[int64]bool) error {
+	known, maxKnown := knownVersions(migs)
+	if v, ahead := unknownApplied(applied, known); ahead {
+		return fmt.Errorf("database is ahead of this binary: schema_migrations has version %d "+
+			"which this build does not know (highest known %d) — upgrade the binary", v, maxKnown)
+	}
+	return nil
+}
+
+// pendingChanges lists, READ-ONLY, every schema change migrate would make: each
+// unapplied migration ("0024_extraction_versions") and each missing or INVALID
+// concurrent index ("index idx_…"). It creates nothing — on a database with no
+// schema_migrations table every migration is pending. It refuses a database that is
+// ahead of this binary, exactly as migrate would.
+func pendingChanges(ctx context.Context, pool *pgxpool.Pool, dim int) ([]string, error) {
+	migs, err := loadMigrations(dim)
+	if err != nil {
+		return nil, err
+	}
+	var hasTable bool
+	if err := pool.QueryRow(ctx,
+		`SELECT to_regclass('schema_migrations') IS NOT NULL`).Scan(&hasTable); err != nil {
+		return nil, fmt.Errorf("migrate: inspect schema_migrations: %w", err)
+	}
+	applied := map[int64]bool{}
+	if hasTable {
+		if applied, err = appliedVersions(ctx, pool); err != nil {
+			return nil, err
+		}
+	}
+	if err := refuseAhead(migs, applied); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, m := range migs {
+		if !applied[m.version] {
+			out = append(out, fmt.Sprintf("%04d_%s", m.version, m.name))
+		}
+	}
+	// Indexes are checked only for migrations already applied: an index whose
+	// migration is pending is covered by naming that migration.
+	for _, ix := range concurrentIndexesFor(dim) {
+		if !applied[ix.requires] {
+			continue
+		}
+		valid, err := indexValid(ctx, pool, ix.name)
+		if err != nil {
+			return nil, err
+		}
+		if valid == nil || !*valid {
+			out = append(out, "index "+ix.name)
+		}
+	}
+	return out, nil
+}
+
+// currentDatabase is the database the pool is actually connected to.
+func currentDatabase(ctx context.Context, pool *pgxpool.Pool) (string, error) {
+	var db string
+	if err := pool.QueryRow(ctx, `SELECT current_database()`).Scan(&db); err != nil {
+		return "", fmt.Errorf("migrate: read current_database: %w", err)
+	}
+	return db, nil
 }
 
 // Event-time expressions (ADR-0134). The span of a row is
@@ -168,39 +347,49 @@ func concurrentIndexesFor(dim int) []concurrentIndex {
 // An interrupted CONCURRENTLY build leaves an INVALID index behind, which CREATE INDEX
 // IF NOT EXISTS would then skip forever while the planner ignores it — so an invalid
 // one is dropped (also concurrently) and rebuilt. Runs on the pool, never in a tx.
-func ensureConcurrentIndexes(ctx context.Context, pool *pgxpool.Pool, applied map[int64]bool, indexes []concurrentIndex) error {
+func ensureConcurrentIndexes(ctx context.Context, pool *pgxpool.Pool, db string, applied map[int64]bool, indexes []concurrentIndex) error {
 	for _, ix := range indexes {
 		if !applied[ix.requires] {
 			continue
 		}
-		var valid *bool
-		err := pool.QueryRow(ctx, `
-			SELECT i.indisvalid
-			FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
-			WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace`, ix.name).Scan(&valid)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("inspect index %s: %w", ix.name, err)
+		valid, err := indexValid(ctx, pool, ix.name)
+		if err != nil {
+			return err
 		}
 		if valid != nil && *valid {
 			continue
 		}
 		if valid != nil {
 			slog.Warn("migrate: rebuilding an INVALID index (an earlier concurrent build was interrupted)",
-				"index", ix.name)
+				"database", db, "index", ix.name)
 			if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+ix.name); err != nil {
 				return fmt.Errorf("drop invalid index %s: %w", ix.name, err)
 			}
 		}
 		started := time.Now()
-		slog.Info("migrate: building index concurrently (writes are not blocked)",
-			"index", ix.name, "table", ix.table)
+		slog.Warn("migrate: building index concurrently (writes are not blocked)",
+			"database", db, "index", ix.name, "table", ix.table)
 		if _, err := pool.Exec(ctx, fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s %s",
 			ix.name, ix.table, ix.using)); err != nil {
 			return fmt.Errorf("build index %s concurrently: %w", ix.name, err)
 		}
-		slog.Info("migrate: index built", "index", ix.name, "took", time.Since(started).String())
+		slog.Info("migrate: index built", "database", db, "index", ix.name, "took", time.Since(started).String())
 	}
 	return nil
+}
+
+// indexValid returns pg_index.indisvalid for the named index in the current schema, or
+// nil when no such index exists.
+func indexValid(ctx context.Context, pool *pgxpool.Pool, name string) (*bool, error) {
+	var valid *bool
+	err := pool.QueryRow(ctx, `
+		SELECT i.indisvalid
+		FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+		WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace`, name).Scan(&valid)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("inspect index %s: %w", name, err)
+	}
+	return valid, nil
 }
 
 // Status returns every known migration (applied and pending) in version order.
