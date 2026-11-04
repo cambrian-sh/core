@@ -193,10 +193,11 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
   (`config.FactsConfig`): `extract_enabled`, `lane_enabled`, `supersession_enabled`, `assessments_enabled` + tunables
   (`queue_size` 1024, `workers` 2, `llm_timeout_ms` 120000, `max_facts_per_document` 64 (per window), `max_prompt_chars`
   48000 (per window), `max_calls_per_document` 8 (windows per source per run; 0 = no cap), `max_facts_per_source` 512,
-  `lane_top_k` 20, `fact_match_weight` 0.2, `current_fact_weight` 0.1, `single_attributes` [] / `multi_attributes` []
+  `lane_top_k` 20, `lane_scoped_documents` 0 (A4, off) / `lane_scoped_top_k` 20, `fact_match_weight` 0.2, `current_fact_weight` 0.1, `single_attributes` [] / `multi_attributes` []
   = DECLARED profiles, `fuzzy_candidates` 10, `cardinality_min_votes` 3); `execution.ingestion.sync_ingest_wait_for_facts`
   (+ `_timeout_ms` 120000). Boot line `fact layer: extract_enabled=<b> lane_enabled=<b> supersession_enabled=<b>
-  assessments_enabled=<b> store=<substrate|none>` (effective values), plus `SYNC_INGEST_WAIT_FOR_FACTS: ENABLED`.
+  assessments_enabled=<b> store=<substrate|none> lane_scoped_documents=<n> lane_scoped_top_k=<k>` (effective values; n is 0
+  unless the lane acts), plus `SYNC_INGEST_WAIT_FOR_FACTS: ENABLED`.
   - Data: a fact is one append-only `memory_fact` knowledge item (core-declared kind, `domain.MemoryFactKindSpec`,
     appended in `app.go` before `NewKindRegistry`); entity id `<scope_key>/<subject_key>/<predicate_key>`, actor = the
     writing principal (chunk `source_agent_id`, else the ctx principal), id `ki_fact:<sha256(evidence|chunk|subject|
@@ -216,7 +217,7 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
     SQL on the item classification). The plugin seam `KernelServices.Knowledge` is `authz.ReservedKindGuard` (no
     memory_fact through the raw seam).
   - Ingest: `memory.FactExtractor` on its own worker pool (Start/Stop, goleak), items + embeddings through the writer.
-    A2 (source-agnostic, `decisions/ingestion-prompts-are-source-agnostic.md`): the prompt (`fact-extract-v2`,
+    A2 (source-agnostic, `decisions/ingestion-prompts-are-source-agnostic.md`): the prompt (`fact-extract-v3` since A3,
     `fact_prompt.go`) names no source kind; per-source data arrives as `domain.SourceMeta` (type, title, author, reference
     time + basis event|authored|ingested from the document's `TimeSource`, `domain.SourceMetaOf` / the lister) and only an
     event/authored time dates "now" facts or bounds a cue; guarded by `TestFactPrompt_SourceAgnostic` (and
@@ -227,8 +228,32 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
     `speaker`. With assessments: at most ONE batched judge call per window over unknown-cardinality exact-key pairs and fuzzy same-subject candidates
     asserted earlier; each verdict stored as a keyed assessment first (a replay reuses it, no call); exact-key verdicts
     vote on the profile (learned single/multi at `cardinality_min_votes`, declared always wins).
+  - Backfill concurrency (`T-20261103-fact-backfill-processes-each-principal-s`): `execution.facts.backfill_group_concurrency`
+    (default 1 = the serial ordered backfill; `cmd/facts-backfill -group-concurrency N` overrides) runs one ordered group in
+    two phases (`internal/memory/fact_backfill_staged.go`): extraction and judge calls N at a time, then the assessments,
+    votes and markers committed window by window in event-time order, re-planned against the live store with the
+    not-yet-written items hidden (`domain.FactStagedReader`: `FactsByID`, `SimilarFactsHiding`) — the serial run's final
+    items/assessments/resolutions/profiles. Uncommitted windows are journaled in `knowledge_extraction_windows`
+    (migration 0025; `domain.ExtractionWindowJournal`, deleted on commit and by facts-reset), so a stop between phases
+    resumes with no extraction call. `SimilarFacts` now orders ties by item id. Live ingest is unchanged.
+  - A3 (agent-plane source metadata): `IngestMemoryRequest.source_kind`/`title`/`author` (9-11) and
+    `MemoryPart.speaker` (3) are DESCRIPTIVE. `ingest_memory.go` trims them, refuses control characters
+    (INVALID_ARGUMENT) and cuts them to `execution.ingestion.source_kind_max_chars` (64) / `source_title_max_chars` (256) /
+    `source_author_max_chars` (128) / `part_speaker_max_chars` (64) (0 = default). They land on
+    `ExternalDocument.SourceKind` / `Title` / `AuthorLabel` and `DocumentPart.Speaker`; `SourceType` ("ingest_memory") and
+    the stamped `Author` (= `source_agent_id`) stay kernel-owned. `SourceMetaOf` / `FactBackfillCandidate.SourceMeta`:
+    type = SourceKind else SourceType, author = AuthorLabel else Author. SourceKind/AuthorLabel persist in
+    `documents.metadata` (`source_kind`, `author_label`; no migration). The body join is unchanged (byte-identical);
+    `domain.ChunkSpeakers` maps the ADR-0134 chunk spans onto the part spans and writes chunk metadata
+    `speaker_at_start` / `speakers`; the extractor renders `[i] (speaker at start: X) …` from the stored chunk, so live
+    ingest and backfill see the same input.
   - Query: unchanged lane (`fact_lane.go`, `FactReader` port) over the substrate reader; `fact_match` / `current_fact`,
-    `fact_matches` metadata, history/earliest chains.
+    `fact_matches` metadata, history/earliest chains. A4 (experimental, default off): with `lane_scoped_documents` N > 0
+    the lane runs a second search restricted to the facts of the first N distinct source documents (chunk metadata
+    `document_id`) of the fused dense+lexical pool, via `domain.FactSearchOptions.SourceDocumentIDs` through the same
+    enforcing reader; `PgFactItemReader.scopedSearchSQL` ranks those documents' facts EXACTLY (not HNSW) using the
+    concurrent companion index `idx_statement_values_source_document` (`migrate.go`; no migration file). Scoped hits are
+    merged into the global ones by fact id and reach their chunks by the same enforced `GetBatch`.
   - Backfill: `memory.FactBackfill` (`MemoryStack.FactBackfill`) + `cmd/facts-backfill` (lister
     `PgKnowledgeStore.ListFactBackfillCandidates`, told the running extractor version).
   - Reset (A2-Q3): `cmd/facts-reset` (`-namespace` principal prefix, `-principal`, `-all`, `-dry-run`, `-keep-learned`) →

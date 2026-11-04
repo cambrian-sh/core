@@ -140,6 +140,24 @@ func (w *EnforcingKnowledgeWriter) MarkExtracted(ctx context.Context, m domain.E
 	return w.inner.MarkExtracted(ctx, m)
 }
 
+// PutExtractionWindow — PASS-THROUGH (the two-phase backfill's journal: a document id,
+// a digest, a passage range and the ids of items that already passed PutClassifiedItem;
+// no content).
+func (w *EnforcingKnowledgeWriter) PutExtractionWindow(ctx context.Context, win domain.ExtractionWindow) error {
+	return w.inner.PutExtractionWindow(ctx, win)
+}
+
+// ExtractionWindows — PASS-THROUGH (same bookkeeping rows; the items they name are read
+// back through the enforcing fact reader).
+func (w *EnforcingKnowledgeWriter) ExtractionWindows(ctx context.Context, namespace, extractor, documentID, contentHash, version string) ([]domain.ExtractionWindow, error) {
+	return w.inner.ExtractionWindows(ctx, namespace, extractor, documentID, contentHash, version)
+}
+
+// DeleteExtractionWindows — PASS-THROUGH (same bookkeeping rows).
+func (w *EnforcingKnowledgeWriter) DeleteExtractionWindows(ctx context.Context, namespace, extractor, documentID, contentHash string) error {
+	return w.inner.DeleteExtractionWindows(ctx, namespace, extractor, documentID, contentHash)
+}
+
 // EnforcingFactItemReader is the READ chokepoint of the fact layer over the substrate
 // (A1.5; the read half of the retired EnforcingFactStore, moved). Every read resolves
 // its predicate from the argument/options, else from ctx; none at all is
@@ -209,6 +227,45 @@ func (r *EnforcingFactItemReader) SimilarFacts(ctx context.Context, f domain.Fac
 		return nil, err
 	}
 	return r.inner.SimilarFacts(ctx, f, vec, k, eff)
+}
+
+var _ domain.FactStagedReader = (*EnforcingFactItemReader)(nil)
+
+// ErrStagedReadsUnsupported is returned by the staged reads when the inner reader does
+// not implement domain.FactStagedReader.
+var ErrStagedReadsUnsupported = errors.New("authz: the fact reader has no staged reads (domain.FactStagedReader)")
+
+// HasStagedReads reports whether the inner reader implements domain.FactStagedReader —
+// the two-phase backfill checks it before it relies on the staged reads.
+func (r *EnforcingFactItemReader) HasStagedReads() bool {
+	_, ok := r.inner.(domain.FactStagedReader)
+	return ok
+}
+
+// FactsByID — ENFORCED (a by-id read: the predicate is applied IN SQL, AGENTS.md §2.4).
+func (r *EnforcingFactItemReader) FactsByID(ctx context.Context, ids []domain.KnowledgeItemID, scope *domain.TagPredicate) ([]domain.Fact, error) {
+	eff, err := r.resolve(ctx, scope, "FactsByID")
+	if err != nil {
+		return nil, err
+	}
+	sr, ok := r.inner.(domain.FactStagedReader)
+	if !ok {
+		return nil, ErrStagedReadsUnsupported
+	}
+	return sr.FactsByID(ctx, ids, eff)
+}
+
+// SimilarFactsHiding — ENFORCED, like SimilarFacts.
+func (r *EnforcingFactItemReader) SimilarFactsHiding(ctx context.Context, f domain.Fact, vec []float32, k int, scope *domain.TagPredicate, hidden []domain.KnowledgeItemID) ([]domain.Fact, error) {
+	eff, err := r.resolve(ctx, scope, "SimilarFactsHiding")
+	if err != nil {
+		return nil, err
+	}
+	sr, ok := r.inner.(domain.FactStagedReader)
+	if !ok {
+		return nil, ErrStagedReadsUnsupported
+	}
+	return sr.SimilarFactsHiding(ctx, f, vec, k, eff, hidden)
 }
 
 // ErrReservedKind is returned by ReservedKindGuard for a kernel-reserved kind.

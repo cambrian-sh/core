@@ -319,6 +319,43 @@ type ExtractionMarkerStore interface {
 	MarkExtracted(ctx context.Context, m ExtractionMarker) error
 }
 
+// ExtractionWindow is one row of the two-phase backfill's extraction JOURNAL
+// (knowledge_extraction_windows, migration 0025; T-20261103-fact-backfill-processes-each-principal-s).
+// The two-phase backfill (memory.FactBackfill, execution.facts.backfill_group_concurrency
+// > 1) extracts and stores a window's items BEFORE the window is assessed, so the
+// extraction marker cannot advance yet (a marker says "extracted AND assessed"). The
+// journal records what the window stored — the passage range it covered and the items
+// as stored, in write order, with the subset this window inserted — so a run that stops
+// between extraction and assessment resumes WITHOUT a second extraction call and still
+// assesses the window. Bookkeeping only: ids, no content. A committed document's rows
+// are deleted.
+type ExtractionWindow struct {
+	NamespaceID      string
+	Extractor        string
+	DocumentID       string
+	ContentHash      string
+	ExtractorVersion string
+	// PassageStart/PassageEnd bound the window in the extractor's passages [start, end).
+	PassageStart int
+	PassageEnd   int
+	// ItemIDs are the window's items as stored (the assessment batch), in write order;
+	// NewItemIDs the subset the window inserted (the rest already existed).
+	ItemIDs    []KnowledgeItemID
+	NewItemIDs []KnowledgeItemID
+}
+
+// ExtractionWindowJournal reads and writes knowledge_extraction_windows.
+type ExtractionWindowJournal interface {
+	// PutExtractionWindow upserts one window row (keyed by namespace, extractor,
+	// document, content hash, version and passage start).
+	PutExtractionWindow(ctx context.Context, w ExtractionWindow) error
+	// ExtractionWindows returns the rows of one document's content under one extractor
+	// version, ordered by PassageStart.
+	ExtractionWindows(ctx context.Context, namespace, extractor, documentID, contentHash, version string) ([]ExtractionWindow, error)
+	// DeleteExtractionWindows removes every row of one document's content (any version).
+	DeleteExtractionWindows(ctx context.Context, namespace, extractor, documentID, contentHash string) error
+}
+
 // FactSubstrateStore is the RAW substrate the ADR-0136 A1 fact path is built on
 // (postgres.PgKnowledgeStore). Only kernel.NewMemoryStack holds it, and it wraps it in
 // authz.EnforcingKnowledgeWriter before anything else sees it (AGENTS.md §2.1).
@@ -328,6 +365,7 @@ type FactSubstrateStore interface {
 	PredicateProfileStore
 	ItemEmbeddingWriter
 	ExtractionMarkerStore
+	ExtractionWindowJournal
 }
 
 // FactSubstrateWriter is the ENFORCED write side the fact extractor receives: items go
@@ -340,4 +378,5 @@ type FactSubstrateWriter interface {
 	PredicateProfileStore
 	ItemEmbeddingWriter
 	ExtractionMarkerStore
+	ExtractionWindowJournal
 }

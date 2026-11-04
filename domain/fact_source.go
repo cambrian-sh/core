@@ -34,12 +34,16 @@ func (b ReferenceBasis) DatesWriting() bool {
 
 // SourceMeta is one source's ingest metadata as the fact extractor sees it.
 type SourceMeta struct {
-	// SourceType is the free-text source label (ExternalDocument.SourceType). Shown to
-	// the model as context only; never an enum anything branches on.
+	// SourceType is the free-text source label: the client's ExternalDocument.SourceKind
+	// when it gave one (ADR-0136 A3.2), else the kernel's SourceType. Shown to the model
+	// as context only; never an enum anything branches on.
 	SourceType string
-	Title      string
-	// Author is the source's author (ExternalDocument.Author), else the writing
-	// principal's id, else "". It resolves first-person references no passage labels.
+	// Title is the source's title (the client's, else the body's first line — both
+	// already resolved onto ExternalDocument.Title by the ingest plane).
+	Title string
+	// Author is the source's author as the source names it (ExternalDocument.AuthorLabel),
+	// else the stamped writer (ExternalDocument.Author), else the writing principal's id,
+	// else "". It resolves first-person references no passage labels.
 	Author string
 	// ReferenceTime is the "now" relative dates resolve against; ReferenceBasis says
 	// what it is. Zero time = unknown.
@@ -75,9 +79,9 @@ func ReferenceBasisOf(src TimeSource, t time.Time) ReferenceBasis {
 // unstated time; principal is the writing principal's id, the author fallback.
 func SourceMetaOf(doc ExternalDocument, ingestedAt time.Time, principal string) SourceMeta {
 	m := SourceMeta{
-		SourceType:    strings.TrimSpace(doc.SourceType),
+		SourceType:    firstNonBlank(doc.SourceKind, doc.SourceType),
 		Title:         strings.TrimSpace(doc.Title),
-		Author:        strings.TrimSpace(doc.Author),
+		Author:        firstNonBlank(doc.AuthorLabel, doc.Author),
 		TimePrecision: doc.TimePrecision,
 	}
 	if m.Author == "" {
@@ -90,4 +94,15 @@ func SourceMetaOf(doc ExternalDocument, ingestedAt time.Time, principal string) 
 		m.TimePrecision = ""
 	}
 	return m
+}
+
+// firstNonBlank returns the first value that is not blank, trimmed (A3.2 precedence:
+// the client's descriptive value, else the kernel's).
+func firstNonBlank(vals ...string) string {
+	for _, v := range vals {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return ""
 }

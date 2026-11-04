@@ -48,6 +48,14 @@ type derivedKey struct {
 // admits IN SQL (the read path); a nil scope is the write path's full read.
 func (s *PgKnowledgeStore) deriveKeys(ctx context.Context, q pgxQuerier, ia domain.InputResolutionAuthority,
 	ns, kind string, keys []resolutionKey, scope *domain.TagPredicate) (map[resolutionKey]derivedKey, error) {
+	return s.deriveKeysHiding(ctx, q, ia, ns, kind, keys, scope, nil)
+}
+
+// deriveKeysHiding is deriveKeys with the hidden items treated as absent — neither a
+// key's own item nor a related one. The two-phase backfill derives "as the serial run
+// saw it" this way (domain.FactStagedReader.SimilarFactsHiding); nil hides nothing.
+func (s *PgKnowledgeStore) deriveKeysHiding(ctx context.Context, q pgxQuerier, ia domain.InputResolutionAuthority,
+	ns, kind string, keys []resolutionKey, scope *domain.TagPredicate, hidden map[domain.KnowledgeItemID]bool) (map[resolutionKey]derivedKey, error) {
 	out := map[resolutionKey]derivedKey{}
 	if len(keys) == 0 {
 		return out, nil
@@ -71,8 +79,8 @@ func (s *PgKnowledgeStore) deriveKeys(ctx context.Context, q pgxQuerier, ia doma
 	keyOf := map[domain.KnowledgeItemID]resolutionKey{}
 	for _, it := range items {
 		k := resolutionKey{it.EntityID, it.AssertedBy}
-		if !want[k] {
-			continue // same entity, another actor
+		if !want[k] || hidden[it.ID] {
+			continue // same entity, another actor (or hidden)
 		}
 		byKey[k] = append(byKey[k], it)
 		allIDs = append(allIDs, string(it.ID))
@@ -95,7 +103,7 @@ func (s *PgKnowledgeStore) deriveKeys(ctx context.Context, q pgxQuerier, ia doma
 	for _, a := range asms {
 		for _, v := range a.Verdicts {
 			for _, side := range []domain.KnowledgeItemID{v.A, v.B} {
-				if _, have := relByID[side]; !have {
+				if _, have := relByID[side]; !have && !hidden[side] {
 					relIDs[string(side)] = true
 				}
 			}
@@ -643,5 +651,76 @@ func (s *PgKnowledgeStore) MarkExtracted(ctx context.Context, m domain.Extractio
 			passages_covered = EXCLUDED.passages_covered, passages_total = EXCLUDED.passages_total,
 			extracted_at = now()`,
 		ns, m.Extractor, m.DocumentID, m.ContentHash, m.Items, m.ExtractorVersion, m.PassagesCovered, m.PassagesTotal)
+	return err
+}
+
+var _ domain.ExtractionWindowJournal = (*PgKnowledgeStore)(nil)
+
+func idStrings(ids []domain.KnowledgeItemID) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = string(id)
+	}
+	return out
+}
+
+// PutExtractionWindow upserts one journal row of the two-phase backfill
+// (knowledge_extraction_windows, migration 0025).
+func (s *PgKnowledgeStore) PutExtractionWindow(ctx context.Context, w domain.ExtractionWindow) error {
+	ns := w.NamespaceID
+	if ns == "" {
+		ns = "default"
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO knowledge_extraction_windows
+			(namespace_id, extractor, document_id, content_hash, extractor_version, passage_start, passage_end, item_ids, new_item_ids)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (namespace_id, extractor, document_id, content_hash, extractor_version, passage_start) DO UPDATE SET
+			passage_end = EXCLUDED.passage_end, item_ids = EXCLUDED.item_ids, new_item_ids = EXCLUDED.new_item_ids,
+			created_at = now()`,
+		ns, w.Extractor, w.DocumentID, w.ContentHash, w.ExtractorVersion, w.PassageStart, w.PassageEnd,
+		idStrings(w.ItemIDs), idStrings(w.NewItemIDs))
+	return err
+}
+
+// ExtractionWindows returns one document content's journal rows under one version, by
+// passage start.
+func (s *PgKnowledgeStore) ExtractionWindows(ctx context.Context, namespace, extractor, documentID, contentHash, version string) ([]domain.ExtractionWindow, error) {
+	if namespace == "" {
+		namespace = "default"
+	}
+	rows, err := s.pool.Query(ctx, `SELECT passage_start, passage_end, item_ids, new_item_ids FROM knowledge_extraction_windows
+		WHERE namespace_id = $1 AND extractor = $2 AND document_id = $3 AND content_hash = $4 AND extractor_version = $5
+		ORDER BY passage_start`, namespace, extractor, documentID, contentHash, version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.ExtractionWindow
+	for rows.Next() {
+		w := domain.ExtractionWindow{NamespaceID: namespace, Extractor: extractor, DocumentID: documentID,
+			ContentHash: contentHash, ExtractorVersion: version}
+		var items, fresh []string
+		if err := rows.Scan(&w.PassageStart, &w.PassageEnd, &items, &fresh); err != nil {
+			return nil, err
+		}
+		for _, id := range items {
+			w.ItemIDs = append(w.ItemIDs, domain.KnowledgeItemID(id))
+		}
+		for _, id := range fresh {
+			w.NewItemIDs = append(w.NewItemIDs, domain.KnowledgeItemID(id))
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// DeleteExtractionWindows removes one document content's journal rows (every version).
+func (s *PgKnowledgeStore) DeleteExtractionWindows(ctx context.Context, namespace, extractor, documentID, contentHash string) error {
+	if namespace == "" {
+		namespace = "default"
+	}
+	_, err := s.pool.Exec(ctx, `DELETE FROM knowledge_extraction_windows
+		WHERE namespace_id = $1 AND extractor = $2 AND document_id = $3 AND content_hash = $4`,
+		namespace, extractor, documentID, contentHash)
 	return err
 }

@@ -102,6 +102,10 @@ type DocumentPart struct {
 	Length int
 	// OccurredAt is the part's event time in UTC; zero = this part has no time.
 	OccurredAt time.Time
+	// Speaker is who speaks or writes this part, as the caller labelled it (ADR-0136
+	// A3.3); "" = unlabelled. Descriptive data only: it is never part of the body, so
+	// a labelled ingest assembles the same bytes as an unlabelled one.
+	Speaker string
 }
 
 // MemoryPartInput is one part as a caller supplied it (wire → domain), before the
@@ -109,6 +113,8 @@ type DocumentPart struct {
 type MemoryPartInput struct {
 	Text       string
 	OccurredAt *time.Time // nil = no time for this part
+	// Speaker labels the part (ADR-0136 A3); "" = none. It does not enter the body.
+	Speaker string
 }
 
 // PartSeparator joins part texts into the document body. A blank line keeps each
@@ -191,7 +197,7 @@ func ResolveIngestEventTime(occurredAt *time.Time, parts []MemoryPartInput, prec
 			if i > 0 {
 				b.WriteString(PartSeparator)
 			}
-			dp := DocumentPart{Offset: b.Len(), Length: len(p.Text)}
+			dp := DocumentPart{Offset: b.Len(), Length: len(p.Text), Speaker: p.Speaker}
 			b.WriteString(p.Text)
 			if p.OccurredAt != nil {
 				dp.OccurredAt = clamp(*p.OccurredAt)

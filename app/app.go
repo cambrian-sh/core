@@ -950,11 +950,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		TemporalIntent:     rv2.TemporalIntentEnabled,
 		TemporalFitWeight:  rv2.TemporalFitWeight,
 		// ADR-0136 D4/D5: the fact lane and its features (execution.facts).
-		FactLane:          fc.LaneEnabled,
-		FactLaneTopK:      fc.LaneTopK,
-		FactMatchWeight:   fc.FactMatchWeight,
-		Supersession:      fc.SupersessionEnabled,
-		CurrentFactWeight: fc.CurrentFactWeight,
+		FactLane:     fc.LaneEnabled,
+		FactLaneTopK: fc.LaneTopK,
+		// ADR-0136 A4: the document-scoped lane (0 = off). Acts only inside the lane.
+		FactLaneScopedDocuments: fc.LaneScopedDocuments,
+		FactLaneScopedTopK:      fc.LaneScopedTopK,
+		FactMatchWeight:         fc.FactMatchWeight,
+		Supersession:            fc.SupersessionEnabled,
+		CurrentFactWeight:       fc.CurrentFactWeight,
 	})
 	slog.Info(fmt.Sprintf("ranking v2: stage_a_calibrated=%t temporal_intent_enabled=%t",
 		rv2.StageACalibrated, rv2.TemporalIntentEnabled),
@@ -980,8 +983,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// assessments switch (it needs supersession), the expect_log anchors of the
 	// adr0136-gate-facts arms.
 	factsAssess := fc.AssessmentsEnabled && fc.SupersessionEnabled && factsExtract
-	slog.Info(fmt.Sprintf("fact layer: extract_enabled=%t lane_enabled=%t supersession_enabled=%t assessments_enabled=%t store=%s",
-		factsExtract, factsLane, fc.SupersessionEnabled, factsAssess, factsStore),
+	// ADR-0136 A4: the scoped lane's EFFECTIVE N (it runs inside the lane, so 0 when the
+	// lane cannot act). APPENDED to the line so the existing expect_log prefixes match.
+	factsScopedDocs := 0
+	if factsLane {
+		factsScopedDocs = fc.LaneScopedDocuments
+	}
+	slog.Info(fmt.Sprintf("fact layer: extract_enabled=%t lane_enabled=%t supersession_enabled=%t assessments_enabled=%t store=%s lane_scoped_documents=%d lane_scoped_top_k=%d",
+		factsExtract, factsLane, fc.SupersessionEnabled, factsAssess, factsStore, factsScopedDocs, fc.LaneScopedTopK),
 		"single_attributes", fc.SingleAttributes,
 		"multi_attributes", fc.MultiAttributes,
 		"cardinality_min_votes", fc.CardinalityMinVotes,
@@ -995,6 +1004,10 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		"generator_role", string(domain.PurposeFacts))
 	if (fc.ExtractEnabled && !factsExtract) || (fc.LaneEnabled && !factsLane) {
 		slog.Warn("fact layer: a switch is on but no knowledge substrate was composed; it has no effect")
+	}
+	if fc.LaneScopedDocuments > 0 && !factsLane {
+		slog.Warn("fact layer: lane_scoped_documents needs lane_enabled (and a knowledge substrate); the scoped lane is off",
+			"lane_scoped_documents", fc.LaneScopedDocuments)
 	}
 	if fc.AssessmentsEnabled && !factsAssess {
 		slog.Warn("fact layer: assessments_enabled needs extract_enabled and supersession_enabled; no assessment call is made")

@@ -75,13 +75,20 @@ type FactBackfillCandidate struct {
 	// TextChars is the total length of the content chunks (a cost estimate input:
 	// A2.3 windows per document).
 	TextChars int
+	// SourceKind and AuthorLabel are the client's descriptive source kind and author
+	// (ADR-0136 A3.2), from the documents row's metadata, so a backfill renders the
+	// same Source block as the live ingest did. "" = the client gave none.
+	SourceKind  string
+	AuthorLabel string
 }
 
-// SourceMeta is the candidate's A2.1 source metadata. The author is the recorded writer
-// (the ingest path's doc.Author, which is also its principal fallback).
+// SourceMeta is the candidate's A2.1 source metadata, with the A3.2 precedence of
+// SourceMetaOf: type = SourceKind else SourceType; author = AuthorLabel else the recorded
+// writer (the ingest path's doc.Author, which is also its principal fallback).
 func (c FactBackfillCandidate) SourceMeta() SourceMeta {
 	return SourceMeta{
-		SourceType: c.SourceType, Title: c.Title, Author: c.Author,
+		SourceType: firstNonBlank(c.SourceKind, c.SourceType), Title: c.Title,
+		Author:         firstNonBlank(c.AuthorLabel, c.Author),
 		ReferenceTime:  c.SessionTime,
 		ReferenceBasis: ReferenceBasisOf(c.TimeSource, c.SessionTime),
 		TimePrecision:  c.TimePrecision,

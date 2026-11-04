@@ -206,6 +206,8 @@ func TestRankingV2_FactLayerOffIsByteIdentical(t *testing.T) {
 	got := goldenRankingOutput(t, func(q *QueryService) {
 		q.facts = newMemSubstrate()
 		q.rankingV2.FactLaneTopK, q.rankingV2.FactMatchWeight, q.rankingV2.CurrentFactWeight = 20, 0.2, 0.1
+		// ADR-0136 A4: the scoped lane's tunables set, but it runs only inside the lane.
+		q.rankingV2.FactLaneScopedDocuments, q.rankingV2.FactLaneScopedTopK = 5, 20
 	})
 	if strings.ReplaceAll(string(want), "\r\n", "\n") != got {
 		t.Fatalf("the fact layer, switched off, changed the ranking.\n--- got\n%s", got)

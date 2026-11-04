@@ -110,6 +110,12 @@ func (c ExecutionConfig) RetrievalFingerprint(embedderID string) string {
 		if c.Facts.SupersessionEnabled {
 			fmt.Fprintf(&b, "facts_supersession=true\ncurrent_fact_weight=%g\n", c.Facts.CurrentFactWeight)
 		}
+		// ADR-0136 A4: the document-scoped lane adds fact-reached primary hits. Written
+		// only when it acts (lane on and N > 0), so every existing fingerprint holds.
+		if c.Facts.LaneScopedDocuments > 0 {
+			fmt.Fprintf(&b, "facts_lane_scoped_documents=%d\nfacts_lane_scoped_top_k=%d\n",
+				c.Facts.LaneScopedDocuments, c.Facts.LaneScopedTopK)
+		}
 	}
 
 	// Stage-B cross-encoder. The model id lives in the reranker agent's environment,

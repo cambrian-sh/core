@@ -252,6 +252,20 @@ message IngestMemoryRequest {
   // vocabulary above, so a date-only source is never shown as an exact instant.
   // Empty means "second" when a time is given. An unknown value is INVALID_ARGUMENT.
   string time_precision = 8;
+  // ADR-0136 Amendment A3: DESCRIPTIVE source metadata, all optional. The kernel
+  // trims each to a configured cap (execution.ingestion.source_*_max_chars) and
+  // rejects control characters (INVALID_ARGUMENT). None of them is identity or
+  // routing: the writer of record (source_agent_id) stays the authenticated caller,
+  // and the kernel's own source type (which parser routing reads) is unchanged.
+  //
+  // source_kind is free text describing the source ("conversation", "email",
+  // "report", ...). Never an enum, and nothing branches on it; the fact extractor
+  // shows it to the model as data.
+  string source_kind = 9;
+  // title is the source's own title. Unset: the body's first line, as before.
+  string title = 10;
+  // author is the source's author as the source names it. Descriptive only.
+  string author = 11;
 }
 // MemoryPart is one timed part of a multi-part memory (ADR-0134 D1).
 message MemoryPart {
@@ -259,6 +273,10 @@ message MemoryPart {
   // occurred_at is this part's event time. Optional: a part with no time
   // contributes text but no time.
   google.protobuf.Timestamp occurred_at = 2;
+  // speaker is who speaks or writes this part (a name or role label; ADR-0136 A3).
+  // Optional and descriptive. It never changes the assembled body: every chunk
+  // records the speaker at its first character and the speakers it overlaps.
+  string speaker = 3;
 }
 message IngestMemoryResponse {
   string doc_id = 1;

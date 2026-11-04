@@ -71,3 +71,37 @@ func TestFactItemsMigrations_ExtractionVersionsUpgradeKeepsLegacyMarkers(t *test
 		t.Fatalf("version 24 recorded %d times", n)
 	}
 }
+
+// T-20261103-fact-backfill-processes-each-principal-s: 0025 adds the two-phase backfill's
+// extraction journal. Additive: one new table.
+func TestLoadMigrations_Includes0025ExtractionWindows(t *testing.T) {
+	migs, err := loadMigrations(1536)
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	for _, m := range migs {
+		if m.version != 25 {
+			continue
+		}
+		if m.name != "extraction_windows" {
+			t.Fatalf("migration 25 is %q", m.name)
+		}
+		for _, s := range []string{
+			"CREATE TABLE IF NOT EXISTS knowledge_extraction_windows",
+			"item_ids          TEXT[] NOT NULL",
+			"new_item_ids      TEXT[] NOT NULL",
+			"PRIMARY KEY (namespace_id, extractor, document_id, content_hash, extractor_version, passage_start)",
+		} {
+			if !strings.Contains(m.sql, s) {
+				t.Errorf("0025 lacks %q", s)
+			}
+		}
+		for _, line := range strings.Split(m.sql, "\n") {
+			if l := strings.TrimSpace(line); !strings.HasPrefix(l, "--") && strings.Contains(strings.ToUpper(l), "DROP ") {
+				t.Errorf("0025 must be additive: %q", l)
+			}
+		}
+		return
+	}
+	t.Fatal("0025_extraction_windows is not embedded")
+}

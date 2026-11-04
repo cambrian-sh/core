@@ -173,15 +173,88 @@ func describeFactForReader(f domain.Fact, supersededByValue string, supersededAt
 	return s
 }
 
+// metaDocumentID is the chunk metadata key holding the chunk's source document id, the
+// parent stamped at ingest (ingestion_chunks.go) and promoted to chunks.document_id by
+// the adapter. The A4 scoped lane groups hits by it; the id itself is opaque.
+const metaDocumentID = "document_id"
+
+// hitDocumentID is the source document of a candidate row ("" when it has none — an
+// episode or a kernel artifact, which the scoped lane simply skips).
+func hitDocumentID(d domain.Document) string {
+	id, _ := d.Metadata[metaDocumentID].(string)
+	return id
+}
+
+// scopedFactDocuments is ADR-0136 A4.1's document set: the first n DISTINCT source
+// documents of the candidate list, in rank order. The rows come from the scoped dense
+// and lexical reads, so every document named is one the caller can already read.
+func scopedFactDocuments(results []domain.SearchResult, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	seen := make(map[string]bool, n)
+	var out []string
+	for _, r := range results {
+		id := hitDocumentID(r.Document)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+		if len(out) >= n {
+			break
+		}
+	}
+	return out
+}
+
+// mergeFactHits appends the scoped lane's hits that the global lane did not already
+// return (by fact id), keeping the global hits first.
+func mergeFactHits(global, scoped []domain.FactHit) []domain.FactHit {
+	if len(scoped) == 0 {
+		return global
+	}
+	seen := make(map[string]bool, len(global))
+	for _, h := range global {
+		seen[h.Fact.ID] = true
+	}
+	for _, h := range scoped {
+		if !seen[h.Fact.ID] {
+			seen[h.Fact.ID] = true
+			global = append(global, h)
+		}
+	}
+	return global
+}
+
 // injectFactHits is the lane. It returns results with the fact-reached chunks that
 // were not already candidates appended, and the per-chunk annotations. Fail-open: a
 // fact-store error leaves results unchanged (retrieval reads fail open, §3.2).
+//
+// ADR-0136 A4: with FactLaneScopedDocuments = N > 0 the lane runs a SECOND fact search,
+// restricted to the facts of the first N distinct source documents of results (the
+// fused dense+lexical pool, taken before this lane appends anything), under the same
+// predicate. Its hits join the global ones (de-duplicated by fact id) and go through the
+// same annotation, chain and by-id fetch below, so a scoped fact reaches its chunk
+// exactly like a global one. N = 0 runs nothing new: the lane is byte-identical.
 func (q *QueryService) injectFactHits(ctx context.Context, results []domain.SearchResult, vec []float32, eff *domain.TagPredicate, docType string) ([]domain.SearchResult, factLaneHits) {
 	rv := q.rankingV2
+	scopedDocs := scopedFactDocuments(results, rv.FactLaneScopedDocuments)
 	hits, err := q.facts.SearchFacts(ctx, vec, domain.FactSearchOptions{TopK: rv.FactLaneTopK, Scope: eff})
 	if err != nil {
 		slog.WarnContext(ctx, "fact lane: fact search failed; lane skipped", "err", err)
-		return results, nil
+		hits = nil
+	}
+	scopedFound := 0
+	if len(scopedDocs) > 0 {
+		scoped, serr := q.facts.SearchFacts(ctx, vec, domain.FactSearchOptions{
+			TopK: rv.FactLaneScopedTopK, Scope: eff, SourceDocumentIDs: scopedDocs})
+		if serr != nil {
+			slog.WarnContext(ctx, "fact lane: scoped fact search failed; scoped lane skipped", "err", serr)
+		} else {
+			scopedFound = len(scoped)
+			hits = mergeFactHits(hits, scoped)
+		}
 	}
 	if len(hits) == 0 {
 		return results, nil
@@ -283,7 +356,8 @@ func (q *QueryService) injectFactHits(ctx context.Context, results []domain.Sear
 		results = append(results, domain.SearchResult{Document: d, Score: score, RawScore: cos})
 		added++
 	}
-	slog.DebugContext(ctx, "fact lane", "facts", len(hits), "chunks", len(ann), "added", added)
+	slog.DebugContext(ctx, "fact lane", "facts", len(hits), "chunks", len(ann), "added", added,
+		"scoped_documents", len(scopedDocs), "scoped_facts", scopedFound)
 	return results, ann
 }
 

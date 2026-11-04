@@ -50,6 +50,7 @@ func newFactSubstrate(t *testing.T) (*PgKnowledgeStore, *PgFactItemReader, conte
 			`DELETE FROM predicate_profiles WHERE namespace_id = 'a1test'`,
 			`DELETE FROM knowledge_items WHERE namespace_id = 'a1test'`,
 			`DELETE FROM knowledge_extractions WHERE namespace_id = 'a1test' OR document_id LIKE 'a1test-%'`,
+			`DELETE FROM knowledge_extraction_windows WHERE namespace_id = 'a1test' OR document_id LIKE 'a1test-%'`,
 			`DELETE FROM chunks WHERE id LIKE 'a1test-%'`,
 			`DELETE FROM documents WHERE id LIKE 'a1test-%'`,
 		} {
@@ -537,5 +538,47 @@ func TestPg_FactReset_SelectedPrincipalsOnly(t *testing.T) {
 	}
 	if _, _, _, _, _, l := counts(); l != 0 {
 		t.Fatalf("learned profiles left: %d", l)
+	}
+}
+
+// ADR-0136 A3.2: the client's descriptive source kind and author label are written to
+// documents.metadata by the ingest path's SaveDocument and read back by the backfill
+// lister, so a backfill sees the same Source block as the live ingest; a re-ingest
+// without them clears them (the latest ingest owns the row). The chunk speaker labels
+// (A3.3) live in chunks.metadata and come back with the chunk read.
+func TestPg_FactBackfillLister_ReadsClientSourceMetadata(t *testing.T) {
+	ks, _, ctx := newFactSubstrate(t)
+	vec := &PgVectorAdapter{pool: ks.pool}
+	doc := domain.ExternalDocument{SourceKind: "conversation", AuthorLabel: "Alice"}
+	if _, err := vec.SaveDocument(ctx, domain.SourceDocument{ID: "a1test-a3doc", Title: "Trip", SourceType: "a3src",
+		Text: "hi", Metadata: domain.SourceDocumentMetadata(doc)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ks.pool.Exec(ctx, `INSERT INTO chunks (id, document_id, text, metadata) VALUES
+		('a1test-a3doc-chunk-0', 'a1test-a3doc', 'hi', '{"source_agent_id":"lme-a3-q1","speaker_at_start":"assistant","speakers":["assistant","user"]}')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cands, err := ks.ListFactBackfillCandidates(ctx, domain.FactBackfillFilter{SourceType: "a3src"})
+	if err != nil || len(cands) != 1 {
+		t.Fatalf("candidates = %+v err %v", cands, err)
+	}
+	c := cands[0]
+	if c.SourceKind != "conversation" || c.AuthorLabel != "Alice" || c.Author != "lme-a3-q1" {
+		t.Fatalf("candidate = %+v", c)
+	}
+	if m := c.SourceMeta(); m.SourceType != "conversation" || m.Author != "Alice" || m.Title != "Trip" {
+		t.Fatalf("SourceMeta = %+v", m)
+	}
+	chunks, err := vec.ChunksByIDs(ctx, c.ChunkIDs)
+	if err != nil || len(chunks) != 1 || chunks[0].Metadata[domain.MetaSpeakerAtStart] != "assistant" {
+		t.Fatalf("chunk metadata = %+v err %v", chunks, err)
+	}
+	// Re-ingest with no descriptive metadata: the kernel defaults come back.
+	if _, err := vec.SaveDocument(ctx, domain.SourceDocument{ID: "a1test-a3doc", Title: "Trip", SourceType: "a3src", Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	cands, _ = ks.ListFactBackfillCandidates(ctx, domain.FactBackfillFilter{SourceType: "a3src"})
+	if len(cands) != 1 || cands[0].SourceKind != "" || cands[0].AuthorLabel != "" || cands[0].SourceMeta().SourceType != "a3src" {
+		t.Fatalf("after a plain re-ingest = %+v", cands)
 	}
 }

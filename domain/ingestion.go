@@ -24,8 +24,20 @@ type ExternalDocument struct {
 	// instead of a flattened text approximation. Empty for text documents, which
 	// travel in Body. When set, Body may be empty — the parser's leaves become the
 	// chunk set.
-	Data   []byte
+	Data []byte
+	// Author is the KERNEL-STAMPED writer: the authenticated principal's id on the agent
+	// plane. It becomes the chunks' source_agent_id — the identity read scope, erasure
+	// and the ADR-0137 writer-of-record rely on. A client never sets it (AuthorLabel is
+	// the client's descriptive author).
 	Author string
+	// SourceKind is the CLIENT's free-text description of the source ("conversation",
+	// "email", "report", ...; ADR-0136 A3.1). Descriptive data only: SourceType stays
+	// kernel-owned because parser routing reads it, and nothing branches on SourceKind.
+	// The fact extractor shows it as the source type when set (SourceMetaOf).
+	SourceKind string
+	// AuthorLabel is the source's author as the source names it (A3.2). Descriptive
+	// only: it never replaces Author.
+	AuthorLabel string
 	// Timestamp is the document's EVENT time — when the content happened
 	// (ADR-0134), in UTC. An ingest with no stated time sets it to the ingest
 	// clock and TimeSource to TimeSourceIngestDefault, so the two are never

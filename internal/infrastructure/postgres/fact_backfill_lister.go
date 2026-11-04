@@ -19,8 +19,9 @@ var _ domain.FactBackfillLister = (*PgKnowledgeStore)(nil)
 // ListFactBackfillCandidates implements domain.FactBackfillLister over the documents
 // and chunks tables (ADR-0136 A1.7; T-20261103-no-backfill-path-populates-memory-facts-for).
 // It returns identifiers, tags, times and source metadata (title, time label, total text
-// length) only — never content: the chunk TEXT is read by the backfill through the
-// enforcing read store.
+// length, and the client's descriptive source kind / author label from documents.metadata,
+// ADR-0136 A3.2) only — never content: the chunk TEXT, and the chunks' A3.3 speaker
+// metadata with it, is read by the backfill through the enforcing read store.
 //
 // A document is a candidate when it has stored content chunks and (unless
 // IncludeMarked) no memory_fact marker in knowledge_extractions. Chunk ids come in
@@ -74,7 +75,9 @@ func (s *PgKnowledgeStore) ListFactBackfillCandidates(ctx context.Context, f dom
 				CASE WHEN min(c.event_time) IS NOT NULL THEN min(c.time_source) END, '') AS time_source,
 			COALESCE(CASE WHEN min(d.event_time) IS NOT NULL THEN d.time_precision END,
 				CASE WHEN min(c.event_time) IS NOT NULL THEN min(c.time_precision) END, '') AS time_precision,
-			COALESCE(sum(length(c.text)), 0)::int AS text_chars
+			COALESCE(sum(length(c.text)), 0)::int AS text_chars,
+			COALESCE(max(d.metadata->>'` + domain.DocMetaSourceKind + `'), '') AS source_kind,
+			COALESCE(max(d.metadata->>'` + domain.DocMetaAuthorLabel + `'), '') AS author_label
 		FROM documents d
 		JOIN chunks c ON c.document_id = d.id
 		WHERE c.text <> ''` + where + `
@@ -94,7 +97,7 @@ func (s *PgKnowledgeStore) ListFactBackfillCandidates(ctx context.Context, f dom
 		var at time.Time
 		var ts, tp string
 		if err := rows.Scan(&c.DocumentID, &c.SourceType, &c.Tags, &at, &c.ChunkIDs, &c.Author,
-			&c.Title, &ts, &tp, &c.TextChars); err != nil {
+			&c.Title, &ts, &tp, &c.TextChars, &c.SourceKind, &c.AuthorLabel); err != nil {
 			return nil, err
 		}
 		c.TimeSource, c.TimePrecision = domain.TimeSource(ts), domain.TimePrecision(tp)

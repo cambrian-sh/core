@@ -47,7 +47,10 @@ import (
 // out-of-order arrival costs a close of the incoming fact and a later re-plan, and the
 // fuzzy pass sees fewer candidates. With Ordered, documents are grouped by
 // classification (supersession never relates two scopes) and each group runs strictly
-// in event-time order on one worker; groups run in parallel up to Concurrency.
+// in event-time order on one worker; groups run in parallel up to Concurrency. With
+// GroupConcurrency > 1 a group runs in two phases instead — extraction and judge calls
+// concurrently, then the commit in event-time order — ending in the serial run's state
+// (fact_backfill_staged.go explains the equivalence and its limits).
 //
 // Resumable. A document is done exactly when the extractor wrote a COMPLETE marker of
 // its running version (knowledge_extractions, A2.4), which happens only after its items
@@ -55,7 +58,10 @@ import (
 // cancelled, crashes, fails part-way or stops at max_calls_per_document leaves a partial
 // (or no) marker, and the next run resumes exactly there; a marker of another extractor
 // version (a changed prompt or backbone) makes the document pending again. A complete
-// marker of the running version costs no LLM call.
+// marker of the running version costs no LLM call. In a two-phase group the marker
+// advances only when a window is COMMITTED (assessed); in between, the extraction
+// journal (domain.ExtractionWindow) records the stored window, so a stop between the
+// phases resumes with no second extraction call and still assesses it.
 type FactBackfill struct {
 	lister    domain.FactBackfillLister
 	reader    domain.VectorStore
@@ -96,6 +102,12 @@ type FactBackfillOptions struct {
 	DocsPerMinute float64
 	// Ordered runs each classification group in event-time order on one worker.
 	Ordered bool
+	// GroupConcurrency is the documents of ONE ordered group in flight at once
+	// (execution.facts.backfill_group_concurrency). <= 1 is the serial ordered path;
+	// > 1 runs the group in the two phases of fact_backfill_staged.go — extraction and
+	// the judge calls concurrently, the commit in event-time order — with the serial
+	// run's result. Read only with Ordered.
+	GroupConcurrency int
 	// ProgressEvery logs a progress line every N finished documents (<= 0 means 25).
 	ProgressEvery int
 	Logger        *slog.Logger
@@ -129,6 +141,17 @@ type FactBackfillReport struct {
 	AssessmentsReplayed int
 	FactsInserted       int
 	Elapsed             time.Duration
+
+	// Two-phase groups (GroupConcurrency > 1). TwoPhase is whether the run used them;
+	// JournalWindowsReplayed counts windows reloaded from the extraction journal of an
+	// earlier, stopped run (no extraction call); AssessmentCallsDiscarded counts judge
+	// calls made ahead whose candidate set an earlier commit then changed (counted in
+	// AssessmentCalls too: the price of running them concurrently); SpeculationWaves
+	// counts the concurrent judge passes (1 per group, plus one per such change).
+	TwoPhase                 bool
+	JournalWindowsReplayed   int
+	AssessmentCallsDiscarded int
+	SpeculationWaves         int
 }
 
 // ErrFactBackfillUnavailable is returned when the stack has no fact extractor or no
@@ -208,6 +231,22 @@ func (b *FactBackfill) Run(ctx context.Context, opts FactBackfillOptions) (FactB
 	}
 	r := &backfillRun{b: b, log: log, limiter: rate.NewLimiter(limit, 1), every: every, total: rep.Pending, start: start, rep: &rep}
 
+	// The two-phase path needs the extractor's staged primitives and staged reads; any
+	// gap runs the serial ordered path, which is always correct.
+	var staged stagedSink
+	if opts.Ordered && opts.GroupConcurrency > 1 {
+		if ss, ok := b.extractor.(stagedSink); !ok {
+			log.WarnContext(ctx, "facts-backfill: group_concurrency > 1 needs the fact extractor's two-phase path; running each group serially")
+		} else if err := ss.stagedReady(); err != nil {
+			log.WarnContext(ctx, "facts-backfill: two-phase groups unavailable; running each group serially", "err", err)
+		} else {
+			staged = ss
+			rep.TwoPhase = true
+		}
+	} else if !opts.Ordered && opts.GroupConcurrency > 1 {
+		log.InfoContext(ctx, "facts-backfill: group_concurrency is read only with ordered groups; unordered runs every document independently")
+	}
+
 	work := make(chan []domain.FactBackfillCandidate)
 	var wg sync.WaitGroup
 	for range workers {
@@ -215,6 +254,14 @@ func (b *FactBackfill) Run(ctx context.Context, opts FactBackfillOptions) (FactB
 		go func() {
 			defer wg.Done()
 			for g := range work {
+				if staged != nil {
+					if ctx.Err() != nil {
+						r.cancelled(len(g))
+						continue
+					}
+					r.stagedGroup(ctx, staged, g, opts.GroupConcurrency)
+					continue
+				}
 				for i, c := range g {
 					if ctx.Err() != nil {
 						r.cancelled(len(g) - i)
@@ -417,5 +464,7 @@ func reportAttrs(r FactBackfillReport) []any {
 		"extracted", r.Extracted, "skipped", r.Skipped, "failed", r.Failed, "missing", r.Missing,
 		"cancelled", r.Cancelled, "partial", r.Partial, "llm_calls", r.LLMCalls, "assessment_calls", r.AssessmentCalls,
 		"assessments_replayed", r.AssessmentsReplayed, "facts_inserted", r.FactsInserted, "elapsed", r.Elapsed.Round(time.Second).String(),
+		"two_phase", r.TwoPhase, "journal_windows_replayed", r.JournalWindowsReplayed,
+		"assessment_calls_discarded", r.AssessmentCallsDiscarded, "speculation_waves", r.SpeculationWaves,
 	}
 }

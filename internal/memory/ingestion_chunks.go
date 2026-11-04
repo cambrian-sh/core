@@ -118,6 +118,7 @@ func (im *IngestionManager) persistChunksTracked(
 			SourceType: doc.SourceType,
 			Text:       doc.Body,
 			Tags:       doc.Tags,
+			Metadata:   domain.SourceDocumentMetadata(doc),
 			EventStamp: doc.StampOf(),
 		})
 		clock.Since(StageDocumentRow, t)
@@ -200,7 +201,12 @@ func (im *IngestionManager) persistChunksTracked(
 	for i := range chunks {
 		bodies[i] = chunks[i].Body
 	}
-	stamps := domain.ChunkStamps(doc, domain.LocateChunkSpans(doc.Body, bodies))
+	spans := domain.LocateChunkSpans(doc.Body, bodies)
+	stamps := domain.ChunkStamps(doc, spans)
+	// ADR-0136 A3.3: the same spans label each chunk with the speaker at its first
+	// character and the speakers it overlaps — metadata only; text and boundaries are
+	// untouched.
+	speakers := domain.ChunkSpeakers(doc, spans)
 
 	// Chunk-context prepend (execution.ingestion.chunk_context_prepend): give
 	// each chunk its document title + section breadcrumb IN the text, so both
@@ -239,7 +245,7 @@ func (im *IngestionManager) persistChunksTracked(
 			Text:               chunk.Body,
 			ActivationStrength: externalActivation(doc.Importance),
 			Embedding:          domain.Embedding{Vector: vec, Model: "dynamic", Size: len(vec)},
-			Metadata:           chunkMetadata(doc, chunks, chunk, documentID, ids, i, entityID, scene),
+			Metadata:           withChunkSpeaker(chunkMetadata(doc, chunks, chunk, documentID, ids, i, entityID, scene), speakers[i]),
 			CreatedAt:          ingestedAt,
 			EventStamp:         stamps[i],
 		})
@@ -446,6 +452,18 @@ func chunkMetadata(
 		},
 	})
 	meta["chunk_relations"] = json.RawMessage(data)
+	return meta
+}
+
+// withChunkSpeaker records a chunk's A3.3 speaker labels on its metadata; a chunk with
+// no known speaker gets neither key.
+func withChunkSpeaker(meta map[string]any, sp domain.ChunkSpeaker) map[string]any {
+	if sp.AtStart != "" {
+		meta[domain.MetaSpeakerAtStart] = sp.AtStart
+	}
+	if len(sp.Speakers) > 0 {
+		meta[domain.MetaSpeakers] = append([]string(nil), sp.Speakers...)
+	}
 	return meta
 }
 

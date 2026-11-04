@@ -124,6 +124,12 @@ type concurrentIndex struct {
 var concurrentIndexes = []concurrentIndex{
 	{name: "idx_chunks_event_start", table: "chunks", using: "(" + EventStartExpr + ")", requires: 19},
 	{name: "idx_chunks_event_end", table: "chunks", using: "(" + EventEndExpr + ")", requires: 19},
+	// ADR-0136 A4: the document-scoped fact lane finds the facts of a few source
+	// documents by their recorded source_document value (postgres.PgFactItemReader
+	// scopedSearchSQL, which repeats this literal predicate). Partial, so it holds one
+	// row per fact. 0022_fact_items is the version whose memory_fact kind writes it.
+	{name: "idx_statement_values_source_document", table: "statement_values",
+		using: "(value_text) WHERE predicate = 'source_document'", requires: 22},
 }
 
 // ItemEmbeddingIndexName is the per-dimension partial HNSW index of the ADR-0136 A1 item

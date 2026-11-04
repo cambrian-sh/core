@@ -155,7 +155,7 @@ func TestFactWindows_PackInOrderWithinBudget(t *testing.T) {
 	}
 	head := len(factPromptHead(factExtractionInput{Source: src})) + factSectionReserve
 	budget := head + 2000 // two passages per window
-	ws := packFactWindows(passages, src, nil, budget)
+	ws := packFactWindows(passages, nil, src, nil, budget)
 	if len(ws) != 6 {
 		t.Fatalf("windows = %+v, want 6 of 2", ws)
 	}
@@ -173,7 +173,7 @@ func TestFactWindows_PackInOrderWithinBudget(t *testing.T) {
 	if next != len(passages) {
 		t.Fatalf("windows cover %d of %d passages", next, len(passages))
 	}
-	if ws := packFactWindows(passages, src, nil, 10); len(ws) != len(passages) {
+	if ws := packFactWindows(passages, nil, src, nil, 10); len(ws) != len(passages) {
 		t.Fatalf("a passage larger than the budget still gets its own window: %+v", ws)
 	}
 }
@@ -220,7 +220,7 @@ func TestFactExtractor_SectionedPartialResumeAndVersion(t *testing.T) {
 		t.Fatalf("run 1: %+v err %v calls %d", res, err, gen.calls.Load())
 	}
 	mk, _ := sub.marker("doc-long")
-	if mk.ExtractorVersion != "fact-extract-v2/model-a" || mk.PassagesCovered != 2 || mk.PassagesTotal != 5 || mk.Items != 2 {
+	if mk.ExtractorVersion != factExtractPromptVersion+"/model-a" || mk.PassagesCovered != 2 || mk.PassagesTotal != 5 || mk.Items != 2 {
 		t.Fatalf("partial marker = %+v", mk)
 	}
 	if done, _ := e.AlreadyExtracted(ctx, "doc-long", ids); done {

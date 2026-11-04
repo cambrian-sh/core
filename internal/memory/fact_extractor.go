@@ -495,10 +495,11 @@ func (e *FactExtractor) process(j factJob) (FactDocumentResult, error) {
 	}
 	passages := factPassages(j.chunks)
 	texts := make([]string, len(passages))
+	speakers := make([]string, len(passages))
 	for i, p := range passages {
-		texts[i] = p.Text
+		texts[i], speakers[i] = p.Text, p.Speaker
 	}
-	windows := packFactWindows(texts, j.source, e.canonical, e.cfg.MaxPromptChars)
+	windows := packFactWindows(texts, speakers, j.source, e.canonical, e.cfg.MaxPromptChars)
 	// Resume at the window holding the first uncovered passage (a changed
 	// max_prompt_chars can make that window start a little before it; the repeated
 	// passages re-extract idempotently).
@@ -566,13 +567,38 @@ func (e *FactExtractor) process(j factJob) (FactDocumentResult, error) {
 // actually sent, embed, write, and the window's assessment. It returns the write stats
 // and the number of facts built.
 func (e *FactExtractor) processWindow(j factJob, win []factPassage, w, of, maxFacts int, res *FactDocumentResult) (FactSaveStats, int, error) {
+	st, n, storedFacts, _, err := e.extractWindow(j, win, w, of, maxFacts, res)
+	if err != nil {
+		return st, n, err
+	}
+	if e.assessing() && len(storedFacts) > 0 {
+		called, replayed := e.assess(j.ctx, storedFacts)
+		if called {
+			res.LLMCalls++
+			res.AssessmentCalls++
+		}
+		res.AssessmentReplayed = res.AssessmentReplayed || replayed
+	}
+	return st, n, nil
+}
+
+// assessing reports whether windows are assessed (A1.2 rules 2-4 need both switches).
+func (e *FactExtractor) assessing() bool { return e.cfg.Supersession && e.cfg.Assessments }
+
+// extractWindow is a window's extraction half: one extraction call, validation against
+// the passages actually sent, embed and write. It returns the write stats, the number of
+// facts built, the facts AS STORED (the window's assessment batch) and, parallel to it,
+// whether each was inserted by this write. The serial path assesses right after it
+// (processWindow); the two-phase backfill defers the assessment (fact_backfill_staged.go).
+func (e *FactExtractor) extractWindow(j factJob, win []factPassage, w, of, maxFacts int, res *FactDocumentResult) (FactSaveStats, int, []domain.Fact, []bool, error) {
 	ctx := j.ctx
 	texts := make([]string, len(win))
+	speakers := make([]string, len(win))
 	for i, p := range win {
-		texts[i] = p.Text
+		texts[i], speakers[i] = p.Text, p.Speaker
 	}
 	prompt := buildFactPrompt(factExtractionInput{
-		Source: j.source, Passages: texts, CanonicalPredicates: e.canonical, Section: w + 1, Sections: of,
+		Source: j.source, Passages: texts, Speakers: speakers, CanonicalPredicates: e.canonical, Section: w + 1, Sections: of,
 	})
 	llmCtx, cancel := context.WithTimeout(ctx, e.cfg.LLMTimeout)
 	resp, err := callTripletsLLM(llmCtx, e.gen, prompt)
@@ -581,11 +607,11 @@ func (e *FactExtractor) processWindow(j factJob, win []factPassage, w, of, maxFa
 	res.LLMCalls++
 	res.Windows++
 	if err != nil {
-		return FactSaveStats{}, 0, err
+		return FactSaveStats{}, 0, nil, nil, err
 	}
 	parsed, pst, err := parseFactResponse(resp, texts, maxFacts)
 	if err != nil {
-		return FactSaveStats{}, 0, err
+		return FactSaveStats{}, 0, nil, nil, err
 	}
 	if pst.Returned > pst.Kept {
 		slog.InfoContext(ctx, "FactExtractor: facts refused by validation", "document_id", j.documentID, "window", w+1,
@@ -595,30 +621,23 @@ func (e *FactExtractor) processWindow(j factJob, win []factPassage, w, of, maxFa
 	facts := e.buildFacts(j, win, parsed)
 	if len(facts) > 0 {
 		if err := e.embedFacts(ctx, facts); err != nil {
-			return FactSaveStats{}, 0, err
+			return FactSaveStats{}, 0, nil, nil, err
 		}
 	}
-	storedFacts, st := e.writeItems(ctx, facts)
+	storedFacts, inserted, st := e.writeItems(ctx, facts)
 	if st.Failed > 0 && st.Inserted+st.Existing == 0 && len(facts) > 0 {
-		return st, len(facts), errors.New("fact extraction: no item of the window could be stored")
+		return st, len(facts), nil, nil, errors.New("fact extraction: no item of the window could be stored")
 	}
-	if e.cfg.Supersession && e.cfg.Assessments && len(storedFacts) > 0 {
-		called, replayed := e.assess(ctx, storedFacts)
-		if called {
-			res.LLMCalls++
-			res.AssessmentCalls++
-		}
-		res.AssessmentReplayed = res.AssessmentReplayed || replayed
-	}
-	return st, len(facts), nil
+	return st, len(facts), storedFacts, inserted, nil
 }
 
 // writeItems writes each fact as a memory_fact item through the chokepoint, then their
 // embeddings. It returns the facts AS STORED (final classification and identity), the
-// only form later reads may key on.
-func (e *FactExtractor) writeItems(ctx context.Context, facts []domain.Fact) ([]domain.Fact, FactSaveStats) {
+// only form later reads may key on, and parallel to them whether each write inserted.
+func (e *FactExtractor) writeItems(ctx context.Context, facts []domain.Fact) ([]domain.Fact, []bool, FactSaveStats) {
 	var st FactSaveStats
 	stored := make([]domain.Fact, 0, len(facts))
+	fresh := make([]bool, 0, len(facts))
 	var embs []domain.ItemEmbedding
 	for _, f := range facts {
 		it, inserted, err := e.sink.PutClassifiedItem(ctx, f.ToItem(e.cfg.Namespace))
@@ -636,6 +655,7 @@ func (e *FactExtractor) writeItems(ctx context.Context, facts []domain.Fact) ([]
 		sf := domain.FactFromItem(it)
 		sf.Embedding = f.Embedding
 		stored = append(stored, sf)
+		fresh = append(fresh, inserted)
 		if len(f.Embedding) > 0 && e.cfg.EmbedModelID != "" {
 			embs = append(embs, domain.ItemEmbedding{ItemID: it.ID, ModelID: e.cfg.EmbedModelID, Vector: f.Embedding})
 		}
@@ -644,7 +664,7 @@ func (e *FactExtractor) writeItems(ctx context.Context, facts []domain.Fact) ([]
 		slog.WarnContext(ctx, "FactExtractor: item embeddings not stored; these facts are invisible to the fact lane until re-embedded",
 			"items", len(embs), "err", err)
 	}
-	return stored, st
+	return stored, fresh, st
 }
 
 // factActor is the writing principal of a document (A1-Q2): the principal recorded on
@@ -771,6 +791,44 @@ func (e *FactExtractor) cardinalityOf(ctx context.Context, predicate string, cac
 // Best-effort: any failure leaves the items and their cue/profile-driven chains as they
 // are. It returns whether the judge was called and whether a stored verdict was reused.
 func (e *FactExtractor) assess(ctx context.Context, facts []domain.Fact) (called, replayed bool) {
+	p := e.planAssessment(ctx, facts, nil)
+	if p == nil {
+		return false, false
+	}
+	if prior, err := e.sink.GetAssessment(ctx, p.id); err == nil && prior != nil {
+		e.assessReplayed.Add(1)
+		return false, true
+	}
+	resp, err := e.askJudge(ctx, p)
+	e.commitAssessment(ctx, p, resp, err)
+	return true, false
+}
+
+// assessPlan is one window's batched judge call, fully determined before any call: the
+// candidate pairs, the prompt and the keyed assessment id.
+type assessPlan struct {
+	items   []contradictionItem
+	prompt  string
+	inputs  []domain.KnowledgeItemID
+	version string
+	id      string
+}
+
+// factVisibility hides, from one window's assessment, the items the SERIAL ordered run
+// had not stored yet when it assessed that window (the two-phase backfill stores a whole
+// group first; fact_backfill_staged.go). nil hides nothing — the serial path.
+type factVisibility struct {
+	// hidden reports whether an item id is hidden; bySubject lists the hidden ids per
+	// subject reference (scope key + subject key), the only ones a fuzzy read can return.
+	hidden    func(id string) bool
+	bySubject func(f domain.Fact) []domain.KnowledgeItemID
+}
+
+func (v *factVisibility) hides(id string) bool { return v != nil && v.hidden(id) }
+
+// planAssessment collects one window's candidate pairs (A1.2 rules 2-4) and keys them.
+// It only READS (profiles, chains, similar facts); nil when there is no pair.
+func (e *FactExtractor) planAssessment(ctx context.Context, facts []domain.Fact, vis *factVisibility) *assessPlan {
 	// Candidates are read with the explicit kernel bypass, but within each new fact's own
 	// subject reference (scope key + subject): they are facts of exactly this
 	// classification, which is what lets them into this prompt.
@@ -792,6 +850,10 @@ func (e *FactExtractor) assess(ctx context.Context, facts []domain.Fact) (called
 		}
 		return c.ID < f.ID
 	}
+	var staged domain.FactStagedReader
+	if vis != nil {
+		staged, _ = e.reader.(domain.FactStagedReader)
+	}
 	var items []contradictionItem
 	for _, f := range sorted {
 		if f.Polarity == domain.FactNegative {
@@ -805,7 +867,9 @@ func (e *FactExtractor) assess(ctx context.Context, facts []domain.Fact) (called
 				slog.WarnContext(ctx, "FactExtractor: exact-key candidates unavailable", "item", f.ID, "err", err)
 			}
 			for _, c := range chain {
-				if seen[c.ID] || c.Polarity == domain.FactNegative || c.ValueNorm == f.ValueNorm || !before(c, f) {
+				// A hidden item is simply absent: a chain's MEMBERSHIP and each member's
+				// own start (all the prompt shows) do not depend on the other members.
+				if seen[c.ID] || vis.hides(c.ID) || c.Polarity == domain.FactNegative || c.ValueNorm == f.ValueNorm || !before(c, f) {
 					continue
 				}
 				seen[c.ID] = true
@@ -813,12 +877,22 @@ func (e *FactExtractor) assess(ctx context.Context, facts []domain.Fact) (called
 			}
 		}
 		if e.cfg.FuzzyCandidates > 0 && len(f.Embedding) > 0 {
-			sim, err := e.reader.SimilarFacts(sys, f, f.Embedding, e.cfg.FuzzyCandidates, domain.ScopeSystem)
+			var (
+				sim []domain.Fact
+				err error
+			)
+			if staged != nil {
+				// The top-k and the derived-empty filter depend on which items exist, so
+				// the hidden items are excluded inside the read, not after it.
+				sim, err = staged.SimilarFactsHiding(sys, f, f.Embedding, e.cfg.FuzzyCandidates, domain.ScopeSystem, vis.bySubject(f))
+			} else {
+				sim, err = e.reader.SimilarFacts(sys, f, f.Embedding, e.cfg.FuzzyCandidates, domain.ScopeSystem)
+			}
 			if err != nil {
 				slog.WarnContext(ctx, "FactExtractor: fuzzy candidates unavailable", "item", f.ID, "err", err)
 			}
 			for _, c := range sim {
-				if !seen[c.ID] && before(c, f) {
+				if !seen[c.ID] && !vis.hides(c.ID) && before(c, f) {
 					seen[c.ID] = true
 					cands = append(cands, c)
 				}
@@ -831,55 +905,59 @@ func (e *FactExtractor) assess(ctx context.Context, facts []domain.Fact) (called
 		items = append(items, contradictionItem{New: f, Candidates: cands})
 	}
 	if len(items) == 0 {
-		return false, false
+		return nil
 	}
-	prompt := buildAssessmentPrompt(items)
-	var inputs []domain.KnowledgeItemID
+	p := &assessPlan{items: items, prompt: buildAssessmentPrompt(items), version: e.cfg.AssessorModel + "|" + factAssessmentPromptVersion}
 	for _, it := range items {
-		inputs = append(inputs, domain.KnowledgeItemID(it.New.ID))
+		p.inputs = append(p.inputs, domain.KnowledgeItemID(it.New.ID))
 		for _, c := range it.Candidates {
-			inputs = append(inputs, domain.KnowledgeItemID(c.ID))
+			p.inputs = append(p.inputs, domain.KnowledgeItemID(c.ID))
 		}
 	}
-	version := e.cfg.AssessorModel + "|" + factAssessmentPromptVersion
-	id := domain.AssessmentID(domain.AssessmentAuthorityLLMContradiction, version, domain.PromptHash(prompt), inputs)
-	if prior, err := e.sink.GetAssessment(ctx, id); err == nil && prior != nil {
-		e.assessReplayed.Add(1)
-		return false, true
-	}
+	p.id = domain.AssessmentID(domain.AssessmentAuthorityLLMContradiction, p.version, domain.PromptHash(p.prompt), p.inputs)
+	return p
+}
+
+// askJudge makes the plan's one judge call. It stores nothing.
+func (e *FactExtractor) askJudge(ctx context.Context, p *assessPlan) (string, error) {
 	llmCtx, cancel := context.WithTimeout(ctx, e.cfg.LLMTimeout)
-	resp, err := callTripletsLLM(llmCtx, e.gen, prompt)
+	resp, err := callTripletsLLM(llmCtx, e.gen, p.prompt)
 	cancel()
 	e.llmCalls.Add(1)
 	e.assessmentCalls.Add(1)
-	if err != nil {
+	return resp, err
+}
+
+// commitAssessment applies the judge's answer to the plan: stored as a keyed Assessment
+// (which re-derives every cited key) and, when new, its exact-key verdicts vote.
+func (e *FactExtractor) commitAssessment(ctx context.Context, p *assessPlan, resp string, callErr error) {
+	if callErr != nil {
 		// A transport failure is not a verdict: nothing is stored, so a later session
 		// over the same candidates asks again.
-		slog.WarnContext(ctx, "FactExtractor: assessment call failed; no verdict stored", "err", err)
-		return true, false
+		slog.WarnContext(ctx, "FactExtractor: assessment call failed; no verdict stored", "err", callErr)
+		return
 	}
-	verdicts, perr := parseAssessmentResponse(resp, items)
+	verdicts, perr := parseAssessmentResponse(resp, p.items)
 	if perr != nil {
 		// An answer that cannot be read IS a verdict — the judge refused — and it is
 		// stored, so a replay is consistent with it.
 		slog.WarnContext(ctx, "FactExtractor: assessment answer unreadable; stored as refused", "err", perr)
-		verdicts = refusedVerdicts(items)
+		verdicts = refusedVerdicts(p.items)
 	}
 	a := domain.Assessment{
-		ID: id, NamespaceID: e.cfg.Namespace, Kind: domain.KindMemoryFact,
-		Authority: domain.AssessmentAuthorityLLMContradiction, AuthorityVersion: version,
-		PromptHash: domain.PromptHash(prompt), InputItemIDs: inputs, Verdicts: verdicts,
-		RawOutput: resp, Classification: items[0].New.Tags,
+		ID: p.id, NamespaceID: e.cfg.Namespace, Kind: domain.KindMemoryFact,
+		Authority: domain.AssessmentAuthorityLLMContradiction, AuthorityVersion: p.version,
+		PromptHash: domain.PromptHash(p.prompt), InputItemIDs: p.inputs, Verdicts: verdicts,
+		RawOutput: resp, Classification: p.items[0].New.Tags,
 	}
 	inserted, err := e.sink.PutAssessment(ctx, a)
 	if err != nil {
 		slog.WarnContext(ctx, "FactExtractor: assessment not stored; its verdicts have no effect", "err", err)
-		return true, false
+		return
 	}
 	if inserted {
-		e.vote(ctx, a, items)
+		e.vote(ctx, a, p.items)
 	}
-	return true, false
 }
 
 // vote turns an assessment's EXACT-KEY verdicts into profile votes (A1.4): per predicate,

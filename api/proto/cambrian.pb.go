@@ -1157,6 +1157,20 @@ type IngestMemoryRequest struct {
 	// vocabulary above, so a date-only source is never shown as an exact instant.
 	// Empty means "second" when a time is given. An unknown value is INVALID_ARGUMENT.
 	TimePrecision string `protobuf:"bytes,8,opt,name=time_precision,json=timePrecision,proto3" json:"time_precision,omitempty"`
+	// ADR-0136 Amendment A3: DESCRIPTIVE source metadata, all optional. The kernel
+	// trims each to a configured cap (execution.ingestion.source_*_max_chars) and
+	// rejects control characters (INVALID_ARGUMENT). None of them is identity or
+	// routing: the writer of record (source_agent_id) stays the authenticated caller,
+	// and the kernel's own source type (which parser routing reads) is unchanged.
+	//
+	// source_kind is free text describing the source ("conversation", "email",
+	// "report", ...). Never an enum, and nothing branches on it; the fact extractor
+	// shows it to the model as data.
+	SourceKind string `protobuf:"bytes,9,opt,name=source_kind,json=sourceKind,proto3" json:"source_kind,omitempty"`
+	// title is the source's own title. Unset: the body's first line, as before.
+	Title string `protobuf:"bytes,10,opt,name=title,proto3" json:"title,omitempty"`
+	// author is the source's author as the source names it. Descriptive only.
+	Author        string `protobuf:"bytes,11,opt,name=author,proto3" json:"author,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1247,13 +1261,38 @@ func (x *IngestMemoryRequest) GetTimePrecision() string {
 	return ""
 }
 
+func (x *IngestMemoryRequest) GetSourceKind() string {
+	if x != nil {
+		return x.SourceKind
+	}
+	return ""
+}
+
+func (x *IngestMemoryRequest) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *IngestMemoryRequest) GetAuthor() string {
+	if x != nil {
+		return x.Author
+	}
+	return ""
+}
+
 // MemoryPart is one timed part of a multi-part memory (ADR-0134 D1).
 type MemoryPart struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Text  string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
 	// occurred_at is this part's event time. Optional: a part with no time
 	// contributes text but no time.
-	OccurredAt    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	OccurredAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	// speaker is who speaks or writes this part (a name or role label; ADR-0136 A3).
+	// Optional and descriptive. It never changes the assembled body: every chunk
+	// records the speaker at its first character and the speakers it overlaps.
+	Speaker       string `protobuf:"bytes,3,opt,name=speaker,proto3" json:"speaker,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1300,6 +1339,13 @@ func (x *MemoryPart) GetOccurredAt() *timestamppb.Timestamp {
 		return x.OccurredAt
 	}
 	return nil
+}
+
+func (x *MemoryPart) GetSpeaker() string {
+	if x != nil {
+		return x.Speaker
+	}
+	return ""
 }
 
 type IngestMemoryResponse struct {
@@ -4068,7 +4114,7 @@ const file_cambrian_proto_rawDesc = "" +
 	"\vapprover_id\x18\x03 \x01(\tR\n" +
 	"approverId\"*\n" +
 	"\x18ApprovalDecisionResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok\"\xa4\x02\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\"\xf3\x02\n" +
 	"\x13IngestMemoryRequest\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x12\n" +
 	"\x04tags\x18\x02 \x03(\tR\x04tags\x12\x1e\n" +
@@ -4081,12 +4127,18 @@ const file_cambrian_proto_rawDesc = "" +
 	"\voccurred_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"occurredAt\x12*\n" +
 	"\x05parts\x18\a \x03(\v2\x14.cambrian.MemoryPartR\x05parts\x12%\n" +
-	"\x0etime_precision\x18\b \x01(\tR\rtimePrecision\"]\n" +
+	"\x0etime_precision\x18\b \x01(\tR\rtimePrecision\x12\x1f\n" +
+	"\vsource_kind\x18\t \x01(\tR\n" +
+	"sourceKind\x12\x14\n" +
+	"\x05title\x18\n" +
+	" \x01(\tR\x05title\x12\x16\n" +
+	"\x06author\x18\v \x01(\tR\x06author\"w\n" +
 	"\n" +
 	"MemoryPart\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12;\n" +
 	"\voccurred_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAt\"-\n" +
+	"occurredAt\x12\x18\n" +
+	"\aspeaker\x18\x03 \x01(\tR\aspeaker\"-\n" +
 	"\x14IngestMemoryResponse\x12\x15\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x05docId\"\xd1\x01\n" +
 	"\x15UploadArtifactRequest\x12\x18\n" +

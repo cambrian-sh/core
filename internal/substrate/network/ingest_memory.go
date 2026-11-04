@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
@@ -78,6 +81,13 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 		return nil, err
 	}
 
+	// ADR-0136 A3.1: the client's descriptive source metadata, validated BEFORE any work
+	// (a control character is the caller's INVALID_ARGUMENT, never a half-done ingest).
+	meta, err := s.resolveIngestSourceMeta(req)
+	if err != nil {
+		return nil, err
+	}
+
 	if s.IngestionProcessor != nil {
 		sourceURI := req.GetSource()
 		if sourceURI == "" {
@@ -87,15 +97,26 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 		if len(req.GetParts()) > 0 {
 			body = et.Body
 		}
+		title := meta.title
+		if title == "" {
+			title = firstLine(body, 80)
+		}
 		doc := domain.ExternalDocument{
-			SourceURI:  sourceURI,
+			SourceURI: sourceURI,
+			// SourceType stays KERNEL-OWNED (A3.2): parser routing reads it, so a
+			// client's source_kind goes to SourceKind and can never steer it.
 			SourceType: "ingest_memory",
-			Title:      firstLine(body, 80),
+			SourceKind: meta.kind,
+			Title:      title,
 			Body:       body,
-			Author:     callerAgentID(ctx),
-			ThreadID:   req.GetSessionId(),
-			Tags:       append([]string(nil), req.GetTags()...),
-			Importance: float64(req.GetImportance()),
+			// Author is the authenticated caller — the writer of record that becomes
+			// source_agent_id (scope, erasure, ADR-0137). The client's author is
+			// descriptive only and goes to AuthorLabel; it can never replace this.
+			Author:      callerAgentID(ctx),
+			AuthorLabel: meta.author,
+			ThreadID:    req.GetSessionId(),
+			Tags:        append([]string(nil), req.GetTags()...),
+			Importance:  float64(req.GetImportance()),
 		}
 		doc.ApplyEventTime(et)
 		// Stamp the authenticated principal, exactly as the Remember path below does.
@@ -165,13 +186,18 @@ func (s *Server) resolveIngestEventTime(req *pb.IngestMemoryRequest) (domain.Ing
 	if err != nil {
 		return domain.IngestEventTime{}, err
 	}
+	caps := s.ExecCfg.Ingestion.SourceMetaCaps()
 	parts := make([]domain.MemoryPartInput, 0, len(req.GetParts()))
 	for i, p := range req.GetParts() {
 		t, err := wireTime(fmt.Sprintf("parts[%d].occurred_at", i), p.GetOccurredAt())
 		if err != nil {
 			return domain.IngestEventTime{}, err
 		}
-		parts = append(parts, domain.MemoryPartInput{Text: p.GetText(), OccurredAt: t})
+		speaker, err := descriptiveField(fmt.Sprintf("parts[%d].speaker", i), p.GetSpeaker(), caps.Speaker)
+		if err != nil {
+			return domain.IngestEventTime{}, err
+		}
+		parts = append(parts, domain.MemoryPartInput{Text: p.GetText(), OccurredAt: t, Speaker: speaker})
 	}
 	tolerance := time.Duration(s.ExecCfg.Ingestion.EventTimeFutureToleranceMs) * time.Millisecond
 	et, err := domain.ResolveIngestEventTime(occurredAt, parts, req.GetTimePrecision(), time.Now(), tolerance)
@@ -179,6 +205,53 @@ func (s *Server) resolveIngestEventTime(req *pb.IngestMemoryRequest) (domain.Ing
 		return domain.IngestEventTime{}, status.Error(codes.InvalidArgument, err.Error())
 	}
 	return et, nil
+}
+
+// ingestSourceMeta is the client's validated descriptive source metadata (A3.1).
+type ingestSourceMeta struct {
+	kind, title, author string
+}
+
+// resolveIngestSourceMeta validates source_kind, title and author against the
+// configured caps (execution.ingestion.source_*_max_chars).
+func (s *Server) resolveIngestSourceMeta(req *pb.IngestMemoryRequest) (ingestSourceMeta, error) {
+	caps := s.ExecCfg.Ingestion.SourceMetaCaps()
+	var m ingestSourceMeta
+	var err error
+	if m.kind, err = descriptiveField("source_kind", req.GetSourceKind(), caps.Kind); err != nil {
+		return m, err
+	}
+	if m.title, err = descriptiveField("title", req.GetTitle(), caps.Title); err != nil {
+		return m, err
+	}
+	if m.author, err = descriptiveField("author", req.GetAuthor(), caps.Author); err != nil {
+		return m, err
+	}
+	return m, nil
+}
+
+// descriptiveField normalises one free-text descriptive value (ADR-0136 A3.1): trimmed,
+// refused with INVALID_ARGUMENT when it holds a control character (a newline in a label
+// would let a value forge extra lines in a prompt's Source block or a passage label),
+// and cut to max characters at a rune boundary. Empty stays empty.
+func descriptiveField(field, v string, max int) (string, error) {
+	v = strings.TrimSpace(v)
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return "", status.Errorf(codes.InvalidArgument, "%s: control character %U is not allowed", field, r)
+		}
+	}
+	if max > 0 && utf8.RuneCountInString(v) > max {
+		n := 0
+		for i := range v {
+			if n == max {
+				v = strings.TrimSpace(v[:i])
+				break
+			}
+			n++
+		}
+	}
+	return v, nil
 }
 
 // wireTime converts an optional wire Timestamp. A Timestamp is an absolute UTC

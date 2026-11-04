@@ -45,6 +45,13 @@ type RankingV2 struct {
 	FactLane bool
 	// FactLaneTopK is how many facts the lane fetches per query (≤ 0 ⇒ 20).
 	FactLaneTopK int
+	// FactLaneScopedDocuments (ADR-0136 A4, execution.facts.lane_scoped_documents) is N
+	// of the document-scoped lane: the lane ALSO searches only the facts of the first N
+	// distinct source documents of the fused dense+lexical pool (fact_lane.go). 0 = off;
+	// needs FactLane.
+	FactLaneScopedDocuments int
+	// FactLaneScopedTopK is how many facts one scoped search keeps (≤ 0 ⇒ 20).
+	FactLaneScopedTopK int
 	// FactMatchWeight is the Stage-A weight of the fact_match feature, joining only
 	// when the lane found a fact for the query.
 	FactMatchWeight float64
@@ -111,6 +118,12 @@ func (q *QueryService) SetRankingV2(r RankingV2) {
 	}
 	if r.FactLaneTopK <= 0 {
 		r.FactLaneTopK = defaultFactLaneTopK
+	}
+	if r.FactLaneScopedDocuments < 0 {
+		r.FactLaneScopedDocuments = 0
+	}
+	if r.FactLaneScopedTopK <= 0 {
+		r.FactLaneScopedTopK = defaultFactLaneTopK
 	}
 	if r.FactMatchWeight < 0 {
 		r.FactMatchWeight = 0

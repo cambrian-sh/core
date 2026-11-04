@@ -1038,6 +1038,18 @@ type IngestionConfig struct {
 	// line. Default 120000; <=0 falls back to 120000.
 	SyncIngestFactsWaitTimeoutMs int `json:"sync_ingest_facts_wait_timeout_ms,omitempty"`
 
+	// ADR-0136 Amendment A3.1: caps on the agent-plane IngestMemory's DESCRIPTIVE
+	// source metadata (source_kind, title, author, and each part's speaker). The
+	// kernel trims each value, rejects control characters, and cuts it to its cap
+	// (in characters, at a rune boundary). Read by the agent-plane handler
+	// (internal/substrate/network/ingest_memory.go) through SourceMetaCaps. Defaults
+	// 64 / 256 / 128 / 64; each must be >= 0, and 0 means the default (the same rule
+	// as sync_ingest_facts_wait_timeout_ms), so a value can never silently mean "no cap".
+	SourceKindMaxChars   int `json:"source_kind_max_chars,omitempty"`
+	SourceTitleMaxChars  int `json:"source_title_max_chars,omitempty"`
+	SourceAuthorMaxChars int `json:"source_author_max_chars,omitempty"`
+	PartSpeakerMaxChars  int `json:"part_speaker_max_chars,omitempty"`
+
 	// KgExtractorCallAttempts is the total number of times one triplet batch's
 	// call to the kg_extractor agent is attempted when the agent cannot be
 	// booted, dialled or called (T-20261102-kg-extractor-cold-start-drops-the-first-kg:
@@ -1415,6 +1427,16 @@ type FactsConfig struct {
 	MaxFactsPerSource int `json:"max_facts_per_source"`
 	// LaneTopK is how many facts the lane fetches per query. Default 20.
 	LaneTopK int `json:"lane_top_k"`
+	// LaneScopedDocuments is N of the ADR-0136 A4 document-scoped fact lane
+	// (experimental): after the fused dense+lexical pool is formed, the lane also
+	// searches only the facts whose source chunk belongs to the first N DISTINCT source
+	// documents of that pool, so an incidental fact of a document the kernel already
+	// found is not outranked by the principal's whole fact set. 0 = off (the default).
+	// Needs lane_enabled; without it the setting is a no-op (WARN at boot).
+	LaneScopedDocuments int `json:"lane_scoped_documents"`
+	// LaneScopedTopK is how many facts one scoped search keeps (A4). Default 20; > 0
+	// when lane_scoped_documents > 0.
+	LaneScopedTopK int `json:"lane_scoped_top_k"`
 	// FactMatchWeight is the Stage-A weight of fact_match (needs blend_enabled), joined
 	// only for a query the lane matched. Default 0.2.
 	FactMatchWeight float64 `json:"fact_match_weight"`
@@ -1449,6 +1471,17 @@ type FactsConfig struct {
 	// single (or multi) once that many assessments voted that way with no opposing vote;
 	// a split vote stays unknown. Default 3.
 	CardinalityMinVotes int `json:"cardinality_min_votes"`
+	// BackfillGroupConcurrency is how many documents of ONE ordered classification group
+	// cmd/facts-backfill runs at once (its -group-concurrency flag overrides it;
+	// T-20261103-fact-backfill-processes-each-principal-s). 1 is the serial ordered
+	// path: one document at a time in event-time order. N > 1 runs the group in two
+	// phases — every document's extraction and every window's judge call N at a time,
+	// then the assessments, votes and markers committed one window at a time in
+	// event-time order — with the same final items, assessments, resolutions and
+	// predicate profiles as the serial path (ADR-0136 A2 "Backfill concurrency"). It
+	// multiplies with the command's -concurrency (groups in flight). Read only by the
+	// backfill, never by live ingest. Default 1; 0 reads as 1; negative is refused.
+	BackfillGroupConcurrency int `json:"backfill_group_concurrency"`
 }
 
 // PipelinesConfig governs whether authored pipelines actually EXECUTE.
@@ -2037,6 +2070,11 @@ func DefaultConfig() *Config {
 				// ADR-0136 D4: same option for the fact layer, off by default.
 				SyncIngestWaitForFacts:       false,
 				SyncIngestFactsWaitTimeoutMs: 120000,
+				// ADR-0136 A3.1: descriptive source-metadata caps (agent-plane ingest).
+				SourceKindMaxChars:   DefaultSourceKindMaxChars,
+				SourceTitleMaxChars:  DefaultSourceTitleMaxChars,
+				SourceAuthorMaxChars: DefaultSourceAuthorMaxChars,
+				PartSpeakerMaxChars:  DefaultPartSpeakerMaxChars,
 				// T-20261102-kg-extractor-cold-start-drops-the-first-kg: absorb a
 				// cold kg_extractor boot instead of dropping the first batches.
 				KgExtractorCallAttempts:   3,
@@ -2125,12 +2163,16 @@ func DefaultConfig() *Config {
 				MaxCallsPerDocument: 8,
 				MaxFactsPerSource:   512,
 				LaneTopK:            20,
+				LaneScopedTopK:      20,
 				FactMatchWeight:     0.2,
 				CurrentFactWeight:   0.1,
 				SingleAttributes:    []string{},
 				MultiAttributes:     []string{},
 				FuzzyCandidates:     10,
 				CardinalityMinVotes: 3,
+				// T-20261103-fact-backfill-processes-each-principal-s: 1 = the serial
+				// ordered backfill, unchanged.
+				BackfillGroupConcurrency: 1,
 			},
 		},
 		Telemetry: TelemetryConfig{
@@ -2629,6 +2671,15 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	if f := c.Facts; f.LaneEnabled && f.LaneTopK <= 0 {
 		errs = append(errs, "facts.lane_top_k must be > 0 when lane_enabled is on")
 	}
+	if c.Facts.LaneScopedDocuments < 0 {
+		errs = append(errs, "facts.lane_scoped_documents must be >= 0 (0 = off)")
+	}
+	if f := c.Facts; f.LaneScopedDocuments > 0 && f.LaneScopedTopK <= 0 {
+		errs = append(errs, "facts.lane_scoped_top_k must be > 0 when lane_scoped_documents > 0")
+	}
+	if c.Facts.BackfillGroupConcurrency < 0 {
+		errs = append(errs, "facts.backfill_group_concurrency must be >= 0 (0 and 1 = the serial ordered backfill)")
+	}
 	if c.Facts.FactMatchWeight < 0 || c.Facts.CurrentFactWeight < 0 {
 		errs = append(errs, "facts.fact_match_weight and facts.current_fact_weight must be >= 0")
 	}
@@ -2649,6 +2700,19 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Ingestion.SyncIngestFactsWaitTimeoutMs < 0 {
 		errs = append(errs, "ingestion.sync_ingest_facts_wait_timeout_ms must be >= 0")
+	}
+	for _, f := range []struct {
+		name string
+		v    int
+	}{
+		{"source_kind_max_chars", c.Ingestion.SourceKindMaxChars},
+		{"source_title_max_chars", c.Ingestion.SourceTitleMaxChars},
+		{"source_author_max_chars", c.Ingestion.SourceAuthorMaxChars},
+		{"part_speaker_max_chars", c.Ingestion.PartSpeakerMaxChars},
+	} {
+		if f.v < 0 {
+			errs = append(errs, fmt.Sprintf("ingestion.%s must be >= 0 (0 = the default; got %d)", f.name, f.v))
+		}
 	}
 	switch c.Retrieval.HnswIterativeScan {
 	case "", "off", "relaxed_order", "strict_order":

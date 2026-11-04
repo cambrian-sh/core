@@ -165,9 +165,15 @@ type FactHit struct {
 // FactSearchOptions scopes a fact search. Scope is the caller's resolved read
 // predicate; the enforcing reader refuses a search with none (fail closed), exactly as
 // the chunk Search does, and the adapter applies it IN SQL to the item classification.
+//
+// SourceDocumentIDs (ADR-0136 A4, the document-scoped lane) restricts the search to facts
+// whose source document is one of these ids — the document parent the fact recorded at
+// extraction (FactPredSourceDocument), an opaque id never parsed. Empty means no
+// restriction (the global lane). It narrows the search; Scope still applies in full.
 type FactSearchOptions struct {
-	TopK  int
-	Scope *TagPredicate
+	TopK              int
+	Scope             *TagPredicate
+	SourceDocumentIDs []string
 }
 
 // NormalizeFactText is the key normalisation for subjects and values: lower case,
@@ -734,4 +740,21 @@ type FactItemReader interface {
 	// classification but under a DIFFERENT predicate, nearest to vec — the fuzzy
 	// candidates of A1.2 rule 3.
 	SimilarFacts(ctx context.Context, f Fact, vec []float32, k int, scope *TagPredicate) ([]Fact, error)
+}
+
+// FactStagedReader is the read side the TWO-PHASE backfill needs beyond FactItemReader
+// (memory.FactBackfill with execution.facts.backfill_group_concurrency > 1;
+// T-20261103-fact-backfill-processes-each-principal-s). That backfill stores every
+// window of a classification group before it assesses any, then assesses each window
+// as the serial ordered run would have: against the store WITHOUT the items the serial
+// run had not written yet. Both reads apply the predicate exactly as FactItemReader does.
+type FactStagedReader interface {
+	// FactsByID returns the memory_fact items with these ids as STORED (FactFromItem, no
+	// derived interval), each with its embedding from the item projection when one is
+	// stored under the reader's model. Missing ids are absent from the result.
+	FactsByID(ctx context.Context, ids []KnowledgeItemID, scope *TagPredicate) ([]Fact, error)
+	// SimilarFactsHiding is SimilarFacts over the store with the hidden items treated
+	// as ABSENT — neither ranked nor part of any derivation — and with a deterministic
+	// order (distance, then id). With no hidden items it is SimilarFacts.
+	SimilarFactsHiding(ctx context.Context, f Fact, vec []float32, k int, scope *TagPredicate, hidden []KnowledgeItemID) ([]Fact, error)
 }

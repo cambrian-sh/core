@@ -25,6 +25,13 @@
 //
 //	go run ./cmd/facts-backfill -dry-run -namespace lme-run1-
 //	go run ./cmd/facts-backfill -namespace lme-run1- -concurrency 4 -docs-per-minute 120
+//	go run ./cmd/facts-backfill -namespace lme-run1- -concurrency 2 -group-concurrency 8
+//
+// -group-concurrency N (execution.facts.backfill_group_concurrency; default 1) runs N
+// documents of ONE ordered classification group at once in two phases — extraction and
+// judge calls concurrent, assessments/votes/markers committed in event-time order — with
+// the same final facts, assessments, resolutions and profiles as the serial run
+// (memory/fact_backfill_staged.go). In-flight LLM calls are up to concurrency x N.
 package main
 
 import (
@@ -63,6 +70,7 @@ func run() error {
 		concurrency   = flag.Int("concurrency", 1, "documents (ordered: classification groups) in flight")
 		docsPerMinute = flag.Float64("docs-per-minute", 0, "cap on documents started per minute (0 = no cap)")
 		ordered       = flag.Bool("ordered", true, "run each classification group in event-time order on one worker")
+		groupConc     = flag.Int("group-concurrency", 0, "documents of ONE ordered group in flight (two-phase: extraction and judge calls concurrent, commit in event-time order, same result as 1); 0 = execution.facts.backfill_group_concurrency, 1 = serial")
 		progressEvery = flag.Int("progress-every", 25, "log progress every N documents")
 	)
 	flag.Parse()
@@ -140,6 +148,13 @@ func run() error {
 	mem.FactExtractor.Start(ctx)
 	defer mem.FactExtractor.Stop()
 
+	// T-20261103-fact-backfill-processes-each-principal-s: the flag overrides config;
+	// 0 (unset) reads execution.facts.backfill_group_concurrency (default 1 = serial).
+	groupConcurrency := *groupConc
+	if groupConcurrency <= 0 {
+		groupConcurrency = max(1, cfg.Execution.Facts.BackfillGroupConcurrency)
+	}
+
 	var tagList []string
 	for _, t := range strings.Split(*tags, ",") {
 		if t = strings.TrimSpace(t); t != "" {
@@ -151,20 +166,22 @@ func run() error {
 			SourceType: *sourceType, Principal: *principal, Namespace: *namespace,
 			Tags: tagList, Limit: *limit, IncludeMarked: *includeMarked,
 		},
-		DryRun:        *dryRun,
-		Concurrency:   *concurrency,
-		DocsPerMinute: *docsPerMinute,
-		Ordered:       *ordered,
-		ProgressEvery: *progressEvery,
-		Logger:        logger,
+		DryRun:           *dryRun,
+		Concurrency:      *concurrency,
+		DocsPerMinute:    *docsPerMinute,
+		Ordered:          *ordered,
+		GroupConcurrency: groupConcurrency,
+		ProgressEvery:    *progressEvery,
+		Logger:           logger,
 	})
-	fmt.Printf("facts-backfill: extractor_version=%s candidates=%d already_done=%d pending=%d chunks=%d groups=%d max_llm_calls_per_document=%d estimated_llm_calls=%d\n",
+	fmt.Printf("facts-backfill: extractor_version=%s candidates=%d already_done=%d pending=%d chunks=%d groups=%d ordered=%t concurrency=%d group_concurrency=%d max_llm_calls_per_document=%d estimated_llm_calls=%d\n",
 		mem.FactExtractor.ExtractorVersion(), rep.Candidates, rep.AlreadyDone, rep.Pending, rep.Chunks, rep.Groups,
-		rep.MaxLLMCallsPerDocument, rep.EstimatedLLMCalls)
+		*ordered, *concurrency, groupConcurrency, rep.MaxLLMCallsPerDocument, rep.EstimatedLLMCalls)
 	if !*dryRun {
-		fmt.Printf("facts-backfill: extracted=%d partial=%d skipped=%d failed=%d missing=%d cancelled=%d llm_calls=%d assessment_calls=%d assessments_replayed=%d facts_inserted=%d elapsed=%s\n",
+		fmt.Printf("facts-backfill: extracted=%d partial=%d skipped=%d failed=%d missing=%d cancelled=%d llm_calls=%d assessment_calls=%d assessments_replayed=%d facts_inserted=%d two_phase=%t journal_windows_replayed=%d assessment_calls_discarded=%d speculation_waves=%d elapsed=%s\n",
 			rep.Extracted, rep.Partial, rep.Skipped, rep.Failed, rep.Missing, rep.Cancelled, rep.LLMCalls, rep.AssessmentCalls,
-			rep.AssessmentsReplayed, rep.FactsInserted, rep.Elapsed)
+			rep.AssessmentsReplayed, rep.FactsInserted, rep.TwoPhase, rep.JournalWindowsReplayed, rep.AssessmentCallsDiscarded,
+			rep.SpeculationWaves, rep.Elapsed)
 	}
 	return err
 }

@@ -1,6 +1,9 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // SourceDocument is the ingested document itself — the thing a chunk came FROM
 // (ADR-0093).
@@ -88,4 +91,31 @@ type DocumentStore interface {
 	// cache derived from anything other than its source is just a second opinion.
 	// The caller stamps chunks with exactly what landed here.
 	SaveDocument(ctx context.Context, doc SourceDocument) ([]string, error)
+}
+
+// Documents-row metadata keys for the client's descriptive source metadata (ADR-0136
+// A3.2). They live in documents.metadata (JSONB) rather than columns: they are
+// descriptive, never filtered or joined on, and the fact backfill reads them back
+// (ListFactBackfillCandidates) so a backfill renders the same Source block as the
+// live ingest.
+const (
+	DocMetaSourceKind  = "source_kind"
+	DocMetaAuthorLabel = "author_label"
+)
+
+// SourceDocumentMetadata is the documents-row metadata of an ingested document: the
+// client's SourceKind and AuthorLabel when set, else nil (no keys).
+func SourceDocumentMetadata(doc ExternalDocument) map[string]any {
+	var m map[string]any
+	set := func(k, v string) {
+		if v = strings.TrimSpace(v); v != "" {
+			if m == nil {
+				m = map[string]any{}
+			}
+			m[k] = v
+		}
+	}
+	set(DocMetaSourceKind, doc.SourceKind)
+	set(DocMetaAuthorLabel, doc.AuthorLabel)
+	return m
 }

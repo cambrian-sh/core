@@ -71,7 +71,7 @@ func resetFactTables(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	for _, stmt := range []string{
 		`DROP TABLE IF EXISTS memory_facts, memory_fact_extractions CASCADE`,
-		`DROP TABLE IF EXISTS knowledge_assessments, predicate_profiles, knowledge_item_embeddings, knowledge_extractions CASCADE`,
+		`DROP TABLE IF EXISTS knowledge_assessments, predicate_profiles, knowledge_item_embeddings, knowledge_extractions, knowledge_extraction_windows CASCADE`,
 		`DROP INDEX IF EXISTS idx_statement_values_entity`,
 		`DO $$ BEGIN IF to_regclass('resolutions') IS NOT NULL THEN ALTER TABLE resolutions DROP COLUMN IF EXISTS valid_to; END IF; END $$`,
 	} {

@@ -25,7 +25,8 @@ var ErrFactResetNoSelector = errors.New("fact reset: no selector (set a namespac
 //     on their keys (namespace, entity_id, actor);
 //  3. the items themselves — statement_values and knowledge_item_embeddings cascade;
 //  4. the memory_fact extraction markers of the documents those principals wrote (the
-//     backfill lister's own writer selection), so a backfill extracts them again;
+//     backfill lister's own writer selection), so a backfill extracts them again, and
+//     their two-phase extraction journal rows (knowledge_extraction_windows, 0025);
 //  5. unless KeepLearned, every LEARNED memory_fact predicate profile row (owner answer
 //     A2-Q2: profiles are namespace-wide; declared and override rows are kept).
 //
@@ -151,16 +152,21 @@ func (s *PgKnowledgeStore) ResetFacts(ctx context.Context, f domain.FactResetFil
 		docArgs = append(docArgs, v)
 		return fmt.Sprintf("$%d", len(docArgs))
 	}
-	markerSQL := `DELETE FROM knowledge_extractions k WHERE k.extractor = ` + docArg(FactBackfillExtractor)
+	docSel := ` WHERE k.extractor = ` + docArg(FactBackfillExtractor)
 	if conds := documentWriterConds(f.Principal, f.Namespace, docArg); len(conds) > 0 {
-		markerSQL += ` AND k.document_id IN (SELECT DISTINCT d.id FROM documents d JOIN chunks c ON c.document_id = d.id WHERE ` +
+		docSel += ` AND k.document_id IN (SELECT DISTINCT d.id FROM documents d JOIN chunks c ON c.document_id = d.id WHERE ` +
 			strings.Join(conds, " AND ") + `)`
 	}
-	tag, err := tx.Exec(ctx, markerSQL, docArgs...)
+	tag, err := tx.Exec(ctx, `DELETE FROM knowledge_extractions k`+docSel, docArgs...)
 	if err != nil {
 		return rep, fmt.Errorf("fact reset: delete extraction markers: %w", err)
 	}
 	rep.Markers = int(tag.RowsAffected())
+	// The two-phase backfill's extraction journal (0025) of the same documents: its rows
+	// name items deleted above, and a following backfill must extract again.
+	if _, err := tx.Exec(ctx, `DELETE FROM knowledge_extraction_windows k`+docSel, docArgs...); err != nil {
+		return rep, fmt.Errorf("fact reset: delete extraction journal: %w", err)
+	}
 
 	// 5. Learned profiles (all versions), remembering which (namespace, predicate) lost one.
 	type nsPred struct{ ns, pred string }

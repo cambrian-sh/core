@@ -74,14 +74,20 @@ func (r *PgFactItemReader) SearchFacts(ctx context.Context, vec []float32, opts 
 	if err != nil {
 		return nil, err
 	}
-	scopeSQL, scopeArgs := itemScopeSQL(opts.Scope, "ki", 5)
-	q := fmt.Sprintf(`SELECT ki.id, 1 - (%[1]s <=> $1::vector(%[2]d)) AS score
+	var q string
+	var args []any
+	if len(opts.SourceDocumentIDs) > 0 {
+		q, args = r.scopedSearchSQL(vec, k, opts)
+	} else {
+		scopeSQL, scopeArgs := itemScopeSQL(opts.Scope, "ki", 5)
+		q = fmt.Sprintf(`SELECT ki.id, 1 - (%[1]s <=> $1::vector(%[2]d)) AS score
 		FROM knowledge_item_embeddings e
 		JOIN knowledge_items ki ON ki.id = e.item_id
 		WHERE e.dims = %[2]d AND e.model_id = $2 AND ki.kind = $3 AND ki.namespace_id = $4%[3]s
 		ORDER BY %[1]s <=> $1::vector(%[2]d)
 		LIMIT $5`, r.vecExpr(), r.dim, scopeSQL)
-	args := append([]any{pgvector.NewVector(vec), r.modelID, domain.KindMemoryFact, r.namespace, k}, scopeArgs...)
+		args = append([]any{pgvector.NewVector(vec), r.modelID, domain.KindMemoryFact, r.namespace, k}, scopeArgs...)
+	}
 	rows, err := r.store.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("fact search: %w", err)
@@ -152,6 +158,32 @@ func (r *PgFactItemReader) SearchFacts(ctx context.Context, vec []float32, opts 
 		out = append(out, fh)
 	}
 	return out, nil
+}
+
+// scopedSearchSQL is the ADR-0136 A4 document-scoped search: the top k facts whose
+// source document (the FactPredSourceDocument value recorded at extraction) is one of
+// opts.SourceDocumentIDs, under the SAME classification predicate as the global search.
+//
+// It is an EXACT cosine ranking, deliberately not served by the HNSW index: the set is
+// the facts of a handful of documents, and an HNSW top-k post-filtered to them would
+// return too few rows (the A1.5 reasoning for filtering in SQL at all). The candidates
+// are found through idx_statement_values_source_document (migrate.go, a concurrent
+// companion index), so the scan is over those documents' facts, not the namespace. The
+// predicate is a literal (a kernel constant, never caller text) so that partial index's
+// `WHERE predicate = 'source_document'` is implied. The ORDER BY is on the score, not on
+// the `<=>` operator, so the planner cannot pick the approximate index. Ties break on the item id, so the result is deterministic.
+func (r *PgFactItemReader) scopedSearchSQL(vec []float32, k int, opts domain.FactSearchOptions) (string, []any) {
+	scopeSQL, scopeArgs := itemScopeSQL(opts.Scope, "ki", 6)
+	q := fmt.Sprintf(`SELECT ki.id, 1 - (%[1]s <=> $1::vector(%[2]d)) AS score
+		FROM statement_values sv
+		JOIN knowledge_items ki ON ki.id = sv.item_id
+		JOIN knowledge_item_embeddings e ON e.item_id = ki.id
+		WHERE sv.predicate = '%[4]s' AND sv.value_text = ANY($6::text[])
+		  AND e.dims = %[2]d AND e.model_id = $2 AND ki.kind = $3 AND ki.namespace_id = $4%[3]s
+		ORDER BY score DESC, ki.id
+		LIMIT $5`, r.vecExpr(), r.dim, scopeSQL, domain.FactPredSourceDocument)
+	args := append([]any{pgvector.NewVector(vec), r.modelID, domain.KindMemoryFact, r.namespace, k, opts.SourceDocumentIDs}, scopeArgs...)
+	return q, args
 }
 
 // chainViews renders a derivation as fact views keyed by item id: the key's own items
@@ -250,7 +282,21 @@ func (r *PgFactItemReader) FactChain(ctx context.Context, f domain.Fact, scope *
 // subject key — so never another classification), another entity id (predicate),
 // positive, nearest first. Read through the entity-typed `subject` value and its index
 // (idx_statement_values_entity, 0022).
+//
+// Ties in distance are broken by item id (identical fact text embeds identically, so
+// ties are ordinary), which makes the candidate set — and so the keyed assessment id —
+// deterministic; the subject filter is selective, so the order is computed over a few
+// rows.
 func (r *PgFactItemReader) SimilarFacts(ctx context.Context, f domain.Fact, vec []float32, k int, scope *domain.TagPredicate) ([]domain.Fact, error) {
+	return r.SimilarFactsHiding(ctx, f, vec, k, scope, nil)
+}
+
+var _ domain.FactStagedReader = (*PgFactItemReader)(nil)
+
+// SimilarFactsHiding implements domain.FactStagedReader: SimilarFacts with the hidden
+// items excluded from the ranking (SQL) and from every derivation (deriveKeysHiding),
+// so the result is what SimilarFacts returned before those items were written.
+func (r *PgFactItemReader) SimilarFactsHiding(ctx context.Context, f domain.Fact, vec []float32, k int, scope *domain.TagPredicate, hidden []domain.KnowledgeItemID) ([]domain.Fact, error) {
 	if k <= 0 || len(vec) == 0 || len(vec) != r.dim || f.EntityID == "" {
 		return nil, nil
 	}
@@ -258,17 +304,21 @@ func (r *PgFactItemReader) SimilarFacts(ctx context.Context, f domain.Fact, vec 
 	if err != nil {
 		return nil, err
 	}
-	// k is an int, rendered as a literal so the scope placeholders can follow $6.
-	scopeSQL, scopeArgs := itemScopeSQL(scope, "ki", 6)
+	hide := make(map[domain.KnowledgeItemID]bool, len(hidden))
+	for _, id := range hidden {
+		hide[id] = true
+	}
+	// k is an int, rendered as a literal so the scope placeholders can follow $7.
+	scopeSQL, scopeArgs := itemScopeSQL(scope, "ki", 7)
 	q := fmt.Sprintf(`SELECT ki.id FROM knowledge_items ki
 		JOIN statement_values sv ON sv.item_id = ki.id AND sv.predicate = '%[4]s' AND sv.value_type = 'entity'
 		JOIN knowledge_item_embeddings e ON e.item_id = ki.id AND e.dims = %[2]d AND e.model_id = $2
 		WHERE sv.value_entity_id = $3 AND ki.kind = $4 AND ki.namespace_id = $5 AND ki.entity_id <> $6
-		  AND NOT ki.negation%[3]s
-		ORDER BY %[1]s <=> $1::vector(%[2]d)
+		  AND NOT ki.negation AND NOT (ki.id = ANY($7::text[]))%[3]s
+		ORDER BY %[1]s <=> $1::vector(%[2]d), ki.id
 		LIMIT %[5]d`, r.vecExpr(), r.dim, scopeSQL, domain.FactPredSubject, k)
 	args := append([]any{pgvector.NewVector(vec), r.modelID, domain.FactSubjectRef(f.ScopeKey, f.SubjectKey),
-		domain.KindMemoryFact, r.namespace, f.EntityID}, scopeArgs...)
+		domain.KindMemoryFact, r.namespace, f.EntityID, idStrings(hidden)}, scopeArgs...)
 	rows, err := r.store.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("fact similar: %w", err)
@@ -299,7 +349,7 @@ func (r *PgFactItemReader) SimilarFacts(ctx context.Context, f domain.Fact, vec 
 			keys = append(keys, k)
 		}
 	}
-	derived, err := r.store.deriveKeys(ctx, r.store.pool, ia, r.namespace, domain.KindMemoryFact, keys, scope)
+	derived, err := r.store.deriveKeysHiding(ctx, r.store.pool, ia, r.namespace, domain.KindMemoryFact, keys, scope, hide)
 	if err != nil {
 		return nil, err
 	}
@@ -316,4 +366,45 @@ func (r *PgFactItemReader) SimilarFacts(ctx context.Context, f domain.Fact, vec 
 	}
 	sort.SliceStable(out, func(i, j int) bool { return rank[out[i].ID] < rank[out[j].ID] })
 	return out, nil
+}
+
+// FactsByID implements domain.FactStagedReader: the items as stored (no derivation),
+// under scope IN SQL, each with its projection embedding of this reader's model when
+// one is stored. The two-phase backfill reloads a journaled window with it.
+func (r *PgFactItemReader) FactsByID(ctx context.Context, ids []domain.KnowledgeItemID, scope *domain.TagPredicate) ([]domain.Fact, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	scopeSQL, scopeArgs := itemScopeSQL(scope, "ki", 3)
+	items, err := loadItems(ctx, r.store.pool, `WHERE ki.id = ANY($1) AND ki.kind = $2 AND ki.namespace_id = $3`+scopeSQL,
+		append([]any{idStrings(ids), domain.KindMemoryFact, r.namespace}, scopeArgs...)...)
+	if err != nil {
+		return nil, fmt.Errorf("facts by id: %w", err)
+	}
+	out := make([]domain.Fact, 0, len(items))
+	byID := map[string]int{}
+	for _, it := range items {
+		byID[string(it.ID)] = len(out)
+		out = append(out, domain.FactFromItem(it))
+	}
+	if len(out) == 0 || r.dim <= 0 {
+		return out, nil
+	}
+	rows, err := r.store.pool.Query(ctx, fmt.Sprintf(`SELECT item_id, %s FROM knowledge_item_embeddings e
+		WHERE e.item_id = ANY($1) AND e.model_id = $2 AND e.dims = %d`, r.vecExpr(), r.dim), idStrings(ids), r.modelID)
+	if err != nil {
+		return nil, fmt.Errorf("facts by id: embeddings: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var v pgvector.Vector
+		if err := rows.Scan(&id, &v); err != nil {
+			return nil, err
+		}
+		if i, ok := byID[id]; ok {
+			out[i].Embedding = v.Slice()
+		}
+	}
+	return out, rows.Err()
 }
