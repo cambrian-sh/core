@@ -1,0 +1,10 @@
+{
+  "title": "SubAnswer",
+  "description": "The grounded answer to one sub-question, or the empty string (planner.answer_subquestion).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["answer"],
+  "properties": {
+    "answer": { "type": "string" }
+  }
+}

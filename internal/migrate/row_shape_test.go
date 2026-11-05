@@ -28,7 +28,7 @@ var retrievableTables = []string{"chunks", "tools", "skills", "agent_profiles"}
 //
 // 0007 claimed the descriptor tables kept "the same column set as chunks" and did not check
 // it. `section_path` was missing from three tables, and nothing noticed until a live boot
-// failed every agent's interview-vector check with `column "section_path" does not exist`.
+// failed every agent's profile-vector check with `column "section_path" does not exist`.
 // Neither the unit tests nor the migration integration tests read a descriptor back through
 // the shared SELECT, so the row shape was an unasserted contract between two files.
 //

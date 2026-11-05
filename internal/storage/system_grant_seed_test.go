@@ -7,7 +7,7 @@ import "testing"
 // System status was refreshed only on the "source changed" branch, so granting a
 // plugin's agent system status did nothing until somebody happened to edit that
 // agent's source. Observed live: the composition root logged the privileged
-// grant at boot, and the kernel went on LLM-interviewing the agent anyway,
+// grant at boot, and the kernel went on LLM-interviewing the agent anyway (ADR-0037, since deleted),
 // because its stored record still said System=false from the previous boot.
 func TestASystemGrantLandsWithoutTheAgentsSourceChanging(t *testing.T) {
 	adapter, cleanup := newTestAdapter(t)
@@ -27,7 +27,7 @@ func TestASystemGrantLandsWithoutTheAgentsSourceChanging(t *testing.T) {
 	if err := adapter.UpsertDiscoveredAgent(da); err != nil {
 		t.Fatal(err)
 	}
-	// The agent has since been interviewed, so it is no longer provisional. That
+	// The agent has since been seeded, so it is no longer provisional. That
 	// state must survive the grant — it is the reason the short-circuit exists.
 	rec, err := adapter.GetAgentRecord("source_discovery_agent")
 	if err != nil {
@@ -49,13 +49,13 @@ func TestASystemGrantLandsWithoutTheAgentsSourceChanging(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.System {
-		t.Error("the grant did not land: the kernel will keep interviewing and auctioning an agent the composition root declared privileged")
+		t.Error("the grant did not land: the kernel will keep routing user tasks to an agent the composition root declared privileged")
 	}
 	if got.SourceHash != "hash-unchanged" {
 		t.Errorf("the grant rewrote the source hash: %q", got.SourceHash)
 	}
 	if got.Provisional {
-		t.Error("the grant marked the agent provisional — a routing-policy change must not force a re-interview")
+		t.Error("the grant marked the agent provisional — a routing-policy change must not force a re-seed")
 	}
 
 	// And it revokes, or a grant could never be taken back.

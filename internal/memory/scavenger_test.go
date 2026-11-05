@@ -34,8 +34,7 @@ func (s *scavengerRecordingStore) Delete(_ context.Context, id string) error {
 // (Agent.decayLoner) and observe which entity rows it would have removed.
 func newScavengerTestAgent() (*Agent, *scavengerRecordingStore) {
 	store := &scavengerRecordingStore{}
-	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.70, 5, 3, 64, 0, 0, 0)
-	agent.RecordExperiential = true
+	agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 0.70, 5, 3)
 	return agent, store
 }
 
@@ -162,8 +161,7 @@ func TestScavenger_NonSourceDocumentGC(t *testing.T) {
 // `experiences` parent and letting the FK cascade take its chunks — so the
 // per-row loner heuristic must not reach a parented row.
 //
-// Experiential records are born at activation 0.1 (scenes up to 0.5 with
-// surprise) and are usually never recalled, so they satisfy the loner predicate
+// Experiential records are born at activation 0.1 and are usually never recalled, so they satisfy the loner predicate
 // (<0.3 activation, <2 accesses) on their FIRST night.
 //
 // MUTATION RATIONALE — delete the `doc.ExperienceID != ""` early return in
@@ -184,11 +182,6 @@ func TestScavenger_EpisodeParentedRecordsExempt(t *testing.T) {
 			name:    "mnemonic_action_parented_to_episode",
 			docID:   "action:p-1:step-1",
 			docType: domain.DocTypeMnemonicAction,
-		},
-		{
-			name:    "mnemonic_scene_parented_to_episode",
-			docID:   "scene:p-1",
-			docType: domain.DocTypeMnemonicScene,
 		},
 		{
 			name:    "negative_edge_parented_to_episode",

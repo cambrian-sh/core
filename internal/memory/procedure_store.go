@@ -17,8 +17,7 @@ import (
 //
 // The EMBEDDING SUBJECT is the trigger alone — you retrieve by SITUATION and act on
 // steps. Embedding the steps would match routines to each other rather than to the
-// problem in front of the planner, and it is the same reasoning ADR-0049 D7 used to
-// exclude specific entity ids from a scene's similarity key.
+// problem in front of the planner.
 func procedureDoc(p domain.Procedure, vec []float32) *domain.Document {
 	stepsJSON, _ := json.Marshal(p.Steps)
 	// Text is the RECONSTRUCTION face: readable, and enough to act on without a second
@@ -122,13 +121,6 @@ func ApplyOutcome(p domain.Procedure, succeeded bool, deprecateBelow float64) do
 		p.Status = domain.ProcedureDeprecated
 	}
 	return p
-}
-
-// Supersede links a replacement without deleting the original (ADR-0094 D4).
-func Supersede(old domain.Procedure, replacementID string) domain.Procedure {
-	old.Status = domain.ProcedureSuperseded
-	old.SupersededBy = replacementID
-	return old
 }
 
 // procedureFromDoc decodes a stored procedure. Pure; the inverse of procedureDoc.

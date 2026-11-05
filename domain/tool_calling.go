@@ -73,6 +73,10 @@ type ModelToolCall struct {
 	// JSON *string*; validating it against the tool's schema belongs to the caller
 	// that owns the tool, not to the transport.
 	Arguments []byte
+	// Signature is opaque provider state that must be echoed back with the call on
+	// the next turn — Gemini's thoughtSignature (ADR-0139 C1). Nil for providers that
+	// have none. Never interpreted by the kernel.
+	Signature []byte
 }
 
 // Message roles for ModelMessage.

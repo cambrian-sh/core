@@ -7,8 +7,8 @@ import (
 
 // UpsertDiscoveredAgent must be idempotent by SourceHash: re-upserting an agent whose
 // SourceHash is unchanged leaves the existing record untouched — crucially preserving a
-// post-interview Provisional=false state (ADR-0075). This is what lets the built-in
-// filesystem agents be registered through an AgentSource without being re-interviewed on
+// post-seeding Provisional=false state (ADR-0075). This is what lets the built-in
+// filesystem agents be registered through an AgentSource without being re-seeded on
 // every boot.
 func TestUpsertDiscoveredAgent_PreservesProvisionalOnUnchangedHash(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "t.db")
@@ -22,7 +22,7 @@ func TestUpsertDiscoveredAgent_PreservesProvisionalOnUnchangedHash(t *testing.T)
 	if err := store.UpsertDiscoveredAgent(da); err != nil {
 		t.Fatal(err)
 	}
-	// Simulate a completed interview: the agent is now non-provisional.
+	// Simulate completed seeding: the agent is now non-provisional.
 	if err := store.SetProvisional("a1", false); err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestUpsertDiscoveredAgent_PreservesProvisionalOnUnchangedHash(t *testing.T)
 		t.Fatal(err)
 	}
 	if rec.Provisional {
-		t.Fatal("unchanged-SourceHash re-upsert wrongly re-provisioned the agent (would re-interview every boot)")
+		t.Fatal("unchanged-SourceHash re-upsert wrongly re-provisioned the agent (would re-seed every boot)")
 	}
 
 	// A CHANGED SourceHash DOES re-provision (source really changed).

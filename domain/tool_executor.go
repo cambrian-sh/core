@@ -28,36 +28,25 @@ type ArtifactRecorder interface {
 	SaveArtifact(a Artifact) error
 }
 
-// ToolOutputRecorder feeds a successful tool output into the memory layer. A READ
-// output (ADR-0048 D6) flows into the Tier-1 → Tier-2 curation pipeline as a
-// `mnemonic_fact` (its payload is knowledge). A MUTATION output (ADR-0049 D1) is
-// recorded as a `mnemonic_action` EVENT instead — what was done, not knowledge.
-// Routing is the caller's deterministic read/write classification. Satisfied by the
+// ToolOutputRecorder feeds a successful tool output into the memory layer. A MUTATION
+// output (ADR-0049 D1) is recorded as a `mnemonic_action` EVENT — what was done. A
+// READ output records nothing: the ADR-0048 D6 path that curated it as a fact through
+// the tier-2 judge was deleted on 2026-11-05 (decisions/scenes-cancelled.md). Routing
+// is the caller's deterministic read/write classification. Satisfied by the
 // MemoryAgent.
 type ToolOutputRecorder interface {
 	RecordToolOutput(ctx context.Context, rec ToolOutputRecord) error
 }
 
 // ToolOutputRecord carries one tool call's output to the recorder. IsMutation (the
-// tool has DataWriteKinds — ADR-0034) routes it to an action record vs. a fact;
-// ArgsJSON is needed to format the action line ("what was done where").
+// tool has DataWriteKinds — ADR-0034) marks an action record; ArgsJSON is needed to
+// format the action line ("what was done where").
 type ToolOutputRecord struct {
 	ToolName   string
 	ArgsJSON   []byte
 	Output     []byte
 	IsMutation bool
 	TaskID     string // ADR-0049 D3: per-step correlation key stamped on action records
-	// FactEligible reports whether this output passed the ADR-0048 D6 cost floor and
-	// is therefore worth curating as a FACT. It does not gate the world model.
-	//
-	// The two were previously the same decision, and that was a hole. The size floor
-	// asks "is this output substantial enough to embed as knowledge"; the world model
-	// asks "what did this call touch". A tiny result — an MCP write confirming success
-	// in 30 bytes — fails the first and is highly relevant to the second. Conflating
-	// them meant every small tool call vanished from the world model, so plan scenes
-	// came back contentless and no outcome record was ever written, with nothing
-	// logged to say why.
-	FactEligible bool
 	// ClassificationTags are the tool's own domain tags (AuthzTags), carried so the
 	// LTM write is classified from principal + tool domain. The pre-invocation gates
 	// already consume these; the artifact path already classifies its writes — this
@@ -130,35 +119,6 @@ func isDeniedResult(result []byte) bool {
 	return false
 }
 
-// shouldPromoteToolOutput is the deterministic COST pre-filter in front of Tier-2
-// curation (ADR-0048 D6): skip below a size floor and skip results that are
-// themselves a failure. It is cost control, not value-routing — the keep/drop
-// *value* judgment stays in the Tier-2 LLM (Zero-Hardcode).
-//
-// Failures are skipped here, at the RAW result, on purpose: downstream the
-// MemoryAgent wraps the output in a "tool[name]: …" envelope, which is no longer
-// valid JSON and so defeats Tier-2's JSON error detection (checkJSONErrorPayload).
-// A shell failure (non-zero exit_code, or stderr with no stdout — the BusyBox
-// "ps: unknown option" shape) therefore has to be caught here or it leaks into LTM.
-func shouldPromoteToolOutput(result []byte, minBytes int) bool {
-	if len(result) < minBytes {
-		return false
-	}
-	var obj map[string]json.RawMessage
-	if json.Unmarshal(result, &obj) == nil {
-		if _, isErr := obj["error"]; isErr {
-			return false
-		}
-		if _, isDenied := obj["denied"]; isDenied {
-			return false
-		}
-		if isFailedShellResult(obj) {
-			return false
-		}
-	}
-	return true
-}
-
 // isFailedShellResult reports whether a parsed tool result is a failed shell
 // invocation: a non-zero exit_code, or a non-empty stderr paired with empty
 // stdout. Mirrors checkJSONErrorPayload's semantics so the two pre-filters agree
@@ -196,9 +156,9 @@ type ToolCallRequest struct {
 	ToolName string
 	ArgsJSON []byte
 	// SessionTokenID is the agent's per-step managed-LLM BudgetLease (ADR-0018).
-	// Carried so the executor can recognize a sandboxed evaluation session and
-	// auto-approve dangerous tools within it (see EvaluationSessionSet). Empty for
-	// callers that do not run under a managed session.
+	// Carried so tool spend is attributed to the step's lease (priceFor). Empty
+	// for callers that do not run under a managed session. (It once also flagged
+	// evaluation sessions of the ADR-0037 interview, deleted 2026-11-05.)
 	SessionTokenID LeaseID
 	// TaskID is the per-step correlation key (ADR-0049 D3, step-{index}-{planID}),
 	// read from x-task-id metadata. Stamps action records so a step's actions can be
@@ -266,10 +226,9 @@ type ToolExecutor struct {
 	// the task's own lifetime — a kernel restart drops them (the phase-4
 	// residual).
 	ParkDeadline  time.Duration
-	Approval      ApprovalController   // nil ⇒ dangerous tools are denied (fail-closed)
-	EvalSessions  EvaluationSessionSet // nil ⇒ no session is an evaluation (operator approval applies)
-	EgressAuditor EgressAuditor        // ADR-0043: records remote-tool data egress; nil ⇒ no auditing
-	Retriever     ToolRetriever        // ADR-0044: relevance-ranks the granted menu; nil ⇒ full menu
+	Approval      ApprovalController // nil ⇒ dangerous tools are denied (fail-closed)
+	EgressAuditor EgressAuditor      // ADR-0043: records remote-tool data egress; nil ⇒ no auditing
+	Retriever     ToolRetriever      // ADR-0044: relevance-ranks the granted menu; nil ⇒ full menu
 	// Authz is the access-control decision point (ADR-0085). It gates the
 	// data-store regime (Regime 1) and, once effects are declared, the effect
 	// classes an invocation may exercise. nil ⇒ the OSS allow-all default.
@@ -296,6 +255,14 @@ type ToolExecutor struct {
 	// today. It is kept on purpose (owner, 2026-08-10) as the generic ceiling for the
 	// next unattended read-only organ; the executor knows nothing of any specific one.
 	RestrictedTools map[string]map[string]bool
+	// Ceiling is the glob-based twin of RestrictedTools: a declarative agent
+	// profile's tool allowlist (agents/profiles/README.md), enforced as a HARD
+	// ceiling at every point RestrictedTools is — before the Unrestricted bypass and
+	// before the skill overlay — so a profile agent stays inside its allowlist even
+	// under tools_unrestricted and a loaded skill cannot widen it (agent stack v2,
+	// T-20261105-agent-stack-v2-worker-agent-runtime-plus). nil ⇒ no profile ceiling.
+	// A tool must be inside BOTH ceilings (withinCeiling).
+	Ceiling ToolCeiling
 	// Overlay holds run-scoped grants conferred by a loaded system skill (ADR-0046
 	// D6). nil ⇒ no skill-conferred grants. Consulted in grantFor after the static
 	// grants; dangerous tools still require approval regardless of how granted.
@@ -309,11 +276,9 @@ type ToolExecutor struct {
 	ArtifactMeta      ArtifactRecorder                                   // nil ⇒ no durable metadata record
 	ArtifactTags      func(ctx context.Context, agentID string) []string // kernel-derived write tags; nil ⇒ none
 	ArtifactOutputDir string                                             // "" ⇒ no on-disk materialization
-	// ADR-0048 D6: tool-output promotion to LTM. When wired, a successful tool
-	// output that clears the cost pre-filter is fed to Tier-1/Tier-2 curation, where
-	// the LLM scorer decides keep/drop. nil ⇒ no promotion.
-	ToolOutput         ToolOutputRecorder
-	ToolOutputMinBytes int // size floor for the pre-filter (0 ⇒ promote any non-error output)
+	// ToolOutput receives every non-denied tool output (ADR-0049 D1: a mutation
+	// becomes an action record). nil ⇒ nothing is recorded.
+	ToolOutput ToolOutputRecorder
 }
 
 func denied(reason string, argHash string) ToolCallResponse {
@@ -473,12 +438,10 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 		}
 	}
 
-	// Approval for dangerous tools (fail-closed). A sandboxed evaluation session
-	// (the graded interview, ADR-0037) auto-approves: it runs unattended with no
-	// operator, and the per-call process sandbox — not a human — is the
-	// containment boundary for a synthetic scenario. Without this, every
-	// dangerous-tool capability scores as "failed" and corrupts the capability
-	// profile that EFE/Gatekeeper priors are built on.
+	// Approval for dangerous tools (fail-closed). There is no evaluation-session
+	// exemption any more: the ADR-0037 interview that minted evaluation sessions was
+	// deleted 2026-11-05, and ADR-0139 D5 qualification will run against a mock tool
+	// executor that records intended calls, never this one.
 	approver := ""
 	if tool.Dangerous && req.System {
 		// A2.2: an operator ScopeSystem execution carries its own authority — no
@@ -486,20 +449,16 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 		// emits a dangerous-tool feed event so the privileged action stays visible.
 		approver = "operator:system"
 	} else if tool.Dangerous {
-		if e.EvalSessions != nil && e.EvalSessions.IsEvaluation(req.SessionTokenID) {
-			approver = "evaluation-sandbox"
-		} else {
-			if e.Approval == nil {
-				return denied("approval required but unavailable", argHash)
-			}
-			dec, err := e.Approval.Request(ctx, ApprovalRequest{
-				AgentID: req.AgentID, ToolName: req.ToolName, ArgsPreview: preview(req.ArgsJSON, 200),
-			})
-			if err != nil || !dec.Approved {
-				return ToolCallResponse{Denied: true, DenyReason: "not approved", ArgHash: argHash, ApproverID: dec.ApproverID}
-			}
-			approver = dec.ApproverID
+		if e.Approval == nil {
+			return denied("approval required but unavailable", argHash)
 		}
+		dec, err := e.Approval.Request(ctx, ApprovalRequest{
+			AgentID: req.AgentID, ToolName: req.ToolName, ArgsPreview: preview(req.ArgsJSON, 200),
+		})
+		if err != nil || !dec.Approved {
+			return ToolCallResponse{Denied: true, DenyReason: "not approved", ArgHash: argHash, ApproverID: dec.ApproverID}
+		}
+		approver = dec.ApproverID
 	}
 
 	// ADR-0127 CL-2: the contributed pre-dispatch gate — parking for an
@@ -607,27 +566,18 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 	// the result is (maybe) offloaded and ResultJSON nil'd below.
 	e.persistArtifacts(ctx, req, result)
 
-	// Feed the output into memory, routed by the tool's declared nature (ADR-0049 D1).
-	// A MUTATION is an EVENT: record it as an action regardless of size (a write that
-	// happened is durable history), skipping only a denied call (it never ran). A READ
-	// is knowledge: keep the ADR-0048 D6 cost floor + error pre-filter before Tier-2.
-	// Best-effort — never fails the call.
-	// Every non-denied call is REPORTED; the recorder decides what to keep. The size
-	// floor is passed as FactEligible rather than applied here, because it answers only
-	// "is this output worth embedding as a fact" — it must not also decide whether the
-	// call's engaged entities reach the world model. A denied call is skipped outright:
-	// it never ran, so it touched nothing.
+	// Report the output to memory, routed by the tool's declared nature (ADR-0049 D1):
+	// a MUTATION is an EVENT and becomes an action record regardless of size (a write
+	// that happened is durable history). Best-effort — never fails the call. A denied
+	// call is skipped outright: it never ran, so it touched nothing.
 	if e.ToolOutput != nil && !isDeniedResult(result) {
 		isMutation := len(tool.DataWriteKinds) > 0
 		_ = e.ToolOutput.RecordToolOutput(ctx, ToolOutputRecord{
-			ToolName:   req.ToolName,
-			ArgsJSON:   req.ArgsJSON,
-			Output:     result,
-			IsMutation: isMutation,
-			TaskID:     req.TaskID,
-			// A mutation is always durable history; a read must clear the cost floor
-			// before it is curated as knowledge.
-			FactEligible:       isMutation || shouldPromoteToolOutput(result, e.ToolOutputMinBytes),
+			ToolName:           req.ToolName,
+			ArgsJSON:           req.ArgsJSON,
+			Output:             result,
+			IsMutation:         isMutation,
+			TaskID:             req.TaskID,
 			ClassificationTags: tool.AuthzTags(),
 		})
 	}
@@ -775,18 +725,48 @@ func (e *ToolExecutor) AvailableTools(ctx context.Context, agentID string) []Sys
 	// menu — resolved per task, appended here so the restricted-principal
 	// ceiling below applies to them exactly as it does to kernel tools.
 	menu = append(menu, e.contributedTools(ctx, agentID)...)
-	// ADR-0051 D6: a restricted principal sees only its allowlisted tools, so
-	// the advisory menu matches what grantFor will actually allow.
-	if allow, restricted := e.RestrictedTools[agentID]; restricted {
-		filtered := menu[:0:0]
-		for _, t := range menu {
-			if allow[t.Name] {
-				filtered = append(filtered, t)
-			}
-		}
-		return filtered
+	// ADR-0051 D6 + the profile ceiling: a restricted principal sees only its
+	// allowlisted tools, so the advisory menu matches what grantFor will allow.
+	if !e.ceilingBinds(agentID) {
+		return menu
 	}
-	return menu
+	filtered := menu[:0:0]
+	for _, t := range menu {
+		if e.withinCeiling(agentID, t.Name) {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
+// ceilingBinds reports whether any tool ceiling (RestrictedTools, Ceiling) binds
+// agentID, so an unbound principal's menu is not re-filtered.
+func (e *ToolExecutor) ceilingBinds(agentID string) bool {
+	if _, restricted := e.RestrictedTools[agentID]; restricted {
+		return true
+	}
+	if e.Ceiling != nil {
+		if _, bound := e.Ceiling.Allows(agentID, ""); bound {
+			return true
+		}
+	}
+	return false
+}
+
+// withinCeiling reports whether tool is inside every ceiling that binds agentID:
+// the ADR-0051 D6 name set (RestrictedTools) and the profile glob allowlist
+// (Ceiling). An unbound principal is inside. One helper for every call site, so
+// the menu, describe, grant and skill-confer paths cannot disagree.
+func (e *ToolExecutor) withinCeiling(agentID, tool string) bool {
+	if allow, restricted := e.RestrictedTools[agentID]; restricted && !allow[tool] {
+		return false
+	}
+	if e.Ceiling != nil {
+		if inside, bound := e.Ceiling.Allows(agentID, tool); bound && !inside {
+			return false
+		}
+	}
+	return true
 }
 
 // AvailableToolsRanked returns the agent's granted tools narrowed to the top-k
@@ -825,7 +805,21 @@ func (e *ToolExecutor) AvailableToolsRanked(ctx context.Context, agentID, query 
 // ungranted/unknown name is simply absent (fail-closed, no existence leak). An
 // anonymous principal gets nothing.
 func (e *ToolExecutor) AvailableToolsNamed(ctx context.Context, agentID string, names []string) []SystemTool {
-	if len(names) == 0 {
+	return e.AvailableToolsNamedFor(ctx, agentID, "", names)
+}
+
+// AvailableToolsNamedFor is AvailableToolsNamed plus the run-scoped skill overlay
+// (ADR-0046 D6): a tool that a system skill loaded under sessionToken conferred is
+// describable as well as callable. Without this the menu and the executor disagreed:
+// ExecuteTool honoured the overlay through grantFor while the describe path served
+// standing grants only, so a skill-granted tool reached the model with no argument
+// schema (T-20261104-kernel-listtools-names-ignores-run-scoped-skill).
+//
+// The overlay half applies the same ceilings grantFor does: an anonymous principal
+// gets nothing, and a restricted principal only its allowlisted tools. An empty
+// sessionToken reproduces the standing-grants-only behaviour exactly.
+func (e *ToolExecutor) AvailableToolsNamedFor(ctx context.Context, agentID, sessionToken string, names []string) []SystemTool {
+	if len(names) == 0 || agentID == "" {
 		return nil
 	}
 	want := make(map[string]struct{}, len(names))
@@ -836,6 +830,25 @@ func (e *ToolExecutor) AvailableToolsNamed(ctx context.Context, agentID string, 
 	for _, t := range e.AvailableTools(ctx, agentID) {
 		if _, ok := want[t.Name]; ok {
 			out = append(out, t)
+			delete(want, t.Name)
+		}
+	}
+	if sessionToken == "" || e.Overlay == nil || e.Registry == nil {
+		return out
+	}
+	for _, n := range names { // input order, so the result is deterministic
+		if _, pending := want[n]; !pending {
+			continue
+		}
+		if !e.withinCeiling(agentID, n) {
+			continue
+		}
+		if !e.Overlay.Granted(sessionToken, n) {
+			continue
+		}
+		if t, ok := e.Registry.Get(n); ok {
+			out = append(out, t)
+			delete(want, n)
 		}
 	}
 	return out
@@ -853,7 +866,10 @@ func (e *ToolExecutor) grantFor(ctx context.Context, agentID, tool, sessionToken
 	// retired 2026-08-07 with the config key that populated it. An absent entry means
 	// "not a restricted principal", so an empty map is a no-op here rather than a
 	// deny-all — the ceiling stays available for the next read-only organ.
-	if allow, restricted := e.RestrictedTools[agentID]; restricted && !allow[tool] {
+	//
+	// The profile ceiling (Ceiling) is checked here too, for the same reason: a
+	// profile's tool allowlist must hold under the unrestricted bypass.
+	if !e.withinCeiling(agentID, tool) {
 		return ToolGrant{}, false
 	}
 	// Unrestricted: any named agent gets an allow-all grant for any registered
@@ -1340,7 +1356,7 @@ func (e *ToolExecutor) ConferSkillGrants(ctx context.Context, session, agentID s
 		}
 		// ADR-0051 D6: a restricted principal's hard ceiling outranks a skill —
 		// otherwise a skill would be the way around a restricted principal's confinement.
-		if allow, restricted := e.RestrictedTools[agentID]; restricted && !allow[name] {
+		if !e.withinCeiling(agentID, name) {
 			clipped = append(clipped, AccessDecision{
 				Resource:  tool.AuthzRef(),
 				Principal: AgentPrincipal(agentID),

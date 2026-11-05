@@ -30,9 +30,9 @@ Write-Host "Installing cambrian-agent-sdk (editable, with dev extras) ..." -Fore
 Write-Host "Verifying SDK import ..." -ForegroundColor Yellow
 & $py -c "from cambrian_agent_sdk import Agent, assemble_context, build_prompt, find_step_ref, extract_code_block, BudgetExceededError; print('  SDK OK')"
 
-Write-Host "Verifying all 3 cognitive agents import ..." -ForegroundColor Yellow
+Write-Host "Verifying the chat agent and the profile runtime import ..." -ForegroundColor Yellow
 $agentsDir = Join-Path $root "agents"
-& $py -c "import sys; sys.path.insert(0, r'$agentsDir'); import code_generator_agent, summariser_agent, analyst_agent; print('  3 agents OK')"
+& $py -c "import sys; sys.path.insert(0, r'$agentsDir'); import chat_agent, worker_agent; print('  agents OK')"
 
 Write-Host ""
 Write-Host "=== Done ===" -ForegroundColor Cyan

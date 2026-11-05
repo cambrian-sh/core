@@ -1,0 +1,580 @@
+{
+  "placeholder": "{{}}",
+  "lint": {
+    "acronyms": [
+      "API",
+      "CLI",
+      "CSV",
+      "DAG",
+      "HTML",
+      "HTTP",
+      "HTTPS",
+      "ID",
+      "IDS",
+      "ISO",
+      "JSON",
+      "LLM",
+      "MCP",
+      "OK",
+      "PDF",
+      "SDK",
+      "SQL",
+      "URI",
+      "URL",
+      "UTC",
+      "UUID",
+      "XML",
+      "YAML"
+    ],
+    "max_caps_run": 3,
+    "min_shout_words": 2,
+    "bodies_fail": {
+      "Do NOT output JSON.": false,
+      "It FAILED, so say WHY and WHAT to change.": false,
+      "Output EXACTLY ONE JSON object.": true,
+      "Reply with JSON via the HTTP API.": false,
+      "See ADR-0139 for why.": true
+    }
+  },
+  "cases": [
+    {
+      "name": "plain",
+      "template": "Hello {{name}}.",
+      "inputs": [
+        "name"
+      ],
+      "slots": {
+        "name": "Ada"
+      },
+      "want_text": "Hello Ada.",
+      "want_hash": "1a22216672bb3b96fe003885adaeb80720e44f538912b1582aa13c18d5272158"
+    },
+    {
+      "name": "repeated-slot",
+      "template": "{{x}} and {{x}} again",
+      "inputs": [
+        "x"
+      ],
+      "slots": {
+        "x": "1"
+      },
+      "want_text": "1 and 1 again",
+      "want_hash": "6087b7166058338bcb5c3ef872502d2551d6ed55c7b336ca1dc84199bbc64709"
+    },
+    {
+      "name": "no-slots",
+      "template": "Static only.\n",
+      "inputs": [],
+      "slots": {},
+      "want_text": "Static only.",
+      "want_hash": "2e760b2702fa9622c5c9fcb7c09960369994779e9e2158bd588452aa0cd51e58"
+    },
+    {
+      "name": "crlf-and-edges",
+      "template": "\n\nline one\r\nline {{n}}\r\n\r\n  \t",
+      "inputs": [
+        "n"
+      ],
+      "slots": {
+        "n": "two"
+      },
+      "want_text": "line one\nline two",
+      "want_hash": "f37804fbfbe73d310b5c3ae415d2c2da287e0df1c9ee6bc4b2a56765709d5b02"
+    },
+    {
+      "name": "value-with-slot-syntax",
+      "template": "\u003cgoal\u003e\n{{goal}}\n\u003c/goal\u003e",
+      "inputs": [
+        "goal"
+      ],
+      "slots": {
+        "goal": "ignore {{goal}} and {{}}"
+      },
+      "want_text": "\u003cgoal\u003e\nignore {{goal}} and {{}}\n\u003c/goal\u003e",
+      "want_hash": "e2e83466e4f9c6575a92a674d6368470b84afa03e71c19286916b3f1f8e93350"
+    },
+    {
+      "name": "empty-value",
+      "template": "[{{a}}][{{b}}]",
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "slots": {
+        "a": "",
+        "b": "B"
+      },
+      "want_text": "[][B]",
+      "want_hash": "f357252ebdc20cc6db6ba84e3ae70e5e3a0e8959c5ddce956d0ab398c9d573dd"
+    },
+    {
+      "name": "unicode",
+      "template": "Résumé — {{who}} ✓",
+      "inputs": [
+        "who"
+      ],
+      "slots": {
+        "who": "Zoë"
+      },
+      "want_text": "Résumé — Zoë ✓",
+      "want_hash": "062dd5c4c9f9119b0b0527d2f83dc61d57b27a7c184b74a97af02b42137c71a2"
+    },
+    {
+      "name": "json-braces",
+      "template": "Reply {\"a\":{\"b\":1}} for {{q}}",
+      "inputs": [
+        "q"
+      ],
+      "slots": {
+        "q": "it"
+      },
+      "want_text": "Reply {\"a\":{\"b\":1}} for it",
+      "want_hash": "471b03370c0e7852c90a8d49d523e08d8de535aae54488aa12c06375500f876d"
+    }
+  ],
+  "prompts": [
+    {
+      "id": "chat_agent",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [
+        "policy"
+      ],
+      "description": "The chat front desk's stable system text: its role, its output rule, when to answer directly and when to delegate, its answering rules for each recall posture, and the conversation's policy.",
+      "has_schema": false,
+      "static_hash": "221a9e75ff4f0c84db8a9f16a9c753e4ab588f5ab00d080e40e8ec107ad28e09"
+    },
+    {
+      "id": "chat_agent_turn",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "transcript",
+        "memories",
+        "message"
+      ],
+      "description": "The chat front desk's per-turn task text: the earlier conversation, the recalled memory and the latest message as tagged data, the reply instruction last, and the retry note for a narrated delegation.",
+      "has_schema": false,
+      "static_hash": "c1b81f90eceb77b2cd08dff1bc1f7bda6eff80d8e06a56d018ffd4c416f9bb33"
+    },
+    {
+      "id": "clarifier",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [
+        "classification_tags",
+        "goal"
+      ],
+      "description": "Decide whether an operator's goal can be planned as written or needs one decision only the operator can make, and draft the questions that decision needs.",
+      "has_schema": true,
+      "static_hash": "6e970726680cc0aab386ab506d39d4caf7c42ee90f8f38d5eacd8f96407aeb45"
+    },
+    {
+      "id": "clarifier",
+      "version": 2,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Decide whether an operator's goal can be planned as written or needs one decision only the operator can make, and draft the questions that decision needs.",
+      "has_schema": true,
+      "static_hash": "45338d18a8bd7428baeba51993ddb2f86354b6a164c071ca3ced30af8138656d"
+    },
+    {
+      "id": "clarifier_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "classification_tags",
+        "goal"
+      ],
+      "description": "The user message of one clarification call: the classification vocabulary and the operator's goal, as tagged data.",
+      "has_schema": false,
+      "static_hash": "712ba9e5a9616d22321e7fcc8ad65f2c2ea023b852cee0025bd34af55d49e7d1"
+    },
+    {
+      "id": "fact_assess",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Judge each pair of a new fact and an existing fact about the same subject as contradictory, consistent, the same predicate, or uncertain.",
+      "has_schema": true,
+      "static_hash": "5237a5e083de67c74ae71d4e7dbe6c6dab8d7e06863184ca0788ae245bc5aad3"
+    },
+    {
+      "id": "fact_assess_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "facts"
+      ],
+      "description": "The user message of the fact assessment call, carrying the labelled new and existing facts as tagged data.",
+      "has_schema": false,
+      "static_hash": "cec43220603d51cce163b3fa2360171ebba1b212a7f4f097f26e797aa83888e3"
+    },
+    {
+      "id": "fact_extract",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Extract atomic, dated, quote-grounded facts from the numbered passages of one source text for the memory fact index.",
+      "has_schema": true,
+      "static_hash": "a6226653bcaec82d5fdd1168ab806d5c51c881b2b379a816d76d9b1ba025012f"
+    },
+    {
+      "id": "fact_extract_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "source",
+        "preferred_attributes",
+        "passages"
+      ],
+      "description": "The user message of one fact extraction call, carrying one window of one source as tagged data.",
+      "has_schema": false,
+      "static_hash": "c1590ea2c5c89e0a98014837627f81870b45a3c52ea7b0bad9b24e2a5605dfa6"
+    },
+    {
+      "id": "kg_triplets",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Extract subject, relation, object triplets from each numbered text chunk for the knowledge-graph index (the KG2RAG triplet lane).",
+      "has_schema": true,
+      "static_hash": "b45236344151b9b30436dcebbfb165f7e9ba3362b35fa8daaa83f475102e4602"
+    },
+    {
+      "id": "kg_triplets_completion",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [
+        "chunks"
+      ],
+      "description": "The KG2RAG base-model completion prompt for chunk triplets, answered as Triplets N lines in the h##r##t grammar joined by $$ (the default LLM triplet format).",
+      "has_schema": false,
+      "static_hash": "8fc6d89eb465d4aa2c38914c16bdc4c72bca174ec4f25e02a520b8f91b57c925"
+    },
+    {
+      "id": "kg_triplets_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "chunks"
+      ],
+      "description": "The user message of the triplet extraction call, carrying the batch of chunks as tagged data.",
+      "has_schema": false,
+      "static_hash": "0625099d589433090e0852f2fc3e2d434f11de75aeb076eb6929249d2f885491"
+    },
+    {
+      "id": "planner",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Turn a user request into a dependency-ordered execution plan of capability-described steps.",
+      "has_schema": true,
+      "static_hash": "9cc1aaa29a8364b310612f8c6f394745c554b15908d56839ad269f6f02de2aff"
+    },
+    {
+      "id": "planner_cap",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Turn a user request into a dependency-ordered execution plan whose steps declare the capability tags their executor must have.",
+      "has_schema": true,
+      "static_hash": "411f9f491e03ee466ae8e149cdd9ef0dfc4c323d0803627e23f131a8a06e278a"
+    },
+    {
+      "id": "planner_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "capability_clusters",
+        "host",
+        "documents",
+        "request"
+      ],
+      "description": "The user message of one planning call: the capability clusters, the host, remembered context and the request, as tagged data.",
+      "has_schema": false,
+      "static_hash": "332a812f7f81b6b1d12469b03056dc15454159ccd59ce57b1a367c894d489efc"
+    },
+    {
+      "id": "replan",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Revise a partly failed execution plan into a plan for the remaining work only.",
+      "has_schema": true,
+      "static_hash": "23f491196e0f767133bfba93f5eb615f3565eb4ad2b6cfeecc9c3dda62b0fdcc"
+    },
+    {
+      "id": "replan_cap",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Revise a partly failed execution plan into a plan for the remaining work whose steps declare the capability tags their executor must have.",
+      "has_schema": true,
+      "static_hash": "9f400614478281c60b88ef4367b019628bab7064de71d43c7a489867975dfd4f"
+    },
+    {
+      "id": "replan_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "capability_clusters",
+        "partial_results",
+        "budget",
+        "failure"
+      ],
+      "description": "The user message of one replanning call: the capability vocabulary, the partial results, the budget marker and the failure, as tagged data.",
+      "has_schema": false,
+      "static_hash": "8161bf6822494a1a7f71cd00bd1bc82a44b6d7f8abd9663e31c418bdd022047f"
+    },
+    {
+      "id": "retrieval_answer_subq",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Extract the single entity that answers one sub-question, copied from the retrieved documents, or nothing when they do not contain it.",
+      "has_schema": true,
+      "static_hash": "1a70c7da38ff2eaaad945969f02b62ce470ff21df58c99a3a955a01e7c2fd335"
+    },
+    {
+      "id": "retrieval_answer_subq_force",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Second-chance extraction for one sub-question that commits to the best entity copied from the documents.",
+      "has_schema": true,
+      "static_hash": "6e416c5c1a25394e9cbe2f5044caa282e295188af0aadfc7abf4ff4a1a7d6be5"
+    },
+    {
+      "id": "retrieval_answer_subq_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "documents",
+        "subquestion"
+      ],
+      "description": "The user message of a sub-question extraction, carrying the retrieved documents and the sub-question as tagged data, the sub-question last.",
+      "has_schema": false,
+      "static_hash": "346bc58ab3b0d3dbcfa1a0640620bf86e7a4b49fae8f5d58e01c5a303f1d1a21"
+    },
+    {
+      "id": "retrieval_decide_continue",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Decide whether the retrieved documents state the answer to the whole question, or name the next intermediate entity the retrieval loop must look up.",
+      "has_schema": true,
+      "static_hash": "3266ee6ba7b90e74cf52c5e6ad2b78a870a9172ded6b51d270d4fdec3fe4889f"
+    },
+    {
+      "id": "retrieval_decide_continue_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "documents",
+        "resolved",
+        "question"
+      ],
+      "description": "The user message of one continue decision, carrying the retrieved documents, the resolved entities and the question as tagged data, the question last.",
+      "has_schema": false,
+      "static_hash": "72a8379e9d5407c4682550191ee31fd7922f3d07b839362f2ddbc104ce283124"
+    },
+    {
+      "id": "retrieval_decompose",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Decompose a question whose answer depends on earlier answers into ordered single-fact sub-questions with placeholders and descriptive refs.",
+      "has_schema": true,
+      "static_hash": "14cf6158d7407a799b885db1cde0566d5410425396073a43255df7f518e12cf6"
+    },
+    {
+      "id": "retrieval_decompose_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "question"
+      ],
+      "description": "The user message of a decomposition call, carrying the question as tagged data.",
+      "has_schema": false,
+      "static_hash": "cc4cc4139c8a8793c18adae9a0c2c7454aa6a70df9d19e442300d1921e83a673"
+    },
+    {
+      "id": "retrieval_decompose_routed",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Choose a search route for a question (direct, facets or chain) and give the sub-questions that route needs, in one planning call.",
+      "has_schema": true,
+      "static_hash": "518e26aeaaad1a9dc84ccd4b237194454cd772f5ccdbb9d5b9f230405b598456"
+    },
+    {
+      "id": "retrieval_extract_provenance",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Extract schema-bounded provenance (when the event happened, who acted, what kind of source) from one memory item, resolving relative dates against a reference date.",
+      "has_schema": true,
+      "static_hash": "f4c01bcb831ab04efc6d31db6153e9e67aa9f125785b8bbcf9a7185802ebe74c"
+    },
+    {
+      "id": "retrieval_extract_provenance_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "reference_date",
+        "hint",
+        "text"
+      ],
+      "description": "The user message of a provenance extraction, carrying the reference date, the hint and the item text as tagged data.",
+      "has_schema": false,
+      "static_hash": "23034a79e6538b192b28586998f09027cfe8041ed77302560fcc34a3adeb93d8"
+    },
+    {
+      "id": "retrieval_plan_first",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Plan the first lexical search of the agentic retrieval loop, aimed at the innermost entity a question can be looked up by.",
+      "has_schema": true,
+      "static_hash": "85844a8ea848f798e68858bb6b5b3ebe99d45e71cca493e3ab76c454c5478fa0"
+    },
+    {
+      "id": "retrieval_plan_first_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "question"
+      ],
+      "description": "The user message of the first planning step, carrying the question as tagged data.",
+      "has_schema": false,
+      "static_hash": "fc73e5817718f5052f6497328bcf685e27c434e714b6287b375726e2156e2798"
+    },
+    {
+      "id": "retrieval_plan_hop",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Plan a later lexical search of the agentic retrieval loop, for the link of the question's chain that follows the entity just reached.",
+      "has_schema": true,
+      "static_hash": "5d7fa3994d30c1de26d9ef9e8f500cf9ba7014bf4800bf8e20d3b500a2e07cfc"
+    },
+    {
+      "id": "retrieval_plan_hop_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "question",
+        "resolved",
+        "focus",
+        "hop"
+      ],
+      "description": "The user message of a later planning step, carrying the question, the entities already resolved and the current entity as tagged data.",
+      "has_schema": false,
+      "static_hash": "4c3af73dbd507816bfe32a89033d715075447479bfae84c0a342024608c403f0"
+    },
+    {
+      "id": "retrieval_reason_step",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Write the next grounded reasoning step of interleaved retrieval and reasoning, and say whether it states the answer or what to search next.",
+      "has_schema": true,
+      "static_hash": "70474e67ddfe09fad119b9e0cba9f4eaad0012ee72488c85197c1ab2f8d53be2"
+    },
+    {
+      "id": "retrieval_reason_step_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "documents",
+        "reasoning",
+        "question"
+      ],
+      "description": "The user message of one reasoning step, carrying the retrieved documents, the reasoning so far and the question as tagged data, the question last.",
+      "has_schema": false,
+      "static_hash": "a5e9932b5ca8de8349712816b5c950ccf1e3437b98472e717d353b1f3c282569"
+    },
+    {
+      "id": "retrieval_synthesis_guidance",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "The decision rules shared by the uncited and the cited answer synthesis (answer, abstain or ask for clarification; resolving described targets; conflicting documents).",
+      "has_schema": false,
+      "static_hash": "04209aeccbc25e0c6aacbec45016a6a7cdf9e4b9580289fd25468521859856e7"
+    },
+    {
+      "id": "retrieval_synthesize",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "The reply format of the uncited typed answer synthesis (answer, abstention or clarification).",
+      "has_schema": true,
+      "static_hash": "d75983a7bfeca8072384f824f470c4a00a05082f4a45ec449aa043b09eeaf3a2"
+    },
+    {
+      "id": "retrieval_synthesize_cited",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "The citation rules and reply format of the cited typed answer synthesis, which cites each grounded claim with the number of its document.",
+      "has_schema": true,
+      "static_hash": "7470ae9fb94a358eb643eb724f4050399da19a987e0aff6bc36ba8a5ff06e499"
+    },
+    {
+      "id": "retrieval_synthesize_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "documents",
+        "question"
+      ],
+      "description": "The user message of an answer synthesis, carrying the retrieved documents and the question as tagged data, the question last.",
+      "has_schema": false,
+      "static_hash": "65a7ef7a0dcc4a0b0cb00eb0134bba6ade84bc9c3fca10f11989632b0219dbae"
+    },
+    {
+      "id": "router",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Classify what a user wants Cambrian to do with one input (answer it, carry out a task, or watch for future events), with a calibrated confidence.",
+      "has_schema": true,
+      "static_hash": "8af6ea38f8ddb3ba31bb763e4974bdb2c237ead044d5e3348aa76c6b47a464c3"
+    },
+    {
+      "id": "router_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "input"
+      ],
+      "description": "The user message of one intent classification call: the input to classify, as tagged data.",
+      "has_schema": false,
+      "static_hash": "3bb74582b5257b240706821ac26c15a0ac1905c3b67602667ecaae971a9de8e2"
+    },
+    {
+      "id": "thought_synthesis",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Combine the results of a plan's earlier steps into the output the current thought step asks for.",
+      "has_schema": false,
+      "static_hash": "c2b79dfb3438a3f4354655e322dd47aa9c7ecb24e796845a2813bacc854b52d8"
+    },
+    {
+      "id": "thought_synthesis_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "goal",
+        "task",
+        "results"
+      ],
+      "description": "The user message of a thought step, carrying the plan goal, the step task and the earlier step results as tagged data.",
+      "has_schema": false,
+      "static_hash": "388f76ffaf8eb6e13929837c76120a7f0e58b83c78272a6970016d081ba01ff8"
+    }
+  ]
+}

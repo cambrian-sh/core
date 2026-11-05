@@ -28,7 +28,7 @@ seam" below.)*
 | `internal/awareness/` | Planner / Cortex — produces `ExecutionPlan`s (the LLM reasoning layer). |
 | `internal/metabolism/` | Dispatcher, AgentManager, verifier pool — the selection machinery. |
 | `internal/agentplane/` | `Transport` — the kernel's client side of the agent plane: the gRPC connection pool plus the typed calls over it (execute, verify, propose). No selection. |
-| `internal/memory/` | LTM: pgvector store, hippocampus, KG²RAG retrieval, scene/edge writers. |
+| `internal/memory/` | LTM: pgvector store, hippocampus, KG²RAG retrieval, experiential records (action events, plan outcome / episode close). Scenes, precedents, procedure induction and the tier-2 memory judge were removed 2026-11-05 (`cambrian-knowledge/decisions/scenes-cancelled.md`). |
 | `internal/supervision/` | Watcher, circadian/lifecycle, signal validation. |
 | `internal/substrate/` | gRPC server (`network`), session, operator plane, synaptic event log. |
 | `internal/infrastructure/` | Adapters: LLM clients, Postgres, MCP. |

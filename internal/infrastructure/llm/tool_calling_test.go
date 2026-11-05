@@ -150,7 +150,7 @@ func TestNormalizeOpenAIFinishReason(t *testing.T) {
 
 func TestFactory_NativeToolsDeclared_ExposesCapability(t *testing.T) {
 	t.Parallel()
-	gen, _, err := NewClient(config.ModelConfig{
+	gen, err := NewClient(config.GeneratorConfig{
 		Provider: "openai", Model: "m", Endpoint: "http://x", NativeTools: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -165,7 +165,7 @@ func TestFactory_NativeToolsDeclared_ExposesCapability(t *testing.T) {
 // SupportsToolCalling lies and callers branch onto a path that then fails.
 func TestFactory_NativeToolsUndeclared_HidesCapability(t *testing.T) {
 	t.Parallel()
-	gen, _, err := NewClient(config.ModelConfig{
+	gen, err := NewClient(config.GeneratorConfig{
 		Provider: "openai", Model: "m", Endpoint: "http://x"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -273,7 +273,7 @@ func TestOpenAI_GenerateWithTools_RefusesWhenNotDeclared(t *testing.T) {
 func TestOpenAI_CapabilitiesAreIndependent(t *testing.T) {
 	t.Parallel()
 	for _, native := range []bool{false, true} {
-		gen, _, err := NewClient(config.ModelConfig{
+		gen, err := NewClient(config.GeneratorConfig{
 			Provider: "openai", Model: "m", Endpoint: "http://x", NativeTools: native})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -306,7 +306,7 @@ func TestDecorators_DoNotOverReportDisabledInner(t *testing.T) {
 // decorator chain → SupportsToolCalling.
 //
 // This exists because the capability crosses TWO field-by-field struct copies
-// (NewGeneratorRegistry and NewProviderRegistryFromGenerators), and a field omitted
+// (once NewGeneratorRegistry and NewProviderRegistryFromGenerators; now the one NewClient), and a field omitted
 // from either is dropped with no compiler error. That exact shape has cost this
 // codebase a day more than once — the EFE task rebuild, the shadowed tool-round
 // default — so the wiring is asserted rather than assumed.

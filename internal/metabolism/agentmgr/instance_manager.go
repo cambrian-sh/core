@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/procenv"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -341,7 +342,7 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 			"--socket", sockPath,
 			"--substrate-addr", im.substrateAddr)
 		// SEC-01: deny-by-default env — never inherit the kernel's secrets.
-		cmd.Env = append(allowlistedAgentEnv(im.envPassthrough),
+		cmd.Env = append(procenv.Allowlisted(im.envPassthrough),
 			"PYTHONIOENCODING=utf-8",
 			"PYTHONUTF8=1",
 		)
@@ -358,7 +359,7 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 			"--substrate-addr", im.substrateAddr)
 		// SEC-01 deny-by-default env; NO_COLOR/FORCE_COLOR keep stdout as plain
 		// one-line JSON for the kernel's log forwarder (forwardPipe).
-		cmd.Env = append(allowlistedAgentEnv(im.envPassthrough),
+		cmd.Env = append(procenv.Allowlisted(im.envPassthrough),
 			"NO_COLOR=1",
 			"FORCE_COLOR=0",
 		)
@@ -369,11 +370,17 @@ func (im *InstanceManager) buildAgentCmd(def *domain.AgentDefinition, inst *doma
 			"--substrate-addr", im.substrateAddr)
 		// SEC-01: a nil cmd.Env would inherit os.Environ() (all secrets) — set
 		// the allowlisted environment explicitly for native agents too.
-		cmd.Env = append(allowlistedAgentEnv(im.envPassthrough), im.envExtras...)
+		cmd.Env = append(procenv.Allowlisted(im.envPassthrough), im.envExtras...)
 	default:
 		return nil, fmt.Errorf("desteklenmeyen runtime: %s", def.Runtime)
 	}
 	cmd.Dir = def.Dir
+	// Per-agent launch arguments, after the kernel's own flags. A declarative
+	// profile agent is the one runtime worker_agent.py started as `--profile <name>
+	// --agent-id <id>` (agent stack v2, storage/profile_discovery.go); every other
+	// agent has none. argv, not env, for the same reason as --agent-id below: the
+	// SEC-01 deny-by-default environment stays closed.
+	cmd.Args = append(cmd.Args, def.LaunchArgs...)
 	// ADR-0130 D1: the agent's own plane credential, the one credential the
 	// SEC-01 environment admits (agent_credential_env.go).
 	cmd.Env = append(cmd.Env, im.agentCredentialEnv(def.ID)...)

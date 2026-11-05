@@ -1,161 +1,68 @@
 package llm_test
 
 import (
-	"context"
 	"testing"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
 
-func TestNewClient_Ollama(t *testing.T) {
+// NewClient is the one constructor (ADR-0139 D1): every provider yields a value
+// that serves every port, so the Provider path and the streaming gateway can never
+// again be built from diverging copies of the generator config.
+func TestNewClient_EveryProviderServesEveryPort(t *testing.T) {
 	t.Parallel()
-	cfg := config.ModelConfig{
-		Provider:  "ollama",
-		Model:     "llama3",
-		Endpoint:  "http://localhost:11434",
-		TimeoutMs: 60000,
-	}
-	client, extractor, err := llm.NewClient(cfg)
-	if err != nil {
-		t.Fatalf("NewClient(ollama): %v", err)
-	}
-	if client == nil {
-		t.Fatal("want non-nil client")
-	}
-	if extractor == nil {
-		t.Fatal("want non-nil TokenUsageExtractor")
-	}
-	_, genErr := client.Generate(context.Background(), "test")
-	if genErr == nil {
-		t.Log("Generate returned nil error (no server running, expected)")
-	}
-}
-
-func TestNewClient_OpenAI(t *testing.T) {
-	t.Parallel()
-	cfg := config.ModelConfig{
-		Provider:        "openai",
-		Model:           "gpt-4o",
-		Endpoint:        "https://api.openai.com/v1",
-		APIKeyEnv:       "OPENAI_API_KEY",
-		CostPer1MInput:  5.0,
-		CostPer1MOutput: 15.0,
-		TimeoutMs:       30000,
-	}
-	client, extractor, err := llm.NewClient(cfg)
-	if err != nil {
-		t.Fatalf("NewClient(openai): %v", err)
-	}
-	if client == nil {
-		t.Fatal("want non-nil client")
-	}
-	if extractor == nil {
-		t.Fatal("want non-nil TokenUsageExtractor")
-	}
-}
-
-func TestNewClient_Anthropic(t *testing.T) {
-	t.Parallel()
-	cfg := config.ModelConfig{
-		Provider:        "anthropic",
-		Model:           "claude-sonnet-4-20250514",
-		Endpoint:        "https://api.anthropic.com/v1",
-		APIKeyEnv:       "ANTHROPIC_API_KEY",
-		CostPer1MInput:  3.0,
-		CostPer1MOutput: 15.0,
-		TimeoutMs:       30000,
-	}
-	client, extractor, err := llm.NewClient(cfg)
-	if err != nil {
-		t.Fatalf("NewClient(anthropic): %v", err)
-	}
-	if client == nil {
-		t.Fatal("want non-nil client")
-	}
-	if extractor == nil {
-		t.Fatal("want non-nil TokenUsageExtractor")
+	for _, g := range []config.GeneratorConfig{
+		{ID: "o", Provider: "ollama", Model: "llama3", Endpoint: "http://localhost:11434", TimeoutMs: 60000},
+		{ID: "a", Provider: "openai", Model: "gpt-4o", Endpoint: "https://api.openai.com/v1", APIKeyEnv: "OPENAI_API_KEY", TimeoutMs: 30000},
+		{ID: "c", Provider: "anthropic", Model: "claude-sonnet-4-5", Endpoint: "https://api.anthropic.com/v1", TimeoutMs: 30000},
+		{ID: "g", Provider: "gemini", Model: "gemini-2.0-flash", Endpoint: "https://generativelanguage.googleapis.com/v1beta", TimeoutMs: 30000},
+	} {
+		c, err := llm.NewClient(g)
+		if err != nil {
+			t.Fatalf("NewClient(%s): %v", g.Provider, err)
+		}
+		var _ domain.Generator = c
+		var _ domain.LLMStreamer = c
+		if _, ok := domain.AsRequestGenerator(c); !ok {
+			t.Errorf("%s: client must be a RequestGenerator", g.Provider)
+		}
 	}
 }
 
 func TestNewClient_UnknownProvider(t *testing.T) {
 	t.Parallel()
-	// NOTE: "gemini" used to stand in for "unknown" here, but it is a supported
-	// provider in the factory — use a provider that genuinely has no case.
-	cfg := config.ModelConfig{
-		Provider:  "no-such-provider",
-		Model:     "whatever",
-		Endpoint:  "https://example.invalid",
-		TimeoutMs: 30000,
-	}
-	_, _, err := llm.NewClient(cfg)
-	if err == nil {
+	if _, err := llm.NewClient(config.GeneratorConfig{Provider: "no-such-provider", Model: "m"}); err == nil {
 		t.Fatal("want error for unknown provider, got nil")
 	}
 }
 
-func TestTokenUsageExtractor_Interface(t *testing.T) {
+// The per-generator capability override (config request_capabilities) must reach
+// the client (AGENTS.md §3.4: a validated config field is threaded in the same
+// change). haiku-local's probe values are the case that motivated it.
+func TestNewClient_RequestCapabilitiesOverrideReachesClient(t *testing.T) {
 	t.Parallel()
-	_, extractor, err := llm.NewClient(config.ModelConfig{
-		Provider:  "ollama",
-		Model:     "llama3",
-		Endpoint:  "http://localhost:11434",
-		TimeoutMs: 60000,
+	c, err := llm.NewClient(config.GeneratorConfig{
+		ID: "haiku-local", Provider: "openai", Model: "claude-haiku-4-5", Endpoint: "http://127.0.0.1:3131/v1",
+		NativeTools: true,
+		RequestCapabilities: map[string]string{
+			"sampling": "unsupported", "stop": "unsupported", "response_schema": "best_effort",
+			"max_tokens": "best_effort", "cache_breakpoints": "unsupported", "images": "unsupported",
+		},
 	})
 	if err != nil {
-		t.Fatalf("NewClient: %v", err)
+		t.Fatal(err)
 	}
-	usage, err := extractor.Extract([]byte(`{"response":"ok"}`))
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
+	caps := c.Capabilities()
+	if caps.Sampling != domain.LevelUnsupported || caps.Stop != domain.LevelUnsupported {
+		t.Errorf("sampling/stop override lost: %+v", caps)
 	}
-	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 || usage.TotalTokens < 0 {
-		t.Errorf("token counts must be non-negative: %+v", usage)
+	if caps.MaxTokens != domain.LevelBestEffort || caps.ResponseSchema != domain.LevelBestEffort {
+		t.Errorf("max_tokens/response_schema override lost: %+v", caps)
 	}
-}
-
-func TestOllamaExtractor(t *testing.T) {
-	t.Parallel()
-	_, extractor, err := llm.NewClient(config.ModelConfig{Provider: "ollama", Model: "llama3", Endpoint: "http://localhost:11434", TimeoutMs: 60000})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	usage, err := extractor.Extract([]byte(`{"prompt_eval_count":150,"eval_count":80}`))
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	if usage.PromptTokens != 150 || usage.CompletionTokens != 80 || usage.TotalTokens != 230 {
-		t.Errorf("want 150/80/230, got %d/%d/%d", usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
-	}
-}
-
-func TestOpenAIExtractor(t *testing.T) {
-	t.Parallel()
-	_, extractor, err := llm.NewClient(config.ModelConfig{Provider: "openai", Model: "gpt-4o", Endpoint: "https://api.openai.com/v1", TimeoutMs: 30000})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	usage, err := extractor.Extract([]byte(`{"usage":{"prompt_tokens":200,"completion_tokens":100,"total_tokens":300}}`))
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	if usage.PromptTokens != 200 || usage.CompletionTokens != 100 || usage.TotalTokens != 300 {
-		t.Errorf("want 200/100/300, got %d/%d/%d", usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
-	}
-}
-
-func TestAnthropicExtractor(t *testing.T) {
-	t.Parallel()
-	_, extractor, err := llm.NewClient(config.ModelConfig{Provider: "anthropic", Model: "claude", Endpoint: "https://api.anthropic.com", TimeoutMs: 30000})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	usage, err := extractor.Extract([]byte(`{"usage":{"input_tokens":120,"output_tokens":60}}`))
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	if usage.PromptTokens != 120 || usage.CompletionTokens != 60 || usage.TotalTokens != 180 {
-		t.Errorf("want 120/60/180, got %d/%d/%d", usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+	if caps.Tools != domain.LevelEnforced || caps.SystemRole != domain.LevelEnforced {
+		t.Errorf("unoverridden fields must keep the adapter's declaration: %+v", caps)
 	}
 }
 

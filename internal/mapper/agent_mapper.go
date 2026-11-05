@@ -32,6 +32,10 @@ func (m *AgentMapper) ToDomain(rec storage.AgentRecord) domain.AgentDefinition {
 		Trait:           domain.AgentTrait(rec.Trait),
 		Capabilities:    rec.Capabilities,
 		System:          rec.System,
+		LaunchArgs:      rec.LaunchArgs,
+		Profile:         rec.Profile,
+		TrustTier:       rec.TrustTier,
+		ModelPreference: rec.ModelPreference,
 	}
 }
 
@@ -51,6 +55,10 @@ func (m *AgentMapper) ToRecord(def domain.AgentDefinition) storage.AgentRecord {
 		Trait:           string(def.Trait),
 		Capabilities:    def.Capabilities,
 		System:          def.System,
+		LaunchArgs:      def.LaunchArgs,
+		Profile:         def.Profile,
+		TrustTier:       def.TrustTier,
+		ModelPreference: def.ModelPreference,
 	}
 }
 
@@ -68,6 +76,8 @@ func (m *AgentMapper) ManifestToDomain(rec storage.ManifestRecord) domain.AgentM
 		OutputSchema:     rec.OutputSchema,
 		ReleaseNotes:     rec.ReleaseNotes,
 		Dependencies:     rec.Dependencies,
+		ToolAllowlist:    rec.ToolAllowlist,
+		Skills:           rec.Skills,
 	}
 }
 
@@ -87,6 +97,8 @@ func (m *AgentMapper) ManifestToRecord(man domain.AgentManifest) storage.Manifes
 		OutputSchema:     man.OutputSchema,
 		ReleaseNotes:     man.ReleaseNotes,
 		Dependencies:     man.Dependencies,
+		ToolAllowlist:    man.ToolAllowlist,
+		Skills:           man.Skills,
 	}
 }
 
@@ -313,7 +325,6 @@ func (m *AgentMapper) RetrievalSessionToRecord(session domain.RetrievalSession) 
 		Query:           session.Query,
 		QueryEmbedding:  session.QueryEmbedding,
 		Caller:          session.Caller,
-		SceneHits:       session.SceneHits,
 		FactHits:        session.FactHits,
 		RetrievedDocs:   docs,
 		Truncated:       session.Truncated,
@@ -341,7 +352,6 @@ func (m *AgentMapper) RetrievalSessionToDomain(rec storage.RetrievalSessionRecor
 		Query:           rec.Query,
 		QueryEmbedding:  rec.QueryEmbedding,
 		Caller:          rec.Caller,
-		SceneHits:       rec.SceneHits,
 		FactHits:        rec.FactHits,
 		RetrievedDocs:   docs,
 		Truncated:       rec.Truncated,

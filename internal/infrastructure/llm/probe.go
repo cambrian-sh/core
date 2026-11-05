@@ -1,15 +1,11 @@
 package llm
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
 )
 
@@ -35,12 +31,13 @@ type ProbeResult struct {
 // ProbeGenerator makes ONE real call against a generator's configured endpoint
 // and reports what came back.
 //
-// It deliberately does NOT go through domain.Generator. That interface returns
-// text and nothing else, so surfacing the served model through it would mean
-// changing the one path every generation in the kernel flows through — a large
-// blast radius for a diagnostic. Issuing the request directly keeps the
-// generation path untouched and lets the probe read fields the interface throws
-// away.
+// It goes through the generator's own client (NewClient, the one constructor)
+// but NOT through the Provider stack: a diagnostic must not trip the breaker, be
+// refused at a spend ceiling, or fall back to a different generator and report
+// that one's health. Since ADR-0139 C1 the client returns the served model
+// (GenerateResponse.Model), so the probe no longer needs its own hand-written
+// request per provider — which also means Anthropic and Gemini generators are
+// probed with their real API instead of an OpenAI-shaped request.
 func ProbeGenerator(ctx context.Context, g config.GeneratorConfig) ProbeResult {
 	timeout := time.Duration(g.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
@@ -50,24 +47,19 @@ func ProbeGenerator(ctx context.Context, g config.GeneratorConfig) ProbeResult {
 	defer cancel()
 
 	start := time.Now()
-	var served, sample string
-	var err error
-
-	switch strings.ToLower(g.Provider) {
-	case "ollama":
-		served, sample, err = probeOllama(ctx, g)
-	default:
-		// openai, opencode, groq, together, deepseek and every other
-		// OpenAI-compatible endpoint.
-		served, sample, err = probeOpenAICompat(ctx, g)
+	res := ProbeResult{ModelRequested: g.Model}
+	if _, err := NewClient(g); err != nil {
+		// An unrecognised provider string is still most likely OpenAI-compatible
+		// (opencode, groq, together, ...): probe it as one, as before.
+		g.Provider = "openai"
 	}
-
-	res := ProbeResult{
-		ModelServed:    served,
-		ModelRequested: g.Model,
-		Sample:         truncateSample(sample),
-		LatencyMs:      time.Since(start).Milliseconds(),
+	client, err := NewClient(g)
+	if err == nil {
+		var resp domain.GenerateResponse
+		resp, err = client.GenerateRequest(ctx, domain.UserPrompt(probePrompt))
+		res.ModelServed, res.Sample = resp.Model, truncateSample(resp.Text)
 	}
+	res.LatencyMs = time.Since(start).Milliseconds()
 	if err != nil {
 		res.Err = err.Error()
 		return res
@@ -76,95 +68,8 @@ func ProbeGenerator(ctx context.Context, g config.GeneratorConfig) ProbeResult {
 	return res
 }
 
-// probePrompt is deliberately trivial and deterministic: the probe is testing
-// reachability, credentials and model identity, not model quality. A long prompt
-// would spend tokens to learn nothing extra.
+// probePrompt asks for a reply short enough that the probe costs nothing.
 const probePrompt = "Reply with the single word: ok"
-
-func probeOpenAICompat(ctx context.Context, g config.GeneratorConfig) (served, sample string, err error) {
-	body, _ := json.Marshal(map[string]any{
-		"model": g.Model,
-		"messages": []map[string]string{
-			{"role": "user", "content": probePrompt},
-		},
-	})
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("%s/chat/completions", strings.TrimRight(g.Endpoint, "/")),
-		bytes.NewBuffer(body))
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	// The SAME resolution the real clients use. When the probe read only the
-	// environment it reported "the key was rejected" for a credential the
-	// console had stored and displayed -- diagnosing a fault in the key rather
-	// than in the thing that never looked for it.
-	if key := APIKeyFor(g.ID, g.APIKeyEnv); key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	if resp.StatusCode != http.StatusOK {
-		// The body carries the actionable half — "invalid api key", "model not
-		// found" — so it travels rather than just the status code.
-		return "", "", fmt.Errorf("endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(raw)))
-	}
-
-	var parsed struct {
-		Model   string `json:"model"`
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", "", fmt.Errorf("unparseable response: %w", err)
-	}
-	if len(parsed.Choices) > 0 {
-		sample = parsed.Choices[0].Message.Content
-	}
-	return parsed.Model, sample, nil
-}
-
-func probeOllama(ctx context.Context, g config.GeneratorConfig) (served, sample string, err error) {
-	body, _ := json.Marshal(map[string]any{
-		"model":  g.Model,
-		"prompt": probePrompt,
-		"stream": false,
-	})
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("%s/api/generate", strings.TrimRight(g.Endpoint, "/")),
-		bytes.NewBuffer(body))
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(raw)))
-	}
-
-	var parsed struct {
-		Model    string `json:"model"`
-		Response string `json:"response"`
-	}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", "", fmt.Errorf("unparseable response: %w", err)
-	}
-	return parsed.Model, parsed.Response, nil
-}
 
 // truncateSample keeps enough for a human to see the endpoint answered rather
 // than echoed, and no more. The full completion is not the operator's business

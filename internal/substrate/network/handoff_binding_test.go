@@ -25,11 +25,11 @@ func (r *stubLeaseResolver) Complete(context.Context, domain.LeaseID) (llm.Token
 	return llm.TokenUsage{}, nil
 }
 func (r *stubLeaseResolver) EvictExpired() {}
-func (r *stubLeaseResolver) StreamChunks(context.Context, domain.LeaseID, string, domain.GenerateOptions, chan<- domain.StreamChunk) error {
+func (r *stubLeaseResolver) StreamChunks(context.Context, domain.LeaseID, domain.GenerateRequest, chan<- domain.StreamChunk) error {
 	return nil
 }
-func (r *stubLeaseResolver) GenerateWithTools(context.Context, domain.LeaseID, []domain.ModelMessage, domain.GenerateOptions, []domain.ToolDefinition) (domain.ModelTurn, error) {
-	return domain.ModelTurn{}, nil
+func (r *stubLeaseResolver) GenerateWithTools(context.Context, domain.LeaseID, domain.GenerateRequest) (domain.GenerateResponse, error) {
+	return domain.GenerateResponse{}, nil
 }
 
 func (r *stubLeaseResolver) BindLease(domain.LeaseID, domain.LeaseBinding) {}

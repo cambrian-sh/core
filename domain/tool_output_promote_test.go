@@ -13,37 +13,6 @@ func (f *fakeToolOutputRecorder) RecordToolOutput(_ context.Context, rec ToolOut
 	return nil
 }
 
-// The pure cost pre-filter: below the floor, error, and denied are skipped;
-// a substantive non-error output is promoted.
-func TestShouldPromoteToolOutput(t *testing.T) {
-	t.Parallel()
-	pad := strings.Repeat("x", 300)
-	if shouldPromoteToolOutput([]byte("tiny"), 200) {
-		t.Error("below the size floor must be skipped")
-	}
-	if !shouldPromoteToolOutput([]byte(`{"result":"`+pad+`"}`), 200) {
-		t.Error("a substantive non-error output must promote")
-	}
-	if shouldPromoteToolOutput([]byte(`{"error":"`+pad+`"}`), 200) {
-		t.Error("an error result must be skipped")
-	}
-	if shouldPromoteToolOutput([]byte(`{"denied":true,"p":"`+pad+`"}`), 200) {
-		t.Error("a denied result must be skipped")
-	}
-	// ADR-0048 #3: shell-failure shapes are skipped at the raw result (the
-	// "tool[name]:" envelope would later defeat Tier-2's JSON error detection).
-	if shouldPromoteToolOutput([]byte(`{"exit_code":2,"stdout":"","stderr":"`+pad+`"}`), 200) {
-		t.Error("a non-zero exit_code must be skipped")
-	}
-	if shouldPromoteToolOutput([]byte(`{"stdout":"","stderr":"ps: unknown option `+pad+`"}`), 200) {
-		t.Error("stderr with empty stdout (the ps failure shape) must be skipped")
-	}
-	// A result with real stdout is kept even if it also emits a stderr warning.
-	if !shouldPromoteToolOutput([]byte(`{"exit_code":0,"stdout":"`+pad+`","stderr":"warn"}`), 200) {
-		t.Error("substantive stdout must promote despite a stderr warning")
-	}
-}
-
 // ADR-0049 D1: the action formatter renders a mutation into a compact deterministic
 // line; large arg values collapse, status reflects the outcome.
 func TestFormatActionLine(t *testing.T) {
@@ -71,34 +40,26 @@ func TestFormatActionLine(t *testing.T) {
 	}
 }
 
-// A successful, substantive tool output is fed to the recorder; an error output
-// (handler returns a result containing an error marker) is not.
-func TestToolExecutor_PromotesSubstantiveOutputOnly(t *testing.T) {
+// Every non-denied tool call is reported to the recorder, with its read/write nature;
+// the recorder decides what to keep (since 2026-11-05: mutations only).
+func TestToolExecutor_ReportsEveryNonDeniedCall(t *testing.T) {
 	t.Parallel()
-	pad := strings.Repeat("x", 300)
-
 	run := func(result []byte) []ToolOutputRecord {
 		reg := NewInMemoryToolRegistry()
 		reg.Register(SystemTool{Name: "web_search"}) // a read tool (no DataWriteKinds)
 		rec := &fakeToolOutputRecorder{}
 		e := newExec(reg, grantStore("a", ToolGrant{Tool: "web_search"}), &fakeHandler{result: result})
 		e.ToolOutput = rec
-		e.ToolOutputMinBytes = 200
 		e.Execute(context.Background(), ToolCallRequest{AgentID: "a", ToolName: "web_search"})
 		return rec.got
 	}
-
-	// The size floor now decides FactEligible, not whether the call is reported at
-	// all. Every non-denied call reaches the recorder so the world model can see what
-	// it touched; only a substantive output is eligible to be curated as a FACT.
-	if got := run([]byte(`{"result":"` + pad + `"}`)); len(got) != 1 || got[0].ToolName != "web_search" || got[0].IsMutation || !got[0].FactEligible {
-		t.Errorf("substantive read output should be recorded as a fact-eligible non-mutation, got %+v", got)
+	if got := run([]byte(`{"result":"` + strings.Repeat("x", 300) + `"}`)); len(got) != 1 || got[0].ToolName != "web_search" || got[0].IsMutation {
+		t.Errorf("a read output must be reported as a non-mutation, got %+v", got)
 	}
-	if got := run([]byte(`{"error":"` + pad + `"}`)); len(got) != 1 || got[0].FactEligible {
-		t.Errorf("error output must be reported but NOT fact-eligible, got %+v", got)
+	if got := run([]byte(`{"r":"small"}`)); len(got) != 1 {
+		t.Errorf("a small output must be reported too, got %+v", got)
 	}
-	if got := run([]byte(`{"r":"small"}`)); len(got) != 1 || got[0].FactEligible {
-		t.Errorf("below-floor output must be reported (the world model needs it) but NOT "+
-			"fact-eligible, got %+v", got)
+	if got := run([]byte(`{"denied":true}`)); len(got) != 0 {
+		t.Errorf("a denied call never ran and must not be reported, got %+v", got)
 	}
 }

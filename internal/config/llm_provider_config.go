@@ -1,6 +1,11 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+
+	"github.com/cambrian-sh/core/domain"
+)
 
 // EmbedderConfig declares the single embedding model. ADR-0042: the embedder is
 // standalone (not brokered/failed-over) and owns its own dimensions, replacing
@@ -53,10 +58,99 @@ type GeneratorConfig struct {
 	// calls anything, which reads as a model quality problem rather than a config one.
 	// Verified true for deepseek-v4-flash and mimo-v2.5 on opencode (2026-07-28).
 	NativeTools bool `json:"native_tools,omitempty"`
+	// MaxTokens is the output cap sent when a request sets none (ADR-0139 C1).
+	// 0 = send no cap and take the provider's default — except for Anthropic, whose
+	// API requires max_tokens: ApplyGeneratorDefaults fills AnthropicDefaultMaxTokens.
+	// This replaces the 4096 the Anthropic adapter used to hardcode.
+	MaxTokens int `json:"max_tokens,omitempty"`
+	// RequestCapabilities overrides, per field, the C1 capability levels the adapter
+	// declares (ADR-0139 C1): keys are RequestCapabilityKeys, values "enforced",
+	// "best_effort" or "unsupported". Needed because an OpenAI-COMPATIBLE endpoint is
+	// not OpenAI: the claudebox proxy behind haiku-local accepts temperature and stop
+	// and ignores them, and pastes response_format into the prompt. A level set here
+	// decides whether the field is sent, reported as ignored, or refused under strict.
+	//
+	// For haiku-local (claudebox, probed 2026-11-04) the owner's local providers.json
+	// should carry: {"sampling":"unsupported","stop":"unsupported",
+	// "response_schema":"best_effort","max_tokens":"best_effort",
+	// "tool_choice":"best_effort","parallel_tools":"best_effort",
+	// "cache_breakpoints":"unsupported","images":"unsupported"}.
+	RequestCapabilities map[string]string `json:"request_capabilities,omitempty"`
+}
+
+// AnthropicDefaultMaxTokens is the output cap applied to an Anthropic generator whose
+// config sets no max_tokens. The Messages API rejects a request without one.
+const AnthropicDefaultMaxTokens = 4096
+
+// RequestCapabilityKeys are the accepted keys of GeneratorConfig.RequestCapabilities,
+// one per domain.Capabilities field.
+var RequestCapabilityKeys = []string{
+	"system_role", "tools", "tool_choice", "parallel_tools", "response_schema",
+	"max_tokens", "sampling", "stop", "cache_breakpoints", "images",
+}
+
+// ApplyRequestCapabilities returns caps with this generator's overrides applied.
+// Unknown keys and values never reach here: validate refuses them at load.
+func (g GeneratorConfig) ApplyRequestCapabilities(caps domain.Capabilities) domain.Capabilities {
+	for k, v := range g.RequestCapabilities {
+		l := domain.Level(v)
+		if !l.Valid() {
+			continue
+		}
+		switch k {
+		case "system_role":
+			caps.SystemRole = l
+		case "tools":
+			caps.Tools = l
+		case "tool_choice":
+			caps.ToolChoice = l
+		case "parallel_tools":
+			caps.ParallelTools = l
+		case "response_schema":
+			caps.ResponseSchema = l
+		case "max_tokens":
+			caps.MaxTokens = l
+		case "sampling":
+			caps.Sampling = l
+		case "stop":
+			caps.Stop = l
+		case "cache_breakpoints":
+			caps.CacheBreakpoints = l
+		case "images":
+			caps.Images = l
+		}
+	}
+	return caps
+}
+
+func validateRequestCapabilities(i int, caps map[string]string) []string {
+	var errs []string
+	keys := make([]string, 0, len(caps))
+	for k := range caps {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // deterministic error order
+	for _, k := range keys {
+		known := false
+		for _, want := range RequestCapabilityKeys {
+			if k == want {
+				known = true
+				break
+			}
+		}
+		if !known {
+			errs = append(errs, fmt.Sprintf("llm_provider.generators[%d].request_capabilities: unknown key %q (want one of %v)", i, k, RequestCapabilityKeys))
+			continue
+		}
+		if !domain.Level(caps[k]).Valid() {
+			errs = append(errs, fmt.Sprintf("llm_provider.generators[%d].request_capabilities.%s: %q is not enforced|best_effort|unsupported", i, k, caps[k]))
+		}
+	}
+	return errs
 }
 
 // ApplyGeneratorDefaults fills the ADR-0042 per-generator defaults in place
-// (timeout_ms 0 ⇒ 60 s). One function for boot and for the console write path's
+// (timeout_ms 0 ⇒ 60 s; an Anthropic max_tokens 0 ⇒ AnthropicDefaultMaxTokens). One function for boot and for the console write path's
 // effective list, so a generator hot-applied from a file entry that omits
 // timeout_ms gets the same timeout it would get after a restart — not 0, which
 // the HTTP clients read as "no timeout".
@@ -64,6 +158,9 @@ func ApplyGeneratorDefaults(gens []GeneratorConfig) {
 	for i := range gens {
 		if gens[i].TimeoutMs == 0 {
 			gens[i].TimeoutMs = 60000
+		}
+		if gens[i].MaxTokens == 0 && gens[i].Provider == "anthropic" {
+			gens[i].MaxTokens = AnthropicDefaultMaxTokens
 		}
 	}
 }
@@ -79,11 +176,11 @@ type HealthConfig struct {
 // replaces the flat models[] array and the duplicated top-level llm block.
 type LLMProviderConfig struct {
 	// Default is the id of the global default generator (failover step 3 +
-	// interview-session base + default cost).
+	// default cost).
 	Default string `json:"default"`
 	// Generators is the set of LLMs the Provider can route to, keyed by id.
 	Generators []GeneratorConfig `json:"generators"`
-	// Roles maps a system-organ role (planner/verifier/interview/router/memory)
+	// Roles maps a system-organ role (planner/verifier/router/memory/facts; `interview` is retired)
 	// to a generator id. Deterministic and Zero-Hardcode-legal: roles are not
 	// agents bidding for tasks.
 	Roles map[string]string `json:"roles"`
@@ -99,21 +196,10 @@ type LLMProviderConfig struct {
 }
 
 // DefaultGenerator returns the generator marked as the global default, or nil
-// if unset/unknown. Used for default cost (metabolism) and the interview base.
+// if unset/unknown. Used for default cost (metabolism).
 func (c LLMProviderConfig) DefaultGenerator() *GeneratorConfig {
 	for i := range c.Generators {
 		if c.Generators[i].ID == c.Default {
-			return &c.Generators[i]
-		}
-	}
-	return nil
-}
-
-// OllamaGenerator returns the first ollama-provider generator, or nil. The
-// streaming gateway + interview grading need a local streaming-capable model.
-func (c LLMProviderConfig) OllamaGenerator() *GeneratorConfig {
-	for i := range c.Generators {
-		if c.Generators[i].Provider == "ollama" {
 			return &c.Generators[i]
 		}
 	}
@@ -146,6 +232,10 @@ func (c LLMProviderConfig) validate(embedder EmbedderConfig) []string {
 			errs = append(errs, fmt.Sprintf("llm_provider.generators[%d].id %q is duplicated", i, g.ID))
 		}
 		ids[g.ID] = true
+		errs = append(errs, validateRequestCapabilities(i, g.RequestCapabilities)...)
+		if g.MaxTokens < 0 {
+			errs = append(errs, fmt.Sprintf("llm_provider.generators[%d].max_tokens must be >= 0", i))
+		}
 
 		// api_key_env is NO LONGER REQUIRED (ADR-0101 D5).
 		//

@@ -30,6 +30,22 @@ type Handoff struct {
 	WorkingMemory []ContextRef
 }
 
+// HandoffKeyWinnerAgentID and HandoffKeyWinnerSourceHash are the response
+// Handoff.Context keys on which the Dispatcher stamps the DEFINITION it actually
+// dispatched (ADR-0139 D6). The step TaskEvent needs the winner's SourceHash: the
+// Gatekeeper and Dispatcher read GetProfile(agent.ID, agent.SourceHash), so an event
+// written without it aggregates into `profile:<agent>:`, a row nothing reads
+// (T-20261104-routing-never-learns-from-real-outcomes-dag). Kernel-internal and
+// server-authoritative like HandoffKeyBudgetOverrun: the Dispatcher overwrites any
+// agent-echoed value, and the DAGExecutor consumes both keys so they never merge
+// into the plan context. The agent id rides along so the executor uses the hash
+// only when the response really came from that winner (a runner-up fallback that
+// bypasses the Dispatcher carries no stamp and keeps the empty hash).
+const (
+	HandoffKeyWinnerAgentID    = "_winner_agent_id"
+	HandoffKeyWinnerSourceHash = "_winner_source_hash"
+)
+
 // DispatchResult bundles the three values returned by StepDispatcher.Execute.
 type DispatchResult struct {
 	Handoff        *Handoff

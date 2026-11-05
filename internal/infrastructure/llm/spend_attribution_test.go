@@ -69,10 +69,10 @@ func TestSpendMeter_NoSessionCallGoesToKernelBucket(t *testing.T) {
 	p := httpProvider(t, usageServer(t, &hits).URL, "openai", 0, 0)
 	meter := NewSpendMeter(10, nil, nil) // tiny ceiling: must not apply to the bucket
 	p.SetSpendMeter(meter)
-	interview := p.GeneratorFor(domain.PurposeInterview)
+	memory := p.GeneratorFor(domain.PurposeMemory)
 
 	for i := 0; i < 2; i++ {
-		if _, err := interview.Generate(context.Background(), "grade"); err != nil {
+		if _, err := memory.Generate(context.Background(), "extract"); err != nil {
 			t.Fatalf("no-session call refused: %v", err)
 		}
 	}
@@ -136,7 +136,7 @@ func TestSpendMeter_UnclaimedTabSettlesIntoKernelBucket(t *testing.T) {
 	if nb := meter.NoSession(); nb.Calls != 1 || nb.TotalTokens() != 60 || nb.Exhausted {
 		t.Fatalf("bucket = %+v, want the tab's call, not exhausted", nb)
 	}
-	if err := meter.Admit(context.Background(), "interview", 1000); err != nil {
+	if err := meter.Admit(context.Background(), "memory", 1000); err != nil {
 		t.Fatalf("the no-session bucket must never refuse: %v", err)
 	}
 }

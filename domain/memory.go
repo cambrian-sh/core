@@ -28,10 +28,8 @@ type MemoryFetcher interface {
 // The Watcher retains its own local MemoryContextProvider interface for signal enrichment.
 //
 // The MemoryIngester seam (IngestSync / ProcessAndStoreAsync) was REMOVED: it was the
-// per-item LLM-importance write path, superseded by the ADR-0015 Tier-1/Tier-2 drain
-// (MemoryRecorder.RecordExecution -> bounded channel -> batch score -> commit). Its last
-// two callers had already moved off it — the step-result Memory Barrier (ADR-0049 D3) and
-// the premium drift writer, which needs the classification-carrying ingest instead.
+// per-item LLM-importance write path, superseded by the ADR-0015 Tier-1/Tier-2 drain —
+// itself deleted on 2026-11-05 with RecordExecution (decisions/scenes-cancelled.md).
 type MemoryAgent interface {
 	IngestNegativeEdge(ctx context.Context, errorMsg, lastOutput, agentID string) error
 	PoisonMemory(ctx context.Context, memoryID string, correction string) error

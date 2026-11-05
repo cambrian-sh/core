@@ -2,11 +2,11 @@ package awareness
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/prompts"
 )
 
 // Clarification is the operator-facing interview: turning a vague goal into an
@@ -108,7 +108,14 @@ func (c *Clarifier) Clarify(ctx context.Context, goal string, answers []string) 
 		return nil, nil
 	}
 
-	raw, err := c.LLM.Generate(ctx, c.buildPrompt(goal))
+	// A prompt that does not render is a build defect (the prompt lint catches
+	// it before release), not a model failure, so it is returned rather than
+	// swallowed by the fail-open below.
+	req, err := c.buildRequest(goal)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := domain.GenerateVia(ctx, c.LLM, req)
 	if err != nil {
 		// Fail OPEN. The clarifier's failure must not block proposing: the
 		// operator still gets a plan to inspect, which is strictly better than an
@@ -116,8 +123,11 @@ func (c *Clarifier) Clarify(ctx context.Context, goal string, answers []string) 
 		return nil, nil
 	}
 
+	// The reply was validated against prompts/clarifier/clarification.schema.json
+	// by the provider layer (C1); decodeReply tolerates only a code fence on an
+	// unchecked reply. Undecodable is fail-open, like a model error.
 	var m modelClarification
-	if uerr := json.Unmarshal([]byte(domain.ExtractJSONObject(raw)), &m); uerr != nil {
+	if decodeReply(resp, &m) != nil {
 		return nil, nil
 	}
 	if m.Answerable {
@@ -191,35 +201,30 @@ func normaliseKind(k string) string {
 	return KindScope
 }
 
-func (c *Clarifier) buildPrompt(goal string) string {
-	var b strings.Builder
-	b.WriteString(`Decide whether a goal can be planned as written, or whether one decision is
-missing that only the person asking can make.
+// clarifierPrompts is the clarifier's library prompt pair: prompts/clarifier
+// (the stable system block; v2 moved the data regions out of it) and
+// prompts/clarifier_input (the vocabulary and, last, the goal, as tagged data).
+// The text, its response schema and its static hash live there; this file only
+// fills the slots.
+var clarifierPrompts = prompts.MustPair("clarifier", "clarifier_input")
 
-Answer with questions ONLY when the answer would change what gets done. A goal
-that is merely broad is still answerable — breadth is a plan's problem, not a
-question. Vagueness that changes the OUTCOME is what to ask about.
+// clarifierDataTags are the data regions of clarifier_input. A closing </goal>
+// inside the operator's text would otherwise end the data region early and let
+// the rest of the goal read as instructions.
+var clarifierDataTags = []string{"classification_tags", "goal"}
 
-Two kinds:
-- "scope": which subset of the corpus. Options should name a classification tag,
-  so the count of matching documents can be shown. Never invent a tag.
-- "judgement": what counts as done. Options are descriptions, not tags.
+// clarifierCacheTTL: clarification runs when an operator proposes a plan, which is
+// human-paced, so the long breakpoint lifetime (ADR-0139 D1).
+const clarifierCacheTTL = domain.CacheTTLLong
 
-For every question say what actually differs between the options in
-why_it_changes_the_answer. A question without that reads as bureaucracy and gets
-answered at random.
-
-Reply with ONLY this JSON:
-{"answerable":true,"reason":"","questions":[{"question":"","kind":"scope",
- "why_it_changes_the_answer":"","options":[{"label":"","tag":""}]}]}
-
-`)
-	if len(c.Vocabulary) > 0 {
-		b.WriteString("CLASSIFICATION TAGS (the only tags you may name): " +
-			strings.Join(c.Vocabulary, ", ") + "\n\n")
-	} else {
-		b.WriteString("No classification vocabulary is configured — ask judgement questions only.\n\n")
-	}
-	b.WriteString("GOAL: " + goal + "\n")
-	return b.String()
+// buildRequest renders the clarifier call. The goal is untrusted operator text
+// and sits in a <goal> data region, last (ADR-0139 D2); the vocabulary is kernel
+// configuration, also data. An empty vocabulary renders an empty
+// <classification_tags> region, which the prompt reads as "ask judgement
+// questions only".
+func (c *Clarifier) buildRequest(goal string) (domain.GenerateRequest, error) {
+	return planRequest(clarifierPrompts, clarifierDataTags, map[string]string{
+		"classification_tags": strings.Join(c.Vocabulary, ", "),
+		"goal":                strings.TrimSpace(goal),
+	}, clarifierCacheTTL)
 }

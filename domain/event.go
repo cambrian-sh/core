@@ -115,7 +115,7 @@ type SelectionEventPayload struct {
 	// losing bid (0 when there is no runner-up). A near-zero margin flags a
 	// coin-flip auction; a wide margin, a decisive one.
 	WinnerMargin float32
-	// Funnel is the Gatekeeper's per-agent Declaration→Interview→Merit trace for
+	// Funnel is the Gatekeeper's per-agent Declaration→Semantic→Merit trace for
 	// this auction (ROUTE-02). Nil when tracing is off or not applicable.
 	Funnel *GatekeeperFunnel
 
@@ -150,10 +150,10 @@ type GatekeeperFunnel struct {
 	// L1 is the Declaration pass-set: one entry per agent considered, with the
 	// pass/fail verdict and reason.
 	L1 []DeclarationResult
-	// L2 is the Interview (semantic) layer: survivors and eliminated agents with
+	// L2 is the semantic layer: survivors and eliminated agents with
 	// their similarity scores. Empty when Layer 2 did not run (e.g. no embedder,
 	// or only provisional candidates).
-	L2 []InterviewResult
+	L2 []SemanticGateResult
 	// L2Threshold is the similarity floor applied in Layer 2 (0 when L2 skipped).
 	L2Threshold float64
 	// L3 is the Merit ranking: the surviving candidates with their score and its
@@ -171,11 +171,11 @@ type DeclarationResult struct {
 	Reason  string // why it failed (empty when Passed)
 }
 
-// InterviewResult records one agent's Layer-2 (Interview) verdict. Similarity
-// is the best embedding similarity of the agent's profile to the task; Survived
+// SemanticGateResult records one agent's Layer-2 (semantic) verdict. Similarity
+// is the best embedding similarity of the agent's profile vector to the task; Survived
 // reflects whether it cleared the threshold. ProvisionalBypass is true when the
 // agent skipped the semantic gate because it is provisional (cold-start pass).
-type InterviewResult struct {
+type SemanticGateResult struct {
 	AgentID           string
 	Similarity        float64
 	Survived          bool
@@ -192,18 +192,17 @@ type MeritResult struct {
 	TrustScore  float64
 	LatencyTerm float64 // w3 * (1 / normLatency) contribution
 	CostTerm    float64 // w4 * normalizedCost contribution (subtracted)
-	Provisional bool    // provisional cold-start penalty applied
+	Provisional bool    // the agent's profile is flagged provisional (legacy rows; no penalty since 2026-11-05)
 }
 
-// AgentReadyEvent is emitted by InterviewWorker after every Provisional→Active
-// transition. Subscribers (CapabilityClusterer, SynapticWatcher, etc.) can react
+// AgentReadyEvent is emitted by the registration ProfileSeeder after every
+// Provisional→ready transition. Subscribers (the operator roster, etc.) can react
 // to new agents without polling. ADR-0023 D6A.
 type AgentReadyEvent struct {
 	AgentID      string
 	SourceHash   string
 	TrustScore   float64
 	Capabilities []string
-	InterviewMs  int64
 
 	// Contract 0074: the agent detail fields contract 0057 removed from the
 	// operator projection. Carried on the READY event because the projection

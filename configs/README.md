@@ -38,7 +38,8 @@ shells).
 | `config.example.json` | committed | Template for `config.json`. The only file that documents the user-facing schema. |
 | `embedder.json.example` | committed | Template for `embedder.json`. |
 | `providers.json.example` | committed | Template for `providers.json`. |
-| `mcp.json.example` | committed | Template for `mcp.json` (one filesystem MCP server as a starter). |
+| `mcp.json.example` | committed | Template for `mcp.json`: the pinned keyless core MCP server set. Catalog and trust notes: [`MCP.md`](MCP.md). |
+| `mcp.integrations.json.example` | committed | Not loaded. Keyed integration entries (GitHub, Google, Microsoft, Slack, …) to copy into `mcp.json` one at a time. |
 | `config.local.json.example` | committed | Template for `config.local.json`. |
 
 **Bold = "you almost certainly need this file" for a fresh install.**

@@ -11,6 +11,7 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/substrate/network"
+	"github.com/cambrian-sh/core/internal/testing/fakemodels"
 )
 
 // Tests for T-20261101-verification-mints-no-lease-so-verifier-llm (ADR-0131,
@@ -39,11 +40,22 @@ type generatingVerifier struct {
 	mu     sync.Mutex
 	leases []domain.LeaseID
 	errs   []error
+	// boundTo maps each verifier agent called to the AgentID its lease was bound to
+	// at the moment of the call (ADR-0139 D8: must be that verifier).
+	boundTo map[string]string
 }
 
-func (v *generatingVerifier) VerifyOutput(_ context.Context, _ domain.AgentDefinition, req domain.VerifyRequest) (domain.VerifyResponse, error) {
+func (v *generatingVerifier) VerifyOutput(_ context.Context, verifier domain.AgentDefinition, req domain.VerifyRequest) (domain.VerifyResponse, error) {
+	if b, ok := v.gw.ResolveLease(req.LeaseID); ok {
+		v.mu.Lock()
+		if v.boundTo == nil {
+			v.boundTo = map[string]string{}
+		}
+		v.boundTo[verifier.ID] = b.AgentID
+		v.mu.Unlock()
+	}
 	out := make(chan domain.StreamChunk, 16)
-	err := v.gw.StreamChunks(context.Background(), req.LeaseID, "verify this", domain.GenerateOptions{}, out)
+	err := v.gw.StreamChunks(context.Background(), req.LeaseID, domain.UserPrompt("verify this"), out)
 	v.mu.Lock()
 	v.leases = append(v.leases, req.LeaseID)
 	v.errs = append(v.errs, err)
@@ -64,7 +76,7 @@ func newLeaseRig(t *testing.T, crossVerifyRate float64) *leaseRig {
 	t.Helper()
 	meter := llm.NewSpendMeter(100, nil, nil)
 	gw := network.NewLLMGateway(config.DefaultConfig().Execution)
-	gw.RegisterModelClient("llm:fake", usageModel{prompt: 120, compl: 30})
+	gw.SetStepModels(fakemodels.New().Set("llm:fake", usageModel{prompt: 120, compl: 30}))
 	gw.SetDefaultModelID("llm:fake")
 	gw.SetSpendMeter(meter)
 	completed := make(chan domain.LeaseID, 8)
@@ -105,6 +117,13 @@ func (r *leaseRig) assertAllCompleted(t *testing.T, want int) {
 	if len(issued) != want {
 		t.Fatalf("verifier calls = %d, want %d", len(issued), want)
 	}
+	r.verifier.mu.Lock()
+	for verifierID, bound := range r.verifier.boundTo {
+		if bound != verifierID {
+			t.Errorf("verifier %q was handed a lease bound to %q; it must be bound to the verifier (ADR-0139 D8)", verifierID, bound)
+		}
+	}
+	r.verifier.mu.Unlock()
 	for _, id := range issued {
 		if id == "" {
 			t.Fatal("a verifier call carried no lease")
@@ -141,7 +160,7 @@ func TestVerificationLease_BookedToSessionNeverRefusedAtCeiling(t *testing.T) {
 	// the ceiling is live, so the verifier's admission below is the background rule.
 	ctl, _ := r.gw.Acquire(context.Background(), domain.StepAllocation{}, network.StepLeaseTokenLimit, network.StepLeaseDuration)
 	r.gw.BindLease(ctl, domain.LeaseBinding{SessionID: sid, StepIndex: 0})
-	if err := r.gw.StreamChunks(context.Background(), ctl, "p", domain.GenerateOptions{}, make(chan domain.StreamChunk, 16)); !errors.Is(err, llm.ErrSpendCeiling) {
+	if err := r.gw.StreamChunks(context.Background(), ctl, domain.UserPrompt("p"), make(chan domain.StreamChunk, 16)); !errors.Is(err, llm.ErrSpendCeiling) {
 		t.Fatalf("control lease: err = %v, want ErrSpendCeiling", err)
 	}
 	if _, err := r.gw.Complete(context.Background(), ctl); err != nil {

@@ -8,8 +8,9 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// TestPlannerPrompt_ContainsCapabilityClusters verifies the generated system
-// prompt uses the CAPABILITY CLUSTERS block instead of the old AVAILABLE AGENTS flat list.
+// TestPlannerPrompt_ContainsCapabilityClusters verifies the planner sends the
+// clusters in their <capability_clusters> data region instead of the old
+// AVAILABLE AGENTS flat list.
 func TestPlannerPrompt_ContainsCapabilityClusters(t *testing.T) {
 	t.Parallel()
 	provider := &agentProviderWithAgents{
@@ -26,8 +27,8 @@ func TestPlannerPrompt_ContainsCapabilityClusters(t *testing.T) {
 	}
 	prompt := gen.capturedPrompts[0]
 
-	if !strings.Contains(prompt, "CAPABILITY CLUSTERS") {
-		t.Errorf("prompt must contain CAPABILITY CLUSTERS\nprompt:\n%s", prompt)
+	if !strings.Contains(prompt, "<capability_clusters>\n- vision: ocr-agent\n</capability_clusters>") {
+		t.Errorf("prompt must carry the clusters in <capability_clusters>\nprompt:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "AVAILABLE AGENTS") {
 		t.Errorf("prompt must NOT contain AVAILABLE AGENTS (replaced by CAPABILITY CLUSTERS)\nprompt:\n%s", prompt)
@@ -51,19 +52,20 @@ func TestPlannerPrompt_ContainsRuntimeSelectionInstruction(t *testing.T) {
 	// concrete agent at execution time (so the planner drafts capability-level
 	// descriptions), without committing to a specific selection mechanism — the
 	// mechanism is flag-driven (auction or EFE), not baked into the prompt.
-	if !strings.Contains(prompt, "resolves each step to a concrete agent at execution time") {
+	if !strings.Contains(prompt, "The runtime chooses a concrete agent for each step when it runs") {
 		t.Errorf("prompt missing runtime-selection clarifying instruction\nprompt:\n%s", prompt)
 	}
 }
 
-// TestBuildCapabilityCluster_EmptySlice verifies an empty agent slice returns
-// only the header line with no cluster entries.
+// TestBuildCapabilityCluster_EmptySlice verifies an empty agent slice renders
+// nothing: the <capability_clusters> region names the block, so there is no
+// header line inside it any more.
 func TestBuildCapabilityCluster_EmptySlice(t *testing.T) {
 	t.Parallel()
 	out := buildCapabilityCluster([]domain.AgentDefinition{})
 
-	if !strings.Contains(out, "CAPABILITY CLUSTERS") {
-		t.Errorf("output missing header line\ngot: %q", out)
+	if out != "" {
+		t.Errorf("expected an empty block, got %q", out)
 	}
 	// No cluster entries — no "- " lines beyond the header
 	lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -174,9 +176,6 @@ func TestBuildCapabilityCluster_SingleCluster(t *testing.T) {
 
 	out := buildCapabilityCluster(agents)
 
-	if !strings.Contains(out, "CAPABILITY CLUSTERS") {
-		t.Errorf("output missing CAPABILITY CLUSTERS header\ngot: %s", out)
-	}
 	if !strings.Contains(out, "vision:") {
 		t.Errorf("output missing 'vision:' cluster heading\ngot: %s", out)
 	}

@@ -111,14 +111,3 @@ func TestApplyOutcome_NoSnapJudgementOnFirstFailure(t *testing.T) {
 		t.Errorf("first observation must not deprecate, got %s", p.Status)
 	}
 }
-
-func TestSupersede_RetainsTheOriginal(t *testing.T) {
-	t.Parallel()
-	old := Supersede(proc(domain.ProcedureActive, 4), "proc-2")
-	if old.Status != domain.ProcedureSuperseded || old.SupersededBy != "proc-2" {
-		t.Errorf("supersession must link, not delete: %+v", old)
-	}
-	if old.Trigger == "" || len(old.Steps) == 0 {
-		t.Error("the superseded routine must retain its content as evidence")
-	}
-}

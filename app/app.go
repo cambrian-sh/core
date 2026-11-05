@@ -633,18 +633,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	// ADR-0042: the centralized LLM Provider is the sole authority on model
 	// availability/provisioning. System organs Acquire purpose-bound generators
-	// from it (with live health failover). The legacy ProviderRegistry is retained
-	// only as the streaming-client source for the ADR-0018 gateway (streaming is
-	// out of ADR-0042 scope), built from the same generator set.
+	// from it (with live health failover), and since ADR-0139 wave 1c the agent-plane
+	// gateway serves every agent call through it too (SetStepModels below): one
+	// client set, one breaker.
 	llmProvider, err := llm.NewProvider(cfg.LLMProvider, slog.Default())
 	if err != nil {
 		storeHandle.Close()
 		return nil, fmt.Errorf("llm provider: %w", err)
-	}
-	providers, err := llm.NewProviderRegistryFromGenerators(cfg.LLMProvider.Generators)
-	if err != nil {
-		storeHandle.Close()
-		return nil, fmt.Errorf("provider registry: %w", err)
 	}
 	embedder := &llm.OllamaEmbedder{
 		BaseURL:     cfg.Embedder.Endpoint,
@@ -670,7 +665,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	factsGen := llmProvider.GeneratorFor(domain.PurposeFacts) // ADR-0136 D4: read only when execution.facts.extract_enabled
 	awarenessGen := llmProvider.GeneratorFor(domain.PurposePlanner)
 	supervisionGen := llmProvider.GeneratorFor(domain.PurposeVerifier)
-	metabolismGen := llmProvider.GeneratorFor(domain.PurposeInterview) // ADR-0037 interview grading
 
 	// Register LLM models as TraitModel agents so they participate in the auction.
 	registerModelAgents(reg, cfg.LLMProvider.Generators)
@@ -678,8 +672,14 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// (now a system-aware FilesystemAgentSource carrying manifests) FIRST, then any
 	// plugin-contributed sources. This runs BEFORE the reconciles so the orphan-eviction
 	// pass sees the freshly-registered filesystem population.
-	builtinSource := newBuiltinFilesystemAgentSource(cfg.Metabolism.AgentsDir)
-	registerAgentSources(ctx, reg, append([]AgentSource{builtinSource}, composed.agentSources...))
+	//
+	// Agent stack v2: the built-in source also registers one agent per declarative
+	// profile (agents/profiles/*.yaml), validated against the skills this kernel
+	// serves (the same "skills" directory LoadRegistry reads below).
+	builtinSource := newBuiltinFilesystemAgentSource(cfg.Metabolism.AgentsDir).withSkillTools(profileSkillIndex("skills"))
+	registeredAgents := registerAgentSources(ctx, reg, append([]AgentSource{builtinSource}, composed.agentSources...))
+	profiles := collectProfileAgents(registeredAgents)
+	reconcileProfileAgents(ctx, reg, registeredAgents)
 	// ADR-0042: config is the source of truth for the model population. Eviction
 	// of models dropped from config — registration above is upsert-only, so a
 	// removed model would otherwise survive in the registry and keep winning the
@@ -758,17 +758,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// cfg to exist; its streaming clients, observer and meter are attached
 	// further down, before any lease is used.
 	llmGateway := subnetwork.NewLLMGateway(cfg.Execution)
-	meta := kernel.NewMetabolismStack(reg, embedder, vec, mem.ProfileStore, mem.Agent, cfg, observer, metabolismGen, llmGateway)
+	meta := kernel.NewMetabolismStack(reg, embedder, vec, mem.ProfileStore, mem.Agent, cfg, observer, llmGateway)
 	sup := kernel.NewSupervisionStack(reg, mem.ProfileStore, mem.VecDB, supervisionGen, cfg, observer)
 
-	// 3. Wire storage callback so newly-registered agents are enqueued for interview.
-	storeHandle.WireInterviewEnqueuer(meta.InterviewEnqueuer())
+	// 3. Wire storage callback so newly-registered agents are enqueued for profile
+	// seeding (deterministic description vector + neutral prior; the ADR-0037 LLM
+	// interview was deleted 2026-11-05, ADR-0139 Q3).
+	storeHandle.WireProfileSeedEnqueuer(meta.ProfileSeedEnqueuer())
 
-	// ROUTE-04 / ADR-0067: the CapabilityClusterer (and its InterviewWorker SweepTrigger)
-	// were retired — capabilities are the ones agents declare, folded by deterministic
-	// normalization (execution.canonical_vocab). SweepTrigger stays nil (optional).
-
-	// 3c. Wire EventBus (ADR-0030). Both InterviewWorker and the Dispatcher publish to it;
+	// 3c. Wire EventBus (ADR-0030). Both the ProfileSeeder and the Dispatcher publish to it;
 	// other subsystems subscribe. A log handler makes AgentReadyEvent observable in
 	// production without a dedicated subscriber (ADR-0023 D6A observability).
 	eventBus := domain.NewInMemoryEventBus()
@@ -782,14 +780,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 				"source_hash", ev.SourceHash,
 				"trust_score", ev.TrustScore,
 				"capabilities", ev.Capabilities,
-				"interview_ms", ev.InterviewMs,
 			)
 		}
 	})
 
 	// Experiential memory removed: the ADR-0034 scope-promotion pipeline (clustered
 	// insight write-back) is no longer wired. Document ingestion (the corpus) is unaffected.
-	meta.InterviewWorker.EventBus = eventBus
+	meta.ProfileSeeder.EventBus = eventBus
 	// ADR-0100 P2: the dispatcher emits the SAME SelectionEventPayload the auction
 	// does (winner + candidate slate + selection cost), which is how the
 	// orchestration suite scores both arms. The bus is built after the metabolism
@@ -1087,40 +1084,24 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0018: wire the LLM Gateway (constructed above, before the metabolism
 	// stack) and its lifecycle consumers.
 	llmGateway.Observer = observer
-	// ADR-0018 + ADR-0042: register a streaming client for EVERY configured
-	// generator (keyed "llm:<id>"), not just the local Ollama one. OpenAIClient and
-	// AnthropicClient implement domain.LLMStreamer too, so cognitive agents (the
-	// GenerateViaModelStream path) can be served by a cloud model, and the auction's
-	// StepAllocation winner/fallbacks resolve to the right backend — including
-	// cross-provider failover. Previously only the Ollama generator was registered,
-	// so a config without a local model (e.g. deepseek-only) left the streaming
-	// gateway with no client and every agent generate failed with
-	// "model_unavailable: all candidates degraded".
-	streamers, serr := llm.NewStreamersFromGenerators(cfg.LLMProvider.Generators)
-	if serr != nil {
-		slog.Warn("ADR-0018: some generators have no streaming client", "err", serr)
-	}
-	for id, s := range streamers {
-		llmGateway.RegisterModelClient(id, s)
-	}
-	llmGateway.SetClientFactory(func(modelID string) (domain.LLMStreamer, error) {
-		if s, ok := streamers[modelID]; ok {
-			return s, nil
-		}
-		return nil, fmt.Errorf("no streaming client for model %s", modelID)
-	})
-	// Interview grading mints a session against a concrete model. Prefer a local
-	// Ollama generator (cheap, no egress) when one is configured; otherwise use the
-	// configured default generator — which is now streamable like any other.
-	streamingModelKey := "llm:" + cfg.LLMProvider.Default
-	if og := cfg.LLMProvider.OllamaGenerator(); og != nil {
-		streamingModelKey = "llm:" + og.ID
-	}
+	// ADR-0139 D1 (wave 1c): every agent call is served through the Provider's
+	// stack — its breaker, tracing, concurrency cap and schema layer — on the step's
+	// chain (winner → fallbacks → default). The gateway used to hold a second client
+	// set (NewStreamersFromGenerators) with its own 30 s health cache; both are gone.
+	// The Provider's generator table reloads live, so a console-registered model is
+	// servable here with no further wiring.
+	llmGateway.SetStepModels(llmProvider)
 	// Resilience: when a step's auction produced no model winner (e.g. no TraitModel
 	// agent is registered/matched), the streaming gateway falls back to the
 	// configured default model so the agent still generates — the same default that
 	// already serves the organs via the broker.
 	llmGateway.SetDefaultModelID("llm:" + cfg.LLMProvider.Default)
+	// Agent stack v2: a profile's `model:` goes first on its agent's lease chain.
+	llmGateway.SetAgentModelPreference(profileModelPreference(profiles, llmProvider.Roles))
+	checkProfileModels(profiles, func(id string) bool {
+		_, ok := llmProvider.Registry().Lookup(id)
+		return ok
+	}, llmProvider.Roles())
 	circadianRhythm.SessionEvictor = llmGateway
 	circadianRhythm.SessionSweepInterval = time.Duration(cfg.Execution.Session.SessionTokenSweepIntervalSeconds) * time.Second
 	// Phase 2: the ACTIVE→DORMANT driver. Distinct from the token sweep above — that one
@@ -1137,18 +1118,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		circadianRhythm.SessionRetention = time.Duration(cfg.Execution.Session.SessionRetentionDays) * 24 * time.Hour
 		circadianRhythm.RetentionSweepInterval = time.Duration(cfg.Execution.Session.SessionRetentionSweepIntervalSeconds) * time.Second
 	}
-
-	// ADR-0039: sandboxed-evaluation session set. The interview runner Marks each
-	// minted scenario session here; the ToolExecutor consults it to auto-approve
-	// dangerous tools during an unattended interview (the sandbox is the boundary,
-	// not a human). Shared between the interview (write) and the executor (read).
-	evalSessions := domain.NewInMemoryEvaluationSessions()
-
-	// ADR-0037 interview grading: the graded interview executes scenarios against
-	// agents, which call the budgeted GenerateViaModelStream — so it needs to mint
-	// managed LLM sessions. Wire the gateway in now that it exists (it is built
-	// after the metabolism stack). Model ID mirrors the registered streaming client.
-	meta.SetInterviewSession(llmGateway, streamingModelKey, evalSessions)
 
 	// ADR-0018: Wire adaptive token sizing to the Planner via ProfileAggregator.
 	aw.Planner.SetAdvisor(sup.ProfileAggregator)
@@ -1429,16 +1398,19 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Journal:       reg, // REACT-01 / ADR-0061: durable reactive execution (bbolt).
 		// ADR-0080: let a direct-dispatch consumer (chat manager) provision a managed-LLM
 		// session token, the way the planner path does at server.go:493. Nil gateway ⇒ no-op.
+		// The lease is AGENT-UNBOUND: no agent may present it (ADR-0139 D8) until the
+		// consumer binds it (the core chat lane does, via TurnService.SetLeaseBinder).
 		AcquireLLMToken: func(ctx context.Context, tokenLimit int, ttl time.Duration) (string, func(), error) {
-			if llmGateway == nil {
-				return "", func() {}, nil
+			return acquireKernelLLMToken(ctx, llmGateway, "", tokenLimit, ttl)
+		},
+		// ADR-0139 D8: the same lease, bound to agentID at mint — what a plugin that
+		// hands the lease to an agent must use
+		// (T-20261104-leases-minted-with-no-agentid-are-usable-by-any).
+		AcquireAgentLLMToken: func(ctx context.Context, agentID string, tokenLimit int, ttl time.Duration) (string, func(), error) {
+			if agentID == "" {
+				return "", func() {}, errors.New("acquire agent LLM token: agent id is required")
 			}
-			tok, err := llmGateway.Acquire(ctx, domain.StepAllocation{}, tokenLimit, ttl)
-			if err != nil {
-				return "", func() {}, err
-			}
-			// chat.TokenAcquirer speaks the wire type; the lease is cast at this seam.
-			return string(tok), func() { _, _ = llmGateway.Complete(context.Background(), tok) }, nil
+			return acquireKernelLLMToken(ctx, llmGateway, agentID, tokenLimit, ttl)
 		},
 	}
 	if evStore != nil {
@@ -1511,14 +1483,23 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// ADR-0084 D2: stamp each turn's conversation onto its lease, so work the turn
 		// delegates to the planner opens a session linked back to the exchange that
 		// ordered it — resolved server-side, never named by the agent.
-		chatTurns.SetLeaseBinder(llmGateway)
+		// ADR-0139 D8: and to the pool's worker agent, so no other agent can present it.
+		chatTurns.SetLeaseBinder(llmGateway, agentID)
 		// ADR-0098: always install the holder — the emission sites then need no nil check,
 		// and whether anything is listening is decided later by whether a plugin filled it.
 		chatTurns.SetProgressSink(progressSink)
 		// The same holder answers "when did this conversation last do anything?", which is
 		// what lets a wedged turn be cut loose instead of holding a worker and a lease for
 		// the full TurnTimeout while reporting nothing.
-		chatTurns.SetLivenessProbe(progressSink.LastActivity)
+		//
+		// A model call in flight on the turn's lease counts too: a long unary
+		// GenerateWithTools call emits no progress until it returns, so progress alone
+		// read a healthy 60-90 s generation as a stall and cancelled it. The gateway
+		// resolves conversation → lease through the binding SetLeaseBinder (above)
+		// makes the turn stamp, and reports "now" while any call is outstanding. A turn
+		// with no call in flight and no progress for the window is still cut loose
+		// (T-20261105-slow-model-reliability-hardcoded-20-s).
+		chatTurns.SetLivenessProbe(corechat.LatestActivity(progressSink.LastActivity, llmGateway.ConversationActivity))
 		chatTurns.StallTimeout = corechat.DefaultStallTimeout
 		// ADR-0090 D8: a reply to a conversation that arrived through an ingress goes
 		// back out through that ingress. The address is resolved from the conversation
@@ -1577,7 +1558,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if bt, ok := signalRcv.(domain.WatchBacktester); ok {
 		watchBacktester = bt
 	}
-	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, providers, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
+	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
 	// PREM-0032: from here a plugin's start_plan runs on this server's real DAG path.
 	planExec.bind(cambrianServer)
 	// ADR-0098: the agent-facing plane reports memory searches and tool calls against the
@@ -1698,7 +1679,6 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// not fire — so MemoryWrittenEvent had a wired consumer and no reachable
 		// producer, and the operator memory feed was silent.
 		mem.IngestionManager.SetEventBus(eventBus)
-		mem.IngestionManager.SetSceneGenEnabled(cfg.Execution.Ingestion.SceneGenOnIngestEnabled)
 		// ADR-0053: also feed the document-ingest path's chunks to the triplet/
 		// anchor extractor, so uploaded documents populate chunk_triplets (KG2RAG,
 		// query-entity seeding, anchor promotion). Without this the batcher only
@@ -1983,15 +1963,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			ContentStore: storeHandle.ContentStore,
 		},
 		Approval:        toolApprovalCtrl,
-		EvalSessions:    evalSessions, // ADR-0037: interview sessions auto-approve dangerous tools
-		EgressAuditor:   mcpAuditor,   // ADR-0043: nil ⇒ no egress auditing
-		Budget:          mcpBudget,    // ADR-0043: nil ⇒ MCP calls unmetered
-		Pricing:         mcpPricing,   // ADR-0043: nil ⇒ MCP calls unmetered
-		Authz:           authorizer,   // ADR-0085: data-store regime + (Phase 2) effect classes
+		EgressAuditor:   mcpAuditor, // ADR-0043: nil ⇒ no egress auditing
+		Budget:          mcpBudget,  // ADR-0043: nil ⇒ MCP calls unmetered
+		Pricing:         mcpPricing, // ADR-0043: nil ⇒ MCP calls unmetered
+		Authz:           authorizer, // ADR-0085: data-store regime + (Phase 2) effect classes
 		ContentStore:    storeHandle.ContentStore,
 		InlineThreshold: 65536,
 		Unrestricted:    cfg.Execution.Tools.ToolsUnrestricted, // dev/trusted bypass: all agents, all tools
 		Overlay:         domain.NewRunGrantOverlay(),           // ADR-0046 D6: skill-conferred run-scoped grants
+		// Agent stack v2: each profile agent's tool allowlist is a hard ceiling,
+		// held under tools_unrestricted and over skill-conferred grants.
+		Ceiling: profileToolCeiling(profiles),
 		// Promote files a confined tool writes into the DURABLE artifact system
 		// (vault + metadata, retrievable via GetArtifact, scope-governed) AND
 		// materialize them to data/outputs so a requested file lands on disk —
@@ -2005,11 +1987,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			return tags
 		},
 		ArtifactOutputDir: filepath.Join(cfg.Storage.DataDir, "outputs"),
-		// ADR-0048 D6: feed substantive tool outputs into Tier-1/Tier-2 curation so
-		// the LLM scorer can promote valuable ones to durable LTM. The pre-filter
-		// skips errors/denials and outputs below the size floor.
-		ToolOutput:         mem.Agent,
-		ToolOutputMinBytes: 200,
+		// ADR-0049 D1: mutations become action records. (The ADR-0048 D6 read-output
+		// promotion and its 200-byte floor were deleted 2026-11-05 with the tier-2 judge.)
+		ToolOutput: mem.Agent,
 	}
 	cambrianServer.ApprovalHub = toolApproval
 	toolApproval.Bus = eventBus // ADR-0047 0047-19: dangerous-tool approval raises HITLRaisedEvent
@@ -2019,8 +1999,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	cambrianServer.EventBus = eventBus
 	operatorControlHub := operator.NewExecutionControlHub()
 	cambrianServer.ControlHub = operatorControlHub
+	// Agent stack v2: profile agents' grants are their allowlists' expansion over the
+	// registry (native + MCP tools connected above); the MCP tool sink re-syncs them
+	// when a server's tools change (below).
+	profileGrants := newProfileGrantSync(toolGrants, toolReg.All, profiles)
+	profileGrants.Sync(ctx, true)
 	if cfg.Execution.Tools.ToolsUnrestricted {
 		slog.Warn("ADR-0039: tools_unrestricted=true — ALL agents may call ALL tools (grant system bypassed). Trusted deployments only.")
+		if len(profiles) > 0 {
+			slog.Info("agent profiles: tools_unrestricted does not lift profile tool allowlists; each profile agent stays inside its own",
+				"profiles", len(profiles))
+		}
 	}
 	if cfg.Execution.Tools.ToolsAutoApprove {
 		slog.Warn("ADR-0039: tools_auto_approve=true — dangerous tools run WITHOUT operator approval. Trusted deployments only.")
@@ -2092,12 +2081,24 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// index them as DocTypeSkill for semantic retrieval (the analog of tool
 	// discovery + indexing above). Agent skills are SDK-local and never indexed
 	// here. Best-effort — a failure leaves the system-skill menu empty, never
-	// blocks boot. The SkillRetriever + ListSkills wiring follows in ADR-0046-02.
+	// blocks boot. The SkillRetriever and ListSkills are wired just below.
+	//
+	// "skills" is resolved against the process working directory, like "tools"
+	// above: running from cambrian-core finds cambrian-core/skills (the shipped
+	// system skills, ADR-0139 D13). skills/README.md says how other deployments
+	// point at it. A missing directory means zero system skills, not an error.
 	skillReg := domain.NewInMemorySkillRegistry()
 	discoveredSkills, skerr := skilldiscovery.LoadRegistry("skills", skillReg)
 	if skerr != nil {
 		slog.Warn("ADR-0046: skill discovery failed; system skills disabled", "err", skerr)
 	}
+	// AGENTS.md §2.2: tier-0 vec, a kernel-authored artifact writer. The skill index
+	// docs are written by the kernel from operator-authored SKILL.md files at boot,
+	// serve no principal, and carry the skill's scope tags as their classification
+	// (ADR-0046 D2/D4/D9, the DocTypeSkill sibling of the ADR-0044 tool index, which
+	// toolIndexer above writes the same way). Reads of this index go through the
+	// fail-closed EnforcingVectorStore below (VectorSkillRetriever), so scope is
+	// enforced where principals are served.
 	skillIndexer := &domain.SkillIndexer{Store: vec, Embedder: embedder}
 	if err := skillIndexer.IndexAll(ctx, discoveredSkills); err != nil {
 		slog.Warn("ADR-0046: skill indexing failed (system skills unavailable)", "err", err)
@@ -2132,6 +2133,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if mcpConnector != nil {
 		sink := newMCPToolSink(toolReg, toolIndexer)
 		sink.Seed(toolReg.All())
+		sink.onChange = func(ctx context.Context) { profileGrants.Sync(ctx, false) }
 		mcpSink = sink
 	}
 
@@ -2178,9 +2180,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 				return vec.RetagDocument(ctx, parent, applyTag(current, tag, add))
 			}
 
-			// Not a document and not part of one — an agent-written memory, a tool
-			// descriptor, a scene. Those have no parent to be authoritative, so the row
-			// itself is it.
+			// Not a document and not part of one — an agent-written memory or a tool
+			// descriptor. Those have no parent to be authoritative, so the row itself
+			// is it.
 			// Those have no parent to be authoritative, so the row itself is it.
 			doc, err := vec.GetByID(ctx, docID)
 			if err != nil || doc == nil {
@@ -2367,9 +2369,9 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 
 	// B. Async Backfill (Brain Integrity)
 	g.Go(func() error {
-		slog.Info("🧬 Kernel: Starting Brain Integrity verification (Backfill)...")
+		slog.Info("🧬 Kernel: Starting Brain Integrity verification (profile backfill)...")
 		backfillCfg := backfill.BackfillConfig{TimeoutMs: 60000}
-		if err := backfill.RunInterviewBackfill(ctx, k.Registry, k.Memory.ProfileStore, k.Metabolism.InterviewWorker, k.Memory.Embedder, backfillCfg); err != nil {
+		if err := backfill.RunProfileBackfill(ctx, k.Registry, k.Memory.ProfileStore, k.Metabolism.ProfileSeeder, k.Memory.Embedder, backfillCfg); err != nil {
 			return fmt.Errorf("brain integrity failure: %w", err)
 		}
 		slog.Info("✅ Kernel: Brain Integrity verified.")
@@ -2503,7 +2505,7 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// AgentReadyOp events — the empty-capabilities routing-measurement bug.
 		rosterLatch := operator.NewRosterLatch(operatorFeed)
 		k.EventBus.Subscribe(domain.EventTypeAgentReady, rosterLatch.Observe)
-		rosterLatch.Seed(ctx, k.Registry) // manifest baseline — survives disable_interviews (no ready events)
+		rosterLatch.Seed(ctx, k.Registry) // manifest baseline — present before the first AgentReadyEvent
 		rosterLatch.Start(ctx, 0)
 		operatorProjection := operator.NewProjection()
 		operator.SubscribeProjection(k.EventBus, operatorProjection)
@@ -2790,12 +2792,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 					}
 					// Live generator registration (owner directive 2026-08-12):
 					// SaveGenerator/RemoveGenerator swap the broker's table, then
-					// update the three sibling tables that would otherwise drift —
-					// the runtime list (console reads + guards), the streaming
-					// gateway's model clients (agent-plane GenerateViaModelStream),
-					// and the auction's TraitModel agents (step allocation). Stale
-					// streaming clients for removed ids stay registered but stop
-					// resolving via the ladder; the reconcile evicts their agents.
+					// update the sibling tables that would otherwise drift — the
+					// runtime list (console reads + guards), the gateway's default
+					// rung (it serves through the Provider, so it needs no client
+					// table of its own since ADR-0139 wave 1c), and the auction's
+					// TraitModel agents (step allocation); the reconcile evicts the
+					// agents of removed ids.
 					liveGateway := k.LLMGateway
 					agentRepo, _ := k.Registry.(*kernel.AgentRepoDecorator)
 					kernelCtxGen := ctx
@@ -2808,13 +2810,8 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 							k.GeneratorRuntime.set(gens, defaultID)
 						}
 						if liveGateway != nil {
-							streamers, serr := llm.NewStreamersFromGenerators(gens)
-							if serr != nil {
-								slog.Warn("live generator reload: some generators have no streaming client", "err", serr)
-							}
-							for id, s := range streamers {
-								liveGateway.RegisterModelClient(id, s)
-							}
+							// The gateway serves through the Provider reloaded above;
+							// only its last-rung default needs moving.
 							liveGateway.SetDefaultModelID("llm:" + defaultID)
 						}
 						if agentRepo != nil {
@@ -3370,6 +3367,16 @@ type mcpToolSink struct {
 	indexer  *domain.ToolIndexer
 	mu       sync.Mutex
 	byServer map[string]map[string]bool // serverID -> set of published tool names
+	// onChange runs after a server's tool set changed (registered or dropped),
+	// outside the sink's lock. It re-expands profile agents' tool grants (agent
+	// stack v2), since MCP tools register after boot. nil ⇒ nothing to do.
+	onChange func(ctx context.Context)
+}
+
+func (s *mcpToolSink) changed(ctx context.Context) {
+	if s.onChange != nil {
+		s.onChange(ctx)
+	}
 }
 
 func newMCPToolSink(reg *domain.InMemoryToolRegistry, indexer *domain.ToolIndexer) *mcpToolSink {
@@ -3394,6 +3401,7 @@ func (s *mcpToolSink) Seed(tools []domain.SystemTool) {
 // SetServerTools replaces a server's published tools: registers + indexes the new
 // set, and removes any previously-published tool no longer present.
 func (s *mcpToolSink) SetServerTools(ctx context.Context, serverID string, tools []domain.SystemTool) {
+	defer s.changed(ctx) // deferred first ⇒ runs after the unlock below
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := make(map[string]bool, len(tools))
@@ -3415,6 +3423,7 @@ func (s *mcpToolSink) SetServerTools(ctx context.Context, serverID string, tools
 
 // RemoveServerTools drops all of a server's tools from the registry and the index.
 func (s *mcpToolSink) RemoveServerTools(ctx context.Context, serverID string) {
+	defer s.changed(ctx) // deferred first ⇒ runs after the unlock below
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for name := range s.byServer[serverID] {
@@ -3436,7 +3445,12 @@ var _ mcp.ToolSink = (*mcpToolSink)(nil)
 // reg.SetAgent path as any other agent, so it participates in the auction/scope/merit
 // machinery normally. A System=true definition (from Registry.AddSystemAgent) is logged
 // as an explicit privilege grant — the grant is visible, not inferred.
-func registerAgentSources(ctx context.Context, reg *kernel.AgentRepoDecorator, sources []AgentSource) {
+//
+// It returns every agent it registered, so the composition root can bind what a
+// declarative profile declares (tool grants and ceiling, model preference) and
+// prune profile agents that were not discovered this boot.
+func registerAgentSources(ctx context.Context, reg *kernel.AgentRepoDecorator, sources []AgentSource) []DiscoveredAgent {
+	var registered []DiscoveredAgent
 	for _, src := range sources {
 		discovered, err := src.DiscoverAgents(ctx)
 		if err != nil {
@@ -3456,8 +3470,10 @@ func registerAgentSources(ctx context.Context, reg *kernel.AgentRepoDecorator, s
 				continue
 			}
 			slog.Info("ADR-0075: registered agent from source", "source", src.Name(), "id", def.ID, "system", def.System, "manifest", da.Manifest != nil)
+			registered = append(registered, da)
 		}
 	}
+	return registered
 }
 
 // routePreviewAdapter implements operator.RoutePreviewer (ROUTE-07 / ADR-0077) by scoring
@@ -4237,4 +4253,26 @@ func kgExtractorDispatcherFrom(ing config.IngestionConfig, caller domain.AgentCa
 		Attempts: ing.KgExtractorCallAttempts,
 		Backoff:  time.Duration(ing.KgExtractorRetryBackoffMs) * time.Millisecond,
 	}
+}
+
+// acquireKernelLLMToken mints a gateway lease for a plugin or the chat lane and, when
+// agentID is set, binds it to that agent before returning it, so there is no window in
+// which the lease is live but presentable by no one or anyone (ADR-0139 D8). A lease the
+// gateway will not bind is completed rather than handed out. A nil gateway is a no-op,
+// as before: no token, no error.
+func acquireKernelLLMToken(ctx context.Context, gw *subnetwork.SubstrateLLMGateway, agentID string, tokenLimit int, ttl time.Duration) (string, func(), error) {
+	if gw == nil {
+		return "", func() {}, nil
+	}
+	tok, err := gw.Acquire(ctx, domain.StepAllocation{}, tokenLimit, ttl)
+	if err != nil {
+		return "", func() {}, err
+	}
+	release := func() { _, _ = gw.Complete(context.Background(), tok) }
+	if agentID != "" && !gw.BindLeaseAgent(tok, agentID) {
+		release()
+		return "", func() {}, fmt.Errorf("acquire agent LLM token: lease could not be bound to agent %q", agentID)
+	}
+	// chat.TokenAcquirer speaks the wire type; the lease is cast at this seam.
+	return string(tok), release, nil
 }

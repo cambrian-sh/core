@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/cambrian-sh/core/internal/agentprofile"
 )
 
 // generic capabilities describe nothing and cannot discriminate between agents.
@@ -73,40 +75,30 @@ func TestShippedAgents_DeclareADiscriminatingCapability(t *testing.T) {
 	t.Logf("checked %d agent manifests", checked)
 }
 
-// A summariser must not advertise itself as a planner.
-//
-// Guarding the specific wrong declaration that caused the misroute: a false capability is
-// worse than a missing one, because it actively attracts the work the agent is least
-// suited to.
-func TestSummariserAgent_DeclaresSummarisationNotPlanning(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "agents", "summariser_agent.py"))
+// The same rule for declarative profiles (agent stack v2): since part B the
+// dispatchable fleet IS the profiles, so a profile declaring only general_purpose
+// would make that agent win any task.
+func TestShippedProfiles_DeclareADiscriminatingCapability(t *testing.T) {
+	loaded, err := agentprofile.LoadDir(filepath.Join("..", "agents", "profiles"), nil)
 	if err != nil {
-		t.Skipf("summariser_agent not present: %v", err)
+		t.Fatal(err)
 	}
-	m := manifestRe.FindSubmatch(raw)
-	if m == nil {
-		t.Skip("no manifest")
+	if len(loaded) == 0 {
+		t.Skip("no profiles")
 	}
-	var manifest struct {
-		Capabilities []string `json:"capabilities"`
-	}
-	if err := json.Unmarshal(m[1], &manifest); err != nil {
-		t.Fatalf("manifest: %v", err)
-	}
-
-	has := func(want string) bool {
-		for _, c := range manifest.Capabilities {
-			if strings.EqualFold(strings.TrimSpace(c), want) {
-				return true
+	for _, l := range loaded {
+		if l.Err != nil {
+			t.Errorf("%s: %v", l.Path, l.Err)
+			continue
+		}
+		specific := 0
+		for _, c := range l.Profile.Capabilities {
+			if !genericCaps[c] {
+				specific++
 			}
 		}
-		return false
-	}
-	if !has("summarisation") {
-		t.Errorf("summariser must declare summarisation, got %v", manifest.Capabilities)
-	}
-	if has("planning") {
-		t.Errorf("summariser must not declare planning — that is what drew planning work "+
-			"to it and summarisation work elsewhere; got %v", manifest.Capabilities)
+		if specific == 0 {
+			t.Errorf("profile %s declares only generic capabilities %v", l.Profile.Name, l.Profile.Capabilities)
+		}
 	}
 }

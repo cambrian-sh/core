@@ -26,8 +26,6 @@ const (
 	seedPrimeFact  = "ltm-test-seed-prime-fact"
 	seedPoisonFact = "ltm-test-seed-eventsourcing-poison"
 	seedBlockedCmd = "ltm-test-seed-blocked-cmd"
-	seedScene0     = "ltm-test-scene-step-0"
-	seedScene1     = "ltm-test-scene-step-1"
 )
 
 // ── health checks ─────────────────────────────────────────────────────────────
@@ -99,7 +97,7 @@ func newLTMTestEnv(t *testing.T) (
 
 	cleanup = func() {
 		ctx := context.Background()
-		for _, id := range []string{seedPrimeFact, seedPoisonFact, seedBlockedCmd, seedScene0, seedScene1} {
+		for _, id := range []string{seedPrimeFact, seedPoisonFact, seedBlockedCmd} {
 			_ = vec.Delete(ctx, id)
 		}
 		vec.Close()
@@ -173,46 +171,6 @@ func seedViaPgVector(t *testing.T, ctx context.Context, vec *postgres.PgVectorAd
 	}
 }
 
-// seedScenes creates two shallow MnemonicScene documents and a specifies edge.
-func seedScenes(t *testing.T, ctx context.Context, vec *postgres.PgVectorAdapter, embed domain.Embedder) {
-	t.Helper()
-
-	scenes := []struct{ id, text string }{
-		{seedScene0, "step_0 query: prime numbers algorithm | output: Implemented Sieve of Eratosthenes in Python with O(n log log n) complexity."},
-		{seedScene1, "step_1 query: explain time complexity | output: Time complexity is O(n log log n) due to the harmonic series of prime reciprocals."},
-	}
-	for _, s := range scenes {
-		v, err := embed.Embed(ctx, s.text)
-		if err != nil {
-			t.Fatalf("embed scene %s: %v", s.id, err)
-		}
-		if err := vec.Save(ctx, &domain.Document{
-			ID:                 s.id,
-			DocumentType:       domain.DocTypeMnemonicScene,
-			Text:               s.text,
-			Embedding:          domain.Embedding{Vector: v},
-			ActivationStrength: 0.4,
-			Metadata: map[string]interface{}{
-				"source_agent": "test_seeder",
-				"stored_at":    time.Now().Format(time.RFC3339),
-			},
-		}); err != nil {
-			t.Fatalf("seed scene %s: %v", s.id, err)
-		}
-	}
-
-	// Write specifies edge: scene_1 → scene_0 (step 1 builds on step 0)
-	if err := vec.SaveEdge(ctx, domain.DocumentEdge{
-		SourceID:  seedScene1,
-		TargetID:  seedScene0,
-		EdgeType:  domain.EdgeSpecifies,
-		Weight:    0.8,
-		CreatedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("seed specifies edge: %v", err)
-	}
-}
-
 // rawCosine computes cosine similarity between two float32 vectors.
 func rawCosine(a, b []float32) float64 {
 	var dot, normA, normB float64
@@ -243,7 +201,6 @@ func TestLTM_RelevanceGate(t *testing.T) {
 
 	// Seed documents — cleaned up by defer in newLTMTestEnv.
 	seedViaPgVector(t, ctx, vec, embed)
-	seedScenes(t, ctx, vec, embed)
 
 	queries := []struct {
 		name  string
@@ -345,49 +302,6 @@ func TestLTM_RelevanceGate(t *testing.T) {
 				t.Errorf("[A5] <FactLTM> must not contain event-sourcing poison content")
 			}
 		})
-	}
-}
-
-// TestLTM_SceneAndEdgeWritten verifies that MnemonicScene documents and
-// specifies edges seeded in seedScenes are retrievable — confirming the
-// pipeline that DAGExecutor feeds during live execution.
-func TestLTM_SceneAndEdgeWritten(t *testing.T) {
-	vec, embed, _, _, cleanup := newLTMTestEnv(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	seedScenes(t, ctx, vec, embed)
-
-	// Scene docs must exist in pgvector.
-	for _, id := range []string{seedScene0, seedScene1} {
-		doc, err := vec.GetByID(ctx, id)
-		if err != nil {
-			t.Fatalf("GetByID %s: %v", id, err)
-		}
-		if doc == nil {
-			t.Errorf("mnemonic_scene doc %q missing from pgvector", id)
-			continue
-		}
-		if doc.DocumentType != domain.DocTypeMnemonicScene {
-			t.Errorf("doc %q has type %q, want %q", id, doc.DocumentType, domain.DocTypeMnemonicScene)
-		}
-		t.Logf("scene %q found ✓", id)
-	}
-
-	// specifies edge must exist: scene_1 → scene_0.
-	edges, err := vec.GetAdjacentEdges(ctx, []string{seedScene1})
-	if err != nil {
-		t.Fatalf("GetAdjacentEdges: %v", err)
-	}
-	found := false
-	for _, e := range edges {
-		if e.SourceID == seedScene1 && e.TargetID == seedScene0 && e.EdgeType == domain.EdgeSpecifies {
-			found = true
-			t.Logf("specifies edge %s → %s found ✓", seedScene1, seedScene0)
-		}
-	}
-	if !found {
-		t.Errorf("specifies edge from %s to %s not found in document_edges", seedScene1, seedScene0)
 	}
 }
 

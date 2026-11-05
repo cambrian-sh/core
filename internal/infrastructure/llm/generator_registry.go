@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -14,7 +15,6 @@ import (
 type GeneratorEntry struct {
 	ID           string
 	Generator    domain.Generator
-	Extractor    TokenUsageExtractor
 	Provider     string
 	Capabilities []string
 }
@@ -26,32 +26,18 @@ type GeneratorRegistry struct {
 	order   []string // preserves config order for stable iteration
 }
 
-// NewGeneratorRegistry constructs a client for every generator via the existing
-// provider factory, keyed by id.
+// NewGeneratorRegistry constructs a client for every generator via NewClient (the
+// one constructor), keyed by id.
 func NewGeneratorRegistry(generators []config.GeneratorConfig) (*GeneratorRegistry, error) {
 	r := &GeneratorRegistry{entries: make(map[string]GeneratorEntry, len(generators))}
 	for _, g := range generators {
-		gen, ext, err := NewClient(config.ModelConfig{
-			// Carried so the client can find this generator's stored credential.
-			ID:              g.ID,
-			Provider:        g.Provider,
-			Model:           g.Model,
-			Endpoint:        g.Endpoint,
-			APIKeyEnv:       g.APIKeyEnv,
-			CostPer1MInput:  g.CostPer1MInput,
-			CostPer1MOutput: g.CostPer1MOutput,
-			TimeoutMs:       g.TimeoutMs,
-			Capabilities:    g.Capabilities,
-			DisableThinking: g.DisableThinking,
-			NativeTools:     g.NativeTools,
-		})
+		gen, err := NewClient(g)
 		if err != nil {
 			return nil, fmt.Errorf("generator %q: %w", g.ID, err)
 		}
 		r.entries[g.ID] = GeneratorEntry{
 			ID:           g.ID,
 			Generator:    gen,
-			Extractor:    ext,
 			Provider:     g.Provider,
 			Capabilities: g.Capabilities,
 		}
@@ -183,4 +169,65 @@ func (h *healthGenerator) GenerateStream(ctx context.Context, prompt string) (<-
 		h.breaker.Record(h.id, hadContent)
 	}()
 	return out, nil
+}
+
+// GenerateRequest forwards the C1 request path and records the outcome on the
+// breaker exactly as Generate does. A domain.ErrUnsupported refusal is the
+// REQUEST's fault, not the endpoint's, so it is not a health failure.
+func (h *healthGenerator) GenerateRequest(ctx context.Context, req domain.GenerateRequest) (domain.GenerateResponse, error) {
+	rg, ok := domain.AsRequestGenerator(h.inner)
+	if !ok {
+		return domain.GenerateResponse{}, fmt.Errorf("llm provider: health-wrapped %T does not implement GenerateRequest", h.inner)
+	}
+	out, err := rg.GenerateRequest(ctx, req)
+	if !errors.Is(err, domain.ErrUnsupported) {
+		h.breaker.Record(h.id, err == nil && (strings.TrimSpace(out.Text) != "" || len(out.ToolCalls) > 0))
+	}
+	return out, err
+}
+
+// StreamRequest forwards the C1 stream and records its outcome when it ends.
+func (h *healthGenerator) StreamRequest(ctx context.Context, req domain.GenerateRequest) (<-chan domain.StreamChunk, error) {
+	rg, ok := domain.AsRequestGenerator(h.inner)
+	if !ok {
+		return nil, fmt.Errorf("llm provider: health-wrapped %T does not implement StreamRequest", h.inner)
+	}
+	in, err := rg.StreamRequest(ctx, req)
+	if err != nil {
+		if !errors.Is(err, domain.ErrUnsupported) {
+			h.breaker.Record(h.id, false)
+		}
+		return nil, err
+	}
+	out := make(chan domain.StreamChunk, 64)
+	go func() {
+		defer close(out)
+		var hadContent bool
+		for c := range in {
+			if c.Text != "" || (c.Response != nil && len(c.Response.ToolCalls) > 0) {
+				hadContent = true
+			}
+			out <- c
+		}
+		h.breaker.Record(h.id, hadContent)
+	}()
+	return out, nil
+}
+
+// Capabilities forwards the inner generator's declaration.
+func (h *healthGenerator) Capabilities() domain.Capabilities { return capabilitiesOf(h.inner) }
+
+// RequestsEnabled forwards whether the inner is a RequestGenerator at all.
+func (h *healthGenerator) RequestsEnabled() bool {
+	_, ok := domain.AsRequestGenerator(h.inner)
+	return ok
+}
+
+// capabilitiesOf returns v's declared capabilities, or the zero value (everything
+// unsupported) when v is not a RequestGenerator.
+func capabilitiesOf(v any) domain.Capabilities {
+	if rg, ok := domain.AsRequestGenerator(v); ok {
+		return rg.Capabilities()
+	}
+	return domain.Capabilities{}
 }

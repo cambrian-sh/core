@@ -145,9 +145,11 @@ type factJob struct {
 	wait   *FactsWait
 }
 
-// factAssessmentPromptVersion is part of every assessment's authority_version; bump it
-// when buildAssessmentPrompt changes, so a changed prompt is a new judge.
-const factAssessmentPromptVersion = "assess-v1"
+// factAssessmentPromptVersion is part of every assessment's authority_version, so a
+// changed prompt is a new judge. It is derived from the library prompts' static hashes
+// (prompts/fact_assess + prompts/fact_assess_input, ADR-0139 C4); the inline prompt it
+// replaced was "assess-v1".
+var factAssessmentPromptVersion = factAssessPrompts.version
 
 // NewFactExtractor builds the extractor without starting it. sink must be the ENFORCING
 // writer (authz.EnforcingKnowledgeWriter) and reader the ENFORCING fact reader
@@ -492,7 +494,7 @@ func (e *FactExtractor) EstimateLLMCalls(textChars int) int {
 	if e == nil {
 		return 1
 	}
-	capacity := e.cfg.MaxPromptChars - len(factPromptHead(factExtractionInput{CanonicalPredicates: e.canonical})) - factSectionReserve
+	capacity := e.cfg.MaxPromptChars - factWindowOverhead(domain.SourceMeta{}, e.canonical)
 	if capacity < 1000 {
 		capacity = 1000
 	}
@@ -635,11 +637,11 @@ func (e *FactExtractor) extractWindow(j factJob, win []factPassage, w, of, maxFa
 	for i, p := range win {
 		texts[i], speakers[i] = p.Text, p.Speaker
 	}
-	prompt := buildFactPrompt(factExtractionInput{
+	req := buildFactRequest(factExtractionInput{
 		Source: j.source, Passages: texts, Speakers: speakers, CanonicalPredicates: e.canonical, Section: w + 1, Sections: of,
 	})
 	res.Windows++
-	parsed, pst, err := e.extractCall(ctx, j.documentID, w, prompt, texts, maxFacts, res)
+	parsed, pst, err := e.extractCall(ctx, j.documentID, w, req, texts, maxFacts, res)
 	if err != nil {
 		return FactSaveStats{}, 0, nil, nil, err
 	}
@@ -835,9 +837,12 @@ func (e *FactExtractor) assess(ctx context.Context, facts []domain.Fact) (called
 }
 
 // assessPlan is one window's batched judge call, fully determined before any call: the
-// candidate pairs, the prompt and the keyed assessment id.
+// candidate pairs, the request and the keyed assessment id. prompt is the request
+// flattened (domain.FlattenRequest): every byte the judge is sent, which is what the
+// assessment's prompt hash certifies.
 type assessPlan struct {
 	items   []contradictionItem
+	req     domain.GenerateRequest
 	prompt  string
 	inputs  []domain.KnowledgeItemID
 	version string
@@ -937,7 +942,8 @@ func (e *FactExtractor) planAssessment(ctx context.Context, facts []domain.Fact,
 	if len(items) == 0 {
 		return nil
 	}
-	p := &assessPlan{items: items, prompt: buildAssessmentPrompt(items), version: e.cfg.AssessorModel + "|" + factAssessmentPromptVersion}
+	req := buildAssessmentRequest(items)
+	p := &assessPlan{items: items, req: req, prompt: domain.FlattenRequest(req), version: e.cfg.AssessorModel + "|" + factAssessmentPromptVersion}
 	for _, it := range items {
 		p.inputs = append(p.inputs, domain.KnowledgeItemID(it.New.ID))
 		for _, c := range it.Candidates {
@@ -949,9 +955,9 @@ func (e *FactExtractor) planAssessment(ctx context.Context, facts []domain.Fact,
 }
 
 // askJudge makes the plan's one judge call. It stores nothing.
-func (e *FactExtractor) askJudge(ctx context.Context, p *assessPlan) (string, error) {
+func (e *FactExtractor) askJudge(ctx context.Context, p *assessPlan) (domain.GenerateResponse, error) {
 	llmCtx, cancel := context.WithTimeout(ctx, e.callTimeout(len(p.prompt)))
-	resp, err := callTripletsLLM(llmCtx, e.gen, p.prompt)
+	resp, err := domain.GenerateVia(llmCtx, e.gen, p.req)
 	cancel()
 	e.llmCalls.Add(1)
 	e.assessmentCalls.Add(1)
@@ -960,14 +966,21 @@ func (e *FactExtractor) askJudge(ctx context.Context, p *assessPlan) (string, er
 
 // commitAssessment applies the judge's answer to the plan: stored as a keyed Assessment
 // (which re-derives every cited key) and, when new, its exact-key verdicts vote.
-func (e *FactExtractor) commitAssessment(ctx context.Context, p *assessPlan, resp string, callErr error) {
-	if callErr != nil {
+func (e *FactExtractor) commitAssessment(ctx context.Context, p *assessPlan, resp domain.GenerateResponse, callErr error) {
+	var verdicts []domain.AssessmentVerdict
+	perr := callErr
+	switch {
+	case errors.Is(callErr, domain.ErrSchemaValidation):
+		// The reply failed its schema even after the provider's repair turn: an
+		// unreadable answer, handled below like any other (stored as refused).
+	case callErr != nil:
 		// A transport failure is not a verdict: nothing is stored, so a later session
 		// over the same candidates asks again.
 		slog.WarnContext(ctx, "FactExtractor: assessment call failed; no verdict stored", "err", callErr)
 		return
+	default:
+		verdicts, perr = parseAssessmentReply(resp, p.items)
 	}
-	verdicts, perr := parseAssessmentResponse(resp, p.items)
 	if perr != nil {
 		// An answer that cannot be read IS a verdict — the judge refused — and it is
 		// stored, so a replay is consistent with it.
@@ -978,7 +991,7 @@ func (e *FactExtractor) commitAssessment(ctx context.Context, p *assessPlan, res
 		ID: p.id, NamespaceID: e.cfg.Namespace, Kind: domain.KindMemoryFact,
 		Authority: domain.AssessmentAuthorityLLMContradiction, AuthorityVersion: p.version,
 		PromptHash: domain.PromptHash(p.prompt), InputItemIDs: p.inputs, Verdicts: verdicts,
-		RawOutput: resp, Classification: p.items[0].New.Tags,
+		RawOutput: resp.Text, Classification: p.items[0].New.Tags,
 	}
 	inserted, err := e.sink.PutAssessment(ctx, a)
 	if err != nil {

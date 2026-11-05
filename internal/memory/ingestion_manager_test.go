@@ -88,15 +88,13 @@ func TestIngestionManager_ProcessSync_savesDocumentQAChunksBeforeReturn(t *testi
 	// Given
 	store := &captureAllStore{}
 	agent := &Agent{
-		Manager:    &MemoryManager{Store: store, Embedder: &mockEmbedder{vec: []float32{0.1, 0.2}}},
-		pendingCap: 256,
+		Manager: &MemoryManager{Store: store, Embedder: &mockEmbedder{vec: []float32{0.1, 0.2}}},
 	}
 	reg, err := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
 	im := NewIngestionManagerWithRegistry(
-		NewSceneGenerator(&mockLLMGen{response: scenesJSON(1)}),
 		&mockEmbedder{vec: []float32{0.1, 0.2}},
 		agent,
 		reg,
@@ -187,15 +185,13 @@ func TestIngestionManager_ProcessSync_batchesChunkEmbeddings(t *testing.T) {
 	store := &captureAllStore{}
 	embedder := &batchCountingEmbedder{}
 	agent := &Agent{
-		Manager:    &MemoryManager{Store: store, Embedder: embedder},
-		pendingCap: 256,
+		Manager: &MemoryManager{Store: store, Embedder: embedder},
 	}
 	reg, err := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
 	im := NewIngestionManagerWithRegistry(
-		NewSceneGenerator(&mockLLMGen{response: scenesJSON(1)}),
 		embedder,
 		agent,
 		reg,
@@ -236,7 +232,6 @@ func TestIngestionPipeline_SourceDocumentEntity(t *testing.T) {
 	cs := &fakeContentStore{}
 	agent := &Agent{
 		Manager:      &MemoryManager{Store: store, Embedder: &mockEmbedder{vec: []float32{0.1, 0.2}}},
-		pendingCap:   256,
 		ContentStore: cs,
 	}
 
@@ -244,8 +239,7 @@ func TestIngestionPipeline_SourceDocumentEntity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
-	sg := NewSceneGenerator(&mockLLMGen{response: scenesJSON(1)})
-	im := NewIngestionManagerWithRegistry(sg, &mockEmbedder{vec: []float32{0.1, 0.2}}, agent, reg, IngestionConfig{
+	im := NewIngestionManagerWithRegistry(&mockEmbedder{vec: []float32{0.1, 0.2}}, agent, reg, IngestionConfig{
 		QueueSize: 8, BatchSize: 1, Workers: 1, BatchWait: 20 * time.Millisecond,
 	})
 
@@ -327,7 +321,7 @@ func TestIngestionPipeline_SourceDocumentEntity(t *testing.T) {
 		if i < len(chunks)-1 && rel.FollowingChunkID == "" {
 			t.Errorf("chunk %d: FollowingChunkID is empty (expected a neighbor id)", i)
 		}
-		// SiblingContext sanity: at least the parent title and scene should be set.
+		// SiblingContext sanity: the parent title should be set.
 		if rel.SiblingContext.ParentTitle != doc.Title {
 			t.Errorf("chunk %d: SiblingContext.ParentTitle = %q, want %q", i, rel.SiblingContext.ParentTitle, doc.Title)
 		}
@@ -356,12 +350,10 @@ func TestIngestionPipeline_SourceDocumentEntity_SingleChunk(t *testing.T) {
 	cs := &fakeContentStore{}
 	agent := &Agent{
 		Manager:      &MemoryManager{Store: store, Embedder: &mockEmbedder{vec: []float32{0.1}}},
-		pendingCap:   256,
 		ContentStore: cs,
 	}
 	reg, _ := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
-	sg := NewSceneGenerator(&mockLLMGen{response: scenesJSON(1)})
-	im := NewIngestionManagerWithRegistry(sg, &mockEmbedder{vec: []float32{0.1}}, agent, reg, IngestionConfig{
+	im := NewIngestionManagerWithRegistry(&mockEmbedder{vec: []float32{0.1}}, agent, reg, IngestionConfig{
 		QueueSize: 4, BatchSize: 1, Workers: 1, BatchWait: 20 * time.Millisecond,
 	})
 	ctx, cancel := context.WithCancel(context.Background())

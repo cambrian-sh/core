@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
-	"sync"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -22,8 +21,6 @@ type WorkspaceStageImpl struct {
 	PlanningSlots          int
 	ExecutionSlots         int
 	RetrievalFloor         float64
-	DriftGuard             bool
-	DriftThreshold         float64
 	RetrievalSessionLogger domain.RetrievalSessionLogger // ADR-0021: may be nil
 	// MinFactCosine is the minimum raw cosine similarity (pre-floor-multiplier) a FACT
 	// document must have against the query to be injected into the Planner prompt.
@@ -49,8 +46,6 @@ func NewWorkspaceStage(
 	gen domain.Generator,
 	planningSlots, executionSlots int,
 	retrievalFloor float64,
-	driftGuard bool,
-	driftThreshold float64,
 ) *WorkspaceStageImpl {
 	if planningSlots <= 0 {
 		planningSlots = 10
@@ -61,9 +56,6 @@ func NewWorkspaceStage(
 	if retrievalFloor <= 0 {
 		retrievalFloor = 0.2
 	}
-	if driftThreshold <= 0 {
-		driftThreshold = 0.7
-	}
 	return &WorkspaceStageImpl{
 		Store:          store,
 		Embedder:       embedder,
@@ -71,13 +63,11 @@ func NewWorkspaceStage(
 		PlanningSlots:  planningSlots,
 		ExecutionSlots: executionSlots,
 		RetrievalFloor: retrievalFloor,
-		DriftGuard:     driftGuard,
-		DriftThreshold: driftThreshold,
 	}
 }
 
-// PrimeForPlanning retrieves cross-session FACT + SCENE + NegativeEdge documents for the
-// Planner. ADR-0025: returns LTMEnrichment (typed).
+// PrimeForPlanning retrieves cross-session FACT + NegativeEdge documents and stored
+// procedures for the Planner. ADR-0025: returns LTMEnrichment (typed).
 func (w *WorkspaceStageImpl) PrimeForPlanning(ctx context.Context, taskQuery string) (domain.LTMEnrichment, error) {
 	facts, err := w.enrich(ctx, taskQuery, w.PlanningSlots, "planning")
 	if err != nil {
@@ -87,7 +77,7 @@ func (w *WorkspaceStageImpl) PrimeForPlanning(ctx context.Context, taskQuery str
 	// with a nil vector, which the pgvector adapter does not reject: it scores every row
 	// identically and orders by last_accessed_at, so the three most recently touched
 	// failures entered every planner prompt whatever the task was. Scored against the
-	// situation and floored like the precedent lane, for the same reason — an unrelated
+	// situation and floored like the procedure lane, for the same reason — an unrelated
 	// failure is a fabricated analogy, and a prompt padded with one is worse than a lane
 	// that returns nothing.
 	//
@@ -103,36 +93,11 @@ func (w *WorkspaceStageImpl) PrimeForPlanning(ctx context.Context, taskQuery str
 	}
 
 	enrichment := domain.LTMEnrichment{Facts: facts, Negatives: negatives}
-	// ADR-0049 D11 (Issue 013): the precedent lane — give the planner foresight by
-	// surfacing prior TRANSITIONS (similar past situations + their outcome + action path),
-	// failure-weighted and similarity-gated, for the LLM to reason over before it commits.
-	enrichment.Precedents = w.retrievePrecedentLane(ctx, taskQuery)
-	// ADR-0094 D5: induced routines for this situation.
+	// The ADR-0049 D11 precedent lane (scene transitions) was removed 2026-11-05 with
+	// scenes (decisions/scenes-cancelled.md).
+	// ADR-0094 D5: stored routines for this situation.
 	enrichment.Procedures = w.retrieveProcedureLane(ctx, taskQuery)
 	return enrichment, nil
-}
-
-// retrievePrecedentLane finds scenes similar to the situation being planned and resolves
-// them into failure-weighted transitions. Similarity-gated by RetrievalFloor: below it,
-// no scene returns → no precedent (never a fabricated analogy). ADR-0049 D11 (Issue 013).
-func (w *WorkspaceStageImpl) retrievePrecedentLane(ctx context.Context, query string) []domain.Precedent {
-	if w.Store == nil || w.Embedder == nil {
-		return nil
-	}
-	vec, err := w.Embedder.Embed(ctx, query)
-	if err != nil {
-		return nil
-	}
-	scenes, err := w.Store.Search(ctx, vec, domain.SearchOptions{
-		DocumentType:   domain.DocTypeMnemonicScene,
-		TopK:           5,
-		RetrievalFloor: w.RetrievalFloor, // the similarity gate
-		Scope:          domain.ScopeSystem,
-	})
-	if err != nil || len(scenes) == 0 {
-		return nil
-	}
-	return retrievePrecedents(ctx, w.Store, scenes)
 }
 
 // PrimeForExecution retrieves cross-session FACT documents for the DAGExecutor.
@@ -166,49 +131,13 @@ func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int
 		return nil, nil
 	}
 
-	// 2. Launch SCENE query concurrently (ADR-0016 §4).
-	var sceneResult *domain.SearchResult
-	var sceneWg sync.WaitGroup
-	sceneWg.Add(1)
-	go func() {
-		defer sceneWg.Done()
-		results, err := w.Store.Search(ctx, rawVec, domain.SearchOptions{
-			DocumentType: domain.DocTypeMnemonicScene,
-			TopK:         1,
-			Scope:        domain.ScopeSystem, // ADR-0034: workspace enrichment is a kernel read
-		})
-		if err != nil || len(results) == 0 {
-			return
-		}
-		sceneResult = &results[0]
-	}()
-
-	// 3. While SCENE query runs, do independent work here.
-	// (In the Planner path, system-prompt assembly would happen concurrently here.)
-
-	sceneWg.Wait()
-	sceneHits := 0
+	// 2. The ADR-0016 §4 SCENE query priming (blend the query vector with the nearest
+	// `mnemonic_scene`, guarded by a drift threshold) was removed 2026-11-05 with
+	// scenes (decisions/scenes-cancelled.md). The FACT query uses the raw embedding.
+	// An A/B/A planner-retrieval check of that removal is ticketed (AGENTS.md §0.5).
 	queryVec := rawVec
 
-	if sceneResult != nil && len(sceneResult.Document.Embedding.Vector) > 0 {
-		sceneHits = 1
-		primed := blendEmbeddings(rawVec, sceneResult.Document.Embedding.Vector)
-
-		// Drift guard: revert to raw if primed diverges too far.
-		if w.DriftGuard {
-			sim := cosineSimilarity(rawVec, primed)
-			if sim < w.DriftThreshold {
-				slog.Info("WorkspaceStage: SCENE drift detected, reverting to raw embedding",
-					"workspace_scene_drift_detected", true, "similarity", fmt.Sprintf("%.3f", sim), "caller", caller)
-			} else {
-				queryVec = primed
-			}
-		} else {
-			queryVec = primed
-		}
-	}
-
-	// 4. FACT query with (possibly primed) embedding.
+	// 3. FACT query.
 	overFetch := slots * 3
 	if overFetch < 10 {
 		overFetch = 10
@@ -227,7 +156,7 @@ func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int
 	factHits := len(results)
 	if factHits == 0 {
 		slog.Info("WorkspaceStage: cold start — no FACT documents",
-			"workspace_cold_start", true, "scene_hits", sceneHits, "fact_hits", 0, "caller", caller)
+			"workspace_cold_start", true, "fact_hits", 0, "caller", caller)
 		return nil, nil
 	}
 
@@ -302,7 +231,6 @@ func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int
 			Query:           query,
 			QueryEmbedding:  queryVec,
 			Caller:          caller,
-			SceneHits:       sceneHits,
 			FactHits:        factHits,
 			RetrievedDocs:   retrievedDocs,
 			Truncated:       truncated,
@@ -315,26 +243,14 @@ func (w *WorkspaceStageImpl) enrich(ctx context.Context, query string, slots int
 	}
 
 	slog.Info("WorkspaceStage: enrichment complete",
-		"caller", caller, "workspace_cold_start", false, "scene_hits", sceneHits, "fact_hits", len(results))
+		"caller", caller, "workspace_cold_start", false, "fact_hits", len(results))
 	return results, nil
-}
-
-// blendEmbeddings creates a simple mean of two embeddings.
-func blendEmbeddings(a, b []float32) []float32 {
-	if len(a) == 0 || len(b) == 0 {
-		return a
-	}
-	blended := make([]float32, len(a))
-	for i := range a {
-		blended[i] = (a[i] + b[i]) / 2
-	}
-	return blended
 }
 
 // retrieveProcedureLane finds induced routines whose TRIGGER matches the situation being
 // planned (ADR-0094 D5).
 //
-// Similarity-gated by RetrievalFloor, like the precedent lane and for a sharper reason:
+// Similarity-gated by RetrievalFloor, for a sharp reason:
 // a procedure retrieved for a situation it does not fit is worse than no procedure at
 // all — it is a confident wrong answer, and a plausible-looking list of steps is exactly
 // the kind of wrong a planner will follow.

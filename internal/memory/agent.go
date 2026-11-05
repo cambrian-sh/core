@@ -2,12 +2,9 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
-	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,101 +13,19 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// maxFactRunes bounds a Tier-1 memory fact (a tool output or step result). A fact is a
-// FOCUSED snippet, not a document: a whole tool output (a directory listing, a file's
-// contents) is both what overflows the embedder's context window and a poor single
-// embedding. Content that is genuinely a knowledge source belongs in the chunked ingest
-// pipeline (ADR-0060), not stored whole as one fact. Kept a little under the embedder's
-// prose-safe budget so the common case embeds in one request.
-const maxFactRunes = 1500
-
-// boundFactText caps a fact's text on a rune boundary.
-func boundFactText(text string) string {
-	r := []rune(text)
-	if len(r) <= maxFactRunes {
-		return text
-	}
-	return string(r[:maxFactRunes])
-}
-
-// scoringPromptTemplate is the Tier-2 LLM-as-Judge prompt (ADR-0015).
-// The hash of this template is written as scoring_prompt_version at commit time.
-// After PROMPTREQ migration the canonical prompt is built via domain.PromptBuild;
-// this constant holds the static text for hashing purposes only.
-const scoringPromptTemplate = `You are a memory quality judge. Score each step result below across three dimensions (1-10 each):
-- relevance: how relevant is this result to the task?
-- specificity: how specific and actionable is the information?
-- explicitness: how clear and explicit is the information?
-
-Return ONLY a JSON array. Each element: {"relevance":N,"specificity":N,"explicitness":N,"tier":"FULL"|"FACT_ONLY"|"DROP"}
-Tier rules: average >= 7 → FULL (fact + scene), average >= 4 → FACT_ONLY (fact only), average < 4 → DROP.
-Use deterministic mode.`
-
-// scoringPromptHash is the 8-char SHA-256 of the tier-2 scoring prompt (ADR-0015).
-// Written to Document.ScoringPromptVersion at Tier-2 commit time.
-var scoringPromptHash = domain.PromptHashOf(scoringPromptTemplate)
-
-func init() {
-	domain.PromptRegistry[scoringPromptHash] = domain.PromptEntry{
-		ID:      "memory.tier2_score",
-		Version: "1.0.0",
-		Hash:    scoringPromptHash,
-		Schema:  scoringSchema,
-	}
-}
-
-// scoringSchema is the JSON Schema for the Tier-2 scorer output array.
-const scoringSchema = `{
-  "type": "array",
-  "items": {
-    "type": "object",
-    "properties": {
-      "relevance":    { "type": "integer", "minimum": 1, "maximum": 10 },
-      "specificity":  { "type": "integer", "minimum": 1, "maximum": 10 },
-      "explicitness": { "type": "integer", "minimum": 1, "maximum": 10 },
-      "tier": { "type": "string", "enum": ["FULL", "FACT_ONLY", "DROP"] },
-      "descriptor": { "type": "string" }
-    },
-    "required": ["relevance", "specificity", "explicitness", "tier", "descriptor"]
-  }
-}`
-
-// scoredItem holds a scored pending item with its tier and raw scores.
-type scoredItem struct {
-	Item         pendingItem
-	Relevance    int
-	Specificity  int
-	Explicitness int
-	Tier         string // "FULL", "FACT_ONLY", "DROP"
-	// Descriptor is a one-sentence summary of the item, produced by the same
-	// Tier-2 judge pass that scores it (ADR-0048 #2 — no extra LLM call). For a
-	// tool-output promotion it becomes the indexed + recall-rendered Text, with the
-	// raw payload preserved in metadata; so recall introduces content by MEANING
-	// instead of a raw JSON head, and the embedding ranks on meaning, not syntax.
-	Descriptor string
-}
-
 // Agent orchestrates memory curation by evaluating, deduplicating, and masking sensitive data.
 type Agent struct {
 	Manager              *MemoryManager
-	LLMClient            domain.Generator
 	RelevanceThreshold   float64
 	MaxResults           int
 	MaxNeighborExpansion int
 
-	// RecordExperiential gates the passive experiential write path (ADR-0048/0049): step
-	// results (RecordExecution) and tool outputs (RecordToolOutput). Default false — the
-	// kernel leaves it off so no auto-captured tool output / step synthesis is embedded
-	// into long-term memory. Explicit ingestion and recall are unaffected; only the
-	// automatic capture is gated. Set from execution.experiential_memory_enabled.
-	RecordExperiential bool
-
-	// RecordOutcomes gates the ADR-0049 §A2.2 OUTCOME RECORD — one structured record
-	// per completed plan (`WritePlanScene`). Separate from RecordExperiential on
-	// purpose: that flag guards the deprecated RAW path (auto-embedded step results
-	// and tool payloads) which stays off permanently, while this one guards the
-	// abstraction-only path that replaces it. Conflating them would mean re-enabling
-	// the design that was removed on 2026-07-18. Set from
+	// RecordOutcomes gates the ADR-0049 §A2.2 experiential records: the mutation
+	// action events (RecordToolOutput) and the plan-outcome hook (RecordPlanOutcome:
+	// the ADR-0095 episode close, the A2.3 failure record and procedure feedback).
+	// The RAW path it once sat beside — auto-embedded step results and tool payloads
+	// behind `experiential_memory_enabled`, curated by the ADR-0015 tier-2 judge — was
+	// deleted on 2026-11-05 (decisions/scenes-cancelled.md). Set from
 	// execution.experience_records_enabled, whose config default is TRUE (owner
 	// decision 2026-07-28, internal/config/config.go); the field's Go zero value is
 	// false, so an Agent built without config records nothing.
@@ -122,65 +37,23 @@ type Agent struct {
 	// than losing the link (ADR-0095 D5).
 	ExperienceStore domain.ExperienceStore
 
-	// SurpriseFloor is the ADR-0049 A2.3 gate for the FAILURE PRECEDENT (a negative
-	// edge written in addition to the ordinary outcome record). 0 disables it.
+	// SurpriseFloor is the ADR-0049 A2.3 gate for the FAILURE RECORD (a negative edge
+	// RecordPlanOutcome writes for a surprising failure). 0 disables the surprise arm;
+	// a replan-exhausted failure is recorded regardless.
 	SurpriseFloor float64
 
 	// ProcedureDeprecateBelow is the confidence under which a repeatedly-failing routine
 	// is retired (ADR-0094 D4). 0 disables procedure feedback entirely.
 	ProcedureDeprecateBelow float64
 
-	// Tier-1 bounded channel (ADR-0015): pre-embedded step results before Tier-2 pgvector commit.
-	pendingItems []pendingItem
-	pendingMu    sync.RWMutex
-	pendingCap   int
-
-	// Tier-2 drain configuration (ADR-0015).
-	tier2MaxIdle       time.Duration
-	tier2BatchSize     int
-	tier2LLMTimeout    time.Duration
-	tier2FallbackCount atomic.Int64
-	tier2Stop          chan struct{}
-
-	// GraphStore for synchronous edge writing (ADR-0017). May be nil.
-	GraphStore domain.GraphStore
-	// EdgeWriter for discussed_in edges written at Tier-2 commit time (ADR-0025). May be nil.
-	EdgeWriter domain.EdgeWriter
-	// ContentStore offloads a promoted fact's full body to CAS at Tier-2 commit so
-	// recall can serve {summary + content_cid} (ADR-0048 #1). May be nil → offload
-	// skipped and the full text simply stays in pgvector Text.
+	// ContentStore holds an ingested source document's body (IngestionManager,
+	// ADR-0028). May be nil → the body is not offloaded.
 	ContentStore domain.ContentStore
-
-	// actionCounts tracks how many action records each step (by TaskID) produced, so
-	// RecordExecution can drop a single-action step's redundant prose synthesis
-	// (ADR-0049 D3). Incremented as actions are recorded; read+cleared at step-end.
-	actionCounts  map[string]int
-	actionCountMu sync.Mutex
-
-	// stepDocs maps a step's TaskID to its recorded fact docID (ADR-0049 D10), so a
-	// later dependent step can write a `follows` edge to its predecessors' records.
-	stepDocs   map[string]string
-	stepDocsMu sync.Mutex
-
-	// follows-edge deferral (ADR-0049 D10): step records are persisted ASYNCHRONOUSLY by
-	// the Tier-2 drain (and may be dropped), so a `follows` edge written eagerly would
-	// reference a row that does not exist yet → FK violation. Edges are BUFFERED here and
-	// flushed only once BOTH endpoints have committed (mirrors writeDiscussedInEdge).
-	followsMu      sync.Mutex
-	committedDocs  map[string]bool       // step docIDs the Tier-2 drain has persisted
-	pendingFollows []domain.DocumentEdge // edges awaiting both endpoints' commit
 
 	// docSeq makes generated doc IDs unique even under a coarse clock (Windows
 	// UnixNano resolution can repeat for rapid sequential calls, which would collide
-	// IDs and break follows-edge linkage). ADR-0049.
+	// IDs). ADR-0049.
 	docSeq atomic.Uint64
-
-	// planEntities accretes engaged-entity refs → first-touch content fingerprint per
-	// plan (ADR-0049 D5/D6), fed from action args+output during the plan; WritePlanScene
-	// drains it into the plan's single immutable scene. The fingerprint is a hash, never
-	// the content inline — so the scene stays a map, not the territory.
-	planEntities   map[string]map[string]string
-	planEntitiesMu sync.Mutex
 
 	// planStarted holds, per in-flight plan, the instant its episode parent was opened
 	// by BeginExperience — so the completion upsert can carry StartedAt forward instead
@@ -193,47 +66,15 @@ type Agent struct {
 	// difference is testable without a database.
 	planStarted   map[string]time.Time
 	planStartedMu sync.Mutex
-
-	// ADR-0022 Phase 2B: notified after every Tier-2 commitBatch so
-	// WorkspaceStageImpl can clear its query → []ContextRef LRU cache.
-}
-
-// pendingItem is a pre-embedded step result waiting for Tier-2 drain.
-type pendingItem struct {
-	Embedding []float32
-	Doc       *domain.Document
-	SceneID   string           // ADR-0025: scene doc ID for this step; drives discussed_in edge
-	SessionID domain.SessionID // ADR-0029: session scope; written to Doc.Metadata["session_id"] at commit time
 }
 
 // NewAgent creates a memory Agent.
-func NewAgent(manager *MemoryManager, llmClient domain.Generator, relevanceThreshold float64, maxResults, maxNeighborExpansion, channelCap, batchSize, maxIdleSec, llmTimeoutSec int) *Agent {
-	if channelCap <= 0 {
-		channelCap = 256
-	}
-	if batchSize <= 0 {
-		batchSize = 32
-	}
-	if maxIdleSec <= 0 {
-		maxIdleSec = 300
-	}
-	if llmTimeoutSec <= 0 {
-		llmTimeoutSec = 30
-	}
+func NewAgent(manager *MemoryManager, relevanceThreshold float64, maxResults, maxNeighborExpansion int) *Agent {
 	return &Agent{
 		Manager:              manager,
-		LLMClient:            llmClient,
 		RelevanceThreshold:   relevanceThreshold,
 		MaxResults:           maxResults,
 		MaxNeighborExpansion: maxNeighborExpansion,
-		pendingCap:           channelCap,
-		tier2BatchSize:       batchSize,
-		tier2MaxIdle:         time.Duration(maxIdleSec) * time.Second,
-		tier2LLMTimeout:      time.Duration(llmTimeoutSec) * time.Second,
-		actionCounts:         map[string]int{},
-		stepDocs:             map[string]string{},
-		committedDocs:        map[string]bool{},
-		planEntities:         map[string]map[string]string{},
 		planStarted:          map[string]time.Time{},
 	}
 }
@@ -299,194 +140,28 @@ func (a *Agent) FetchContext(ctx context.Context, userInput string) string {
 	return final
 }
 
-// RecordExecution embeds a completed step result and places it into the Tier-1 bounded channel.
-// Non-blocking: if the channel is full, the item is silently dropped.
-// ADR-0015: items in the channel are immediately searchable by Query via linear cosine scan.
-func (a *Agent) RecordExecution(ctx context.Context, result domain.StepResult) error {
-	// Experiential capture is off by default (execution.experiential_memory_enabled): no
-	// auto-embedded step synthesis into long-term memory.
-	if !a.RecordExperiential {
-		return nil
-	}
-	// ADR-0049 D3: a single-action step's prose output merely restates its one action
-	// record — drop it (structural, by action count; no text comparison, no LLM).
-	// Multi-action and uncorrelated/zero-action steps keep the synthesis.
-	if dropStepSynthesis(a.takeActionCount(result.TaskID)) {
-		slog.Debug("MemoryAgent: dropping single-action step synthesis", "task_id", result.TaskID, "step", result.Index)
-		return nil
-	}
-
-	text := boundFactText(fmt.Sprintf("step_%d: %s", result.Index, result.Output))
-
-	vec, err := a.Manager.Embedder.Embed(ctx, text)
-	if err != nil {
-		slog.Warn("MemoryAgent: failed to embed step result for Tier-1 channel", "err", err)
-		return nil
-	}
-
-	docID := a.nextDocID("tier1")
-	metadata := map[string]interface{}{
-		"timestamp":    time.Now().Format(time.RFC3339),
-		"source_agent": "System",
-		"step_index":   result.Index,
-	}
-	if result.TaskID != "" {
-		metadata["task_id"] = result.TaskID // groups a multi-action step's synthesis with its actions
-	}
-	// ADR-0049 D5: per-step snapshots are no longer scenes (scenes are plan-wide, written
-	// once at completion by WritePlanScene). Not stored, so the Tier-2 createSceneDoc no-ops.
-
-	doc := &domain.Document{
-		ID:                 docID,
-		DocumentType:       domain.DocTypeMnemonicFact,
-		Text:               text,
-		ActivationStrength: 0.1,
-		Metadata:           metadata,
-	}
-
-	a.pendingMu.Lock()
-	defer a.pendingMu.Unlock()
-	if len(a.pendingItems) >= a.pendingCap {
-		slog.Debug("MemoryAgent: Tier-1 channel full, dropping item", "doc_id", docID)
-		return nil
-	}
-	a.pendingItems = append(a.pendingItems, pendingItem{Embedding: vec, Doc: doc, SceneID: result.SceneID, SessionID: result.SessionID})
-
-	// ADR-0017: Synchronous pattern-matched edge writing (closes, discussed_in).
-	if a.GraphStore != nil {
-		a.writeSyncEdges(ctx, docID, result.Output)
-	}
-	// ADR-0049 D10: BUFFER structural `follows` edges from this step's record to its
-	// dependency steps' records (deterministic, from the DAG structure). They are written
-	// later by commitFollows — once this record (and its targets) are actually persisted —
-	// because the record here is only pending and the Tier-2 drain may yet drop it.
-	a.bufferFollowsEdges(result.TaskID, docID, result.DependsOnTaskIDs)
-
-	return nil
-}
-
-// RecordToolOutput feeds a successful tool output into the Tier-1 pending channel
-// (ADR-0048 D6); Tier-2 curation then LLM-scores it for promotion to durable LTM.
-// Unlike step records (source_agent="System", excluded from same-session recall by
-// D1), a tool output carries source_agent="ToolOutput" so it stays recallable. The
-// kernel only feeds it here — the keep/drop value judgment is the Tier-2 LLM's.
+// RecordToolOutput records a MUTATION tool output as a durable `mnemonic_action`
+// EVENT (ADR-0049 D1): what was done where, in deterministic structured form, never a
+// raw-JSON dump. Gated by RecordOutcomes.
+//
+// A READ records nothing. Its payload used to be embedded whole as a fact
+// (recordReadFact, behind `experiential_memory_enabled`, curated by the ADR-0015
+// tier-2 judge), and its engaged entities used to accrete the plan's scene scope.
+// Both were deleted on 2026-11-05 with scenes (decisions/scenes-cancelled.md): the
+// first is the raw path ADR-0049 A2.2 removed, the second had no reader but the
+// scene. Knowledge in a tool output that is worth keeping goes through explicit
+// ingestion, where the ADR-0136 fact layer extracts and reconciles it.
 func (a *Agent) RecordToolOutput(ctx context.Context, rec domain.ToolOutputRecord) error {
-	// TWO arms, not one, because this function does two different things and only one
-	// of them was removed on 2026-07-18 (ADR-0049 §A2).
-	//
-	//   recordReadFact    — a read tool's PAYLOAD embedded whole as a fact. This is the
-	//                       raw path A2 removed. Gated by RecordExperiential (false
-	//                       permanently).
-	//   recordActionRecord — a mutation's STRUCTURED action event ("write_file → ok |
-	//                       path=…, +19B"). D1 defines this as deterministic structured
-	//                       form, "never a raw-JSON dump", and A2.2 names the action
-	//                       path as part of the outcome record. Gated by RecordOutcomes.
-	//   engageEntities    — accretes the plan's engaged-entity scope, which is what makes
-	//                       the plan's scene contentful. Writes no payload anywhere.
-	//
-	// Gating all three on RecordExperiential made A2.2 a NO-OP: nothing accreted
-	// planEntities, so every plan scene hit the contentless-scene skip and no outcome
-	// record was ever written. The unit tests missed it because they set both flags;
-	// only a live plan execution showed it.
-	if !a.RecordExperiential && !a.RecordOutcomes {
+	if !a.RecordOutcomes || !rec.IsMutation {
 		return nil
 	}
-	if rec.IsMutation {
-		// A mutation additionally writes an action EVENT ("what I did"); entity
-		// engagement happens inside it.
-		if !a.RecordOutcomes {
-			return nil
-		}
-		return a.recordActionRecord(ctx, rec)
-	}
-	// A READ is DISCOVERY (ADR-0049): it still engages its entities — reading a file/url
-	// tells us the thing exists and what its content is, which is world-model knowledge
-	// worth keeping. No action event (a read is not "something I did"); it flows to the
-	// fact lane.
-	if a.RecordOutcomes {
-		// The scene's engaged scope sees EVERY read, regardless of output size: what the
-		// call touched is the signal, not how much it returned.
-		a.engageEntities(ctx, rec)
-	}
-	if !a.RecordExperiential || !rec.FactEligible {
-		return nil
-	}
-	return a.recordReadFact(ctx, rec)
-}
-
-// engageEntities accretes ONE tool engagement — read or write — into the plan's scene
-// scope (ADR-0049 D5/D6): the canonical things it touched, each with a fingerprint of
-// the content observed at first touch. Nothing else is written; the per-engagement
-// `mnemonic_entity` record the scene scope used to sit alongside was removed with its
-// only consumer (the ADR-0051 Scout, retired 2026-08-08).
-func (a *Agent) engageEntities(ctx context.Context, rec domain.ToolOutputRecord) {
-	// A tool call whose args are not parseable JSON yields no entities — and
-	// `engagedEntities` reports that with a bare `return nil`, indistinguishable from
-	// "this tool engaged nothing". That silence is a world-model hole: on Windows an
-	// unescaped path (`C:\Users\...`) is invalid JSON (`\U` is not an escape), so every
-	// file a tool touched would vanish from the world model with nothing logged
-	// anywhere. Downstream the only symptom is a contentless plan scene, i.e. no
-	// outcome record at all, with no stated reason.
-	if len(rec.ArgsJSON) > 0 && !json.Valid(rec.ArgsJSON) {
-		slog.WarnContext(ctx, "MemoryAgent: tool args are not valid JSON — engaged entities lost (ADR-0049 D8)",
-			"tool", rec.ToolName, "task_id", rec.TaskID, "args_bytes", len(rec.ArgsJSON))
-		return
-	}
-	ents := engagedEntities(rec.ToolName, rec.ArgsJSON)
-	if len(ents) == 0 {
-		slog.DebugContext(ctx, "MemoryAgent: tool engaged no entities",
-			"tool", rec.ToolName, "task_id", rec.TaskID)
-		return
-	}
-	// The observed content rides in the scene BY REFERENCE — a hash, not a CAS blob. The
-	// baseline was offloaded to CAS so the Scout could resolve it; with the Scout gone
-	// nothing reads the blob back, and a Put per engagement is pure write amplification.
-	a.accreteEngaged(rec.TaskID, ents, contentFingerprint(rec.Output)) // scene scope, CANONICAL keys (D5/D6)
-}
-
-// accreteEngaged adds an engagement's CANONICAL entity keys to its plan's scene scope
-// (ADR-0049 D5/D6), keyed by the planID parsed from the TaskID. First-touch wins (the
-// baseline fingerprint is the scene's record of the thing's initial observed state).
-// Using the canonical key (not a raw arg ref) means one real thing spelled two ways
-// accretes once; degenerate paths (the cwd) are already excluded upstream by
-// engagedEntities.
-func (a *Agent) accreteEngaged(taskID string, ents []canonicalEntity, baseline string) {
-	planID := planIDFromTaskID(taskID)
-	if planID == "" {
-		// The ADR-0049 D3 correlation chain broke somewhere upstream, and this is the
-		// only place it is observable. The chain is: DAGExecutor stamps
-		// snapshot["_task_id"] = step-{i}-{planID} → the SDK runtime reads it off the
-		// step context → sends it as `x-task-id` metadata on ExecuteTool → the kernel
-		// handler reads it back into ToolOutputRecord.TaskID. Every link exists; a
-		// break in any of them arrives here as an empty taskID.
-		//
-		// Logged rather than silently dropped because the DOWNSTREAM symptom is a
-		// contentless plan scene — i.e. the outcome record simply never appears, with
-		// nothing anywhere saying why. That silence is what made this cost an entire
-		// investigation to find. WARN, not Debug: an engaged entity that cannot be
-		// attributed to a plan is lost world-model state, not routine noise.
-		if len(ents) > 0 {
-			slog.Warn("MemoryAgent: engaged entities dropped — no plan correlation (ADR-0049 D3)",
-				"task_id", taskID, "entities", len(ents))
-		}
-		return
-	}
-	a.planEntitiesMu.Lock()
-	defer a.planEntitiesMu.Unlock()
-	if a.planEntities[planID] == nil {
-		a.planEntities[planID] = map[string]string{}
-	}
-	for _, e := range ents {
-		if _, seen := a.planEntities[planID][e.Key()]; !seen {
-			a.planEntities[planID][e.Key()] = baseline
-		}
-	}
+	return a.recordActionRecord(ctx, rec)
 }
 
 // recordActionRecord persists a mutation as a durable `mnemonic_action` EVENT
 // (ADR-0049 D1): a compact deterministic line ("what was done where"), embedded and
-// committed DIRECTLY — bypassing the Tier-2 keep/drop judgment, because a write that
-// happened is history, not relevance-scored knowledge to maybe discard.
+// committed DIRECTLY, because a write that happened is history, not relevance-scored
+// knowledge to maybe discard.
 func (a *Agent) recordActionRecord(ctx context.Context, rec domain.ToolOutputRecord) error {
 	text := domain.FormatActionLine(rec.ToolName, rec.ArgsJSON, rec.Output)
 	vec, err := a.Manager.Embedder.Embed(ctx, text)
@@ -520,8 +195,8 @@ func (a *Agent) recordActionRecord(ctx context.Context, rec domain.ToolOutputRec
 	}
 	if rec.TaskID != "" {
 		doc.Metadata["task_id"] = rec.TaskID
-		// ADR-0049 D11: stamp the planID so a scene's action PATH is resolvable by
-		// metadata containment (the precedent lane walks plan_id → its actions).
+		// Stamp the planID so a plan's action path is joinable by metadata
+		// containment (ADR-0137 erasure by plan, the operator's episode view).
 		if planID := planIDFromTaskID(rec.TaskID); planID != "" {
 			doc.Metadata["plan_id"] = planID
 			// ADR-0095 D1: and hang the record off its EPISODE, so deleting the
@@ -533,8 +208,7 @@ func (a *Agent) recordActionRecord(ctx context.Context, rec domain.ToolOutputRec
 			//
 			// Gated on the store as well as the arm: with no ExperienceStore wired no
 			// parent row is ever written, so stamping an id here would point every
-			// action at an episode that cannot exist — which is what the scene write
-			// has always refused to do in the same situation.
+			// action at an episode that cannot exist.
 			if a.RecordOutcomes && a.ExperienceStore != nil {
 				doc.ExperienceID = experienceIDForPlan(planID)
 			}
@@ -543,145 +217,13 @@ func (a *Agent) recordActionRecord(ctx context.Context, rec domain.ToolOutputRec
 	if err := a.Manager.Save(ctx, doc); err != nil {
 		slog.Warn("MemoryAgent: failed to save action record", "doc_id", doc.ID, "err", err)
 	}
-	a.bumpActionCount(rec.TaskID) // ADR-0049 D3: count for the step's dedup decision
-	a.engageEntities(ctx, rec)    // ADR-0049 D5/D6: accrete the plan's scene scope
 	return nil
 }
-
-func (a *Agent) bumpActionCount(taskID string) {
-	if taskID == "" {
-		return
-	}
-	a.actionCountMu.Lock()
-	a.actionCounts[taskID]++
-	a.actionCountMu.Unlock()
-}
-
-// takeActionCount reads and clears the action count for a step (by TaskID). Returns
-// -1 for an unknown/uncorrelated step ("" TaskID) so dedup stays off for it.
-func (a *Agent) takeActionCount(taskID string) int {
-	if taskID == "" {
-		return -1
-	}
-	a.actionCountMu.Lock()
-	defer a.actionCountMu.Unlock()
-	n, ok := a.actionCounts[taskID]
-	delete(a.actionCounts, taskID)
-	if !ok {
-		return 0
-	}
-	return n
-}
-
-// dropStepSynthesis reports whether a step's prose output is a redundant restatement
-// of its single action and should not be recorded (ADR-0049 D3). True iff EXACTLY one
-// action was recorded for the step. -1 (uncorrelated) or 0/≥2 → keep the synthesis.
-func dropStepSynthesis(actionCount int) bool { return actionCount == 1 }
 
 // nextDocID builds a process-unique document ID: a timestamp plus a monotonic
 // sequence so rapid sequential records never collide under a coarse clock (ADR-0049).
 func (a *Agent) nextDocID(prefix string) string {
 	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), a.docSeq.Add(1))
-}
-
-// refKind maps an engaged ref ("kind:value") to an abstract entity category, so the
-// retrieval projection compares by SHAPE, not specific identity (ADR-0049 D7).
-func refKind(ref string) string {
-	prefix := ref
-	if i := strings.IndexByte(ref, ':'); i >= 0 {
-		prefix = ref[:i]
-	}
-	switch prefix {
-	case "path", "file", "filename":
-		return "file"
-	case "dir", "directory":
-		return "directory"
-	case "api", "url", "uri", "host", "endpoint":
-		return "web resource"
-	case "command":
-		return "shell command"
-	default:
-		return "resource"
-	}
-}
-
-// sceneProjection renders the ABSTRACTED, embeddable RETRIEVAL face of a scene
-// (ADR-0049 D7): the goal + engaged-entity KIND counts — NOT specific IDs (those are
-// the entity index) and NOT the outcome (that's a field you read after matching).
-// Pure/deterministic; this is what "situations like this?" matches against.
-func sceneProjection(goal string, refs []string) string {
-	counts := map[string]int{}
-	for _, r := range refs {
-		counts[refKind(r)]++
-	}
-	kinds := make([]string, 0, len(counts))
-	for k := range counts {
-		kinds = append(kinds, k)
-	}
-	sort.Strings(kinds)
-	parts := make([]string, 0, len(kinds))
-	for _, k := range kinds {
-		parts = append(parts, fmt.Sprintf("%d %s", counts[k], k))
-	}
-	proj := "goal: " + canonicalGoal(goal)
-	if len(parts) > 0 {
-		proj += " | engages: " + strings.Join(parts, ", ")
-	}
-	return proj
-}
-
-// canonicalGoal strips the volatile specifics out of the planner's free-text subject
-// before it becomes the projection.
-//
-// The projection is the ABSTRACTED retrieval face — it is what gets embedded, and the
-// concrete things acted on are already recorded by reference in `engaged`. Leaving
-// absolute paths in it indexed situations by where they happened: nine runs of one
-// benchmark family embedded nine different sandbox directories
-// ("... in runs/rt_diag6/workspace"), so situational retrieval keyed partly on a run id
-// that will never recur. Removing them makes the projection mean "this KIND of
-// situation", which is what it was for.
-//
-// Deliberately conservative: paths and quoted literals only. Filenames and prose stay,
-// because for a real request ("summarise q3.pdf") the filename IS part of the
-// situation. Cluster-key normalization is a separate, harder concern and lives in
-// normalizeTrigger.
-func canonicalGoal(goal string) string {
-	// Quoted spans go first, as spans: 'beta record' is two whitespace-separated
-	// fields, so a per-token check sees only an unbalanced 'beta and a record' and
-	// keeps both — which is how the payload leaks back into the situation.
-	stripped := stripQuotedSpans(goal)
-
-	fields := strings.Fields(stripped)
-	out := make([]string, 0, len(fields))
-	for _, f := range fields {
-		if strings.ContainsAny(strings.Trim(f, ".,;:!?()[]{}"), "/\\") {
-			continue // a path: names where, not what
-		}
-		out = append(out, f)
-	}
-	if len(out) == 0 {
-		return goal // never abstract a goal away to nothing
-	}
-	return strings.Join(out, " ")
-}
-
-// stripQuotedSpans removes '...' and "..." runs. An unterminated quote is left alone —
-// dropping the rest of the goal on one stray apostrophe would be worse than keeping it.
-func stripQuotedSpans(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c != '\'' && c != '"' {
-			b.WriteByte(c)
-			continue
-		}
-		if close := strings.IndexByte(s[i+1:], c); close >= 0 {
-			i += close + 1 // skip to the closing quote; loop's i++ moves past it
-			continue
-		}
-		b.WriteByte(c)
-	}
-	return b.String()
 }
 
 // planIDFromTaskID extracts the planID embedded in a step TaskID ("step-{i}-{planID}").
@@ -696,7 +238,7 @@ func planIDFromTaskID(taskID string) string {
 // experienceIDForPlan derives an episode parent id from a plan id (ADR-0095 D1).
 //
 // ONE derivation, used by every writer that parents a record: the begin-of-plan mint,
-// the completion upsert, the mid-plan action records and the failure precedent. Two
+// the completion upsert, the mid-plan action records and the failure record. Two
 // spellings of this would produce two episodes for one plan execution, and the FK is
 // nullable — so the disagreement would show up as silently unparented rows, never as
 // an error.
@@ -719,7 +261,7 @@ const outcomeRunning = "running"
 // episode was never whole.
 //
 // Gated on RecordOutcomes so the default-off arm still writes nothing at all, and a nil
-// store is a no-op for the same reason WritePlanScene tolerates one.
+// store is a no-op for the same reason RecordPlanOutcome tolerates one.
 func (a *Agent) BeginExperience(ctx context.Context, planID string) error {
 	if planID == "" || !a.RecordOutcomes || a.ExperienceStore == nil {
 		return nil
@@ -769,42 +311,42 @@ func (a *Agent) takePlanStart(planID string) time.Time {
 	return t
 }
 
-// WritePlanScene materializes the ONE immutable scene for a completed plan (ADR-0049
-// D5): id `scene-{planID}` (pre-allocated/derivable, so mid-plan actions reference it
-// via their planID), holding the goal + the engaged-entity scope accreted during the
-// plan. Written once at completion; the per-plan accumulator is then cleared.
-func (a *Agent) WritePlanScene(ctx context.Context, rec domain.PlanRecord) error {
-	planID, goal, success, surprise := rec.PlanID, rec.Goal, rec.Success, rec.Surprise
+// RecordPlanOutcome is the plan-completion hook (ADR-0049 §A2.2, ADR-0095). Once per
+// completed plan it:
+//
+//  1. CLOSES the ADR-0095 episode — the same upsert BeginExperience opened it with, now
+//     carrying the terminal outcome and completion time;
+//  2. writes the A2.3 FAILURE RECORD (a negative edge parented on the episode) when the
+//     failure was surprising or survived the whole recovery ladder;
+//  3. feeds the outcome to the ADR-0094 procedures that informed the plan.
+//
+// It was WritePlanScene until 2026-11-05 and also wrote a `mnemonic_scene` chunk per
+// plan. Scenes were cancelled (decisions/scenes-cancelled.md): the scene duplicated the
+// episode row, was read at system scope across principals, and was skipped whenever a
+// plan engaged no entity. That skip used to return before steps 2 and 3, so a
+// pure-reasoning plan that failed left no failure record and never fed its procedures.
+// Every step now runs for every plan, and the failure record's text is built from the
+// PlanRecord (goal and outcome) instead of from the scene.
+func (a *Agent) RecordPlanOutcome(ctx context.Context, rec domain.PlanRecord) error {
+	planID, success, surprise := rec.PlanID, rec.Success, rec.Surprise
 	if planID == "" || a.Manager == nil {
 		return nil
 	}
-	// ADR-0049 §A2.2: the outcome record is a default-off arm. Off ⇒ the plan leaves
-	// no experiential trace at all, which is the post-2026-07-18 baseline.
+	// ADR-0049 §A2.2: the outcome record is an opt-in arm. Off ⇒ the plan leaves no
+	// experiential trace at all.
 	if !a.RecordOutcomes {
 		return nil
 	}
-	goal = normalizeSceneGoal(goal)
+	goal := strings.TrimSpace(rec.Goal)
 	outcome := outcomeOf(success)
-	a.planEntitiesMu.Lock()
-	set := a.planEntities[planID]
-	delete(a.planEntities, planID)
-	a.planEntitiesMu.Unlock()
 
-	// ADR-0095 D1/D4: CLOSE the episode — the same upsert BeginExperience opened it
-	// with, now carrying the terminal outcome and completion time.
-	//
-	// Above the contentless-scene skip below, and not folded into it, because the
-	// EPISODE and the SCENE are different things: the episode is one plan execution and
-	// it happened whether or not it moved world state, while a scene is a world-state
-	// transition worth retrieving. A plan that engages nothing can still have written
-	// action records that hang from this parent, and returning early without closing it
-	// would leave the row stuck at "running" forever.
+	// ADR-0095 D1/D4: CLOSE the episode.
 	//
 	// The write also stands alone as the FALLBACK: it is an upsert on the same derived
 	// id, so a deployment that never reached BeginExperience (a replan that swapped the
-	// plan id mid-flight) still gets its parent here, exactly as before.
+	// plan id mid-flight) still gets its parent here.
 	//
-	// A failure is logged and NOT fatal: the outcome record is still written and simply
+	// A failure is logged and NOT fatal: the failure record is still written and simply
 	// keeps a NULL parent. Losing the memory over bookkeeping about its parentage would
 	// be the worse outcome (ADR-0095 D5).
 	experienceID := experienceIDForPlan(planID)
@@ -823,7 +365,7 @@ func (a *Agent) WritePlanScene(ctx context.Context, rec domain.PlanRecord) error
 			CompletedAt: time.Now().UTC(),
 		}
 		if err := a.ExperienceStore.SaveExperience(ctx, exp); err != nil {
-			slog.WarnContext(ctx, "MemoryAgent: experience parent not recorded; outcome record will have no parent",
+			slog.WarnContext(ctx, "MemoryAgent: experience parent not recorded; failure record will have no parent",
 				"plan_id", planID, "err", err)
 			experienceID = ""
 		}
@@ -831,419 +373,53 @@ func (a *Agent) WritePlanScene(ctx context.Context, rec domain.PlanRecord) error
 		experienceID = ""
 	}
 
-	// ADR-0049 D5/D7: a scene anchors a WORLD-STATE transition. A plan that engaged no
-	// entity transitioned no world state — its "scene" would be a bare goal label that
-	// only ever matches on goal-text similarity, polluting situational retrieval. Skip
-	// it: no engaged entities → no scene. (Pure-reasoning/math plans correctly produce
-	// none; their value, if any, is an episodic record, not a world-model scene.)
-	if len(set) == 0 {
-		slog.Debug("MemoryAgent: skipping contentless scene (no engaged entities)", "plan_id", planID, "goal", goal)
-		return nil
-	}
-
-	refs := make([]string, 0, len(set))
-	for r := range set {
-		refs = append(refs, r)
-	}
-	sort.Strings(refs)
-
-	// RECONSTRUCTION face (Text): the bare engaged refs — descriptors, never raw content
-	// (ADR-0049 D6). The per-ref baseline fingerprint stays in the `engaged` metadata map
-	// and is deliberately NOT rendered here: Text is what a human and an LLM read, and a
-	// 64-hex digest per ref is token cost carrying no meaning to either. RETRIEVAL face
-	// (Embedding): the abstracted projection (ADR-0049 D7) — match on situation SHAPE,
-	// not specific IDs.
-	// Inline ACTION SUMMARY (the "what I did" path): resolve this plan's action records
-	// — saved synchronously before this call — into compact lines, so the scene is a
-	// self-contained transition at a glance (situation + what was done + outcome), not
-	// just a situational index that must be joined to the action lane at query time.
-	actionLines := a.planActionLines(ctx, planID)
-
-	text := "plan goal: " + goal
-	if len(refs) > 0 {
-		text += " | engaged: " + strings.Join(refs, ", ")
-	}
-	if len(actionLines) > 0 {
-		text += " | actions: " + strings.Join(actionLines, "; ")
-	}
-
-	projection := sceneProjection(goal, refs)
-
-	// ADR-0049 A2.9: REINFORCE, do not multiply.
+	// ADR-0049 A2.3 — the FAILURE RECORD. A failed episode that merit did NOT see coming
+	// is the single most decision-relevant thing this system can remember, so it earns a
+	// record in the negative-edge lane the WorkspaceStage already queries. A failure by
+	// an agent already known to fail is unsurprising and writes nothing: that is the
+	// difference between a surprise gate and a failure gate.
 	//
-	// A2.3 gates retrievability rather than existence, on the reasoning that an episode
-	// is "one cheap structured row". That holds for one episode; it does not hold for
-	// the same episode twenty times. Measured 2026-07-28: 141 scenes carried only 100
-	// distinct projections, one situation appearing 8 times, every row embedded
-	// separately and every row pinned at the 0.100 activation floor.
+	// A2.2 shapes it as conditions → attempt → failure mode: the goal is the conditions
+	// and the attempt, the executor's rendered first error is the failure mode. The goal
+	// is also the fallback failure mode when the executor had no error text to render.
 	//
-	// The cost is not the disk. It is that induction counts ROWS, so eight reruns of one
-	// task read as eight confirmations of a routine rather than one observation seen
-	// eight times — inflating confidence in exactly the shape it should not.
-	//
-	// So a repeat of a known situation bumps seen_count and recency on the existing
-	// scene instead of inserting a sibling. Repetition strengthens a memory; it does not
-	// clone it.
-	// Reinforcement replaces the scene INSERT and nothing else. Returning here would
-	// also skip the failure precedent and the procedure-outcome feedback below — and a
-	// repeated failure is precisely when a precedent is worth most. Dedup is about not
-	// storing the same situation twice, not about ignoring what happened in it.
-	reinforced := false
-	if existing := a.findSceneByProjection(ctx, sceneIdentity(projection, refs)); existing != nil {
-		a.reinforceScene(ctx, existing, outcomeOf(success), surprise)
-		reinforced = true
-	}
-
-	// The embed, the document and the Save belong to the INSERT and only to it. They
-	// used to run before this branch, so every rerun of a known situation paid an
-	// embedder call for a vector that was then thrown away — the dedup exists precisely
-	// to stop paying per occurrence, and the most expensive part of the write was
-	// escaping it. Reinforcement updates the row that already carries the vector.
-	if !reinforced {
-		vec, err := a.Manager.Embedder.Embed(ctx, projection) // embed the ABSTRACTED projection
-		if err != nil {
-			slog.Warn("MemoryAgent: failed to embed plan scene", "plan_id", planID, "err", err)
-			return nil
-		}
-		// ADR-0049 A2.3 gates RETRIEVABILITY, not existence. Recording the episode is one
-		// cheap structured row and is always worth it; what must be earned is the right to
-		// COMPETE for a retrieval slot. A surprising episode therefore starts more active
-		// and an unsurprising one decays out of contention on the existing Ebbinghaus
-		// curve — reusing machinery that already exists rather than adding a second gate.
-		//
-		// Unknown surprise (-1, no merit history) takes the baseline: absence of a
-		// prediction is not evidence the episode was dull.
-		activation := 0.1
-		if surprise > 0 {
-			activation = 0.1 + 0.4*surprise
-		}
-		doc := &domain.Document{
-			ID:                 "scene-" + planID,
-			DocumentType:       domain.DocTypeMnemonicScene,
-			Text:               text,
-			ActivationStrength: activation,
-			ExperienceID:       experienceID,
-			Embedding:          domain.Embedding{Vector: vec},
-			Metadata: map[string]interface{}{
-				"timestamp":  time.Now().Format(time.RFC3339),
-				"plan_id":    planID,
-				"engaged":    set,        // map ref → baseline cid (by reference)
-				"projection": projection, // the abstracted retrieval face
-				// The DEDUP key: shape + concrete entities. Distinct from projection,
-				// which must stay coarse to match situations of the same shape.
-				"scene_identity": sceneIdentity(projection, refs),
-				"outcome":        outcome,     // a FIELD, not part of the similarity key
-				"actions":        actionLines, // the inline action path ("what I did")
-				// ADR-0049 A2.3: how far the episode diverged from what merit predicted.
-				// A field, never part of the similarity key — you match on the SITUATION,
-				// then read how surprising what followed was.
-				"surprise": surprise,
-				// ADR-0094 D3: the capability shape, so induction can group routines
-				// without re-deriving them from prose.
-				"capabilities": capabilitiesJSON(rec.Capabilities),
-			},
-		}
-		if err := a.Manager.Save(ctx, doc); err != nil {
-			slog.Warn("MemoryAgent: failed to save plan scene", "plan_id", planID, "err", err)
-			return nil
-		}
-	}
-
-	// ADR-0049 A2.3 — the FAILURE PRECEDENT. A failed episode that merit did NOT see
-	// coming is the single most decision-relevant thing this system can remember, so it
-	// earns a second, faster-decaying record in the negative-edge lane the
-	// WorkspaceStage already queries. A failure by an agent already known to fail is
-	// unsurprising and writes nothing extra: that is the difference between a surprise
-	// gate and a failure gate.
-	//
-	// A2.2 shapes the precedent as conditions → attempt → failure mode: the scene text
-	// is the conditions and the attempt, the executor's rendered first error is the
-	// failure mode. Recording the situation alone — which is what "unexpected plan
-	// failure: <goal>" amounts to — makes every failure of one goal the same precedent,
-	// so retrieval can say a plan like this went wrong but never how.
-	//
-	// The goal remains the fallback: a precedent naming only the situation still beats
-	// no precedent when the executor had no error text to render.
-	//
-	// REPLAN EXHAUSTION is the one carve-out from the surprise gate. It is not a
-	// widening to "log every failure" — an ordinary single-step failure still has to
-	// clear the floor. It is admitted because the system already ran its whole recovery
-	// ladder and still failed, which is decision-relevant whether or not merit saw it
-	// coming; and because the surprise oracle is blind precisely where this matters
-	// most, returning "unknown" (-1) for an agent with no merit history, so a NEW
-	// agent's failures could never clear the floor and its earliest — most instructive —
-	// failures left no precedent at all. Deliberately independent of SurpriseFloor:
-	// a cold-start deployment that never configured the floor is the case being fixed.
+	// REPLAN EXHAUSTION is the one carve-out from the surprise gate: the system already
+	// ran its whole recovery ladder and still failed, which is decision-relevant whether
+	// or not merit saw it coming, and the surprise oracle returns "unknown" (-1) for an
+	// agent with no merit history, so a NEW agent's failures could otherwise never clear
+	// the floor. Deliberately independent of SurpriseFloor.
 	if !success && (rec.ReplanExhausted || (a.SurpriseFloor > 0 && surprise >= a.SurpriseFloor)) {
 		failureMode := rec.FailureSummary
 		if failureMode == "" {
 			failureMode = "unexpected plan failure: " + goal
 		}
 		// Parented, unlike the bare error-path negative edge: this one IS part of the
-		// episode. Without the parent and the plan_id it could not be joined back to the
-		// plan that produced it, so "forget this episode" left the failure precedent
-		// behind — the single most decision-relevant record of the lot, surviving the
-		// deletion of everything it was about.
-		if err := a.ingestNegativeEdgeForPlan(ctx, failureMode, text, "", planID, experienceID); err != nil {
-			slog.WarnContext(ctx, "MemoryAgent: failure precedent not recorded",
+		// episode, so "forget this episode" (ADR-0137) takes it with the rest.
+		if err := a.ingestNegativeEdgeForPlan(ctx, failureMode, planFailureConditions(goal, outcome, rec.ReplanExhausted), "", planID, experienceID); err != nil {
+			slog.WarnContext(ctx, "MemoryAgent: failure record not written",
 				"plan_id", planID, "surprise", surprise, "err", err)
 		}
 	}
 
-	// ADR-0094 co-evolution: the routines that informed this plan learn from its
-	// outcome. After the scene is durable, because feedback is an enrichment of an
-	// enrichment — the episode is the record that matters, and losing a confidence
-	// update is recoverable on the next occurrence.
+	// ADR-0094 co-evolution: the stored routines that informed this plan learn from its
+	// outcome. Procedures are still SERVED after induction was removed (2026-11-05), so
+	// the routines already stored keep learning.
 	if a.ProcedureDeprecateBelow > 0 && len(rec.FollowedProcedures) > 0 {
 		FeedProcedureOutcome(ctx, a.Manager.Store, a.Manager.Embedder,
 			rec.FollowedProcedures, success, a.ProcedureDeprecateBelow)
 	}
-
 	return nil
 }
 
-// maxInlineSceneActions caps how many action lines a scene embeds inline, so a long plan
-// cannot bloat the scene Text. The full path stays queryable via the action lane (plan_id).
-const maxInlineSceneActions = 20
-
-// planActionLines resolves a plan's action records (its "what I did" path) into compact
-// lines for the scene's inline summary. Reuses the precedent lane's resolver (plan_id →
-// time-ordered action docs). Capped; best-effort (a nil/empty store yields nothing).
-func (a *Agent) planActionLines(ctx context.Context, planID string) []string {
-	if a.Manager == nil || a.Manager.Store == nil {
-		return nil
+// planFailureConditions renders the "conditions → attempt" half of an A2.2 failure
+// record from the PlanRecord: deterministic, so two occurrences of the same failure
+// render the same way.
+func planFailureConditions(goal, outcome string, replanExhausted bool) string {
+	text := "plan goal: " + goal + " | outcome: " + outcome
+	if replanExhausted {
+		text += " | replan exhausted"
 	}
-	docs := resolveActionPath(ctx, a.Manager.Store, planID)
-	lines := make([]string, 0, len(docs))
-	for _, d := range docs {
-		if t := strings.TrimSpace(d.Text); t != "" {
-			lines = append(lines, t)
-		}
-		if len(lines) >= maxInlineSceneActions {
-			break
-		}
-	}
-	return lines
-}
-
-// normalizeSceneGoal canonicalizes a plan goal for the scene's situation (ADR-0049 D7).
-// A replan plan's Subject is LLM-prefixed with "Replan: <original>" (replan_handler) and
-// gets a fresh planID — so its scene would otherwise read as a generic "Replan: …"
-// situation, distinct from the original it actually continues. Stripping the prefix makes
-// the failed original and its replan project to the SAME situation, which is exactly what
-// the precedent lane should match on. Pure; idempotent; strips repeated prefixes.
-func normalizeSceneGoal(goal string) string {
-	g := strings.TrimSpace(goal)
-	for {
-		trimmed := strings.TrimSpace(strings.TrimPrefix(g, "Replan:"))
-		if trimmed == g {
-			return g
-		}
-		g = trimmed
-	}
-}
-
-// followsEdges derives the `follows` edges for a step (ADR-0049 D10): one edge from
-// the step's record to each already-recorded predecessor's record. Pure — a function
-// of the step docID + resolved predecessor docIDs. Skips empties and self-loops.
-func followsEdges(stepDocID string, predDocIDs []string) []domain.DocumentEdge {
-	if stepDocID == "" {
-		return nil
-	}
-	edges := make([]domain.DocumentEdge, 0, len(predDocIDs))
-	for _, pred := range predDocIDs {
-		if pred == "" || pred == stepDocID {
-			continue
-		}
-		edges = append(edges, domain.DocumentEdge{
-			SourceID: stepDocID, TargetID: pred, EdgeType: domain.EdgeFollows, Weight: 0.5,
-		})
-	}
-	return edges
-}
-
-func (a *Agent) resolvePredDocs(predTaskIDs []string) []string {
-	if len(predTaskIDs) == 0 {
-		return nil
-	}
-	a.stepDocsMu.Lock()
-	defer a.stepDocsMu.Unlock()
-	out := make([]string, 0, len(predTaskIDs))
-	for _, tid := range predTaskIDs {
-		if id, ok := a.stepDocs[tid]; ok {
-			out = append(out, id)
-		}
-	}
-	return out
-}
-
-// maxPendingFollows caps the follows-edge buffer so a never-committed source (e.g. a
-// Tier-2-dropped step record) cannot leak edges unboundedly.
-const maxPendingFollows = 512
-
-// bufferFollowsEdges records this step's docID under its TaskID and BUFFERS its `follows`
-// edges to its predecessors (ADR-0049 D10). The edges are not written here: the step's
-// fact record is only PENDING (async Tier-2 drain may persist or drop it), so writing now
-// would FK-violate against a non-existent row. commitFollows flushes them once both
-// endpoints are committed. No-op without a GraphStore. A single-action step (whose
-// synthesis is dropped, D3) never reaches here — it is simply absent from the chain.
-func (a *Agent) bufferFollowsEdges(taskID, docID string, predTaskIDs []string) {
-	if taskID != "" && docID != "" {
-		a.stepDocsMu.Lock()
-		a.stepDocs[taskID] = docID
-		a.stepDocsMu.Unlock()
-	}
-	if a.GraphStore == nil {
-		return
-	}
-	edges := followsEdges(docID, a.resolvePredDocs(predTaskIDs))
-	if len(edges) == 0 {
-		return
-	}
-	a.followsMu.Lock()
-	a.pendingFollows = append(a.pendingFollows, edges...)
-	if len(a.pendingFollows) > maxPendingFollows {
-		a.pendingFollows = a.pendingFollows[len(a.pendingFollows)-maxPendingFollows:]
-	}
-	a.followsMu.Unlock()
-}
-
-// commitFollows marks docID as persisted and writes any buffered `follows` edges whose
-// BOTH endpoints are now committed (ADR-0049 D10 FK-safety). Called from commitItem
-// after a step record is Saved. Edges whose other endpoint is still pending (or was
-// dropped) stay buffered / are eventually capped — never written against a missing row.
-func (a *Agent) commitFollows(ctx context.Context, docID string) {
-	if a.GraphStore == nil || docID == "" {
-		return
-	}
-	a.followsMu.Lock()
-	a.committedDocs[docID] = true
-	ready := make([]domain.DocumentEdge, 0, len(a.pendingFollows))
-	remaining := a.pendingFollows[:0]
-	for _, e := range a.pendingFollows {
-		if a.committedDocs[e.SourceID] && a.committedDocs[e.TargetID] {
-			ready = append(ready, e)
-		} else {
-			remaining = append(remaining, e)
-		}
-	}
-	a.pendingFollows = remaining
-	// When nothing is awaiting an endpoint, the commit markers are no longer needed —
-	// clearing them bounds memory over a long session.
-	if len(a.pendingFollows) == 0 {
-		a.committedDocs = map[string]bool{}
-	}
-	a.followsMu.Unlock()
-
-	for _, e := range ready {
-		if err := a.GraphStore.SaveEdge(ctx, e); err != nil {
-			slog.Debug("MemoryAgent: follows edge write failed", "err", err)
-		}
-	}
-}
-
-// recordReadFact feeds a READ tool's payload into the Tier-1 → Tier-2 fact pipeline
-// (ADR-0048 D6): its payload is knowledge, scored/curated like any other fact.
-func (a *Agent) recordReadFact(ctx context.Context, rec domain.ToolOutputRecord) error {
-	text := boundFactText(fmt.Sprintf("tool[%s]: %s", rec.ToolName, string(rec.Output)))
-
-	vec, err := a.Manager.Embedder.Embed(ctx, text)
-	if err != nil {
-		slog.Warn("MemoryAgent: failed to embed tool output for Tier-1 channel", "err", err)
-		return nil
-	}
-
-	sid, _ := domain.SessionIDFromContext(ctx)
-	docID := a.nextDocID("tier1-tool")
-	doc := &domain.Document{
-		ID:                 docID,
-		DocumentType:       domain.DocTypeMnemonicFact,
-		Text:               text,
-		ActivationStrength: 0.1,
-		Metadata: map[string]interface{}{
-			"timestamp":    time.Now().Format(time.RFC3339),
-			"source_agent": "ToolOutput",
-			"tool":         rec.ToolName,
-		},
-	}
-	if len(rec.ClassificationTags) > 0 {
-		// Same hint as the action lane: the tags survive the pending channel on the
-		// doc, so the Tier-2 commit classifies the fact from the tool's domain.
-		doc.Metadata["tags"] = rec.ClassificationTags
-	}
-
-	a.pendingMu.Lock()
-	defer a.pendingMu.Unlock()
-	if len(a.pendingItems) >= a.pendingCap {
-		slog.Debug("MemoryAgent: Tier-1 channel full, dropping tool output", "doc_id", docID)
-		return nil
-	}
-	a.pendingItems = append(a.pendingItems, pendingItem{Embedding: vec, Doc: doc, SessionID: sid})
-	return nil
-}
-
-// EnqueueExternal used to append pre-embedded ingested chunks into the Tier-1 pending
-// channel, described as making them "flow through the Tier-2 dual-coding pipeline"
-// (ADR-0028). They never did: the IngestionManager commits its chunks to the store
-// directly, and nothing outside tests ever called this. Removed rather than kept as an
-// alternative entry point, because a second, unused write path into Tier-1 only
-// documented a route the ingest pipeline does not take.
-
-// Query performs a linear cosine scan over the Tier-1 channel first, then queries pgvector.
-// Results from both sources are merged and returned together. ADR-0015.
-func (a *Agent) Query(ctx context.Context, prompt string, topK int) ([]domain.SearchResult, error) {
-	queryVec, err := a.Manager.Embedder.Embed(ctx, prompt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to embed query: %w", err)
-	}
-
-	var merged []domain.SearchResult
-
-	// Pass 1: linear cosine scan over Tier-1 pending channel
-	a.pendingMu.RLock()
-	pendingCopy := make([]pendingItem, len(a.pendingItems))
-	copy(pendingCopy, a.pendingItems)
-	a.pendingMu.RUnlock()
-
-	for _, p := range pendingCopy {
-		if len(p.Embedding) == 0 {
-			continue
-		}
-		sim := cosineSimilarity(queryVec, p.Embedding)
-		merged = append(merged, domain.SearchResult{
-			Document: *p.Doc,
-			Score:    sim,
-		})
-	}
-
-	// Pass 2: pgvector semantic search — DocTypeMemory retired (ADR-0025); query mnemonic_fact.
-	pgResults, err := a.Manager.Store.Search(ctx, queryVec, domain.SearchOptions{
-		DocumentType: domain.DocTypeMnemonicFact,
-		TopK:         topK,
-		Scope:        domain.ScopeSystem, // ADR-0034: kernel curation read (dedup/neighbor expansion)
-	})
-	if err != nil {
-		slog.Warn("MemoryAgent: pgvector search failed, returning only Tier-1 results", "err", err)
-	} else {
-		merged = append(merged, pgResults...)
-	}
-
-	// Sort by score descending, then take top topK
-	sortSearchResults(merged)
-	if len(merged) > topK {
-		merged = merged[:topK]
-	}
-	return merged, nil
-}
-
-func sortSearchResults(results []domain.SearchResult) {
-	for i := 1; i < len(results); i++ {
-		j := i
-		for j > 0 && results[j].Score > results[j-1].Score {
-			results[j], results[j-1] = results[j-1], results[j]
-			j--
-		}
-	}
+	return text
 }
 
 // cosineSimilarity computes the cosine similarity between two float32 vectors.
@@ -1270,8 +446,7 @@ func cosineSimilarity(a, b []float32) float64 {
 // IngestNegativeEdge stores a failure record as a negative_edge document.
 //
 // UNPARENTED, deliberately. Its callers are failures that are not one plan execution —
-// a Tier-2 commit error, a caller reporting an agent fault — so there is no episode for
-// them to belong to. A plan's OWN failure precedent goes through
+// a caller reporting an agent fault — so there is no episode for them to belong to. A plan's OWN failure precedent goes through
 // ingestNegativeEdgeForPlan instead.
 func (a *Agent) IngestNegativeEdge(ctx context.Context, errorMsg, lastOutput, agentID string) error {
 	return a.ingestNegativeEdgeForPlan(ctx, errorMsg, lastOutput, agentID, "", "")
@@ -1324,496 +499,13 @@ func (a *Agent) PoisonMemory(ctx context.Context, memoryID string, correction st
 	return a.Manager.Save(ctx, doc)
 }
 
-// ── Tier-2 drain (ADR-0015) ──────────────────────────────────────────────
-
-// StartTier2Drain launches the background goroutine that drains the Tier-1 channel
-// in batches, scores items via the Generator, and commits to pgvector.
-// Call StopTier2Drain to shut down.
-func (a *Agent) StartTier2Drain(ctx context.Context) {
-	a.tier2Stop = make(chan struct{})
-	go a.tier2DrainLoop(context.WithoutCancel(ctx))
-}
-
-// StopTier2Drain signals the Tier-2 goroutine to stop.
-func (a *Agent) StopTier2Drain() {
-	if a.tier2Stop != nil {
-		close(a.tier2Stop)
-	}
-}
-
-func (a *Agent) tier2DrainLoop(ctx context.Context) {
-	timer := time.NewTimer(a.tier2MaxIdle)
-	defer timer.Stop()
-
-	for {
-		a.pendingMu.RLock()
-		n := len(a.pendingItems)
-		a.pendingMu.RUnlock()
-
-		if n >= a.tier2BatchSize {
-			a.drainBatch(ctx)
-			timer.Reset(a.tier2MaxIdle)
-			continue
-		}
-
-		select {
-		case <-a.tier2Stop:
-			a.drainBatch(ctx)
-			return
-		case <-ctx.Done():
-			a.drainBatch(ctx)
-			return
-		case <-timer.C:
-			a.drainBatch(ctx)
-			timer.Reset(a.tier2MaxIdle)
-		}
-	}
-}
-
-func (a *Agent) drainBatch(ctx context.Context) {
-	a.pendingMu.Lock()
-	if len(a.pendingItems) == 0 {
-		a.pendingMu.Unlock()
-		return
-	}
-	batch := make([]pendingItem, len(a.pendingItems))
-	copy(batch, a.pendingItems)
-	a.pendingItems = a.pendingItems[:0]
-	a.pendingMu.Unlock()
-
-	channelDepth := len(batch)
-	slog.Info("MemoryAgent: Tier-2 draining batch", "batch_size", channelDepth)
-
-	// Heuristic error pre-filter (ADR-0025): route error items to negative_edge before LLM batch.
-	var clean []pendingItem
-	for _, item := range batch {
-		if isErr, kind := IsErrorOutput(item.Doc.Text); isErr {
-			a.commitErrorItem(ctx, item, kind)
-		} else {
-			clean = append(clean, item)
-		}
-	}
-
-	if len(clean) == 0 {
-		a.commitBatch(ctx, nil, channelDepth)
-		return
-	}
-
-	// ADR-0131 (owner decision 2026-11-01): the judge's spend belongs to the
-	// session whose output it scores, so the batch is scored once per
-	// originating session, under that session and the background marker —
-	// booked to it, never refused at its ceiling (a refusal would silently drop
-	// the scoring). A batch from one session — the usual case — is still one
-	// call; items with no session form their own group and land in the kernel
-	// no-session bucket.
-	var scored []scoredItem
-	for _, group := range groupBySession(clean) {
-		gctx := domain.WithBackgroundSpend(ctx)
-		if group.sid != "" {
-			gctx = domain.WithSessionID(gctx, group.sid)
-		}
-		s, err := a.scoreBatch(gctx, group.items)
-		if err != nil {
-			slog.Warn("MemoryAgent: Tier-2 LLM scoring failed, using heuristic", "err", err)
-			a.tier2FallbackCount.Add(1)
-			s = a.scoreBatchHeuristic(group.items)
-			slog.Info("MemoryAgent: Tier-2 heuristic fallback",
-				"batch_size", len(group.items),
-				"tier2_llm_fallback_count", a.tier2FallbackCount.Load())
-		}
-		scored = append(scored, s...)
-	}
-
-	a.commitBatch(ctx, scored, channelDepth)
-}
-
-// sessionGroup is the Tier-2 items of one originating session.
-type sessionGroup struct {
-	sid   domain.SessionID
-	items []pendingItem
-}
-
-// groupBySession partitions items by originating session, keeping the order in
-// which each session first appears and each item's order within its session.
-func groupBySession(items []pendingItem) []sessionGroup {
-	var groups []sessionGroup
-	idx := make(map[domain.SessionID]int)
-	for _, it := range items {
-		i, ok := idx[it.SessionID]
-		if !ok {
-			i = len(groups)
-			idx[it.SessionID] = i
-			groups = append(groups, sessionGroup{sid: it.SessionID})
-		}
-		groups[i].items = append(groups[i].items, it)
-	}
-	return groups
-}
-
-// commitErrorItem writes a standardised negative_edge document for a pre-filter match. ADR-0025.
-func (a *Agent) commitErrorItem(ctx context.Context, item pendingItem, kind ErrorKind) {
-	agentID, _ := item.Doc.Metadata["agent_id"].(string)
-	stepIndex, _ := item.Doc.Metadata["step_index"].(int)
-	doc := &domain.Document{
-		ID:                 fmt.Sprintf("neg-prefilter-%d", time.Now().UnixNano()),
-		DocumentType:       domain.DocTypeNegativeEdge,
-		Text:               item.Doc.Text,
-		ActivationStrength: 0.1,
-		Metadata: map[string]interface{}{
-			"error_type": string(kind),
-			"raw_output": item.Doc.Text,
-			"agent_id":   agentID,
-			"step_index": stepIndex,
-			"timestamp":  time.Now().Format(time.RFC3339),
-		},
-	}
-	if err := a.Manager.Save(ctx, doc); err != nil {
-		slog.Warn("MemoryAgent: failed to commit error item as negative_edge", "err", err)
-	}
-	slog.Info("MemoryAgent: error item routed to negative_edge",
-		"error_kind", kind, "agent_id", agentID, "step_index", stepIndex)
-}
-
-func (a *Agent) scoreBatch(ctx context.Context, batch []pendingItem) ([]scoredItem, error) {
-	var textsB strings.Builder
-	for _, item := range batch {
-		textsB.WriteString(item.Doc.Text)
-		textsB.WriteString("\n---\n")
-	}
-
-	prompt := domain.PromptBuild(
-		domain.PromptSystem(
-			"You are a memory quality judge.",
-			`Score each result across three dimensions (1-10 each):
-- relevance: how relevant is this result to the task?
-- specificity: how specific and actionable is the information?
-- explicitness: how clear and explicit is the information?
-
-Tier rules: average >= 7 → FULL, average >= 4 → FACT_ONLY, average < 4 → DROP. Use deterministic mode.
-
-Also emit "descriptor": ONE plain-language sentence (<= 160 chars) stating what the
-result CONTAINS — a legible introduction for when it later surfaces in context
-(e.g. "Web search results listing the world's longest rivers."). Summarize the
-content; do NOT copy a raw JSON head.`,
-		),
-		domain.PromptTask("Results to score:\n"+textsB.String()),
-		domain.PromptOutputSchemaJSON(scoringSchema),
-	)
-
-	scoreCtx, cancel := context.WithTimeout(ctx, a.tier2LLMTimeout)
-	defer cancel()
-
-	resp, err := a.LLMClient.Generate(scoreCtx, prompt)
-	if err != nil {
-		return nil, err
-	}
-
-	type llmScore struct {
-		Relevance    int    `json:"relevance"`
-		Specificity  int    `json:"specificity"`
-		Explicitness int    `json:"explicitness"`
-		Tier         string `json:"tier"`
-		Descriptor   string `json:"descriptor"`
-	}
-
-	var raw []llmScore
-	match := domain.ExtractJSONArray(resp)
-	if match == "" || json.Unmarshal([]byte(match), &raw) != nil {
-		return nil, fmt.Errorf("Tier-2: unparseable LLM response")
-	}
-
-	if len(raw) != len(batch) {
-		return nil, fmt.Errorf("Tier-2: score count %d != batch count %d", len(raw), len(batch))
-	}
-
-	scored := make([]scoredItem, len(batch))
-	for i, s := range raw {
-		tier := s.Tier
-		if tier != "FULL" && tier != "FACT_ONLY" && tier != "DROP" {
-			tier = "FACT_ONLY"
-		}
-		scored[i] = scoredItem{
-			Item:         batch[i],
-			Relevance:    s.Relevance,
-			Specificity:  s.Specificity,
-			Explicitness: s.Explicitness,
-			Tier:         tier,
-			Descriptor:   strings.TrimSpace(s.Descriptor),
-		}
-	}
-	return scored, nil
-}
-
-func (a *Agent) scoreBatchHeuristic(batch []pendingItem) []scoredItem {
-	scored := make([]scoredItem, len(batch))
-	for i, item := range batch {
-		avg := 5
-		if len(item.Doc.Text) > 200 {
-			avg = 6
-		} else if len(item.Doc.Text) < 20 {
-			avg = 3
-		}
-		scored[i] = scoredItem{
-			Item:         item,
-			Relevance:    avg,
-			Specificity:  avg,
-			Explicitness: avg,
-			Tier:         "FACT_ONLY",
-			Descriptor:   heuristicDescriptor(item.Doc.Text),
-		}
-	}
-	return scored
-}
-
-// heuristicDescriptor derives a clean one-line descriptor from a raw item text
-// WITHOUT an LLM (the Tier-2 fallback path, ADR-0048 #2). It is still better than
-// the raw payload as an indexed/recall surface: a "tool[name]: …" output collapses
-// to "Output of tool 'name' (N chars).", and any other text to a whitespace-
-// collapsed head. Never the full JSON dump.
-func heuristicDescriptor(text string) string {
-	t := strings.Join(strings.Fields(text), " ")
-	if m := toolOutputPrefixRE.FindStringSubmatch(text); m != nil {
-		return fmt.Sprintf("Output of tool %q (%d chars).", m[1], len(text))
-	}
-	const cap = 160
-	if len(t) <= cap {
-		return t
-	}
-	return t[:cap] + "…"
-}
-
-// toolOutputPrefixRE matches the "tool[name]: …" envelope RecordToolOutput writes.
-var toolOutputPrefixRE = regexp.MustCompile(`^tool\[([^\]]+)\]:`)
-
-func (a *Agent) commitBatch(ctx context.Context, scored []scoredItem, channelDepth int) {
-	var dropped int
-	for _, s := range scored {
-		a.commitItem(ctx, s)
-		if s.Tier == "DROP" {
-			dropped++
-		}
-	}
-
-	dropRate := float64(0)
-	if channelDepth > 0 {
-		dropRate = float64(dropped) / float64(channelDepth)
-	}
-
-	slog.Info("MemoryAgent: Tier-2 batch committed",
-		"tier2_channel_depth", channelDepth,
-		"tier2_drop_rate", fmt.Sprintf("%.2f", dropRate),
-		"tier2_llm_fallback_count", a.tier2FallbackCount.Load())
-
-}
-
-func (a *Agent) commitItem(ctx context.Context, s scoredItem) {
-	if s.Item.SessionID != "" && s.Item.Doc.Metadata != nil {
-		s.Item.Doc.Metadata[domain.MetaSessionID] = string(s.Item.SessionID)
-	}
-	// ADR-0048 #1: EVERY promoted memory carries a one-line Summary. The Tier-2 judge
-	// emits a descriptor for each item, so a step record, an external chunk, and a
-	// tool output all get a gist — recall serves the Summary as the agent-facing
-	// surface while the full body stays in Text. A TOOL OUTPUT additionally offloads
-	// its (often large, JSON-heavy) body to CAS and re-embeds on the summary, so recall
-	// can hand back {summary + content_cid} and ranking is on meaning, not JSON syntax.
-	if s.Tier != "DROP" && s.Descriptor != "" {
-		s.Item.Doc.Summary = s.Descriptor
-		if isToolOutputItem(s.Item.Doc) {
-			a.offloadFullBody(ctx, &s)
-		}
-	}
-	switch s.Tier {
-	case "FULL":
-		s.Item.Doc.DocumentType = domain.DocTypeMnemonicFact
-		s.Item.Doc.ScoringPromptVersion = scoringPromptHash
-		s.Item.Doc.Embedding = domain.Embedding{Vector: s.Item.Embedding}
-		if err := a.Manager.Save(ctx, s.Item.Doc); err != nil {
-			slog.Warn("MemoryAgent: Tier-2 failed to save FACT", "doc_id", s.Item.Doc.ID, "err", err)
-			return
-		}
-		a.writeDiscussedInEdge(ctx, s.Item.Doc.ID, s.Item.SceneID)
-		a.commitFollows(ctx, s.Item.Doc.ID) // ADR-0049 D10: flush follows edges now the row exists
-		// ADR-0049 D3: write a Tier-2 scene ONLY when the eager WriteScene didn't
-		// already produce one for this step (SceneID set) — otherwise it's a duplicate
-		// scene of the same snapshot. The eager scene owns it; this is the fallback.
-		if s.Item.SceneID == "" {
-			if a.createSceneDoc(ctx, s) != nil {
-				slog.Warn("MemoryAgent: Tier-2 failed to save SCENE", "doc_id", s.Item.Doc.ID+"-scene")
-			}
-		}
-	case "FACT_ONLY":
-		s.Item.Doc.DocumentType = domain.DocTypeMnemonicFact
-		s.Item.Doc.ScoringPromptVersion = scoringPromptHash
-		s.Item.Doc.Embedding = domain.Embedding{Vector: s.Item.Embedding}
-		if err := a.Manager.Save(ctx, s.Item.Doc); err != nil {
-			slog.Warn("MemoryAgent: Tier-2 failed to save FACT_ONLY", "doc_id", s.Item.Doc.ID, "err", err)
-			return
-		}
-		a.writeDiscussedInEdge(ctx, s.Item.Doc.ID, s.Item.SceneID)
-		a.commitFollows(ctx, s.Item.Doc.ID) // ADR-0049 D10: flush follows edges now the row exists
-	case "DROP":
-		slog.Debug("MemoryAgent: Tier-2 dropping item", "doc_id", s.Item.Doc.ID)
-	}
-}
-
-// isToolOutputItem reports whether a pending doc originated from RecordToolOutput
-// (ADR-0048 D6) — the only items that get descriptor-indexed (#2). Step records and
-// external chunks carry different source_agent values and keep their raw text.
-func isToolOutputItem(doc *domain.Document) bool {
-	if doc == nil || doc.Metadata == nil {
-		return false
-	}
-	src, _ := doc.Metadata["source_agent"].(string)
-	return src == "ToolOutput"
-}
-
-// offloadFullBody moves a promoted tool output's full body to the ContentStore so
-// recall can serve {summary + content_cid} (ADR-0048 #1), and recomputes the
-// embedding on the summary so retrieval ranks on meaning, not the raw JSON body. The
-// Summary itself is set by the caller (commitItem) for every promoted memory; this
-// adds the offload + re-embed that only a heavy tool-output body warrants.
-func (a *Agent) offloadFullBody(ctx context.Context, s *scoredItem) {
-	doc := s.Item.Doc
-
-	// Offload the full body to CAS for {summary + cid} recall. The drain ctx carries
-	// no session, so the item's own SessionID is threaded onto the Put — an
-	// unstamped blob is owner "" and readable by ANY caller via get_context_node,
-	// while the LTM row it backs is session-scoped. An item with no session (a
-	// sessionless tool call) still writes an ownerless blob, matching its row.
-	// Best-effort: a nil store or Put error just leaves the full text in pgvector Text.
-	if a.ContentStore != nil {
-		putCtx := ctx
-		if s.Item.SessionID != "" {
-			putCtx = domain.WithSessionID(ctx, s.Item.SessionID)
-		}
-		if cid, err := a.ContentStore.Put(putCtx, []byte(doc.Text), "ltm_fact", nil, s.Descriptor); err == nil {
-			if doc.Metadata == nil {
-				doc.Metadata = map[string]interface{}{}
-			}
-			doc.Metadata["content_cid"] = string(cid)
-		} else {
-			slog.Warn("MemoryAgent: content offload failed; full text stays in pgvector",
-				"doc_id", doc.ID, "err", err)
-		}
-	}
-
-	// Embed the SUMMARY so recall ranks on meaning. A re-embed failure degrades to
-	// the prior (raw-body) vector rather than crashing the drain.
-	if vec, err := a.Manager.Embedder.Embed(ctx, s.Descriptor); err == nil && len(vec) > 0 {
-		s.Item.Embedding = vec
-	} else if err != nil {
-		slog.Warn("MemoryAgent: descriptor re-embed failed; indexing with prior vector",
-			"doc_id", doc.ID, "err", err)
-	}
-}
-
-// writeDiscussedInEdge writes a discussed_in edge from a committed FACT to its originating scene. ADR-0025.
-func (a *Agent) writeDiscussedInEdge(ctx context.Context, factDocID, sceneID string) {
-	if a.EdgeWriter == nil || sceneID == "" {
-		return
-	}
-	if err := a.EdgeWriter.WriteEdge(ctx, factDocID, sceneID, "discussed_in", 0.7); err != nil {
-		slog.Warn("MemoryAgent: failed to write discussed_in edge", "fact_id", factDocID, "scene_id", sceneID, "err", err)
-	}
-}
-
-func (a *Agent) createSceneDoc(ctx context.Context, s scoredItem) error {
-	if s.Item.Doc.Metadata == nil {
-		return nil
-	}
-	snapshotRaw, _ := s.Item.Doc.Metadata["snapshot"]
-	snapshot, _ := snapshotRaw.(string)
-	if snapshot == "" {
-		return nil
-	}
-
-	sceneMeta := map[string]interface{}{
-		"parent_doc_id": s.Item.Doc.ID,
-		"timestamp":     time.Now().Format(time.RFC3339),
-	}
-	if s.Item.SessionID != "" {
-		sceneMeta[domain.MetaSessionID] = string(s.Item.SessionID)
-	}
-	sceneDoc := &domain.Document{
-		ID:                   s.Item.Doc.ID + "-scene",
-		DocumentType:         domain.DocTypeMnemonicScene,
-		Text:                 snapshot,
-		ActivationStrength:   0.1,
-		ScoringPromptVersion: scoringPromptHash,
-		Metadata:             sceneMeta,
-	}
-	return a.Manager.Save(ctx, sceneDoc)
-}
-
-// writeSyncEdges scans the step output for explicit references and creates document_edges.
-// ADR-0017: synchronous (non-blocking) edge writing for closes + discussed_in relations.
-func (a *Agent) writeSyncEdges(ctx context.Context, sourceDocID, output string) {
-	if a.GraphStore == nil {
-		return
-	}
-
-	// Ticket reference: ENG-1234, ABC-567, #12345
-	ticketRe := regexp.MustCompile(`(?:[A-Z]+-\d+|#\d+)`)
-	// PR/commit URLs
-	prRe := regexp.MustCompile(`github\.com/[\w.-]+/[\w.-]+/(?:pull|commit)/[\w]+`)
-
-	for _, match := range ticketRe.FindAllString(output, -1) {
-		targetID := "ref:" + match
-		a.writeEdge(ctx, sourceDocID, targetID, domain.EdgeCloses)
-	}
-	for _, match := range prRe.FindAllString(output, -1) {
-		targetID := "ref:" + match
-		a.writeEdge(ctx, sourceDocID, targetID, domain.EdgeCloses)
-	}
-}
-
-func (a *Agent) writeEdge(ctx context.Context, sourceID, targetID string, edgeType domain.EdgeType) {
-	var weight float32
-	switch edgeType {
-	case domain.EdgeCloses:
-		weight = 0.6
-	case domain.EdgeDiscussedIn:
-		weight = 0.5
-	default:
-		weight = 0.5
-	}
-	edge := domain.DocumentEdge{
-		SourceID: sourceID,
-		TargetID: targetID,
-		EdgeType: edgeType,
-		Weight:   weight,
-	}
-	if err := a.GraphStore.SaveEdge(ctx, edge); err != nil {
-		slog.Debug("MemoryAgent: sync edge write failed", "err", err)
-	}
-}
-
-// JSON extraction from LLM responses (reasoning-wrapper-tolerant) lives in
-// domain as domain.ExtractJSONArray / domain.ExtractJSONObject —
-// shared with the awareness planner so the two no longer drift.
-
-// engagedCountForPlan reports how many entities a plan has accreted into its scene
-// scope. Test seam: the accretion is in-memory and otherwise only observable through a
-// completed scene, which is exactly what made its absence hard to see.
-func (a *Agent) engagedCountForPlan(planID string) int {
-	a.planEntitiesMu.Lock()
-	defer a.planEntitiesMu.Unlock()
-	return len(a.planEntities[planID])
-}
-
-// capabilitiesJSON renders the capability sequence for scene metadata. A JSON string
-// rather than a []string because metadata round-trips through JSONB, where a typed slice
-// comes back as []interface{} and every reader would have to re-narrow it.
-func capabilitiesJSON(caps []string) string {
-	if len(caps) == 0 {
-		return ""
-	}
-	b, err := json.Marshal(caps)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
+// The ADR-0015 tier-2 memory judge (the Tier-1 pending channel, StartTier2Drain, the
+// batched LLM scoring prompt and its heuristic fallback), its only feeders
+// (RecordExecution, recordReadFact), Agent.Query (a scan of that channel only tests
+// called) and the scene machinery around them (createSceneDoc, discussed_in and
+// follows edges, scene dedup and reinforcement) were deleted on 2026-11-05
+// (decisions/scenes-cancelled.md; investigations/2026-11-05-memory-judge-assessment.md).
+// The judge guarded a capture path ADR-0049 A2.2 forbids and was never measured.
 
 // outcomeOf renders a plan's success as the stored outcome vocabulary.
 func outcomeOf(success bool) string {
@@ -1821,114 +513,4 @@ func outcomeOf(success bool) string {
 		return "success"
 	}
 	return "failure"
-}
-
-// sceneIdentity is the DEDUP key: the abstracted projection plus the concrete entities
-// engaged.
-//
-// The projection alone is not enough, and getting this wrong costs in both directions.
-// It renders engaged entities by KIND and COUNT ("engages: 1 file") and canonicalGoal
-// strips paths from the goal — by design, because it is the RETRIEVAL face and must
-// match situations of the same shape. Reusing it as the dedup identity merged genuine
-// VARIANTS: three plans touching main.go, api.go and db.go project identically, so the
-// second and third were recorded as reruns of the first. Induction then saw one
-// situation where there were three, and no routine could ever reach min_samples.
-//
-// So identity = shape + the specific things acted on. Same shape AND same entities is
-// a rerun and reinforces; same shape on different entities is a variant and earns its
-// own episode, which is exactly the evidence a routine is generalised FROM.
-func sceneIdentity(projection string, refs []string) string {
-	if len(refs) == 0 {
-		return projection
-	}
-	sorted := append([]string(nil), refs...)
-	sort.Strings(sorted) // order of engagement is not part of identity
-	return projection + " | on: " + strings.Join(sorted, ",")
-}
-
-// findSceneByProjection returns an existing scene for this exact situation, or nil.
-//
-// Exact match on the identity key, not similarity: deciding that two DIFFERENT
-// situations are close enough to merge is a clustering judgement, and it belongs to
-// induction, which can be tuned and re-run. A write-path merge is irreversible.
-func (a *Agent) findSceneByProjection(ctx context.Context, identity string) *domain.Document {
-	if a.Manager == nil || a.Manager.Store == nil || identity == "" {
-		return nil
-	}
-	// Kernel-internal dedup probe on the WRITE path — no principal is asking. Explicit
-	// bypass, because the read chokepoint enforces by-identity reads (ADR-0095 D9) and
-	// would otherwise fail closed here, reporting every situation as unseen and silently
-	// re-minting the sibling scenes A2.9 exists to prevent.
-	docs, err := a.Manager.Store.QueryByMetadata(domain.WithScope(ctx, domain.ScopeSystem), map[string]string{
-		"scene_identity": identity,
-	}, 1)
-	if err != nil {
-		// Never swallowed: dedup dying quietly is indistinguishable from a genuinely new
-		// situation, and induction then counts reruns as confirmations (A2.9).
-		slog.WarnContext(ctx, "MemoryAgent: scene dedup probe failed; treating situation as new",
-			"identity", identity, "err", err)
-		return nil
-	}
-	if len(docs) == 0 {
-		return nil
-	}
-	// Only a scene reinforces a scene — the same projection key could in principle
-	// appear on another document type.
-	if docs[0].DocumentType != domain.DocTypeMnemonicScene {
-		return nil
-	}
-	return &docs[0]
-}
-
-// reinforceScene bumps an existing scene's seen_count and recency, and raises its
-// activation if THIS occurrence was more surprising than any before it.
-//
-// Repetition alone earns nothing: seeing the same unsurprising thing again is not
-// evidence that it deserves a retrieval slot, and boosting on repetition would let a
-// loop promote its own noise. What repetition earns is an honest COUNT.
-//
-// SURPRISE is different, and this is the subtle part. A surprising outcome in a
-// FAMILIAR situation is the most decision-relevant thing the system can observe — the
-// situation looked routine and was not. Deduplicating by situation must therefore not
-// suppress it: the scene carries the HIGHEST surprise ever seen in that situation, so
-// one shocking occurrence makes the memory retrievable even if a hundred dull ones
-// preceded it. Without this, dedup would silently disable the A2.3 surprise gate for
-// every repeated situation.
-func (a *Agent) reinforceScene(ctx context.Context, doc *domain.Document, outcome string, surprise float64) {
-	if doc.Metadata == nil {
-		doc.Metadata = map[string]interface{}{}
-	}
-	seen := 1
-	switch v := doc.Metadata["seen_count"].(type) {
-	case float64: // JSONB round-trips numbers as float64
-		seen = int(v) + 1
-	case int:
-		seen = v + 1
-	default:
-		seen = 2 // the row existed, so this sighting is at least the second
-	}
-	doc.Metadata["seen_count"] = seen
-	doc.Metadata["last_seen"] = time.Now().UTC().Format(time.RFC3339)
-	if surprise > 0 {
-		if activation := 0.1 + 0.4*surprise; activation > doc.ActivationStrength {
-			doc.ActivationStrength = activation
-			doc.Metadata["surprise"] = surprise
-		}
-	}
-	// Track outcomes so a situation that starts failing is visible without a second
-	// row: a routine induced from successes must not be reinforced by failures.
-	if outcome == "failure" {
-		fails := 0
-		if v, ok := doc.Metadata["failure_count"].(float64); ok {
-			fails = int(v)
-		}
-		doc.Metadata["failure_count"] = fails + 1
-	}
-	if err := a.Manager.Save(ctx, doc); err != nil {
-		slog.WarnContext(ctx, "MemoryAgent: scene reinforcement not persisted",
-			"scene", doc.ID, "err", err)
-		return
-	}
-	slog.DebugContext(ctx, "MemoryAgent: scene reinforced (duplicate situation)",
-		"scene", doc.ID, "seen_count", seen)
 }

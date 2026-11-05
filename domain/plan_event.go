@@ -52,11 +52,12 @@ type RetrievedDoc struct {
 // RetrievalSession captures the full state of a WorkspaceStage retrieval,
 // including query embedding, retrieved documents, and retroactive plan linkage.
 type RetrievalSession struct {
-	SessionID       string         `json:"session_id"`
-	Query           string         `json:"query"`
-	QueryEmbedding  []float32      `json:"query_embedding,omitempty"`
-	Caller          string         `json:"caller"` // "planning" or "execution"
-	SceneHits       int            `json:"scene_hits"`
+	SessionID      string    `json:"session_id"`
+	Query          string    `json:"query"`
+	QueryEmbedding []float32 `json:"query_embedding,omitempty"`
+	Caller         string    `json:"caller"` // "planning" or "execution"
+	// SceneHits (`scene_hits`) was removed 2026-11-05 with the WorkspaceStage scene
+	// priming; sessions logged before carry it and decode without it.
 	FactHits        int            `json:"fact_hits"`
 	RetrievedDocs   []RetrievedDoc `json:"retrieved_docs"`
 	Truncated       bool           `json:"truncated"`

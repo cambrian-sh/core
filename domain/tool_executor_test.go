@@ -338,61 +338,6 @@ func TestToolExecutor_UnrestrictedMode(t *testing.T) {
 	}
 }
 
-// A sandboxed evaluation session auto-approves a dangerous tool (the interview
-// has no operator); a non-evaluation session still hits the operator gate; and
-// an empty token is never an evaluation (fail-closed to approval).
-func TestToolExecutor_EvaluationSessionAutoApproves(t *testing.T) {
-	t.Parallel()
-	reg := NewInMemoryToolRegistry()
-	reg.Register(SystemTool{Name: "execute_command", Dangerous: true})
-	grant := ToolGrant{Tool: "execute_command"}
-	evals := NewInMemoryEvaluationSessions()
-	evals.Mark("interview-tok")
-
-	// Evaluation session: auto-approved even though the operator approver would deny.
-	hEval := &fakeHandler{result: []byte(`"ran"`)}
-	eEval := newExec(reg, grantStore("a", grant), hEval)
-	eEval.Approval = &fakeApproval{approve: false} // operator would deny
-	eEval.EvalSessions = evals
-	r := eEval.Execute(context.Background(), ToolCallRequest{
-		AgentID: "a", ToolName: "execute_command", SessionTokenID: "interview-tok",
-	})
-	if r.Denied {
-		t.Fatalf("evaluation session must auto-approve dangerous tool, denied: %s", r.DenyReason)
-	}
-	if !hEval.called {
-		t.Error("evaluation session: handler should run")
-	}
-	if r.ApproverID != "evaluation-sandbox" {
-		t.Errorf("evaluation auto-approval should be audited, ApproverID=%q", r.ApproverID)
-	}
-
-	// Non-evaluation session under the same executor still gates on the operator.
-	hLive := &fakeHandler{result: []byte(`"ran"`)}
-	eLive := newExec(reg, grantStore("a", grant), hLive)
-	eLive.Approval = &fakeApproval{approve: false}
-	eLive.EvalSessions = evals
-	if r := eLive.Execute(context.Background(), ToolCallRequest{
-		AgentID: "a", ToolName: "execute_command", SessionTokenID: "live-tok",
-	}); !r.Denied {
-		t.Error("non-evaluation session must still be operator-gated")
-	}
-	if hLive.called {
-		t.Error("operator-denied live session must not run")
-	}
-
-	// Empty token is never an evaluation, even with a set wired.
-	hAnon := &fakeHandler{result: []byte(`"ran"`)}
-	eAnon := newExec(reg, grantStore("a", grant), hAnon)
-	eAnon.Approval = &fakeApproval{approve: false}
-	eAnon.EvalSessions = evals
-	if r := eAnon.Execute(context.Background(), ToolCallRequest{
-		AgentID: "a", ToolName: "execute_command", SessionTokenID: "",
-	}); !r.Denied {
-		t.Error("empty session token must fail closed to operator approval")
-	}
-}
-
 // The auto-approve controller (tools_auto_approve) approves every dangerous call.
 func TestAlwaysApproveController(t *testing.T) {
 	t.Parallel()
@@ -412,5 +357,3 @@ func TestAlwaysApproveController(t *testing.T) {
 
 var _ ApprovalController = (*fakeApproval)(nil)
 var _ ApprovalController = AlwaysApproveController{}
-var _ EvaluationSessionSet = (*InMemoryEvaluationSessions)(nil)
-var _ EvaluationSessionMarker = (*InMemoryEvaluationSessions)(nil)

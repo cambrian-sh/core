@@ -2,10 +2,12 @@ package network
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,48 +18,54 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 )
 
-type modelHealthState int
-
-const (
-	healthHealthy modelHealthState = iota
-	healthUnhealthy
-	healthRateLimited
-)
-
-type modelHealthEntry struct {
-	state     modelHealthState
-	expiresAt time.Time
-	reason    string // last failure cause (e.g. "openai: HTTP 401: ...") — surfaced in the degraded error
-}
-
 // LLMGateway is the central control point for ADR-0018 managed LLM calls.
-// It owns the session store, CONWIP semaphore, and health cache circuit breaker.
+// It owns the lease store, the CONWIP semaphore, lease admission against the
+// session spend ceiling, and lease metering. Model health is NOT its concern: since
+// ADR-0139 wave 1c every call is served through the Provider's stack (StepModels),
+// whose circuit breaker is the only health authority.
 type LLMGateway interface {
 	Acquire(ctx context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (domain.LeaseID, error)
 	Complete(ctx context.Context, leaseID domain.LeaseID) (llm.TokenUsage, error)
 	EvictExpired()
-	StreamChunks(ctx context.Context, leaseID domain.LeaseID, prompt string, opts domain.GenerateOptions, out chan<- domain.StreamChunk) error
-	// GenerateWithTools runs ONE managed generation turn with native tool-calling
-	// (ADR-0097 Phase B). Returns ErrToolCallingUnsupported when the allocated model
-	// cannot do it, which callers translate into the prompt-encoded fallback rather
-	// than a failure.
-	GenerateWithTools(ctx context.Context, leaseID domain.LeaseID, messages []domain.ModelMessage, opts domain.GenerateOptions, tools []domain.ToolDefinition) (domain.ModelTurn, error)
+	// StreamChunks serves one streamed C1 request under a lease. The final chunk
+	// forwarded to out carries the complete GenerateResponse (StreamChunk.Response:
+	// Ignored, usage, stop reason, model) when the call ended normally.
+	StreamChunks(ctx context.Context, leaseID domain.LeaseID, req domain.GenerateRequest, out chan<- domain.StreamChunk) error
+	// GenerateWithTools runs ONE managed C1 turn, normally with native tool-calling
+	// (ADR-0097 Phase B). Returns ErrToolCallingUnsupported when the serving model
+	// cannot call tools, which callers translate into the prompt-encoded fallback
+	// rather than a failure.
+	GenerateWithTools(ctx context.Context, leaseID domain.LeaseID, req domain.GenerateRequest) (domain.GenerateResponse, error)
 }
+
+// StepModels is the gateway's view of the LLM Provider (ADR-0139 D1: one pathway,
+// one breaker). *llm.Provider implements it. candidates are generator ids in
+// preference order; the implementation serves the call on the first one its breaker
+// admits and falls back down the list on endpoint-class failures only (transport,
+// 429, 5xx) — never on a refusal, a schema failure or an unsupported field. It
+// returns the id of the generator that served the call. It must NOT meter: the
+// gateway books lease calls itself.
+type StepModels interface {
+	GenerateOn(ctx context.Context, candidates []string, req domain.GenerateRequest) (domain.GenerateResponse, string, error)
+	StreamOn(ctx context.Context, candidates []string, req domain.GenerateRequest) (<-chan domain.StreamChunk, string, error)
+}
+
+var _ StepModels = (*llm.Provider)(nil)
 
 // SubstrateLLMGateway implements LLMGateway.
 type SubstrateLLMGateway struct {
-	mu            sync.RWMutex
-	sessions      map[domain.LeaseID]*domain.BudgetLeaseState
-	semaphore     chan struct{}
-	healthCache   map[string]*modelHealthEntry
-	modelClients  map[string]domain.LLMStreamer // model agent ID → streaming client
-	cfg           config.ExecutionConfig
-	clientFactory func(agentID string) (domain.LLMStreamer, error)
-	Observer      domain.TelemetryObserver // ADR-0019: may be nil (no op)
-	// defaultModelID is the streaming model used when a step's StepAllocation has
-	// no model winner (the auction returned no TraitModel candidate). It is the
-	// streaming-path analogue of the broker's default generator that serves the
-	// organs, so an agent step still runs instead of failing. Empty ⇒ no fallback.
+	mu        sync.RWMutex
+	sessions  map[domain.LeaseID]*domain.BudgetLeaseState
+	semaphore chan struct{}
+	cfg       config.ExecutionConfig
+	// models serves every call (ADR-0139 D1): the Provider's breaker, tracing,
+	// concurrency cap and schema layer. Attached at composition, before serving.
+	models   StepModels
+	Observer domain.TelemetryObserver // ADR-0019: may be nil (no op)
+	// defaultModelID is the LAST rung of every step's model chain: winner →
+	// fallbacks → default. With no allocated winner it is the only rung, so an agent
+	// step still runs instead of failing — the analogue of the Provider ladder's
+	// global default. An agent id ("llm:<generator>"). Empty ⇒ no rung.
 	defaultModelID string
 
 	// meter is the ADR-0131 D1 spend ledger — the SAME object the Provider meters
@@ -71,6 +79,34 @@ type SubstrateLLMGateway struct {
 	// D6 run-scoped skill grants keyed by the lease
 	// (T-20261101-retrieval-dispatch-lease-retrieval-dispatch-go).
 	onComplete atomic.Pointer[func(domain.LeaseID)]
+
+	// agentModel resolves the model preference of the agent a lease is bound to
+	// (agent stack v2: a declarative profile's `model:`, a generator id or the
+	// generator behind a role, resolved per call so a role reassignment is live).
+	// The preferred generator becomes the FIRST rung of that lease's chain, ahead of
+	// the step allocation and the default: a prior, never a command — an unknown or
+	// unhealthy id is skipped by the Provider's chain walk and the next rung serves.
+	// Nil, or "" for an agent, ⇒ the chain is unchanged.
+	agentModel atomic.Pointer[func(agentID string) string]
+}
+
+// SetAgentModelPreference attaches the per-agent model preference resolver (see
+// agentModel). It returns a generator id, or "" for no preference.
+func (g *SubstrateLLMGateway) SetAgentModelPreference(fn func(agentID string) string) {
+	if fn == nil {
+		g.agentModel.Store(nil)
+		return
+	}
+	g.agentModel.Store(&fn)
+}
+
+// preferredModel is the generator the lease's bound agent prefers, or "".
+func (g *SubstrateLLMGateway) preferredModel(ss *domain.BudgetLeaseState) string {
+	fn := g.agentModel.Load()
+	if fn == nil || ss == nil || ss.Binding.AgentID == "" {
+		return ""
+	}
+	return (*fn)(ss.Binding.AgentID)
 }
 
 // SetSpendMeter attaches the ADR-0131 spend ledger. Every agent stream and tool
@@ -99,29 +135,23 @@ func (g *SubstrateLLMGateway) SetDefaultModelID(modelID string) {
 	g.defaultModelID = modelID
 }
 
-// NewLLMGateway creates a wired SubstrateLLMGateway.
+// NewLLMGateway creates a SubstrateLLMGateway. The composition root attaches its
+// StepModels (SetStepModels) before any lease is used.
 func NewLLMGateway(cfg config.ExecutionConfig) *SubstrateLLMGateway {
-	gw := &SubstrateLLMGateway{
-		sessions:     make(map[domain.LeaseID]*domain.BudgetLeaseState),
-		semaphore:    make(chan struct{}, cfg.LLM.LLMGatewayMaxConcurrency),
-		healthCache:  make(map[string]*modelHealthEntry),
-		modelClients: make(map[string]domain.LLMStreamer),
-		cfg:          cfg,
+	return &SubstrateLLMGateway{
+		sessions:  make(map[domain.LeaseID]*domain.BudgetLeaseState),
+		semaphore: make(chan struct{}, cfg.LLM.LLMGatewayMaxConcurrency),
+		cfg:       cfg,
 	}
-	_ = gw // caller injects clientFactory and modelClients after construction
-	return gw
 }
 
-// SetClientFactory configures how model streaming clients are resolved.
-func (g *SubstrateLLMGateway) SetClientFactory(f func(agentID string) (domain.LLMStreamer, error)) {
-	g.clientFactory = f
-}
-
-// RegisterModelClient pre-registers a streaming client for a model agent ID.
-func (g *SubstrateLLMGateway) RegisterModelClient(agentID string, client domain.LLMStreamer) {
+// SetStepModels attaches the model source every lease call is served through — the
+// kernel's *llm.Provider in production. A live generator reload needs no call here:
+// the Provider swaps its own table.
+func (g *SubstrateLLMGateway) SetStepModels(m StepModels) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.modelClients[agentID] = client
+	g.models = m
 }
 
 // minSessionTTL floors a session's initial lifetime. The TTL is a LEAK safety-net (the
@@ -144,6 +174,22 @@ const (
 	StepLeaseDuration   = 30 * time.Second
 )
 
+// leaseIDBytes is the lease id's entropy: 128 bits (ADR-0139 D8).
+const leaseIDBytes = 16
+
+// newLeaseID mints a lease id from crypto/rand. A lease is a bearer credential — it
+// resolves to a session, a beneficiary, a conversation and a spend budget — so it must be
+// unguessable. The previous `lease-<UnixNano>-<math/rand%10000>` had about 13 bits of
+// entropy on top of a clock an observer can estimate, and it was clock-derived identity
+// (AGENTS.md §2.6). The "lease-" prefix is kept: operators and logs recognise it.
+func newLeaseID() (domain.LeaseID, error) {
+	var b [leaseIDBytes]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("llm gateway: mint lease id: %w", err)
+	}
+	return domain.LeaseID("lease-" + hex.EncodeToString(b[:])), nil
+}
+
 // Acquire creates a new session for a step, allocating a session token UUID.
 //
 // A lease acquired under a domain.WithBackgroundSpend ctx is a background lease
@@ -151,7 +197,10 @@ const (
 // is bound to, never refused at that session's ceiling. The marker is read here,
 // from the kernel-side ctx that mints the lease, so no agent can claim it.
 func (g *SubstrateLLMGateway) Acquire(ctx context.Context, sa domain.StepAllocation, tokenLimit int, estimatedDuration time.Duration) (domain.LeaseID, error) {
-	sessionID := domain.LeaseID(fmt.Sprintf("lease-%d-%d", time.Now().UnixNano(), rand.Int63()%10000))
+	sessionID, err := newLeaseID()
+	if err != nil {
+		return "", err
+	}
 	now := time.Now()
 	ttl := time.Duration(float64(estimatedDuration) * g.cfg.Session.SessionTokenTTLMultiplier)
 	if ttl < minSessionTTL {
@@ -192,12 +241,36 @@ func (g *SubstrateLLMGateway) BindLease(leaseID domain.LeaseID, b domain.LeaseBi
 	}
 }
 
+// BindLeaseAgent records the agent a lease has just been dispatched to
+// (domain.LeaseAgentBinder), leaving the rest of the binding as BindLease wrote it. The
+// dispatcher calls it immediately before every CallAgent, so the ADR-0139 D8 ownership
+// check (Server.resolveLeaseFor) applies to plan-step leases, which are minted before
+// selection. See domain.LeaseAgentBinder for why the AgentID moves on re-dispatch.
+func (g *SubstrateLLMGateway) BindLeaseAgent(leaseID domain.LeaseID, agentID string) bool {
+	if g == nil || leaseID == "" || agentID == "" {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st, ok := g.sessions[leaseID]
+	if !ok {
+		return false
+	}
+	if prev := st.Binding.AgentID; prev != "" && prev != agentID {
+		slog.Debug("lease handed to another agent by dispatch",
+			"lease_prev_agent", prev, "lease_agent", agentID, "step", st.Binding.StepIndex)
+	}
+	st.Binding.AgentID = agentID
+	return true
+}
+
 // ResolveLease returns the identity bound to leaseID (domain.LeaseResolver).
 //
 // The bool reports whether the lease is KNOWN, not whether it carries a binding — a live
 // but unbound lease returns (zero, true). Transports rely on that distinction: "known
 // lease" means the caller is an agent and its header must not be read as a session ID,
-// even when no session was bound.
+// even when no session was bound. Whether the CALLER may use the lease is decided by
+// Server.resolveLeaseFor, not here: an agent may use only a lease bound to itself.
 func (g *SubstrateLLMGateway) ResolveLease(leaseID domain.LeaseID) (domain.LeaseBinding, bool) {
 	if g == nil || leaseID == "" {
 		return domain.LeaseBinding{}, false
@@ -320,7 +393,9 @@ func admitLease(meter *llm.SpendMeter, ss *domain.BudgetLeaseState, sid domain.S
 func (g *SubstrateLLMGateway) EvictExpired() {
 	g.mu.Lock()
 	for id, ss := range g.sessions {
-		if time.Now().After(ss.ExpiresAt) {
+		// A lease with a call in flight is live whatever its TTL says: a long
+		// unary generation refreshes nothing until it returns.
+		if ss.InFlightCalls == 0 && time.Now().After(ss.ExpiresAt) {
 			slog.Warn("session_token_leaked", "session_id", id, "agent_id", ss.StepAllocation.Winner.ID)
 			delete(g.sessions, id)
 		}
@@ -363,111 +438,248 @@ func (g *SubstrateLLMGateway) GetBudgetLeaseState(id domain.LeaseID) *domain.Bud
 	return &cpy
 }
 
-// StreamChunks opens a managed stream to the allocated TraitModel.
-// It applies CONWIP, health cache routing, Pass 1 budget enforcement,
-// and Pass 2 reconciliation.
-func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain.LeaseID, prompt string, opts domain.GenerateOptions, out chan<- domain.StreamChunk) error {
-	start := time.Now()
+// leaseCall is what both lease lanes resolve before a model is touched.
+type leaseCall struct {
+	ss         *domain.BudgetLeaseState
+	candidates []string // generator ids: winner → fallbacks → default
+	sid        domain.SessionID
+	meter      *llm.SpendMeter
+	prompt     string // the request text, for admission and the len/4 estimate
+	models     StepModels
+}
+
+// beginLeaseCall runs the guards every managed call shares — lease lookup, the
+// step's model chain, and the ADR-0131 D3 ceiling check — so the streaming lane and
+// the tool lane cannot drift apart on any of them. The caller holds a CONWIP slot.
+func (g *SubstrateLLMGateway) beginLeaseCall(ctx context.Context, sessionID domain.LeaseID, req domain.GenerateRequest) (*leaseCall, error) {
+	g.mu.RLock()
+	ss, ok := g.sessions[sessionID]
+	def := g.defaultModelID
+	models := g.models
+	g.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+	candidates := withPreferredModel(g.preferredModel(ss), stepCandidates(ss.StepAllocation, def))
+	if len(candidates) == 0 {
+		// An ALLOCATION problem — the auction produced no model candidate and no
+		// default is configured — not a health one.
+		slog.Error("llm_gateway: no model allocated to this step and no default model configured. " +
+			"Check the agent manifest's RequiredModelCapabilities and that a matching TraitModel is registered.")
+		return nil, fmt.Errorf("no model allocated for session %s and no default model configured", sessionID)
+	}
+	if models == nil {
+		return nil, fmt.Errorf("llm gateway: no model source wired (SetStepModels)")
+	}
+	lc := &leaseCall{ss: ss, candidates: candidates, sid: leaseSession(ctx, ss),
+		meter: g.meter.Load(), prompt: llm.RequestText(req), models: models}
+	// ADR-0131 D3: the session ceiling is checked before any model is touched.
+	if err := admitLease(lc.meter, ss, lc.sid, lc.prompt); err != nil {
+		return nil, err
+	}
+	return lc, nil
+}
+
+// stepCandidates is a step's model chain as generator ids: the auction's winner,
+// its fallbacks, then the configured default, without repeats (ADR-0139 D1).
+// Allocations and the default name model AGENTS ("llm:<generator id>"); the
+// Provider is keyed by generator id.
+func stepCandidates(sa domain.StepAllocation, defaultModelID string) []string {
+	ids := make([]string, 0, 4)
+	add := func(agentID string) {
+		id := strings.TrimPrefix(agentID, "llm:")
+		if id == "" || slices.Contains(ids, id) {
+			return
+		}
+		ids = append(ids, id)
+	}
+	add(sa.Winner.ID)
+	for _, fb := range sa.Fallbacks {
+		add(fb.ID)
+	}
+	add(defaultModelID)
+	return ids
+}
+
+// withPreferredModel puts the bound agent's preferred generator first on the
+// chain, without repeating it. "" leaves the chain as it is.
+func withPreferredModel(pref string, chain []string) []string {
+	pref = strings.TrimPrefix(pref, "llm:")
+	if pref == "" {
+		return chain
+	}
+	out := make([]string, 0, len(chain)+1)
+	out = append(out, pref)
+	for _, id := range chain {
+		if id != pref {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// acquireSlot takes a CONWIP slot, or fails fast with gateway_overflow.
+func (g *SubstrateLLMGateway) acquireSlot(ctx context.Context) (func(), error) {
 	select {
 	case g.semaphore <- struct{}{}:
-		defer func() { <-g.semaphore }()
+		return func() { <-g.semaphore }, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	default:
-		return fmt.Errorf("gateway_overflow")
+		return nil, fmt.Errorf("gateway_overflow")
 	}
+}
+
+// trackCall marks one model call as in flight on the lease until the returned func
+// runs (once, when the call returns). It is what makes a long UNARY generation
+// visible as liveness: such a call streams nothing, so without the in-flight count
+// the chat stall watchdog saw a healthy 60-90 s generation as silence and cancelled
+// it (T-20261105-slow-model-reliability-hardcoded-20-s). A counter read on demand,
+// not a heartbeat goroutine per call, so a hot path gains no goroutines.
+func (g *SubstrateLLMGateway) trackCall(leaseID domain.LeaseID) func() {
+	g.mu.Lock()
+	if s, ok := g.sessions[leaseID]; ok {
+		s.InFlightCalls++
+		g.touchLocked(s)
+	}
+	g.mu.Unlock()
+	return func() {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		// Looked up again: Complete may have removed the lease meanwhile.
+		if s, ok := g.sessions[leaseID]; ok {
+			if s.InFlightCalls > 0 {
+				s.InFlightCalls--
+			}
+			s.LastActivityAt = time.Now()
+		}
+	}
+}
+
+// ConversationActivity reports when model work for a conversation was last seen:
+// now while any call is in flight on a lease bound to it (domain.LeaseBinding
+// .ConversationID, stamped by the chat lane at turn start), else the latest call
+// start, chunk or return on those leases. Zero when no live lease is bound to the
+// conversation. It is the gateway's half of the chat liveness probe
+// (app.go composes it with the progress holder's LastActivity); a plain lease scan,
+// because it is polled a few times per stall window, not per call.
+func (g *SubstrateLLMGateway) ConversationActivity(conversationID string) time.Time {
+	if conversationID == "" {
+		return time.Time{}
+	}
+	return g.activityWhere(func(b domain.LeaseBinding) bool { return b.ConversationID == conversationID })
+}
+
+// RunActivity is ConversationActivity for a plan: the leases bound to runID (every
+// step lease of one Execute carries its run id, server.go BindLease). It is the
+// gateway's half of the plan idle watchdog (plan_watchdog.go), the same counter
+// the chat stall watchdog reads — one liveness mechanism, two consumers
+// (T-20261105-owner-decision-needed-120-s-plan-timeout-ms).
+func (g *SubstrateLLMGateway) RunActivity(runID domain.RunID) time.Time {
+	if runID == "" {
+		return time.Time{}
+	}
+	return g.activityWhere(func(b domain.LeaseBinding) bool { return b.RunID == runID })
+}
+
+// activityWhere is the shared lease scan behind ConversationActivity and
+// RunActivity: now when a matching lease has work in flight, else the latest
+// activity on the matching leases, else zero.
+func (g *SubstrateLLMGateway) activityWhere(match func(domain.LeaseBinding) bool) time.Time {
+	if g == nil {
+		return time.Time{}
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	var last time.Time
+	for _, s := range g.sessions {
+		if !match(s.Binding) {
+			continue
+		}
+		if s.InFlightCalls > 0 {
+			return time.Now()
+		}
+		if s.LastActivityAt.After(last) {
+			last = s.LastActivityAt
+		}
+	}
+	return last
+}
+
+// TrackLeaseWork marks kernel-side work done for the holder of a lease — a tool
+// call (ExecuteTool) or a recall (QueryMemory) — as in flight on that lease until
+// the returned func runs, exactly like a model call (trackCall). Those RPCs can
+// run for minutes (a page fetch, an agentic retrieval chain) without a model call
+// on the lease, and a plan or chat turn doing that is working, not idle. A no-op
+// for an empty or unknown lease; the returned func is always safe to call.
+func (g *SubstrateLLMGateway) TrackLeaseWork(leaseID domain.LeaseID) func() {
+	if g == nil || leaseID == "" {
+		return func() {}
+	}
+	return g.trackCall(leaseID)
+}
+
+// touchLocked refreshes a lease's keepalive TTL. Callers hold g.mu.
+func (g *SubstrateLLMGateway) touchLocked(s *domain.BudgetLeaseState) {
+	ttl := time.Duration(float64(time.Minute) * g.cfg.Session.SessionTokenTTLMultiplier)
+	s.ExpiresAt = time.Now().Add(ttl)
+	s.LastActivityAt = time.Now()
+}
+
+// StreamChunks opens a managed stream on the step's model chain (ADR-0018,
+// ADR-0139 D1). It applies CONWIP, lease admission, Pass 1 budget enforcement and
+// Pass 2 reconciliation. Health and fallback are the Provider's: there is no second
+// health cache here.
+func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain.LeaseID, req domain.GenerateRequest, out chan<- domain.StreamChunk) error {
+	start := time.Now()
+	release, err := g.acquireSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if g.Observer != nil {
 		g.Observer.OnConwipWait(time.Since(start).Milliseconds())
 	}
 
-	g.mu.RLock()
-	ss, ok := g.sessions[sessionID]
-	g.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("session not found: %s", sessionID)
-	}
-
-	// Build the candidate chain from StepAllocation, skipping empty ids (an empty
-	// Winner.ID means the auction allocated no model to this step).
-	modelIDs := make([]string, 0, 4)
-	if ss.StepAllocation.Winner.ID != "" {
-		modelIDs = append(modelIDs, ss.StepAllocation.Winner.ID)
-	}
-	if ss.StepAllocation.Fallbacks[0].ID != "" {
-		modelIDs = append(modelIDs, ss.StepAllocation.Fallbacks[0].ID)
-	}
-	if ss.StepAllocation.Fallbacks[1].ID != "" {
-		modelIDs = append(modelIDs, ss.StepAllocation.Fallbacks[1].ID)
-	}
-	// Resilience: when no model was allocated (empty StepAllocation — e.g. no
-	// TraitModel agent is registered or matched the step), fall back to the
-	// configured default model so the agent still generates, instead of failing
-	// the step. This is the streaming-path analogue of the broker's default
-	// generator that already serves the organs (planner/memory/verifier).
-	g.mu.RLock()
-	def := g.defaultModelID
-	g.mu.RUnlock()
-	if len(modelIDs) == 0 && def != "" {
-		slog.Warn("llm_gateway: step has no allocated model; using configured default model",
-			"default_model", def, "session", sessionID)
-		modelIDs = append(modelIDs, def)
-	}
-	if len(modelIDs) == 0 {
-		return fmt.Errorf("no model allocated for session %s and no default model configured", sessionID)
-	}
-
-	// ADR-0131 D3: the session ceiling is checked before any model is touched.
-	meter := g.meter.Load()
-	sid := leaseSession(ctx, ss)
-	if err := admitLease(meter, ss, sid, prompt); err != nil {
-		return err
-	}
-
-	// Find first healthy model
-	modelID, err := g.selectHealthyModel(modelIDs)
+	lc, err := g.beginLeaseCall(ctx, sessionID, req)
 	if err != nil {
 		return err
 	}
+	defer g.trackCall(sessionID)()
 
-	streamer, err := g.getStreamer(modelID)
+	// The stream is cancelled when this call returns. A Pass-1 cut stops reading
+	// early, and the Provider's layers (its concurrency slot, the breaker record)
+	// release only once the stream ends, so the cut must end it.
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	chunks, modelID, err := lc.models.StreamOn(sctx, lc.candidates, req)
 	if err != nil {
-		slog.Error("llm_gateway: no streaming client for model (check that the generator is configured and its provider is supported)",
-			"model", modelID, "err", err)
-		return err
-	}
-
-	// Open stream from the model
-	chunks, err := streamer.GenerateStream(ctx, prompt)
-	if err != nil {
-		// Surface the REAL cause (e.g. "openai: HTTP 401", connection refused, bad
-		// endpoint). Without this the only thing the agent ever sees is the generic
-		// "model_unavailable: all candidates degraded" raised by the next call's
-		// fast-fail within the cooldown window — the actual failure is invisible.
-		slog.Error("llm_gateway: model stream failed; marking degraded for cooldown",
-			"model", modelID, "err", err)
-		g.markUnhealthy(modelID, err.Error())
+		// Surface the REAL cause (HTTP 401, connection refused, bad endpoint).
+		slog.Error("llm_gateway: model stream failed",
+			"candidates", lc.candidates, "model", modelID, "err", err)
 		return err
 	}
 
 	// Pass 1: per-chunk budget enforcement
-	var fullText string
+	var fullText strings.Builder
 	var accumulated int
 	var usage llm.StreamUsage
-	cutoff := int(float64(ss.TokenLimit) * 0.9)
+	var final *domain.GenerateResponse
+	cutoff := int(float64(lc.ss.TokenLimit) * 0.9)
 	overrun := false
 
 	for chunk := range chunks {
 		usage.Observe(chunk)
-		// Keepalive TTL refresh
+		if chunk.Response != nil {
+			final = chunk.Response
+		}
 		g.mu.Lock()
 		if s, ok := g.sessions[sessionID]; ok {
-			ttl := time.Duration(float64(time.Minute) * g.cfg.Session.SessionTokenTTLMultiplier)
-			s.ExpiresAt = time.Now().Add(ttl)
-			s.LastActivityAt = time.Now()
+			g.touchLocked(s)
 		}
 		g.mu.Unlock()
 
-		fullText += chunk.Text
+		fullText.WriteString(chunk.Text)
 		accumulated += llm.EstimateTokens(chunk.Text)
 
 		if accumulated >= cutoff && !overrun {
@@ -483,21 +695,33 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		out <- chunk
 	}
 
-	// Providers often send usage AFTER the first final chunk (OpenAI's usage chunk
-	// trails finish_reason). On a natural end, read the rest of the stream — the
-	// agent has its answer already, nothing more is forwarded — so the usage is
-	// real rather than estimated. Not after a Pass-1 cut: waiting for a runaway
-	// generation to finish would defeat the cut.
-	if !overrun {
+	if overrun {
+		// Waiting for a runaway generation to finish would defeat the cut: cancel
+		// it, then drain so every layer down to the adapter can close.
+		cancel()
+		for range chunks {
+		}
+	} else {
+		// Providers often send usage AFTER the first final chunk (OpenAI's usage
+		// chunk trails finish_reason). Read the rest — nothing more is forwarded —
+		// so the usage is real rather than estimated.
 		for chunk := range chunks {
 			usage.Observe(chunk)
+			if chunk.Response != nil {
+				final = chunk.Response
+			}
 		}
 	}
 
 	// Pass 2: post-stream reconciliation. Provider usage when the stream carried
 	// it; otherwise the len/4 estimate over prompt AND response, flagged
-	// Estimated (ADR-0131 D2). This used to compute a value and discard it.
-	reconciled := llm.ReconcileTokens(prompt, usage.Chunk(), fullText)
+	// Estimated (ADR-0131 D2).
+	var reconciled llm.TokenUsage
+	if final != nil && !overrun {
+		reconciled = llm.ResponseUsage(lc.prompt, *final)
+	} else {
+		reconciled = llm.ReconcileTokens(lc.prompt, usage.Chunk(), fullText.String())
+	}
 
 	g.mu.Lock()
 	if s, ok := g.sessions[sessionID]; ok {
@@ -510,207 +734,66 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		}
 	}
 	g.mu.Unlock()
-	meter.RecordSessionTally(sid, ss.Tally, g.leasePurpose(ss), modelID, reconciled)
-
-	// Update health cache on success
-	g.markHealthy(modelID)
-
+	lc.meter.RecordSessionTally(lc.sid, lc.ss.Tally, g.leasePurpose(lc.ss), modelID, reconciled)
 	return nil
 }
 
-// ErrToolCallingUnsupported is returned when the model allocated to a step cannot do
+// ErrToolCallingUnsupported is returned when the model serving a step cannot do
 // native tool-calling. It is a CAPABILITY answer, not a failure: the caller is
 // expected to fall back to the prompt-encoded action protocol, so it must stay
 // distinguishable from a real generation error.
 var ErrToolCallingUnsupported = errors.New("tool_calling_unsupported")
 
-// GenerateWithTools runs one managed generation turn with native tool-calling.
+// GenerateWithTools runs one managed C1 turn, normally with native tool-calling.
 //
-// It reuses the same guards as StreamChunks — CONWIP, session lookup, allocation
-// chain with default-model fallback, health selection — because a tool-calling turn
-// is the same managed LLM call, just with a different response shape. Diverging on
-// any of those would mean the tool path quietly escapes budget or health control.
-func (g *SubstrateLLMGateway) GenerateWithTools(
-	ctx context.Context, sessionID domain.LeaseID, messages []domain.ModelMessage,
-	opts domain.GenerateOptions, tools []domain.ToolDefinition,
-) (domain.ModelTurn, error) {
-	var zero domain.ModelTurn
-
-	select {
-	case g.semaphore <- struct{}{}:
-		defer func() { <-g.semaphore }()
-	case <-ctx.Done():
-		return zero, ctx.Err()
-	default:
-		return zero, fmt.Errorf("gateway_overflow")
+// It shares every guard with StreamChunks — CONWIP, lease lookup, the model chain,
+// admission — because a tool turn is the same managed LLM call with a different
+// response shape. Diverging on any of those would let the tool path escape budget
+// control.
+func (g *SubstrateLLMGateway) GenerateWithTools(ctx context.Context, sessionID domain.LeaseID, req domain.GenerateRequest) (domain.GenerateResponse, error) {
+	release, err := g.acquireSlot(ctx)
+	if err != nil {
+		return domain.GenerateResponse{}, err
 	}
+	defer release()
 
-	g.mu.RLock()
-	ss, ok := g.sessions[sessionID]
-	g.mu.RUnlock()
-	if !ok {
-		return zero, fmt.Errorf("session not found: %s", sessionID)
+	lc, err := g.beginLeaseCall(ctx, sessionID, req)
+	if err != nil {
+		return domain.GenerateResponse{}, err
 	}
+	defer g.trackCall(sessionID)()
 
-	modelIDs := make([]string, 0, 4)
-	if ss.StepAllocation.Winner.ID != "" {
-		modelIDs = append(modelIDs, ss.StepAllocation.Winner.ID)
-	}
-	for _, fb := range ss.StepAllocation.Fallbacks {
-		if fb.ID != "" {
-			modelIDs = append(modelIDs, fb.ID)
+	resp, modelID, err := lc.models.GenerateOn(ctx, lc.candidates, req)
+	if err != nil {
+		if len(req.Tools) > 0 && isToolsUnsupported(err) {
+			// Capability, not health: the Provider's breaker does not count an
+			// unsupported field, so the model stays in service for text.
+			return domain.GenerateResponse{}, fmt.Errorf("%w: model %s: %w", ErrToolCallingUnsupported, modelID, err)
 		}
-	}
-	g.mu.RLock()
-	def := g.defaultModelID
-	g.mu.RUnlock()
-	if len(modelIDs) == 0 && def != "" {
-		modelIDs = append(modelIDs, def)
-	}
-	if len(modelIDs) == 0 {
-		return zero, fmt.Errorf("no model allocated for session %s and no default model configured", sessionID)
+		slog.Error("llm_gateway: generation failed",
+			"candidates", lc.candidates, "model", modelID, "err", err)
+		return domain.GenerateResponse{}, err
 	}
 
-	meter := g.meter.Load()
-	sid := leaseSession(ctx, ss)
-	prompt := llm.MessagesText(messages)
-	if err := admitLease(meter, ss, sid, prompt); err != nil {
-		return zero, err
-	}
-
-	modelID, err := g.selectHealthyModel(modelIDs)
-	if err != nil {
-		return zero, err
-	}
-
-	client, err := g.getStreamer(modelID)
-	if err != nil {
-		return zero, err
-	}
-	tg, ok := client.(domain.ToolCallingGenerator)
-	if !ok || !domain.SupportsToolCalling(client) {
-		// Capability, not health: do NOT mark the model degraded. A model that
-		// cannot do tool-calling is perfectly healthy for text generation, and
-		// poisoning the health cache here would take it out of service entirely.
-		return zero, fmt.Errorf("%w: model %s", ErrToolCallingUnsupported, modelID)
-	}
-
-	cctx, capture := llm.WithUsageCapture(ctx)
-	turn, err := tg.GenerateWithTools(cctx, messages, tools)
-	if err != nil {
-		slog.Error("llm_gateway: tool-calling generation failed; marking degraded for cooldown",
-			"model", modelID, "err", err)
-		g.markUnhealthy(modelID, err.Error())
-		return zero, err
-	}
-
-	// Budget accounting on the same basis as the streaming path: the provider's
-	// usage when the response carried it, else the flagged len/4 estimate over the
-	// conversation and the turn — prose plus serialized arguments, since a turn
-	// that is ALL tool calls has no prose and would otherwise bill as zero.
-	turnText := llm.TurnText(turn)
-	reconciled, reported := capture.Usage()
-	if !reported {
-		reconciled = llm.EstimateUsage(prompt, turnText)
-	}
+	// The provider's usage when the response carried it, else the flagged len/4
+	// estimate over the conversation and the turn — prose plus serialized
+	// arguments, since a turn that is ALL tool calls has no prose.
+	turnText := llm.TurnText(resp.Turn())
+	reconciled := llm.ResponseUsage(lc.prompt, resp)
 	g.mu.Lock()
 	if st, ok := g.sessions[sessionID]; ok {
-		ttl := time.Duration(float64(time.Minute) * g.cfg.Session.SessionTokenTTLMultiplier)
-		st.ExpiresAt = time.Now().Add(ttl)
-		st.LastActivityAt = time.Now()
+		g.touchLocked(st)
 		st.ConsumedTokens += llm.EstimateTokens(turnText)
 		addLeaseUsageLocked(st, reconciled)
 	}
 	g.mu.Unlock()
-	meter.RecordSessionTally(sid, ss.Tally, g.leasePurpose(ss), modelID, reconciled)
-
-	g.markHealthy(modelID)
-	return turn, nil
+	lc.meter.RecordSessionTally(lc.sid, lc.ss.Tally, g.leasePurpose(lc.ss), modelID, reconciled)
+	return resp, nil
 }
 
-func (g *SubstrateLLMGateway) selectHealthyModel(modelIDs []string) (string, error) {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	now := time.Now()
-	reasons := make([]string, 0, len(modelIDs))
-	nonEmpty := 0
-	for _, mid := range modelIDs {
-		if mid == "" {
-			continue
-		}
-		nonEmpty++
-		entry, ok := g.healthCache[mid]
-		if !ok || entry.state == healthHealthy {
-			return mid, nil
-		}
-		if now.After(entry.expiresAt) {
-			delete(g.healthCache, mid)
-			return mid, nil
-		}
-		r := entry.reason
-		if r == "" {
-			r = "recent failure"
-		}
-		reasons = append(reasons, fmt.Sprintf("%s: %s", mid, r))
-	}
-	if nonEmpty == 0 {
-		// No model was allocated to this step (StepAllocation.Winner.ID is empty,
-		// and no fallbacks). This is an ALLOCATION problem — the auction returned no
-		// model candidate — not a health/availability one, so the cooldown cache is
-		// irrelevant. Distinguished from real degradation so the error stops blaming
-		// model health for what is an empty allocation.
-		slog.Error("llm_gateway: no model allocated to this step — empty StepAllocation winner. The auction produced no model candidate: check the agent manifest's RequiredModelCapabilities and that a matching TraitModel is registered in the auction registry.")
-		return "", fmt.Errorf("no_model_allocated: step has no model winner (empty StepAllocation)")
-	}
-	slog.Warn("llm_gateway: all model candidates are in health-cache cooldown",
-		"candidates", modelIDs, "reasons", reasons)
-	return "", fmt.Errorf("model_unavailable: all %d candidates degraded (%s)", nonEmpty, strings.Join(reasons, "; "))
-}
-
-func (g *SubstrateLLMGateway) getStreamer(modelID string) (domain.LLMStreamer, error) {
-	g.mu.RLock()
-	s, ok := g.modelClients[modelID]
-	g.mu.RUnlock()
-	if ok {
-		return s, nil
-	}
-	if g.clientFactory != nil {
-		return g.clientFactory(modelID)
-	}
-	return nil, fmt.Errorf("no streaming client for model %s", modelID)
-}
-
-func (g *SubstrateLLMGateway) markHealthy(modelID string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	delete(g.healthCache, modelID)
-}
-
-func (g *SubstrateLLMGateway) markUnhealthy(modelID, reason string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.healthCache[modelID] = &modelHealthEntry{
-		state:     healthUnhealthy,
-		expiresAt: time.Now().Add(30 * time.Second),
-		reason:    reason,
-	}
-}
-
-// MarkUnhealthy exposes health cache updates for testing.
-func (g *SubstrateLLMGateway) MarkUnhealthy(modelID string) {
-	g.markUnhealthy(modelID, "forced unhealthy (test)")
-}
-
-// HealthState returns the current state of a model in the health cache (for testing).
-func (g *SubstrateLLMGateway) HealthState(modelID string) modelHealthState {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	e, ok := g.healthCache[modelID]
-	if !ok {
-		return healthHealthy
-	}
-	if time.Now().After(e.expiresAt) {
-		return healthHealthy
-	}
-	return e.state
+// isToolsUnsupported reports whether err is the C1 refusal of the tools field
+// (domain.UnsupportedField(domain.FieldTools, ...)).
+func isToolsUnsupported(err error) bool {
+	return errors.Is(err, domain.ErrUnsupported) &&
+		strings.Contains(err.Error(), domain.ErrUnsupported.Error()+": "+domain.FieldTools)
 }

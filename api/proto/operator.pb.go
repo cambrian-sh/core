@@ -3908,7 +3908,7 @@ type AuctionEventOp struct {
 	// winner_margin is the winning bid's confidence minus the best losing bid
 	// (0 when no runner-up). ROUTE-02: a near-zero margin flags a coin-flip.
 	WinnerMargin float32 `protobuf:"fixed32,7,opt,name=winner_margin,json=winnerMargin,proto3" json:"winner_margin,omitempty"`
-	// funnel is the Gatekeeper's Declaration->Interview->Merit candidate trace for
+	// funnel is the Gatekeeper's Declaration->Semantic->Merit candidate trace for
 	// this auction (ROUTE-02). Absent when routing tracing is disabled or on the
 	// 'started' event.
 	Funnel *GatekeeperFunnelOp `protobuf:"bytes,8,opt,name=funnel,proto3" json:"funnel,omitempty"`
@@ -4111,7 +4111,7 @@ func (x *BidEntryOp) GetRequirements() []string {
 type GatekeeperFunnelOp struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	L1            []*DeclarationResultOp `protobuf:"bytes,1,rep,name=l1,proto3" json:"l1,omitempty"`                                             // Layer 1: Declaration pass-set
-	L2            []*InterviewResultOp   `protobuf:"bytes,2,rep,name=l2,proto3" json:"l2,omitempty"`                                             // Layer 2: Interview (semantic) survivors/eliminated
+	L2            []*InterviewResultOp   `protobuf:"bytes,2,rep,name=l2,proto3" json:"l2,omitempty"`                                             // Layer 2: semantic (profile-vector) survivors/eliminated
 	L2Threshold   float64                `protobuf:"fixed64,3,opt,name=l2_threshold,json=l2Threshold,proto3" json:"l2_threshold,omitempty"`      // similarity floor applied in Layer 2 (0 if L2 skipped)
 	L3            []*MeritResultOp       `protobuf:"bytes,4,rep,name=l3,proto3" json:"l3,omitempty"`                                             // Layer 3: Merit ranking, highest-first (as presented to the auction)
 	MaxCandidates int32                  `protobuf:"varint,5,opt,name=max_candidates,json=maxCandidates,proto3" json:"max_candidates,omitempty"` // GatekeeperMaxCandidates cap applied after ranking (0 = uncapped)
@@ -4244,12 +4244,16 @@ func (x *DeclarationResultOp) GetReason() string {
 	return ""
 }
 
+// InterviewResultOp is one agent's Layer-2 SEMANTIC gate verdict. The name is
+// historical and kept for wire compatibility: the profile vector it is matched
+// against is embedded from the agent's declared description at registration; the
+// LLM interview that once wrote it was deleted 2026-11-05.
 type InterviewResultOp struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	AgentId           string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
 	Similarity        float64                `protobuf:"fixed64,2,opt,name=similarity,proto3" json:"similarity,omitempty"` // best profile->task similarity; 0 when below threshold (not returned by the searcher)
 	Survived          bool                   `protobuf:"varint,3,opt,name=survived,proto3" json:"survived,omitempty"`
-	ProvisionalBypass bool                   `protobuf:"varint,4,opt,name=provisional_bypass,json=provisionalBypass,proto3" json:"provisional_bypass,omitempty"` // cold-start agent that skipped the semantic gate
+	ProvisionalBypass bool                   `protobuf:"varint,4,opt,name=provisional_bypass,json=provisionalBypass,proto3" json:"provisional_bypass,omitempty"` // agent whose profile vector is not seeded yet, so it skipped the semantic gate
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -4320,7 +4324,7 @@ type MeritResultOp struct {
 	TrustScore    float64                `protobuf:"fixed64,4,opt,name=trust_score,json=trustScore,proto3" json:"trust_score,omitempty"`
 	LatencyTerm   float64                `protobuf:"fixed64,5,opt,name=latency_term,json=latencyTerm,proto3" json:"latency_term,omitempty"` // w3 * (1/normLatency) contribution
 	CostTerm      float64                `protobuf:"fixed64,6,opt,name=cost_term,json=costTerm,proto3" json:"cost_term,omitempty"`          // w4 * normalizedCost contribution (subtracted)
-	Provisional   bool                   `protobuf:"varint,7,opt,name=provisional,proto3" json:"provisional,omitempty"`                     // cold-start penalty applied
+	Provisional   bool                   `protobuf:"varint,7,opt,name=provisional,proto3" json:"provisional,omitempty"`                     // profile flagged provisional (legacy rows; no penalty since 2026-11-05)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4410,7 +4414,10 @@ type AgentReadyOp struct {
 	SourceHash   string                 `protobuf:"bytes,2,opt,name=source_hash,json=sourceHash,proto3" json:"source_hash,omitempty"`
 	TrustScore   float64                `protobuf:"fixed64,3,opt,name=trust_score,json=trustScore,proto3" json:"trust_score,omitempty"`
 	Capabilities []string               `protobuf:"bytes,4,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
-	InterviewMs  int64                  `protobuf:"varint,5,opt,name=interview_ms,json=interviewMs,proto3" json:"interview_ms,omitempty"`
+	// DEPRECATED 2026-11-05: interview_ms was the LLM interview's duration. The
+	// interview was deleted (ADR-0139 Q3); the kernel no longer fills it (always 0).
+	// Kept, not reserved, so the operator contract stays wire-compatible.
+	InterviewMs int64 `protobuf:"varint,5,opt,name=interview_ms,json=interviewMs,proto3" json:"interview_ms,omitempty"`
 	// ── Contract 0074: the agent detail fields contract 0057 removed ────────
 	//
 	// Folded onto the projection by agent_id (absolute state, ADR-0047 D6), so an
@@ -4420,9 +4427,10 @@ type AgentReadyOp struct {
 	Runtime         string `protobuf:"bytes,8,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	ExecPath        string `protobuf:"bytes,9,opt,name=exec_path,json=execPath,proto3" json:"exec_path,omitempty"`
 	ManifestVersion string `protobuf:"bytes,10,opt,name=manifest_version,json=manifestVersion,proto3" json:"manifest_version,omitempty"`
-	// provisional marks an agent whose capability claims have not been verified by
-	// an interview yet. It is the difference between "this agent says it can do X"
-	// and "we have seen it do X", and routing treats the two differently.
+	// provisional marks an agent that is registered but whose profile has not been
+	// seeded yet (its description vector is pending). Since 2026-11-05 it is routed
+	// on the neutral prior like any agent with no verified outcomes; it only skips
+	// the semantic gate, which has no vector for it yet.
 	Provisional bool `protobuf:"varint,11,opt,name=provisional,proto3" json:"provisional,omitempty"`
 	System      bool `protobuf:"varint,12,opt,name=system,proto3" json:"system,omitempty"`
 	// classification_tags describe what the agent IS, so a policy can permit or
@@ -10899,9 +10907,9 @@ func (*ListRoleAssignmentsOpRequest) Descriptor() ([]byte, []int) {
 // RoleAssignmentOp binds a system organ to the generator that serves it.
 type RoleAssignmentOp struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// role is one of: "planner", "verifier", "router", "interview", "memory".
-	// Note "interview" is the AGENT examiner (ROUTE-03), not an operator-facing
-	// clarification interview — they are different subsystems with one word.
+	// role is one of: "planner", "verifier", "router", "memory", "facts". The
+	// "interview" role (the AGENT examiner) is retired with the interview,
+	// 2026-11-05; a config that still names it loads, and the role is ignored.
 	Role        string `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
 	GeneratorId string `protobuf:"bytes,2,opt,name=generator_id,json=generatorId,proto3" json:"generator_id,omitempty"`
 	// resolved reports whether generator_id names a generator that actually exists.

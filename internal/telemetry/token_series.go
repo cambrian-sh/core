@@ -17,7 +17,7 @@ import (
 //
 // It is a DECORATOR over domain.TaskEventWriter rather than a new emission site.
 // Every path that records a step's usage already goes through WriteTaskEvent —
-// the executor, the interview worker, the verification worker — so wrapping the
+// the executor, the verification worker, the aggregator's sources — so wrapping the
 // one chokepoint catches all of them and cannot drift from what the kernel
 // actually recorded. A parallel emission site would have to be added at each
 // caller and the first one anybody forgot would silently under-report.

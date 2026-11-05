@@ -1,0 +1,82 @@
+{
+  "title": "ExecutionPlanWithCapabilities",
+  "description": "A plan. Decoded into domain.ExecutionPlan (plus reasoning, which is logged) by internal/awareness/planner.go and replan_handler.go.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reasoning",
+    "subject",
+    "cache_policy",
+    "steps"
+  ],
+  "properties": {
+    "reasoning": {
+      "type": "string",
+      "description": "A few sentences on the approach; logged, never executed."
+    },
+    "subject": {
+      "type": "string"
+    },
+    "cache_policy": {
+      "type": "string",
+      "description": "codegen, cognitive, tool, research or default."
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query",
+          "depends_on",
+          "required_capabilities"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The complete natural-language instruction for this step."
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Zero-based indices of the steps that must finish first."
+          },
+          "required_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Capability tags from <capability_clusters>; empty when none is needed."
+          },
+          "is_thought": {
+            "type": "boolean"
+          },
+          "checkpoint_after": {
+            "type": "boolean"
+          },
+          "fan_out_over": {
+            "type": "integer",
+            "description": "Index of the earlier step whose output is the set to expand over."
+          },
+          "fan_out_var": {
+            "type": "string",
+            "description": "Placeholder name used in the query; default item."
+          },
+          "preferred_agent": {
+            "type": "string",
+            "description": "An agent ID, only when the request names one."
+          },
+          "agent_pin": {
+            "type": "string",
+            "enum": [
+              "soft",
+              "hard"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -7,24 +7,14 @@ type Generator interface {
 	Generate(ctx context.Context, prompt string) (string, error)
 }
 
-// StepResult carries a completed step's output and its pre-execution context snapshot.
-// Used by MemoryRecorder (ADR-0015) to feed the Tier-1 pending channel.
-type StepResult struct {
-	Index     int
-	Output    string            // step output payload text
-	Snapshot  map[string]string // masterContext clone at step dispatch time
-	SceneID   string            // ADR-0025: ID of the MnemonicScene written for this step; "" if none
-	SessionID SessionID         // ADR-0029: session scope for Tier-2 session_id metadata tag; "" = unscoped
-	TaskID    string            // ADR-0049 D3: per-step correlation key (step-{index}-{planID}); "" disables dedup
-	// DependsOnTaskIDs are the TaskIDs of this step's dependency steps (ADR-0049 D10),
-	// so RecordExecution can write `follows` edges from this step's record to theirs.
-	DependsOnTaskIDs []string
-}
-
-// MemoryRecorder receives completed step results for async LTM ingestion.
-// ADR-0015: step results flow through the Tier-1 bounded channel before Tier-2 batched pgvector commit.
+// MemoryRecorder receives a plan's lifecycle for the experiential record (ADR-0049
+// §A2.2, ADR-0095): the episode is opened at plan start and closed at completion.
+//
+// It used to receive every step result too (RecordExecution, StepResult), feeding the
+// ADR-0015 Tier-1 channel and tier-2 memory judge. That raw capture path, and the
+// per-step SceneID it carried, were deleted on 2026-11-05 with scenes
+// (cambrian-knowledge/decisions/scenes-cancelled.md).
 type MemoryRecorder interface {
-	RecordExecution(ctx context.Context, result StepResult) error
 	// BeginExperience mints the EPISODE PARENT for a plan at its START (ADR-0095 D1).
 	//
 	// The id is derived from the plan id precisely "so records written mid-plan can
@@ -37,11 +27,12 @@ type MemoryRecorder interface {
 	// Never fatal: an episode that cannot be opened is logged and the plan proceeds
 	// unparented (ADR-0095 D5 — a write must never fail over bookkeeping).
 	BeginExperience(ctx context.Context, planID string) error
-	// WritePlanScene materializes the ONE immutable scene for a completed plan
-	// (ADR-0049 D5/D7) — id `scene-{planID}`, holding the goal + engaged-entity scope
-	// (accreted from the plan's actions) + the outcome. Written for BOTH success and
-	// failure (a failure scene is the highest-value precedent). Replaces per-step scenes.
-	WritePlanScene(ctx context.Context, rec PlanRecord) error
+	// RecordPlanOutcome is the plan-completion hook, called for BOTH success and
+	// failure. It closes the ADR-0095 episode, writes the ADR-0049 A2.3 failure record
+	// when the failure was surprising or exhausted the replan ladder, and feeds the
+	// outcome to the ADR-0094 procedures that informed the plan. It was WritePlanScene
+	// until 2026-11-05, when the plan scene it also wrote was removed.
+	RecordPlanOutcome(ctx context.Context, rec PlanRecord) error
 }
 
 // WorkspaceStage enriches the Planner and DAGExecutor with cross-session LTM facts.
@@ -55,7 +46,7 @@ type WorkspaceStage interface {
 
 // PlanRecord is everything the memory layer needs about a completed plan (ADR-0049
 // A2.2). A struct rather than a parameter list because this has already grown once —
-// goal, then surprise, now the capability shape — and each widening churned every call
+// goal, then surprise, then the capability shape — and each widening churned every call
 // site and test fake. Fields are added here without touching any of them.
 type PlanRecord struct {
 	PlanID  string
@@ -66,11 +57,8 @@ type PlanRecord struct {
 	// not the mean, because one badly-mispredicted step is what makes an episode worth
 	// remembering; averaging dilutes it away. -1 is deliberately distinct from 0.0.
 	Surprise float64
-	// Capabilities is the ordered capability sequence the plan's steps required — the
-	// SHAPE of the routine, which is what ADR-0094 D3 clusters on. Empty when the
-	// capability_contract arm is off, in which case the episode is not inducible: the
-	// inducer skips it rather than grouping on situation alone, which over-groups.
-	Capabilities []string
+	// Capabilities (the plan's capability sequence, ADR-0094 D3's clustering key) was
+	// removed 2026-11-05 with procedure induction, its only reader.
 	// FollowedProcedures are the ADR-0094 routines that were in the planner's context
 	// when this plan was built. They close the co-evolution loop: a routine that shaped
 	// a plan learns from how that plan turned out.

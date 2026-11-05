@@ -1,4 +1,4 @@
-package interview
+package registration
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// fakeSearchVectorStore is a minimal VectorStore stub for InterviewSearcher tests.
+// fakeSearchVectorStore is a minimal VectorStore stub for ProfileSearcher tests.
 type fakeSearchVectorStore struct {
 	results []domain.SearchResult
 }
@@ -59,7 +59,7 @@ func TestSearchByEmbedding_FiltersToAgentProfile(t *testing.T) {
 		},
 	}
 
-	searcher := NewInterviewSearcher(store)
+	searcher := NewProfileSearcher(store)
 	results, err := searcher.SearchByEmbedding(context.Background(), []float32{0.1, 0.2}, 0.5, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -88,7 +88,7 @@ func TestSearchByEmbedding_ThresholdFilter(t *testing.T) {
 		},
 	}
 
-	searcher := NewInterviewSearcher(store)
+	searcher := NewProfileSearcher(store)
 	results, err := searcher.SearchByEmbedding(context.Background(), []float32{0.1, 0.2}, 0.8, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -122,7 +122,7 @@ func TestSearchByEmbedding_OrderedDescending(t *testing.T) {
 		},
 	}
 
-	searcher := NewInterviewSearcher(store)
+	searcher := NewProfileSearcher(store)
 	results, err := searcher.SearchByEmbedding(context.Background(), []float32{0.1, 0.2}, 0.5, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -135,31 +135,5 @@ func TestSearchByEmbedding_OrderedDescending(t *testing.T) {
 	}
 	if results[1].Similarity != 0.7 {
 		t.Errorf("expected results[1].Similarity=0.7, got %f", results[1].Similarity)
-	}
-}
-
-// TestFakeInterviewSearcher_ReturnsConfiguredResults verifies that
-// fakeInterviewSearcher returns the configured agentID→similarity map, filtered
-// by threshold.
-func TestFakeInterviewSearcher_ReturnsConfiguredResults(t *testing.T) {
-	fake := &fakeInterviewSearcher{
-		results: map[string]float64{
-			"agent-x": 0.92,
-			"agent-y": 0.45, // below threshold 0.5
-		},
-	}
-
-	out, err := fake.SearchByEmbedding(context.Background(), []float32{0.1}, 0.5, 10)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(out) != 1 {
-		t.Fatalf("expected 1 result (agent-y below threshold), got %d", len(out))
-	}
-	if out[0].AgentID != "agent-x" {
-		t.Errorf("expected AgentID=agent-x, got %q", out[0].AgentID)
-	}
-	if out[0].Similarity != 0.92 {
-		t.Errorf("expected Similarity=0.92, got %f", out[0].Similarity)
 	}
 }

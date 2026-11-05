@@ -67,8 +67,8 @@ func TestGetProfile_SeedsKernelScopeThroughEnforcingStore(t *testing.T) {
 	if _, err := store.GetProfile(context.Background(), "agent-a", "hash-a"); err != nil {
 		t.Fatalf("GetProfile through the enforcing store: %v", err)
 	}
-	if _, err := store.HasInterviewVector(context.Background(), "agent-a", "hash-a"); err != nil {
-		t.Fatalf("HasInterviewVector through the enforcing store: %v", err)
+	if _, err := store.HasProfileVector(context.Background(), "agent-a", "hash-a"); err != nil {
+		t.Fatalf("HasProfileVector through the enforcing store: %v", err)
 	}
 }
 

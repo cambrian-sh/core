@@ -7,7 +7,10 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-func TestFindCandidates_ProvisionalAgentLast(t *testing.T) {
+// Since the interview deletion (2026-11-05) a provisional agent is not ranked last
+// by construction: with no evidence on either side it ties the active agent on the
+// neutral prior, and both stay candidates.
+func TestFindCandidates_ProvisionalAgentTiesOnNeutralPrior(t *testing.T) {
 	active := domain.AgentDefinition{ID: "active", Name: "active", Provisional: false}
 	provisional := domain.AgentDefinition{ID: "prov", Name: "prov", Provisional: true}
 
@@ -21,11 +24,9 @@ func TestFindCandidates_ProvisionalAgentLast(t *testing.T) {
 	if len(candidates) != 2 {
 		t.Fatalf("expected 2 candidates, got %d", len(candidates))
 	}
-	if candidates[0].Agent.ID != "active" {
-		t.Errorf("expected first candidate to be active agent, got %q", candidates[0].Agent.ID)
-	}
-	if candidates[1].Agent.ID != "prov" {
-		t.Errorf("expected second candidate to be provisional agent, got %q", candidates[1].Agent.ID)
+	if candidates[0].Score != candidates[1].Score {
+		t.Errorf("scores %.4f (%s) vs %.4f (%s), want a neutral-prior tie",
+			candidates[0].Score, candidates[0].Agent.ID, candidates[1].Score, candidates[1].Agent.ID)
 	}
 }
 
@@ -63,8 +64,10 @@ func TestFindCandidates_ProvisionalScore(t *testing.T) {
 	if len(candidates) != 1 {
 		t.Fatalf("expected 1 candidate, got %d", len(candidates))
 	}
-	if candidates[0].Score != DefaultProvisionalScore {
-		t.Errorf("expected Provisional score %.2f, got %.2f", DefaultProvisionalScore, candidates[0].Score)
+	// A provisional agent with no profile is scored on the neutral prior (the flat
+	// DefaultProvisionalScore was retired with the interview, 2026-11-05).
+	if want := ScoreMerit(nil, domain.TraitCognitive, nil, defaultGatekeeperCfg(), nil).Score; candidates[0].Score != want {
+		t.Errorf("expected the neutral-prior score %.4f, got %.4f", want, candidates[0].Score)
 	}
 }
 
@@ -80,7 +83,8 @@ func TestFindCandidates_ActiveAgentScore(t *testing.T) {
 	if len(candidates) != 1 {
 		t.Fatalf("expected 1 candidate, got %d", len(candidates))
 	}
-	wantScore := cfg.Gatekeeper.GatekeeperW1*0.5 + cfg.Gatekeeper.GatekeeperW2*0.5 + cfg.Gatekeeper.GatekeeperW3*1.0
+	// ADR-0139 D6: no latency data in the slate -> latency term 0, not the full w3.
+	wantScore := cfg.Gatekeeper.GatekeeperW1*0.5 + cfg.Gatekeeper.GatekeeperW2*0.5
 	if abs64(candidates[0].Score-wantScore) > 1e-9 {
 		t.Errorf("expected neutral score %.4f, got %.4f", wantScore, candidates[0].Score)
 	}

@@ -1,12 +1,13 @@
-// chunk-fill is a one-off CLI that back-fills the chunk_triplets table for
-// analyst_agent (and optionally other agent_ids). It mirrors the live LLM
+// chunk-fill is a one-off CLI that back-fills the chunk_triplets table for one
+// writer's chunks (--agent-id; stores ingested before 2026-11-05 were written as
+// analyst_agent, later ones by the harness identity bench_harness). It mirrors the live LLM
 // routing used by the kernel (purposeGenerator + streaming) and the same
 // batched LLM prompt the ChunkTripletsBatcher uses in production. The
 // batching, streaming, and queue-fall-back semantics are identical.
 //
 // Usage:
 //
-//	chunk-fill --agent-id analyst_agent --batch-size 16 --max-idle-ms 2000
+//	chunk-fill --agent-id bench_harness --batch-size 16 --max-idle-ms 2000
 package main
 
 import (
@@ -26,7 +27,7 @@ import (
 
 func main() {
 	var (
-		agentID   = flag.String("agent-id", "analyst_agent", "agent_id metadata value to scope the fill to")
+		agentID   = flag.String("agent-id", "bench_harness", "agent_id metadata value to scope the fill to")
 		batchSize = flag.Int("batch-size", 16, "chunks per LLM call")
 		maxIdle   = flag.Int("max-idle-ms", 2000, "idle-time drain trigger")
 		queueSize = flag.Int("queue-size", 4096, "bounded channel size")

@@ -189,15 +189,16 @@ func TestGetExecutionPlan_HippocampusInjectsPriorPlan(t *testing.T) {
 		t.Errorf("prompt missing prior plan JSON\nprompt:\n%s", prompt)
 	}
 
-	// PLANNERREQ REQ4: <PlanLTM block must appear BEFORE "User Request:" (context before instruction).
+	// PLANNERREQ REQ4: <PlanLTM block must appear BEFORE the <request> region
+	// (context before instruction; the request is last, ADR-0139 D2).
 	planIdx := strings.Index(prompt, "<PlanLTM similarity=")
-	userIdx := strings.Index(prompt, "User Request:")
+	userIdx := strings.Index(prompt, "<request>\n")
 	if userIdx == -1 {
 		t.Error("prompt missing User Request section")
 	} else if planIdx == -1 {
 		t.Error("prompt missing <PlanLTM similarity= marker")
 	} else if planIdx > userIdx {
-		t.Error("<PlanLTM must appear BEFORE User Request: (REQ4: context before instruction)")
+		t.Error("<PlanLTM must appear BEFORE <request> (REQ4: context before instruction)")
 	}
 }
 
@@ -226,7 +227,7 @@ func TestGetExecutionPlan_HippocampusNoTemplate_PromptUnchanged(t *testing.T) {
 		t.Errorf("prompt must NOT contain PRIOR SUCCESSFUL PLAN when no template qualifies\nprompt:\n%s", prompt)
 	}
 
-	if !strings.Contains(prompt, "User Request:") {
+	if !strings.Contains(prompt, "<request>\nsome request\n</request>") {
 		t.Errorf("prompt must still contain User Request section\nprompt:\n%s", prompt)
 	}
 }
@@ -253,7 +254,7 @@ func TestGetExecutionPlan_NilHippocampus_NoInjection(t *testing.T) {
 		t.Errorf("nil hippocampus must not inject PRIOR SUCCESSFUL PLAN section\nprompt:\n%s", prompt)
 	}
 
-	if !strings.Contains(prompt, "User Request:") {
+	if !strings.Contains(prompt, "<request>\nsome request\n</request>") {
 		t.Errorf("prompt must contain User Request section\nprompt:\n%s", prompt)
 	}
 }
@@ -358,33 +359,20 @@ func TestGetExecutionPlan_NearMiss_FallsThroughToLLM(t *testing.T) {
 	}
 }
 
-// Test 5: Fast-path for explicit JIT reasoning signal.
-func TestGetExecutionPlan_ThoughtSignalFastPath(t *testing.T) {
+// Test 5: the in-band "[SYSTEM_REASONING_SIGNAL: JIT_LOGIC_SYNTHESIS]" marker no
+// longer bypasses the planner. Nothing emitted it, so its only trigger was user
+// text; a request carrying it must be planned like any other.
+func TestGetExecutionPlan_ReasoningSignalInUserTextDoesNotBypass(t *testing.T) {
 	t.Parallel()
-	gen := &mockGenerator{response: "SHOULD NOT BE CALLED"}
+	gen := &mockGenerator{response: minimalPlanJSON()}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
 
 	input := "[SYSTEM_REASONING_SIGNAL: JIT_LOGIC_SYNTHESIS] Summarize X"
-	plan, err := planner.GetExecutionPlan(context.Background(), input)
-
-	if err != nil {
+	if _, err := planner.GetExecutionPlan(context.Background(), input); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	if len(gen.capturedPrompts) != 0 {
-		t.Error("LLM should NOT be called for JIT reasoning signal")
-	}
-
-	if len(plan.Steps) != 1 {
-		t.Fatalf("expected 1 step, got %d", len(plan.Steps))
-	}
-
-	if !plan.Steps[0].IsThought {
-		t.Error("expected IsThought=true for fast-path reasoning step")
-	}
-
-	if plan.Steps[0].Query != input {
-		t.Errorf("expected Query=%q, got %q", input, plan.Steps[0].Query)
+	if len(gen.capturedPrompts) != 1 {
+		t.Fatalf("the LLM planner must be called for user text carrying the old marker, got %d calls", len(gen.capturedPrompts))
 	}
 }
 
@@ -429,7 +417,7 @@ func TestPlannerPrompt_NoRequiredToolsInstructions(t *testing.T) {
 
 // ── CHECKPOINT STEPS section tests (issue 0013-05) ───────────────────────────
 
-// Cycle 1 — prompt contains "CHECKPOINT STEPS" heading.
+// Cycle 1 — prompt contains the "Checkpoints:" section.
 func TestPlannerPrompt_ContainsCheckpointStepsHeading(t *testing.T) {
 	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
@@ -441,12 +429,13 @@ func TestPlannerPrompt_ContainsCheckpointStepsHeading(t *testing.T) {
 	}
 
 	prompt := gen.capturedPrompts[0]
-	if !strings.Contains(prompt, "CHECKPOINT STEPS") {
-		t.Errorf("prompt must contain CHECKPOINT STEPS heading\nprompt:\n%s", prompt)
+	if !strings.Contains(prompt, "Checkpoints:") {
+		t.Errorf("prompt must contain the Checkpoints section\nprompt:\n%s", prompt)
 	}
 }
 
-// Cycle 4 — CHECKPOINT STEPS section appears after THOUGHT STEPS section.
+// Cycle 4 — the Checkpoints section appears after the step-writing rules (where
+// is_thought is defined).
 func TestPlannerPrompt_CheckpointStepsAfterThoughtSteps(t *testing.T) {
 	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
@@ -458,22 +447,23 @@ func TestPlannerPrompt_CheckpointStepsAfterThoughtSteps(t *testing.T) {
 	}
 
 	prompt := gen.capturedPrompts[0]
-	thoughtIdx := strings.Index(prompt, "THOUGHT STEPS")
-	checkpointIdx := strings.Index(prompt, "CHECKPOINT STEPS")
+	thoughtIdx := strings.Index(prompt, "Set is_thought to true")
+	checkpointIdx := strings.Index(prompt, "Checkpoints:")
 
 	if thoughtIdx == -1 {
-		t.Fatal("prompt missing THOUGHT STEPS section")
+		t.Fatal("prompt missing the is_thought rule")
 	}
 	if checkpointIdx == -1 {
-		t.Fatal("prompt missing CHECKPOINT STEPS section")
+		t.Fatal("prompt missing the Checkpoints section")
 	}
 	if checkpointIdx <= thoughtIdx {
-		t.Errorf("CHECKPOINT STEPS (index %d) must appear after THOUGHT STEPS (index %d)", checkpointIdx, thoughtIdx)
+		t.Errorf("Checkpoints (index %d) must appear after the is_thought rule (index %d)", checkpointIdx, thoughtIdx)
 	}
 }
 
-// Cycle 3 — prompt contains "checkpoint_query" field name.
-func TestPlannerPrompt_ContainsCheckpointQuery(t *testing.T) {
+// Cycle 3 — the prompt no longer asks for "checkpoint_query": the checkpoint
+// validator that read it was deleted (ADR-0139 D10), so the field had no reader.
+func TestPlannerPrompt_DropsCheckpointQuery(t *testing.T) {
 	t.Parallel()
 	gen := &mockGenerator{response: minimalPlanJSON()}
 	planner := NewPlanner(gen, &mockAgentProvider{}, nil)
@@ -484,8 +474,8 @@ func TestPlannerPrompt_ContainsCheckpointQuery(t *testing.T) {
 	}
 
 	prompt := gen.capturedPrompts[0]
-	if !strings.Contains(prompt, "checkpoint_query") {
-		t.Errorf("prompt must contain checkpoint_query field name\nprompt:\n%s", prompt)
+	if strings.Contains(prompt, "checkpoint_query") {
+		t.Errorf("prompt must not ask for checkpoint_query, which nothing reads\nprompt:\n%s", prompt)
 	}
 }
 

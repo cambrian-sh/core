@@ -1,18 +1,736 @@
 {
-  "_comment": "Copy to mcp.json (gitignored) and edit. Add as many `servers` entries as you need. Auth secrets come from env vars (auth.token_env); never inline them. See ADR-0043 for per-tool policy schema (pricing/dangerous/data_write_kinds). Adjust the `endpoint` path for your OS — the example below uses a Unix-style relative path; on Windows, use .exe suffix. WARNING: an empty `{\"mcp\": {}}` here will silently wipe any `mcp` block in config.json because Koanf merges per-key. Don't create mcp.json if you don't use MCP.",
-
+  "_comment": "Keyless core MCP server set (owner directive decisions/agent-stack-v2-mcp-tools-and-profiles.md: tools come only from MCP servers). Copy to mcp.json (gitignored) and edit paths. Catalog, prerequisites (node 22+/npx, uv/uvx, Docker for the sandbox), trust notes and keyed integrations: configs/MCP.md and configs/mcp.integrations.json.example. Every version is PINNED and was checked on its registry 2026-11-05; the live MCP handshake has NOT been verified yet (pending owner approval, ticket T-20261105-curate-verify-and-pin-the-mcp-server-set). Tools are named mcp:<id>/<tool>; skills grant them by that name (skills/file-report uses mcp:filesystem/*).",
+  "_comment_policy": "ADR-0139 D8 / ADR-0086: a tool with no `tools` entry and no `default_tool_policy` FAILS CLOSED (dangerous = approval required, effects read+write+egress). Servers that can write, send or execute list their read tools explicitly and carry NO default, so a tool added by a later server version arrives dangerous. Network reads declare `egress` but are not dangerous: no approval prompt, but the egress effect is visible to grants, profile allowlists and the egress auditor. `env` is a PASSTHROUGH list of variable NAMES the stdio child may inherit from the kernel environment (values are set in the kernel's environment, never here); CAMBRIAN_* and LANGFUSE_* never pass. WARNING: an empty `{\"mcp\": {}}` silently wipes any `mcp` block in config.json (Koanf merges per-key) - do not create mcp.json if you do not use MCP. On Windows, `npx`/`uvx`/`uv` resolve through PATHEXT; use forward slashes or escaped backslashes in paths.",
   "mcp": {
     "default_session_budget": 0,
     "call_timeout_ms": 60000,
     "servers": [
       {
-        "id": "filesystem",
+        "id": "fetch",
+        "_note": "Official reference server (modelcontextprotocol/servers, MIT). Fetches a URL and returns Markdown. Network read: egress, no approval. It can reach localhost/intranet URLs - see MCP.md trust notes.",
         "transport": "stdio",
-        "endpoint": "./bin/reference-fs-mcp",
-        "auth": {"type": "none"},
+        "endpoint": "uvx",
+        "args": [
+          "mcp-server-fetch==2026.11.4"
+        ],
+        "auth": {
+          "type": "none"
+        },
         "tools": [
-          {"name": "read_file",     "dangerous": false},
-          {"name": "list_directory","dangerous": false}
+          {
+            "name": "fetch",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "web-search",
+        "_note": "Keyless DuckDuckGo search (nickclyde/duckduckgo-mcp-server, MIT, community). Rate-limited by DuckDuckGo; for production use a keyed provider (brave-search/tavily/exa) or self-hosted SearXNG from mcp.integrations.json.example.",
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "duckduckgo-mcp-server==0.7.0"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "tools": [
+          {
+            "name": "search",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "fetch_content",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "filesystem",
+        "_note": "Official reference server. ONLY the directories given as args are reachable - replace ./workspace with the absolute roots you want to expose. Pinned to 1.0.0 because 2.x declares node>=24 (2.2.0 is current). Write tools are dangerous.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem@1.0.0",
+          "./workspace"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "tools": [
+          {
+            "name": "read_text_file",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "read_file",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "read_media_file",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "read_multiple_files",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_directory",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_directory_with_sizes",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "directory_tree",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "search_files",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_file_info",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_allowed_directories",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "write_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "edit_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "append_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "create_directory",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "move_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "copy_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "code-sandbox",
+        "_note": "Sandboxed code execution for data analysis (vndee/llm-sandbox, MIT). Runs Python (and JS, R, Go, ...) in a throwaway Docker container; captures matplotlib plots as images; installs pandas/numpy on demand. Needs Docker running. HARDEN via the kernel environment: BACKEND=docker SANDBOX_NETWORK_MODE=none SANDBOX_READ_ONLY=true SANDBOX_CAP_DROP=ALL SANDBOX_SECURITY_OPT=no-new-privileges:true SANDBOX_MEMORY=2g SANDBOX_CPU_COUNT=1 (with network none, on-demand pip installs fail: pre-bake an image). execute_code is dangerous with write+egress until those settings are proven to take.",
+        "transport": "stdio",
+        "endpoint": "uv",
+        "args": [
+          "run",
+          "--no-project",
+          "--with",
+          "llm-sandbox[mcp-docker]==0.3.46",
+          "python",
+          "-m",
+          "llm_sandbox.mcp_server.server"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "env": [
+          "BACKEND",
+          "DOCKER_HOST",
+          "SANDBOX_NETWORK_MODE",
+          "SANDBOX_READ_ONLY",
+          "SANDBOX_CAP_DROP",
+          "SANDBOX_SECURITY_OPT",
+          "SANDBOX_MEMORY",
+          "SANDBOX_CPU_COUNT"
+        ],
+        "tools": [
+          {
+            "name": "execute_code",
+            "dangerous": true,
+            "effects": [
+              "read",
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "get_supported_languages",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_language_details",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "shell",
+        "_note": "Replacement for the dead @cfdude/super-shell-mcp (npm 404). tumf/mcp-shell-server (MIT): runs ONLY executables named in ALLOW_COMMANDS (set it in the kernel environment, e.g. ALLOW_COMMANDS=git,ls,cat). It is NOT a sandbox: an allowed program runs with the kernel user's files, network and credentials. Always dangerous. Windows execution is unverified (developed for POSIX shells). VERIFIED 2026-11-05: does NOT run on Windows (imports the Unix-only `pwd` module); use it only on Linux/macOS deployments.",
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "mcp-shell-server==1.1.14"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "env": [
+          "ALLOW_COMMANDS",
+          "ALLOW_PATTERNS"
+        ],
+        "tools": [
+          {
+            "name": "shell_execute",
+            "dangerous": true,
+            "effects": [
+              "read",
+              "write",
+              "egress"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "git",
+        "_note": "Official reference server. --repository scopes it to one repo; replace the path. History and diff reads are safe; anything that changes the index, HEAD or branches is dangerous. It has no push tool.",
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "mcp-server-git==2026.11.4",
+          "--repository",
+          "./workspace/repo"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "tools": [
+          {
+            "name": "git_status",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_diff_unstaged",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_diff_staged",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_diff",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_log",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_show",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_branch",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_remote",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_add",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "git_commit",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "git_reset",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "git_create_branch",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "git_checkout",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "git_merge",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "sqlite",
+        "_note": "Google MCP Toolbox for Databases (googleapis/mcp-toolbox, Apache-2.0), prebuilt sqlite toolset. The reference mcp-server-sqlite is archived. SQLITE_DATABASE (kernel env) names the database file. execute_sql takes raw SQL and can write: dangerous. Point it at a copy or open a read-only file when you only need analysis.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@toolbox-sdk/server@1.15.0",
+          "--prebuilt=sqlite",
+          "--stdio"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "env": [
+          "SQLITE_DATABASE"
+        ],
+        "tools": [
+          {
+            "name": "list_tables",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "execute_sql",
+            "dangerous": true,
+            "effects": [
+              "read",
+              "write"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "time",
+        "_note": "Official reference server: current time and timezone conversion. Pure read.",
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "mcp-server-time==2026.11.4"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "default_tool_policy": {
+          "effects": [
+            "read"
+          ]
+        }
+      },
+      {
+        "id": "calculator",
+        "_note": "Exact arithmetic (githejie/mcp-server-calculator, MIT, community, ~160 stars). One tool, calculate(expression): an AST walker over numbers, + - * / // % ** and the math module (pi, e, sqrt, log, ...); no eval, no I/O, no network. Pure read. Caveat: a huge power (9**9**9) is not capped and can spin the server until call_timeout_ms. PyPI 0.2.1 (2026-08-08) checked on the registry 2026-11-05; live handshake NOT verified yet.",
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "mcp-server-calculator==0.2.1"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "tools": [
+          {
+            "name": "calculate",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "pdf-reader",
+        "_note": "@sylphx/pdf-reader-mcp (now the SylphxAI/anymd project, MIT): PDF/DOCX/PPTX/XLSX/HTML to Markdown, outline, search, page render/OCR. A `source` may be a URL, so reads carry egress. Unlisted tools fail closed.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@sylphx/pdf-reader-mcp@8.5.9"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "tools": [
+          {
+            "name": "read",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "outline",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "search",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "inspect",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "markitdown",
+        "_note": "Microsoft MarkItDown MCP (microsoft/markitdown, MIT; package is pre-release 0.0.1a8): converts docx/xlsx/pptx/pdf/html/csv/images to Markdown. The uri may be http(s), file: or data:, so reads carry egress. Upstream says local, trusted use only. Needs --prerelease=allow: a transitive dependency (azure-ai-contentunderstanding) is only published as a pre-release. Handshake verified 2026-11-05 (tool: convert_to_markdown).",
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "--prerelease=allow",
+          "markitdown-mcp==0.0.1a8"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "tools": [
+          {
+            "name": "convert_to_markdown",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "sequential-thinking",
+        "_note": "Official reference server: a scratchpad for step-by-step reasoning. No I/O. Pinned to 1.0.0 because 2.x declares node>=24.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-sequential-thinking@1.0.0"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "default_tool_policy": {
+          "effects": [
+            "read"
+          ]
+        }
+      },
+      {
+        "id": "terminal",
+        "_note": "Desktop Commander (@wonderwhy-er/desktop-commander, MIT): Windows/macOS/Linux terminal (PowerShell/cmd/bash sessions, REPLs), file ops, search, process management. Handshake verified on Windows 2026-11-05 (25 tools). NOT a sandbox: its allowedDirectories restricts only its file tools, never terminal commands, and its blockedCommands list is bypassable (upstream README). Every write/exec tool is dangerous (approval required). NEVER grant set_config_value to an agent (it can widen its own allowedDirectories/blockedCommands) nor give_feedback_to_desktop_commander. Telemetry is ON by default upstream: set \"telemetryEnabled\": false in ~/.claude-server-commander/config.json (done on the owner's host 2026-11-05). For isolation run its Docker image (ADR-0139 D8).",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@wonderwhy-er/desktop-commander@0.3.1"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "tools": [
+          {
+            "name": "get_config",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "read_file",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "read_multiple_files",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_directory",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "start_search",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_more_search_results",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "stop_search",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_searches",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_file_info",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "read_process_output",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_sessions",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_processes",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_usage_stats",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_recent_tool_calls",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "write_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "write_pdf",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "create_directory",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "move_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "edit_block",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "start_process",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "interact_with_process",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "force_terminate",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "kill_process",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "set_config_value",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "give_feedback_to_desktop_commander",
+            "dangerous": true,
+            "effects": [
+              "egress"
+            ]
+          }
         ]
       }
     ]

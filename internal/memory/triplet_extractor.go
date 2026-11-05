@@ -2,16 +2,33 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/prompts"
 )
 
 // llmTripletExtractor is the original LLM-backed extractor (the Tier-3 residue
 // producer). It stamps every triplet sources={llm}, confidence=0 (filler) per
 // the ADR-0053 D2 (revised) scale — the LLM alone is the lowest-trust tier.
+//
+// It speaks one of two reply formats (execution.ingestion.kg_triplets_llm_format):
+//   - completion (the default): the KG²RAG base-model completion prompt
+//     ("Triplets N: <h##r##t>$$..."), parsed positionally by its "Triplets N" marker;
+//   - structured (ADR-0139 C1/C4): the library prompt kg_triplets as a cached system
+//     block, the chunks as tagged data keyed by id, and a response schema; the reply
+//     is keyed by chunk id, never read by position.
+//
+// Both go through the same per-triplet filters (appendChunkTriplet), so the triplets
+// mean the same thing either way; whether the MODEL extracts the same triplets in the
+// two formats is an empirical question that decides the default (an A/B/A retrieval
+// run, AGENTS.md §0.5), which is why completion stays the default.
 type llmTripletExtractor struct {
-	gen domain.Generator
+	gen        domain.Generator
+	structured bool
 }
 
 func (e *llmTripletExtractor) ExtractBatch(ctx context.Context, texts []string, _ []string) ([][]domain.ChunkTriplet, error) {
@@ -37,17 +54,102 @@ func (e *llmTripletExtractor) ExtractBatch(ctx context.Context, texts []string, 
 	if len(nonEmpty) == 0 {
 		return out, nil
 	}
-	prompt := buildBatchTripletPrompt(nonEmpty)
-	resp, err := callTripletsLLM(ctx, e.gen, prompt)
-	if err != nil {
-		return nil, fmt.Errorf("llm triplet extractor: %w", err)
+	var perChunk [][]domain.ChunkTriplet
+	if e.structured {
+		resp, err := domain.GenerateVia(ctx, e.gen, buildTripletRequest(nonEmpty))
+		if err != nil {
+			return nil, fmt.Errorf("llm triplet extractor: %w", err)
+		}
+		if perChunk, err = parseTripletReply(resp, len(nonEmpty)); err != nil {
+			return nil, fmt.Errorf("llm triplet extractor: %w", err)
+		}
+	} else {
+		prompt := buildBatchTripletPrompt(nonEmpty)
+		resp, err := callTripletsLLM(ctx, e.gen, prompt)
+		if err != nil {
+			return nil, fmt.Errorf("llm triplet extractor: %w", err)
+		}
+		perChunk = parseBatchedTripletResponse(resp, len(nonEmpty))
 	}
-	perChunk := parseBatchedTripletResponse(resp, len(nonEmpty))
 	for j, triplets := range perChunk {
 		if j >= len(origIdx) {
 			break
 		}
 		out[origIdx[j]] = stampSource(triplets, "llm", confFiller)
+	}
+	return out, nil
+}
+
+// tripletDataTags are the data regions of kg_triplets_input; a closing tag of either
+// inside a chunk's text is neutralised so the chunk cannot end its region early.
+var tripletDataTags = []string{"chunk", "chunks"}
+
+// buildTripletRequest renders the structured extraction call. Chunk i (0-based) is
+// sent as <chunk id="i+1">, and the reply names each chunk by that id.
+func buildTripletRequest(texts []string) domain.GenerateRequest {
+	var sb strings.Builder
+	for i, t := range texts {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(`<chunk id="`)
+		sb.WriteString(strconv.Itoa(i + 1))
+		sb.WriteString(`">`)
+		sb.WriteString(prompts.NeutraliseClosingTags(t, tripletDataTags...))
+		sb.WriteString("</chunk>")
+	}
+	return kgTripletsPrompts.mustRequest(map[string]string{"chunks": sb.String()})
+}
+
+// tripletsReply is the structured reply (prompts/kg_triplets/triplets.schema.json).
+type tripletsReply struct {
+	Chunks []tripletsReplyChunk `json:"chunks"`
+}
+
+type tripletsReplyChunk struct {
+	ID       int                `json:"id"`
+	Triplets []tripletsReplyRow `json:"triplets"`
+}
+
+type tripletsReplyRow struct {
+	Subject  string `json:"subject"`
+	Relation string `json:"relation"`
+	Object   string `json:"object"`
+}
+
+// parseTripletReply maps a structured reply back onto the n chunks BY ID: an id
+// outside 1..n is ignored, a chunk the reply leaves out has no triplets, and a chunk
+// listed twice has its lists merged (deduplicated). A reply that is not the expected
+// JSON is an error, so its chunks settle as failed rather than as "no triplets" —
+// the legacy format could not tell those apart. A reply the provider layer did not
+// check against the schema (resp.SchemaUnchecked) is read tolerantly.
+func parseTripletReply(resp domain.GenerateResponse, n int) ([][]domain.ChunkTriplet, error) {
+	raw, err := replyField(resp.Text, "chunks", resp.SchemaUnchecked())
+	if err != nil {
+		return nil, err
+	}
+	var chunks []tripletsReplyChunk
+	if err := json.Unmarshal(raw, &chunks); err != nil {
+		return nil, fmt.Errorf("triplet reply is not the expected JSON: %w", err)
+	}
+	out := make([][]domain.ChunkTriplet, n)
+	seen := make([]map[string]bool, n)
+	for _, c := range chunks {
+		i := c.ID - 1
+		if i < 0 || i >= n {
+			continue
+		}
+		if seen[i] == nil {
+			seen[i] = map[string]bool{}
+		}
+		for _, t := range c.Triplets {
+			// The completion format could not carry '<' or '>' inside a field (its
+			// grammar is <h##r##t>), so neither can this one: same triplets either way.
+			if strings.ContainsAny(t.Subject+t.Relation+t.Object, "<>") {
+				continue
+			}
+			out[i] = appendChunkTriplet(out[i], seen[i], t.Subject, t.Relation, t.Object)
+		}
 	}
 	return out, nil
 }

@@ -6,14 +6,14 @@ import "testing"
 func TestIsSystemAgent(t *testing.T) {
 	t.Parallel()
 	if !IsSystemAgent("retrieval_agent") {
-		t.Error("retrieval_agent must be a system agent (bypasses interview, excluded from auction)")
+		t.Error("retrieval_agent must be a system agent (verified by default, excluded from selection)")
 	}
 	// ADR-0053 D2 revised: the deterministic kg_extractor is also a privileged organ.
 	if !IsSystemAgent("kg_extractor_agent") {
-		t.Error("kg_extractor_agent must be a system agent (bypasses interview, excluded from auction)")
+		t.Error("kg_extractor_agent must be a system agent (verified by default, excluded from selection)")
 	}
 	// The kernel-invoked organs that ran on DeterministicAgent ("tool" trait) now run on
-	// CognitiveAgent, so this map — not the trait — keeps them out of the interview, the
+	// CognitiveAgent, so this map — not the trait — keeps them out of selection, the
 	// Gatekeeper slate and the verifier pool (T-20261031-core-system-agents-docling-kg-extractor).
 	for _, id := range []string{"reranker_agent", "docling_agent"} {
 		if !IsSystemAgent(id) {

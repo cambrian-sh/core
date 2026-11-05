@@ -1,0 +1,66 @@
+{
+  "title": "Clarification",
+  "description": "Whether a goal is answerable as written and, when it is not, the questions to ask. Mirrors modelClarification in internal/awareness/clarify.go.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "answerable",
+    "reason",
+    "questions"
+  ],
+  "properties": {
+    "answerable": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "question",
+          "kind",
+          "why_it_changes_the_answer",
+          "options"
+        ],
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "scope",
+              "judgement"
+            ]
+          },
+          "why_it_changes_the_answer": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "label",
+                "tag"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "tag": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

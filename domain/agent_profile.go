@@ -4,20 +4,15 @@ package domain
 // ProfileAggregator from raw TaskEvent records. The Gatekeeper reads only this
 // derived state — never the raw events — during Merit ranking.
 //
-// The primary key in pgvector is (AgentID, SourceHash). A new SourceHash causes
-// a fresh Interview; Merit is seeded from the previous version's history with
-// trust decay proportional to the embedding distance between release notes.
+// The primary key in pgvector is (AgentID, SourceHash). A new SourceHash starts a
+// fresh profile on the neutral prior at registration; nothing is inherited from the
+// previous version (the ADR-0002 D2 / ADR-0006 D5 release-notes merit decay was
+// deleted with the LLM interview on 2026-11-05,
+// T-20261105-delete-the-llm-agent-interview-now-owner). Rows written before then may
+// still carry a `release_notes` key; it is ignored on read.
 type AgentProfile struct {
-	AgentID    string `json:"agent_id,omitempty"`
-	SourceHash string `json:"source_hash,omitempty"`
-	// ReleaseNotes is the manifest release-notes text (or, for an A2A agent, the
-	// Agent Card text) this version was interviewed against. Persisted so the
-	// NEXT version's inherited merit can decay by the embedding distance between
-	// its notes and these (ADR-0002 D2 / ADR-0006 D5). Until 2026-11-01 the
-	// worker embedded the prior profile's SourceHash — a hash string — as the
-	// "old" text, so the distance was meaningless
-	// (T-20261031-interview-merit-decay-compares-release-notes).
-	ReleaseNotes               string  `json:"release_notes,omitempty"`
+	AgentID                    string  `json:"agent_id,omitempty"`
+	SourceHash                 string  `json:"source_hash,omitempty"`
 	SuccessRate                float64 `json:"success_rate,omitempty"`
 	TrustScore                 float64 `json:"trust_score,omitempty"`
 	NetworkLatencyMedianMs     int     `json:"network_latency_median_ms,omitempty"`

@@ -63,7 +63,7 @@ func (f *fakeCapSource) GetManifest(_ context.Context, id string) (*domain.Agent
 }
 
 // Seeding from manifests must populate the roster even with NO AgentReadyEvents
-// (the disable_interviews case) — this is the actual empty-capabilities root cause.
+// (e.g. the embedder down at boot) — this is the actual empty-capabilities root cause.
 func TestRosterLatch_SeedFromManifests(t *testing.T) {
 	t.Parallel()
 	feed := NewSpool(SpoolConfig{})

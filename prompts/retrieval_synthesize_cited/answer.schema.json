@@ -1,0 +1,11 @@
+{
+  "title": "TypedAnswer",
+  "description": "The typed three-way synthesis reply (planner.synthesize / synthesize_cited). The kernel reads status and text (retrieval_dispatch.go Synthesize / SynthesizeCited).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "text"],
+  "properties": {
+    "status": { "type": "string", "enum": ["answer", "abstention", "clarification"] },
+    "text": { "type": "string" }
+  }
+}

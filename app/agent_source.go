@@ -25,6 +25,17 @@ type FilesystemAgentSource struct {
 	dir           string
 	isSystemAgent func(string) bool
 	mapper        mapper.AgentMapper
+	// skillTools is the skill index declarative profiles are validated against
+	// (storage.DiscoverOptions.SkillTools); nil skips the skill checks.
+	skillTools map[string][]string
+}
+
+// withSkillTools sets the skill index profiles in this directory are validated
+// against (agent stack v2): every skill a profile lists must exist, and the tools
+// it grants must sit inside the profile's allowlist.
+func (s *FilesystemAgentSource) withSkillTools(skillTools map[string][]string) *FilesystemAgentSource {
+	s.skillTools = skillTools
+	return s
 }
 
 // NewFilesystemAgentSource builds a source over a PLUGIN-contributed directory. Its
@@ -67,7 +78,7 @@ func (s *FilesystemAgentSource) Name() string { return "filesystem:" + s.dir }
 // DiscoverAgents scans the directory and returns each agent's definition + manifest,
 // skipping any whose exec path does not resolve on disk.
 func (s *FilesystemAgentSource) DiscoverAgents(_ context.Context) ([]DiscoveredAgent, error) {
-	discovered, err := storage.DiscoverFilesystemAgents(s.dir, s.isSystemAgent)
+	discovered, err := storage.DiscoverFilesystemAgentsWith(s.dir, s.isSystemAgent, storage.DiscoverOptions{SkillTools: s.skillTools})
 	if err != nil {
 		return nil, err
 	}

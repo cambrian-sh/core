@@ -50,11 +50,13 @@ func TestIntegration_CorrectCandidateSelection(t *testing.T) {
 	if candidates[0].Score <= candidates[1].Score {
 		t.Errorf("sql-high score (%.4f) must exceed sql-low score (%.4f)", candidates[0].Score, candidates[1].Score)
 	}
-	if candidates[2].Score <= candidates[3].Score {
-		t.Errorf("image score (%.4f) must exceed sql-prov score (%.4f)", candidates[2].Score, candidates[3].Score)
-	}
-	if candidates[3].Score != DefaultProvisionalScore {
-		t.Errorf("sql-prov must have DefaultProvisionalScore %.4f, got %.4f", DefaultProvisionalScore, candidates[3].Score)
+	// image (no profile) and sql-prov (provisional, no profile) both sit on the
+	// neutral prior since the interview deletion (2026-11-05); the stable sort keeps
+	// registration order between them.
+	neutral := ScoreMerit(nil, domain.TraitCognitive, nil, defaultGatekeeperCfg(), nil).Score
+	if candidates[2].Score != neutral || candidates[3].Score != neutral {
+		t.Errorf("image/sql-prov scores = %.4f/%.4f, want both the neutral prior %.4f",
+			candidates[2].Score, candidates[3].Score, neutral)
 	}
 }
 
@@ -77,10 +79,11 @@ func TestIntegration_AllProvisional(t *testing.T) {
 	if len(candidates) != 3 {
 		t.Fatalf("expected 3 candidates, got %d", len(candidates))
 	}
+	neutral := ScoreMerit(nil, domain.TraitCognitive, nil, defaultGatekeeperCfg(), nil).Score
 	for _, c := range candidates {
-		if c.Score != DefaultProvisionalScore {
-			t.Errorf("agent %q: expected DefaultProvisionalScore %.4f, got %.4f",
-				c.Agent.ID, DefaultProvisionalScore, c.Score)
+		if c.Score != neutral {
+			t.Errorf("agent %q: expected the neutral-prior score %.4f, got %.4f",
+				c.Agent.ID, neutral, c.Score)
 		}
 	}
 }

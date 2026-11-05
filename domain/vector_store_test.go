@@ -20,9 +20,6 @@ func TestDocTypeConstants(t *testing.T) {
 	if DocTypeMnemonicFact != "mnemonic_fact" {
 		t.Errorf("DocTypeMnemonicFact = %q, want %q", DocTypeMnemonicFact, "mnemonic_fact")
 	}
-	if DocTypeMnemonicScene != "mnemonic_scene" {
-		t.Errorf("DocTypeMnemonicScene = %q, want %q", DocTypeMnemonicScene, "mnemonic_scene")
-	}
 }
 
 // Cycle 2: SearchOptions zero-value has empty DocumentType (no filter) and zero TopK.
@@ -56,9 +53,9 @@ func TestSearchOptions_WithMnemonicDocTypes(t *testing.T) {
 	if factOpts.DocumentType != "mnemonic_fact" {
 		t.Errorf("DocumentType = %q, want %q", factOpts.DocumentType, "mnemonic_fact")
 	}
-	sceneOpts := SearchOptions{DocumentType: DocTypeMnemonicScene, TopK: 1}
-	if sceneOpts.DocumentType != "mnemonic_scene" {
-		t.Errorf("DocumentType = %q, want %q", sceneOpts.DocumentType, "mnemonic_scene")
+	actionOpts := SearchOptions{DocumentType: DocTypeMnemonicAction, TopK: 1}
+	if actionOpts.DocumentType != "mnemonic_action" {
+		t.Errorf("DocumentType = %q, want %q", actionOpts.DocumentType, "mnemonic_action")
 	}
 }
 

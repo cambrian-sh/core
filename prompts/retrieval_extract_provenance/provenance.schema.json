@@ -1,0 +1,15 @@
+{
+  "title": "Provenance",
+  "description": "Schema-bounded provenance of one memory item (planner.extract_provenance). An empty string means not stated.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["valid_time", "actors", "source_type"],
+  "properties": {
+    "valid_time": { "type": "string" },
+    "actors": { "type": "array", "items": { "type": "string" } },
+    "source_type": {
+      "type": "string",
+      "enum": ["slack_thread", "design_doc", "git_change", "incident_report", "support_ticket", "system_event", "email", "note", ""]
+    }
+  }
+}

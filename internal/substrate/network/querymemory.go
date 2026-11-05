@@ -91,6 +91,10 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	// time. Reporting it is the difference between a status line that moves and one that
 	// reads as a hang.
 	s.reportProgress(ctx, domain.PhaseSearching)
+	// A recall (an agentic retrieval chain can run for minutes on its own lease) is
+	// activity on the CALLER's lease while it runs, for the plan idle watchdog and
+	// the chat stall watchdog. callerLease drops a lease the caller does not hold.
+	defer s.trackLeaseWork(callerLease(ctx, s.LLMGateway))()
 
 	// The kernel's own LLM calls for this recall (the agentic retrieval chain's
 	// retrieval_agent stream, any memory organ) go back as the "cambrian-llm-usage"
@@ -104,7 +108,10 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	}
 
 	// ADR-0049 D4: x-lane="actions" routes to the "what did I do" lane (action
-	// records); anything else is the default fact lane ("what do I know").
+	// records); anything else is the default fact lane ("what do I know"). The
+	// "scenes" and "precedents" lanes were removed 2026-11-05 with scenes
+	// (decisions/scenes-cancelled.md): an old client that still sends them gets the
+	// default fact lane.
 	var results []domain.SearchResult
 	lane := ""
 	if md, ok := metadata.FromIncomingContext(ctx); ok && len(md.Get("x-lane")) > 0 {
@@ -113,14 +120,9 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 	switch lane {
 	case "actions":
 		results, err = s.MemorySearcher.SearchActions(ctx, req.GetQuery(), callerID)
-	case "scenes":
-		results, err = s.MemorySearcher.SearchScenes(ctx, req.GetQuery(), callerID)
 	case "procedures":
-		// ADR-0094 D5: induced routines ("how has this gone here?").
+		// ADR-0094 D5: stored routines ("how has this gone here?").
 		results, err = s.MemorySearcher.SearchProcedures(ctx, req.GetQuery(), callerID)
-	case "precedents":
-		// ADR-0049 Issue 014: the world-model precedent pull lane (transitions).
-		results, err = s.MemorySearcher.SearchPrecedents(ctx, req.GetQuery(), callerID)
 	default:
 		results, err = s.MemorySearcher.Search(ctx, req.GetQuery(), callerID)
 	}

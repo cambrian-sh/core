@@ -11,50 +11,11 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 )
 
-func TestModelConfig_Unmarshal(t *testing.T) {
-	raw := `{"provider":"openai","model":"gpt-4o","endpoint":"https://api.openai.com/v1","api_key_env":"OPENAI_API_KEY","cost_per_1m_input":5.0,"cost_per_1m_output":15.0,"timeout_ms":30000,"capabilities":["planning","text-generation"]}`
-	var mc config.ModelConfig
-	if err := json.Unmarshal([]byte(raw), &mc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if mc.Provider != "openai" {
-		t.Errorf("Provider: want openai, got %q", mc.Provider)
-	}
-	if mc.Model != "gpt-4o" {
-		t.Errorf("Model: want gpt-4o, got %q", mc.Model)
-	}
-	if mc.CostPer1MInput != 5.0 {
-		t.Errorf("CostPer1MInput: want 5.0, got %v", mc.CostPer1MInput)
-	}
-	if mc.CostPer1MOutput != 15.0 {
-		t.Errorf("CostPer1MOutput: want 15.0, got %v", mc.CostPer1MOutput)
-	}
-	if mc.TimeoutMs != 30000 {
-		t.Errorf("TimeoutMs: want 30000, got %d", mc.TimeoutMs)
-	}
-	if len(mc.Capabilities) != 2 {
-		t.Errorf("Capabilities: want 2, got %d", len(mc.Capabilities))
-	}
-}
-
-func TestModelConfig_DefaultsApplied(t *testing.T) {
-	raw := `{"provider":"ollama","model":"llama3"}`
-	var mc config.ModelConfig
-	if err := json.Unmarshal([]byte(raw), &mc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if mc.TimeoutMs != 0 {
-		t.Errorf("TimeoutMs: want 0 (zero value before LoadConfig), got %d", mc.TimeoutMs)
-	}
-	if mc.CostPer1MInput != 0 {
-		t.Errorf("CostPer1MInput: want 0, got %v", mc.CostPer1MInput)
-	}
-}
-
 // NOTE: ADR-0042 removed the top-level llm{} block and models[] array. Generator
-// parsing + timeout/health defaults are now covered by llm_provider_config_test.go
-// (TestLoadConfig_LLMProvider_RoundTripAndDefaults). ModelConfig struct round-trip
-// is still covered by TestModelConfig_* above (the streaming path uses it).
+// parsing + timeout/health defaults are covered by llm_provider_config_test.go
+// (TestLoadConfig_LLMProvider_RoundTripAndDefaults). ModelConfig, the field-by-field
+// copy of GeneratorConfig the clients used to be built from, was deleted with
+// ADR-0139 D1: llm.NewClient takes the GeneratorConfig itself.
 
 func TestConfig_LoadConfig_EnvVarOverridesFileValue(t *testing.T) {
 	// New convention (ADR-0024): env vars use CAMBRIAN_ prefix with __ as hierarchy separator.
@@ -94,7 +55,7 @@ func TestExecutionConfig_Validate_ModelConfigs(t *testing.T) {
 	cfg := config.ExecutionConfig{
 		Plan: config.PlanConfig{
 			StepTimeoutMultiplier:       2.0,
-			PlanTimeoutMs:               120000,
+			PlanMaxDurationMs:           config.DefaultPlanMaxDurationMs,
 			MaxReplanAttempts:           2,
 			MaxPartialContextBytes:      51200,
 			FallbackConfidenceThreshold: 0.4,
@@ -176,7 +137,7 @@ func TestTelemetryConfig_Unmarshal(t *testing.T) {
 func TestConfigError_DetectableViaErrorsAs(t *testing.T) {
 	invalid := config.ExecutionConfig{
 		Plan: config.PlanConfig{
-			PlanTimeoutMs: 0, // below minimum of 1000 — triggers validation error
+			PlanMaxDurationMs: 0, // below minimum of 1000 — triggers validation error
 		},
 		Verification: config.VerificationConfig{
 			TrustScoreCalWeight: 0.6,
@@ -205,7 +166,7 @@ func TestConfigError_DetectableViaErrorsAs(t *testing.T) {
 func TestConfigError_MultipleFailuresJoined(t *testing.T) {
 	invalid := config.ExecutionConfig{
 		Plan: config.PlanConfig{
-			PlanTimeoutMs: 0, // < 1000
+			PlanMaxDurationMs: 0, // < 1000
 		},
 		Verification: config.VerificationConfig{
 			TrustScoreCalWeight: 0.6,
@@ -224,8 +185,8 @@ func TestConfigError_MultipleFailuresJoined(t *testing.T) {
 		t.Fatalf("expected *config.ConfigError, got %T", err)
 	}
 	// Both violations must appear in a single error message.
-	if !strings.Contains(cfgErr.Message, "plan_timeout_ms") {
-		t.Errorf("message missing plan_timeout_ms violation: %q", cfgErr.Message)
+	if !strings.Contains(cfgErr.Message, "plan_max_duration_ms") {
+		t.Errorf("message missing plan_max_duration_ms violation: %q", cfgErr.Message)
 	}
 	if !strings.Contains(cfgErr.Message, "ewma_alpha") {
 		t.Errorf("message missing ewma_alpha violation: %q", cfgErr.Message)
@@ -346,8 +307,8 @@ func TestLoadConfig_MinimalFile_DefaultsPreserved(t *testing.T) {
 	if cfg.Execution.Supervision.EWMAAlpha != def.Execution.Supervision.EWMAAlpha {
 		t.Errorf("EWMAAlpha: want %v, got %v", def.Execution.Supervision.EWMAAlpha, cfg.Execution.Supervision.EWMAAlpha)
 	}
-	if cfg.Execution.Plan.PlanTimeoutMs != def.Execution.Plan.PlanTimeoutMs {
-		t.Errorf("PlanTimeoutMs: want %v, got %v", def.Execution.Plan.PlanTimeoutMs, cfg.Execution.Plan.PlanTimeoutMs)
+	if cfg.Execution.Plan.PlanMaxDurationMs != def.Execution.Plan.PlanMaxDurationMs {
+		t.Errorf("PlanMaxDurationMs: want %v, got %v", def.Execution.Plan.PlanMaxDurationMs, cfg.Execution.Plan.PlanMaxDurationMs)
 	}
 	if cfg.Execution.Plan.FallbackEnabled != def.Execution.Plan.FallbackEnabled {
 		t.Errorf("FallbackEnabled: want %v, got %v", def.Execution.Plan.FallbackEnabled, cfg.Execution.Plan.FallbackEnabled)
@@ -406,7 +367,8 @@ func TestDefaultConfig_KnownValues(t *testing.T) {
 	}{
 		{"EWMAAlpha", ex.Supervision.EWMAAlpha, 0.5},
 		{"StepTimeoutMultiplier", ex.Plan.StepTimeoutMultiplier, 2.0},
-		{"PlanTimeoutMs", ex.Plan.PlanTimeoutMs, 120000},
+		{"PlanIdleTimeoutMs", ex.Plan.PlanIdleTimeoutMs, 180000},
+		{"PlanMaxDurationMs", ex.Plan.PlanMaxDurationMs, 1800000},
 		{"FallbackEnabled", ex.Plan.FallbackEnabled, true},
 		{"GatekeeperW1", ex.Gatekeeper.GatekeeperW1, 0.4},
 		{"GatekeeperW4", ex.Gatekeeper.GatekeeperW4, 0.15},
@@ -492,8 +454,8 @@ func TestLoadConfig_TuningOverridesDefaults(t *testing.T) {
 	}
 	// Untuned fields must fall through to DefaultConfig().
 	def := config.DefaultConfig()
-	if cfg.Execution.Plan.PlanTimeoutMs != def.Execution.Plan.PlanTimeoutMs {
-		t.Errorf("PlanTimeoutMs: want %v (default), got %v", def.Execution.Plan.PlanTimeoutMs, cfg.Execution.Plan.PlanTimeoutMs)
+	if cfg.Execution.Plan.PlanMaxDurationMs != def.Execution.Plan.PlanMaxDurationMs {
+		t.Errorf("PlanMaxDurationMs: want %v (default), got %v", def.Execution.Plan.PlanMaxDurationMs, cfg.Execution.Plan.PlanMaxDurationMs)
 	}
 }
 
@@ -542,8 +504,8 @@ func TestLoadConfig_TuningAbsent_DoesNotAffectDefaults(t *testing.T) {
 	if cfg.Execution.Supervision.EWMAAlpha != def.Execution.Supervision.EWMAAlpha {
 		t.Errorf("EWMAAlpha: want %v (default), got %v", def.Execution.Supervision.EWMAAlpha, cfg.Execution.Supervision.EWMAAlpha)
 	}
-	if cfg.Execution.Plan.PlanTimeoutMs != def.Execution.Plan.PlanTimeoutMs {
-		t.Errorf("PlanTimeoutMs: want %v (default), got %v", def.Execution.Plan.PlanTimeoutMs, cfg.Execution.Plan.PlanTimeoutMs)
+	if cfg.Execution.Plan.PlanMaxDurationMs != def.Execution.Plan.PlanMaxDurationMs {
+		t.Errorf("PlanMaxDurationMs: want %v (default), got %v", def.Execution.Plan.PlanMaxDurationMs, cfg.Execution.Plan.PlanMaxDurationMs)
 	}
 	if cfg.Execution.Retrieval.KG2RAGEnabled != def.Execution.Retrieval.KG2RAGEnabled {
 		t.Errorf("KG2RAGEnabled: want %v (default), got %v", def.Execution.Retrieval.KG2RAGEnabled, cfg.Execution.Retrieval.KG2RAGEnabled)

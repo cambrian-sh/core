@@ -68,10 +68,10 @@ func TestSaveProfile_BackgroundCtx_IsAttributedToKernelUnderFailClosedAuthz(t *t
 	az := &failClosedAuthorizer{}
 	ps := NewProfileStore(authz.NewEnforcingStoreWriter(stub, az, slog.Default()))
 
-	// context.Background(): exactly what InterviewWorker.Start hands processAgent.
+	// context.Background(): exactly what ProfileSeeder.Start hands Seed.
 	err := ps.SaveProfile(context.Background(), "chat_agent", "h1", []float32{1}, domain.AgentProfile{AgentID: "chat_agent"})
 	if errors.Is(err, authz.ErrWriteDenied) {
-		t.Fatalf("interview profile save denied with no principal (the ticket's bug): %v", err)
+		t.Fatalf("seeded profile save denied with no principal (the ticket's bug): %v", err)
 	}
 	if err != nil {
 		t.Fatalf("SaveProfile: %v", err)
@@ -163,7 +163,7 @@ func TestPg_SaveProfile_FailClosedAuthz_PersistsKernelAuthoredRow(t *testing.T) 
 
 	emb := make([]float32, 1536)
 	emb[0] = 1
-	// No principal on the context: the InterviewWorker's condition.
+	// No principal on the context: the ProfileSeeder's condition.
 	if err := ps.SaveProfile(context.Background(), agent, "h1", emb, domain.AgentProfile{AgentID: agent, SourceHash: "h1"}); err != nil {
 		t.Fatalf("SaveProfile under fail-closed authz: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestPg_SaveProfile_FailClosedAuthz_PersistsKernelAuthoredRow(t *testing.T) 
 			t.Errorf("write classified as %s, want %s", p, domain.SystemPrincipal)
 		}
 	}
-	// The profile is readable on the kernel read path (Gatekeeper / re-interview).
+	// The profile is readable on the kernel read path (Gatekeeper / re-seed).
 	if got, err := ps.GetProfile(context.Background(), agent, "h1"); err != nil || got == nil || got.AgentID != agent {
 		t.Fatalf("GetProfile after save = %+v, %v", got, err)
 	}

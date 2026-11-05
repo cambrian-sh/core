@@ -13,6 +13,13 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 )
 
+// RetiredRoles are llm_provider.roles keys whose organ no longer exists, with the
+// reason. A config (file, store or env) that still names one loads unchanged; the
+// Provider drops the binding at construction with a log line.
+var RetiredRoles = map[string]string{
+	"interview": "the LLM agent interview was deleted 2026-11-05 (T-20261105-delete-the-llm-agent-interview-now-owner)",
+}
+
 // Provider is the concrete LLMProvider (ADR-0042). It composes the id-keyed
 // registry, the circuit breaker (availability), the price ledger (cost), and the
 // failover resolver into a single Acquire entry point. Preference is delegated:
@@ -100,6 +107,13 @@ func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger) (*Provider, err
 	// would let a later config read observe a value no file ever stated.
 	roles := make(map[string]string, len(cfg.Roles))
 	for r, id := range cfg.Roles {
+		// A RETIRED role (its organ was deleted) is dropped, not served: nothing
+		// would ever acquire it, and listing it would show the operator a binding
+		// that does nothing. Loading still succeeds — the file is not rewritten.
+		if why, retired := RetiredRoles[r]; retired {
+			log.Info("llm provider: ignoring retired role", "role", r, "generator", id, "why", why)
+			continue
+		}
 		roles[r] = id
 		// A role naming an unknown generator is TOLERATED (the ladder falls back
 		// to the default, ListRoleAssignments reports resolved=false) but never
@@ -183,26 +197,51 @@ func (p *Provider) Ledger() *PriceLedger { return p.ledger }
 // Registry exposes the generator registry for auction agent registration.
 func (p *Provider) Registry() *GeneratorRegistry { return p.tab().registry }
 
-// Default returns the global default generator id (interview-session base, etc.).
+// Default returns the global default generator id.
 func (p *Provider) Default() string { return p.tab().defaultID }
 
 // Acquire implements domain.LLMProvider: resolve a healthy model via the ladder,
 // then return it wrapped in the health-recording decorator.
 func (p *Provider) Acquire(ctx context.Context, req domain.LLMRequest) (domain.Generator, error) {
-	id, err := p.resolve(ctx, req)
+	gen, _, err := p.acquire(ctx, req, nil)
+	return gen, err
+}
+
+// acquire is Acquire with the D1 fallback's exclusion set: generators that already
+// failed THIS call with an endpoint-class error are skipped by the ladder even while
+// their breaker is still closed. It also returns the resolved id.
+func (p *Provider) acquire(ctx context.Context, req domain.LLMRequest, excluded map[string]bool) (domain.Generator, string, error) {
+	id, err := p.resolveExcluding(ctx, req, excluded)
 	if err != nil {
-		p.log.Error("llm provider: no healthy model", "purpose", req.Purpose, "suggested", req.SuggestedModelID, "err", err)
-		return nil, err
+		if len(excluded) == 0 {
+			p.log.Error("llm provider: no healthy model", "purpose", req.Purpose, "suggested", req.SuggestedModelID, "err", err)
+		}
+		return nil, "", err
 	}
 	entry, ok := p.tab().registry.Lookup(id)
 	if !ok {
-		return nil, fmt.Errorf("llm provider: resolved id %q not in registry", id)
+		return nil, "", fmt.Errorf("llm provider: resolved id %q not in registry", id)
 	}
+	purpose := string(req.Purpose)
+	if purpose == "" {
+		purpose = "model"
+	}
+	return p.decorate(id, entry.Generator, string(req.Purpose), purpose, true), id, nil
+}
+
+// decorate builds the Provider's decorator stack around one registered client. It
+// is the ONE place the stack is assembled, shared by Acquire (the organs) and
+// StreamOn/GenerateOn (the agent-plane gateway, ADR-0139 D1), so an agent call and
+// an organ call cross the same breaker, tracing, concurrency cap and schema layer.
+// metered=false omits the spend-meter layer for a caller that books the call
+// itself against a lease (the gateway: ADR-0131 D3 admission and the per-request
+// tally are lease-scoped, and metering here too would book every call twice).
+func (p *Provider) decorate(id string, client domain.Generator, tracePurpose, meterPurpose string, metered bool) domain.Generator {
 	// Health-recording (inner) so the breaker sees outcomes; tracing (outer) so
 	// every call is observed by purpose. Tracing is a no-op when unset.
-	gen := newHealthGenerator(id, entry.Generator, p.breaker)
+	gen := newHealthGenerator(id, client, p.breaker)
 	if p.traceWrapper != nil {
-		gen = p.traceWrapper(gen, string(req.Purpose))
+		gen = p.traceWrapped(gen, tracePurpose)
 	}
 	// Outermost: the global concurrency cap gates the entire (traced, health-recorded)
 	// call, so a burst of direct system-organ calls cannot flood the provider.
@@ -212,14 +251,12 @@ func (p *Provider) Acquire(ctx context.Context, req domain.LLMRequest) (domain.G
 	// Outermost of all: the ADR-0131 spend meter. Outside the concurrency cap so
 	// a call refused at the session ceiling never occupies a slot; at Acquire so
 	// every system organ is metered without any call site knowing.
-	if m := p.meter.Load(); m != nil {
-		purpose := string(req.Purpose)
-		if purpose == "" {
-			purpose = "model"
-		}
-		gen = &meteredGenerator{inner: gen, meter: m, purpose: purpose, generatorID: id}
+	if m := p.meter.Load(); m != nil && metered {
+		gen = &meteredGenerator{inner: gen, meter: m, purpose: meterPurpose, generatorID: id}
 	}
-	return gen, nil
+	// The C1 response-schema layer (ADR-0139): validates a best-effort structured
+	// reply and repairs it once. Outside the meter so each attempt is booked.
+	return &schemaGenerator{inner: gen}
 }
 
 // concurrencyGenerator bounds concurrent in-flight LLM calls via a shared semaphore.
@@ -299,16 +336,24 @@ func (c *concurrencyGenerator) GenerateStream(ctx context.Context, prompt string
 // resolve picks the generator id via the failover ladder, sourcing preference by
 // purpose. Separated from Acquire so the decision is unit-testable.
 func (p *Provider) resolve(ctx context.Context, req domain.LLMRequest) (string, error) {
+	return p.resolveExcluding(ctx, req, nil)
+}
+
+func (p *Provider) resolveExcluding(ctx context.Context, req domain.LLMRequest, excluded map[string]bool) (string, error) {
 	// One table load for the whole decision: allIDs/default/capIndex are always
 	// from the SAME published table, even mid-reload.
 	t := p.tab()
+	healthy := p.breaker.Healthy
+	if len(excluded) > 0 {
+		healthy = func(id string) bool { return !excluded[id] && p.breaker.Healthy(id) }
+	}
 	return resolveModel(
 		req.SuggestedModelID,
 		req.CapabilityHints,
 		p.preferenceFor(ctx, req),
 		t.allIDs,
 		t.defaultID,
-		p.breaker.Healthy,
+		healthy,
 		t.capIndex,
 	)
 }
@@ -355,12 +400,17 @@ type modelGenerator struct {
 	id       string
 }
 
+func (g *modelGenerator) request() domain.LLMRequest {
+	return domain.LLMRequest{SuggestedModelID: g.id}
+}
+
 func (g *modelGenerator) Generate(ctx context.Context, prompt string) (string, error) {
-	gen, err := g.provider.Acquire(ctx, domain.LLMRequest{SuggestedModelID: g.id})
-	if err != nil {
-		return "", err
-	}
-	return gen.Generate(ctx, prompt)
+	var out string
+	err := g.provider.withFallback(ctx, g.request(), func(gen domain.Generator) (err error) {
+		out, err = gen.Generate(ctx, prompt)
+		return err
+	})
+	return out, err
 }
 
 type purposeGenerator struct {
@@ -369,12 +419,17 @@ type purposeGenerator struct {
 	hints    []string
 }
 
+func (g *purposeGenerator) request() domain.LLMRequest {
+	return domain.LLMRequest{Purpose: g.purpose, CapabilityHints: g.hints}
+}
+
 func (g *purposeGenerator) Generate(ctx context.Context, prompt string) (string, error) {
-	gen, err := g.provider.Acquire(ctx, domain.LLMRequest{Purpose: g.purpose, CapabilityHints: g.hints})
-	if err != nil {
-		return "", err
-	}
-	return gen.Generate(ctx, prompt)
+	var out string
+	err := g.provider.withFallback(ctx, g.request(), func(gen domain.Generator) (err error) {
+		out, err = gen.Generate(ctx, prompt)
+		return err
+	})
+	return out, err
 }
 
 // GenerateWithTools acquires a generator for this purpose and forwards native
@@ -383,16 +438,17 @@ func (g *purposeGenerator) Generate(ctx context.Context, prompt string) (string,
 func (g *purposeGenerator) GenerateWithTools(
 	ctx context.Context, messages []domain.ModelMessage, tools []domain.ToolDefinition,
 ) (domain.ModelTurn, error) {
-	gen, err := g.provider.Acquire(ctx, domain.LLMRequest{Purpose: g.purpose, CapabilityHints: g.hints})
-	if err != nil {
-		return domain.ModelTurn{}, err
-	}
-	tg, ok := gen.(domain.ToolCallingGenerator)
-	if !ok {
-		return domain.ModelTurn{}, fmt.Errorf(
-			"llm provider: acquired %T does not implement native tool-calling", gen)
-	}
-	return tg.GenerateWithTools(ctx, messages, tools)
+	var out domain.ModelTurn
+	err := g.provider.withFallback(ctx, g.request(), func(gen domain.Generator) error {
+		tg, ok := gen.(domain.ToolCallingGenerator)
+		if !ok {
+			return fmt.Errorf("llm provider: acquired %T does not implement native tool-calling", gen)
+		}
+		var err error
+		out, err = tg.GenerateWithTools(ctx, messages, tools)
+		return err
+	})
+	return out, err
 }
 
 // GenerateStream acquires a healthy generator and delegates to its streaming
@@ -400,17 +456,17 @@ func (g *purposeGenerator) GenerateWithTools(
 // does not implement streaming; callers can fall back to Generate. ADR-0042
 // D5 live-failover applies identically to streaming calls.
 func (g *purposeGenerator) GenerateStream(ctx context.Context, prompt string) (<-chan domain.StreamChunk, error) {
-	gen, err := g.provider.Acquire(ctx, domain.LLMRequest{Purpose: g.purpose, CapabilityHints: g.hints})
-	if err != nil {
-		return nil, err
-	}
-	sg, ok := gen.(interface {
-		GenerateStream(ctx context.Context, prompt string) (<-chan domain.StreamChunk, error)
+	var out <-chan domain.StreamChunk
+	err := g.provider.withFallback(ctx, g.request(), func(gen domain.Generator) error {
+		sg, ok := gen.(streamingInner)
+		if !ok {
+			return fmt.Errorf("llm provider: generator %T does not implement streaming", gen)
+		}
+		var err error
+		out, err = sg.GenerateStream(ctx, prompt)
+		return err
 	})
-	if !ok {
-		return nil, fmt.Errorf("llm provider: generator %T does not implement streaming", gen)
-	}
-	return sg.GenerateStream(ctx, prompt)
+	return out, err
 }
 
 var (
@@ -438,7 +494,7 @@ func (p *Provider) BreakerState(id string) string {
 	return "open"
 }
 
-// Roles returns the role → generator-id map (planner/verifier/router/interview/
+// Roles returns the role → generator-id map (planner/verifier/router/
 // memory). Copied, so a caller cannot mutate the Provider's routing table.
 func (p *Provider) Roles() map[string]string {
 	p.rolesMu.RLock()

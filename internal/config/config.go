@@ -33,8 +33,33 @@ type PlanConfig struct {
 	// StepTimeoutBaseBufferMs is the additive floor (ms) added after scaling.
 	StepTimeoutBaseBufferMs int `json:"step_timeout_base_buffer_ms"`
 
-	// PlanTimeoutMs is the hard ceiling (ms) for the entire plan execution.
-	PlanTimeoutMs int `json:"plan_timeout_ms"`
+	// StepTimeoutFloorMs is the shortest per-step deadline the dispatcher will set
+	// (ms). The ADR-0001 D5 formula scales the winner's OBSERVED median latency, so
+	// an agent whose history is short answers (5 s median ⇒ 25 s at the defaults)
+	// is cut off the first time it is asked for a long generation on a slow local
+	// or proxied model. The floor keeps that healthy step alive; the formula can
+	// still EXTEND past it for an agent that is genuinely slow. It applies only
+	// where the formula applies (a winner with no latency profile still runs under
+	// the plan's own limits alone), and the plan's absolute cap
+	// (PlanMaxDurationMs) still bounds it. Default 180000 (3 min); 0 disables the
+	// floor (T-20261105-slow-model-reliability-hardcoded-20-s).
+	StepTimeoutFloorMs int `json:"step_timeout_floor_ms,omitempty"`
+
+	// PlanIdleTimeoutMs cancels a plan that has made NO progress for this long
+	// (ms). Progress is a step starting or finishing, a model or tool call in
+	// flight on one of the plan's step leases (or an in-kernel thought/replan
+	// call), or an ADR-0098 progress event for the plan's conversation. A plan
+	// that keeps working is never cut by it, however long it runs. Default
+	// 180000 (DefaultPlanIdleTimeoutMs); 0 disables the idle watchdog, leaving
+	// only PlanMaxDurationMs. Replaces the fixed 120 s plan_timeout_ms (owner
+	// decision 2026-11-05, T-20261105-owner-decision-needed-120-s-plan-timeout-ms).
+	PlanIdleTimeoutMs int `json:"plan_idle_timeout_ms"`
+
+	// PlanMaxDurationMs is the absolute safety cap (ms) on one plan, whatever
+	// its progress. Default 1800000 (30 min). The retired v1/v2 key
+	// plan_timeout_ms, when an operator still sets it, is loaded as this key
+	// (it was their hard cap) — see renameDeprecatedExecutionKeys.
+	PlanMaxDurationMs int `json:"plan_max_duration_ms"`
 
 	// ContextGrowthK is the scalar used in ContextGrowthPenalty = k * growthBytes.
 	// Penalises agents that inflate the DAG context with large payloads.
@@ -83,6 +108,12 @@ type PlanConfig struct {
 	PlanDriftDays          int     `json:"plan_drift_days"`
 	ContextRefSnippetChars int     `json:"context_ref_snippet_chars"` // default 500
 
+	// ThoughtResultsMaxChars caps the earlier-step results an in-kernel thought step
+	// inlines into its synthesis call (ADR-0139 D2), in characters, across all
+	// results: when they are larger, each is shortened to a fair share and marked as
+	// shortened. Default 24000 (about 6k tokens); <= 0 reads as the default.
+	ThoughtResultsMaxChars int `json:"thought_results_max_chars,omitempty"`
+
 	// BudgetExhaustionAlarmRate is the threshold above which PLAN_BUDGET_INSUFFICIENT
 	// signal is emitted. Default: 0.05 (5%). ADR-0018.
 	BudgetExhaustionAlarmRate float64 `json:"budget_exhaustion_alarm_rate"`
@@ -121,9 +152,12 @@ type GatekeeperConfig struct {
 	// GatekeeperW3 is the weight for 1/NormalisedLatency in the GatekeeperScore formula.
 	GatekeeperW3 float64 `json:"gatekeeper_w3"`
 
-	// ColdStartPenaltyMultiplier is applied to GatekeeperScore when AgentProfile.Provisional==true
-	// (post-Interview but pre-verified). Default: 0.6.
-	ColdStartPenaltyMultiplier float64 `json:"cold_start_penalty_multiplier"`
+	// RETIRED 2026-11-05 (T-20261105-delete-the-llm-agent-interview-now-owner):
+	// `cold_start_penalty_multiplier`. It discounted an agent whose PROFILE was flagged
+	// provisional; the only writer of that flag was the LLM interview's A2A path,
+	// deleted with the interview. Agents with no evidence carry the neutral prior
+	// instead. A layer that still sets it loads unchanged (the decoder ignores keys
+	// with no field); retiredExecutionFields (execution_migration_test.go) records it.
 
 	// RETIRED 2026-10-31 (T-20261031-min-auction-confidence-config-is-dead-after-the):
 	// `min_auction_confidence`. It was the bid-confidence floor of the Auctioneer,
@@ -208,7 +242,7 @@ type RoutingConfig struct {
 	AgentPinning bool `json:"agent_pinning"`
 
 	// RoutingTraceEnabled turns on the ROUTE-02 gatekeeper candidate-funnel trace
-	// (Declaration→Interview→Merit per-agent verdicts + winner margin) carried on
+	// (Declaration→Semantic→Merit per-agent verdicts + winner margin) carried on
 	// the auction event. Default true: the funnel only records values the
 	// Gatekeeper already computes, so the cost is a per-auction slice allocation.
 	// Toggle it off to measure that overhead as an A/B arm (acceptance: zero
@@ -398,32 +432,26 @@ type SessionConfig struct {
 	MaxSessionTokens int `json:"max_session_tokens,omitempty"`
 }
 
-// MemoryConfig — Long-term memory: experiential capture, the Tier-1/Tier-2 promotion pipeline, consolidation and GC.
+// MemoryConfig — Long-term memory: experiential records, recall thresholds, consolidation and GC.
 //
 // Split out of the former 198-field flat ExecutionConfig (config schema v2).
 // Field names, types and json tags are unchanged; only the nesting is new, so
 // each field means exactly what it meant before.
 type MemoryConfig struct {
-	// ExperientialMemoryEnabled turns on the passive "experiential" write path: every
-	// completed planner step result (RecordExecution) and every tool output
-	// (RecordToolOutput) is embedded and stored to long-term memory as a fact. Default
-	// FALSE — the design stores whole, unfocused tool outputs (a directory listing, a
-	// file's contents) as single embeddings, which both overflows the embedder's context
-	// window and pollutes recall with low-signal auto-captured junk. Knowledge that is
-	// genuinely a memory source belongs in the explicit chunked ingest pipeline, not this
-	// auto-capture. Off by default; benchmark rigs that measure experiential recall can
-	// re-enable it via tuning.local.json.
-	ExperientialMemoryEnabled bool `json:"experiential_memory_enabled"`
+	// RETIRED 2026-11-05 (T-20261105-remove-scenes-completely-owner-decision-2026-11):
+	// `experiential_memory_enabled`, `tier1_channel_capacity`, `tier2_batch_size`,
+	// `tier2_llm_timeout` and `tier2_max_idle_seconds`. They gated and tuned the RAW
+	// capture path (step results and tool payloads embedded whole) and the ADR-0015
+	// tier-2 memory judge that curated it; both were deleted by owner decision
+	// (cambrian-knowledge/decisions/scenes-cancelled.md,
+	// investigations/2026-11-05-memory-judge-assessment.md). A layer that still sets
+	// them loads unchanged — the decoder ignores keys with no field.
 
-	// ExperienceRecordsEnabled turns on the ADR-0049 §A2.2 OUTCOME RECORD: one
-	// structured record per completed plan (the abstracted D7 projection + engaged
-	// entity refs + action path + outcome), parented to an `experiences` row.
-	//
-	// This is NOT the flag above. `experiential_memory_enabled` guards the RAW path
-	// removed on 2026-07-18 — whole tool payloads embedded as single vectors — and
-	// stays false permanently. This one guards the abstraction-only replacement:
-	// nothing raw is ever embedded, and a plan that engaged no entity writes nothing
-	// at all.
+	// ExperienceRecordsEnabled turns on the ADR-0049 §A2.2 experiential records: the
+	// mutation action events and, per completed plan, the ADR-0095 `experiences` row
+	// (episode open and close), the A2.3 failure record and procedure feedback. The
+	// plan-level `mnemonic_scene` chunk it also wrote until 2026-11-05 was removed with
+	// scenes. Nothing raw is ever embedded.
 	//
 	// DEFAULT TRUE as of 2026-07-28 (owner decision). The reasoning, recorded because
 	// "we turned the removed thing back on" is the wrong summary:
@@ -432,8 +460,9 @@ type MemoryConfig struct {
 	//     path cannot embed a tool payload by construction (§A2.2 hard constraint).
 	//   - Defect 4 — experience crowding corpus recall — now has a structural guard
 	//     (§A2.4 lane-aware truncation), measured to cost nothing.
-	//   - The volume is bounded: ONE record per plan, and none at all for a plan that
-	//     engaged no entity.
+	//   - The volume is bounded: one episode row per plan, one action event per
+	//     mutation, and a failure record only for a surprising or replan-exhausted
+	//     failure.
 	//   - It is the only way to progress. `mean_foreign_share` cannot detect
 	//     displacement until experience has volume, and volume only accrues if this is
 	//     on. Enabling is how the measurement STARTS, not a substitute for it.
@@ -442,16 +471,13 @@ type MemoryConfig struct {
 	// foreign_share ~0.43). Drift against those is the thing to watch.
 	ExperienceRecordsEnabled bool `json:"experience_records_enabled"`
 
-	// ExperienceSurpriseFloor is the ADR-0049 A2.3 gate: an episode whose prediction
-	// error reaches this writes an additional FAILURE PRECEDENT (a negative edge)
-	// beyond its ordinary outcome record. Surprise is |merit expectation - actual|, so
+	// ExperienceSurpriseFloor is the ADR-0049 A2.3 gate: a failed episode whose
+	// prediction error reaches this writes a FAILURE RECORD (a negative edge). Surprise is |merit expectation - actual|, so
 	// 0.5 means "merit was wrong by half" — a confident agent that failed, or a
 	// distrusted one that succeeded. Both are worth remembering; a routine failure by
 	// an agent already known to fail is not.
 	//
-	// Default 0.5 is editorial, not measured. It should be tuned from the surprise
-	// distribution the outcome records accumulate, which is exactly why they are
-	// written unconditionally with the score stamped on them.
+	// Default 0.5 is editorial, not measured.
 	ExperienceSurpriseFloor float64 `json:"experience_surprise_floor"`
 
 	// (execution.scope_enforcement_enabled is GONE — ADR-0085. Access control is no
@@ -476,27 +502,10 @@ type MemoryConfig struct {
 	// Default: 30. ADR-0015.
 	MinGCAgeDays int `json:"min_gc_age_days"`
 
-	// Tier2MaxIdleSeconds is the idle-time drain trigger for the Tier-2 background goroutine.
-	// Default: 300. ADR-0015.
-	Tier2MaxIdleSeconds int `json:"tier2_max_idle_seconds"`
-
-	// Tier2LLMTimeout is the timeout (seconds) for the Tier-2 Generator scoring call.
-	// On timeout, the entire batch falls through to heuristic FACT-only commit.
-	// Default: 30. ADR-0015.
-	Tier2LLMTimeout int `json:"tier2_llm_timeout"`
-
-	// Tier2BatchSize is the minimum channel length that triggers a load-driven drain.
-	// Default: 32. ADR-0015.
-	Tier2BatchSize int `json:"tier2_batch_size"`
-
 	// CircadianStaleDocWarnThreshold is the count of low-activation-strength documents above
 	// which CircadianRhythm logs a WARN on startup (indicating pg_cron may be disabled).
 	// Default: 50. ADR-0015.
 	CircadianStaleDocWarnThreshold int `json:"circadian_stale_doc_warn_threshold"`
-
-	// Tier1ChannelCapacity is the bounded size of the pending channel in MemoryAgent.
-	// Default: 256. ADR-0015.
-	Tier1ChannelCapacity int `json:"tier1_channel_capacity"`
 
 	// RememberDefaultActivation is the initial ActivationStrength (ADR-0015 lifecycle
 	// metric) stamped on a fact written via memory.remember()/IngestMemory when the
@@ -528,25 +537,13 @@ type MemoryConfig struct {
 // Field names, types and json tags are unchanged; only the nesting is new, so
 // each field means exactly what it meant before.
 type ProcedureConfig struct {
-	// ProcedureInductionIntervalHours schedules the ADR-0094 D3 batch pass that
-	// distils recurring successful episodes into reusable routines. ZERO DISABLES IT,
-	// and zero is the default.
-	//
-	// This is the batch consolidation ADR-0049 originally rejected and §A2.5 later
-	// permitted, under constraints the scheduler is built around: nothing load-bearing
-	// may depend on it, it produces only abstractions, and it is idempotent. Off by
-	// default because it cannot produce anything useful until outcome records have
-	// accumulated under the capability_contract arm — a scheduler with nothing to
-	// induce from is pure cost.
-	ProcedureInductionIntervalHours int `json:"procedure_induction_interval_hours"`
-
-	// ProcedureMinSamples is the D3 promotion threshold: how many times a routine must
-	// recur before it is a routine rather than a coincidence. Floors at 2 regardless —
-	// a single occurrence is never inducible.
-	ProcedureMinSamples int `json:"procedure_min_samples"`
-
-	// ProcedureMaxEpisodesPerPass bounds one pass's read of the store. Default 500.
-	ProcedureMaxEpisodesPerPass int `json:"procedure_max_episodes_per_pass"`
+	// RETIRED 2026-11-05 (T-20261105-remove-scenes-completely-owner-decision-2026-11):
+	// `procedure_induction_interval_hours`, `procedure_min_samples` and
+	// `procedure_max_episodes_per_pass`. They scheduled and tuned the ADR-0094 D3
+	// induction pass, which read routines out of `mnemonic_scene` metadata; scenes and
+	// induction were removed by owner decision (decisions/scenes-cancelled.md).
+	// Procedures already stored are still served and still learn from outcomes (the key
+	// below). A layer that still sets the retired keys loads unchanged.
 
 	// ProcedureDeprecateBelow is the confidence floor under which a routine that keeps
 	// failing is retired (ADR-0094 D4). 0 disables procedure feedback. Default 0.3 —
@@ -874,13 +871,11 @@ type WorkspaceConfig struct {
 	// DAGExecutor's initial context. Default: 5. ADR-0016.
 	WorkspaceExecutionSlots int `json:"workspace_execution_slots"`
 
-	// WorkspaceEnableDriftGuard enables session-ID cross-contamination filtering
-	// during scene-primed FACT pull. Default: false. ADR-0016.
-	WorkspaceEnableDriftGuard bool `json:"workspace_enable_drift_guard"`
-
-	// WorkspaceDriftThreshold is the cosine similarity threshold for contradiction
-	// detection between top-K FACT results. Default: 0.7. ADR-0016.
-	WorkspaceDriftThreshold float64 `json:"workspace_drift_threshold"`
+	// RETIRED 2026-11-05 (T-20261105-remove-scenes-completely-owner-decision-2026-11):
+	// `workspace_enable_drift_guard` and `workspace_drift_threshold`. Their only reader
+	// was the guard on the ADR-0016 scene-primed query vector in WorkspaceStage.enrich,
+	// removed with scenes (decisions/scenes-cancelled.md). A layer that still sets them
+	// loads unchanged.
 
 	// ADR-0022 Phase 3: circuit-breaker flag.
 	// When true, DAGExecutor populates Handoff.WorkingMemory from PrimeForStep.
@@ -928,11 +923,11 @@ type IngestionConfig struct {
 	// reasoning model to stream a 16-fact batch (typical: 60-180s).
 	EdgeExtractionLLMTimeoutMs int `json:"edge_extraction_llm_timeout_ms"`
 
-	// SceneGenOnIngestEnabled turns the per-item episodic scene-generation LLM
-	// call back ON for the document-ingest path. Default OFF (ADR-0060): it is a
-	// synchronous per-item LLM call that stalls ingest when no LLM is reachable
-	// and is not needed for document/structure retrieval.
-	SceneGenOnIngestEnabled bool `json:"scene_gen_on_ingest_enabled,omitempty"`
+	// RETIRED 2026-11-05 (T-20261105-remove-scenes-completely-owner-decision-2026-11):
+	// `scene_gen_on_ingest_enabled`. Scenes were cancelled by the owner
+	// (cambrian-knowledge/decisions/scenes-cancelled.md) and the ADR-0028 ingest
+	// SceneGenerator it switched on was deleted with them. A layer that still sets
+	// the key loads unchanged — the decoder ignores keys with no field.
 
 	// EvidenceCaptureEnabled preserves every ingested document's original bytes
 	// as immutable evidence (content-addressed blob + evidence row + outbox)
@@ -958,7 +953,7 @@ type IngestionConfig struct {
 	// IngestionQueueSize is the bounded document queue depth (ADR-0028). Default 1000.
 	IngestionQueueSize int `json:"ingestion_queue_size,omitempty"`
 
-	// IngestionBatchSize is the documents-per-scene-generation call (ADR-0028). Default 5.
+	// IngestionBatchSize is the documents per pipeline batch (ADR-0028). Default 5.
 	IngestionBatchSize int `json:"ingestion_batch_size,omitempty"`
 
 	// IngestionWorkers is the number of concurrent pipeline workers (ADR-0028). Default 5.
@@ -1085,7 +1080,40 @@ type IngestionConfig struct {
 	// queueing re-appends items already accepted, so it adds no queue growth and
 	// no goroutine. Default 1; 0 never re-queues.
 	KgTripletsMaxRequeues int `json:"kg_triplets_max_requeues,omitempty"`
+
+	// KgTripletsLLMFormat selects the reply format of the LLM triplet extractor (the
+	// residue tier of the chunk_triplets lane): "completion" (default; "" reads as it)
+	// is the KG²RAG base-model completion prompt with its <h##r##t>$$ grammar,
+	// "structured" the library prompt kg_triplets as a cached system block, chunks
+	// keyed by id and a response schema (ADR-0139 C1/C4). Both apply the same triplet
+	// filters; the default moves only after an A/B/A retrieval run (AGENTS.md §0.5).
+	KgTripletsLLMFormat string `json:"kg_triplets_llm_format,omitempty"`
 }
+
+// DefaultStepTimeoutFloorMs is the default of plan.step_timeout_floor_ms.
+const DefaultStepTimeoutFloorMs = 180000
+
+// DefaultPlanIdleTimeoutMs is the default of plan.plan_idle_timeout_ms: 3 min,
+// equal to DefaultStepTimeoutFloorMs on purpose. A step that makes no kernel
+// call at all (no model call, no tool call, no progress) is cut by its own
+// per-step deadline first, or at the same moment — so a silent step reads as
+// "step timed out" (its own fault) rather than as the plan going idle, and the
+// idle watchdog only decides when NOTHING in the plan is running
+// (T-20261105-owner-decision-needed-120-s-plan-timeout-ms).
+const DefaultPlanIdleTimeoutMs = 180000
+
+// DefaultPlanMaxDurationMs is the default of plan.plan_max_duration_ms: the
+// absolute safety cap on one plan, 30 min (owner decision 2026-11-05).
+const DefaultPlanMaxDurationMs = 1800000
+
+// DefaultThoughtResultsMaxChars is the default of plan.thought_results_max_chars.
+const DefaultThoughtResultsMaxChars = 24000
+
+// KgTripletsLLMFormat values.
+const (
+	KgTripletsFormatCompletion = "completion"
+	KgTripletsFormatStructured = "structured"
+)
 
 // HippocampusConfig — Hippocampus retrieval policies.
 //
@@ -1132,8 +1160,6 @@ type ToolsConfig struct {
 	// approval): this bypasses ONLY the human-in-the-loop approval gate, which is
 	// unanswerable in an unattended local/dev run. For trusted/dev deployments
 	// only — default false (fail-closed: dangerous tools require an operator).
-	// Note: interview/evaluation sessions auto-approve independently of this flag
-	// (the sandbox is their containment boundary) — see EvaluationSessionSet.
 	ToolsAutoApprove bool `json:"tools_auto_approve,omitempty"`
 
 	// ToolRetrievalFloor (ADR-0044) is the minimum cosine similarity for a tool to
@@ -1180,7 +1206,7 @@ type ChatConfig struct {
 	ChatPoolAcquireTimeoutSeconds int `json:"chat_pool_acquire_timeout_seconds,omitempty"`
 }
 
-// AgentsConfig — Agent process runtime: resource caps, env passthrough, daemon restart policy and the interview disable flag.
+// AgentsConfig — Agent process runtime: resource caps, env passthrough and daemon restart policy.
 //
 // Split out of the former 198-field flat ExecutionConfig (config schema v2).
 // Field names, types and json tags are unchanged; only the nesting is new, so
@@ -1209,13 +1235,12 @@ type AgentsConfig struct {
 	// socket/addr (passed as flags), never the kernel's credentials.
 	AgentEnvPassthrough []string `json:"agent_env_passthrough,omitempty"`
 
-	// DisableInterviews skips the ADR-0037 graded LLM interview (Examiner) at
-	// registration. Benchmark/eval-only: the graded interview spends an LLM Q&A
-	// per agent to seed cold-start trust priors, which the offline routing eval
-	// does not need (it reads manifest capabilities directly) and which otherwise
-	// starves the planner for LLM throughput. Default false. Merit falls back to
-	// the neutral cold-start prior.
-	DisableInterviews bool `json:"disable_interviews"`
+	// RETIRED 2026-11-05 (T-20261105-delete-the-llm-agent-interview-now-owner):
+	// `disable_interviews`. The ADR-0037 graded LLM interview it switched off was
+	// deleted (owner decision, ADR-0139 Q3): every agent is now seeded the way this
+	// flag's `true` arm seeded it — SR=Trust=0.5 and its Description as the Layer-2
+	// vector — and learns from verified outcomes (ADR-0139 D6). A layer that still
+	// sets it loads unchanged; retiredExecutionFields records it.
 
 	// ── REACT-04 / ADR-0070: daemon supervision ──
 	// DaemonRestartMaxAttempts is the max automatic restarts of a crashed daemon per
@@ -1346,7 +1371,7 @@ type ExecutionConfig struct {
 	// Session lifecycle: idle timeout, retention sweeps and token TTL.
 	Session SessionConfig `json:"session"`
 
-	// Long-term memory: experiential capture, the Tier-1/Tier-2 promotion pipeline, consolidation and GC.
+	// Long-term memory: experiential records, recall thresholds, consolidation and GC.
 	Memory MemoryConfig `json:"memory"`
 
 	// ADR-0094 procedure induction.
@@ -1370,7 +1395,7 @@ type ExecutionConfig struct {
 	// Chat session worker pool.
 	Chat ChatConfig `json:"chat"`
 
-	// Agent process runtime: resource caps, env passthrough, daemon restart policy and the interview disable flag.
+	// Agent process runtime: resource caps, env passthrough and daemon restart policy.
 	Agents AgentsConfig `json:"agents"`
 
 	// Supervision statistics: aggregation cadence, EWMA/latency windows and histogram sizing.
@@ -1846,6 +1871,16 @@ type MCPServerConfig struct {
 		TokenEnv string `json:"token_env"` // env var holding the credential
 	} `json:"auth"`
 	Tools []MCPToolConfig `json:"tools,omitempty"`
+	// DefaultToolPolicy applies to every advertised tool with no `tools` entry
+	// (ADR-0139 D8). Absent, an unlisted tool FAILS CLOSED: dangerous, with
+	// effects read+write+egress. Set it to mark a whole server read-only, e.g.
+	// {"effects":["read"]}. Its `name` and `pricing` are ignored.
+	DefaultToolPolicy *MCPToolConfig `json:"default_tool_policy,omitempty"`
+	// Env names the kernel environment variables a stdio server may inherit, on
+	// top of the OS essentials (ADR-0139 D8). Everything else is withheld; a
+	// credential-shaped name passes only when listed here, and CAMBRIAN_* /
+	// LANGFUSE_* never pass.
+	Env []string `json:"env,omitempty"`
 
 	// ClassificationTags apply to EVERY tool this server advertises (ADR-0085 D2 /
 	// ADR-0090). A remote server's tools are discovered dynamically, so without a
@@ -1868,7 +1903,10 @@ type MCPToolConfig struct {
 	// default when set, so one tool in an otherwise-domain-bound server can be
 	// classified differently.
 	ClassificationTags []string `json:"classification_tags,omitempty"`
-	Pricing            struct {
+	// Effects declare the tool's effect classes (ADR-0086 closed set: read,
+	// write, egress, spend, admin). Declared effects win over inference.
+	Effects []string `json:"effects,omitempty"`
+	Pricing struct {
 		Kind            string  `json:"kind"`                         // "flat" | "per_unit" | "token"
 		UnitCost        float64 `json:"unit_cost"`                    // $ per unit / per call
 		MaxUnitsPerCall int     `json:"max_units_per_call,omitempty"` // reservation cap
@@ -1901,13 +1939,19 @@ func DefaultConfig() *Config {
 				// blow a 2-minute plan ceiling, and a timeout mid-plan wastes
 				// everything already spent).
 				StepTimeoutBaseBufferMs: 15000,
-				// 120 s is the PRODUCT default (owner decision 2026-10-31, ADR-0131 D7;
-				// T-20261031-plan-timeout-default-is-the-10-minute-benchmark). The
-				// 10-minute value promoted here on 2026-08-11 was the benchmark rig's:
-				// a wedged provider held leases, pool connections and goroutines for
-				// ten minutes per plan. The rig keeps 600000 in its gitignored
-				// configs/tuning.local.json.
-				PlanTimeoutMs:               120000,
+				// 3 min: comfortably fits one long generation on a slow local or
+				// proxied model (the 2026-11-05 E2E saw a healthy 96 s step).
+				StepTimeoutFloorMs: DefaultStepTimeoutFloorMs,
+				// The fixed 120 s plan ceiling (owner decision 2026-10-31, ADR-0131
+				// D7) is superseded by a progress-aware one (owner decision
+				// 2026-11-05): a plan is cut when it goes idle, or at the 30 min
+				// safety cap. A call in flight counts as progress, so ONE hung call is
+				// bounded by the per-step deadline (step_timeout_* with its floor) and
+				// the provider's own request timeout, not by the idle window; a
+				// winner with no latency profile gets no step deadline and falls to
+				// the 30 min cap.
+				PlanIdleTimeoutMs:           DefaultPlanIdleTimeoutMs,
+				PlanMaxDurationMs:           DefaultPlanMaxDurationMs,
 				ContextGrowthK:              0.001,
 				MaxRecursionDepth:           3,
 				FallbackConfidenceThreshold: 0.4,
@@ -1917,17 +1961,17 @@ func DefaultConfig() *Config {
 				MaxPartialContextBytes:      51200,
 				PlanDriftDays:               7,
 				ContextRefSnippetChars:      500,
+				ThoughtResultsMaxChars:      DefaultThoughtResultsMaxChars,
 				BudgetExhaustionAlarmRate:   0.05,
 				MinStepEnergy:               256,
 				MaxStepEnergy:               32768,
 			},
 			Gatekeeper: GatekeeperConfig{
-				GatekeeperMaxCandidates:    5,
-				GatekeeperW1:               0.4,
-				GatekeeperW2:               0.4,
-				GatekeeperW3:               0.2,
-				GatekeeperW4:               0.15,
-				ColdStartPenaltyMultiplier: 0.6,
+				GatekeeperMaxCandidates: 5,
+				GatekeeperW1:            0.4,
+				GatekeeperW2:            0.4,
+				GatekeeperW3:            0.2,
+				GatekeeperW4:            0.15,
 			},
 			Verification: VerificationConfig{
 				VerifierPoolThreshold:      0.8,
@@ -1981,23 +2025,14 @@ func DefaultConfig() *Config {
 				MaxMemoryResults:               5,
 				MaxNeighborExpansion:           3,
 				MinGCAgeDays:                   30,
-				Tier2MaxIdleSeconds:            300,
-				Tier2LLMTimeout:                30,
-				Tier2BatchSize:                 32,
-				Tier1ChannelCapacity:           4096,
 				CircadianStaleDocWarnThreshold: 50,
 				RememberDefaultActivation:      0.5,
-				// ADR-0049 A2.2 outcome records: ON (owner decision 2026-07-28). The RAW
-				// path stays off — see ExperientialMemoryEnabled, which is deliberately
-				// absent from this block and therefore false.
+				// ADR-0049 A2.2 experiential records: ON (owner decision 2026-07-28).
 				ExperienceRecordsEnabled: true,
 				ExperienceSurpriseFloor:  0.5,
 			},
 			Procedure: ProcedureConfig{
-				ProcedureInductionIntervalHours: 1, // ADR-0094 scheduler ON hourly (owner default 2026-08-11); 0 disables
-				ProcedureMinSamples:             2,
-				ProcedureMaxEpisodesPerPass:     500,
-				ProcedureDeprecateBelow:         0.3, // ADR-0049 A2.3 failure-precedent gate
+				ProcedureDeprecateBelow: 0.3, // ADR-0094 D4 retirement floor for stored routines
 			},
 			Retrieval: RetrievalConfig{
 				RetrievalFloor:         0.2,
@@ -2074,7 +2109,6 @@ func DefaultConfig() *Config {
 				WorkspaceMinFactCosine:  0.60,
 				WorkspacePlanningSlots:  5,
 				WorkspaceExecutionSlots: 5,
-				WorkspaceDriftThreshold: 0.7,
 				UseGlobalWorkspace:      true,
 			},
 			Ingestion: IngestionConfig{
@@ -2112,6 +2146,7 @@ func DefaultConfig() *Config {
 				KgExtractorCallAttempts:   3,
 				KgExtractorRetryBackoffMs: 2000,
 				KgTripletsMaxRequeues:     1,
+				KgTripletsLLMFormat:       KgTripletsFormatCompletion,
 				// Drop OCR/layout junk only from Docling output; chat and other text
 				// ingests keep every leaf (T-20261102-ingestion-structure-junk-filter-silently-drops).
 				StructureJunkFilterBackends: []string{"docling"},
@@ -2440,6 +2475,10 @@ func LoadConfigWithStore(path string, store Store) (*Config, Provenance, error) 
 				s = "execution." + block + "." + rest
 			}
 		}
+		// A deprecated key's variable keeps working as its successor
+		// (CAMBRIAN_EXECUTION__PLAN__PLAN_TIMEOUT_MS → plan_max_duration_ms), per
+		// layer like the file and store migrations (deprecatedExecutionKey).
+		s = deprecatedEnvKey(s, os.LookupEnv)
 		// Record the variable name alongside the config key it maps to: this
 		// callback is the only place both are visible at once, and the variable
 		// name is the half that makes "something pins this" actionable.
@@ -2591,8 +2630,14 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	if c.Plan.StepTimeoutMultiplier < 0 {
 		errs = append(errs, "step_timeout_multiplier must be >= 0")
 	}
-	if c.Plan.PlanTimeoutMs < 1000 {
-		errs = append(errs, "plan_timeout_ms must be >= 1000")
+	if c.Plan.PlanMaxDurationMs < 1000 {
+		errs = append(errs, "plan_max_duration_ms must be >= 1000")
+	}
+	if c.Plan.PlanIdleTimeoutMs < 0 {
+		errs = append(errs, "plan_idle_timeout_ms must be >= 0 (0 disables the idle watchdog)")
+	}
+	if c.Plan.StepTimeoutFloorMs < 0 {
+		errs = append(errs, "step_timeout_floor_ms must be >= 0 (0 disables the floor)")
 	}
 	if c.Supervision.EWMAAlpha < 0 || c.Supervision.EWMAAlpha > 1 {
 		errs = append(errs, "ewma_alpha must be in [0, 1]")
@@ -2767,6 +2812,11 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	case "", "off", "relaxed_order", "strict_order":
 	default:
 		errs = append(errs, fmt.Sprintf("retrieval.hnsw_iterative_scan must be one of off, relaxed_order, strict_order (got %q)", c.Retrieval.HnswIterativeScan))
+	}
+	switch c.Ingestion.KgTripletsLLMFormat {
+	case "", KgTripletsFormatCompletion, KgTripletsFormatStructured:
+	default:
+		errs = append(errs, fmt.Sprintf("ingestion.kg_triplets_llm_format must be %q or %q (got %q)", KgTripletsFormatCompletion, KgTripletsFormatStructured, c.Ingestion.KgTripletsLLMFormat))
 	}
 	switch c.Ingestion.DocumentIdentity {
 	case "", DocumentIdentityV2, DocumentIdentityLegacy:

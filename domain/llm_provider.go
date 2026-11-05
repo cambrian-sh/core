@@ -3,7 +3,7 @@ package domain
 import "context"
 
 // Purpose identifies why an organ needs a generator. System-organ purposes
-// (router/planner/verifier/interview/memory) resolve via deterministic role
+// (router/planner/verifier/memory/facts) resolve via deterministic role
 // config; PurposeAgentStep takes no role preference — agent-step model choice
 // is the auction's StepAllocation (ADR-0018), served by the LLMGateway. This
 // split is what keeps the Provider's availability authority Zero-Hardcode-legal
@@ -11,11 +11,14 @@ import "context"
 type Purpose string
 
 const (
-	PurposeRouter    Purpose = "router"
-	PurposePlanner   Purpose = "planner"
-	PurposeVerifier  Purpose = "verifier"
-	PurposeInterview Purpose = "interview"
-	PurposeMemory    Purpose = "memory"
+	PurposeRouter   Purpose = "router"
+	PurposePlanner  Purpose = "planner"
+	PurposeVerifier Purpose = "verifier"
+	// PurposeInterview ("interview") was RETIRED 2026-11-05 with the LLM agent
+	// interview, its only consumer (T-20261105-delete-the-llm-agent-interview-now-owner). A
+	// config whose llm_provider.roles still names it loads; the role is dropped
+	// with a log line (llm.RetiredRoles).
+	PurposeMemory Purpose = "memory"
 	// PurposeFacts is the ADR-0136 D4/D5 fact extractor (one call per ingested
 	// document, plus at most one supersession call). Its own role, so an operator can
 	// route this high-volume organ to a cheap generator (ADR-0131 D5: cost routing

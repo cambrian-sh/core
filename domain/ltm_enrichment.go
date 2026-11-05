@@ -8,25 +8,13 @@ type LTMEnrichment struct {
 	// Episodes (ADR-0029: DocTypeEpisodicMemory hits above the "episodic" policy
 	// threshold — a policy itself retired 2026-10-31) is gone. Its writer was removed on 2026-07-18 and the reader — a
 	// WorkspaceStage lane and the planner's <EpisodicMemory> block — was retired with it.
-	Precedents []Precedent // ADR-0049 D11: world-model transitions for the situation being planned
+	// Precedents (ADR-0049 D11, transitions read from `mnemonic_scene` rows) were
+	// removed 2026-11-05 with scenes (decisions/scenes-cancelled.md).
 	// Procedures are ADR-0094 induced routines for the situation being planned —
 	// "how has this kind of work gone here?". ADVISORY (D6): planner input, never a
 	// directive. The Gatekeeper still filters and the Dispatcher still selects, which
 	// is why a routine names capabilities and never agents.
 	Procedures []Procedure
-}
-
-// Precedent is a world-model TRANSITION (ADR-0049 D11): a past situation, what was DONE
-// in it (the action path), and how it turned OUT. The planner/agent LLM reasons over
-// these to anticipate which approach worked or failed under similar conditions — memory
-// is the model, the LLM is the inference engine. Failure-weighted, similarity-gated.
-type Precedent struct {
-	SceneID    string   // the engaging scene's id (scene-{planID})
-	Situation  string   // the abstracted situation (scene projection, else reconstruction text)
-	Outcome    string   // "success" | "failure"
-	Success    bool     // outcome as a boolean for failure-weighting
-	Actions    []string // the action path taken in that situation (compact lines)
-	Similarity float64  // cosine similarity of the precedent scene to the current situation
 }
 
 // PlanLTMEntry carries a prior successful ExecutionPlan and its review metadata

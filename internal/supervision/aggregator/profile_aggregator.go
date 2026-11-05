@@ -24,6 +24,11 @@ type AggregatorProfileStore interface {
 	GetProfile(ctx context.Context, agentID, sourceHash string) (*domain.AgentProfile, error)
 }
 
+// neutralSuccessRate is the success rate of an agent with no VERIFIED outcome: the
+// same 0.5 cold-start prior gatekeeper.ScoreMerit uses for a missing profile, so
+// "executed but unchecked" and "never seen" rank alike (ADR-0139 D6).
+const neutralSuccessRate = 0.5
+
 // DefaultTrustScoreCalWeight is the default calibration signal weight.
 const DefaultTrustScoreCalWeight = 0.6
 
@@ -123,12 +128,10 @@ func (a *ProfileAggregator) aggregateOne(ctx context.Context, agentID, sourceHas
 		return err
 	}
 
-	var verified, unverified []domain.TaskEvent
+	var verified []domain.TaskEvent
 	for _, e := range events {
 		if e.Verified {
 			verified = append(verified, e)
-		} else {
-			unverified = append(unverified, e)
 		}
 	}
 
@@ -146,11 +149,13 @@ func (a *ProfileAggregator) aggregateOne(ctx context.Context, agentID, sourceHas
 		}
 		successRate = EWMA(vals, a.Config.EWMAAlpha)
 	} else {
-		vals := make([]float64, len(unverified))
-		for i := range vals {
-			vals[i] = 1.0
-		}
-		successRate = EWMA(vals, a.Config.EWMAAlpha)
+		// ADR-0139 D6: an unverified outcome is NEUTRAL evidence. This used to be
+		// EWMA over a 1.0 per unverified event, so an agent nobody had checked read
+		// as a perfect success rate — and once step events reach the profile routing
+		// reads (T-20261104-routing-never-learns-from-real-outcomes-dag) that would
+		// have handed every executed agent SR=1.0 for merely answering. With no
+		// verified event the rate is the Gatekeeper's neutral cold-start prior.
+		successRate = neutralSuccessRate
 	}
 
 	calWeight := a.Config.TrustScoreCalWeight

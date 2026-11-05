@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // The fact extractor's LLM call discipline (ADR-0136 D4, T-20261104-fact-extractor-
@@ -80,7 +82,7 @@ func FactErrorKind(err error) string {
 	switch {
 	case err == nil:
 		return ""
-	case errors.Is(err, errFactResponseUnparseable):
+	case errors.Is(err, errFactResponseUnparseable), errors.Is(err, domain.ErrSchemaValidation):
 		return FactErrKindParse
 	case errors.Is(err, context.DeadlineExceeded):
 		return FactErrKindTimeout
@@ -104,18 +106,22 @@ func (e *FactExtractor) callTimeout(promptChars int) time.Duration {
 }
 
 // extractCall is one window's extraction: the call, the parse, and up to
-// cfg.ParseRetries re-asks of the SAME prompt when the answer cannot be read. The
-// re-ask carries no reminder text: a plain retry fixed 6 of 7 such failures, and an
-// identical prompt keeps the extractor version (fact-extract-v3) exact. A timeout or a
-// transport error is not retried here (the next backfill run retries the document);
-// every failed call is logged with its kind.
-func (e *FactExtractor) extractCall(ctx context.Context, documentID string, w int, prompt string, passages []string, maxFacts int, res *FactDocumentResult) ([]extractedFact, factParseStats, error) {
-	timeout := e.callTimeout(len(prompt))
+// cfg.ParseRetries re-asks of the SAME request when the answer cannot be read. The
+// request carries the response schema (ADR-0139 C1), so the provider layer has already
+// validated the reply and repaired it once; a reply that still fails its schema
+// (domain.ErrSchemaValidation) is an unreadable answer like any other. The re-ask
+// carries no reminder text: a plain retry fixed 6 of 7 such failures, and an identical
+// request keeps the extractor version exact. A timeout or a transport error is not
+// retried here (the next backfill run retries the document); every failed call is
+// logged with its kind.
+func (e *FactExtractor) extractCall(ctx context.Context, documentID string, w int, req domain.GenerateRequest, passages []string, maxFacts int, res *FactDocumentResult) ([]extractedFact, factParseStats, error) {
+	promptChars := requestChars(req)
+	timeout := e.callTimeout(promptChars)
 	for attempt := 0; ; attempt++ {
 		llmCtx, cancel := context.WithTimeout(ctx, timeout)
-		resp, err := callTripletsLLM(llmCtx, e.gen, prompt)
+		resp, err := domain.GenerateVia(llmCtx, e.gen, req)
 		if err == nil && llmCtx.Err() != nil {
-			// A streamed answer cut off by the deadline arrives as partial text with no
+			// An answer cut off by the deadline can arrive as partial text with no
 			// error; it is a timeout, not an unreadable answer.
 			err = llmCtx.Err()
 		}
@@ -126,16 +132,23 @@ func (e *FactExtractor) extractCall(ctx context.Context, documentID string, w in
 			e.parseRetries.Add(1)
 			res.ParseRetries++
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, domain.ErrSchemaValidation) {
 			kind := FactErrorKind(err)
 			if kind == FactErrKindTimeout {
 				e.timeouts.Add(1)
 			}
 			slog.WarnContext(ctx, "FactExtractor: extraction call failed", "document_id", documentID, "window", w+1,
-				"attempt", attempt+1, "err_kind", kind, "timeout", timeout.String(), "prompt_chars", len(prompt), "err", err)
+				"attempt", attempt+1, "err_kind", kind, "timeout", timeout.String(), "prompt_chars", promptChars, "err", err)
 			return nil, factParseStats{}, err
 		}
-		parsed, pst, perr := parseFactResponse(resp, passages, maxFacts)
+		var (
+			parsed []extractedFact
+			pst    factParseStats
+			perr   = err
+		)
+		if perr == nil {
+			parsed, pst, perr = parseFactReply(resp, passages, maxFacts)
+		}
 		if perr == nil {
 			if attempt > 0 {
 				e.parseRepaired.Add(1)
@@ -145,9 +158,9 @@ func (e *FactExtractor) extractCall(ctx context.Context, documentID string, w in
 		}
 		e.parseFailures.Add(1)
 		retry := attempt < e.cfg.ParseRetries && ctx.Err() == nil
-		head, tail := redactedResponseEnds(resp)
+		head, tail := redactedResponseEnds(resp.Text)
 		slog.WarnContext(ctx, "FactExtractor: extraction answer unparseable", "document_id", documentID, "window", w+1,
-			"attempt", attempt+1, "retrying", retry, "err_kind", FactErrorKind(perr), "response_chars", len(resp),
+			"attempt", attempt+1, "retrying", retry, "err_kind", FactErrorKind(perr), "response_chars", len(resp.Text),
 			"response_head", head, "response_tail", tail, "err", perr)
 		if !retry {
 			return nil, factParseStats{}, perr

@@ -63,11 +63,11 @@ func (m *mockGatekeeperProfileReader) GetProfile(_ context.Context, agentID, sou
 	return m.profiles[agentID+":"+sourceHash], nil
 }
 
-type fakeInterviewSearcher struct {
+type fakeProfileSearcher struct {
 	results map[string]float64
 }
 
-func (f *fakeInterviewSearcher) SearchByEmbedding(_ context.Context, _ []float32, threshold float64, _ int) ([]domain.AgentSearchResult, error) {
+func (f *fakeProfileSearcher) SearchByEmbedding(_ context.Context, _ []float32, threshold float64, _ int) ([]domain.AgentSearchResult, error) {
 	var out []domain.AgentSearchResult
 	for agentID, sim := range f.results {
 		if sim < threshold {

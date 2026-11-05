@@ -1,0 +1,62 @@
+[
+  {
+    "name": "plain",
+    "description": "Deploy the application to production.",
+    "want": "Deploy the application to production."
+  },
+  {
+    "name": "two-sentences",
+    "description": "Write a report. Then verify it.",
+    "want": "Write a report."
+  },
+  {
+    "name": "first-line",
+    "description": "Line one\nline two. more",
+    "want": "Line one"
+  },
+  {
+    "name": "crlf",
+    "description": "Line one\r\nline two",
+    "want": "Line one"
+  },
+  {
+    "name": "markup",
+    "description": "## **Heading** text here",
+    "want": "Heading** text here"
+  },
+  {
+    "name": "spaces",
+    "description": "  lots   of\tinner   space  ",
+    "want": "lots of inner space"
+  },
+  {
+    "name": "mcp:server/fallback_name-here",
+    "description": "",
+    "want": "fallback name here"
+  },
+  {
+    "name": "only-markup",
+    "description": "### ",
+    "want": "only markup"
+  },
+  {
+    "name": "long",
+    "description": "procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure end",
+    "want": "procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure procedure…"
+  },
+  {
+    "name": "long-no-space",
+    "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "want": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"
+  },
+  {
+    "name": "unicode",
+    "description": "ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ",
+    "want": "ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé ünïcödé…"
+  },
+  {
+    "name": "period-no-space",
+    "description": "v1.2 is the version.Next",
+    "want": "v1.2 is the version.Next"
+  }
+]

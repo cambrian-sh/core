@@ -199,7 +199,17 @@ type KernelServices struct {
 	// this: without a `_session_token_id` on the handoff Context, the dispatched agent's
 	// GenerateViaModelStream call is rejected UNAUTHENTICATED. Returns the token id and a
 	// release func to call when the turn completes. Nil when no gateway is configured.
+	//
+	// The lease it returns is AGENT-UNBOUND. Under ADR-0139 D8 an agent may present only a
+	// lease bound to itself, so this lease is usable in-process and by non-agent
+	// principals only (a plan-level budget, say). A consumer that hands the lease to an
+	// agent uses AcquireAgentLLMToken instead, or binds it itself.
 	AcquireLLMToken func(ctx context.Context, tokenLimit int, ttl time.Duration) (tokenID string, release func(), err error)
+	// AcquireAgentLLMToken is AcquireLLMToken with the lease bound to agentID at mint, so
+	// the agent the consumer dispatches can spend under it and no other agent can
+	// (ADR-0139 D8, T-20261104-leases-minted-with-no-agentid-are-usable-by-any). An empty
+	// agentID is an error. Nil gateway ⇒ ("", no-op, nil), as for AcquireLLMToken.
+	AcquireAgentLLMToken func(ctx context.Context, agentID string, tokenLimit int, ttl time.Duration) (tokenID string, release func(), err error)
 
 	// Agents lists registered agents, so a plugin can tell a real principal from
 	// one that only a policy link mentions (contract 0074 ListPrincipals).

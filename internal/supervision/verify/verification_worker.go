@@ -36,7 +36,7 @@ type VerificationWorkerConfig struct {
 
 // LeaseGateway is the managed-LLM lease lifecycle the worker needs — a narrow
 // view of the substrate LLM gateway, the SAME Acquire → BindLease → Complete
-// path every other lease site uses (agent steps, interview, chat, retrieval
+// path every other lease site uses (agent steps, chat, retrieval
 // dispatch). Complete runs the gateway's completion hook, so a verifier lease
 // is cleaned up exactly like a step lease.
 type LeaseGateway interface {

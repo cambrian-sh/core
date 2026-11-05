@@ -23,7 +23,6 @@ func ProvideServer(
 	aw *AwarenessStack,
 	meta *MetabolismStack,
 	watcher *supwatcher.Watcher,
-	modelRouter *llm.ProviderRegistry,
 	llmProvider *llm.Provider, // ADR-0042: availability authority; the router Acquires from it
 	sessionMgr *session.SessionManager,
 	llmGateway subnetwork.LLMGateway,
@@ -50,7 +49,6 @@ func ProvideServer(
 		// meta.AgentTransport directly — they bypass selection by construction.
 		meta.Selector,
 		watcher,
-		modelRouter,
 		sessionMgr,
 		mem.WorkspaceStage,
 		llmGateway,
@@ -72,13 +70,16 @@ func ProvideServer(
 		slog.Warn("Phase 3: registry does not implement domain.RunStore — runs will not persist and resume is unavailable")
 	}
 
-	// No per-step scene writer is wired: ADR-0025's per-step scenes were superseded by
-	// ADR-0049 D5 (one plan-wide scene via memory.Agent.WritePlanScene), and the
-	// SceneWriter port, its Pg adapter and the server factory were removed 2026-10-31
-	// (T-20261031-per-step-scenewriter-plumbing-is-wired-into).
+	// No scene writer of any kind is wired: the per-step SceneWriter plumbing was
+	// removed 2026-10-31 (T-20261031-per-step-scenewriter-plumbing-is-wired-into) and
+	// the plan-wide scene on 2026-11-05 (decisions/scenes-cancelled.md).
 
 	// ADR-0026: wire step-level memoization cache.
 	srv.StepCache = stepCache
+
+	// ADR-0139 C1: thought steps go to the planner-purpose generator (the one the
+	// Planner itself wraps) on the structured request path.
+	srv.ThoughtLLM = aw.LLM
 
 	// ADR-0042: the server resolves agent-step models through the Provider.
 	srv.Provider = llmProvider

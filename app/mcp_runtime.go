@@ -15,17 +15,32 @@ import (
 func mcpServerFromConfig(s config.MCPServerConfig) mcp.ServerConfig {
 	toolPolicy := make(map[string]mcp.ToolPolicy, len(s.Tools))
 	for _, tc := range s.Tools {
-		toolPolicy[tc.Name] = mcp.ToolPolicy{
-			Dangerous:          tc.Dangerous,
-			DataWriteKinds:     tc.DataWriteKinds,
-			ClassificationTags: tc.ClassificationTags,
-		}
+		toolPolicy[tc.Name] = mcpToolPolicyFromConfig(tc)
+	}
+	// ADR-0139 D8: nil default ⇒ the connector fails closed on unlisted tools.
+	var def *mcp.ToolPolicy
+	if s.DefaultToolPolicy != nil {
+		p := mcpToolPolicyFromConfig(*s.DefaultToolPolicy)
+		def = &p
 	}
 	return mcp.ServerConfig{
 		ID: s.ID, Transport: s.Transport, Endpoint: s.Endpoint, Args: s.Args,
 		AuthType: s.Auth.Type, AuthHeader: s.Auth.Header, AuthTokenEnv: s.Auth.TokenEnv,
+		Env:                       s.Env,
 		Tools:                     toolPolicy,
+		DefaultPolicy:             def,
 		DefaultClassificationTags: s.ClassificationTags,
+	}
+}
+
+// mcpToolPolicyFromConfig maps one configured tool policy (per-tool or the
+// server default) to the connector's shape.
+func mcpToolPolicyFromConfig(tc config.MCPToolConfig) mcp.ToolPolicy {
+	return mcp.ToolPolicy{
+		Dangerous:          tc.Dangerous,
+		DataWriteKinds:     tc.DataWriteKinds,
+		ClassificationTags: tc.ClassificationTags,
+		Effects:            tc.Effects,
 	}
 }
 

@@ -236,32 +236,32 @@ func containsString(haystack, needle string) bool {
 // Models routinely fence their JSON or precede it with reasoning. Layer 3 used to
 // json.Unmarshal the raw generator output, so a fenced response failed with
 // "invalid character '`'" and the whole request died BEFORE a plan existed —
-// measured at 5 of 21 benchmark tasks on 2026-07-28. Every other LLM-output parser
-// in the kernel already went through domain.ExtractJSONObject; this one did not.
-func TestLayer3_WrappedJSON_IsExtracted(t *testing.T) {
+// measured at 5 of 21 benchmark tasks on 2026-07-28. That was fixed with a
+// first-'{' scraper; under C1 (ADR-0139) the reply is schema-validated and
+// repaired by the provider layer instead, so the scraper is gone. A generator
+// that ignored the schema (here: a legacy fake) keeps exactly one tolerance, a
+// code fence; prose around the JSON is a failed reply, not a guess.
+func TestLayer3_WrappedJSON_OnlyAFenceIsTolerated(t *testing.T) {
 	t.Parallel()
-	cases := map[string]string{
-		"fenced":            "```json\n" + highConfidenceResponse + "\n```",
-		"fenced no lang":    "```\n" + highConfidenceResponse + "\n```",
-		"reasoning preface": "Let me classify this.\n\n" + highConfidenceResponse,
-		"trailing prose":    highConfidenceResponse + "\n\nHope that helps.",
+	cases := map[string]bool{
+		"```json\n" + highConfidenceResponse + "\n```":       true,
+		"```\n" + highConfidenceResponse + "\n```":           true,
+		"Let me classify this.\n\n" + highConfidenceResponse: false,
+		highConfidenceResponse + "\n\nHope that helps.":      false,
 	}
-	for name, raw := range cases {
-		t.Run(name, func(t *testing.T) {
-			r := newRouterWithGen(harness.NewFakeGenerator(raw))
-
-			dec, err := r.Resolve(context.Background(), domain.RouterInput{Body: "can you refactor this for me"})
-			if err != nil {
-				t.Fatalf("wrapped JSON must still classify, got error: %v", err)
-			}
-			if dec.Type != domain.DecisionPlan {
-				t.Fatalf("expected DecisionPlan, got %q", dec.Type)
-			}
-		})
+	for raw, ok := range cases {
+		r := newRouterWithGen(harness.NewFakeGenerator(raw))
+		dec, err := r.Resolve(context.Background(), domain.RouterInput{Body: "can you refactor this for me"})
+		if (err == nil) != ok {
+			t.Fatalf("%q: err = %v, want ok=%v", raw, err, ok)
+		}
+		if ok && dec.Type != domain.DecisionPlan {
+			t.Fatalf("expected DecisionPlan, got %q", dec.Type)
+		}
 	}
 }
 
-// Extraction must not turn genuinely unparseable output into a silent success:
+// Decoding must not turn genuinely unparseable output into a silent success:
 // no-JSON-at-all is still a hard error (ADR: Layer 3 never silently falls back).
 func TestLayer3_NoJSONAnywhere_StillErrors(t *testing.T) {
 	t.Parallel()

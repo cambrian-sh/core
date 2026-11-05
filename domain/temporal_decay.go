@@ -16,7 +16,6 @@ import (
 //
 // Default λ per document type (from DecayConfig):
 //   - MnemonicFact:  0.005 /hour (slow decay)
-//   - MnemonicScene: 0.02  /hour (fast decay)
 //   - AgentProfile:  0.001 /hour (very slow)
 //   - NegativeEdge:  0.05  /hour (fast)
 func TemporalDecay(baseStrength float64, lastAccessed time.Time, lambda float64, now time.Time) float64 {
@@ -31,21 +30,20 @@ func TemporalDecay(baseStrength float64, lastAccessed time.Time, lambda float64,
 // Configurable per deployment; defaults represent editorial judgement, not
 // calibrated constants.
 type DecayConfig struct {
-	MnemonicFactLambda  float64 // default 0.005 /hour
-	MnemonicSceneLambda float64 // default 0.02  /hour
-	AgentProfileLambda  float64 // default 0.001 /hour
-	NegativeEdgeLambda  float64 // default 0.05  /hour
-	DefaultLambda       float64 // fallback for unknown document types; default 0.01 /hour
+	MnemonicFactLambda float64 // default 0.005 /hour
+	AgentProfileLambda float64 // default 0.001 /hour
+	NegativeEdgeLambda float64 // default 0.05  /hour
+	DefaultLambda      float64 // fallback for unknown document types; default 0.01 /hour
+	// MnemonicSceneLambda was removed 2026-11-05 with the scene document type.
 }
 
 // DefaultDecayConfig returns the editorial defaults for temporal decay rates.
 func DefaultDecayConfig() DecayConfig {
 	return DecayConfig{
-		MnemonicFactLambda:  0.005,
-		MnemonicSceneLambda: 0.02,
-		AgentProfileLambda:  0.001,
-		NegativeEdgeLambda:  0.05,
-		DefaultLambda:       0.01,
+		MnemonicFactLambda: 0.005,
+		AgentProfileLambda: 0.001,
+		NegativeEdgeLambda: 0.05,
+		DefaultLambda:      0.01,
 	}
 }
 
@@ -54,8 +52,6 @@ func (c DecayConfig) LambdaFor(docType string) float64 {
 	switch docType {
 	case DocTypeMnemonicFact:
 		return c.MnemonicFactLambda
-	case DocTypeMnemonicScene:
-		return c.MnemonicSceneLambda
 	case DocTypeAgentProfile:
 		return c.AgentProfileLambda
 	case DocTypeNegativeEdge:

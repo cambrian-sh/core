@@ -52,6 +52,10 @@ RUN grep -vi '^cambrian-agent-sdk' /app/agents/requirements.lock > /tmp/req.txt 
 COPY --from=build /out/orchestrator /app/orchestrator
 COPY --from=build /out/pagerank-recompute /app/pagerank-recompute
 COPY cambrian-core/agents/ /app/agents/
+# The prompt library (ADR-0139 C4): the kernel embeds it, but the Python system agents
+# (chat_agent, retrieval_agent) read it from disk — the nearest ancestor prompts/ of
+# their file, i.e. /app/prompts. Without it they fail at start.
+COPY cambrian-core/prompts/ /app/prompts/
 COPY cambrian-core/configs/ /app/configs/
 COPY cambrian-core/db/ /app/db/
 

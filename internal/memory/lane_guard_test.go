@@ -12,9 +12,9 @@ import (
 func TestLaneClassification(t *testing.T) {
 	t.Parallel()
 	experiential := []string{
-		domain.DocTypeMnemonicScene, domain.DocTypeMnemonicAction,
+		domain.DocTypeMnemonicAction,
 		domain.DocTypeMnemonicEntity, domain.DocTypeEpisodicMemory,
-		domain.DocTypeNegativeEdge,
+		domain.DocTypeNegativeEdge, domain.DocTypeMnemonicProcedure,
 	}
 	for _, dt := range experiential {
 		if !isExperientialDoc(domain.Document{DocumentType: dt}) {
@@ -22,7 +22,8 @@ func TestLaneClassification(t *testing.T) {
 		}
 	}
 	// The corpus: what an operator deliberately ingested.
-	for _, dt := range []string{domain.DocTypeMnemonicFact, domain.DocTypeDocSection, ""} {
+	// "mnemonic_scene" is no longer a type at all (removed 2026-11-05).
+	for _, dt := range []string{domain.DocTypeMnemonicFact, domain.DocTypeDocSection, "", "mnemonic_scene"} {
 		if isExperientialDoc(domain.Document{DocumentType: dt}) {
 			t.Errorf("%s must be classified as corpus", dt)
 		}
@@ -33,14 +34,14 @@ func TestLaneClassification(t *testing.T) {
 	}
 }
 
-// A knowledge query asks in the corpus lane; action/precedent queries ask in the
-// experience lane. If this inverts, the guard protects exactly the wrong side.
+// A knowledge query asks in the corpus lane; action/failure/procedure queries ask in
+// the experience lane. If this inverts, the guard protects exactly the wrong side.
 func TestLaneOfQuery(t *testing.T) {
 	t.Parallel()
 	if laneIsExperiential(domain.DocTypeMnemonicFact) {
 		t.Error("a fact query asks in the CORPUS lane")
 	}
-	for _, dt := range []string{domain.DocTypeMnemonicAction, domain.DocTypeMnemonicScene, domain.DocTypeNegativeEdge} {
+	for _, dt := range []string{domain.DocTypeMnemonicAction, domain.DocTypeNegativeEdge, domain.DocTypeMnemonicProcedure} {
 		if !laneIsExperiential(dt) {
 			t.Errorf("%s query asks in the EXPERIENCE lane", dt)
 		}
@@ -56,14 +57,14 @@ func TestLaneGuard_ExperienceNeverEvictsCorpusPrimary(t *testing.T) {
 	t.Parallel()
 	topK := 2
 	results := []domain.SearchResult{
-		{Document: domain.Document{ID: "scene-1", DocumentType: domain.DocTypeMnemonicScene}, Score: 0.9},
-		{Document: domain.Document{ID: "scene-2", DocumentType: domain.DocTypeMnemonicScene}, Score: 0.8},
+		{Document: domain.Document{ID: "action-1", DocumentType: domain.DocTypeMnemonicAction}, Score: 0.9},
+		{Document: domain.Document{ID: "action-2", DocumentType: domain.DocTypeMnemonicAction}, Score: 0.8},
 		{Document: domain.Document{ID: "corpus-1", DocumentType: domain.DocTypeMnemonicFact}, Score: 0.3},
 	}
 	// All three are PRIMARY, so the primary/injected split alone cannot decide this —
 	// only the lane dimension can. (An earlier version of this test marked just the
 	// corpus row primary, and passed even with the lane logic removed.)
-	primaryIDs := map[string]bool{"corpus-1": true, "scene-1": true, "scene-2": true}
+	primaryIDs := map[string]bool{"corpus-1": true, "action-1": true, "action-2": true}
 	got := assembleLanes(results, primaryIDs, topK, laneIsExperiential(domain.DocTypeMnemonicFact), nil)
 
 	if len(got) == 0 || got[0].Document.ID != "corpus-1" {
@@ -74,17 +75,17 @@ func TestLaneGuard_ExperienceNeverEvictsCorpusPrimary(t *testing.T) {
 	}
 }
 
-// The mirror: a precedent query must not have its precedents pushed out by corpus.
-func TestLaneGuard_CorpusNeverEvictsPrecedent(t *testing.T) {
+// The mirror: an experience query must not have its records pushed out by corpus.
+func TestLaneGuard_CorpusNeverEvictsExperience(t *testing.T) {
 	t.Parallel()
 	results := []domain.SearchResult{
 		{Document: domain.Document{ID: "corpus-1", DocumentType: domain.DocTypeMnemonicFact}, Score: 0.95},
-		{Document: domain.Document{ID: "scene-1", DocumentType: domain.DocTypeMnemonicScene}, Score: 0.2},
+		{Document: domain.Document{ID: "action-1", DocumentType: domain.DocTypeMnemonicAction}, Score: 0.2},
 	}
-	primaryIDs := map[string]bool{"corpus-1": true, "scene-1": true}
-	got := assembleLanes(results, primaryIDs, 1, laneIsExperiential(domain.DocTypeMnemonicScene), nil)
-	if len(got) != 1 || got[0].Document.ID != "scene-1" {
-		t.Errorf("a precedent query must keep its precedent, got %v", laneIDs(got))
+	primaryIDs := map[string]bool{"corpus-1": true, "action-1": true}
+	got := assembleLanes(results, primaryIDs, 1, laneIsExperiential(domain.DocTypeMnemonicAction), nil)
+	if len(got) != 1 || got[0].Document.ID != "action-1" {
+		t.Errorf("an action query must keep its action record, got %v", laneIDs(got))
 	}
 }
 

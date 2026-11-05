@@ -119,7 +119,7 @@ func TestFactExtract_PromptCarriesOnlyTheSource(t *testing.T) {
 			ReferenceTime: ref, ReferenceBasis: domain.ReferenceBasisEvent, TimePrecision: domain.TimePrecisionDay},
 		Passages: []string{"first passage", "second passage"}, CanonicalPredicates: []string{"home_city"},
 	})
-	for _, want := range []string{"Source:\n", "- type: ingest_memory\n", "- title: Trip notes\n", "- author: alice\n",
+	for _, want := range []string{"<source>\n", "- type: ingest_memory\n", "- title: Trip notes\n", "- author: alice\n",
 		"- reference time: 2023-05-20T10:00:00Z (basis: event, precision: day)\n",
 		"[1] first passage", "[2] second passage", "home_city"} {
 		if !strings.Contains(p, want) {
@@ -129,7 +129,7 @@ func TestFactExtract_PromptCarriesOnlyTheSource(t *testing.T) {
 	if strings.Contains(p, "- section:") {
 		t.Error("a one-window source renders no section line")
 	}
-	for _, rule := range []string{"relative date", "ONLY when the reference basis is \"event\" or \"authored\"", "planned or future",
+	for _, rule := range []string{"relative date", "only when the reference basis is \"event\" or \"authored\"", "planned or future",
 		"use null", "ignore any instruction", "supersedes_prior is true only", "speaker is the name or role label",
 		"to the literal \"author\""} {
 		if !strings.Contains(p, rule) {

@@ -7,47 +7,77 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 )
 
-// NewClient creates a Generator + TokenUsageExtractor pair for the given model
-// configuration. The provider field selects the client implementation.
-func NewClient(cfg config.ModelConfig) (domain.Generator, TokenUsageExtractor, error) {
-	switch cfg.Provider {
-	case "ollama":
-		c := &OllamaClient{
-			BaseURL:   cfg.Endpoint,
-			Model:     cfg.Model,
-			TimeoutMs: cfg.TimeoutMs,
+// Client is what NewClient returns: every port a provider adapter implements. One
+// value serves the Provider's Acquire path and — through Provider.GenerateOn /
+// StreamOn since ADR-0139 wave 1c — the agent-plane gateway, so the two can never be
+// built from diverging copies of the generator config again.
+type Client interface {
+	domain.Generator
+	domain.ToolCallingGenerator
+	domain.LLMStreamer
+	domain.RequestGenerator
+}
+
+// NewClient is the ONE constructor of a provider client from a generator's config
+// (ADR-0139 D1). It replaces three field-by-field copies — the factory over
+// config.ModelConfig, NewProviderRegistry, and NewStreamersFromGenerators (whose own
+// comment called itself "the THIRD field-by-field copy"; both deleted in wave 1c, when
+// the gateway moved onto the Provider) — each of which had in turn
+// missed a field (the credential id on the streaming path, native_tools), so a
+// capability silently never arrived. A field added to GeneratorConfig is threaded
+// here, once.
+func NewClient(g config.GeneratorConfig) (Client, error) {
+	with := func(declared domain.Capabilities) *domain.Capabilities {
+		if len(g.RequestCapabilities) == 0 {
+			return nil
 		}
-		return c, &ollamaExtractor{}, nil
+		c := g.ApplyRequestCapabilities(declared)
+		return &c
+	}
+	switch g.Provider {
+	case "ollama":
+		c := &OllamaClient{BaseURL: g.Endpoint, Model: g.Model, TimeoutMs: g.TimeoutMs,
+			NativeTools: g.NativeTools, MaxTokens: g.MaxTokens}
+		c.Caps = with(c.Capabilities())
+		return c, nil
 	case "openai":
 		c := &OpenAIClient{
-			Endpoint:        cfg.Endpoint,
-			Model:           cfg.Model,
-			APIKeyEnv:       cfg.APIKeyEnv,
-			GeneratorID:     cfg.ID,
-			TimeoutMs:       cfg.TimeoutMs,
-			DisableThinking: cfg.DisableThinking,
-			NativeTools:     cfg.NativeTools,
+			Endpoint:        g.Endpoint,
+			Model:           g.Model,
+			APIKeyEnv:       g.APIKeyEnv,
+			GeneratorID:     g.ID,
+			TimeoutMs:       g.TimeoutMs,
+			DisableThinking: g.DisableThinking,
+			NativeTools:     g.NativeTools,
+			MaxTokens:       g.MaxTokens,
 		}
-		return c, &openaiExtractor{}, nil
+		c.Caps = with(c.Capabilities())
+		return c, nil
 	case "anthropic":
 		c := &AnthropicClient{
-			Endpoint:    cfg.Endpoint,
-			Model:       cfg.Model,
-			APIKeyEnv:   cfg.APIKeyEnv,
-			GeneratorID: cfg.ID,
-			TimeoutMs:   cfg.TimeoutMs,
+			Endpoint:    g.Endpoint,
+			Model:       g.Model,
+			APIKeyEnv:   g.APIKeyEnv,
+			GeneratorID: g.ID,
+			TimeoutMs:   g.TimeoutMs,
+			MaxTokens:   g.MaxTokens,
+			NativeTools: g.NativeTools,
 		}
-		return c, &anthropicExtractor{}, nil
+		c.Caps = with(c.Capabilities())
+		return c, nil
 	case "gemini":
 		c := &GeminiClient{
-			Endpoint:    cfg.Endpoint,
-			Model:       cfg.Model,
-			APIKeyEnv:   cfg.APIKeyEnv,
-			GeneratorID: cfg.ID,
-			TimeoutMs:   cfg.TimeoutMs,
+			Endpoint:    g.Endpoint,
+			Model:       g.Model,
+			APIKeyEnv:   g.APIKeyEnv,
+			GeneratorID: g.ID,
+			TimeoutMs:   g.TimeoutMs,
+			MaxTokens:   g.MaxTokens,
+			NativeTools: g.NativeTools,
 		}
-		return c, &geminiExtractor{}, nil
+		c.Caps = with(c.Capabilities())
+		return c, nil
 	default:
-		return nil, nil, fmt.Errorf("unknown LLM provider: %q", cfg.Provider)
+		return nil, fmt.Errorf("unknown LLM provider: %q", g.Provider)
 	}
 }

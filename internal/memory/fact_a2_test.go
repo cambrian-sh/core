@@ -51,23 +51,6 @@ func TestFactPrompt_SourceAgnostic(t *testing.T) {
 	}
 }
 
-func TestScenePrompt_SourceAgnostic(t *testing.T) {
-	sg := NewSceneGenerator(nil)
-	p := sg.buildPrompt([]domain.ExternalDocument{{}})
-	assertSourceAgnostic(t, "scene prompt", p)
-	if strings.Contains(p, "social dynamics") {
-		t.Fatal("the scene prompt still asks for a conversational dimension")
-	}
-	// Metadata is passed as data, the time with its basis.
-	p = sg.buildPrompt([]domain.ExternalDocument{{SourceType: "pdf", Title: "Spec", Author: "acme",
-		Timestamp: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), TimeSource: domain.TimeSourceSourceMetadata}})
-	for _, want := range []string{"<SourceType>pdf</SourceType>", "<Title>Spec</Title>", "<Author>acme</Author>", `<Time basis="authored">2024-01-02T00:00:00Z</Time>`} {
-		if !strings.Contains(p, want) {
-			t.Errorf("scene prompt lacks %q:\n%s", want, p)
-		}
-	}
-}
-
 func TestSourceMeta_ReferenceBasisFromIngestMetadata(t *testing.T) {
 	at := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
 	ing := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
@@ -153,7 +136,7 @@ func TestFactWindows_PackInOrderWithinBudget(t *testing.T) {
 	for i := range passages {
 		passages[i] = fmt.Sprintf("passage %02d %s", i, strings.Repeat("x", 900))
 	}
-	head := len(factPromptHead(factExtractionInput{Source: src})) + factSectionReserve
+	head := factWindowOverhead(src, nil)
 	budget := head + 2000 // two passages per window
 	ws := packFactWindows(passages, nil, src, nil, budget)
 	if len(ws) != 6 {
@@ -201,7 +184,7 @@ func TestFactExtractor_SectionedPartialResumeAndVersion(t *testing.T) {
 	sub := newMemSubstrate()
 	gen := windowGen()
 	src := domain.SourceMeta{Title: "Long source", ReferenceTime: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), ReferenceBasis: domain.ReferenceBasisAuthored}
-	head := len(factPromptHead(factExtractionInput{Source: src})) + factSectionReserve
+	head := factWindowOverhead(src, nil)
 	texts := make([]string, 5)
 	for i := range texts {
 		texts[i] = fmt.Sprintf("passage %d says something. %s", i, strings.Repeat("y", 900))
@@ -276,7 +259,7 @@ func TestFactExtractor_MaxFactsPerSourceStopsAndIsDone(t *testing.T) {
 	sub := newMemSubstrate()
 	gen := windowGen()
 	src := domain.SourceMeta{}
-	head := len(factPromptHead(factExtractionInput{Source: src})) + factSectionReserve
+	head := factWindowOverhead(src, nil)
 	texts := make([]string, 4)
 	for i := range texts {
 		texts[i] = fmt.Sprintf("passage %d. %s", i, strings.Repeat("z", 900))

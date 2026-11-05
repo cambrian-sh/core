@@ -177,7 +177,7 @@ func TestResolution_L2CannotEmptyASlateL1Approved(t *testing.T) {
 	g := NewGatekeeper(resolutionAgents(), cfg,
 		WithEmbedder(&mockEmbedder{}),
 		// Nobody clears the semantic threshold.
-		WithSearcher(&fakeInterviewSearcher{results: map[string]float64{}}),
+		WithSearcher(&fakeProfileSearcher{results: map[string]float64{}}),
 	)
 
 	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
@@ -196,7 +196,7 @@ func TestResolution_L2CannotEmptyASlateL1Approved(t *testing.T) {
 func TestResolution_L2MayEmptySlateWhenL1DidNotGate(t *testing.T) {
 	g := NewGatekeeper(resolutionAgents(), resolutionCfg(),
 		WithEmbedder(&mockEmbedder{}),
-		WithSearcher(&fakeInterviewSearcher{results: map[string]float64{}}),
+		WithSearcher(&fakeProfileSearcher{results: map[string]float64{}}),
 	)
 
 	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{

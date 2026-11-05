@@ -97,12 +97,12 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 		slog.Info("🔍 Substrate detected ENV mutation, forcing sync barrier")
 	}
 
-	// 2. MEMORY BARRIER: Protocol-based trigger. ADR-0049 D3: the step output is
-	// already recorded by RecordExecution (the `step_N:` fact) and any mutations as
-	// synchronous `mnemonic_action` records — so the barrier no longer re-ingests a
-	// duplicate payload row. Retained as a barrier signal only.
+	// 2. MEMORY BARRIER: Protocol-based trigger. Mutations are recorded as
+	// synchronous `mnemonic_action` records (ADR-0049 D1); step output is not
+	// captured (RecordExecution was deleted 2026-11-05). The barrier no longer
+	// ingests anything. Retained as a barrier signal only.
 	if val, ok := resp.Context["_kernel_sync"]; (ok && val == "true") || forceSync {
-		slog.Info("⚡ Sync Barrier (step output already recorded; no duplicate ingest)", "agent", agentName)
+		slog.Info("⚡ Sync Barrier (signal only; no ingest)", "agent", agentName)
 	}
 
 	return resp, nil

@@ -60,7 +60,7 @@ func TestNewDefaultChunkers_OmitsLateWithoutEmbedder(t *testing.T) {
 // literal that always said "option_c".
 func TestNewIngestionManager_HonoursConfiguredDefault(t *testing.T) {
 	t.Parallel()
-	im := NewIngestionManager(nil, &mockEmbedder{vec: []float32{0.1}}, testAgent(),
+	im := NewIngestionManager(&mockEmbedder{vec: []float32{0.1}}, testAgent(),
 		IngestionConfig{}, config.ChunkerConfig{Default: "markdown_header"})
 
 	got, err := im.registry.Resolve("some_source", ".md")
@@ -76,7 +76,7 @@ func TestNewIngestionManager_HonoursConfiguredDefault(t *testing.T) {
 // `chunker.routes` block describes is real.
 func TestNewIngestionManager_HonoursConfiguredRoutes(t *testing.T) {
 	t.Parallel()
-	im := NewIngestionManager(nil, &mockEmbedder{vec: []float32{0.1}}, testAgent(),
+	im := NewIngestionManager(&mockEmbedder{vec: []float32{0.1}}, testAgent(),
 		IngestionConfig{}, config.ChunkerConfig{
 			Default:   "option_c",
 			Routes:    map[string]string{"repo_scan": "ast_go"},
@@ -104,13 +104,13 @@ func TestNewIngestionManager_LateGateFollowsConfig(t *testing.T) {
 		Routes:  map[string]string{"bulk": lateChunkerName},
 	}
 
-	off := NewIngestionManager(nil, &mockEmbedder{vec: []float32{0.1}}, testAgent(), IngestionConfig{}, cfg)
+	off := NewIngestionManager(&mockEmbedder{vec: []float32{0.1}}, testAgent(), IngestionConfig{}, cfg)
 	if got, _ := off.registry.Resolve("bulk", ".txt"); got.Name() != "option_c" {
 		t.Errorf("late gate closed should fall back to default, got %q", got.Name())
 	}
 
 	cfg.Late.Enabled = true
-	on := NewIngestionManager(nil, &mockEmbedder{vec: []float32{0.1}}, testAgent(), IngestionConfig{}, cfg)
+	on := NewIngestionManager(&mockEmbedder{vec: []float32{0.1}}, testAgent(), IngestionConfig{}, cfg)
 	if got, _ := on.registry.Resolve("bulk", ".txt"); got.Name() != lateChunkerName {
 		t.Errorf("late gate open should route to late, got %q", got.Name())
 	}
@@ -121,7 +121,7 @@ func TestNewIngestionManager_LateGateFollowsConfig(t *testing.T) {
 // documented default.
 func TestNewIngestionManager_InvalidConfigFallsBackToOptionC(t *testing.T) {
 	t.Parallel()
-	im := NewIngestionManager(nil, &mockEmbedder{vec: []float32{0.1}}, testAgent(),
+	im := NewIngestionManager(&mockEmbedder{vec: []float32{0.1}}, testAgent(),
 		IngestionConfig{}, config.ChunkerConfig{Default: "no_such_chunker"})
 
 	if im.registry == nil {

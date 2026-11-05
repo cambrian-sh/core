@@ -7,12 +7,12 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-type trackingInterviewSearcher struct {
+type trackingProfileSearcher struct {
 	called bool
-	inner  *fakeInterviewSearcher
+	inner  *fakeProfileSearcher
 }
 
-func (t *trackingInterviewSearcher) SearchByEmbedding(ctx context.Context, embedding []float32, threshold float64, topK int) ([]domain.AgentSearchResult, error) {
+func (t *trackingProfileSearcher) SearchByEmbedding(ctx context.Context, embedding []float32, threshold float64, topK int) ([]domain.AgentSearchResult, error) {
 	t.called = true
 	return t.inner.SearchByEmbedding(ctx, embedding, threshold, topK)
 }
@@ -21,7 +21,7 @@ func TestFindCandidates_TraitTool_GoesThroughLayer2(t *testing.T) {
 	toolAgent := domain.AgentDefinition{ID: "tool-gk-1", Provisional: false, Trait: domain.TraitTool}
 	registry := newMockAgentDeclarationSource([]domain.AgentDefinition{toolAgent}, nil)
 
-	searcher := &trackingInterviewSearcher{inner: &fakeInterviewSearcher{results: map[string]float64{}}}
+	searcher := &trackingProfileSearcher{inner: &fakeProfileSearcher{results: map[string]float64{}}}
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(registry, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))
@@ -43,8 +43,8 @@ func TestFindCandidates_TraitTool_CognitiveAgentStillChecked(t *testing.T) {
 	cogAgent := domain.AgentDefinition{ID: "cog-gk-2", Provisional: false, Trait: domain.TraitCognitive}
 	registry := newMockAgentDeclarationSource([]domain.AgentDefinition{toolAgent, cogAgent}, nil)
 
-	searcher := &trackingInterviewSearcher{
-		inner: &fakeInterviewSearcher{results: map[string]float64{cogAgent.ID: 0.8}},
+	searcher := &trackingProfileSearcher{
+		inner: &fakeProfileSearcher{results: map[string]float64{cogAgent.ID: 0.8}},
 	}
 	embedder := &mockEmbedder{}
 
@@ -72,7 +72,7 @@ func TestFindCandidates_TraitTool_FailsDeclaration_Eliminated(t *testing.T) {
 		toolAgent.ID: {SupportedFormats: []string{"csv"}},
 	})
 
-	searcher := &trackingInterviewSearcher{inner: &fakeInterviewSearcher{results: map[string]float64{}}}
+	searcher := &trackingProfileSearcher{inner: &fakeProfileSearcher{results: map[string]float64{}}}
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(registry, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))

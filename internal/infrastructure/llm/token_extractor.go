@@ -1,7 +1,5 @@
 package llm
 
-import "encoding/json"
-
 // TokenUsage holds the token counts from an LLM response.
 type TokenUsage struct {
 	PromptTokens     int
@@ -44,111 +42,6 @@ func (u TokenUsage) Add(v TokenUsage) TokenUsage {
 func EstimateUsage(prompt, response string) TokenUsage {
 	in, out := EstimateTokens(prompt), EstimateTokens(response)
 	return TokenUsage{PromptTokens: in, CompletionTokens: out, TotalTokens: in + out, Estimated: true}
-}
-
-// TokenUsageExtractor parses an LLM provider's HTTP response body
-// and extracts token usage counts.
-type TokenUsageExtractor interface {
-	Extract(responseBody []byte) (TokenUsage, error)
-}
-
-// ollamaExtractor extracts token usage from Ollama /api/generate responses.
-type ollamaExtractor struct{}
-
-type ollamaGenResponse struct {
-	PromptEvalCount    int `json:"prompt_eval_count"`
-	EvalCount          int `json:"eval_count"`
-	PromptEvalDuration int `json:"prompt_eval_duration"`
-	EvalDuration       int `json:"eval_duration"`
-	TotalDuration      int `json:"total_duration"`
-}
-
-func (e *ollamaExtractor) Extract(responseBody []byte) (TokenUsage, error) {
-	var r ollamaGenResponse
-	if err := json.Unmarshal(responseBody, &r); err != nil {
-		return TokenUsage{}, nil // non-parseable = no token data
-	}
-	return TokenUsage{
-		PromptTokens:     r.PromptEvalCount,
-		CompletionTokens: r.EvalCount,
-		TotalTokens:      r.PromptEvalCount + r.EvalCount,
-	}, nil
-}
-
-// openaiExtractor extracts token usage from OpenAI chat completion responses.
-type openaiExtractor struct{}
-
-type openaiUsage struct {
-	PromptTokens        int `json:"prompt_tokens"`
-	CompletionTokens    int `json:"completion_tokens"`
-	TotalTokens         int `json:"total_tokens"`
-	PromptTokensDetails *struct {
-		CachedTokens int `json:"cached_tokens"`
-	} `json:"prompt_tokens_details,omitempty"`
-}
-
-// tokenUsage converts the OpenAI usage block. prompt_tokens already includes the
-// cached tokens, so CacheReadTokens is a breakdown, not an addition.
-func (u openaiUsage) tokenUsage() TokenUsage {
-	out := TokenUsage{
-		PromptTokens:     u.PromptTokens,
-		CompletionTokens: u.CompletionTokens,
-		TotalTokens:      u.TotalTokens,
-	}
-	if out.TotalTokens == 0 {
-		out.TotalTokens = out.PromptTokens + out.CompletionTokens
-	}
-	if u.PromptTokensDetails != nil {
-		out.CacheReadTokens = u.PromptTokensDetails.CachedTokens
-	}
-	return out
-}
-
-type openaiFullResp struct {
-	Usage openaiUsage `json:"usage"`
-}
-
-func (e *openaiExtractor) Extract(responseBody []byte) (TokenUsage, error) {
-	var r openaiFullResp
-	if err := json.Unmarshal(responseBody, &r); err != nil {
-		return TokenUsage{}, nil
-	}
-	return r.Usage.tokenUsage(), nil
-}
-
-// anthropicExtractor extracts token usage from Anthropic message responses.
-type anthropicExtractor struct{}
-
-type anthropicUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-}
-
-// tokenUsage converts the Anthropic usage block. Anthropic's input_tokens
-// EXCLUDES cache reads and cache writes, so the prompt total is the sum of all
-// three — the same "every input token" meaning PromptTokens has for OpenAI.
-func (u anthropicUsage) tokenUsage() TokenUsage {
-	in := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
-	return TokenUsage{
-		PromptTokens:     in,
-		CompletionTokens: u.OutputTokens,
-		TotalTokens:      in + u.OutputTokens,
-		CacheReadTokens:  u.CacheReadInputTokens,
-	}
-}
-
-type anthropicFullResp struct {
-	Usage anthropicUsage `json:"usage"`
-}
-
-func (e *anthropicExtractor) Extract(responseBody []byte) (TokenUsage, error) {
-	var r anthropicFullResp
-	if err := json.Unmarshal(responseBody, &r); err != nil {
-		return TokenUsage{}, nil
-	}
-	return r.Usage.tokenUsage(), nil
 }
 
 // CalculateCost computes the estimated cost of a model call.

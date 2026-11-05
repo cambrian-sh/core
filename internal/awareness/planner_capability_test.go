@@ -38,7 +38,7 @@ func TestPlanner_CapabilityContract_OffIsByteIdentical(t *testing.T) {
 		t.Fatalf("expected one prompt, got %d", len(gen.capturedPrompts))
 	}
 	prompt := gen.capturedPrompts[0]
-	if strings.Contains(prompt, "CAPABILITY REQUIREMENTS") {
+	if strings.Contains(prompt, "Capability requirements:") {
 		t.Error("control-arm prompt must NOT contain the capability rules block")
 	}
 	if strings.Contains(prompt, "required_capabilities") {
@@ -61,7 +61,7 @@ func TestPlanner_CapabilityContract_OnEmitsAndParses(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	prompt := gen.capturedPrompts[0]
-	if !strings.Contains(prompt, "CAPABILITY REQUIREMENTS") {
+	if !strings.Contains(prompt, "Capability requirements:") {
 		t.Error("capability-arm prompt must contain the capability rules block")
 	}
 	if !strings.Contains(prompt, "required_capabilities") {
@@ -94,8 +94,8 @@ func TestPlanner_CapabilityContract_HashesDiffer(t *testing.T) {
 func TestPlannerSchemas_CarryAgentPinFields(t *testing.T) {
 	t.Parallel()
 	for name, schema := range map[string]string{
-		"base":       planOutputSchema,
-		"capability": planOutputSchemaCap,
+		"base":       string(plannerPrompts.Schema()),
+		"capability": string(plannerCapPrompts.Schema()),
 	} {
 		if !strings.Contains(schema, "preferred_agent") {
 			t.Errorf("%s schema must expose preferred_agent", name)
@@ -105,15 +105,15 @@ func TestPlannerSchemas_CarryAgentPinFields(t *testing.T) {
 		}
 	}
 	for name, text := range map[string]string{
-		"base":       plannerStaticText,
-		"capability": plannerStaticTextCap,
+		"base":       plannerPrompts.System.Body,
+		"capability": plannerCapPrompts.System.Body,
 	} {
-		if !strings.Contains(text, "AGENT PINNING") {
+		if !strings.Contains(text, "Agent pinning:") {
 			t.Errorf("%s prompt must carry the pinning rules", name)
 		}
 	}
 	// The instruction that caused the leak must be gone, not merely supplemented.
-	if strings.Contains(plannerStaticText, "You may reference a specific agent ID") {
+	if strings.Contains(plannerPrompts.System.Body, "You may reference a specific agent ID") {
 		t.Error("the old free-form agent-ID invitation must not survive")
 	}
 }

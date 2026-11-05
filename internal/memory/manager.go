@@ -40,8 +40,8 @@ func (m *MemoryManager) Ingest(ctx context.Context, doc *domain.Document) error 
 // Save persists an ALREADY-EMBEDDED document.
 //
 // Distinct from Ingest, which embeds doc.Text first: callers that have computed a
-// vector themselves (batched embedding, a scene projection, a promoted fact whose
-// vector was reused) must not pay for a second embed, and passing them through
+// vector themselves (batched embedding, a procedure trigger, an action line) must
+// not pay for a second embed, and passing them through
 // Ingest would silently overwrite the vector they built.
 //
 // It exists so that writing a document is a method call on the manager rather than

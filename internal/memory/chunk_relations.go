@@ -1,7 +1,7 @@
 // Package memory holds the runtime's working / episodic / mnemonic
 // memory primitives. ChunkRelations and SiblingContext carry
 // per-chunk relation metadata: parent entity ID, linear neighbor IDs,
-// and sibling context (parent title/summary/scene + preceding/following
+// and sibling context (parent title/summary + preceding/following
 // snippets). The 512B total budget keeps the metadata column from
 // ballooning under the 100 docs/min target (ADR-0060 D4).
 package memory
@@ -15,7 +15,6 @@ import (
 const (
 	parentTitleMaxBytes      = 80
 	parentSummaryMaxBytes    = 120
-	parentSceneMaxBytes      = 120
 	precedingSnippetMaxBytes = 96
 	followingSnippetMaxBytes = 96
 	siblingContextMaxBytes   = 512
@@ -38,14 +37,16 @@ type ChunkRelations struct {
 }
 
 // SiblingContext is the content half of the chunk_relations payload:
-// a tight preview of the parent document (title, summary, scene) plus
+// a tight preview of the parent document (title, summary) plus
 // the first few bytes of the preceding and following chunks. Each
 // field is hard-capped (see the const block above); the total
 // marshaled JSON is hard-capped at 512B by SiblingContext.MarshalJSON.
 type SiblingContext struct {
-	ParentTitle      string `json:"parent_title"`      // <= 80B after trim
-	ParentSummary    string `json:"parent_summary"`    // <= 120B
-	ParentScene      string `json:"parent_scene"`      // <= 120B
+	ParentTitle   string `json:"parent_title"`   // <= 80B after trim
+	ParentSummary string `json:"parent_summary"` // <= 120B
+	// ParentScene (`parent_scene`, <= 120B) was removed 2026-11-05 with ingest scene
+	// generation (decisions/scenes-cancelled.md). Rows written before carry the key;
+	// decoding ignores it.
 	PrecedingSnippet string `json:"preceding_snippet"` // <= 96B
 	FollowingSnippet string `json:"following_snippet"` // <= 96B
 }
@@ -57,29 +58,28 @@ type SiblingContext struct {
 //     ~117B scaffold, which is wasted bytes for the all-empty case).
 //  2. Per-field cap pass: each field is truncated to its per-field
 //     maximum at the last word boundary (or hard-cut at the limit if
-//     no boundary is found). This is the "designed fit" — 80+120+
-//     120+96+96 = 512 bytes of content.
+//     no boundary is found). The per-field caps sum to 80+120+96+96 =
+//     392 bytes of content, under the 512B budget.
 //  3. Total-budget pass: if the marshaled JSON still exceeds 512B
 //     (because the JSON scaffold adds ~120B of fixed overhead), the
 //     most-expendable fields are progressively halved in the
 //     documented precedence (preceding_snippet, following_snippet,
-//     parent_summary, parent_scene, parent_title) until the total
-//     fits. The 5 per-field caps are the cap on this shrink; we
+//     parent_summary, parent_title) until the total
+//     fits. The 4 per-field caps are the cap on this shrink; we
 //     never grow a field back.
 //
 // JSON keys and the identifier fields on ChunkRelations (ParentEntityID,
 // PrecedingChunkID, FollowingChunkID) are never trimmed — they are
-// structural, not content. Only the 5 string values of SiblingContext
+// structural, not content. Only the 4 string values of SiblingContext
 // are in the budget's scope.
 func (s SiblingContext) MarshalJSON() ([]byte, error) {
-	if s.ParentTitle == "" && s.ParentSummary == "" && s.ParentScene == "" &&
+	if s.ParentTitle == "" && s.ParentSummary == "" &&
 		s.PrecedingSnippet == "" && s.FollowingSnippet == "" {
 		return []byte("{}"), nil
 	}
 
 	s.ParentTitle = truncateAtWordBoundary(s.ParentTitle, parentTitleMaxBytes)
 	s.ParentSummary = truncateAtWordBoundary(s.ParentSummary, parentSummaryMaxBytes)
-	s.ParentScene = truncateAtWordBoundary(s.ParentScene, parentSceneMaxBytes)
 	s.PrecedingSnippet = truncateAtWordBoundary(s.PrecedingSnippet, precedingSnippetMaxBytes)
 	s.FollowingSnippet = truncateAtWordBoundary(s.FollowingSnippet, followingSnippetMaxBytes)
 
@@ -99,7 +99,6 @@ func (s SiblingContext) MarshalJSON() ([]byte, error) {
 		{&s.PrecedingSnippet, precedingSnippetMaxBytes},
 		{&s.FollowingSnippet, followingSnippetMaxBytes},
 		{&s.ParentSummary, parentSummaryMaxBytes},
-		{&s.ParentScene, parentSceneMaxBytes},
 		{&s.ParentTitle, parentTitleMaxBytes},
 	}
 	for iter := 0; iter < 32; iter++ {

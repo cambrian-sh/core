@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // T-20261101-planner-validation-retries-and-replans-compound: validation retries
@@ -58,5 +60,45 @@ func TestPlanCallBudget_PlannerGenerateIsNotCharged(t *testing.T) {
 		if _, err := p.Generate(context.Background(), "thought"); err != nil {
 			t.Fatalf("Generate charged the budget: %v", err)
 		}
+	}
+}
+
+// c1Planner is a Planner whose generator is a C1 RequestGenerator.
+type c1Planner struct {
+	mockPlanner
+	reqs int
+}
+
+func (p *c1Planner) GenerateRequest(context.Context, domain.GenerateRequest) (domain.GenerateResponse, error) {
+	p.reqs++
+	return domain.GenerateResponse{Text: `{"subject":"replan","steps":[]}`}, nil
+}
+
+func (p *c1Planner) StreamRequest(context.Context, domain.GenerateRequest) (<-chan domain.StreamChunk, error) {
+	return nil, errors.New("no stream")
+}
+
+func (p *c1Planner) Capabilities() domain.Capabilities { return domain.Capabilities{} }
+
+// ADR-0139 D1: the replan handler sends a structured request through the budget
+// wrapper. The wrapper must forward the planner's RequestGenerator (or every
+// replan silently falls back to the legacy string path) and must charge the
+// budget for it exactly like Generate.
+func TestPlanCallBudget_ReplanGeneratorForwardsC1AndCharges(t *testing.T) {
+	t.Parallel()
+	p := &c1Planner{}
+	gen := newPlanCallBudget(0).generator(p)
+	rg, ok := domain.AsRequestGenerator(gen)
+	if !ok {
+		t.Fatal("the budgeted replan generator hides the planner's RequestGenerator")
+	}
+	if _, err := rg.GenerateRequest(context.Background(), domain.UserPrompt("replan")); err != nil || p.reqs != 1 {
+		t.Fatalf("first structured replan: err=%v reqs=%d", err, p.reqs)
+	}
+	if _, err := rg.GenerateRequest(context.Background(), domain.UserPrompt("again")); !errors.Is(err, ErrPlannerCallBudget) {
+		t.Fatalf("a structured replan past the budget must be refused, got %v", err)
+	}
+	if _, ok := domain.AsRequestGenerator(newPlanCallBudget(1).generator(&mockPlanner{})); ok {
+		t.Fatal("over a legacy planner the wrapper must not claim RequestGenerator")
 	}
 }

@@ -2,34 +2,18 @@ package config
 
 import "testing"
 
-// TestDefaults_ExperienceArms pins the three-way distinction that "turn experiential
-// memory on" could otherwise blur. These are three different levers with three different
-// risk profiles, and only one of them is on.
+// TestDefaults_ExperienceArms pins the experiential-record default. The raw capture
+// path (`experiential_memory_enabled`) and procedure induction
+// (`procedure_induction_interval_hours`) were deleted on 2026-11-05 with scenes
+// (decisions/scenes-cancelled.md); TestRemovedExecutionKeys_AbsentFromSchema pins that
+// their keys stay gone.
 func TestDefaults_ExperienceArms(t *testing.T) {
 	cfg := DefaultConfig()
 
-	// ON: the abstraction-only outcome record (ADR-0049 A2.2). One structured record per
-	// plan, no raw payload, behind the A2.4 lane guard.
+	// ON: the abstraction-only experiential records (ADR-0049 A2.2, ADR-0095): action
+	// events and the plan-outcome hook, no raw payload, behind the A2.4 lane guard.
 	if !cfg.Execution.Memory.ExperienceRecordsEnabled {
 		t.Error("experience_records_enabled must default TRUE (owner decision 2026-07-28)")
-	}
-
-	// OFF, PERMANENTLY: the raw path removed on 2026-07-18 — whole tool payloads
-	// embedded as single vectors, which overflowed the embedder and polluted recall.
-	// If this test ever fails, the July removal has been silently undone.
-	if cfg.Execution.Memory.ExperientialMemoryEnabled {
-		t.Error("experiential_memory_enabled (the RAW path) must stay false — it is the " +
-			"design that was removed, not the one that was rebuilt")
-	}
-
-	// ON, hourly: the procedural induction scheduler (owner default 2026-08-11,
-	// promoted from the operating config). The "nothing to induce from" era ended
-	// once capability_contract went default-on and plans accrued; an idle pass
-	// over an empty table is cheap, and a scheduler nobody remembers to enable
-	// never induces anything.
-	if cfg.Execution.Procedure.ProcedureInductionIntervalHours != 1 {
-		t.Errorf("procedure induction must default to hourly (owner decision 2026-08-11), "+
-			"got interval %d", cfg.Execution.Procedure.ProcedureInductionIntervalHours)
 	}
 
 	// The gates the enabled arm depends on must be sane, or "on" means something else.

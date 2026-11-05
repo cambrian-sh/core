@@ -14,7 +14,7 @@ import (
 // sharedLLMTransport is the connection-pooled HTTP transport every LLM client reuses, so
 // concurrent LLM requests reuse warm TLS connections instead of churning a fresh handshake
 // per call. Go's http.DefaultTransport keeps only 2 idle connections per host, so under
-// sustained parallel LLM traffic — interviews (unbounded errgroup), concurrent DAG steps,
+// sustained parallel LLM traffic — concurrent DAG steps, verification,
 // the planner — most calls would otherwise pay a full TLS handshake every time. This does
 // NOT cap concurrency (MaxConnsPerHost = 0 = unlimited); it only pools idle connections.
 //

@@ -1,4 +1,4 @@
-package interview
+package registration
 
 import (
 	"testing"

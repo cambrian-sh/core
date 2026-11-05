@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChunkTriplets",
+  "description": "Triplets per chunk, keyed by the chunk id the request gave. Mirrors tripletsReply in internal/memory/triplet_extractor.go.",
+  "type": "object",
+  "required": ["chunks"],
+  "properties": {
+    "chunks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "triplets"],
+        "properties": {
+          "id": { "type": "integer", "minimum": 1 },
+          "triplets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["subject", "relation", "object"],
+              "properties": {
+                "subject": { "type": "string" },
+                "relation": { "type": "string" },
+                "object": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

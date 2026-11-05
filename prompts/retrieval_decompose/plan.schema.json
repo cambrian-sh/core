@@ -1,0 +1,21 @@
+{
+  "title": "Decomposition",
+  "description": "Ordered sub-questions with {n} placeholders for earlier answers, each with a descriptive ref (planner.decompose).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sub_questions"],
+  "properties": {
+    "sub_questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["q", "ref"],
+        "properties": {
+          "q": { "type": "string" },
+          "ref": { "type": "string" }
+        }
+      }
+    }
+  }
+}

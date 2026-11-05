@@ -2,53 +2,86 @@ package awareness
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/prompts"
 )
 
-// ── ReplanHandler prompt constants ───────────────────────────────────────────
+// ── ReplanHandler prompts ────────────────────────────────────────────────────
+//
+// Library prompts (ADR-0139 C4/D2): prompts/replan and prompts/replan_cap are the
+// stable system blocks of the two arms; prompts/replan_input is the user message,
+// whose tagged regions carry the capability vocabulary (contract arm only), the
+// partial results, the budget marker and, last, the failure. The failed step's
+// query and error are user- and tool-derived, so they are data in <failure>, never
+// rule text. The hash is the pair's static hash, as for the planner.
 
-const replanRole = "You are the Cambrian Replanning Engine. The current plan has partially failed and you must produce a revised plan for the REMAINING work."
+var (
+	replanPrompts    = prompts.MustPair("replan", "replan_input")
+	replanCapPrompts = prompts.MustPair("replan_cap", "replan_input")
 
-const replanStaticRules = `STRICT RULES:
-- Do NOT re-include steps that already succeeded (they are listed above in <Context>).
-- The new plan's step 0 corresponds to the first incomplete step of the original plan.
-- Each step must have "query" (natural language) and "depends_on" (int array).
-- The subject should be "Replan: <original subject>".`
+	replanPromptHash    = replanPrompts.StaticHash()
+	replanPromptHashCap = replanCapPrompts.StaticHash()
+)
 
-// replanStaticText is hashed for the registry. Dynamic fields (failed step,
-// error, partial results, budget/checkpoint blocks) are excluded from the hash.
-const replanStaticText = replanRole + replanStaticRules + PlanOutputSchema
+// replanDataTags are the data regions of replan_input.
+var replanDataTags = []string{"capability_clusters", "partial_results", "failure"}
 
-var replanPromptHash = domain.PromptHashOf(replanStaticText)
+// replanCacheTTL: a replan runs inside DAG execution, daemon-paced and in bursts
+// minutes apart at most, so the short (5 minute) breakpoint lifetime is the right
+// one (ADR-0139 D1); a 1h write would cost more than it saves.
+const replanCacheTTL = domain.CacheTTLShort
+
+// budgetExceededMarker is the replan_input budget value when the plan ran over
+// its cost budget; the system block says what it means.
+const budgetExceededMarker = "<budget_exceeded/>"
 
 func init() {
-	domain.PromptRegistry[replanPromptHash] = domain.PromptEntry{
-		ID:      "planner.replan",
-		Version: "1.0.0",
-		Hash:    replanPromptHash,
-		Schema:  PlanOutputSchema,
-	}
+	registerPairPrompt("planner.replan", replanPrompts)
+	registerPairPrompt("planner.replan.capability_contract", replanCapPrompts)
 }
 
-// ── End ReplanHandler prompt constants ───────────────────────────────────────
+// ── End ReplanHandler prompts ────────────────────────────────────────────────
+
+// CapabilityContractSource reports whether the ROUTE-03 capability_contract arm
+// is on and, if so, the vocabulary block and set to plan against. *Planner
+// implements it; the replan handler uses it so a replan under the contract arm
+// keeps required_capabilities instead of silently dropping them.
+type CapabilityContractSource interface {
+	CapabilityContract(ctx context.Context) (block string, vocab map[string]struct{}, canonical bool, on bool)
+}
 
 // PlannerReplanHandler wraps the Planner to implement substrate.ReplanHandler.
-// It builds a specialised replan prompt with error context and partial results,
-// calls the Planner's Generate method, and parses the response into a new
-// ExecutionPlan for the remaining work.
+// It sends the replan prompt pair with the failure and the partial results as
+// data, through the planner's generator (C1 when it is a RequestGenerator), and
+// decodes the schema-validated reply into a new ExecutionPlan for the remaining
+// work.
 type PlannerReplanHandler struct {
 	planner Generator
+	caps    CapabilityContractSource // nil ⇒ the default (no capability contract) arm
+}
+
+// ReplanOption configures a PlannerReplanHandler.
+type ReplanOption func(*PlannerReplanHandler)
+
+// WithCapabilityContract makes the handler follow the planner's
+// capability_contract arm. src may be nil (no-op).
+func WithCapabilityContract(src CapabilityContractSource) ReplanOption {
+	return func(h *PlannerReplanHandler) { h.caps = src }
 }
 
 // NewPlannerReplanHandler creates a replan handler backed by any Generator.
-func NewPlannerReplanHandler(planner Generator) *PlannerReplanHandler {
-	return &PlannerReplanHandler{planner: planner}
+func NewPlannerReplanHandler(planner Generator, opts ...ReplanOption) *PlannerReplanHandler {
+	h := &PlannerReplanHandler{planner: planner}
+	for _, o := range opts {
+		o(h)
+	}
+	return h
 }
 
 // Replan calls the Planner with error context and partial results to produce
@@ -67,86 +100,77 @@ func (h *PlannerReplanHandler) Replan(
 		failedStepQuery = originalPlan.Steps[failedStep].Query
 	}
 
-	var partialResults strings.Builder
-	stepCount := 0
-	for k, v := range partialContext {
+	// Partial results in key order: the map's iteration order is random, and a
+	// prompt that changes byte order per call is neither reproducible nor cacheable.
+	keys := make([]string, 0, len(partialContext))
+	for k := range partialContext {
 		if strings.HasPrefix(k, "step_") && strings.HasSuffix(k, "_result") {
-			partialResults.WriteString(fmt.Sprintf("- %s: %s\n", k, v))
-			stepCount++
+			keys = append(keys, k)
 		}
 	}
+	sort.Strings(keys)
+	var partialResults strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&partialResults, "- %s: %s\n", k, partialContext[k])
+	}
 
-	modelConstraint := ""
+	budget := ""
 	var budgetErr *domain.BudgetExceededError
 	if errors.As(err, &budgetErr) {
-		modelConstraint = `
-BUDGET CONSTRAINT:
-- The plan exceeded its cost budget. You MUST use ONLY the cheapest available model for ALL remaining steps.
-- Every remaining step should prefer thought steps (is_thought: true) over agent steps where possible, to avoid costly external agent invocations.
-
-`
+		budget = budgetExceededMarker
 	}
 
-	var checkpointErr *domain.SemanticCheckpointError
-	if errors.As(err, &checkpointErr) {
-		checkpointQuery := ""
-		if checkpointErr.StepIndex >= 0 && checkpointErr.StepIndex < len(originalPlan.Steps) {
-			checkpointQuery = originalPlan.Steps[checkpointErr.StepIndex].CheckpointQuery
+	pair := replanPrompts
+	promptVersion := replanPromptHash
+	var capBlock string
+	var capVocab map[string]struct{}
+	var canonical bool
+	if h.caps != nil {
+		var on bool
+		capBlock, capVocab, canonical, on = h.caps.CapabilityContract(ctx)
+		if on {
+			pair = replanCapPrompts
+			promptVersion = replanPromptHashCap
 		}
-		modelConstraint = fmt.Sprintf(
-			`
-CHECKPOINT FAILURE:
-- Step %d completed successfully but its output was assessed as incoherent before
-  downstream steps were dispatched.
-- Checkpoint assessment: %s
-- Original coherence question: "%s"
-- Do NOT simply retry the failed step. Diagnose why the output failed the coherence
-  check and redesign the approach for the remaining work.
-
-`,
-			checkpointErr.StepIndex,
-			checkpointErr.Assessment,
-			checkpointQuery,
-		)
 	}
 
-	// Build the dynamic context string: original request + failure details.
-	avoidConstraint := fmt.Sprintf("- Avoid the tool/agent approach that failed: %s", failedStepQuery)
-	contextContent := fmt.Sprintf(
-		"Original request: %s\n\nFailed step: step %d — %s\nError: %s\n%s\nPartial results so far (%d steps completed):\n%s",
-		originalPlan.Subject, failedStep, failedStepQuery, errMsg, modelConstraint, stepCount, partialResults.String(),
-	)
-
-	prompt := domain.PromptBuild(
-		domain.PromptSystem(replanRole, replanStaticRules, avoidConstraint),
-		domain.PromptContext(contextContent),
-		domain.PromptTask(fmt.Sprintf("Produce a revised ExecutionPlan in JSON for the REMAINING work only. Subject: \"Replan: %s\".", originalPlan.Subject)),
-		domain.PromptOutputSchemaJSON(PlanOutputSchema),
-	)
+	failure := fmt.Sprintf("Original subject: %s\nFailed step: step %d — %s\nError: %s\nSteps completed: %d",
+		originalPlan.Subject, failedStep, failedStepQuery, errMsg, len(keys))
+	req, rerr := planRequest(pair, replanDataTags, map[string]string{
+		"capability_clusters": capBlock, // empty on the default arm
+		"partial_results":     partialResults.String(),
+		"budget":              budget,
+		"failure":             failure,
+	}, replanCacheTTL)
+	if rerr != nil {
+		return nil, rerr
+	}
 
 	slog.Info("🔄 Replanning", "failed_step", failedStep, "error", errMsg)
 
-	responseStr, genErr := h.planner.Generate(ctx, prompt)
+	resp, genErr := domain.GenerateVia(ctx, h.planner, req)
 	if genErr != nil {
-		slog.Error("ReplanHandler: Planner.Generate failed", "error", genErr)
+		slog.Error("ReplanHandler: planner call failed", "error", genErr)
 		return nil, genErr
 	}
 
-	match := domain.ExtractJSONObject(responseStr)
-	if match == "" {
-		slog.Error("ReplanHandler: no JSON object found in Planner response")
-		return nil, fmt.Errorf("replan: no JSON found in response")
+	var reply planReply
+	if derr := decodePlanReply(resp, &reply); derr != nil {
+		slog.Error("ReplanHandler: reply is not a plan", "error", derr)
+		return nil, fmt.Errorf("replan: %w", derr)
 	}
-
-	var plan domain.ExecutionPlan
-	if unmarshalErr := json.Unmarshal([]byte(match), &plan); unmarshalErr != nil {
-		slog.Error("ReplanHandler: failed to parse replan JSON", "error", unmarshalErr)
-		return nil, fmt.Errorf("replan: parse error: %w", unmarshalErr)
+	if reply.Reasoning != "" {
+		slog.Debug("replan reasoning", "reasoning", reply.Reasoning)
 	}
+	plan := reply.ExecutionPlan
 
 	// PROMPTREQ: record the replan prompt hash so PlanEvent.PlannerPromptVersion
 	// reflects the last accepted Generate() call.
-	plan.PlannerPromptVersion = replanPromptHash
+	plan.PlannerPromptVersion = promptVersion
+
+	// Same ROUTE-03 vocabulary guard as the planner: a replanned step must not be
+	// able to hard-fail on a capability tag the model was not shown.
+	dropInventedCapabilities(ctx, &plan, capVocab, canonical)
 
 	slog.Info("✅ Replan produced", "steps", len(plan.Steps), "subject", plan.Subject)
 	return &plan, nil

@@ -132,60 +132,30 @@ func TestCONWIP_Semaphore_LargeScale(t *testing.T) {
 	}
 }
 
-// ─── Health cache fallback tests ─────────────────────────────────────────────
+// ─── Model chain (ADR-0139 D1) ───────────────────────────────────────────────
+//
+// The gateway's own health cache is gone: the Provider's breaker is the only one,
+// and fallback down the chain is the Provider's (tested in internal/infrastructure/llm).
+// What the gateway still owns is the ORDER of the chain it hands over.
 
-func TestHealthCache_PrimaryUnhealthyRoutesToFallback(t *testing.T) {
+func TestStepCandidates_WinnerThenFallbacksThenDefault(t *testing.T) {
 	t.Parallel()
-	gw := newTestGateway(5)
-
-	modelIDs := []string{"primary-model", "fallback-model"}
-
-	selected, err := gw.selectHealthyModel(modelIDs)
-	if err != nil {
-		t.Fatalf("selectHealthyModel returned error: %v", err)
+	sa := domain.StepAllocation{
+		Winner:    domain.AgentDefinition{ID: "llm:primary"},
+		Fallbacks: [2]domain.AgentDefinition{{ID: "llm:second"}, {ID: "llm:primary"}},
 	}
-	if selected != "primary-model" {
-		t.Errorf("healthy primary: got %q, want %q", selected, "primary-model")
+	got := stepCandidates(sa, "llm:default")
+	want := []string{"primary", "second", "default"}
+	if len(got) != len(want) {
+		t.Fatalf("chain = %v, want %v", got, want)
 	}
-
-	gw.MarkUnhealthy("primary-model")
-
-	selected, err = gw.selectHealthyModel(modelIDs)
-	if err != nil {
-		t.Fatalf("selectHealthyModel returned error: %v", err)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("chain = %v, want %v (agent ids stripped, repeats dropped)", got, want)
+		}
 	}
-	if selected != "fallback-model" {
-		t.Errorf("unhealthy primary: got %q, want %q (fallback)", selected, "fallback-model")
-	}
-}
-
-func TestHealthCache_AllCandidatesDegradedReturnsError(t *testing.T) {
-	t.Parallel()
-	gw := newTestGateway(5)
-
-	modelIDs := []string{"m1", "m2"}
-	gw.MarkUnhealthy("m1")
-	gw.MarkUnhealthy("m2")
-
-	_, err := gw.selectHealthyModel(modelIDs)
-	if err == nil {
-		t.Fatal("expected error when all models degraded")
-	}
-}
-
-func TestHealthCache_HealthStateReflectsMarking(t *testing.T) {
-	t.Parallel()
-	gw := newTestGateway(5)
-
-	state := gw.HealthState("new-model")
-	if state != healthHealthy {
-		t.Errorf("unmarked model: state = %v, want healthy", state)
-	}
-
-	gw.MarkUnhealthy("new-model")
-	state = gw.HealthState("new-model")
-	if state != healthUnhealthy {
-		t.Errorf("marked model: state = %v, want unhealthy", state)
+	if got := stepCandidates(domain.StepAllocation{}, ""); len(got) != 0 {
+		t.Fatalf("empty allocation, no default: chain = %v, want empty", got)
 	}
 }
 

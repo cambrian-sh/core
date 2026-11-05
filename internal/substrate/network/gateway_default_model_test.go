@@ -26,7 +26,7 @@ func TestStreamChunks_EmptyAllocation_UsesDefaultModel(t *testing.T) {
 	t.Parallel()
 	gw := newTestGateway(5)
 	def := &fakeStreamer{}
-	gw.RegisterModelClient("llm:deepseek", def)
+	useFakeModel(gw, "llm:deepseek", def)
 	gw.SetDefaultModelID("llm:deepseek")
 
 	gw.AddSession("s1", &domain.BudgetLeaseState{
@@ -37,7 +37,7 @@ func TestStreamChunks_EmptyAllocation_UsesDefaultModel(t *testing.T) {
 	})
 
 	out := make(chan domain.StreamChunk, 8)
-	if err := gw.StreamChunks(context.TODO(), "s1", "hi", domain.GenerateOptions{}, out); err != nil {
+	if err := gw.StreamChunks(context.TODO(), "s1", domain.UserPrompt("hi"), out); err != nil {
 		t.Fatalf("StreamChunks with default fallback: unexpected err: %v", err)
 	}
 	if !def.called {
@@ -58,7 +58,7 @@ func TestStreamChunks_EmptyAllocation_NoDefault_FailsClearly(t *testing.T) {
 	})
 
 	out := make(chan domain.StreamChunk, 8)
-	err := gw.StreamChunks(context.TODO(), "s2", "hi", domain.GenerateOptions{}, out)
+	err := gw.StreamChunks(context.TODO(), "s2", domain.UserPrompt("hi"), out)
 	if err == nil {
 		t.Fatal("expected an error when no model is allocated and no default is configured")
 	}

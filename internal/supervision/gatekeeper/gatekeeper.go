@@ -28,7 +28,10 @@ func softPinned(score float64) float64 {
 }
 
 const (
-	DefaultProvisionalScore    = 0.1
+	// DefaultProvisionalScore (a flat 0.1 for a provisional agent) was RETIRED
+	// 2026-11-05 with the LLM interview (T-20261105-delete-the-llm-agent-interview-now-owner):
+	// a provisional agent — registered, profile not yet seeded — is scored on the
+	// neutral prior like any agent with no evidence, so it is routable from boot.
 	DefaultSimilarityThreshold = 0.2 // ADR-0023: lowered from 0.5 so agent descriptions that are
 	// semantically related (but not identical) to the task still pass the Gatekeeper.
 	// The Dispatcher's merit ranking (over cognitive and tool agents alike) refines the match.
@@ -47,12 +50,12 @@ type batchManifestReader interface {
 	GetManifestBatch(ids []string) (map[string]*domain.AgentManifest, error)
 }
 
-// Gatekeeper is the three-layer interrupt controller (Declaration → Interview → Merit).
+// Gatekeeper is the three-layer interrupt controller (Declaration → Semantic → Merit).
 type Gatekeeper struct {
 	Registry domain.AgentDeclarationSource
 	Profiles GatekeeperProfileReader
 	Embedder domain.Embedder
-	Searcher domain.InterviewSearcher
+	Searcher domain.ProfileSearcher
 	ExecCfg  config.ExecutionConfig
 	// RouteScorer is the ROUTE-07 learned gatekeeper scorer (ADR-0076). When set AND
 	// execution.learned_scorer is on, it replaces the hand-weighted GatekeeperScore with
@@ -79,7 +82,7 @@ func WithEmbedder(e domain.Embedder) GatekeeperOption {
 	return func(g *Gatekeeper) { g.Embedder = e }
 }
 
-func WithSearcher(s domain.InterviewSearcher) GatekeeperOption {
+func WithSearcher(s domain.ProfileSearcher) GatekeeperOption {
 	return func(g *Gatekeeper) { g.Searcher = s }
 }
 
@@ -211,7 +214,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 			"unmatched", resolution.Unmatched, "vocabulary", resolution.Vocabulary)
 	}
 
-	// ROUTE-02 routing trace: record the Declaration→Interview→Merit funnel so a
+	// ROUTE-02 routing trace: record the Declaration→Semantic→Merit funnel so a
 	// mis-routed step is explainable from the persisted auction event alone. The
 	// funnel only captures values the layers already compute; it is nil (zero
 	// cost beyond the flag check) when tracing is off.
@@ -226,6 +229,17 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 	}
 
 	var candidates []domain.ScoredCandidate
+	// Merit-scored candidates whose profile carries no latency yet. Their latency
+	// term is filled AFTER the loop with the slate's mean known term — the neutral
+	// value — instead of the full w3 bonus that `normLatency == 0 → 1.0` used to
+	// hand every agent without data (ADR-0139 D6; see scoreMerit).
+	type latencyPending struct {
+		idx     int
+		agent   domain.AgentDefinition
+		profile *domain.AgentProfile
+	}
+	var pendingLatency []latencyPending
+	var knownLatencyTerms []float64
 	for _, agent := range agents {
 		// Daemon agents are signal producers, not task executors; they never
 		// serve AgentService and cannot bid or execute steps.
@@ -255,15 +269,27 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 			funnel.L1 = append(funnel.L1, domain.DeclarationResult{AgentID: agent.ID, Passed: true})
 		}
 
-		score := DefaultProvisionalScore
-		if !agent.Provisional {
-			// Rank on the SAME tags the gate enforced: that is where the agent's
-			// per-capability history lives (ROUTE-06). An unmatched requirement has
-			// no history anyway and falls back to the global profile.
-			mb := g.computeMeritBreakdown(ctx, agent, gateTask.RequiredCapabilities)
-			score = mb.Score
-			if trace {
-				meritByAgent[agent.ID] = mb
+		// Every agent — provisional or not — is ranked on merit. A provisional agent
+		// (registered, profile not yet seeded) usually has no profile for its source
+		// hash, so ScoreMerit gives it the NEUTRAL prior (SR = Trust = 0.5): the same
+		// footing as a seeded agent with no verified outcomes yet (ADR-0139 D6). It
+		// used to carry a flat DefaultProvisionalScore of 0.1 until an LLM interview
+		// promoted it; the interview was deleted 2026-11-05.
+		//
+		// Rank on the SAME tags the gate enforced: that is where the agent's
+		// per-capability history lives (ROUTE-06). An unmatched requirement has
+		// no history anyway and falls back to the global profile.
+		profile := g.fetchProfile(ctx, agent)
+		mb := ScoreMerit(profile, agent.Trait, gateTask.RequiredCapabilities, g.ExecCfg, g.RouteScorer)
+		score := mb.Score
+		if trace {
+			meritByAgent[agent.ID] = mb
+		}
+		if agent.Trait != domain.TraitModel {
+			if mb.LatencyKnown {
+				knownLatencyTerms = append(knownLatencyTerms, mb.LatencyTerm)
+			} else {
+				pendingLatency = append(pendingLatency, latencyPending{idx: len(candidates), agent: agent, profile: profile})
 			}
 		}
 		// A soft pin is a thumb on the scale, not a verdict: the named agent is
@@ -274,6 +300,24 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 			score = softPinned(score)
 		}
 		candidates = append(candidates, domain.ScoredCandidate{Agent: agent, Score: score})
+	}
+
+	// Missing latency is NEUTRAL (ADR-0139 D6): an agent with no latency data takes
+	// the mean latency term of the slate's agents that have it. When none has data
+	// the term is 0 for everyone — a constant across the slate, so rank-neutral.
+	if len(pendingLatency) > 0 {
+		neutral := meanOf(knownLatencyTerms)
+		for _, p := range pendingLatency {
+			mb := scoreMerit(p.profile, p.agent.Trait, gateTask.RequiredCapabilities, g.ExecCfg, g.RouteScorer, neutral)
+			score := mb.Score
+			if p.agent.ID == pinnedID {
+				score = softPinned(score)
+			}
+			candidates[p.idx].Score = score
+			if trace {
+				meritByAgent[p.agent.ID] = mb
+			}
+		}
 	}
 
 	// ADR-0023 Routing Fix: Layer 2 semantic search now applies to ALL
@@ -294,7 +338,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 			topK := len(candidates) + 10
 			results, searchErr := g.Searcher.SearchByEmbedding(ctx, embedding, DefaultSimilarityThreshold, topK)
 			if searchErr != nil {
-				slog.Warn("Gatekeeper: InterviewSearcher failed, skipping Layer 2", "err", searchErr)
+				slog.Warn("Gatekeeper: ProfileSearcher failed, skipping Layer 2", "err", searchErr)
 			} else {
 				qualifyingAgents := make(map[string]struct{}, len(results))
 				simByAgent := make(map[string]float64, len(results))
@@ -309,10 +353,10 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 				if trace {
 					funnel.L2Threshold = DefaultSimilarityThreshold
 				}
-				// A provisional agent bypasses L2 unconditionally: it has no
-				// interview history to be judged on, so gating it on description
-				// similarity would keep every new agent out of the slate it needs to
-				// enter in order to acquire a history at all.
+				// A provisional agent bypasses L2 unconditionally: its profile vector
+				// has not been seeded yet (the embedder may still be coming up at
+				// boot), so the searcher cannot return it, and gating it would keep a
+				// just-registered agent out of every slate.
 				//
 				// ROUTE-06 / ADR-0069 once bounded this bypass with a per-capability
 				// exploration budget, withdrawn after N provisional wins per window.
@@ -334,14 +378,14 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 					if bypass {
 						filtered = append(filtered, c)
 						if trace {
-							funnel.L2 = append(funnel.L2, domain.InterviewResult{
+							funnel.L2 = append(funnel.L2, domain.SemanticGateResult{
 								AgentID: c.Agent.ID, Survived: true, ProvisionalBypass: true,
 							})
 						}
 					} else if _, ok := qualifyingAgents[c.Agent.ID]; ok {
 						filtered = append(filtered, c)
 						if trace {
-							funnel.L2 = append(funnel.L2, domain.InterviewResult{
+							funnel.L2 = append(funnel.L2, domain.SemanticGateResult{
 								AgentID: c.Agent.ID, Similarity: simByAgent[c.Agent.ID], Survived: true,
 							})
 						}
@@ -351,7 +395,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 							// Below-threshold agents are not returned by the searcher, so
 							// similarity is unknown (recorded as 0) — Survived=false is the
 							// load-bearing signal.
-							funnel.L2 = append(funnel.L2, domain.InterviewResult{
+							funnel.L2 = append(funnel.L2, domain.SemanticGateResult{
 								AgentID: c.Agent.ID, Similarity: simByAgent[c.Agent.ID], Survived: false,
 							})
 						}
@@ -362,7 +406,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 				// with a fuzzy tool (routing diagnosis D3) and kills the step outright.
 				// Measured 2026-07-29 on the live probe: L1 admitted exactly one
 				// capability-eligible agent and L2 eliminated it at similarity 0.0
-				// (its interview vector was missing), producing `no_candidate`.
+				// (its profile vector was missing), producing `no_candidate`.
 				// Keep the eligible set and let merit rank it.
 				// Only when L1 ACTUALLY gated: eligibility must have been established
 				// by the capability contract for L2 to be overridable. With no declared
@@ -399,8 +443,9 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 		for _, c := range candidates {
 			mb, ok := meritByAgent[c.Agent.ID]
 			if !ok {
-				// Provisional agent: no merit breakdown, carries the flat score.
-				mb = MeritBreakdown{Score: c.Score, Provisional: true}
+				// Defensive: every candidate is merit-scored above, so this is only
+				// reached if a future path appends one without a breakdown.
+				mb = MeritBreakdown{Score: c.Score}
 			}
 			funnel.L3 = append(funnel.L3, domain.MeritResult{
 				AgentID:     c.Agent.ID,
@@ -495,8 +540,11 @@ type MeritBreakdown struct {
 	SuccessRate float64
 	TrustScore  float64
 	LatencyTerm float64 // w3 * (1/normLatency) contribution
-	CostTerm    float64 // w4 * normalizedCost contribution (subtracted from Score)
-	Provisional bool
+	// LatencyKnown is false when the profile has no latency yet; LatencyTerm is
+	// then the neutral fill the caller supplied (ADR-0139 D6), not a measurement.
+	LatencyKnown bool
+	CostTerm     float64 // w4 * normalizedCost contribution (subtracted from Score)
+	Provisional  bool
 }
 
 func (g *Gatekeeper) computeMeritScore(ctx context.Context, agent domain.AgentDefinition, requiredCaps []string) float64 {
@@ -509,16 +557,33 @@ func (g *Gatekeeper) computeMeritScore(ctx context.Context, agent domain.AgentDe
 // used instead of the global profile — an agent's PDF-parsing merit no longer inflates
 // its browser-auction score. Empty caps or no tag history ⇒ global (byte-identical).
 func (g *Gatekeeper) computeMeritBreakdown(ctx context.Context, agent domain.AgentDefinition, requiredCaps []string) MeritBreakdown {
-	var profile *domain.AgentProfile
-	if g.Profiles != nil {
-		p, err := g.Profiles.GetProfile(ctx, agent.ID, agent.SourceHash)
-		if err != nil {
-			slog.Warn("Gatekeeper: profile fetch error, using neutral score",
-				"agent_id", agent.ID, "err", err)
-		}
-		profile = p
+	return ScoreMerit(g.fetchProfile(ctx, agent), agent.Trait, requiredCaps, g.ExecCfg, g.RouteScorer)
+}
+
+// fetchProfile reads the profile routing scores on: (agent.ID, agent.SourceHash).
+// A fetch error reads as nil ⇒ neutral priors.
+func (g *Gatekeeper) fetchProfile(ctx context.Context, agent domain.AgentDefinition) *domain.AgentProfile {
+	if g.Profiles == nil {
+		return nil
 	}
-	return ScoreMerit(profile, agent.Trait, requiredCaps, g.ExecCfg, g.RouteScorer)
+	p, err := g.Profiles.GetProfile(ctx, agent.ID, agent.SourceHash)
+	if err != nil {
+		slog.Warn("Gatekeeper: profile fetch error, using neutral score",
+			"agent_id", agent.ID, "err", err)
+	}
+	return p
+}
+
+// meanOf is the arithmetic mean; 0 for an empty slice.
+func meanOf(vs []float64) float64 {
+	if len(vs) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, v := range vs {
+		sum += v
+	}
+	return sum / float64(len(vs))
 }
 
 // ScoreMerit is the PURE merit-scoring core (ADR-0077): given a resolved profile (nil ⇒
@@ -527,7 +592,18 @@ func (g *Gatekeeper) computeMeritBreakdown(ctx context.Context, agent domain.Age
 // the GatekeeperScore + its component terms. Decoupled from profile FETCHING so both the
 // live Gatekeeper path and the PreviewRoute RPC (the gatekeeper benchmark, ADR-0077) score
 // candidates identically — the benchmark supplies synthetic profiles inline, no live fleet.
+//
+// A profile with no latency yet scores a latency term of 0 here (no evidence, no
+// bonus). Within a slate the Gatekeeper replaces that with the slate's mean known
+// term (scoreMerit's neutralLatencyTerm), so missing latency is neutral rather than
+// the full w3 bonus `normLatency == 0 → 1.0` once gave it (ADR-0139 D6).
 func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredCaps []string, cfg config.ExecutionConfig, scorer RouteScorer) MeritBreakdown {
+	return scoreMerit(profile, trait, requiredCaps, cfg, scorer, 0)
+}
+
+// scoreMerit is ScoreMerit with the latency term to use when the profile has no
+// latency data (neutralLatencyTerm, already weighted by w3).
+func scoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredCaps []string, cfg config.ExecutionConfig, scorer RouteScorer, neutralLatencyTerm float64) MeritBreakdown {
 	w1, w2, w3, w4 := cfg.Gatekeeper.GatekeeperW1, cfg.Gatekeeper.GatekeeperW2, cfg.Gatekeeper.GatekeeperW3, cfg.Gatekeeper.GatekeeperW4
 
 	const (
@@ -537,6 +613,7 @@ func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredC
 	successRate, trustScore := neutralSuccessRate, neutralTrustScore
 	var (
 		normLatency        float64
+		latencyKnown       bool
 		profileProvisional bool
 		normalizedCost     float64
 	)
@@ -555,6 +632,7 @@ func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredC
 				}
 			}
 		}
+		latencyKnown = profile.NetworkLatencyMedianMs+profile.ComputationLatencyMedianMs > 0
 		normLatency = float64(profile.NetworkLatencyMedianMs+profile.ComputationLatencyMedianMs) +
 			domain.ContextGrowthPenalty(profile.ContextGrowthBytesMedian, cfg.Plan.ContextGrowthK)
 		profileProvisional = profile.Provisional
@@ -566,11 +644,14 @@ func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredC
 		}
 	}
 
-	if normLatency == 0 {
-		normLatency = 1.0
+	// Missing latency is neutral, not the maximum bonus: this used to set
+	// normLatency = 1.0 (i.e. 1 ms), so an agent with NO latency data earned the
+	// full w3 while every measured agent (hundreds of ms) earned ~0 — a free merit
+	// bonus for having no evidence (T-20261104-merit-math-distorts-routing-interview-grade-is).
+	latencyTerm := neutralLatencyTerm
+	if latencyKnown && normLatency > 0 {
+		latencyTerm = w3 * (1.0 / normLatency)
 	}
-
-	latencyTerm := w3 * (1.0 / normLatency)
 	costTerm := w4 * normalizedCost
 
 	var score float64
@@ -583,8 +664,8 @@ func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredC
 	}
 
 	// ROUTE-07 / ADR-0076: when the learned-scorer arm is on and a model is loaded, the
-	// model's score REPLACES the hand-weighted score (and the cold-start penalty — the
-	// provisional flag is a model feature, so it must not be double-applied). The merit
+	// model's score REPLACES the hand-weighted score (the provisional flag is one of the
+	// model's features; only legacy profile rows still carry it). The merit
 	// terms are still returned for the ROUTE-02 funnel. Byte-identical when the arm is off.
 	if cfg.Routing.LearnedScorer && scorer != nil {
 		provFloat := 0.0
@@ -592,16 +673,14 @@ func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredC
 			provFloat = 1.0
 		}
 		score = scorer.Score([5]float64{successRate, trustScore, latencyTerm, costTerm, provFloat})
-		return MeritBreakdown{Score: score, SuccessRate: successRate, TrustScore: trustScore, LatencyTerm: latencyTerm, CostTerm: costTerm, Provisional: profileProvisional}
+		return MeritBreakdown{Score: score, SuccessRate: successRate, TrustScore: trustScore, LatencyTerm: latencyTerm, LatencyKnown: latencyKnown, CostTerm: costTerm, Provisional: profileProvisional}
 	}
 
-	if profileProvisional {
-		penalty := cfg.Gatekeeper.ColdStartPenaltyMultiplier
-		if penalty == 0 {
-			penalty = 0.6
-		}
-		score *= penalty
-	}
+	// The ×ColdStartPenaltyMultiplier (0.6) penalty on a provisional PROFILE was
+	// RETIRED 2026-11-05 (T-20261105-delete-the-llm-agent-interview-now-owner). Its
+	// only writer was the interview's A2A path, which saved remote agents'
+	// profiles as provisional; an agent without evidence now carries the neutral
+	// prior, not a discount on top of it.
 
-	return MeritBreakdown{Score: score, SuccessRate: successRate, TrustScore: trustScore, LatencyTerm: latencyTerm, CostTerm: costTerm, Provisional: profileProvisional}
+	return MeritBreakdown{Score: score, SuccessRate: successRate, TrustScore: trustScore, LatencyTerm: latencyTerm, LatencyKnown: latencyKnown, CostTerm: costTerm, Provisional: profileProvisional}
 }

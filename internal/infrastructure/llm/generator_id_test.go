@@ -27,25 +27,9 @@ func TestGeneratorID_ReachesEveryClientConstruction(t *testing.T) {
 		{ID: "gem", Provider: "gemini", Model: "gemini", Endpoint: "https://z"},
 	}
 
-	t.Run("streaming clients", func(t *testing.T) {
-		streamers, err := NewStreamersFromGenerators(generators)
-		if err != nil {
-			t.Fatalf("NewStreamersFromGenerators: %v", err)
-		}
-		for _, g := range generators {
-			s, ok := streamers["llm:"+g.ID]
-			if !ok {
-				t.Fatalf("no streaming client for %q", g.ID)
-			}
-			if got := generatorIDOf(s); got != g.ID {
-				t.Errorf("%s streaming client carries id %q, want %q", g.Provider, got, g.ID)
-			}
-		}
-	})
-
 	t.Run("factory", func(t *testing.T) {
 		for _, g := range generators {
-			gen, _, err := NewClient(config.ModelConfig{
+			gen, err := NewClient(config.GeneratorConfig{
 				ID: g.ID, Provider: g.Provider, Model: g.Model, Endpoint: g.Endpoint,
 			})
 			if err != nil {

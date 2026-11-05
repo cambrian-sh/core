@@ -177,7 +177,7 @@ func (d *AgentRepoDecorator) SetAgent(def domain.AgentDefinition) error {
 // SetAgentWithManifest registers an agent AND persists its manifest (ADR-0075) — the
 // persist path an AgentSource uses to carry the manifest EXTRAS (PythonDeps for PLAT-01,
 // MemoryLimitMB for SEC-01, schemas) that plain SetAgent drops. It is **idempotent by
-// SourceHash**: an unchanged agent keeps its existing record (and its post-interview
+// SourceHash**: an unchanged agent keeps its existing record (and its post-seeding
 // Provisional state) — so registering the built-in filesystem agents through a source
 // behaves exactly like the old in-Seed scan, not a blind re-provisioning on every boot.
 // A nil manifest carries an empty manifest record (matching the built-in scan, which

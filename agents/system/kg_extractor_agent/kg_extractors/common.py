@@ -36,14 +36,14 @@ META_KIND_CONCEPT = "concept"  # abstract: topics, methods, ideas, categories, s
 ALL_META_KINDS = (META_KIND_NAMED, META_KIND_LOCATED, META_KIND_VALUED, META_KIND_CONCEPT)
 
 # Cambrian's document-edge vocabulary (ADR-0017) — typed predicates plus the
-# open "extracted" verb phrases from ADR-0053 chunk_triplets.
+# open "extracted" verb phrases from ADR-0053 chunk_triplets. Mirrors
+# domain.EdgeType in cambrian-core/domain/graph.go. "discussed_in", "engaged"
+# and "follows" were removed 2026-11-05 with scenes and the raw step-record
+# path (cambrian-knowledge/decisions/scenes-cancelled.md).
 TYPED_PREDICATES = (
     "closes",
     "specifies",
     "contradicts",
-    "discussed_in",
-    "follows",
-    "engaged",
     "co_activated",
     "extracted",
 )

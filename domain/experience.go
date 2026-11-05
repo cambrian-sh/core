@@ -16,7 +16,7 @@ import (
 // to and the boundary was inexpressible — not hard, inexpressible.
 type Experience struct {
 	// ID is derived from the plan id, so records written mid-plan can reference a
-	// parent that already exists (mirrors ADR-0049 D5's pre-allocated scene id).
+	// parent that already exists.
 	ID        string
 	SessionID string
 	// Surface is the ingress the producing session was opened on (ADR-0090

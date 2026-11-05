@@ -117,9 +117,10 @@ func (m multiCloser) Close() error {
 	return last
 }
 
-// WireInterviewEnqueuer connects the interview worker to storage callbacks.
-// When BBoltAdapter discovers a new A2A agent, it enqueues it for interview.
-func (h *StorageHandle) WireInterviewEnqueuer(enqueuer func(agent domain.AgentDefinition)) {
+// WireProfileSeedEnqueuer connects the registration ProfileSeeder to storage
+// callbacks. When BBoltAdapter registers a new A2A agent, it enqueues it for
+// profile seeding (filesystem agents are seeded by the boot profile backfill).
+func (h *StorageHandle) WireProfileSeedEnqueuer(enqueuer func(agent domain.AgentDefinition)) {
 	if h.raw == nil {
 		return
 	}

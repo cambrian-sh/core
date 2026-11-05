@@ -28,9 +28,9 @@ import (
 // not a chaos test (T-20261031-per-pr-chaos-gate-is-vacuous-the-four-scenarios).
 
 // ============================================================================
-// Scenario 1 — Gatekeeper survives a Layer-2 (pgvector interview index) outage.
+// Scenario 1 — Gatekeeper survives a Layer-2 (pgvector agent-profile index) outage.
 //
-// Guards gatekeeper.go:290-297: the embed error and the InterviewSearcher error
+// Guards gatekeeper.go:290-297: the embed error and the ProfileSearcher error
 // are each "warn and skip Layer 2", so the Declaration (L1) slate is returned
 // instead of an empty slate or an error. The task carries NO
 // RequiredCapabilities on purpose: with L1 enforced the "keep the L1 set" rule
@@ -38,15 +38,14 @@ import (
 // error treated as "zero matches" would empty the slate and fail this test.
 // ============================================================================
 
-func chaosGatekeeper(t *testing.T, emb domain.Embedder, searcher domain.InterviewSearcher) *gatekeeper.Gatekeeper {
+func chaosGatekeeper(t *testing.T, emb domain.Embedder, searcher domain.ProfileSearcher) *gatekeeper.Gatekeeper {
 	t.Helper()
 	return gatekeeper.NewGatekeeper(newChaosRegistry(10), config.ExecutionConfig{
 		Gatekeeper: config.GatekeeperConfig{
-			GatekeeperW1:               0.4,
-			GatekeeperW2:               0.4,
-			GatekeeperW3:               0.2,
-			ColdStartPenaltyMultiplier: 0.6,
-			GatekeeperMaxCandidates:    10,
+			GatekeeperW1:            0.4,
+			GatekeeperW2:            0.4,
+			GatekeeperW3:            0.2,
+			GatekeeperMaxCandidates: 10,
 		},
 	}, gatekeeper.WithEmbedder(emb), gatekeeper.WithSearcher(searcher))
 }
@@ -59,7 +58,7 @@ func TestChaos_GatekeeperFallsBackOnDbTimeout(t *testing.T) {
 	t.Run("searcher returns DeadlineExceeded", func(t *testing.T) {
 		logs := chaos.CaptureLogs(t)
 		emb := chaos.NewFaultyEmbedder(nil, chaos.FaultConfig{AfterSuccesses: 1 << 20})
-		searcher := chaos.NewFaultyInterviewSearcher(nil, chaos.FaultConfig{Error: context.DeadlineExceeded})
+		searcher := chaos.NewFaultyProfileSearcher(nil, chaos.FaultConfig{Error: context.DeadlineExceeded})
 		gk := chaosGatekeeper(t, emb, searcher)
 
 		candidates, err := gk.FindCandidates(context.Background(), task())
@@ -72,7 +71,7 @@ func TestChaos_GatekeeperFallsBackOnDbTimeout(t *testing.T) {
 		if searcher.Calls() != 1 {
 			t.Fatalf("Layer 2 was not attempted (searcher calls=%d); the scenario did not reach gatekeeper.go:295", searcher.Calls())
 		}
-		if logs.Count(slog.LevelWarn, "InterviewSearcher failed") != 1 {
+		if logs.Count(slog.LevelWarn, "ProfileSearcher failed") != 1 {
 			t.Fatal("the Layer-2 skip must be logged at WARN (gatekeeper.go:297), not silent")
 		}
 	})
@@ -81,7 +80,7 @@ func TestChaos_GatekeeperFallsBackOnDbTimeout(t *testing.T) {
 		emb := chaos.NewFaultyEmbedder(nil, chaos.FaultConfig{AfterSuccesses: 1 << 20})
 		// Delay far beyond the deadline: the searcher only returns when ctx expires,
 		// which is what a wedged Postgres connection looks like from the Gatekeeper.
-		searcher := chaos.NewFaultyInterviewSearcher(nil, chaos.FaultConfig{Delay: 30 * time.Second})
+		searcher := chaos.NewFaultyProfileSearcher(nil, chaos.FaultConfig{Delay: 30 * time.Second})
 		gk := chaosGatekeeper(t, emb, searcher)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
@@ -103,7 +102,7 @@ func TestChaos_GatekeeperFallsBackOnDbTimeout(t *testing.T) {
 	t.Run("embedder itself times out", func(t *testing.T) {
 		logs := chaos.CaptureLogs(t)
 		emb := chaos.NewFaultyEmbedder(nil, chaos.FaultConfig{Error: context.DeadlineExceeded})
-		searcher := chaos.NewFaultyInterviewSearcher(nil, chaos.FaultConfig{AfterSuccesses: 1 << 20})
+		searcher := chaos.NewFaultyProfileSearcher(nil, chaos.FaultConfig{AfterSuccesses: 1 << 20})
 		gk := chaosGatekeeper(t, emb, searcher)
 
 		candidates, err := gk.FindCandidates(context.Background(), task())
@@ -138,27 +137,40 @@ func TestChaos_GatekeeperFallsBackOnDbTimeout(t *testing.T) {
 //   - failover.go resolveModel rung 3: `healthy(defaultID)` gate
 //   - circuit_breaker.go Healthy: `Sub(openedAt) >= cooldown` half-open
 //   - provider.go concurrencyGenerator.Generate: `defer func() { <-c.sem }()`
-//   - ollama_client.go:37-38: TimeoutMs bounds a stalled generation
+//   - ollama_client.go / request.go sdkHTTPClient: TimeoutMs bounds a stalled generation
 // ============================================================================
 
-// faultyOllamaServer is an /api/generate endpoint whose outcome per request is
-// decided by fg: an error becomes failStatus (with Retry-After: 0 so the
-// transport's retry ladder, when it applies, does not sleep); a stall is honoured
-// against the request context, so a client timeout releases the handler.
+// faultyOllamaServer is an Ollama endpoint whose outcome per request is decided
+// by fg: an error becomes failStatus (with Retry-After: 0 so the transport's retry
+// ladder, when it applies, does not sleep); a stall is honoured against the request
+// context, so a client timeout releases the handler. Since ADR-0139 D1 the Ollama
+// generator speaks Ollama's OpenAI-compatible /v1/chat/completions, so the fake
+// answers in that shape.
 func faultyOllamaServer(t *testing.T, fg *chaos.FaultyGenerator, failStatus int) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Prompt string `json:"prompt"`
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		out, err := fg.Generate(r.Context(), req.Prompt)
+		var prompt string
+		if n := len(req.Messages); n > 0 {
+			prompt = req.Messages[n-1].Content
+		}
+		out, err := fg.Generate(r.Context(), prompt)
 		if err != nil {
 			w.Header().Set("Retry-After", "0")
 			http.Error(w, `{"error":"`+err.Error()+`"}`, failStatus)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"response": out})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chaos", "object": "chat.completion", "created": 1, "model": "chaos",
+			"choices": []map[string]any{{"index": 0, "finish_reason": "stop",
+				"message": map[string]any{"role": "assistant", "content": out}}},
+		})
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -399,8 +411,8 @@ func (m *memStore) QueryByMetadata(context.Context, map[string]string, int) ([]d
 
 func chaosIngestionManager(t *testing.T, store domain.VectorStore, emb domain.Embedder) *memory.IngestionManager {
 	t.Helper()
-	agent := memory.NewAgent(memory.NewMemoryManager(store, emb), nil, 0.7, 5, 3, 64, 0, 0, 0)
-	return memory.NewIngestionManager(nil, emb, agent, memory.IngestionConfig{}, config.ChunkerConfig{Default: "option_c"})
+	agent := memory.NewAgent(memory.NewMemoryManager(store, emb), 0.7, 5, 3)
+	return memory.NewIngestionManager(emb, agent, memory.IngestionConfig{}, config.ChunkerConfig{Default: "option_c"})
 }
 
 func chaosDocument() domain.ExternalDocument {

@@ -100,6 +100,18 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 		ctx = domain.WithPrincipal(ctx, domain.AgentPrincipal(agentID))
 	}
 	sessionToken := leaseIDOf(req.GetLeaseId(), req.GetSessionTokenId())
+	// ADR-0139 D8: a lease not bound to this agent (another agent's, or an
+	// agent-unbound one) confers nothing — not its skill
+	// grants, not an evaluation lease's approval bypass, not its spend. Refused as a
+	// denial (not an RPC error) so the agent's loop sees it like any other refusal.
+	if s.leaseForeignToCaller(ctx, sessionToken) {
+		return &pb.ExecuteToolResponse{Denied: true, DenyReason: "lease is not valid for this caller"}, nil
+	}
+	// A tool call is plan (and chat-turn) activity for as long as it runs: a page
+	// fetch or a confined process can take minutes without a model call on the
+	// lease, and the idle watchdogs must not read that as silence
+	// (T-20261105-owner-decision-needed-120-s-plan-timeout-ms).
+	defer s.trackLeaseWork(sessionToken)()
 
 	// The operator-facing counterpart, which DOES name the tool.
 	//
@@ -161,7 +173,10 @@ func (s *Server) ListTools(ctx context.Context, _ *pb.ListToolsRequest) (*pb.Lis
 	case len(toolNamesFromMetadata(ctx)) > 0:
 		// ADR-0045 describe_tool: full spec for the named granted tools only
 		// (grant-gated, fail-closed — ungranted names are simply absent).
-		tools = s.ToolExecutor.AvailableToolsNamed(ctx, agentID, toolNamesFromMetadata(ctx))
+		// ADR-0046 D6: tools a system skill conferred under the caller's OWN lease
+		// are describable too, so a skill-granted tool reaches the model with its
+		// real schema. A lease bound to another agent is ignored (no overlay).
+		tools = s.ToolExecutor.AvailableToolsNamedFor(ctx, agentID, s.callerOverlayToken(ctx), toolNamesFromMetadata(ctx))
 	case toolQueryFromMetadata(ctx) != "":
 		tools = s.ToolExecutor.AvailableToolsRanked(ctx, agentID, toolQueryFromMetadata(ctx), toolKFromMetadata(ctx))
 	default:

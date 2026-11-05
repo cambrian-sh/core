@@ -41,7 +41,9 @@ const (
 	// wedged.
 	//
 	// Sized against what it is measuring: the emission points are memory retrieval and
-	// tool execution, and a healthy turn hits one every few seconds. Ninety seconds of
+	// tool execution, and a healthy turn hits one every few seconds. A model call in
+	// flight on the turn's lease also counts as reporting (app.go composes the probe with
+	// LatestActivity), so the window never has to cover one long generation. Ninety seconds of
 	// complete silence is not slow work, it is stopped work — while still leaving ample
 	// room for a single long retrieval or a slow tool.
 	DefaultStallTimeout = 90 * time.Second
@@ -90,6 +92,10 @@ type TurnService struct {
 	// delegates to the planner can be attributed back to the conversation server-side
 	// (ADR-0084 D2). Optional; without it a delegated run simply carries no conversation.
 	leases domain.LeaseResolver
+	// leaseAgentID is the agent every pool worker runs; it is bound onto the turn's
+	// lease so that only that agent can present it (ADR-0139 D8). Empty ⇒ the lease
+	// stays agent-unbound, as before.
+	leaseAgentID string
 	// progress receives supersedable "what is happening now" snapshots for the turn
 	// (ADR-0098). nil ⇒ nothing is listening, which is the OSS default: the kernel
 	// emits unconditionally and a premium bridge decides what becomes of it.
@@ -114,12 +120,36 @@ type TurnService struct {
 // TurnTimeout.
 func (s *TurnService) SetLivenessProbe(f func(conversationID string) time.Time) { s.liveness = f }
 
+// LatestActivity combines liveness sources into one probe: a conversation was last
+// active at the LATEST time any source reports. The composition root uses it to
+// join progress emissions with in-flight model work (the LLM gateway reports "now"
+// while a call is outstanding on the turn's lease), because a long unary generation
+// emits no progress until it returns, and the progress signal alone read a healthy
+// 60-90 s generation as a stall (T-20261105-slow-model-reliability-hardcoded-20-s).
+// Nil sources are skipped.
+func LatestActivity(sources ...func(conversationID string) time.Time) func(conversationID string) time.Time {
+	return func(conversationID string) time.Time {
+		var last time.Time
+		for _, src := range sources {
+			if src == nil {
+				continue
+			}
+			if t := src(conversationID); t.After(last) {
+				last = t
+			}
+		}
+		return last
+	}
+}
+
 // watchStall cancels the turn when it stops reporting progress.
 //
 // It deliberately measures SILENCE rather than elapsed time: a turn legitimately running
 // for three minutes while retrieving and calling tools keeps reporting, and must not be
 // killed. One that has emitted nothing for the stall window has stopped, whatever the
-// clock says.
+// clock says. "Reporting" is whatever the liveness probe counts — in production both
+// progress emissions and a model call in flight on the turn's lease (LatestActivity), so
+// a turn waiting on one long generation is working, not silent.
 func (s *TurnService) watchStall(ctx context.Context, conversationID string, cancel context.CancelFunc, stalled *atomic.Bool) {
 	if s.liveness == nil || s.StallTimeout <= 0 {
 		return
@@ -167,8 +197,13 @@ func (s *TurnService) emitProgress(ctx context.Context, conversationID string, p
 }
 
 // NewTurnService wires the service. store and pool are required.
-// SetLeaseBinder wires the lease registry so each turn's lease carries its conversation.
-func (s *TurnService) SetLeaseBinder(r domain.LeaseResolver) { s.leases = r }
+// SetLeaseBinder wires the lease registry so each turn's lease carries its conversation,
+// and binds the lease to agentID — the agent the pool's workers run — so a turn lease
+// presented by any other agent is refused (ADR-0139 D8). agentID may be empty.
+func (s *TurnService) SetLeaseBinder(r domain.LeaseResolver, agentID string) {
+	s.leases = r
+	s.leaseAgentID = agentID
+}
 
 // SetDeliverer wires the outbound path (ADR-0090 D8). nil leaves conversations
 // store-only, which is correct for a console-only deployment: the console reads
@@ -340,6 +375,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 				s.leases.BindLease(domain.LeaseID(tok), domain.LeaseBinding{
 					ConversationID:  conv.ID,
 					OriginMessageID: userMsg.ID,
+					AgentID:         s.leaseAgentID,
 				})
 			}
 		}

@@ -22,13 +22,13 @@ type A2ACardFetcher interface {
 	FetchCard(ctx context.Context, endpoint string) (*A2ACard, error)
 }
 
-// Enqueuer enqueues an agent for asynchronous Interview processing.
+// Enqueuer enqueues an agent for asynchronous profile seeding (registration.ProfileSeeder).
 type Enqueuer interface {
 	Enqueue(agent domain.AgentDefinition)
 }
 
 // RegisterA2AAgent fetches the Agent Card from endpoint, builds an AgentDefinition
-// with Runtime=RuntimeA2A, persists it to bbolt, and enqueues it in InterviewWorker.
+// with Runtime=RuntimeA2A, persists it to bbolt, and enqueues it for profile seeding.
 // Idempotent: if the SourceHash is unchanged the call is a no-op.
 func (b *BBoltAdapter) RegisterA2AAgent(ctx context.Context, endpoint string) error {
 	card, err := b.CardFetcher.FetchCard(ctx, endpoint)
@@ -97,7 +97,7 @@ func (b *BBoltAdapter) RegisterA2AAgent(ctx context.Context, endpoint string) er
 		return fmt.Errorf("a2a: persist agent %s: %w", agentID, err)
 	}
 
-	// Enqueue for Interview processing.
+	// Enqueue for profile seeding (card ingestion + neutral prior; no interview).
 	b.Enqueuer.Enqueue(agent)
 	return nil
 }

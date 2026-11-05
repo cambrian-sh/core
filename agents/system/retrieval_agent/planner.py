@@ -4,45 +4,216 @@ This module is the "thin stateless Python endpoint" from AGENTIC_RETRIEVAL_SPEC
 §2.1: pure functions that take the loop state + an injected LLM callable and
 return a decision. Go owns the loop + retrieval tiers and calls these per step.
 
-Phase 2a scope: the **lexical query-planner** (`plan_step`) — the headline
-"agent > fixed weights" lever (spec §2.2). Given the user's question, the
-planner selects the MOST DISCRIMINATIVE lexical terms and phrases; the Go side
-compiles the resulting :class:`QuerySpec` into a search string that BM25 /
-``searchByType`` executes deterministically. `decide_continue` and `synthesize`
-land in later phases; minimal forms are stubbed here so the op-router in
-``agent.py`` has a stable surface.
+Ops: the lexical query planner (``plan_step``), interleaved reasoning
+(``reason_step``), the stop/continue decision (``decide_continue``), typed
+synthesis (``synthesize`` / ``synthesize_cited``), up-front decomposition
+(``decompose`` / ``decompose_routed``), grounded sub-question extraction
+(``answer_subquestion``) and ingest-time provenance (``extract_provenance``).
 
-The LLM is injected as ``LLM = Callable[[str], str]`` (temp=0 expected) so this
-is unit-testable with a fake and backend-agnostic (CognitiveAgent.think, a
-model agent, or a direct provider — resolved in ``agent.py``).
+Prompts (ADR-0139 C4/D2). Every prompt is a file in the kernel's prompt library,
+``cambrian-core/prompts/retrieval_<op>/v<N>.md``, rendered with the SDK's
+``prompt_library`` (the same rules and static hash as the Go loader). Each call
+is a stable, slot-free system block the provider caches (with the reply's JSON
+schema) plus a volatile user message in which the untrusted text (retrieved
+documents, the question, the item text) sits in named tags, documents first and
+the question last.
+
+The LLM is injected as ``LLM = Callable[[LLMRequest], Reply | str]`` (temp=0
+expected) so this module is unit-testable with a fake and backend-agnostic. The
+agent (``agent.py``) binds it to ``SubstrateClient.generate_request``; a fake may
+return a plain string, which is read like a reply whose schema was not checked.
+
+Structured outputs: a reply the kernel validated against the response schema is
+decoded with ``json.loads`` as is. Only a reply whose schema was NOT checked (the
+kernel reported ``response_schema`` as ignored, or predates the structured
+fields) goes through the tolerant decode, which finds the first JSON value in
+prose or a code fence. The old first-``{``/last-``}`` scraper is gone.
 """
 from __future__ import annotations
 
+import datetime as _dt
+import hashlib
 import json
+import os
 import re
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
-LLM = Callable[[str], str]
+from cambrian_agent_sdk.prompt_library import PromptLibrary
 
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+# --------------------------------------------------------------------------
+# The LLM seam: a structured request in, a reply out
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LLMRequest:
+    """One model call in the ADR-0139 C1 shape.
+
+    ``system`` is ``[{"text", "cache"}]`` (stable, last block cached),
+    ``messages`` the volatile user turn, ``response_schema`` the
+    ``{"name", "schema", "strict"}`` dict ``generate_request`` takes (or None),
+    ``prompt_version`` the static hash of every prompt file the call sent.
+    """
+
+    op: str
+    system: list[dict]
+    messages: list[dict]
+    response_schema: dict | None
+    prompt_version: str
+
+    def flatten(self) -> str:
+        """The request as one prompt string, for a backend with no system field."""
+        parts = [b["text"].strip() for b in self.system if b.get("text", "").strip()]
+        parts += [m["content"].strip() for m in self.messages if m.get("content", "").strip()]
+        return "\n\n".join(parts)
+
+    @property
+    def user(self) -> str:
+        return "\n\n".join(m["content"] for m in self.messages)
+
+
+@dataclass(frozen=True)
+class Reply:
+    """A model reply. ``schema_checked`` is true only when the kernel validated
+    the text against the request's response schema (so it is JSON as is)."""
+
+    text: str
+    schema_checked: bool = False
+
+
+LLM = Callable[[LLMRequest], "Reply | str"]
+
+
+def _call(llm: LLM, req: LLMRequest) -> Reply:
+    r = llm(req)
+    if isinstance(r, Reply):
+        return r
+    return Reply(text="" if r is None else str(r), schema_checked=False)
+
+
+# --------------------------------------------------------------------------
+# The prompt library (cambrian-core/prompts)
+# --------------------------------------------------------------------------
+
+
+def _prompts_root() -> Path:
+    """The kernel prompt tree: ``$CAMBRIAN_PROMPTS_DIR``, else the nearest
+    ancestor ``prompts/`` holding this agent's prompts: the repo, the image
+    (/app/prompts) and a ``setup`` install (<prefix>/prompts, unpacked from the
+    kernel embed) all put prompts/ beside agents/."""
+    env = os.environ.get("CAMBRIAN_PROMPTS_DIR", "").strip()
+    if env:
+        return Path(env)
+    for parent in Path(__file__).resolve().parents:
+        cand = parent / "prompts"
+        if (cand / "retrieval_synthesize" / "v1.md").is_file():
+            return cand
+    raise RuntimeError(
+        "retrieval_agent: cannot find the kernel prompt library (a prompts/ directory "
+        "above this file); set CAMBRIAN_PROMPTS_DIR")
+
+
+# Loaded once, at import: a missing or invalid prompt file fails the agent at
+# start, not on the first query.
+LIBRARY = PromptLibrary.load(_prompts_root())
+
+_CLOSING_TAGS = ("documents", "question", "resolved_entities", "current_entity",
+                 "reasoning_so_far", "sub_question", "reference_date", "hint", "text")
+
+
+def neutralise_closing_tags(value: str, tags: tuple[str, ...] = _CLOSING_TAGS) -> str:
+    """Rewrite ``</tag>`` (any case, inner spaces) to ``[/tag]`` so untrusted
+    text cannot close its data region (SPEC.md §3.1; the Go twin is
+    ``prompts.NeutraliseClosingTags``)."""
+    for t in tags:
+        value = re.sub(r"(?i)</\s*" + re.escape(t) + r"\s*>", f"[/{t}]", value)
+    return value
+
+
+def _schema(prompt) -> dict | None:
+    if prompt.response_schema is None:
+        return None
+    return {"name": prompt.id, "schema": prompt.response_schema.decode("utf-8"), "strict": False}
+
+
+def _version(*prompts) -> str:
+    """sha256 over the static hashes of every file sent, in order (the Go
+    ``Pair.StaticHash`` rule, generalised to the synthesis triple)."""
+    return hashlib.sha256("\n".join(p.static_hash for p in prompts).encode("utf-8")).hexdigest()
+
+
+def build_request(op: str, system_ids: tuple[str, ...], input_id: str,
+                  values: dict[str, str]) -> LLMRequest:
+    """Render one call: slot-free system blocks (last one cached and owning the
+    schema) and the input prompt as the single user message."""
+    systems = [LIBRARY.get(i) for i in system_ids]
+    for p in systems:
+        if p.inputs:
+            raise ValueError(f"{p.id}: a system block must be slot-free")
+    inp = LIBRARY.get(input_id)
+    user = inp.render({k: neutralise_closing_tags(str(v)) for k, v in values.items()}).text
+    blocks = [{"text": p.body, "cache": i == len(systems) - 1} for i, p in enumerate(systems)]
+    return LLMRequest(op=op, system=blocks, messages=[{"role": "user", "content": user}],
+                      response_schema=_schema(systems[-1]),
+                      prompt_version=_version(*systems, inp))
+
+
+# --------------------------------------------------------------------------
+# Decoding
+# --------------------------------------------------------------------------
+
+_FENCE_RE = re.compile(r"^```[A-Za-z0-9_-]*\s*\n?(.*?)\n?```$", re.DOTALL)
+
+
+def _strip_fence(text: str) -> str:
+    t = text.strip()
+    m = _FENCE_RE.match(t)
+    return m.group(1).strip() if m else t
+
+
+def _tolerant(text: str, want: type) -> Any:
+    """First JSON value of type ``want`` in prose or a code fence. Used ONLY for a
+    reply whose schema the kernel did not check (legacy kernel, ignored schema,
+    a test fake, the env-gated local decompose backend)."""
+    t = _strip_fence(text)
+    try:
+        v = json.loads(t)
+        if isinstance(v, want):
+            return v
+    except ValueError:
+        pass
+    dec = json.JSONDecoder()
+    opener = "{" if want is dict else "["
+    i = t.find(opener)
+    while i != -1:
+        try:
+            v, _ = dec.raw_decode(t, i)
+            if isinstance(v, want):
+                return v
+        except ValueError:
+            pass
+        i = t.find(opener, i + 1)
+    return None
+
+
+def decode(reply: Reply, want: type = dict) -> Any:
+    """The reply as a ``want`` (dict or list), or None when it is not one."""
+    if reply.schema_checked:
+        try:
+            v = json.loads(_strip_fence(reply.text))
+        except ValueError:
+            return None
+        return v if isinstance(v, want) else None
+    return _tolerant(reply.text, want)
 
 
 def extract_json(text: str) -> dict | None:
-    """Best-effort: pull the first JSON object out of an LLM completion."""
-    candidates: list[str] = [m.group(1) for m in _FENCE_RE.finditer(text)]
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        candidates.append(text[start : end + 1])
-    for c in candidates:
-        try:
-            obj = json.loads(c)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict):
-            return obj
-    return None
+    """Tolerant decode of a plain completion (kept for callers and tests)."""
+    return _tolerant(text, dict)
 
 
 def _strlist(v: object) -> list[str]:
@@ -57,13 +228,13 @@ def _strlist(v: object) -> list[str]:
 
 
 def build_context(chunks: object, max_chars: int) -> str:
-    """Join retrieved chunk texts into a context block for the LLM.
+    """Join retrieved chunk texts into the documents region.
 
-    Dedups by CONTENT first (the union-ingest of shared corpora — e.g. MuSiQue —
-    surfaces the same paragraph under several ids, which interleaveDedup, keyed on
-    doc id, does not collapse; without this the duplicates eat the char budget and
-    push the real answer past the clip). Then truncates to ``max_chars`` — kept
-    generous so a long answer paragraph is not cut off mid-sentence.
+    Dedups by CONTENT first (a union-ingest of shared corpora surfaces the same
+    paragraph under several ids, which interleaveDedup, keyed on doc id, does not
+    collapse; without this the duplicates eat the char budget and push the real
+    answer past the clip). Then truncates to ``max_chars``, kept generous so a
+    long answer paragraph is not cut off mid-sentence.
     """
     items = chunks if isinstance(chunks, list) else []
     seen: set[str] = set()
@@ -75,6 +246,23 @@ def build_context(chunks: object, max_chars: int) -> str:
         seen.add(t)
         uniq.append(t)
     return "\n---\n".join(uniq)[:max_chars]
+
+
+def build_labeled_context(chunks: object, max_chars: int) -> str:
+    """Number retrieved chunks [1], [2], ... in the ORDER GIVEN, for citation.
+
+    Unlike ``build_context`` this does NOT content-dedup: the caller (AnswerSystem,
+    ADR-0081) resolves citation marker n against evidence[n-1] on the kernel side,
+    so the label→chunk mapping here must stay 1:1 with the order it was handed.
+    """
+    items = chunks if isinstance(chunks, list) else []
+    parts: list[str] = []
+    for i, c in enumerate(items, start=1):
+        t = str(c).strip()
+        if not t:
+            continue
+        parts.append(f"[{i}] {t}")
+    return "\n---\n".join(parts)[:max_chars]
 
 
 # --------------------------------------------------------------------------
@@ -125,73 +313,20 @@ class QuerySpec:
 # plan_step — the lexical query-planner
 # --------------------------------------------------------------------------
 
-PLAN_STEP_PROMPT = """\
-You are planning the FIRST retrieval step of a MULTI-HOP question. Such questions
-describe their answer INDIRECTLY through nested intermediate entities — e.g.
-"What league does the team that plays in Stadium X play for?" — where you must
-FIRST find the inner entity (the team, anchored by "plays in Stadium X"); the
-outer attribute (the league) is a LATER hop.
 
-Identify the INNERMOST entity that can be looked up directly — the one anchored by
-a concrete identifier (a proper noun, name, title, place, date). Build a query to
-find THAT entity ONLY: use its distinctive identifying tokens, and DROP the outer
-attributes/relations that depend on it (the final answer's property) plus all filler.
-
-Example (invented; not a benchmark question):
-  "What league does the team that plays in Halverson Park Stadium play for?"
-  -> innermost entity = the team, anchored by "Halverson Park Stadium"
-  -> {{"phrases": ["Halverson Park Stadium"], "must_terms": ["team"], "should_terms": []}}
-     (DROP "league" / "play for" — that resolves on the NEXT hop.)
-
-Return ONLY JSON, no prose:
-{{
-  "must_terms": ["<discriminative token>", ...],   // tight (1-4)
-  "should_terms": ["<supporting token>", ...],      // optional
-  "phrases": ["<exact distinctive anchor phrase>", ...]
-}}
-
-Question: {query}"""
-
-# Hop >= 2: the loop carries the resolved-entity history + hop index so the planner
-# can work out WHICH LINK of the chain this is and pick the relation for THAT link —
-# not the question's final attribute (the bug that stalled 3-4 hop: applying
-# "president" to an intermediate country instead of seeking the next country).
-PLAN_STEP_HOP_PROMPT = """\
-You are on hop {hop} of a multi-hop retrieval loop, resolving the QUESTION one link
-at a time. A multi-hop question is a CHAIN of relations; you resolve them in order.
-
-QUESTION:
-  {query}
-ENTITIES ALREADY RESOLVED (earlier links — do NOT look these up again):
-{resolved}
-The entity you just reached, to build on NOW, is:
-  {focus}
-
-Work out which link comes NEXT. Find the relation of "{focus}" that leads to the
-NEXT entity in the chain — or, ONLY if every earlier link is resolved and this is
-the FINAL link, the question's answer attribute. It is usually NOT the question's
-final attribute yet. Example: for "the president of the OTHER country in the
-Commission with [X]", once "{focus}" is X (a country), the next link is the OTHER
-Commission country — NOT X's president.
-
-Give TWO things:
-- must_terms: the specific attribute/relation NOUN for THIS link — e.g. "commission
-  partner", "other country", "capital", "league" — the one that ADVANCES the chain.
-  Never the question's generic main verb ("participated", "is") or filler.
-- should_terms: the question's ULTIMATE answer attribute — the single thing the WHOLE
-  question ultimately asks for (e.g. "president", "birthplace", "abbreviation").
-  ALWAYS include it: if "{focus}" turns out to BE the answer entity, this is what
-  makes its answer paragraph rank. (When THIS link already is the final one,
-  must_terms and should_terms may be the same word — that is fine.)
-
-1-2 terms each; no other named entities from the question.
-
-Return ONLY JSON:
-{{
-  "phrases": ["{focus}"],
-  "must_terms": ["<relation that advances THIS link>"],
-  "should_terms": ["<the question's ultimate answer attribute>"]
-}}"""
+def plan_step_request(query: str, scratchpad: str = "", history: list[str] | None = None,
+                      hop_index: int = 0) -> LLMRequest:
+    focus = scratchpad.strip()
+    if not focus:
+        return build_request("plan_step", ("retrieval_plan_first",), "retrieval_plan_first_input",
+                             {"question": query})
+    # history's last entry is `focus` itself (the loop records the bridge then
+    # plans the next hop); show only the EARLIER links as "already resolved".
+    hist = [str(h).strip() for h in (history or []) if str(h).strip() and str(h).strip() != focus]
+    resolved = "\n".join(f"- {h}" for h in hist) or "(none yet)"
+    return build_request("plan_step", ("retrieval_plan_hop",), "retrieval_plan_hop_input",
+                         {"question": query, "resolved": resolved, "focus": focus,
+                          "hop": str(hop_index)})
 
 
 def plan_step(query: str, llm: LLM, scratchpad: str = "",
@@ -199,27 +334,15 @@ def plan_step(query: str, llm: LLM, scratchpad: str = "",
     """Select discriminative lexical terms for this hop's search.
 
     Hop 1 (empty scratchpad) plans from the raw question. Later hops plan FOR the
-    bridge entity in ``scratchpad``, now HOP-AWARE: ``history`` (entities resolved
-    in earlier links) + ``hop_index`` let the planner work out which link of the
-    chain this is and pick the relation for THAT link — instead of reusing the
-    question's final attribute (the bug that stalled 3-4 hop). Robust to bad/empty
-    LLM output: on parse failure the QuerySpec carries no terms, so
-    :meth:`QuerySpec.to_lexical_query` falls back to the bridge (later hops) or the
-    raw query (hop 1) — the loop never emits an empty search.
+    bridge entity in ``scratchpad``, HOP-AWARE: ``history`` (entities resolved in
+    earlier links) + ``hop_index`` let the planner work out which link of the
+    chain this is and pick the relation for THAT link. Robust to bad/empty LLM
+    output: on parse failure the QuerySpec carries no terms, so
+    :meth:`QuerySpec.to_lexical_query` falls back to the bridge (later hops) or
+    the raw query (hop 1) — the loop never emits an empty search.
     """
     focus = scratchpad.strip()
-    if focus:
-        # history's last entry is `focus` itself (the loop records the bridge then
-        # plans the next hop); show only the EARLIER links as "already resolved".
-        hist = [str(h).strip() for h in (history or []) if str(h).strip() and str(h).strip() != focus]
-        resolved = "\n".join(f"- {h}" for h in hist) or "(none yet)"
-        prompt = PLAN_STEP_HOP_PROMPT.format(
-            query=query, focus=focus, resolved=resolved, hop=hop_index,
-        )
-    else:
-        prompt = PLAN_STEP_PROMPT.format(query=query)
-    raw = llm(prompt)
-    obj = extract_json(raw) or {}
+    obj = decode(_call(llm, plan_step_request(query, scratchpad, history, hop_index))) or {}
     return QuerySpec(
         nl_intent=focus or query,  # later-hop fallback = the bridge, not the raw question
         must_terms=_strlist(obj.get("must_terms")),
@@ -229,93 +352,39 @@ def plan_step(query: str, llm: LLM, scratchpad: str = "",
 
 
 # --------------------------------------------------------------------------
-# reason_step — IRCoT: generate the next chain-of-thought step, retrieve on it
+# reason_step — interleaved retrieval + reasoning
 # --------------------------------------------------------------------------
 
-IRCOT_PROMPT = """\
-You are answering a MULTI-HOP question by REASONING one step at a time, retrieving
-evidence as you go. Given the QUESTION, the reasoning SO FAR, and the CONTEXT
-retrieved, write the NEXT single reasoning sentence that makes concrete progress.
-
-Rules:
-- Prefer facts from the CONTEXT. You MAY also use well-known knowledge to NAME an
-  intermediate entity the question implies but the context hasn't surfaced yet —
-  e.g. "The team with the most World Series titles is the New York Yankees."
-- If you can now state the FINAL answer, write it starting with "So the answer is"
-  and set done=true.
-- Otherwise set done=false and give a SHORT search query (a name + the one attribute
-  you need next) to retrieve the next fact.
-
-Return ONLY JSON:
-{{"thought": "<one reasoning sentence>", "done": <true|false>, "search_query": "<what to retrieve next; empty if done>"}}
-
-QUESTION: {query}
-
-REASONING SO FAR:
-{cot}
-
-CONTEXT:
-{context}"""
+_DECIDE_CONTEXT_MAXCHARS = 12000
 
 
 def reason_step(state: dict, llm: LLM) -> dict:
-    """IRCoT step: emit the next CoT sentence (which may NAME an intermediate entity
-    from reasoning, not just extract it from text), decide done, and give the next
-    search query. Fail-safe: parse failure ⇒ done (stop), so the loop degrades to
-    the chunks already accumulated."""
+    """Emit the next GROUNDED reasoning sentence, decide done, and give the next
+    search query. Grounded only: the prompt no longer licenses naming an
+    intermediate entity from the model's own knowledge. Fail-safe: parse failure
+    ⇒ done (stop), so the loop degrades to the chunks already accumulated."""
     query = str(state.get("query", ""))
     cot = state.get("cot") if isinstance(state.get("cot"), list) else []
     cot_str = "\n".join(f"- {t}" for t in cot if str(t).strip()) or "(nothing yet)"
-    context = build_context(state.get("chunks"), _DECIDE_CONTEXT_MAXCHARS)
-    raw = llm(IRCOT_PROMPT.format(query=query, cot=cot_str, context=context))
-    obj = extract_json(raw) or {}
+    context = build_context(state.get("chunks"), _DECIDE_CONTEXT_MAXCHARS) or "(nothing retrieved)"
+    req = build_request("reason_step", ("retrieval_reason_step",), "retrieval_reason_step_input",
+                        {"documents": context, "reasoning": cot_str, "question": query})
+    obj = decode(_call(llm, req))
+    if obj is None:
+        return {"thought": "", "done": True, "search_query": ""}
     thought = str(obj.get("thought", "")).strip()
     search_query = str(obj.get("search_query", "")).strip()
-    done = bool(obj.get("done")) or thought.lower().startswith("so the answer is")
-    if done:
-        search_query = ""
+    # `done` is a boolean under the schema; an unchecked reply may spell it "true".
+    done = obj.get("done") in (True, "true") or thought.lower().startswith("so the answer is")
+    # The kernel stops on an empty next query too (query.go ircot loop); say so.
+    if done or not search_query:
+        done, search_query = True, ""
     return {"thought": thought, "done": done, "search_query": search_query}
 
 
 # --------------------------------------------------------------------------
 # decide_continue — the loop's stop/iterate decision (spec §2.2)
 # --------------------------------------------------------------------------
-
-DECIDE_CONTINUE_PROMPT = """\
-You are resolving a MULTI-HOP question step by step (like a ReAct loop). Multi-hop
-questions name their answer INDIRECTLY through intermediate entities that must be
-resolved IN ORDER — e.g. "the league of the team that plays in Stadium X" means:
-first find the TEAM, then look up that team's LEAGUE.
-
-ENTITIES ALREADY RESOLVED in earlier steps (do NOT look these up again):
-{history}
-
-Given the QUESTION and the CONTEXT gathered so far, output ONLY JSON:
-
-1. If the CONTEXT explicitly STATES the FINAL answer to the whole QUESTION:
-     {{"decision": "stop_answer"}}
-2. Otherwise you are NOT done yet — CONTINUE. Using the question and what you have
-   resolved so far, find the NEXT intermediate entity to look up. Give its EXACT
-   name as revealed in the CONTEXT (no title, no description), and return:
-     {{"decision": "continue", "bridge": "<exact entity name>"}}
-
-BIAS STRONGLY TOWARD CONTINUE. Stop ONLY when a sentence in the CONTEXT literally
-states the final answer to the WHOLE question. A CONTEXT that names an intermediate
-entity (a team, a person, a place, a work, a system) but not the final answer means
-you are NOT done — you MUST continue on that entity. Do not stop because the context
-is long or noisy.
-
-The bridge MUST be a CONCRETE NAMED entity (a proper noun) that appears in the
-CONTEXT and is NOT already in the resolved list above. Never repeat a resolved
-entity. If several new named entities appear, pick the one the QUESTION's next
-unresolved step points to (the entity you now need in order to take the next hop).
-
-QUESTION: {query}
-
-CONTEXT:
-{context}"""
-
-_DECIDE_CONTEXT_MAXCHARS = 12000
 
 _WORD_RE = re.compile(r"[0-9a-z]+")
 
@@ -343,7 +412,7 @@ def _bridge_reject_reason(bridge: str, query: str, context: str) -> str:
     stop_answer) when it fails to advance the loop:
       - ``empty``: no bridge proposed;
       - ``echo_question``: every word already appears in the QUESTION, so the
-        model just restated a question entity (the ``Timor Leste`` spin);
+        model just restated a question entity;
       - ``ungrounded``: some bridge word appears nowhere in the retrieved CONTEXT.
     """
     b = _word_set(bridge)
@@ -362,7 +431,7 @@ def _valid_bridge(bridge: str, query: str, context: str) -> bool:
 
 def decide_continue(state: dict, llm: LLM) -> dict:
     """Decide whether to stop (answer is retrievable) or continue (look up a
-    bridge entity next). ``state = {query, chunks: [text, ...]}``.
+    bridge entity next). ``state = {query, chunks: [text, ...], history}``.
 
     Fail-safe: any parse failure, a missing/empty bridge, or a bridge that
     merely echoes the question / isn't grounded in the context ⇒ ``stop_answer``
@@ -371,10 +440,13 @@ def decide_continue(state: dict, llm: LLM) -> dict:
     """
     query = str(state.get("query", ""))
     history = state.get("history") if isinstance(state.get("history"), list) else []
-    hist_str = "\n".join(f"- {h}" for h in history if str(h).strip()) or "(none yet — this is the first step)"
+    hist_str = "\n".join(f"- {h}" for h in history if str(h).strip()) or "(none yet; this is the first step)"
     context = build_context(state.get("chunks"), _DECIDE_CONTEXT_MAXCHARS)
-    raw = llm(DECIDE_CONTINUE_PROMPT.format(query=query, history=hist_str, context=context))
-    obj = extract_json(raw) or {}
+    req = build_request("decide_continue", ("retrieval_decide_continue",),
+                        "retrieval_decide_continue_input",
+                        {"documents": context or "(nothing retrieved)", "resolved": hist_str,
+                         "question": query})
+    obj = decode(_call(llm, req)) or {}
     raw_decision = str(obj.get("decision", "")).strip() or "(none)"
     raw_bridge = str(obj.get("bridge", "")).strip()
     # Diagnostic fields (raw_*/reject_reason) let the kernel log distinguish
@@ -398,310 +470,78 @@ def decide_continue(state: dict, llm: LLM) -> dict:
 # synthesize — the final typed three-way output (spec §2.5)
 # --------------------------------------------------------------------------
 
-SYNTHESIZE_PROMPT = """\
-Given the QUESTION and the CONTEXT retrieved from memory, produce a TYPED answer.
-Decide among three cases, in this order:
-
-1. ANSWER — the CONTEXT contains the answer to the QUESTION. The "text" is the
-   answer, grounded in the context: lead with the direct answer (the name, value,
-   or yes/no), as concisely as the question allows — a short factual question wants
-   a short span; a "how do I / what should I do" question may need the key step or
-   two. Do NOT pad or restate the question. Respond:
-     {{"status": "answer", "text": "<the answer, grounded in the context>"}}
-2. ABSTENTION — the QUESTION is specific but the CONTEXT does NOT contain the
-   answer; the information is simply not present. Do NOT guess. Respond:
-     {{"status": "abstention", "text": "not found in memory"}}
-   Abstain ONLY after checking every passage. If ANY passage plainly names the
-   thing the question asks for (even mid-passage, even phrased differently),
-   that is an ANSWER, not an abstention. Unrelated passages around it are
-   normal — ignore them; their presence is never a reason to abstain.
-3. CLARIFICATION — use this ONLY when the QUESTION points at its subject with a
-   BARE GENERIC reference and gives NO description that could pin it down: "the
-   manager", "the project", "the migration", "the ticket", "we", "last quarter",
-   with no defining clause. Only the ASKER can resolve such a reference. Respond:
-     {{"status": "clarification", "text": "which <thing> do you mean?"}}
-
-CRITICAL — do NOT confuse a MULTI-HOP question with an ambiguous one. A question
-that DESCRIBES its target through a relationship, a defining clause, or a chain of
-them — "the team that plays in Halverson Park Stadium", "the band whose
-drummer grew up in the town where the festival started", "the country whose navy
-operates the frigate Calder Ridge" — is FULLY
-SPECIFIED. It is NOT ambiguous just because resolving it takes several steps. For
-any described or multi-hop question you MUST return ANSWER (if the context has it)
-or ABSTENTION (if it does not) — NEVER clarification.
-
-CHAIN INSIDE THE CONTEXT — for a described target, resolve it in TWO reads:
-first find the passage that identifies the described thing (WHO plays at that
-stadium, WHO produced that film), then find the passage stating the asked fact
-ABOUT that thing. The two facts usually sit in DIFFERENT passages; answer only
-the FINAL question, using the intermediate silently. Answer the exact relation
-asked (grandmother ≠ mother; the mother's mother is the grandmother).
-
-CONFLICTING PASSAGES — when two passages give different values for the same
-fact (a team's league, a company's owner), they usually describe DIFFERENT
-TIMES. Prefer the passage matching the timeframe the question or its resolving
-passage implies; a passage that mentions the resolving entity or its era
-outranks a generally famous but unrelated-in-time fact. Never pick a value just
-because it is the better-known one.
-
-Examples:
-- "What did the manager approve?" (no which manager) -> clarification
-- "What did Devon Park approve?" (context says he approved Aurora) -> answer: "Aurora"
-- "What is the league of the team that plays in Halverson Park Stadium?"
-    -> answer if the context resolves it, else abstention; NEVER clarification
-- "Which instrument does the founder of the band whose drummer grew up in the
-    festival's home town play?" -> answer or abstention; NEVER clarification
-- "What did Bob Chen say about Project Zephyr?" (no Zephyr in context) -> abstention
-
-Return ONLY JSON.
-
-QUESTION: {query}
-
-CONTEXT:
-{context}"""
-
 _SYNTH_CONTEXT_MAXCHARS = 16000
 _VALID_STATUS = ("answer", "abstention", "clarification")
 
+# The abstention text. The kernel uses the same sentinel for its own abstentions
+# (internal/memory/query.go AnswerWithCitations); keep them equal.
+ABSTENTION_TEXT = "not found in memory"
 
-def build_labeled_context(chunks: object, max_chars: int) -> str:
-    """Number retrieved chunks [1], [2], ... in the ORDER GIVEN, for citation.
 
-    Unlike ``build_context`` this does NOT content-dedup: the caller (AnswerSystem,
-    ADR-0081) resolves citation marker n against evidence[n-1] on the kernel side,
-    so the label→chunk mapping here must stay 1:1 with the order it was handed.
+def _typed(obj: dict | None) -> dict:
+    """Read a synthesis reply into ``{status, text}``.
+
+    An unreadable reply, or an "answer" with no text, is an explicit FAILURE,
+    reported as an abstention carrying ``failure``: the kernel maps every status
+    other than abstention/clarification to "answer", so the old default
+    (``answer`` with ``""``) shipped an empty answer as though it were one. An
+    abstention says what happened — nothing was answered — and keeps the
+    kernel's "not found in memory" sentinel.
     """
-    items = chunks if isinstance(chunks, list) else []
-    parts: list[str] = []
-    for i, c in enumerate(items, start=1):
-        t = str(c).strip()
-        if not t:
-            continue
-        parts.append(f"[{i}] {t}")
-    return "\n---\n".join(parts)[:max_chars]
-
-
-SYNTHESIZE_CITED_PROMPT = """\
-Given the QUESTION and the numbered CONTEXT sources retrieved from memory, produce
-a TYPED, CITED answer. Follow the SAME three-way decision as an uncited answer
-(answer / abstention / clarification), with ONE addition: in the "answer" case,
-cite EVERY grounded claim inline with the bracketed number(s) of the source(s) it
-came from, placed at the END of the sentence or clause it supports.
-
-Rules for citations:
-- Cite ONLY from the numbered sources. A claim you cannot ground in a source must
-  be dropped, not cited — never invent a citation or use outside knowledge.
-- A sentence may cite multiple sources: "... within SLA [1][3]."
-- Do not cite the abstention or clarification text.
-
-  {{"status": "answer", "text": "<grounded answer with inline [n] citations>"}}
-  {{"status": "abstention", "text": "not found in memory"}}
-  {{"status": "clarification", "text": "which <thing> do you mean?"}}
-
-A described or multi-hop question is FULLY SPECIFIED — return answer or abstention,
-NEVER clarification (a bare generic reference with no defining clause is the only
-clarification case).
-
-Example:
-QUESTION: Where did the little prince come from, and who did he meet?
-CONTEXT:
-[1] I have serious reason to believe that the planet from which the little prince
-    came is the asteroid known as B612.
-[2] "What is that big book?" said the little prince ... "I am a geographer," said
-    the old gentleman.
--> {{"status": "answer", "text": "The little prince came from the asteroid B612 [1]. He met a geographer [2]."}}
-
-Return ONLY JSON.
-
-QUESTION: {query}
-
-CONTEXT:
-{context}"""
-
-
-def synthesize_cited(state: dict, llm: LLM) -> dict:
-    """Grounded synthesis with inline [n] citations (ADR-0081).
-
-    ``state = {query, chunks: [text, ...]}`` — chunks are numbered [1..N] in order
-    and the answer cites them inline. Same fail-safe as ``synthesize``: an unknown
-    status defaults to ``answer``.
-    """
-    query = str(state.get("query", ""))
-    context = build_labeled_context(state.get("chunks"), _SYNTH_CONTEXT_MAXCHARS) or "(nothing retrieved)"
-    raw = llm(SYNTHESIZE_CITED_PROMPT.format(query=query, context=context))
-    obj = extract_json(raw) or {}
+    if obj is None:
+        return {"status": "abstention", "text": ABSTENTION_TEXT, "failure": "unparseable_reply"}
     status = str(obj.get("status", "")).strip().lower()
-    if status not in _VALID_STATUS:
-        status = "answer"
-    return {"status": status, "text": str(obj.get("text", ""))}
+    text = str(obj.get("text", "") or "").strip()
+    if status == "abstention":
+        return {"status": status, "text": text or ABSTENTION_TEXT}
+    if status == "clarification" and text:
+        return {"status": status, "text": text}
+    if not text:
+        return {"status": "abstention", "text": ABSTENTION_TEXT, "failure": "empty_answer"}
+    # An answer — or an unknown status that still carries an answer text.
+    return {"status": "answer", "text": text}
+
+
+def synthesize_request(query: str, chunks: object, cited: bool) -> LLMRequest:
+    if cited:
+        docs = build_labeled_context(chunks, _SYNTH_CONTEXT_MAXCHARS)
+        op_id, op = "retrieval_synthesize_cited", "synthesize_cited"
+    else:
+        docs = build_context(chunks, _SYNTH_CONTEXT_MAXCHARS)
+        op_id, op = "retrieval_synthesize", "synthesize"
+    # The shared guidance block comes first so both ops send one identical prefix.
+    return build_request(op, ("retrieval_synthesis_guidance", op_id), "retrieval_synthesize_input",
+                         {"documents": docs or "(nothing retrieved)", "question": query})
 
 
 def synthesize(state: dict, llm: LLM) -> dict:
     """Produce the final typed three-way output for the loop's result.
 
     ``state = {query, chunks: [text, ...]}``. Returns
-    ``{"status": "answer"|"abstention"|"clarification", "text": "..."}``.
-    Fail-safe: any parse failure or an unknown status defaults to ``answer``
-    (so a bad synthesis step never wrongly abstains on an answerable query and
-    breaks the answer-category scoring).
+    ``{"status": "answer"|"abstention"|"clarification", "text": "..."}``, plus
+    ``failure`` when the reply could not be read (see :func:`_typed`).
     """
-    query = str(state.get("query", ""))
-    context = build_context(state.get("chunks"), _SYNTH_CONTEXT_MAXCHARS) or "(nothing retrieved)"
-    raw = llm(SYNTHESIZE_PROMPT.format(query=query, context=context))
-    obj = extract_json(raw) or {}
-    status = str(obj.get("status", "")).strip().lower()
-    if status not in _VALID_STATUS:
-        status = "answer"
-    return {"status": status, "text": str(obj.get("text", ""))}
+    req = synthesize_request(str(state.get("query", "")), state.get("chunks"), cited=False)
+    return _typed(decode(_call(llm, req)))
+
+
+def synthesize_cited(state: dict, llm: LLM) -> dict:
+    """Grounded synthesis with inline [n] citations (ADR-0081).
+
+    ``state = {query, chunks: [text, ...]}`` — chunks are numbered [1..N] in order
+    and the answer cites them inline. Same decision rules (one shared guidance
+    block) and the same explicit failure as :func:`synthesize`.
+    """
+    req = synthesize_request(str(state.get("query", "")), state.get("chunks"), cited=True)
+    return _typed(decode(_call(llm, req)))
 
 
 # --------------------------------------------------------------------------
 # up-front GROUNDED decomposition — plan the whole chain, then answer each
 # sub-question from RETRIEVED memory (never parametric). Robust alternative to
 # the greedy hop-by-hop bridge loop: one bad greedy hop derails the whole chain,
-# whereas decomposing up front lets each sub-question be retrieved independently
-# (the direct-retrieval probe showed each sub-question IS individually
-# retrievable; the greedy loop just under-issued the right queries).
+# whereas decomposing up front lets each sub-question be retrieved independently.
 # --------------------------------------------------------------------------
-
-DECOMPOSE_PROMPT = """\
-Decompose a MULTI-HOP question into an ORDERED list of simple SUB-QUESTIONS, each
-answerable by a SINGLE fact lookup. Later sub-questions refer to earlier ANSWERS
-with placeholders {{1}}, {{2}}, ... (1-indexed by position). The LAST sub-question's
-answer is the final answer to the whole question.
-
-For EACH sub-question also give a short "ref": a NOUN PHRASE naming what its answer
-IS, so that if the answer can't be found, later steps can still refer to it
-descriptively (e.g. "the country where {{1}} was born"). The ref may use earlier
-placeholders too.
-
-Example (invented; not a benchmark question):
-Q: "Which language is spoken in the country where the author of The Glass Orchard
-    was born?"
--> [{{"q": "Who wrote The Glass Orchard?", "ref": "the author of The Glass Orchard"}},
-    {{"q": "In which country was {{1}} born?", "ref": "the country where {{1}} was born"}},
-    {{"q": "Which language is spoken in {{2}}?", "ref": "the language spoken in {{2}}"}}]
-
-Rules:
-- Each sub-question asks for exactly ONE entity/fact.
-- Reference ONLY earlier answers via {{n}}; keep the original names/anchors.
-- 1-4 sub-questions. A simple question may stay a single sub-question.
-- Do NOT answer them. Return ONLY a JSON list of objects, each with "q" and "ref".
-
-Question: {query}"""
-
-
-def _extract_json_list(text: str) -> list | None:
-    """Pull the first JSON array out of an LLM completion."""
-    for c in [m.group(1) for m in _FENCE_RE.finditer(text)] + [text]:
-        s, e = c.find("["), c.rfind("]")
-        if s != -1 and e > s:
-            try:
-                v = json.loads(c[s : e + 1])
-            except json.JSONDecodeError:
-                continue
-            if isinstance(v, list):
-                return v
-    return None
-
-
-def decompose(query: str, llm: LLM, max_subqs: int = 4) -> tuple[list[str], list[str]]:
-    """Decompose a multi-hop question into ordered sub-questions (with {n}
-    placeholders for earlier answers) AND a parallel list of "refs" — noun phrases
-    naming each sub-question's answer, used as a coherent fallback when a
-    sub-answer can't be found (so the chain isn't corrupted by an empty
-    substitution). Fail-safe: on parse failure returns the raw question as a single
-    sub-question with an empty ref (⇒ degrades to a single pass)."""
-    q = query.strip()
-    if not q:
-        return [], []
-    raw = llm(DECOMPOSE_PROMPT.format(query=q))
-    lst = _extract_json_list(raw) or []
-    subqs: list[str] = []
-    refs: list[str] = []
-    for x in lst:
-        if isinstance(x, dict):
-            sq = str(x.get("q", "")).strip()
-            rf = str(x.get("ref", "")).strip()
-        else:  # tolerate a bare string (older/degenerate output)
-            sq, rf = str(x).strip(), ""
-        if sq:
-            subqs.append(sq)
-            refs.append(rf)
-    if not subqs:
-        return [q], [""]
-    return subqs[:max_subqs], refs[:max_subqs]
-
-
-# --------------------------------------------------------------------------
-# ADR-0135: the planner chooses a ROUTE with its plan, in the same single call.
-# Used only when the kernel asks for it (decompose op with "routes": true, sent
-# when execution.retrieval.agentic_adaptive_routes_enabled is on); every other
-# caller gets DECOMPOSE_PROMPT above unchanged, so the flag-off path plans exactly
-# as before. The kernel validates the route (missing/unknown/inconsistent ⇒ chain).
-# --------------------------------------------------------------------------
-
-DECOMPOSE_ROUTE_PROMPT = """\
-You plan how to search a person's MEMORY (their past conversations and notes) to
-answer a QUESTION. First choose a ROUTE, then give the SUB-QUESTIONS that route needs.
-
-ROUTES
-- "direct": ONE lookup answers it. The question already names what to find; a
-  single search with the question itself is the best query. sub_questions is [].
-- "facets": it needs SEVERAL INDEPENDENT pieces that are found separately and then
-  combined — counting, listing, totalling or comparing things spread across
-  different conversations or time periods. No piece depends on another piece's
-  answer, so the sub-questions use NO placeholders.
-- "chain": a LATER lookup needs an EARLIER ANSWER — you cannot even phrase step 2
-  until step 1 is answered. Later sub-questions refer to earlier answers with
-  placeholders {{1}}, {{2}}, ... (1-indexed by position). The LAST sub-question's
-  answer is the final answer.
-
-When unsure between direct and the others, choose "direct" only if one search
-could plausibly find the whole answer in one place.
-
-For EACH sub-question also give a short "ref": a NOUN PHRASE naming what its
-answer IS, so later steps can still refer to it if the answer is not found
-(e.g. "the friend I went hiking with"). A chain ref may use earlier placeholders.
-
-EXAMPLES (invented; none is a benchmark question)
-Q: "Where did I park my car at the airport?"
--> {{"route": "direct", "sub_questions": []}}
-Q: "What did I name my sourdough starter?"
--> {{"route": "direct", "sub_questions": []}}
-Q: "How many concerts did I go to this summer?"
--> {{"route": "facets", "sub_questions": [
-     {{"q": "Which concerts did I go to this summer?", "ref": "the concerts I went to this summer"}},
-     {{"q": "On what dates did I go to concerts this summer?", "ref": "the dates of the concerts I went to this summer"}}]}}
-   NOT {{"q": "When did each of those concerts take place?"}}: "those" points at another
-   sub-question's answer, and facets are searched separately, so it would be searched blind.
-Q: "Which did I buy first, the blender or the toaster?"
--> {{"route": "facets", "sub_questions": [
-     {{"q": "When did I buy the blender?", "ref": "the date I bought the blender"}},
-     {{"q": "When did I buy the toaster?", "ref": "the date I bought the toaster"}}]}}
-Q: "Where does the friend I went hiking with work?"
--> {{"route": "chain", "sub_questions": [
-     {{"q": "Which friend did I go hiking with?", "ref": "the friend I went hiking with"}},
-     {{"q": "Where does {{1}} work?", "ref": "the workplace of {{1}}"}}]}}
-Q: "Which language is spoken in the country where the author of The Glass Orchard was born?"
--> {{"route": "chain", "sub_questions": [
-     {{"q": "Who wrote The Glass Orchard?", "ref": "the author of The Glass Orchard"}},
-     {{"q": "In which country was {{1}} born?", "ref": "the country where {{1}} was born"}},
-     {{"q": "Which language is spoken in {{2}}?", "ref": "the language spoken in {{2}}"}}]}}
-
-RULES
-- Each sub-question asks for exactly ONE thing; keep the original names/anchors.
-- facets: 2-4 sub-questions, NO {{n}}, and EACH ONE STANDS ALONE: it must make
-  sense searched by itself, without the other sub-questions. Never refer to another
-  sub-question or its answer ("those", "these", "them", "each of them", "that one",
-  "the same"); repeat the full noun phrase instead. If a piece can only be phrased by
-  pointing at another piece's answer, the route is chain, not facets.
-- chain: 2-4 sub-questions, each later one uses an earlier {{n}}. direct: no
-  sub-questions.
-- Do NOT answer anything. Return ONLY a JSON object:
-  {{"route": "direct" | "facets" | "chain", "sub_questions": [{{"q": "...", "ref": "..."}}]}}
-
-Question: {query}"""
 
 
 def _subq_pairs(items: object, max_subqs: int) -> tuple[list[str], list[str]]:
@@ -724,78 +564,87 @@ def _subq_pairs(items: object, max_subqs: int) -> tuple[list[str], list[str]]:
     return subqs[:max_subqs], refs[:max_subqs]
 
 
+def decompose_request(query: str, routes: bool) -> LLMRequest:
+    sys_id = "retrieval_decompose_routed" if routes else "retrieval_decompose"
+    return build_request("decompose", (sys_id,), "retrieval_decompose_input", {"question": query})
+
+
+def decompose(query: str, llm: LLM, max_subqs: int = 4) -> tuple[list[str], list[str]]:
+    """Decompose a multi-step question into ordered sub-questions (with {n}
+    placeholders for earlier answers) AND a parallel list of "refs" — noun phrases
+    naming each sub-question's answer, used as a coherent fallback when a
+    sub-answer can't be found. Fail-safe: on parse failure returns the raw
+    question as a single sub-question with an empty ref (⇒ a single pass).
+
+    The schema asks for ``{"sub_questions": [...]}``; an unchecked reply may still
+    be the older bare list, which is accepted."""
+    q = query.strip()
+    if not q:
+        return [], []
+    reply = _call(llm, decompose_request(q, routes=False))
+    obj = decode(reply, dict)
+    if obj is not None and "sub_questions" in obj:
+        items = obj.get("sub_questions")
+    elif not reply.schema_checked:
+        # An unchecked reply may be the older bare list (whose first item a dict
+        # decode would otherwise mistake for the whole reply).
+        items = _tolerant(reply.text, list)
+    else:
+        items = None
+    subqs, refs = _subq_pairs(items, max_subqs)
+    if not subqs:
+        return [q], [""]
+    return subqs, refs
+
+
 def decompose_routed(query: str, llm: LLM, max_subqs: int = 4) -> dict:
     """ADR-0135 D1: one planning call returning ``{"route", "sub_questions", "refs"}``.
 
     Parsed defensively:
       * the expected object → its route (lower-cased, passed through even if
         unknown — the kernel decides what an unusable route means and logs it);
-      * a bare JSON list (the legacy shape) → that plan with route "" (⇒ chain);
+      * a bare JSON list (the legacy shape, unchecked replies only) → that plan
+        with route "" (⇒ chain);
       * nothing parseable → route "" and the question as its single sub-question,
-        today's fail-safe (an echo plan ⇒ the kernel runs one pass).
+        the fail-safe (an echo plan ⇒ the kernel runs one pass).
     A "direct" route with no sub-questions carries the question itself as its one
     sub-question, so a kernel that does not execute routes sees an echo plan.
     """
     q = query.strip()
     if not q:
         return {"route": "", "sub_questions": [], "refs": []}
-    raw = llm(DECOMPOSE_ROUTE_PROMPT.format(query=q))
+    reply = _call(llm, decompose_request(q, routes=True))
     route = ""
     subqs: list[str] = []
     refs: list[str] = []
-    obj = extract_json(raw)
+    obj = decode(reply, dict)
     if obj is not None and ("route" in obj or "sub_questions" in obj):
         r = obj.get("route", "")
         route = r.strip().lower() if isinstance(r, str) else ""
         subqs, refs = _subq_pairs(obj.get("sub_questions"), max_subqs)
-    else:
-        subqs, refs = _subq_pairs(_extract_json_list(raw), max_subqs)
+    elif not reply.schema_checked:
+        subqs, refs = _subq_pairs(_tolerant(reply.text, list), max_subqs)
     if not subqs:
         subqs, refs = [q], [""]
     return {"route": route, "sub_questions": subqs, "refs": refs}
 
 
-ANSWER_SUBQ_PROMPT = """\
-Answer the SUB-QUESTION using ONLY the CONTEXT retrieved from memory. Return the
-single specific entity (a name, place, org, or date) that answers it, copied from
-the CONTEXT. If the CONTEXT does not contain the answer, return "" — do NOT guess
-or use outside knowledge.
-
-Return ONLY JSON: {{"answer": "<entity copied from context, or empty>"}}
-
-SUB-QUESTION: {subq}
-
-CONTEXT:
-{context}"""
-
-# Second-chance extraction (bridge-binding fix). Measured on the MuSiQue full
-# run: ~72% of misses at every hop count were chains that broke when
-# answer_subquestion returned "" even though the gold evidence WAS retrieved —
-# the strict pass under-commits, the descriptive-ref fallback then sends an
-# unresolved referent phrase back into retrieval, and the chain drifts. The
-# grounded-only rule is enforced by the mechanical word-set guard below, NOT by
-# model caution, so a candidate-forcing retry cannot leak parametric knowledge:
-# an ungrounded pick is still rejected and the ref fallback still applies.
-ANSWER_SUBQ_FORCE_PROMPT = """\
-Identify the single entity in the CONTEXT that best answers the SUB-QUESTION.
-You MUST choose one entity (a name, place, org, or date) COPIED VERBATIM from
-the CONTEXT — never use outside knowledge. Only if nothing in the CONTEXT
-relates to the SUB-QUESTION at all, return "".
-
-Return ONLY JSON: {{"answer": "<entity copied from context, or empty>"}}
-
-SUB-QUESTION: {subq}
-
-CONTEXT:
-{context}"""
-
+# Second-chance extraction (bridge-binding fix). Measured on a full multi-hop run:
+# ~72% of misses at every hop count were chains that broke when the strict pass
+# returned "" even though the gold evidence WAS retrieved — the strict pass
+# under-commits, the descriptive-ref fallback then sends an unresolved referent
+# phrase back into retrieval, and the chain drifts. The grounded-only rule is
+# enforced by the mechanical word-set guard below, NOT by model caution, so a
+# candidate-forcing retry cannot leak parametric knowledge: an ungrounded pick is
+# still rejected and the ref fallback still applies.
 _SUBQ_CONTEXT_MAXCHARS = 12000
+_SUBQ_PASSES = ("retrieval_answer_subq", "retrieval_answer_subq_force")
 
 
 def answer_subquestion(subq: str, chunks: object, llm: LLM) -> str:
     """Extract the GROUNDED answer to one sub-question from retrieved chunks.
 
-    Grounded-only: the answer must be present in the CONTEXT — if the model
+    Grounded-only: the answer must be present in the documents — if the model
     returns something whose words are not in the retrieved text, we reject it
     (return "") rather than let parametric knowledge leak in. A strict pass runs
     first; when it yields nothing usable, a candidate-forcing second pass asks
@@ -806,9 +655,10 @@ def answer_subquestion(subq: str, chunks: object, llm: LLM) -> str:
     if not context:
         return ""
     ctx_words = _word_set(context)
-    for prompt in (ANSWER_SUBQ_PROMPT, ANSWER_SUBQ_FORCE_PROMPT):
-        raw = llm(prompt.format(subq=subq, context=context))
-        obj = extract_json(raw) or {}
+    for sys_id in _SUBQ_PASSES:
+        req = build_request("answer_subq", (sys_id,), "retrieval_answer_subq_input",
+                            {"documents": context, "subquestion": subq})
+        obj = decode(_call(llm, req)) or {}
         ans = str(obj.get("answer", "")).strip()
         # grounding guard: every answer word must appear in the retrieved context
         if ans and _word_set(ans) <= ctx_words:
@@ -820,46 +670,59 @@ def answer_subquestion(subq: str, chunks: object, llm: LLM) -> str:
 # extract_provenance — ingest-time schema-bounded metadata (spec §3)
 # --------------------------------------------------------------------------
 
-EXTRACT_PROVENANCE_PROMPT = """\
-Extract provenance metadata from a memory item. Fill ONLY these fields from what
-is stated in the TEXT (and the optional HINT); do NOT invent. Normalize any date
-to an absolute ISO-8601 value (YYYY-MM-DD). If a field is not stated, use "" (or
-[] for actors). Return ONLY JSON:
-{{
-  "valid_time": "<absolute ISO-8601 date the event happened, or ''>",
-  "actors": ["<person/system named as doing the action>", ...],
-  "source_type": "<slack_thread|design_doc|git_change|incident_report|support_ticket|system_event|email|note|'' >"
-}}
-
-TEXT:
-{text}
-
-HINT: {hint}"""
-
 _KNOWN_SOURCE_TYPES = {
     "slack_thread", "design_doc", "git_change", "incident_report",
     "support_ticket", "system_event", "email", "note",
 }
 
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
-def extract_provenance(text: str, llm: LLM, hint: str = "") -> dict:
+
+def reference_date(value: object = None, now: _dt.datetime | None = None) -> str:
+    """The date relative dates resolve against: the caller's event time when it
+    is an ISO-8601 date or timestamp, else today's date in UTC."""
+    s = str(value or "").strip()
+    if _ISO_DATE.match(s):
+        return s[:10]
+    return (now or _dt.datetime.now(_dt.timezone.utc)).date().isoformat()
+
+
+def extract_provenance(text: str, llm: LLM, hint: str = "", ref_date: str = "") -> dict:
     """Per-memory, schema-bounded provenance extraction (spec §3).
 
     Returns ``{"valid_time": str, "actors": [str], "source_type": str,
     "origin": "inferred"}``. Schema-bounded (fills fixed fields, never invents
-    content); fail-safe to empty fields on any parse failure. The Go ingest hook
-    stamps these into the document metadata so actor/time become QUERYABLE (which
-    is what filter-first enumeration needs), and tags them ``origin=inferred`` so
-    an inferred fact is never trusted like a caller-given one.
+    content); fail-safe to empty fields on any parse failure. ``ref_date`` is the
+    date relative dates in the text resolve against (:func:`reference_date`);
+    without one the prompt would have to invent the year. Tagged
+    ``origin=inferred`` so an inferred fact is never trusted like a caller-given one.
     """
-    raw = llm(EXTRACT_PROVENANCE_PROMPT.format(text=text[:2000], hint=hint or "(none)"))
-    obj = extract_json(raw) or {}
+    req = build_request("extract_provenance", ("retrieval_extract_provenance",),
+                        "retrieval_extract_provenance_input",
+                        {"reference_date": reference_date(ref_date), "hint": hint or "(none)",
+                         "text": text[:2000]})
+    obj = decode(_call(llm, req)) or {}
     source_type = str(obj.get("source_type", "")).strip().lower()
     if source_type not in _KNOWN_SOURCE_TYPES:
         source_type = ""
+    valid_time = str(obj.get("valid_time", "")).strip()
+    if valid_time and not _ISO_DATE.match(valid_time):
+        valid_time = ""  # the schema asks for YYYY-MM-DD; anything else is not a date we can use
     return {
-        "valid_time": str(obj.get("valid_time", "")).strip(),
+        "valid_time": valid_time,
         "actors": [str(a).strip() for a in _strlist(obj.get("actors"))],
         "source_type": source_type,
         "origin": "inferred",
+    }
+
+
+def prompt_versions() -> dict[str, str]:
+    """``{op: static hash}`` of every request shape this module sends."""
+    return {
+        "plan_step/first": plan_step_request("q").prompt_version,
+        "plan_step/hop": plan_step_request("q", "x").prompt_version,
+        "synthesize": synthesize_request("q", [], cited=False).prompt_version,
+        "synthesize_cited": synthesize_request("q", [], cited=True).prompt_version,
+        "decompose": decompose_request("q", routes=False).prompt_version,
+        "decompose_routed": decompose_request("q", routes=True).prompt_version,
     }

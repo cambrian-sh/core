@@ -26,15 +26,15 @@ import (
 func episodeAgent() (*multiCaptureStore, *fakeExperienceStore, *Agent) {
 	docs := &multiCaptureStore{}
 	exps := &fakeExperienceStore{}
-	a := NewAgent(NewMemoryManager(docs, &recordingEmbedder{}), nil, 0.7, 5, 3, 64, 0, 0, 0)
+	a := NewAgent(NewMemoryManager(docs, &recordingEmbedder{}), 0.7, 5, 3)
 	a.RecordOutcomes = true
 	a.SurpriseFloor = 0.5
 	a.ExperienceStore = exps
 	return docs, exps, a
 }
 
-// engagePlan runs one mutation through the real tool-output path — which is what both
-// accretes the plan's engaged scope and writes the mid-plan action record.
+// engagePlan runs one mutation through the real tool-output path, which writes the
+// mid-plan action record.
 func engagePlan(a *Agent, planID string) {
 	_ = a.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
 		ToolName: "write_file", ArgsJSON: []byte(`{"path":"/tmp/ep.md"}`),
@@ -126,7 +126,7 @@ func TestExperience_CompletionClosesWithoutErasingItsStart(t *testing.T) {
 
 	_ = a.BeginExperience(ctx, "p-life")
 	engagePlan(a, "p-life")
-	_ = a.WritePlanScene(ctx, domain.PlanRecord{PlanID: "p-life", Goal: "do a thing", Success: true, Surprise: -1})
+	_ = a.RecordPlanOutcome(ctx, domain.PlanRecord{PlanID: "p-life", Goal: "do a thing", Success: true, Surprise: -1})
 
 	if len(exps.saved) != 2 {
 		t.Fatalf("expected an open and a close for one episode, got %d writes: %+v", len(exps.saved), exps.saved)
@@ -144,26 +144,30 @@ func TestExperience_CompletionClosesWithoutErasingItsStart(t *testing.T) {
 	if !closed.StartedAt.Equal(begun.StartedAt) {
 		t.Errorf("closing an episode must carry its start forward: %v → %v", begun.StartedAt, closed.StartedAt)
 	}
-	scenes := docsOfType(docs, domain.DocTypeMnemonicScene)
-	if len(scenes) != 1 || scenes[0].ExperienceID != "exp-p-life" {
-		t.Errorf("the outcome record must hang from the episode, got %+v", scenes)
+	actions := docsOfType(docs, domain.DocTypeMnemonicAction)
+	if len(actions) != 1 || actions[0].ExperienceID != "exp-p-life" {
+		t.Errorf("the plan's action record must hang from the episode, got %+v", actions)
+	}
+	// 2026-11-05: no plan-level chunk is written any more (scenes cancelled). The
+	// successful plan's only rows are its action records.
+	if len(docs.saved) != 1 {
+		t.Errorf("a successful plan writes only its action records, got %d docs: %+v", len(docs.saved), docs.saved)
 	}
 }
 
-// A plan that engaged nothing writes no SCENE (ADR-0049 D5/D7) — but it still HAPPENED,
-// and its row is already open. Returning early without closing it would leave the
-// episode stuck at "running" forever, with whatever it did write hanging off a parent
-// that never reaches a terminal state.
-func TestWritePlanScene_ContentlessPlanStillClosesItsEpisode(t *testing.T) {
+// A plan that touched nothing (a pure-reasoning plan) still HAPPENED, and its row is
+// already open. Returning early without closing it would leave the episode stuck at
+// "running" forever.
+func TestRecordPlanOutcome_PlanWithNoActionsStillClosesItsEpisode(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	docs, exps, a := episodeAgent()
 
 	_ = a.BeginExperience(ctx, "p-void")
-	_ = a.WritePlanScene(ctx, domain.PlanRecord{PlanID: "p-void", Goal: "think about it", Success: false, Surprise: -1})
+	_ = a.RecordPlanOutcome(ctx, domain.PlanRecord{PlanID: "p-void", Goal: "think about it", Success: false, Surprise: -1})
 
-	if n := len(docsOfType(docs, domain.DocTypeMnemonicScene)); n != 0 {
-		t.Errorf("a plan with no engaged entities must write no scene, got %d", n)
+	if n := len(docs.saved); n != 0 {
+		t.Errorf("an unsurprising failure with no actions writes no chunk, got %d", n)
 	}
 	if len(exps.saved) != 2 {
 		t.Fatalf("expected the episode to be opened and closed, got %d writes", len(exps.saved))
@@ -198,7 +202,7 @@ func TestActionRecord_HangsFromTheEpisode(t *testing.T) {
 	// With the arm off nothing is written at all — not "written unparented".
 	t.Run("arm off: nothing written", func(t *testing.T) {
 		docs := &multiCaptureStore{}
-		a := NewAgent(NewMemoryManager(docs, &recordingEmbedder{}), nil, 0.7, 5, 3, 64, 0, 0, 0)
+		a := NewAgent(NewMemoryManager(docs, &recordingEmbedder{}), 0.7, 5, 3)
 		engagePlan(a, "p-off")
 		if len(docs.saved) != 0 {
 			t.Errorf("both arms off must write nothing, got %+v", docs.saved)
@@ -206,9 +210,8 @@ func TestActionRecord_HangsFromTheEpisode(t *testing.T) {
 	})
 }
 
-// The failure precedent belongs to its episode and must be deletable with it. The other
-// negative-edge callers do NOT: a Tier-2 commit error or a reported agent fault is not
-// one plan execution, and inventing a parent for it would be a claim about something
+// The failure record belongs to its episode and must be deletable with it. The other
+// negative-edge callers do NOT: a reported agent fault is not one plan execution, and inventing a parent for it would be a claim about something
 // that never happened.
 func TestFailurePrecedent_HangsFromTheEpisodeAndOtherEdgesDoNot(t *testing.T) {
 	t.Parallel()
@@ -217,7 +220,7 @@ func TestFailurePrecedent_HangsFromTheEpisodeAndOtherEdgesDoNot(t *testing.T) {
 
 	_ = a.BeginExperience(ctx, "p-fail")
 	engagePlan(a, "p-fail")
-	_ = a.WritePlanScene(ctx, domain.PlanRecord{
+	_ = a.RecordPlanOutcome(ctx, domain.PlanRecord{
 		PlanID: "p-fail", Goal: "migrate", Success: false, Surprise: 0.9,
 		FailureSummary: `step 2 (apply the migration): relation "documents" does not exist`,
 	})
@@ -235,8 +238,8 @@ func TestFailurePrecedent_HangsFromTheEpisodeAndOtherEdgesDoNot(t *testing.T) {
 
 	// The port-level call is unchanged: no parent, no plan_id.
 	bare := &multiCaptureStore{}
-	other := NewAgent(NewMemoryManager(bare, &recordingEmbedder{}), nil, 0.7, 5, 3, 64, 0, 0, 0)
-	if err := other.IngestNegativeEdge(ctx, "tier-2 commit failed", "last output", "agent-1"); err != nil {
+	other := NewAgent(NewMemoryManager(bare, &recordingEmbedder{}), 0.7, 5, 3)
+	if err := other.IngestNegativeEdge(ctx, "agent fault", "last output", "agent-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	loose := docsOfType(bare, domain.DocTypeNegativeEdge)

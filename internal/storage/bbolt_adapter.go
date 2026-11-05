@@ -80,7 +80,7 @@ type BBoltAdapter struct {
 	// (ADR-0061 A2.7; see AppendReactiveSignal).
 	journalAppenders atomic.Int32
 	CardFetcher      A2ACardFetcher // for A2A agent registration; nil means RegisterA2AAgent disabled
-	Enqueuer         Enqueuer       // for Interview enqueue after registration
+	Enqueuer         Enqueuer       // for profile-seeding enqueue after registration
 }
 
 func NewBBoltAdapter(dbPath string, agentsDir string, isSystemAgent func(id string) bool) (*BBoltAdapter, error) {
@@ -199,12 +199,24 @@ func createBuckets(tx *bbolt.Tx) error {
 // sidecar whose trait/binary is invalid is skipped. isSystemAgent (nil-safe) stamps
 // AgentRecord.System. This is the single discovery implementation used both by Seed
 // (which then persists with manifests) and by the app-layer FilesystemAgentSource.
+//
+// Declarative profiles (<agentsDir>/profiles/*.yaml, profile_discovery.go) are
+// discovered too, validated WITHOUT the skill checks; the composition root uses
+// DiscoverFilesystemAgentsWith to pass the kernel's skill index.
 func DiscoverFilesystemAgents(agentsDir string, isSystemAgent func(id string) bool) ([]DiscoveredAgent, error) {
+	return DiscoverFilesystemAgentsWith(agentsDir, isSystemAgent, DiscoverOptions{})
+}
+
+// DiscoverFilesystemAgentsWith is DiscoverFilesystemAgents with options (the skill
+// index profiles are validated against).
+func DiscoverFilesystemAgentsWith(agentsDir string, isSystemAgent func(id string) bool, opt DiscoverOptions) ([]DiscoveredAgent, error) {
 	systemID := isSystemAgent
 	if systemID == nil {
 		systemID = func(string) bool { return false }
 	}
 	var out []DiscoveredAgent
+	profilesDir := filepath.Join(agentsDir, ProfilesDirName)
+	runtimePath := filepath.Join(agentsDir, ProfileRuntimeFile)
 	walkErr := filepath.WalkDir(agentsDir, func(walkPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			slog.Warn("DB (BBOLT): agents walk error, skipping", "path", walkPath, "err", walkErr)
@@ -213,6 +225,11 @@ func DiscoverFilesystemAgents(agentsDir string, isSystemAgent func(id string) bo
 		if d.IsDir() {
 			if walkPath == agentsDir {
 				return nil
+			}
+			// Profiles are data, read by profileAgentRecords below, never scanned
+			// for agent source files.
+			if walkPath == profilesDir {
+				return fs.SkipDir
 			}
 			// ADR-0125: a dependency may legitimately ship a file named agent.js —
 			// nothing under node_modules is an agent of ours.
@@ -238,6 +255,12 @@ func DiscoverFilesystemAgents(agentsDir string, isSystemAgent func(id string) bo
 			return nil
 		}
 		name := d.Name()
+		// The profile runtime is not an agent by itself: it runs once per profile,
+		// under the profile's id (profile_discovery.go). Registering it too would
+		// run the default profile a second time as "worker_agent".
+		if walkPath == runtimePath {
+			return nil
+		}
 		switch {
 		case strings.HasSuffix(name, "agent.py"):
 			id := strings.TrimSuffix(name, ".py")
@@ -263,13 +286,18 @@ func DiscoverFilesystemAgents(agentsDir string, isSystemAgent func(id string) bo
 		}
 		return nil
 	})
+	taken := make(map[string]bool, len(out))
+	for _, da := range out {
+		taken[da.Agent.ID] = true
+	}
+	out = append(out, profileAgentRecords(agentsDir, systemID, opt, taken)...)
 	return out, walkErr
 }
 
 // UpsertDiscoveredAgent persists one DiscoveredAgent idempotently in its own transaction
 // (ADR-0075). It is the exported, source-facing form of the built-in seeder's per-agent
 // write: an unchanged agent (same SourceHash) is left untouched — crucially preserving
-// its post-interview Provisional=false state across reboots — so registering the built-in
+// its post-seeding Provisional=false state across reboots — so registering the built-in
 // filesystem agents through an AgentSource behaves exactly like the old in-Seed scan.
 // The one exception is System status, which is composition-root policy rather than a
 // property of the agent's code and is therefore reconciled on every call.
@@ -318,7 +346,7 @@ func upsertDiscovered(tx *bbolt.Tx, da DiscoveredAgent) error {
 	//
 	// It used to be refreshed only on the "source changed" branch below, so
 	// granting a plugin's agent system status had no effect until somebody
-	// happened to edit that agent's source. The kernel went on LLM-interviewing
+	// happened to edit that agent's source. The kernel went on LLM-interviewing (ADR-0037, since deleted)
 	// and auctioning an organ the composition root had already declared
 	// privileged, and the grant looked like it had simply not worked.
 	//
@@ -351,6 +379,12 @@ func upsertDiscovered(tx *bbolt.Tx, da DiscoveredAgent) error {
 	// point or a runtime override forever for the new shapes.
 	existing.ExecPath = da.Agent.ExecPath
 	existing.Runtime = da.Agent.Runtime
+	// Agent stack v2 profile fields are source-derived too (the profile file is
+	// part of the SourceHash), so they refresh with it.
+	existing.LaunchArgs = da.Agent.LaunchArgs
+	existing.Profile = da.Agent.Profile
+	existing.TrustTier = da.Agent.TrustTier
+	existing.ModelPreference = da.Agent.ModelPreference
 	data, err := json.Marshal(existing)
 	if err != nil {
 		return fmt.Errorf("marshal updated agent %s: %w", id, err)

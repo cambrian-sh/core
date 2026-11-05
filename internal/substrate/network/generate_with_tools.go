@@ -2,17 +2,16 @@ package network
 
 import (
 	"context"
-	"errors"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/cambrian-sh/core/api/proto"
-	"github.com/cambrian-sh/core/domain"
 )
 
 // GenerateWithTools serves one managed generation turn with native tool-calling
-// (ADR-0097 Phase B).
+// (ADR-0097 Phase B), as a C1 request (ADR-0139 D1): system blocks, the message
+// conversation, tools, a response schema and options all reach the adapter.
 //
 // Unary rather than streaming: a tool call is only actionable once complete, so
 // streaming partial calls would force every client to reassemble them for no gain.
@@ -27,73 +26,60 @@ func (s *Server) GenerateWithTools(
 	if s.LLMGateway == nil {
 		return nil, status.Error(codes.Unimplemented, "GenerateWithTools: LLMGateway not wired")
 	}
-
-	opts := domain.GenerateOptions{}
-	if req.Options != nil {
-		opts.MaxTokens = req.Options.MaxTokens
-		opts.Temperature = req.Options.Temperature
-		opts.StopSequences = req.Options.StopSequences
+	// ADR-0139 D8, same rule as GenerateViaModelStream: an agent may spend only under a
+	// lease bound to itself. This lane had no ownership check at all, so a stolen or
+	// unbound lease generated freely here
+	// (T-20261104-leases-minted-with-no-agentid-are-usable-by-any).
+	if s.leaseForeignToCaller(ctx, leaseID) {
+		return nil, status.Error(codes.PermissionDenied, "lease is not valid for this caller")
 	}
 
-	tools := make([]domain.ToolDefinition, 0, len(req.GetTools()))
-	for _, t := range req.GetTools() {
-		tools = append(tools, domain.ToolDefinition{
-			Name:        t.GetName(),
-			Description: t.GetDescription(),
-			Parameters:  []byte(t.GetParametersJson()),
-		})
+	greq, err := rpcRequest{
+		system:   req.GetSystem(),
+		messages: req.GetMessages(),
+		prompt:   req.GetPrompt(), //nolint:staticcheck // deprecated field, deliberate fallback
+		tools:    req.GetTools(),
+		schema:   req.GetResponseSchema(),
+		options:  req.GetOptions(),
+		cacheTTL: req.GetCacheTtl(),
+	}.toGenerateRequest()
+	if err != nil {
+		return nil, err
 	}
 
-	// Prefer the message list; fall back to wrapping the deprecated prompt as a lone
-	// user turn so an un-upgraded client still works rather than sending nothing.
-	messages := make([]domain.ModelMessage, 0, len(req.GetMessages()))
-	for _, m := range req.GetMessages() {
-		msg := domain.ModelMessage{
-			Role:       m.GetRole(),
-			Content:    m.GetContent(),
-			ToolCallID: m.GetToolCallId(),
-		}
-		for _, tc := range m.GetToolCalls() {
-			msg.ToolCalls = append(msg.ToolCalls, domain.ModelToolCall{
-				ID:   tc.GetId(),
-				Name: tc.GetName(),
-				// Forwarded as the provider's own bytes: re-encoding would reorder
-				// keys and change what the provider matches its record of the call
-				// against.
-				Arguments: []byte(tc.GetArgumentsJson()),
-			})
-		}
-		messages = append(messages, msg)
-	}
-	if len(messages) == 0 {
-		if p := req.GetPrompt(); p != "" { //nolint:staticcheck // deprecated field, deliberate fallback
-			messages = append(messages, domain.UserMessage(p))
-		}
-	}
-	if len(messages) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "messages (or the deprecated prompt) is required")
-	}
-
-	turn, err := s.LLMGateway.GenerateWithTools(ctx, leaseID, messages, opts, tools)
+	resp, err := s.LLMGateway.GenerateWithTools(ctx, leaseID, greq)
 	if err != nil {
 		// A model that cannot do tool-calling is a CAPABILITY answer, not a failure.
 		// FailedPrecondition is the documented signal for "fall back to the
 		// prompt-encoded action protocol" — mapping it to Internal would make an
 		// ordinary deployment look broken and push clients into retry loops.
-		if errors.Is(err, ErrToolCallingUnsupported) {
-			return nil, status.Error(codes.FailedPrecondition, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, gatewayStatus(err)
 	}
 
-	resp := &pb.GenerateWithToolsResponse{
-		Text: turn.Text,
+	// ADR-0079: the exchange lane captures tool turns too — with a native-tools
+	// generator the SDK's ReAct loop runs here, so without this a benchmark told
+	// "every agent turn is captured" saw none of them
+	// (T-20261104-llm-exchange-capture-adr-0079-misses-every). Gated and truncated by
+	// the sink; fire-and-forget.
+	if s.LLMExchangeSink != nil {
+		if completion := renderExchangeCompletion(resp); completion != "" {
+			s.LLMExchangeSink(string(leaseID), callerAgentHeader(ctx), s.exchangeModelID(leaseID, &resp), 0,
+				renderExchangePrompt(greq), completion)
+		}
+	}
+
+	out := &pb.GenerateWithToolsResponse{
+		Text: resp.Text,
 		// The stop reason is already normalized at the adapter, so no provider
 		// vocabulary crosses this boundary.
-		StopReason: string(turn.StopReason),
+		StopReason:  string(resp.StopReason),
+		UsageTokens: int32(resp.Usage.Input + resp.Usage.Output),
+		Ignored:     resp.Ignored,
+		Usage:       usageProto(resp.Usage),
+		Model:       resp.Model,
 	}
-	for _, tc := range turn.ToolCalls {
-		resp.ToolCalls = append(resp.ToolCalls, &pb.ModelToolCallProto{
+	for _, tc := range resp.ToolCalls {
+		out.ToolCalls = append(out.ToolCalls, &pb.ModelToolCallProto{
 			// Verbatim: providers correlate the tool result on their own id and
 			// reject a synthesized one.
 			Id:            tc.ID,
@@ -101,5 +87,5 @@ func (s *Server) GenerateWithTools(
 			ArgumentsJson: string(tc.Arguments),
 		})
 	}
-	return resp, nil
+	return out, nil
 }

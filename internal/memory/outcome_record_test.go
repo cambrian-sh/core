@@ -74,11 +74,11 @@ func TestBornTags_CarriesSurfaceAndIngress(t *testing.T) {
 // The arm is default-off, and off must mean NOTHING is written — not "written but
 // filtered later". This is the post-2026-07-18 baseline and the control arm of every
 // A/B that measures the outcome record.
-func TestWritePlanScene_DefaultOffWritesNothing(t *testing.T) {
+func TestRecordPlanOutcome_DefaultOffWritesNothing(t *testing.T) {
 	t.Parallel()
 	store := &fakeExperienceStore{}
 	agent := &Agent{ExperienceStore: store} // RecordOutcomes defaults false
-	if err := agent.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "plan-1", Goal: "do a thing", Success: true, Surprise: -1}); err != nil {
+	if err := agent.RecordPlanOutcome(context.Background(), domain.PlanRecord{PlanID: "plan-1", Goal: "do a thing", Success: true, Surprise: -1}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(store.saved) != 0 {
@@ -87,20 +87,20 @@ func TestWritePlanScene_DefaultOffWritesNothing(t *testing.T) {
 }
 
 // A nil Manager must not panic — the gate is checked before any dereference.
-func TestWritePlanScene_NilManagerIsSafe(t *testing.T) {
+func TestRecordPlanOutcome_NilManagerIsSafe(t *testing.T) {
 	t.Parallel()
 	agent := &Agent{RecordOutcomes: true}
-	if err := agent.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "plan-1", Goal: "goal", Success: true, Surprise: -1}); err != nil {
+	if err := agent.RecordPlanOutcome(context.Background(), domain.PlanRecord{PlanID: "plan-1", Goal: "goal", Success: true, Surprise: -1}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 // An empty plan id is not an episode.
-func TestWritePlanScene_EmptyPlanIDWritesNothing(t *testing.T) {
+func TestRecordPlanOutcome_EmptyPlanIDWritesNothing(t *testing.T) {
 	t.Parallel()
 	store := &fakeExperienceStore{}
 	agent := &Agent{RecordOutcomes: true, ExperienceStore: store}
-	if err := agent.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "", Goal: "goal", Success: true, Surprise: -1}); err != nil {
+	if err := agent.RecordPlanOutcome(context.Background(), domain.PlanRecord{PlanID: "", Goal: "goal", Success: true, Surprise: -1}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(store.saved) != 0 {
@@ -108,48 +108,8 @@ func TestWritePlanScene_EmptyPlanIDWritesNothing(t *testing.T) {
 	}
 }
 
-// TestRecordToolOutput_ArmsAreIndependent pins the split that A2.2 needed and the
-// original single-flag gating broke.
-//
-// The failure it guards against is invisible in isolation: with everything behind
-// RecordExperiential, turning ON the outcome-record arm produced NOTHING, because the
-// engaged-entity accretion that feeds a plan scene never ran, so every scene hit the
-// contentless-scene skip. Both flags were set in every existing test, so nothing caught
-// it until a live plan execution wrote zero rows.
-func TestRecordToolOutput_ArmsAreIndependent(t *testing.T) {
-	t.Parallel()
-	mutation := domain.ToolOutputRecord{
-		ToolName:   "write_file",
-		ArgsJSON:   []byte(`{"path":"/tmp/a.md"}`),
-		Output:     []byte(`{"ok":1}`),
-		IsMutation: true,
-		TaskID:     "step-0-plan1",
-	}
-
-	t.Run("both off writes nothing", func(t *testing.T) {
-		store := &captureSaveStore{}
-		agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.7, 5, 3, 64, 0, 0, 0)
-		_ = agent.RecordToolOutput(context.Background(), mutation)
-		if got := agent.engagedCountForPlan("plan1"); got != 0 {
-			t.Errorf("both arms off: expected no engagement, got %d", got)
-		}
-	})
-
-	t.Run("outcomes arm alone accretes the plan scope", func(t *testing.T) {
-		store := &captureSaveStore{}
-		agent := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.7, 5, 3, 64, 0, 0, 0)
-		agent.RecordOutcomes = true // RecordExperiential stays FALSE
-		_ = agent.RecordToolOutput(context.Background(), mutation)
-		if got := agent.engagedCountForPlan("plan1"); got == 0 {
-			t.Error("outcome arm on: the plan scene scope must accrete, or WritePlanScene " +
-				"skips as contentless and A2.2 silently writes nothing")
-		}
-	})
-}
-
 // multiCaptureStore keeps EVERY saved doc. The shared captureSaveStore keeps only the
-// last, which cannot answer "did this plan write a precedent IN ADDITION to its outcome
-// record" — the exact question A2.3 turns on.
+// last, which cannot answer how many rows a plan wrote.
 type multiCaptureStore struct {
 	fakeVectorStore
 	saved []domain.Document
@@ -160,16 +120,15 @@ func (m *multiCaptureStore) Save(_ context.Context, doc *domain.Document) error 
 	return nil
 }
 
-// TestWritePlanScene_SurpriseGatesTheFailurePrecedent covers ADR-0049 A2.3's core
-// distinction. An UNSURPRISING failure gets the ordinary outcome record and nothing
-// more; a surprising one additionally earns a failure precedent in the negative-edge
-// lane. A gate that fired on every failure would be a failure gate, which is exactly
+// TestRecordPlanOutcome_SurpriseGatesTheFailurePrecedent covers ADR-0049 A2.3's core
+// distinction. An UNSURPRISING failure closes its episode and writes nothing more; a
+// surprising one earns a failure record in the negative-edge lane. A gate that fired on every failure would be a failure gate, which is exactly
 // what A2.3 rejects.
-func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
+func TestRecordPlanOutcome_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 	t.Parallel()
 	newAgent := func() (*multiCaptureStore, *Agent) {
 		store := &multiCaptureStore{}
-		a := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.7, 5, 3, 64, 0, 0, 0)
+		a := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 0.7, 5, 3)
 		a.RecordOutcomes = true
 		a.SurpriseFloor = 0.5
 		return store, a
@@ -203,7 +162,7 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 	t.Run("unsurprising failure writes no precedent", func(t *testing.T) {
 		store, a := newAgent()
 		engage(a, "p1")
-		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "p1", Goal: "routine", Success: false, Surprise: 0.1})
+		_ = a.RecordPlanOutcome(context.Background(), domain.PlanRecord{PlanID: "p1", Goal: "routine", Success: false, Surprise: 0.1})
 		if n := negEdges(store); n != 0 {
 			t.Errorf("a predicted failure must not earn a precedent, got %d", n)
 		}
@@ -212,20 +171,20 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 	t.Run("surprising failure writes a precedent", func(t *testing.T) {
 		store, a := newAgent()
 		engage(a, "p2")
-		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "p2", Goal: "shock", Success: false, Surprise: 0.9})
+		_ = a.RecordPlanOutcome(context.Background(), domain.PlanRecord{PlanID: "p2", Goal: "shock", Success: false, Surprise: 0.9})
 		if n := negEdges(store); n != 1 {
 			t.Errorf("an unexpected failure must earn exactly one precedent, got %d", n)
 		}
 	})
 
 	// ADR-0049 A2.2 shapes the precedent as conditions → attempt → failure mode. The
-	// scene text is the conditions; without the executor's failure summary the stored
-	// record names only the goal, so every failure of one goal is the same precedent and
+	// goal is the conditions; without the executor's failure summary the stored record
+	// names only the goal, so every failure of one goal is the same precedent and
 	// retrieval can never say HOW it went wrong.
 	t.Run("the precedent carries the failure mode", func(t *testing.T) {
 		store, a := newAgent()
 		engage(a, "p4")
-		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+		_ = a.RecordPlanOutcome(context.Background(), domain.PlanRecord{
 			PlanID: "p4", Goal: "migrate", Success: false, Surprise: 0.9,
 			FailedStep:     2,
 			FailureSummary: `step 2 (apply the migration): relation "documents" does not exist`,
@@ -236,9 +195,9 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 				t.Errorf("precedent text missing %q; got %q", want, edge.Text)
 			}
 		}
-		// The conditions half survives: the scene text is what makes the failure
-		// mode situated rather than a bare error string.
-		if !strings.Contains(edge.Text, "plan goal: migrate") {
+		// The conditions half survives: since 2026-11-05 it is built from the
+		// PlanRecord (goal and outcome), not from the removed scene text.
+		if !strings.Contains(edge.Text, "plan goal: migrate | outcome: failure") {
 			t.Errorf("precedent dropped the conditions; got %q", edge.Text)
 		}
 	})
@@ -246,7 +205,7 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 	t.Run("an unrendered failure falls back to the goal", func(t *testing.T) {
 		store, a := newAgent()
 		engage(a, "p5")
-		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+		_ = a.RecordPlanOutcome(context.Background(), domain.PlanRecord{
 			PlanID: "p5", Goal: "migrate", Success: false, Surprise: 0.9,
 		})
 		edge := negEdge(t, store)
@@ -263,7 +222,7 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 	t.Run("replan exhaustion writes a precedent with surprise unknown", func(t *testing.T) {
 		store, a := newAgent()
 		engage(a, "p6")
-		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+		_ = a.RecordPlanOutcome(context.Background(), domain.PlanRecord{
 			PlanID: "p6", Goal: "cold start", Success: false, Surprise: -1,
 			ReplanExhausted: true,
 			FailureSummary:  `step 0 (write the file): permission denied`,
@@ -288,7 +247,7 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 		store, a := newAgent()
 		a.SurpriseFloor = 0 // never set by this deployment
 		engage(a, "p7")
-		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+		_ = a.RecordPlanOutcome(context.Background(), domain.PlanRecord{
 			PlanID: "p7", Goal: "cold start", Success: false, Surprise: -1, ReplanExhausted: true,
 		})
 		if n := negEdges(store); n != 1 {
@@ -301,7 +260,7 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 	t.Run("an under-floor failure without exhaustion still writes nothing", func(t *testing.T) {
 		store, a := newAgent()
 		engage(a, "p8")
-		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+		_ = a.RecordPlanOutcome(context.Background(), domain.PlanRecord{
 			PlanID: "p8", Goal: "routine", Success: false, Surprise: 0.1, ReplanExhausted: false,
 		})
 		if n := negEdges(store); n != 0 {
@@ -314,7 +273,7 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 	t.Run("a SUCCESS marked replan-exhausted writes no precedent", func(t *testing.T) {
 		store, a := newAgent()
 		engage(a, "p9")
-		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{
+		_ = a.RecordPlanOutcome(context.Background(), domain.PlanRecord{
 			PlanID: "p9", Goal: "recovered", Success: true, Surprise: -1, ReplanExhausted: true,
 		})
 		if n := negEdges(store); n != 0 {
@@ -325,48 +284,55 @@ func TestWritePlanScene_SurpriseGatesTheFailurePrecedent(t *testing.T) {
 	t.Run("surprising SUCCESS writes no precedent", func(t *testing.T) {
 		store, a := newAgent()
 		engage(a, "p3")
-		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "p3", Goal: "pleasant", Success: true, Surprise: 0.9})
+		_ = a.RecordPlanOutcome(context.Background(), domain.PlanRecord{PlanID: "p3", Goal: "pleasant", Success: true, Surprise: 0.9})
 		if n := negEdges(store); n != 0 {
 			t.Errorf("a success is not a negative edge however surprising, got %d", n)
 		}
 	})
 }
 
-// Surprise must reach the record as a FIELD and lift its activation, since A2.3 gates
-// retrievability rather than existence. Unknown surprise (-1) must take the baseline
-// and never be read as "predicted perfectly".
-func TestWritePlanScene_SurpriseStampedAndScalesActivation(t *testing.T) {
+// decision (2026-11-05, scenes cancelled): the failure record and the procedure
+// feedback used to sit BELOW the "contentless scene" early return, so a plan that
+// engaged no entity (a pure-reasoning plan, or a tool call whose args did not parse)
+// left no failure record and never fed its procedures. With the scene gone there is
+// no early return: both run for every plan.
+func TestRecordPlanOutcome_NoEngagementStillWritesFailureRecordAndFeedsProcedures(t *testing.T) {
 	t.Parallel()
-	run := func(surprise float64) domain.Document {
-		store := &multiCaptureStore{}
-		a := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), nil, 0.7, 5, 3, 64, 0, 0, 0)
-		a.RecordOutcomes = true
-		_ = a.RecordToolOutput(context.Background(), domain.ToolOutputRecord{
-			ToolName: "write_file", ArgsJSON: []byte(`{"path":"/tmp/y.md"}`),
-			Output: []byte(`{"ok":1}`), IsMutation: true, TaskID: "step-0-ps",
-		})
-		_ = a.WritePlanScene(context.Background(), domain.PlanRecord{PlanID: "ps", Goal: "goal", Success: true, Surprise: surprise})
-		for _, d := range store.saved {
-			if d.DocumentType == domain.DocTypeMnemonicScene {
-				return d
-			}
-		}
-		t.Fatal("no outcome record written")
-		return domain.Document{}
+	ctx := context.Background()
+	store := newLifecycleStore()
+	routine := domain.Procedure{
+		ID: "proc-r", Trigger: "reason about it", Steps: []domain.ProcedureStep{{Intent: "think"}},
+		Confidence: 0.6, Status: domain.ProcedureActive,
 	}
+	if err := SaveProcedure(ctx, store, &recordingEmbedder{}, routine); err != nil {
+		t.Fatalf("seed procedure: %v", err)
+	}
+	a := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 0.7, 5, 3)
+	a.RecordOutcomes = true
+	a.ProcedureDeprecateBelow = 0.3
 
-	high := run(1.0)
-	if got, _ := high.Metadata["surprise"].(float64); got != 1.0 {
-		t.Errorf("surprise must be stamped on the record, got %v", high.Metadata["surprise"])
+	// No RecordToolOutput call: the plan engaged nothing.
+	_ = a.RecordPlanOutcome(ctx, domain.PlanRecord{
+		PlanID: "p-pure", Goal: "reason about it", Success: false, Surprise: -1,
+		ReplanExhausted: true, FailureSummary: "step 0 (think): gave up",
+		FollowedProcedures: []string{"proc-r"},
+	})
+
+	edges := store.ofType(domain.DocTypeNegativeEdge)
+	if len(edges) != 1 {
+		t.Fatalf("a replan-exhausted failure with no engaged entity must still write its failure record, got %d", len(edges))
 	}
-	low := run(0.0)
-	unknown := run(-1)
-	if !(high.ActivationStrength > low.ActivationStrength) {
-		t.Errorf("a surprising episode must start more retrievable: %v vs %v",
-			high.ActivationStrength, low.ActivationStrength)
+	for _, want := range []string{"gave up", "plan goal: reason about it", "replan exhausted"} {
+		if !strings.Contains(edges[0].Text, want) {
+			t.Errorf("failure record missing %q; got %q", want, edges[0].Text)
+		}
 	}
-	if unknown.ActivationStrength != low.ActivationStrength {
-		t.Errorf("unknown surprise must take the baseline, not be penalised: %v vs %v",
-			unknown.ActivationStrength, low.ActivationStrength)
+	got, ok := procedureFromDoc(store.docs["proc-r"])
+	if !ok {
+		t.Fatal("procedure row unreadable after feedback")
+	}
+	if !(got.Confidence < routine.Confidence) {
+		t.Errorf("the failed plan must feed its procedure even with no engaged entity: confidence %v → %v",
+			routine.Confidence, got.Confidence)
 	}
 }

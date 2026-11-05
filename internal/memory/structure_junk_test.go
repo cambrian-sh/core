@@ -69,14 +69,13 @@ func newJunkTestManager(t *testing.T, p StructureParser, backends []string) (*In
 	t.Helper()
 	store := &captureAllStore{}
 	agent := &Agent{
-		Manager:    &MemoryManager{Store: store, Embedder: &mockEmbedder{vec: []float32{0.1, 0.2}}},
-		pendingCap: 256,
+		Manager: &MemoryManager{Store: store, Embedder: &mockEmbedder{vec: []float32{0.1, 0.2}}},
 	}
 	reg, err := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
-	im := NewIngestionManagerWithRegistry(nil, &mockEmbedder{vec: []float32{0.1, 0.2}}, agent, reg,
+	im := NewIngestionManagerWithRegistry(&mockEmbedder{vec: []float32{0.1, 0.2}}, agent, reg,
 		IngestionConfig{JunkFilterBackends: backends})
 	im.SetStructureGraph(p, noopStructStore{})
 	return im, store
@@ -105,7 +104,7 @@ func TestStructureJunk_ChatSessionKeepsEveryLeaf(t *testing.T) {
 		SourceURI: "longmemeval://session-1", SourceType: "chat", Title: "chat",
 		Body: strings.Join([]string{chatProse, chatTable, chatTerminal, chatNumbers, chatReceipts}, "\n\n"),
 	}
-	out, err := im.persistChunks(context.Background(), doc, nil, "e1", "", false)
+	out, err := im.persistChunks(context.Background(), doc, nil, "e1", false)
 	if err != nil {
 		t.Fatalf("persistChunks: %v", err)
 	}
@@ -143,7 +142,7 @@ func TestStructureJunk_DoclingJunkDroppedWhenConfigured(t *testing.T) {
 	}
 	im, store := newJunkTestManager(t, &fixedParser{make: mk}, []string{"docling"})
 	doc := domain.ExternalDocument{SourceURI: "operator_ingest://bio.pdf", SourceType: "pdf", Title: "bio", Data: []byte("%PDF")}
-	out, err := im.persistChunks(context.Background(), doc, nil, "e1", "", false)
+	out, err := im.persistChunks(context.Background(), doc, nil, "e1", false)
 	if err != nil {
 		t.Fatalf("persistChunks: %v", err)
 	}
@@ -160,7 +159,7 @@ func TestStructureJunk_DoclingJunkDroppedWhenConfigured(t *testing.T) {
 
 	// The same Docling parse with the filter disabled ([]) keeps everything.
 	im2, store2 := newJunkTestManager(t, &fixedParser{make: mk}, nil)
-	if out, err := im2.persistChunks(context.Background(), doc, nil, "e1", "", false); err != nil || out.DroppedLeaves != 0 {
+	if out, err := im2.persistChunks(context.Background(), doc, nil, "e1", false); err != nil || out.DroppedLeaves != 0 {
 		t.Fatalf("filter off: dropped=%d err=%v", out.DroppedLeaves, err)
 	}
 	if !strings.Contains(storedText(store2), "image not available") {
@@ -207,7 +206,7 @@ func TestStructureJunk_DropsAreLoggedWithHashAndSample(t *testing.T) {
 			junkLeaf("chk:n2", "a real sentence about the plan", "", 2),
 		},
 	}
-	im := NewIngestionManagerWithRegistry(nil, &mockEmbedder{vec: []float32{0.1}}, testAgent(), nil,
+	im := NewIngestionManagerWithRegistry(&mockEmbedder{vec: []float32{0.1}}, testAgent(), nil,
 		IngestionConfig{JunkFilterBackends: []string{"text"}})
 
 	n := im.applyStructureJunkFilter(context.Background(), "doc-42", sd)
@@ -240,7 +239,7 @@ func TestStructureJunk_DropsAreLoggedWithHashAndSample(t *testing.T) {
 // Classified leaves of an UNFILTERED backend are kept and only visible at DEBUG.
 func TestStructureJunk_UnfilteredBackendKeepsAndStaysOffInfo(t *testing.T) {
 	t.Parallel()
-	im := NewIngestionManagerWithRegistry(nil, &mockEmbedder{vec: []float32{0.1}}, testAgent(), nil,
+	im := NewIngestionManagerWithRegistry(&mockEmbedder{vec: []float32{0.1}}, testAgent(), nil,
 		IngestionConfig{JunkFilterBackends: []string{"docling"}})
 	sd := structuredChat("markdown")
 	if n := im.applyStructureJunkFilter(context.Background(), "chat", sd); n != 0 {

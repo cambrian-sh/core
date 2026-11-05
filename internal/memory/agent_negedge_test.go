@@ -21,7 +21,7 @@ func (c *captureSaveStore) Save(_ context.Context, doc *domain.Document) error {
 
 func newTestAgent(store domain.VectorStore) *Agent {
 	mgr := NewMemoryManager(store, &fakeEmbedder{})
-	return NewAgent(mgr, nil, 0.70, 5, 3, 64, 0, 0, 0)
+	return NewAgent(mgr, 0.70, 5, 3)
 }
 
 func TestFetchContext_FiltersNeuralTrace(t *testing.T) {

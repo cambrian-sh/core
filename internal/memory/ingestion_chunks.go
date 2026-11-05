@@ -65,7 +65,6 @@ func (im *IngestionManager) persistChunksTracked(
 	ident docIdentity,
 	chunks []domain.Chunk,
 	entityID string,
-	scene string,
 	trackKG bool,
 	trackFacts bool,
 ) (persistOutcome, error) {
@@ -267,7 +266,7 @@ func (im *IngestionManager) persistChunksTracked(
 			Text:               chunk.Body,
 			ActivationStrength: externalActivation(doc.Importance),
 			Embedding:          domain.Embedding{Vector: vec, Model: "dynamic", Size: len(vec)},
-			Metadata:           withChunkSpeaker(chunkMetadata(doc, chunks, chunk, documentID, ids, i, entityID, scene), speakers[i]),
+			Metadata:           withChunkSpeaker(chunkMetadata(doc, chunks, chunk, documentID, ids, i, entityID), speakers[i]),
 			CreatedAt:          ingestedAt,
 			EventStamp:         stamps[i],
 		})
@@ -424,7 +423,6 @@ func chunkMetadata(
 	ids []string,
 	index int,
 	entityID string,
-	scene string,
 ) map[string]any {
 	meta := make(map[string]any, len(chunk.Metadata)+8)
 	for k, v := range chunk.Metadata {
@@ -439,7 +437,6 @@ func chunkMetadata(
 		nextID = ids[index+1]
 		nextBody = chunks[index+1].Body
 	}
-	meta["snapshot"] = scene
 	meta["document_id"] = documentID
 	meta["chunk_id"] = ids[index]
 	meta["source_doc_entity_id"] = entityID
@@ -468,7 +465,6 @@ func chunkMetadata(
 		FollowingChunkID: nextID,
 		SiblingContext: SiblingContext{
 			ParentTitle:      doc.Title,
-			ParentScene:      scene,
 			PrecedingSnippet: clip(prevBody, precedingSnippetMaxBytes),
 			FollowingSnippet: clip(nextBody, followingSnippetMaxBytes),
 		},

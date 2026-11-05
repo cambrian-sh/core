@@ -1,0 +1,22 @@
+{
+  "title": "RoutedDecomposition",
+  "description": "A route (direct, facets or chain) and the sub-questions it needs (planner.decompose_routed). The route is not an enum here: the kernel validates it and treats an unusable route as chain.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["route", "sub_questions"],
+  "properties": {
+    "route": { "type": "string" },
+    "sub_questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["q", "ref"],
+        "properties": {
+          "q": { "type": "string" },
+          "ref": { "type": "string" }
+        }
+      }
+    }
+  }
+}

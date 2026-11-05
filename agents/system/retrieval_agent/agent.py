@@ -7,15 +7,21 @@ this agent once per step via ``Auctioneer.CallAgent`` with a JSON Handoff
 state (Go passes it in each call), so it is trivially restartable + testable.
 
 Ops (dispatched in :meth:`run`):
-  * ``plan_step``      → {query} → the lexical QuerySpec (Phase 2a).
-  * ``decide_continue``→ {state} → the stop/continue decision (stub → later phase).
-  * ``synthesize``     → {chunks} → the typed answer (stub → later phase).
-  * ``decompose``      → {query[, routes]} → {sub_questions, refs}; with
+  * ``plan_step``         → {query[, scratchpad, history, hop]} → the lexical QuerySpec.
+  * ``reason_step``       → {query, cot, chunks} → {thought, done, search_query}.
+  * ``decide_continue``   → {query, chunks, history} → the stop/continue decision.
+  * ``synthesize``        → {query, chunks} → the typed answer {status, text[, failure]}.
+  * ``synthesize_cited``  → the same with inline [n] citations (ADR-0081).
+  * ``decompose``         → {query[, routes]} → {sub_questions, refs}; with
     ``"routes": true`` (ADR-0135) also the planner's ``route`` (direct|facets|chain).
+  * ``answer_subq``       → {subq, chunks} → {answer}.
+  * ``extract_provenance``→ {text[, hint, reference_date|event_time]} → provenance.
 
 LLM access: a kernel-invoked agent receives a valid ``session_token_id`` on the
-task (from the Handoff), so ``self.substrate.generate(token, prompt)`` reaches
-the managed model proxy. This is why the endpoint works under kernel invocation
+task (from the Handoff), so ``self.substrate.generate_request(token, ...)``
+reaches the managed model proxy. Each op sends the ADR-0139 C1 shape built by
+``planner``: library system blocks (cached), one user message with the tagged
+data, and the reply's JSON schema. This is why the endpoint works under kernel invocation
 even though a bare external ``generate_stream`` (no session) is rejected.
 
 Why a CognitiveAgent (not Deterministic): it needs ``self.substrate`` (the LLM
@@ -28,7 +34,7 @@ from __future__ import annotations
 import json
 import os
 
-from cambrian_agent_sdk import CognitiveAgent
+from cambrian_agent_sdk import CognitiveAgent, SchemaValidationFailed
 from cambrian_agent_sdk._logging import configure_logging
 
 import planner
@@ -115,9 +121,13 @@ class RetrievalAgent(CognitiveAgent):
             return self._ok({"answer": ans})
         if op == "extract_provenance":
             llm = self._make_llm(task, _PLAN_MAX_TOKENS)
+            # Relative dates resolve against the caller's event time when it sends
+            # one (reference_date, or event_time), else today's date (UTC).
+            ref = obj.get("reference_date") or obj.get("event_time") or ""
             return self._ok(
                 planner.extract_provenance(
-                    str(obj.get("text", "")), llm, hint=str(obj.get("hint", ""))
+                    str(obj.get("text", "")), llm, hint=str(obj.get("hint", "")),
+                    ref_date=str(ref),
                 )
             )
         return self._ok({"error": f"unknown op {op!r}"})
@@ -125,9 +135,17 @@ class RetrievalAgent(CognitiveAgent):
     # ── internals ────────────────────────────────────────────────────────────
 
     def _make_llm(self, task, max_tokens: int):
-        """Build the injected LLM callable bound to this invocation's session
-        token + remaining deadline (so a slow model can't leak a thread past
-        the Go step deadline)."""
+        """Build the injected LLM callable bound to this invocation's session token.
+
+        Sends the planner's structured request (ADR-0139 C1) and reports whether
+        the reply's schema was checked: only when the kernel neither ignored
+        ``response_schema`` nor predates the structured fields is the text JSON as
+        is; otherwise the planner decodes it tolerantly. A reply that still failed
+        its schema after the kernel's repair turn (``SchemaValidationFailed``) is
+        an unreadable answer, handed to the op's own fail-safe as an empty,
+        checked reply. Every other error propagates, as before: the kernel's
+        dispatcher fails open on it.
+        """
         token = str(getattr(task, "session_token_id", "") or "")
         # Pass NO client-side gRPC deadline (timeout_ms=0 ⇒ None), matching react.py's
         # deliberate choice for an agent's own LLM call. The former code used
@@ -136,36 +154,50 @@ class RetrievalAgent(CognitiveAgent):
         # int(remaining*1000) overflows to a nonsense value (observed 9.2e21), which the gRPC
         # client turns into an INSTANT DEADLINE_EXCEEDED — the exact failure that killed every
         # decompose. The kernel's provider timeout + the session-token TTL still bound the call.
-        def _llm(prompt: str) -> str:
-            return self.substrate.generate(
-                session_token_id=token,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=_TEMPERATURE,
-                timeout_ms=0,
-            )
+        def _llm(req: planner.LLMRequest) -> planner.Reply:
+            try:
+                res = self.substrate.generate_request(
+                    token,
+                    system=req.system,
+                    messages=req.messages,
+                    response_schema=req.response_schema,
+                    # One retrieval chain is machine-paced: the short cache window.
+                    cache_ttl="short",
+                    max_tokens=max_tokens,
+                    temperature=_TEMPERATURE,
+                    timeout_ms=0,
+                )
+            except SchemaValidationFailed:
+                return planner.Reply(text="", schema_checked=True)
+            ignored = set(getattr(res, "ignored", None) or [])
+            checked = (req.response_schema is not None
+                       and not getattr(res, "legacy_kernel", False)
+                       and "response_schema" not in ignored)
+            return planner.Reply(text=str(getattr(res, "text", "") or ""), schema_checked=checked)
 
         return _llm
 
     @staticmethod
     def _make_ollama_llm(max_tokens: int):
-        """Direct local-ollama backend for the decompose op (env-gated above)."""
+        """Direct local-ollama backend for the decompose op (env-gated above). It
+        has no system field and no schema check: the request is flattened and the
+        reply decoded tolerantly."""
         import urllib.request
 
-        def _llm(prompt: str) -> str:
+        def _llm(req: planner.LLMRequest) -> planner.Reply:
             body = {
                 "model": _DECOMPOSE_OLLAMA_MODEL,
-                "prompt": prompt,
+                "prompt": req.flatten(),
                 "stream": False,
                 "options": {"num_predict": max_tokens, "temperature": _TEMPERATURE},
             }
-            req = urllib.request.Request(
+            http_req = urllib.request.Request(
                 _OLLAMA_URL + "/api/generate",
                 data=json.dumps(body).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                return str(json.loads(resp.read())["response"])
+            with urllib.request.urlopen(http_req, timeout=120) as resp:
+                return planner.Reply(text=str(json.loads(resp.read())["response"]))
 
         return _llm
 
@@ -188,4 +220,7 @@ agent = RetrievalAgent(agent_id="retrieval_agent")
 
 if __name__ == "__main__":  # pragma: no cover
     configure_logging(agent_id="retrieval_agent")
+    import logging
+    logging.getLogger("cambrian.retrieval_agent").info(
+        "retrieval_agent prompt versions %s", planner.prompt_versions())
     agent.serve()

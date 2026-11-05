@@ -121,7 +121,6 @@ type Server struct {
 	VectorStore    domain.VectorStore
 	MemorySearcher domain.MemorySearcher
 	Hippocampus    domain.ProceduralMemory
-	ModelRouter    *llm.ProviderRegistry
 	Provider       domain.LLMProvider // ADR-0042: agent-step model provisioning (health-guarded)
 	SessionMgr     *session.SessionManager
 	// ConvSurfaces resolves which ENTRY POINT a conversation arrived on, for turns
@@ -156,6 +155,11 @@ type Server struct {
 	// AgentCallLogger records agent-initiated LLM calls (GenerateViaModelStream) to an
 	// external observability backend. nil = disabled (no-op). OBSERVABILITYREQ REQ1.
 	AgentCallLogger AgentCallLogger
+
+	// ThoughtLLM serves in-kernel thought steps (thoughtFn) on the C1 request path:
+	// the planner-purpose generator, wired at the composition root. nil = the
+	// Planner's legacy Generate, which sends the request flattened to one prompt.
+	ThoughtLLM domain.Generator
 
 	// GenWrapper decorates a raw generator with cross-cutting concerns (Langfuse
 	// tracing) so thought/synthesis steps generated in-kernel are
@@ -285,7 +289,6 @@ func NewServer(
 	enqVerification executer.EnqueueVerification,
 	auctioneer domain.StepDispatcher,
 	watcher *supwatcher.Watcher,
-	modelRouter *llm.ProviderRegistry,
 	sessionMgr *session.SessionManager,
 	workspaceStage domain.WorkspaceStage,
 	llmGateway LLMGateway,
@@ -303,7 +306,6 @@ func NewServer(
 		Hippocampus:         hippocampus,
 		EnqueueVerification: enqVerification,
 		Watcher:             watcher,
-		ModelRouter:         modelRouter,
 		SessionMgr:          sessionMgr,
 		WorkspaceStage:      workspaceStage,
 		LLMGateway:          llmGateway,
@@ -432,6 +434,19 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			// Falls back to not_implemented when no SyncProcessor is wired (OSS build).
 			if sp, ok := s.SignalReceiver.(SyncProcessor); ok {
 				convID := in.GetMetadata()["_conversation_id"]
+				if convID == "" {
+					// The sync (chat) pipelines are keyed to a conversation stream, so a
+					// turn with no conversation has nothing to answer it: ProcessSync
+					// with an empty stream can only fail ("no sync WatchConfig found for
+					// stream \"\""), which surfaced as UNKNOWN for any agent-plane Execute
+					// the router read as chat. Run it as work instead — the PLAN path
+					// below, which opens a fresh session exactly as a turn with no
+					// session header does. The caller's session header is not consulted
+					// here; an unadoptable raw x-session-id stays unadopted (ADR-0139 D8).
+					// T-20261104-agent-plane-execute-with-an-unrecognised-raw-x.
+					slog.Info("router: chat turn with no conversation, running it as a plan")
+					break
+				}
 				sig := domain.Signal{
 					StreamID: convID,
 					RawText:  rawInput,
@@ -709,9 +724,11 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			// this the kernel has no way to answer "whose lease is this?" and has to
 			// trust whatever the agent puts in a header.
 			if r := s.leaseResolver(); r != nil {
-				// AgentID is intentionally left empty: the lease is acquired at step
-				// DISPATCH, before the auction picks a winner, so the executing agent
-				// is not yet known here.
+				// AgentID is left empty HERE: the lease is acquired before selection
+				// picks the winner, so the executing agent is not yet known. The
+				// dispatcher binds it (BindLeaseAgent) immediately before each
+				// CallAgent — winner, runner-up fallback, yield delegate and resume
+				// — so the ADR-0139 D8 ownership check applies to this lease too.
 				r.BindLease(tokenID, domain.LeaseBinding{
 					SessionID: sessionID,
 					RunID:     executionID,
@@ -754,8 +771,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 
 		// healingOccurred is set true by innerFn when SelfHealer injects _heal_attempt,
 		// signalling that at least one retry was consumed. It is passed to the Memory
-		// Barrier, which since ADR-0049 D3 only logs — the step result is recorded by
-		// RecordExecution onto the Tier-1 channel, not re-ingested here.
+		// Barrier, which since ADR-0049 D3 only logs.
 		healingOccurred := false
 
 		// runnerUps and winningAgentID are captured from the auction so that the
@@ -771,7 +787,10 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 				ID:          fmt.Sprintf("task-%d", i),
 				Description: step.Query,
 				Context:     fmt.Sprintf("Subject: %s", plan.Subject),
-				Deadline:    time.Now().Add(20 * time.Second),
+				// Deadline is left zero: the Dispatcher stamps the deadline the step
+				// actually runs under (execution.plan.step_timeout_* under the plan
+				// ceiling). A hardcoded `now + 20 s` here was read by nothing
+				// (T-20261105-slow-model-reliability-hardcoded-20-s).
 			}
 			// ROUTE-03: thread the step's declared capabilities into the
 			// auction ONLY under the capability_contract arm, so the control
@@ -816,6 +835,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 					slog.Warn("🏥 Healing exhausted", "step", i,
 						"attempts", healErr.AttemptCount,
 						"loop", healErr.LoopDetected,
+						"timed_out", healErr.TimedOut,
 						"err", healErr.LastError)
 					// Experiential memory removed: no negative-edge (failure) write-back.
 				}
@@ -871,25 +891,30 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		return resp, nil
 	}
 
-	planCtx, cancelPlan := context.WithTimeout(ctx, time.Duration(s.ExecCfg.Plan.PlanTimeoutMs)*time.Millisecond)
-	defer cancelPlan()
+	// The progress-aware plan ceiling (owner decision 2026-11-05, plan_watchdog.go):
+	// the plan is cut when it goes idle for plan_idle_timeout_ms, or at the
+	// plan_max_duration_ms safety cap — never merely for being long while it works.
+	// Each cause names its key, so a step that dies because the PLAN was cut says so
+	// (SelfHealer reports context.Cause) instead of reading as the step's own
+	// failure (T-20261105-slow-model-reliability-hardcoded-20-s).
+	planAct := newPlanActivity()
+	maxDuration, idleTimeout := planLimits(s.ExecCfg.Plan)
+	planCtx, stopPlanCeiling := startPlanCeiling(ctx, maxDuration, idleTimeout,
+		s.planLivenessProbe(ctx, planAct, executionID, sessionID))
+	defer stopPlanCeiling()
+
+	var replanner executer.ReplanHandler = inFlightReplanner{inner: s.replanHandler(planBudget), own: planAct}
 
 	eventWriter := s.taskEventWriter()
 
 	executor := &executer.DAGExecutor{
 		EventWriter:         eventWriter,
 		EnqueueVerification: s.EnqueueVerification,
-		// ADR-0049 §A2.2. The recorder is wired again, but the two paths behind it are
-		// gated independently and only one is armed by default:
-		//   RecordExecution  — the RAW path removed 2026-07-18 (whole tool payloads as
-		//                      single embeddings). Self-gates on RecordExperiential,
-		//                      which stays false permanently.
-		//   WritePlanScene   — the OUTCOME RECORD. Self-gates on RecordOutcomes
-		//                      (execution.experience_records_enabled), default TRUE
-		//                      since the owner decision of 2026-07-28 (ADR-0095).
-		// Wiring the recorder therefore does NOT restore the removed design: at the
-		// defaults the raw path stays off and only the abstraction-only outcome
-		// record is written.
+		// ADR-0049 §A2.2 / ADR-0095: the plan lifecycle (BeginExperience,
+		// RecordPlanOutcome). Self-gates on RecordOutcomes
+		// (execution.experience_records_enabled), default TRUE since the owner
+		// decision of 2026-07-28. The raw step-result path (RecordExecution) that
+		// used to sit behind this recorder was deleted 2026-11-05.
 		MemoryRecorder:         s.MemoryAgent,
 		Surprise:               s.SurpriseOracle, // ADR-0049 A2.3: may be nil ⇒ surprise unknown (-1)
 		WorkspaceStage:         s.WorkspaceStage,
@@ -901,9 +926,14 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		StepCache:              s.StepCache,
 		UseGlobalWorkspace:     s.ExecCfg.Workspace.UseGlobalWorkspace,
 		ContextRefSnippetChars: s.ExecCfg.Plan.ContextRefSnippetChars,
-		ThoughtFn:              executer.StepFunc(s.thoughtFn(plan)),
-		CheckpointValidator:    awareness.NewLLMCheckpointValidator(s.Planner),
-		ReplanHandler:          s.replanHandler(planBudget),
+		// A thought step is an in-kernel model call on no step lease: in flight
+		// for the plan idle watchdog while it runs.
+		ThoughtFn: inFlightStepFunc(planAct, executer.StepFunc(s.thoughtFn(plan))),
+		// No mid-plan checkpoint gate: the LLM checkpoint validator and the executor
+		// gate that consumed it were deleted (ADR-0139 D10 / owner Q5). It failed open
+		// and trusted the agent's self-report; verification is the async
+		// VerificationWorker's job.
+		ReplanHandler:          replanner,
 		MaxReplanAttempts:      s.ExecCfg.Plan.MaxReplanAttempts,
 		MaxFanOutWidth:         s.ExecCfg.Plan.MaxFanOutWidth,
 		MaxPlanCost:            s.ExecCfg.Plan.MaxPlanCost,
@@ -927,7 +957,12 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		defer s.ControlHub.Deregister(sessionID)
 	}
 
-	masterCtx, err := executor.ExecuteFrom(planCtx, plan, initialCtx, executer.StepFunc(stepFn), startFromStep)
+	masterCtx, err := executor.ExecuteFrom(planCtx, plan, initialCtx,
+		activityStepFunc(planAct, executer.StepFunc(stepFn)), startFromStep)
+	// The plan ceiling's verdict, when it is what ended the plan: the idle or the
+	// max-duration cause (both wrap context.DeadlineExceeded). Nil for a plan that
+	// finished, failed on its own, or was abandoned by its caller.
+	ceilingCause := planCeilingCause(ctx, planCtx)
 
 	// ADR-0131 D3: a plan that hit the session ceiling ENDS AS A FAILURE, whatever
 	// shape the executor's outcome took. A refused call can surface as a step error,
@@ -946,6 +981,12 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		if errors.As(err, &partialErr) {
 			slog.Warn("⚠️ Partial plan failure", "failed_step", partialErr.FailedStep, "context_entries", len(partialErr.Context))
 			partialErr.Context["_partial_plan"] = "true"
+			if ceilingCause != nil {
+				// Reported as a TIMEOUT, with the cause naming which limit fired.
+				partialErr.Context[PlanTimedOutKey] = "true"
+				partialErr.Context[PlanTimeoutCauseKey] = ceilingCause.Error()
+				slog.Warn("⏱️ plan cut by its ceiling", "run", executionID, "cause", ceilingCause)
+			}
 			s.stampSpend(partialErr.Context, sessionID, spendBase)
 			return &pb.Handoff{
 				Id:        in.Id,
@@ -954,6 +995,13 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 				Payload:   &pb.Object{Data: []byte(partialErr.Error())},
 				Metadata:  partialErr.Context,
 			}, nil
+		}
+		if ceilingCause != nil {
+			// The executor returns the bare ctx error when the ceiling fires between
+			// steps — context.Canceled for the idle cut, which would reach the caller
+			// as CANCELLED. It is a timeout, and the caller is told which one.
+			slog.Warn("⏱️ plan cut by its ceiling", "run", executionID, "cause", ceilingCause)
+			return nil, status.Error(codes.DeadlineExceeded, ceilingCause.Error())
 		}
 		return nil, err
 	}
@@ -1050,7 +1098,10 @@ func (s *Server) PutContextNode(ctx context.Context, req *pb.PutContextNodeReque
 // replanHandler re-plans through the plan's shared planner-call budget, so DAG
 // replans and the validation retry draw on one count.
 func (s *Server) replanHandler(budget *planCallBudget) executer.ReplanHandler {
-	return awareness.NewPlannerReplanHandler(budget.generator(s.Planner))
+	// The concrete *awareness.Planner reports its capability_contract arm, so a
+	// replan under that arm keeps required_capabilities (and the vocabulary guard).
+	caps, _ := s.Planner.(awareness.CapabilityContractSource)
+	return awareness.NewPlannerReplanHandler(budget.generator(s.Planner), awareness.WithCapabilityContract(caps))
 }
 
 // taskEventWriter resolves the TaskEvent sink: the registry when it can write
@@ -1082,49 +1133,30 @@ func (s *Server) wrapGen(g domain.Generator) domain.Generator {
 
 func (s *Server) thoughtFn(plan *domain.ExecutionPlan) executer.StepFunc {
 	return func(ctx context.Context, i int, handoff *domain.Handoff) (*domain.Handoff, error) {
-		var prompt string
+		var req domain.GenerateRequest
 		if handoff.Payload != nil && len(handoff.Payload.Data) > 0 {
-			// Checkpoint coherence probe: runCheckpoint passes its question via Payload.Data.
-			prompt = string(handoff.Payload.Data)
+			// An explicit prompt on the payload is used as-is. (Its original caller, the
+			// ADR-0013 checkpoint probe, was removed with the gate — ADR-0139 D10.)
+			req = domain.UserPrompt(string(handoff.Payload.Data))
 		} else {
-			var contextSummary strings.Builder
-			// Phase 0 fallback: context map contains step_N_result keys.
-			for k, v := range handoff.Context {
-				if strings.HasPrefix(k, "step_") && strings.HasSuffix(k, "_result") {
-					contextSummary.WriteString(fmt.Sprintf("- %s: %s\n", k, v))
-				}
+			// ADR-0139 D2: library prompts, results in a deterministic order, bounded,
+			// in tagged data regions (thought_synthesis.go).
+			results := fitThoughtResults(s.thoughtResults(ctx, handoff), s.ExecCfg.Plan.ThoughtResultsMaxChars)
+			var err error
+			if req, err = buildThoughtRequest(plan.Subject, plan.Steps[i].Query, results); err != nil {
+				return nil, err
 			}
-			// ADR-0022 Phase 3: when UseGlobalWorkspace=true, Context is nil and
-			// prior step outputs are carried as ContextRefs in WorkingMemory.
-			for _, ref := range handoff.WorkingMemory {
-				if ref.Snippet != "" {
-					contextSummary.WriteString(fmt.Sprintf("- %s: %s\n", ref.CID, ref.Snippet))
-				} else if s.ContentStore != nil {
-					node, err := s.ContentStore.Get(ctx, ref.CID)
-					if err == nil && node != nil {
-						contextSummary.WriteString(fmt.Sprintf("- %s: %s\n", ref.CID, string(node.Data)))
-					}
-				}
-			}
-			prompt = fmt.Sprintf(
-				"You are the Cambrian Reasoning engine. Synthesize:\nGoal: %q\nTask: %s\nResults:\n%s\nOutput ONLY synthesis.",
-				plan.Subject, plan.Steps[i].Query, contextSummary.String(),
-			)
 		}
-
-		var respStr string
-		var genErr error
 
 		// The model serving a thought step is the Provider's call, resolved from the
 		// declared need — no per-step model name travels on the plan any more.
-		respStr, genErr = s.Planner.Generate(ctx, prompt)
-
+		resp, genErr := domain.GenerateVia(ctx, s.thoughtGenerator(), req)
 		if genErr != nil {
 			return nil, genErr
 		}
 
 		return &domain.Handoff{
-			Payload: &domain.Payload{Data: []byte(strings.TrimSpace(respStr))},
+			Payload: &domain.Payload{Data: []byte(strings.TrimSpace(resp.Text))},
 			Context: handoff.Context,
 		}, nil
 	}
@@ -1402,9 +1434,9 @@ func (s *Server) runFallback(
 }
 
 // handleMemoryBarrier is a barrier SIGNAL only — it no longer ingests anything.
-// ADR-0049 D3 moved the step result onto RecordExecution (the `step_N:` fact) and
-// mutations onto synchronous `mnemonic_action` records, so re-ingesting here produced
-// a duplicate row. The former prioritised path went through IngestSync, which has since
+// ADR-0049 D3 moved mutations onto synchronous `mnemonic_action` records, so
+// re-ingesting here produced a duplicate row; step output itself is no longer captured
+// (RecordExecution was deleted 2026-11-05). The former prioritised path went through IngestSync, which has since
 // been removed along with the rest of the LLM-importance write path.
 func (s *Server) handleMemoryBarrier(
 	stepCtx context.Context,
@@ -1413,13 +1445,12 @@ func (s *Server) handleMemoryBarrier(
 	kernelSync, envMutation bool,
 	links []string,
 ) {
-	// ADR-0049 D3: the step result is already recorded by RecordExecution (the
-	// `step_N:` fact) and any mutations as synchronous `mnemonic_action` records — so
-	// the barrier no longer re-ingests a duplicate `Step N result:` row. Retained as a
+	// ADR-0049 D3: mutations are recorded as synchronous `mnemonic_action` records,
+	// so the barrier does not re-ingest a `Step N result:` row. Retained as a
 	// barrier signal only (the sync-flush guarantee for mutations is met by the
 	// synchronous action save). `resp`/`links`/`stepCtx` are now unused here.
 	if kernelSync || envMutation {
-		slog.Info("🛡️ Memory Barrier (step result already recorded; no duplicate ingest)",
+		slog.Info("🛡️ Memory Barrier (signal only; no ingest)",
 			"step", i, "reason", map[string]bool{"sync": kernelSync, "mutation": envMutation})
 	}
 }

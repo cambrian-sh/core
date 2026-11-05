@@ -47,7 +47,7 @@ func factDocs(n int) []domain.SearchResult {
 func TestWorkspaceStage_LTMEnrichmentFacts(t *testing.T) {
 	t.Parallel()
 	store := &mockFactStore{docs: factDocs(2)}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2, false, 0.7)
+	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2)
 
 	result, err := ws.PrimeForPlanning(context.Background(), "auth deployment")
 	if err != nil {
@@ -72,7 +72,7 @@ func TestWorkspaceStage_NegativesInEnrichment(t *testing.T) {
 			}},
 		},
 	}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2, false, 0.7)
+	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2)
 
 	result, err := ws.PrimeForPlanning(context.Background(), "some query")
 	if err != nil {
@@ -118,7 +118,7 @@ func (n *negLaneStore) GetBatch(_ context.Context, _ []string) ([]domain.Documen
 func TestWorkspaceStage_NegativesSearchedAgainstTheTask(t *testing.T) {
 	t.Parallel()
 	store := &negLaneStore{}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.35, false, 0.7)
+	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.35)
 
 	if _, err := ws.PrimeForPlanning(context.Background(), "auth deployment"); err != nil {
 		t.Fatalf("PrimeForPlanning failed: %v", err)
@@ -148,7 +148,7 @@ func TestWorkspaceStage_NegativesSearchedAgainstTheTask(t *testing.T) {
 func TestWorkspaceStage_SlotLimit(t *testing.T) {
 	t.Parallel()
 	store := &mockFactStore{docs: factDocs(8)}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 3, 0.2, false, 0.7)
+	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 3, 0.2)
 
 	result, err := ws.PrimeForExecution(context.Background(), &domain.ExecutionPlan{Subject: "test"}, nil)
 	if err != nil {
@@ -163,7 +163,7 @@ func TestWorkspaceStage_SlotLimit(t *testing.T) {
 func TestWorkspaceStage_EmptyResults(t *testing.T) {
 	t.Parallel()
 	store := &mockFactStore{docs: nil}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2, false, 0.7)
+	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2)
 
 	result, err := ws.PrimeForPlanning(context.Background(), "unknown query")
 	if err != nil {
@@ -178,7 +178,7 @@ func TestWorkspaceStage_EmptyResults(t *testing.T) {
 func TestWorkspaceStage_ExecutionSlots(t *testing.T) {
 	t.Parallel()
 	store := &mockFactStore{docs: factDocs(10)}
-	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2, false, 0.7)
+	ws := NewWorkspaceStage(store, &fakeEmbedder{}, nil, 10, 5, 0.2)
 
 	result, err := ws.PrimeForExecution(context.Background(), &domain.ExecutionPlan{Subject: "test"}, nil)
 	if err != nil {
@@ -186,5 +186,43 @@ func TestWorkspaceStage_ExecutionSlots(t *testing.T) {
 	}
 	if len(result) != 5 {
 		t.Errorf("got %d entries, want exactly 5 (execution slots)", len(result))
+	}
+}
+
+// typeRecordingStore records the DocumentType of every Search, and returns a hit with
+// an embedding for any type, so a scene query (had it survived) would prime.
+type typeRecordingStore struct {
+	mockFactStore
+	mu    sync.Mutex
+	types []string
+	vecs  [][]float32
+}
+
+func (s *typeRecordingStore) Search(ctx context.Context, vec []float32, opts domain.SearchOptions) ([]domain.SearchResult, error) {
+	s.mu.Lock()
+	s.types = append(s.types, opts.DocumentType)
+	s.vecs = append(s.vecs, append([]float32(nil), vec...))
+	s.mu.Unlock()
+	return s.mockFactStore.Search(ctx, vec, opts)
+}
+
+// 2026-11-05 (decisions/scenes-cancelled.md): enrichment no longer queries scenes and
+// no longer primes the FACT query; the fact search runs on the raw query embedding.
+func TestWorkspaceStage_NoScenePriming(t *testing.T) {
+	t.Parallel()
+	store := &typeRecordingStore{mockFactStore: mockFactStore{docs: factDocs(2)}}
+	emb := &fakeEmbedder{}
+	ws := NewWorkspaceStage(store, emb, nil, 10, 5, 0.2)
+	if _, err := ws.PrimeForPlanning(context.Background(), "auth deployment"); err != nil {
+		t.Fatalf("PrimeForPlanning failed: %v", err)
+	}
+	raw, _ := emb.Embed(context.Background(), "auth deployment")
+	for i, ty := range store.types {
+		if ty == "mnemonic_scene" {
+			t.Errorf("enrichment must not search mnemonic_scene; searched types %v", store.types)
+		}
+		if ty == domain.DocTypeMnemonicFact && fmt.Sprint(store.vecs[i]) != fmt.Sprint(raw) {
+			t.Errorf("the FACT query must use the raw embedding; got %v want %v", store.vecs[i], raw)
+		}
 	}
 }

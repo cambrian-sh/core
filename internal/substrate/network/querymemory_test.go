@@ -18,10 +18,9 @@ import (
 type mockMemorySearcher struct {
 	results          []domain.SearchResult
 	actionResults    []domain.SearchResult
-	sceneResults     []domain.SearchResult
-	precedentResults []domain.SearchResult
+	procedureResults []domain.SearchResult
 	err              error
-	lastLane         string // "facts" | "actions" | "scenes" | "precedents" | "procedures"
+	lastLane         string // "facts" | "actions" | "procedures"
 }
 
 func (m *mockMemorySearcher) Search(_ context.Context, _, _ string) ([]domain.SearchResult, error) {
@@ -34,19 +33,9 @@ func (m *mockMemorySearcher) SearchActions(_ context.Context, _, _ string) ([]do
 	return m.actionResults, m.err
 }
 
-func (m *mockMemorySearcher) SearchScenes(_ context.Context, _, _ string) ([]domain.SearchResult, error) {
-	m.lastLane = "scenes"
-	return m.sceneResults, m.err
-}
-
-func (m *mockMemorySearcher) SearchPrecedents(_ context.Context, _, _ string) ([]domain.SearchResult, error) {
-	m.lastLane = "precedents"
-	return m.precedentResults, m.err
-}
-
 func (m *mockMemorySearcher) SearchProcedures(_ context.Context, _, _ string) ([]domain.SearchResult, error) {
 	m.lastLane = "procedures"
-	return m.precedentResults, m.err
+	return m.procedureResults, m.err
 }
 
 func ctxWithAgentID(agentID string) context.Context {
@@ -185,25 +174,32 @@ func TestQueryMemory_RoutesActionsLane(t *testing.T) {
 	}
 }
 
-// ADR-0049 Issue 014: x-lane="precedents" routes to the world-model transition lane.
-// The retired "entity" lane is no longer a case, so it falls through to the default fact
-// lane like any other unknown value — an unknown lane must never be an error.
-func TestQueryMemory_RoutesPrecedentLane(t *testing.T) {
+// Retired lanes are no longer cases, so they fall through to the default fact lane like
+// any other unknown value — an unknown lane must never be an error. "entity" was retired
+// earlier; "scenes" and "precedents" on 2026-11-05 (decisions/scenes-cancelled.md), and
+// an SDK older than its deprecation shim still sends "precedents".
+func TestQueryMemory_RetiredLanesFallThroughToFacts(t *testing.T) {
 	t.Parallel()
 	searcher := &mockMemorySearcher{
 		results:          []domain.SearchResult{{Document: domain.Document{ID: "f", Text: "a fact"}, Score: 0.9}},
-		precedentResults: []domain.SearchResult{{Document: domain.Document{ID: "p", Text: "SITUATION: x | OUTCOME: failure"}, Score: 0.8}},
+		procedureResults: []domain.SearchResult{{Document: domain.Document{ID: "p", Text: "procedure: ship"}, Score: 0.8}},
 	}
 	srv := makeQueryMemoryServer(searcher)
 
-	resp, _ := srv.QueryMemory(ctxWithLane("agent-a", "entity"), &pb.MemoryRequest{Query: "file:a.md"})
-	if searcher.lastLane != "facts" || resp.Results[0].Text != "a fact" {
-		t.Errorf("a retired lane must fall through to the fact lane; got lane=%q text=%q", searcher.lastLane, resp.Results[0].Text)
+	for _, lane := range []string{"entity", "scenes", "precedents"} {
+		searcher.lastLane = ""
+		resp, err := srv.QueryMemory(ctxWithLane("agent-a", lane), &pb.MemoryRequest{Query: "ship"})
+		if err != nil {
+			t.Fatalf("lane %q: a retired lane must not be an error: %v", lane, err)
+		}
+		if searcher.lastLane != "facts" || resp.Results[0].Text != "a fact" {
+			t.Errorf("retired lane %q must fall through to the fact lane; got lane=%q text=%q", lane, searcher.lastLane, resp.Results[0].Text)
+		}
 	}
 
-	resp, _ = srv.QueryMemory(ctxWithLane("agent-a", "precedents"), &pb.MemoryRequest{Query: "ship"})
-	if searcher.lastLane != "precedents" || !strings.Contains(resp.Results[0].Text, "OUTCOME: failure") {
-		t.Errorf("x-lane=precedents must route to the precedent lane; got lane=%q text=%q", searcher.lastLane, resp.Results[0].Text)
+	resp, _ := srv.QueryMemory(ctxWithLane("agent-a", "procedures"), &pb.MemoryRequest{Query: "ship"})
+	if searcher.lastLane != "procedures" || resp.Results[0].Text != "procedure: ship" {
+		t.Errorf("x-lane=procedures must still route to the procedure lane; got lane=%q", searcher.lastLane)
 	}
 }
 

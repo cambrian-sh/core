@@ -29,7 +29,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/internal/config"
-	"github.com/cambrian-sh/core/internal/metabolism/interview"
+	"github.com/cambrian-sh/core/internal/metabolism/registration"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -169,10 +169,10 @@ func bootstrapBenchmarkKernel(b *testing.B) (*Kernel, context.CancelFunc) {
 	return k, cancel
 }
 
-// waitForCognitiveAgents blocks until all cognitive agents finish their Interview.
+// waitForCognitiveAgents blocks until all cognitive agents have a seeded profile.
 func waitForCognitiveAgents(b *testing.B, k *Kernel) {
 	b.Helper()
-	if err := interview.WaitForAgentReadiness(k.Metabolism.InterviewWorker, cognitiveAgentIDs, 60*time.Second); err != nil {
+	if err := registration.WaitForAgentReadiness(k.Metabolism.ProfileSeeder, cognitiveAgentIDs, 60*time.Second); err != nil {
 		b.Skipf("cognitive agents not ready: %v", err)
 	}
 }

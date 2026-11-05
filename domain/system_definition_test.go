@@ -13,7 +13,7 @@ func TestASystemGrantCountsAsMuchAsBeingNamedInTheMap(t *testing.T) {
 	t.Parallel()
 	granted := AgentDefinition{ID: "source_discovery_agent", System: true}
 	if !IsSystemDefinition(granted) {
-		t.Error("an explicit AddSystemAgent grant must confer system status, or a plugin's kernel organ gets interviewed and auctioned")
+		t.Error("an explicit AddSystemAgent grant must confer system status, or a plugin's kernel organ gets routed user tasks")
 	}
 	// And the ID route still works, so nothing compiled-in regressed.
 	if !IsSystemDefinition(AgentDefinition{ID: "retrieval_agent"}) {

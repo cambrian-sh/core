@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/procenv"
 )
 
 // SEC-01 per-agent memory cap resolution: declared manifest limit wins; system
@@ -39,69 +40,34 @@ func TestEffectiveMemLimitMB(t *testing.T) {
 	}
 }
 
-func TestIsSecretEnvName(t *testing.T) {
-	secret := []string{
-		"OPENCODE_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY",
-		"CAMBRIAN_OPERATOR_PASSWORD", "CAMBRIAN_ADMIN_TOKEN", "LANGFUSE_SECRET_KEY",
-		"AWS_SECRET_ACCESS_KEY", "HF_TOKEN", "DB_PASSWORD", "my_private_key",
-	}
-	for _, s := range secret {
-		if !isSecretEnvName(s) {
-			t.Errorf("expected %q to be treated as a secret", s)
-		}
-	}
-	notSecret := []string{"PATH", "LANG", "TMPDIR", "PYTHONUTF8", "HOME", "SYSTEMROOT"}
-	for _, s := range notSecret {
-		if isSecretEnvName(s) {
-			t.Errorf("expected %q NOT to be treated as a secret", s)
-		}
-	}
-}
+// The allowlist itself (secret stripping, base names, passthrough) lives in
+// internal/procenv and is tested there; agentmgr only calls procenv.Allowlisted.
 
 func envHas(env []string, name string) (string, bool) {
 	for _, kv := range env {
-		if eq := strings.IndexByte(kv, '='); eq > 0 && envKey(kv[:eq]) == envKey(name) {
+		if eq := strings.IndexByte(kv, '='); eq > 0 && procenv.Key(kv[:eq]) == procenv.Key(name) {
 			return kv[eq+1:], true
 		}
 	}
 	return "", false
 }
 
-func TestAllowlistedAgentEnv_StripsSecrets_KeepsBase(t *testing.T) {
-	// A kernel secret, an OS essential, an operator passthrough, and an
-	// unrelated var. Only the base + declared passthrough (non-secret) survive.
+// The agent launcher really applies the strict allowlist: a kernel secret in the
+// environment does not reach the agent's command.
+func TestBuildAgentCmd_EnvIsAllowlisted(t *testing.T) {
 	t.Setenv("OPENCODE_API_KEY", "sk-super-secret")
-	t.Setenv("CAMBRIAN_OPERATOR_PASSWORD", "hunter2")
-	t.Setenv("PATH", "/usr/bin")
 	t.Setenv("SOME_UNRELATED_VAR", "nope")
-	t.Setenv("MY_AGENT_CACHE", "/tmp/cache")
-
-	env := allowlistedAgentEnv([]string{"MY_AGENT_CACHE"})
-
-	if _, ok := envHas(env, "OPENCODE_API_KEY"); ok {
+	im := NewInstanceManager("python", "localhost:50051")
+	def := &domain.AgentDefinition{ID: "a", Runtime: domain.RuntimePython, ExecPath: "agent.py"}
+	cmd, err := im.buildAgentCmd(def, &domain.Instance{ID: "i1"}, "")
+	if err != nil {
+		t.Fatalf("buildAgentCmd: %v", err)
+	}
+	if _, ok := envHas(cmd.Env, "OPENCODE_API_KEY"); ok {
 		t.Error("SECRET LEAK: OPENCODE_API_KEY passed to agent env")
 	}
-	if _, ok := envHas(env, "CAMBRIAN_OPERATOR_PASSWORD"); ok {
-		t.Error("SECRET LEAK: CAMBRIAN_OPERATOR_PASSWORD passed to agent env")
-	}
-	if _, ok := envHas(env, "SOME_UNRELATED_VAR"); ok {
+	if _, ok := envHas(cmd.Env, "SOME_UNRELATED_VAR"); ok {
 		t.Error("deny-by-default failed: unrelated var passed through")
-	}
-	if v, ok := envHas(env, "PATH"); !ok || v != "/usr/bin" {
-		t.Errorf("base allowlist var PATH missing/wrong: %q ok=%v", v, ok)
-	}
-	if v, ok := envHas(env, "MY_AGENT_CACHE"); !ok || v != "/tmp/cache" {
-		t.Errorf("declared passthrough MY_AGENT_CACHE missing/wrong: %q ok=%v", v, ok)
-	}
-}
-
-// An operator must not be able to allowlist a secret name — the secret guard
-// wins over the passthrough.
-func TestAllowlistedAgentEnv_PassthroughCannotOverrideSecretGuard(t *testing.T) {
-	t.Setenv("SNEAKY_API_KEY", "leak")
-	env := allowlistedAgentEnv([]string{"SNEAKY_API_KEY"})
-	if _, ok := envHas(env, "SNEAKY_API_KEY"); ok {
-		t.Error("SECRET LEAK: a secret-named var was passed because it was allowlisted")
 	}
 }
 

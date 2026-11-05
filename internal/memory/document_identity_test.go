@@ -16,8 +16,8 @@ import (
 // the shape most ingest tests need (ProcessSync and the batch worker resolve the id
 // themselves, ADR-0138 D1.4).
 func (im *IngestionManager) persistChunks(ctx context.Context, doc domain.ExternalDocument, chunks []domain.Chunk,
-	entityID, scene string, trackKG bool) (persistOutcome, error) {
-	return im.persistChunksTracked(ctx, doc, im.resolveDocumentID(ctx, doc), chunks, entityID, scene, trackKG, false)
+	entityID string, trackKG bool) (persistOutcome, error) {
+	return im.persistChunksTracked(ctx, doc, im.resolveDocumentID(ctx, doc), chunks, entityID, trackKG, false)
 }
 
 // T-20261103-binary-uploads-with-a-tag-or-session-collapse (RED before ADR-0138): two
@@ -209,12 +209,12 @@ func (o *orderedStore) SaveBatch(ctx context.Context, docs []*domain.Document) e
 
 func newLifecycleIngestManager(t *testing.T, store domain.VectorStore, lc domain.DocumentLifecycleStore, cfg IngestionConfig) *IngestionManager {
 	t.Helper()
-	agent := &Agent{Manager: &MemoryManager{Store: store, Embedder: &mockEmbedder{vec: []float32{0.1, 0.2}}}, pendingCap: 256}
+	agent := &Agent{Manager: &MemoryManager{Store: store, Embedder: &mockEmbedder{vec: []float32{0.1, 0.2}}}}
 	reg, err := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
-	im := NewIngestionManagerWithRegistry(nil, &mockEmbedder{vec: []float32{0.1, 0.2}}, agent, reg, cfg)
+	im := NewIngestionManagerWithRegistry(&mockEmbedder{vec: []float32{0.1, 0.2}}, agent, reg, cfg)
 	im.SetDocumentLifecycle(lc)
 	return im
 }
@@ -279,7 +279,7 @@ func TestPersist_RevisesBeforeTheChunkSaveAndRefusalWritesNothing(t *testing.T) 
 	im := newLifecycleIngestManager(t, store, lc, IngestionConfig{})
 	doc := domain.ExternalDocument{Body: "v2 text", Title: "t", Tags: []string{sourceDocumentMarker, "named-doc"}, Author: "agent:a"}
 	chunks := []domain.Chunk{{Body: "v2 text"}}
-	if _, err := im.persistChunks(context.Background(), doc, chunks, "e1", "", false); err != nil {
+	if _, err := im.persistChunks(context.Background(), doc, chunks, "e1", false); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 	if len(events) < 2 || events[0] != "revise:named-doc" || events[1] != "save" {
@@ -293,7 +293,7 @@ func TestPersist_RevisesBeforeTheChunkSaveAndRefusalWritesNothing(t *testing.T) 
 	refusing := &fakeLifecycle{refuse: true, events: &events}
 	store2 := &orderedStore{events: &events}
 	im2 := newLifecycleIngestManager(t, store2, refusing, IngestionConfig{})
-	_, err := im2.persistChunks(context.Background(), doc, chunks, "e1", "", false)
+	_, err := im2.persistChunks(context.Background(), doc, chunks, "e1", false)
 	if !errors.Is(err, domain.ErrDocumentOwnedByAnotherWriter) {
 		t.Fatalf("want ErrDocumentOwnedByAnotherWriter, got %v", err)
 	}

@@ -59,7 +59,7 @@ type streamingAgentCaller struct{ gw *SubstrateLLMGateway }
 
 func (c *streamingAgentCaller) CallAgent(_ context.Context, _ string, h *domain.Handoff, _ string) (*domain.Handoff, error) {
 	out := make(chan domain.StreamChunk, 8)
-	if err := c.gw.StreamChunks(context.Background(), domain.LeaseID(h.Context["_session_token_id"]), "decompose", domain.GenerateOptions{}, out); err != nil {
+	if err := c.gw.StreamChunks(context.Background(), domain.LeaseID(h.Context["_session_token_id"]), domain.UserPrompt("decompose"), out); err != nil {
 		return nil, err
 	}
 	return &domain.Handoff{Payload: &domain.Payload{Data: []byte(`{"sub_questions":["a"],"refs":[]}`)}}, nil

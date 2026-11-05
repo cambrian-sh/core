@@ -32,14 +32,13 @@ func (noopStructStore) SaveStructuralEdges(context.Context, []StructuralEdge) er
 func newCaptureIngestManager(t *testing.T, p StructureParser) *IngestionManager {
 	t.Helper()
 	agent := &Agent{
-		Manager:    &MemoryManager{Store: &captureAllStore{}, Embedder: &mockEmbedder{vec: []float32{0.1, 0.2}}},
-		pendingCap: 256,
+		Manager: &MemoryManager{Store: &captureAllStore{}, Embedder: &mockEmbedder{vec: []float32{0.1, 0.2}}},
 	}
 	reg, err := NewRegistry(defaultChunkers(), config.ChunkerConfig{Default: "option_c"})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
-	im := NewIngestionManagerWithRegistry(nil, &mockEmbedder{vec: []float32{0.1, 0.2}}, agent, reg, IngestionConfig{})
+	im := NewIngestionManagerWithRegistry(&mockEmbedder{vec: []float32{0.1, 0.2}}, agent, reg, IngestionConfig{})
 	im.SetStructureGraph(p, noopStructStore{})
 	return im
 }
@@ -62,7 +61,7 @@ func TestPersistChunks_BinaryDocumentSendsDataB64(t *testing.T) {
 		Data:       raw,
 	}
 
-	if _, err := im.persistChunks(context.Background(), doc, nil, "entity-1", "", false); err != nil {
+	if _, err := im.persistChunks(context.Background(), doc, nil, "entity-1", false); err != nil {
 		t.Fatalf("persistChunks: %v", err)
 	}
 
@@ -91,7 +90,7 @@ func TestPersistChunks_TextDocumentSendsNoDataB64(t *testing.T) {
 		Body:       "# Notes\n\nthe sprint slipped",
 	}
 
-	if _, err := im.persistChunks(context.Background(), doc, nil, "entity-1", "", false); err != nil {
+	if _, err := im.persistChunks(context.Background(), doc, nil, "entity-1", false); err != nil {
 		t.Fatalf("persistChunks: %v", err)
 	}
 

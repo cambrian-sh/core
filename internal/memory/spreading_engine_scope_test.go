@@ -23,8 +23,8 @@ import (
 func scopedSpreadFixture() (*recordingGraphStore, *vecStoreWithDocs) {
 	gs := &recordingGraphStore{
 		edges: []domain.DocumentEdge{
-			{SourceID: "pub-seed", TargetID: "pub-neighbor", EdgeType: domain.EdgeDiscussedIn, Weight: 0.9, CreatedAt: time.Now()},
-			{SourceID: "pub-seed", TargetID: "secret", EdgeType: domain.EdgeDiscussedIn, Weight: 0.9, CreatedAt: time.Now()},
+			{SourceID: "pub-seed", TargetID: "pub-neighbor", EdgeType: domain.EdgeCoActivated, Weight: 0.9, CreatedAt: time.Now()},
+			{SourceID: "pub-seed", TargetID: "secret", EdgeType: domain.EdgeCoActivated, Weight: 0.9, CreatedAt: time.Now()},
 		},
 	}
 	vs := &vecStoreWithDocs{docs: map[string]domain.Document{

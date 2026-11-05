@@ -56,7 +56,7 @@ func (g *countingGateway) Acquire(ctx context.Context, sa domain.StepAllocation,
 
 func TestKernelPlanExecutor_RunsPlanThroughRealDAGExecutor(t *testing.T) {
 	cfg := config.ExecutionConfig{Plan: config.PlanConfig{
-		PlanTimeoutMs: 30000, StepTimeoutBaseBufferMs: 5000, StepTimeoutMultiplier: 2.0,
+		PlanMaxDurationMs: 30000, StepTimeoutBaseBufferMs: 5000, StepTimeoutMultiplier: 2.0,
 	}}
 	cfg.LLM.LLMGatewayMaxConcurrency = 4
 	gw := &countingGateway{SubstrateLLMGateway: subnetwork.NewLLMGateway(cfg)}

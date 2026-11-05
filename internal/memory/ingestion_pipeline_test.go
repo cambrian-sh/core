@@ -2,9 +2,7 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -14,20 +12,6 @@ import (
 
 // ── test doubles ─────────────────────────────────────────────────────────────
 
-type mockLLMGen struct {
-	response string
-	err      error
-	calls    int
-}
-
-func (m *mockLLMGen) Generate(_ context.Context, _ string) (string, error) {
-	m.calls++
-	if m.err != nil {
-		return "", m.err
-	}
-	return m.response, nil
-}
-
 type mockEmbedder struct {
 	vec []float32
 	err error
@@ -35,15 +19,6 @@ type mockEmbedder struct {
 
 func (m *mockEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
 	return m.vec, m.err
-}
-
-func scenesJSON(n int) string {
-	scenes := make([]string, n)
-	for i := range scenes {
-		scenes[i] = fmt.Sprintf("Scene for document %d", i+1)
-	}
-	b, _ := json.Marshal(scenes)
-	return string(b)
 }
 
 func makeDoc(i int) domain.ExternalDocument {
@@ -60,8 +35,7 @@ func makeDoc(i int) domain.ExternalDocument {
 func testAgent() *Agent {
 	mgr := &MemoryManager{Embedder: &mockEmbedder{vec: []float32{0.1}}}
 	return &Agent{
-		Manager:    mgr,
-		pendingCap: 256,
+		Manager: mgr,
 	}
 }
 
@@ -69,62 +43,14 @@ func testAgent() *Agent {
 // gone: the ingestion pipeline commits chunks to the store directly and nothing but
 // these tests ever called it.
 
-// ── Cycle 3 — SceneGenerator.Generate calls LLM once for 5 docs ──────────────
-
-func TestSceneGenerator_Generate_BatchOf5_OneLLMCall(t *testing.T) {
-	t.Parallel()
-	gen := &mockLLMGen{response: scenesJSON(5)}
-	sg := NewSceneGenerator(gen)
-	batch := make([]domain.ExternalDocument, 5)
-	for i := range batch {
-		batch[i] = makeDoc(i)
-	}
-
-	scenes, err := sg.Generate(context.Background(), batch)
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if len(scenes) != 5 {
-		t.Fatalf("expected 5 scenes, got %d", len(scenes))
-	}
-	if gen.calls != 1 {
-		t.Errorf("expected 1 LLM call, got %d", gen.calls)
-	}
-	for i, s := range scenes {
-		if s == "" {
-			t.Errorf("scene %d is empty", i)
-		}
-	}
-}
-
-// ── Cycle 4 — SceneGenerator.Generate falls back to placeholders on LLM error ─
-
-func TestSceneGenerator_Generate_LLMError_FallbackPlaceholders(t *testing.T) {
-	t.Parallel()
-	gen := &mockLLMGen{err: fmt.Errorf("timeout")}
-	sg := NewSceneGenerator(gen)
-	batch := []domain.ExternalDocument{makeDoc(0), makeDoc(1)}
-
-	scenes, err := sg.Generate(context.Background(), batch)
-	if err != nil {
-		t.Fatalf("Generate should not propagate LLM errors: %v", err)
-	}
-	if len(scenes) != 2 {
-		t.Fatalf("expected 2 fallback scenes, got %d", len(scenes))
-	}
-	for i, s := range scenes {
-		if !strings.Contains(s, "scene generation pending") {
-			t.Errorf("scene %d: expected fallback placeholder, got %q", i, s)
-		}
-	}
-}
+// Cycles 3 and 4 covered the ADR-0028 SceneGenerator, deleted 2026-11-05 with
+// scenes (decisions/scenes-cancelled.md).
 
 // ── Cycle 5 — IngestionManager.Enqueue returns false when queue is full ───────
 
 func TestIngestionManager_Enqueue_ReturnsFalseWhenFull(t *testing.T) {
 	t.Parallel()
-	sg := NewSceneGenerator(&mockLLMGen{response: scenesJSON(5)})
-	im := NewIngestionManager(sg, &mockEmbedder{vec: []float32{0.1}}, testAgent(),
+	im := NewIngestionManager(&mockEmbedder{vec: []float32{0.1}}, testAgent(),
 		IngestionConfig{QueueSize: 1, BatchSize: 5, Workers: 1, BatchWait: time.Second}, config.ChunkerConfig{Default: "option_c"})
 
 	doc := makeDoc(0)
@@ -138,16 +64,13 @@ func TestIngestionManager_Enqueue_ReturnsFalseWhenFull(t *testing.T) {
 
 func TestIngestionManager_EndToEnd_DocFlowsToChunkFacts(t *testing.T) {
 	t.Parallel()
-	gen := &mockLLMGen{response: scenesJSON(5)}
 	emb := &mockEmbedder{vec: []float32{0.1, 0.2}}
 	store := &captureAllStore{}
 	ag := &Agent{
-		Manager:    &MemoryManager{Store: store, Embedder: emb},
-		pendingCap: 256,
+		Manager: &MemoryManager{Store: store, Embedder: emb},
 	}
 
-	sg := NewSceneGenerator(gen)
-	im := NewIngestionManager(sg, emb, ag, IngestionConfig{
+	im := NewIngestionManager(emb, ag, IngestionConfig{
 		QueueSize: 100,
 		BatchSize: 1, // flush after 1 doc so test doesn't wait
 		Workers:   1,

@@ -362,7 +362,7 @@ func (r *recordingBinder) ResolveLease(id domain.LeaseID) (domain.LeaseBinding, 
 func TestTurn_BindsConversationOntoTheLease(t *testing.T) {
 	svc, _, _ := setup(t, domain.ProfileOperator)
 	binder := &recordingBinder{}
-	svc.SetLeaseBinder(binder)
+	svc.SetLeaseBinder(binder, "chat_agent")
 	svc.acquireToken = func(context.Context, int, time.Duration) (string, func(), error) {
 		return "lease-1", func() {}, nil
 	}
@@ -380,6 +380,11 @@ func TestTurn_BindsConversationOntoTheLease(t *testing.T) {
 	}
 	if b.OriginMessageID == "" {
 		t.Error("OriginMessageID must name the ordering turn — that is the causation half")
+	}
+	// ADR-0139 D8: the turn lease names the pool's worker agent, so any other agent
+	// presenting it is refused by the transport.
+	if b.AgentID != "chat_agent" {
+		t.Errorf("AgentID = %q, want chat_agent (the pool's worker agent)", b.AgentID)
 	}
 }
 

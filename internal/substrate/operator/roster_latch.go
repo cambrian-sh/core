@@ -37,17 +37,17 @@ func NewRosterLatch(feed *Spool) *RosterLatch {
 
 // AgentCapabilitySource enumerates registered agents and their declared capabilities from
 // the authoritative manifests. The roster is seeded from it at boot so the feed carries the
-// agent→capabilities roster EVEN WHEN no interview runs — with disable_interviews the
-// interview worker never emits AgentReadyEvent, so the manifest is the only capability source.
+// agent→capabilities roster before the first AgentReadyEvent (and when the embedder is
+// down at boot the profile seeder emits none), so the manifest is the boot capability source.
 type AgentCapabilitySource interface {
 	GetAllAgents(ctx context.Context) ([]domain.AgentDefinition, error)
 	GetManifest(ctx context.Context, agentID string) (*domain.AgentManifest, error)
 }
 
 // Seed populates the roster from the manifest source (call once at boot, before Start).
-// Mirrors the interview worker's preferCaps: use declared capabilities, else fall back to
-// tools. A later AgentReadyEvent from the interview path (fresher: trust score, updated
-// caps) overwrites the seed via Observe.
+// Mirrors the profile seeder's preferCaps: use declared capabilities, else fall back to
+// tools. A later AgentReadyEvent from the seeder (fresher: trust score, updated caps)
+// overwrites the seed via Observe.
 func (r *RosterLatch) Seed(ctx context.Context, src AgentCapabilitySource) {
 	if src == nil {
 		return

@@ -7,7 +7,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// ROUTE-02: the Gatekeeper records a Declaration->Interview->Merit funnel onto
+// ROUTE-02: the Gatekeeper records a Declaration->Semantic->Merit funnel onto
 // the DispatchTask when routing tracing is enabled, so a mis-route is
 // explainable from the persisted auction event alone.
 
@@ -67,8 +67,10 @@ func TestFunnel_RecordsL1AndL3(t *testing.T) {
 	if m.SuccessRate != 0.5 || m.TrustScore != 0.5 {
 		t.Errorf("expected neutral merit components 0.5/0.5, got %.3f/%.3f", m.SuccessRate, m.TrustScore)
 	}
-	if m.LatencyTerm <= 0 {
-		t.Errorf("expected a positive latency term for a cognitive agent, got %.4f", m.LatencyTerm)
+	// ADR-0139 D6: no latency data anywhere in the slate -> neutral term 0,
+	// not the full w3 bonus it used to be.
+	if m.LatencyTerm != 0 {
+		t.Errorf("expected a neutral 0 latency term for a profile-less agent, got %.4f", m.LatencyTerm)
 	}
 }
 
@@ -76,7 +78,7 @@ func TestFunnel_RecordsL2SurvivorsAndEliminated(t *testing.T) {
 	above := domain.AgentDefinition{ID: "above", Provisional: false}
 	below := domain.AgentDefinition{ID: "below", Provisional: false}
 	reg := newMockAgentDeclarationSource([]domain.AgentDefinition{above, below}, nil)
-	searcher := &fakeInterviewSearcher{results: map[string]float64{"above": 0.8, "below": 0.1}}
+	searcher := &fakeProfileSearcher{results: map[string]float64{"above": 0.8, "below": 0.1}}
 
 	cfg := defaultGatekeeperCfg()
 	cfg.Routing.RoutingTraceEnabled = true
@@ -95,11 +97,11 @@ func TestFunnel_RecordsL2SurvivorsAndEliminated(t *testing.T) {
 	if len(task.Funnel.L2) != 2 {
 		t.Fatalf("expected 2 L2 entries, got %d: %+v", len(task.Funnel.L2), task.Funnel.L2)
 	}
-	up, _ := findEntry(task.Funnel.L2, "above", func(v domain.InterviewResult) string { return v.AgentID })
+	up, _ := findEntry(task.Funnel.L2, "above", func(v domain.SemanticGateResult) string { return v.AgentID })
 	if !up.Survived || up.Similarity != 0.8 {
 		t.Errorf("expected 'above' to survive with sim 0.8, got %+v", up)
 	}
-	down, _ := findEntry(task.Funnel.L2, "below", func(v domain.InterviewResult) string { return v.AgentID })
+	down, _ := findEntry(task.Funnel.L2, "below", func(v domain.SemanticGateResult) string { return v.AgentID })
 	if down.Survived {
 		t.Errorf("expected 'below' to be eliminated in L2, got %+v", down)
 	}

@@ -1,0 +1,11 @@
+{
+  "title": "ContinueDecision",
+  "description": "Stop or continue the retrieval loop (planner.decide_continue). The kernel reads decision and bridge (internal/substrate/network/retrieval_dispatch.go DecideContinue).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "bridge"],
+  "properties": {
+    "decision": { "type": "string", "enum": ["stop_answer", "continue"] },
+    "bridge": { "type": "string" }
+  }
+}

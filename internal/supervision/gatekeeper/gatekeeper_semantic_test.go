@@ -13,7 +13,7 @@ func TestFindCandidates_Layer2_EliminatesBelowThreshold(t *testing.T) {
 	reg := newMockAgentDeclarationSource([]domain.AgentDefinition{above, below}, nil)
 
 	// DefaultSimilarityThreshold is 0.2; 0.1 is below and should be eliminated.
-	searcher := &fakeInterviewSearcher{results: map[string]float64{"above": 0.8, "below": 0.1}}
+	searcher := &fakeProfileSearcher{results: map[string]float64{"above": 0.8, "below": 0.1}}
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))
@@ -37,7 +37,7 @@ func TestFindCandidates_Layer2_FormatIncompatibleEliminated(t *testing.T) {
 		"bad": {SupportedFormats: []string{"xml"}},
 	})
 
-	searcher := &fakeInterviewSearcher{results: map[string]float64{"ok": 0.9, "bad": 0.9}}
+	searcher := &fakeProfileSearcher{results: map[string]float64{"ok": 0.9, "bad": 0.9}}
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))
@@ -65,7 +65,7 @@ func TestFindCandidates_Layer2_MeritOrderPreserved(t *testing.T) {
 		"low:l1":  {TrustScore: 0.3, SuccessRate: 0.3},
 	}}
 
-	searcher := &fakeInterviewSearcher{results: map[string]float64{"high": 0.9, "low": 0.7}}
+	searcher := &fakeProfileSearcher{results: map[string]float64{"high": 0.9, "low": 0.7}}
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg(), WithProfiles(profiles), WithEmbedder(embedder), WithSearcher(searcher))
@@ -90,7 +90,7 @@ func TestFindCandidates_Layer2_ProvisionalBypassesGate(t *testing.T) {
 	reg := newMockAgentDeclarationSource([]domain.AgentDefinition{active, prov}, nil)
 
 	// DefaultSimilarityThreshold is 0.2; 0.1 is below and should eliminate the active agent.
-	searcher := &fakeInterviewSearcher{results: map[string]float64{"active": 0.1}}
+	searcher := &fakeProfileSearcher{results: map[string]float64{"active": 0.1}}
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))
@@ -104,8 +104,8 @@ func TestFindCandidates_Layer2_ProvisionalBypassesGate(t *testing.T) {
 	if candidates[0].Agent.ID != "prov" {
 		t.Errorf("expected 'prov', got %q", candidates[0].Agent.ID)
 	}
-	if candidates[0].Score != DefaultProvisionalScore {
-		t.Errorf("expected DefaultProvisionalScore %.4f, got %.4f", DefaultProvisionalScore, candidates[0].Score)
+	if want := ScoreMerit(nil, domain.TraitCognitive, nil, defaultGatekeeperCfg(), nil).Score; candidates[0].Score != want {
+		t.Errorf("expected the neutral-prior score %.4f, got %.4f", want, candidates[0].Score)
 	}
 }
 
@@ -114,7 +114,7 @@ func TestFindCandidates_TraitDaemon_Excluded(t *testing.T) {
 	cog := domain.AgentDefinition{ID: "analyst", Provisional: false, Trait: domain.TraitCognitive}
 	reg := newMockAgentDeclarationSource([]domain.AgentDefinition{daemon, cog}, nil)
 
-	searcher := &fakeInterviewSearcher{results: map[string]float64{"pulse": 0.99, "analyst": 0.8}}
+	searcher := &fakeProfileSearcher{results: map[string]float64{"pulse": 0.99, "analyst": 0.8}}
 	embedder := &mockEmbedder{}
 
 	gk := NewGatekeeper(reg, defaultGatekeeperCfg(), WithEmbedder(embedder), WithSearcher(searcher))

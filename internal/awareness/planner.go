@@ -13,210 +13,74 @@ import (
 	"sync"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/prompts"
 )
 
-// ── Planner prompt constants ─────────────────────────────────────────────────
-// Only the static portions are hashed (plannerPromptHash). Dynamic sections
-// (capability clusters, model list, LTM blocks, user input) are injected at
-// runtime and excluded from the hash so it remains stable across requests.
+// ── Planner prompts ──────────────────────────────────────────────────────────
+//
+// The planner's text lives in the prompt library (ADR-0139 C4/D2): the stable
+// system block per arm (prompts/planner, prompts/planner_cap — no slots, so the
+// provider can cache it) and one user-message template shared by both arms
+// (prompts/planner_input), whose tagged regions carry the per-call data: the
+// capability clusters, the host, remembered context and, last, the request.
+//
+// The prompt version stamped on every plan is the pair's static hash
+// (prompts.Pair.StaticHash), computed from the very files that are rendered. It
+// gates plan-cache reuse (REQ-CACHE-1) and PlanEvent provenance, and it cannot
+// certify text that was never sent — the drift class where the pin rules were
+// hashed but not sent (T-20261104-prompt-code-contract-drift-planner-pin-rules).
+// Per-host and per-request values are slot values, never static text, so the
+// hash is the same on every host.
 
-const plannerRole = "You are the Cambrian Planner. Your goal: resolve requests in MINIMAL steps."
+var (
+	plannerPrompts    = prompts.MustPair("planner", "planner_input")
+	plannerCapPrompts = prompts.MustPair("planner_cap", "planner_input")
 
-// plannerLTMRules explains the memory sections. The <DiscoveryLTM> and
-// <environment> rules were removed 2026-08-08: the Scout was their only producer
-// and it was retired, so they described sections that could never appear. The
-// host-path rule that had been living inside that dead branch now has two
-// halves — a static division-of-labour rule in plannerDecisionRules, and the
-// dynamic <host> block built by buildHostBlock. See ADR-0100's P3 residuals.
-const plannerLTMRules = `LTM CONTEXT RULES (applies when <FactLTM>, <PlanLTM>, or <NegativeLTM> sections appear in <Context>):
-- <FactLTM> contains facts from prior sessions retrieved for relevance to this request. Use facts with high relevance scores to enrich your plan steps where applicable. Ignore facts that are not relevant — do NOT invent steps just to use a fact.
-- <PlanLTM> contains a prior successful plan for a similar request. Use it as a structural reference but adapt it to the current request; do not copy it blindly.
-- <NegativeLTM> contains failure records from prior sessions. Avoid assigning the same task to the agent that previously failed it.`
+	// plannerPromptHash / plannerPromptHashCap are written to
+	// ExecutionPlan.PlannerPromptVersion and forwarded to PlanEvent. The two arms
+	// differ, so provenance distinguishes them for free.
+	plannerPromptHash    = plannerPrompts.StaticHash()
+	plannerPromptHashCap = plannerCapPrompts.StaticHash()
+)
 
-const plannerDecisionRules = `STRICT DECISION RULES:
-- The "query" field MUST contain the full natural-language instructions for the step. NEVER truncate the user's intent; include the complete action required.
-- Describe what the step needs in natural language. The runtime will discover the right agent automatically.
-- If the user provides explicit answers, construct steps effectively without redundant actions.
-- IMPORTANT: The example "uppercase the Name column in data.csv" is ONLY a format example. NEVER use it as the actual task unless the user explicitly requests it.
-- Describe steps by CAPABILITY, not by agent. The runtime resolves each step to a concrete agent at execution time (discovery + selection); do not assume a particular selection mechanism. If the USER named an agent, express that with "preferred_agent" (see AGENT PINNING) — never by naming an agent inside "query" alone, and never as a capability tag.
-- When a step requires analysis, comparison, evaluation, or justification, start the query with verbs like "Analyse...", "Compare...", or "Evaluate...". Do NOT start analysis steps with "Summarise..." — that will route the task to the wrong agent.
-- NEVER set "is_thought": true for steps that require analysis, comparison, evaluation, code generation, or summarisation. These MUST be routed to the corresponding cognitive agent. Only use "is_thought": true for trivial synthesis or routing decisions that do not require domain expertise.
-- FILE AND FOLDER PATHS ARE THE EXECUTOR'S JOB, NOT YOURS. Describe the TARGET in natural language — "a folder named Reports on the desktop", "the project's README" — and let the step's agent resolve it. That agent runs ON the host and is given its absolute paths; you are not. So do NOT construct absolute paths, do NOT guess a home directory or a user name, and do NOT write "~" or "~/Desktop" (which the shell does not expand on every platform). The <host> section tells you the OS so you can phrase a step in terms that platform understands; it is not an invitation to build paths.`
+// plannerDataTags are the data regions of planner_input. A closing tag of any of
+// them inside a value is neutralised before rendering (prompts SPEC.md §3.1), so
+// a fact, an agent description or the request cannot end its region early.
+var plannerDataTags = []string{"capability_clusters", "host", "documents", "request"}
 
-// plannerAgentPinRules is the agent-pinning instruction block, shared by both
-// planner arms. It gives the planner a legitimate field for naming an agent: the
-// prompt previously invited "you may reference a specific agent ID" with nowhere
-// to put it, so the name leaked into required_capabilities and, once L1 actually
-// enforced the capability contract, filtered every candidate and killed the step.
-const plannerAgentPinRules = `AGENT PINNING:
-- Default: do NOT name an agent. Leave "preferred_agent" absent and let the runtime select.
-- ONLY when the USER's request itself names an agent, set "preferred_agent" to that exact agent ID from the CAPABILITY CLUSTERS list.
-- Set "agent_pin":"hard" when the user is directing ("use terminal_agent to ...", "run this with X"): the named agent is bound and the step FAILS if it is unavailable.
-- Set "agent_pin":"soft" when the agent is a suggestion or your own inference ("probably the research agent"): the named agent is prioritised but the runtime may still choose better.
-- NEVER put an agent ID in "required_capabilities" — those are capability tags only, and an agent ID there matches nothing and kills the step.
-
-`
-
-const plannerDependencyRules = `DEPENDENCY RULES:
-- Each step has a "depends_on" field: a list of zero-based indices of steps that MUST complete before this step can run.
-- Root steps with no prerequisites MUST have "depends_on": [].
-- Independent steps MUST have empty depends_on so the runtime can execute them in parallel.
-- NEVER reference an index that does not exist in the steps array.
-- NEVER create a cycle (e.g. step 0 depending on step 1 which depends on step 0).`
-
-// plannerUsageRules contains usage examples that shape reasoning (thought steps,
-// checkpoint steps, structured reasoning). These belong in <Constraints>, not
-// <OutputSchema>, because they describe HOW to reason, not what to output.
-const plannerUsageRules = `THOUGHT STEPS:
-- If a step only requires reasoning, synthesis, or planning based on previous steps (no external action needed), set "is_thought": true.
-
-CHECKPOINT STEPS:
-- After any step whose output gates irreversible or costly downstream work, set "checkpoint_after": true.
-- Optionally supply "checkpoint_query" with a specific coherence question for that step. If omitted, the runtime generates a default template.
-- Typical triggers: file writes, external API calls, format-transforming steps, any step that feeds 3 or more dependent steps.
-- Example: {"query": "Convert CSV to JSON schema", "depends_on": [0], "checkpoint_after": true, "checkpoint_query": "Is the output valid JSON schema compatible with the downstream validator?"}
-
-STRUCTURED REASONING (OPTIONAL):
-- You may emit <thought>...</thought> blocks BEFORE the JSON plan to reason through the problem.
-- Example: <thought>The user wants X. I should use agent Y for step 1...</thought>{"steps":[...]}
-- The Substrate will extract and discard thought blocks; only the JSON plan is processed.
-- Never include thought blocks INSIDE the JSON structure.
-
-FAN-OUT (PARAMETRIC) STEPS:
-- When a step must run ONCE PER ITEM of a set whose SIZE is only known after an earlier step observes it (e.g. "for each missing section, write it" after a step scans the folder), emit ONE parametric step — do NOT guess the count and do NOT enumerate the items yourself.
-- Set "fan_out_over" to the zero-based index of the earlier step whose output is that set, and write the query with a "{item}" placeholder (or set "fan_out_var":"x" to use "{x}"). The runtime expands it into one concrete step per discovered item at execution time.
-- A step that must run AFTER all items (a summary/reduce) should "depends_on" the parametric step's index.
-- Example: {"query":"write the file for {item}","depends_on":[0],"fan_out_over":0}`
-
-// plannerCapabilityRules is the ROUTE-03 capability-contract instruction block,
-// injected into <Constraints> ONLY under the capability_contract arm. It tells
-// the planner to tag each step with the capability strings its executor must
-// declare, drawn from the live CAPABILITY CLUSTERS vocabulary (no invented tags).
-const plannerCapabilityRules = `CAPABILITY REQUIREMENTS:
-- For each step, add a "required_capabilities" array: the capability tags the executing agent MUST declare. Choose ONLY from the tags shown in CAPABILITY CLUSTERS above (the label before each ":"), using the exact tag strings.
-- Pick the minimal set a correct executor needs (usually 1-2 tags). For a pure reasoning/thought step that needs no special capability, use an empty array [].
-- NEVER invent a capability tag that is not listed in CAPABILITY CLUSTERS. If none fits, use [].`
-
-// PlanOutputSchema is the shared JSON Schema + format example for plans produced
-// by both the Planner and the ReplanHandler. Shared so both registry entries
-// reference an identical contract.
-const PlanOutputSchema = `{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "type": "object",
-  "properties": {
-    "steps": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "query":            { "type": "string", "minLength": 1 },
-          "depends_on":       { "type": "array", "items": { "type": "integer" } },
-          "is_thought":       { "type": "boolean" },
-          "checkpoint_after": { "type": "boolean" },
-          "checkpoint_query": { "type": "string" },
-          "fan_out_over":     { "type": "integer" },
-          "fan_out_var":      { "type": "string" },
-          "preferred_agent":  { "type": "string" },
-          "agent_pin":        { "type": "string", "enum": ["soft", "hard"] }
-        },
-        "required": ["query", "depends_on"]
-      }
-    },
-    "subject":      { "type": "string" },
-    "cache_policy": { "type": "string" }
-  },
-  "required": ["steps", "subject"]
-}
-
-Set cache_policy based on the dominant capability of the request:
-- "codegen" — when the plan involves writing, generating, or refactoring code
-- "cognitive" — when the plan involves analysis, summarisation, comparison, or reasoning
-- "tool" — when the plan involves file reads, data transforms, or deterministic operations
-- "research" — when the plan involves web search, paper reading, or information gathering
-- "default" — when none of the above clearly applies
-
-Example:
-{"steps":[{"query":"full natural-language instruction","depends_on":[]},{"query":"Synthesize results from step 0","depends_on":[0],"is_thought":true}],"subject":"The primary entity or goal","cache_policy":"cognitive"}`
-
-// planOutputSchema is an alias used inside this package.
-const planOutputSchema = PlanOutputSchema
-
-// planOutputSchemaCap is the ROUTE-03 variant: identical to PlanOutputSchema but
-// with the per-step "required_capabilities" array in the contract + example.
-// Used only under the capability_contract arm.
-const planOutputSchemaCap = `{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "type": "object",
-  "properties": {
-    "steps": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "query":                 { "type": "string", "minLength": 1 },
-          "depends_on":            { "type": "array", "items": { "type": "integer" } },
-          "required_capabilities": { "type": "array", "items": { "type": "string" } },
-          "is_thought":            { "type": "boolean" },
-          "checkpoint_after":      { "type": "boolean" },
-          "checkpoint_query":      { "type": "string" },
-          "fan_out_over":          { "type": "integer" },
-          "fan_out_var":           { "type": "string" },
-          "preferred_agent":       { "type": "string" },
-          "agent_pin":             { "type": "string", "enum": ["soft", "hard"] }
-        },
-        "required": ["query", "depends_on", "required_capabilities"]
-      }
-    },
-    "subject":      { "type": "string" },
-    "cache_policy": { "type": "string" }
-  },
-  "required": ["steps", "subject"]
-}
-
-Set cache_policy based on the dominant capability of the request:
-- "codegen" — when the plan involves writing, generating, or refactoring code
-- "cognitive" — when the plan involves analysis, summarisation, comparison, or reasoning
-- "tool" — when the plan involves file reads, data transforms, or deterministic operations
-- "research" — when the plan involves web search, paper reading, or information gathering
-- "default" — when none of the above clearly applies
-
-Example:
-{"steps":[{"query":"full natural-language instruction","depends_on":[],"required_capabilities":["file_read"]},{"query":"Synthesize results from step 0","depends_on":[0],"required_capabilities":[],"is_thought":true}],"subject":"The primary entity or goal","cache_policy":"cognitive"}`
-
-// plannerStaticTextCap / plannerPromptHashCap are the capability_contract-arm
-// counterparts of plannerStaticText / plannerPromptHash. The added capability
-// rules + schema field change the hash, so PlanEvent provenance distinguishes the
-// two arms for free.
-const plannerStaticTextCap = plannerRole + plannerLTMRules + plannerDecisionRules + plannerCapabilityRules + plannerAgentPinRules + plannerDependencyRules + plannerUsageRules + planOutputSchemaCap
-
-var plannerPromptHashCap = domain.PromptHashOf(plannerStaticTextCap)
-
-// plannerStaticText is the concatenation of all static planner prompt parts.
-// Only this text is hashed — dynamic injections are excluded so the hash
-// remains stable across requests.
-const plannerStaticText = plannerRole + plannerLTMRules + plannerDecisionRules + plannerAgentPinRules + plannerDependencyRules + plannerUsageRules + planOutputSchema
-
-// plannerPromptHash is the 8-char SHA-256 of the planner's static prompt text.
-// Written to ExecutionPlan.PlannerPromptVersion and forwarded to PlanEvent.
-var plannerPromptHash = domain.PromptHashOf(plannerStaticText)
+// plannerCacheTTL: planning is human-paced (an operator or user request), so the
+// long breakpoint lifetime (ADR-0139 D1: 1h for human-paced work) keeps the
+// system block warm between requests minutes apart.
+const plannerCacheTTL = domain.CacheTTLLong
 
 func init() {
-	domain.PromptRegistry[plannerPromptHash] = domain.PromptEntry{
-		ID:      "planner.plan",
-		Version: "1.0.0",
-		Hash:    plannerPromptHash,
-		Schema:  PlanOutputSchema,
-	}
-	// ROUTE-03 capability_contract arm variant.
-	domain.PromptRegistry[plannerPromptHashCap] = domain.PromptEntry{
-		ID:      "planner.plan.capability_contract",
-		Version: "1.0.0",
-		Hash:    plannerPromptHashCap,
-		Schema:  planOutputSchemaCap,
+	registerPairPrompt("planner.plan", plannerPrompts)
+	registerPairPrompt("planner.plan.capability_contract", plannerCapPrompts)
+}
+
+// registerPairPrompt records a library pair in the compile-time PromptRegistry
+// under its static hash, so an audit record's prompt version resolves to an id.
+func registerPairPrompt(id string, p prompts.Pair) {
+	h := p.StaticHash()
+	domain.PromptRegistry[h] = domain.PromptEntry{
+		ID:      id,
+		Version: fmt.Sprintf("%s.v%d+%s.v%d", p.System.ID, p.System.Version, p.Input.ID, p.Input.Version),
+		Hash:    h,
+		Schema:  string(p.Schema()),
 	}
 }
 
-// ── End planner prompt constants ─────────────────────────────────────────────
+// planReply is the planner and replanner reply contract: the plan, plus a
+// reasoning field the schema asks for FIRST. It replaces the free-form
+// <thought>…</thought> preamble the model used to write before its JSON (which
+// needed its own scraper): the model still reasons before committing to steps,
+// and the reasoning is logged, never executed.
+type planReply struct {
+	Reasoning string `json:"reasoning"`
+	domain.ExecutionPlan
+}
+
+// ── End planner prompts ──────────────────────────────────────────────────────
 
 // Generator is the consumer-side interface for LLM text generation.
 // LLMClient satisfies this interface; tests can inject a fake.
@@ -314,23 +178,47 @@ func (p *Planner) Generate(ctx context.Context, prompt string) (string, error) {
 	return p.client.Generate(ctx, prompt)
 }
 
-func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*domain.ExecutionPlan, error) {
-	// Fast-path for explicit JIT reasoning signals (Issue #032 / #033)
-	// If the request is a direct call to the synthesis engine, bypass the LLM
-	// planner and return a single-step Thought Plan.
-	if strings.Contains(userInput, "[SYSTEM_REASONING_SIGNAL: JIT_LOGIC_SYNTHESIS]") {
-		slog.Info("🧠 JIT reasoning signal detected, bypassing LLM planner for Thought Step")
-		return &domain.ExecutionPlan{
-			Subject: "JIT Logic Synthesis",
-			Steps: []domain.Step{
-				{
-					Query:     userInput,
-					IsThought: true,
-				},
-			},
-		}, nil
-	}
+// The C1 surface (ADR-0139 D1) of the Planner's client, forwarded with its
+// report: the replan handler re-plans through the Planner (via the plan-call
+// budget), and a Planner that hid its client's RequestGenerator would silently
+// put every replan back on the legacy single-string path. RequestsEnabled is
+// false when the client is not a RequestGenerator, so AsRequestGenerator(planner)
+// tells the truth about the client.
 
+// GenerateRequest serves req on the planner's client.
+func (p *Planner) GenerateRequest(ctx context.Context, req domain.GenerateRequest) (domain.GenerateResponse, error) {
+	return domain.GenerateVia(ctx, p.client, req)
+}
+
+// StreamRequest streams req on the planner's client, when it can.
+func (p *Planner) StreamRequest(ctx context.Context, req domain.GenerateRequest) (<-chan domain.StreamChunk, error) {
+	rg, ok := domain.AsRequestGenerator(p.client)
+	if !ok {
+		return nil, fmt.Errorf("planner: client %T does not implement StreamRequest", p.client)
+	}
+	return rg.StreamRequest(ctx, req)
+}
+
+// Capabilities reports the client's declared capabilities.
+func (p *Planner) Capabilities() domain.Capabilities {
+	if rg, ok := domain.AsRequestGenerator(p.client); ok {
+		return rg.Capabilities()
+	}
+	return domain.Capabilities{}
+}
+
+// RequestsEnabled reports whether the client is a RequestGenerator.
+func (p *Planner) RequestsEnabled() bool {
+	_, ok := domain.AsRequestGenerator(p.client)
+	return ok
+}
+
+var _ domain.RequestGenerator = (*Planner)(nil)
+
+func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*domain.ExecutionPlan, error) {
+	// The in-band "[SYSTEM_REASONING_SIGNAL: JIT_LOGIC_SYNTHESIS]" fast-path was
+	// deleted 2026-11-04: nothing in the workspace emitted the marker, so its only
+	// reachable trigger was user text, which let any request skip planning.
 	agents, err := p.provider.GetAllAgents(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch agent list: %v", err)
@@ -369,86 +257,59 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 		}
 	}
 
-	// PLANNERREQ: canonical 4-section prompt via domain.PromptBuild.
-	// Dynamic sections (capability clusters, model list) are constraint strings;
-	// static constraint groups are constants hashed into plannerPromptHash.
-	// LTM enrichment and user request are context/task — excluded from the hash.
-	ltmBlock := buildLTMBlock(planEntry, ltmEnrichment)
-	// ROUTE-03: under the capability_contract arm, inject the capability rules
-	// (after the decision rules) and the capability-schema variant. When off, the
-	// section list, schema, and prompt hash are exactly the pre-ROUTE-03 values,
-	// so the control arm is byte-identical.
-	constraints := []string{
-		buildCapabilityCluster(agents), // dynamic — excluded from hash
-		buildHostBlock(p.hostGOOS()),   // dynamic — per-host, MUST stay out of the hash
-		plannerLTMRules,
-		plannerDecisionRules,
-		plannerDependencyRules,
-		plannerUsageRules,
-	}
-	schema := planOutputSchema
+	// The stable system block is the arm's library prompt; everything per call —
+	// the capability clusters, the host, remembered context and, last, the request —
+	// goes into the user message as tagged data (ADR-0139 D2), and the reply shape
+	// is the response schema (C1), validated and repaired once by the provider layer.
+	//
+	// ROUTE-03: under the capability_contract arm the capability prompt is used and
+	// the clusters are the manifest-declared vocabulary.
+	pair := plannerPrompts
+	clusterBlock := buildCapabilityCluster(agents)
 	promptVersion := plannerPromptHash
 	// The capability vocabulary the planner was actually shown. nil when the contract
 	// arm is off, which disables the guard below along with the feature itself.
 	var capVocab map[string]struct{}
 	if p.capabilityContract {
-		clusterBlock, vocab := buildCapabilityClusterFromManifests(ctx, agents, p.provider, p.canonicalVocab)
-		capVocab = vocab
-		constraints = []string{
-			// manifest-derived vocabulary so the emitted required_capabilities
-			// match what L1 Declaration enforces (NOT the clusterer's labels).
-			clusterBlock,
-			buildHostBlock(p.hostGOOS()), // dynamic — per-host, MUST stay out of the hash
-			plannerLTMRules,
-			plannerDecisionRules,
-			plannerCapabilityRules,
-			plannerDependencyRules,
-			plannerUsageRules,
-		}
-		schema = planOutputSchemaCap
+		// manifest-derived vocabulary so the emitted required_capabilities
+		// match what L1 Declaration enforces (NOT the clusterer's labels).
+		clusterBlock, capVocab = buildCapabilityClusterFromManifests(ctx, agents, p.provider, p.canonicalVocab)
+		pair = plannerCapPrompts
 		promptVersion = plannerPromptHashCap
 	}
-	fullPrompt := domain.PromptBuild(
-		domain.PromptSystem(plannerRole, constraints...),
-		domain.PromptContext(ltmBlock),
-		domain.PromptTask("User Request: "+userInput),
-		domain.PromptOutputSchemaJSON(schema),
-	)
-	slog.Debug("Sending full prompt to LLM", "full_prompt", fullPrompt)
+	req, err := planRequest(pair, plannerDataTags, map[string]string{
+		"capability_clusters": clusterBlock,
+		"host":                buildHostBlock(p.hostGOOS()),
+		"documents":           buildLTMBlock(planEntry, ltmEnrichment),
+		"request":             userInput,
+	}, plannerCacheTTL)
+	if err != nil {
+		return nil, err
+	}
 
-	responseStr, err := p.client.Generate(ctx, fullPrompt)
+	resp, err := domain.GenerateVia(ctx, p.client, req)
 	if err != nil {
 		// Log it HERE. A bare `return nil, err` made a provider refusal invisible
-		// server-side: on 2026-08-07 a chat turn logged "Sending full prompt to LLM"
-		// and then nothing at all, for four minutes, while the provider had already
-		// answered "Weekly usage limit reached" in half a second. The operator's only
-		// evidence was silence, which reads as "the kernel is broken" rather than
-		// "the model provider said no". The error still propagates unchanged — this
-		// only stops it leaving the kernel without a trace.
+		// server-side: on 2026-08-07 a chat turn sent its prompt and then logged
+		// nothing at all, for four minutes, while the provider had already answered
+		// "Weekly usage limit reached" in half a second. The operator's only evidence
+		// was silence, which reads as "the kernel is broken" rather than "the model
+		// provider said no". The error still propagates unchanged — this only stops
+		// it leaving the kernel without a trace.
 		slog.Error("planner: LLM call failed — no plan produced",
 			"err", err,
-			"prompt_chars", len(fullPrompt),
+			"prompt_chars", len(domain.FlattenRequest(req)),
 			"prompt_version", promptVersion)
 		return nil, err
 	}
-	slog.Debug("Received raw LLM response", "raw_response", responseStr)
-	thoughts, planJSON := ParseThoughts(responseStr)
-	for i, t := range thoughts {
-		slog.Debug("planner thought", "index", i, "thought", t)
+	var reply planReply
+	if err := decodePlanReply(resp, &reply); err != nil {
+		return nil, fmt.Errorf("planner: %w", err)
 	}
-	if len(thoughts) > 0 {
-		slog.Debug("planner extracted thoughts", "count", len(thoughts), "subject_input", userInput)
+	if reply.Reasoning != "" {
+		slog.Debug("planner reasoning", "reasoning", reply.Reasoning, "prompt_version", promptVersion)
 	}
-	match := domain.ExtractJSONObject(planJSON)
-	slog.Debug("Successfully extracted JSON from response", "extracted_json", match)
-	if match == "" {
-		return nil, fmt.Errorf("no JSON object found in LLM response: %s", responseStr)
-	}
-
-	var plan domain.ExecutionPlan
-	if err := json.Unmarshal([]byte(match), &plan); err != nil {
-		return nil, fmt.Errorf("Parse error: %v | Raw: %s", err, responseStr)
-	}
+	plan := reply.ExecutionPlan
 
 	// AGENTCONTEXTREQ REQ1: forward planning-time facts to DAGExecutor so agents
 	// execute with the same background knowledge that informed the Planner.
@@ -468,49 +329,9 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	plan.PlannerPromptVersion = promptVersion
 
 	// ROUTE-03 vocabulary guard: drop emitted capabilities the planner was not shown.
-	//
-	// The prompt says "NEVER invent a capability tag that is not listed in CAPABILITY
-	// CLUSTERS" and the planner invents them anyway — measured 2026-07-28, it emitted
-	// `required_capabilities: ["file_write"]` when no agent declared `file_write` and
-	// the tag was absent from the rendered vocabulary. Once L1 Declaration genuinely
-	// enforces, an undeclared tag matches nothing, filters every candidate, and the
-	// step dies with `no candidates found`. A hallucinated tag must not be able to
-	// hard-fail a step.
-	//
-	// Dropping is fail-OPEN for that step: it falls back to unconstrained routing,
-	// which is exactly the pre-ROUTE-03 behaviour. That is a deliberate and bounded
-	// choice — the capability contract is a ROUTING refinement derived from an
-	// LLM emission, not an authorization boundary. Scope (ADR-0034/0035), the policy
-	// PDP (ADR-0085/0087) and approval gates are separate and untouched; none of them
-	// consult this field. Were it load-bearing for access, the right answer would be
-	// to fail the step instead.
-	//
 	// Same shape as the cache_policy validation directly below: an LLM-emitted name is
 	// checked against the configured set and silently normalised when unknown.
-	//
-	// Guarded on NON-EMPTY: an empty vocabulary means "no manifest declared any
-	// capability" — no knowledge — not "every emitted tag is invented". Filtering on
-	// an absence of information would silently strip every requirement the moment the
-	// registry were empty or a manifest read failed, which is the same silent-failure
-	// shape this guard exists to prevent.
-	if len(capVocab) > 0 {
-		for i := range plan.Steps {
-			kept := plan.Steps[i].RequiredCapabilities[:0]
-			for _, c := range plan.Steps[i].RequiredCapabilities {
-				lookup := c
-				if p.canonicalVocab {
-					lookup = domain.NormalizeCapability(c)
-				}
-				if _, ok := capVocab[lookup]; ok {
-					kept = append(kept, c)
-					continue
-				}
-				slog.WarnContext(ctx, "planner: dropping invented capability tag",
-					"capability", c, "step", i)
-			}
-			plan.Steps[i].RequiredCapabilities = kept
-		}
-	}
+	dropInventedCapabilities(ctx, &plan, capVocab, p.canonicalVocab)
 
 	// ADR-0027: validate LLM-emitted cache_policy against the configured policy set.
 	// Unknown names are normalised to "" so the Hippocampus falls back to default.
@@ -525,7 +346,9 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 		if step.FanOutOver != nil {
 			fanOut = *step.FanOutOver
 		}
-		slog.Info("planner_step_generated", "index", i, "query", step.Query, "is_thought", step.IsThought, "depends_on", step.DependsOn, "fan_out_over", fanOut, "subject", plan.Subject)
+		// preferred_agent / agent_pin are logged so a pinned plan is observable without the
+		// prompt-exchange capture, which covers the agent plane only (E2E 20261105T000624Z E12).
+		slog.Info("planner_step_generated", "index", i, "query", step.Query, "is_thought", step.IsThought, "depends_on", step.DependsOn, "fan_out_over", fanOut, "subject", plan.Subject, "preferred_agent", step.PreferredAgent, "agent_pin", step.AgentPin)
 	}
 
 	if p.advisor != nil {
@@ -540,6 +363,74 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	}
 
 	return &plan, nil
+}
+
+// dropInventedCapabilities is the ROUTE-03 vocabulary guard: it drops emitted
+// capabilities the model was not shown. Shared by the planner and the replan
+// handler so both producers of capability-contract plans apply one rule.
+//
+// The prompt says "NEVER invent a capability tag that is not listed in CAPABILITY
+// CLUSTERS" and the planner invents them anyway — measured 2026-07-28, it emitted
+// `required_capabilities: ["file_write"]` when no agent declared `file_write` and
+// the tag was absent from the rendered vocabulary. Once L1 Declaration genuinely
+// enforces, an undeclared tag matches nothing, filters every candidate, and the
+// step dies with `no candidates found`. A hallucinated tag must not be able to
+// hard-fail a step.
+//
+// Dropping is fail-OPEN for that step: it falls back to unconstrained routing,
+// which is exactly the pre-ROUTE-03 behaviour. That is a deliberate and bounded
+// choice — the capability contract is a ROUTING refinement derived from an
+// LLM emission, not an authorization boundary. Scope (ADR-0034/0035), the policy
+// PDP (ADR-0085/0087) and approval gates are separate and untouched; none of them
+// consult this field. Were it load-bearing for access, the right answer would be
+// to fail the step instead.
+//
+// Guarded on NON-EMPTY: an empty vocabulary means "no manifest declared any
+// capability" — no knowledge — not "every emitted tag is invented". Filtering on
+// an absence of information would silently strip every requirement the moment the
+// registry were empty or a manifest read failed, which is the same silent-failure
+// shape this guard exists to prevent.
+func dropInventedCapabilities(ctx context.Context, plan *domain.ExecutionPlan, vocab map[string]struct{}, canonical bool) {
+	if len(vocab) == 0 {
+		return
+	}
+	for i := range plan.Steps {
+		kept := plan.Steps[i].RequiredCapabilities[:0]
+		for _, c := range plan.Steps[i].RequiredCapabilities {
+			lookup := c
+			if canonical {
+				lookup = domain.NormalizeCapability(c)
+			}
+			if _, ok := vocab[lookup]; ok {
+				kept = append(kept, c)
+				continue
+			}
+			slog.WarnContext(ctx, "planner: dropping invented capability tag",
+				"capability", c, "step", i)
+		}
+		plan.Steps[i].RequiredCapabilities = kept
+	}
+}
+
+// CapabilityContract reports whether the ROUTE-03 capability_contract arm is on
+// and, when it is, renders the vocabulary block and set the model must choose
+// from. It exists for the replan handler, which must produce plans under the
+// same contract: one builder (buildCapabilityClusterFromManifests) serves both,
+// so the planner and the replanner cannot show the model different vocabularies.
+// Off: ("", nil, false, false).
+func (p *Planner) CapabilityContract(ctx context.Context) (block string, vocab map[string]struct{}, canonical bool, on bool) {
+	if !p.capabilityContract {
+		return "", nil, false, false
+	}
+	agents, err := p.provider.GetAllAgents(ctx)
+	if err != nil {
+		// An empty vocabulary disables the guard (the documented "no knowledge"
+		// behaviour); the error is logged rather than swallowed.
+		slog.WarnContext(ctx, "planner: capability vocabulary unavailable for replan", "err", err)
+		return "", nil, p.canonicalVocab, true
+	}
+	block, vocab = buildCapabilityClusterFromManifests(ctx, agents, p.provider, p.canonicalVocab)
+	return block, vocab, p.canonicalVocab, true
 }
 
 // buildCapabilityCluster groups agents by their Capabilities field and returns
@@ -582,42 +473,13 @@ func buildLTMBlock(plan *domain.PlanLTMEntry, enrichment domain.LTMEnrichment) s
 	// The ADR-0029 <EpisodicMemory> block used to be rendered here. Removed with the
 	// rest of the episodic lane: nothing has written a DocTypeEpisodicMemory row since
 	// the extractor was deleted on 2026-07-18, so the block could only ever be empty.
-	// ADR-0049 D11: precedent block — prior transitions for the situation being planned,
-	// failure-weighted, for the LLM to anticipate which approach worked or failed.
-	if block := buildPrecedentBlock(enrichment.Precedents); block != "" {
-		sb.WriteString(block)
-	}
-	// ADR-0094 D5: induced routines for this situation — how this kind of work has
+	// The ADR-0049 D11 <PrecedentLTM> block was removed 2026-11-05 with scenes
+	// (decisions/scenes-cancelled.md).
+	// ADR-0094 D5: stored routines for this situation — how this kind of work has
 	// gone here before.
 	if block := buildProcedureBlock(enrichment.Procedures); block != "" {
 		sb.WriteString(block)
 	}
-	return sb.String()
-}
-
-// buildPrecedentBlock renders the <PrecedentLTM> world-model block (ADR-0049 D11). Each
-// precedent is a transition the LLM REASONS over — situation → outcome → the action path
-// taken. Failures are surfaced first (the retrieval already failure-weighted them). The
-// block is presented as evidence, never as a routing directive (Zero-Hardcode rule).
-func buildPrecedentBlock(precedents []domain.Precedent) string {
-	if len(precedents) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	sb.WriteString("<PrecedentLTM>\n")
-	for _, p := range precedents {
-		fmt.Fprintf(&sb, "  <precedent outcome=%q similarity=\"%.2f\">\n", p.Outcome, p.Similarity)
-		fmt.Fprintf(&sb, "    <situation>%s</situation>\n", p.Situation)
-		if len(p.Actions) > 0 {
-			sb.WriteString("    <actions>\n")
-			for _, a := range p.Actions {
-				fmt.Fprintf(&sb, "      <action>%s</action>\n", a)
-			}
-			sb.WriteString("    </actions>\n")
-		}
-		sb.WriteString("  </precedent>\n")
-	}
-	sb.WriteString("</PrecedentLTM>\n")
 	return sb.String()
 }
 
@@ -664,7 +526,6 @@ func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.Ag
 	}
 
 	var sb strings.Builder
-	sb.WriteString("CAPABILITY CLUSTERS (active agents grouped by declared capability):\n")
 	keys := make([]string, 0, len(clusters))
 	for k := range clusters {
 		keys = append(keys, k)
@@ -676,7 +537,7 @@ func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.Ag
 	for _, a := range uncategorized {
 		fmt.Fprintf(&sb, "- (uncategorized): %s — %q\n", a.ID, a.Description)
 	}
-	return sb.String(), vocab
+	return strings.TrimRight(sb.String(), "\n"), vocab
 }
 
 // buildHostBlock reports the OS the kernel is running on, as a DYNAMIC prompt
@@ -698,14 +559,15 @@ func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.Ag
 //     leaks a username into memory. The OS is a property of the deployment; a
 //     home directory is a property of one account.
 //
-// It must stay OUT of plannerStaticText: the hash gates plan-cache reuse
-// (PlannerPromptVersion), so folding a per-host value into it would give each
-// host a different hash and silently invalidate cached plans across a fleet.
+// It is the content of planner_input's <host> slot, never static text: the hash
+// gates plan-cache reuse (PlannerPromptVersion), so folding a per-host value into
+// it would give each host a different hash and silently invalidate cached plans
+// across a fleet.
 func buildHostBlock(goos string) string {
 	if goos == "" {
 		return ""
 	}
-	return "<host>\n  os: " + goos + "\n</host>"
+	return "os: " + goos
 }
 
 func buildCapabilityCluster(agents []domain.AgentDefinition) string {
@@ -731,7 +593,6 @@ func buildCapabilityCluster(agents []domain.AgentDefinition) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("CAPABILITY CLUSTERS (active agents grouped by domain):\n")
 
 	keys := make([]string, 0, len(clusters))
 	for k := range clusters {
@@ -745,7 +606,7 @@ func buildCapabilityCluster(agents []domain.AgentDefinition) string {
 	for _, a := range uncategorized {
 		sb.WriteString(fmt.Sprintf("- (uncategorized): %s — %q\n", a.ID, a.Description))
 	}
-	return sb.String()
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // extractShortCapability derives a short capability label from an agent description.
@@ -770,10 +631,6 @@ func extractShortCapability(desc string) string {
 	}
 	return strings.Join(words, " ")
 }
-
-// JSON extraction from LLM plan responses (reasoning-wrapper-tolerant) lives in
-// domain as domain.ExtractJSONObject — shared with the memory Tier-2
-// scorer so the two no longer drift.
 
 // extractStepType derives a stable step-type label from a step query by taking
 // the first word of the query as a cheap classifier.

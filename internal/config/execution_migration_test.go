@@ -226,6 +226,33 @@ var retiredExecutionFields = map[string]string{
 	"k_anonymity_floor":                   "T-20261031-three-config-fields-are-parsed-and-defaulted: the ADR-0034 D11 promotion pipeline was removed.",
 	"inbox_dir":                           "T-20261031-three-config-fields-are-parsed-and-defaulted: the ADR-0028 DirectoryWatcher left the boot path; only a log line read it.",
 	"max_orphaned_documents":              "T-20261031-execution-memory-max-orphaned-documents-and: the ADR-0030 scavenger is never constructed from config.",
+
+	// Scenes cancelled 2026-11-05 (owner decision, decisions/scenes-cancelled.md;
+	// T-20261105-remove-scenes-completely-owner-decision-2026-11). Each key configured
+	// only a mechanism deleted in that change.
+	"scene_gen_on_ingest_enabled":        "Scenes cancelled 2026-11-05: the ADR-0028 ingest SceneGenerator was deleted.",
+	"experiential_memory_enabled":        "Scenes cancelled 2026-11-05: the raw step/tool-output capture path it gated was deleted with the tier-2 judge.",
+	"tier1_channel_capacity":             "Scenes cancelled 2026-11-05: the ADR-0015 Tier-1 pending channel was deleted.",
+	"tier2_batch_size":                   "Scenes cancelled 2026-11-05: the ADR-0015 tier-2 memory judge was deleted.",
+	"tier2_llm_timeout":                  "Scenes cancelled 2026-11-05: the ADR-0015 tier-2 memory judge was deleted.",
+	"tier2_max_idle_seconds":             "Scenes cancelled 2026-11-05: the ADR-0015 tier-2 memory judge was deleted.",
+	"procedure_induction_interval_hours": "Scenes cancelled 2026-11-05: ADR-0094 procedure induction (it read scenes) was deleted.",
+	"procedure_min_samples":              "Scenes cancelled 2026-11-05: ADR-0094 procedure induction was deleted.",
+	"procedure_max_episodes_per_pass":    "Scenes cancelled 2026-11-05: ADR-0094 procedure induction was deleted.",
+	"workspace_enable_drift_guard":       "Scenes cancelled 2026-11-05: it guarded the ADR-0016 scene-primed query vector, removed.",
+	"workspace_drift_threshold":          "Scenes cancelled 2026-11-05: it guarded the ADR-0016 scene-primed query vector, removed.",
+
+	// The ADR-0037 LLM agent interview deleted 2026-11-05 (owner decision, ADR-0139 Q3;
+	// T-20261105-delete-the-llm-agent-interview-now-owner).
+	"disable_interviews": "Interview deleted 2026-11-05: every agent is seeded on the neutral prior, the flag's former true arm.",
+	"cold_start_penalty_multiplier": "Interview deleted 2026-11-05: the penalty applied to provisional PROFILES, " +
+		"whose only writer was the interview's A2A path.",
+
+	// REPLACED, not dropped: an explicit plan_timeout_ms still loads, as
+	// plan_max_duration_ms (deprecatedExecutionKey in execution_migrate.go).
+	"plan_timeout_ms": "Superseded 2026-11-05 by the progress-aware plan ceiling (owner decision, " +
+		"T-20261105-owner-decision-needed-120-s-plan-timeout-ms): plan_idle_timeout_ms + plan_max_duration_ms; " +
+		"an explicit value loads as plan_max_duration_ms.",
 }
 
 // retiredExecutionMapEntries are entries DELIBERATELY removed from a map-valued v1

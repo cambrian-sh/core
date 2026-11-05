@@ -1,4 +1,4 @@
-package interview
+package registration
 
 import (
 	"context"
@@ -7,23 +7,23 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
-// pgvectorInterviewSearcher wraps a domain.VectorStore and implements
-// domain.InterviewSearcher. It filters results to agent_profile documents
+// pgvectorProfileSearcher wraps a domain.VectorStore and implements
+// domain.ProfileSearcher. It filters results to agent_profile documents
 // and applies the caller-supplied similarity threshold.
-type pgvectorInterviewSearcher struct {
+type pgvectorProfileSearcher struct {
 	store domain.VectorStore
 }
 
-// NewInterviewSearcher returns a domain.InterviewSearcher backed by the given
+// NewProfileSearcher returns a domain.ProfileSearcher backed by the given
 // VectorStore.
-func NewInterviewSearcher(store domain.VectorStore) domain.InterviewSearcher {
-	return &pgvectorInterviewSearcher{store: store}
+func NewProfileSearcher(store domain.VectorStore) domain.ProfileSearcher {
+	return &pgvectorProfileSearcher{store: store}
 }
 
-func (s *pgvectorInterviewSearcher) SearchByEmbedding(ctx context.Context, embedding []float32, threshold float64, topK int) ([]domain.AgentSearchResult, error) {
+func (s *pgvectorProfileSearcher) SearchByEmbedding(ctx context.Context, embedding []float32, threshold float64, topK int) ([]domain.AgentSearchResult, error) {
 	// ADR-0023 Routing Fix:
 	// 1. Pass DocumentType so pgvector filters at the SQL level. Without this,
-	//    LTM documents (facts, scenes) drown out agent profiles in the top-K.
+	//    LTM documents (facts, actions) drown out agent profiles in the top-K.
 	// 2. Pass RetrievalFloor=1.0 so the floor-multiplier re-ranking becomes a
 	//    no-op for agent-profile lookups (agent profiles have no ActivationStrength).
 	raw, err := s.store.Search(ctx, embedding, domain.SearchOptions{

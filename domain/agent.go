@@ -33,13 +33,13 @@ const (
 	// in ADR-0023; this constant is retained only for backward-compatible manifest
 	// parsing and will be removed once no manifests declare "trait":"tool".
 	TraitTool   AgentTrait = "tool"   // deprecated — see above
-	TraitModel  AgentTrait = "model"  // LLM inference provider; bypasses Interview, Merit-tracked with cost penalty
+	TraitModel  AgentTrait = "model"  // LLM inference provider; no profile vector, Merit-tracked with cost penalty
 	TraitDaemon AgentTrait = "daemon" // autonomous background process; emits signals via SignalStream. ADR-0033.
 )
 
 // systemAgentIDs are privileged kernel-invoked organs (ADR-0051): the kernel calls them
 // DIRECTLY (e.g. the kg_extractor via the agent transport's CallAgent), never through selection.
-// They are therefore (a) verified by default — they bypass the Gatekeeper interview, and
+// They are therefore (a) verified by default — their profile is seeded at full trust, and
 // (b) excluded from auction/EFE candidate selection — they are never assigned a user task.
 // A deterministic system exception, NOT task-to-agent routing, so the Zero-Hardcode Rule is
 // unaffected (the same class as the shell/Omurilik/scope exceptions).
@@ -47,40 +47,35 @@ var systemAgentIDs = map[string]bool{
 	// kg_extractor_agent (ADR-0053 D2 revised): the deterministic, NO-LLM tiered
 	// triplet extractor (metadata + spacy_patterns). The kernel hands it a chunk
 	// batch and gets triplets back; it is invoked DIRECTLY on the ingest path,
-	// never auctioned/interviewed — the privileged-organ class.
+	// never routed a user task — the privileged-organ class.
 	"kg_extractor_agent": true,
 	// reranker_agent (ADR-0054 Stage B): the warm bge cross-encoder relevance
 	// oracle. The kernel hands it {query, documents} on the recall path and gets
 	// one relevance score per document back; invoked DIRECTLY via the agent transport,
-	// never auctioned/interviewed — same privileged-organ class as the kg_extractor.
+	// never routed a user task — same privileged-organ class as the kg_extractor.
 	// CognitiveAgent with run() overridden: a scoring model, no generative think().
 	"reranker_agent": true,
 	// docling_agent (ADR-0060): the document-structure parser. The kernel hands it a
 	// document (text or raw bytes) on the ingest path and gets the section tree back,
 	// invoked DIRECTLY via the agent transport (network.DoclingDispatcher), never
-	// auctioned/interviewed. It was missing from this map until
+	// auctioned. It was missing from this map until
 	// T-20261031-core-system-agents-docling-kg-extractor: it ships no AGENT_MANIFEST,
-	// so discovery gave it the cognitive zero-value trait and it was LLM-interviewed,
+	// so discovery gave it the cognitive zero-value trait and it was LLM-interviewed (ADR-0037, since deleted),
 	// put on the Gatekeeper slate and verifier-eligible like an ordinary agent.
 	"docling_agent": true,
-	// operator_agent (ADR-0059): the operator's privileged answer path. The
-	// operator plane sends chat messages to the kernel via OperatorConsole.
-	// SendMessage; that path must bypass the Router/auction/Plan because the
-	// operator IS the principal (a benchmark is a first-class operator
-	// workload, not a user-task agent). The kernel invokes this organ directly
-	// via the LLM broker: recall + LLM call, same shape as the system organs
-	// above. Never auctioned/interviewed.
-	"operator_agent": true,
+	// operator_agent (ADR-0059) was removed 2026-11-05: no file implemented it, so
+	// the entry granted system status to an id nothing registers (agent stack v2,
+	// investigations/2026-11-05-agent-stack-audit.md).
 	// retrieval_agent (AGENTIC_RETRIEVAL_SPEC §2.1): the LLM steps of the agentic
 	// retrieval loop (plan_step / decide_continue / synthesize). The kernel calls
 	// it DIRECTLY via the agent transport on the recall path with a managed LLM session
-	// (RetrievalDispatcher), never auctioned/interviewed — same privileged-organ
+	// (RetrievalDispatcher), never routed a user task — same privileged-organ
 	// class as the other system organs. CognitiveAgent: makes managed generate() calls.
 	"retrieval_agent": true,
 	// chat_agent (ADR-0084): the conversational front desk. The kernel's chat worker
 	// pool dispatches it DIRECTLY (CallDaemon) to own one conversation turn; it never
 	// executes planner steps and has no work tools — it only converses and delegates
-	// whole tasks to the planner. It must be excluded from the auction/interview for
+	// whole tasks to the planner. It must be excluded from selection for
 	// two reasons: (a) it is incapable of doing task work, so routing a step to it dead-
 	// loops on empty memory queries; (b) letting the planner route back to it creates a
 	// chat→planner→chat recursion. Same privileged-organ class as the other organs — the
@@ -88,8 +83,8 @@ var systemAgentIDs = map[string]bool{
 	"chat_agent": true,
 }
 
-// IsSystemAgent reports whether agentID is a privileged kernel organ that bypasses the
-// interview (verified by default) and is ignored by the Gatekeeper / auction / EFE.
+// IsSystemAgent reports whether agentID is a privileged kernel organ that is verified by
+// default (seeded at full trust) and is ignored by the Gatekeeper / auction / EFE.
 func IsSystemAgent(agentID string) bool {
 	return systemAgentIDs[agentID]
 }
@@ -131,6 +126,26 @@ type AgentDefinition struct {
 	// carried here but read by nothing, and their authoritative home was always
 	// the agent_scopes table). Operator-set at registration, never self-declared.
 	ClassificationTags []string `json:"classification_tags,omitempty"`
+	// LaunchArgs are appended to the agent's command line after the kernel's own
+	// flags (--socket, --substrate-addr). A declarative profile agent (agent stack
+	// v2, agents/profiles/README.md) is the one runtime worker_agent.py launched as
+	// `--profile <name> --agent-id <id>`; every other agent has none.
+	LaunchArgs []string `json:"launch_args,omitempty"`
+	// Profile names the agents/profiles/<name>.yaml this agent was built from; ""
+	// for an agent that is its own source file. A profile agent's grants and tool
+	// ceiling come from the profile's tool allowlist (app/profile_grants.go).
+	Profile string `json:"profile,omitempty"`
+	// TrustTier is the profile's declared ADR-0139 D8 tier (system, first-party,
+	// third-party). Stored for the agent card and the console; the D8 containment
+	// mapping at launch is NOT built yet, so the tier does not change how the
+	// process is sandboxed today (logged at boot).
+	TrustTier string `json:"trust_tier,omitempty"`
+	// ModelPreference is the profile's `model:` — a generator id, or
+	// `role:<role>` meaning the generator assigned to that role. The LLM gateway
+	// puts it first on the agent's lease model chain (a prior, never a command: an
+	// unknown or unhealthy id falls through to the step allocation and the
+	// default).
+	ModelPreference string `json:"model_preference,omitempty"`
 }
 
 // AuthzRef identifies an agent to the decision point (Taggable).

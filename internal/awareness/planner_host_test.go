@@ -4,8 +4,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/cambrian-sh/core/domain"
 )
 
 // TestBuildHostBlock_CarriesOnlyTheOS pins the division of labour decided on
@@ -26,9 +24,10 @@ func TestBuildHostBlock_CarriesOnlyTheOS(t *testing.T) {
 	if !strings.Contains(block, "os: windows") {
 		t.Fatalf("host block must state the OS, got %q", block)
 	}
-	// Assert the premise, so this cannot pass vacuously on an empty block.
-	if !strings.Contains(block, "<host>") || !strings.Contains(block, "</host>") {
-		t.Fatalf("host block must be a delimited section, got %q", block)
+	// The block is the content of planner_input's <host> region; the region, not
+	// the block, carries the delimiters.
+	if strings.Contains(block, "<host>") {
+		t.Fatalf("host block must be the region's content, not the region, got %q", block)
 	}
 	for _, forbidden := range []string{"home", "desktop", "cwd", "Users"} {
 		if strings.Contains(block, forbidden) {
@@ -76,8 +75,9 @@ func TestPlannerPromptHash_ExcludesTheHost(t *testing.T) {
 		t.Fatal("premise failed: buildHostBlock produced nothing, so the check below proves nothing")
 	}
 	for name, static := range map[string]string{
-		"plannerStaticText":    plannerStaticText,
-		"plannerStaticTextCap": plannerStaticTextCap,
+		"planner":       plannerPrompts.System.Body,
+		"planner_cap":   plannerCapPrompts.System.Body,
+		"planner_input": plannerPrompts.Input.Body,
 	} {
 		if strings.Contains(static, block) {
 			t.Errorf("%s contains the rendered <host> block; a per-host value in the hashed text gives every host a different plannerPromptHash and silently invalidates cached plans", name)
@@ -88,8 +88,8 @@ func TestPlannerPromptHash_ExcludesTheHost(t *testing.T) {
 	}
 	// The hash is a pure function of that text, so equal text ⇒ equal hash on
 	// every machine. Asserted directly rather than trusting the string check.
-	if domain.PromptHashOf(plannerStaticText) != plannerPromptHash {
-		t.Error("plannerPromptHash is not the hash of plannerStaticText")
+	if plannerPrompts.StaticHash() != plannerPromptHash {
+		t.Error("plannerPromptHash is not the static hash of the planner prompt pair")
 	}
 	if plannerPromptHash == plannerPromptHashCap {
 		t.Error("the two arms must hash differently")
@@ -102,11 +102,12 @@ func TestPlannerPromptHash_ExcludesTheHost(t *testing.T) {
 // block it lived inside — on Windows, where no shell expands "~".
 func TestPlannerRules_ForbidConstructingPaths(t *testing.T) {
 	t.Parallel()
-	if !strings.Contains(plannerDecisionRules, "~") {
+	rules := plannerPrompts.System.Body
+	if !strings.Contains(rules, "~") {
 		t.Error("the decision rules must mention \"~\" in order to forbid it")
 	}
-	lowered := strings.ToLower(plannerDecisionRules)
-	for _, want := range []string{"executor's job", "do not construct absolute paths"} {
+	lowered := strings.ToLower(strings.Join(strings.Fields(rules), " "))
+	for _, want := range []string{"executing agent's job", "do not construct absolute paths"} {
 		if !strings.Contains(lowered, strings.ToLower(want)) {
 			t.Errorf("the decision rules must say %q", want)
 		}
@@ -119,15 +120,15 @@ func TestPlannerRules_ForbidConstructingPaths(t *testing.T) {
 func TestPlannerRules_DropDeadDiscoverySections(t *testing.T) {
 	t.Parallel()
 	for _, dead := range []string{"<DiscoveryLTM>", "<environment>"} {
-		if strings.Contains(plannerLTMRules, dead) {
-			t.Errorf("plannerLTMRules still instructs on %s, which nothing produces since the Scout was retired", dead)
+		if strings.Contains(plannerPrompts.System.Body, dead) {
+			t.Errorf("the planner prompt still instructs on %s, which nothing produces since the Scout was retired", dead)
 		}
 	}
 	// Premise: the surviving LTM sections are still described, so the test above
 	// is not passing merely because the rules block was emptied.
 	for _, live := range []string{"<FactLTM>", "<PlanLTM>", "<NegativeLTM>"} {
-		if !strings.Contains(plannerLTMRules, live) {
-			t.Errorf("plannerLTMRules lost %s", live)
+		if !strings.Contains(plannerPrompts.System.Body, live) {
+			t.Errorf("the planner prompt lost %s", live)
 		}
 	}
 }

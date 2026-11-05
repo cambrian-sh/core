@@ -1,18 +1,26 @@
 package llm
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
-	"time"
+	"sort"
+	"strings"
+
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/cambrian-sh/core/domain"
 )
 
+// OpenAIClient is the OpenAI-COMPATIBLE adapter (ADR-0139 D1), built on the
+// official openai-go SDK. "Compatible" is the operative word: it also serves the
+// claudebox proxy behind haiku-local, Ollama's /v1 endpoint (OllamaClient),
+// deepseek and mimo on opencode, and any LiteLLM a user points it at (owner Q2).
+// Those endpoints differ in what they honour, so the capability declaration is
+// per generator (Caps, from GeneratorConfig.RequestCapabilities), not per adapter.
 type OpenAIClient struct {
 	Endpoint  string
 	Model     string
@@ -24,147 +32,383 @@ type OpenAIClient struct {
 	TimeoutMs   int
 	// DisableThinking sends thinking:{"type":"disabled"} to suppress server-side
 	// reasoning on OpenAI-compat reasoning models (deepseek-v4-flash on opencode).
+	// A request's "openai:thinking" ProviderExtension overrides it per call.
 	DisableThinking bool
 	// NativeTools declares that this endpoint honours the tool-calling API
 	// (ADR-0097 D2). Default false: sending `tools` to an endpoint that ignores them
 	// yields a model that never calls anything, which reads as a model-quality
 	// problem rather than a configuration one.
 	NativeTools bool
+	// MaxTokens is the output cap sent when a request sets none; 0 sends none.
+	MaxTokens int
+	// Caps overrides DefaultCapabilities when non-nil (the per-generator config).
+	Caps *domain.Capabilities
+
+	// provider names the adapter in errors and extension keys ("openai", or
+	// "ollama" when wrapped by OllamaClient). Empty = "openai".
+	provider string
 }
 
 // NativeToolsEnabled implements domain.ToolCallingReporter.
-func (c *OpenAIClient) NativeToolsEnabled() bool { return c.NativeTools }
+func (c *OpenAIClient) NativeToolsEnabled() bool { return c.Capabilities().Tools.Sent() }
 
-// openAIThinking is the opencode/deepseek reasoning toggle. Type "disabled"
-// suppresses reasoning-token generation (faster; no empty-content-from-budget).
-type openAIThinking struct {
-	Type string `json:"type"`
+// RequestsEnabled implements domain.RequestGeneratorReporter.
+func (c *OpenAIClient) RequestsEnabled() bool { return true }
+
+func (c *OpenAIClient) name() string {
+	if c.provider == "" {
+		return "openai"
+	}
+	return c.provider
 }
 
-func disabledThinking(disable bool) *openAIThinking {
-	if !disable {
+// Capabilities implements domain.RequestGenerator.
+//
+// The defaults are what an unknown OpenAI-compatible endpoint can be trusted with:
+// json_schema is best-effort (deepseek accepts only json_object; claudebox pastes
+// the schema into the prompt), so the provider layer validates and repairs it;
+// caching is implicit on every such endpoint, never an explicit breakpoint. A real
+// OpenAI generator can raise response_schema to "enforced" in its config.
+func (c *OpenAIClient) Capabilities() domain.Capabilities {
+	if c.Caps != nil {
+		return *c.Caps
+	}
+	tools := domain.LevelUnsupported
+	if c.NativeTools {
+		tools = domain.LevelEnforced
+	}
+	return domain.Capabilities{
+		SystemRole:       domain.LevelEnforced,
+		Tools:            tools,
+		ToolChoice:       domain.LevelEnforced,
+		ParallelTools:    domain.LevelEnforced,
+		ResponseSchema:   domain.LevelBestEffort,
+		MaxTokens:        domain.LevelEnforced,
+		Sampling:         domain.LevelEnforced,
+		Stop:             domain.LevelEnforced,
+		CacheBreakpoints: domain.LevelUnsupported,
+		Images:           domain.LevelUnsupported,
+	}
+}
+
+// client builds the SDK client for one call. Built per call, not cached, so a
+// credential rotated in the store (ADR-0101 D5) applies on the next call — which is
+// what makes the D1 "retry once after a credential refresh" meaningful.
+func (c *OpenAIClient) client(streaming bool) openai.Client {
+	key := APIKeyFor(c.GeneratorID, c.APIKeyEnv)
+	opts := []option.RequestOption{
+		option.WithBaseURL(strings.TrimRight(c.Endpoint, "/") + "/"),
+		option.WithHTTPClient(sdkHTTPClient(c.TimeoutMs, streaming)),
+		// Retries are sharedLLMTransport's job (see sdkHTTPClient).
+		option.WithMaxRetries(0),
+		// The SDK seeds credentials, org and project from OPENAI_* env vars. This
+		// adapter talks to many endpoints that are not OpenAI; an ambient
+		// OPENAI_API_KEY must never be sent to a local Ollama or a third-party
+		// gateway. The credential is ours (APIKeyFor) or absent.
+		option.WithMiddleware(func(r *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+			r.Header.Del("OpenAI-Organization")
+			r.Header.Del("OpenAI-Project")
+			if key == "" {
+				r.Header.Del("Authorization")
+			}
+			return next(r)
+		}),
+	}
+	if key != "" {
+		opts = append(opts, option.WithAPIKey(key))
+	} else {
+		// A non-empty placeholder keeps the SDK from failing on a missing key; the
+		// middleware strips the header it produces.
+		opts = append(opts, option.WithAPIKey("unused"))
+	}
+	return openai.NewClient(opts...)
+}
+
+// params maps a prepared request onto the SDK's chat-completions params.
+func (c *OpenAIClient) params(req domain.GenerateRequest) (openai.ChatCompletionNewParams, []option.RequestOption, error) {
+	p := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(c.Model),
+		Messages: toOpenAIMessages(req.System, req.Messages),
+	}
+	for _, t := range req.Tools {
+		params, err := schemaMap(t.Parameters)
+		if err != nil {
+			return p, nil, fmt.Errorf("%s: tool %q: %w", c.name(), t.Name, err)
+		}
+		def := shared.FunctionDefinitionParam{Name: t.Name, Parameters: shared.FunctionParameters(params)}
+		if t.Description != "" {
+			def.Description = openai.String(t.Description)
+		}
+		p.Tools = append(p.Tools, openai.ChatCompletionFunctionTool(def))
+	}
+	// Only constrain the choice when tools are actually offered; sending
+	// tool_choice with an empty tools array is rejected by some gateways.
+	if len(p.Tools) > 0 {
+		switch req.ToolChoice.Mode {
+		case domain.ToolChoiceNone:
+			p.ToolChoice.OfAuto = openai.String("none")
+		case domain.ToolChoiceRequired:
+			p.ToolChoice.OfAuto = openai.String("required")
+		case domain.ToolChoiceTool:
+			p.ToolChoice = openai.ToolChoiceOptionFunctionToolChoice(
+				openai.ChatCompletionNamedToolChoiceFunctionParam{Name: req.ToolChoice.Name})
+		default:
+			p.ToolChoice.OfAuto = openai.String("auto")
+		}
+		if req.ToolChoice.DisableParallel {
+			p.ParallelToolCalls = openai.Bool(false)
+		}
+	}
+	if rs := req.ResponseSchema; rs != nil {
+		schema, err := schemaMap(rs.Schema)
+		if err != nil {
+			return p, nil, fmt.Errorf("%s: response schema: %w", c.name(), err)
+		}
+		js := shared.ResponseFormatJSONSchemaJSONSchemaParam{Name: schemaName(rs), Schema: schema}
+		if rs.Strict {
+			js.Strict = openai.Bool(true)
+		}
+		p.ResponseFormat.OfJSONSchema = &shared.ResponseFormatJSONSchemaParam{JSONSchema: js}
+	}
+	// max_tokens, not max_completion_tokens: every compatible endpoint we serve
+	// (opencode, claudebox, Ollama, LiteLLM) reads max_tokens; only OpenAI's o-series
+	// insists on the newer name.
+	if n := req.Options.MaxTokens; n > 0 {
+		p.MaxTokens = openai.Int(int64(n))
+	} else if c.MaxTokens > 0 {
+		p.MaxTokens = openai.Int(int64(c.MaxTokens))
+	}
+	if t := req.Options.Temperature; t != nil {
+		p.Temperature = openai.Float(float64(*t))
+	}
+	if len(req.Options.Stop) > 0 {
+		p.Stop.OfStringArray = req.Options.Stop
+	}
+
+	// Extensions go on the body as top-level fields. The legacy disable_thinking
+	// flag is the default for "thinking"; a request extension overrides it.
+	ext := providerExtensions(req, "openai", c.name())
+	var opts []option.RequestOption
+	if _, set := ext["thinking"]; !set && c.DisableThinking {
+		opts = append(opts, option.WithJSONSet("thinking", map[string]string{"type": "disabled"}))
+	}
+	keys := make([]string, 0, len(ext))
+	for k := range ext {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		opts = append(opts, option.WithJSONSet(k, ext[k]))
+	}
+	return p, opts, nil
+}
+
+// GenerateRequest implements domain.RequestGenerator.
+func (c *OpenAIClient) GenerateRequest(ctx context.Context, req domain.GenerateRequest) (domain.GenerateResponse, error) {
+	req, ignored, err := prepareRequest(req, c.Capabilities())
+	if err != nil {
+		return domain.GenerateResponse{}, err
+	}
+	p, opts, err := c.params(req)
+	if err != nil {
+		return domain.GenerateResponse{}, err
+	}
+	cl := c.client(false)
+	completion, err := cl.Chat.Completions.New(ctx, p, opts...)
+	if err != nil {
+		c.logRejected(err, p)
+		return domain.GenerateResponse{}, wrapProviderError(c.name(), err)
+	}
+	usage := openAIUsage(completion.Usage)
+	// ADR-0131 D2: hand the response's own usage to whoever metered this call.
+	reportUsage(ctx, tokenUsageOf(usage))
+	if len(completion.Choices) == 0 {
+		return domain.GenerateResponse{}, fmt.Errorf("%s: no choices in response", c.name())
+	}
+	ch := completion.Choices[0]
+	out := domain.GenerateResponse{
+		Text:       ch.Message.Content,
+		StopReason: normalizeOpenAIFinishReason(ch.FinishReason),
+		Usage:      usage,
+		Ignored:    ignored,
+		Model:      completion.Model,
+	}
+	if out.Text == "" && ch.Message.Refusal != "" {
+		out.Text, out.StopReason = ch.Message.Refusal, domain.StopRefusal
+	}
+	for _, tc := range ch.Message.ToolCalls {
+		out.ToolCalls = append(out.ToolCalls, domain.ModelToolCall{
+			ID:   tc.ID,
+			Name: tc.Function.Name,
+			// Arguments arrive as a JSON string; forward the bytes unparsed.
+			// Schema validation belongs to whoever owns the tool.
+			Arguments: []byte(tc.Function.Arguments),
+		})
+	}
+	return out, nil
+}
+
+// logRejected records what a tools request OFFERED when the endpoint refused it.
+// A gateway rejection says only "Upstream request failed" and names no field; tool
+// names and schemas are what gets rejected in practice (a name containing ':' or
+// '/', a schema missing its top-level "type": "object"). The prompt is never logged.
+func (c *OpenAIClient) logRejected(err error, p openai.ChatCompletionNewParams) {
+	if len(p.Tools) == 0 {
+		return
+	}
+	names := make([]string, 0, len(p.Tools))
+	for _, t := range p.Tools {
+		if f := t.GetFunction(); f != nil {
+			names = append(names, f.Name)
+		}
+	}
+	slog.Error(c.name()+": request rejected", "model", c.Model,
+		"tool_count", len(p.Tools), "tool_names", names, "err", err)
+}
+
+// StreamRequest implements domain.RequestGenerator. Usage is requested with
+// stream_options.include_usage; the final chunk carries the whole response.
+func (c *OpenAIClient) StreamRequest(ctx context.Context, req domain.GenerateRequest) (<-chan domain.StreamChunk, error) {
+	req, ignored, err := prepareRequest(req, c.Capabilities())
+	if err != nil {
+		return nil, err
+	}
+	p, opts, err := c.params(req)
+	if err != nil {
+		return nil, err
+	}
+	p.StreamOptions.IncludeUsage = openai.Bool(true)
+	cl := c.client(true)
+	stream := cl.Chat.Completions.NewStreaming(ctx, p, opts...)
+	// The SDK sends the request lazily, on the first Next. Pull it here so an HTTP
+	// refusal is returned synchronously, as the hand-written streamer did.
+	first := stream.Next()
+	if !first {
+		if serr := stream.Err(); serr != nil {
+			_ = stream.Close()
+			return nil, wrapProviderError(c.name(), serr)
+		}
+	}
+
+	out := make(chan domain.StreamChunk, 64)
+	go func() {
+		defer close(out)
+		defer stream.Close()
+		acc := openAIStreamAcc{resp: domain.GenerateResponse{Ignored: ignored}}
+		for ok := first; ok; ok = stream.Next() {
+			if ctx.Err() != nil {
+				return
+			}
+			chunk := stream.Current()
+			if text := acc.add(chunk); text != "" {
+				out <- domain.StreamChunk{Text: text}
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		resp := acc.finish()
+		reportUsage(ctx, tokenUsageOf(resp.Usage))
+		streamFinal(out, &resp, wrapStreamErr(c.name(), stream.Err()))
+	}()
+	return out, nil
+}
+
+func wrapStreamErr(provider string, err error) error {
+	if err == nil {
 		return nil
 	}
-	return &openAIThinking{Type: "disabled"}
+	return wrapProviderError(provider, err)
 }
 
-type openAIChatRequest struct {
-	Model    string          `json:"model"`
-	Messages []openAIChatMsg `json:"messages"`
-	Thinking *openAIThinking `json:"thinking,omitempty"`
+// openAIStreamAcc folds stream deltas into one response. Tool-call deltas arrive
+// fragmented by index: the id and name on the first, arguments across many.
+type openAIStreamAcc struct {
+	resp  domain.GenerateResponse
+	text  strings.Builder
+	calls []domain.ModelToolCall
+	byIdx map[int64]int
 }
 
-type openAIChatMsg struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	// Tool-calling conversation fields (ADR-0097 D8). Both omitempty: a plain text
-	// completion must serialize byte-identically to before this change.
-	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+func (a *openAIStreamAcc) add(chunk openai.ChatCompletionChunk) string {
+	if chunk.Model != "" {
+		a.resp.Model = chunk.Model
+	}
+	if u := openAIUsage(chunk.Usage); u.Input+u.Output > 0 {
+		a.resp.Usage = u
+	}
+	if len(chunk.Choices) == 0 {
+		return ""
+	}
+	ch := chunk.Choices[0]
+	if ch.FinishReason != "" {
+		a.resp.StopReason = normalizeOpenAIFinishReason(ch.FinishReason)
+	}
+	for _, d := range ch.Delta.ToolCalls {
+		if a.byIdx == nil {
+			a.byIdx = map[int64]int{}
+		}
+		i, seen := a.byIdx[d.Index]
+		if !seen {
+			i = len(a.calls)
+			a.byIdx[d.Index] = i
+			a.calls = append(a.calls, domain.ModelToolCall{})
+		}
+		if d.ID != "" {
+			a.calls[i].ID = d.ID
+		}
+		if d.Function.Name != "" {
+			a.calls[i].Name = d.Function.Name
+		}
+		a.calls[i].Arguments = append(a.calls[i].Arguments, d.Function.Arguments...)
+	}
+	a.text.WriteString(ch.Delta.Content)
+	return ch.Delta.Content
 }
 
-type openAIChatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Usage openaiUsage `json:"usage"`
+func (a *openAIStreamAcc) finish() domain.GenerateResponse {
+	a.resp.Text = a.text.String()
+	a.resp.ToolCalls = a.calls
+	if a.resp.StopReason == "" {
+		a.resp.StopReason = domain.StopUnknown
+	}
+	return a.resp
 }
 
+// openAIUsage maps the SDK usage block. prompt_tokens already includes the cached
+// tokens, so CacheRead is a breakdown. OpenAI-compatible endpoints report no cache
+// WRITES, so CacheWriteKnown stays false.
+func openAIUsage(u openai.CompletionUsage) domain.GenerateUsage {
+	return domain.GenerateUsage{
+		Input:     int(u.PromptTokens),
+		Output:    int(u.CompletionTokens),
+		CacheRead: int(u.PromptTokensDetails.CachedTokens),
+	}
+}
+
+// Generate implements domain.Generator (the legacy single-prompt port).
 func (c *OpenAIClient) Generate(ctx context.Context, prompt string) (string, error) {
-	timeout := time.Duration(c.TimeoutMs) * time.Millisecond
-	httpClient := &http.Client{Timeout: timeout, Transport: sharedLLMTransport}
-
-	reqBody := openAIChatRequest{
-		Model: c.Model,
-		Messages: []openAIChatMsg{
-			{Role: "user", Content: prompt},
-		},
-		Thinking: disabledThinking(c.DisableThinking),
-	}
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/chat/completions", c.Endpoint), bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if apiKey := APIKeyFor(c.GeneratorID, c.APIKeyEnv); apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("openai: HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	var chatResp openAIChatResponse
-	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return "", err
-	}
-	// ADR-0131 D2: hand the response's own usage to whoever metered this call.
-	reportUsage(ctx, chatResp.Usage.tokenUsage())
-	if len(chatResp.Choices) == 0 {
-		return "", fmt.Errorf("openai: no choices in response")
-	}
-	return chatResp.Choices[0].Message.Content, nil
+	return shimGenerate(ctx, c, prompt)
 }
 
-// ── Native tool-calling (ADR-0097 Phase A) ───────────────────────────────────
-
-// openAIToolDef / openAIFunctionDef mirror the OpenAI `tools` request shape.
-type openAIFunctionDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
+// GenerateWithTools implements domain.ToolCallingGenerator (ADR-0097).
+//
+// Refuses rather than quietly falling back to a plain completion when tools are
+// not declared: a caller that reached here without checking SupportsToolCalling
+// has a bug, and silently dropping the tools would hand it a model that never
+// calls anything.
+func (c *OpenAIClient) GenerateWithTools(
+	ctx context.Context, messages []domain.ModelMessage, tools []domain.ToolDefinition,
+) (domain.ModelTurn, error) {
+	if !c.NativeToolsEnabled() {
+		return domain.ModelTurn{}, fmt.Errorf("%s: native tool-calling not enabled for model %q (set native_tools)", c.name(), c.Model)
+	}
+	return shimGenerateWithTools(ctx, c, messages, tools)
 }
 
-type openAIToolDef struct {
-	Type     string            `json:"type"` // always "function"
-	Function openAIFunctionDef `json:"function"`
-}
-
-// openAIToolCall mirrors the response shape. Arguments is a JSON *string*, not an
-// object — the provider double-encodes it, and both configured models were verified
-// to do so on 2026-07-28.
-type openAIToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
-
-type openAIToolChatRequest struct {
-	Model      string          `json:"model"`
-	Messages   []openAIChatMsg `json:"messages"`
-	Thinking   *openAIThinking `json:"thinking,omitempty"`
-	Tools      []openAIToolDef `json:"tools,omitempty"`
-	ToolChoice string          `json:"tool_choice,omitempty"`
-}
-
-type openAIToolChatResponse struct {
-	Choices []struct {
-		FinishReason string `json:"finish_reason"`
-		Message      struct {
-			Content   string           `json:"content"`
-			ToolCalls []openAIToolCall `json:"tool_calls"`
-		} `json:"message"`
-	} `json:"choices"`
+// GenerateStream implements domain.LLMStreamer.
+func (c *OpenAIClient) GenerateStream(ctx context.Context, prompt string) (<-chan domain.StreamChunk, error) {
+	return shimGenerateStream(ctx, c, prompt)
 }
 
 // normalizeOpenAIFinishReason maps OpenAI's vocabulary onto domain.StopReason.
@@ -186,137 +430,56 @@ func normalizeOpenAIFinishReason(r string) domain.StopReason {
 	}
 }
 
-// GenerateWithTools implements domain.ToolCallingGenerator.
+// toOpenAIMessages renders the system blocks and the conversation onto the wire.
 //
-// Verified live against the configured endpoint (2026-07-28): both deepseek-v4-flash
-// and mimo-v2.5 return finish_reason "tool_calls" with a populated tool_calls array.
-func (c *OpenAIClient) GenerateWithTools(
-	ctx context.Context, messages []domain.ModelMessage, tools []domain.ToolDefinition,
-) (domain.ModelTurn, error) {
-	var zero domain.ModelTurn
-	// Refuse rather than quietly falling back to a plain completion: a caller that
-	// reached here without checking SupportsToolCalling has a bug, and silently
-	// dropping the tools would hand it a model that never calls anything.
-	if !c.NativeTools {
-		return zero, fmt.Errorf("openai: native tool-calling not enabled for model %q (set native_tools)", c.Model)
-	}
-
-	reqBody := openAIToolChatRequest{
-		Model:    c.Model,
-		Messages: toOpenAIMessages(messages),
-		Thinking: disabledThinking(c.DisableThinking),
-	}
-	for _, t := range tools {
-		reqBody.Tools = append(reqBody.Tools, openAIToolDef{
-			Type: "function",
-			Function: openAIFunctionDef{
-				Name: t.Name, Description: t.Description, Parameters: json.RawMessage(t.Parameters),
-			},
-		})
-	}
-	// Only constrain the choice when tools are actually offered; sending
-	// tool_choice with an empty tools array is rejected by some gateways.
-	if len(reqBody.Tools) > 0 {
-		reqBody.ToolChoice = "auto"
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return zero, err
-	}
-
-	httpClient := &http.Client{
-		Timeout:   time.Duration(c.TimeoutMs) * time.Millisecond,
-		Transport: sharedLLMTransport,
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("%s/chat/completions", c.Endpoint), bytes.NewBuffer(jsonData))
-	if err != nil {
-		return zero, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if apiKey := APIKeyFor(c.GeneratorID, c.APIKeyEnv); apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return zero, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return zero, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		// A gateway rejection on a tools request says only "Upstream request failed"
-		// and names no field, so log what we OFFERED. Tool names and their schemas
-		// are the field that gets rejected in practice — twice already: a name
-		// containing ':' or '/', and a schema missing its top-level "type": "object".
-		//
-		// The prompt is deliberately NOT logged. It carries user content, and it has
-		// never been the cause; the tool envelope is both the likely culprit and the
-		// part that is safe to record.
-		names := make([]string, 0, len(reqBody.Tools))
-		for _, t := range reqBody.Tools {
-			names = append(names, t.Function.Name)
-		}
-		slog.Error("openai: request rejected",
-			"status", resp.StatusCode, "model", c.Model,
-			"tool_count", len(reqBody.Tools), "tool_names", names,
-			"response", string(body))
-		return zero, fmt.Errorf("openai: HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	var chatResp openAIToolChatResponse
-	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return zero, err
-	}
-	// ADR-0131 D2: the tool path is a billed call like any other.
-	if u, uerr := (&openaiExtractor{}).Extract(body); uerr == nil {
-		reportUsage(ctx, u)
-	}
-	if len(chatResp.Choices) == 0 {
-		return zero, fmt.Errorf("openai: no choices in response")
-	}
-
-	ch := chatResp.Choices[0]
-	out := domain.ModelTurn{
-		Text:       ch.Message.Content,
-		StopReason: normalizeOpenAIFinishReason(ch.FinishReason),
-	}
-	for _, tc := range ch.Message.ToolCalls {
-		out.ToolCalls = append(out.ToolCalls, domain.ModelToolCall{
-			ID:   tc.ID,
-			Name: tc.Function.Name,
-			// Arguments arrive as a JSON string; forward the bytes unparsed.
-			// Schema validation belongs to whoever owns the tool.
-			Arguments: []byte(tc.Function.Arguments),
-		})
-	}
-	return out, nil
-}
-
-// toOpenAIMessages renders the conversation onto the wire shape.
-//
+// System blocks become ONE system message: OpenAI-compatible endpoints differ on
+// multiple system messages (claudebox merges them anyway), and one message keeps the
+// stable prefix byte-identical across calls, which is what implicit caching keys on.
 // An assistant turn carries its tool_calls; a tool turn carries the id of the call it
-// answers. Dropping either — which the first cut of Phase B did by sending one user
-// message per round — leaves the model unable to see its own call or its result.
-func toOpenAIMessages(messages []domain.ModelMessage) []openAIChatMsg {
-	out := make([]openAIChatMsg, 0, len(messages))
+// answers. Dropping either leaves the model unable to see its own call or its result.
+func toOpenAIMessages(system []domain.SystemBlock, messages []domain.ModelMessage) []openai.ChatCompletionMessageParamUnion {
+	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages)+1)
+	if s := systemText(system); s != "" {
+		out = append(out, openai.SystemMessage(s))
+	}
 	for _, m := range messages {
-		msg := openAIChatMsg{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
-		for _, tc := range m.ToolCalls {
-			call := openAIToolCall{ID: tc.ID, Type: "function"}
-			call.Function.Name = tc.Name
-			// Arguments go back as the JSON STRING the provider sent, not re-encoded:
-			// round-tripping through a map would reorder keys and change the bytes the
-			// provider matches against its own record of the call.
-			call.Function.Arguments = string(tc.Arguments)
-			msg.ToolCalls = append(msg.ToolCalls, call)
+		switch m.Role {
+		case domain.RoleAssistant:
+			a := openai.ChatCompletionAssistantMessageParam{}
+			if m.Content != "" || len(m.ToolCalls) == 0 {
+				a.Content.OfString = openai.String(m.Content)
+			}
+			for _, tc := range m.ToolCalls {
+				// Arguments go back as the JSON STRING the provider sent, not
+				// re-encoded: round-tripping through a map would reorder keys and
+				// change the bytes the provider matches against its record of the call.
+				args := string(tc.Arguments)
+				if args == "" {
+					args = "{}"
+				}
+				a.ToolCalls = append(a.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
+					OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+						ID: tc.ID,
+						Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
+							Name: tc.Name, Arguments: args,
+						},
+					},
+				})
+			}
+			out = append(out, openai.ChatCompletionMessageParamUnion{OfAssistant: &a})
+		case domain.RoleTool:
+			out = append(out, openai.ToolMessage(m.Content, m.ToolCallID))
+		case "system":
+			out = append(out, openai.SystemMessage(m.Content))
+		default:
+			out = append(out, openai.UserMessage(m.Content))
 		}
-		out = append(out, msg)
 	}
 	return out
 }
+
+var (
+	_ domain.RequestGenerator     = (*OpenAIClient)(nil)
+	_ domain.ToolCallingGenerator = (*OpenAIClient)(nil)
+	_ domain.LLMStreamer          = (*OpenAIClient)(nil)
+)

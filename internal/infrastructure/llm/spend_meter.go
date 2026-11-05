@@ -18,7 +18,7 @@ import (
 // exist anyway and neither of which can be skipped:
 //
 //   - Provider.Acquire, for every system organ (planner, router, replan,
-//     checkpoint, thought steps, tier-2 scoring, verification, interview, the
+//     checkpoint, thought steps, tier-2 scoring, verification, the
 //     Ingress Studio's drafting model). The meter is the OUTERMOST decorator on
 //     every acquired generator, so a call refused at the ceiling never takes a
 //     concurrency slot, and a new organ is metered by construction.
@@ -44,7 +44,7 @@ import (
 //     (router classification before Execute opens one); the tab is enforced
 //     against its own total and SettleTab later moves it into the session;
 //   - none of these: the explicit kernel no-session bucket (NoSessionBucket —
-//     registration-triggered interviews, maintenance), reported by
+//     background workers, maintenance), reported by
 //     ReportNoSession and never refused: there is no session whose ceiling it
 //     could exceed.
 //

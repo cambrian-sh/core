@@ -51,7 +51,6 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			SourceHash:   e.SourceHash,
 			TrustScore:   e.TrustScore,
 			Capabilities: e.Capabilities,
-			InterviewMs:  e.InterviewMs,
 			// Contract 0074: the detail fields 0057 removed. Empty on a producer
 			// that does not populate them, which folds harmlessly — the projection
 			// upserts by agent_id and an absent field is not a cleared one.

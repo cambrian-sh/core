@@ -46,7 +46,9 @@ const (
 type OrchestratorClient interface {
 	// The main method where the agent receives and processes a task (if the Orchestrator also implements this service)
 	Execute(ctx context.Context, in *Handoff, opts ...grpc.CallOption) (*Handoff, error)
-	// Auction / Qualified-Volunteering Model
+	// DEPRECATED: Auction / Qualified-Volunteering Model. The auction was retired by
+	// ADR-0100 and the kernel serves no bids. Kept so the contract stays
+	// wire-compatible; do not build on it.
 	RequestProposal(ctx context.Context, in *AuctionTask, opts ...grpc.CallOption) (*AgentProposal, error)
 	// Shared LTM semantic query — proxied through Substrate with ACL enforcement
 	QueryMemory(ctx context.Context, in *MemoryRequest, opts ...grpc.CallOption) (*MemoryResponse, error)
@@ -342,7 +344,9 @@ func (c *orchestratorClient) SubmitApprovalDecision(ctx context.Context, in *App
 type OrchestratorServer interface {
 	// The main method where the agent receives and processes a task (if the Orchestrator also implements this service)
 	Execute(context.Context, *Handoff) (*Handoff, error)
-	// Auction / Qualified-Volunteering Model
+	// DEPRECATED: Auction / Qualified-Volunteering Model. The auction was retired by
+	// ADR-0100 and the kernel serves no bids. Kept so the contract stays
+	// wire-compatible; do not build on it.
 	RequestProposal(context.Context, *AuctionTask) (*AgentProposal, error)
 	// Shared LTM semantic query — proxied through Substrate with ACL enforcement
 	QueryMemory(context.Context, *MemoryRequest) (*MemoryResponse, error)
@@ -909,6 +913,10 @@ const (
 //
 // Service that agents register with, or that agents implement (AgentService)
 type AgentServiceClient interface {
+	// DEPRECATED 2026-11-05: the kernel no longer calls RequestProposal. Its last
+	// caller was the LLM agent interview, deleted 2026-11-05 (ADR-0139 Q3); the
+	// auction's bid round was retired earlier (ADR-0100). Agents may still serve it;
+	// nothing asks. Kept so the contract stays wire-compatible.
 	RequestProposal(ctx context.Context, in *ProposalRequest, opts ...grpc.CallOption) (*ProposalResponse, error)
 	Execute(ctx context.Context, in *Handoff, opts ...grpc.CallOption) (*Handoff, error)
 	VerifyOutput(ctx context.Context, in *VerifyRequest, opts ...grpc.CallOption) (*VerifyResponse, error)
@@ -958,6 +966,10 @@ func (c *agentServiceClient) VerifyOutput(ctx context.Context, in *VerifyRequest
 //
 // Service that agents register with, or that agents implement (AgentService)
 type AgentServiceServer interface {
+	// DEPRECATED 2026-11-05: the kernel no longer calls RequestProposal. Its last
+	// caller was the LLM agent interview, deleted 2026-11-05 (ADR-0139 Q3); the
+	// auction's bid round was retired earlier (ADR-0100). Agents may still serve it;
+	// nothing asks. Kept so the contract stays wire-compatible.
 	RequestProposal(context.Context, *ProposalRequest) (*ProposalResponse, error)
 	Execute(context.Context, *Handoff) (*Handoff, error)
 	VerifyOutput(context.Context, *VerifyRequest) (*VerifyResponse, error)

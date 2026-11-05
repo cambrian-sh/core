@@ -184,23 +184,23 @@ func (e *FaultyEmbedder) innerEmbed(ctx context.Context, text string) ([]float32
 	return e.inner.Embed(ctx, text)
 }
 
-// ---------------------------------------------------------------- InterviewSearcher
+// ---------------------------------------------------------------- ProfileSearcher
 
-// FaultyInterviewSearcher faults the Gatekeeper's Layer-2 semantic search (the
-// pgvector-backed interview index). With a nil inner it returns no matches.
-type FaultyInterviewSearcher struct {
-	inner domain.InterviewSearcher
+// FaultyProfileSearcher faults the Gatekeeper's Layer-2 semantic search (the
+// pgvector-backed agent-profile index). With a nil inner it returns no matches.
+type FaultyProfileSearcher struct {
+	inner domain.ProfileSearcher
 	cfg   FaultConfig
 	sched faultSchedule
 }
 
-func NewFaultyInterviewSearcher(inner domain.InterviewSearcher, cfg FaultConfig) *FaultyInterviewSearcher {
-	return &FaultyInterviewSearcher{inner: inner, cfg: cfg}
+func NewFaultyProfileSearcher(inner domain.ProfileSearcher, cfg FaultConfig) *FaultyProfileSearcher {
+	return &FaultyProfileSearcher{inner: inner, cfg: cfg}
 }
 
-func (s *FaultyInterviewSearcher) Calls() int { return s.sched.count() }
+func (s *FaultyProfileSearcher) Calls() int { return s.sched.count() }
 
-func (s *FaultyInterviewSearcher) SearchByEmbedding(ctx context.Context, embedding []float32, threshold float64, topK int) ([]domain.AgentSearchResult, error) {
+func (s *FaultyProfileSearcher) SearchByEmbedding(ctx context.Context, embedding []float32, threshold float64, topK int) ([]domain.AgentSearchResult, error) {
 	if err := gate(ctx, s.cfg, &s.sched); err != nil {
 		return nil, err
 	}
@@ -357,8 +357,8 @@ func (w *FaultyTaskEventWriter) WriteTaskEvent(event domain.TaskEvent) error {
 }
 
 var (
-	_ domain.VectorStore       = (*FaultyVectorStore)(nil)
-	_ domain.Generator         = (*FaultyGenerator)(nil)
-	_ domain.BatchEmbedder     = (*FaultyEmbedder)(nil)
-	_ domain.InterviewSearcher = (*FaultyInterviewSearcher)(nil)
+	_ domain.VectorStore     = (*FaultyVectorStore)(nil)
+	_ domain.Generator       = (*FaultyGenerator)(nil)
+	_ domain.BatchEmbedder   = (*FaultyEmbedder)(nil)
+	_ domain.ProfileSearcher = (*FaultyProfileSearcher)(nil)
 )

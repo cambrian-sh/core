@@ -19,6 +19,11 @@ type AgentRecord struct {
 	// domain.IsSystemAgent(id) — the field is the registry-side mirror of that
 	// lookup so callers holding an AgentRecord don't need a second map hit.
 	System bool `json:"system,omitempty"`
+	// Agent stack v2 profile fields (domain.AgentDefinition documents them).
+	LaunchArgs      []string `json:"launch_args,omitempty"`
+	Profile         string   `json:"profile,omitempty"`
+	TrustTier       string   `json:"trust_tier,omitempty"`
+	ModelPreference string   `json:"model_preference,omitempty"`
 }
 
 // ManifestRecord is the raw JSON shape stored in the bbolt manifests bucket.
@@ -38,6 +43,12 @@ type ManifestRecord struct {
 	OutputSchema     map[string]any `json:"output_schema,omitempty"`
 	ReleaseNotes     string         `json:"release_notes,omitempty"`
 	Dependencies     []string       `json:"dependencies,omitempty"`
+	// ToolAllowlist and Skills are a declarative profile's `tools` globs and skill
+	// menu (agents/profiles/README.md). The allowlist is deliberately NOT under
+	// Tools: Tools is still read as legacy capability tags (dispatch.go,
+	// profile_seeder.go).
+	ToolAllowlist []string `json:"tool_allowlist,omitempty"`
+	Skills        []string `json:"skills,omitempty"`
 }
 
 // TaskEventRecord is the raw JSON shape stored in the bbolt task_events bucket.
@@ -131,11 +142,12 @@ type RetrievedDocRecord struct {
 
 // RetrievalSessionRecord is the raw JSON shape stored in the bbolt retrieval_sessions bucket.
 type RetrievalSessionRecord struct {
-	SessionID       string               `json:"session_id"`
-	Query           string               `json:"query"`
-	QueryEmbedding  []float32            `json:"query_embedding,omitempty"`
-	Caller          string               `json:"caller"`
-	SceneHits       int                  `json:"scene_hits"`
+	SessionID      string    `json:"session_id"`
+	Query          string    `json:"query"`
+	QueryEmbedding []float32 `json:"query_embedding,omitempty"`
+	Caller         string    `json:"caller"`
+	// `scene_hits` removed 2026-11-05 with scene priming; stored records keep the key,
+	// which decoding ignores.
 	FactHits        int                  `json:"fact_hits"`
 	RetrievedDocs   []RetrievedDocRecord `json:"retrieved_docs"`
 	Truncated       bool                 `json:"truncated"`

@@ -76,7 +76,9 @@ func TestMCPTaskChain_ContributedMenuFollowsTaskBeneficiary(t *testing.T) {
 	taskBob := submitAs(domain.AgentPrincipal("mcp:bob"))
 
 	// The kernel's own lease machinery, exactly as Execute's stepFn binds it at
-	// dispatch: a per-step lease bound to the task session.
+	// dispatch: a per-step lease bound to the task session, then to the executing
+	// agent by the dispatcher (dispatch.Dispatcher.bindLease). Without the agent an
+	// agent caller is refused the lease (ADR-0139 D8, fail closed).
 	gw := network.NewLLMGateway(config.ExecutionConfig{
 		Session: config.SessionConfig{SessionTokenTTLMultiplier: 5},
 		LLM:     config.LLMConfig{LLMGatewayMaxConcurrency: 4},
@@ -88,6 +90,7 @@ func TestMCPTaskChain_ContributedMenuFollowsTaskBeneficiary(t *testing.T) {
 			t.Fatalf("acquire lease: %v", err)
 		}
 		gw.BindLease(lease, domain.LeaseBinding{SessionID: domain.SessionID(task)})
+		gw.BindLeaseAgent(lease, "attending-agent")
 		return string(lease)
 	}
 
@@ -168,6 +171,7 @@ func TestMCPTaskChain_MachineSubmissionCarriesItsOwner(t *testing.T) {
 		t.Fatalf("acquire: %v", err)
 	}
 	gw.BindLease(lease, domain.LeaseBinding{SessionID: domain.SessionID(task)})
+	gw.BindLeaseAgent(lease, "attending-agent") // as the dispatcher does (ADR-0139 D8)
 
 	srv := &network.Server{LLMGateway: gw, ToolExecutor: executor, TaskOwners: lane}
 	ctx := metadata.NewIncomingContext(context.Background(),

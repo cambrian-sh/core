@@ -121,21 +121,20 @@ type DAGExecutor struct {
 	// available and the episode is recorded with surprise -1 ("unknown"), which is NOT
 	// the same as zero: an unscored fleet is unpredictable, not predictable.
 	Surprise               domain.SurpriseOracle
-	WorkspaceStage         domain.WorkspaceStage      // ADR-0016: may be nil; nil disables GWS enrichment
-	LLMGateway             LLMGateway                 // ADR-0018: may be nil
-	Observer               domain.TelemetryObserver   // ADR-0019: may be nil
-	PlanEventWriter        domain.PlanEventWriter     // ADR-0021: may be nil; nil disables plan-level telemetry
-	EventBus               domain.EventBus            // ADR-0047 D7/0047-17: may be nil; publishes PlanStateChanged for the operator feed
-	InjectPlanner          InjectPlanner              // ADR-0047 A1.1: may be nil; nil ⇒ deterministic instruction-as-step default
-	ThoughtFn              StepFunc                   // used for IsThought=true steps; may be nil
-	CheckpointValidator    domain.CheckpointValidator // ADR-0013 H1 gate; may be nil (nil disables checkpoints)
-	PauseController        *PauseController           // optional; nil disables HITL pausing
-	ReplanHandler          ReplanHandler              // optional; nil disables plan-level replan
-	CheckpointStore        CheckpointStore            // optional; nil disables checkpointing
-	ContentStore           domain.ContentStore        // ADR-0022 Phase 1: may be nil; nil disables CAS
-	StepCache              domain.StepCache           // ADR-0026: may be nil; nil disables step-level memoization
-	StepCachePolicies      map[string]int             // ADR-0026: operator TTL overrides; nil = use heuristic defaults
-	ContextRefSnippetChars int                        // ADR-0022: snippet length; 0 defaults to 500
+	WorkspaceStage         domain.WorkspaceStage    // ADR-0016: may be nil; nil disables GWS enrichment
+	LLMGateway             LLMGateway               // ADR-0018: may be nil
+	Observer               domain.TelemetryObserver // ADR-0019: may be nil
+	PlanEventWriter        domain.PlanEventWriter   // ADR-0021: may be nil; nil disables plan-level telemetry
+	EventBus               domain.EventBus          // ADR-0047 D7/0047-17: may be nil; publishes PlanStateChanged for the operator feed
+	InjectPlanner          InjectPlanner            // ADR-0047 A1.1: may be nil; nil ⇒ deterministic instruction-as-step default
+	ThoughtFn              StepFunc                 // used for IsThought=true steps; may be nil
+	PauseController        *PauseController         // optional; nil disables HITL pausing
+	ReplanHandler          ReplanHandler            // optional; nil disables plan-level replan
+	CheckpointStore        CheckpointStore          // optional; nil disables checkpointing
+	ContentStore           domain.ContentStore      // ADR-0022 Phase 1: may be nil; nil disables CAS
+	StepCache              domain.StepCache         // ADR-0026: may be nil; nil disables step-level memoization
+	StepCachePolicies      map[string]int           // ADR-0026: operator TTL overrides; nil = use heuristic defaults
+	ContextRefSnippetChars int                      // ADR-0022: snippet length; 0 defaults to 500
 	// ADR-0022 Phase 3: circuit-breaker flag.
 	// true  → Handoff.WorkingMemory populated from the step's DependsOn outputs; Handoff.Context empty.
 	// false → filterSnapshotForStep into Handoff.Context (Phase 0 behavior).
@@ -268,8 +267,8 @@ func (d *DAGExecutor) executeStep(
 	// ADR-0022: WorkingMemory and Context are mutually exclusive.
 	// When WorkingMemory is non-nil (use_global_workspace=true), Context is nil.
 	// ADR-0049 D3: hand the agent its per-step correlation key so its tool calls
-	// (actions) get stamped with it; the same key is set on the StepResult below, so
-	// RecordExecution can count the step's actions and dedup its prose synthesis.
+	// (actions) get stamped with it, which is how an action record finds its plan and
+	// its episode parent (ADR-0095 D1).
 	if snapshot == nil {
 		snapshot = map[string]string{}
 	}
@@ -299,6 +298,12 @@ func (d *DAGExecutor) executeStep(
 	// added, and never merge into the plan context.
 	usage, haveUsage := llm.StepUsageFrom(resp.Context)
 	llm.ClearStepUsage(resp.Context)
+	// ADR-0139 D6: the dispatched definition's identity, stamped by the Dispatcher
+	// (domain.HandoffKeyWinnerSourceHash), consumed here for the same reason.
+	winnerID := resp.Context[domain.HandoffKeyWinnerAgentID]
+	winnerHash := resp.Context[domain.HandoffKeyWinnerSourceHash]
+	delete(resp.Context, domain.HandoffKeyWinnerAgentID)
+	delete(resp.Context, domain.HandoffKeyWinnerSourceHash)
 	sizeAfter := contextByteSize(resp.Context)
 	growthBytes := sizeAfter - sizeBefore
 	if growthBytes < 0 {
@@ -307,6 +312,18 @@ func (d *DAGExecutor) executeStep(
 	agentID := resp.FromAgent
 	if plan.Steps[stepIndex].IsThought {
 		agentID = "System_Thought"
+	}
+	// The SourceHash keys the profile the Gatekeeper and Dispatcher read
+	// (GetProfile(agent.ID, agent.SourceHash)). Without it every step outcome
+	// aggregated into `profile:<agent>:`, which nothing reads, and the cold-start
+	// prior stayed the agent's merit for ever
+	// (T-20261104-routing-never-learns-from-real-outcomes-dag). Used only when the
+	// stamp names the agent the response came from; otherwise (a runner-up fallback
+	// or a yield resume that bypassed the Dispatcher's stamp) the hash stays empty,
+	// the pre-fix behaviour.
+	var sourceHash string
+	if winnerID != "" && winnerID == agentID {
+		sourceHash = winnerHash
 	}
 	// Server-authoritative: stamped by the step function from the gateway's
 	// reconciled lease, never by the agent (ADR-0018; domain.HandoffKeyBudgetOverrun).
@@ -347,6 +364,7 @@ func (d *DAGExecutor) executeStep(
 		event := domain.TaskEvent{
 			TaskID:             taskID,
 			AgentID:            agentID,
+			SourceHash:         sourceHash,
 			BidConfidence:      float64(resp.Confidence),
 			ContextGrowthBytes: growthBytes,
 			PromptTokens:       promptTokens,
@@ -378,7 +396,8 @@ func (d *DAGExecutor) executeStep(
 	}
 
 	// ADR-0026: cache the successful result for future steps with identical inputs.
-	if d.StepCache != nil && resp != nil && cacheKey != "" {
+	// resp is non-nil here: a nil response returned early above.
+	if d.StepCache != nil && cacheKey != "" {
 		if ttl := resolveCacheTTL(plan.Steps[stepIndex], d.StepCachePolicies); ttl > 0 {
 			if putErr := d.StepCache.Put(ctx, cacheKey, resp, ttl); putErr != nil {
 				slog.Warn("StepCache.Put failed", "step", stepIndex, "err", putErr)
@@ -893,7 +912,7 @@ func (d *DAGExecutor) ExecuteFrom(
 	// getting this order wrong costs nothing at write time and silently leaves the
 	// episode in pieces.
 	//
-	// Errors are swallowed for the same reason the scene write is: bookkeeping about a
+	// Errors are swallowed for the same reason the outcome write is: bookkeeping about a
 	// memory must never be able to fail the work that produced it (D5).
 	if d.MemoryRecorder != nil {
 		_ = d.MemoryRecorder.BeginExperience(ctx, planID)
@@ -1007,7 +1026,7 @@ func (d *DAGExecutor) ExecuteFrom(
 	maxSurprise := -1.0
 	// Labelled so an abort deep inside the pause/replan handling — including from within
 	// the resume `select` — leaves the LOOP rather than the function. Everything after
-	// the loop (drain, PlanEvent, episode close, plan scene) must run exactly once per
+	// the loop (drain, PlanEvent, plan outcome and episode close) must run exactly once per
 	// Execute, on every one of these paths.
 coordinate:
 	for inFlight > 0 || (func() bool { d.pausedMu.Lock(); defer d.pausedMu.Unlock(); return d.paused }()) {
@@ -1191,10 +1210,6 @@ coordinate:
 			budgetOverrunCount++
 		}
 
-		// ADR-0049 D5: scenes are no longer per-step. The ONE plan-wide scene is written
-		// at plan completion (WritePlanScene below); per-step SceneID stays empty.
-		var sceneID string
-
 		// ADR-0049 A2.3: score this step against what merit predicted of its agent, and
 		// keep the plan's WORST miss. The executing agent is the handoff's sender; the
 		// step's first required capability scopes the expectation when ROUTE-06 has one.
@@ -1208,19 +1223,9 @@ coordinate:
 			}
 		}
 
-		// ADR-0015: Feed step result to Tier-1 pending channel (non-blocking, best-effort).
-		// SceneID forwarded so Tier-2 drain can write the discussed_in edge (ADR-0025).
-		if d.MemoryRecorder != nil && r.resp != nil && r.resp.Payload != nil {
-			_ = d.MemoryRecorder.RecordExecution(ctx, domain.StepResult{
-				Index:            r.index,
-				Output:           string(r.resp.Payload.Data),
-				Snapshot:         r.snapshot,
-				SceneID:          sceneID,
-				SessionID:        d.CurrentSessionID,                                      // ADR-0029: tags Tier-2 commits with session_id for KeyFacts
-				TaskID:           formatTaskID(r.index, planID),                           // ADR-0049 D3: per-step dedup correlation key
-				DependsOnTaskIDs: dependsOnTaskIDs(plan.Steps[r.index].DependsOn, planID), // ADR-0049 D10: follows edges
-			})
-		}
+		// Step results are no longer fed to memory: RecordExecution (the ADR-0015 Tier-1
+		// channel and tier-2 judge, with its per-step SceneID and `follows` edges) was
+		// deleted 2026-11-05 (decisions/scenes-cancelled.md).
 
 		runningCost += r.estimatedCost
 		completed[r.index] = true
@@ -1247,28 +1252,6 @@ coordinate:
 		if d.CheckpointStore != nil {
 			if err := d.CheckpointStore.SaveCheckpoint(d.CurrentRunID, r.index, cloneMap(masterContext)); err != nil {
 				slog.Warn("checkpoint write failed", "run", d.CurrentRunID, "step", r.index, "err", err)
-			}
-		}
-
-		// Semantic Checkpoint Gate (ADR-0013): run coherence probe before
-		// dispatching successor steps. Mirrors BudgetExceededError control flow.
-		step := plan.Steps[r.index]
-		if step.CheckpointAfter && d.CheckpointValidator != nil {
-			assessment, incoherent := d.runCheckpoint(ctx, r.index, planID, step, masterContext)
-			masterContext[fmt.Sprintf("step_%d_checkpoint", r.index)] = assessment
-			if incoherent && firstErr == nil {
-				firstErr = &domain.SemanticCheckpointError{
-					StepIndex:      r.index,
-					Assessment:     assessment,
-					OriginalResult: masterContext[fmt.Sprintf("step_%d_result", r.index)],
-				}
-				failedStepIdx = r.index
-				if d.ReplanHandler != nil && d.MaxReplanAttempts != 0 {
-					d.pausedMu.Lock()
-					d.paused = true
-					d.errorPause = true
-					d.pausedMu.Unlock()
-				}
 			}
 		}
 
@@ -1358,22 +1341,17 @@ coordinate:
 		d.Observer.OnPlanCompleted(planEvent)
 	}
 
-	// ADR-0049 D5/D7: materialize the plan's ONE immutable scene now that its
-	// engaged-entity scope is fully known — for BOTH success and failure (a failure
-	// scene is the highest-value precedent), with the outcome recorded.
+	// ADR-0049 A2.2 / ADR-0095: the plan-outcome hook — close the episode, write the
+	// A2.3 failure record, feed the procedures — for BOTH success and failure.
 	if d.MemoryRecorder != nil {
-		_ = d.MemoryRecorder.WritePlanScene(ctx, domain.PlanRecord{
-			PlanID:  planID,
-			Goal:    plan.Subject,
-			Success: !planFailed,
-			// ADR-0094 D3 clusters on the capability SHAPE, so the sequence has to
-			// reach the record. Taken from the plan rather than from what executed,
-			// so a routine describes what the work REQUIRED, not who happened to win.
-			Capabilities: planCapabilitySequence(plan),
-			Surprise:     maxSurprise,
+		_ = d.MemoryRecorder.RecordPlanOutcome(ctx, domain.PlanRecord{
+			PlanID:   planID,
+			Goal:     plan.Subject,
+			Success:  !planFailed,
+			Surprise: maxSurprise,
 			// ADR-0094 D8: the routines that informed this plan, so the memory agent
 			// can feed their confidence from how it turned out. Without this the
-			// co-evolution branch in WritePlanScene is unreachable — the field was
+			// co-evolution branch in RecordPlanOutcome is unreachable — the field was
 			// read but never written, so no routine ever learned from an outcome.
 			FollowedProcedures: plan.FollowedProcedures,
 			// ADR-0049 A2.2: the failure MODE, not only the situation. Both values exist
@@ -1580,55 +1558,6 @@ func formatTaskID(stepIndex int, planID string) string {
 	return fmt.Sprintf("step-%d-%s", stepIndex, planID)
 }
 
-// dependsOnTaskIDs maps a step's dependency indices to their per-step TaskIDs
-// (ADR-0049 D10) so the memory layer can write `follows` edges between step records.
-func dependsOnTaskIDs(deps []int, planID string) []string {
-	if len(deps) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(deps))
-	for _, d := range deps {
-		out = append(out, formatTaskID(d, planID))
-	}
-	return out
-}
-
-// runCheckpoint runs the H1 coherence gate (ADR-0013) via the dedicated
-// CheckpointValidator. It assesses the step's output against its original intent
-// and returns a structured verdict — no input echo, no magic-token substring
-// search. A validator error fails open (coherent) so the gate never fabricates a
-// replan from a transient failure.
-func (d *DAGExecutor) runCheckpoint(
-	ctx context.Context,
-	stepIndex int,
-	planID string,
-	step domain.Step,
-	masterContext map[string]string,
-) (assessment string, incoherent bool) {
-	if d.CheckpointValidator == nil {
-		return "", false
-	}
-
-	result := masterContext[fmt.Sprintf("step_%d_result", stepIndex)]
-	verdict, err := d.CheckpointValidator.Validate(ctx, domain.CheckpointRequest{
-		StepQuery:  step.Query,
-		StepOutput: result,
-		Question:   step.CheckpointQuery,
-	})
-	if err != nil {
-		slog.Warn("checkpoint validator error; proceeding", "step", stepIndex, "err", err)
-	}
-
-	if d.EventWriter != nil {
-		_ = d.EventWriter.WriteTaskEvent(domain.TaskEvent{
-			TaskID:  fmt.Sprintf("checkpoint-%d-%s", stepIndex, planID),
-			AgentID: "System_Checkpoint",
-		})
-	}
-
-	return verdict.Assessment, !verdict.Coherent
-}
-
 func deduplicate(indices []int) []int {
 	if len(indices) == 0 {
 		return indices
@@ -1642,20 +1571,6 @@ func deduplicate(indices []int) []int {
 		}
 	}
 	return result
-}
-
-// planCapabilitySequence renders a plan's ordered capability requirements — the shape
-// ADR-0094 D3 groups on. Empty when the capability_contract arm is off, which makes the
-// plan uninducible rather than mis-grouped.
-func planCapabilitySequence(plan *domain.ExecutionPlan) []string {
-	out := make([]string, 0, len(plan.Steps))
-	for _, st := range plan.Steps {
-		if len(st.RequiredCapabilities) == 0 {
-			continue
-		}
-		out = append(out, strings.Join(st.RequiredCapabilities, "+"))
-	}
-	return out
 }
 
 const (

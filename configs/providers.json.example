@@ -1,5 +1,5 @@
 {
-  "_comment": "LLM provider list (centralized model provisioning, ADR-0042). Copy to configs/providers.json (gitignored) and edit. The `default` field is the id of the global default generator. The `roles` map assigns a generator id to each system-organ role (planner/verifier/interview/router/memory). The `health` block tunes the per-id circuit-breaker. If both config.json and providers.json define an `llm_provider` block, providers.json wins. CAMBRIAN_LLM_PROVIDER__* env vars override this file. See ADR-0042 for the full schema.",
+  "_comment": "LLM provider list (centralized model provisioning, ADR-0042). Copy to configs/providers.json (gitignored) and edit. The `default` field is the id of the global default generator. The `roles` map assigns a generator id to each system-organ role (planner/verifier/router/memory/facts; the former `interview` role is retired and ignored if present). The `health` block tunes the per-id circuit-breaker. If both config.json and providers.json define an `llm_provider` block, providers.json wins. CAMBRIAN_LLM_PROVIDER__* env vars override this file. See ADR-0042 for the full schema. Per generator, `max_tokens` is the output cap sent when a request sets none (Anthropic defaults to 4096), `native_tools` enables native tool calling, and `request_capabilities` overrides what the adapter declares it honours (ADR-0139 C1): keys system_role, tools, tool_choice, parallel_tools, response_schema, max_tokens, sampling, stop, cache_breakpoints, images; values enforced | best_effort | unsupported. An unsupported field is not sent and is reported in the response's ignored list; a best_effort response_schema is validated and repaired once by the provider layer. The haiku-local entry below carries the values measured against the claudebox proxy on 2026-11-04.",
 
   "llm_provider": {
     "default": "primary",
@@ -12,12 +12,30 @@
         "api_key_env": "OPENAI_API_KEY",
         "timeout_ms": 60000,
         "capabilities": ["reasoning", "code"]
+      },
+      {
+        "id": "haiku-local",
+        "provider": "openai",
+        "model": "claude-haiku-4-5",
+        "endpoint": "http://127.0.0.1:3131/v1",
+        "timeout_ms": 120000,
+        "capabilities": ["reasoning", "code"],
+        "native_tools": true,
+        "request_capabilities": {
+          "sampling": "unsupported",
+          "stop": "unsupported",
+          "response_schema": "best_effort",
+          "max_tokens": "best_effort",
+          "tool_choice": "best_effort",
+          "parallel_tools": "best_effort",
+          "cache_breakpoints": "unsupported",
+          "images": "unsupported"
+        }
       }
     ],
     "roles": {
       "planner": "primary",
       "verifier": "primary",
-      "interview": "primary",
       "router": "primary",
       "memory": "primary"
     },

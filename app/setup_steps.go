@@ -173,6 +173,12 @@ func (s *setupState) stepPython(ctx context.Context) {
 	} else {
 		s.ui.line("ok", "agents materialized", fmt.Sprintf("%s  (%d files, embedded)", s.agentsDir, n))
 	}
+	promptsDir := filepath.Join(s.prefix, "prompts")
+	if n, err := unpackPrompts(promptsDir); err != nil {
+		s.warnf("could not materialize the prompt library", err.Error())
+	} else {
+		s.ui.line("ok", "prompt library materialized", fmt.Sprintf("%s  (%d files, embedded)", promptsDir, n))
+	}
 
 	venvDir := filepath.Join(s.prefix, "venv")
 	venvPy := venvPython(venvDir)

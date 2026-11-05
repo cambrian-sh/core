@@ -40,7 +40,7 @@ func TestPersistChunks_SpeakerMetadataWithoutChangingChunks(t *testing.T) {
 		cut := strings.Index(doc.Body, "I lived")
 		chunks := []domain.Chunk{{Body: strings.TrimSpace(doc.Body[:cut])}, {Body: strings.TrimSpace(doc.Body[cut:])}}
 		im := newCaptureIngestManager(t, nil)
-		if _, err := im.persistChunks(context.Background(), doc, chunks, "e1", "", false); err != nil {
+		if _, err := im.persistChunks(context.Background(), doc, chunks, "e1", false); err != nil {
 			t.Fatal(err)
 		}
 		return im.agent.Manager.Store.(*captureAllStore).snapshot()
@@ -84,7 +84,7 @@ func TestPersistChunks_SpeakerMetadataWithoutChangingChunks(t *testing.T) {
 	prompt := buildFactPrompt(factExtractionInput{Passages: []string{ps[0].Text, ps[1].Text}, Speakers: []string{ps[0].Speaker, ps[1].Speaker}})
 	if !strings.Contains(prompt, "[2] (speaker at start: assistant) "+ps[1].Text+"\n") ||
 		!strings.Contains(prompt, "[1] (speaker at start: user) ") {
-		t.Fatalf("prompt passages:\n%s", prompt[strings.Index(prompt, "Passages:"):])
+		t.Fatalf("prompt passages:\n%s", prompt[strings.Index(prompt, "<passages>"):])
 	}
 }
 

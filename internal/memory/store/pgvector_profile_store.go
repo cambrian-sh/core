@@ -15,12 +15,11 @@ import (
 // It is the interface expected by MetabolismStack, SupervisionStack, and MemoryStack.
 type ProfileStore interface {
 	domain.ProfileStore
-	domain.ProfileHistory
 	domain.JudicialStore
-	// HasInterviewVector reports whether a non-empty interview embedding is stored for
-	// (agentID, sourceHash) — lets the startup backfill re-interview agents whose vector
+	// HasProfileVector reports whether a non-empty profile embedding is stored for
+	// (agentID, sourceHash) — lets the startup backfill re-seed agents whose vector
 	// is missing (e.g. written while the embedder was down).
-	HasInterviewVector(ctx context.Context, agentID, sourceHash string) (bool, error)
+	HasProfileVector(ctx context.Context, agentID, sourceHash string) (bool, error)
 }
 
 // PgVectorProfileStore implements domain.ProfileStore and domain.JudicialStore
@@ -128,77 +127,13 @@ func (p *PgVectorProfileStore) GetProfile(ctx context.Context, agentID, sourceHa
 	return &profile, nil
 }
 
-// previousProfileScan bounds how many of one agent's profile rows a
-// GetPreviousProfile reads — one row per interviewed version, so the bound is
-// never reached in practice.
-const previousProfileScan = 150
-
-// GetPreviousProfile implements domain.ProfileHistory: the most recently
-// written profile for agentID under a source hash other than currentSourceHash
-// (T-20261101-interview-reinterview-never-finds-the-previous).
-//
-// It goes through the store this type was built on — in the kernel, the tier-2
-// enforcing writeStore over the enforcing read store (AGENTS.md §2.1) — never
-// the raw adapter. Scope travels both ways (§2.4): ScopeSystem on
-// SearchOptions.Scope and on the context, because a profile is a kernel-authored
-// artifact read before any principal exists (see kernelRead).
-//
-// A Search with no query vector and DocumentType=agent_profile reads the
-// agent_profiles table (ADR-0093 tableFor); QueryByMetadata would not — it reads
-// only chunks, which is why the ticket's first sketch needed an adapter change.
-// The agent filter is applied in SQL (a typed, parameter-bound Filter)
-// AND re-checked here, because a store that does not honour Filter must not
-// hand back another agent's profile. Ordering is by created_at, which the
-// upsert never rewrites: it is when that VERSION was first interviewed, so a
-// later merit refresh of an old row cannot make it look newer.
-func (p *PgVectorProfileStore) GetPreviousProfile(ctx context.Context, agentID, currentSourceHash string) (*domain.AgentProfile, error) {
-	results, err := p.store.Search(kernelRead(ctx), nil, domain.SearchOptions{
-		DocumentType: domain.DocTypeAgentProfile,
-		TopK:         previousProfileScan,
-		Filter:       domain.SearchFilter{Metadata: map[string]string{"agent_id": agentID}},
-		Scope:        domain.ScopeSystem, // kernel read, mirrored on ctx by kernelRead
-	})
-	if err != nil {
-		return nil, fmt.Errorf("pgVectorProfileStore: list profiles for agent %s: %w", agentID, err)
-	}
-	best := -1
-	for i := range results {
-		doc := &results[i].Document
-		if doc.DocumentType != "" && doc.DocumentType != domain.DocTypeAgentProfile {
-			continue
-		}
-		if id, _ := doc.Metadata["agent_id"].(string); id != agentID {
-			continue
-		}
-		if hash, _ := doc.Metadata["source_hash"].(string); hash == currentSourceHash {
-			continue
-		}
-		if best < 0 || doc.CreatedAt.After(results[best].Document.CreatedAt) {
-			best = i
-		}
-	}
-	if best < 0 {
-		return nil, nil
-	}
-	doc := results[best].Document
-	var profile domain.AgentProfile
-	if err := json.Unmarshal([]byte(doc.Text), &profile); err != nil {
-		return nil, fmt.Errorf("pgVectorProfileStore: unmarshal previous profile for agent %s: %w", agentID, err)
-	}
-	if profile.SourceHash == "" {
-		// Rows written before AgentProfile carried its hash: the key is the truth.
-		profile.SourceHash, _ = doc.Metadata["source_hash"].(string)
-	}
-	return &profile, nil
-}
-
-// HasInterviewVector reports whether a non-empty interview embedding is stored for
+// HasProfileVector reports whether a non-empty profile embedding is stored for
 // (agentID, sourceHash). A profile row can exist with a NULL/empty vector — e.g. it was
 // written while the embedder was failing — which makes the agent invisible to the
-// Gatekeeper's Layer-2 semantic gate (it is never returned by the interview searcher, so
-// it is eliminated from every task). The backfill uses this to re-interview such agents
+// Gatekeeper's Layer-2 semantic gate (it is never returned by the profile searcher, so
+// it is eliminated from every task). The backfill uses this to re-seed such agents
 // once the embedder is healthy, instead of trusting the mere existence of a profile.
-func (p *PgVectorProfileStore) HasInterviewVector(ctx context.Context, agentID, sourceHash string) (bool, error) {
+func (p *PgVectorProfileStore) HasProfileVector(ctx context.Context, agentID, sourceHash string) (bool, error) {
 	id := fmt.Sprintf("profile:%s:%s", agentID, sourceHash)
 	doc, err := p.store.GetByID(kernelRead(ctx), id)
 	if err != nil {
@@ -237,10 +172,10 @@ func kernelRead(ctx context.Context) context.Context {
 //
 // The store is built on the tier-2 EnforcingStoreWriter (memory_stack.go), which
 // classifies every write by the principal on the context (ADR-0085). Its writers
-// are all background workers whose context never carried one: the InterviewWorker
-// pool, the VerificationWorker and the ProfileAggregator ticker. In OSS the
+// are all background workers whose context never carried one: the registration
+// ProfileSeeder pool, the VerificationWorker and the ProfileAggregator ticker. In OSS the
 // AllowAll authorizer let that through; under the premium authorizer a zero
-// principal fails closed (`no_principal`), so every interview's profile was denied
+// principal fails closed (`no_principal`), so every seeded profile was denied
 // and the agent never became routable
 // (T-20261101-interviewworker-saves-agent-profiles-with-no).
 //

@@ -40,7 +40,7 @@ func (u *usageStreamer) GenerateStream(context.Context, string) (<-chan domain.S
 func meteredGateway(meter *llm.SpendMeter, s domain.LLMStreamer) *SubstrateLLMGateway {
 	cfg := config.DefaultConfig().Execution
 	gw := NewLLMGateway(cfg)
-	gw.RegisterModelClient("llm:fake", s)
+	useFakeModel(gw, "llm:fake", s)
 	gw.SetDefaultModelID("llm:fake")
 	gw.SetSpendMeter(meter)
 	return gw
@@ -60,7 +60,7 @@ func (d *streamingDispatcher) Execute(ctx context.Context, _ *domain.DispatchTas
 	d.calls++
 	d.mu.Unlock()
 	out := make(chan domain.StreamChunk, 16)
-	if err := d.gw.StreamChunks(ctx, domain.LeaseID(h.Context["_session_token_id"]), "agent prompt", domain.GenerateOptions{}, out); err != nil {
+	if err := d.gw.StreamChunks(ctx, domain.LeaseID(h.Context["_session_token_id"]), domain.UserPrompt("agent prompt"), out); err != nil {
 		return nil, err
 	}
 	return &domain.DispatchResult{
@@ -176,7 +176,7 @@ func TestGateway_LeaseUsageSumsCallsAndKeepsProviderUsage(t *testing.T) {
 	gw.BindLease(lease, domain.LeaseBinding{SessionID: "ses-g"})
 	for i := 0; i < 2; i++ {
 		out := make(chan domain.StreamChunk, 8)
-		if err := gw.StreamChunks(context.Background(), lease, "p", domain.GenerateOptions{}, out); err != nil {
+		if err := gw.StreamChunks(context.Background(), lease, domain.UserPrompt("p"), out); err != nil {
 			t.Fatalf("StreamChunks: %v", err)
 		}
 	}

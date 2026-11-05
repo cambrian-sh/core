@@ -395,7 +395,7 @@ func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
 			Plan: config.PlanConfig{
 				FallbackEnabled:             true,
 				FallbackConfidenceThreshold: 0.4,
-				PlanTimeoutMs:               5000,
+				PlanMaxDurationMs:           5000,
 			},
 		},
 	}
@@ -489,7 +489,7 @@ func TestServer_StepFn_FallbackPropagatesErrorWhenAllRunnerUpsFail(t *testing.T)
 			Plan: config.PlanConfig{
 				FallbackEnabled:             true,
 				FallbackConfidenceThreshold: 0.4,
-				PlanTimeoutMs:               5000,
+				PlanMaxDurationMs:           5000,
 			},
 		},
 	}

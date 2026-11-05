@@ -13,7 +13,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // AgentDialer boots agent instances and provides gRPC connections.
@@ -124,35 +123,11 @@ func (a *Transport) RegisterAgentClient(agentID string, client pb.AgentServiceCl
 	a.agentConns[agentID] = conn
 }
 
-// RequestProposalFrom calls a specific agent with an already-constructed ProposalRequest.
-// Implements domain.ProposalRequester.
-//
-// This is NOT a bid. The auction's bid round is gone; this survives because the
-// INTERVIEW worker uses the same RPC to put a scenario to an agent during
-// onboarding, which is a different question asked over the same wire.
-func (a *Transport) RequestProposalFrom(ctx context.Context, agent domain.AgentDefinition, req domain.ProposalRequest) (domain.ProposalResponse, error) {
-	client, err := a.getOrDialClient(ctx, agent, "")
-	if err != nil {
-		return domain.ProposalResponse{}, fmt.Errorf("RequestProposalFrom: %w", err)
-	}
-	protoResp, err := client.RequestProposal(ctx, &pb.ProposalRequest{
-		TaskId:         req.TaskID,
-		Description:    req.Description,
-		Context:        req.Context,
-		Deadline:       timestamppb.New(req.Deadline),
-		ConfidenceHint: req.ConfidenceHint,
-	})
-	if err != nil {
-		return domain.ProposalResponse{}, err
-	}
-	return domain.ProposalResponse{
-		Confidence:         protoResp.Confidence,
-		Rationale:          protoResp.Rationale,
-		Requirements:       protoResp.Requirements,
-		EstimatedLatencyMs: protoResp.EstimatedLatencyMs,
-		Metadata:           protoResp.Metadata,
-	}, nil
-}
+// The kernel-side RequestProposal caller (RequestProposalFrom) was removed
+// 2026-11-05 with the LLM agent interview, its last caller
+// (T-20261105-delete-the-llm-agent-interview-now-owner). The auction's bid round was
+// retired earlier (ADR-0100). AgentService.RequestProposal stays in the proto,
+// deprecated, so agents that still serve it remain wire-compatible.
 
 // VerifyOutput calls the VerifyOutput RPC on a verifier agent.
 // Implements domain.VerifyRequester.

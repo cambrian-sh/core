@@ -61,7 +61,14 @@ func TestChunkTripletsBatcherConfigFrom_Threads(t *testing.T) {
 		got.LLMTimeout != 4*time.Second || got.MaxRequeues != 2 {
 		t.Fatalf("batcher settings not threaded: %+v", got)
 	}
-	if def := chunkTripletsBatcherConfigFrom(config.DefaultConfig().Execution.Ingestion); def.MaxRequeues != 1 {
-		t.Fatalf("default MaxRequeues = %d, want 1", def.MaxRequeues)
+	if def := chunkTripletsBatcherConfigFrom(config.DefaultConfig().Execution.Ingestion); def.MaxRequeues != 1 || def.StructuredLLMFormat {
+		t.Fatalf("defaults = MaxRequeues %d, structured %v; want 1, false (completion until an A/B/A run)", def.MaxRequeues, def.StructuredLLMFormat)
+	}
+	// ADR-0139 C1/C4: kg_triplets_llm_format reaches the extractor's format switch.
+	if got := chunkTripletsBatcherConfigFrom(config.IngestionConfig{KgTripletsLLMFormat: config.KgTripletsFormatStructured}); !got.StructuredLLMFormat {
+		t.Fatal("kg_triplets_llm_format=structured did not reach the batcher")
+	}
+	if got := chunkTripletsBatcherConfigFrom(config.IngestionConfig{KgTripletsLLMFormat: config.KgTripletsFormatCompletion}); got.StructuredLLMFormat {
+		t.Fatal("kg_triplets_llm_format=completion selected the structured format")
 	}
 }

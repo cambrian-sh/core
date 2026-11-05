@@ -11,6 +11,7 @@ import (
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
+	"github.com/cambrian-sh/core/internal/testing/fakemodels"
 )
 
 // FakeModelID is the model agent id the harness gateway streams through. It is
@@ -64,7 +65,7 @@ func New(cfg Config) *SystemHarness {
 	if cfg.MaxConcurrentSessions > 0 {
 		exec.LLM.LLMGatewayMaxConcurrency = cfg.MaxConcurrentSessions
 	}
-	exec.Plan.PlanTimeoutMs = 120000
+	exec.Plan.PlanMaxDurationMs = 120000
 	exec.Session.MaxSessionTokens = cfg.MaxSessionTokens
 	if cfg.StepTokenLimit == 0 {
 		cfg.StepTokenLimit = 4096
@@ -76,7 +77,7 @@ func New(cfg Config) *SystemHarness {
 
 	gw := subnetwork.NewLLMGateway(exec)
 	gw.Observer = obs
-	gw.RegisterModelClient(FakeModelID, streamer)
+	gw.SetStepModels(fakemodels.New().Set(FakeModelID, streamer))
 	gw.SetDefaultModelID(FakeModelID)
 	meter := llm.NewSpendMeter(exec.Session.MaxSessionTokens, nil, nil)
 	gw.SetSpendMeter(meter)
@@ -158,7 +159,7 @@ func (h *SystemHarness) ExecutePlan(ctx context.Context) (*domain.Handoff, []dom
 		// StreamChunks is synchronous and never closes out; size the buffer for
 		// the whole response so the gateway cannot block on a slow reader.
 		out := make(chan domain.StreamChunk, 4096)
-		if err := h.Gateway.StreamChunks(ctx, lease, prompt, domain.GenerateOptions{}, out); err != nil {
+		if err := h.Gateway.StreamChunks(ctx, lease, domain.UserPrompt(prompt), out); err != nil {
 			return nil, fmt.Errorf("harness: gateway: %w", err)
 		}
 		close(out)

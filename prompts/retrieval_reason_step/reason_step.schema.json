@@ -1,0 +1,12 @@
+{
+  "title": "ReasonStep",
+  "description": "One interleaved reasoning step (planner.reason_step): the next sentence, whether it states the final answer, and the next search.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["thought", "done", "search_query"],
+  "properties": {
+    "thought": { "type": "string" },
+    "done": { "type": "boolean" },
+    "search_query": { "type": "string" }
+  }
+}

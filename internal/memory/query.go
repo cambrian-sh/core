@@ -1716,7 +1716,7 @@ func (q *QueryService) injectQueryEntitySeeds(ctx context.Context, results []dom
 func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
 	// AGENTIC_RETRIEVAL_SPEC: the fact lane runs the agentic loop (plan → retrieve
 	// → decide_continue → iterate) when enabled; otherwise the single pass. Only
-	// the fact lane loops — action/scene recall stay single-pass.
+	// the fact lane loops — action and procedure recall stay single-pass.
 	var (
 		results []domain.SearchResult
 		err     error
@@ -1864,20 +1864,12 @@ func (q *QueryService) SearchActions(ctx context.Context, query, callerID string
 	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicAction, false)
 }
 
-// SearchScenes is the situational-retrieval lane (ADR-0049 D7): find scenes whose
-// abstracted projection is similar to the query situation — "have I been in a
-// situation like this?". Below the relevance floor → empty ("no precedent"); no
-// graph spreading.
-func (q *QueryService) SearchScenes(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicScene, false)
-}
-
 // SearchProcedures is the ADR-0094 D5 procedural lane: "how has this kind of work gone
-// here?". A fourth intent alongside facts, actions and precedents — grounding a claim,
-// reconstructing history, recalling a transition and recalling a ROUTINE are four
-// different questions, and D4/A2.4 exist because mixing them re-bloats context.
+// here?". A third intent alongside facts and actions — grounding a claim,
+// reconstructing history and recalling a ROUTINE are different questions, and D4/A2.4
+// exist because mixing them re-bloats context.
 //
-// Similarity-gated like the precedent lane: no trigger match above the floor returns
+// Similarity-gated: no trigger match above the floor returns
 // nothing rather than the nearest routine, because a procedure retrieved for a
 // situation it does not fit is worse than none — it is a confident wrong answer.
 //
@@ -1886,36 +1878,6 @@ func (q *QueryService) SearchScenes(ctx context.Context, query, callerID string)
 // the record that they once worked.
 func (q *QueryService) SearchProcedures(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
 	return q.searchByType(ctx, query, callerID, domain.DocTypeMnemonicProcedure, false)
-}
-
-// SearchPrecedents is the world-model PULL lane (ADR-0049 D11/Issue 014): for the
-// agent's current sub-situation it retrieves prior TRANSITIONS — similar scenes plus
-// their outcome and action path — so the agent can anticipate the consequence of its
-// next action. Built on the situational scene search, so it inherits the relevance floor
-// ("no precedent" below it, never a fabricated analogy) and is failure-weighted. Fed by
-// the live pull path — PrimeForStep is NOT revived.
-func (q *QueryService) SearchPrecedents(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	scenes, err := q.SearchScenes(ctx, query, callerID)
-	if err != nil || len(scenes) == 0 {
-		return []domain.SearchResult{}, err
-	}
-	precedents := retrievePrecedents(ctx, q.vectorStore, scenes)
-	out := make([]domain.SearchResult, 0, len(precedents))
-	for _, p := range precedents {
-		out = append(out, domain.SearchResult{
-			Document: domain.Document{
-				ID:           p.SceneID,
-				DocumentType: domain.DocTypeMnemonicScene,
-				Text:         precedentText(p),
-				Metadata: map[string]interface{}{
-					"outcome":  p.Outcome,
-					"scene_id": p.SceneID,
-				},
-			},
-			Score: p.Similarity,
-		})
-	}
-	return out, nil
 }
 
 // searchByType embeds the query, searches one document type, and applies ACL +
@@ -2653,9 +2615,9 @@ const (
 )
 
 // isSameSessionStepRecord reports whether doc is the CURRENT session's own
-// auto-recorded step output. RecordExecution writes step results as
+// auto-recorded step output. RecordExecution wrote step results as
 // "step_N:" mnemonic_facts with metadata source_agent="System" and the run's
-// session_id (ADR-0015/0029); recalling those back into the same run accretes a
+// session_id (ADR-0015/0029). It was deleted 2026-11-05, but rows it wrote remain; recalling those back into the same run accretes a
 // larger copy of the context each step (ADR-0048 D1). A deliberate remember()
 // fact carries the agent's own id as source, not "System", so it is NOT excluded
 // — the exclusion is narrow to the auto-recorded step records.
@@ -2734,7 +2696,7 @@ func docTags(meta map[string]interface{}) []string {
 // — and because a type check cannot be defeated by a missing metadata key.
 func isExperientialDoc(d domain.Document) bool {
 	switch d.DocumentType {
-	case domain.DocTypeMnemonicScene, domain.DocTypeMnemonicAction,
+	case domain.DocTypeMnemonicAction,
 		domain.DocTypeMnemonicEntity, domain.DocTypeEpisodicMemory,
 		domain.DocTypeNegativeEdge, domain.DocTypeMnemonicProcedure:
 		return true
@@ -2745,10 +2707,12 @@ func isExperientialDoc(d domain.Document) bool {
 }
 
 // laneIsExperiential maps a query's document type to the lane it is asking in: a
-// knowledge question wants corpus, an action or precedent question wants experience.
+// knowledge question wants corpus, an action, failure or procedure question wants
+// experience. (The scene type was removed 2026-11-05; migration 0028 deleted its rows,
+// so no scene can reach this guard.)
 func laneIsExperiential(docType string) bool {
 	switch docType {
-	case domain.DocTypeMnemonicAction, domain.DocTypeMnemonicScene,
+	case domain.DocTypeMnemonicAction,
 		domain.DocTypeEpisodicMemory, domain.DocTypeNegativeEdge,
 		domain.DocTypeMnemonicProcedure:
 		return true

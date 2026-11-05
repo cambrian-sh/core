@@ -93,6 +93,29 @@ type Dispatcher struct {
 
 	// Rand is injectable so tests are deterministic. nil ⇒ package rand.
 	Rand *rand.Rand
+
+	// Leases binds the step lease on the handoff to the agent about to receive it
+	// (ADR-0139 D8). The lease is minted before selection, so this is the first point
+	// the executing agent is known. nil ⇒ the lease stays agent-unbound (tests), and an
+	// agent-unbound lease is refused to every agent (Server.resolveLeaseFor).
+	Leases domain.LeaseAgentBinder
+}
+
+// handoffLeaseKey is the handoff context key that carries the step's BudgetLease to the
+// agent (kernel-internal; the wire name predates the lease rename, see domain/llm_gateway.go).
+const handoffLeaseKey = "_session_token_id"
+
+// bindLease hands the handoff's lease to agentID immediately before it is called. Every
+// CallAgent this dispatcher makes goes through here, so the winner, a runner-up fallback
+// and a yield delegate or resume each find the lease bound to themselves — and any other
+// agent presenting it is refused by Server.resolveLeaseFor.
+func (d *Dispatcher) bindLease(agentID string, h *domain.Handoff) {
+	if d.Leases == nil || h == nil || h.Context == nil {
+		return
+	}
+	if lease := h.Context[handoffLeaseKey]; lease != "" {
+		d.Leases.BindLeaseAgent(domain.LeaseID(lease), agentID)
+	}
 }
 
 func (d *Dispatcher) randFloat() float64 {
@@ -249,7 +272,18 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 		callCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
+	// The task's Deadline is the one the step actually runs under — the per-step
+	// deadline when there is one, else the plan ceiling the caller's ctx carries,
+	// else none — so whatever reads it (yield's sub-tasks inherit it) is told the
+	// truth. It used to be a hardcoded `now + 20 s` set by the server that nothing
+	// enforced (T-20261105-slow-model-reliability-hardcoded-20-s).
+	if dl, ok := callCtx.Deadline(); ok {
+		task.Deadline = dl
+	} else {
+		task.Deadline = time.Time{}
+	}
 
+	d.bindLease(winner.Agent.ID, in)
 	resp, err := d.Caller.CallAgent(callCtx, winner.Agent.ID, in, "")
 	if err != nil {
 		in.Context["_winning_agent_id"] = winner.Agent.ID
@@ -260,6 +294,18 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 			err = fmt.Errorf("dispatch: step timed out (agent %s): %w", winner.Agent.ID, err)
 		}
 		return &domain.DispatchResult{Confidence: winner.Score, RunnerUps: runnerUps}, err
+	}
+
+	// ADR-0139 D6: stamp the dispatched definition's identity on the response so the
+	// step TaskEvent lands on the profile routing reads (agent.ID, agent.SourceHash).
+	// Overwrites any agent-echoed value — the kernel, not the agent, knows which
+	// version it dispatched. See domain.HandoffKeyWinnerSourceHash.
+	if resp != nil {
+		if resp.Context == nil {
+			resp.Context = make(map[string]string)
+		}
+		resp.Context[domain.HandoffKeyWinnerAgentID] = winner.Agent.ID
+		resp.Context[domain.HandoffKeyWinnerSourceHash] = winner.Agent.SourceHash
 	}
 
 	return &domain.DispatchResult{
@@ -278,6 +324,11 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 // solicits no bids (ADR-0100), so the term is the winner's OBSERVED median latency
 // from its profile (network + computation), the same figure cheapestCompetent
 // already ranks on — observed, never self-reported.
+//
+// The result is never shorter than execution.plan.step_timeout_floor_ms (default
+// 3 min): a short observed median must not cut off the first long generation the
+// agent is asked for on a slow local or proxied model. The floor raises the
+// deadline; it never creates one where the formula yields none.
 //
 // A winner with no profile, or a profile with no latency yet, gets NO per-step
 // deadline (0) and runs under the plan ceiling alone. The formula has nothing to
@@ -303,7 +354,11 @@ func (d *Dispatcher) stepTimeout(ctx context.Context, winner domain.ScoredCandid
 	if latency <= 0 {
 		return 0
 	}
-	return time.Duration(float64(latency)*mult) + buffer
+	timeout := time.Duration(float64(latency)*mult) + buffer
+	if floor := time.Duration(d.ExecCfg.Plan.StepTimeoutFloorMs) * time.Millisecond; timeout < floor {
+		timeout = floor
+	}
+	return timeout
 }
 
 // selectWinner implements the ADR-0100 D4 per-step dispatch policy.
@@ -313,7 +368,13 @@ func (d *Dispatcher) stepTimeout(ctx context.Context, winner domain.ScoredCandid
 // freezes on early noise. Pure cheapest-first pays a re-execution whenever it
 // guesses wrong. The step itself already says which regime it is in — a cheap
 // step whose result will be verified can afford to try the cheap agent, because
-// the checkpoint catches a bad answer and escalation is affordable.
+// verification catches a bad answer and escalation is affordable.
+//
+// CAVEAT (ADR-0139 D10): "verified" was the mid-plan checkpoint gate, which has
+// been deleted, so nothing verifies a checkpoint_after step mid-plan any more.
+// The branch is OFF by default (dispatch_cheap_energy_max = 0) and must stay off
+// until it is re-grounded on the async VerificationWorker —
+// T-20261104-cheapest-competent-dispatch-branch-is-keyed-on.
 func (d *Dispatcher) selectWinner(ctx context.Context, task *domain.DispatchTask, scored []domain.ScoredCandidate) (domain.ScoredCandidate, string) {
 	if len(scored) == 1 {
 		return scored[0], ReasonSoleCandidate
@@ -434,6 +495,8 @@ func (d *Dispatcher) selectModelCandidates(ctx context.Context, winnerAgentID st
 }
 
 // CallAgent satisfies domain.StepDispatcher by delegating to the shared caller.
+// The handoff's lease is bound to agentID first, exactly as Execute does for its winner.
 func (d *Dispatcher) CallAgent(ctx context.Context, agentID string, handoff *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error) {
+	d.bindLease(agentID, handoff)
 	return d.Caller.CallAgent(ctx, agentID, handoff, excludeInstanceID)
 }

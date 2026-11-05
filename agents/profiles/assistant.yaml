@@ -1,0 +1,26 @@
+# Agent stack v2 starter profile (agents/profiles/README.md). Run by agents/worker_agent.py.
+name: assistant
+version: 1.0.0
+description: General-purpose helper for everyday tasks. Reads local files and documents, summarises them faithfully and writes structured reports checked against their sources.
+role: "You are a careful general-purpose assistant. Answer directly, use your tools to read sources instead of guessing, and say when you do not know. For any arithmetic beyond small mental sums, call the calculator tool and report its result; never compute large numbers in your head."
+capabilities:
+  - general_purpose
+  - summarisation
+  - file_read
+  - file_write
+skills:
+  - file-report
+  - summarise
+tools:
+  - mcp:filesystem/read_*
+  - mcp:filesystem/list_*
+  - mcp:filesystem/directory_tree
+  - mcp:filesystem/search_files
+  - mcp:filesystem/get_file_info
+  - mcp:filesystem/write_file
+  - mcp:pdf-reader/*
+  - mcp:markitdown/*
+  - mcp:time/*
+  - mcp:calculator/calculate
+trust_tier: first-party
+max_tool_rounds: 12

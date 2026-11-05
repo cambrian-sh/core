@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/prompts"
 )
 
 // streamingGenerator is the optional streaming capability a Generator may
@@ -104,6 +105,10 @@ type ChunkTripletsBatcherConfig struct {
 	// domain.ErrTripletExtractorUnavailable is re-queued before it settles as
 	// failed. 0 = never re-queue; negative is treated as 0.
 	MaxRequeues int
+	// StructuredLLMFormat selects the default LLM extractor's reply format: false is
+	// the KG²RAG completion format, true the structured library prompt with a
+	// response schema (execution.ingestion.kg_triplets_llm_format; ADR-0139 C1/C4).
+	StructuredLLMFormat bool
 }
 
 // NewChunkTripletsBatcher builds the batcher but does NOT start the drain
@@ -127,7 +132,7 @@ func NewChunkTripletsBatcher(gen domain.Generator, store domain.ChunkTripletsSto
 	return &ChunkTripletsBatcher{
 		gen:         gen,
 		store:       store,
-		extractor:   &llmTripletExtractor{gen: gen}, // default: LLM residue tier
+		extractor:   &llmTripletExtractor{gen: gen, structured: cfg.StructuredLLMFormat}, // default: LLM residue tier
 		queue:       make(chan tripletItem, cfg.QueueSize),
 		batchSize:   cfg.BatchSize,
 		maxIdle:     cfg.MaxIdle,
@@ -516,7 +521,9 @@ func (b *ChunkTripletsBatcher) failBatch(batch []tripletItem, err error) {
 	}
 }
 
-// buildBatchTripletPrompt builds the batched extraction prompt. Format:
+// buildBatchTripletPrompt builds the batched extraction prompt of the completion
+// format from the library prompt kg_triplets_completion (ADR-0139 C4), byte-identical
+// to the inline prompt it replaced. Format:
 //
 //	"Chunk 1: <chunk1>
 //	 Triplets 1: <h##r##t>$$<h##r##t>...
@@ -529,16 +536,6 @@ func (b *ChunkTripletsBatcher) failBatch(batch []tripletItem, err error) {
 // avoids the parser confusing example bodies with real output.
 func buildBatchTripletPrompt(texts []string) string {
 	var sb strings.Builder
-	sb.WriteString("Extract informative triplets from the chunks following the examples. ")
-	sb.WriteString("Make sure the triplet texts are only directly from the given text! ")
-	sb.WriteString("Complete directly and strictly following the instructions without any additional words, line break nor space.\n\n")
-
-	// Two examples
-	sb.WriteString("Text 1: Scott Derrickson (born July 16, 1966) is an American director.\n")
-	sb.WriteString("Triplets 1: <Scott Derrickson##born in##1966>$$<Scott Derrickson##nationality##America>$$<Scott Derrickson##occupation##director>\n\n")
-	sb.WriteString("Text 2: A Kiss for Corliss is a 1949 American comedy film directed by Richard Wallace.\n")
-	sb.WriteString("Triplets 2: <A Kiss for Corliss##directed by##Richard Wallace>$$<A Kiss for Corliss##genre##comedy>\n\n")
-
 	for i, t := range texts {
 		sb.WriteString("Chunk ")
 		sb.WriteString(itoa(i + 1))
@@ -548,8 +545,21 @@ func buildBatchTripletPrompt(texts []string) string {
 		sb.WriteString(itoa(i + 1))
 		sb.WriteString(": ")
 	}
-	return sb.String()
+	r, err := kgTripletsCompletionPrompt.Render(map[string]string{"chunks": sb.String()})
+	if err != nil {
+		panic(err) // one fixed slot: a mismatch is a defect the golden test catches
+	}
+	return r.Text
 }
+
+// kgTripletsCompletionPrompt is the completion-format library prompt.
+var kgTripletsCompletionPrompt = func() prompts.Prompt {
+	p, err := prompts.Get("kg_triplets_completion")
+	if err != nil {
+		panic("memory: library prompt kg_triplets_completion: " + err.Error())
+	}
+	return p
+}()
 
 // itoa is a tiny dependency-free integer formatter.
 func itoa(n int) string {

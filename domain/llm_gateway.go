@@ -63,7 +63,19 @@ type BudgetLeaseState struct {
 	CacheReadTokensUsed int
 	UsageEstimated      bool
 	ExpiresAt           time.Time // keepalive TTL — refreshed on each chunk
-	LastActivityAt      time.Time
+	// LastActivityAt is when a model call (or tracked tool/recall call) under the
+	// lease last started, streamed a chunk or returned.
+	LastActivityAt time.Time
+	// InFlightCalls counts the calls running under the lease right now: model calls,
+	// and the kernel-side tool calls and recalls the lease's holder made
+	// (SubstrateLLMGateway.TrackLeaseWork). A unary call (GenerateWithTools)
+	// reports nothing until it returns, so "a call is in flight" is the only
+	// liveness signal a long generation gives; the chat stall watchdog reads it
+	// through SubstrateLLMGateway.ConversationActivity
+	// (T-20261105-slow-model-reliability-hardcoded-20-s) and the plan idle watchdog
+	// through RunActivity (T-20261105-owner-decision-needed-120-s-plan-timeout-ms).
+	// Server-side only.
+	InFlightCalls int
 	// Binding is the execution identity the kernel attached at dispatch (session, run,
 	// step, agent). It is what lets a transport resolve an agent's opaque lease back to
 	// the session that owns it, instead of trusting the agent's own header. Written
@@ -115,6 +127,11 @@ type StreamChunk struct {
 	// Already INCLUDED in UsagePromptTokens; carried separately so the ADR-0131
 	// spend ledger can report cache_read. Zero when the provider says nothing.
 	UsageCacheReadTokens int
+	// Response is set on the FINAL chunk of a RequestGenerator.StreamRequest (ADR-0139
+	// C1): the whole call's text, tool calls, stop reason, usage and Ignored fields.
+	// Nil on every other chunk and on the legacy GenerateStream path, whose consumers
+	// read only the fields above.
+	Response *GenerateResponse
 }
 
 // LLMStreamer is a provider client that can stream LLM responses.

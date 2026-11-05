@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // SchemaV1Flat is the original config schema: one flat `execution` block holding
@@ -84,6 +85,102 @@ func migrateConfigMap(doc map[string]any) []string {
 	return moved
 }
 
+// deprecatedExecutionKey is a key that was REPLACED rather than retired: an
+// operator's explicit value still means something, so it is carried to its
+// successor instead of being ignored. Keyed by v2 block, then the old leaf name.
+//
+// plan.plan_timeout_ms (the fixed whole-plan ceiling, 120 s by default) was
+// replaced on 2026-11-05 by a progress-aware pair, plan_idle_timeout_ms and
+// plan_max_duration_ms (owner decision,
+// T-20261105-owner-decision-needed-120-s-plan-timeout-ms). An operator who set
+// plan_timeout_ms chose a HARD CAP, so the value becomes plan_max_duration_ms; the
+// idle watchdog runs at its default on top. A layer that states both keeps its
+// plan_max_duration_ms — the newer statement of intent, as in
+// migrateExecutionBlock's nested-wins rule.
+var deprecatedExecutionKey = map[string]map[string]string{
+	"plan": {"plan_timeout_ms": "plan_max_duration_ms"},
+}
+
+// deprecationLogged makes each deprecated key's INFO line appear once per process,
+// not once per layer per (re)load.
+var deprecationLogged sync.Map
+
+func logDeprecatedKey(block, oldKey, newKey, origin string, overridden bool) {
+	if _, seen := deprecationLogged.LoadOrStore(block+"."+oldKey, true); seen {
+		return
+	}
+	msg := "config: deprecated key loaded as its successor"
+	if overridden {
+		msg = "config: deprecated key ignored; its successor is set in the same layer"
+	}
+	slog.Info(msg,
+		slog.String("deprecated", "execution."+block+"."+oldKey),
+		slog.String("successor", "execution."+block+"."+newKey),
+		slog.String("origin", origin),
+		slog.String("ticket", "T-20261105-owner-decision-needed-120-s-plan-timeout-ms"))
+}
+
+// renameDeprecatedExecutionKeys carries each deprecatedExecutionKey in a v2
+// `execution` block to its successor, in place, and returns the deprecated keys it
+// touched ("plan.plan_timeout_ms"), sorted.
+// It runs AFTER migrateExecutionBlock, so a v1 flat plan_timeout_ms has already
+// been routed into `plan` and is handled by the same code path as a v2 one.
+func renameDeprecatedExecutionKeys(doc map[string]any, origin string) []string {
+	exec, ok := doc["execution"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	var renamed []string
+	for block, renames := range deprecatedExecutionKey {
+		dst, ok := exec[block].(map[string]any)
+		if !ok {
+			continue
+		}
+		for oldKey, newKey := range renames {
+			val, present := dst[oldKey]
+			if !present {
+				continue
+			}
+			_, overridden := dst[newKey]
+			if !overridden {
+				dst[newKey] = val
+			}
+			delete(dst, oldKey)
+			logDeprecatedKey(block, oldKey, newKey, origin, overridden)
+			renamed = append(renamed, block+"."+oldKey)
+		}
+	}
+	sort.Strings(renamed)
+	return renamed
+}
+
+// deprecatedEnvKey maps an environment-derived config path naming a deprecated
+// key to the path it now loads as, or returns it unchanged. lookupEnv reports
+// whether a variable is set, so a deployment that sets both the old and the new
+// variable keeps the new one (the old path is then left as-is, where the struct
+// decoder ignores it).
+func deprecatedEnvKey(path string, lookupEnv func(string) (string, bool)) string {
+	rest, ok := strings.CutPrefix(path, "execution.")
+	if !ok {
+		return path
+	}
+	block, leaf, ok := strings.Cut(rest, ".")
+	if !ok {
+		return path
+	}
+	newKey, ok := deprecatedExecutionKey[block][leaf]
+	if !ok {
+		return path
+	}
+	newVar := "CAMBRIAN_EXECUTION__" + strings.ToUpper(block) + "__" + strings.ToUpper(newKey)
+	if _, set := lookupEnv(newVar); set {
+		logDeprecatedKey(block, leaf, newKey, "environment", true)
+		return path
+	}
+	logDeprecatedKey(block, leaf, newKey, "environment", false)
+	return "execution." + block + "." + newKey
+}
+
 // migrateJSON converts one config document's bytes from v1 to v2 when needed.
 //
 // It returns the original bytes unchanged when there is nothing to do, so a v2
@@ -101,19 +198,22 @@ func migrateJSON(b []byte, origin string) []byte {
 		return b
 	}
 	moved := migrateConfigMap(doc)
-	if len(moved) == 0 {
+	renamed := renameDeprecatedExecutionKeys(doc, origin)
+	if len(moved) == 0 && len(renamed) == 0 {
 		return b
 	}
 	out, err := stdjson.Marshal(doc)
 	if err != nil {
 		return b
 	}
-	slog.Info("config: migrated legacy flat execution block to nested schema",
-		slog.String("origin", origin),
-		slog.Int("from_schema", SchemaV1Flat),
-		slog.Int("to_schema", SchemaV2Nested),
-		slog.Int("keys_moved", len(moved)),
-		slog.String("example", moved[0]))
+	if len(moved) > 0 {
+		slog.Info("config: migrated legacy flat execution block to nested schema",
+			slog.String("origin", origin),
+			slog.Int("from_schema", SchemaV1Flat),
+			slog.Int("to_schema", SchemaV2Nested),
+			slog.Int("keys_moved", len(moved)),
+			slog.String("example", moved[0]))
+	}
 	return out
 }
 
@@ -144,6 +244,9 @@ func MigrateFileInPlace(path string) ([]string, error) {
 		return nil, fmt.Errorf("config migrate: parse %s: %w", path, err)
 	}
 	moved := migrateConfigMap(doc)
+	// Deprecated keys are carried to their successors too: an explicit migrate
+	// should leave a file that loads without a deprecation notice.
+	moved = append(moved, renameDeprecatedExecutionKeys(doc, path)...)
 	if len(moved) == 0 {
 		return nil, nil
 	}
@@ -215,7 +318,6 @@ var legacyExecutionKey = map[string]string{
 	"chat_pool_size":                           "chat",
 	"circadian_stale_doc_warn_threshold":       "memory",
 	"classification_vocabulary":                "router",
-	"cold_start_penalty_multiplier":            "gatekeeper",
 	"context_growth_k":                         "plan",
 	"context_ref_snippet_chars":                "plan",
 	"cross_verify_rate":                        "verification",
@@ -223,7 +325,6 @@ var legacyExecutionKey = map[string]string{
 	"daemon_restart_max_attempts":              "agents",
 	"daemon_restart_max_backoff_ms":            "agents",
 	"daemon_restart_window_seconds":            "agents",
-	"disable_interviews":                       "agents",
 	"discovery_safe_tools":                     "tools",
 	"dispatch_cheap_energy_max":                "routing",
 	"dispatch_merit_floor":                     "routing",
@@ -234,7 +335,6 @@ var legacyExecutionKey = map[string]string{
 	"ewma_alpha":                               "supervision",
 	"experience_records_enabled":               "memory",
 	"experience_surprise_floor":                "memory",
-	"experiential_memory_enabled":              "memory",
 	"exploration_rate":                         "routing",
 	"fallback_confidence_threshold":            "plan",
 	"fallback_enabled":                         "plan",
@@ -294,9 +394,6 @@ var legacyExecutionKey = map[string]string{
 	"plan_preview_only":                        "plan",
 	"plan_timeout_ms":                          "plan",
 	"procedure_deprecate_below":                "procedure",
-	"procedure_induction_interval_hours":       "procedure",
-	"procedure_max_episodes_per_pass":          "procedure",
-	"procedure_min_samples":                    "procedure",
 	"profile_aggregator_interval_seconds":      "supervision",
 	"proposal_timeout_ms":                      "routing",
 	"query_entity_seeding_enabled":             "retrieval",
@@ -313,7 +410,6 @@ var legacyExecutionKey = map[string]string{
 	"router_classification_body_chars":         "router",
 	"router_min_classification_confidence":     "router",
 	"routing_trace_enabled":                    "routing",
-	"scene_gen_on_ingest_enabled":              "ingestion",
 	"session_idle_sweep_interval_seconds":      "session",
 	"session_idle_timeout_minutes":             "session",
 	"session_retention_days":                   "session",
@@ -328,10 +424,6 @@ var legacyExecutionKey = map[string]string{
 	"step_timeout_base_buffer_ms":              "plan",
 	"step_timeout_multiplier":                  "plan",
 	"structure_graph_enabled":                  "retrieval",
-	"tier1_channel_capacity":                   "memory",
-	"tier2_batch_size":                         "memory",
-	"tier2_llm_timeout":                        "memory",
-	"tier2_max_idle_seconds":                   "memory",
 	"tool_effects_strict":                      "tools",
 	"tool_retrieval_floor":                     "tools",
 	"tools_auto_approve":                       "tools",
@@ -346,8 +438,6 @@ var legacyExecutionKey = map[string]string{
 	"verifier_pool_threshold_floor":            "verification",
 	"verifier_pool_threshold_step":             "verification",
 	"verifier_recency_window":                  "verification",
-	"workspace_drift_threshold":                "workspace",
-	"workspace_enable_drift_guard":             "workspace",
 	"workspace_execution_slots":                "workspace",
 	"workspace_min_fact_cosine":                "workspace",
 	"workspace_planning_slots":                 "workspace",

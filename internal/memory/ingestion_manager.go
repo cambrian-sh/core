@@ -62,7 +62,6 @@ const defaultSyncKGWaitTimeout = 30 * time.Second
 
 type IngestionManager struct {
 	queue    chan domain.ExternalDocument
-	sceneGen *SceneGenerator
 	embedder domain.Embedder
 	agent    *Agent
 	registry *Registry
@@ -87,10 +86,6 @@ type IngestionManager struct {
 	// document's previous version. nil (tests, tools without a database) = ids are derived
 	// without a lookup and nothing is retired, logged once at boot by the composer.
 	lifecycle domain.DocumentLifecycleStore
-	// sceneGenEnabled gates the per-item scene-generation LLM call on the ingest
-	// hot path (ADR-0049 episodic scenes). Default OFF: it stalls ingest when no
-	// LLM is reachable and is not needed for document/structure retrieval.
-	sceneGenEnabled bool
 	// bus publishes MemoryWrittenEvent so an ingest reaches the operator feed
 	// (ADR-0047 D3). nil ⇒ no-op.
 	//
@@ -99,7 +94,7 @@ type IngestionManager struct {
 	// publisher wired to a dead path and a consumer receiving nothing.
 	bus domain.EventBus
 	// evidenceCapture preserves the delivery as immutable evidence (ADR-0105)
-	// before ANY semantic processing — including scene generation — touches it.
+	// before ANY semantic processing touches it.
 	// nil = the substrate's evidence foundation is disabled (the default).
 	evidenceCapture EvidenceCapture
 	// structureLeavesDropped counts structure leaves dropped as junk since start
@@ -194,13 +189,6 @@ func (im *IngestionManager) SetStructureGraph(parser StructureParser, store Stru
 	}
 }
 
-// SetSceneGenEnabled toggles per-item scene generation on ingest (default off).
-func (im *IngestionManager) SetSceneGenEnabled(v bool) {
-	if im != nil {
-		im.sceneGenEnabled = v
-	}
-}
-
 // fallbackRegistry is the back-compat floor: option_c only, no routes.
 //
 // It is reached when the caller supplied no registry at all. It is NOT the
@@ -231,7 +219,7 @@ func fallbackRegistry() *Registry {
 // the manager falls back to option_c so ingestion still runs, because refusing to
 // ingest anything is a worse answer to a typo in one route than ingesting with the
 // documented default. The log line is the loud part.
-func NewIngestionManager(sceneGen *SceneGenerator, embedder domain.Embedder, agent *Agent, cfg IngestionConfig, chunkerCfg config.ChunkerConfig) *IngestionManager {
+func NewIngestionManager(embedder domain.Embedder, agent *Agent, cfg IngestionConfig, chunkerCfg config.ChunkerConfig) *IngestionManager {
 	registry := fallbackRegistry()
 	if chunkerCfg.Default != "" {
 		reg, err := NewRegistry(NewDefaultChunkers(embedder, chunkerCfg), chunkerCfg)
@@ -247,7 +235,7 @@ func NewIngestionManager(sceneGen *SceneGenerator, embedder domain.Embedder, age
 			registry.SetLateGate(func() bool { return enabled })
 		}
 	}
-	return NewIngestionManagerWithRegistry(sceneGen, embedder, agent, registry, cfg)
+	return NewIngestionManagerWithRegistry(embedder, agent, registry, cfg)
 }
 
 // chunkerFor resolves doc's chunker through the registry. The policy matches
@@ -268,7 +256,7 @@ func (im *IngestionManager) chunkerFor(doc domain.ExternalDocument) domain.Chunk
 	return chunker
 }
 
-func NewIngestionManagerWithRegistry(sceneGen *SceneGenerator, embedder domain.Embedder, agent *Agent, registry *Registry, cfg IngestionConfig) *IngestionManager {
+func NewIngestionManagerWithRegistry(embedder domain.Embedder, agent *Agent, registry *Registry, cfg IngestionConfig) *IngestionManager {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 1000
 	}
@@ -290,7 +278,7 @@ func NewIngestionManagerWithRegistry(sceneGen *SceneGenerator, embedder domain.E
 	if registry == nil {
 		registry = fallbackRegistry()
 	}
-	return &IngestionManager{queue: make(chan domain.ExternalDocument, cfg.QueueSize), sceneGen: sceneGen, embedder: embedder, agent: agent, registry: registry, cfg: cfg}
+	return &IngestionManager{queue: make(chan domain.ExternalDocument, cfg.QueueSize), embedder: embedder, agent: agent, registry: registry, cfg: cfg}
 }
 func (im *IngestionManager) Enqueue(doc domain.ExternalDocument) bool {
 	select {
@@ -314,7 +302,7 @@ func (im *IngestionManager) Enqueue(doc domain.ExternalDocument) bool {
 // passes the full body, the IngestionManager handles chunking +
 // source-doc entity minting + chunk ingestion. The DirectoryWatcher
 // (ADR-0028) still feeds the same manager via Enqueue, so both
-// paths share the chunker registry + scene generator + agent
+// paths share the chunker registry + agent
 // write path.
 func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.ExternalDocument) (entityID string, err error) {
 	// One timing line per document (ingestion_timing.go). The clock rides ctx so
@@ -341,7 +329,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 		return dup.ID, nil
 	}
 	// Evidence first (ADR-0105 D2): the original bytes must be durable and
-	// published as evidence before chunking, scene generation or any other
+	// published as evidence before chunking or any other
 	// semantic step — so a failure anywhere downstream still leaves source
 	// material that can be reprocessed.
 	if im.evidenceCapture != nil {
@@ -355,18 +343,6 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 		// memory_fact item links to the evidence revision it was extracted from (a
 		// changed document is a new revision, ADR-0105 D4).
 		ctx = withIngestEvidence(ctx, evID)
-	}
-	scene := ""
-	if im.sceneGenEnabled && im.sceneGen != nil {
-		t := time.Now()
-		scenes, err := im.sceneGen.Generate(ctx, []domain.ExternalDocument{doc})
-		clock.Since(StageScene, t)
-		if err != nil {
-			return "", fmt.Errorf("ingestion manager: scene generate: %w", err)
-		}
-		if len(scenes) > 0 {
-			scene = scenes[0]
-		}
 	}
 	// Chunks FIRST, entity LAST (T-20261031-processsync-leaves-the-source-doc-entity-stub).
 	// The entity id is deterministic (source_doc:<uri>) and the chunks carry it as a
@@ -387,7 +363,7 @@ func (im *IngestionManager) ProcessSync(ctx context.Context, doc domain.External
 		chunks, _ = OptionCChunker{}.Chunk(ctx, &doc)
 	}
 	clock.Since(StageChunk, t)
-	outcome, err := im.persistChunksTracked(ctx, doc, ident, chunks, entityID, scene, im.cfg.SyncWaitForKG, im.cfg.SyncWaitForFacts)
+	outcome, err := im.persistChunksTracked(ctx, doc, ident, chunks, entityID, im.cfg.SyncWaitForKG, im.cfg.SyncWaitForFacts)
 	chunkCount := outcome.Stored
 	stored = chunkCount
 	if err != nil {
@@ -516,22 +492,14 @@ func (im *IngestionManager) worker(ctx context.Context, jobs <-chan []domain.Ext
 }
 
 func (im *IngestionManager) processBatch(ctx context.Context, batch []domain.ExternalDocument) {
-	var scenes []string
-	if im.sceneGenEnabled && im.sceneGen != nil {
-		scenes, _ = im.sceneGen.Generate(ctx, batch)
-	}
-	for i, doc := range batch {
-		scene := ""
-		if i < len(scenes) {
-			scene = scenes[i]
-		}
-		im.processBatchDoc(ctx, doc, scene)
+	for _, doc := range batch {
+		im.processBatchDoc(ctx, doc)
 	}
 }
 
 // processBatchDoc is one document of processBatch, with its own timing line.
 // Same order as ProcessSync: chunks first, entity last.
-func (im *IngestionManager) processBatchDoc(ctx context.Context, doc domain.ExternalDocument, scene string) {
+func (im *IngestionManager) processBatchDoc(ctx context.Context, doc domain.ExternalDocument) {
 	started := time.Now()
 	// A fresh clock per document: the batch shares one ctx across documents.
 	clock := domain.NewStageClock()
@@ -559,7 +527,7 @@ func (im *IngestionManager) processBatchDoc(ctx context.Context, doc domain.Exte
 		chunks, _ = OptionCChunker{}.Chunk(dctx, &doc)
 	}
 	clock.Since(StageChunk, t)
-	outcome, err = im.persistChunksTracked(dctx, doc, ident, chunks, entityID, scene, false, false) // async path: never waits for the KG or fact lane
+	outcome, err = im.persistChunksTracked(dctx, doc, ident, chunks, entityID, false, false) // async path: never waits for the KG or fact lane
 	if err != nil {
 		slog.Warn("IngestionManager: failed to persist chunks", "source_uri", doc.SourceURI, "err", err)
 		return

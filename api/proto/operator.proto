@@ -360,7 +360,8 @@ service OperatorConsole {
 
   // ListGenerators reports the configured LLM generators (ADR-0042) with live
   // breaker state, and ListRoleAssignments which generator serves each system
-  // organ (planner / verifier / router / interview / memory).
+  // organ (planner / verifier / router / memory / facts). The `interview` role is
+  // retired (the LLM agent interview was deleted 2026-11-05).
   //
   // No credential is ever returned: a generator carries key_configured and
   // key_last_four only. There is deliberately no GetGeneratorKey — a console that
@@ -446,7 +447,7 @@ service OperatorConsole {
   rpc RemoveGenerator(RemoveGeneratorOpRequest) returns (SetConfigOpResponse);
 
   // SetRoleAssignment binds a system organ (planner / verifier / router /
-  // interview / memory) to the generator that serves it (contract 0096). The
+  // memory / facts) to the generator that serves it (contract 0096). The
   // WRITE half of ListRoleAssignments, landing on the ADR-0101 store like the
   // generator writes above.
   //
@@ -1179,7 +1180,7 @@ message AuctionEventOp {
   // winner_margin is the winning bid's confidence minus the best losing bid
   // (0 when no runner-up). ROUTE-02: a near-zero margin flags a coin-flip.
   float winner_margin = 7;
-  // funnel is the Gatekeeper's Declaration->Interview->Merit candidate trace for
+  // funnel is the Gatekeeper's Declaration->Semantic->Merit candidate trace for
   // this auction (ROUTE-02). Absent when routing tracing is disabled or on the
   // 'started' event.
   GatekeeperFunnelOp funnel = 8;
@@ -1211,7 +1212,7 @@ message BidEntryOp {
 // persisted event alone.
 message GatekeeperFunnelOp {
   repeated DeclarationResultOp l1 = 1; // Layer 1: Declaration pass-set
-  repeated InterviewResultOp l2 = 2;   // Layer 2: Interview (semantic) survivors/eliminated
+  repeated InterviewResultOp l2 = 2;   // Layer 2: semantic (profile-vector) survivors/eliminated
   double l2_threshold = 3;             // similarity floor applied in Layer 2 (0 if L2 skipped)
   repeated MeritResultOp l3 = 4;       // Layer 3: Merit ranking, highest-first (as presented to the auction)
   int32 max_candidates = 5;            // GatekeeperMaxCandidates cap applied after ranking (0 = uncapped)
@@ -1223,11 +1224,15 @@ message DeclarationResultOp {
   string reason = 3; // why it failed (empty when passed)
 }
 
+// InterviewResultOp is one agent's Layer-2 SEMANTIC gate verdict. The name is
+// historical and kept for wire compatibility: the profile vector it is matched
+// against is embedded from the agent's declared description at registration; the
+// LLM interview that once wrote it was deleted 2026-11-05.
 message InterviewResultOp {
   string agent_id = 1;
   double similarity = 2;          // best profile->task similarity; 0 when below threshold (not returned by the searcher)
   bool survived = 3;
-  bool provisional_bypass = 4;    // cold-start agent that skipped the semantic gate
+  bool provisional_bypass = 4;    // agent whose profile vector is not seeded yet, so it skipped the semantic gate
 }
 
 message MeritResultOp {
@@ -1237,7 +1242,7 @@ message MeritResultOp {
   double trust_score = 4;
   double latency_term = 5; // w3 * (1/normLatency) contribution
   double cost_term = 6;    // w4 * normalizedCost contribution (subtracted)
-  bool provisional = 7;    // cold-start penalty applied
+  bool provisional = 7;    // profile flagged provisional (legacy rows; no penalty since 2026-11-05)
 }
 
 message AgentReadyOp {
@@ -1245,6 +1250,9 @@ message AgentReadyOp {
   string source_hash = 2;
   double trust_score = 3;
   repeated string capabilities = 4;
+  // DEPRECATED 2026-11-05: interview_ms was the LLM interview's duration. The
+  // interview was deleted (ADR-0139 Q3); the kernel no longer fills it (always 0).
+  // Kept, not reserved, so the operator contract stays wire-compatible.
   int64 interview_ms = 5;
 
   // ── Contract 0074: the agent detail fields contract 0057 removed ────────
@@ -1256,9 +1264,10 @@ message AgentReadyOp {
   string runtime = 8;
   string exec_path = 9;
   string manifest_version = 10;
-  // provisional marks an agent whose capability claims have not been verified by
-  // an interview yet. It is the difference between "this agent says it can do X"
-  // and "we have seen it do X", and routing treats the two differently.
+  // provisional marks an agent that is registered but whose profile has not been
+  // seeded yet (its description vector is pending). Since 2026-11-05 it is routed
+  // on the neutral prior like any agent with no verified outcomes; it only skips
+  // the semantic gate, which has no vector for it yet.
   bool provisional = 11;
   bool system = 12;
   // classification_tags describe what the agent IS, so a policy can permit or
@@ -2222,9 +2231,9 @@ message ListRoleAssignmentsOpRequest {}
 
 // RoleAssignmentOp binds a system organ to the generator that serves it.
 message RoleAssignmentOp {
-  // role is one of: "planner", "verifier", "router", "interview", "memory".
-  // Note "interview" is the AGENT examiner (ROUTE-03), not an operator-facing
-  // clarification interview — they are different subsystems with one word.
+  // role is one of: "planner", "verifier", "router", "memory", "facts". The
+  // "interview" role (the AGENT examiner) is retired with the interview,
+  // 2026-11-05; a config that still names it loads, and the role is ignored.
   string role = 1;
   string generator_id = 2;
   // resolved reports whether generator_id names a generator that actually exists.

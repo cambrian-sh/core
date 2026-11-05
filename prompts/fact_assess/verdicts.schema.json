@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FactAssessment",
+  "description": "One verdict per (new fact, existing fact) pair, keyed by the labels the request gave. Mirrors the decode struct of parseAssessmentResponse in internal/memory/fact_prompt.go; an unknown verdict word is read as uncertain by the parser, so the verdict is not an enum here.",
+  "type": "object",
+  "required": ["verdicts"],
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["new", "candidate", "verdict"],
+        "properties": {
+          "new": { "type": "string" },
+          "candidate": { "type": "string" },
+          "verdict": { "type": "string" }
+        }
+      }
+    }
+  }
+}

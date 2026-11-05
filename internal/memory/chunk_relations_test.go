@@ -15,7 +15,6 @@ func TestChunkRelations_Struct(t *testing.T) {
 		SiblingContext: SiblingContext{
 			ParentTitle:      "Cambrian Architecture",
 			ParentSummary:    "Overview of the runtime",
-			ParentScene:      "Operator setting up the kernel",
 			PrecedingSnippet: "First chunk body",
 			FollowingSnippet: "Last chunk body",
 		},
@@ -46,9 +45,6 @@ func TestChunkRelations_Struct(t *testing.T) {
 	if got.SiblingContext.ParentSummary != cr.SiblingContext.ParentSummary {
 		t.Errorf("ParentSummary: got %q, want %q", got.SiblingContext.ParentSummary, cr.SiblingContext.ParentSummary)
 	}
-	if got.SiblingContext.ParentScene != cr.SiblingContext.ParentScene {
-		t.Errorf("ParentScene: got %q, want %q", got.SiblingContext.ParentScene, cr.SiblingContext.ParentScene)
-	}
 	if got.SiblingContext.PrecedingSnippet != cr.SiblingContext.PrecedingSnippet {
 		t.Errorf("PrecedingSnippet: got %q, want %q", got.SiblingContext.PrecedingSnippet, cr.SiblingContext.PrecedingSnippet)
 	}
@@ -63,7 +59,6 @@ func TestChunkRelations_BudgetEnforced(t *testing.T) {
 	sc := SiblingContext{
 		ParentTitle:      big,
 		ParentSummary:    big,
-		ParentScene:      big,
 		PrecedingSnippet: big,
 		FollowingSnippet: big,
 	}
@@ -83,7 +78,6 @@ func TestChunkRelations_PerFieldLimits(t *testing.T) {
 	sc := SiblingContext{
 		ParentTitle:      big,
 		ParentSummary:    big,
-		ParentScene:      big,
 		PrecedingSnippet: big,
 		FollowingSnippet: big,
 	}
@@ -103,9 +97,6 @@ func TestChunkRelations_PerFieldLimits(t *testing.T) {
 	}
 	if l := len(got.ParentSummary); l > parentSummaryMaxBytes {
 		t.Errorf("ParentSummary: %d bytes, want <= %d", l, parentSummaryMaxBytes)
-	}
-	if l := len(got.ParentScene); l > parentSceneMaxBytes {
-		t.Errorf("ParentScene: %d bytes, want <= %d", l, parentSceneMaxBytes)
 	}
 	if l := len(got.PrecedingSnippet); l > precedingSnippetMaxBytes {
 		t.Errorf("PrecedingSnippet: %d bytes, want <= %d", l, precedingSnippetMaxBytes)
@@ -189,5 +180,23 @@ func TestChunkRelations_OnlyIdentifiers(t *testing.T) {
 	}
 	if got.SiblingContext.ParentTitle != "" {
 		t.Errorf("ParentTitle should be empty for identifier-only payload, got %q", got.SiblingContext.ParentTitle)
+	}
+}
+
+// A row written before 2026-11-05 carries `parent_scene`; scenes were removed
+// (decisions/scenes-cancelled.md) and decoding must ignore the stale key.
+func TestChunkRelations_LegacyParentSceneIgnored(t *testing.T) {
+	t.Parallel()
+	var got ChunkRelations
+	raw := `{"parent_entity_id":"e","sibling_context":{"parent_title":"T","parent_scene":"old scene"}}`
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("Unmarshal legacy row: %v", err)
+	}
+	if got.SiblingContext.ParentTitle != "T" {
+		t.Errorf("ParentTitle = %q, want T", got.SiblingContext.ParentTitle)
+	}
+	out, _ := json.Marshal(got)
+	if strings.Contains(string(out), "parent_scene") {
+		t.Errorf("re-marshaled relations still carry parent_scene: %s", out)
 	}
 }

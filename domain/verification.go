@@ -2,26 +2,7 @@ package domain
 
 import (
 	"context"
-	"time"
 )
-
-// ProposalRequest is the domain-layer mirror of proto's ProposalRequest.
-type ProposalRequest struct {
-	TaskID         string
-	Description    string
-	Context        string
-	Deadline       time.Time
-	ConfidenceHint float32
-}
-
-// ProposalResponse is the domain-layer mirror of proto's ProposalResponse.
-type ProposalResponse struct {
-	Confidence         float32
-	Rationale          string
-	Requirements       []string
-	EstimatedLatencyMs int32
-	Metadata           map[string]string
-}
 
 // VerifyRequest is the domain-layer mirror of proto's VerifyRequest.
 type VerifyRequest struct {
@@ -58,11 +39,6 @@ type VerificationRequest struct {
 	// it back on the verifier call ctx so that spend is booked to the session
 	// (ADR-0131, owner decision 2026-11-01). "" = no originating session.
 	SessionID SessionID
-}
-
-// ProposalRequester sends a RequestProposal RPC to a specific agent.
-type ProposalRequester interface {
-	RequestProposalFrom(ctx context.Context, agent AgentDefinition, req ProposalRequest) (ProposalResponse, error)
 }
 
 // VerifyRequester sends a VerifyOutput RPC to a verifier agent.

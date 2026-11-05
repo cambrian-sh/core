@@ -507,6 +507,11 @@ func (c configWriteSource) SaveGenerator(spec operator.GeneratorSpec) (operator.
 			if entry.APIKeyEnv == "" {
 				entry.APIKeyEnv = list[i].APIKeyEnv
 			}
+			// The ADR-0139 C1 fields (max_tokens, request_capabilities) are not on
+			// the operator wire yet (wave 1c), so a console save must not erase
+			// what a file declares for them -- same rule as the cost fields.
+			entry.MaxTokens = list[i].MaxTokens
+			entry.RequestCapabilities = list[i].RequestCapabilities
 			list[i] = entry
 			replaced = true
 			break
@@ -647,12 +652,11 @@ const rolesKeyPrefix = "llm_provider.roles."
 // agent_step purpose is deliberately absent: agent-step model choice belongs to
 // the EFE/dispatch preference hook, and binding it here would hardcode routing.
 var assignableRoles = map[string]bool{
-	string(domain.PurposePlanner):   true,
-	string(domain.PurposeVerifier):  true,
-	string(domain.PurposeRouter):    true,
-	string(domain.PurposeInterview): true,
-	string(domain.PurposeMemory):    true,
-	string(domain.PurposeFacts):     true, // ADR-0136 D4 fact extractor
+	string(domain.PurposePlanner):  true,
+	string(domain.PurposeVerifier): true,
+	string(domain.PurposeRouter):   true,
+	string(domain.PurposeMemory):   true,
+	string(domain.PurposeFacts):    true, // ADR-0136 D4 fact extractor
 }
 
 // SetRoleAssignment durably binds a system role to a generator and hot-applies
@@ -666,7 +670,7 @@ func (c configWriteSource) SetRoleAssignment(role, generatorID string) (operator
 
 	if !assignableRoles[role] {
 		res.Effect = operator.EffectRejected
-		res.Error = fmt.Sprintf("unknown role %q; roles are planner, verifier, router, interview, memory, facts", role)
+		res.Error = fmt.Sprintf("unknown role %q; roles are planner, verifier, router, memory, facts", role)
 		return res, nil
 	}
 	// Refused rather than stored, like a credential against a missing generator:
@@ -772,6 +776,12 @@ func mcpConfigFromSpec(spec operator.MCPServerSpec, prior *config.MCPServerConfi
 		// travels by another route entirely.
 		entry.Tools = prior.Tools
 		entry.Auth.TokenEnv = prior.Auth.TokenEnv
+		// Same for the server-default tool policy and the env passthrough
+		// (ADR-0139 D8): neither crosses the wire, and dropping them on a save
+		// would silently re-close a server the operator had marked read-only, or
+		// strip the key a stdio server needs to start.
+		entry.DefaultToolPolicy = prior.DefaultToolPolicy
+		entry.Env = prior.Env
 	}
 	return entry
 }

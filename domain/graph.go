@@ -18,14 +18,18 @@ const (
 	EdgeCloses      EdgeType = "closes"       // PR/commit closes a ticket or issue
 	EdgeSpecifies   EdgeType = "specifies"    // design doc specifies an implementation
 	EdgeContradicts EdgeType = "contradicts"  // fact contradicts another fact
-	EdgeDiscussedIn EdgeType = "discussed_in" // artifact referenced in a discussion thread
-	EdgeFollows     EdgeType = "follows"      // ADR-0049 D10: a step's record follows its dependency step's record
 	EdgeCoActivated EdgeType = "co_activated" // ADR-0049 D10: Hebbian — memories co-retrieved together wire together
-	EdgeEngaged     EdgeType = "engaged"      // ADR-0049: a scene engaged an entity (world-model structure; both endpoints persisted, FK-safe)
 	EdgeExtracted   EdgeType = "extracted"    // ADR-0053 D2: LLM-extracted entity/relation edge; free-form label in DocumentEdge.Label
 	EdgePartOf      EdgeType = "part_of"      // ADR-0060: structural child→parent (chunk/section belongs to its section)
 	EdgeContains    EdgeType = "contains"     // ADR-0060: structural parent→child (section contains chunk/section)
 	EdgeNext        EdgeType = "next"         // ADR-0060: structural sibling sequence (reading order within a parent)
+
+	// Removed 2026-11-05 with scenes and the raw step-record path
+	// (decisions/scenes-cancelled.md): EdgeDiscussedIn ("discussed_in", step fact →
+	// scene, ADR-0025), EdgeEngaged ("engaged", scene → entity, ADR-0049, never
+	// written) and EdgeFollows ("follows", step record → its dependency's record,
+	// ADR-0049 D10). Migration 0028 deletes the stored discussed_in/engaged rows;
+	// stored follows rows join surviving facts and are left in place.
 )
 
 // DocumentEdge represents a typed, weighted causal link between two LTM documents.

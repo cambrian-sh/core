@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/prompts"
 )
 
 // layer2Keywords maps each DecisionType to its precompiled word-boundary regex.
@@ -23,52 +24,38 @@ var layer2Keywords = map[domain.DecisionType]*regexp.Regexp{
 	domain.DecisionPlan:  regexp.MustCompile(`(?i)\b(plan|execute|run)\b`),
 }
 
-// classifySchema is the static JSON Schema for the Layer 3 classification prompt.
-// Registered in PromptRegistry at init() time.
-const classifySchema = `{
-  "decision": "chat|plan|watch",
-  "confidence": 0.0,
-  "alternatives": [{"decision": "chat|plan|watch", "confidence": 0.0}],
-  "reason": "string"
-}`
+// classifyPrompts is the Layer 3 prompt pair from the library (ADR-0139 C4/D2):
+// prompts/router, the stable system block (no slots, cached), and
+// prompts/router_input, the user message carrying the input in an <input> data
+// region. The reply shape is prompts/router/classification.schema.json, sent as
+// the response schema and validated by the provider layer (C1).
+var classifyPrompts = prompts.MustPair("router", "router_input")
 
-// classifyRole is the persona line of the Layer 3 prompt.
-const classifyRole = `You are Cambrian's intent classifier. Decide what the user wants Cambrian to DO with their input and choose exactly one decision type.`
+// classifyPromptHash is the pair's static hash: the identity of the static text
+// actually sent, registered under "router.classify".
+var classifyPromptHash = classifyPrompts.StaticHash()
 
-// classifyConstraints defines each decision type behaviorally with a decisive
-// discriminator. Without these definitions the model only sees bare enum values
-// and conflates "produce a summary file" (a task → plan) with answering directly
-// (chat). Ingestion is deliberately NOT a decision type here: storing content into
-// long-term memory is an automatic memory-subsystem function (IngestionManager /
-// the /v1/ingest webhook / the SynapticWatcher), never a user-routed request that
-// would (incorrectly) plan agent tasks to write LTM.
-const classifyConstraints = `Decision types:
-- chat: Answer a question directly from existing knowledge/memory. No external action, no artifact produced. Examples: "What is X?", "Explain how LLMs work."
-- plan: DO a task or PRODUCE an artifact — anything needing action or tools: creating or writing a file, researching, fetching a URL, computing, transforming, building. Examples: "Create a file cambrian.txt that summarizes how LLMs work", "Research X and write a report", "Scrape this page and extract the prices."
-- watch: Register a persistent reactive rule that fires on FUTURE events. Examples: "Monitor X and alert me when Y", "Track this page for changes."
+// classifyDataTags are the data regions of router_input.
+var classifyDataTags = []string{"input"}
 
-Decisive rule: if the user asks to CREATE, WRITE, GENERATE, PRODUCE, or otherwise carry out a task — even when the requested output is a summary or explanation — classify as 'plan'. Use 'chat' only for a question to be answered directly with no action or artifact.`
-
-// classifyPromptTemplate is the static (non-dynamic) portion of the prompt whose
-// hash is written to PromptRegistry (role + constraints; the task body is dynamic).
-const classifyPromptTemplate = classifyRole + "\n" + classifyConstraints
-
-var classifyPromptHash string
+// classifyCacheTTL: routing classifies a human's input, so it is human-paced and
+// takes the long breakpoint lifetime (ADR-0139 D1). The system block is small;
+// below a provider's minimum cacheable prefix the mark is simply not used.
+const classifyCacheTTL = domain.CacheTTLLong
 
 func init() {
-	classifyPromptHash = domain.PromptHashOf(classifyPromptTemplate)
 	domain.PromptRegistry[classifyPromptHash] = domain.PromptEntry{
 		ID:      "router.classify",
-		Version: "1.1.0",
+		Version: fmt.Sprintf("router.v%d+router_input.v%d", classifyPrompts.System.Version, classifyPrompts.Input.Version),
 		Hash:    classifyPromptHash,
-		Schema:  classifySchema,
+		Schema:  string(classifyPrompts.Schema()),
 	}
 }
 
 // DefaultRouter implements domain.InputRouter using four ordered layers:
 //
 //	Layer 0 — RouterInput.Intent pre-classification (Gateway shortcut)
-//	Layer 1 — Slash-prefix commands (/watch, /plan, /ingest)
+//	Layer 1 — Slash-prefix commands (/watch, /plan)
 //	Layer 2 — Word-boundary keyword heuristics
 //	Layer 3 — LLM classification with structured output
 //
@@ -79,15 +66,25 @@ type DefaultRouter struct {
 	bodyChars     int
 }
 
-// New constructs a DefaultRouter with default Layer 3 configuration.
+// Default Layer 3 tuning. The kernel never uses these: it wires
+// execution.router.router_min_classification_confidence and
+// router_classification_body_chars through NewWithConfig. They mirror the config
+// defaults for callers (tests, tools) that need only Layers 0-2 or a default router.
+const (
+	DefaultMinConfidence = 0.5
+	DefaultBodyChars     = 500
+)
+
+// New constructs a DefaultRouter with the default Layer 3 tuning.
 // gen is the LLM generator; it may be nil when only Layers 0-2 are needed.
 func New(gen domain.Generator) *DefaultRouter {
-	return NewWithConfig(gen, 0.5, 500)
+	return NewWithConfig(gen, DefaultMinConfidence, DefaultBodyChars)
 }
 
 // NewWithConfig constructs a DefaultRouter with explicit Layer 3 tuning.
 // minConfidence is the confidence gate below which DecisionClarification is returned.
-// bodyChars is the maximum characters of Body passed to the Layer 3 prompt.
+// bodyChars is the maximum characters (runes, not bytes) of Body passed to the
+// Layer 3 prompt; 0 disables the cut.
 func NewWithConfig(gen domain.Generator, minConfidence float64, bodyChars int) *DefaultRouter {
 	return &DefaultRouter{gen: gen, minConfidence: minConfidence, bodyChars: bodyChars}
 }
@@ -173,35 +170,22 @@ func (r *DefaultRouter) layer3(ctx context.Context, input domain.RouterInput) (*
 		return nil, errors.New("router: Layer 3 classification requires a Generator; none configured")
 	}
 
-	body := input.Body
-	if r.bodyChars > 0 && len(body) > r.bodyChars {
-		body = body[:r.bodyChars]
+	req, err := r.classifyRequest(input.Body)
+	if err != nil {
+		return nil, err
 	}
-
-	prompt := domain.PromptBuild(
-		domain.PromptSystem(classifyRole, classifyConstraints),
-		domain.PromptTask(fmt.Sprintf("Classify this input: %q", body)),
-		domain.PromptOutputSchemaJSON(classifySchema),
-	)
-
-	raw, err := r.gen.Generate(ctx, prompt)
+	out, err := domain.GenerateVia(ctx, r.gen, req)
 	if err != nil {
 		return nil, fmt.Errorf("router: Layer 3 generator error: %w", err)
 	}
 
-	// Extract before unmarshalling. Models wrap JSON in ```json fences and emit
-	// reasoning preambles, and this was the ONE place in the kernel that fed raw
-	// generator output straight to json.Unmarshal — every other LLM-output parser
-	// (the Planner among them) already goes through ExtractJSONObject. Measured
-	// 2026-07-28: 5 of 21 benchmark tasks died here with "invalid character '`'"
-	// BEFORE a plan existed, i.e. the request was lost at the front door.
-	extracted := domain.ExtractJSONObject(raw)
-	if extracted == "" {
-		extracted = raw // keep the original text in the error when there is no JSON at all
-	}
-
+	// The provider layer validated the reply against the classification schema
+	// (and repaired it once), so it is decoded as is. The ExtractJSONObject scrape
+	// that used to sit here — added 2026-07-28 when fenced replies killed 5 of 21
+	// benchmark tasks at the front door — is gone: a fence is now the only
+	// tolerance, and only on a reply whose generator ignored the schema.
 	var resp classifyResponse
-	if err := json.Unmarshal([]byte(extracted), &resp); err != nil {
+	if err := decodeClassification(out, &resp); err != nil {
 		return nil, fmt.Errorf("router: Layer 3 invalid JSON response: %w", err)
 	}
 
@@ -249,6 +233,53 @@ func (r *DefaultRouter) layer3(ctx context.Context, input domain.RouterInput) (*
 		ClarificationQuestion: "I'm not sure what you'd like me to do. Please choose:",
 		ClarificationOptions:  options,
 	}, nil
+}
+
+// classifyRequest renders the Layer 3 call. The body is clipped to bodyChars
+// RUNES: a byte cut could split a multi-byte character and send invalid UTF-8.
+func (r *DefaultRouter) classifyRequest(body string) (domain.GenerateRequest, error) {
+	if r.bodyChars > 0 {
+		body = truncateRunes(body, r.bodyChars)
+	}
+	msg, err := classifyPrompts.Message(map[string]string{
+		"input": prompts.NeutraliseClosingTags(body, classifyDataTags...),
+	})
+	if err != nil {
+		return domain.GenerateRequest{}, fmt.Errorf("router: prompt %s: %w", classifyPrompts.Input.ID, err)
+	}
+	return domain.GenerateRequest{
+		System:         []domain.SystemBlock{{Text: classifyPrompts.System.Body, Cache: true}},
+		Messages:       []domain.ModelMessage{domain.UserMessage(msg)},
+		ResponseSchema: &domain.ResponseSchema{Name: "route_classification", Schema: classifyPrompts.Schema()},
+		CacheTTL:       classifyCacheTTL,
+	}, nil
+}
+
+// decodeClassification decodes a Layer 3 reply. A validated reply is decoded as
+// is; an unchecked one (resp.SchemaUnchecked: the generator ignored the schema)
+// may carry one markdown code fence, nothing more.
+func decodeClassification(resp domain.GenerateResponse, v *classifyResponse) error {
+	text := strings.TrimSpace(resp.Text)
+	if resp.SchemaUnchecked() && strings.HasPrefix(text, "```") {
+		text = strings.TrimPrefix(text, "```")
+		if nl := strings.IndexByte(text, '\n'); nl >= 0 {
+			text = text[nl+1:] // the language tag line ("json")
+		}
+		text = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(text), "```"))
+	}
+	return json.Unmarshal([]byte(text), v)
+}
+
+// truncateRunes cuts s to at most n runes, never inside a UTF-8 sequence.
+func truncateRunes(s string, n int) string {
+	i := 0
+	for pos := range s {
+		if i == n {
+			return s[:pos]
+		}
+		i++
+	}
+	return s
 }
 
 // labelFor returns a human-readable label for a decision type.

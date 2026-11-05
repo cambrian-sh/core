@@ -2,15 +2,18 @@ package domain
 
 import "context"
 
-// AgentSearchResult is a candidate returned by an interview vector search.
+// AgentSearchResult is a candidate returned by an agent-profile vector search.
 type AgentSearchResult struct {
 	AgentID    string
 	SourceHash string
 	Similarity float64
 }
 
-// InterviewSearcher searches agent profiles by embedding similarity.
-type InterviewSearcher interface {
+// ProfileSearcher searches agent profiles by embedding similarity — the Gatekeeper's
+// Layer-2 semantic gate. Profile vectors are embedded deterministically from each
+// agent's declared description at registration (internal/metabolism/registration);
+// the LLM interview that once wrote them was deleted 2026-11-05 (ADR-0139 Q3).
+type ProfileSearcher interface {
 	SearchByEmbedding(ctx context.Context, embedding []float32, threshold float64, topK int) ([]AgentSearchResult, error)
 }
 
@@ -20,7 +23,7 @@ type ScoredCandidate struct {
 	Score float64
 }
 
-// Gatekeeper is the three-layer interrupt controller (Declaration → Interview → Merit)
+// Gatekeeper is the three-layer interrupt controller (Declaration → Semantic → Merit)
 // that filters the full agent list to a short candidate slate before the Auction.
 type Gatekeeper interface {
 	FindCandidates(ctx context.Context, task *DispatchTask) ([]ScoredCandidate, error)

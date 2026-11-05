@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/procenv"
 )
 
 // checkPythonDeps verifies every import name in deps resolves in the target
@@ -28,7 +29,7 @@ func checkPythonDeps(ctx context.Context, pythonPath string, deps []string) erro
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, pythonPath, "-c", script)
-	cmd.Env = allowlistedAgentEnv(nil) // SEC-01: the check runs deny-by-default too
+	cmd.Env = procenv.Allowlisted(nil) // SEC-01: the check runs deny-by-default too
 
 	out, err := cmd.Output()
 	if err == nil {

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtractedFacts",
+  "description": "The facts of one window, each citing its passage number and a verbatim quote. Mirrors rawExtractedFact in internal/memory/fact_prompt.go. As lenient as that parser on value, polarity and supersedes_prior; grounding (the quote) is checked by the parser, not here.",
+  "type": "object",
+  "required": ["facts"],
+  "properties": {
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["subject", "attribute", "value", "passage", "quote"],
+        "properties": {
+          "subject": { "type": "string" },
+          "attribute": { "type": "string" },
+          "value": { "type": ["string", "number", "boolean"] },
+          "valid_from": { "type": ["string", "null"] },
+          "valid_to": { "type": ["string", "null"] },
+          "polarity": { "type": "string" },
+          "supersedes_prior": { "type": ["boolean", "string"] },
+          "speaker": { "type": "string" },
+          "passage": { "type": "integer" },
+          "quote": { "type": "string" }
+        }
+      }
+    }
+  }
+}

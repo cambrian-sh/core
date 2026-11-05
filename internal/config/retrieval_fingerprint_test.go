@@ -51,7 +51,7 @@ func TestRetrievalFingerprint_IgnoresUnrelatedConfig(t *testing.T) {
 	// every historical fingerprint on an unrelated change. This test is what keeps
 	// the field list explicit.
 	a := ExecutionConfig{Retrieval: RetrievalConfig{RecallTopK: 10}}
-	b := ExecutionConfig{Memory: MemoryConfig{ExperientialMemoryEnabled: true}, Retrieval: RetrievalConfig{RecallTopK: 10}}
+	b := ExecutionConfig{Memory: MemoryConfig{ExperienceRecordsEnabled: true}, Retrieval: RetrievalConfig{RecallTopK: 10}}
 	if a.RetrievalFingerprint("e") != b.RetrievalFingerprint("e") {
 		t.Fatal("fingerprint changed on a field that does not affect ranking")
 	}

@@ -32,6 +32,27 @@ func TestUVAssetMapping(t *testing.T) {
 	}
 }
 
+// The Python system agents read the prompt library from <prefix>/prompts.
+func TestUnpackPromptsWritesTheLibraryTheAgentsRead(t *testing.T) {
+	dst := t.TempDir()
+	n, err := unpackPrompts(dst)
+	if err != nil {
+		t.Fatalf("unpackPrompts: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("unpackPrompts wrote no files")
+	}
+	for _, must := range []string{
+		filepath.Join("chat_agent", "v1.md"),
+		filepath.Join("retrieval_synthesize_cited", "v1.md"),
+		filepath.Join("retrieval_synthesize_cited", "answer.schema.json"),
+	} {
+		if !fileExists(filepath.Join(dst, must)) {
+			t.Errorf("expected %s to be unpacked", must)
+		}
+	}
+}
+
 // The embed must keep Python package markers (default embed rules would drop
 // underscore-prefixed __init__.py — that's why the directive uses `all:`) while
 // unpack filters build junk.

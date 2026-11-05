@@ -31,6 +31,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	core "github.com/cambrian-sh/core"
+	"github.com/cambrian-sh/core/prompts"
 )
 
 // Model defaults, kept in sync with configs/embedder.json.example and the
@@ -482,6 +483,34 @@ func writeExecutable(dest string, r io.Reader) error {
 }
 
 // ---- embedded agents ---------------------------------------------------------------------
+
+// unpackPrompts materializes the embedded prompt library (ADR-0139 C4) into dst. The
+// kernel reads its prompts from the embed, but the Python system agents (chat_agent,
+// retrieval_agent) read the same files from disk: from the nearest ancestor prompts/
+// directory of their own file, so dst is <prefix>/prompts, the sibling of the agents dir.
+// Without it a binary-installed deployment starts agents that fail at import.
+func unpackPrompts(dst string) (int, error) {
+	n := 0
+	err := fs.WalkDir(prompts.Files, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := prompts.Files.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		out := filepath.Join(dst, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(out, b, 0o644); err != nil {
+			return err
+		}
+		n++
+		return nil
+	})
+	return n, err
+}
 
 // unpackAgents materializes the embedded agent sources into dst, refreshing
 // existing files and filtering build junk (__pycache__, *.pyc, node_modules,

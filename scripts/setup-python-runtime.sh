@@ -30,8 +30,8 @@ echo "Installing cambrian-agent-sdk (editable, with dev extras) ..."
 echo "Verifying SDK import ..."
 "$PY" -c "from cambrian_agent_sdk import Agent, assemble_context, build_prompt, find_step_ref, extract_code_block, BudgetExceededError; print('  SDK OK')"
 
-echo "Verifying all 3 cognitive agents import ..."
-"$PY" -c "import sys; sys.path.insert(0, '$ROOT/agents'); import code_generator_agent, summariser_agent, analyst_agent; print('  3 agents OK')"
+echo "Verifying the chat agent and the profile runtime import ..."
+"$PY" -c "import sys; sys.path.insert(0, '$ROOT/agents'); import chat_agent, worker_agent; print('  agents OK')"
 
 echo ""
 echo "=== Done ==="

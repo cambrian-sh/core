@@ -23,14 +23,14 @@ func (m *mockAgentLister) GetAllAgents(_ context.Context) ([]domain.AgentDefinit
 type mockProfileChecker struct {
 	profile       *domain.AgentProfile
 	err           error
-	missingVector bool // when true, HasInterviewVector reports false
+	missingVector bool // when true, HasProfileVector reports false
 }
 
 func (m *mockProfileChecker) GetProfile(_ context.Context, _, _ string) (*domain.AgentProfile, error) {
 	return m.profile, m.err
 }
 
-func (m *mockProfileChecker) HasInterviewVector(_ context.Context, _, _ string) (bool, error) {
+func (m *mockProfileChecker) HasProfileVector(_ context.Context, _, _ string) (bool, error) {
 	return !m.missingVector, nil
 }
 
@@ -53,9 +53,9 @@ func (e *alwaysAvailableEmbedder) Embed(_ context.Context, _ string) ([]float32,
 
 // Cycle 1: provisional agents are enqueued; active (non-provisional) agents are skipped.
 // A pre-existing profile in pgvector must not prevent a provisional agent from being
-// interviewed — this is the mismatch that occurs when bbolt is wiped but pgvector
+// seeded — this is the mismatch that occurs when bbolt is wiped but pgvector
 // persists. ADR-0023.
-func TestRunInterviewBackfill_EnqueuesProvisionalAgents(t *testing.T) {
+func TestRunProfileBackfill_EnqueuesProvisionalAgents(t *testing.T) {
 	agents := &mockAgentLister{
 		agents: []domain.AgentDefinition{
 			{ID: "provisional-no-profile", SourceHash: "h1", Provisional: true},
@@ -73,7 +73,7 @@ func TestRunInterviewBackfill_EnqueuesProvisionalAgents(t *testing.T) {
 	enqueuer := &mockBackfillEnqueuer{}
 	embedder := &alwaysAvailableEmbedder{}
 
-	err := RunInterviewBackfill(context.Background(), agents, profiles, enqueuer, embedder, BackfillConfig{TimeoutMs: 5000})
+	err := RunProfileBackfill(context.Background(), agents, profiles, enqueuer, embedder, BackfillConfig{TimeoutMs: 5000})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,10 +87,10 @@ func TestRunInterviewBackfill_EnqueuesProvisionalAgents(t *testing.T) {
 	}
 }
 
-// A non-provisional ("ready") agent whose stored interview vector is missing must be
-// re-enqueued — this is the self-heal for agents interviewed while the embedder was down
+// A non-provisional ("ready") agent whose stored profile vector is missing must be
+// re-enqueued — this is the self-heal for agents seeded while the embedder was down
 // (their profile was saved with a NULL vector, making them invisible to the Layer-2 gate).
-func TestRunInterviewBackfill_HealsReadyAgentWithMissingVector(t *testing.T) {
+func TestRunProfileBackfill_HealsReadyAgentWithMissingVector(t *testing.T) {
 	agents := &mockAgentLister{
 		agents: []domain.AgentDefinition{
 			{ID: "ready-ok", SourceHash: "h1", Provisional: false},    // has vector → skip
@@ -104,7 +104,7 @@ func TestRunInterviewBackfill_HealsReadyAgentWithMissingVector(t *testing.T) {
 	enqueuer := &mockBackfillEnqueuer{}
 	embedder := &alwaysAvailableEmbedder{}
 
-	if err := RunInterviewBackfill(context.Background(), agents, profiles, enqueuer, embedder, BackfillConfig{TimeoutMs: 5000}); err != nil {
+	if err := RunProfileBackfill(context.Background(), agents, profiles, enqueuer, embedder, BackfillConfig{TimeoutMs: 5000}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	ids := enqueuerIDs(enqueuer.enqueued)
@@ -116,14 +116,14 @@ func TestRunInterviewBackfill_HealsReadyAgentWithMissingVector(t *testing.T) {
 // perAgentProfileChecker returns different profiles per agentID.
 type perAgentProfileChecker struct {
 	profiles      map[string]*domain.AgentProfile
-	missingVector map[string]bool // agentID → true means "no interview vector"
+	missingVector map[string]bool // agentID → true means "no profile vector"
 }
 
 func (p *perAgentProfileChecker) GetProfile(_ context.Context, agentID, _ string) (*domain.AgentProfile, error) {
 	return p.profiles[agentID], nil
 }
 
-func (p *perAgentProfileChecker) HasInterviewVector(_ context.Context, agentID, _ string) (bool, error) {
+func (p *perAgentProfileChecker) HasProfileVector(_ context.Context, agentID, _ string) (bool, error) {
 	// Default: a ready agent has its vector; only agents flagged missing report false.
 	return !p.missingVector[agentID], nil
 }
@@ -137,7 +137,7 @@ func enqueuerIDs(agents []domain.AgentDefinition) []string {
 }
 
 // Cycle 2: Embedder unavailability triggers retry, not silent skip.
-func TestRunInterviewBackfill_EmbedderUnavailableRetries(t *testing.T) {
+func TestRunProfileBackfill_EmbedderUnavailableRetries(t *testing.T) {
 	// Embedder fails twice, then succeeds on the third call.
 	callCount := 0
 	embedder := &countingEmbedder{fn: func() ([]float32, error) {
@@ -159,7 +159,7 @@ func TestRunInterviewBackfill_EmbedderUnavailableRetries(t *testing.T) {
 		InitialBackoffMs: 1,    // 1 ms for fast tests
 	}
 
-	err := RunInterviewBackfill(context.Background(), agents, profiles, enqueuer, embedder, cfg)
+	err := RunProfileBackfill(context.Background(), agents, profiles, enqueuer, embedder, cfg)
 	if err != nil {
 		t.Fatalf("expected success after retry, got: %v", err)
 	}
@@ -183,8 +183,8 @@ func (e *countingEmbedder) Embed(_ context.Context, _ string) ([]float32, error)
 	return e.fn()
 }
 
-// Cycle 3: RunInterviewBackfill returns quickly (server not blocked).
-func TestRunInterviewBackfill_ReturnsAfterEnqueue_NotAfterProcessing(t *testing.T) {
+// Cycle 3: RunProfileBackfill returns quickly (server not blocked).
+func TestRunProfileBackfill_ReturnsAfterEnqueue_NotAfterProcessing(t *testing.T) {
 	agents := &mockAgentLister{
 		agents: []domain.AgentDefinition{
 			{ID: "agent-1", SourceHash: "h1", Provisional: true},
@@ -199,7 +199,7 @@ func TestRunInterviewBackfill_ReturnsAfterEnqueue_NotAfterProcessing(t *testing.
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunInterviewBackfill(context.Background(), agents, profiles, enqueuer, embedder, BackfillConfig{TimeoutMs: 5000})
+		done <- RunProfileBackfill(context.Background(), agents, profiles, enqueuer, embedder, BackfillConfig{TimeoutMs: 5000})
 	}()
 
 	// Must complete within 500ms (enqueue is non-blocking, no processing waits).
@@ -212,6 +212,24 @@ func TestRunInterviewBackfill_ReturnsAfterEnqueue_NotAfterProcessing(t *testing.
 			t.Errorf("expected 2 enqueued agents, got %d", len(enqueuer.enqueued))
 		}
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("RunInterviewBackfill did not return within 500ms — it may be blocking on Interview processing")
+		t.Fatal("RunProfileBackfill did not return within 500ms — it may be blocking on profile seeding")
+	}
+}
+
+// T-20261102-interview-backfill-tries-to-boot-llm-model: a TraitModel agent has no
+// profile vector by design and must never be enqueued, provisional or not.
+func TestRunProfileBackfill_SkipsModelAgents(t *testing.T) {
+	agents := &mockAgentLister{agents: []domain.AgentDefinition{
+		{ID: "llm:ready", Trait: domain.TraitModel},
+		{ID: "llm:prov", Trait: domain.TraitModel, Provisional: true},
+	}}
+	enq := &mockBackfillEnqueuer{}
+	err := RunProfileBackfill(context.Background(), agents,
+		&mockProfileChecker{missingVector: true}, enq, &alwaysAvailableEmbedder{}, BackfillConfig{})
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if len(enq.enqueued) != 0 {
+		t.Fatalf("model agents enqueued for seeding: %+v", enq.enqueued)
 	}
 }

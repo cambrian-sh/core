@@ -113,7 +113,7 @@ func (d *RetrievalDispatcher) call(ctx context.Context, reqData []byte) ([]byte,
 				sid, _ := domain.SessionIDFromContext(ctx)
 				r.BindLease(tokenID, domain.LeaseBinding{SessionID: sid, StepIndex: -1, AgentID: agentID})
 			}
-			parent := callerLease(ctx)
+			parent := callerLease(ctx, d.Gateway)
 			defer func() {
 				// Complete also runs the gateway's completion hook, which clears any
 				// skill grants conferred under this lease (ADR-0046 D6) — the third
@@ -145,15 +145,33 @@ type leaseCharger interface {
 // or the legacy x-session-id slot that older SDKs fill with their lease), or "".
 // Used only to charge spend to it, never to authorise anything: ChargeLease adds
 // usage and grants nothing, and it ignores a value that is not a live lease.
-func callerLease(ctx context.Context) domain.LeaseID {
+//
+// It still applies the ADR-0139 D8 ownership rule: a lease bound to an agent
+// other than the caller is dropped (""), so an agent cannot bill its retrieval
+// chain to a victim's step lease — which would spend the victim's budget and
+// trip the victim's ceiling. gw is the dispatcher's gateway; one without lease
+// resolution (a test fake) leaves the presented value unchecked, as before.
+func callerLease(ctx context.Context, gw LLMGateway) domain.LeaseID {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return ""
 	}
-	if l := firstMD(md, leaseHeader); l != "" {
-		return domain.LeaseID(l)
+	lease := domain.LeaseID(firstMD(md, leaseHeader))
+	if lease == "" {
+		lease = domain.LeaseID(firstMD(md, sessionHeader))
 	}
-	return domain.LeaseID(firstMD(md, sessionHeader))
+	if lease == "" {
+		return ""
+	}
+	if r, ok := gw.(domain.LeaseResolver); ok {
+		if _, known := r.ResolveLease(lease); known {
+			if _, owned := resolveLeaseForCaller(ctx, r, lease); !owned {
+				slog.WarnContext(ctx, "ADR-0139 D8: not charging retrieval spend to a lease the caller does not hold")
+				return ""
+			}
+		}
+	}
+	return lease
 }
 
 // PlanQuery asks the retrieval_agent to rewrite the query into a discriminative

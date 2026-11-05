@@ -55,9 +55,6 @@ type MemoryStack struct {
 	// (cmd/facts-reset): FactSubstrate.Resetter, handed through unchanged. nil unless a
 	// maintenance command handed one in — the kernel never resets facts.
 	FactReset domain.FactResetter
-	// ProcedureScheduler runs the ADR-0094 induction pass. nil ⇒ disabled, which is
-	// the default (execution.procedure_induction_interval_hours = 0).
-	ProcedureScheduler *memory.ProcedureScheduler
 }
 
 // NewMemoryStack constructs the memory layer from infrastructure primitives.
@@ -108,21 +105,19 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// see kernelRead in pgvector_profile_store.go.
 	profileStore := memstore.NewProfileStore(writeStore)
 	memoryManager := memory.NewMemoryManager(writeStore, embed)
-	memoryAgent := memory.NewAgent(memoryManager, gen,
-		execCfg.Memory.MemoryRelevanceThreshold, execCfg.Memory.MaxMemoryResults, execCfg.Memory.MaxNeighborExpansion,
-		execCfg.Memory.Tier1ChannelCapacity, execCfg.Memory.Tier2BatchSize, execCfg.Memory.Tier2MaxIdleSeconds, execCfg.Memory.Tier2LLMTimeout)
-	// Passive experiential capture (auto-embedding step results + tool outputs into LTM) is
-	// off unless explicitly enabled. See execution.experiential_memory_enabled.
-	memoryAgent.RecordExperiential = execCfg.Memory.ExperientialMemoryEnabled
-	// ADR-0049 §A2.2: the outcome record — one abstracted record per completed plan.
-	// A separate arm from the raw path above, because they are opposite designs: that
-	// one embeds whole tool payloads (removed 2026-07-18, stays off), this one embeds
-	// only the D7 projection and references everything else. `vec` is the raw adapter
-	// on purpose — this is a kernel-owned write of a row the kernel itself stamps, not
-	// a principal-facing one.
+	memoryAgent := memory.NewAgent(memoryManager,
+		execCfg.Memory.MemoryRelevanceThreshold, execCfg.Memory.MaxMemoryResults, execCfg.Memory.MaxNeighborExpansion)
+	// The passive raw capture (auto-embedded step results and tool outputs behind
+	// `experiential_memory_enabled`, curated by the ADR-0015 tier-2 judge) was deleted
+	// 2026-11-05 with its config keys (decisions/scenes-cancelled.md).
+	//
+	// ADR-0049 §A2.2: the experiential records — mutation action events and the
+	// plan-outcome hook (episode close, A2.3 failure record, procedure feedback).
 	memoryAgent.RecordOutcomes = execCfg.Memory.ExperienceRecordsEnabled
 	memoryAgent.SurpriseFloor = execCfg.Memory.ExperienceSurpriseFloor
 	memoryAgent.ProcedureDeprecateBelow = execCfg.Procedure.ProcedureDeprecateBelow
+	// `vec` is the raw adapter on purpose (ADR-0095 D1): the episode parent row is a
+	// kernel-owned write of a row the kernel itself stamps, not a principal-facing one.
 	// Asserted rather than required on the port: a store that cannot persist episode
 	// parents (a test fake, a future backend) leaves this nil, and the outcome record
 	// is then written with a NULL parent instead of not written at all.
@@ -165,7 +160,7 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// ADR-0016: Cross-session workspace enrichment.
 	ws := memory.NewWorkspaceStage(scopedRead, embed, gen,
 		execCfg.Workspace.WorkspacePlanningSlots, execCfg.Workspace.WorkspaceExecutionSlots,
-		execCfg.Retrieval.RetrievalFloor, execCfg.Workspace.WorkspaceEnableDriftGuard, execCfg.Workspace.WorkspaceDriftThreshold)
+		execCfg.Retrieval.RetrievalFloor)
 
 	// PLANNERREQ REQ1: wire MinFactCosine — raw cosine floor before Planner injection.
 	ws.MinFactCosine = execCfg.Workspace.WorkspaceMinFactCosine
@@ -260,14 +255,11 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 				execCfg.Retrieval.HebbianLearningRate, execCfg.Retrieval.HebbianMaxWeight, execCfg.Retrieval.HebbianCoActivationFloor,
 				execCfg.Retrieval.HebbianDecayPerDay, execCfg.Retrieval.HebbianBaseWeight, execCfg.Retrieval.HebbianTopN)
 		}
-		memoryAgent.GraphStore = gs
-		// ADR-0025: wire EdgeWriter for Tier-2 discussed_in edges.
-		memoryAgent.EdgeWriter = &memory.GraphStoreEdgeWriter{GraphStore: gs}
 	}
 
-	// ADR-0028: ingestion pipeline — SceneGenerator + IngestionManager + DirectoryWatcher.
-	sceneGen := memory.NewSceneGenerator(gen)
-	ingestionMgr := memory.NewIngestionManager(sceneGen, embed, memoryAgent, ingestionConfigFrom(execCfg.Ingestion), chunkerCfg)
+	// ADR-0028: ingestion pipeline. (Its SceneGenerator was deleted 2026-11-05 with
+	// scenes — decisions/scenes-cancelled.md.)
+	ingestionMgr := memory.NewIngestionManager(embed, memoryAgent, ingestionConfigFrom(execCfg.Ingestion), chunkerCfg)
 	// ADR-0138 D2-D4: the document lifecycle is composed HERE, with the manager, so no
 	// ingest path can run without it once a database is wired. Its writer check is
 	// computed inside the store's transaction (the writer of record against the
@@ -304,28 +296,10 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// weight) and its fixed-dir fsnotify watch errored at startup when InboxDir was
 	// absent. On-demand + reactive watch sources (ADR-0032/REACT-06) supersede it.
 
-	// ADR-0094 D3 + ADR-0049 A2.5: the offline induction pass. Constructed only when
-	// an interval is configured, so a deployment that has not opted in carries no
-	// goroutine, no ticker and no store reads. The inducer writes through the RAW
-	// adapter because a procedure is a kernel-authored artifact, not a principal's
-	// write — the same reasoning as the experience parent row.
-	var procScheduler *memory.ProcedureScheduler
-	if h := execCfg.Procedure.ProcedureInductionIntervalHours; h > 0 {
-		inducer := &memory.ProcedureInducer{
-			Store:      vec,
-			Embedder:   embed,
-			MinSamples: execCfg.Procedure.ProcedureMinSamples,
-		}
-		if es, ok := vec.(domain.ExperienceStore); ok {
-			inducer.Experience = es
-		}
-		procScheduler = &memory.ProcedureScheduler{
-			Inducer:     inducer,
-			Store:       vec,
-			Interval:    time.Duration(h) * time.Hour,
-			MaxEpisodes: execCfg.Procedure.ProcedureMaxEpisodesPerPass,
-		}
-	}
+	// The ADR-0094 D3 offline induction pass (ProcedureScheduler / ProcedureInducer)
+	// was deleted 2026-11-05: it induced routines from `mnemonic_scene` metadata, and
+	// scenes were cancelled (decisions/scenes-cancelled.md). Stored procedures are
+	// still served by the WorkspaceStage procedure lane and still fed outcomes.
 
 	return &MemoryStack{
 		VecDB:                vec,
@@ -345,20 +319,13 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		FactExtractor:        factExtractor,
 		FactBackfill:         factBackfill,
 		FactReset:            facts.Resetter,
-		ProcedureScheduler:   procScheduler,
 	}
 }
 
 // Start launches the memory Agent's background workers and the ingestion pipeline.
 func (s *MemoryStack) Start(ctx context.Context) error {
-	// The Tier-1 channel the drain serves is filled ONLY by the raw experiential path
-	// (RecordExecution / recordReadFact), which is gated on RecordExperiential — off in
-	// production since 2026-07-18. Starting the drain regardless meant a goroutine, an
-	// idle timer and (on any drain) an LLM judge sitting on a channel nothing could
-	// write to. Gated here so the cost is paid only by a deployment that enables the arm.
-	if s.Agent.RecordExperiential {
-		s.Agent.StartTier2Drain(ctx)
-	}
+	// The ADR-0015 tier-2 drain that used to start here was deleted 2026-11-05 with the
+	// raw capture path it served (decisions/scenes-cancelled.md).
 	// The original ADR-0053 D2 LLM-lane EdgeBatcher used to be started here. It is no longer constructed
 	// — see NewMemoryStack for why. The ADR-0053 batcher below is the one that
 	// actually receives work from the ingest path.
@@ -373,9 +340,6 @@ func (s *MemoryStack) Start(ctx context.Context) error {
 	if s.IngestionManager != nil {
 		s.IngestionManager.Start(ctx)
 	}
-	// ADR-0094: the induction pass. Start is a no-op when the scheduler is nil
-	// (no interval configured), so the default deployment is unaffected.
-	s.ProcedureScheduler.Start(ctx)
 	return s.Agent.StartMemoryWorker(ctx, false)
 }
 
@@ -484,6 +448,9 @@ func chunkTripletsBatcherConfigFrom(c config.IngestionConfig) memory.ChunkTriple
 		// batch failed because the extractor was unavailable get this many more
 		// passes before they settle as kg_failed.
 		MaxRequeues: c.KgTripletsMaxRequeues,
+		// ADR-0139 C1/C4: the LLM extractor's reply format; "" and "completion"
+		// keep the KG²RAG completion prompt until an A/B/A run moves the default.
+		StructuredLLMFormat: c.KgTripletsLLMFormat == config.KgTripletsFormatStructured,
 	}
 }
 

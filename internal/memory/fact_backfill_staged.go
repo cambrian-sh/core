@@ -88,8 +88,8 @@ type stagedSink interface {
 	assessing() bool
 	planAssessment(ctx context.Context, facts []domain.Fact, vis *factVisibility) *assessPlan
 	assessmentStored(ctx context.Context, id string, countReplay bool) bool
-	askJudge(ctx context.Context, p *assessPlan) (string, error)
-	commitAssessment(ctx context.Context, p *assessPlan, resp string, callErr error)
+	askJudge(ctx context.Context, p *assessPlan) (domain.GenerateResponse, error)
+	commitAssessment(ctx context.Context, p *assessPlan, resp domain.GenerateResponse, callErr error)
 	markStagedWindow(ctx context.Context, d *stagedDoc, upto int)
 	finishStagedDoc(ctx context.Context, d *stagedDoc)
 }
@@ -353,7 +353,7 @@ type stagedItem struct {
 }
 
 type judgeAnswer struct {
-	resp string
+	resp domain.GenerateResponse
 	err  error
 	used bool
 }

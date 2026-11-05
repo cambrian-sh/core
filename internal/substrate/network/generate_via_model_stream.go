@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -32,12 +33,25 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 	if s.LLMGateway == nil {
 		return status.Error(codes.Unimplemented, "GenerateViaModelStream: LLMGateway not wired")
 	}
+	// ADR-0139 D8: a lease is bound to the agent it was issued to. Spending under
+	// another agent's lease — or, for an agent caller, under a lease bound to no agent —
+	// is refused before a token is generated; the answer is the same as for a lease that
+	// does not exist.
+	if s.leaseForeignToCaller(stream.Context(), leaseID) {
+		return status.Error(codes.PermissionDenied, "lease is not valid for this caller")
+	}
 
-	opts := domain.GenerateOptions{}
-	if req.Options != nil {
-		opts.MaxTokens = req.Options.MaxTokens
-		opts.Temperature = req.Options.Temperature
-		opts.StopSequences = req.Options.StopSequences
+	// ADR-0139 C1: one structured request, built the same way for both lanes.
+	greq, err := rpcRequest{
+		system:   req.GetSystem(),
+		messages: req.GetMessages(),
+		prompt:   req.GetPrompt(), //nolint:staticcheck // deprecated field, deliberate fallback
+		schema:   req.GetResponseSchema(),
+		options:  req.GetOptions(),
+		cacheTTL: req.GetCacheTtl(),
+	}.toGenerateRequest()
+	if err != nil {
+		return err
 	}
 
 	out := make(chan domain.StreamChunk, 64)
@@ -45,10 +59,11 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 
 	go func() {
 		defer close(out)
-		errCh <- s.LLMGateway.StreamChunks(stream.Context(), leaseID, req.Prompt, opts, out)
+		errCh <- s.LLMGateway.StreamChunks(stream.Context(), leaseID, greq, out)
 	}()
 
 	var responseBuilder strings.Builder
+	var final *domain.GenerateResponse
 	for chunk := range out {
 		responseBuilder.WriteString(chunk.Text)
 		usageTokens := int32(0)
@@ -61,6 +76,16 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 			IsFinal:     chunk.IsFinal,
 			UsageTokens: usageTokens,
 		}
+		// ADR-0139 C1: the final chunk of a normally-ended call carries the whole
+		// response — what the generator ignored, the usage breakdown, the stop
+		// reason and the serving model — so a streaming agent loses nothing.
+		if r := chunk.Response; chunk.IsFinal && r != nil {
+			final = r
+			pbChunk.Ignored = r.Ignored
+			pbChunk.Usage = usageProto(r.Usage)
+			pbChunk.StopReason = string(r.StopReason)
+			pbChunk.Model = r.Model
+		}
 		if err := stream.Send(pbChunk); err != nil {
 			return err
 		}
@@ -72,22 +97,13 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 	}
 
 	// After streaming completes, resolve session metadata for logging.
-	var agentID, modelID string
+	agentID := callerAgentHeader(stream.Context())
+	var modelID string
 	var stepIndex int
-	// Calling agent ID from gRPC request metadata (set by Python SDK).
-	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
-		if vals := md.Get("x-agent-id"); len(vals) > 0 {
-			agentID = vals[0]
-		}
-	}
-	if ss, ok := s.LLMGateway.(sessionStore); ok {
-		if state := ss.GetBudgetLeaseState(leaseID); state != nil {
-			// Winner is the TraitModel agent allocated for this step.
-			modelID = state.StepAllocation.Winner.ID
-		}
-	}
+	modelID = s.exchangeModelID(leaseID, final)
 
 	completion := responseBuilder.String()
+	prompt := renderExchangePrompt(greq)
 
 	// Persist full prompt+response as a neural trace in pgvector.
 	neuralTrace := fmt.Sprintf("PROMPT:\n%s\n\nRESPONSE:\n%s", req.Prompt, completion)
@@ -108,10 +124,8 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 			// always carry; leaseID is the same fact, already resolved server-side,
 			// and it is what the trace is keyed on anyway. Still not caller-supplied:
 			// the lease was minted by the kernel and the binding is the kernel's.
-			if r := s.leaseResolver(); r != nil {
-				if binding, known := r.ResolveLease(leaseID); known {
-					sid = binding.SessionID
-				}
+			if binding, known := s.resolveLeaseFor(traceCtx, leaseID); known {
+				sid = binding.SessionID
 			}
 		}
 		if sid != "" {
@@ -122,7 +136,7 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 
 	// OBSERVABILITYREQ REQ1: Log agent LLM call to Langfuse (fire-and-forget).
 	if s.AgentCallLogger != nil && completion != "" {
-		s.AgentCallLogger.Log(stream.Context(), "agent_llm", req.Prompt, completion, modelID, agentID, stepIndex)
+		s.AgentCallLogger.Log(stream.Context(), "agent_llm", prompt, completion, modelID, agentID, stepIndex)
 	}
 
 	// ADR-0079: fork the same prompt+completion to the operator feed's live-only
@@ -130,21 +144,33 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 	// internal ReAct loop. Gated (nil unless execution.capture_llm_exchanges); the sink
 	// truncates. Fire-and-forget — never affects the agent stream.
 	if s.LLMExchangeSink != nil && completion != "" {
-		s.LLMExchangeSink(string(leaseID), agentID, modelID, stepIndex, req.Prompt, completion)
+		s.LLMExchangeSink(string(leaseID), agentID, modelID, stepIndex, prompt, completion)
 	}
 
-	err := <-errCh
-	if err != nil {
-		switch err.Error() {
-		case "model_unavailable":
-			return status.Error(codes.Unavailable, err.Error())
-		case "gateway_overflow":
-			return status.Error(codes.ResourceExhausted, "gateway overloaded")
-		case "session not found":
-			return status.Error(codes.NotFound, err.Error())
-		default:
-			return status.Error(codes.Internal, err.Error())
+	return gatewayStatus(<-errCh)
+}
+
+// callerAgentHeader is the calling agent's id from request metadata (set by the
+// SDK), for exchange and trace attribution only — never for authorization.
+func callerAgentHeader(ctx context.Context) string {
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("x-agent-id"); len(vals) > 0 {
+			return vals[0]
 		}
 	}
-	return nil
+	return ""
+}
+
+// exchangeModelID names the model for an exchange record: the one the provider says
+// served the call, else the step's allocated winner.
+func (s *Server) exchangeModelID(leaseID domain.LeaseID, resp *domain.GenerateResponse) string {
+	if resp != nil && resp.Model != "" {
+		return resp.Model
+	}
+	if ss, ok := s.LLMGateway.(sessionStore); ok {
+		if state := ss.GetBudgetLeaseState(leaseID); state != nil {
+			return state.StepAllocation.Winner.ID
+		}
+	}
+	return ""
 }

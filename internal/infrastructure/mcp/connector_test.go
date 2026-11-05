@@ -44,6 +44,9 @@ func TestConnector_ConfigDrivenConnectDiscoverAuth(t *testing.T) {
 	tools := conn.ConnectAll(ctx, []ServerConfig{{
 		ID: "srv", Transport: "http", Endpoint: ts.URL,
 		AuthType: "bearer", AuthTokenEnv: "MCP_TEST_TOKEN",
+		// Declared read-only: an unlisted tool is Dangerous (ADR-0139 D8) and would
+		// need an approver this test does not wire.
+		Tools: map[string]ToolPolicy{"echo": {Effects: []string{"read"}}},
 	}})
 
 	// Discovery registered the server's tool under the namespaced identity.

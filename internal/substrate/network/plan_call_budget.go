@@ -93,3 +93,42 @@ func (g *budgetedReplanGenerator) Generate(ctx context.Context, prompt string) (
 	}
 	return g.inner.Generate(ctx, prompt)
 }
+
+// The C1 surface (ADR-0139 D1) of the replan generator. The replan handler sends
+// a structured request (cached system block, data messages, response schema);
+// without these methods the budget wrapper would hide the planner's
+// RequestGenerator and push every replan back onto the legacy string path. Each
+// request draws on the budget exactly like Generate; the report is forwarded so
+// domain.AsRequestGenerator sees the planner's real capability.
+
+func (g *budgetedReplanGenerator) GenerateRequest(ctx context.Context, req domain.GenerateRequest) (domain.GenerateResponse, error) {
+	if err := g.budget.take(); err != nil {
+		return domain.GenerateResponse{}, err
+	}
+	return domain.GenerateVia(ctx, g.inner, req)
+}
+
+func (g *budgetedReplanGenerator) StreamRequest(ctx context.Context, req domain.GenerateRequest) (<-chan domain.StreamChunk, error) {
+	rg, ok := domain.AsRequestGenerator(g.inner)
+	if !ok {
+		return nil, fmt.Errorf("planner %T does not implement StreamRequest", g.inner)
+	}
+	if err := g.budget.take(); err != nil {
+		return nil, err
+	}
+	return rg.StreamRequest(ctx, req)
+}
+
+func (g *budgetedReplanGenerator) Capabilities() domain.Capabilities {
+	if rg, ok := domain.AsRequestGenerator(g.inner); ok {
+		return rg.Capabilities()
+	}
+	return domain.Capabilities{}
+}
+
+func (g *budgetedReplanGenerator) RequestsEnabled() bool {
+	_, ok := domain.AsRequestGenerator(g.inner)
+	return ok
+}
+
+var _ domain.RequestGenerator = (*budgetedReplanGenerator)(nil)

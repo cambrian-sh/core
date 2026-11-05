@@ -16,7 +16,9 @@ import (
 
 type toolGateway struct {
 	turn        domain.ModelTurn
+	ignored     []string
 	err         error
+	gotReq      domain.GenerateRequest
 	gotTools    []domain.ToolDefinition
 	gotMessages []domain.ModelMessage
 }
@@ -28,12 +30,13 @@ func (g *toolGateway) Complete(context.Context, domain.LeaseID) (llm.TokenUsage,
 	return llm.TokenUsage{}, nil
 }
 func (g *toolGateway) EvictExpired() {}
-func (g *toolGateway) StreamChunks(context.Context, domain.LeaseID, string, domain.GenerateOptions, chan<- domain.StreamChunk) error {
+func (g *toolGateway) StreamChunks(context.Context, domain.LeaseID, domain.GenerateRequest, chan<- domain.StreamChunk) error {
 	return nil
 }
-func (g *toolGateway) GenerateWithTools(_ context.Context, _ domain.LeaseID, msgs []domain.ModelMessage, _ domain.GenerateOptions, tools []domain.ToolDefinition) (domain.ModelTurn, error) {
-	g.gotMessages, g.gotTools = msgs, tools
-	return g.turn, g.err
+func (g *toolGateway) GenerateWithTools(_ context.Context, _ domain.LeaseID, req domain.GenerateRequest) (domain.GenerateResponse, error) {
+	g.gotReq, g.gotMessages, g.gotTools = req, req.Messages, req.Tools
+	return domain.GenerateResponse{Text: g.turn.Text, ToolCalls: g.turn.ToolCalls,
+		StopReason: g.turn.StopReason, Ignored: g.ignored}, g.err
 }
 
 func TestGenerateWithTools_MapsTurnToProto(t *testing.T) {

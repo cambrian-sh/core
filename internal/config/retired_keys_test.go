@@ -123,6 +123,53 @@ var retiredKeys2026_10_31 = map[string]string{
 	"execution.memory.activation_threshold":            "T-20261031-primeforstep-is-unwired-so-activation-threshold",
 	"execution.plan.max_context_slots":                 "T-20261031-primeforstep-is-unwired-so-activation-threshold",
 	"execution.workspace.workspace_lru_cache_capacity": "T-20261031-primeforstep-is-unwired-so-activation-threshold",
+	// 2026-11-05, owner decision decisions/scenes-cancelled.md: scenes, precedents,
+	// procedure induction and the tier-2 memory judge, each key with the mechanism
+	// it configured.
+	"execution.ingestion.scene_gen_on_ingest_enabled":        "T-20261105-remove-scenes-completely-owner-decision-2026-11",
+	"execution.memory.experiential_memory_enabled":           "T-20261105-remove-scenes-completely-owner-decision-2026-11",
+	"execution.memory.tier1_channel_capacity":                "T-20261105-remove-scenes-completely-owner-decision-2026-11",
+	"execution.memory.tier2_batch_size":                      "T-20261105-remove-scenes-completely-owner-decision-2026-11",
+	"execution.memory.tier2_llm_timeout":                     "T-20261105-remove-scenes-completely-owner-decision-2026-11",
+	"execution.memory.tier2_max_idle_seconds":                "T-20261105-remove-scenes-completely-owner-decision-2026-11",
+	"execution.procedure.procedure_induction_interval_hours": "T-20261105-remove-scenes-completely-owner-decision-2026-11",
+	"execution.procedure.procedure_min_samples":              "T-20261105-remove-scenes-completely-owner-decision-2026-11",
+	"execution.procedure.procedure_max_episodes_per_pass":    "T-20261105-remove-scenes-completely-owner-decision-2026-11",
+	"execution.workspace.workspace_enable_drift_guard":       "T-20261105-remove-scenes-completely-owner-decision-2026-11",
+	"execution.workspace.workspace_drift_threshold":          "T-20261105-remove-scenes-completely-owner-decision-2026-11",
+	// 2026-11-05, owner decision on ADR-0139 Q3: the LLM agent interview is deleted.
+	"execution.agents.disable_interviews":                "T-20261105-delete-the-llm-agent-interview-now-owner",
+	"execution.gatekeeper.cold_start_penalty_multiplier": "T-20261105-delete-the-llm-agent-interview-now-owner",
+}
+
+// TestRetiredInterviewKeysStillLoad pins the 2026-11-05 interview retirement for the
+// spellings that are actually in use: the benchmark smoke launcher set
+// CAMBRIAN_EXECUTION__AGENTS__DISABLE_INTERVIEWS, older tuning files carry
+// cold_start_penalty_multiplier, and a v1 flat file carries both. All must load,
+// validate, and leave live siblings in the same layer honoured.
+func TestRetiredInterviewKeysStillLoad(t *testing.T) {
+	dir := baseBundle(t)
+	writeCfg(t, dir, "tuning.json", `{"schema_version": 2,
+		"execution": {
+			"agents": {"disable_interviews": true, "agent_boot_timeout_ms": 12345},
+			"gatekeeper": {"cold_start_penalty_multiplier": 0.6, "gatekeeper_w2": 0.37}
+		}
+	}`)
+	t.Setenv("CAMBRIAN_EXECUTION__AGENTS__DISABLE_INTERVIEWS", "true")
+	t.Setenv("CAMBRIAN_EXECUTION__DISABLE_INTERVIEWS", "true")        // v1 flat env spelling
+	store := mapStore{"execution.cold_start_penalty_multiplier": 0.5} // v1 flat store spelling
+
+	cfg, _ := loadFrom(t, dir, store)
+
+	if got := cfg.Execution.Agents.AgentBootTimeoutMs; got != 12345 {
+		t.Errorf("agent_boot_timeout_ms from the same layer = %v, want 12345", got)
+	}
+	if got := cfg.Execution.Gatekeeper.GatekeeperW2; got != 0.37 {
+		t.Errorf("gatekeeper_w2 from the same layer = %v, want 0.37", got)
+	}
+	if err := cfg.Execution.Validate(); err != nil {
+		t.Errorf("Validate rejected a config carrying the retired interview keys: %v", err)
+	}
 }
 
 // TestRemovedExecutionKeysAreIgnored is the operator-facing guarantee for the

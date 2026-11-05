@@ -26,7 +26,7 @@ func (c *grantingCaller) CallAgent(ctx context.Context, _ string, h *domain.Hand
 	c.binding, _ = c.gw.ResolveLease(c.lease)
 	c.overlay.Activate(string(c.lease), []string{"skill_tool"})
 	out := make(chan domain.StreamChunk, 8)
-	if err := c.gw.StreamChunks(ctx, c.lease, "decompose this", domain.GenerateOptions{}, out); err != nil {
+	if err := c.gw.StreamChunks(ctx, c.lease, domain.UserPrompt("decompose this"), out); err != nil {
 		return nil, err
 	}
 	return &domain.Handoff{Payload: &domain.Payload{Data: []byte(`{"sub_questions":["a"],"refs":[]}`)}}, nil
@@ -41,7 +41,7 @@ func TestRetrievalDispatch_LeaseIsSessionBoundChargedAndCleared(t *testing.T) {
 	t.Parallel()
 	meter := llm.NewSpendMeter(0, nil, nil)
 	gw := meteredGateway(meter, &usageStreamer{text: "x", prompt: 40, compl: 10})
-	s := NewServer(nil, nil, nil, config.ExecutionConfig{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, gw, nil, nil)
+	s := NewServer(nil, nil, nil, config.ExecutionConfig{}, nil, nil, nil, nil, nil, nil, nil, nil, gw, nil, nil)
 	overlay := domain.NewRunGrantOverlay()
 	s.ToolExecutor = &domain.ToolExecutor{Overlay: overlay}
 
@@ -58,6 +58,11 @@ func TestRetrievalDispatch_LeaseIsSessionBoundChargedAndCleared(t *testing.T) {
 
 	if caller.binding.SessionID != "ses-r" {
 		t.Fatalf("retrieval lease bound to %q, want the caller's session", caller.binding.SessionID)
+	}
+	// ADR-0139 D8: and to the retrieval agent it is handed to, the only agent that may
+	// present it.
+	if caller.binding.AgentID != "retrieval_agent" {
+		t.Fatalf("retrieval lease bound to agent %q, want retrieval_agent", caller.binding.AgentID)
 	}
 	if overlay.Granted(string(caller.lease), "skill_tool") {
 		t.Fatal("a grant conferred under the retrieval lease survived the dispatch")

@@ -31,7 +31,7 @@ import (
 type ResourceKind string
 
 const (
-	KindMemory   ResourceKind = "memory"   // documents, facts, scenes
+	KindMemory   ResourceKind = "memory"   // documents, facts, experiential records
 	KindSkill    ResourceKind = "skill"    // authored procedural capabilities
 	KindAgent    ResourceKind = "agent"    // invocation of an agent
 	KindTool     ResourceKind = "tool"     // invocation of a system/MCP tool

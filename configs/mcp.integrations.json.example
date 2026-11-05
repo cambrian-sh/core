@@ -1,0 +1,200 @@
+{
+  "_comment": "Keyed / per-customer MCP integrations. This file is NOT loaded by the kernel: it is a catalog of ready-made `servers` entries. To enable one, copy its object into the `mcp.servers` array of configs/mcp.json, set the credential variables it names in the kernel's environment (or save the token from the console, which stores it under mcp:<id>:token), and restart or save it from the console. Do not paste the whole file in: every server in mcp.json is dialled at boot, concurrently, and there is no `enabled` flag yet. See configs/MCP.md for each entry's credentials, scopes and risks. Versions were checked on their registries 2026-11-05; live handshakes are NOT verified.",
+  "_comment_policy": "Same rules as mcp.json.example. Remote (http) servers: every call leaves the host, so reads declare read+egress. Servers that can send, post, write or delete carry NO default_tool_policy, so every tool not explicitly listed is dangerous (approval) with read+write+egress. Where a server has a read-only mode (flag or URL) the entry uses it and marks the whole server read+egress; removing that flag means you must also remove the default_tool_policy. Credentials are ONE static credential per server today (ADR-0043 D9): every principal acts as that account. Per-principal OAuth is a gap (MCP.md).",
+
+  "mcp": {
+    "servers": [
+      {
+        "id": "github",
+        "_note": "Official GitHub MCP server, remote (github/github-mcp-server, MIT). /readonly keeps only read tools. Fine-grained PAT in GITHUB_MCP_PAT (repo read scopes). For writes use the github-write entry below.",
+        "transport": "http",
+        "endpoint": "https://api.githubcopilot.com/mcp/readonly",
+        "auth": {"type": "bearer", "token_env": "GITHUB_MCP_PAT"},
+        "default_tool_policy": {"effects": ["read", "egress"]}
+      },
+      {
+        "id": "github-write",
+        "_note": "Same server with write tools (issues, PRs, files, branches). No default policy: every tool is dangerous (approval) until you list read tools explicitly. Use a PAT scoped to the repos the agents may change.",
+        "transport": "http",
+        "endpoint": "https://api.githubcopilot.com/mcp/",
+        "auth": {"type": "bearer", "token_env": "GITHUB_MCP_PAT"}
+      },
+      {
+        "id": "brave-search",
+        "_note": "Official Brave Search server (brave/brave-search-mcp-server, MIT). BRAVE_API_KEY. Paid API beyond the free tier.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": ["-y", "@brave/brave-search-mcp-server@2.1.4"],
+        "auth": {"type": "none"},
+        "env": ["BRAVE_API_KEY"],
+        "default_tool_policy": {"effects": ["read", "egress"]}
+      },
+      {
+        "id": "tavily",
+        "_note": "Official Tavily server (tavily-ai/tavily-mcp, MIT): search, extract, crawl, map. TAVILY_API_KEY. Paid API.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": ["-y", "tavily-mcp@0.2.22"],
+        "auth": {"type": "none"},
+        "env": ["TAVILY_API_KEY"],
+        "default_tool_policy": {"effects": ["read", "egress"]}
+      },
+      {
+        "id": "exa",
+        "_note": "Official Exa server (exa-labs/exa-mcp-server, MIT). EXA_API_KEY. Paid API.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": ["-y", "exa-mcp-server@3.4.3"],
+        "auth": {"type": "none"},
+        "env": ["EXA_API_KEY"],
+        "default_tool_policy": {"effects": ["read", "egress"]}
+      },
+      {
+        "id": "searxng",
+        "_note": "Keyless meta-search against YOUR SearXNG instance (ihor-sokoliuk/mcp-searxng, MIT, community). SEARXNG_URL names the instance (not a secret).",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": ["-y", "mcp-searxng@2.10.0"],
+        "auth": {"type": "none"},
+        "env": ["SEARXNG_URL"],
+        "tools": [
+          {"name": "searxng_web_search", "dangerous": false, "effects": ["read", "egress"]},
+          {"name": "web_url_read",       "dangerous": false, "effects": ["read", "egress"]}
+        ]
+      },
+      {
+        "id": "google-workspace",
+        "_note": "Gmail, Drive, Calendar (taylorwilsdon/google_workspace_mcp, MIT, community; Google's own remote Workspace MCP servers are preview and OAuth-only). GOOGLE_OAUTH_CLIENT_ID/SECRET from your Cloud project; first use opens a browser OAuth consent and caches the user's token on disk (one Google account for every principal). --read-only drops send/modify tools; remove it AND the default_tool_policy to allow writes.",
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": ["workspace-mcp==2.3.0", "--tools", "gmail", "drive", "calendar", "--tool-tier", "core", "--read-only"],
+        "auth": {"type": "none"},
+        "env": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "USER_GOOGLE_EMAIL"],
+        "default_tool_policy": {"effects": ["read", "egress"]}
+      },
+      {
+        "id": "microsoft-365",
+        "_note": "Outlook mail, calendar, OneDrive, (with --org-mode) Teams and SharePoint via Microsoft Graph (Softeria/ms-365-mcp-server, MIT, community; Microsoft's own Agent 365 / Work IQ servers are tenant-managed and OAuth-only). Device-code sign-in on first use; token cached on disk. --read-only drops write tools; remove it AND the default_tool_policy to allow sending.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": ["-y", "@softeria/ms-365-mcp-server@0.179.1", "--read-only"],
+        "auth": {"type": "none"},
+        "env": ["MS365_MCP_CLIENT_ID", "MS365_MCP_TENANT_ID"],
+        "default_tool_policy": {"effects": ["read", "egress"]}
+      },
+      {
+        "id": "slack",
+        "_note": "Slack (korotovsky/slack-mcp-server, MIT, community; Slack's official remote server at mcp.slack.com is OAuth-only with no dynamic client registration). User token xoxp- in SLACK_MCP_XOXP_TOKEN (or bot xoxb- in SLACK_MCP_XOXB_TOKEN: invited channels only, no search). Posting is OFF unless SLACK_MCP_ADD_MESSAGE_TOOL is set; it is dangerous here either way.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": ["-y", "slack-mcp-server@1.3.0", "--transport", "stdio"],
+        "auth": {"type": "none"},
+        "env": ["SLACK_MCP_XOXP_TOKEN", "SLACK_MCP_XOXB_TOKEN", "SLACK_MCP_ADD_MESSAGE_TOOL"],
+        "tools": [
+          {"name": "channels_list",                 "dangerous": false, "effects": ["read", "egress"]},
+          {"name": "conversations_history",         "dangerous": false, "effects": ["read", "egress"]},
+          {"name": "conversations_replies",         "dangerous": false, "effects": ["read", "egress"]},
+          {"name": "conversations_search_messages", "dangerous": false, "effects": ["read", "egress"]},
+          {"name": "attachment_get_data",           "dangerous": false, "effects": ["read", "egress"]},
+          {"name": "usergroups_list",               "dangerous": false, "effects": ["read", "egress"]},
+          {"name": "usergroups_me",                 "dangerous": false, "effects": ["read", "egress"]},
+          {"name": "conversations_add_message",     "dangerous": true,  "effects": ["write", "egress"]},
+          {"name": "reactions_add",                 "dangerous": true,  "effects": ["write", "egress"]},
+          {"name": "reactions_remove",              "dangerous": true,  "effects": ["write", "egress"]},
+          {"name": "usergroups_create",             "dangerous": true,  "effects": ["write", "egress"]},
+          {"name": "usergroups_update",             "dangerous": true,  "effects": ["write", "egress"]},
+          {"name": "usergroups_users_update",       "dangerous": true,  "effects": ["write", "egress"]}
+        ]
+      },
+      {
+        "id": "postgres",
+        "_note": "Google MCP Toolbox, prebuilt postgres toolset (Apache-2.0). The reference @modelcontextprotocol/server-postgres is deprecated. Connect with a READ-ONLY database role: execute_sql takes raw SQL. get_query_plan is kept dangerous because it templates caller SQL.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": ["-y", "@toolbox-sdk/server@1.15.0", "--prebuilt=postgres", "--stdio"],
+        "auth": {"type": "none"},
+        "env": ["POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DATABASE", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_QUERY_PARAMS"],
+        "tools": [
+          {"name": "execute_sql",                    "dangerous": true,  "effects": ["read", "write"]},
+          {"name": "get_query_plan",                 "dangerous": true,  "effects": ["read", "write"]},
+          {"name": "list_tables",                    "dangerous": false, "effects": ["read"]},
+          {"name": "list_views",                     "dangerous": false, "effects": ["read"]},
+          {"name": "list_schemas",                   "dangerous": false, "effects": ["read"]},
+          {"name": "list_indexes",                   "dangerous": false, "effects": ["read"]},
+          {"name": "list_invalid_indexes",           "dangerous": false, "effects": ["read"]},
+          {"name": "list_sequences",                 "dangerous": false, "effects": ["read"]},
+          {"name": "list_triggers",                  "dangerous": false, "effects": ["read"]},
+          {"name": "list_stored_procedure",          "dangerous": false, "effects": ["read"]},
+          {"name": "list_roles",                     "dangerous": false, "effects": ["read"]},
+          {"name": "list_tablespaces",               "dangerous": false, "effects": ["read"]},
+          {"name": "list_table_stats",               "dangerous": false, "effects": ["read"]},
+          {"name": "list_top_bloated_tables",        "dangerous": false, "effects": ["read"]},
+          {"name": "list_database_stats",            "dangerous": false, "effects": ["read"]},
+          {"name": "list_query_stats",               "dangerous": false, "effects": ["read"]},
+          {"name": "list_active_queries",            "dangerous": false, "effects": ["read"]},
+          {"name": "long_running_transactions",      "dangerous": false, "effects": ["read"]},
+          {"name": "list_locks",                     "dangerous": false, "effects": ["read"]},
+          {"name": "list_pg_settings",               "dangerous": false, "effects": ["read"]},
+          {"name": "list_memory_configurations",     "dangerous": false, "effects": ["read"]},
+          {"name": "list_autovacuum_configurations", "dangerous": false, "effects": ["read"]},
+          {"name": "list_available_extensions",      "dangerous": false, "effects": ["read"]},
+          {"name": "list_installed_extensions",      "dangerous": false, "effects": ["read"]},
+          {"name": "list_publication_tables",        "dangerous": false, "effects": ["read"]},
+          {"name": "list_replication_slots",         "dangerous": false, "effects": ["read"]},
+          {"name": "replication_stats",              "dangerous": false, "effects": ["read"]},
+          {"name": "database_overview",              "dangerous": false, "effects": ["read"]},
+          {"name": "get_column_cardinality",         "dangerous": false, "effects": ["read"]}
+        ]
+      },
+      {
+        "id": "notion",
+        "_note": "Official Notion server, local (makenotion/notion-mcp-server, MIT). NOTION_TOKEN = an internal integration secret shared only with the pages it may touch. Notion now prioritises its remote server (mcp.notion.com, OAuth-only). Tool names are generated from Notion's OpenAPI spec, so none are listed: every tool is dangerous until you list the read ones.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": ["-y", "@notionhq/notion-mcp-server@2.6.1"],
+        "auth": {"type": "none"},
+        "env": ["NOTION_TOKEN"]
+      },
+      {
+        "id": "atlassian",
+        "_note": "Official Atlassian Rovo MCP server, remote (Jira, Confluence, JSM, Bitbucket, Compass). Headless auth needs an org admin to enable API-token auth; a service-account API key goes in ATLASSIAN_MCP_API_KEY (Bearer). A personal token instead needs Authorization: Basic base64(email:token): use auth {type: header, header: Authorization, token_env: ...} with the full 'Basic ...' value. Writes exist: no default policy.",
+        "transport": "http",
+        "endpoint": "https://mcp.atlassian.com/v2/mcp",
+        "auth": {"type": "bearer", "token_env": "ATLASSIAN_MCP_API_KEY"}
+      },
+      {
+        "id": "linear",
+        "_note": "Official Linear MCP server, remote. Accepts a Linear API key as Bearer. /mcp/readonly exposes read tools only; use https://mcp.linear.app/mcp (and drop the default policy) for writes.",
+        "transport": "http",
+        "endpoint": "https://mcp.linear.app/mcp/readonly",
+        "auth": {"type": "bearer", "token_env": "LINEAR_API_KEY"},
+        "default_tool_policy": {"effects": ["read", "egress"]}
+      },
+      {
+        "id": "playwright",
+        "_note": "Optional, keyless: Microsoft Playwright browser automation (microsoft/playwright-mcp, Apache-2.0). Drives a real browser: navigates, clicks, fills forms, can submit anything. --isolated keeps no profile between sessions. Every tool fails closed (dangerous). First run downloads a browser build.",
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": ["-y", "@playwright/mcp@0.0.84", "--headless", "--isolated"],
+        "auth": {"type": "none"}
+      },
+      {
+        "id": "excel",
+        "_note": "Optional, keyless: create/edit .xlsx (haris-musa/excel-mcp-server, MIT, community). EXCEL_FILES_PATH (not a secret) is its working directory. Fails closed.",
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": ["excel-mcp-server==2.2.6", "stdio"],
+        "auth": {"type": "none"},
+        "env": ["EXCEL_FILES_PATH"]
+      },
+      {
+        "id": "word",
+        "_note": "Optional, keyless: create/edit .docx (GongRzhe/Office-Word-MCP-Server, MIT, community; last release 2025-12-31). Fails closed. Reading Office files is better served by markitdown/pdf-reader in mcp.json.example.",
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": ["office-word-mcp-server==1.1.11"],
+        "auth": {"type": "none"}
+      }
+    ]
+  }
+}

@@ -418,7 +418,8 @@ type OperatorConsoleClient interface {
 	ClassifyInput(ctx context.Context, in *ClassifyInputOpRequest, opts ...grpc.CallOption) (*ClassifiedInputOp, error)
 	// ListGenerators reports the configured LLM generators (ADR-0042) with live
 	// breaker state, and ListRoleAssignments which generator serves each system
-	// organ (planner / verifier / router / interview / memory).
+	// organ (planner / verifier / router / memory / facts). The `interview` role is
+	// retired (the LLM agent interview was deleted 2026-11-05).
 	//
 	// No credential is ever returned: a generator carries key_configured and
 	// key_last_four only. There is deliberately no GetGeneratorKey — a console that
@@ -497,7 +498,7 @@ type OperatorConsoleClient interface {
 	SaveGenerator(ctx context.Context, in *SaveGeneratorOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
 	RemoveGenerator(ctx context.Context, in *RemoveGeneratorOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
 	// SetRoleAssignment binds a system organ (planner / verifier / router /
-	// interview / memory) to the generator that serves it (contract 0096). The
+	// memory / facts) to the generator that serves it (contract 0096). The
 	// WRITE half of ListRoleAssignments, landing on the ADR-0101 store like the
 	// generator writes above.
 	//
@@ -1845,7 +1846,8 @@ type OperatorConsoleServer interface {
 	ClassifyInput(context.Context, *ClassifyInputOpRequest) (*ClassifiedInputOp, error)
 	// ListGenerators reports the configured LLM generators (ADR-0042) with live
 	// breaker state, and ListRoleAssignments which generator serves each system
-	// organ (planner / verifier / router / interview / memory).
+	// organ (planner / verifier / router / memory / facts). The `interview` role is
+	// retired (the LLM agent interview was deleted 2026-11-05).
 	//
 	// No credential is ever returned: a generator carries key_configured and
 	// key_last_four only. There is deliberately no GetGeneratorKey — a console that
@@ -1924,7 +1926,7 @@ type OperatorConsoleServer interface {
 	SaveGenerator(context.Context, *SaveGeneratorOpRequest) (*SetConfigOpResponse, error)
 	RemoveGenerator(context.Context, *RemoveGeneratorOpRequest) (*SetConfigOpResponse, error)
 	// SetRoleAssignment binds a system organ (planner / verifier / router /
-	// interview / memory) to the generator that serves it (contract 0096). The
+	// memory / facts) to the generator that serves it (contract 0096). The
 	// WRITE half of ListRoleAssignments, landing on the ADR-0101 store like the
 	// generator writes above.
 	//

@@ -1,0 +1,12 @@
+{
+  "title": "QuerySpec",
+  "description": "The lexical query a retrieval_agent planning step emits. Mirrors planner.QuerySpec in agents/system/retrieval_agent/planner.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["must_terms", "should_terms", "phrases"],
+  "properties": {
+    "must_terms": { "type": "array", "items": { "type": "string" } },
+    "should_terms": { "type": "array", "items": { "type": "string" } },
+    "phrases": { "type": "array", "items": { "type": "string" } }
+  }
+}

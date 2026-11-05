@@ -27,4 +27,10 @@ type AgentManifest struct {
 	// before spawning, so a missing package is an install-time error naming the
 	// dep — not a silent ImportError crash after boot. Empty ⇒ no self-check.
 	PythonDeps []string `json:"python_deps,omitempty"`
+	// ToolAllowlist is a declarative profile's tool allowlist (globs over kernel
+	// tool names). The kernel enforces it as grants plus a ceiling for profile
+	// agents (app/profile_grants.go); it is never read as capability tags.
+	ToolAllowlist []string `json:"tool_allowlist,omitempty"`
+	// Skills is a profile's skill menu (skill names), carried for the agent card.
+	Skills []string `json:"skills,omitempty"`
 }

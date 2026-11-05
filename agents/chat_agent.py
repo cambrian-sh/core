@@ -25,13 +25,53 @@ not push its specifics into this file.
 from __future__ import annotations
 
 import logging
+import os
 import re
+from pathlib import Path
 
 from cambrian_agent_sdk import CognitiveAgent, AgentResult, AgentTask, tool
-from cambrian_agent_sdk.types import ProposalResponse
+from cambrian_agent_sdk.prompt_library import PromptLibrary, sections
+from cambrian_agent_sdk.working_memory import memory_provenance_attrs
 from cambrian_agent_sdk._logging import configure_logging
 
 _log = logging.getLogger("cambrian.chat_agent")
+
+
+# ── Prompts (ADR-0139 C4/D2) ────────────────────────────────────────────────
+# The texts live in the kernel prompt library (cambrian-core/prompts/chat_agent and
+# chat_agent_turn), rendered with the SDK loader (same rules and static hash as Go).
+# chat_agent is the STABLE system text (role, rules, the posture's answering rule,
+# the policy); chat_agent_turn is the VOLATILE task text, where the untrusted
+# transcript now lives as tagged data instead of inside <Role>.
+
+def _prompts_root() -> Path:
+    """``$CAMBRIAN_PROMPTS_DIR``, else the nearest ancestor ``prompts/`` holding this
+    agent's prompts: the repo, the image (/app/prompts) and a ``setup`` install
+    (<prefix>/prompts, unpacked from the kernel embed) all put prompts/ beside agents/."""
+    env = os.environ.get("CAMBRIAN_PROMPTS_DIR", "").strip()
+    if env:
+        return Path(env)
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "prompts" / "chat_agent" / "v1.md").is_file():
+            return parent / "prompts"
+    raise RuntimeError("chat_agent: cannot find the kernel prompt library; set CAMBRIAN_PROMPTS_DIR")
+
+
+_LIBRARY = PromptLibrary.load(_prompts_root())
+_SYSTEM = sections(_LIBRARY.get("chat_agent"))
+_TURN = sections(_LIBRARY.get("chat_agent_turn"))
+PROMPT_VERSIONS = {pid: _LIBRARY.get(pid).static_hash for pid in ("chat_agent", "chat_agent_turn")}
+
+# Tags that hold untrusted text in the turn (and the policy in the system text).
+_DATA_TAGS = ("conversation", "recalled_memory", "memory", "latest_message", "policy")
+
+
+def _neutralise(value: str) -> str:
+    """``</tag>`` -> ``[/tag]`` for every data tag, so a value cannot close its region
+    (SPEC.md §3.1; Go: prompts.NeutraliseClosingTags)."""
+    for t in _DATA_TAGS:
+        value = re.sub(r"(?i)</\s*" + re.escape(t) + r"\s*>", f"[/{t}]", value)
+    return value
 
 
 AGENT_DESCRIPTION = (
@@ -68,10 +108,6 @@ _LEAK_PATTERNS = (
     re.compile(r"\bcid:\w", re.I),         # leaked offload markup
 )
 
-# Leading section labels a reasoning-style prompt may emit; only the spoken part is kept.
-_SECTION_LABEL = re.compile(r"^\s*(Observations?|Reasoning|Thought|Analysis)\s*:\s*.*?$",
-                            re.I | re.M)
-
 # Non-committal on purpose. When a turn fails we must never fabricate an action the agent did
 # not take ("I've cancelled that for you") — an honest stumble beats a confident false claim.
 _SAFE_FALLBACK = "Sorry — I didn't quite catch that. Could you say it again?"
@@ -80,6 +116,11 @@ _SAFE_FALLBACK = "Sorry — I didn't quite catch that. Could you say it again?"
 # instead of emitting the delegate_to_planner tool action, NOTHING happens — the turn ends and
 # no plan ever runs. This detects that narration so run() can force a real delegation. Anchored
 # on a first-person future intent + an action verb; broad on the verb, narrow on the intent.
+#
+# KEPT after the ADR-0139 prompt migration, and English-only by nature: the new rules state
+# plainly that narration does nothing, but no prompt makes a model reliable here, and a missed
+# delegation is a silent no-op for the user. In another language it simply never fires, which
+# is the behaviour without the guard (no retry), not a false positive.
 _ACTION_PROMISE = re.compile(
     r"\b(i['’]?ll|i\s+will|i['’]?m\s+going\s+to|going\s+to|let\s+me|now\s+i['’]?ll)\b"
     r"[^.!?\n]{0,80}?"
@@ -87,28 +128,23 @@ _ACTION_PROMISE = re.compile(
     re.I,
 )
 
-# Retry instruction when the model narrated a delegation it never performed.
-_FORCE_DELEGATE = (
-    "Last turn you replied in prose that you would delegate or do something, but you did NOT call "
-    "the delegate_to_planner tool — so NOTHING happened and no plan ran. Emit the delegate_to_planner "
-    "tool action NOW, with a concrete, self-contained task_description built from the conversation "
-    "(what to produce, where, and the key facts). Do not reply in prose this turn — call the tool."
-)
-
 
 def _spoken_only(text: str) -> str:
-    """Return only words that are safe to say to a user, or a neutral fallback."""
+    """Return only words that are safe to say to a user, or a neutral fallback.
+
+    Only the language-independent leak check remains. The old English label scrubbing
+    (drop any line starting "Reasoning:"/"Analysis:", keep only what followed
+    "Answer:"/"Reply:") is gone: the reply is now the final_answer action's answer
+    field, which the turn contract defines as the deliverable alone, so the labels it
+    targeted no longer come from the prompt — and it deleted real content ("Analysis:
+    the numbers show ..." lost the whole line; text before a mid-reply "Answer:" was cut).
+    """
     t = (text or "").strip()
     if not t:
         return _SAFE_FALLBACK
     if any(p.search(t) for p in _LEAK_PATTERNS):
         return _SAFE_FALLBACK
-    # If the model labelled its spoken part, keep only that.
-    m = re.search(r"(?:Conclusion|Answer|Reply)\s*:\s*(.+)\Z", t, re.I | re.S)
-    if m:
-        t = m.group(1).strip()
-    t = _SECTION_LABEL.sub("", t).strip()
-    return t or _SAFE_FALLBACK
+    return t
 
 
 def _result_text(result) -> str:
@@ -128,37 +164,21 @@ def _result_text(result) -> str:
 
 
 class ChatAgent(CognitiveAgent):
-    role = (
-        "You are the conversational front desk of an AI system. You speak directly to the user, "
-        "one turn at a time, in natural first-person language. You do NOT perform tasks yourself "
-        "and you have no tools for doing work — your job is to converse, and to hand real work to "
-        "the planner and then report back what it did."
-    )
-    output_schema = (
-        "Your final answer is ONLY the words you say to the user"
-        "No internal reasoning, no section labels, no tool names, no markup."
-    )
-    constraints = (
-        # The core rule of the front desk: never do the work, delegate it — by CALLING THE TOOL.
-        "You have NO tools for doing work — you cannot create files, run commands, or browse. The "
-        "ONLY way any work gets done is by calling the delegate_to_planner tool, which hands the "
-        "task to the planner. CRITICAL: delegating is a TOOL ACTION you must emit. Writing 'I'll "
-        "delegate this' or 'I'll create the file' in a reply does NOTHING — the turn just ends and "
-        "no plan ever runs. If a request needs an action or multi-step work (create/edit a file, "
-        "look something up externally, build/do/find X), OR the user confirms a delegation you "
-        "offered (e.g. replies 'yes'), your action THIS TURN must be the delegate_to_planner tool "
-        "call with a clear, self-contained task_description — never a prose reply describing it.",
-        "Only AFTER delegate_to_planner returns the planner's result do you reply, summarising THAT "
-        "result. Never say you did — or will do — something unless you actually called the tool this turn.",
-        "For a plain conversational turn (greeting, chit-chat, or a question you can answer from "
-        "the conversation or from recalled memory), just reply — do not delegate.",
-        "Answer only from the conversation and from recalled memory; do not invent facts. If you "
-        "don't know something and it isn't a task to delegate, say so plainly.",
-        "Keep replies conversational and brief unless the user asks for detail.",
-    )
+    # The stable texts come from the prompt library (prompts/chat_agent). The class
+    # attributes keep their old meaning for anything that introspects an agent.
+    role = _SYSTEM["role"].render()
+    output_schema = _SYSTEM["output"].render()
+    constraints = tuple(_SYSTEM["rules"].render().splitlines())
     result_type = "text"
-    max_tokens = 1024
+    # The reply is ONE final_answer action and cannot be chunked across turns, so the cap
+    # must hold the longest reply the rules tell the model to write out in full (a 700-line
+    # list is ~3.6k output tokens). 1024 was harmless while providers ignored max_tokens;
+    # since ADR-0139 C1 the kernel honours it, and 1024 would cut such a reply mid-list
+    # (E2E 20261105T000624Z, E14). Only generated tokens are billed, so the headroom is free.
+    max_tokens = 8192
     temperature = 0.5
+    # A chat is human-paced: the stable system block is worth the 1-hour cache window.
+    cache_ttl = "long"
 
     # The managed-LLM budget lease for the turn in flight (ADR-0018). Stashed in run() so the
     # planner-delegation tool can charge a sub-plan to the same lease.
@@ -185,13 +205,82 @@ class ChatAgent(CognitiveAgent):
     def _recall(self, task: "AgentTask") -> bool:
         """Honour the conversation's recall posture (ADR-0084 D7).
 
-        The kernel sends ``recall_lookup`` per turn, derived from the conversation's profile:
+        The kernel sends ``recall_lookup`` per turn, derived from the conversation's profile
+        (``domain.ConversationProfile.Recall``, ``internal/chat/service.go`` buildHandoff):
         customer-facing conversations are tools-only, so an external user cannot pull on the
         deployment's shared memory. Reading it here — rather than hardcoding a class default —
         is what makes that posture a property of the CONVERSATION instead of a setting someone
         can flip once and forget.
+
+        Fail-closed: recall needs an explicit ``recall_lookup=true``; an absent value, or a
+        ``profile`` of ``customer`` (defence in depth, should the two ever disagree), is
+        tools-only. The kernel does NOT enforce this posture server-side (no QueryMemory clamp
+        exists for a chat lease), so this agent is the enforcement point: it governs both the
+        seed recall and whether memory_query is on the menu at all.
         """
+        if self._meta(task, "profile").strip().lower() == "customer":
+            return False
         return self._meta(task, "recall_lookup", "false").strip().lower() == "true"
+
+    def _seed_memories(self, task: "AgentTask", query: str) -> str:
+        """The turn's initial recall, rendered as ``<memory>`` entries, or "" when the
+        posture forbids it or nothing was found.
+
+        Done here instead of by run_think's seed: run_think recalls on ``task.text``, which
+        now carries the tagged transcript, and a recall query made of the whole conversation
+        retrieves on the wrong thing. The latest message is the query.
+        """
+        memory = getattr(self, "memory", None)
+        if memory is None or not query:
+            return ""
+        try:
+            results = memory.recall(query, session_token_id=task.session_token_id or "")
+        except TypeError:
+            results = memory.recall(query)
+        except Exception as e:  # noqa: BLE001 — recall is best-effort; a turn without it still answers
+            _log.warning("chat_agent: seed recall failed: %r", e)
+            return ""
+        items = []
+        for r in results or []:
+            text = r.get("text", "") if isinstance(r, dict) else getattr(r, "text", "")
+            text = str(text or "").strip()
+            if text:
+                items.append(f"<memory {memory_provenance_attrs(r)}>{_neutralise(text)}</memory>")
+        return "\n".join(items)
+
+    def compose(self, task: "AgentTask", *, recall: bool, force_delegate: bool = False):
+        """The turn's prompt parts: ``(role, constraints, turn_text, max_memory_queries)``.
+
+        System (stable for the conversation, cached): role, rules, the posture's answering
+        rule, and the policy. User turn (volatile): the transcript, recalled memory and the
+        latest message, each in its own tag, the reply instruction last.
+        """
+        from cambrian_agent_sdk.react import _DEFAULT_MAX_MEMORY_QUERIES
+
+        policy = self._meta(task, "policy").strip()
+        transcript = self._meta(task, "transcript").strip()
+        user_msg = (task.text or "").strip()
+
+        role = self.role
+        if policy:
+            role += "\n\n" + _SYSTEM["policy"].render({"policy": _neutralise(policy)})
+        posture = "answer-memory" if recall else "answer-tools-only"
+        constraints = list(self.constraints) + _SYSTEM[posture].render().splitlines()
+
+        parts = []
+        if transcript:
+            parts.append(_TURN["conversation"].render({"transcript": _neutralise(transcript)}))
+        memories = self._seed_memories(task, user_msg) if recall else ""
+        if memories:
+            parts.append(_TURN["memory"].render({"memories": memories}))
+        parts.append(_TURN["message"].render({"message": _neutralise(user_msg)}))
+        if force_delegate:
+            parts.append(_TURN["force-delegate"].render())
+        # Tools-only: the menu advertises NO memory query (max 0 => memory-none), so the
+        # posture holds in what the model is offered, not only in the skipped seed recall.
+        # With recall, the seed above spent one query of the loop's default budget.
+        max_mem = max(0, _DEFAULT_MAX_MEMORY_QUERIES - 1) if recall else 0
+        return role, constraints, "\n\n".join(parts), max_mem
 
     def run(self, task: "AgentTask"):
         from cambrian_agent_sdk.react import run_think, ReActLoopError
@@ -199,68 +288,58 @@ class ChatAgent(CognitiveAgent):
         # Make the turn's managed-LLM lease available to delegate_to_planner (charges any
         # sub-plan to the same lease rather than bypassing the budget).
         self._turn_token = task.session_token_id or ""
+        recall = self._recall(task)
 
-        policy = self._meta(task, "policy")
-        transcript = self._meta(task, "transcript")
-        user_msg = (task.text or "").strip()
-
-        # Compose policy + transcript into the per-turn ROLE, deliberately NOT into task.text:
-        # the ReAct seed passes task.text verbatim as the x-tool-query gRPC metadata header,
-        # and a multi-line header value is illegal. Keeping task.text as the single-line user
-        # message keeps that header valid.
-        role_parts = [self.role]
-        if policy:
-            role_parts.append(
-                "Follow this policy strictly; refuse anything it forbids:\n"
-                f"<policy>\n{policy}\n</policy>"
+        def _think(force_delegate: bool):
+            role, constraints, turn_text, max_mem = self.compose(
+                task, recall=recall, force_delegate=force_delegate)
+            # The transcript travels in the TASK (the user turn), as tagged data — never in
+            # <Role>, where untrusted history sat inside the system prompt and changed it every
+            # turn. task.text is no longer sent as a gRPC header here: seed_system_tools=False
+            # skips the tool-menu query, and the skill-menu query header is sanitised by the
+            # SDK (_header_safe).
+            turn = AgentTask(
+                text=turn_text,
+                type="text",
+                metadata=task.metadata,
+                context=task.context,
+                session_token_id=task.session_token_id,
+                deadline_remaining_ms=task.deadline_remaining_ms,
             )
-        if transcript:
-            role_parts.append(f"The conversation so far:\n{transcript}")
-        composed_role = "\n\n".join(role_parts)
-
-        turn = AgentTask(
-            text=user_msg,
-            type="text",
-            metadata=task.metadata,
-            context=task.context,
-            session_token_id=task.session_token_id,
-            deadline_remaining_ms=task.deadline_remaining_ms,
-        )
-
-        def _think(extra_constraints):
             # The chat front desk has NO system tools — it never executes a task itself. Its only
-            # "tool" is delegate_to_planner (an in-process @tool), plus memory recall.
-            # seed_system_tools=False strips the kernel tool menu and find_tools. yield_subgoal is
-            # disabled: a subgoal is a step INSIDE a plan bound by a kernel coordinator a directly-
-            # dispatched chat worker doesn't have; the front desk delegates WHOLE work instead.
-            cons = list(self.constraints) if self.constraints else []
-            cons += extra_constraints
+            # "tool" is delegate_to_planner (an in-process @tool), plus memory recall when the
+            # posture allows it. seed_system_tools=False strips the kernel tool menu and
+            # find_tools. yield_subgoal is disabled: a subgoal is a step INSIDE a plan bound by a
+            # kernel coordinator a directly-dispatched chat worker doesn't have; the front desk
+            # delegates WHOLE work instead.
             return run_think(
                 self, turn,
-                role=composed_role,
+                role=role,
                 output_schema=self.output_schema,
-                constraints=cons,
+                constraints=constraints,
                 result_type=None,
-                seed_recall=self._recall(task),
+                seed_recall=False,  # done in compose(), on the latest message
                 seed_system_tools=False,
                 allow_yield_subgoal=False,
+                max_memory_queries=max_mem,
                 # Rounds: delegate_to_planner, then summarise its result (+1 slack).
                 max_tool_rounds=3,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
+                cache_ttl=self.cache_ttl,
             )
 
         self._delegated = False
         try:
-            result = _think([])
+            result = _think(False)
             raw = _result_text(result)
             # Guardrail: the model unreliably NARRATES a delegation ("I'll delegate this to the
             # planner") without emitting the delegate_to_planner tool action, so nothing runs. If
             # the reply promises an action but no delegation happened, force one retry that must
-            # call the tool. Only then is the summary grounded in a real planner result.
+            # call the tool. The retry note goes in the user turn, so the system text is unchanged.
             if not self._delegated and _ACTION_PROMISE.search(raw or ""):
                 _log.warning("chat_agent: reply promised delegation but no tool call fired; forcing retry")
-                result = _think([_FORCE_DELEGATE])
+                result = _think(True)
                 raw = _result_text(result)
         except ReActLoopError as e:
             _log.warning("chat_agent: ReActLoopError -> fallback: %s", e)
@@ -279,15 +358,6 @@ class ChatAgent(CognitiveAgent):
             confidence=getattr(result, "confidence", 0.7) or 0.7,
         )
 
-    def propose(self, request=None) -> ProposalResponse:
-        # Chat workers are summoned by the kernel's pool, not won in the auction. Bid low so
-        # this agent is never picked for ordinary task planning.
-        return ProposalResponse(
-            confidence=0.2,
-            rationale="conversation worker (summoned by the chat pool, not bid)",
-            estimated_latency_ms=4000,
-        )
-
 
 agent = ChatAgent(
     agent_id="chat_agent",
@@ -298,4 +368,5 @@ agent = ChatAgent(
 
 if __name__ == "__main__":
     configure_logging(agent_id="chat_agent")
+    _log.info("chat_agent prompt versions %s", PROMPT_VERSIONS)
     agent.serve()
