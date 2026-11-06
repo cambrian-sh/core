@@ -201,6 +201,8 @@ type Registry struct {
 	decisionObs      []domain.DecisionObserver
 	activityObs      []domain.AgentActivityObserver
 	loginObs         []domain.LoginObserver
+	hooks            []domain.Hook
+	hookObs          []domain.HookObserver
 	transformers     []domain.EvidenceTransformer
 	kinds            []domain.KindSpec
 	authorities      []domain.ResolutionAuthority
@@ -465,6 +467,24 @@ func (r *Registry) AddAgentActivityObserver(o domain.AgentActivityObserver) {
 func (r *Registry) AddLoginObserver(o domain.LoginObserver) {
 	if o != nil {
 		r.loginObs = append(r.loginObs, o)
+	}
+}
+
+// AddHook contributes an ADR-0139 D11 lifecycle hook. Add-many: plugin hooks run
+// in one chain with the operator's execution.hooks, ordered by priority then name
+// (a name must be unique across both, or boot fails). A hook can only narrow a
+// decision — the chain enforces it — so registering one never widens authority.
+func (r *Registry) AddHook(h domain.Hook) {
+	if h != nil {
+		r.hooks = append(r.hooks, h)
+	}
+}
+
+// AddHookObserver receives every hook invocation record (ADR-0139 D11; the D7
+// event-log seam). Add-many. MUST return promptly and MUST NOT panic.
+func (r *Registry) AddHookObserver(o domain.HookObserver) {
+	if o != nil {
+		r.hookObs = append(r.hookObs, o)
 	}
 }
 
@@ -867,6 +887,17 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 		}
 		fan = append(fan, reg.loginObs...)
 		opts.LoginObserver = fan
+	}
+	// Lifecycle hooks (ADR-0139 D11): appended; the chain orders them. Observers
+	// fan out like the other observer seams.
+	opts.Hooks = append(opts.Hooks, reg.hooks...)
+	if len(reg.hookObs) > 0 {
+		fan := make(domain.MultiHookObserver, 0, len(reg.hookObs)+1)
+		if opts.HookObserver != nil {
+			fan = append(fan, opts.HookObserver)
+		}
+		fan = append(fan, reg.hookObs...)
+		opts.HookObserver = fan
 	}
 	// Evidence transformers (ADR-0108 D3): appended in registration order.
 	opts.EvidenceTransformers = append(opts.EvidenceTransformers, reg.transformers...)

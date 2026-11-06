@@ -1,0 +1,93 @@
+{
+  "name": "Researcher",
+  "description": "Researches questions on the web and answers with citations.",
+  "supportedInterfaces": [
+    {
+      "url": "https://agents.example.org/a2a/researcher",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "provider": {
+    "organization": "Example Org",
+    "url": "https://example.org"
+  },
+  "version": "1.2.0+0123456789ab",
+  "capabilities": {
+    "extensions": [
+      {
+        "uri": "urn:cambrian:a2a:ext:agent:v1",
+        "description": "Cambrian kernel metadata: the kernel-assigned trust tier (ADR-0139 D8) and the agent's tool allowlist.",
+        "params": {
+          "agent_id": "researcher",
+          "profile": "researcher",
+          "runtime": "python",
+          "skills": [
+            "web-research"
+          ],
+          "source_hash": "sha256:0123456789abcdef0123456789abcdef",
+          "tool_allowlist": [
+            "mcp:web-search/*",
+            "mcp:fetch/*"
+          ],
+          "trust_tier": "first-party"
+        }
+      }
+    ]
+  },
+  "securitySchemes": {
+    "cambrian_bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer",
+        "description": "Every Cambrian plane requires a bearer credential issued by the deployment's operator; there is no anonymous access."
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "schemes": {
+        "cambrian_bearer": {}
+      }
+    }
+  ],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "research",
+      "name": "Research",
+      "description": "Researches questions on the web and answers with citations.",
+      "tags": [
+        "research"
+      ],
+      "examples": [
+        "Find three independent sources on a claim and summarise them",
+        "Check whether a quoted statistic is supported by primary sources",
+        "Compare two products using their published documentation"
+      ]
+    },
+    {
+      "id": "web_research",
+      "name": "Web Research",
+      "description": "Researches questions on the web and answers with citations.",
+      "tags": [
+        "web_research"
+      ],
+      "examples": [
+        "Find three independent sources on a claim and summarise them",
+        "Check whether a quoted statistic is supported by primary sources",
+        "Compare two products using their published documentation"
+      ]
+    }
+  ],
+  "signatures": [
+    {
+      "protected": "eyJhbGciOiJFZERTQSIsImprdSI6Imh0dHBzOi8vY2FyZHMuZXhhbXBsZS5vcmcvLndlbGwta25vd24vandrcy5qc29uIiwia2lkIjoiLS02SU01bDBPb3NMajl5V3NrSVNZaFVBM25fM0NVUlFrbXJZTVNoYV9jayIsInR5cCI6IkpPU0UifQ",
+      "signature": "wMR4XIbIlHH1yzdlIqPM1NzFITo9S-70z4zdKtiBRkrxmxc8llRZpQ89Hg2SwH1UvfW6Y5eOWBuew0SR6dGQCQ"
+    }
+  ]
+}

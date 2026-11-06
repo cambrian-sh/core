@@ -132,6 +132,8 @@ func profileAgentRecords(agentsDir string, isSystemAgent func(string) bool, opt 
 				SupportedFormats: []string{"text"},
 				ToolAllowlist:    append([]string(nil), p.Tools...),
 				Skills:           append([]string(nil), p.Skills...),
+				Examples:         append([]string(nil), p.Examples...),
+				StreamsOutput:    p.StreamsOutput,
 				ReleaseNotes:     "worker_agent profile " + p.Name + " (agent stack v2).",
 			},
 		})

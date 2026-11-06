@@ -20,9 +20,12 @@ What it does with the profile:
 
 - **Role and limits.** ``role`` is the prompt's <Role>; ``max_tool_rounds`` and
   ``max_tokens`` bound the ReAct loop.
-- **Skills.** The skill menu is exactly the profile's skills (their Tier-1 index lines,
-  served by the kernel). A body loads on demand through ``use_skill`` and is pinned for
-  the rest of the run (ADR-0139 D3 Phase 0, the existing loop behaviour).
+- **Skills.** The skill menu is the agent's effective skill set: the profile's skills
+  plus the skills an operator granted this agent id (decisions/skill-access-grants.md),
+  as Tier-1 index lines served and ENFORCED by the kernel. A body loads on demand
+  through ``use_skill`` and is pinned for the rest of the run (ADR-0139 D3 Phase 0).
+  ``find_skills`` may discover skills outside the set; ``use_skill`` on one asks an
+  operator, and an approval is a durable grant (the body loads in the same run).
 - **Tools.** The tool menu is the kernel's granted tools filtered to the profile's
   allowlist globs, and a call outside the allowlist is refused locally. The client
   filter keeps the menu small; the ENFORCING control is the kernel's: it grants a
@@ -112,6 +115,14 @@ class WorkerAgent(CognitiveAgent):
     #: the ADR-0044 task-relevant top-k: a top-k over the whole registry, filtered
     #: afterwards, could leave a profile with none of its own tools on the menu.
     seed_tools_full = True
+
+    #: ADR-0139 D12 / D14 / D13: a worker may spawn subagents, write principal memory
+    #: notes and propose skills (owner-recorded default, ticket
+    #: T-20261105-adr-0139-d12-in-agent-subagents-via-spawn). Each verb is offered only
+    #: when the kernel serves it; the kernel bounds what a child may do.
+    allow_subagents = True
+    allow_memory_note_writes = True
+    allow_skill_proposals = True
 
     def __init__(self, profile: Profile, agent_id: Optional[str] = None) -> None:
         super().__init__(agent_id or profile.name, version=profile.version,

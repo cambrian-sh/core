@@ -85,6 +85,10 @@ func TestUseGlobalWorkspace_TruePopulatesWorkingMemory(t *testing.T) {
 	ex := &DAGExecutor{
 		WorkspaceStage:     mock,
 		UseGlobalWorkspace: true, // Phase 3 active
+		// The ref carries the cid the merge writes. (A cid seeded in the initial
+		// context no longer survives step 0 re-running: a cid must not outlive the
+		// result it addressed.)
+		ContentStore: newTestStore(t),
 	}
 
 	plan := &domain.ExecutionPlan{
@@ -107,7 +111,6 @@ func TestUseGlobalWorkspace_TruePopulatesWorkingMemory(t *testing.T) {
 
 	if _, err := ex.Execute(context.Background(), plan, map[string]string{
 		"step_0_result": "result of step 0",
-		"step_0_cid":    "cid-step-0",
 	}, stepFn); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

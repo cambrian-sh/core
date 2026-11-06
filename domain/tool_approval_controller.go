@@ -60,7 +60,8 @@ func (c *InMemoryApprovalController) Request(ctx context.Context, req ApprovalRe
 			InterventionID: req.ID,
 			AgentID:        req.AgentID,
 			Description:    req.ToolName,
-			IsDestructive:  true,
+			// A skill access request widens what an agent may read, not what it may do.
+			IsDestructive: req.Kind != ApprovalKindSkillAccess,
 		})
 	}
 
@@ -78,10 +79,14 @@ func (c *InMemoryApprovalController) Request(ctx context.Context, req ApprovalRe
 		c.mu.Unlock()
 	}()
 
+	grace := c.grace
+	if req.Timeout > 0 {
+		grace = req.Timeout
+	}
 	select {
 	case dec := <-decCh:
 		return dec, nil
-	case <-time.After(c.grace):
+	case <-time.After(grace):
 		return ApprovalDecision{Approved: false}, nil // fail-closed: timeout
 	case <-ctx.Done():
 		return ApprovalDecision{Approved: false}, ctx.Err()
@@ -114,7 +119,7 @@ func (c *InMemoryApprovalController) Submit(id string, approved bool, approverID
 		return false
 	}
 	select {
-	case decCh <- ApprovalDecision{Approved: approved, ApproverID: approverID}:
+	case decCh <- ApprovalDecision{Approved: approved, ApproverID: approverID, Decided: true}:
 		return true
 	default:
 		return false

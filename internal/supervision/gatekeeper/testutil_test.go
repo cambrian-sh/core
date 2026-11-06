@@ -13,6 +13,9 @@ func defaultGatekeeperCfg() config.ExecutionConfig {
 			ContextGrowthK: 0.001,
 		},
 		Gatekeeper: config.GatekeeperConfig{
+			// The hand-weighted formula; posterior_lcb (the default since 2026-11-05)
+			// has its own tests in merit_posterior_test.go.
+			MeritMode:               config.MeritModeLegacy,
 			GatekeeperW1:            0.4,
 			GatekeeperW2:            0.4,
 			GatekeeperW3:            0.2,
@@ -27,6 +30,7 @@ func defaultTestExecCfg() config.ExecutionConfig {
 			ContextGrowthK: 0.001,
 		},
 		Gatekeeper: config.GatekeeperConfig{
+			MeritMode:               config.MeritModeLegacy, // see defaultGatekeeperCfg
 			GatekeeperW1:            0.4,
 			GatekeeperW2:            0.4,
 			GatekeeperW3:            0.2,

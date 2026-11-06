@@ -130,6 +130,16 @@ type Options struct {
 	// directly-set equivalent. OSS default nil.
 	LoginObserver domain.LoginObserver
 
+	// Hooks are plugin-declared ADR-0139 D11 lifecycle hooks, run with the
+	// operator's execution.hooks in one chain (priority, then name). A hook can
+	// only narrow a decision, never widen it. Plugins contribute through
+	// Registry.AddHook; this field is the directly-set equivalent. OSS default nil.
+	Hooks []domain.Hook
+	// HookObserver receives every hook invocation record (the D7 event-log seam).
+	// Observation only; must return promptly. Plugins contribute through
+	// Registry.AddHookObserver. OSS default nil (invocations are still logged).
+	HookObserver domain.HookObserver
+
 	// EvidenceTransformers are the transformation-stage consumers of the
 	// evidence outbox (ADR-0108 D3). Plugins contribute through
 	// Registry.AddEvidenceTransformer; empty means the outbox consumer never

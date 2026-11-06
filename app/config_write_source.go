@@ -657,6 +657,9 @@ var assignableRoles = map[string]bool{
 	string(domain.PurposeRouter):   true,
 	string(domain.PurposeMemory):   true,
 	string(domain.PurposeFacts):    true, // ADR-0136 D4 fact extractor
+	// In-kernel thought steps. Unbound, they borrow the planner's generator
+	// (llm.RoleFallbacks); binding one moves only thought steps.
+	string(domain.PurposeThought): true,
 }
 
 // SetRoleAssignment durably binds a system role to a generator and hot-applies
@@ -670,7 +673,7 @@ func (c configWriteSource) SetRoleAssignment(role, generatorID string) (operator
 
 	if !assignableRoles[role] {
 		res.Effect = operator.EffectRejected
-		res.Error = fmt.Sprintf("unknown role %q; roles are planner, verifier, router, memory, facts", role)
+		res.Error = fmt.Sprintf("unknown role %q; roles are planner, verifier, router, memory, facts, thought", role)
 		return res, nil
 	}
 	// Refused rather than stored, like a credential against a missing generator:

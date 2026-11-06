@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"strconv"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -284,7 +285,9 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 	}
 
 	d.bindLease(winner.Agent.ID, in)
+	callStart := time.Now()
 	resp, err := d.Caller.CallAgent(callCtx, winner.Agent.ID, in, "")
+	callMs := time.Since(callStart).Milliseconds()
 	if err != nil {
 		in.Context["_winning_agent_id"] = winner.Agent.ID
 		// Name the step deadline when it is what fired, so a timed-out step reads
@@ -306,6 +309,13 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 		}
 		resp.Context[domain.HandoffKeyWinnerAgentID] = winner.Agent.ID
 		resp.Context[domain.HandoffKeyWinnerSourceHash] = winner.Agent.SourceHash
+		// The wall time of the winner's call, the step TaskEvent's latency
+		// (T-20261104-step-taskevents-carry-no-latency-so-the-merit). A sub-ms call
+		// rounds up to 1: 0 means "unknown" to the aggregator.
+		if callMs < 1 {
+			callMs = 1
+		}
+		resp.Context[domain.HandoffKeyWinnerLatencyMs] = strconv.FormatInt(callMs, 10)
 	}
 
 	return &domain.DispatchResult{
@@ -380,7 +390,16 @@ func (d *Dispatcher) selectWinner(ctx context.Context, task *domain.DispatchTask
 		return scored[0], ReasonSoleCandidate
 	}
 
-	if d.ExplorationRate > 0 && d.randFloat() < d.ExplorationRate {
+	// Epsilon exploration (ADR-0100 D9) — except under the ADR-0139 D6 thompson
+	// merit mode, where the Gatekeeper already ranked the slate by one posterior
+	// sample per candidate: that IS the exploration policy (an uncertain agent's
+	// draw is wide, so it wins in proportion to its chance of being best), and an
+	// epsilon branch on top would add uniform-random picks the posterior did not
+	// ask for. posterior_lcb keeps the epsilon branch: a lower bound is pessimistic
+	// about uncertainty, so without it an agent with no evidence would rarely be
+	// tried and never acquire any.
+	explore := d.ExplorationRate > 0 && d.ExecCfg.Gatekeeper.ActiveMeritMode() != config.MeritModeThompson
+	if explore && d.randFloat() < d.ExplorationRate {
 		pick := d.randIntn(len(scored))
 		return scored[pick], ReasonExploration
 	}

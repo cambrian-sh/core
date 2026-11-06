@@ -148,8 +148,11 @@ func (s Step) FanOutVarName() string {
 //
 // Pure function of (plan, fanIdx, items). maxWidth <= 0 disables the cap; exceeding it
 // returns *FanOutWidthError so the caller can replan instead of silently truncating. An
-// empty item set drops the dependency on the node (discovery found nothing to do) so
-// dependents proceed rather than stall.
+// empty item set KEEPS the dependency on the inert node: the executor marks the node
+// completed (so dependents proceed rather than stall) and records its result as empty,
+// so a dependent is told "this fan-out produced nothing" (domain.StepDependencyEmpty)
+// instead of the dependency silently vanishing from its inputs
+// (T-20261105-a-planner-thought-step-that-depends-on-two).
 func ExpandFanOut(plan *ExecutionPlan, fanIdx int, items []string, maxWidth int) (*ExecutionPlan, error) {
 	if plan == nil {
 		return nil, fmt.Errorf("fan-out: nil plan")
@@ -176,6 +179,9 @@ func ExpandFanOut(plan *ExecutionPlan, fanIdx int, items []string, maxWidth int)
 	rewriteDeps := func(deps []int) []int {
 		if len(deps) == 0 {
 			return nil
+		}
+		if k == 0 {
+			return append([]int(nil), deps...) // keep: the empty node is reported, not dropped
 		}
 		out := make([]int, 0, len(deps)+k)
 		seen := map[int]bool{}

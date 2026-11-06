@@ -138,9 +138,12 @@ def test_starter_profile_advertises_only_allowlisted_tools_and_its_skills(name):
         offered = {t for t in sent if t.startswith("mcp_") or t == "web_search"}
         assert offered == want, (name, offered ^ want)
 
-    # The skill menu is the profile's skills, by name, Tier-1; no other skill is listed.
+    # The skill menu is the agent's effective set, Tier-1: the kernel's full listing
+    # (decisions/skill-access-grants.md: profile skills + grants, enforced and marked
+    # kernel-side). This fake kernel marks nothing, like an older one, so the profile
+    # proxy bounds the menu to the profile's skills; no other skill is listed.
     menu_call = kernel.skill_calls[0]
-    assert menu_call["names"] == list(prof.skills) and menu_call["full"] is False
+    assert menu_call["names"] is None and menu_call["full"] is False
     prompt = kernel.systems[0]
     for s in prof.skills:
         assert s in prompt

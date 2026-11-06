@@ -123,6 +123,16 @@ func NewMetabolismStack(
 		supgk.WithEmbedder(embedder),
 		supgk.WithSearcher(profileSearcher),
 	)
+	// ADR-0139 D6: say which merit scorer routes this kernel, so an A/B/A arm can
+	// prove from the boot log that its flag took.
+	slog.Info("Gatekeeper: merit mode",
+		"merit_mode", cfg.Execution.Gatekeeper.ActiveMeritMode(),
+		"prior_alpha", cfg.Execution.Gatekeeper.MeritPriorAlpha,
+		"prior_beta", cfg.Execution.Gatekeeper.MeritPriorBeta,
+		"lcb_quantile", cfg.Execution.Gatekeeper.MeritLCBQuantile,
+		"unverified_weight", cfg.Execution.Gatekeeper.MeritUnverifiedWeight,
+		"exploration_rate", cfg.Execution.Routing.ExplorationRate,
+		"exploration_active", cfg.Execution.Gatekeeper.ActiveMeritMode() != config.MeritModeThompson)
 
 	transport := agentplane.New(manager)
 

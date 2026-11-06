@@ -18,5 +18,9 @@ tools:
   - mcp:filesystem/get_file_info
   - mcp:filesystem/write_file
   - mcp:sqlite/*
+examples:
+  - Profile this CSV file and report missing values and outliers
+  - Chart monthly revenue from the sales table in this SQLite database
+  - Compute summary statistics for each numeric column and explain the caveats
 trust_tier: first-party
 max_tool_rounds: 20

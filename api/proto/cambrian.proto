@@ -134,6 +134,85 @@ service Orchestrator {
   rpc WatchApprovals(WatchApprovalsRequest) returns (stream ApprovalRequest);
   // Operator-plane: submit an approve/deny decision for a pending request.
   rpc SubmitApprovalDecision(ApprovalDecisionRequest) returns (ApprovalDecisionResponse);
+
+  // ── ADR-0139 Phase 2/3 (C7): subagents, memory notes, skill proposals ────────
+  //
+  // All four are additive. A kernel that does not serve one answers UNIMPLEMENTED
+  // (the generated UnimplementedOrchestratorServer does that), and a client MUST
+  // treat UNIMPLEMENTED as "this deployment has no such surface", never as a
+  // failed call to retry. The principal is the x-agent-id metadata plus the
+  // lease, as on ExecuteTool, never a body field.
+
+  // ADR-0139 D12: spawn one in-agent subagent and wait for its result (unary:
+  // the parent awaits). The child is a SEPARATE kernel dispatch, so the
+  // ToolExecutor governs every child tool call and child spend counts against
+  // the ROOT lease (tree-wide, D1). Cancelling this call MUST cancel the child.
+  //
+  // No streaming variant, deliberately: the parent can act only on the final
+  // result, the child's progress is already visible on the C6 run event log and
+  // the operator feed, and a stream would need the C7 cancellation/resume
+  // protocol, which is not frozen yet.
+  //
+  // Request-shape faults are gRPC errors (INVALID_ARGUMENT; a missing, foreign or
+  // expired lease is PERMISSION_DENIED). Everything that happens TO the child,
+  // including a policy refusal, is an OK response with an exit_reason, so the
+  // parent model sees it as a tool result.
+  rpc SpawnSubagent(SpawnSubagentRequest) returns (SpawnSubagentResponse);
+
+  // ADR-0139 D14 / D3: the run principal's memory notes as the FROZEN run-start
+  // snapshot. Every call within one run MUST return the same snapshot (same
+  // version), even after a ProposeMemoryNote in that run: writes are durable at
+  // once but appear from the next run, which keeps the prompt cache intact.
+  rpc GetMemoryNotes(GetMemoryNotesRequest) returns (GetMemoryNotesResponse);
+
+  // ADR-0139 D14: write to the run principal's notes (append, replace a section,
+  // remove a section). Bounded and injection-scanned on write; a refused write is
+  // an OK response with accepted=false and a rejection, never a silent trim or
+  // eviction.
+  rpc ProposeMemoryNote(ProposeMemoryNoteRequest) returns (ProposeMemoryNoteResponse);
+
+  // ADR-0139 D13: propose a skill (new, or an edit of an existing one). It enters
+  // the staged approval queue as PENDING and is NEVER active until an operator
+  // approves it (OperatorConsole/DecideSkillProposal).
+  rpc ProposeSkill(ProposeSkillRequest) returns (ProposeSkillResponse);
+
+  // ADR-0139 amendment 2026-11-06 (live step-output stream; additive within
+  // contract 0101, capability "step-output-stream"): an agent that calls its OWN
+  // model (Claude Code / the Claude Agent SDK as a worker, LangGraph, a custom
+  // agent) pushes its step's live output here; it reaches the operator feed
+  // (TokenChunkOp) and MCP progress like the gateway's deltas do. Every chunk is
+  // bound to the step's lease: a dead lease, or one not issued to the caller, is
+  // PERMISSION_DENIED. seq is strictly increasing per lease; a chunk at or below
+  // the highest accepted seq is a duplicate (a retried stream) and is dropped. An
+  // agent that pushes should declare streams_output (profile / manifest) so the
+  // kernel stops forwarding gateway deltas for its steps.
+  rpc EmitStepOutput(stream StepOutputChunk) returns (EmitStepOutputAck);
+}
+
+// StepOutputKind classifies one pushed chunk.
+enum StepOutputKind {
+  STEP_OUTPUT_KIND_UNSPECIFIED = 0; // read as TEXT
+  STEP_OUTPUT_KIND_TEXT = 1;        // a fragment of the step's output text
+  STEP_OUTPUT_KIND_PROGRESS = 2;    // a progress note ("reading 3 of 7 files")
+  STEP_OUTPUT_KIND_STATUS = 3;      // a status note
+}
+
+// StepOutputChunk is one chunk of a step's live output, pushed by its agent.
+message StepOutputChunk {
+  string lease_id = 1;   // the step's lease; every chunk names it
+  uint64 seq = 2;        // strictly increasing per lease, from 1
+  StepOutputKind kind = 3;
+  string data = 4;       // capped per chunk and per step (execution.step_output.*)
+  bool final = 5;        // the agent's last chunk for the step; later chunks are dropped
+}
+
+// EmitStepOutputAck summarises one EmitStepOutput stream.
+message EmitStepOutputAck {
+  uint64 accepted = 1;           // chunks delivered
+  uint64 duplicates = 2;         // dropped: seq not above the highest accepted
+  uint64 over_cap = 3;           // dropped: the step's byte cap was reached
+  uint64 after_final = 4;        // dropped: the agent had already sent final
+  uint64 last_seq = 5;           // the highest seq accepted on this stream
 }
 
 // ADR-0039 tool-execution messages.
@@ -180,6 +259,20 @@ message SkillDescriptor {
   string description = 2;          // Tier-1 one-line summary (always served)
   string instructions = 3;         // Tier-2 SKILL.md body (only when full=true / use_skill)
   repeated string tool_grants = 4; // bundled tools activated run-scoped on load (Tier-2)
+  // Per-agent skill access (decisions/skill-access-grants.md, additive). For an
+  // agent the kernel bounds (a profile agent) the effective skill set is its
+  // profile's skills plus its operator-approved grants, and a body is served only
+  // inside it. access says where this skill stands for the caller:
+  //   "profile" | "granted"  in the effective set (a body is served on use_skill)
+  //   "requestable"          visible but outside the set (find_skills); use_skill
+  //                          asks an operator on the approval hub
+  //   "pending"              asked; no decision in time. The request stays open and
+  //                          an approval applies to later runs
+  //   "denied"               an operator denied it (or the kernel keeps no grants)
+  // "" = this agent is not bounded (no profile): the pre-grant behaviour. A
+  // use_skill request may carry x-skill-rationale metadata (shown to the operator).
+  string access = 5;
+  string access_detail = 6;        // human-readable reason for pending / denied
 }
 message ListSkillsResponse {
   repeated SkillDescriptor skills = 1;
@@ -200,6 +293,10 @@ message ApprovalRequest {
   string agent_id = 2;
   string tool_name = 3;
   string args_preview = 4;
+  // "" = a dangerous-tool approval (ADR-0039); "skill_access" = an agent asks for
+  // a skill outside its effective set (tool_name "skill:<name>"; approving grants
+  // it durably to that agent, decisions/skill-access-grants.md). Additive.
+  string kind = 5;
 }
 message ApprovalDecisionRequest {
   string id = 1;
@@ -727,4 +824,267 @@ message GenerateChunk {
   GenerateUsage usage = 6;
   string stop_reason = 7;           // see GenerateWithToolsResponse.stop_reason
   string model = 8;
+}
+
+// ══ ADR-0139 D12: in-agent subagents (C7) ════════════════════════════════════
+
+// SubagentMode is how the child's context starts (ADR-0139 D12).
+enum SubagentMode {
+  // Read as ISOLATED: the cheaper default, and the one that leaks nothing.
+  SUBAGENT_MODE_UNSPECIFIED = 0;
+  // A fresh context: the objective (and output schema) only.
+  SUBAGENT_MODE_ISOLATED = 1;
+  // Inherits the parent's COMPACTED context, carried in context_summary and
+  // context_refs. The kernel does not hold the parent's context (the SDK's D3
+  // ContextEngine does), so the parent supplies it.
+  SUBAGENT_MODE_FORK = 2;
+}
+
+// SubagentStatus is the coarse outcome, so a parent can tell "done" from
+// "stopped" without decoding exit_reason (ADR-0139 D12).
+enum SubagentStatus {
+  SUBAGENT_STATUS_UNSPECIFIED = 0;
+  // exit_reason COMPLETED, and the output validated against output_schema when
+  // one was given.
+  SUBAGENT_STATUS_DONE = 1;
+  // The child ran but was stopped before completing (BUDGET, TIMEOUT). text or
+  // structured_json may hold a partial result; truncated says so.
+  SUBAGENT_STATUS_STOPPED = 2;
+  // The child produced no usable result (DEPTH, DENIED, ERROR).
+  SUBAGENT_STATUS_FAILED = 3;
+}
+
+// SubagentExitReason is why the child ended (ADR-0139 D12; C6 event vocabulary).
+enum SubagentExitReason {
+  SUBAGENT_EXIT_REASON_UNSPECIFIED = 0;
+  SUBAGENT_EXIT_REASON_COMPLETED = 1;
+  // The root lease, token_budget, max_tool_rounds or the tree-wide iteration cap
+  // ran out.
+  SUBAGENT_EXIT_REASON_BUDGET = 2;
+  // The spawn would exceed the configured depth (default 1). The child never ran.
+  SUBAGENT_EXIT_REASON_DEPTH = 3;
+  // Policy refused it: a toolset entry outside the parent's tools, a target the
+  // principal may not dispatch to, or a ToolExecutor deny that ended the child.
+  SUBAGENT_EXIT_REASON_DENIED = 4;
+  // timeout_ms (or the parent's own deadline) elapsed, including while the spawn
+  // waited for a concurrency slot (concurrency is config, default 4).
+  SUBAGENT_EXIT_REASON_TIMEOUT = 5;
+  SUBAGENT_EXIT_REASON_ERROR = 6;
+}
+
+message SpawnSubagentRequest {
+  // The PARENT's per-step BudgetLease (ADR-0018), a credential, as on
+  // ExecuteToolRequest. The kernel resolves it to the parent run and the ROOT
+  // lease; the child gets its own lease, bound to the child dispatch and rolling
+  // up to that root. Depth is derived from the lease chain server-side, never
+  // from the request.
+  string lease_id = 1;
+  SubagentMode mode = 2;
+  // The child's task. Required (empty is INVALID_ARGUMENT).
+  string objective = 3;
+  // Optional JSON Schema for the child's final answer (same shape and strict
+  // semantics as GenerateStreamRequest.response_schema). When set,
+  // structured_json is validated against it; a reply that still fails after the
+  // one repair ends the child with exit_reason ERROR.
+  ResponseSchema output_schema = 4;
+  // Tool names or globs ("web_*", "*") for the child. MUST be a subset of the
+  // tools the PARENT may call. Enforced server-side against the parent's grants,
+  // never trusted from the model: an entry that matches anything outside the
+  // parent's set ends the spawn with DENIED (refused, not silently narrowed).
+  // Empty = no tools beyond final_answer. "*" = the parent's tools MINUS the
+  // classes D12 withholds by default (clarify, memory write, messaging), which a
+  // child gets only when they are named explicitly.
+  repeated string toolset = 5;
+  // Optional target. Both empty = the parent's own profile. Both set is
+  // INVALID_ARGUMENT. A target the principal may not dispatch to is DENIED.
+  string target_agent_id = 6;
+  string target_capability = 7;
+  // FORK only: the parent's compacted context (the D3 phase-2 summary shape).
+  // Set on an ISOLATED spawn it is INVALID_ARGUMENT.
+  string context_summary = 8;
+  // FORK only: content refs the child may resolve (resolve_cid), read-scoped to
+  // the principal exactly as for the parent.
+  repeated ContextRef context_refs = 9;
+  // Tool-round cap for the child. 0 = the configured default. The kernel clamps
+  // it to what remains of the tree-wide iteration cap; it can never raise it.
+  int32 max_tool_rounds = 10;
+  // Wall-clock limit for the child in milliseconds. 0 = the configured default.
+  // Clamped to the parent call's own deadline.
+  int64 timeout_ms = 11;
+  // Optional NARROW-ONLY token cap for this child. 0 = none beyond the root
+  // lease. It never creates budget: the child also stops when the root lease is
+  // spent (D1: no per-child budget escapes the root).
+  int64 token_budget = 12;
+  // Optional idempotency key (AGENTS.md 2.6). A repeat with the same key under
+  // the same root run returns the first child's result instead of spawning again.
+  string client_spawn_id = 13;
+}
+
+message SpawnSubagentResponse {
+  SubagentStatus status = 1;
+  SubagentExitReason exit_reason = 2;
+  // The child's final text answer (possibly partial when status is STOPPED).
+  string text = 3;
+  // The final answer as JSON, set when output_schema was given and the reply
+  // validated.
+  string structured_json = 4;
+  // true when text / structured_json is incomplete (cut by budget, timeout or a
+  // size cap). A parent MUST NOT treat a truncated result as complete.
+  bool truncated = 5;
+  // Content ids (ContentStore CIDs / artifact hashes) the child produced,
+  // readable by the parent under the same scope.
+  repeated string artifacts = 6;
+  // The child's model usage summed over its calls. Already counted against the
+  // root lease: reported, never billed again.
+  GenerateUsage usage = 7;
+  // The child dispatch's run id, for the C6 event log and traces.
+  string child_run_id = 8;
+  // Human-readable detail for any exit_reason other than COMPLETED (which
+  // toolset entry was denied, which limit was hit). Never parsed.
+  string detail = 9;
+  // Tool rounds the child used.
+  int32 tool_rounds = 10;
+}
+
+// ══ ADR-0139 D14: principal memory notes ═════════════════════════════════════
+
+// MemoryNotesScope is whose notes a document is.
+enum MemoryNotesScope {
+  MEMORY_NOTES_SCOPE_UNSPECIFIED = 0;
+  // The run principal's own notes: the "sub" of the run, not the agent.
+  MEMORY_NOTES_SCOPE_PERSONAL = 1;
+  // The principal's org scope (D9 org profile). Absent in a personal profile.
+  MEMORY_NOTES_SCOPE_ORG = 2;
+}
+
+message GetMemoryNotesRequest {
+  // The run's BudgetLease. The kernel resolves the run and its principal from
+  // it; there is no principal field.
+  string lease_id = 1;
+}
+
+// MemoryNotesDocument is one scope's notes (an AGENTS.md / MEMORY.md analogue):
+// markdown whose "## " headings are the SECTIONS ProposeMemoryNote addresses.
+message MemoryNotesDocument {
+  MemoryNotesScope scope = 1;
+  // The principal id (PERSONAL) or org id (ORG) the document belongs to.
+  string owner_id = 2;
+  string content = 3;
+  // Sizes count Unicode code points of the stored content, so a budget means the
+  // same for every model and language.
+  int32 size_chars = 4;
+  int32 budget_chars = 5;
+  // Opaque version of this document; pass it as if_match to write against it.
+  string etag = 6;
+  // true when content was cut to budget_chars because the budget was lowered
+  // below the stored size. Never silent: the snapshot says so.
+  bool truncated = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message GetMemoryNotesResponse {
+  // One document per scope the principal may READ (C8 authz), PERSONAL first.
+  // A scope with no notes is omitted.
+  repeated MemoryNotesDocument documents = 1;
+  // Opaque version of the whole snapshot. Constant for the run.
+  string version = 2;
+  // When the snapshot was frozen (the run start).
+  google.protobuf.Timestamp snapshot_at = 3;
+}
+
+enum MemoryNoteOp {
+  MEMORY_NOTE_OP_UNSPECIFIED = 0; // INVALID_ARGUMENT
+  // Append `content` under `section` (created at the end when absent), or at the
+  // end of the document when section is empty.
+  MEMORY_NOTE_OP_APPEND = 1;
+  // Replace the body of `section` with `content`. section is required.
+  MEMORY_NOTE_OP_REPLACE_SECTION = 2;
+  // Remove `section`, heading and body. section is required; content is ignored.
+  MEMORY_NOTE_OP_REMOVE_SECTION = 3;
+}
+
+enum MemoryNoteRejection {
+  MEMORY_NOTE_REJECTION_UNSPECIFIED = 0; // accepted
+  // The write would take the document over budget_chars. Nothing is evicted.
+  MEMORY_NOTE_REJECTION_OVER_BUDGET = 1;
+  // The injection scan flagged the content; the write is not stored.
+  MEMORY_NOTE_REJECTION_INJECTION_FLAGGED = 2;
+  // The principal, this agent or this subagent may not write that scope. D12:
+  // children have no memory write unless it is granted.
+  MEMORY_NOTE_REJECTION_SCOPE_DENIED = 3;
+  // if_match did not match the current etag.
+  MEMORY_NOTE_REJECTION_CONFLICT = 4;
+  // REPLACE_SECTION / REMOVE_SECTION named a section that does not exist.
+  MEMORY_NOTE_REJECTION_SECTION_NOT_FOUND = 5;
+}
+
+message ProposeMemoryNoteRequest {
+  string lease_id = 1;
+  // UNSPECIFIED is read as PERSONAL.
+  MemoryNotesScope scope = 2;
+  MemoryNoteOp op = 3;
+  // The section heading text without the leading "## ". Matched exactly.
+  string section = 4;
+  string content = 5;
+  // Optional optimistic-concurrency guard: the etag the agent wrote against.
+  string if_match = 6;
+  // Why the agent is writing this; recorded with the write (audit trail).
+  string reason = 7;
+}
+
+message ProposeMemoryNoteResponse {
+  // true = stored durably now; it appears in the snapshot from the NEXT run.
+  bool accepted = 1;
+  MemoryNoteRejection rejection = 2;
+  string detail = 3;
+  // The document's state after the call (unchanged when rejected).
+  string etag = 4;
+  int32 size_chars = 5;
+  int32 budget_chars = 6;
+}
+
+// ══ ADR-0139 D13: agent-proposed skills ══════════════════════════════════════
+
+enum SkillProposalRejection {
+  SKILL_PROPOSAL_REJECTION_UNSPECIFIED = 0; // accepted (queued)
+  // skill_md is not a valid C3 SKILL.md (frontmatter, name mismatch, size cap).
+  SKILL_PROPOSAL_REJECTION_INVALID_FORMAT = 1;
+  // A skill with this name exists and base_version is empty or not current.
+  SKILL_PROPOSAL_REJECTION_NAME_TAKEN = 2;
+  // The target skill is locked against agent edits.
+  SKILL_PROPOSAL_REJECTION_LOCKED = 3;
+  // The deterministic scan returned "dangerous". Cannot be overridden.
+  SKILL_PROPOSAL_REJECTION_SCAN_DANGEROUS = 4;
+  // The pending-queue quota for this agent or principal is full.
+  SKILL_PROPOSAL_REJECTION_QUOTA = 5;
+  // The agent may not propose skills (or not in this scope).
+  SKILL_PROPOSAL_REJECTION_DENIED = 6;
+}
+
+message ProposeSkillRequest {
+  // The proposing run's BudgetLease. The SOURCE RUN of the proposal is the
+  // lease's run, derived server-side; an agent cannot name another run.
+  string lease_id = 1;
+  // The skill name; must equal the frontmatter `name` in skill_md.
+  string name = 2;
+  // The full C3 SKILL.md (frontmatter and markdown body). The kernel stamps trust
+  // "agent-proposed" whatever the frontmatter claims.
+  string skill_md = 3;
+  // Why this routine is worth keeping (shown to the approving operator).
+  string rationale = 4;
+  // Optional content ids backing the proposal (artifacts, tool results).
+  repeated string evidence_cids = 5;
+  // When editing an existing skill: the version proposed against. Empty = a new
+  // skill.
+  string base_version = 6;
+}
+
+message ProposeSkillResponse {
+  // true = queued as PENDING. Not active until an operator approves it.
+  bool accepted = 1;
+  // The proposal id. Deterministic over (name, base_version, content hash): an
+  // identical re-proposal returns the existing id with accepted=true.
+  string proposal_id = 2;
+  SkillProposalRejection rejection = 3;
+  string detail = 4;
 }

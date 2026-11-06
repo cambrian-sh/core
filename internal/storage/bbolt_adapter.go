@@ -79,8 +79,8 @@ type BBoltAdapter struct {
 	// appender commits directly instead of waiting out bbolt's batch window
 	// (ADR-0061 A2.7; see AppendReactiveSignal).
 	journalAppenders atomic.Int32
-	CardFetcher      A2ACardFetcher // for A2A agent registration; nil means RegisterA2AAgent disabled
-	Enqueuer         Enqueuer       // for profile-seeding enqueue after registration
+	CardFetcher      domain.CardFetcher // for A2A agent registration (agentcard.RemoteFetcher); nil means RegisterA2AAgent disabled
+	Enqueuer         Enqueuer           // for profile-seeding enqueue after registration
 }
 
 func NewBBoltAdapter(dbPath string, agentsDir string, isSystemAgent func(id string) bool) (*BBoltAdapter, error) {

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,11 +16,11 @@ import (
 // --- Test doubles ---
 
 type mockA2ACardFetcher struct {
-	card *A2ACard
+	card *domain.AgentCard
 	err  error
 }
 
-func (m *mockA2ACardFetcher) FetchCard(_ context.Context, _ string) (*A2ACard, error) {
+func (m *mockA2ACardFetcher) FetchCard(_ context.Context, _ string) (*domain.AgentCard, error) {
 	return m.card, m.err
 }
 
@@ -57,7 +58,7 @@ func TestRegisterA2AAgent_PersistsDefinitionAndEnqueues(t *testing.T) {
 	adapter, cleanup := newA2ATestAdapter(t)
 	defer cleanup()
 
-	card := &A2ACard{Name: "Web Search Agent", Description: "Searches the web", Version: "1.0"}
+	card := &domain.AgentCard{Name: "Web Search Agent", Description: "Searches the web", Version: "1.0"}
 	adapter.CardFetcher = &mockA2ACardFetcher{card: card}
 	enqueuer := &mockEnqueuer{}
 	adapter.Enqueuer = enqueuer
@@ -90,6 +91,48 @@ func TestRegisterA2AAgent_PersistsDefinitionAndEnqueues(t *testing.T) {
 	if got.Runtime != "a2a" {
 		t.Errorf("persisted Runtime=%q, want a2a", got.Runtime)
 	}
+	// ADR-0139 D4: a remote agent is third-party, on the record and on the
+	// definition handed to the seeder.
+	if got.TrustTier != A2ATrustTier || enqueued.TrustTier != A2ATrustTier {
+		t.Errorf("trust tier: record %q, enqueued %q; want %q", got.TrustTier, enqueued.TrustTier, A2ATrustTier)
+	}
+	if got.Name != card.Name || got.A2AEndpoint != "http://a2a.example.com" {
+		t.Errorf("record not persisted in the AgentRecord shape: %+v", got)
+	}
+}
+
+// A remote card cannot overwrite a local agent that has the same id.
+func TestRegisterA2AAgent_RefusesLocalIDTakeover(t *testing.T) {
+	adapter, cleanup := newA2ATestAdapter(t)
+	defer cleanup()
+	local, _ := json.Marshal(AgentRecord{ID: "researcher", Name: "Researcher", Runtime: "python", ExecPath: "worker_agent.py"})
+	_ = adapter.db.Update(func(tx *bbolt.Tx) error { return tx.Bucket(agentBucket).Put([]byte("researcher"), local) })
+
+	enqueuer := &mockEnqueuer{}
+	adapter.Enqueuer = enqueuer
+	adapter.CardFetcher = &mockA2ACardFetcher{card: &domain.AgentCard{Name: "Researcher", Description: "evil", Version: "1"}}
+	err := adapter.RegisterA2AAgent(context.Background(), "http://evil.example.com")
+	if !errors.Is(err, ErrA2AIDTaken) {
+		t.Fatalf("err = %v, want ErrA2AIDTaken", err)
+	}
+	got, _ := adapter.GetAgentRecord("researcher")
+	if got == nil || got.Runtime != "python" || len(enqueuer.enqueued) != 0 {
+		t.Fatalf("local agent was overwritten or enqueued: %+v", got)
+	}
+}
+
+func TestNormalizeA2AAgentID(t *testing.T) {
+	for in, want := range map[string]string{
+		"Web Search Agent": "web-search-agent",
+		"  a/b..c  ":       "a-b-c",
+		"../../etc":        "etc",
+		"Ünïcode":          "n-code",
+		"!!!":              "",
+	} {
+		if got := normalizeA2AAgentID(in); got != want {
+			t.Errorf("normalizeA2AAgentID(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
 
 // Cycle 2: Idempotency — same SourceHash → no re-enqueue.
@@ -97,7 +140,7 @@ func TestRegisterA2AAgent_Idempotent_SameHash(t *testing.T) {
 	adapter, cleanup := newA2ATestAdapter(t)
 	defer cleanup()
 
-	card := &A2ACard{Name: "My Agent", Description: "does stuff", Version: "2.0"}
+	card := &domain.AgentCard{Name: "My Agent", Description: "does stuff", Version: "2.0"}
 	adapter.CardFetcher = &mockA2ACardFetcher{card: card}
 	enqueuer := &mockEnqueuer{}
 	adapter.Enqueuer = enqueuer
@@ -138,14 +181,14 @@ func TestRegisterA2AAgent_CardVersionChange_Reenqueues(t *testing.T) {
 	adapter.Enqueuer = enqueuer
 
 	// First registration — version 1.0
-	cardV1 := &A2ACard{Name: "Versioned Agent", Description: "v1 features", Version: "1.0"}
+	cardV1 := &domain.AgentCard{Name: "Versioned Agent", Description: "v1 features", Version: "1.0"}
 	adapter.CardFetcher = &mockA2ACardFetcher{card: cardV1}
 	if err := adapter.RegisterA2AAgent(context.Background(), "http://versioned.example.com"); err != nil {
 		t.Fatalf("v1 registration failed: %v", err)
 	}
 
 	// Second registration — version 2.0 (card version bump)
-	cardV2 := &A2ACard{Name: "Versioned Agent", Description: "v2 features", Version: "2.0"}
+	cardV2 := &domain.AgentCard{Name: "Versioned Agent", Description: "v2 features", Version: "2.0"}
 	adapter.CardFetcher = &mockA2ACardFetcher{card: cardV2}
 	if err := adapter.RegisterA2AAgent(context.Background(), "http://versioned.example.com"); err != nil {
 		t.Fatalf("v2 registration failed: %v", err)

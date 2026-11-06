@@ -22,5 +22,9 @@ tools:
   - mcp:markitdown/*
   - mcp:time/*
   - mcp:calculator/calculate
+examples:
+  - Summarise the PDF report in my downloads folder in five bullet points
+  - Read these meeting notes and write a structured report of the decisions and owners
+  - What is 18.5 percent of 4,382,950?
 trust_tier: first-party
 max_tool_rounds: 12

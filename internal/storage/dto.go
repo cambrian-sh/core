@@ -49,6 +49,12 @@ type ManifestRecord struct {
 	// profile_seeder.go).
 	ToolAllowlist []string `json:"tool_allowlist,omitempty"`
 	Skills        []string `json:"skills,omitempty"`
+	// Examples are a profile's example tasks, carried for the A2A card.
+	Examples []string `json:"examples,omitempty"`
+	// StreamsOutput: the agent pushes its own live step output (EmitStepOutput),
+	// so the gateway forwards none for it (ADR-0139 amendment 2026-11-06). Read
+	// from a profile's `streams_output` or an AGENT_MANIFEST's key.
+	StreamsOutput bool `json:"streams_output,omitempty"`
 }
 
 // TaskEventRecord is the raw JSON shape stored in the bbolt task_events bucket.

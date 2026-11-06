@@ -14,9 +14,11 @@ import (
 // guard lets an operator say which databases a boot may not migrate on its own.
 //
 // It is read by postgres.NewPgVectorAdapter (every kernel and every cmd/ tool that opens
-// the vector store) and handed to migrate.Boot. The explicit `migrate up` subcommand is
-// the deliberate path and is not guarded. storage.auto_migrate=false still turns the
-// boot runner off entirely and wins over Mode.
+// the vector store) and handed to migrate.Boot. The explicit `migrate up` subcommand
+// honours ProtectedDBNames as well (since 2026-11-06,
+// T-20261106-orchestrator-migrate-up-ignores-database): it refuses a protected database
+// with pending changes unless AllowPending is set for that one command; it ignores Mode.
+// storage.auto_migrate=false still turns the boot runner off entirely and wins over Mode.
 type MigrationsConfig struct {
 	// Mode: "auto" (default — apply pending migrations at boot, the historical
 	// behaviour), "refuse_pending" (boot only when nothing is pending; otherwise exit

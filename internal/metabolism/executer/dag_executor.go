@@ -135,6 +135,11 @@ type DAGExecutor struct {
 	StepCache              domain.StepCache         // ADR-0026: may be nil; nil disables step-level memoization
 	StepCachePolicies      map[string]int           // ADR-0026: operator TTL overrides; nil = use heuristic defaults
 	ContextRefSnippetChars int                      // ADR-0022: snippet length; 0 defaults to 500
+	// DependencyResultsMaxChars bounds the upstream results inlined into a dependent
+	// step's domain.StepDependency list, in bytes across its dependencies
+	// (execution.plan.dependency_results_max_chars; the server resolves <= 0 to the
+	// config default). 0 here means unbounded — tests and harnesses only.
+	DependencyResultsMaxChars int
 	// ADR-0022 Phase 3: circuit-breaker flag.
 	// true  → Handoff.WorkingMemory populated from the step's DependsOn outputs; Handoff.Context empty.
 	// false → filterSnapshotForStep into Handoff.Context (Phase 0 behavior).
@@ -194,9 +199,16 @@ type DAGExecutor struct {
 // InjectPlanner composes the new forward plan for an operator InjectCorrection
 // from the instruction plus the live execution state (ADR-0047 A1.1). Optional:
 // when nil, the executor uses a deterministic default — a single-step forward
-// plan carrying the instruction, routed by the normal auction (Zero-Hardcode),
-// with prior results available via masterContext. completed is the set of
-// already-finished step indices.
+// plan carrying the instruction, routed by the normal auction (Zero-Hardcode).
+// completed is the set of already-finished step indices; ctx is the plan context,
+// for the planner to read.
+//
+// How the new plan's steps SEE earlier results: not through masterContext (a step
+// receives only the results of its own in-plan DependsOn, and the swap resets the
+// completed set). applyReplannedPlan captures the swapped-out plan's outcomes as
+// prior-plan domain.StepDependency entries, and every step of the new plan that
+// declares no in-plan dependency receives them (priorPlanResults,
+// T-20261106-an-injected-injectcorrection-step-cannot-see).
 type InjectPlanner func(instruction string, ctx map[string]string, plan *domain.ExecutionPlan, completed []int) (*domain.ExecutionPlan, error)
 
 // stepResult carries the outcome of one goroutine back to the coordinator.
@@ -222,6 +234,7 @@ func (d *DAGExecutor) executeStep(
 	stepIndex int,
 	snapshot map[string]string,
 	workingMemory []domain.ContextRef,
+	deps stepDeps,
 	stepFn StepFunc,
 	planID string,
 ) stepResult {
@@ -251,7 +264,11 @@ func (d *DAGExecutor) executeStep(
 	// ADR-0026: step-level cache lookup. On hit, skip stepFn entirely.
 	var cacheKey string
 	if d.StepCache != nil {
-		cacheKey = stepCacheKey(plan.Subject, planID, plan.Steps[stepIndex], snapshot)
+		// Keyed on the FULL upstream results (deps.results), not the snapshot: in
+		// Phase 3 the snapshot carries no step_N_result keys, so a dependent step's
+		// key used to ignore its inputs and replay another plan's answer for the same
+		// subject and query (T-20261105-a-planner-thought-step-that-depends-on-two).
+		cacheKey = stepCacheKey(plan.Subject, planID, plan.Steps[stepIndex], deps.results)
 		if cached, ok, getErr := d.StepCache.Get(ctx, cacheKey); getErr != nil {
 			slog.Warn("StepCache.Get failed, falling through to live execution", "step", stepIndex, "err", getErr)
 		} else if ok && cached != nil {
@@ -274,6 +291,14 @@ func (d *DAGExecutor) executeStep(
 	}
 	snapshot["_task_id"] = formatTaskID(stepIndex, planID)
 	snapshot["_step_index"] = strconv.Itoa(stepIndex)
+	// The upstream results, structured (domain.StepDependency), on every dependent
+	// step whichever executor runs it. Kernel-authored: always overwritten, and a
+	// root step carries none even if an earlier context held the key.
+	if deps.manifest != "" {
+		snapshot[domain.HandoffKeyStepDependencies] = deps.manifest
+	} else {
+		delete(snapshot, domain.HandoffKeyStepDependencies)
+	}
 
 	stepHandoff := &domain.Handoff{
 		Payload:       &domain.Payload{Data: []byte(plan.Steps[stepIndex].Query)},
@@ -302,8 +327,13 @@ func (d *DAGExecutor) executeStep(
 	// (domain.HandoffKeyWinnerSourceHash), consumed here for the same reason.
 	winnerID := resp.Context[domain.HandoffKeyWinnerAgentID]
 	winnerHash := resp.Context[domain.HandoffKeyWinnerSourceHash]
+	winnerLatency := resp.Context[domain.HandoffKeyWinnerLatencyMs]
 	delete(resp.Context, domain.HandoffKeyWinnerAgentID)
 	delete(resp.Context, domain.HandoffKeyWinnerSourceHash)
+	delete(resp.Context, domain.HandoffKeyWinnerLatencyMs)
+	// The step's own input manifest, echoed back by step functions that return
+	// the handoff context (thoughtFn does); it must not merge into the plan context.
+	delete(resp.Context, domain.HandoffKeyStepDependencies)
 	sizeAfter := contextByteSize(resp.Context)
 	growthBytes := sizeAfter - sizeBefore
 	if growthBytes < 0 {
@@ -322,8 +352,16 @@ func (d *DAGExecutor) executeStep(
 	// or a yield resume that bypassed the Dispatcher's stamp) the hash stays empty,
 	// the pre-fix behaviour.
 	var sourceHash string
+	// The winner's call wall time (domain.HandoffKeyWinnerLatencyMs), on the same
+	// terms as the hash: it describes the stamped winner only. 0 = unknown, which
+	// the aggregator leaves out of the latency median
+	// (T-20261104-step-taskevents-carry-no-latency-so-the-merit).
+	var latencyMs int
 	if winnerID != "" && winnerID == agentID {
 		sourceHash = winnerHash
+		if ms, err := strconv.Atoi(winnerLatency); err == nil && ms > 0 {
+			latencyMs = ms
+		}
 	}
 	// Server-authoritative: stamped by the step function from the gateway's
 	// reconciled lease, never by the agent (ADR-0018; domain.HandoffKeyBudgetOverrun).
@@ -367,13 +405,16 @@ func (d *DAGExecutor) executeStep(
 			SourceHash:         sourceHash,
 			BidConfidence:      float64(resp.Confidence),
 			ContextGrowthBytes: growthBytes,
-			PromptTokens:       promptTokens,
-			CompletionTokens:   responseTokens,
-			TotalTokens:        promptTokens + responseTokens,
-			EstimatedCost:      estimatedCost,
-			BudgetOverrun:      budgetOverrun,
-			Capability:         stepCap,
-			UsageEstimated:     usage.Estimated,
+			// Wall time of the agent call; network and computation are not
+			// separable from the kernel, so it is all booked as computation.
+			ComputationLatencyMs: latencyMs,
+			PromptTokens:         promptTokens,
+			CompletionTokens:     responseTokens,
+			TotalTokens:          promptTokens + responseTokens,
+			EstimatedCost:        estimatedCost,
+			BudgetOverrun:        budgetOverrun,
+			Capability:           stepCap,
+			UsageEstimated:       usage.Estimated,
 		}
 		if d.EventWriter != nil {
 			if err := d.EventWriter.WriteTaskEvent(event); err != nil {
@@ -426,6 +467,14 @@ func (d *DAGExecutor) executeStep(
 // store may be nil — in that case behaviour is identical to the pre-Phase-1 form.
 // snippetChars controls the inline snippet length; 0 uses 500 as default.
 func mergeStepResult(ctx context.Context, masterContext map[string]string, r stepResult, store domain.ContentStore, snippetChars int) domain.CID {
+	if r.resp == nil || r.resp.Payload == nil {
+		// A step that finished with no output is RECORDED as empty, not skipped: a
+		// replanned plan reuses step indices, so skipping left the previous plan's
+		// step_N_result for a dependent to read as this step's, and an absent key
+		// reads as "unavailable" to buildStepDependencies, not as "empty".
+		masterContext[fmt.Sprintf("step_%d_result", r.index)] = ""
+		delete(masterContext, fmt.Sprintf("step_%d_cid", r.index))
+	}
 	if r.resp == nil {
 		return ""
 	}
@@ -439,6 +488,8 @@ func mergeStepResult(ctx context.Context, masterContext map[string]string, r ste
 	}
 	data := r.resp.Payload.Data
 	masterContext[fmt.Sprintf("step_%d_result", r.index)] = string(data)
+	// A cid from an earlier plan's step at this index must not outlive its result.
+	delete(masterContext, fmt.Sprintf("step_%d_cid", r.index))
 
 	if store == nil {
 		return ""
@@ -485,17 +536,22 @@ func buildSnippet(data []byte, snippetChars int) string {
 	return s[:i]
 }
 
-// applyReplannedPlan swaps in a new plan after replan/hot-swap. It re-runs
-// topological sort, resets dispatch state, and clears the error flag.
-// The caller must hold d.pausedMu.
-func (d *DAGExecutor) applyReplannedPlan(newPlan *domain.ExecutionPlan, plan **domain.ExecutionPlan, n *int, alreadyDispatched map[int]bool, completed map[int]bool, topoOrder *[]int) error {
-	*plan = newPlan
-	*n = len((*plan).Steps)
-	var err error
-	*topoOrder, err = TopologicalSort((*plan).Steps)
+// applyReplannedPlan swaps in a new plan after replan/hot-swap/injection. It
+// re-runs topological sort, records the swapped-out plan's outcomes (its completed
+// results and its failed step, fail) into prior so the new plan's root steps receive
+// them, and resets dispatch state. A plan that does not sort leaves everything
+// untouched. Coordinator-only, with no step in flight (every call site waits for
+// inFlight == 0), so master is read without the context lock.
+func (d *DAGExecutor) applyReplannedPlan(newPlan *domain.ExecutionPlan, plan **domain.ExecutionPlan, n *int, alreadyDispatched map[int]bool, completed map[int]bool, topoOrder *[]int,
+	master map[string]string, prior *priorPlanResults, fail *stepFailure) error {
+	order, err := TopologicalSort(newPlan.Steps)
 	if err != nil {
 		return err
 	}
+	prior.capture(master, *plan, completed, fail)
+	*plan = newPlan
+	*n = len(newPlan.Steps)
+	*topoOrder = order
 	for k := range alreadyDispatched {
 		delete(alreadyDispatched, k)
 	}
@@ -655,8 +711,9 @@ func buildStepStates(plan *domain.ExecutionPlan, completed, dispatched map[int]b
 
 // buildInjectionPlan composes the new forward plan for an operator injection.
 // Uses InjectPlanner when set; otherwise the deterministic default — a single
-// NL step carrying the instruction (routed by the auction; prior step results
-// remain available via masterContext). Called only from the coordinator.
+// NL step carrying the instruction, routed by the auction. That step has no
+// in-plan dependency, so it receives the swapped-out plan's results as prior-plan
+// StepDependency entries (see InjectPlanner). Called only from the coordinator.
 func (d *DAGExecutor) buildInjectionPlan(instruction string, ctx map[string]string, plan *domain.ExecutionPlan, completed []int) *domain.ExecutionPlan {
 	if d.InjectPlanner != nil {
 		if p, err := d.InjectPlanner(instruction, ctx, plan, completed); err == nil && p != nil && len(p.Steps) > 0 {
@@ -845,6 +902,9 @@ func (d *DAGExecutor) ExecuteFrom(
 		}
 	}
 	masterContext := cloneMap(initialContext)
+	// Outcomes of every plan a replan swaps out of this run, handed to the
+	// replacement plan's root steps (T-20261106-an-injected-injectcorrection-step-cannot-see).
+	prior := &priorPlanResults{}
 	runningCost := 0.0
 
 	// Coordinator-owned step tracking. Declared before the first publishPlanState so the
@@ -962,6 +1022,7 @@ func (d *DAGExecutor) ExecuteFrom(
 			// Phase 0 fallback (use_global_workspace=false or WorkspaceStage=nil): filterSnapshotForStep.
 			mu.Lock()
 			contextSnapshot := filterSnapshotForStep(masterContext, plan.Steps[i])
+			deps := buildStepDependencies(masterContext, plan, i, d.DependencyResultsMaxChars, prior)
 			mu.Unlock()
 
 			var workingMemory []domain.ContextRef
@@ -973,7 +1034,12 @@ func (d *DAGExecutor) ExecuteFrom(
 				for _, dep := range plan.Steps[i].DependsOn {
 					if cidStr, ok := masterContext[fmt.Sprintf("step_%d_cid", dep)]; ok {
 						ref := domain.ContextRef{
-							CID:       domain.CID(cidStr),
+							CID: domain.CID(cidStr),
+							// Typed and labelled so a receiver can tell which upstream step
+							// a ref is (SDK find_step_ref; the SDK renders these steps from
+							// the HandoffKeyStepDependencies manifest, not as anonymous facts).
+							Type:      domain.NodeTypeStepResult,
+							Labels:    []string{fmt.Sprintf("step_%d", dep)},
 							Precision: 1.0, // direct dependency = highest relevance
 						}
 						if res, ok2 := masterContext[fmt.Sprintf("step_%d_result", dep)]; ok2 {
@@ -1013,7 +1079,7 @@ func (d *DAGExecutor) ExecuteFrom(
 			go func() {
 				defer wg.Done()
 				results <- d.executeStep(cancelCtx, plan, stepIdx,
-					stepContextSnapshot, stepWorkingMemory, stepFn, planID)
+					stepContextSnapshot, stepWorkingMemory, deps, stepFn, planID)
 			}()
 		}
 	}
@@ -1097,7 +1163,8 @@ coordinate:
 
 				// Only now mutate: a rejected replan must leave the executor's state
 				// untouched rather than half-swapped.
-				if topoErr := d.applyReplannedPlan(newPlan, &plan, &n, alreadyDispatched, completed, &topoOrder); topoErr != nil {
+				if topoErr := d.applyReplannedPlan(newPlan, &plan, &n, alreadyDispatched, completed, &topoOrder,
+					masterContext, prior, failureOf(firstErr, failedStepIdx)); topoErr != nil {
 					// Returned verbatim (a topology error, not a PartialPlanError), but
 					// still through the completion block.
 					abortErr = topoErr
@@ -1126,15 +1193,17 @@ coordinate:
 				d.pausedMu.Unlock()
 
 				if hsPlan != nil && len(hsPlan.Steps) > 0 {
-					if err := d.applyReplannedPlan(hsPlan, &plan, &n, alreadyDispatched, completed, &topoOrder); err != nil {
+					if err := d.applyReplannedPlan(hsPlan, &plan, &n, alreadyDispatched, completed, &topoOrder,
+						masterContext, prior, failureOf(firstErr, failedStepIdx)); err != nil {
 						abortErr = err
 						break coordinate
 					}
 				}
 
 				// ADR-0047 A1.1: fold an operator InjectCorrection into a new
-				// forward plan (prior results stay in masterContext). The Planner
-				// routes the injected NL step (Zero-Hardcode).
+				// forward plan. The Planner routes the injected NL step
+				// (Zero-Hardcode); the swapped-out plan's results reach its root
+				// steps as prior-plan StepDependency entries.
 				if injection != "" {
 					d.publishPlanState(planID, "replanning", lastActiveStep, runningCost, false, buildSteps())
 					completedIdx := make([]int, 0, len(completed))
@@ -1142,7 +1211,14 @@ coordinate:
 						completedIdx = append(completedIdx, idx)
 					}
 					injPlan := d.buildInjectionPlan(injection, masterContext, plan, completedIdx)
-					if err := d.applyReplannedPlan(injPlan, &plan, &n, alreadyDispatched, completed, &topoOrder); err != nil {
+					// A failure belongs to the plan it happened in: when a hot-swap
+					// was just applied, that plan was already captured with it.
+					var injFail *stepFailure
+					if hsPlan == nil {
+						injFail = failureOf(firstErr, failedStepIdx)
+					}
+					if err := d.applyReplannedPlan(injPlan, &plan, &n, alreadyDispatched, completed, &topoOrder,
+						masterContext, prior, injFail); err != nil {
 						abortErr = err
 						break coordinate
 					}
@@ -1281,6 +1357,15 @@ coordinate:
 					firstErr = err
 					failedStepIdx = fanIdx
 				} else {
+					if len(items) == 0 {
+						// Nothing to fan out over: the inert node stays a dependency of its
+						// dependents (domain.ExpandFanOut) and is recorded as an empty
+						// result, so they are told it produced nothing.
+						mu.Lock()
+						masterContext[fmt.Sprintf("step_%d_result", fanIdx)] = ""
+						delete(masterContext, fmt.Sprintf("step_%d_cid", fanIdx))
+						mu.Unlock()
+					}
 					slog.Info("DAGExecutor: fan-out expanded", "src", r.index, "fan_step", fanIdx, "children", len(items))
 				}
 			}

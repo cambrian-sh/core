@@ -21,6 +21,14 @@ type Skill struct {
 	// skill only when its ADR-0034 TagPredicate.Allows these tags — the same
 	// read path as memory, no new permission logic.
 	ScopeTags []string
+	// Version and Trust are the ADR-0139 C3 frontmatter metadata. For an
+	// agent-proposed skill the kernel stamps Trust "agent-proposed" and Version
+	// from the lifecycle ledger, whatever the frontmatter claimed (D13).
+	Version string
+	Trust   string
+	// SourcePath is the SKILL.md the skill was discovered from; "" for a skill
+	// registered over the wire or materialised from the lifecycle store.
+	SourcePath string
 }
 
 // SkillRegistry is the kernel-owned catalog of system skills (ADR-0046 D2).
@@ -54,6 +62,14 @@ func (r *InMemorySkillRegistry) Get(name string) (Skill, bool) {
 	defer r.mu.RUnlock()
 	s, ok := r.skills[name]
 	return s, ok
+}
+
+// Unregister removes a skill from the catalog (ADR-0139 D13: an archived skill
+// is no longer served to agents; its record and versions stay in the ledger).
+func (r *InMemorySkillRegistry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.skills, name)
 }
 
 // All returns every registered system skill (unordered).

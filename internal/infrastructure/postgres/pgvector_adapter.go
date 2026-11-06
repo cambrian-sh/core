@@ -525,7 +525,18 @@ func RunMigrations(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("migrate: connect: %w", err)
 	}
 	defer pool.Close()
-	return migrate.Migrate(ctx, pool, dim)
+	// The explicit `migrate up` honours database.migrations.protected_dbnames too
+	// (T-20261106-orchestrator-migrate-up-ignores-database): on 2026-11-05 a run whose env
+	// overrides were misspelled fell back to configs/config.json and applied five
+	// migrations, one destructive, to the protected working database. Mode is forced to
+	// auto (an explicit `migrate up` must not be skipped by mode=off), so the only effect
+	// of the policy here is the protected-database refusal, lifted for one command by
+	// CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_PENDING=true.
+	return migrate.Boot(ctx, pool, dim, migrate.Policy{
+		Mode:             migrate.ModeAuto,
+		ProtectedDBNames: cfg.Database.Migrations.ProtectedDBNames,
+		AllowPending:     cfg.Database.Migrations.AllowPending,
+	})
 }
 
 // MigrationStatus returns the applied/pending migration list for the `migrate status` CLI.

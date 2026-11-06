@@ -103,6 +103,19 @@ const (
 	OperatorConsole_ExplainAccessBatch_FullMethodName       = "/cambrian.OperatorConsole/ExplainAccessBatch"
 	OperatorConsole_GetBlastRadiusPreview_FullMethodName    = "/cambrian.OperatorConsole/GetBlastRadiusPreview"
 	OperatorConsole_RetryWatchDeadLetter_FullMethodName     = "/cambrian.OperatorConsole/RetryWatchDeadLetter"
+	OperatorConsole_ListMemoryNotes_FullMethodName          = "/cambrian.OperatorConsole/ListMemoryNotes"
+	OperatorConsole_GetMemoryNotes_FullMethodName           = "/cambrian.OperatorConsole/GetMemoryNotes"
+	OperatorConsole_SetMemoryNotes_FullMethodName           = "/cambrian.OperatorConsole/SetMemoryNotes"
+	OperatorConsole_DeleteMemoryNotes_FullMethodName        = "/cambrian.OperatorConsole/DeleteMemoryNotes"
+	OperatorConsole_SetMemoryNotesBudget_FullMethodName     = "/cambrian.OperatorConsole/SetMemoryNotesBudget"
+	OperatorConsole_ListSkillProposals_FullMethodName       = "/cambrian.OperatorConsole/ListSkillProposals"
+	OperatorConsole_DecideSkillProposal_FullMethodName      = "/cambrian.OperatorConsole/DecideSkillProposal"
+	OperatorConsole_SetSkillLock_FullMethodName             = "/cambrian.OperatorConsole/SetSkillLock"
+	OperatorConsole_ListSkillLedger_FullMethodName          = "/cambrian.OperatorConsole/ListSkillLedger"
+	OperatorConsole_RollbackSkill_FullMethodName            = "/cambrian.OperatorConsole/RollbackSkill"
+	OperatorConsole_ListSkillGrants_FullMethodName          = "/cambrian.OperatorConsole/ListSkillGrants"
+	OperatorConsole_GrantSkill_FullMethodName               = "/cambrian.OperatorConsole/GrantSkill"
+	OperatorConsole_RevokeSkillGrant_FullMethodName         = "/cambrian.OperatorConsole/RevokeSkillGrant"
 )
 
 // OperatorConsoleClient is the client API for OperatorConsole service.
@@ -656,6 +669,61 @@ type OperatorConsoleClient interface {
 	// cannot double-fire. Mutating: command_id + reason, audited. Premium
 	// (capability "watch-deadletter"); OSS returns Unimplemented.
 	RetryWatchDeadLetter(ctx context.Context, in *RetryWatchDeadLetterOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// ── ADR-0139 D14: principal memory notes (capability "memory-notes") ───────
+	//
+	// The operator half of the notes the agent plane reads as a run-start snapshot
+	// (Orchestrator/GetMemoryNotes) and writes through ProposeMemoryNote. Lands
+	// with the next contract bump; a kernel without it answers Unimplemented and
+	// does not advertise the capability. Reads: any authenticated role, scoped by
+	// the caller's C8 authz like every other memory read. Mutations: Operator-only,
+	// command_id + mandatory reason, audited. An edit lands for the NEXT run of the
+	// principal; a run in flight keeps its frozen snapshot.
+	ListMemoryNotes(ctx context.Context, in *ListMemoryNotesOpRequest, opts ...grpc.CallOption) (*ListMemoryNotesOpResponse, error)
+	GetMemoryNotes(ctx context.Context, in *GetMemoryNotesOpRequest, opts ...grpc.CallOption) (*MemoryNotesOp, error)
+	// SetMemoryNotes replaces a whole document. Same budget and injection scan as
+	// an agent write; a refusal is accepted=false with a rejection, never a trim.
+	SetMemoryNotes(ctx context.Context, in *SetMemoryNotesOpRequest, opts ...grpc.CallOption) (*SetMemoryNotesOpResponse, error)
+	// DeleteMemoryNotes clears a document. Audited; the cleared text is kept in
+	// the audit record, so a delete is recoverable by an operator.
+	DeleteMemoryNotes(ctx context.Context, in *DeleteMemoryNotesOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// SetMemoryNotesBudget sets a document's budget (or the scope default).
+	SetMemoryNotesBudget(ctx context.Context, in *SetMemoryNotesBudgetOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// ── ADR-0139 D13: skill lifecycle (capability "skills-lifecycle") ──────────
+	//
+	// Agent-proposed skills (Orchestrator/ProposeSkill) wait here as PENDING and
+	// are never active until approved. Every mutation, by an operator or by the
+	// deterministic curator (active → stale → archived), appends a ledger entry;
+	// nothing is ever deleted. Lifecycle state and usage ride the existing
+	// ListSkills (SkillOp), not a second listing. Lands with the next contract
+	// bump; Unimplemented and unadvertised otherwise. Mutations: Operator-only,
+	// command_id + mandatory reason, audited.
+	ListSkillProposals(ctx context.Context, in *ListSkillProposalsOpRequest, opts ...grpc.CallOption) (*ListSkillProposalsOpResponse, error)
+	// DecideSkillProposal approves or rejects one PENDING proposal. `reason` is
+	// the decision note, stored on the proposal and in the audit. Approving a
+	// proposal whose base_version is no longer current is FAILED_PRECONDITION; a
+	// "dangerous" scan verdict can never be approved.
+	DecideSkillProposal(ctx context.Context, in *DecideSkillProposalOpRequest, opts ...grpc.CallOption) (*DecideSkillProposalOpResponse, error)
+	// SetSkillLock locks or unlocks a skill against further AGENT edits
+	// (ProposeSkill → LOCKED). Operators can still edit or roll back a locked skill.
+	SetSkillLock(ctx context.Context, in *SetSkillLockOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	ListSkillLedger(ctx context.Context, in *ListSkillLedgerOpRequest, opts ...grpc.CallOption) (*ListSkillLedgerOpResponse, error)
+	// RollbackSkill restores a skill to the state recorded by one ledger entry.
+	// The rollback is itself a NEW ledger entry; history is never rewritten.
+	RollbackSkill(ctx context.Context, in *RollbackSkillOpRequest, opts ...grpc.CallOption) (*RollbackSkillOpResponse, error)
+	// ── Per-agent skill access grants (capability "skill-grants") ──────────────
+	//
+	// Owner decision 2026-11-05 (decisions/skill-access-grants.md, amends ADR-0139
+	// D13): a profile agent's effective skills are its profile's skills plus its
+	// grants. A grant is keyed by agent id, lasts until revoked, and comes from an
+	// approved use_skill request (live, over WatchToolApprovals / ResolveHITL), an
+	// approved skill proposal (the proposer), or GrantSkill. Every grant, revoke,
+	// request and denial is audited. Mutations: Operator-only, command_id +
+	// mandatory reason, audited. Advertised only when the 0031 store is wired.
+	ListSkillGrants(ctx context.Context, in *ListSkillGrantsOpRequest, opts ...grpc.CallOption) (*ListSkillGrantsOpResponse, error)
+	GrantSkill(ctx context.Context, in *GrantSkillOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// RevokeSkillGrant ends an active grant (NOT_FOUND when there is none). A skill
+	// the agent's profile lists stays available through the profile.
+	RevokeSkillGrant(ctx context.Context, in *RevokeSkillGrantOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 }
 
 type operatorConsoleClient struct {
@@ -1533,6 +1601,136 @@ func (c *operatorConsoleClient) RetryWatchDeadLetter(ctx context.Context, in *Re
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListMemoryNotes(ctx context.Context, in *ListMemoryNotesOpRequest, opts ...grpc.CallOption) (*ListMemoryNotesOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListMemoryNotesOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListMemoryNotes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GetMemoryNotes(ctx context.Context, in *GetMemoryNotesOpRequest, opts ...grpc.CallOption) (*MemoryNotesOp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MemoryNotesOp)
+	err := c.cc.Invoke(ctx, OperatorConsole_GetMemoryNotes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SetMemoryNotes(ctx context.Context, in *SetMemoryNotesOpRequest, opts ...grpc.CallOption) (*SetMemoryNotesOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetMemoryNotesOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetMemoryNotes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) DeleteMemoryNotes(ctx context.Context, in *DeleteMemoryNotesOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_DeleteMemoryNotes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SetMemoryNotesBudget(ctx context.Context, in *SetMemoryNotesBudgetOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetMemoryNotesBudget_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListSkillProposals(ctx context.Context, in *ListSkillProposalsOpRequest, opts ...grpc.CallOption) (*ListSkillProposalsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSkillProposalsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListSkillProposals_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) DecideSkillProposal(ctx context.Context, in *DecideSkillProposalOpRequest, opts ...grpc.CallOption) (*DecideSkillProposalOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DecideSkillProposalOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_DecideSkillProposal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SetSkillLock(ctx context.Context, in *SetSkillLockOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetSkillLock_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListSkillLedger(ctx context.Context, in *ListSkillLedgerOpRequest, opts ...grpc.CallOption) (*ListSkillLedgerOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSkillLedgerOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListSkillLedger_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RollbackSkill(ctx context.Context, in *RollbackSkillOpRequest, opts ...grpc.CallOption) (*RollbackSkillOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RollbackSkillOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_RollbackSkill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListSkillGrants(ctx context.Context, in *ListSkillGrantsOpRequest, opts ...grpc.CallOption) (*ListSkillGrantsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSkillGrantsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListSkillGrants_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) GrantSkill(ctx context.Context, in *GrantSkillOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_GrantSkill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RevokeSkillGrant(ctx context.Context, in *RevokeSkillGrantOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_RevokeSkillGrant_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OperatorConsoleServer is the server API for OperatorConsole service.
 // All implementations must embed UnimplementedOperatorConsoleServer
 // for forward compatibility.
@@ -2084,6 +2282,61 @@ type OperatorConsoleServer interface {
 	// cannot double-fire. Mutating: command_id + reason, audited. Premium
 	// (capability "watch-deadletter"); OSS returns Unimplemented.
 	RetryWatchDeadLetter(context.Context, *RetryWatchDeadLetterOpRequest) (*CommandAck, error)
+	// ── ADR-0139 D14: principal memory notes (capability "memory-notes") ───────
+	//
+	// The operator half of the notes the agent plane reads as a run-start snapshot
+	// (Orchestrator/GetMemoryNotes) and writes through ProposeMemoryNote. Lands
+	// with the next contract bump; a kernel without it answers Unimplemented and
+	// does not advertise the capability. Reads: any authenticated role, scoped by
+	// the caller's C8 authz like every other memory read. Mutations: Operator-only,
+	// command_id + mandatory reason, audited. An edit lands for the NEXT run of the
+	// principal; a run in flight keeps its frozen snapshot.
+	ListMemoryNotes(context.Context, *ListMemoryNotesOpRequest) (*ListMemoryNotesOpResponse, error)
+	GetMemoryNotes(context.Context, *GetMemoryNotesOpRequest) (*MemoryNotesOp, error)
+	// SetMemoryNotes replaces a whole document. Same budget and injection scan as
+	// an agent write; a refusal is accepted=false with a rejection, never a trim.
+	SetMemoryNotes(context.Context, *SetMemoryNotesOpRequest) (*SetMemoryNotesOpResponse, error)
+	// DeleteMemoryNotes clears a document. Audited; the cleared text is kept in
+	// the audit record, so a delete is recoverable by an operator.
+	DeleteMemoryNotes(context.Context, *DeleteMemoryNotesOpRequest) (*CommandAck, error)
+	// SetMemoryNotesBudget sets a document's budget (or the scope default).
+	SetMemoryNotesBudget(context.Context, *SetMemoryNotesBudgetOpRequest) (*CommandAck, error)
+	// ── ADR-0139 D13: skill lifecycle (capability "skills-lifecycle") ──────────
+	//
+	// Agent-proposed skills (Orchestrator/ProposeSkill) wait here as PENDING and
+	// are never active until approved. Every mutation, by an operator or by the
+	// deterministic curator (active → stale → archived), appends a ledger entry;
+	// nothing is ever deleted. Lifecycle state and usage ride the existing
+	// ListSkills (SkillOp), not a second listing. Lands with the next contract
+	// bump; Unimplemented and unadvertised otherwise. Mutations: Operator-only,
+	// command_id + mandatory reason, audited.
+	ListSkillProposals(context.Context, *ListSkillProposalsOpRequest) (*ListSkillProposalsOpResponse, error)
+	// DecideSkillProposal approves or rejects one PENDING proposal. `reason` is
+	// the decision note, stored on the proposal and in the audit. Approving a
+	// proposal whose base_version is no longer current is FAILED_PRECONDITION; a
+	// "dangerous" scan verdict can never be approved.
+	DecideSkillProposal(context.Context, *DecideSkillProposalOpRequest) (*DecideSkillProposalOpResponse, error)
+	// SetSkillLock locks or unlocks a skill against further AGENT edits
+	// (ProposeSkill → LOCKED). Operators can still edit or roll back a locked skill.
+	SetSkillLock(context.Context, *SetSkillLockOpRequest) (*CommandAck, error)
+	ListSkillLedger(context.Context, *ListSkillLedgerOpRequest) (*ListSkillLedgerOpResponse, error)
+	// RollbackSkill restores a skill to the state recorded by one ledger entry.
+	// The rollback is itself a NEW ledger entry; history is never rewritten.
+	RollbackSkill(context.Context, *RollbackSkillOpRequest) (*RollbackSkillOpResponse, error)
+	// ── Per-agent skill access grants (capability "skill-grants") ──────────────
+	//
+	// Owner decision 2026-11-05 (decisions/skill-access-grants.md, amends ADR-0139
+	// D13): a profile agent's effective skills are its profile's skills plus its
+	// grants. A grant is keyed by agent id, lasts until revoked, and comes from an
+	// approved use_skill request (live, over WatchToolApprovals / ResolveHITL), an
+	// approved skill proposal (the proposer), or GrantSkill. Every grant, revoke,
+	// request and denial is audited. Mutations: Operator-only, command_id +
+	// mandatory reason, audited. Advertised only when the 0031 store is wired.
+	ListSkillGrants(context.Context, *ListSkillGrantsOpRequest) (*ListSkillGrantsOpResponse, error)
+	GrantSkill(context.Context, *GrantSkillOpRequest) (*CommandAck, error)
+	// RevokeSkillGrant ends an active grant (NOT_FOUND when there is none). A skill
+	// the agent's profile lists stays available through the profile.
+	RevokeSkillGrant(context.Context, *RevokeSkillGrantOpRequest) (*CommandAck, error)
 	mustEmbedUnimplementedOperatorConsoleServer()
 }
 
@@ -2345,6 +2598,45 @@ func (UnimplementedOperatorConsoleServer) GetBlastRadiusPreview(context.Context,
 }
 func (UnimplementedOperatorConsoleServer) RetryWatchDeadLetter(context.Context, *RetryWatchDeadLetterOpRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method RetryWatchDeadLetter not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListMemoryNotes(context.Context, *ListMemoryNotesOpRequest) (*ListMemoryNotesOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListMemoryNotes not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GetMemoryNotes(context.Context, *GetMemoryNotesOpRequest) (*MemoryNotesOp, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMemoryNotes not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetMemoryNotes(context.Context, *SetMemoryNotesOpRequest) (*SetMemoryNotesOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetMemoryNotes not implemented")
+}
+func (UnimplementedOperatorConsoleServer) DeleteMemoryNotes(context.Context, *DeleteMemoryNotesOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteMemoryNotes not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetMemoryNotesBudget(context.Context, *SetMemoryNotesBudgetOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetMemoryNotesBudget not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListSkillProposals(context.Context, *ListSkillProposalsOpRequest) (*ListSkillProposalsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSkillProposals not implemented")
+}
+func (UnimplementedOperatorConsoleServer) DecideSkillProposal(context.Context, *DecideSkillProposalOpRequest) (*DecideSkillProposalOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DecideSkillProposal not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetSkillLock(context.Context, *SetSkillLockOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetSkillLock not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListSkillLedger(context.Context, *ListSkillLedgerOpRequest) (*ListSkillLedgerOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSkillLedger not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RollbackSkill(context.Context, *RollbackSkillOpRequest) (*RollbackSkillOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RollbackSkill not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListSkillGrants(context.Context, *ListSkillGrantsOpRequest) (*ListSkillGrantsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSkillGrants not implemented")
+}
+func (UnimplementedOperatorConsoleServer) GrantSkill(context.Context, *GrantSkillOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method GrantSkill not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RevokeSkillGrant(context.Context, *RevokeSkillGrantOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeSkillGrant not implemented")
 }
 func (UnimplementedOperatorConsoleServer) mustEmbedUnimplementedOperatorConsoleServer() {}
 func (UnimplementedOperatorConsoleServer) testEmbeddedByValue()                         {}
@@ -3858,6 +4150,240 @@ func _OperatorConsole_RetryWatchDeadLetter_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListMemoryNotes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListMemoryNotesOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListMemoryNotes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListMemoryNotes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListMemoryNotes(ctx, req.(*ListMemoryNotesOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GetMemoryNotes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMemoryNotesOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GetMemoryNotes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GetMemoryNotes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GetMemoryNotes(ctx, req.(*GetMemoryNotesOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SetMemoryNotes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetMemoryNotesOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetMemoryNotes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetMemoryNotes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetMemoryNotes(ctx, req.(*SetMemoryNotesOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_DeleteMemoryNotes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteMemoryNotesOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).DeleteMemoryNotes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_DeleteMemoryNotes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).DeleteMemoryNotes(ctx, req.(*DeleteMemoryNotesOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SetMemoryNotesBudget_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetMemoryNotesBudgetOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetMemoryNotesBudget(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetMemoryNotesBudget_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetMemoryNotesBudget(ctx, req.(*SetMemoryNotesBudgetOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListSkillProposals_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSkillProposalsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListSkillProposals(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListSkillProposals_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListSkillProposals(ctx, req.(*ListSkillProposalsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_DecideSkillProposal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DecideSkillProposalOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).DecideSkillProposal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_DecideSkillProposal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).DecideSkillProposal(ctx, req.(*DecideSkillProposalOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SetSkillLock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetSkillLockOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetSkillLock(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetSkillLock_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetSkillLock(ctx, req.(*SetSkillLockOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListSkillLedger_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSkillLedgerOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListSkillLedger(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListSkillLedger_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListSkillLedger(ctx, req.(*ListSkillLedgerOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RollbackSkill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RollbackSkillOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RollbackSkill(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RollbackSkill_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RollbackSkill(ctx, req.(*RollbackSkillOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListSkillGrants_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSkillGrantsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListSkillGrants(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListSkillGrants_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListSkillGrants(ctx, req.(*ListSkillGrantsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_GrantSkill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GrantSkillOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).GrantSkill(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_GrantSkill_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).GrantSkill(ctx, req.(*GrantSkillOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RevokeSkillGrant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeSkillGrantOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RevokeSkillGrant(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RevokeSkillGrant_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RevokeSkillGrant(ctx, req.(*RevokeSkillGrantOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OperatorConsole_ServiceDesc is the grpc.ServiceDesc for OperatorConsole service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -4188,6 +4714,58 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RetryWatchDeadLetter",
 			Handler:    _OperatorConsole_RetryWatchDeadLetter_Handler,
+		},
+		{
+			MethodName: "ListMemoryNotes",
+			Handler:    _OperatorConsole_ListMemoryNotes_Handler,
+		},
+		{
+			MethodName: "GetMemoryNotes",
+			Handler:    _OperatorConsole_GetMemoryNotes_Handler,
+		},
+		{
+			MethodName: "SetMemoryNotes",
+			Handler:    _OperatorConsole_SetMemoryNotes_Handler,
+		},
+		{
+			MethodName: "DeleteMemoryNotes",
+			Handler:    _OperatorConsole_DeleteMemoryNotes_Handler,
+		},
+		{
+			MethodName: "SetMemoryNotesBudget",
+			Handler:    _OperatorConsole_SetMemoryNotesBudget_Handler,
+		},
+		{
+			MethodName: "ListSkillProposals",
+			Handler:    _OperatorConsole_ListSkillProposals_Handler,
+		},
+		{
+			MethodName: "DecideSkillProposal",
+			Handler:    _OperatorConsole_DecideSkillProposal_Handler,
+		},
+		{
+			MethodName: "SetSkillLock",
+			Handler:    _OperatorConsole_SetSkillLock_Handler,
+		},
+		{
+			MethodName: "ListSkillLedger",
+			Handler:    _OperatorConsole_ListSkillLedger_Handler,
+		},
+		{
+			MethodName: "RollbackSkill",
+			Handler:    _OperatorConsole_RollbackSkill_Handler,
+		},
+		{
+			MethodName: "ListSkillGrants",
+			Handler:    _OperatorConsole_ListSkillGrants_Handler,
+		},
+		{
+			MethodName: "GrantSkill",
+			Handler:    _OperatorConsole_GrantSkill_Handler,
+		},
+		{
+			MethodName: "RevokeSkillGrant",
+			Handler:    _OperatorConsole_RevokeSkillGrant_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -36,6 +36,9 @@ type profileAgent struct {
 	Allow     domain.ToolAllowlist
 	Model     string
 	TrustTier string
+	// Skills is the profile's `skills` list: with the agent's grants, its
+	// effective skill set (decisions/skill-access-grants.md, app/skill_access_wiring.go).
+	Skills []string
 }
 
 // profileSkillIndex is the skill index profiles are validated against: the
@@ -68,6 +71,7 @@ func collectProfileAgents(registered []DiscoveredAgent) []profileAgent {
 		pa := profileAgent{ID: def.ID, Model: def.ModelPreference, TrustTier: def.TrustTier}
 		if da.Manifest != nil {
 			pa.Allow = append(domain.ToolAllowlist(nil), da.Manifest.ToolAllowlist...)
+			pa.Skills = append([]string{}, da.Manifest.Skills...)
 		}
 		out = append(out, pa)
 	}

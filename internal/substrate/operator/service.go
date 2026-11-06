@@ -118,6 +118,17 @@ type Service struct {
 	// which a console renders as "this kernel holds no assertions about identity"
 	// rather than an empty review queue — two very different states.
 	linkWriter LinkWriter
+	// notes is the ADR-0139 D14 memory-notes surface (memory_notes.go). nil ⇒
+	// the five notes RPCs answer Unimplemented and "memory-notes" is not advertised.
+	notes MemoryNotesAdmin
+	// skillLifecycle is the ADR-0139 D13 skill lifecycle (skills_lifecycle.go).
+	// nil ⇒ the five lifecycle RPCs answer Unimplemented, ListSkills carries no
+	// lifecycle fields, and "skills-lifecycle" is not advertised.
+	skillLifecycle SkillLifecycleAdmin
+	// skillGrants is per-agent skill access (skill_grants.go,
+	// decisions/skill-access-grants.md). nil = the RPCs answer Unimplemented and
+	// "skill-grants" is not advertised.
+	skillGrants SkillGrantAdmin
 
 	sessionOps SessionOps
 	convOps    ConversationOps // ADR-0084 D9: OSS chat lane

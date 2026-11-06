@@ -300,6 +300,19 @@ func invoke(entry domain.PublishedToolEntry) mcpsdk.ToolHandler {
 		// `<corr>-h2` — is findable afterwards under one name.
 		corr := newCorrelationID()
 		ctx = domain.WithQueryCorrelation(ctx, corr)
+		// ADR-0139 amendment 2026-11-06: a caller that sent a progressToken gets
+		// notifications/progress for this call (the task tools stream a task's live
+		// step output through it). Stateless transport: the notification rides this
+		// request's own response stream.
+		if req != nil && req.Params != nil && req.Session != nil {
+			if tok := req.Params.GetProgressToken(); tok != nil {
+				session := req.Session
+				ctx = withProgress(ctx, func(ctx context.Context, progress float64, message string) error {
+					return session.NotifyProgress(ctx, &mcpsdk.ProgressNotificationParams{
+						ProgressToken: tok, Progress: progress, Message: message})
+				})
+			}
+		}
 		res, err := entry.Handler.Invoke(ctx, args)
 		if err != nil {
 			return toolError(err.Error()), nil

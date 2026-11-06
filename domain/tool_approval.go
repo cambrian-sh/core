@@ -1,20 +1,36 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ApprovalRequest is a pending operator decision for a dangerous tool call
-// (ADR-0039 D10).
+// (ADR-0039 D10), or — Kind ApprovalKindSkillAccess — an agent's request for a
+// skill outside its effective set (decisions/skill-access-grants.md). Both ride
+// the one operator approval hub, so an operator answers them in one place.
 type ApprovalRequest struct {
 	ID          string
 	AgentID     string
-	ToolName    string
+	ToolName    string // for skill_access: "skill:<name>", so a console that predates Kind still renders it
 	ArgsPreview string
+	// Kind is "" for a dangerous-tool approval, ApprovalKindSkillAccess for a skill
+	// access request.
+	Kind string
+	// Timeout, when > 0, replaces the controller's default grace window for this
+	// request (skill access waits execution.skills.access_request_timeout_seconds).
+	Timeout time.Duration
 }
 
 // ApprovalDecision is an operator's (or automated approver's) ruling.
 type ApprovalDecision struct {
 	Approved   bool
 	ApproverID string
+	// Decided is true when someone actually ruled (approve OR deny), false when the
+	// request failed closed without a ruling (no approver subscribed, timeout,
+	// cancellation). Tool approvals treat both as a denial; skill access reports
+	// the second as "pending" and keeps the request open for a later grant.
+	Decided bool
 }
 
 // ApprovalController gates dangerous tool calls on an operator decision
@@ -45,7 +61,7 @@ type AlwaysApproveController struct{}
 
 // Request always approves, stamped with a synthetic approver for the audit trail.
 func (AlwaysApproveController) Request(_ context.Context, _ ApprovalRequest) (ApprovalDecision, error) {
-	return ApprovalDecision{Approved: true, ApproverID: "auto-approve"}, nil
+	return ApprovalDecision{Approved: true, ApproverID: "auto-approve", Decided: true}, nil
 }
 
 // EgressAuditor records that data left the trust boundary via a remote tool call

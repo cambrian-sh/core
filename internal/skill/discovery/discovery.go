@@ -24,6 +24,10 @@ type skillFrontmatter struct {
 	Description string   `yaml:"description"`
 	Tools       []string `yaml:"tools"`
 	Scope       []string `yaml:"scope"` // ADR-0046 D9 (option A): flat classification tags
+	// ADR-0139 C3 metadata. Lenient: a non-string version (e.g. `version: 1`) is
+	// read as its YAML text.
+	Version string `yaml:"version"`
+	Trust   string `yaml:"trust"`
 }
 
 // ParseSkillMD parses one SKILL.md (frontmatter + body) into a domain.Skill.
@@ -47,6 +51,8 @@ func ParseSkillMD(content []byte) (domain.Skill, error) {
 		Instructions: body,
 		ToolGrants:   f.Tools,
 		ScopeTags:    f.Scope,
+		Version:      strings.TrimSpace(f.Version),
+		Trust:        strings.TrimSpace(f.Trust),
 	}, nil
 }
 
@@ -102,6 +108,7 @@ func Discover(dir string) ([]domain.Skill, error) {
 			slog.Warn("skill discovery: skipping", "dir", e.Name(), "err", perr)
 			continue
 		}
+		sk.SourcePath = path
 		skills = append(skills, sk)
 	}
 	return skills, nil

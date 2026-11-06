@@ -208,10 +208,18 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 
 	case domain.TokenChunkEvent:
 		out.SessionId = e.SessionID
+		// ADR-0139 amendment 2026-11-06: the step-output event (every producer).
 		out.Payload = &pb.OperatorEvent_Token{Token: &pb.TokenChunkOp{
-			SessionId: e.SessionID,
-			StepIndex: int32(e.StepIndex),
-			Text:      e.Text,
+			SessionId:     e.SessionID,
+			StepIndex:     int32(e.StepIndex),
+			Text:          e.Text,
+			LeaseId:       e.LeaseID,
+			TaskSessionId: e.TaskSessionID,
+			AgentId:       e.AgentID,
+			Kind:          e.Kind,
+			ChunkSeq:      e.Seq,
+			Final:         e.Final,
+			Source:        e.Source,
 		}}
 
 	case domain.AgentLLMExchangeEvent:

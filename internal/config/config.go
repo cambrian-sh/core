@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -108,11 +109,15 @@ type PlanConfig struct {
 	PlanDriftDays          int     `json:"plan_drift_days"`
 	ContextRefSnippetChars int     `json:"context_ref_snippet_chars"` // default 500
 
-	// ThoughtResultsMaxChars caps the earlier-step results an in-kernel thought step
-	// inlines into its synthesis call (ADR-0139 D2), in characters, across all
-	// results: when they are larger, each is shortened to a fair share and marked as
-	// shortened. Default 24000 (about 6k tokens); <= 0 reads as the default.
-	ThoughtResultsMaxChars int `json:"thought_results_max_chars,omitempty"`
+	// DependencyResultsMaxChars caps the upstream results a dependent plan step is
+	// handed inline (domain.StepDependency, the executor's buildStepDependencies), in
+	// bytes across all of its dependencies, for an agent step and an in-kernel thought
+	// step alike: when they are larger, each is shortened to a fair share, marked as
+	// shortened and keeps its content-store cid so the receiver can resolve the rest.
+	// Default 24000 (about 6k tokens); <= 0 reads as the default. Replaces
+	// thought_results_max_chars (2026-11-05, which bounded only the thought step's
+	// request; T-20261105-a-planner-thought-step-that-depends-on-two).
+	DependencyResultsMaxChars int `json:"dependency_results_max_chars,omitempty"`
 
 	// BudgetExhaustionAlarmRate is the threshold above which PLAN_BUDGET_INSUFFICIENT
 	// signal is emitted. Default: 0.05 (5%). ADR-0018.
@@ -168,6 +173,56 @@ type GatekeeperConfig struct {
 	// GatekeeperW4 is the weight for the cost-penalty term in GatekeeperScore.
 	// Set to 0 to disable cost-awareness entirely. Default: 0.15.
 	GatekeeperW4 float64 `json:"gatekeeper_w4"`
+
+	// MeritMode selects the Gatekeeper's L3 merit scorer (ADR-0139 D6, evolvable):
+	//   - "posterior_lcb" (default since 2026-11-05, owner decision
+	//     decisions/posterior-lcb-default-merit.md): rank by a lower quantile
+	//     (MeritLCBQuantile) of the Beta posterior over the agent's verified outcomes for
+	//     the step's capability, then by cost, then by latency (a missing latency or cost
+	//     takes the slate mean);
+	//   - "legacy": the hand-weighted GatekeeperScore
+	//     w1·SR + w2·Trust + w3/latency − w4·cost (or the ROUTE-07 learned scorer when
+	//     routing.learned_scorer is on), byte-identical to before D6;
+	//   - "thompson": rank by one sample from that posterior per dispatch (Thompson
+	//     sampling), same tie-breaks. Exploration is inherent, so the Dispatcher's
+	//     epsilon branch (routing.exploration_rate) is skipped in this mode.
+	// The posterior modes drop the SR binarisation and the always-zero calibration
+	// term; they ignore the w1..w4 weights and the learned scorer. The owner promoted
+	// posterior_lcb without an A/B/A study; that study stays open as an optional
+	// validation (T-20261105-a-b-a-routing-study-legacy-merit-vs-posterior).
+	MeritMode string `json:"merit_mode,omitempty"`
+
+	// MeritPriorAlpha / MeritPriorBeta are the Beta prior of every (agent,
+	// capability) posterior. Default 1/1 (uniform, neutral). No interview or
+	// manifest seed feeds it: an agent with no verified outcome sits on the prior.
+	// Both must be > 0; 0 (unset) reads as the default 1.
+	MeritPriorAlpha float64 `json:"merit_prior_alpha,omitempty"`
+	MeritPriorBeta  float64 `json:"merit_prior_beta,omitempty"`
+
+	// MeritLCBQuantile is the posterior quantile posterior_lcb ranks by. Default 0.1
+	// (a 90% one-sided lower bound). Must be in (0, 1); 0.5 ≈ the posterior median;
+	// 0 (unset) reads as the default 0.1.
+	MeritLCBQuantile float64 `json:"merit_lcb_quantile,omitempty"`
+
+	// MeritUnverifiedWeight is how much an UNVERIFIED step outcome (the step
+	// returned, no verifier scored it) adds to α in the posterior modes. Default 0:
+	// unverified outcomes are neutral evidence (ADR-0139 D6). In [0, 1].
+	MeritUnverifiedWeight float64 `json:"merit_unverified_weight,omitempty"`
+}
+
+// Merit modes of GatekeeperConfig.MeritMode (ADR-0139 D6).
+const (
+	MeritModeLegacy       = "legacy"
+	MeritModePosteriorLCB = "posterior_lcb"
+	MeritModeThompson     = "thompson"
+)
+
+// ActiveMeritMode is MeritMode with the empty string read as the default, posterior_lcb.
+func (g GatekeeperConfig) ActiveMeritMode() string {
+	if g.MeritMode == "" {
+		return MeritModePosteriorLCB
+	}
+	return g.MeritMode
 }
 
 // VerificationConfig — Verifier pool sizing, trust-score weighting and cross-verification sampling.
@@ -1106,8 +1161,8 @@ const DefaultPlanIdleTimeoutMs = 180000
 // absolute safety cap on one plan, 30 min (owner decision 2026-11-05).
 const DefaultPlanMaxDurationMs = 1800000
 
-// DefaultThoughtResultsMaxChars is the default of plan.thought_results_max_chars.
-const DefaultThoughtResultsMaxChars = 24000
+// DefaultDependencyResultsMaxChars is the default of plan.dependency_results_max_chars.
+const DefaultDependencyResultsMaxChars = 24000
 
 // KgTripletsLLMFormat values.
 const (
@@ -1255,6 +1310,49 @@ type AgentsConfig struct {
 	// (full-jitter) restart backoff. Defaults 1000 / 30000.
 	DaemonRestartBaseBackoffMs int `json:"daemon_restart_base_backoff_ms"`
 	DaemonRestartMaxBackoffMs  int `json:"daemon_restart_max_backoff_ms"`
+
+	// ── ADR-0139 D12: in-agent subagents (Orchestrator.SpawnSubagent) ──
+	// Every limit below is enforced by the kernel (internal/substrate/network/
+	// subagent.go), never by the agent: a child is a separate kernel dispatch on
+	// its own lease that rolls up to the parent's ROOT lease.
+
+	// SubagentMaxDepth is how deep a spawn chain may go, counted from the lease
+	// chain (a root step lease is depth 0, its child depth 1). A spawn that would
+	// exceed it ends with exit_reason DEPTH and never runs. Default 1 (D12):
+	// children may not spawn grandchildren. 0 disables spawning entirely.
+	SubagentMaxDepth int `json:"subagent_max_depth"`
+	// SubagentMaxConcurrency is how many children of one ROOT lease may run at
+	// once. A spawn beyond it waits for a slot until its timeout, then ends with
+	// TIMEOUT. Default 4 (D12). <= 0 is read as 1.
+	SubagentMaxConcurrency int `json:"subagent_max_concurrency"`
+	// SubagentTreeMaxToolRounds is the tree-wide iteration cap: the tool calls
+	// all children of one root may make together. A child's max_tool_rounds is
+	// clamped to what remains. Default 64. <= 0 = no tree cap.
+	SubagentTreeMaxToolRounds int `json:"subagent_tree_max_tool_rounds"`
+	// SubagentDefaultMaxToolRounds is a child's tool-call cap when the spawn
+	// asks for 0. Default 16.
+	SubagentDefaultMaxToolRounds int `json:"subagent_default_max_tool_rounds"`
+	// SubagentTreeTokenBudget caps the model tokens all children of one root may
+	// spend together. 0 (default) = no tree cap beyond the session spend ceiling
+	// (ADR-0131), which still binds every child call. A spawn's token_budget is
+	// clamped to what remains.
+	SubagentTreeTokenBudget int `json:"subagent_tree_token_budget"`
+	// SubagentDefaultTimeoutMs is a child's wall-clock limit when the spawn asks
+	// for 0. Always clamped to the parent call's own deadline. Default 300000.
+	SubagentDefaultTimeoutMs int `json:"subagent_default_timeout_ms"`
+	// SubagentResultMaxChars caps the child's text / structured_json in the
+	// result; a longer answer is cut and marked truncated. Default 16000.
+	SubagentResultMaxChars int `json:"subagent_result_max_chars"`
+	// SubagentWithheldTools are the tool-name globs a "*" toolset does NOT pass
+	// to a child (D12: no clarify, memory write or messaging unless granted). A
+	// child gets one only when the spawn names it explicitly.
+	SubagentWithheldTools []string `json:"subagent_withheld_tools"`
+	// SubagentMemoryWriteTools are the names (globs) that grant a child memory
+	// write when the spawn's toolset names them explicitly: the lease is then
+	// bound MemoryWriteGranted, which the D14 notes service reads. They are
+	// control verbs, not registry tools, so they are not checked against the
+	// parent's tool menu — only against the parent's own memory-write right.
+	SubagentMemoryWriteTools []string `json:"subagent_memory_write_tools"`
 }
 
 // SupervisionConfig — Supervision statistics: aggregation cadence, EWMA/latency windows and histogram sizing.
@@ -1416,6 +1514,247 @@ type ExecutionConfig struct {
 	// Facts is the ADR-0136 D4/D5 fact layer: per-document fact extraction, the fact
 	// retrieval lane and valid-time supersession. Every switch defaults off.
 	Facts FactsConfig `json:"facts"`
+
+	// Hooks is the ADR-0139 D11 lifecycle-hook declarations: built-in parameterised
+	// hooks and external command hooks. Empty by default (no hooks).
+	Hooks HooksConfig `json:"hooks"`
+
+	// MemoryNotes is ADR-0139 D14 principal memory notes: default budgets, the org
+	// scope and the frozen-snapshot cache (internal/memorynotes; memory_notes.go).
+	MemoryNotes MemoryNotesConfig `json:"memory_notes"`
+
+	// Skills is the ADR-0139 D13 skill lifecycle: agent proposals and the
+	// deterministic curator (internal/skill/lifecycle; skills_lifecycle.go).
+	Skills SkillsConfig `json:"skills"`
+
+	// StepOutput is the live step-output stream (ADR-0139 amendment 2026-11-06):
+	// gateway deltas on both model lanes, agent-pushed output, caps and the MCP
+	// progress wait (step_output.go).
+	StepOutput StepOutputConfig `json:"step_output"`
+}
+
+// Hook kinds accepted in execution.hooks.entries[].kind (ADR-0139 D11).
+const (
+	// HookKindDenyArgsRegex denies a tool call whose arguments match Pattern.
+	HookKindDenyArgsRegex = "deny_args_regex"
+	// HookKindRequireApproval narrows the named tools' calls to ask (an approval).
+	HookKindRequireApproval = "require_approval"
+	// HookKindRedactOutput replaces Pattern matches in a tool result or model reply.
+	HookKindRedactOutput = "redact_output"
+	// HookKindCommand runs an external program: the JSON event on stdin, a JSON
+	// result on stdout.
+	HookKindCommand = "command"
+)
+
+// HooksConfig declares lifecycle hooks (ADR-0139 D11). Hooks can only narrow a
+// decision (allow → ask → deny), never widen one; a rewrite needs may_rewrite and
+// a rewritten tool call is re-authorized. Plugins add hooks through
+// app.Registry.AddHook; these are the operator's.
+type HooksConfig struct {
+	// Entries are the declared hooks. Run order is priority (ascending), then name.
+	Entries []HookConfig `json:"entries,omitempty"`
+	// DefaultTimeoutMs bounds a hook whose timeout_ms is 0. 0 ⇒ 5000.
+	DefaultTimeoutMs int `json:"default_timeout_ms,omitempty"`
+	// GuardedArguments are the control-verb arguments post_model hooks see and may
+	// rewrite or refuse besides the final answer (HookEvent.GuardedArgs): tool
+	// calls the SDK handles itself, which never reach the ToolExecutor and so never
+	// pass a pre_tool hook. Empty = DefaultGuardedArguments (the SDK's control
+	// verbs); a non-empty list replaces the defaults. Read by the llm.Provider
+	// (llm.WithGuardedArgs, app.go). T-20261106-post-model-hooks-do-not-guard-control-verb.
+	GuardedArguments []GuardedArgumentConfig `json:"guarded_arguments,omitempty"`
+}
+
+// HookConfig is one declared hook.
+type HookConfig struct {
+	// Name is unique across all hooks (config and plugin); it is logged on every call.
+	Name string `json:"name"`
+	// Kind: deny_args_regex | require_approval | redact_output | command.
+	Kind string `json:"kind"`
+	// Points the hook attaches to (pre_tool, post_tool, pre_model, post_model,
+	// pre_compact, post_compact, run_start, run_end, subagent_start, subagent_end).
+	// Empty ⇒ the kind's natural point: deny_args_regex and require_approval →
+	// pre_tool, redact_output → post_tool. A command hook must name its points.
+	Points []string `json:"points,omitempty"`
+	// Priority orders hooks; lower runs first.
+	Priority int `json:"priority,omitempty"`
+	// OnFailure is allow | block. Empty ⇒ block at pre_* and *_start points,
+	// allow at post_* and *_end points.
+	OnFailure string `json:"on_failure,omitempty"`
+	// TimeoutMs bounds one invocation. 0 ⇒ default_timeout_ms.
+	TimeoutMs int `json:"timeout_ms,omitempty"`
+	// MayRewrite permits input/output rewrites. Required for redact_output; for a
+	// command hook it decides whether its rewrites are honoured.
+	MayRewrite bool `json:"may_rewrite,omitempty"`
+	// Tools restricts tool-point hooks to these tool names (fnmatch globs, the
+	// profile-allowlist syntax: `*` crosses `/`, so "mcp:*" covers every MCP
+	// tool). Empty ⇒ every tool. Required for require_approval.
+	Tools []string `json:"tools,omitempty"`
+	// Pattern is the RE2 regex for deny_args_regex (matched against the raw
+	// argument JSON) and redact_output.
+	Pattern string `json:"pattern,omitempty"`
+	// Replacement is redact_output's substitute. Empty ⇒ "[REDACTED]".
+	Replacement string `json:"replacement,omitempty"`
+	// Reason is the narrowing reason the agent sees (deny_args_regex, require_approval).
+	Reason string `json:"reason,omitempty"`
+	// Command is a command hook's argv: Command[0] is the program, the rest its
+	// arguments. Never a shell string; no shell is involved.
+	Command []string `json:"command,omitempty"`
+	// Env names extra environment variables passed to a command hook, on top of
+	// the OS essentials. Secret-shaped names are stripped regardless (procenv).
+	Env []string `json:"env,omitempty"`
+	// Agents scopes the hook to events of these agent ids (fnmatch globs, as
+	// Tools). Applies at every point: tool, model and subagent events all carry
+	// the acting agent. Empty = every event; a non-empty list never matches an
+	// event with no agent (an organ call such as the planner's has none).
+	Agents []string `json:"agents,omitempty"`
+	// Purposes scopes the model points (pre_model, post_model) to calls with these
+	// purpose labels (fnmatch globs): router, planner, verifier, memory, facts,
+	// thought (an in-kernel thought step), agent_step (every agent-plane gateway
+	// call), model (a model-bound handle). A deliverables scope is
+	// [agent_step, thought]. Empty = every purpose. Only valid on a hook that
+	// attaches to a model point.
+	Purposes []string `json:"purposes,omitempty"`
+}
+
+// GuardedArgumentConfig names one guarded outbound argument: the string argument
+// Arg of every call to Tool in a model reply (execution.hooks.guarded_arguments).
+type GuardedArgumentConfig struct {
+	Tool string `json:"tool"`
+	Arg  string `json:"arg"`
+}
+
+// DefaultGuardedArguments are the SDK's control-verb arguments that leave a model
+// reply without passing the ToolExecutor (sdk/cambrian_agent_sdk/react.py
+// _YIELD_TOOL_DEF and _KERNEL_VERB_DEFS): a subgoal's intent becomes a plan step,
+// a spawn's objective a child's task, a memory note's content and a proposed
+// skill's body are persisted. spawn_subagent's context_summary is NOT a model
+// argument (the SDK builds it for the SpawnSubagent RPC), so it is not here.
+var DefaultGuardedArguments = []GuardedArgumentConfig{
+	{Tool: "yield_subgoal", Arg: "intent"},
+	{Tool: "spawn_subagent", Arg: "objective"},
+	{Tool: "propose_memory_note", Arg: "content"},
+	{Tool: "propose_skill", Arg: "skill_md"},
+}
+
+// GuardedArgumentList is GuardedArguments with its default applied, as the
+// domain type the llm.Provider consumes (llm.WithGuardedArgs). The final answer
+// (execution.step_output.final_answer_tool/arg) is always guarded on top.
+func (h HooksConfig) GuardedArgumentList() []domain.GuardedArg {
+	src := h.GuardedArguments
+	if len(src) == 0 {
+		src = DefaultGuardedArguments
+	}
+	out := make([]domain.GuardedArg, 0, len(src))
+	for _, g := range src {
+		out = append(out, domain.GuardedArg{Tool: g.Tool, Arg: g.Arg})
+	}
+	return out
+}
+
+// attachesToModelPoint reports whether a hook entry names a model point. No kind's
+// natural point is a model point, so an entry with no points never does.
+func (e HookConfig) attachesToModelPoint() bool {
+	for _, p := range e.Points {
+		if p == string(domain.HookPreModel) || p == string(domain.HookPostModel) {
+			return true
+		}
+	}
+	return false
+}
+
+// validate checks execution.hooks. A bad hook fails the load: a safety
+// control that silently did not install is worse than a boot error.
+func (h HooksConfig) validate() []string {
+	var errs []string
+	if h.DefaultTimeoutMs < 0 {
+		errs = append(errs, "hooks.default_timeout_ms must be >= 0")
+	}
+	guarded := map[GuardedArgumentConfig]bool{}
+	for i, g := range h.GuardedArguments {
+		at := fmt.Sprintf("hooks.guarded_arguments[%d]", i)
+		if strings.TrimSpace(g.Tool) == "" || strings.TrimSpace(g.Arg) == "" {
+			errs = append(errs, at+": tool and arg are both required")
+			continue
+		}
+		if guarded[g] {
+			errs = append(errs, fmt.Sprintf("%s: %s.%s is listed twice", at, g.Tool, g.Arg))
+		}
+		guarded[g] = true
+	}
+	seen := map[string]bool{}
+	for i, e := range h.Entries {
+		at := fmt.Sprintf("hooks.entries[%d]", i)
+		if strings.TrimSpace(e.Name) == "" {
+			errs = append(errs, at+".name is required")
+		} else if seen[e.Name] {
+			errs = append(errs, fmt.Sprintf("%s.name %q is declared twice", at, e.Name))
+		}
+		seen[e.Name] = true
+		for _, p := range e.Points {
+			if !domain.HookPoint(p).Valid() {
+				errs = append(errs, fmt.Sprintf("%s.points: unknown point %q", at, p))
+			}
+		}
+		switch e.OnFailure {
+		case "", "allow", "block":
+		default:
+			errs = append(errs, fmt.Sprintf("%s.on_failure must be allow or block (got %q)", at, e.OnFailure))
+		}
+		if e.TimeoutMs < 0 {
+			errs = append(errs, at+".timeout_ms must be >= 0")
+		}
+		for _, t := range e.Tools {
+			if strings.TrimSpace(t) == "" {
+				errs = append(errs, at+".tools must not contain an empty name")
+			}
+		}
+		for _, a := range e.Agents {
+			if strings.TrimSpace(a) == "" {
+				errs = append(errs, at+".agents must not contain an empty glob")
+			}
+		}
+		for _, p := range e.Purposes {
+			if strings.TrimSpace(p) == "" {
+				errs = append(errs, at+".purposes must not contain an empty glob")
+			}
+		}
+		if len(e.Purposes) > 0 && !e.attachesToModelPoint() {
+			errs = append(errs, at+".purposes scope model calls: the hook must attach to pre_model or post_model")
+		}
+		needPattern := func() {
+			if e.Pattern == "" {
+				errs = append(errs, at+".pattern is required for kind "+e.Kind)
+				return
+			}
+			if _, err := regexp.Compile(e.Pattern); err != nil {
+				errs = append(errs, fmt.Sprintf("%s.pattern does not compile: %v", at, err))
+			}
+		}
+		switch e.Kind {
+		case HookKindDenyArgsRegex:
+			needPattern()
+		case HookKindRequireApproval:
+			if len(e.Tools) == 0 {
+				errs = append(errs, at+".tools is required for require_approval")
+			}
+		case HookKindRedactOutput:
+			needPattern()
+			if !e.MayRewrite {
+				errs = append(errs, at+": redact_output rewrites output and needs may_rewrite: true")
+			}
+		case HookKindCommand:
+			if len(e.Command) == 0 || strings.TrimSpace(e.Command[0]) == "" {
+				errs = append(errs, at+".command is required (argv; command[0] is the program)")
+			}
+			if len(e.Points) == 0 {
+				errs = append(errs, at+".points is required for a command hook")
+			}
+		default:
+			errs = append(errs, fmt.Sprintf("%s.kind must be one of %s, %s, %s, %s (got %q)", at,
+				HookKindDenyArgsRegex, HookKindRequireApproval, HookKindRedactOutput, HookKindCommand, e.Kind))
+		}
+	}
+	return errs
 }
 
 // FactsConfig is the ADR-0136 fact layer (D4 fact-augmented keys into chunks, D5
@@ -1669,6 +2008,11 @@ type Config struct {
 		// apart on purpose, because reusing one name for both directions makes
 		// every comment and console label ambiguous.
 		MCP MCPEndpointConfig `json:"mcp"`
+		// A2A is the kernel's A2A Agent Card listener (ADR-0139 D4/C2): signed
+		// cards for the registered agents at the A2A well-known path. Like MCP,
+		// the INBOUND side lives here and the OUTBOUND side (remote agents the
+		// kernel registers) is the top-level `a2a` block.
+		A2A A2AEndpointConfig `json:"a2a"`
 		// RateLimit is the per-principal token bucket on the gRPC planes
 		// (rate_limit.go). Default on and generous.
 		RateLimit RateLimitConfig `json:"rate_limit"`
@@ -1685,7 +2029,11 @@ type Config struct {
 	// unchanged (the decoder ignores keys with no field).
 	// ADR-0043: external MCP servers the kernel consumes tools from. Opt-in —
 	// absent/empty ⇒ no MCP behaviour.
-	MCP     MCPConfig     `json:"mcp,omitempty"`
+	MCP MCPConfig `json:"mcp,omitempty"`
+	// A2A lists the remote A2A agents the kernel registers and how their cards'
+	// signatures are checked (ADR-0139 D4). The inbound card listener is
+	// server.a2a.
+	A2A     A2AConfig     `json:"a2a"`
 	Chunker ChunkerConfig `json:"chunker"`
 	// Relations declares the identity plane's link verbs (five-planes step 2,
 	// D-W5-1). Absent/empty is a working deployment: the built-in seeds
@@ -1768,6 +2116,134 @@ func (m MCPEndpointConfig) validate(grpcPort string) []string {
 			errs = append(errs, fmt.Sprintf("server.mcp.clients lists %q twice", name))
 		}
 		seen[name] = true
+	}
+	return errs
+}
+
+// A2AEndpointConfig configures the kernel's Agent Card listener (ADR-0139
+// D4/C2; internal/agentcard). It serves, read-only and unauthenticated:
+//
+//	/a2a/{agent_id}/.well-known/agent-card.json  the agent's kernel-signed card
+//	/a2a/agents                                  the card index
+//	/.well-known/jwks.json                       the card-signing public key
+//
+// DEFAULT DISABLED, like server.mcp: a listener opens because a deployment said
+// so. It binds through the one listener policy (server.bind_address, TLS,
+// timeouts; ADR-0130 D3).
+type A2AEndpointConfig struct {
+	// Enabled switches the listener on. Off: nothing in this block is read and
+	// no signing key is loaded or minted.
+	Enabled bool `json:"enabled"`
+	// Port is the listener's TCP port. No implied default (the server.mcp rule).
+	Port int `json:"port"`
+	// PublicBaseURL is where clients reach THIS listener (e.g. behind a proxy).
+	// Optional; when set, cards carry its JWKS URL as the JWS `jku` and the
+	// index returns absolute card URLs.
+	PublicBaseURL string `json:"public_base_url"`
+	// Interfaces are the public A2A interfaces a deployment fronts its agents
+	// with (card.supportedInterfaces). The kernel does NOT itself serve the A2A
+	// task protocol, so the default is none and cards say so; list one only
+	// when something at that URL serves it. url_template may hold {agent_id}.
+	Interfaces []A2AInterfaceConfig `json:"interfaces"`
+	// ProviderOrganization / ProviderURL become card.provider (A2A requires
+	// both members, so both or neither).
+	ProviderOrganization string `json:"provider_organization"`
+	ProviderURL          string `json:"provider_url"`
+	// DocumentationURL, optional, becomes card.documentationUrl.
+	DocumentationURL string `json:"documentation_url"`
+	// SigningKeyFile, when set, holds the Ed25519 card-signing key (hex seed;
+	// created 0600 on first boot when absent). Empty: the key is the ADR-0101
+	// named secret `a2a:card-signing-key` in the encrypted config store, minted
+	// on first boot. The key is never logged.
+	SigningKeyFile string `json:"signing_key_file"`
+	// IncludeSystemAgents publishes cards for system agents too. Off: they are
+	// kernel organs never assigned a user task.
+	IncludeSystemAgents bool `json:"include_system_agents"`
+}
+
+// A2AInterfaceConfig is one public A2A interface (AgentInterface).
+type A2AInterfaceConfig struct {
+	URLTemplate     string `json:"url_template"`
+	ProtocolBinding string `json:"protocol_binding"`
+}
+
+// A2AProtocolBindings are the A2A 1.0 protocol bindings.
+var A2AProtocolBindings = []string{"JSONRPC", "GRPC", "HTTP+JSON"}
+
+func (a A2AEndpointConfig) validate(grpcPort string, mcp MCPEndpointConfig) []string {
+	if !a.Enabled {
+		return nil
+	}
+	var errs []string
+	if a.Port <= 0 || a.Port > 65535 {
+		errs = append(errs, fmt.Sprintf("server.a2a.port must be 1..65535 when server.a2a.enabled is true (got %d)", a.Port))
+	}
+	if p, err := strconv.Atoi(strings.TrimSpace(grpcPort)); err == nil && p == a.Port {
+		errs = append(errs, fmt.Sprintf("server.a2a.port %d is server.port: the card listener gets its own port", a.Port))
+	}
+	if mcp.Enabled && mcp.Port == a.Port {
+		errs = append(errs, fmt.Sprintf("server.a2a.port %d is server.mcp.port", a.Port))
+	}
+	if (a.ProviderOrganization == "") != (a.ProviderURL == "") {
+		errs = append(errs, "server.a2a.provider_organization and server.a2a.provider_url are set together or not at all "+
+			"(A2A AgentProvider requires both)")
+	}
+	for i, it := range a.Interfaces {
+		if strings.TrimSpace(it.URLTemplate) == "" {
+			errs = append(errs, fmt.Sprintf("server.a2a.interfaces[%d].url_template is empty", i))
+		}
+		ok := false
+		for _, b := range A2AProtocolBindings {
+			ok = ok || it.ProtocolBinding == b
+		}
+		if !ok {
+			errs = append(errs, fmt.Sprintf("server.a2a.interfaces[%d].protocol_binding %q must be one of %v",
+				i, it.ProtocolBinding, A2AProtocolBindings))
+		}
+	}
+	return errs
+}
+
+// A2AConfig is the OUTBOUND A2A side: remote agents the kernel registers.
+type A2AConfig struct {
+	// Endpoints are the remote A2A agents' base URLs. At boot the kernel fetches
+	// each card (<endpoint>/.well-known/agent-card.json), applies the signature
+	// policy and registers the agent as runtime a2a at trust tier third-party.
+	// Empty: no remote agents (the default).
+	Endpoints []string `json:"endpoints"`
+	// SignaturePolicy is off | optional | required (default optional):
+	//   - optional: a card signed by a trusted key must verify, else it is
+	//     refused; an unsigned card, or one signed only by unknown keys, is
+	//     registered with a WARN;
+	//   - required: only cards that verify against a trusted key register;
+	//   - off: signatures are ignored.
+	// A broken signature by a trusted key is refused under optional AND required.
+	SignaturePolicy string `json:"signature_policy"`
+	// TrustedJWKSFile is a JSON Web Key Set (Ed25519 OKP or P-256 EC keys) of
+	// the card signers this deployment trusts. A card's own `jku` is never
+	// fetched: it is served by the party the signature is meant to check.
+	TrustedJWKSFile string `json:"trusted_jwks_file"`
+}
+
+// DefaultA2ASignaturePolicy applies when a2a.signature_policy is unset.
+const DefaultA2ASignaturePolicy = "optional"
+
+func (a A2AConfig) validate() []string {
+	var errs []string
+	switch a.SignaturePolicy {
+	case "off", "optional", "required":
+	default:
+		errs = append(errs, fmt.Sprintf("a2a.signature_policy %q must be off, optional or required", a.SignaturePolicy))
+	}
+	if a.SignaturePolicy == "required" && strings.TrimSpace(a.TrustedJWKSFile) == "" && len(a.Endpoints) > 0 {
+		errs = append(errs, "a2a.signature_policy=required needs a2a.trusted_jwks_file: with no trusted key "+
+			"every remote card would be refused")
+	}
+	for i, e := range a.Endpoints {
+		u := strings.TrimSpace(e)
+		if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+			errs = append(errs, fmt.Sprintf("a2a.endpoints[%d] %q must be an http(s) URL", i, e))
+		}
 	}
 	return errs
 }
@@ -1961,7 +2437,7 @@ func DefaultConfig() *Config {
 				MaxPartialContextBytes:      51200,
 				PlanDriftDays:               7,
 				ContextRefSnippetChars:      500,
-				ThoughtResultsMaxChars:      DefaultThoughtResultsMaxChars,
+				DependencyResultsMaxChars:   DefaultDependencyResultsMaxChars,
 				BudgetExhaustionAlarmRate:   0.05,
 				MinStepEnergy:               256,
 				MaxStepEnergy:               32768,
@@ -1972,6 +2448,12 @@ func DefaultConfig() *Config {
 				GatekeeperW2:            0.4,
 				GatekeeperW3:            0.2,
 				GatekeeperW4:            0.15,
+				// ADR-0139 D6: posterior_lcb by owner decision (2026-11-05); legacy stays selectable.
+				MeritMode:             MeritModePosteriorLCB,
+				MeritPriorAlpha:       1,
+				MeritPriorBeta:        1,
+				MeritLCBQuantile:      0.1,
+				MeritUnverifiedWeight: 0,
 			},
 			Verification: VerificationConfig{
 				VerifierPoolThreshold:      0.8,
@@ -2181,6 +2663,20 @@ func DefaultConfig() *Config {
 				// T-20261102-kg-extractor-cold-start-drops-the-first-kg: 10 s killed
 				// the kg_extractor (spaCy load) while the kernel booted its agents.
 				AgentBootTimeoutMs: 30000,
+				// ADR-0139 D12 subagent limits (depth 1 and concurrency 4 are the
+				// ADR's and the proto's stated defaults).
+				SubagentMaxDepth:             1,
+				SubagentMaxConcurrency:       4,
+				SubagentTreeMaxToolRounds:    64,
+				SubagentDefaultMaxToolRounds: 16,
+				SubagentDefaultTimeoutMs:     300000,
+				SubagentResultMaxChars:       16000,
+				SubagentWithheldTools: []string{
+					"clarify", "clarify_*", "ask_user*",
+					"memory_write*", "memory_note*", "propose_memory_note", "ingest_memory*",
+					"send_message*", "message_*", "*_send_message", "notify*",
+				},
+				SubagentMemoryWriteTools: []string{"memory_write*", "memory_note*", "propose_memory_note"},
 			},
 			Supervision: SupervisionConfig{
 				ProfileAggregatorIntervalSeconds: 300,
@@ -2244,6 +2740,8 @@ func DefaultConfig() *Config {
 				// ordered backfill, unchanged.
 				BackfillGroupConcurrency: 1,
 			},
+			// ADR-0139 D13: proposals on (inert until approved), curator off.
+			Skills: DefaultSkillsConfig(),
 		},
 		Telemetry: TelemetryConfig{
 			TraceSamplingRate:            1.0,
@@ -2275,6 +2773,8 @@ func DefaultConfig() *Config {
 		MCP: MCPConfig{
 			CallTimeoutMs: 60000, // owner default 2026-08-11; 0 meant NO per-call deadline
 		},
+		// ADR-0139 D4: verify remote card signatures when they are by a trusted key.
+		A2A: A2AConfig{SignaturePolicy: DefaultA2ASignaturePolicy},
 		Chunker: ChunkerConfig{
 			Default:   "option_c",
 			Routes:    map[string]string{},
@@ -2606,6 +3106,9 @@ func (c *Config) validateSecrets() *ConfigError {
 	errs = append(errs, c.LLMProvider.validate(c.Embedder)...)
 	// ADR-0126 D3/D4: validate the inbound MCP endpoint (no-op until enabled).
 	errs = append(errs, c.Server.MCP.validate(c.Server.Port)...)
+	// ADR-0139 D4: the card listener (no-op until enabled) and remote agents.
+	errs = append(errs, c.Server.A2A.validate(c.Server.Port, c.Server.MCP)...)
+	errs = append(errs, c.A2A.validate()...)
 	errs = append(errs, c.Server.RateLimit.validate()...)
 
 	if len(errs) > 0 {
@@ -2675,6 +3178,23 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Gatekeeper.GatekeeperW4 < 0 {
 		errs = append(errs, "gatekeeper_w4 must be >= 0")
+	}
+	switch c.Gatekeeper.ActiveMeritMode() {
+	case MeritModeLegacy, MeritModePosteriorLCB, MeritModeThompson:
+	default:
+		errs = append(errs, fmt.Sprintf("gatekeeper.merit_mode %q must be one of legacy, posterior_lcb, thompson", c.Gatekeeper.MeritMode))
+	}
+	// The posterior parameters are validated even under legacy, so a layer that
+	// prepares a posterior arm fails at load rather than on the flip.
+	// 0 reads as the default (prior 1, quantile 0.1), as in the scorer.
+	if c.Gatekeeper.MeritPriorAlpha < 0 || c.Gatekeeper.MeritPriorBeta < 0 {
+		errs = append(errs, "gatekeeper.merit_prior_alpha and merit_prior_beta must be > 0 (0 = default 1)")
+	}
+	if c.Gatekeeper.MeritLCBQuantile < 0 || c.Gatekeeper.MeritLCBQuantile >= 1 {
+		errs = append(errs, "gatekeeper.merit_lcb_quantile must be in (0, 1) (0 = default 0.1)")
+	}
+	if c.Gatekeeper.MeritUnverifiedWeight < 0 || c.Gatekeeper.MeritUnverifiedWeight > 1 {
+		errs = append(errs, "gatekeeper.merit_unverified_weight must be in [0, 1]")
 	}
 	if c.Plan.MaxPlanCost < 0 {
 		errs = append(errs, "max_plan_cost must be >= 0")
@@ -2789,6 +3309,10 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 			break
 		}
 	}
+	errs = append(errs, c.Hooks.validate()...)
+	errs = append(errs, c.MemoryNotes.validate()...)
+	errs = append(errs, c.StepOutput.validate()...)
+	errs = append(errs, c.Skills.validate()...)
 	if c.Facts.CardinalityMinVotes < 0 {
 		errs = append(errs, "facts.cardinality_min_votes must be >= 0 (0 = the default 3)")
 	}

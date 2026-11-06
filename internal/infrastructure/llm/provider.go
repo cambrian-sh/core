@@ -20,6 +20,18 @@ var RetiredRoles = map[string]string{
 	"interview": "the LLM agent interview was deleted 2026-11-05 (T-20261105-delete-the-llm-agent-interview-now-owner)",
 }
 
+// RoleFallbacks maps a purpose to the role it resolves through when no role of
+// its own is configured in llm_provider.roles. It is the documented alias table
+// that keeps a newly split purpose from changing routing: `thought` (in-kernel
+// thought steps, split off `planner` so hooks and spend can tell a deliverable
+// from a plan) is served by the planner's generator until an operator binds a
+// `thought` role. One hop only; the table is config vocabulary, not routing —
+// the role values themselves come from config (Zero-Hardcode Rule).
+// T-20261106-thought-steps-call-the-model-under-the-planner.
+var RoleFallbacks = map[domain.Purpose]domain.Purpose{
+	domain.PurposeThought: domain.PurposePlanner,
+}
+
 // Provider is the concrete LLMProvider (ADR-0042). It composes the id-keyed
 // registry, the circuit breaker (availability), the price ledger (cost), and the
 // failover resolver into a single Acquire entry point. Preference is delegated:
@@ -63,6 +75,17 @@ type Provider struct {
 	// consumer runs. Nil = no metering (maintenance binaries).
 	meter atomic.Pointer[SpendMeter]
 
+	// hooks is the ADR-0139 D11 pre_model/post_model chain (hook_layer.go),
+	// fixed at construction (WithHooks). Nil = no hooks.
+	hooks *domain.HookChain
+	// finalAnswerTool / finalAnswerArg name the native tool lane's deliverable a
+	// post_model hook sees and may rewrite (WithFinalAnswer; config defaults).
+	finalAnswerTool string
+	finalAnswerArg  string
+	// guardedArgs are the control-verb arguments a post_model hook also sees and
+	// may rewrite (WithGuardedArgs; execution.hooks.guarded_arguments defaults).
+	guardedArgs []domain.GuardedArg
+
 	log *slog.Logger
 }
 
@@ -84,7 +107,7 @@ type generatorTable struct {
 func (p *Provider) tab() *generatorTable { return p.table.Load() }
 
 // NewProvider builds the Provider from the llm_provider config block.
-func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger) (*Provider, error) {
+func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger, opts ...ProviderOption) (*Provider, error) {
 	reg, err := NewGeneratorRegistry(cfg.Generators)
 	if err != nil {
 		return nil, err
@@ -130,6 +153,13 @@ func NewProvider(cfg config.LLMProviderConfig, log *slog.Logger) (*Provider, err
 		roles:   roles,
 		sem:     sem,
 		log:     log,
+		// The defaults live with the config keys (execution.step_output).
+		finalAnswerTool: config.StepOutputConfig{}.FinalAnswerToolName(),
+		finalAnswerArg:  config.StepOutputConfig{}.FinalAnswerArgName(),
+		guardedArgs:     config.HooksConfig{}.GuardedArgumentList(),
+	}
+	for _, o := range opts {
+		o(p)
 	}
 	p.table.Store(&generatorTable{
 		registry:  reg,
@@ -371,8 +401,15 @@ func (p *Provider) preferenceFor(_ context.Context, req domain.LLMRequest) []str
 		return nil
 	}
 	// System role: deterministic role -> id (Zero-Hardcode-legal; roles are not agents).
+	// A purpose with no role of its own resolves through its RoleFallbacks alias
+	// (thought -> planner), so splitting a purpose label never moves its traffic.
 	p.rolesMu.RLock()
 	id, ok := p.roles[string(req.Purpose)]
+	if !ok {
+		if alias, has := RoleFallbacks[req.Purpose]; has {
+			id, ok = p.roles[string(alias)]
+		}
+	}
 	p.rolesMu.RUnlock()
 	if ok {
 		return []string{id}
@@ -405,12 +442,7 @@ func (g *modelGenerator) request() domain.LLMRequest {
 }
 
 func (g *modelGenerator) Generate(ctx context.Context, prompt string) (string, error) {
-	var out string
-	err := g.provider.withFallback(ctx, g.request(), func(gen domain.Generator) (err error) {
-		out, err = gen.Generate(ctx, prompt)
-		return err
-	})
-	return out, err
+	return g.provider.generatePrompt(ctx, g.request(), prompt)
 }
 
 type purposeGenerator struct {
@@ -424,12 +456,29 @@ func (g *purposeGenerator) request() domain.LLMRequest {
 }
 
 func (g *purposeGenerator) Generate(ctx context.Context, prompt string) (string, error) {
+	return g.provider.generatePrompt(ctx, g.request(), prompt)
+}
+
+// generatePrompt serves the legacy single-string port for both handle kinds,
+// inside the D11 pre_model/post_model hooks (hook_layer.go).
+func (p *Provider) generatePrompt(ctx context.Context, lr domain.LLMRequest, prompt string) (string, error) {
+	label, model := lrLabel(lr), lr.SuggestedModelID
+	prompt, err := p.prePrompt(ctx, label, model, prompt, false)
+	if err != nil {
+		return "", err
+	}
 	var out string
-	err := g.provider.withFallback(ctx, g.request(), func(gen domain.Generator) (err error) {
+	err = p.withFallback(ctx, lr, func(gen domain.Generator) (err error) {
 		out, err = gen.Generate(ctx, prompt)
 		return err
 	})
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	if err := p.postModel(ctx, label, model, domain.UserPrompt(prompt), &out, nil); err != nil {
+		return "", err
+	}
+	return out, nil
 }
 
 // GenerateWithTools acquires a generator for this purpose and forwards native
@@ -438,8 +487,20 @@ func (g *purposeGenerator) Generate(ctx context.Context, prompt string) (string,
 func (g *purposeGenerator) GenerateWithTools(
 	ctx context.Context, messages []domain.ModelMessage, tools []domain.ToolDefinition,
 ) (domain.ModelTurn, error) {
+	// D11: the same pre_model/post_model hooks as the C1 path.
+	p, label := g.provider, string(g.purpose)
+	hreq := domain.GenerateRequest{Messages: messages, Tools: tools}
+	if err := p.preModel(ctx, label, "", &hreq, false); err != nil {
+		return domain.ModelTurn{}, err
+	}
+	messages = hreq.Messages
+	if len(hreq.System) > 0 {
+		// Hook annotations. This port has no system slot, so the context leads the
+		// first user turn (a copy — the caller's slice is untouched).
+		messages = withLeadingContext(messages, hreq.System)
+	}
 	var out domain.ModelTurn
-	err := g.provider.withFallback(ctx, g.request(), func(gen domain.Generator) error {
+	err := p.withFallback(ctx, g.request(), func(gen domain.Generator) error {
 		tg, ok := gen.(domain.ToolCallingGenerator)
 		if !ok {
 			return fmt.Errorf("llm provider: acquired %T does not implement native tool-calling", gen)
@@ -448,7 +509,13 @@ func (g *purposeGenerator) GenerateWithTools(
 		out, err = tg.GenerateWithTools(ctx, messages, tools)
 		return err
 	})
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	if err := p.postModel(ctx, label, "", hreq, &out.Text, &out.ToolCalls); err != nil {
+		return domain.ModelTurn{}, err
+	}
+	return out, nil
 }
 
 // GenerateStream acquires a healthy generator and delegates to its streaming
@@ -456,8 +523,23 @@ func (g *purposeGenerator) GenerateWithTools(
 // does not implement streaming; callers can fall back to Generate. ADR-0042
 // D5 live-failover applies identically to streaming calls.
 func (g *purposeGenerator) GenerateStream(ctx context.Context, prompt string) (<-chan domain.StreamChunk, error) {
+	if g.provider.postModelMatches(ctx, string(g.purpose)) {
+		// A post_model hook matches: served buffered, so the hook sees the whole
+		// reply before anything is delivered (hook_layer.go, bufferedPromptStream).
+		prompt, err := g.provider.prePrompt(ctx, string(g.purpose), "", prompt, false)
+		if err != nil {
+			return nil, err
+		}
+		return g.provider.bufferedPromptStream(ctx, g.request(), prompt)
+	}
+	// D11: streamed calls no post_model hook matches fire pre_model only
+	// (delivered chunks cannot be rewritten).
+	prompt, err := g.provider.prePrompt(ctx, string(g.purpose), "", prompt, true)
+	if err != nil {
+		return nil, err
+	}
 	var out <-chan domain.StreamChunk
-	err := g.provider.withFallback(ctx, g.request(), func(gen domain.Generator) error {
+	err = g.provider.withFallback(ctx, g.request(), func(gen domain.Generator) error {
 		sg, ok := gen.(streamingInner)
 		if !ok {
 			return fmt.Errorf("llm provider: generator %T does not implement streaming", gen)
@@ -494,8 +576,9 @@ func (p *Provider) BreakerState(id string) string {
 	return "open"
 }
 
-// Roles returns the role → generator-id map (planner/verifier/router/
-// memory). Copied, so a caller cannot mutate the Provider's routing table.
+// Roles returns the CONFIGURED role → generator-id map (planner/verifier/router/
+// memory/facts/thought). A purpose served through RoleFallbacks (thought with no
+// role of its own) is not listed: it has no binding, it borrows one. Copied, so a caller cannot mutate the Provider's routing table.
 func (p *Provider) Roles() map[string]string {
 	p.rolesMu.RLock()
 	defer p.rolesMu.RUnlock()

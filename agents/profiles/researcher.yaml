@@ -17,5 +17,9 @@ tools:
   - mcp:markitdown/*
   - mcp:filesystem/read_*
   - mcp:time/*
+examples:
+  - Find three independent sources on the 2025 EU AI Act timeline and summarise them with citations
+  - Check whether this claim from a news article is supported by primary sources
+  - Compare the published benchmarks of two open-source vector databases
 trust_tier: first-party
 max_tool_rounds: 16

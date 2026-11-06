@@ -90,3 +90,64 @@ func TestDAGExecutor_FanOut_OverWidthErrors(t *testing.T) {
 		t.Fatal("expected an error when fan-out exceeds the width cap, got nil")
 	}
 }
+
+// The reduce step sees every fan-out child's result, by step and objective; a fan-out
+// that found nothing is reported to it as an EMPTY upstream step, not dropped
+// (T-20261105-a-planner-thought-step-that-depends-on-two).
+func TestDAGExecutor_FanOut_ReduceReceivesChildResults(t *testing.T) {
+	for _, tc := range []struct {
+		name, discovered string
+		want             map[string]string // objective -> status
+	}{
+		{"three", `["a","b","c"]`, map[string]string{"write a": "completed", "write b": "completed", "write c": "completed"}},
+		{"none", `[]`, map[string]string{"write {item}": "empty"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := &domain.ExecutionPlan{Steps: []domain.Step{
+				{Query: "scan"},
+				{Query: "write {item}", FanOutOver: ptr(0), DependsOn: []int{0}},
+				{Query: "reduce", DependsOn: []int{1}},
+			}}
+			var mu sync.Mutex
+			var reduce *domain.Handoff
+			stepFn := func(_ context.Context, _ int, h *domain.Handoff) (*domain.Handoff, error) {
+				q := string(h.Payload.Data)
+				out := "done " + q
+				switch q {
+				case "scan":
+					out = tc.discovered
+				case "reduce":
+					mu.Lock()
+					reduce = h
+					mu.Unlock()
+				}
+				return &domain.Handoff{Payload: &domain.Payload{Data: []byte(out)}}, nil
+			}
+			if _, err := (&executer.DAGExecutor{MaxFanOutWidth: 10}).Execute(context.Background(), plan, nil, stepFn); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if reduce == nil {
+				t.Fatal("reduce never ran")
+			}
+			deps, err := domain.DecodeStepDependencies(reduce.Context[domain.HandoffKeyStepDependencies])
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := map[string]string{}
+			for _, d := range deps {
+				got[d.Objective] = d.Status
+				if d.Status == domain.StepDependencyCompleted && d.Content != "done "+d.Objective {
+					t.Errorf("child %q content = %q", d.Objective, d.Content)
+				}
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("deps = %+v, want %v", deps, tc.want)
+			}
+			for obj, st := range tc.want {
+				if got[obj] != st {
+					t.Errorf("%q: status %q, want %q (deps %+v)", obj, got[obj], st, deps)
+				}
+			}
+		})
+	}
+}

@@ -52,6 +52,25 @@ type StepModels interface {
 
 var _ StepModels = (*llm.Provider)(nil)
 
+// ObservedStepModels is the optional StepModels capability the native tool lane
+// streams through (ADR-0139 amendment 2026-11-06): GenerateOn served over the
+// generator's stream, reporting deltas to observe while the call runs. A
+// StepModels without it serves the turn unary, with no deltas.
+type ObservedStepModels interface {
+	GenerateOnObserved(ctx context.Context, candidates []string, req domain.GenerateRequest, observe func(domain.ModelStreamDelta)) (domain.GenerateResponse, string, error)
+}
+
+var _ ObservedStepModels = (*llm.Provider)(nil)
+
+// ObservedToolGateway is the optional LLMGateway capability the GenerateWithTools
+// RPC uses to forward a turn's live output to the step-output stream while the
+// RPC itself stays unary.
+type ObservedToolGateway interface {
+	GenerateWithToolsObserved(ctx context.Context, leaseID domain.LeaseID, req domain.GenerateRequest, observe func(domain.ModelStreamDelta)) (domain.GenerateResponse, error)
+}
+
+var _ ObservedToolGateway = (*SubstrateLLMGateway)(nil)
+
 // SubstrateLLMGateway implements LLMGateway.
 type SubstrateLLMGateway struct {
 	mu        sync.RWMutex
@@ -88,6 +107,61 @@ type SubstrateLLMGateway struct {
 	// unhealthy id is skipped by the Provider's chain walk and the next rung serves.
 	// Nil, or "" for an agent, ⇒ the chain is unchanged.
 	agentModel atomic.Pointer[func(agentID string) string]
+
+	// gate is the ADR-0139 D12 per-lease admission seam: the subagent service
+	// refuses a call on a child lease whose token_budget, or whose tree's
+	// tree-wide budget, is spent, and counts every call's usage toward both.
+	// Nil ⇒ no gate (every lease admitted, as before).
+	gate atomic.Pointer[leaseGateBox]
+}
+
+// LeaseGate is the optional per-lease admission check every managed call runs
+// after the session-ceiling check, and the usage observer every booked call
+// reports to. Implementations must be prompt and non-blocking: AdmitLeaseCall
+// runs on the call path, ObserveLeaseUsage after it, outside the gateway lock.
+type LeaseGate interface {
+	AdmitLeaseCall(lease domain.LeaseID) error
+	ObserveLeaseUsage(lease domain.LeaseID, u llm.TokenUsage)
+}
+
+type leaseGateBox struct{ g LeaseGate }
+
+// SetLeaseGate attaches the D12 lease gate. Nil clears it.
+func (g *SubstrateLLMGateway) SetLeaseGate(gate LeaseGate) {
+	if gate == nil {
+		g.gate.Store(nil)
+		return
+	}
+	g.gate.Store(&leaseGateBox{gate})
+}
+
+func (g *SubstrateLLMGateway) leaseGate() LeaseGate {
+	if b := g.gate.Load(); b != nil {
+		return b.g
+	}
+	return nil
+}
+
+// observeLeaseUsage reports one booked call's usage to the lease gate.
+func (g *SubstrateLLMGateway) observeLeaseUsage(lease domain.LeaseID, u llm.TokenUsage) {
+	if gate := g.leaseGate(); gate != nil && !u.IsZero() {
+		gate.ObserveLeaseUsage(lease, u)
+	}
+}
+
+// RollUpLease adds a completed CHILD lease's usage to its parent lease (ADR-0139
+// D1/D12: subagent spend rolls up the lease chain to the root) WITHOUT
+// reporting it to the lease gate, which already counted every call of the child
+// as it was made. Unknown parents are ignored, as in ChargeLease.
+func (g *SubstrateLLMGateway) RollUpLease(parent domain.LeaseID, u llm.TokenUsage) {
+	if g == nil || parent == "" || u.IsZero() {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if ss, ok := g.sessions[parent]; ok {
+		addLeaseUsageLocked(ss, u)
+	}
 }
 
 // SetAgentModelPreference attaches the per-agent model preference resolver (see
@@ -344,9 +418,13 @@ func (g *SubstrateLLMGateway) ChargeLease(leaseID domain.LeaseID, u llm.TokenUsa
 		return
 	}
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if ss, ok := g.sessions[leaseID]; ok {
+	ss, ok := g.sessions[leaseID]
+	if ok {
 		addLeaseUsageLocked(ss, u)
+	}
+	g.mu.Unlock()
+	if ok {
+		g.observeLeaseUsage(leaseID, u)
 	}
 }
 
@@ -476,6 +554,12 @@ func (g *SubstrateLLMGateway) beginLeaseCall(ctx context.Context, sessionID doma
 	// ADR-0131 D3: the session ceiling is checked before any model is touched.
 	if err := admitLease(lc.meter, ss, lc.sid, lc.prompt); err != nil {
 		return nil, err
+	}
+	// ADR-0139 D12: a child lease's own and tree-wide budgets.
+	if gate := g.leaseGate(); gate != nil {
+		if err := gate.AdmitLeaseCall(sessionID); err != nil {
+			return nil, err
+		}
 	}
 	return lc, nil
 }
@@ -652,7 +736,16 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 	// release only once the stream ends, so the cut must end it.
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// When a D11 post_model hook matches the step, StreamOn serves the call
+	// BUFFERED (llm.Provider.StreamOn): the chunks below are then the complete,
+	// post-hook reply, and a hook refusal or a broken stream is an error here with
+	// nothing delivered. The Pass-1 cut below cannot stop such a generation early —
+	// it sees the reply only once it is complete; the request's max_tokens bounds it.
 	chunks, modelID, err := lc.models.StreamOn(sctx, lc.candidates, req)
+	if errors.Is(err, domain.ErrHookDenied) {
+		slog.Info("llm_gateway: model stream refused by a hook", "model", modelID, "err", err)
+		return err
+	}
 	if err != nil {
 		// Surface the REAL cause (HTTP 401, connection refused, bad endpoint).
 		slog.Error("llm_gateway: model stream failed",
@@ -672,6 +765,11 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		usage.Observe(chunk)
 		if chunk.Response != nil {
 			final = chunk.Response
+		}
+		if chunk.ToolCall != nil && chunk.Text == "" && !chunk.IsFinal {
+			// A tool-call fragment (ADR-0139 amendment 2026-11-06) carries no text
+			// for a text-lane client; the final chunk's Response has the calls.
+			continue
 		}
 		g.mu.Lock()
 		if s, ok := g.sessions[sessionID]; ok {
@@ -734,6 +832,7 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		}
 	}
 	g.mu.Unlock()
+	g.observeLeaseUsage(sessionID, reconciled)
 	lc.meter.RecordSessionTally(lc.sid, lc.ss.Tally, g.leasePurpose(lc.ss), modelID, reconciled)
 	return nil
 }
@@ -751,6 +850,15 @@ var ErrToolCallingUnsupported = errors.New("tool_calling_unsupported")
 // response shape. Diverging on any of those would let the tool path escape budget
 // control.
 func (g *SubstrateLLMGateway) GenerateWithTools(ctx context.Context, sessionID domain.LeaseID, req domain.GenerateRequest) (domain.GenerateResponse, error) {
+	return g.GenerateWithToolsObserved(ctx, sessionID, req, nil)
+}
+
+// GenerateWithToolsObserved is GenerateWithTools reporting the turn's live deltas
+// to observe (ADR-0139 amendment 2026-11-06). The guards, metering and response
+// are identical; only the transport to the provider differs — streamed when the
+// model source can stream (ObservedStepModels), unary otherwise. observe == nil is
+// GenerateWithTools.
+func (g *SubstrateLLMGateway) GenerateWithToolsObserved(ctx context.Context, sessionID domain.LeaseID, req domain.GenerateRequest, observe func(domain.ModelStreamDelta)) (domain.GenerateResponse, error) {
 	release, err := g.acquireSlot(ctx)
 	if err != nil {
 		return domain.GenerateResponse{}, err
@@ -763,7 +871,13 @@ func (g *SubstrateLLMGateway) GenerateWithTools(ctx context.Context, sessionID d
 	}
 	defer g.trackCall(sessionID)()
 
-	resp, modelID, err := lc.models.GenerateOn(ctx, lc.candidates, req)
+	var resp domain.GenerateResponse
+	var modelID string
+	if om, ok := lc.models.(ObservedStepModels); ok && observe != nil {
+		resp, modelID, err = om.GenerateOnObserved(ctx, lc.candidates, req, observe)
+	} else {
+		resp, modelID, err = lc.models.GenerateOn(ctx, lc.candidates, req)
+	}
 	if err != nil {
 		if len(req.Tools) > 0 && isToolsUnsupported(err) {
 			// Capability, not health: the Provider's breaker does not count an
@@ -787,6 +901,7 @@ func (g *SubstrateLLMGateway) GenerateWithTools(ctx context.Context, sessionID d
 		addLeaseUsageLocked(st, reconciled)
 	}
 	g.mu.Unlock()
+	g.observeLeaseUsage(sessionID, reconciled)
 	lc.meter.RecordSessionTally(lc.sid, lc.ss.Tally, g.leasePurpose(lc.ss), modelID, reconciled)
 	return resp, nil
 }

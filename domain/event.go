@@ -193,6 +193,11 @@ type MeritResult struct {
 	LatencyTerm float64 // w3 * (1 / normLatency) contribution
 	CostTerm    float64 // w4 * normalizedCost contribution (subtracted)
 	Provisional bool    // the agent's profile is flagged provisional (legacy rows; no penalty since 2026-11-05)
+	// Mode is the merit mode that scored the candidate (ADR-0139 D6:
+	// legacy | posterior_lcb | thompson); Alpha/Beta its Beta posterior (0 under
+	// legacy). Not on the operator wire yet.
+	Mode        string
+	Alpha, Beta float64
 }
 
 // AgentReadyEvent is emitted by the registration ProfileSeeder after every
@@ -414,12 +419,43 @@ func (PlanStateChanged) domainEvent()   {}
 func (AuditEvent) domainEvent()         {}
 func (AuditEvent) EventType() string    { return EventTypeAudit }
 
-// TokenChunkEvent is a best-effort, live-only fragment of a step's streamed
-// output (managed-proxy generations only). Never replayed. ADR-0047 D12.
+// TokenChunkEvent is a best-effort, live-only chunk of a step's live output
+// stream. Never replayed.
+//
+// Since the ADR-0139 amendment of 2026-11-06 (which supersedes ADR-0047 D12's
+// token-level tier) it is the STEP-OUTPUT event, not "managed-proxy tokens": it
+// carries every producer — gateway deltas on both model lanes and agent-pushed
+// output — with its kind, the kernel's per-lease seq and the producer. SessionID
+// keeps its historical meaning on the wire (it has always carried the LEASE id);
+// TaskSessionID is the task session the lease belongs to.
 type TokenChunkEvent struct {
 	SessionID string
 	StepIndex int
 	Text      string
+
+	LeaseID       string
+	TaskSessionID string
+	AgentID       string
+	Kind          string
+	Seq           uint64
+	Final         bool
+	Source        string
+}
+
+// TokenChunkFromStepOutput renders one step-output chunk as the feed event.
+func TokenChunkFromStepOutput(c StepOutputChunk) TokenChunkEvent {
+	return TokenChunkEvent{
+		SessionID:     string(c.LeaseID),
+		StepIndex:     c.StepIndex,
+		Text:          c.Data,
+		LeaseID:       string(c.LeaseID),
+		TaskSessionID: string(c.SessionID),
+		AgentID:       c.AgentID,
+		Kind:          string(c.Kind),
+		Seq:           c.Seq,
+		Final:         c.Final,
+		Source:        string(c.Source),
+	}
 }
 
 func (TokenChunkEvent) domainEvent()      {}

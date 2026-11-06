@@ -77,9 +77,13 @@ func ProvideServer(
 	// ADR-0026: wire step-level memoization cache.
 	srv.StepCache = stepCache
 
-	// ADR-0139 C1: thought steps go to the planner-purpose generator (the one the
-	// Planner itself wraps) on the structured request path.
-	srv.ThoughtLLM = aw.LLM
+	// ADR-0139 C1: thought steps go to their OWN purpose, `thought`, on the
+	// structured request path — so pre_model/post_model hooks, spend records and
+	// traces label a kernel-synthesized answer as a deliverable, not a plan
+	// (T-20261106-thought-steps-call-the-model-under-the-planner). Routing is
+	// unchanged: with no `thought` role configured the Provider resolves it to the
+	// planner's generator (llm.RoleFallbacks).
+	srv.ThoughtLLM = llmProvider.GeneratorFor(domain.PurposeThought)
 
 	// ADR-0042: the server resolves agent-step models through the Provider.
 	srv.Provider = llmProvider

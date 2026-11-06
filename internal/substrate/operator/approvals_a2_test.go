@@ -86,3 +86,26 @@ func TestWatchToolApprovals_Unconfigured(t *testing.T) {
 		t.Fatal("expected Unimplemented when the approval hub is not wired")
 	}
 }
+
+// A skill_access request (decisions/skill-access-grants.md) rides the same stream
+// with its kind, and is not destructive: it widens what an agent may read.
+func TestWatchToolApprovals_CarriesSkillAccessKind(t *testing.T) {
+	t.Parallel()
+	hub := &chanApprovalHub{ch: make(chan domain.ApprovalRequest, 1)}
+	svc := operator.NewService(operator.NewSpool(operator.SpoolConfig{}))
+	svc.SetCommandSources(operator.NewInMemoryAuditStore(), domain.NewInMemoryGrantsStore())
+	svc.SetSteeringSources(operator.NewExecutionControlHub(), hub)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &fakeApprovalStream{ctx: ctx, recv: make(chan *pb.ApprovalOp, 1)}
+	go func() { _ = svc.WatchToolApprovals(&pb.SubscribeRequest{}, stream) }()
+	hub.ch <- domain.ApprovalRequest{ID: "appr-2", AgentID: "analyst", ToolName: "skill:proposed-x", Kind: domain.ApprovalKindSkillAccess}
+	select {
+	case got := <-stream.recv:
+		if got.GetKind() != domain.ApprovalKindSkillAccess || got.GetIsDestructive() || got.GetToolName() != "skill:proposed-x" {
+			t.Fatalf("ApprovalOp = %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for an ApprovalOp")
+	}
+}

@@ -19,8 +19,10 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	"github.com/cambrian-sh/core/internal/ingress"
+	"github.com/cambrian-sh/core/internal/memorynotes"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
+	"github.com/cambrian-sh/core/internal/stepoutput"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 
 	"github.com/cambrian-sh/core/internal/substrate/harness"
@@ -157,8 +159,10 @@ type Server struct {
 	AgentCallLogger AgentCallLogger
 
 	// ThoughtLLM serves in-kernel thought steps (thoughtFn) on the C1 request path:
-	// the planner-purpose generator, wired at the composition root. nil = the
-	// Planner's legacy Generate, which sends the request flattened to one prompt.
+	// the thought-purpose generator (domain.PurposeThought; routed like the planner
+	// unless a `thought` role is configured), wired at the composition root. nil =
+	// the Planner's legacy Generate, which sends the request flattened to one
+	// prompt (and is labelled planner — only a bare test server takes that path).
 	ThoughtLLM domain.Generator
 
 	// GenWrapper decorates a raw generator with cross-cutting concerns (Langfuse
@@ -203,6 +207,19 @@ type Server struct {
 	// an unscoped deployment the answer is always yes.
 	Authz domain.Authorizer
 
+	// MemoryNotes is the ADR-0139 D14 notes service (GetMemoryNotes /
+	// ProposeMemoryNote, memory_notes_rpc.go). nil ⇒ both RPCs answer
+	// Unimplemented. MemoryNotesPrincipal resolves a lease binding to the run
+	// principal; nil ⇒ no principal, so runs see only org notes (fail-closed).
+	MemoryNotes          *memorynotes.Service
+	MemoryNotesPrincipal MemoryNotesPrincipalFunc
+
+	// Subagents is the ADR-0139 D12 runtime behind SpawnSubagent (subagent.go):
+	// per-root trees, child-lease ceilings and counters. The composition root also
+	// hands it to the ToolExecutor (LeaseCeiling) and the gateway (SetLeaseGate).
+	// nil ⇒ SpawnSubagent answers Unimplemented.
+	Subagents *SubagentService
+
 	// IngestionProcessor is the ONLY way memory is written (ADR-0060 D8/D9): the
 	// body goes through the chunker registry, a source-doc entity is minted, and
 	// each chunk is ingested with chunk_relations. Satisfied by
@@ -226,9 +243,11 @@ type Server struct {
 	EventBus   domain.EventBus
 	ControlHub *operator.ExecutionControlHub
 
-	// TokenSink, when set, receives each managed-proxy generation chunk for the
-	// operator feed's live-only token lane (ADR-0047 D12/0047-23). Best-effort.
-	TokenSink func(sessionID string, stepIndex int, text string)
+	// StepOutput is the live step-output stream (ADR-0139 amendment 2026-11-06,
+	// superseding ADR-0047 D12's token tier): gateway deltas from both model lanes
+	// and agent-pushed output (EmitStepOutput) reach the operator feed and MCP
+	// progress through it. nil ⇒ no live output, EmitStepOutput is Unimplemented.
+	StepOutput *stepoutput.Stream
 
 	// LLMExchangeSink, when set, receives the full prompt+completion of each managed-proxy
 	// agent generation (ADR-0079) for the operator feed's live-only exchange lane — the
@@ -242,6 +261,14 @@ type Server struct {
 	// empty menu (agents simply see no system skills).
 	SkillRegistry  domain.SkillRegistry
 	SkillRetriever domain.SkillRetriever
+	// SkillLifecycle is the ADR-0139 D13 lifecycle (skills_lifecycle_rpc.go):
+	// ProposeSkill, use_skill usage and run-outcome telemetry. nil → ProposeSkill
+	// is Unimplemented and no usage is recorded.
+	SkillLifecycle SkillLifecycle
+	// SkillAccess bounds a profile agent's skills to its profile's list plus its
+	// operator-approved grants and runs use_skill access requests
+	// (skills_rpc.go; decisions/skill-access-grants.md). nil = no agent is bounded.
+	SkillAccess SkillAccess
 
 	// Embedder backs the Embed RPC (ADR-0041) used by an agent's Local Recurrent
 	// Workspace for relevance ranking. nil → Embed returns Unimplemented.
@@ -318,7 +345,12 @@ func NewServer(
 	// is read at call time because the composition root attaches it after
 	// construction (T-20261101-retrieval-dispatch-lease-retrieval-dispatch-go).
 	if h, ok := llmGateway.(interface{ SetCompleteHook(func(domain.LeaseID)) }); ok {
-		h.SetCompleteHook(func(lease domain.LeaseID) { s.ToolExecutor.EndRun(string(lease)) })
+		h.SetCompleteHook(func(lease domain.LeaseID) {
+			s.ToolExecutor.EndRun(string(lease))
+			// The step-output stream's per-lease state (seq, caps, dedupe) ends
+			// with the lease.
+			s.StepOutput.EndLease(lease)
+		})
 	}
 	return s
 }
@@ -926,6 +958,9 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		StepCache:              s.StepCache,
 		UseGlobalWorkspace:     s.ExecCfg.Workspace.UseGlobalWorkspace,
 		ContextRefSnippetChars: s.ExecCfg.Plan.ContextRefSnippetChars,
+		// The one bound on upstream results handed to a dependent step (agent or
+		// thought), domain.StepDependency; <= 0 reads as the config default.
+		DependencyResultsMaxChars: dependencyResultsMaxChars(s.ExecCfg.Plan.DependencyResultsMaxChars),
 		// A thought step is an in-kernel model call on no step lease: in flight
 		// for the plan idle watchdog while it runs.
 		ThoughtFn: inFlightStepFunc(planAct, executer.StepFunc(s.thoughtFn(plan))),
@@ -959,6 +994,9 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 
 	masterCtx, err := executor.ExecuteFrom(planCtx, plan, initialCtx,
 		activityStepFunc(planAct, executer.StepFunc(stepFn)), startFromStep)
+	// ADR-0139 D13: the run's outcome credits the skills its steps loaded. Only a
+	// run that finished every step counts as a success (a partial plan does not).
+	s.recordSkillRunOutcome(ctx, executionID, err == nil)
 	// The plan ceiling's verdict, when it is what ended the plan: the idle or the
 	// max-duration cause (both wrap context.DeadlineExceeded). Nil for a plan that
 	// finished, failed on its own, or was abandoned by its caller.
@@ -1133,19 +1171,24 @@ func (s *Server) wrapGen(g domain.Generator) domain.Generator {
 
 func (s *Server) thoughtFn(plan *domain.ExecutionPlan) executer.StepFunc {
 	return func(ctx context.Context, i int, handoff *domain.Handoff) (*domain.Handoff, error) {
-		var req domain.GenerateRequest
-		if handoff.Payload != nil && len(handoff.Payload.Data) > 0 {
-			// An explicit prompt on the payload is used as-is. (Its original caller, the
-			// ADR-0013 checkpoint probe, was removed with the gate — ADR-0139 D10.)
-			req = domain.UserPrompt(string(handoff.Payload.Data))
-		} else {
-			// ADR-0139 D2: library prompts, results in a deterministic order, bounded,
-			// in tagged data regions (thought_synthesis.go).
-			results := fitThoughtResults(s.thoughtResults(ctx, handoff), s.ExecCfg.Plan.ThoughtResultsMaxChars)
-			var err error
-			if req, err = buildThoughtRequest(plan.Subject, plan.Steps[i].Query, results); err != nil {
-				return nil, err
-			}
+		// ADR-0139 D2: library prompts, the step's upstream results (the executor's
+		// domain.StepDependency manifest, already ordered and bounded) in tagged data
+		// regions (thought_synthesis.go).
+		//
+		// There is deliberately no "payload is the prompt" branch any more. The
+		// executor always puts the step's query on the payload, so that branch —
+		// kept for the ADR-0013 checkpoint probe, deleted by ADR-0139 D10 — ran for
+		// EVERY thought step and sent the bare query with none of the results; the
+		// results path was unreachable from the first commit. A merge step answered
+		// "I don't see any previous steps"
+		// (T-20261105-a-planner-thought-step-that-depends-on-two).
+		results, err := thoughtResults(handoff)
+		if err != nil {
+			return nil, err
+		}
+		req, err := buildThoughtRequest(plan.Subject, plan.Steps[i].Query, results)
+		if err != nil {
+			return nil, err
 		}
 
 		// The model serving a thought step is the Provider's call, resolved from the

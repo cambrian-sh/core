@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -233,7 +234,14 @@ func (g *modelGenerator) Capabilities() domain.Capabilities {
 }
 func (g *modelGenerator) RequestsEnabled() bool { return true }
 
+// generateRequest serves a C1 call on a purpose/model handle, inside the D11
+// pre_model/post_model hooks (hook_layer.go) — outside the fallback walk, so a
+// hook sees one logical call.
 func (p *Provider) generateRequest(ctx context.Context, lr domain.LLMRequest, req domain.GenerateRequest) (domain.GenerateResponse, error) {
+	label, model := lrLabel(lr), lr.SuggestedModelID
+	if err := p.preModel(ctx, label, model, &req, false); err != nil {
+		return domain.GenerateResponse{}, err
+	}
 	var out domain.GenerateResponse
 	err := p.withFallback(ctx, lr, func(gen domain.Generator) error {
 		rg, ok := domain.AsRequestGenerator(gen)
@@ -244,10 +252,32 @@ func (p *Provider) generateRequest(ctx context.Context, lr domain.LLMRequest, re
 		out, err = rg.GenerateRequest(ctx, req)
 		return err
 	})
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	if err := p.postModel(ctx, label, model, req, &out.Text, &out.ToolCalls); err != nil {
+		return domain.GenerateResponse{}, err
+	}
+	return out, nil
 }
 
+// streamRequest fires pre_model only: chunks already delivered cannot be
+// rewritten or withheld (D11) — unless a post_model hook's scope matches the call,
+// which is then served buffered (bufferedStream, hook_layer.go).
 func (p *Provider) streamRequest(ctx context.Context, lr domain.LLMRequest, req domain.GenerateRequest) (<-chan domain.StreamChunk, error) {
+	label, model := lrLabel(lr), lr.SuggestedModelID
+	if p.postModelMatches(ctx, label) {
+		if err := p.preModel(ctx, label, model, &req, false); err != nil {
+			return nil, err
+		}
+		out, _, err := p.bufferedStream(ctx, label, model, req, func(call func(domain.Generator) error) (string, error) {
+			return "", p.withFallback(ctx, lr, call)
+		})
+		return out, err
+	}
+	if err := p.preModel(ctx, label, model, &req, true); err != nil {
+		return nil, err
+	}
 	var out <-chan domain.StreamChunk
 	err := p.withFallback(ctx, lr, func(gen domain.Generator) error {
 		rg, ok := domain.AsRequestGenerator(gen)
@@ -363,6 +393,11 @@ func (p *Provider) fallbackLoop(ctx context.Context, label string, acquire func(
 // too would book every agent call twice. It returns the id of the generator that
 // served (or last failed) the call.
 func (p *Provider) GenerateOn(ctx context.Context, candidates []string, req domain.GenerateRequest) (domain.GenerateResponse, string, error) {
+	// D11 hooks around the whole chain walk (hook_layer.go).
+	label, model := string(domain.PurposeAgentStep), firstCandidate(candidates)
+	if err := p.preModel(ctx, label, model, &req, false); err != nil {
+		return domain.GenerateResponse{}, "", err
+	}
 	var out domain.GenerateResponse
 	id, err := p.fallbackLoop(ctx, string(domain.PurposeAgentStep), p.chainAcquirer(candidates), func(gen domain.Generator) error {
 		rg, ok := domain.AsRequestGenerator(gen)
@@ -373,13 +408,152 @@ func (p *Provider) GenerateOn(ctx context.Context, candidates []string, req doma
 		out, err = rg.GenerateRequest(ctx, req)
 		return err
 	})
-	return out, id, err
+	if err != nil {
+		return out, id, err
+	}
+	if err := p.postModel(ctx, label, model, req, &out.Text, &out.ToolCalls); err != nil {
+		return domain.GenerateResponse{}, id, err
+	}
+	return out, id, nil
+}
+
+// GenerateOnObserved is GenerateOn served over the generator's STREAM, reporting
+// each text delta and tool-call fragment to observe while the call runs (ADR-0139
+// amendment 2026-11-06: the native tool lane streams internally so the step's live
+// output reaches the operator feed; the agent still gets one unary response).
+//
+// Everything GenerateOn guarantees holds: the D11 pre_model hooks run before the
+// call and the post_model hooks run on the COMPLETE reply afterwards — its text and
+// its tool calls, the final-answer deliverable included (this is not a
+// "streamed call" to a hook — post_model fires, and its rewrite or refusal governs
+// what the caller receives); the fallback walk is the same, and a stream that
+// breaks mid-way is an endpoint failure like any other, so the next candidate
+// serves — observe then gets a Restarted delta, because what it saw so far belongs
+// to the abandoned attempt. Deltas are reported BEFORE post_model runs, so a caller
+// that must not leak pre-hook text must not observe (the gateway's step-output
+// stream suppresses itself whenever a post_model hook is installed).
+//
+// A generator whose StreamRequest answers domain.ErrUnsupported is served unary on
+// the same attempt, with no deltas. observe == nil is GenerateOn.
+// observe runs on the calling goroutine and must be prompt and non-blocking.
+func (p *Provider) GenerateOnObserved(ctx context.Context, candidates []string, req domain.GenerateRequest, observe func(domain.ModelStreamDelta)) (domain.GenerateResponse, string, error) {
+	if observe == nil {
+		return p.GenerateOn(ctx, candidates, req)
+	}
+	label, model := string(domain.PurposeAgentStep), firstCandidate(candidates)
+	if err := p.preModel(ctx, label, model, &req, false); err != nil {
+		return domain.GenerateResponse{}, "", err
+	}
+	var out domain.GenerateResponse
+	emitted := false
+	id, err := p.fallbackLoop(ctx, string(domain.PurposeAgentStep), p.chainAcquirer(candidates), func(gen domain.Generator) error {
+		rg, ok := domain.AsRequestGenerator(gen)
+		if !ok {
+			return fmt.Errorf("llm provider: acquired %T does not implement StreamRequest", gen)
+		}
+		if emitted {
+			observe(domain.ModelStreamDelta{Restarted: true})
+			emitted = false
+		}
+		resp, sawDelta, err := consumeObservedStream(ctx, rg, req, observe)
+		emitted = emitted || sawDelta
+		if err != nil {
+			return err
+		}
+		out = resp
+		return nil
+	})
+	if err != nil {
+		return out, id, err
+	}
+	if err := p.postModel(ctx, label, model, req, &out.Text, &out.ToolCalls); err != nil {
+		return domain.GenerateResponse{}, id, err
+	}
+	return out, id, nil
+}
+
+// consumeObservedStream runs one streamed attempt to its end, reporting deltas,
+// and returns the final chunk's complete response. The adapters' stream_error
+// convention (a final chunk with text and no Response) is an error here, never a
+// delta. It always drains the channel, so every layer down to the adapter closes.
+func consumeObservedStream(ctx context.Context, rg domain.RequestGenerator, req domain.GenerateRequest, observe func(domain.ModelStreamDelta)) (domain.GenerateResponse, bool, error) {
+	ch, err := rg.StreamRequest(ctx, req)
+	if err != nil {
+		// Not streamable (or a field it refuses): serve the attempt unary. A refused
+		// field is refused again by GenerateRequest before any model is called, so
+		// the caller sees the same C1 refusal it would have seen from GenerateOn.
+		if errors.Is(err, domain.ErrUnsupported) {
+			resp, gerr := rg.GenerateRequest(ctx, req)
+			return resp, false, gerr
+		}
+		return domain.GenerateResponse{}, false, err
+	}
+	var final *domain.GenerateResponse
+	var streamErr string
+	saw := false
+	for c := range ch {
+		if c.Response != nil {
+			final = c.Response
+		}
+		if c.IsFinal && c.Response == nil {
+			streamErr = c.Text
+			continue
+		}
+		if c.Text == "" && c.ToolCall == nil {
+			continue
+		}
+		saw = true
+		observe(domain.ModelStreamDelta{Text: c.Text, ToolCall: c.ToolCall})
+	}
+	if err := ctx.Err(); err != nil {
+		return domain.GenerateResponse{}, saw, err
+	}
+	if final == nil {
+		if streamErr == "" {
+			streamErr = "stream ended without a final response"
+		}
+		return domain.GenerateResponse{}, saw, errors.New(streamErr)
+	}
+	return *final, saw, nil
+}
+
+// firstCandidate is the step chain's preferred generator id, for hook events.
+func firstCandidate(candidates []string) string {
+	for _, c := range candidates {
+		if c != "" {
+			return c
+		}
+	}
+	return ""
 }
 
 // StreamOn is GenerateOn for a streamed call. Fallback covers OPENING the stream;
 // once chunks flow, a failure ends that stream (a partial answer cannot be resumed
 // on another model).
+//
+// When a D11 post_model hook's scope matches the call (agent_step, the context's
+// agent) the call is served BUFFERED instead — the same shape as
+// GenerateOnObserved: the provider stream is consumed here, post_model runs on the
+// complete reply, and the returned channel holds only the (possibly rewritten)
+// reply, already closed. This is what puts the SDK's text protocol (served by
+// GenerateViaModelStream) under post_model, its final answer and control-verb
+// envelopes included (T-20261106-text-protocol-agent-replies-never-reach-post).
+// A refusal or a failed assembly returns an error and no channel.
 func (p *Provider) StreamOn(ctx context.Context, candidates []string, req domain.GenerateRequest) (<-chan domain.StreamChunk, string, error) {
+	label, model := string(domain.PurposeAgentStep), firstCandidate(candidates)
+	walk := func(call func(domain.Generator) error) (string, error) {
+		return p.fallbackLoop(ctx, label, p.chainAcquirer(candidates), call)
+	}
+	if p.postModelMatches(ctx, label) {
+		if err := p.preModel(ctx, label, model, &req, false); err != nil {
+			return nil, "", err
+		}
+		return p.bufferedStream(ctx, label, model, req, walk)
+	}
+	// D11: a streamed call no post_model hook matches fires pre_model only.
+	if err := p.preModel(ctx, label, model, &req, true); err != nil {
+		return nil, "", err
+	}
 	var out <-chan domain.StreamChunk
 	id, err := p.fallbackLoop(ctx, string(domain.PurposeAgentStep), p.chainAcquirer(candidates), func(gen domain.Generator) error {
 		rg, ok := domain.AsRequestGenerator(gen)

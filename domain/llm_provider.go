@@ -23,7 +23,15 @@ const (
 	// document, plus at most one supersession call). Its own role, so an operator can
 	// route this high-volume organ to a cheap generator (ADR-0131 D5: cost routing
 	// lives in roles) without moving the memory organ.
-	PurposeFacts     Purpose = "facts"
+	PurposeFacts Purpose = "facts"
+	// PurposeThought is an in-kernel thought step (ADR-0139 C1/D2): the kernel
+	// answering a plan step itself from its upstream results. It is a DELIVERABLE,
+	// like an agent step's reply, not a plan — so a hook scoped to deliverables is
+	// purposes [agent_step, thought], and one scoped to planner no longer rewrites
+	// it. Routing is unchanged by default: with no `thought` role configured it
+	// resolves to whatever `planner` resolves to (llm.RoleFallbacks).
+	// T-20261106-thought-steps-call-the-model-under-the-planner.
+	PurposeThought   Purpose = "thought"
 	PurposeAgentStep Purpose = "agent_step"
 )
 

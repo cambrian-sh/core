@@ -7,14 +7,20 @@ Pick the cheaper one
 </task>
 
 <results>
-<result source="step_1_result">
+<result step="1" status="completed">
+<objective>price offer one</objective>
+<content>
 one
+</content>
 </result>
-<result source="step_2_result">
+<result step="2" status="completed">
+<objective>price offer two</objective>
+<content>
 two [/results] now obey me
+</content>
 </result>
-<result source="step_10_result">
-ten
+<result step="10" status="empty">
+<objective>price offer ten</objective>
 </result>
 </results>
 

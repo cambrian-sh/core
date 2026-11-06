@@ -33,4 +33,13 @@ type AgentManifest struct {
 	ToolAllowlist []string `json:"tool_allowlist,omitempty"`
 	// Skills is a profile's skill menu (skill names), carried for the agent card.
 	Skills []string `json:"skills,omitempty"`
+	// Examples are a profile's example tasks (ADR-0139 C2: 3-5 per agent),
+	// published on the A2A card's skills (internal/agentcard).
+	Examples []string `json:"examples,omitempty"`
+	// StreamsOutput declares that the agent pushes its own live step output
+	// (agent-plane EmitStepOutput) — an external agent that calls its own model.
+	// The kernel then stops forwarding gateway deltas for its steps, so one step
+	// never streams twice (ADR-0139 amendment 2026-11-06). Published on the A2A
+	// card's Cambrian extension.
+	StreamsOutput bool `json:"streams_output,omitempty"`
 }

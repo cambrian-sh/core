@@ -58,7 +58,7 @@ func TestMCPTaskChain_ContributedMenuFollowsTaskBeneficiary(t *testing.T) {
 	// Submit through the REAL published tool handler, identity on the context
 	// exactly as the endpoint middleware establishes it.
 	var submit domain.PublishedToolHandler
-	for _, e := range mcpserve.TaskTools(lane) {
+	for _, e := range mcpserve.TaskTools(lane, mcpserve.TaskOutput{}) {
 		if e.Tool.Name == "submit_task" {
 			submit = e.Handler
 		}
@@ -148,7 +148,7 @@ func TestMCPTaskChain_MachineSubmissionCarriesItsOwner(t *testing.T) {
 		func(context.Context, string, string) (string, map[string]string, error) { return "", nil, nil })
 
 	var submit domain.PublishedToolHandler
-	for _, e := range mcpserve.TaskTools(lane) {
+	for _, e := range mcpserve.TaskTools(lane, mcpserve.TaskOutput{}) {
 		if e.Tool.Name == "submit_task" {
 			submit = e.Handler
 		}

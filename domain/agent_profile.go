@@ -30,6 +30,39 @@ type AgentProfile struct {
 	// required capability, falling back to the global SuccessRate/TrustScore above when
 	// the tag has no history.
 	CapabilityStats map[string]CapabilityStat `json:"capability_stats,omitempty"`
+	// Outcomes is the agent's global outcome evidence (ADR-0139 D6), over every
+	// step event regardless of capability. The posterior merit modes read it for a
+	// step that declares no required capability; a step that does reads the
+	// capability-keyed CapabilityStats[cap].Outcomes instead.
+	Outcomes OutcomeEvidence `json:"outcomes,omitzero"`
+}
+
+// OutcomeEvidence is the raw evidence behind an ADR-0139 D6 Beta posterior.
+//
+// It stores EVIDENCE, not α/β: the prior (execution.gatekeeper.merit_prior_alpha /
+// merit_prior_beta) and the weight of unverified outcomes (merit_unverified_weight)
+// are applied at scoring time, so changing them takes effect on the next dispatch
+// without re-aggregating, and a stored row never bakes in a prior. The posterior is
+//
+//	α = prior_α + VerifiedSuccess + unverified_weight·Unverified
+//	β = prior_β + VerifiedFailure
+//
+// A verified event contributes its verifier score fractionally: VerifiedSuccess
+// += score, VerifiedFailure += 1 − score (a pass/fail verifier reduces to counts).
+// This is the standard fractional Bernoulli update and avoids re-binarising a
+// graded score at 0.5, the distortion T-20261104-merit-math-distorts-routing named.
+// An unverified event is a step that returned without error and that no verifier
+// has scored; it moves the posterior only when merit_unverified_weight > 0
+// (default 0), and only toward success, because a failed step writes no event.
+type OutcomeEvidence struct {
+	VerifiedSuccess float64 `json:"verified_success,omitempty"`
+	VerifiedFailure float64 `json:"verified_failure,omitempty"`
+	Unverified      int     `json:"unverified,omitempty"`
+}
+
+// IsZero reports whether there is no evidence at all.
+func (o OutcomeEvidence) IsZero() bool {
+	return o.VerifiedSuccess == 0 && o.VerifiedFailure == 0 && o.Unverified == 0
 }
 
 // CapabilityStat is an agent's success/trust for a single capability tag (ROUTE-06).
@@ -38,6 +71,10 @@ type CapabilityStat struct {
 	TrustScore  float64 `json:"trust_score"`
 	// SampleCount is the number of verified events behind this stat (for shrinkage/fallback).
 	SampleCount int `json:"sample_count"`
+	// Outcomes is the capability-keyed ADR-0139 D6 evidence (verified and, when
+	// counted, unverified events stamped with this capability). The legacy fields
+	// above are unchanged by it.
+	Outcomes OutcomeEvidence `json:"outcomes,omitzero"`
 }
 
 // ModelMetrics tracks token usage and cost for LLM inference providers.

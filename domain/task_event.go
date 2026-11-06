@@ -45,12 +45,17 @@ type TaskEventReadWriter interface {
 // The ProfileAggregator reads these records to derive AgentProfile metrics.
 // The Gatekeeper never reads TaskEvent directly.
 type TaskEvent struct {
-	TaskID               string    `json:"task_id,omitempty"`
-	AgentID              string    `json:"agent_id,omitempty"`
-	SourceHash           string    `json:"source_hash,omitempty"`
-	BidConfidence        float64   `json:"bid_confidence,omitempty"`
-	VerifierScore        float64   `json:"verifier_score,omitempty"`
-	NetworkLatencyMs     int       `json:"network_latency_ms,omitempty"`
+	TaskID           string  `json:"task_id,omitempty"`
+	AgentID          string  `json:"agent_id,omitempty"`
+	SourceHash       string  `json:"source_hash,omitempty"`
+	BidConfidence    float64 `json:"bid_confidence,omitempty"`
+	VerifierScore    float64 `json:"verifier_score,omitempty"`
+	NetworkLatencyMs int     `json:"network_latency_ms,omitempty"`
+	// ComputationLatencyMs is, on a plan-step event, the WALL time of the agent call
+	// as the Dispatcher measured it (network + computation: the kernel cannot split
+	// them, so NetworkLatencyMs stays 0). 0 means unknown — a thought step, or a
+	// response that did not come from the stamped winner — and the aggregator
+	// leaves unknown latencies out of the median (ADR-0139 D6).
 	ComputationLatencyMs int       `json:"computation_latency_ms,omitempty"`
 	ContextGrowthBytes   int       `json:"context_growth_bytes,omitempty"`
 	PromptTokens         int       `json:"prompt_tokens,omitempty"`

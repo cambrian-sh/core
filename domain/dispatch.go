@@ -41,9 +41,15 @@ type Handoff struct {
 // into the plan context. The agent id rides along so the executor uses the hash
 // only when the response really came from that winner (a runner-up fallback that
 // bypasses the Dispatcher carries no stamp and keeps the empty hash).
+//
+// HandoffKeyWinnerLatencyMs carries the wall time (ms, decimal) of the winner's
+// CallAgent, measured by the Dispatcher around the call (T-20261104-step-taskevents-
+// carry-no-latency-so-the-merit). It is the step TaskEvent's latency; the executor
+// consumes it on the same terms as the source hash.
 const (
 	HandoffKeyWinnerAgentID    = "_winner_agent_id"
 	HandoffKeyWinnerSourceHash = "_winner_source_hash"
+	HandoffKeyWinnerLatencyMs  = "_winner_latency_ms"
 )
 
 // DispatchResult bundles the three values returned by StepDispatcher.Execute.

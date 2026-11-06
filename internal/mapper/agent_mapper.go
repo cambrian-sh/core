@@ -78,6 +78,8 @@ func (m *AgentMapper) ManifestToDomain(rec storage.ManifestRecord) domain.AgentM
 		Dependencies:     rec.Dependencies,
 		ToolAllowlist:    rec.ToolAllowlist,
 		Skills:           rec.Skills,
+		Examples:         rec.Examples,
+		StreamsOutput:    rec.StreamsOutput,
 	}
 }
 
@@ -99,6 +101,8 @@ func (m *AgentMapper) ManifestToRecord(man domain.AgentManifest) storage.Manifes
 		Dependencies:     man.Dependencies,
 		ToolAllowlist:    man.ToolAllowlist,
 		Skills:           man.Skills,
+		Examples:         man.Examples,
+		StreamsOutput:    man.StreamsOutput,
 	}
 }
 

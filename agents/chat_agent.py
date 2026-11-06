@@ -180,6 +180,16 @@ class ChatAgent(CognitiveAgent):
     # A chat is human-paced: the stable system block is worth the 1-hour cache window.
     cache_ttl = "long"
 
+    # ADR-0139 D14: the front desk writes the principal's durable memory notes (the
+    # place a stated preference belongs). D12 subagents and D13 skill proposals stay
+    # OFF: the front desk delegates whole work to the planner instead, and a chat
+    # turn is not where a reusable procedure is authored. A deployment that wants
+    # either sets the attribute on a subclass (ticket
+    # T-20261105-adr-0139-d12-in-agent-subagents-via-spawn records the decision).
+    allow_memory_note_writes = True
+    allow_subagents = False
+    allow_skill_proposals = False
+
     # The managed-LLM budget lease for the turn in flight (ADR-0018). Stashed in run() so the
     # planner-delegation tool can charge a sub-plan to the same lease.
     _turn_token = ""

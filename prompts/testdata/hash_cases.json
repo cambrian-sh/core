@@ -564,6 +564,15 @@
       "static_hash": "c2b79dfb3438a3f4354655e322dd47aa9c7ecb24e796845a2813bacc854b52d8"
     },
     {
+      "id": "thought_synthesis",
+      "version": 2,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Combine the results of a plan's earlier steps into the output the current thought step asks for.",
+      "has_schema": false,
+      "static_hash": "0d2b2241e170170bed37787229a46843d1169e2d2293ec25f81b3a2d421e515f"
+    },
+    {
       "id": "thought_synthesis_input",
       "version": 1,
       "tier": "volatile",

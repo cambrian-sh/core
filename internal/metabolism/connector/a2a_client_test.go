@@ -177,3 +177,24 @@ func TestA2AClient_Execute_ServerError(t *testing.T) {
 		t.Errorf("expected nil Handoff on error, got %v", result)
 	}
 }
+
+// A2A 1.0 path first; the bytes as served are kept for signature verification.
+func TestA2AClient_FetchCard_WellKnownAgentCardPathKeepsRaw(t *testing.T) {
+	body := `{"name":"new-agent","description":"d","version":"1","skills":[{"id":"s","name":"S","description":"x","tags":["t"]}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/agent-card.json" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	got, err := New().FetchCard(context.Background(), srv.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "new-agent" || string(got.Raw) != body || got.Skills[0].ID != "s" {
+		t.Fatalf("card = %+v raw=%q", got, got.Raw)
+	}
+}

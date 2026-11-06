@@ -43,7 +43,7 @@ func (f *fakeTaskLane) Status(_ context.Context, taskID string) (TaskView, bool)
 
 func taskHandlers(t *testing.T, lane TaskLane) (submit, status domain.PublishedToolHandler) {
 	t.Helper()
-	for _, e := range TaskTools(lane) {
+	for _, e := range TaskTools(lane, TaskOutput{}) {
 		switch e.Tool.Name {
 		case "submit_task":
 			submit = e.Handler
@@ -67,7 +67,7 @@ func alice() context.Context {
 // unlike the worker transport beside it.
 func TestTaskTools_Declarations(t *testing.T) {
 	t.Parallel()
-	surface := TaskTools(&fakeTaskLane{})
+	surface := TaskTools(&fakeTaskLane{}, TaskOutput{})
 	if len(surface) != 2 {
 		t.Fatalf("task tools = %d, want 2", len(surface))
 	}
@@ -280,7 +280,7 @@ func TestTaskStatus_AnswersOwnTask(t *testing.T) {
 // surface, unlike the machine-only worker transport beside them.
 func TestTaskTools_ListedOverTheEndpoint(t *testing.T) {
 	t.Parallel()
-	session := serve(t, Options{Surface: TaskTools(&fakeTaskLane{})}, "token-aaaa")
+	session := serve(t, Options{Surface: TaskTools(&fakeTaskLane{}, TaskOutput{})}, "token-aaaa")
 	res, err := session.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("tools/list: %v", err)

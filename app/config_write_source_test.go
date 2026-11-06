@@ -808,3 +808,18 @@ func TestSetGeneratorKey_AcceptsAGeneratorSavedThisBoot(t *testing.T) {
 		t.Fatalf("a key for a just-saved generator must store live, got %+v", o)
 	}
 }
+
+// "thought" is an assignable role: unbound it borrows the planner's generator
+// (llm.RoleFallbacks); binding it moves only thought steps
+// (T-20261106-thought-steps-call-the-model-under-the-planner).
+func TestSetRoleAssignment_AcceptsTheThoughtRole(t *testing.T) {
+	applied := map[string]string{}
+	src := rolesSource(t, applied)
+	out, err := src.SetRoleAssignment("thought", "fast")
+	if err != nil {
+		t.Fatalf("SetRoleAssignment: %v", err)
+	}
+	if !out.Set || applied["thought"] != "fast" {
+		t.Fatalf("thought role not stored/applied: %+v %+v", out, applied)
+	}
+}

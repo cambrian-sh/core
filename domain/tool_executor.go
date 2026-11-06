@@ -279,6 +279,27 @@ type ToolExecutor struct {
 	// ToolOutput receives every non-denied tool output (ADR-0049 D1: a mutation
 	// becomes an action record). nil ⇒ nothing is recorded.
 	ToolOutput ToolOutputRecorder
+	// Hooks is the ADR-0139 D11 lifecycle-hook chain: pre_tool runs after the
+	// policy decision and can only narrow it; post_tool may rewrite or withhold
+	// the output. nil ⇒ no hooks (behaviour unchanged).
+	Hooks *HookChain
+	// LeaseCeiling is the ADR-0139 D12 per-LEASE tool ceiling: a subagent's
+	// toolset (a subset of its parent's tools, resolved by the kernel at spawn)
+	// bound to the child's lease. Checked wherever the session token is known,
+	// after the per-agent ceilings and before the Unrestricted bypass and the
+	// skill overlay, so neither can widen a child past its toolset. nil ⇒ none.
+	LeaseCeiling LeaseToolCeiling
+}
+
+// WithinLeaseCeiling reports whether tool is inside the D12 ceiling bound to
+// sessionToken. A lease the ceiling does not bind (every non-child lease), an
+// empty token and a nil ceiling are all inside.
+func (e *ToolExecutor) WithinLeaseCeiling(sessionToken, tool string) bool {
+	if e == nil || e.LeaseCeiling == nil || sessionToken == "" {
+		return true
+	}
+	inside, bound := e.LeaseCeiling.AllowsLease(sessionToken, tool)
+	return !bound || inside
 }
 
 func denied(reason string, argHash string) ToolCallResponse {
@@ -391,64 +412,53 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 		}
 	}
 
-	// Grant (fail-closed on unknown principal / no grant). A2.2: an operator
-	// ScopeSystem execution (req.System) bypasses the per-agent grant with an
-	// allow-all policy — the operator is above the scope plane (D13).
-	var grant ToolGrant
-	if req.System {
-		grant = ToolGrant{Tool: req.ToolName, Policy: ToolResourcePolicy{AllowAll: true}}
-	} else {
-		g, granted := e.grantFor(ctx, req.AgentID, req.ToolName, string(req.SessionTokenID))
-		if !granted {
-			return denied("tool not granted to agent", argHash)
+	// Grant → CID hydration → resource policy → scope → effects.
+	grant, reason, authorized := e.authorize(ctx, &req, tool)
+	if !authorized {
+		return denied(reason, argHash)
+	}
+
+	// The policy decision: allow, or ask for a dangerous tool. A2.2: an operator
+	// ScopeSystem execution carries its own authority — no per-agent HITL gate. The
+	// operator command handler audits the call and emits a dangerous-tool feed
+	// event so the privileged action stays visible.
+	verdict := HookAllow
+	if tool.Dangerous && !req.System {
+		verdict = HookAsk
+	}
+
+	// ADR-0139 D11 pre_tool hooks, AFTER the policy decision. They can only narrow
+	// it (allow → ask → deny). A rewritten call is re-authorized from the grant
+	// onward, so a rewrite can never reach what the original call could not.
+	if e.Hooks.Has(HookPreTool) {
+		out := e.Hooks.Run(ctx, e.toolHookEvent(ctx, req, tool, HookPreTool, verdict, nil))
+		if out.ArgsRewritten {
+			argHash = hashBytes(out.Args) // the receipt names the call that runs
+			req.ArgsJSON = out.Args
+			g, why, ok := e.authorize(ctx, &req, tool)
+			if !ok {
+				slog.Warn("ADR-0139 D11: hook-rewritten tool call refused by policy",
+					"tool", req.ToolName, "agent", req.AgentID, "reason", why)
+				return denied("hook rewrite refused: "+why, argHash)
+			}
+			grant = g
 		}
-		grant = g
-	}
-
-	// ADR-0048 #3: resolve {"$cid":"…"} reference args to their stored content before
-	// policy + dispatch, so the tool receives the real bytes. Done after the grant
-	// check (no CAS reads for ungranted calls); the argHash above stays keyed on the
-	// logical reference action.
-	req.ArgsJSON = e.hydrateCIDArgs(ctx, req.ArgsJSON)
-
-	// Regime 2 — system-resource policy on the tool's declared resource args.
-	if reason, ok := checkResourcePolicy(tool, grant.Policy, req.ArgsJSON); !ok {
-		return denied("resource policy: "+reason, argHash)
-	}
-
-	// Regime 1 — data-store scope, when the tool touches tagged stores. A2.2: an
-	// operator ScopeSystem execution reads/writes at ScopeSystem (D13), so it is
-	// not scope-gated here.
-	if !req.System && (len(tool.DataReadKinds) > 0 || len(tool.DataWriteKinds) > 0) {
-		if !e.scopeAllows(ctx, req.AgentID, tool) {
-			return denied("scope", argHash)
-		}
-	}
-
-	// Regime 3 — EFFECT classes (ADR-0086). The tag check above asks what the tool
-	// is ABOUT; this asks what the invocation DOES. Both must pass, and this one
-	// applies to every tool, not only the tagged-store ones — "no tool may
-	// transmit outside this network" has to hold for a tool that touches no store.
-	//
-	// An operator ScopeSystem execution carries its own authority (A2.2) and is not
-	// effect-gated; the resource-arg policy and process confinement still apply.
-	if !req.System {
-		if dec := e.effectDecision(ctx, req, tool); !dec.Allowed {
-			return denied("effect not permitted: "+dec.Detail, argHash)
+		// Defence in depth over the chain's own rule: never looser than policy.
+		verdict, _ = NarrowVerdict(verdict, out.Verdict)
+		if verdict == HookDeny {
+			return denied(out.DenyReason(), argHash)
 		}
 	}
 
-	// Approval for dangerous tools (fail-closed). There is no evaluation-session
-	// exemption any more: the ADR-0037 interview that minted evaluation sessions was
-	// deleted 2026-11-05, and ADR-0139 D5 qualification will run against a mock tool
-	// executor that records intended calls, never this one.
+	// Approval (fail-closed): a dangerous tool, or a call a hook narrowed to ask.
+	// There is no evaluation-session exemption any more: the ADR-0037 interview
+	// that minted evaluation sessions was deleted 2026-11-05, and ADR-0139 D5
+	// qualification will run against a mock tool executor that records intended
+	// calls, never this one.
 	approver := ""
-	if tool.Dangerous && req.System {
-		// A2.2: an operator ScopeSystem execution carries its own authority — no
-		// per-agent HITL gate. The operator command handler audits the call and
-		// emits a dangerous-tool feed event so the privileged action stays visible.
+	if tool.Dangerous && req.System && verdict == HookAllow {
 		approver = "operator:system"
-	} else if tool.Dangerous {
+	} else if verdict == HookAsk {
 		if e.Approval == nil {
 			return denied("approval required but unavailable", argHash)
 		}
@@ -565,6 +575,20 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 	// into the GC'd ContentStore) into the durable artifact system + disk, BEFORE
 	// the result is (maybe) offloaded and ResultJSON nil'd below.
 	e.persistArtifacts(ctx, req, result)
+
+	// ADR-0139 D11 post_tool hooks: they may rewrite the output (may_rewrite; e.g.
+	// redaction) or withhold it (narrow to deny). The call already ran, so its
+	// artifacts were promoted above from what the tool really wrote; a withheld
+	// output is not recorded to memory and never reaches the agent.
+	if e.Hooks.Has(HookPostTool) {
+		out := e.Hooks.Run(ctx, e.toolHookEvent(ctx, req, tool, HookPostTool, HookAllow, result))
+		if out.ResultRewritten {
+			result = out.Result
+		}
+		if out.Verdict != HookAllow {
+			return ToolCallResponse{Denied: true, DenyReason: out.DenyReason() + " (output withheld)", ArgHash: argHash, ApproverID: approver}
+		}
+	}
 
 	// Report the output to memory, routed by the tool's declared nature (ADR-0049 D1):
 	// a MUTATION is an EVENT and becomes an action record regardless of size (a write
@@ -828,6 +852,9 @@ func (e *ToolExecutor) AvailableToolsNamedFor(ctx context.Context, agentID, sess
 	}
 	var out []SystemTool // nil when nothing matches (anonymous / all ungranted)
 	for _, t := range e.AvailableTools(ctx, agentID) {
+		if !e.WithinLeaseCeiling(sessionToken, t.Name) {
+			continue // ADR-0139 D12: outside a child lease's toolset
+		}
 		if _, ok := want[t.Name]; ok {
 			out = append(out, t)
 			delete(want, t.Name)
@@ -840,7 +867,7 @@ func (e *ToolExecutor) AvailableToolsNamedFor(ctx context.Context, agentID, sess
 		if _, pending := want[n]; !pending {
 			continue
 		}
-		if !e.withinCeiling(agentID, n) {
+		if !e.withinCeiling(agentID, n) || !e.WithinLeaseCeiling(sessionToken, n) {
 			continue
 		}
 		if !e.Overlay.Granted(sessionToken, n) {
@@ -870,6 +897,11 @@ func (e *ToolExecutor) grantFor(ctx context.Context, agentID, tool, sessionToken
 	// The profile ceiling (Ceiling) is checked here too, for the same reason: a
 	// profile's tool allowlist must hold under the unrestricted bypass.
 	if !e.withinCeiling(agentID, tool) {
+		return ToolGrant{}, false
+	}
+	// ADR-0139 D12: a subagent's lease carries its toolset as a hard ceiling,
+	// held under the Unrestricted bypass and over the skill overlay below.
+	if !e.WithinLeaseCeiling(sessionToken, tool) {
 		return ToolGrant{}, false
 	}
 	// Unrestricted: any named agent gets an allow-all grant for any registered
@@ -1356,7 +1388,7 @@ func (e *ToolExecutor) ConferSkillGrants(ctx context.Context, session, agentID s
 		}
 		// ADR-0051 D6: a restricted principal's hard ceiling outranks a skill —
 		// otherwise a skill would be the way around a restricted principal's confinement.
-		if !e.withinCeiling(agentID, name) {
+		if !e.withinCeiling(agentID, name) || !e.WithinLeaseCeiling(session, name) {
 			clipped = append(clipped, AccessDecision{
 				Resource:  tool.AuthzRef(),
 				Principal: AgentPrincipal(agentID),

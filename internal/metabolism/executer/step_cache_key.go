@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -87,6 +88,23 @@ func stepCacheKey(planSubject, planID string, step domain.Step, snapshot map[str
 			io.WriteString(depsH, snapshot[fmt.Sprintf("step_%d_result", dep)]) //nolint:errcheck
 		}
 		io.WriteString(h, hex.EncodeToString(depsH.Sum(nil))) //nolint:errcheck
+	}
+
+	// Prior-plan results a root step of a replanned plan receives
+	// (priorPlanResults.forRootStep, keys prior_<gen>_step_<N>) are inputs too.
+	var prior []string
+	for k := range snapshot {
+		if strings.HasPrefix(k, "prior_") {
+			prior = append(prior, k)
+		}
+	}
+	if len(prior) > 0 {
+		sort.Strings(prior)
+		priorH := sha256.New()
+		for _, k := range prior {
+			io.WriteString(priorH, k+"\x00"+snapshot[k]+"\x00") //nolint:errcheck
+		}
+		io.WriteString(h, "|prior|"+hex.EncodeToString(priorH.Sum(nil))) //nolint:errcheck
 	}
 
 	return hex.EncodeToString(h.Sum(nil))

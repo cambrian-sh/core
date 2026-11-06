@@ -65,11 +65,15 @@ func TestServer_ThoughtFn(t *testing.T) {
 		},
 	}
 
+	// The executor's upstream-results manifest (domain.StepDependency); a thought
+	// step reads nothing else.
+	manifest, _ := domain.EncodeStepDependencies([]domain.StepDependency{
+		{Step: 0, Objective: "find A", Status: domain.StepDependencyCompleted, Content: "Agent found A.", Bytes: 14},
+		{Step: 1, Objective: "find B", Status: domain.StepDependencyCompleted, Content: "Agent found B.", Bytes: 14},
+	})
 	handoff := &domain.Handoff{
-		Context: map[string]string{
-			"step_0_result": "Agent found A.",
-			"step_1_result": "Agent found B.",
-		},
+		Payload: &domain.Payload{Data: []byte("Summarize findings")},
+		Context: map[string]string{domain.HandoffKeyStepDependencies: manifest},
 	}
 
 	tf := s.thoughtFn(plan)
@@ -345,6 +349,7 @@ func TestServer_StepFn_FallbackUsesRunnerUpWhenWinnerFails(t *testing.T) {
 	gk := supgk.NewGatekeeper(reg, config.ExecutionConfig{
 		Gatekeeper: config.GatekeeperConfig{
 			GatekeeperMaxCandidates: 5,
+			MeritMode:               config.MeritModeLegacy, // fallback-order tests assume the hand-weighted ranking
 			GatekeeperW1:            0.4,
 			GatekeeperW2:            0.4,
 			GatekeeperW3:            0.2,
@@ -455,6 +460,7 @@ func TestServer_StepFn_FallbackPropagatesErrorWhenAllRunnerUpsFail(t *testing.T)
 	gk := supgk.NewGatekeeper(reg, config.ExecutionConfig{
 		Gatekeeper: config.GatekeeperConfig{
 			GatekeeperMaxCandidates: 5,
+			MeritMode:               config.MeritModeLegacy, // fallback-order tests assume the hand-weighted ranking
 			GatekeeperW1:            0.4,
 			GatekeeperW2:            0.4,
 			GatekeeperW3:            0.2,

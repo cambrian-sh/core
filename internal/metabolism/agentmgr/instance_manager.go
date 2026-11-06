@@ -587,23 +587,38 @@ func (im *InstanceManager) KillAllAgents(ctx context.Context) error {
 func (im *InstanceManager) BootCount() uint64 { return im.bootCount.Load() }
 
 func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefinition) error {
+	_, err := im.bootAgentInstance(ctx, def, true)
+	return err
+}
+
+// BootDedicatedInstance boots a fresh instance of def for ONE caller (ADR-0139
+// D12: a subagent child, which must not queue behind its own single-threaded
+// parent on the shared instance). The instance is tracked — so EvictInstance
+// kills it and process-exit watching applies — but NOT indexed under the agent
+// id, so no ordinary call (GetInstance, GetOrBootInstance) is ever routed to it.
+// The caller owns its life and must EvictInstance it when done.
+func (im *InstanceManager) BootDedicatedInstance(ctx context.Context, def *domain.AgentDefinition) (*domain.Instance, error) {
+	return im.bootAgentInstance(ctx, def, false)
+}
+
+func (im *InstanceManager) bootAgentInstance(ctx context.Context, def *domain.AgentDefinition, index bool) (*domain.Instance, error) {
 	im.bootCount.Add(1)
 	inst := domain.NewInstance(def.ID)
 
 	// PLAT-01: fail fast with the missing dep named, not a silent spawn crash.
 	if err := im.verifyRuntimeDeps(ctx, def); err != nil {
-		return err
+		return nil, err
 	}
 
 	cmd, err := im.buildAgentCmd(def, inst, "") // streamID "" for non-daemon boot path
 	if err != nil {
-		return err
+		return nil, err
 	}
 	inst.SocketPath = socketPath(def.ID, inst.ID)
 
 	token, err := generateAuthToken()
 	if err != nil {
-		return fmt.Errorf("token generation failed: %w", err)
+		return nil, fmt.Errorf("token generation failed: %w", err)
 	}
 	inst.AuthToken = token
 	cmd.Args = append(cmd.Args, "--auth-token", token)
@@ -613,17 +628,17 @@ func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefin
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("stdout pipe error: %v", err)
+		return nil, fmt.Errorf("stdout pipe error: %v", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("stderr pipe error: %v", err)
+		return nil, fmt.Errorf("stderr pipe error: %v", err)
 	}
 	// SEC-01 / lifetime: bind the child's life to ours before it exists, so a hard kill
 	// of the kernel cannot leave it running.
 	containLifetime(cmd)
 	if err := cmd.Start(); err != nil {
-		return err
+		return nil, err
 	}
 	// SEC-01: cap the agent's memory after start (Windows Job Object / Unix
 	// RLIMIT_AS). A failure here is non-fatal — the agent still runs uncapped and
@@ -644,7 +659,7 @@ func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefin
 	exit := im.watchExit(inst.ID, cmd)
 	if err := awaitSocket(ctx, cmd, exit, inst.SocketPath, "agent "+def.ID, im.bootTimeout); err != nil {
 		im.forgetExit(inst.ID)
-		return err
+		return nil, err
 	}
 
 	// Phase 2: gRPC health check — confirms the gRPC stack is SERVING, not just
@@ -659,9 +674,11 @@ func (im *InstanceManager) bootAgent(ctx context.Context, def *domain.AgentDefin
 	im.mu.Lock()
 	im.cmds[inst.ID] = cmd
 	im.instances[inst.ID] = inst
-	im.agentIndex[def.ID] = append(im.agentIndex[def.ID], inst.ID)
+	if index {
+		im.agentIndex[def.ID] = append(im.agentIndex[def.ID], inst.ID)
+	}
 	im.mu.Unlock()
-	return nil
+	return inst, nil
 }
 
 // bootDaemonAgent boots a TraitDaemon agent process. Unlike bootAgent it:

@@ -113,6 +113,12 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 	// (T-20261105-owner-decision-needed-120-s-plan-timeout-ms).
 	defer s.trackLeaseWork(sessionToken)()
 
+	// ADR-0139 D12: a subagent's tool calls count against its max_tool_rounds and
+	// the tree-wide iteration cap, kernel-side (the agent's own loop cap is advisory).
+	if ok, why := s.Subagents.AdmitToolCall(sessionToken); !ok {
+		return &pb.ExecuteToolResponse{Denied: true, DenyReason: why}, nil
+	}
+
 	// The operator-facing counterpart, which DOES name the tool.
 	//
 	// Emitted around the call rather than after it: a page fetch or a web search
@@ -133,6 +139,7 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 		TaskID:         mdValue(ctx, "x-task-id"), // ADR-0049 D3: per-step correlation key
 	})
 
+	s.Subagents.RecordToolResult(sessionToken, resp.ResultCID, resp.Denied)
 	s.reportActivity(domain.AgentActivity{
 		SessionTokenID: string(sessionToken), AgentID: agentID,
 		Tool: req.GetToolName(), Done: true,
@@ -182,6 +189,18 @@ func (s *Server) ListTools(ctx context.Context, _ *pb.ListToolsRequest) (*pb.Lis
 	default:
 		tools = s.ToolExecutor.AvailableTools(ctx, agentID)
 	}
+	// ADR-0139 D12: a subagent sees only its toolset (the same lease ceiling
+	// ExecuteTool enforces). A lease the caller may not use filters nothing here:
+	// callerOverlayToken returns "" for it, and the menu stays the agent's own.
+	if tok := s.callerOverlayToken(ctx); tok != "" {
+		kept := tools[:0:0]
+		for _, t := range tools {
+			if s.ToolExecutor.WithinLeaseCeiling(tok, t.Name) {
+				kept = append(kept, t)
+			}
+		}
+		tools = kept
+	}
 	// ADR-0045: serve Tier-1 (terse summary + arg-names-only schema) by default;
 	// Tier-2 (full description + full schema) only when x-tool-full is set (the
 	// describe_tool path). One render function (domain.ToolDisclosure) keeps the
@@ -223,7 +242,7 @@ func (s *Server) WatchApprovals(_ *pb.WatchApprovalsRequest, stream pb.Orchestra
 				return nil
 			}
 			if err := stream.Send(&pb.ApprovalRequest{
-				Id: r.ID, AgentId: r.AgentID, ToolName: r.ToolName, ArgsPreview: r.ArgsPreview,
+				Id: r.ID, AgentId: r.AgentID, ToolName: r.ToolName, ArgsPreview: r.ArgsPreview, Kind: r.Kind,
 			}); err != nil {
 				return err
 			}

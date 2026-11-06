@@ -38,6 +38,11 @@ const (
 	Orchestrator_Embed_FullMethodName                  = "/cambrian.Orchestrator/Embed"
 	Orchestrator_WatchApprovals_FullMethodName         = "/cambrian.Orchestrator/WatchApprovals"
 	Orchestrator_SubmitApprovalDecision_FullMethodName = "/cambrian.Orchestrator/SubmitApprovalDecision"
+	Orchestrator_SpawnSubagent_FullMethodName          = "/cambrian.Orchestrator/SpawnSubagent"
+	Orchestrator_GetMemoryNotes_FullMethodName         = "/cambrian.Orchestrator/GetMemoryNotes"
+	Orchestrator_ProposeMemoryNote_FullMethodName      = "/cambrian.Orchestrator/ProposeMemoryNote"
+	Orchestrator_ProposeSkill_FullMethodName           = "/cambrian.Orchestrator/ProposeSkill"
+	Orchestrator_EmitStepOutput_FullMethodName         = "/cambrian.Orchestrator/EmitStepOutput"
 )
 
 // OrchestratorClient is the client API for Orchestrator service.
@@ -114,6 +119,46 @@ type OrchestratorClient interface {
 	WatchApprovals(ctx context.Context, in *WatchApprovalsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ApprovalRequest], error)
 	// Operator-plane: submit an approve/deny decision for a pending request.
 	SubmitApprovalDecision(ctx context.Context, in *ApprovalDecisionRequest, opts ...grpc.CallOption) (*ApprovalDecisionResponse, error)
+	// ADR-0139 D12: spawn one in-agent subagent and wait for its result (unary:
+	// the parent awaits). The child is a SEPARATE kernel dispatch, so the
+	// ToolExecutor governs every child tool call and child spend counts against
+	// the ROOT lease (tree-wide, D1). Cancelling this call MUST cancel the child.
+	//
+	// No streaming variant, deliberately: the parent can act only on the final
+	// result, the child's progress is already visible on the C6 run event log and
+	// the operator feed, and a stream would need the C7 cancellation/resume
+	// protocol, which is not frozen yet.
+	//
+	// Request-shape faults are gRPC errors (INVALID_ARGUMENT; a missing, foreign or
+	// expired lease is PERMISSION_DENIED). Everything that happens TO the child,
+	// including a policy refusal, is an OK response with an exit_reason, so the
+	// parent model sees it as a tool result.
+	SpawnSubagent(ctx context.Context, in *SpawnSubagentRequest, opts ...grpc.CallOption) (*SpawnSubagentResponse, error)
+	// ADR-0139 D14 / D3: the run principal's memory notes as the FROZEN run-start
+	// snapshot. Every call within one run MUST return the same snapshot (same
+	// version), even after a ProposeMemoryNote in that run: writes are durable at
+	// once but appear from the next run, which keeps the prompt cache intact.
+	GetMemoryNotes(ctx context.Context, in *GetMemoryNotesRequest, opts ...grpc.CallOption) (*GetMemoryNotesResponse, error)
+	// ADR-0139 D14: write to the run principal's notes (append, replace a section,
+	// remove a section). Bounded and injection-scanned on write; a refused write is
+	// an OK response with accepted=false and a rejection, never a silent trim or
+	// eviction.
+	ProposeMemoryNote(ctx context.Context, in *ProposeMemoryNoteRequest, opts ...grpc.CallOption) (*ProposeMemoryNoteResponse, error)
+	// ADR-0139 D13: propose a skill (new, or an edit of an existing one). It enters
+	// the staged approval queue as PENDING and is NEVER active until an operator
+	// approves it (OperatorConsole/DecideSkillProposal).
+	ProposeSkill(ctx context.Context, in *ProposeSkillRequest, opts ...grpc.CallOption) (*ProposeSkillResponse, error)
+	// ADR-0139 amendment 2026-11-06 (live step-output stream; additive within
+	// contract 0101, capability "step-output-stream"): an agent that calls its OWN
+	// model (Claude Code / the Claude Agent SDK as a worker, LangGraph, a custom
+	// agent) pushes its step's live output here; it reaches the operator feed
+	// (TokenChunkOp) and MCP progress like the gateway's deltas do. Every chunk is
+	// bound to the step's lease: a dead lease, or one not issued to the caller, is
+	// PERMISSION_DENIED. seq is strictly increasing per lease; a chunk at or below
+	// the highest accepted seq is a duplicate (a retried stream) and is dropped. An
+	// agent that pushes should declare streams_output (profile / manifest) so the
+	// kernel stops forwarding gateway deltas for its steps.
+	EmitStepOutput(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[StepOutputChunk, EmitStepOutputAck], error)
 }
 
 type orchestratorClient struct {
@@ -338,6 +383,59 @@ func (c *orchestratorClient) SubmitApprovalDecision(ctx context.Context, in *App
 	return out, nil
 }
 
+func (c *orchestratorClient) SpawnSubagent(ctx context.Context, in *SpawnSubagentRequest, opts ...grpc.CallOption) (*SpawnSubagentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SpawnSubagentResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_SpawnSubagent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orchestratorClient) GetMemoryNotes(ctx context.Context, in *GetMemoryNotesRequest, opts ...grpc.CallOption) (*GetMemoryNotesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMemoryNotesResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_GetMemoryNotes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orchestratorClient) ProposeMemoryNote(ctx context.Context, in *ProposeMemoryNoteRequest, opts ...grpc.CallOption) (*ProposeMemoryNoteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProposeMemoryNoteResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_ProposeMemoryNote_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orchestratorClient) ProposeSkill(ctx context.Context, in *ProposeSkillRequest, opts ...grpc.CallOption) (*ProposeSkillResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProposeSkillResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_ProposeSkill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orchestratorClient) EmitStepOutput(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[StepOutputChunk, EmitStepOutputAck], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[4], Orchestrator_EmitStepOutput_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[StepOutputChunk, EmitStepOutputAck]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Orchestrator_EmitStepOutputClient = grpc.ClientStreamingClient[StepOutputChunk, EmitStepOutputAck]
+
 // OrchestratorServer is the server API for Orchestrator service.
 // All implementations must embed UnimplementedOrchestratorServer
 // for forward compatibility.
@@ -412,6 +510,46 @@ type OrchestratorServer interface {
 	WatchApprovals(*WatchApprovalsRequest, grpc.ServerStreamingServer[ApprovalRequest]) error
 	// Operator-plane: submit an approve/deny decision for a pending request.
 	SubmitApprovalDecision(context.Context, *ApprovalDecisionRequest) (*ApprovalDecisionResponse, error)
+	// ADR-0139 D12: spawn one in-agent subagent and wait for its result (unary:
+	// the parent awaits). The child is a SEPARATE kernel dispatch, so the
+	// ToolExecutor governs every child tool call and child spend counts against
+	// the ROOT lease (tree-wide, D1). Cancelling this call MUST cancel the child.
+	//
+	// No streaming variant, deliberately: the parent can act only on the final
+	// result, the child's progress is already visible on the C6 run event log and
+	// the operator feed, and a stream would need the C7 cancellation/resume
+	// protocol, which is not frozen yet.
+	//
+	// Request-shape faults are gRPC errors (INVALID_ARGUMENT; a missing, foreign or
+	// expired lease is PERMISSION_DENIED). Everything that happens TO the child,
+	// including a policy refusal, is an OK response with an exit_reason, so the
+	// parent model sees it as a tool result.
+	SpawnSubagent(context.Context, *SpawnSubagentRequest) (*SpawnSubagentResponse, error)
+	// ADR-0139 D14 / D3: the run principal's memory notes as the FROZEN run-start
+	// snapshot. Every call within one run MUST return the same snapshot (same
+	// version), even after a ProposeMemoryNote in that run: writes are durable at
+	// once but appear from the next run, which keeps the prompt cache intact.
+	GetMemoryNotes(context.Context, *GetMemoryNotesRequest) (*GetMemoryNotesResponse, error)
+	// ADR-0139 D14: write to the run principal's notes (append, replace a section,
+	// remove a section). Bounded and injection-scanned on write; a refused write is
+	// an OK response with accepted=false and a rejection, never a silent trim or
+	// eviction.
+	ProposeMemoryNote(context.Context, *ProposeMemoryNoteRequest) (*ProposeMemoryNoteResponse, error)
+	// ADR-0139 D13: propose a skill (new, or an edit of an existing one). It enters
+	// the staged approval queue as PENDING and is NEVER active until an operator
+	// approves it (OperatorConsole/DecideSkillProposal).
+	ProposeSkill(context.Context, *ProposeSkillRequest) (*ProposeSkillResponse, error)
+	// ADR-0139 amendment 2026-11-06 (live step-output stream; additive within
+	// contract 0101, capability "step-output-stream"): an agent that calls its OWN
+	// model (Claude Code / the Claude Agent SDK as a worker, LangGraph, a custom
+	// agent) pushes its step's live output here; it reaches the operator feed
+	// (TokenChunkOp) and MCP progress like the gateway's deltas do. Every chunk is
+	// bound to the step's lease: a dead lease, or one not issued to the caller, is
+	// PERMISSION_DENIED. seq is strictly increasing per lease; a chunk at or below
+	// the highest accepted seq is a duplicate (a retried stream) and is dropped. An
+	// agent that pushes should declare streams_output (profile / manifest) so the
+	// kernel stops forwarding gateway deltas for its steps.
+	EmitStepOutput(grpc.ClientStreamingServer[StepOutputChunk, EmitStepOutputAck]) error
 	mustEmbedUnimplementedOrchestratorServer()
 }
 
@@ -478,6 +616,21 @@ func (UnimplementedOrchestratorServer) WatchApprovals(*WatchApprovalsRequest, gr
 }
 func (UnimplementedOrchestratorServer) SubmitApprovalDecision(context.Context, *ApprovalDecisionRequest) (*ApprovalDecisionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitApprovalDecision not implemented")
+}
+func (UnimplementedOrchestratorServer) SpawnSubagent(context.Context, *SpawnSubagentRequest) (*SpawnSubagentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SpawnSubagent not implemented")
+}
+func (UnimplementedOrchestratorServer) GetMemoryNotes(context.Context, *GetMemoryNotesRequest) (*GetMemoryNotesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMemoryNotes not implemented")
+}
+func (UnimplementedOrchestratorServer) ProposeMemoryNote(context.Context, *ProposeMemoryNoteRequest) (*ProposeMemoryNoteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProposeMemoryNote not implemented")
+}
+func (UnimplementedOrchestratorServer) ProposeSkill(context.Context, *ProposeSkillRequest) (*ProposeSkillResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProposeSkill not implemented")
+}
+func (UnimplementedOrchestratorServer) EmitStepOutput(grpc.ClientStreamingServer[StepOutputChunk, EmitStepOutputAck]) error {
+	return status.Error(codes.Unimplemented, "method EmitStepOutput not implemented")
 }
 func (UnimplementedOrchestratorServer) mustEmbedUnimplementedOrchestratorServer() {}
 func (UnimplementedOrchestratorServer) testEmbeddedByValue()                      {}
@@ -806,6 +959,85 @@ func _Orchestrator_SubmitApprovalDecision_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Orchestrator_SpawnSubagent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SpawnSubagentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).SpawnSubagent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_SpawnSubagent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).SpawnSubagent(ctx, req.(*SpawnSubagentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Orchestrator_GetMemoryNotes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMemoryNotesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).GetMemoryNotes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_GetMemoryNotes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).GetMemoryNotes(ctx, req.(*GetMemoryNotesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Orchestrator_ProposeMemoryNote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProposeMemoryNoteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).ProposeMemoryNote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_ProposeMemoryNote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).ProposeMemoryNote(ctx, req.(*ProposeMemoryNoteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Orchestrator_ProposeSkill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProposeSkillRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).ProposeSkill(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_ProposeSkill_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).ProposeSkill(ctx, req.(*ProposeSkillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Orchestrator_EmitStepOutput_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(OrchestratorServer).EmitStepOutput(&grpc.GenericServerStream[StepOutputChunk, EmitStepOutputAck]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Orchestrator_EmitStepOutputServer = grpc.ClientStreamingServer[StepOutputChunk, EmitStepOutputAck]
+
 // Orchestrator_ServiceDesc is the grpc.ServiceDesc for Orchestrator service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -873,6 +1105,22 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "SubmitApprovalDecision",
 			Handler:    _Orchestrator_SubmitApprovalDecision_Handler,
 		},
+		{
+			MethodName: "SpawnSubagent",
+			Handler:    _Orchestrator_SpawnSubagent_Handler,
+		},
+		{
+			MethodName: "GetMemoryNotes",
+			Handler:    _Orchestrator_GetMemoryNotes_Handler,
+		},
+		{
+			MethodName: "ProposeMemoryNote",
+			Handler:    _Orchestrator_ProposeMemoryNote_Handler,
+		},
+		{
+			MethodName: "ProposeSkill",
+			Handler:    _Orchestrator_ProposeSkill_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -896,6 +1144,11 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "WatchApprovals",
 			Handler:       _Orchestrator_WatchApprovals_Handler,
 			ServerStreams: true,
+		},
+		{
+			StreamName:    "EmitStepOutput",
+			Handler:       _Orchestrator_EmitStepOutput_Handler,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "cambrian.proto",

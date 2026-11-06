@@ -91,15 +91,31 @@ const taskTextMaxChars = 100_000
 // which task ids exist on this kernel.
 var errTaskNotVisible = errors.New("no task with that id is visible to you")
 
+// TaskOutput is the task's live step-output source for the MCP progress channel
+// (ADR-0139 amendment 2026-11-06). A call that carries a progressToken is held open
+// while the task runs and each piece of its steps' live output is sent as
+// notifications/progress, with the text as the message.
+type TaskOutput struct {
+	// Subscribe delivers the live output of every step of task taskID to fn until
+	// cancel runs. fn is called synchronously by the stream and must not block.
+	// nil => no progress channel (a wait still long-polls the state).
+	Subscribe func(taskID string, fn func(domain.StepOutputChunk)) (cancel func())
+	// DefaultWait is how long a call carrying a progressToken and no wait_seconds
+	// stays open. 0 => such a call returns at once, as before.
+	DefaultWait time.Duration
+	// MaxWait bounds every wait, explicit wait_seconds included. 0 => DefaultWait.
+	MaxWait time.Duration
+}
+
 // TaskTools renders the task hand-off pair over lane. Owner "core" beside the
 // memory tools; composed by the root, never part of the CoreTools golden.
-func TaskTools(lane TaskLane) domain.PublishedToolSurface {
+func TaskTools(lane TaskLane, output TaskOutput) domain.PublishedToolSurface {
 	return domain.PublishedToolSurface{
 		{Owner: "core", Tool: submitTaskTool, Handler: handlerFunc(func(ctx context.Context, args json.RawMessage) (domain.PublishedToolResult, error) {
-			return submitTask(ctx, lane, args)
+			return submitTask(ctx, lane, output, args)
 		})},
 		{Owner: "core", Tool: getTaskStatusTool, Handler: handlerFunc(func(ctx context.Context, args json.RawMessage) (domain.PublishedToolResult, error) {
-			return getTaskStatus(ctx, lane, args)
+			return getTaskStatus(ctx, lane, output, args)
 		})},
 	}
 }
@@ -112,14 +128,18 @@ var submitTaskTool = domain.PublishedTool{
 	Description: "Hand Cambrian a task to accomplish, in natural language. It enters the " +
 		"kernel's planner lane exactly as an operator-submitted task would and runs " +
 		"asynchronously; the answer carries a task_id — poll get_task_status until the state " +
-		"is succeeded or failed. Tasks run agents and spend LLM budget on your behalf.",
+		"is succeeded or failed. Tasks run agents and spend LLM budget on your behalf. " +
+		"Live output: send a progressToken (or wait_seconds) and the call stays open while the " +
+		"task runs, streaming its steps' output as notifications/progress, then answers with the " +
+		"state reached.",
 	InputSchema: []byte(`{
   "type": "object",
   "additionalProperties": false,
   "required": ["task"],
   "properties": {
     "task": {"type": "string", "description": "What to accomplish, in natural language. Becomes the task's goal and the planner's input."},
-    "parent_task_id": {"type": "string", "description": "Optional: a task id you submitted earlier, recording this task as its follow-up."}
+    "parent_task_id": {"type": "string", "description": "Optional: a task id you submitted earlier, recording this task as its follow-up."},
+    "wait_seconds": {"type": "integer", "minimum": 0, "description": "Optional: hold the call open up to this long (bounded by the server) until the task is terminal, streaming live output as notifications/progress when the request carries a progressToken. 0 returns at once. Default: the server's progress wait when a progressToken is sent, else 0."}
   }
 }`),
 	// Honest effects: submission mutates kernel state (a task session, a plan,
@@ -134,13 +154,16 @@ var getTaskStatusTool = domain.PublishedTool{
 	Description: "Poll one of your submitted tasks by task_id. States: running, paused, " +
 		"dormant, succeeded, failed — succeeded and failed are terminal (terminal: true), and " +
 		"the result text arrives with them. Only tasks submitted under your own identity (or, " +
-		"for a worker machine, its owner's) are visible; anything else answers not-found.",
+		"for a worker machine, its owner's) are visible; anything else answers not-found. " +
+		"Send a progressToken (or wait_seconds) to long-poll: the call stays open until the task " +
+		"is terminal or the wait ends, streaming its live output as notifications/progress.",
 	InputSchema: []byte(`{
   "type": "object",
   "additionalProperties": false,
   "required": ["task_id"],
   "properties": {
-    "task_id": {"type": "string", "description": "The id submit_task returned."}
+    "task_id": {"type": "string", "description": "The id submit_task returned."},
+    "wait_seconds": {"type": "integer", "minimum": 0, "description": "Optional: long-poll up to this long (bounded by the server) until the task is terminal. 0 answers at once. Default: the server's progress wait when a progressToken is sent, else 0."}
   }
 }`),
 	Effects:  []domain.ToolEffect{domain.EffectRead},
@@ -178,7 +201,7 @@ func taskCaller(ctx context.Context) (domain.PrincipalRef, error) {
 	return p, nil
 }
 
-func submitTask(ctx context.Context, lane TaskLane, args json.RawMessage) (domain.PublishedToolResult, error) {
+func submitTask(ctx context.Context, lane TaskLane, output TaskOutput, args json.RawMessage) (domain.PublishedToolResult, error) {
 	if lane == nil {
 		return domain.PublishedToolResult{}, errors.New("the task lane is not available on this kernel")
 	}
@@ -189,6 +212,7 @@ func submitTask(ctx context.Context, lane TaskLane, args json.RawMessage) (domai
 	var in struct {
 		Task         string `json:"task"`
 		ParentTaskID string `json:"parent_task_id"`
+		WaitSeconds  *int   `json:"wait_seconds"`
 	}
 	if err := parseArgs(args, &in); err != nil {
 		return domain.PublishedToolResult{}, err
@@ -210,9 +234,21 @@ func submitTask(ctx context.Context, lane TaskLane, args json.RawMessage) (domai
 			return domain.PublishedToolResult{}, fmt.Errorf("parent_task_id: %w", errTaskNotVisible)
 		}
 	}
+	wait, err := output.waitFor(ctx, in.WaitSeconds)
+	if err != nil {
+		return domain.PublishedToolResult{}, err
+	}
 	id, err := lane.Submit(ctx, task, in.ParentTaskID, owner)
 	if err != nil {
 		return domain.PublishedToolResult{}, fmt.Errorf("submit: %w", err)
+	}
+	if wait > 0 {
+		// The task's session exists from Submit on, but its first step is
+		// dispatched by the planner later, so subscribing here misses nothing.
+		output.follow(ctx, lane, id, wait)
+		if view, ok := lane.Status(ctx, id); ok && view.Beneficiary == owner {
+			return renderTaskView(view), nil
+		}
 	}
 	return domain.PublishedToolResult{
 		Structured: map[string]any{"task_id": id, "state": TaskStateRunning},
@@ -220,7 +256,7 @@ func submitTask(ctx context.Context, lane TaskLane, args json.RawMessage) (domai
 	}, nil
 }
 
-func getTaskStatus(ctx context.Context, lane TaskLane, args json.RawMessage) (domain.PublishedToolResult, error) {
+func getTaskStatus(ctx context.Context, lane TaskLane, output TaskOutput, args json.RawMessage) (domain.PublishedToolResult, error) {
 	if lane == nil {
 		return domain.PublishedToolResult{}, errors.New("the task lane is not available on this kernel")
 	}
@@ -229,7 +265,8 @@ func getTaskStatus(ctx context.Context, lane TaskLane, args json.RawMessage) (do
 		return domain.PublishedToolResult{}, err
 	}
 	var in struct {
-		TaskID string `json:"task_id"`
+		TaskID      string `json:"task_id"`
+		WaitSeconds *int   `json:"wait_seconds"`
 	}
 	if err := parseArgs(args, &in); err != nil {
 		return domain.PublishedToolResult{}, err
@@ -243,6 +280,23 @@ func getTaskStatus(ctx context.Context, lane TaskLane, args json.RawMessage) (do
 		// error VALUE both ways keeps the two byte-identical by construction.
 		return domain.PublishedToolResult{}, errTaskNotVisible
 	}
+	// The visibility check above runs BEFORE any wait or subscription: a caller
+	// can never long-poll, or receive the live output of, someone else's task.
+	wait, err := output.waitFor(ctx, in.WaitSeconds)
+	if err != nil {
+		return domain.PublishedToolResult{}, err
+	}
+	if wait > 0 && !TaskTerminal(view.State) {
+		output.follow(ctx, lane, in.TaskID, wait)
+		if v, ok := lane.Status(ctx, in.TaskID); ok && v.Beneficiary == owner {
+			view = v
+		}
+	}
+	return renderTaskView(view), nil
+}
+
+// renderTaskView is the status answer both tools give.
+func renderTaskView(view TaskView) domain.PublishedToolResult {
 	structured := map[string]any{
 		"task_id":            view.ID,
 		"state":              view.State,
@@ -256,5 +310,5 @@ func getTaskStatus(ctx context.Context, lane TaskLane, args json.RawMessage) (do
 		structured["result"] = view.Result
 		text += "\n" + view.Result
 	}
-	return domain.PublishedToolResult{Structured: structured, Text: text}, nil
+	return domain.PublishedToolResult{Structured: structured, Text: text}
 }

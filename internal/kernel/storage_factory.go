@@ -1,6 +1,8 @@
 package kernel
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -125,6 +127,26 @@ func (h *StorageHandle) WireProfileSeedEnqueuer(enqueuer func(agent domain.Agent
 		return
 	}
 	h.raw.Enqueuer = funcEnqueuer(enqueuer)
+}
+
+// WireA2ACardFetcher sets the card fetcher remote A2A registration uses
+// (ADR-0139 D4): the verifying agentcard.RemoteFetcher, so a card the
+// a2a.signature_policy refuses is never registered.
+func (h *StorageHandle) WireA2ACardFetcher(f domain.CardFetcher) {
+	if h.raw == nil {
+		return
+	}
+	h.raw.CardFetcher = f
+}
+
+// RegisterA2AAgent registers the remote A2A agent at endpoint (fetch, verify,
+// persist at the third-party tier, enqueue for seeding). Called from boot for
+// each a2a.endpoints entry.
+func (h *StorageHandle) RegisterA2AAgent(ctx context.Context, endpoint string) error {
+	if h.raw == nil {
+		return fmt.Errorf("a2a: storage not initialised")
+	}
+	return h.raw.RegisterA2AAgent(ctx, endpoint)
 }
 
 // funcEnqueuer adapts a plain function to the storage.Enqueuer interface

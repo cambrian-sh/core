@@ -133,6 +133,26 @@ func rawCases(t *testing.T) []profileCase {
 		{Name: "empty-tools", Text: with("tools:\n  - mcp:filesystem/read_*\n  - mcp:time/*\n", "tools: []\n"), ExpectedName: "tester"},
 		{Name: "comment-indented", Text: with("skills:\n", "skills:\n    # inside\n"), ExpectedName: "tester", Skills: fixtureSkills},
 		{Name: "bom", Text: "ï»¿" + baseProfile, ExpectedName: "tester"},
+		{Name: "examples-ok", Text: baseProfile + "examples:\n  - Summarise this file\n  - \"Compare: a and b\"\n  - '  Padded example  '\n", ExpectedName: "tester", Skills: fixtureSkills},
+		{Name: "examples-flow", Text: baseProfile + "examples: [one task, another task]\n", ExpectedName: "tester", Skills: fixtureSkills},
+		{Name: "examples-empty-list", Text: baseProfile + "examples: []\n", ExpectedName: "tester", Skills: fixtureSkills},
+		{Name: "examples-null", Text: baseProfile + "examples: ~\n", ExpectedName: "tester", Skills: fixtureSkills},
+		{Name: "examples-too-many", Text: baseProfile + "examples: [a, b, c, d, e, f]\n", ExpectedName: "tester"},
+		{Name: "examples-duplicate", Text: baseProfile + "examples: [a, a]\n", ExpectedName: "tester"},
+		{Name: "examples-int", Text: baseProfile + "examples: [7]\n", ExpectedName: "tester"},
+		{Name: "examples-blank", Text: baseProfile + "examples:\n  - '   '\n", ExpectedName: "tester"},
+		{Name: "examples-scalar", Text: baseProfile + "examples: one task\n", ExpectedName: "tester"},
+		// ADR-0139 amendment 2026-11-06: streams_output. The subset has no boolean
+		// scalar, so exactly true / false (unquoted or quoted); null is false.
+		{Name: "streams-output-true", Text: baseProfile + "streams_output: true\n", ExpectedName: "tester"},
+		{Name: "streams-output-false", Text: baseProfile + "streams_output: false\n", ExpectedName: "tester"},
+		{Name: "streams-output-quoted", Text: baseProfile + "streams_output: \"true\"\n", ExpectedName: "tester"},
+		{Name: "streams-output-null", Text: baseProfile + "streams_output: ~\n", ExpectedName: "tester"},
+		{Name: "streams-output-yes", Text: baseProfile + "streams_output: yes\n", ExpectedName: "tester"},
+		{Name: "streams-output-int", Text: baseProfile + "streams_output: 1\n", ExpectedName: "tester"},
+		{Name: "streams-output-list", Text: baseProfile + "streams_output: [true]\n", ExpectedName: "tester"},
+		{Name: "examples-too-long", Text: baseProfile + "examples:\n  - " + strings.Repeat("x", MaxExampleRunes+1) + "\n", ExpectedName: "tester"},
+		{Name: "examples-max-length-multibyte", Text: baseProfile + "examples:\n  - " + strings.Repeat("é", MaxExampleRunes) + "\n", ExpectedName: "tester", Skills: fixtureSkills},
 	}
 	// The shipped profiles, against the shipped skills (the kernel's view).
 	shipped := shippedSkillTools(t)
@@ -192,6 +212,8 @@ func buildFixture(t *testing.T) fixture {
 		"max_tool_rounds":       MaxToolRoundsBounds,
 		"max_tokens":            MaxTokensBounds,
 		"default_version":       DefaultVersion,
+		"max_examples":          MaxExamples,
+		"max_example_runes":     MaxExampleRunes,
 	}}
 	for _, c := range rawCases(t) {
 		p, err := Parse(c.Text, Options{ExpectedName: c.ExpectedName, SkillTools: c.Skills})
@@ -267,6 +289,12 @@ func TestParseVerdicts(t *testing.T) {
 		"unknown-field": false, "unquoted-colon-space": false, "glob-wildcard-server": false,
 		"reserved-capability": false, "new-capability-warns": true, "model-role": true, "bom": false,
 		"flow-list-trailing-comma": false, "max-tokens-huge": false,
+		"examples-ok": true, "examples-flow": true, "examples-empty-list": true, "examples-null": true,
+		"examples-too-many": false, "examples-duplicate": false, "examples-int": false, "examples-blank": false,
+		"examples-scalar": false, "examples-too-long": false, "examples-max-length-multibyte": true,
+		"streams-output-true": true, "streams-output-false": true, "streams-output-quoted": true,
+		"streams-output-null": true, "streams-output-yes": false, "streams-output-int": false,
+		"streams-output-list": false,
 	} {
 		if byName[name].Valid != valid {
 			t.Errorf("%s: valid=%v, want %v", name, byName[name].Valid, valid)
@@ -274,6 +302,12 @@ func TestParseVerdicts(t *testing.T) {
 	}
 	if byName["new-capability-warns"].Warnings != 1 {
 		t.Errorf("new capability should warn once")
+	}
+	if p := byName["streams-output-true"].Profile; p == nil || !p.StreamsOutput {
+		t.Errorf("streams_output: true should parse true: %+v", p)
+	}
+	if p := byName["base"].Profile; p == nil || p.StreamsOutput {
+		t.Errorf("streams_output defaults to false: %+v", p)
 	}
 	if p := byName["base"].Profile; p == nil || p.Role != "You test: carefully." || *p.MaxToolRounds != 8 || p.Version != "1.2.3" {
 		t.Errorf("base parsed wrong: %+v", p)

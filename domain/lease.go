@@ -42,7 +42,20 @@ type LeaseBinding struct {
 	// trusting the agent to name one it was not dispatched under.
 	ConversationID  string
 	OriginMessageID string
+	// ParentLeaseID is set when this lease belongs to an ADR-0139 D12 subagent: the
+	// lease of the parent that spawned it. Non-empty marks the holder as a CHILD.
+	// D12: children get no memory write (and no clarify or messaging) unless the
+	// spawn granted it, so a child lease is refused memory-note writes
+	// (MEMORY_NOTE_REJECTION_SCOPE_DENIED) unless MemoryWriteGranted is set.
+	// Written by the kernel at spawn, never by the agent.
+	ParentLeaseID LeaseID
+	// MemoryWriteGranted is the D12 explicit grant of memory write to a child
+	// (the spawn's toolset named the memory-write tool). Meaningless on a root lease.
+	MemoryWriteGranted bool
 }
+
+// IsChild reports whether the lease belongs to a D12 subagent.
+func (b LeaseBinding) IsChild() bool { return b.ParentLeaseID != "" }
 
 // IsZero reports whether the binding carries no identity at all. A zero binding must never
 // be used to grant ownership or narrow a scope — it means "this lease was never bound".

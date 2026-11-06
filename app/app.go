@@ -30,6 +30,7 @@ import (
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/evidence"
 	"github.com/cambrian-sh/core/internal/health"
+	"github.com/cambrian-sh/core/internal/hooks"
 	"github.com/cambrian-sh/core/internal/infrastructure/llm"
 	mcp "github.com/cambrian-sh/core/internal/infrastructure/mcp"
 	"github.com/cambrian-sh/core/internal/infrastructure/mcpserve"
@@ -43,7 +44,9 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/routescorer"
 	"github.com/cambrian-sh/core/internal/ratelimit"
 	ossreactive "github.com/cambrian-sh/core/internal/reactive"
+	skillaccess "github.com/cambrian-sh/core/internal/skill/access"
 	skilldiscovery "github.com/cambrian-sh/core/internal/skill/discovery"
+	skilllifecycle "github.com/cambrian-sh/core/internal/skill/lifecycle"
 	"github.com/cambrian-sh/core/internal/storage"
 	subnetwork "github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
@@ -178,6 +181,14 @@ type Kernel struct {
 	ArtifactVault   *vault.ArtifactVault
 	EventBus        *domain.InMemoryEventBus
 
+	// ADR-0139 D13: the skill lifecycle (nil when its store is not wired) and the
+	// deterministic curator worker (nil unless execution.skills.curator.enabled).
+	SkillLifecycle *skilllifecycle.Service
+	SkillCurator   *skilllifecycle.Curator
+	// SkillAccess is per-agent skill access (decisions/skill-access-grants.md):
+	// profile skills + grants. nil only if it could not be built.
+	SkillAccess *skillaccess.Service
+
 	// ADR-0085: the access-control decision point. In OSS this is the allow-all
 	// default; a premium policy plugin replaces it. The kernel holds it so every
 	// enforcement point asks the SAME decision point.
@@ -241,6 +252,10 @@ type Kernel struct {
 	// before the operator feed exists, and contract 0079 needs to give it the
 	// feed as a second destination once that feed is up.
 	Progress *progressHolder
+	// StepOutputFeed is the live step-output stream's operator-feed sink (ADR-0139
+	// amendment 2026-11-06), built with the agent-plane server and attached to the
+	// feed once it exists — the same late binding as Progress.
+	StepOutputFeed *stepOutputFeed
 	// Logs is the in-process log retention window.
 	//
 	// Carried on the kernel because it is created with the logger — before almost
@@ -330,6 +345,9 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 	}
 	if k.CircadianRhythm != nil {
 		k.CircadianRhythm.Stop()
+	}
+	if k.SkillCurator != nil {
+		k.SkillCurator.Stop() // ADR-0139 D13
 	}
 	if k.ArtifactVault != nil {
 		_ = k.ArtifactVault.Close()
@@ -636,7 +654,27 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// from it (with live health failover), and since ADR-0139 wave 1c the agent-plane
 	// gateway serves every agent call through it too (SetStepModels below): one
 	// client set, one breaker.
-	llmProvider, err := llm.NewProvider(cfg.LLMProvider, slog.Default())
+	//
+	// ADR-0139 D11: the lifecycle-hook chain — the operator's execution.hooks plus
+	// every plugin's hooks, in one stable order. Built before the Provider so both
+	// it (pre/post_model) and the ToolExecutor (pre/post_tool) take it at
+	// construction. A misdeclared hook fails the boot.
+	hookChain, err := hooks.NewChain(cfg.Execution.Hooks, opts.Hooks, opts.HookObserver, slog.Default())
+	if err != nil {
+		storeHandle.Close()
+		return nil, fmt.Errorf("execution.hooks: %w", err)
+	}
+	if names := hookChain.Names(); len(names) > 0 {
+		slog.Info("ADR-0139 D11: lifecycle hooks installed", "hooks", names)
+	}
+	// The final-answer tool/arg name the native tool lane's deliverable, which the
+	// post_model hooks see and may rewrite (T-20261106-post-model-hooks-never-see-
+	// native-tool-call) — the same keys the live step-output stream extracts.
+	llmProvider, err := llm.NewProvider(cfg.LLMProvider, slog.Default(), llm.WithHooks(hookChain),
+		llm.WithFinalAnswer(cfg.Execution.StepOutput.FinalAnswerToolName(), cfg.Execution.StepOutput.FinalAnswerArgName()),
+		// The control-verb arguments post_model hooks guard besides the deliverable
+		// (execution.hooks.guarded_arguments; T-20261106-post-model-hooks-do-not-guard-control-verb).
+		llm.WithGuardedArgs(cfg.Execution.Hooks.GuardedArgumentList()))
 	if err != nil {
 		storeHandle.Close()
 		return nil, fmt.Errorf("llm provider: %w", err)
@@ -765,6 +803,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// seeding (deterministic description vector + neutral prior; the ADR-0037 LLM
 	// interview was deleted 2026-11-05, ADR-0139 Q3).
 	storeHandle.WireProfileSeedEnqueuer(meta.ProfileSeedEnqueuer())
+	// ADR-0139 D4: every remote A2A card read — boot registration and the
+	// seeder's description vector — goes through the verifying fetcher
+	// (a2a.signature_policy). app/agentcard_endpoint.go.
+	remoteCards, err := newRemoteCardFetcher(cfg)
+	if err != nil {
+		return nil, err
+	}
+	storeHandle.WireA2ACardFetcher(remoteCards)
+	meta.ProfileSeeder.CardFetcher = remoteCards
 
 	// 3c. Wire EventBus (ADR-0030). Both the ProfileSeeder and the Dispatcher publish to it;
 	// other subsystems subscribe. A log handler makes AgentReadyEvent observable in
@@ -1559,6 +1606,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		watchBacktester = bt
 	}
 	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
+	// ADR-0139 amendment 2026-11-06: the live step-output stream (step_output_wiring.go).
+	// Built here, unconditionally, so the MCP endpoint below can subscribe to it; the
+	// operator feed attaches its sink when services start.
+	stepOutFeed := &stepOutputFeed{}
+	cambrianServer.StepOutput = buildStepOutput(cfg.Execution.StepOutput, hookChain, llmGateway, reg, stepOutFeed)
 	// PREM-0032: from here a plugin's start_plan runs on this server's real DAG path.
 	planExec.bind(cambrianServer)
 	// ADR-0098: the agent-facing plane reports memory searches and tool calls against the
@@ -1847,9 +1899,15 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			return string(resp.GetPayload().GetData()), resp.GetMetadata(), nil
 		})
 	cambrianServer.TaskOwners = mcpTaskLane
+	// ADR-0139 D14: principal memory notes — one service for both planes. The run
+	// principal is resolved from kernel-held facts on the lease (conversation owner,
+	// then task beneficiary, then execution.memory_notes.default_principal).
+	cambrianServer.MemoryNotes = buildMemoryNotes(ctx, cfg.Execution.MemoryNotes, vec.Pool(), authorizer)
+	cambrianServer.MemoryNotesPrincipal = memoryNotesPrincipal(cfg.Execution.MemoryNotes.DefaultPrincipal,
+		conversations, sessionMgr, mcpTaskLane)
 
 	mcpEndpoint, err := startMCPEndpoint(cfg,
-		append(append(append(mcpserve.CoreTools(mcpCoreBackends), mcpserve.TaskTools(mcpTaskLane)...),
+		append(append(append(mcpserve.CoreTools(mcpCoreBackends), mcpserve.TaskTools(mcpTaskLane, mcpTaskOutput(cambrianServer.StepOutput, cfg.Execution.StepOutput))...),
 			domain.ContributionLaneTools(workerHub)...), composed.publishedTools...),
 		authorizer, opts.IdentityResolver)
 	if err != nil {
@@ -1990,7 +2048,18 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// ADR-0049 D1: mutations become action records. (The ADR-0048 D6 read-output
 		// promotion and its 200-byte floor were deleted 2026-11-05 with the tier-2 judge.)
 		ToolOutput: mem.Agent,
+		// ADR-0139 D11: pre_tool after the policy decision (narrow only; a rewrite
+		// is re-authorized), post_tool around the output.
+		Hooks: hookChain,
 	}
+	// ADR-0139 D12: in-agent subagents. One service is the SpawnSubagent runtime,
+	// the per-lease tool ceiling the executor enforces on child leases, and the
+	// gateway's per-call gate for child token budgets — wired here together so a
+	// child can never run with its ceiling or its budget missing.
+	subagents := subnetwork.NewSubagentService(cfg.Execution.Agents, hookChain)
+	cambrianServer.Subagents = subagents
+	cambrianServer.ToolExecutor.LeaseCeiling = subagents
+	llmGateway.SetLeaseGate(subagents)
 	cambrianServer.ApprovalHub = toolApproval
 	toolApproval.Bus = eventBus // ADR-0047 0047-19: dangerous-tool approval raises HITLRaisedEvent
 	// ADR-0047 0047-17/0047-18: the executor publishes PlanStateChanged to the
@@ -2123,6 +2192,26 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Store:    authz.NewEnforcingVectorStore(vec, slog.Default()),
 		Embedder: embedder,
 		Floor:    cfg.Execution.Tools.ToolRetrievalFloor,
+	}
+	// ADR-0139 D13: the skill lifecycle overlays the catalog just built — shipped
+	// skills get lifecycle records, approved agent skills are served from the
+	// Postgres store into this same registry and index (app/skill_lifecycle_wiring.go).
+	//
+	// Per-agent skill access (decisions/skill-access-grants.md): a profile agent's
+	// skills are its profile's list plus its grants; use_skill outside that asks the
+	// operator on the shared approval hub (app/skill_access_wiring.go). An approved
+	// proposal grants the skill to its proposer.
+	skillAccess := wireSkillAccess(ctx, cfg.Execution.Skills, vec.Pool(), profiles, skillReg, toolApproval)
+	var proposerGrants skilllifecycle.ProposalGranter
+	if skillAccess != nil && skillAccess.HasStore() {
+		proposerGrants = skillAccess
+	}
+	if skillAccess != nil {
+		cambrianServer.SkillAccess = skillAccess // typed-nil guard: only a built service
+	}
+	skillLifecycle, skillCurator := wireSkillLifecycle(ctx, cfg.Execution.Skills, vec.Pool(), skillReg, skillIndexer, discoveredSkills, proposerGrants)
+	if skillLifecycle != nil {
+		cambrianServer.SkillLifecycle = skillLifecycle // typed-nil guard: only a built service
 	}
 
 	// ADR-0043 D8 / ADR-0044 re-sync: the sink keeps the registry + the retrieval
@@ -2274,6 +2363,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		CheckpointSource:   storeHandle,
 		TokenSeries:        tokenSeries,
 		Progress:           progressSink,
+		StepOutputFeed:     stepOutFeed,
 		Logs:               util.DefaultLogRing(),
 		LLMProvider:        llmProvider,
 		VectorCounter:      vectorCounterFor(vec),
@@ -2300,6 +2390,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		Listener:           lis,
 		SessionMgr:         sessionMgr,
 		CircadianRhythm:    circadianRhythm,
+		SkillLifecycle:     skillLifecycle,
+		SkillCurator:       skillCurator,
+		SkillAccess:        skillAccess,
 		ArtifactVault:      artifactVault,
 		EventBus:           eventBus,
 		Authorizer:         authorizer,
@@ -2332,6 +2425,16 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	g.Go(func() error { return k.Memory.Start(ctx) })
 	g.Go(func() error { return k.Metabolism.Start(ctx) })
 	g.Go(func() error { return k.Supervision.Start(ctx) })
+
+	// ADR-0139 D4: the agent card listener (server.a2a) and remote A2A agent
+	// registration (a2a.endpoints); both off by default. app/agentcard_endpoint.go.
+	startAgentCards(g, ctx, k)
+
+	// ADR-0139 D13: the deterministic skill curator (execution.skills.curator.enabled;
+	// off by default). Non-blocking; drained by Shutdown.
+	if k.SkillCurator != nil {
+		k.SkillCurator.Start(ctx)
+	}
 
 	// ADR-0074: start plugin lifecycles (e.g. the reactive engine's worker pools +
 	// REACT-06 scheduler). Start is non-blocking (launches goroutines and returns) — the
@@ -2509,10 +2612,12 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		rosterLatch.Start(ctx, 0)
 		operatorProjection := operator.NewProjection()
 		operator.SubscribeProjection(k.EventBus, operatorProjection)
-		// ADR-0047 0047-23: fork managed-proxy generation chunks onto the feed's
-		// live-only token lane.
-		k.Server.TokenSink = func(sessionID string, stepIndex int, text string) {
-			operatorFeed.EmitEphemeral(domain.TokenChunkEvent{SessionID: sessionID, StepIndex: stepIndex, Text: text})
+		// The live step-output stream reaches the feed's live-only lane as
+		// TokenChunkEvent (ADR-0139 amendment 2026-11-06; formerly ADR-0047 0047-23's
+		// managed-proxy TokenSink): gateway deltas from both model lanes and
+		// agent-pushed EmitStepOutput chunks.
+		if k.StepOutputFeed != nil {
+			k.StepOutputFeed.attach(operatorFeed.EmitEphemeral)
 		}
 		// ADR-0079: fork the full prompt+completion of every managed-proxy agent turn
 		// onto the feed's live-only exchange lane so a benchmark can review every agent
@@ -3037,6 +3142,33 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if operatorSvc.HasLinkWriter() {
 			operatorCaps = append(operatorCaps, "links")
 		}
+		// ADR-0139 D14 (contract 0101): the operator half of principal memory notes.
+		// Advertised only when the service is built, so a console never renders a
+		// notes screen whose RPCs answer Unimplemented.
+		if k.Server != nil && k.Server.MemoryNotes != nil {
+			operatorSvc.SetMemoryNotesAdmin(k.Server.MemoryNotes)
+		}
+		if operatorSvc.HasMemoryNotes() {
+			operatorCaps = append(operatorCaps, "memory-notes")
+		}
+		// ADR-0139 D13 (contract 0101): the skill lifecycle — proposal queue, locks,
+		// ledger, rollback and the SkillOp lifecycle fields. Advertised only when
+		// the Postgres lifecycle store is wired (wireSkillLifecycle).
+		if k.SkillLifecycle != nil {
+			operatorSvc.SetSkillLifecycle(k.SkillLifecycle)
+		}
+		if operatorSvc.HasSkillLifecycle() {
+			operatorCaps = append(operatorCaps, "skills-lifecycle")
+		}
+		// Per-agent skill access grants (decisions/skill-access-grants.md):
+		// ListSkillGrants / GrantSkill / RevokeSkillGrant. Advertised only when the
+		// 0031 grant store is wired.
+		if k.SkillAccess != nil && k.SkillAccess.HasStore() {
+			operatorSvc.SetSkillGrants(k.SkillAccess)
+		}
+		if operatorSvc.HasSkillGrants() {
+			operatorCaps = append(operatorCaps, "skill-grants")
+		}
 		// ADR-0082 D2: plugin-contributed capabilities. Each plugin declares the operator
 		// surfaces it implements in its own manifest; the kernel collects them here and
 		// advertises them WITHOUT interpreting any of them — which is what keeps downstream
@@ -3051,6 +3183,15 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 			operatorCaps = append(operatorCaps, "chat")
 		}
 		operatorCaps = append(operatorCaps, "session-lifecycle")
+		// step-output-stream (ADR-0139 amendment 2026-11-06, additive within 0101):
+		// TokenChunkOp carries the live step-output stream — kind, lease, chunk_seq,
+		// source — for every producer, the native tool lane included, and the agent
+		// plane serves EmitStepOutput. Advertised when the stream is wired (always,
+		// in this build), so a console renders live output only against a kernel
+		// that produces it.
+		if k.Server != nil && k.Server.StepOutput != nil {
+			operatorCaps = append(operatorCaps, "step-output-stream")
+		}
 		operatorCaps = append(operatorCaps, k.PluginCapabilities...)
 		// Contract 0070: adds the OSS ListDocuments RPC (ListDocumentsOpRequest /
 		// ListDocumentsOpResponse / DocumentSummaryOp) and the "document-listing"
@@ -3145,8 +3286,18 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		// duplicate_of + version, ListDocumentsOpRequest gains the upload_name /
 		// upload_tags replace-by-name lookup, DocumentSummaryOp gains updated_at_unix_ms
 		// + version. Capability "upload-replace". (ADR-0137's erasure surface, which
-		// planned 0100, takes the next number.)
-		operatorSvc.SetHandshake(KernelVersion, "0100", operatorCaps)
+		// planned 0100, takes the next free number after 0101.)
+		// Contract 0101 (ADR-0139 phase 2/3, additive, one proto pass for D12/D13/D14):
+		// agent plane SpawnSubagent, GetMemoryNotes, ProposeMemoryNote, ProposeSkill;
+		// operator plane List/Get/Set/DeleteMemoryNotes + SetMemoryNotesBudget
+		// (capability "memory-notes") and the D13 skill-lifecycle RPCs and SkillOp /
+		// ListSkillsOpRequest fields (capability "skills-lifecycle"). Each capability
+		// is advertised only when its store is wired, so one bump covers all three.
+		// Still 0101 after the ADR-0139 amendment of 2026-11-06 (live step-output
+		// stream): its changes are purely additive — TokenChunkOp fields 4-10 and the
+		// agent-plane EmitStepOutput RPC — and are announced by the
+		// "step-output-stream" capability, as the other additive passes were.
+		operatorSvc.SetHandshake(KernelVersion, "0101", operatorCaps)
 		// ADR-0089: plugin identity rides the same handshake. Reported for EVERY
 		// declared plugin, registered or not — the console needs to distinguish "this
 		// deployment has no such plugin" from "it declined to register".
@@ -3477,9 +3628,17 @@ func registerAgentSources(ctx context.Context, reg *kernel.AgentRepoDecorator, s
 }
 
 // routePreviewAdapter implements operator.RoutePreviewer (ROUTE-07 / ADR-0077) by scoring
-// each inline candidate through gatekeeper.ScoreMerit under the ACTIVE arm (hand weights,
-// or the ROUTE-07 learned scorer when armed), then ranking by score. It is the
-// gatekeeper-benchmark's deterministic routing entry point — no planner, auction, or agents.
+// the inline candidates as ONE slate through gatekeeper.ScoreSlate under the ACTIVE arm,
+// then ranking them with gatekeeper.MeritRanksBefore — the same two calls the live
+// Gatekeeper makes, so the preview applies the same slate-mean neutral fills
+// (T-20261104-previewroute-scores-missing-latency-as-0-while) and the same ADR-0139 D6
+// merit mode. It is the gatekeeper-benchmark's deterministic routing entry point — no
+// planner, auction, or agents.
+//
+// Arms: "hand_weights" / "learned_scorer" (merit_mode legacy), "posterior_lcb", and
+// "thompson_mean": under thompson the live path ranks by one random posterior draw per
+// dispatch, which a deterministic preview cannot reproduce, so it reports and ranks by
+// the posterior MEAN (the expected draw) and names the arm accordingly.
 type routePreviewAdapter struct {
 	cfg    config.ExecutionConfig
 	scorer gatekeeper.RouteScorer
@@ -3487,21 +3646,63 @@ type routePreviewAdapter struct {
 
 func (r routePreviewAdapter) PreviewRoute(requiredCaps []string, cands []operator.RouteCandidate) ([]domain.MeritResult, string) {
 	arm := "hand_weights"
-	if r.cfg.Routing.LearnedScorer && r.scorer != nil {
-		arm = "learned_scorer"
-	}
-	out := make([]domain.MeritResult, len(cands))
-	for i, c := range cands {
-		p := c.Profile
-		mb := gatekeeper.ScoreMerit(&p, c.Trait, requiredCaps, r.cfg, r.scorer)
-		out[i] = domain.MeritResult{
-			AgentID: c.Profile.AgentID, Score: mb.Score, SuccessRate: mb.SuccessRate,
-			TrustScore: mb.TrustScore, LatencyTerm: mb.LatencyTerm, CostTerm: mb.CostTerm,
-			Provisional: mb.Provisional,
+	switch r.cfg.Gatekeeper.ActiveMeritMode() {
+	case config.MeritModePosteriorLCB:
+		arm = config.MeritModePosteriorLCB
+	case config.MeritModeThompson:
+		arm = "thompson_mean"
+	default:
+		if r.cfg.Routing.LearnedScorer && r.scorer != nil {
+			arm = "learned_scorer"
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	entries := make([]gatekeeper.SlateEntry, len(cands))
+	for i, c := range cands {
+		p := previewProfileWithEvidence(c.Profile)
+		entries[i] = gatekeeper.SlateEntry{Profile: &p, Trait: c.Trait}
+	}
+	mbs := gatekeeper.ScoreSlate(entries, requiredCaps, r.cfg, r.scorer, nil)
+	order := make([]int, len(cands))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := mbs[order[i]], mbs[order[j]]
+		return gatekeeper.MeritRanksBefore(r.cfg, a.Score, a, b.Score, b)
+	})
+	out := make([]domain.MeritResult, len(cands))
+	for k, i := range order {
+		mb := mbs[i]
+		out[k] = domain.MeritResult{
+			AgentID: cands[i].Profile.AgentID, Score: mb.Score, SuccessRate: mb.SuccessRate,
+			TrustScore: mb.TrustScore, LatencyTerm: mb.LatencyTerm, CostTerm: mb.CostTerm,
+			Provisional: mb.Provisional, Mode: mb.Mode, Alpha: mb.Alpha, Beta: mb.Beta,
+		}
+	}
 	return out, arm
+}
+
+// previewProfileWithEvidence gives a PreviewRoute candidate's capability stats the
+// ADR-0139 D6 outcome evidence the wire cannot carry yet: RouteCandidateOp has
+// success_rate and sample_count per capability but no evidence fields, so a stat
+// with samples and no evidence is read as SuccessRate·n verified successes and
+// (1−SuccessRate)·n failures. The legacy arm never reads the evidence, so its
+// scores are unchanged. Wire fields for the evidence are a proto follow-up
+// (T-20261105-previewroute-wire-carries-no-outcome-evidence).
+func previewProfileWithEvidence(p domain.AgentProfile) domain.AgentProfile {
+	if len(p.CapabilityStats) == 0 {
+		return p
+	}
+	stats := make(map[string]domain.CapabilityStat, len(p.CapabilityStats))
+	for k, st := range p.CapabilityStats {
+		if st.SampleCount > 0 && st.Outcomes.IsZero() {
+			n := float64(st.SampleCount)
+			st.Outcomes = domain.OutcomeEvidence{VerifiedSuccess: st.SuccessRate * n, VerifiedFailure: (1 - st.SuccessRate) * n}
+		}
+		stats[k] = st
+	}
+	p.CapabilityStats = stats
+	return p
 }
 
 func registerModelAgents(reg *kernel.AgentRepoDecorator, generators []config.GeneratorConfig) {

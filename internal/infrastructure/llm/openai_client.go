@@ -300,8 +300,14 @@ func (c *OpenAIClient) StreamRequest(ctx context.Context, req domain.GenerateReq
 				return
 			}
 			chunk := stream.Current()
-			if text := acc.add(chunk); text != "" {
+			text, calls := acc.addDeltas(chunk)
+			if text != "" {
 				out <- domain.StreamChunk{Text: text}
+			}
+			// ADR-0139 amendment 2026-11-06: tool-call fragments for the live
+			// step-output stream (the accumulator still builds the whole calls).
+			for i := range calls {
+				out <- domain.StreamChunk{ToolCall: &calls[i]}
 			}
 		}
 		if ctx.Err() != nil {
@@ -330,7 +336,9 @@ type openAIStreamAcc struct {
 	byIdx map[int64]int
 }
 
-func (a *openAIStreamAcc) add(chunk openai.ChatCompletionChunk) string {
+// addDeltas folds one chunk and returns its text delta and its tool-call
+// fragments, indexed by the call's position in this turn.
+func (a *openAIStreamAcc) addDeltas(chunk openai.ChatCompletionChunk) (string, []domain.ToolCallDelta) {
 	if chunk.Model != "" {
 		a.resp.Model = chunk.Model
 	}
@@ -338,9 +346,10 @@ func (a *openAIStreamAcc) add(chunk openai.ChatCompletionChunk) string {
 		a.resp.Usage = u
 	}
 	if len(chunk.Choices) == 0 {
-		return ""
+		return "", nil
 	}
 	ch := chunk.Choices[0]
+	var deltas []domain.ToolCallDelta
 	if ch.FinishReason != "" {
 		a.resp.StopReason = normalizeOpenAIFinishReason(ch.FinishReason)
 	}
@@ -361,9 +370,11 @@ func (a *openAIStreamAcc) add(chunk openai.ChatCompletionChunk) string {
 			a.calls[i].Name = d.Function.Name
 		}
 		a.calls[i].Arguments = append(a.calls[i].Arguments, d.Function.Arguments...)
+		deltas = append(deltas, domain.ToolCallDelta{
+			Index: i, ID: d.ID, Name: d.Function.Name, ArgumentsDelta: d.Function.Arguments})
 	}
 	a.text.WriteString(ch.Delta.Content)
-	return ch.Delta.Content
+	return ch.Delta.Content, deltas
 }
 
 func (a *openAIStreamAcc) finish() domain.GenerateResponse {

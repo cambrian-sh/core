@@ -138,3 +138,19 @@ func TestBuiltinSource_RegistersShippedProfiles(t *testing.T) {
 		}
 	}
 }
+
+// decisions/skill-access-grants.md: profile agents are bound to their profile's
+// skills (the base of the effective set); other agents are unbound.
+func TestProfileSkillSets_BindsOnlyProfileAgents(t *testing.T) {
+	agents := collectProfileAgents([]DiscoveredAgent{
+		{Definition: domain.AgentDefinition{ID: "analyst", Profile: "analyst"}, Manifest: &domain.AgentManifest{Skills: []string{"file-report"}}},
+		{Definition: domain.AgentDefinition{ID: "legacy"}, Manifest: &domain.AgentManifest{Skills: []string{"x"}}},
+	})
+	sets := profileSkillSets(agents)
+	if s, ok := sets("analyst"); !ok || len(s) != 1 || s[0] != "file-report" {
+		t.Fatalf("analyst = %v %v", s, ok)
+	}
+	if _, ok := sets("legacy"); ok {
+		t.Fatal("a non-profile agent must be unbound")
+	}
+}

@@ -237,6 +237,11 @@ func (a *Transport) CallAgent(ctx context.Context, agentID string, handoff *doma
 	if err != nil {
 		return nil, err
 	}
+	if domain.DedicatedInstanceRequested(ctx) && agent.Runtime != domain.RuntimeA2A {
+		if booter, ok := a.Manager.(dedicatedBooter); ok {
+			return a.callDedicated(ctx, booter, *agent, handoff)
+		}
+	}
 	client, err := a.getOrDialClient(ctx, *agent, excludeInstanceID)
 	if err != nil {
 		return nil, err
@@ -251,6 +256,38 @@ func (a *Transport) CallAgent(ctx context.Context, agentID string, handoff *doma
 			// (T-20261102-kg-extractor-cold-start-drops-the-first-kg).
 			a.forgetAgentClient(agent.ID, client)
 		}
+		return nil, err
+	}
+	return protoToDomainHandoff(protoResp), nil
+}
+
+// dedicatedBooter is the optional AgentDialer surface behind
+// domain.WithDedicatedInstance (agentmgr.AgentManager implements it). A dialer
+// without it serves dedicated requests on the shared instance, as before.
+type dedicatedBooter interface {
+	BootDedicatedInstance(ctx context.Context, def *domain.AgentDefinition) (*domain.Instance, error)
+	EvictInstance(instanceID string)
+}
+
+// callDedicated serves one handoff on a fresh instance booted for it (ADR-0139
+// D12: a subagent child must not queue behind its single-threaded parent on the
+// shared instance). The connection is NOT cached — RegisterAgentClient would
+// close the shared instance's connection under the parent's in-flight call —
+// and the instance is evicted (its process killed) when the call returns, which
+// is also how cancelling the call stops the child.
+func (a *Transport) callDedicated(ctx context.Context, booter dedicatedBooter, agent domain.AgentDefinition, handoff *domain.Handoff) (*domain.Handoff, error) {
+	inst, err := booter.BootDedicatedInstance(ctx, &agent)
+	if err != nil {
+		return nil, fmt.Errorf("dedicated instance: %w", err)
+	}
+	defer booter.EvictInstance(inst.ID)
+	conn, err := a.Manager.DialAgent("unix:" + inst.SocketPath)
+	if err != nil {
+		return nil, fmt.Errorf("dedicated instance: dial agent %s: %w", agent.ID, err)
+	}
+	defer func() { _ = conn.Close() }()
+	protoResp, err := pb.NewAgentServiceClient(conn).Execute(ctx, domainToProtoHandoff(handoff))
+	if err != nil {
 		return nil, err
 	}
 	return protoToDomainHandoff(protoResp), nil

@@ -106,8 +106,9 @@ func TestExpandFanOut_CustomVar(t *testing.T) {
 	}
 }
 
-// Discovery found nothing: no children are appended and the dependent drops its dependency
-// on the (now empty) node, so it proceeds rather than stalling forever.
+// Discovery found nothing: no children are appended and the dependent KEEPS its dependency
+// on the inert node — the executor marks it completed (no stall) and reports it as an empty
+// upstream result rather than dropping it from the dependent's inputs.
 func TestExpandFanOut_EmptySetRemovesNode(t *testing.T) {
 	t.Parallel()
 	plan := &ExecutionPlan{Steps: []Step{
@@ -125,8 +126,8 @@ func TestExpandFanOut_EmptySetRemovesNode(t *testing.T) {
 	if got.Steps[2].Query != "report" {
 		t.Errorf("step 2 = %q, want report", got.Steps[2].Query)
 	}
-	if len(got.Steps[2].DependsOn) != 0 {
-		t.Errorf("dependency on the empty node must be dropped, got %v", got.Steps[2].DependsOn)
+	if d := got.Steps[2].DependsOn; len(d) != 1 || d[0] != 1 {
+		t.Errorf("dependency on the empty node must be kept, got %v", d)
 	}
 }
 

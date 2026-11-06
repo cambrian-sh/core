@@ -616,6 +616,64 @@ service OperatorConsole {
   // cannot double-fire. Mutating: command_id + reason, audited. Premium
   // (capability "watch-deadletter"); OSS returns Unimplemented.
   rpc RetryWatchDeadLetter(RetryWatchDeadLetterOpRequest) returns (CommandAck);
+
+  // ── ADR-0139 D14: principal memory notes (capability "memory-notes") ───────
+  //
+  // The operator half of the notes the agent plane reads as a run-start snapshot
+  // (Orchestrator/GetMemoryNotes) and writes through ProposeMemoryNote. Lands
+  // with the next contract bump; a kernel without it answers Unimplemented and
+  // does not advertise the capability. Reads: any authenticated role, scoped by
+  // the caller's C8 authz like every other memory read. Mutations: Operator-only,
+  // command_id + mandatory reason, audited. An edit lands for the NEXT run of the
+  // principal; a run in flight keeps its frozen snapshot.
+  rpc ListMemoryNotes(ListMemoryNotesOpRequest) returns (ListMemoryNotesOpResponse);
+  rpc GetMemoryNotes(GetMemoryNotesOpRequest) returns (MemoryNotesOp);
+  // SetMemoryNotes replaces a whole document. Same budget and injection scan as
+  // an agent write; a refusal is accepted=false with a rejection, never a trim.
+  rpc SetMemoryNotes(SetMemoryNotesOpRequest) returns (SetMemoryNotesOpResponse);
+  // DeleteMemoryNotes clears a document. Audited; the cleared text is kept in
+  // the audit record, so a delete is recoverable by an operator.
+  rpc DeleteMemoryNotes(DeleteMemoryNotesOpRequest) returns (CommandAck);
+  // SetMemoryNotesBudget sets a document's budget (or the scope default).
+  rpc SetMemoryNotesBudget(SetMemoryNotesBudgetOpRequest) returns (CommandAck);
+
+  // ── ADR-0139 D13: skill lifecycle (capability "skills-lifecycle") ──────────
+  //
+  // Agent-proposed skills (Orchestrator/ProposeSkill) wait here as PENDING and
+  // are never active until approved. Every mutation, by an operator or by the
+  // deterministic curator (active → stale → archived), appends a ledger entry;
+  // nothing is ever deleted. Lifecycle state and usage ride the existing
+  // ListSkills (SkillOp), not a second listing. Lands with the next contract
+  // bump; Unimplemented and unadvertised otherwise. Mutations: Operator-only,
+  // command_id + mandatory reason, audited.
+  rpc ListSkillProposals(ListSkillProposalsOpRequest) returns (ListSkillProposalsOpResponse);
+  // DecideSkillProposal approves or rejects one PENDING proposal. `reason` is
+  // the decision note, stored on the proposal and in the audit. Approving a
+  // proposal whose base_version is no longer current is FAILED_PRECONDITION; a
+  // "dangerous" scan verdict can never be approved.
+  rpc DecideSkillProposal(DecideSkillProposalOpRequest) returns (DecideSkillProposalOpResponse);
+  // SetSkillLock locks or unlocks a skill against further AGENT edits
+  // (ProposeSkill → LOCKED). Operators can still edit or roll back a locked skill.
+  rpc SetSkillLock(SetSkillLockOpRequest) returns (CommandAck);
+  rpc ListSkillLedger(ListSkillLedgerOpRequest) returns (ListSkillLedgerOpResponse);
+  // RollbackSkill restores a skill to the state recorded by one ledger entry.
+  // The rollback is itself a NEW ledger entry; history is never rewritten.
+  rpc RollbackSkill(RollbackSkillOpRequest) returns (RollbackSkillOpResponse);
+
+  // ── Per-agent skill access grants (capability "skill-grants") ──────────────
+  //
+  // Owner decision 2026-11-05 (decisions/skill-access-grants.md, amends ADR-0139
+  // D13): a profile agent's effective skills are its profile's skills plus its
+  // grants. A grant is keyed by agent id, lasts until revoked, and comes from an
+  // approved use_skill request (live, over WatchToolApprovals / ResolveHITL), an
+  // approved skill proposal (the proposer), or GrantSkill. Every grant, revoke,
+  // request and denial is audited. Mutations: Operator-only, command_id +
+  // mandatory reason, audited. Advertised only when the 0031 store is wired.
+  rpc ListSkillGrants(ListSkillGrantsOpRequest) returns (ListSkillGrantsOpResponse);
+  rpc GrantSkill(GrantSkillOpRequest) returns (CommandAck);
+  // RevokeSkillGrant ends an active grant (NOT_FOUND when there is none). A skill
+  // the agent's profile lists stays available through the profile.
+  rpc RevokeSkillGrant(RevokeSkillGrantOpRequest) returns (CommandAck);
 }
 
 message CreateSessionRequest {
@@ -858,6 +916,11 @@ message SnapshotResponse {
   // (IngestMemoryOpResponse.duplicate_of / version), and ListDocuments answers the
   // upload_name lookup. Advertised when the kernel keeps document identity v2 and a
   // lifecycle store backs it.
+  // ADR-0139 (next contract bump, additive): memory-notes (D14: the
+  // List/Get/Set/DeleteMemoryNotes and SetMemoryNotesBudget RPCs) and
+  // skills-lifecycle (D13: ListSkillProposals, DecideSkillProposal, SetSkillLock,
+  // ListSkillLedger, RollbackSkill, and the lifecycle fields on SkillOp /
+  // ListSkillsOpRequest). Each is advertised only when its store is wired.
   repeated string capabilities = 6;
   // plugins enumerates every plugin this build DECLARED, registered or not, with
   // its own version line (ADR-0089). Capabilities tell the UI which surfaces
@@ -1403,10 +1466,27 @@ message PlanStepOp {
   repeated string required_capabilities = 7;
 }
 
+// TokenChunkOp is one chunk of a step's LIVE OUTPUT stream (live-only; seq on the
+// OperatorEvent is 0 and it is never replayed).
+//
+// Since the ADR-0139 amendment of 2026-11-06 (superseding ADR-0047 D12's
+// token-level tier) it carries every producer, not only managed-proxy text: gateway
+// deltas on both model lanes (the native tool lane streams internally) and output
+// an agent pushed over EmitStepOutput. Fields 4-10 are additive within contract
+// 0101 (capability "step-output-stream"); a client that reads only 1-3 sees text
+// exactly as before.
 message TokenChunkOp {
+  // Historical: carries the step's LEASE id (it always has). See task_session_id.
   string session_id = 1;
-  int32 step_index = 2;
+  int32 step_index = 2;   // -1 when the lease is not step-scoped
   string text = 3;
+  string lease_id = 4;          // the step's lease (same value as session_id)
+  string task_session_id = 5;   // the task session the lease belongs to ("" when none)
+  string agent_id = 6;          // the agent the lease is bound to
+  string kind = 7;              // "text" | "progress" | "status"
+  uint64 chunk_seq = 8;         // the kernel's per-lease sequence across producers, from 1
+  bool final = 9;               // the producer's last chunk for the step (agent-declared)
+  string source = 10;           // "gateway" | "agent"
 }
 
 message AuditOp {
@@ -1499,6 +1579,17 @@ message ListSkillsOpRequest {
   int32 page = 1;
   int32 page_size = 2;
   string query = 3;
+
+  // ── ADR-0139 D13 (capability "skills-lifecycle") ──────────────────────────
+  //
+  // lifecycle_state filters by SkillOp.lifecycle_state ("active" | "stale" |
+  // "archived"); empty = active and stale, which is what ListSkills returned
+  // before (archived skills are not served to agents).
+  string lifecycle_state = 4;
+  // include_archived adds archived skills to an unfiltered listing.
+  bool include_archived = 5;
+  // source filters by SkillOp.source; empty = all.
+  string source = 6;
 }
 message SkillOp {
   string name = 1;
@@ -1515,6 +1606,33 @@ message SkillOp {
   // source_path is where it was loaded from, which is what an operator needs to
   // edit it. Empty for a skill registered over the wire rather than from disk.
   string source_path = 6;
+
+  // ── ADR-0139 D13 (capability "skills-lifecycle") ──────────────────────────
+  //
+  // All empty / zero on a kernel without the capability.
+  //
+  // version is the skill's current version (C3 frontmatter, or the ledger's).
+  string version = 7;
+  // source is "builtin" | "official" | "hub" | "agent-proposed" (the C3 trust
+  // classes). Unknown values must be shown as-is, not mapped.
+  string source = 8;
+  // lifecycle_state is "active" | "stale" | "archived", set ONLY by the
+  // deterministic curator from usage telemetry (no LLM) or by an operator
+  // rollback. Archived is never deleted.
+  string lifecycle_state = 9;
+  google.protobuf.Timestamp state_changed_at = 10;
+  // locked: agents cannot propose edits to it (SetSkillLock).
+  bool locked = 11;
+  // exempt_reason is why the curator will not move it: "pinned", "pipeline" or
+  // "schedule" (referenced by a pipeline or a schedule). Empty = not exempt.
+  string exempt_reason = 12;
+  // Usage telemetry the curator reads. use_count counts use_skill loads;
+  // success_count those whose run completed (verified outcome).
+  int64 use_count = 13;
+  int64 success_count = 14;
+  google.protobuf.Timestamp last_used_at = 15;
+  // The ledger entry that produced the current version (ListSkillLedger).
+  string ledger_entry_id = 16;
 }
 message ListSkillsOpResponse {
   repeated SkillOp skills = 1;
@@ -1751,6 +1869,10 @@ message ApprovalOp {
   string tool_name = 3;
   string args_preview = 4;
   bool is_destructive = 5;
+  // "" = a dangerous-tool approval; "skill_access" = an agent asks for a skill
+  // outside its effective set (tool_name "skill:<name>"). Approving (ResolveHITL)
+  // grants that skill to that agent durably (decisions/skill-access-grants.md).
+  string kind = 6;
 }
 
 // ── Watch CRUD (premium capability-gated; proto in OSS). A2.6. ────────────────
@@ -3325,4 +3447,309 @@ message ListLinkCandidatesOpResponse {
   // candidates are unretracted proposals, highest confidence first — the review
   // inbox, in the order a reviewer would work it.
   repeated LinkOp candidates = 1;
+}
+
+// ── ADR-0139 D14: principal memory notes (capability "memory-notes") ─────────
+//
+// A notes document is addressed by (scope, owner_id): scope is "personal" (owner
+// = a principal id) or "org" (owner = an org id). The agent plane's
+// MemoryNotesDocument is the same record; sizes are Unicode code points.
+
+message ListMemoryNotesOpRequest {
+  // scope filters by "personal" | "org"; empty = both.
+  string scope = 1;
+  // owner_id filters to one principal or org; empty = all the caller may read.
+  string owner_id = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+// MemoryNotesSummaryOp is one document without its body, for the listing.
+message MemoryNotesSummaryOp {
+  string scope = 1;
+  string owner_id = 2;
+  int32 size_chars = 3;
+  int32 budget_chars = 4;
+  string etag = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  // updated_by is the writer of record: an operator principal, or the agent id
+  // with the run principal it acted for.
+  string updated_by = 7;
+  // over_budget: size_chars > budget_chars (the budget was lowered below the
+  // stored size). Snapshots are then served truncated, and flagged.
+  bool over_budget = 8;
+}
+
+message ListMemoryNotesOpResponse {
+  repeated MemoryNotesSummaryOp notes = 1;
+  int32 total = 2;
+  int32 page = 3;
+}
+
+message GetMemoryNotesOpRequest {
+  string scope = 1;
+  string owner_id = 2;
+}
+
+// MemoryNotesOp is one whole document. An unknown (scope, owner_id) is NOT_FOUND;
+// one the caller may not read is NOT_FOUND too (fail-closed, indistinguishable).
+message MemoryNotesOp {
+  string scope = 1;
+  string owner_id = 2;
+  string content = 3;
+  int32 size_chars = 4;
+  int32 budget_chars = 5;
+  string etag = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  string updated_by = 8;
+  // Whether budget_chars is this document's own budget (false = the scope
+  // default applies).
+  bool budget_overridden = 9;
+}
+
+message SetMemoryNotesOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string scope = 3;
+  string owner_id = 4;
+  // The whole new document (markdown; "## " headings are its sections).
+  string content = 5;
+  // Optional optimistic-concurrency guard (MemoryNotesOp.etag). A mismatch is
+  // accepted=false, rejection "conflict".
+  string if_match = 6;
+  // override_injection_flag stores content the injection scan flagged. Operator
+  // judgement, audited with `reason`. It does not lift the budget.
+  bool override_injection_flag = 7;
+}
+
+message SetMemoryNotesOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  bool accepted = 3;
+  // rejection is one of: "over_budget", "injection_flagged", "scope_denied",
+  // "conflict" (the agent plane's MemoryNoteRejection, as strings). Empty when
+  // accepted.
+  string rejection = 4;
+  string detail = 5;
+  string etag = 6;
+  int32 size_chars = 7;
+  int32 budget_chars = 8;
+}
+
+message DeleteMemoryNotesOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string scope = 3;
+  string owner_id = 4;
+}
+
+message SetMemoryNotesBudgetOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  // scope is required ("personal" | "org").
+  string scope = 3;
+  // owner_id empty = set the SCOPE DEFAULT; otherwise this document's budget.
+  string owner_id = 4;
+  // budget_chars > 0. Lowering it below a document's size truncates nothing
+  // stored: later writes that do not bring it under budget are refused, and the
+  // run snapshot is served cut to the budget with truncated=true.
+  int32 budget_chars = 5;
+  // clear_override = true removes the document's own budget (back to the scope
+  // default); budget_chars is then ignored.
+  bool clear_override = 6;
+}
+
+// ── ADR-0139 D13: skill lifecycle (capability "skills-lifecycle") ────────────
+
+message ListSkillProposalsOpRequest {
+  // state filters by SkillProposalOp.state; empty = "pending".
+  string state = 1;
+  // skill_name filters to proposals for one skill; empty = all.
+  string skill_name = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+// SkillProposalOp is one agent-proposed skill (Orchestrator/ProposeSkill).
+message SkillProposalOp {
+  string id = 1;
+  string name = 2;
+  // The proposed C3 SKILL.md, verbatim.
+  string skill_md = 3;
+  string rationale = 4;
+  // state is "pending" | "approved" | "rejected".
+  string state = 5;
+  // Who proposed it: the agent, the run principal it acted for, and the source
+  // run (derived from the proposing lease, never claimed by the agent).
+  string proposer_agent_id = 6;
+  string principal_id = 7;
+  string source_run_id = 8;
+  repeated string evidence_cids = 9;
+  // base_version: the version an EDIT was proposed against; empty for a new
+  // skill. current_version is the skill's version now, so a console can show
+  // that the proposal is stale before an approve fails.
+  string base_version = 10;
+  string current_version = 11;
+  // scan_verdict is the deterministic scan's verdict: "clean" | "suspicious" |
+  // "dangerous". "dangerous" proposals cannot be approved.
+  string scan_verdict = 12;
+  repeated string scan_findings = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp decided_at = 15;
+  string decided_by = 16;
+  // The operator's decision note (DecideSkillProposalOpRequest.reason).
+  string decision_note = 17;
+}
+
+message ListSkillProposalsOpResponse {
+  repeated SkillProposalOp proposals = 1;
+  int32 total = 2;
+  int32 page = 3;
+}
+
+message DecideSkillProposalOpRequest {
+  string command_id = 1;
+  // Mandatory; the decision note, stored on the proposal and in the audit.
+  string reason = 2;
+  string proposal_id = 3;
+  // true = approve (the skill becomes active at the proposed content), false =
+  // reject. Deciding a proposal that is not PENDING is FAILED_PRECONDITION.
+  bool approve = 4;
+  // lock_after_approve also locks the skill against further agent edits.
+  bool lock_after_approve = 5;
+}
+
+message DecideSkillProposalOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  // On approval: the skill's new version and the ledger entry that records it.
+  string skill_version = 3;
+  string ledger_entry_id = 4;
+}
+
+message SetSkillLockOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string skill_name = 3;
+  bool locked = 4;
+}
+
+message ListSkillLedgerOpRequest {
+  // skill_name filters to one skill; empty = all skills, newest first.
+  string skill_name = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+// SkillLedgerEntryOp is one mutation of one skill. Append-only.
+message SkillLedgerEntryOp {
+  string id = 1;
+  string skill_name = 2;
+  // mutation is one of: "created", "updated", "approved", "rejected", "locked",
+  // "unlocked", "state_changed", "rolled_back". Unknown values are shown as-is.
+  string mutation = 3;
+  string from_version = 4;
+  string to_version = 5;
+  // Lifecycle state before / after ("active" | "stale" | "archived").
+  string from_state = 6;
+  string to_state = 7;
+  // actor: an operator principal, "curator" (the deterministic lifecycle), or
+  // the agent id for an agent-originated change.
+  string actor = 8;
+  string reason = 9;
+  google.protobuf.Timestamp at = 10;
+  // proposal_id when the mutation came from a proposal decision.
+  string proposal_id = 11;
+  // rollback_of: on a "rolled_back" entry, the entry it restored.
+  string rollback_of = 12;
+  // restorable: RollbackSkill accepts this entry as a target.
+  bool restorable = 13;
+}
+
+message ListSkillLedgerOpResponse {
+  repeated SkillLedgerEntryOp entries = 1;
+  int32 total = 2;
+  int32 page = 3;
+}
+
+message RollbackSkillOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string skill_name = 3;
+  // The ledger entry whose resulting state to restore (content, version and
+  // lifecycle state). It must belong to skill_name and be restorable, else
+  // FAILED_PRECONDITION.
+  string ledger_entry_id = 4;
+}
+
+message RollbackSkillOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  // The NEW "rolled_back" ledger entry the rollback appended.
+  string ledger_entry_id = 3;
+  string skill_version = 4;
+}
+
+// ── Per-agent skill access grants (decisions/skill-access-grants.md) ─────────
+
+message ListSkillGrantsOpRequest {
+  // Filters; empty = all.
+  string agent_id = 1;
+  string skill_name = 2;
+  // include_revoked also lists revoked grants.
+  bool include_revoked = 3;
+  // request_state filters the access requests: "pending" (default), "granted",
+  // "denied", or "all".
+  string request_state = 4;
+}
+
+// SkillGrantOp is one agent's durable access to one skill.
+message SkillGrantOp {
+  string id = 1;
+  string agent_id = 2;
+  string skill_name = 3;
+  // source: "request" (an approved use_skill request), "proposal" (the agent's
+  // own approved skill proposal) or "operator" (GrantSkill).
+  string source = 4;
+  string granted_by = 5;
+  google.protobuf.Timestamp granted_at = 6;
+  string reason = 7;
+  // Set once revoked; an active grant has none.
+  google.protobuf.Timestamp revoked_at = 8;
+  string revoked_by = 9;
+  string revoke_reason = 10;
+}
+
+// SkillAccessRequestOp is an agent's latest request for a skill outside its
+// effective set. "pending" ones wait for GrantSkill (the live approval timed out).
+message SkillAccessRequestOp {
+  string id = 1;
+  string agent_id = 2;
+  string skill_name = 3;
+  string run_id = 4;
+  string rationale = 5;
+  string state = 6; // "pending" | "granted" | "denied"
+  google.protobuf.Timestamp requested_at = 7;
+  google.protobuf.Timestamp decided_at = 8;
+  string decided_by = 9;
+}
+
+message ListSkillGrantsOpResponse {
+  repeated SkillGrantOp grants = 1;
+  repeated SkillAccessRequestOp requests = 2;
+}
+
+message GrantSkillOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string agent_id = 3;
+  // The skill must be one the kernel serves (FAILED_PRECONDITION otherwise).
+  string skill_name = 4;
+}
+
+message RevokeSkillGrantOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string agent_id = 3;
+  string skill_name = 4;
 }

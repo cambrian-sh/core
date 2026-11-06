@@ -15,7 +15,10 @@ import (
 //
 // Unary rather than streaming: a tool call is only actionable once complete, so
 // streaming partial calls would force every client to reassemble them for no gain.
-// Text-only generation keeps using GenerateViaModelStream.
+// Text-only generation keeps using GenerateViaModelStream. The OPERATOR still sees
+// the turn live: since the ADR-0139 amendment of 2026-11-06 the kernel streams from
+// the provider internally and forwards text and the final-answer argument to the
+// step-output stream (step_output.go).
 func (s *Server) GenerateWithTools(
 	ctx context.Context, req *pb.GenerateWithToolsRequest,
 ) (*pb.GenerateWithToolsResponse, error) {
@@ -47,7 +50,10 @@ func (s *Server) GenerateWithTools(
 		return nil, err
 	}
 
-	resp, err := s.LLMGateway.GenerateWithTools(ctx, leaseID, greq)
+	// ADR-0139 amendment 2026-11-06: the turn's live output goes to the step-output
+	// stream while it is generated (streamed from the provider internally); the
+	// RPC's answer is unchanged. nil forwarder ⇒ served unary, as before.
+	resp, err := generateWithTools(ctx, s.LLMGateway, leaseID, greq, s.stepOutputForwarder(ctx, leaseID))
 	if err != nil {
 		// A model that cannot do tool-calling is a CAPABILITY answer, not a failure.
 		// FailedPrecondition is the documented signal for "fall back to the

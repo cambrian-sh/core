@@ -54,6 +54,14 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 		return err
 	}
 
+	// The step-output stream's gateway producer (ADR-0139 amendment 2026-11-06);
+	// nil when no delta may flow for this step. When a D11 post_model hook matches
+	// the step, the forwarder is nil (the suppression rule) AND the Provider serves
+	// the call buffered (llm.Provider.StreamOn), so every chunk below is already the
+	// complete post-hook reply and a refusal arrives as the error with no chunk
+	// (T-20261106-text-protocol-agent-replies-never-reach-post).
+	fwd := s.stepOutputForwarder(stream.Context(), leaseID)
+
 	out := make(chan domain.StreamChunk, 64)
 	errCh := make(chan error, 1)
 
@@ -89,11 +97,10 @@ func (s *Server) GenerateViaModelStream(req *pb.GenerateStreamRequest, stream pb
 		if err := stream.Send(pbChunk); err != nil {
 			return err
 		}
-		// ADR-0047 0047-23: fork the chunk to the operator feed's live-only token
-		// lane (best-effort; never affects the agent stream).
-		if s.TokenSink != nil && chunk.Text != "" {
-			s.TokenSink(string(leaseID), 0, chunk.Text)
-		}
+		// Fork the chunk to the live step-output stream (the operator feed's
+		// live-only lane and MCP progress). Best-effort; never affects the agent
+		// stream. Formerly ADR-0047 0047-23's TokenSink.
+		fwd.text(chunk.Text)
 	}
 
 	// After streaming completes, resolve session metadata for logging.

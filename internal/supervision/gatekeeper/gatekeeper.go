@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
@@ -62,6 +65,12 @@ type Gatekeeper struct {
 	// a model learned from orchestration artifacts. nil (or arm off) ⇒ hand weights
 	// (byte-identical). Structural interface — satisfied by *routescorer.Model.
 	RouteScorer RouteScorer
+
+	// Rand drives the ADR-0139 D6 Thompson sampler (merit_mode = thompson).
+	// Injectable so tests are deterministic (WithRand); nil ⇒ a time-seeded source
+	// created on first use. Guarded by randMu.
+	Rand   *rand.Rand
+	randMu sync.Mutex
 }
 
 // RouteScorer scores a candidate from its merit feature vector (ROUTE-07 / ADR-0076). The
@@ -84,6 +93,11 @@ func WithEmbedder(e domain.Embedder) GatekeeperOption {
 
 func WithSearcher(s domain.ProfileSearcher) GatekeeperOption {
 	return func(g *Gatekeeper) { g.Searcher = s }
+}
+
+// WithRand seeds the Thompson sampler (ADR-0139 D6) — tests and reproducible runs.
+func WithRand(r *rand.Rand) GatekeeperOption {
+	return func(g *Gatekeeper) { g.Rand = r }
 }
 
 func NewGatekeeper(registry domain.AgentDeclarationSource, cfg config.ExecutionConfig, opts ...GatekeeperOption) *Gatekeeper {
@@ -223,23 +237,12 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 	if trace {
 		funnel = &domain.GatekeeperFunnel{MaxCandidates: g.ExecCfg.Gatekeeper.GatekeeperMaxCandidates}
 	}
-	var meritByAgent map[string]MeritBreakdown
-	if trace {
-		meritByAgent = make(map[string]MeritBreakdown)
-	}
+	// Every candidate's merit breakdown, keyed by agent id: the ranking below reads
+	// the tie-break fields from it (posterior modes), and the funnel records it.
+	meritByAgent := make(map[string]MeritBreakdown)
 
 	var candidates []domain.ScoredCandidate
-	// Merit-scored candidates whose profile carries no latency yet. Their latency
-	// term is filled AFTER the loop with the slate's mean known term — the neutral
-	// value — instead of the full w3 bonus that `normLatency == 0 → 1.0` used to
-	// hand every agent without data (ADR-0139 D6; see scoreMerit).
-	type latencyPending struct {
-		idx     int
-		agent   domain.AgentDefinition
-		profile *domain.AgentProfile
-	}
-	var pendingLatency []latencyPending
-	var knownLatencyTerms []float64
+	var slate []SlateEntry
 	for _, agent := range agents {
 		// Daemon agents are signal producers, not task executors; they never
 		// serve AgentService and cannot bid or execute steps.
@@ -271,53 +274,37 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 
 		// Every agent — provisional or not — is ranked on merit. A provisional agent
 		// (registered, profile not yet seeded) usually has no profile for its source
-		// hash, so ScoreMerit gives it the NEUTRAL prior (SR = Trust = 0.5): the same
-		// footing as a seeded agent with no verified outcomes yet (ADR-0139 D6). It
-		// used to carry a flat DefaultProvisionalScore of 0.1 until an LLM interview
-		// promoted it; the interview was deleted 2026-11-05.
+		// hash, so ScoreMerit gives it the NEUTRAL prior (SR = Trust = 0.5, or the
+		// Beta prior in the posterior modes): the same footing as a seeded agent with
+		// no verified outcomes yet (ADR-0139 D6). It used to carry a flat
+		// DefaultProvisionalScore of 0.1 until an LLM interview promoted it; the
+		// interview was deleted 2026-11-05.
 		//
 		// Rank on the SAME tags the gate enforced: that is where the agent's
 		// per-capability history lives (ROUTE-06). An unmatched requirement has
 		// no history anyway and falls back to the global profile.
-		profile := g.fetchProfile(ctx, agent)
-		mb := ScoreMerit(profile, agent.Trait, gateTask.RequiredCapabilities, g.ExecCfg, g.RouteScorer)
+		candidates = append(candidates, domain.ScoredCandidate{Agent: agent})
+		slate = append(slate, SlateEntry{Profile: g.fetchProfile(ctx, agent), Trait: agent.Trait})
+	}
+
+	// Scored as ONE slate, because two parts of the score are slate-relative
+	// (ADR-0139 D6): a missing latency (and, in the posterior modes, a missing cost)
+	// takes the slate's mean known value — neutral, rather than the full w3 bonus
+	// `normLatency == 0 → 1.0` once handed every agent without data — and the
+	// Thompson mode draws one posterior sample per candidate per dispatch.
+	breakdowns := ScoreSlate(slate, gateTask.RequiredCapabilities, g.ExecCfg, g.RouteScorer, g.sampler())
+	for i := range candidates {
+		mb := breakdowns[i]
 		score := mb.Score
-		if trace {
-			meritByAgent[agent.ID] = mb
-		}
-		if agent.Trait != domain.TraitModel {
-			if mb.LatencyKnown {
-				knownLatencyTerms = append(knownLatencyTerms, mb.LatencyTerm)
-			} else {
-				pendingLatency = append(pendingLatency, latencyPending{idx: len(candidates), agent: agent, profile: profile})
-			}
-		}
 		// A soft pin is a thumb on the scale, not a verdict: the named agent is
 		// boosted but still ranked, so a markedly better candidate can win. Note
 		// the pin is applied AFTER L1 — a soft pin never buys past the capability
 		// contract, it only competes harder inside it.
-		if agent.ID == pinnedID {
+		if candidates[i].Agent.ID == pinnedID {
 			score = softPinned(score)
 		}
-		candidates = append(candidates, domain.ScoredCandidate{Agent: agent, Score: score})
-	}
-
-	// Missing latency is NEUTRAL (ADR-0139 D6): an agent with no latency data takes
-	// the mean latency term of the slate's agents that have it. When none has data
-	// the term is 0 for everyone — a constant across the slate, so rank-neutral.
-	if len(pendingLatency) > 0 {
-		neutral := meanOf(knownLatencyTerms)
-		for _, p := range pendingLatency {
-			mb := scoreMerit(p.profile, p.agent.Trait, gateTask.RequiredCapabilities, g.ExecCfg, g.RouteScorer, neutral)
-			score := mb.Score
-			if p.agent.ID == pinnedID {
-				score = softPinned(score)
-			}
-			candidates[p.idx].Score = score
-			if trace {
-				meritByAgent[p.agent.ID] = mb
-			}
-		}
+		candidates[i].Score = score
+		meritByAgent[candidates[i].Agent.ID] = mb
 	}
 
 	// ADR-0023 Routing Fix: Layer 2 semantic search now applies to ALL
@@ -429,9 +416,25 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 		}
 	}
 
+	// legacy: score only (byte-identical). Posterior modes: score, then the cost
+	// and latency tie-breaks (MeritRanksBefore).
 	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].Score > candidates[j].Score
+		a, b := candidates[i], candidates[j]
+		return MeritRanksBefore(g.ExecCfg, a.Score, meritByAgent[a.Agent.ID], b.Score, meritByAgent[b.Agent.ID])
 	})
+
+	// Per-dispatch scores at debug (ADR-0139 D6 observability): enough to explain
+	// a ranking under any mode without the routing trace.
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		for rank, c := range candidates {
+			mb := meritByAgent[c.Agent.ID]
+			slog.Debug("Gatekeeper: merit",
+				"task_id", taskID(task), "mode", mb.Mode, "rank", rank, "agent_id", c.Agent.ID,
+				"score", c.Score, "success_rate", mb.SuccessRate, "trust", mb.TrustScore,
+				"alpha", mb.Alpha, "beta", mb.Beta, "cost", mb.Cost, "latency_ms", mb.LatencyMs,
+				"latency_known", mb.LatencyKnown)
+		}
+	}
 
 	maxK := g.ExecCfg.Gatekeeper.GatekeeperMaxCandidates
 	if maxK > 0 && len(candidates) > maxK {
@@ -455,6 +458,9 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 				LatencyTerm: mb.LatencyTerm,
 				CostTerm:    mb.CostTerm,
 				Provisional: mb.Provisional,
+				Mode:        mb.Mode,
+				Alpha:       mb.Alpha,
+				Beta:        mb.Beta,
 			})
 		}
 		task.Funnel = funnel
@@ -535,16 +541,32 @@ func (g *Gatekeeper) FindModelCandidates(ctx context.Context, requiredCapabiliti
 
 // MeritBreakdown is the GatekeeperScore and the individual terms that produced
 // it, so the ROUTE-02 funnel can show which component drove a candidate's rank.
+//
+// Under the ADR-0139 D6 posterior modes the additive terms do not exist: Score is
+// the ranking statistic (the LCB quantile, or the Thompson sample / posterior mean),
+// SuccessRate is the posterior mean, TrustScore / LatencyTerm / CostTerm are 0, and
+// Cost / LatencyMs carry the tie-break values.
 type MeritBreakdown struct {
 	Score       float64
 	SuccessRate float64
 	TrustScore  float64
 	LatencyTerm float64 // w3 * (1/normLatency) contribution
-	// LatencyKnown is false when the profile has no latency yet; LatencyTerm is
-	// then the neutral fill the caller supplied (ADR-0139 D6), not a measurement.
+	// LatencyKnown is false when the profile has no latency yet; LatencyTerm (or,
+	// in the posterior modes, LatencyMs) is then the neutral fill, not a measurement.
 	LatencyKnown bool
 	CostTerm     float64 // w4 * normalizedCost contribution (subtracted from Score)
 	Provisional  bool
+
+	// Mode is the merit mode that produced Score (config.MeritMode*).
+	Mode string
+	// Alpha / Beta are the Beta posterior (posterior modes only; 0 under legacy).
+	Alpha, Beta float64
+	// Cost is the agent's average cost per task and LatencyMs its median latency,
+	// the posterior modes' tie-breaks. Missing values are filled with the slate's
+	// mean known value by ScoreSlate (CostKnown / LatencyKnown say which).
+	Cost      float64
+	CostKnown bool
+	LatencyMs float64
 }
 
 func (g *Gatekeeper) computeMeritScore(ctx context.Context, agent domain.AgentDefinition, requiredCaps []string) float64 {
@@ -588,22 +610,39 @@ func meanOf(vs []float64) float64 {
 
 // ScoreMerit is the PURE merit-scoring core (ADR-0077): given a resolved profile (nil ⇒
 // neutral cold-start priors), the agent trait, the step's required capabilities, the
-// execution config (hand weights + arm flags) and an optional learned scorer, it produces
-// the GatekeeperScore + its component terms. Decoupled from profile FETCHING so both the
-// live Gatekeeper path and the PreviewRoute RPC (the gatekeeper benchmark, ADR-0077) score
-// candidates identically — the benchmark supplies synthetic profiles inline, no live fleet.
+// execution config (hand weights + arm flags + merit mode) and an optional learned
+// scorer, it produces the GatekeeperScore + its component terms. Decoupled from
+// profile FETCHING so both the live Gatekeeper path and the PreviewRoute RPC (the
+// gatekeeper benchmark, ADR-0077) score candidates identically — the benchmark
+// supplies synthetic profiles inline, no live fleet.
 //
-// A profile with no latency yet scores a latency term of 0 here (no evidence, no
-// bonus). Within a slate the Gatekeeper replaces that with the slate's mean known
-// term (scoreMerit's neutralLatencyTerm), so missing latency is neutral rather than
-// the full w3 bonus `normLatency == 0 → 1.0` once gave it (ADR-0139 D6).
+// It scores ONE candidate in isolation. A slate is scored with ScoreSlate, which
+// adds the slate-relative parts: the neutral fill of a missing latency (legacy:
+// the slate's mean known latency term; this function alone gives it 0 — no
+// evidence, no bonus) and, under thompson, the per-dispatch posterior sample (this
+// function alone reports the posterior mean).
 func ScoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredCaps []string, cfg config.ExecutionConfig, scorer RouteScorer) MeritBreakdown {
 	return scoreMerit(profile, trait, requiredCaps, cfg, scorer, 0)
 }
 
 // scoreMerit is ScoreMerit with the latency term to use when the profile has no
-// latency data (neutralLatencyTerm, already weighted by w3).
+// latency data (neutralLatencyTerm, already weighted by w3; legacy mode only).
+//
+// TraitModel candidates (ADR-0018 sub-selection) always take the legacy formula:
+// D6 is a posterior per (agent, capability) over step outcomes, and model
+// providers are not dispatched to steps, so they have no such outcomes.
 func scoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredCaps []string, cfg config.ExecutionConfig, scorer RouteScorer, neutralLatencyTerm float64) MeritBreakdown {
+	if mode := cfg.Gatekeeper.ActiveMeritMode(); mode != config.MeritModeLegacy && trait != domain.TraitModel {
+		return scorePosterior(profile, requiredCaps, cfg, mode)
+	}
+	mb := scoreLegacy(profile, trait, requiredCaps, cfg, scorer, neutralLatencyTerm)
+	mb.Mode = config.MeritModeLegacy
+	return mb
+}
+
+// scoreLegacy is the hand-weighted GatekeeperScore, unchanged by ADR-0139 D6
+// (golden-tested: TestScoreMerit_LegacyGolden).
+func scoreLegacy(profile *domain.AgentProfile, trait domain.AgentTrait, requiredCaps []string, cfg config.ExecutionConfig, scorer RouteScorer, neutralLatencyTerm float64) MeritBreakdown {
 	w1, w2, w3, w4 := cfg.Gatekeeper.GatekeeperW1, cfg.Gatekeeper.GatekeeperW2, cfg.Gatekeeper.GatekeeperW3, cfg.Gatekeeper.GatekeeperW4
 
 	const (
@@ -683,4 +722,210 @@ func scoreMerit(profile *domain.AgentProfile, trait domain.AgentTrait, requiredC
 	// prior, not a discount on top of it.
 
 	return MeritBreakdown{Score: score, SuccessRate: successRate, TrustScore: trustScore, LatencyTerm: latencyTerm, LatencyKnown: latencyKnown, CostTerm: costTerm, Provisional: profileProvisional}
+}
+
+// Defaults the posterior modes fall back to when a config carries a zero value
+// (a hand-built ExecutionConfig in a test or plugin; a loaded config is validated
+// and defaulted by internal/config).
+const (
+	defaultMeritPrior       = 1.0
+	defaultMeritLCBQuantile = 0.1
+)
+
+// posteriorParams resolves the posterior settings, zero values read as defaults.
+func posteriorParams(cfg config.ExecutionConfig) (priorA, priorB, quantile, unverifiedW float64) {
+	g := cfg.Gatekeeper
+	priorA, priorB, quantile, unverifiedW = g.MeritPriorAlpha, g.MeritPriorBeta, g.MeritLCBQuantile, g.MeritUnverifiedWeight
+	if priorA <= 0 {
+		priorA = defaultMeritPrior
+	}
+	if priorB <= 0 {
+		priorB = defaultMeritPrior
+	}
+	if quantile <= 0 || quantile >= 1 {
+		quantile = defaultMeritLCBQuantile
+	}
+	if unverifiedW < 0 {
+		unverifiedW = 0
+	}
+	return priorA, priorB, quantile, unverifiedW
+}
+
+// outcomeEvidence picks the evidence a step is scored on: for a step that declares
+// required capabilities, the first of them the agent has evidence for (the
+// capability-keyed posterior, ADR-0139 D6); none ⇒ NO evidence (the prior), not the
+// global record — an agent's PDF-parsing record must not vouch for it on a browser
+// step (the ROUTE-06 failure). A step that declares none scores on the global
+// evidence over every outcome.
+func outcomeEvidence(profile *domain.AgentProfile, requiredCaps []string) domain.OutcomeEvidence {
+	if profile == nil {
+		return domain.OutcomeEvidence{}
+	}
+	if len(requiredCaps) == 0 {
+		return profile.Outcomes
+	}
+	for _, rc := range requiredCaps {
+		if st, ok := profile.CapabilityStats[rc]; ok && !st.Outcomes.IsZero() {
+			return st.Outcomes
+		}
+	}
+	return domain.OutcomeEvidence{}
+}
+
+// scorePosterior scores one candidate under a posterior mode (ADR-0139 D6):
+//
+//	α = prior_α + verified successes + unverified_weight·unverified
+//	β = prior_β + verified failures
+//
+// posterior_lcb ⇒ Score = the merit_lcb_quantile quantile of Beta(α, β);
+// thompson ⇒ Score = the posterior mean (ScoreSlate replaces it with a sample when
+// it is given a sampler; PreviewRoute is not, so it reports the mean).
+// Cost and latency are NOT in the score: they are tie-breaks (MeritRanksBefore).
+// No SR binarisation, no calibration term, no hand weights, no learned scorer.
+func scorePosterior(profile *domain.AgentProfile, requiredCaps []string, cfg config.ExecutionConfig, mode string) MeritBreakdown {
+	priorA, priorB, quantile, unverifiedW := posteriorParams(cfg)
+	ev := outcomeEvidence(profile, requiredCaps)
+	alpha := priorA + ev.VerifiedSuccess + unverifiedW*float64(ev.Unverified)
+	beta := priorB + ev.VerifiedFailure
+	mean := alpha / (alpha + beta)
+
+	mb := MeritBreakdown{Mode: mode, Alpha: alpha, Beta: beta, SuccessRate: mean}
+	if mode == config.MeritModePosteriorLCB {
+		mb.Score = betaQuantile(quantile, alpha, beta)
+	} else {
+		mb.Score = mean
+	}
+	if profile != nil {
+		mb.Provisional = profile.Provisional
+		if ms := profile.NetworkLatencyMedianMs + profile.ComputationLatencyMedianMs; ms > 0 {
+			mb.LatencyMs, mb.LatencyKnown = float64(ms), true
+		}
+		if profile.ModelMetrics != nil {
+			mb.Cost, mb.CostKnown = profile.ModelMetrics.AvgCostPerTask, true
+		}
+	}
+	return mb
+}
+
+// SlateEntry is one candidate of a slate: its resolved profile (nil ⇒ no evidence)
+// and trait.
+type SlateEntry struct {
+	Profile *domain.AgentProfile
+	Trait   domain.AgentTrait
+}
+
+// BetaSampler draws one value from Beta(alpha, beta). nil ⇒ no sampling.
+type BetaSampler func(alpha, beta float64) float64
+
+// ScoreSlate scores a slate under the active merit mode and returns the
+// breakdowns in input order. Both the live Gatekeeper (FindCandidates) and the
+// PreviewRoute RPC call it, so they apply the same slate-relative neutral fills
+// (T-20261104-previewroute-scores-missing-latency-as-0-while):
+//
+//   - legacy: a candidate with no latency takes the mean latency TERM of the
+//     non-model candidates that have one; none has one ⇒ 0 for all (rank-neutral).
+//   - posterior modes: a missing latency or cost tie-break takes the mean of the
+//     known values among the posterior-scored candidates; and, when sample is
+//     non-nil under thompson, Score is one posterior draw per candidate.
+//
+// Model-trait entries keep the legacy formula in every mode (see scoreMerit).
+func ScoreSlate(entries []SlateEntry, requiredCaps []string, cfg config.ExecutionConfig, scorer RouteScorer, sample BetaSampler) []MeritBreakdown {
+	out := make([]MeritBreakdown, len(entries))
+	mode := cfg.Gatekeeper.ActiveMeritMode()
+	if mode == config.MeritModeLegacy {
+		var known []float64
+		var pending []int
+		for i, e := range entries {
+			out[i] = scoreMerit(e.Profile, e.Trait, requiredCaps, cfg, scorer, 0)
+			if e.Trait == domain.TraitModel {
+				continue
+			}
+			if out[i].LatencyKnown {
+				known = append(known, out[i].LatencyTerm)
+			} else {
+				pending = append(pending, i)
+			}
+		}
+		if len(pending) > 0 {
+			neutral := meanOf(known)
+			for _, i := range pending {
+				out[i] = scoreMerit(entries[i].Profile, entries[i].Trait, requiredCaps, cfg, scorer, neutral)
+			}
+		}
+		return out
+	}
+
+	var knownLat, knownCost []float64
+	for i, e := range entries {
+		out[i] = scoreMerit(e.Profile, e.Trait, requiredCaps, cfg, scorer, 0)
+		if e.Trait == domain.TraitModel {
+			continue
+		}
+		if out[i].LatencyKnown {
+			knownLat = append(knownLat, out[i].LatencyMs)
+		}
+		if out[i].CostKnown {
+			knownCost = append(knownCost, out[i].Cost)
+		}
+	}
+	neutralLat, neutralCost := meanOf(knownLat), meanOf(knownCost)
+	for i, e := range entries {
+		if e.Trait == domain.TraitModel {
+			continue
+		}
+		if !out[i].LatencyKnown {
+			out[i].LatencyMs = neutralLat
+		}
+		if !out[i].CostKnown {
+			out[i].Cost = neutralCost
+		}
+		if mode == config.MeritModeThompson && sample != nil {
+			out[i].Score = sample(out[i].Alpha, out[i].Beta)
+		}
+	}
+	return out
+}
+
+// MeritRanksBefore reports whether a candidate with final score sa (soft pin
+// included) and breakdown a ranks ahead of one with sb / b. Legacy compares the
+// score alone (the pre-D6 order, byte-identical under a stable sort). The
+// posterior modes break an exact score tie — the common case at cold start, when
+// every candidate sits on the same prior — by lower cost, then lower latency;
+// both are slate-mean filled when missing, so the order is a strict weak order.
+func MeritRanksBefore(cfg config.ExecutionConfig, sa float64, a MeritBreakdown, sb float64, b MeritBreakdown) bool {
+	if sa != sb {
+		return sa > sb
+	}
+	if cfg.Gatekeeper.ActiveMeritMode() == config.MeritModeLegacy {
+		return false
+	}
+	if a.Cost != b.Cost {
+		return a.Cost < b.Cost
+	}
+	return a.LatencyMs < b.LatencyMs
+}
+
+// sampler returns the Thompson sampler over the Gatekeeper's RNG, or nil outside
+// thompson mode. FindCandidates runs concurrently for parallel plan steps and
+// *rand.Rand is not safe for concurrent use, so every draw holds randMu.
+func (g *Gatekeeper) sampler() BetaSampler {
+	if g.ExecCfg.Gatekeeper.ActiveMeritMode() != config.MeritModeThompson {
+		return nil
+	}
+	return func(alpha, beta float64) float64 {
+		g.randMu.Lock()
+		defer g.randMu.Unlock()
+		if g.Rand == nil {
+			g.Rand = rand.New(rand.NewSource(time.Now().UnixNano()))
+		}
+		return sampleBeta(g.Rand, alpha, beta)
+	}
+}
+
+// taskID is the task's id for logging; "" for a nil task.
+func taskID(task *domain.DispatchTask) string {
+	if task == nil {
+		return ""
+	}
+	return task.ID
 }

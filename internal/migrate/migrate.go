@@ -141,8 +141,9 @@ func Boot(ctx context.Context, pool *pgxpool.Pool, dim int, p Policy) error {
 	if !p.AllowPending {
 		return fmt.Errorf("%w: database %q has %d pending schema change(s) [%s] that this binary "+
 			"would apply (%s). Nothing was written. If %q is the database you meant to upgrade, "+
-			"run `<binary> migrate up` with the same config, or boot once with "+
-			"CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_PENDING=true; otherwise point database.dbname "+
+			"boot once, or run `<binary> migrate up`, with "+
+			"CAMBRIAN_DATABASE__MIGRATIONS__ALLOW_PENDING=true (a protected database refuses "+
+			"`migrate up` without it too); otherwise point database.dbname "+
 			"(CAMBRIAN_DATABASE__DBNAME) at the database this binary is meant for",
 			ErrPendingRefused, db, len(pending), strings.Join(pending, ", "), reason, db)
 	}
@@ -154,8 +155,8 @@ func Boot(ctx context.Context, pool *pgxpool.Pool, dim int, p Policy) error {
 // Migrate brings schema_migrations up to date: it creates the table if absent, refuses
 // when the DB is ahead of this binary, and applies every pending migration in version
 // order (each in its own transaction). dim substitutes ${EMBEDDING_DIM} in the SQL.
-// It applies no Policy: it is the deliberate `migrate up` path (and the tests' entry
-// point). Boot goes through Boot.
+// It applies no Policy: it is the tests' entry point. Boot and the `migrate up` CLI
+// (postgres.RunMigrations) go through Boot, so both honour protected_dbnames.
 func Migrate(ctx context.Context, pool *pgxpool.Pool, dim int) error {
 	db, err := currentDatabase(ctx, pool)
 	if err != nil {

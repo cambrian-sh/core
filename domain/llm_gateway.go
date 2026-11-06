@@ -132,6 +132,34 @@ type StreamChunk struct {
 	// Nil on every other chunk and on the legacy GenerateStream path, whose consumers
 	// read only the fields above.
 	Response *GenerateResponse
+	// ToolCall is one fragment of a streamed tool call (ADR-0139 amendment
+	// 2026-11-06, live step-output stream): the adapters that stream tool-call
+	// arguments (Anthropic input_json_delta, OpenAI-compatible tool_calls deltas)
+	// emit it so the gateway can forward a final-answer argument live. Text is empty
+	// on such a chunk. The complete calls still arrive on the final chunk's
+	// Response; a consumer that ignores ToolCall loses nothing.
+	ToolCall *ToolCallDelta
+}
+
+// ToolCallDelta is one streamed fragment of a model's tool call. Index identifies
+// the call within the turn (Anthropic's content-block index, OpenAI's tool_calls
+// index); ID and Name are set on the fragment that opens the call and may repeat;
+// ArgumentsDelta is the next piece of the call's JSON arguments text.
+type ToolCallDelta struct {
+	Index          int
+	ID             string
+	Name           string
+	ArgumentsDelta string
+}
+
+// ModelStreamDelta is what a streamed model call reports to a live observer while
+// the call runs (llm.Provider.GenerateOnObserved): a text delta, a tool-call
+// fragment, or Restarted — the call failed over to another generator, so every
+// delta reported so far belongs to an abandoned attempt.
+type ModelStreamDelta struct {
+	Text      string
+	ToolCall  *ToolCallDelta
+	Restarted bool
 }
 
 // LLMStreamer is a provider client that can stream LLM responses.

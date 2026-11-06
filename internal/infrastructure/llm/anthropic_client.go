@@ -423,6 +423,19 @@ func (c *AnthropicClient) StreamRequest(ctx context.Context, req domain.Generate
 			if ev.Type == "content_block_delta" && ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
 				out <- domain.StreamChunk{Text: ev.Delta.Text}
 			}
+			// ADR-0139 amendment 2026-11-06: tool-call fragments, so the gateway can
+			// forward a final-answer argument live. The call opens on its
+			// content_block_start (id, name) and its input arrives as input_json_delta
+			// pieces on the same block index. msg.Accumulate above still builds the
+			// complete calls for the final Response.
+			if ev.Type == "content_block_start" && ev.ContentBlock.Type == "tool_use" {
+				out <- domain.StreamChunk{ToolCall: &domain.ToolCallDelta{
+					Index: int(ev.Index), ID: ev.ContentBlock.ID, Name: ev.ContentBlock.Name}}
+			}
+			if ev.Type == "content_block_delta" && ev.Delta.Type == "input_json_delta" && ev.Delta.PartialJSON != "" {
+				out <- domain.StreamChunk{ToolCall: &domain.ToolCallDelta{
+					Index: int(ev.Index), ArgumentsDelta: ev.Delta.PartialJSON}}
+			}
 		}
 		if ctx.Err() != nil {
 			return

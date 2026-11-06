@@ -5,6 +5,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
 )
 
 // WatchToolApprovals streams pending dangerous-tool approval requests to an
@@ -41,9 +42,11 @@ func (s *Service) WatchToolApprovals(_ *pb.SubscribeRequest, stream pb.OperatorC
 				AgentId:     r.AgentID,
 				ToolName:    r.ToolName,
 				ArgsPreview: r.ArgsPreview,
-				// An approval request is raised ONLY for a dangerous tool (ADR-0039),
-				// so every streamed approval is destructive by construction.
-				IsDestructive: true,
+				// A tool approval is raised ONLY for a dangerous tool (ADR-0039), so it is
+				// destructive by construction. A skill_access request
+				// (decisions/skill-access-grants.md) widens what an agent may read.
+				IsDestructive: r.Kind != domain.ApprovalKindSkillAccess,
+				Kind:          r.Kind,
 			}); err != nil {
 				return err
 			}

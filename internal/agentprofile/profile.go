@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -46,7 +47,7 @@ var ModelRoles = []string{"planner", "verifier", "router", "memory", "facts"}
 // Fields are the profile's keys; any other key is an error.
 var Fields = []string{
 	"name", "description", "capabilities", "skills", "tools", "model", "trust_tier",
-	"max_tool_rounds", "max_tokens", "role", "version",
+	"max_tool_rounds", "max_tokens", "role", "version", "examples", "streams_output",
 }
 
 // Required are the keys a profile must set.
@@ -56,6 +57,13 @@ var Required = []string{"name", "description", "capabilities", "skills", "tools"
 var (
 	MaxToolRoundsBounds = [2]int64{1, 64}
 	MaxTokensBounds     = [2]int64{256, 131072}
+)
+
+// Example-task bounds (ADR-0139 C2: "3-5 example tasks"). Optional; when set,
+// 1..MaxExamples unique non-blank strings of at most MaxExampleRunes characters.
+const (
+	MaxExamples     = 5
+	MaxExampleRunes = 300
 )
 
 // DefaultVersion is a profile's version when it sets none.
@@ -84,6 +92,13 @@ type Profile struct {
 	MaxToolRounds *int64   `json:"max_tool_rounds"`
 	MaxTokens     *int64   `json:"max_tokens"`
 	Version       string   `json:"version"`
+	// Examples are example tasks the agent is for; the A2A card publishes them
+	// on its skills (internal/agentcard). nil when the profile sets none.
+	Examples []string `json:"examples"`
+	// StreamsOutput declares that the agent pushes its own live step output
+	// (agent-plane EmitStepOutput), so the kernel forwards no gateway deltas for its
+	// steps (ADR-0139 amendment 2026-11-06). Optional; `true` or `false`.
+	StreamsOutput bool `json:"streams_output"`
 	// Warnings are non-fatal findings (a capability new to the fleet vocabulary).
 	Warnings []string `json:"-"`
 }
@@ -220,6 +235,31 @@ func Parse(text string, opt Options) (Profile, error) {
 		if !reVersion.MatchString(p.Version) {
 			return Profile{}, fmt.Errorf("version %q must be MAJOR.MINOR.PATCH", p.Version)
 		}
+	}
+
+	if !isEmpty(data["examples"]) {
+		ex, err := listField(data, "examples")
+		if err != nil {
+			return Profile{}, err
+		}
+		if len(ex) > MaxExamples {
+			return Profile{}, fmt.Errorf("%q has %d entries; at most %d", "examples", len(ex), MaxExamples)
+		}
+		for _, e := range ex {
+			s, ok := e.(string)
+			if !ok || strings.TrimSpace(s) == "" {
+				return Profile{}, fmt.Errorf("example %s must be a non-empty string", pyRepr(e))
+			}
+			s = strings.TrimSpace(s)
+			if utf8.RuneCountInString(s) > MaxExampleRunes {
+				return Profile{}, fmt.Errorf("example %q is longer than %d characters", s, MaxExampleRunes)
+			}
+			p.Examples = append(p.Examples, s)
+		}
+	}
+
+	if p.StreamsOutput, err = boolField(data, "streams_output"); err != nil {
+		return Profile{}, err
 	}
 
 	if p.MaxToolRounds, err = intField(data, "max_tool_rounds", MaxToolRoundsBounds); err != nil {
@@ -362,6 +402,25 @@ func intField(data map[string]any, key string, bounds [2]int64) (*int64, error) 
 }
 
 // isEmpty mirrors Python's `data.get(k) in (None, "", [])`.
+// boolField reads an optional boolean. The frontmatter subset has no boolean
+// scalar (an unquoted true is the string "true", as in the SDK's _scalar), so the
+// field accepts exactly "true" or "false"; absent, null or blank is false.
+func boolField(data map[string]any, key string) (bool, error) {
+	v, ok := data[key]
+	if !ok || isNullOrBlank(v) {
+		return false, nil
+	}
+	if s, isStr := v.(string); isStr {
+		switch strings.TrimSpace(s) {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		}
+	}
+	return false, fmt.Errorf("%q must be true or false (got %s)", key, pyRepr(v))
+}
+
 func isEmpty(v any) bool {
 	switch x := v.(type) {
 	case nil, null:

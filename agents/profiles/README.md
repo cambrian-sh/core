@@ -45,6 +45,8 @@ equal `name`.
 | `max_tool_rounds` | no | Cap on tool rounds per task, 1..64. Default: the SDK's. |
 | `max_tokens` | no | Generation cap per turn, 256..131072. Default: the SDK's (4096). |
 | `version` | no | `MAJOR.MINOR.PATCH`, default `1.0.0`. Becomes the manifest version. |
+| `examples` | no | Up to 5 example tasks (one line each, at most 300 characters, no duplicates), ADR-0139 C2. Carried on the manifest and published on the agent's A2A card skills (`internal/agentcard`). |
+| `streams_output` | no | `true` or `false` (default `false`). `true` declares that the agent pushes its own live step output over the agent-plane `EmitStepOutput` RPC (an adapter around an agent that calls its own model), so the kernel stops forwarding gateway deltas for its steps and one step never streams twice (ADR-0139 amendment 2026-11-06). Carried on the manifest and on the A2A card's Cambrian extension. A profile run by `worker_agent.py` generates through the kernel and leaves it unset. |
 
 Any other field is an error.
 

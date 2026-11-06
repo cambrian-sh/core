@@ -26,7 +26,7 @@ tool a skill lists must fall inside the allowlist of each profile that uses it
 | `description` | What the skill is for. The menu line is derived from its first sentence, capped at 120 characters (ADR-0045 D3), so put the purpose first. |
 | `tools` | Tools the skill grants for the rest of the run when it is loaded (ADR-0046 D6). The grant is intersected with what policy allows the agent (ADR-0085 D4). A tool the registry does not know, or that policy refuses, is dropped with a `skill_grant_clipped` log line and the skill still loads. Dangerous tools still need operator approval. |
 | `scope` | Classification tags (ADR-0046 D9). `[]` means unscoped: visible to every agent whose read scope requires no tags. |
-| `version`, `trust` | ADR-0139 C3 metadata. Parsed leniently; the kernel does not read them yet. |
+| `version`, `trust` | ADR-0139 C3 metadata, parsed leniently. `version` becomes the shipped skill's lifecycle version (else `sha-<12 hex>` of the file). For an agent-proposed skill (ADR-0139 D13) the kernel ignores both: trust is always `agent-proposed` and the version is the ledger's. |
 
 MCP tool names have the form `mcp:<server id>/<tool>`, where `<server id>` is the
 `id` in `configs/mcp.json`. `file-report` names `mcp:filesystem/...`, which is the

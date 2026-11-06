@@ -14,6 +14,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/memory"
+	"github.com/cambrian-sh/core/internal/skill/lifecycle"
 )
 
 // ADR-0047 Amendment A2 (CORE-OPS-1): the operator-plane paged reads. These are
@@ -204,17 +205,33 @@ func (s *Service) toolGrantsIndex() map[string][]*pb.ToolGrantOp {
 }
 
 // ListSkills returns the registered system skills, filtered + paged (A2.1).
-func (s *Service) ListSkills(_ context.Context, req *pb.ListSkillsOpRequest) (*pb.ListSkillsOpResponse, error) {
+//
+// ADR-0139 D13: with the skill lifecycle wired, each skill carries its lifecycle
+// fields (version, source, state, lock, usage) and the D13 filters apply;
+// archived skills, which the catalog no longer serves, are listed from their
+// stored content when the request asks for them. One listing, not a second one.
+func (s *Service) ListSkills(ctx context.Context, req *pb.ListSkillsOpRequest) (*pb.ListSkillsOpResponse, error) {
 	if s.skills == nil {
 		return &pb.ListSkillsOpResponse{Page: pageOf(req.GetPage())}, nil
 	}
+	var records map[string]lifecycle.Skill
+	if s.skillLifecycle != nil {
+		recs, err := s.skillLifecycle.Skills(ctx)
+		if err != nil {
+			return nil, lifecycleErr(err)
+		}
+		records = make(map[string]lifecycle.Skill, len(recs))
+		for _, r := range recs {
+			records[r.Name] = r
+		}
+	}
 	q := strings.ToLower(strings.TrimSpace(req.GetQuery()))
 	var filtered []*pb.SkillOp
-	for _, sk := range s.skills.All() {
+	keep := func(sk domain.Skill, sourcePath string) {
 		if q != "" && !strings.Contains(strings.ToLower(sk.Name), q) && !strings.Contains(strings.ToLower(sk.Description), q) {
-			continue
+			return
 		}
-		filtered = append(filtered, &pb.SkillOp{
+		op := &pb.SkillOp{
 			Name:        sk.Name,
 			Description: sk.Description,
 			ToolGrants:  sk.ToolGrants,
@@ -222,8 +239,33 @@ func (s *Service) ListSkills(_ context.Context, req *pb.ListSkillsOpRequest) (*p
 			// Contract 0074: a skill IS its instructions. Without the body a detail
 			// pane can list a skill's name and grants and never show what it
 			// actually tells an agent to do.
-			Body: sk.Instructions,
-		})
+			Body:       sk.Instructions,
+			SourcePath: sourcePath,
+		}
+		if records != nil {
+			if r, ok := records[sk.Name]; ok {
+				skillOpLifecycle(op, r)
+			} else {
+				// Served but not lifecycle-managed (registered over the wire).
+				op.LifecycleState = domain.SkillStateActive
+			}
+			if !skillListFilter(req, op) {
+				return
+			}
+		}
+		filtered = append(filtered, op)
+	}
+	served := map[string]bool{}
+	for _, sk := range s.skills.All() {
+		served[sk.Name] = true
+		keep(sk, sk.SourcePath)
+	}
+	for name, r := range records {
+		if !served[name] && r.State == domain.SkillStateArchived {
+			c := r.Content
+			c.Name = name
+			keep(c, "")
+		}
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Name < filtered[j].Name })
 

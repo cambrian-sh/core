@@ -196,8 +196,19 @@ func (a *ProfileAggregator) aggregateOne(ctx context.Context, agentID, sourceHas
 	allEvents := events
 	var netLatencies, compLatencies, contextGrowths []int
 	for _, e := range allEvents {
-		netLatencies = append(netLatencies, e.NetworkLatencyMs)
-		compLatencies = append(compLatencies, e.ComputationLatencyMs)
+		// A latency of 0 is UNKNOWN, not instant: a thought step, a response that
+		// did not come from the stamped winner, a verification-only event, and every
+		// step event written before the Dispatcher measured the call
+		// (T-20261104-step-taskevents-carry-no-latency-so-the-merit). Counting those
+		// zeros would drag the median toward 0 and make the agent look fast for
+		// having no data. With no known sample the median stays 0 (= unknown), so a
+		// profile whose events all predate the measurement aggregates exactly as before.
+		if e.NetworkLatencyMs > 0 {
+			netLatencies = append(netLatencies, e.NetworkLatencyMs)
+		}
+		if e.ComputationLatencyMs > 0 {
+			compLatencies = append(compLatencies, e.ComputationLatencyMs)
+		}
 		contextGrowths = append(contextGrowths, e.ContextGrowthBytes)
 	}
 
@@ -244,19 +255,25 @@ func (a *ProfileAggregator) aggregateOne(ctx context.Context, agentID, sourceHas
 		RecentVerifierIDs:          recentVerifierIDs,
 		ModelMetrics:               modelMetrics,
 		// ROUTE-06 / ADR-0069: capability-scoped success/trust for tag-scoped merit.
-		CapabilityStats: computeCapabilityStats(verified, a.Config, calWeight, absWeight),
+		CapabilityStats: computeCapabilityStats(events, a.Config, calWeight, absWeight),
+		// ADR-0139 D6: the evidence behind the Beta posterior merit modes.
+		Outcomes: outcomeEvidence(events),
 	}
 
 	return a.Store.SaveProfile(ctx, agentID, sourceHash, nil, profile)
 }
 
-// computeCapabilityStats groups verified events by their stamped capability tag and
-// computes a per-tag success/trust with the same EWMA the global profile uses
-// (ROUTE-06 / ADR-0069). Events without a capability are skipped. Returns nil when no
-// tagged verified events exist.
-func computeCapabilityStats(verified []domain.TaskEvent, cfg AggregatorConfig, calWeight, absWeight float64) map[string]domain.CapabilityStat {
+// computeCapabilityStats groups events by their stamped capability tag (ROUTE-06 /
+// ADR-0069). Per tag it computes, from the VERIFIED events, the legacy success/trust
+// with the same EWMA the global profile uses, and, from all of them, the ADR-0139 D6
+// outcome evidence. Events without a capability are skipped. A tag with only
+// unverified events gets an entry with SampleCount 0 — which the legacy scorer and
+// the surprise signal skip, exactly as if it were absent — so that the posterior
+// modes can count unverified outcomes when merit_unverified_weight > 0. Returns nil
+// when no tagged event exists.
+func computeCapabilityStats(events []domain.TaskEvent, cfg AggregatorConfig, calWeight, absWeight float64) map[string]domain.CapabilityStat {
 	byCap := make(map[string][]domain.TaskEvent)
-	for _, e := range verified {
+	for _, e := range events {
 		if e.Capability == "" {
 			continue
 		}
@@ -267,26 +284,50 @@ func computeCapabilityStats(verified []domain.TaskEvent, cfg AggregatorConfig, c
 	}
 	out := make(map[string]domain.CapabilityStat, len(byCap))
 	for capTag, evs := range byCap {
-		succ := make([]float64, len(evs))
-		trust := make([]float64, len(evs))
-		for i, e := range evs {
-			if e.VerifierScore > 0.5 {
-				succ[i] = 1.0
+		var succ, trust []float64
+		for _, e := range evs {
+			if !e.Verified {
+				continue
 			}
+			s := 0.0
+			if e.VerifierScore > 0.5 {
+				s = 1.0
+			}
+			succ = append(succ, s)
 			calPart := 0.0
 			if e.BidConfidence > 0 {
 				calPart = clamp(e.VerifierScore/e.BidConfidence, 0, 2) / 2.0
 			}
 			absPart := clamp(e.VerifierScore, 0, 1)
-			trust[i] = calWeight*calPart + absWeight*absPart
+			trust = append(trust, calWeight*calPart+absWeight*absPart)
 		}
 		out[capTag] = domain.CapabilityStat{
 			SuccessRate: EWMA(succ, cfg.EWMAAlpha),
 			TrustScore:  EWMA(trust, cfg.EWMAAlpha),
-			SampleCount: len(evs),
+			SampleCount: len(succ),
+			Outcomes:    outcomeEvidence(evs),
 		}
 	}
 	return out
+}
+
+// outcomeEvidence sums the ADR-0139 D6 Beta-posterior evidence of events (see
+// domain.OutcomeEvidence): a verified event adds its verifier score (clamped to
+// [0,1]) to the successes and the remainder to the failures — fractional, so a
+// graded verdict is not re-binarised at 0.5 — and an unverified event is counted
+// separately, to be weighted (default 0) at scoring time.
+func outcomeEvidence(events []domain.TaskEvent) domain.OutcomeEvidence {
+	var ev domain.OutcomeEvidence
+	for _, e := range events {
+		if !e.Verified {
+			ev.Unverified++
+			continue
+		}
+		s := clamp(e.VerifierScore, 0, 1)
+		ev.VerifiedSuccess += s
+		ev.VerifiedFailure += 1 - s
+	}
+	return ev
 }
 
 // EWMA computes an exponentially weighted moving average over values in order.

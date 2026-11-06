@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -55,29 +58,64 @@ func New() *A2AClient {
 	return &A2AClient{http: &http.Client{}}
 }
 
-// FetchCard GETs {endpoint}/.well-known/agent.json and parses the Agent Card.
+// maxCardBytes bounds a fetched Agent Card. Cards are small JSON documents; a
+// remote that streams more is refused rather than buffered.
+const maxCardBytes = 1 << 20
+
+// cardFetchTimeout bounds one card GET.
+const cardFetchTimeout = 30 * time.Second
+
+// FetchCard GETs {endpoint}/.well-known/agent-card.json (A2A 1.0 §8.2) and
+// parses the Agent Card, keeping the bytes as served in card.Raw so a verifying
+// fetcher (internal/agentcard RemoteFetcher) can check its JWS signature. A 404
+// falls back to the pre-0.3 path /.well-known/agent.json for older servers.
 func (c *A2AClient) FetchCard(ctx context.Context, endpoint string) (*domain.AgentCard, error) {
-	url := endpoint + "/.well-known/agent.json"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	base := strings.TrimRight(endpoint, "/")
+	raw, status, err := c.getCard(ctx, base+"/.well-known/agent-card.json")
+	if err == nil && status == http.StatusNotFound {
+		raw, status, err = c.getCard(ctx, base+"/.well-known/agent.json")
+	}
 	if err != nil {
-		return nil, fmt.Errorf("a2a: build FetchCard request: %w", err)
+		return nil, err
 	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("a2a: FetchCard HTTP: %w", err)
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("a2a: FetchCard returned status %d", status)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("a2a: FetchCard returned status %d", resp.StatusCode)
-	}
-
 	var card domain.AgentCard
-	if err := json.NewDecoder(resp.Body).Decode(&card); err != nil {
+	if err := json.Unmarshal(raw, &card); err != nil {
 		return nil, fmt.Errorf("a2a: FetchCard decode: %w", err)
 	}
+	card.Raw = raw
 	return &card, nil
+}
+
+func (c *A2AClient) getCard(ctx context.Context, url string) ([]byte, int, error) {
+	// Bounded here, not on the shared client (Execute's tasks may legitimately
+	// run long): the card fetch runs at boot registration and in the profile
+	// seeder, and a remote that never answers must not hold either.
+	ctx, cancel := context.WithTimeout(ctx, cardFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("a2a: build FetchCard request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("a2a: FetchCard HTTP: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxCardBytes+1))
+	if err != nil {
+		return nil, 0, fmt.Errorf("a2a: FetchCard read: %w", err)
+	}
+	if len(raw) > maxCardBytes {
+		return nil, 0, fmt.Errorf("a2a: FetchCard: card exceeds %d bytes", maxCardBytes)
+	}
+	return raw, resp.StatusCode, nil
 }
 
 // Execute translates a Handoff into an A2A Task, POSTs to {agent.A2AEndpoint}/tasks,
