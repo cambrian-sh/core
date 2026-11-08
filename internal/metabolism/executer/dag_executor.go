@@ -155,7 +155,7 @@ type DAGExecutor struct {
 	// each child on a dedicated agent instance (domain.WithDedicatedInstance), because an
 	// agent process runs one Execute at a time; <= 1 runs children one at a time on the
 	// agent's shared instance.
-	FanOutConcurrency      int
+	FanOutConcurrency int
 	// Calendar is the kernel's one "today" (domain.Calendar). Its block is stamped on
 	// every step's handoff (domain.HandoffKeyCurrentDate) so an agent or thought step
 	// resolves "the last two weeks" against the organisation's date, and it scopes the
@@ -163,7 +163,7 @@ type DAGExecutor struct {
 	// yesterday's answer to a relative ask is never replayed today
 	// (T-20261107-planner-and-chat-agent-are-not-told-today-s). nil ⇒ the wall clock
 	// in UTC.
-	Calendar *domain.Calendar
+	Calendar               *domain.Calendar
 	MaxPlanCost            float64          // total plan budget; 0 disables budget enforcement
 	DefaultInputCostPer1M  float64          // cost per 1M input tokens for cost estimation
 	DefaultOutputCostPer1M float64          // cost per 1M output tokens for cost estimation
@@ -1195,6 +1195,20 @@ coordinate:
 
 			// Error-triggered pause: call ReplanHandler automatically.
 			if isErrorPause && d.ReplanHandler != nil {
+				// A plan whose context has ended — its ceiling fired (the caller-deadline
+				// reserve, max duration or idle watchdog) or its caller went away — is
+				// not replanned: the planner call would run on the dead context and
+				// always fail ("ReplanHandler: planner call failed … context deadline
+				// exceeded", 19 times in run 20261107T191751Z), logging an error and
+				// spending the reserve the partial report needs. Leave the loop with
+				// firstErr as it is, so the completion block returns the same
+				// PartialPlanError — the completed steps' report
+				// (T-20261108-replanhandler-replans-a-step-that-the-caller).
+				if planErr := cancelCtx.Err(); planErr != nil {
+					slog.Info("DAGExecutor: plan context ended; not replanning, reporting what the plan did",
+						"failed_step", failedStepIdx, "cause", context.Cause(cancelCtx), "step_err", firstErr)
+					break coordinate
+				}
 				if d.replanSuppressor != nil {
 					d.replanSuppressor.SetReplanning(true)
 				}

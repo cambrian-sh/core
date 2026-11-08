@@ -375,6 +375,14 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	// Same shape as the cache_policy validation directly below: an LLM-emitted name is
 	// checked against the configured set and silently normalised when unknown.
 	dropInventedCapabilities(ctx, &plan, capVocab, p.canonicalVocab)
+	// A step that names itself in depends_on / fan_out_over meant the step before it
+	// (one-based numbering slipped in): repaired here, deterministically, before the
+	// validator would refuse the plan as a cycle
+	// (T-20261108-planner-writes-depends-on-1-based-step-n).
+	for _, r := range domain.RepairSelfDependencies(&plan) {
+		slog.Warn("planner: repaired a self-dependency (one-based step number)",
+			"step", r.Step, "field", r.Field, "from", r.From, "to", r.To)
+	}
 	// Effect contract: normalised and checked, but never dropped (fail closed).
 	normalizeDeclaredEffects(ctx, &plan, effectVocab)
 

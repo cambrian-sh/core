@@ -280,6 +280,37 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
   feeds; agent steps get it on the payload only, so the auction's task description stays the planner's text; thought
   steps on the ctx step), and the planner/replan prompts ask the source step's query for a JSON array and a
   parametric query that describes one item.
+- **JSON fan-out sources are read as JSON, never as lines** (2026-11-08,
+  `T-20261107-read-only-fan-out-over-an-unrecognised-json`). o3 #1's source answered with a JSON object holding two
+  arrays, a blank line, then the requested name array unfenced (1170 B); no rule matched and the read-only line
+  fallback made 26 children of `{`, `],`, `"contact_email": …` that ran the plan into its caller's deadline.
+  `ExtractStructuredFanOutItems` now scans the JSON values that start a line (bare or fenced): the reply's TRAILING
+  list wins (the `fanout_source` contract), else exactly one list, else none; wrappers descend one single-object
+  field (depth 3); object rows are never dropped (known key, then `*name`, then `*id`, else the compact row). A
+  read-only step over JSON with no recognisable list is demoted to one step (`FanOutDemotedUnrecognisedJSON`,
+  `domain.SourceHoldsJSON` also catches truncated JSON); free text keeps the list-line fallback. Expansion logs
+  `source_bytes` and the first items.
+- **The kernel tells every model today's date** (2026-11-08, `T-20261107-planner-and-chat-agent-are-not-told-today-s`).
+  `domain.Calendar` is the one source, built once in `app` from the new config key `organisation.timezone` (IANA,
+  validated at load, empty ⇒ UTC; `time/tzdata` embedded) and shared: planner (`planner_input` v2 `<today>`),
+  replans (`replan_input` v2), the executor (stamps `_current_date` = `Calendar.Block()` on every step, strips it
+  from responses, and scopes the step-cache key to the date), thought steps (`thought_synthesis_input` v2, stamped
+  value else the server calendar), the chat turn handoff (`current_date` metadata, rendered by `agents/chat_agent.py`
+  through the new `current_date` prompt) and SDK workers (`react-turn` v5 `current-date`, `react.with_current_date`).
+  The block carries today's ISO date and weekday, the timezone, yesterday/tomorrow, this week/month/quarter and
+  7/14/30 days ago, so no model subtracts dates itself (o1 delegated "since November 24" for "the last two weeks"
+  on 7 Nov). Not covered: the exact-match plan cache can still replay a plan whose queries hold absolute dates
+  from an earlier day (follow-up ticket).
+- **A plan whose context has ended is not replanned** (2026-11-08,
+  `T-20261108-replanhandler-replans-a-step-that-the-caller`): when the caller-deadline reserve, max duration or
+  idle watchdog (or the caller) ended the plan context, the executor skips `ReplanHandler` and returns the
+  partial-plan report; the replan's planner call had always failed on the dead context (19 ERROR rows in run
+  20261107T191751Z).
+- **Self-dependencies are repaired as one-based slips** (2026-11-08,
+  `T-20261108-planner-writes-depends-on-1-based-step-n`): `domain.RepairSelfDependencies` (planner and replan)
+  rewrites a step naming itself in `depends_on` / `fan_out_over` to the previous step (only that case is
+  unambiguous; WARN log). Planner v3, planner_cap v6, replan v3, replan_cap v6 add the numbering rule: steps are
+  numbered from 0 and queries cite earlier steps by the same numbers.
 - **A plan's result reports every final step and every side-effecting call** (2026-11-07,
   `T-20261107-plan-result-is-only-the-last-topo-step-a-plan`). `_dag_final_result` is `executer.buildPlanReport`:
   the result of every completed step no other completed step consumed (the sinks; the completed frontier on a
@@ -350,6 +381,16 @@ The kernel is **strictly layered**. A breach (e.g. `domain/` importing
   `T-20261107-chat-agent-answers-turkish-government-asks-with`: an exception from `run_think` (provider auth
   failure, lost lease) now fails the turn (SDK INTERNAL -> `humanFailure` status line, nothing stored) instead of
   storing "Sorry — I didn't quite catch that"; the fallback remains for leak hits, empty replies and `ReActLoopError`.
+  2026-11-08 (agent:claude-chat-fix): `internal/chat/disclosure.go` is the reply disclosure guard, run in `Turn`
+  before Emit: a paragraph that declares redaction/withholding never states a personal identifier (e-mail, IBAN, NINO,
+  SSN, card, 11-digit national number, phone), and a customer conversation never gets a strong identifier; values the
+  user wrote are kept; masked values get a category label plus one held-back line in the turn language. Names are not
+  detected (chat_agent v4 drafting rule). `chat_agent.py`: inside the reply reserve, or after a plan with no time for
+  another, the loop ends (`_ReplyNow`) and ONE bounded call writes the reply (`chat_agent_turn` v6 reply-now; fixed
+  `_OUT_OF_TIME` text with the results if that call cannot run); the turn's `language` reaches the model by name
+  (reply-language); the first delegation carries the latest message verbatim (delegation-scope); a `ReActLoopError`
+  returns the drafted answer the SDK now carries (`ReActLoopError.draft`) or a reply over the turn's results, and the
+  fallback only when the turn has neither.
   `T-20261107-chat-failure-texts-are-english-only-in-non` (owner decision 2026-11-07: failure and fallback texts follow
   the conversation's language, never model-translated): `internal/chat/locale.go` holds a message catalogue keyed by
   `MessageID` and language (en, tr) and a deterministic detector (distinctive letters + function words) run on the

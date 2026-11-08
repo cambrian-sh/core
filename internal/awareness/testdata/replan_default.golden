@@ -40,6 +40,9 @@ How to write steps:
 Dependencies:
 - depends_on lists the zero-based indices of the steps that must finish before
   this one. A step with no prerequisites has an empty list.
+- Steps are numbered from 0: the first step is step 0, the second step 1. Use
+  the same numbers when a query refers to an earlier step ("the result of step
+  2"), and in depends_on and fan_out_over. A step never lists its own index.
 - Keep independent steps independent (an empty depends_on), so they run in
   parallel.
 - Reference only indices that exist, and never form a cycle.

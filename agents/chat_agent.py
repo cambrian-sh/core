@@ -73,7 +73,7 @@ PROMPT_VERSIONS = {pid: _LIBRARY.get(pid).static_hash for pid in ("chat_agent", 
 # Tags that hold untrusted or kernel-supplied text in the turn (and the policy and the
 # work systems in the system text).
 _DATA_TAGS = ("conversation", "recalled_memory", "memory", "latest_message", "policy",
-              "work_systems", "planner_result")
+              "work_systems", "planner_result", "user_request")
 
 
 def _neutralise(value: str) -> str:
@@ -435,6 +435,9 @@ class ChatAgent(CognitiveAgent):
     # The turn's language (the kernel's "language" key) and its seed recall, once per turn.
     _turn_language = ""
     _seed_cache = None
+    # The latest message, and whether the turn's first delegation carried it to the planner.
+    _turn_message = ""
+    _scope_sent = False
 
     def _time_left(self):
         """Seconds until the turn deadline, or None when the turn has none."""
@@ -482,7 +485,7 @@ class ChatAgent(CognitiveAgent):
         self._delegated = True
         try:
             result = self.substrate.execute(
-                task_description, session_token_id=self._turn_token,
+                self._scoped_task(task_description), session_token_id=self._turn_token,
                 # The plan's share of the turn: its gRPC deadline reaches the kernel, which
                 # stops the plan a little before it (execution.plan.caller_deadline_reserve_ms)
                 # and returns what completed plus the ledger of its writes as an ordinary
@@ -512,6 +515,29 @@ class ChatAgent(CognitiveAgent):
         # reads the result it is about to relay.
         lang_line = self._reply_language_line()
         return f"{self._delegation_result}\n\n{lang_line}" if lang_line else result
+
+    def _scoped_task(self, task_description: str) -> str:
+        """The task sent to the planner. The FIRST delegation of a turn carries the user's
+        latest message verbatim after the front desk's task_description, with the instruction
+        to plan the whole request including its final create, record, save or send step
+        (chat_agent_turn delegation-scope).
+
+        T-20261108-chat-front-desk-delegates-a-draft-and-save: asked to draft an FOI response
+        and record it in the case system, the front desk delegated lookup after lookup (2.71
+        delegations per attempt), its three tool rounds ran out, and it wrote the response in
+        its own reply: 0 writes in 6 attempts. The rule "never delegate only the lookup"
+        (chat_agent v3) did not hold, so the planner now always sees the whole request once
+        and plans its write step itself. Later delegations in the turn are follow-ups and go
+        as written; a task_description that already holds the message is sent unchanged.
+        """
+        message = (self._turn_message or "").strip()
+        if self._scope_sent or not message or message in task_description:
+            return task_description
+        self._scope_sent = True
+        return _TURN["delegation-scope"].render({
+            "task_description": task_description.strip(),
+            "message": _neutralise(message),
+        })
 
     def _reply_language_line(self) -> str:
         name = _language_name(self._turn_language)
@@ -714,6 +740,8 @@ class ChatAgent(CognitiveAgent):
         self._turn_results = []
         self._turn_language = self._meta(task, "language")
         self._seed_cache = None
+        self._turn_message = task.text or ""
+        self._scope_sent = False
         remaining_ms = getattr(task, "deadline_remaining_ms", 0) or 0
         self._turn_deadline = _now() + remaining_ms / 1000.0 if remaining_ms > 0 else 0.0
         substrate = self.substrate
@@ -726,6 +754,7 @@ class ChatAgent(CognitiveAgent):
 
     def _run_turn(self, task, _think, recall, fallback, substrate, ReActLoopError):
         result = None
+        replied_now = False  # the reply came from the one final call (_reply_now)
         try:
             result = _think(False)
             raw = _result_text(result)
@@ -755,9 +784,25 @@ class ChatAgent(CognitiveAgent):
             # The turn is out of loop time: one call writes the reply (bounded by the time
             # left), or the fixed out-of-time sentence carries the results.
             raw = self._reply_now(task, substrate, recall)
+            replied_now = True
         except ReActLoopError as e:
-            _log.warning("chat_agent: ReActLoopError -> fallback: %s", e)
-            return AgentResult(data=fallback.encode("utf-8"), type="text", confidence=0.2)
+            # The loop died on a budget (T-20261108-chat-agent-throws-away-a-drafted-answer-and).
+            # At the end of a long turn that had real work behind it, "could you say it again?"
+            # threw the work away and invited the user to re-run a four-minute job. Keep what
+            # the turn has: the answer the model had already drafted (the inferred answer it
+            # was re-prompted on), else one reply call over the planner's results. Only a turn
+            # with neither gets the fallback sentence.
+            draft = getattr(e, "draft", "") or ""
+            if draft.strip() and _spoken_only(draft, self._turn_language) != fallback:
+                _log.warning("chat_agent: ReActLoopError (%s); returning the drafted answer", e)
+                raw = draft
+            elif self._turn_results:
+                _log.warning("chat_agent: ReActLoopError (%s); replying from the turn's results", e)
+                raw = self._reply_now(task, substrate, recall)
+                replied_now = True
+            else:
+                _log.warning("chat_agent: ReActLoopError -> fallback: %s", e)
+                return AgentResult(data=fallback.encode("utf-8"), type="text", confidence=0.2)
         except Exception as e:
             # Not a reply: the model provider refused, the turn's lease is gone, the kernel is
             # unreachable. Speaking the fallback here ("I didn't quite catch that, could you
@@ -776,6 +821,10 @@ class ChatAgent(CognitiveAgent):
         if spoken == fallback:
             _log.warning("chat_agent: fallback substituted. raw_len=%d raw_head=%r delegated=%s",
                          len(raw), raw[:200], self._delegated)
+            if self._turn_results and not replied_now:
+                # The reply was unusable (a step-trace dump, a leak) but the planner returned
+                # results this turn: one reply call over them instead of "say it again".
+                spoken = _spoken_only(self._reply_now(task, substrate, recall), self._turn_language)
         return AgentResult(
             data=spoken.encode("utf-8"),
             type="text",

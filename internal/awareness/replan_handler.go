@@ -193,6 +193,14 @@ func (h *PlannerReplanHandler) Replan(
 	// Same ROUTE-03 vocabulary guard as the planner: a replanned step must not be
 	// able to hard-fail on a capability tag the model was not shown.
 	dropInventedCapabilities(ctx, &plan, capVocab, canonical)
+	// A step that names itself in depends_on / fan_out_over meant the step before it
+	// (one-based numbering slipped in): repaired here, deterministically, before the
+	// validator would refuse the plan as a cycle
+	// (T-20261108-planner-writes-depends-on-1-based-step-n).
+	for _, r := range domain.RepairSelfDependencies(&plan) {
+		slog.Warn("replan: repaired a self-dependency (one-based step number)",
+			"step", r.Step, "field", r.Field, "from", r.From, "to", r.To)
+	}
 	normalizeDeclaredEffects(ctx, &plan, effectVocab)
 
 	slog.Info("✅ Replan produced", "steps", len(plan.Steps), "subject", plan.Subject)

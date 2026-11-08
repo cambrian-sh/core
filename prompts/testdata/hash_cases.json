@@ -258,11 +258,12 @@
         "memories",
         "message",
         "planner_result",
-        "language"
+        "language",
+        "task_description"
       ],
-      "description": "The chat front desk's per-turn task text: the earlier conversation, the recalled memory and the latest message as tagged data, the reply instruction last, the retry note for a narrated delegation, the retry note for a reply that denied access after a delegation returned a result, the note returned instead of a new plan after a final refusal, the reply-language line naming the language to write the reply in, and the reply-now note for the one final reply call made when the turn has no time left for another tool call or plan.",
+      "description": "The chat front desk's per-turn task text: the earlier conversation, the recalled memory and the latest message as tagged data, the reply instruction last, the retry note for a narrated delegation, the retry note for a reply that denied access after a delegation returned a result, the note returned instead of a new plan after a final refusal, the reply-language line naming the language to write the reply in, the reply-now note for the one final reply call made when the turn has no time left for another tool call or plan, and the delegation-scope text the first delegation of a turn sends to the planner.",
       "has_schema": false,
-      "static_hash": "02630a15f7d7d2e4097f8f20475dbe5621686c1a464f5ebd831121e975b38939"
+      "static_hash": "f0c60a058da255107b4f2bc708d81c9cfd07e32c74ab18bbfacf198cab0db5ac"
     },
     {
       "id": "clarifier",
@@ -411,6 +412,15 @@
       "static_hash": "05fe765376a0d95e8dffc4b95f9a62e9cecaffd14ada8a16bb0a876e54223c0e"
     },
     {
+      "id": "planner",
+      "version": 3,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Turn a user request into a dependency-ordered execution plan of capability-described steps.",
+      "has_schema": true,
+      "static_hash": "fc4ae2fcc99bf920953396d943a8b52d3f64a3d80959d9a670441a82d56aa143"
+    },
+    {
       "id": "planner_cap",
       "version": 1,
       "tier": "stable",
@@ -454,6 +464,15 @@
       "description": "Turn a user request into a dependency-ordered execution plan whose steps declare the capability tags their executor must have and the effects they perform.",
       "has_schema": true,
       "static_hash": "43b05e94c88542031559808bb4f5c62306a15d13f23dfd10bbec187e39b20b19"
+    },
+    {
+      "id": "planner_cap",
+      "version": 6,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Turn a user request into a dependency-ordered execution plan whose steps declare the capability tags their executor must have and the effects they perform.",
+      "has_schema": true,
+      "static_hash": "8d7d3847d92a849025ee2e8329237d4182b53b673933fd519762f6018a32c295"
     },
     {
       "id": "planner_input",
@@ -503,6 +522,15 @@
       "static_hash": "d7e851cc997b08c715bc6df9dd2feac87405903c3c67ee74abcba2232e87783d"
     },
     {
+      "id": "replan",
+      "version": 3,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Revise a partly failed execution plan into a plan for the remaining work only.",
+      "has_schema": true,
+      "static_hash": "fb43bca494bf529f9cffd8829051a48dc194f890db0e51c92cf55919888fdc1d"
+    },
+    {
       "id": "replan_cap",
       "version": 1,
       "tier": "stable",
@@ -546,6 +574,15 @@
       "description": "Revise a partly failed execution plan into a plan for the remaining work whose steps declare the capability tags their executor must have and the effects they perform.",
       "has_schema": true,
       "static_hash": "3a6c00d322e4288c12a0192e93acd84ba4852b16de3c9d3b3e4e72572b40f434"
+    },
+    {
+      "id": "replan_cap",
+      "version": 6,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Revise a partly failed execution plan into a plan for the remaining work whose steps declare the capability tags their executor must have and the effects they perform.",
+      "has_schema": true,
+      "static_hash": "63ef7ce2f0a42ee483eb258a67e9ea62703ec0b9ec537416592f6b58dc4415e2"
     },
     {
       "id": "replan_input",
