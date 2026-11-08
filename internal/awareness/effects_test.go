@@ -49,6 +49,7 @@ func effectPlanner(t *testing.T, reply string) (*Planner, *requestRecorder) {
 	p.SetCapabilityContract(true)
 	p.SetEffectSource(goldenEffects(t))
 	p.goos = "linux"
+	p.SetCalendar(goldenCalendar())
 	return p, gen
 }
 
@@ -151,7 +152,7 @@ func (r replanEffectSource) EffectContract(ctx context.Context) (string, *domain
 // it keeps the effect contract (block + enum).
 func TestReplanEffects_YieldReasonFeedsTheReplan(t *testing.T) {
 	gen := &requestRecorder{reply: `{"reasoning":"add move","subject":"Replan: s","cache_policy":"tool","steps":[{"query":"move the report","depends_on":[],"required_capabilities":[],"required_effects":["move"]}]}`}
-	h := NewPlannerReplanHandler(gen, WithCapabilityContract(replanEffectSource{goldenEffects(t)}))
+	h := NewPlannerReplanHandler(gen, WithCapabilityContract(replanEffectSource{goldenEffects(t)}), WithCalendar(goldenCalendar()))
 	yieldErr := errString(`yield: agent "research_agent" did not perform "move the report into Archive" itself (it yielded it, e.g. for lack of a tool) and dispatching it failed: no candidates`)
 	plan, err := h.Replan(context.Background(), 0, yieldErr, nil, makePlan(domain.Step{Query: "file the report", RequiredEffects: []string{"read"}}))
 	if err != nil {

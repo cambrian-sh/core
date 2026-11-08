@@ -432,6 +432,9 @@ class ChatAgent(CognitiveAgent):
     _turn_deadline = 0.0
     # Every planner result this turn, in order: the material of the one final reply.
     _turn_results: list = []
+    # The turn's language (the kernel's "language" key) and its seed recall, once per turn.
+    _turn_language = ""
+    _seed_cache = None
 
     def _time_left(self):
         """Seconds until the turn deadline, or None when the turn has none."""
@@ -708,8 +711,21 @@ class ChatAgent(CognitiveAgent):
         self._delegation_result = ""
         self._replay_delegation = False
         self._final_denial = ""
+        self._turn_results = []
+        self._turn_language = self._meta(task, "language")
+        self._seed_cache = None
         remaining_ms = getattr(task, "deadline_remaining_ms", 0) or 0
         self._turn_deadline = _now() + remaining_ms / 1000.0 if remaining_ms > 0 else 0.0
+        substrate = self.substrate
+        if self._turn_deadline:
+            self.substrate = _DeadlineGuardedSubstrate(substrate, self)
+        try:
+            return self._run_turn(task, _think, recall, fallback, substrate, ReActLoopError)
+        finally:
+            self.substrate = substrate
+
+    def _run_turn(self, task, _think, recall, fallback, substrate, ReActLoopError):
+        result = None
         try:
             result = _think(False)
             raw = _result_text(result)
@@ -735,6 +751,10 @@ class ChatAgent(CognitiveAgent):
                 self._replay_delegation = True
                 result = _think(False, self._delegation_result)
                 raw = _result_text(result)
+        except _ReplyNow:
+            # The turn is out of loop time: one call writes the reply (bounded by the time
+            # left), or the fixed out-of-time sentence carries the results.
+            raw = self._reply_now(task, substrate, recall)
         except ReActLoopError as e:
             _log.warning("chat_agent: ReActLoopError -> fallback: %s", e)
             return AgentResult(data=fallback.encode("utf-8"), type="text", confidence=0.2)

@@ -62,7 +62,7 @@ func TestPlannerSendsSystemMessagesAndSchema(t *testing.T) {
 		if arm.cap {
 			pair = plannerCapPrompts
 		}
-		assertPairRequest(t, req, pair, domain.CacheTTLLong, "<request>\ndo something\n</request>\n\nPlan the request above.")
+		assertPairRequest(t, req, pair, domain.CacheTTLLong, "<request>\ndo something\n</request>\n\nPlan the request above. Resolve every relative date in it (\"the last two weeks\", \"this quarter\", \"tomorrow\") against <today>: take the dates from its reference lines rather than computing them, and write the exact dates into the steps that need them.")
 		if plan.PlannerPromptVersion != arm.want || arm.want != pair.StaticHash() {
 			t.Errorf("cap=%v: PlannerPromptVersion %q is not the pair's static hash", arm.cap, plan.PlannerPromptVersion)
 		}
@@ -177,7 +177,7 @@ func TestReplanRequestGolden(t *testing.T) {
 		"replan_cap_budget.golden": {true, &domain.BudgetExceededError{RunningCost: 5, MaxCost: 3}},
 	} {
 		gen := &requestRecorder{reply: replanCapReply}
-		var opts []ReplanOption
+		opts := []ReplanOption{WithCalendar(goldenCalendar())}
 		if c.cap {
 			opts = append(opts, WithCapabilityContract(fakeCapSource{vocab: map[string]struct{}{"file_read": {}}}))
 		}
@@ -200,7 +200,7 @@ func TestReplan_CapabilityArm_UsesCapSchemaAndGuard(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	req := gen.only(t)
-	assertPairRequest(t, req, replanCapPrompts, domain.CacheTTLShort, "</failure>\n\nRevise the plan for the remaining work.")
+	assertPairRequest(t, req, replanCapPrompts, domain.CacheTTLShort, "</failure>\n\nRevise the plan for the remaining work. Resolve every relative date against <today>: take the dates from its reference lines rather than computing them.")
 	if !strings.Contains(req.Messages[0].Content, "<capability_clusters>\n- file_read: worker_agent\n</capability_clusters>") {
 		t.Error("capability-arm replan must send the vocabulary")
 	}
