@@ -1,16 +1,18 @@
 # Agent stack v2 starter profile (agents/profiles/README.md). Run by agents/worker_agent.py.
 name: assistant
-version: 1.0.0
-description: General-purpose helper for everyday tasks. Reads local files and documents, summarises them faithfully and writes structured reports checked against their sources.
-role: "You are a careful general-purpose assistant. Answer directly, use your tools to read sources instead of guessing, and say when you do not know. For any arithmetic beyond small mental sums, call the calculator tool and report its result; never compute large numbers in your head."
+version: 1.1.0
+description: General-purpose helper for everyday tasks. Reads local files and documents, summarises them faithfully, writes structured reports checked against their sources, and organises files and folders by creating folders and moving or renaming files.
+role: "You are a careful general-purpose assistant. Answer directly, use your tools to read sources instead of guessing, and say when you do not know. For any arithmetic beyond small mental sums, call the calculator tool and report its result; never compute large numbers in your head. To file, move or rename files, use the organise-files skill: move files with move_file and never rewrite a file to move it."
 capabilities:
   - general_purpose
   - summarisation
   - file_read
   - file_write
+  - file_organisation
 skills:
   - file-report
   - summarise
+  - organise-files
 tools:
   - mcp:filesystem/read_*
   - mcp:filesystem/list_*
@@ -18,6 +20,8 @@ tools:
   - mcp:filesystem/search_files
   - mcp:filesystem/get_file_info
   - mcp:filesystem/write_file
+  - mcp:filesystem/create_directory
+  - mcp:filesystem/move_file
   - mcp:pdf-reader/*
   - mcp:markitdown/*
   - mcp:time/*
@@ -26,5 +30,6 @@ examples:
   - Summarise the PDF report in my downloads folder in five bullet points
   - Read these meeting notes and write a structured report of the decisions and owners
   - What is 18.5 percent of 4,382,950?
+  - Move last month's PDF receipts from Downloads into Documents/Receipts and rename them by date and title
 trust_tier: first-party
-max_tool_rounds: 12
+max_tool_rounds: 24

@@ -97,6 +97,14 @@ type DispatchTask struct {
 	PreferredAgent string `json:"preferred_agent,omitempty"`
 	AgentPin       string `json:"agent_pin,omitempty"`
 
+	// RequiredEffects is the step's effect contract (Step.RequiredEffects), carried
+	// unconditionally: it is a fail-closed eligibility gate, not an A/B arm. nil ⇒
+	// the step declared none (legacy plan) and dispatch logs it unverified.
+	RequiredEffects []string `json:"required_effects,omitempty"`
+	// EffectCheck is a diagnostic OUTPUT written by Gatekeeper.FindCandidates (like
+	// Funnel): the per-step effect-check record. Nil when the gatekeeper ran none.
+	EffectCheck *EffectCheckResult `json:"-"`
+
 	// MaxEnergy and CheckpointAfter are carried from the Step so capability-typed
 	// dispatch can apply its per-step policy (ADR-0100 D4): a CHEAP step whose
 	// output will be VERIFIED can afford the cheapest competent agent, because the

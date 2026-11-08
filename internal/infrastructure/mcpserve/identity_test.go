@@ -93,10 +93,10 @@ func TestIdentity_ResolverRepointsThePrincipal(t *testing.T) {
 	if next.principal.ID != "build-agent" {
 		t.Errorf("principal = %q, want the bound principal build-agent", next.principal.ID)
 	}
-	// The kind is held STEADY across the hop: a binding changes who is asking, not
-	// how the decision point evaluates them.
-	if next.principal.Kind != domain.PrincipalAgent {
-		t.Errorf("principal kind = %q, want %q", next.principal.Kind, domain.PrincipalAgent)
+	// ADR-0142 D3: a principal binding names the PERSON at the keyboard, and a
+	// person is `user` on every door — the kind the owner fence answers for.
+	if next.principal.Kind != domain.PrincipalUser {
+		t.Errorf("principal kind = %q, want %q", next.principal.Kind, domain.PrincipalUser)
 	}
 	// Resolution is asked on the mcp surface, with the external id policy targets
 	// and the client name as a label an operator can act on.

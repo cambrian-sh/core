@@ -87,7 +87,7 @@ func serveSteps(t *testing.T, h *WorkerHub, reg WorkerRegistration,
 // answerPrompts subscribes the chat-console stand-in: every prompt of kind is
 // answered by fn; notices and other kinds are collected but unanswered. stop
 // unsubscribes and ends the responder.
-func answerPrompts(ctrl *InMemoryConsentController, kind ConsentPromptKind,
+func answerPrompts(ctrl WorkerConsentHub, kind ConsentPromptKind,
 	fn func(ConsentPrompt) ConsentAnswer) (seen *promptLog, stop func()) {
 	ch, cancel := ctrl.Watch()
 	log := &promptLog{}
@@ -98,7 +98,11 @@ func answerPrompts(ctrl *InMemoryConsentController, kind ConsentPromptKind,
 			case p := <-ch:
 				log.add(p)
 				if p.Kind == kind && fn != nil {
-					ctrl.Submit(p.ID, fn(p))
+					ans := fn(p)
+					// The surface answers AS the beneficiary — the prompt's
+					// addressee under the default self rule (ADR-0142 D11).
+					ans.By = Approver{Principal: p.Beneficiary}
+					ctrl.Submit(p.ID, ans)
 				}
 			case <-done:
 				return
@@ -147,11 +151,12 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 // ── The consent hub itself: both prompt kinds through a stand-in subscriber ──
 
 // Gate: "Both prompt kinds are received and answered through a chat-console
-// stand-in" — the seam mirrors InMemoryApprovalController: raise → stream to
-// subscribers → block → Submit resolves; no-subscriber and timeout fail CLOSED.
+// stand-in" — the seam is a view over the addressed hub: raise → stream to
+// subscribers → block → an addressee's Submit resolves; no-subscriber and
+// timeout fail CLOSED.
 func TestConsentHub_BothPromptKindsAnsweredThroughSubscriber(t *testing.T) {
 	t.Parallel()
-	ctrl := NewInMemoryConsentController(2 * time.Second)
+	ctrl := newConsentHub(2 * time.Second)
 
 	// No subscriber: fail-closed before anything is even asked.
 	if ans, outcome, err := ctrl.Request(context.Background(), ConsentPrompt{Kind: ConsentPromptApprove}); err != nil ||
@@ -159,6 +164,8 @@ func TestConsentHub_BothPromptKindsAnsweredThroughSubscriber(t *testing.T) {
 		t.Fatalf("no-subscriber must fail closed: ans=%+v outcome=%s err=%v", ans, outcome, err)
 	}
 
+	alice := UserPrincipal("alice")
+	standIn := Approver{Principal: alice}
 	ch, cancel := ctrl.Watch()
 	defer cancel()
 	go func() {
@@ -166,36 +173,37 @@ func TestConsentHub_BothPromptKindsAnsweredThroughSubscriber(t *testing.T) {
 			switch p.Kind {
 			case ConsentPromptApprove:
 				if p.Machine != "a-machine" || p.Object != "C:/secret/report.txt" {
-					ctrl.Submit(p.ID, ConsentAnswer{Approved: false, AnsweredBy: "stand-in (prompt malformed)"})
+					ctrl.Submit(p.ID, ConsentAnswer{Approved: false, By: standIn})
 					return
 				}
-				ctrl.Submit(p.ID, ConsentAnswer{Approved: true, AnsweredBy: "stand-in"})
+				ctrl.Submit(p.ID, ConsentAnswer{Approved: true, By: standIn})
 			case ConsentPromptChooseMachine:
-				ctrl.Submit(p.ID, ConsentAnswer{Approved: true, Machine: p.Candidates[1], AnsweredBy: "stand-in"})
+				ctrl.Submit(p.ID, ConsentAnswer{Approved: true, Machine: p.Candidates[1], By: standIn})
 			}
 		}
 	}()
 
 	ans, outcome, err := ctrl.Request(context.Background(), ConsentPrompt{
-		Kind: ConsentPromptApprove, Machine: "a-machine",
+		Kind: ConsentPromptApprove, Machine: "a-machine", Beneficiary: alice,
 		Tool: "local:a-machine/write_file", Object: "C:/secret/report.txt",
 	})
-	if err != nil || outcome != ConsentAnswered || !ans.Approved || ans.AnsweredBy != "stand-in" {
+	if err != nil || outcome != ConsentAnswered || !ans.Approved || ans.AnsweredBy != "alice" {
 		t.Fatalf("approve prompt: ans=%+v outcome=%s err=%v", ans, outcome, err)
 	}
 
 	ans, outcome, err = ctrl.Request(context.Background(), ConsentPrompt{
 		Kind: ConsentPromptChooseMachine, Candidates: []string{"a-machine", "b-machine"}, Tool: "read_file",
+		Beneficiary: alice,
 	})
 	if err != nil || outcome != ConsentAnswered || !ans.Approved || ans.Machine != "b-machine" {
 		t.Fatalf("choose-machine prompt: ans=%+v outcome=%s err=%v", ans, outcome, err)
 	}
 
 	// Timeout with a silent subscriber: fail-closed too.
-	quick := NewInMemoryConsentController(30 * time.Millisecond)
+	quick := newConsentHub(30 * time.Millisecond)
 	_, cancelQuick := quick.Watch()
 	defer cancelQuick()
-	if ans, outcome, err := quick.Request(context.Background(), ConsentPrompt{Kind: ConsentPromptApprove}); err != nil ||
+	if ans, outcome, err := quick.Request(context.Background(), ConsentPrompt{Kind: ConsentPromptApprove, Beneficiary: alice}); err != nil ||
 		outcome != ConsentTimedOut || ans.Approved {
 		t.Fatalf("silent subscriber must time out closed: ans=%+v outcome=%s err=%v", ans, outcome, err)
 	}
@@ -209,7 +217,7 @@ func TestConsentHub_BothPromptKindsAnsweredThroughSubscriber(t *testing.T) {
 func TestConsent_ReadOnlyAutoDispatchesSilentlyWithReceipt(t *testing.T) {
 	t.Parallel()
 	h := hubForTest()
-	ctrl := NewInMemoryConsentController(time.Second)
+	ctrl := newConsentHub(time.Second)
 	e, decisions := consentExec(h, ctrl)
 	owner := AgentPrincipal("owner-a")
 	prompts, stop := answerPrompts(ctrl, ConsentPromptApprove, nil)
@@ -242,7 +250,7 @@ func TestConsent_ReadOnlyAutoDispatchesSilentlyWithReceipt(t *testing.T) {
 func TestConsent_EffectfulUnderAutoRequiresApproval(t *testing.T) {
 	t.Parallel()
 	h := hubForTest()
-	ctrl := NewInMemoryConsentController(2 * time.Second)
+	ctrl := newConsentHub(2 * time.Second)
 	e, decisions := consentExec(h, ctrl)
 	owner := AgentPrincipal("owner-a")
 	prompts, stop := answerPrompts(ctrl, ConsentPromptApprove, func(ConsentPrompt) ConsentAnswer {
@@ -274,7 +282,9 @@ func TestConsent_EffectfulUnderAutoRequiresApproval(t *testing.T) {
 	if !strings.Contains(p.ArgsJSON, `"content":"x"`) {
 		t.Errorf("prompt does not surface the raw args: %q", p.ArgsJSON)
 	}
-	if dec, ok := decisions.find(ReasonConsentApproved); !ok || !dec.Allowed || !strings.Contains(dec.Detail, "console") {
+	// The receipt names the VERIFIED answerer (the beneficiary), not a label the
+	// surface chose (ADR-0142 D11).
+	if dec, ok := decisions.find(ReasonConsentApproved); !ok || !dec.Allowed || !strings.Contains(dec.Detail, owner.String()) {
 		t.Fatalf("no consent_approved receipt naming the approver; decisions = %v", decisions.reasons())
 	}
 }
@@ -284,7 +294,7 @@ func TestConsent_EffectfulUnderAutoRequiresApproval(t *testing.T) {
 func TestConsent_AnySurfaceKnobPromptsForReads(t *testing.T) {
 	t.Parallel()
 	h := hubForTest()
-	ctrl := NewInMemoryConsentController(2 * time.Second)
+	ctrl := newConsentHub(2 * time.Second)
 	e, decisions := consentExec(h, ctrl)
 	owner := AgentPrincipal("owner-a")
 	prompts, stop := answerPrompts(ctrl, ConsentPromptApprove, func(ConsentPrompt) ConsentAnswer {
@@ -350,9 +360,9 @@ func TestConsent_EffectfulWithoutConsentRefusedWithDecision(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := hubForTest()
 			var ctrl ConsentController
-			var hub *InMemoryConsentController
+			var hub WorkerConsentHub
 			if !tc.nilCtrl {
-				hub = NewInMemoryConsentController(tc.grace)
+				hub = newConsentHub(tc.grace)
 				ctrl = hub
 			}
 			e, decisions := consentExec(h, ctrl)
@@ -467,7 +477,7 @@ func TestLadder_SoleCapableLiveMachineResolves(t *testing.T) {
 func TestLadder_DefaultMachineBreaksTieWithoutPrompt(t *testing.T) {
 	t.Parallel()
 	h := hubForTest()
-	ctrl := NewInMemoryConsentController(time.Second)
+	ctrl := newConsentHub(time.Second)
 	e, decisions := consentExec(h, ctrl)
 	owner := AgentPrincipal("owner-a")
 	prompts, stop := answerPrompts(ctrl, ConsentPromptChooseMachine, nil)
@@ -506,7 +516,7 @@ func TestLadder_DefaultMachineBreaksTieWithoutPrompt(t *testing.T) {
 func TestLadder_AsksThroughSurfaceAndHonorsTheAnswer(t *testing.T) {
 	t.Parallel()
 	h := hubForTest()
-	ctrl := NewInMemoryConsentController(2 * time.Second)
+	ctrl := newConsentHub(2 * time.Second)
 	e, decisions := consentExec(h, ctrl)
 	owner := AgentPrincipal("owner-a")
 	prompts, stop := answerPrompts(ctrl, ConsentPromptChooseMachine, func(p ConsentPrompt) ConsentAnswer {
@@ -538,7 +548,7 @@ func TestLadder_AsksThroughSurfaceAndHonorsTheAnswer(t *testing.T) {
 	if len(asked) != 1 || len(asked[0].Candidates) != 2 {
 		t.Fatalf("expected one choose-machine prompt with both candidates, got %+v", asked)
 	}
-	if dec, ok := decisions.find(ReasonMachineSelected); !ok || !strings.Contains(dec.Detail, "console") {
+	if dec, ok := decisions.find(ReasonMachineSelected); !ok || !strings.Contains(dec.Detail, owner.String()) {
 		t.Fatalf("no machine_selected(answer) receipt; decisions = %v", decisions.reasons())
 	}
 }
@@ -551,7 +561,7 @@ func TestLadder_EndsWithoutAnswerRefusesWithDecision(t *testing.T) {
 
 	t.Run("unanswered ask", func(t *testing.T) {
 		h := hubForTest()
-		ctrl := NewInMemoryConsentController(40 * time.Millisecond)
+		ctrl := newConsentHub(40 * time.Millisecond)
 		e, decisions := consentExec(h, ctrl)
 		_, stop := answerPrompts(ctrl, ConsentPromptNotice, nil) // subscribed, silent
 		defer stop()
@@ -576,7 +586,7 @@ func TestLadder_EndsWithoutAnswerRefusesWithDecision(t *testing.T) {
 
 	t.Run("no live capable machine", func(t *testing.T) {
 		h := hubForTest()
-		e, decisions := consentExec(h, NewInMemoryConsentController(time.Second))
+		e, decisions := consentExec(h, newConsentHub(time.Second))
 		ctx := WithTaskBeneficiary(context.Background(), owner)
 		resp := e.Execute(ctx, ToolCallRequest{AgentID: "agent-1", ToolName: "local:read_file", ArgsJSON: []byte(`{}`)})
 		if !resp.Denied {
@@ -610,7 +620,7 @@ func parkOffline(t *testing.T, h *WorkerHub, reg WorkerRegistration) {
 func TestParking_OfflineTargetParksThenDispatchesOnReturn(t *testing.T) {
 	t.Parallel()
 	h := hubForTest()
-	ctrl := NewInMemoryConsentController(time.Second)
+	ctrl := newConsentHub(time.Second)
 	e, decisions := consentExec(h, ctrl)
 	owner := AgentPrincipal("owner-a")
 	prompts, stop := answerPrompts(ctrl, ConsentPromptApprove, nil)
@@ -813,4 +823,9 @@ func TestObjectOfArgs_RawVerbatimOnly(t *testing.T) {
 			t.Errorf("%s: derived %q, want nothing", raw, got)
 		}
 	}
+}
+
+// newConsentHub is the consent view of a fresh addressed hub (ADR-0142 D11).
+func newConsentHub(grace time.Duration) WorkerConsentHub {
+	return NewAddressedHub(AddressedHubConfig{ConsentTimeout: grace}).Consent()
 }

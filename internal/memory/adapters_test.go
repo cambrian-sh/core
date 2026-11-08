@@ -97,3 +97,28 @@ func TestWebhookReceiver_FullQueue_Returns503(t *testing.T) {
 		t.Errorf("expected 503, got %d", resp.StatusCode)
 	}
 }
+
+// ADR-0142 (K-3): an empty ingest token refuses every request; it no longer
+// switches authentication off.
+func TestWebhookReceiver_EmptyTokenFailsClosed(t *testing.T) {
+	called := false
+	h := NewWebhookReceiver("", func(domain.ExternalDocument) bool { called = true; return true })
+	for _, hdr := range []string{"", "anything"} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/ingest", strings.NewReader(`{"content":"x"}`))
+		if hdr != "" {
+			req.Header.Set("X-Ingest-Token", hdr)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized || called {
+			t.Fatalf("token %q: status %d enqueued=%v", hdr, rec.Code, called)
+		}
+	}
+	// Behind an authenticating wrapper the preauthenticated receiver enqueues.
+	pre := NewPreauthenticatedWebhookReceiver(func(domain.ExternalDocument) bool { called = true; return true })
+	rec := httptest.NewRecorder()
+	pre.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/ingest", strings.NewReader(`{"content":"x"}`)))
+	if rec.Code != http.StatusAccepted || !called {
+		t.Fatalf("preauthenticated: %d", rec.Code)
+	}
+}

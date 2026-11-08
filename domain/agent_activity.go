@@ -101,11 +101,9 @@ func RedactArgs(args map[string]any) map[string]string {
 			out[k] = "[redacted]"
 			continue
 		}
-		s := stringifyArg(v)
-		if len(s) > 160 {
-			s = s[:160] + "…"
-		}
-		out[k] = s
+		// Cut by runes, never bytes: a byte cut could split a multi-byte rune and leave
+		// invalid UTF-8, which a proto string field refuses to marshal.
+		out[k] = boundRunes(stringifyArg(v), 160)
 	}
 	return out
 }

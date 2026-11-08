@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ArtifactByteWriter persists artifact bytes into the durable content-addressable
@@ -184,6 +185,11 @@ type ToolCallResponse struct {
 	ArgHash    string
 	ResultHash string
 	ApproverID string
+	// ApprovalState is the approval's resolution when the call was refused at the
+	// approval gate (denied, expired, unroutable, needs_hierarchy, ...); "" otherwise.
+	// Structured so a consumer (the per-run unroutable bound in ExecuteTool) never has
+	// to parse DenyReason.
+	ApprovalState ApprovalState
 }
 
 // ToolExecutor is the single reference monitor for tool execution (ADR-0039 D4).
@@ -283,6 +289,11 @@ type ToolExecutor struct {
 	// policy decision and can only narrow it; post_tool may rewrite or withhold
 	// the output. nil ⇒ no hooks (behaviour unchanged).
 	Hooks *HookChain
+	// History is the conversation-scoped record of side-effecting calls the
+	// executor keeps, and matches every approval it raises against, so the
+	// approver is told of a possible duplicate (action_history.go;
+	// execution.tools.duplicate_notice_window_minutes). nil: no record, no notice.
+	History *ActionHistory
 	// LeaseCeiling is the ADR-0139 D12 per-LEASE tool ceiling: a subagent's
 	// toolset (a subset of its parent's tools, resolved by the kernel at spawn)
 	// bound to the child's lease. Checked wherever the session token is known,
@@ -379,7 +390,7 @@ func (e *ToolExecutor) hydrateCIDArgs(ctx context.Context, argsJSON []byte) []by
 	return argsJSON
 }
 
-func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCallResponse {
+func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out ToolCallResponse) {
 	argHash := hashBytes(req.ArgsJSON)
 
 	// Tool resolution. A contributed local:<machine>/<tool> identity NEVER
@@ -455,6 +466,21 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 	// that minted evaluation sessions was deleted 2026-11-05, and ADR-0139 D5
 	// qualification will run against a mock tool executor that records intended
 	// calls, never this one.
+	//
+	// The conversation's action history (action_history.go): a side-effecting
+	// call is recorded from the moment it asks for approval (or, needing none, is
+	// dispatched) until it ends — done, failed, or dropped when it never ran — and
+	// an approval it raises carries a notice naming any earlier call of the
+	// conversation it may duplicate (T-20261107-approver-is-not-told-that-an-identical-side).
+	histScope := ""
+	if e.History != nil && tool.SideEffecting() {
+		hsid, _ := SessionIDFromContext(ctx)
+		histScope = ActionHistoryScope(ConversationIDFromContext(ctx), string(hsid))
+	}
+	var histRef ActionRef
+	dispatched := false
+	defer func() { e.finishHistory(ctx, histRef, dispatched, out) }()
+
 	approver := ""
 	if tool.Dangerous && req.System && verdict == HookAllow {
 		approver = "operator:system"
@@ -462,13 +488,34 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 		if e.Approval == nil {
 			return denied("approval required but unavailable", argHash)
 		}
+		// ADR-0142 D11: the request names who the call is for (kernel-held facts
+		// only: the task beneficiary, else the conversation owner) and where it
+		// came from, so the policy can route it and the hub can deliver it there.
+		beneficiary := TaskBeneficiaryFromContext(ctx)
+		if beneficiary.IsZero() {
+			beneficiary = PersonPrincipal(ConversationOwnerFromContext(ctx))
+		}
+		sid, _ := SessionIDFromContext(ctx)
+		notice := ""
+		if histScope != "" {
+			histRef = e.History.Begin(histScope, req.ToolName, req.ArgsJSON, ActionAwaitingApproval)
+			notice = RenderDuplicateNotice(e.History.Matches(histScope, req.ToolName, req.ArgsJSON, histRef))
+		}
 		dec, err := e.Approval.Request(ctx, ApprovalRequest{
 			AgentID: req.AgentID, ToolName: req.ToolName, ArgsPreview: preview(req.ArgsJSON, 200),
+			Object: objectOfArgs(req.ArgsJSON), Beneficiary: beneficiary, Args: req.ArgsJSON,
+			ConversationID: ConversationIDFromContext(ctx), SessionID: string(sid),
+			DuplicateNotice: notice,
 		})
 		if err != nil || !dec.Approved {
-			return ToolCallResponse{Denied: true, DenyReason: "not approved", ArgHash: argHash, ApproverID: dec.ApproverID}
+			reason := ApprovalDenyReason(dec, err)
+			slog.Info("tool call not approved", "tool", req.ToolName, "agent", req.AgentID,
+				"state", string(dec.State), "approval", dec.ApprovalID, "beneficiary", beneficiary.String(),
+				"reason", reason)
+			return ToolCallResponse{Denied: true, DenyReason: reason, ArgHash: argHash, ApproverID: dec.ApproverID, ApprovalState: dec.State}
 		}
 		approver = dec.ApproverID
+		e.History.Approved(histRef, dec.ApprovalID)
 	}
 
 	// ADR-0127 CL-2: the contributed pre-dispatch gate — parking for an
@@ -528,6 +575,10 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 		holdID = id
 	}
 
+	if histScope != "" && histRef.IsZero() {
+		histRef = e.History.Begin(histScope, req.ToolName, req.ArgsJSON, ActionRunning)
+	}
+	dispatched = true
 	result, err := handler.Execute(ctx, ToolCall{ToolName: req.ToolName, ArgsJSON: req.ArgsJSON, Policy: grant.Policy})
 	if err != nil {
 		if priced {
@@ -546,6 +597,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) ToolCal
 				Reason:    ReasonConsentDeniedOnMachine,
 				Detail:    "machine " + strconv.Quote(contrib.machine) + " declined consent locally",
 			})
+			dispatched = false // the machine refused it: it never ran
 			return denied("consent denied on machine "+strconv.Quote(contrib.machine), argHash)
 		}
 		if contrib != nil {
@@ -1517,10 +1569,42 @@ func hashBytes(b []byte) string {
 
 func hashString(s string) string { return hashBytes([]byte(s)) }
 
+// preview cuts b to at most n bytes, on a rune boundary. It used to cut at byte n
+// whatever was there: a non-ASCII argument straddling the cut left invalid UTF-8
+// in ArgsPreview, which protobuf refuses to marshal (the approval stream's Send
+// failed and closed the stream) and Postgres refuses to store (the approval was
+// not persisted, so the call was denied).
 func preview(b []byte, n int) string {
-	s := string(b)
-	if len(s) <= n {
-		return s
+	if len(b) <= n {
+		return strings.ToValidUTF8(string(b), "")
 	}
-	return s[:n]
+	cut := n
+	for cut > 0 && !utf8.RuneStart(b[cut]) {
+		cut--
+	}
+	return strings.ToValidUTF8(string(b[:cut]), "")
+}
+
+// finishHistory closes a call's ActionHistory entry when Execute returns: a call
+// that was never dispatched is dropped (it touched nothing); a dispatched one is
+// done — with the identifiers its result names — or failed.
+func (e *ToolExecutor) finishHistory(ctx context.Context, ref ActionRef, dispatched bool, out ToolCallResponse) {
+	if ref.IsZero() {
+		return
+	}
+	if !dispatched {
+		e.History.Drop(ref)
+		return
+	}
+	if out.Error != "" {
+		e.History.Finish(ref, true, nil)
+		return
+	}
+	result := out.ResultJSON
+	if len(result) == 0 && out.ResultCID != "" && e.ContentStore != nil {
+		if node, err := e.ContentStore.Get(context.WithoutCancel(ctx), CID(out.ResultCID)); err == nil && node != nil {
+			result = node.Data
+		}
+	}
+	e.History.Finish(ref, false, PlanActionIDs(result))
 }

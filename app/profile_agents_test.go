@@ -154,3 +154,65 @@ func TestProfileSkillSets_BindsOnlyProfileAgents(t *testing.T) {
 		t.Fatal("a non-profile agent must be unbound")
 	}
 }
+
+// The shipped assistant can organise files: loaded from disk through the real
+// discovery path, its grants over the curated filesystem server's tools
+// (configs/mcp.json.example) are exactly its allowlist's expansion, which now
+// includes create_directory and move_file and still excludes the tools it was not
+// given (edit/append/copy). Before, no shipped profile held move_file, so a "file
+// my receipts" step could only reach an agent that would fake the move
+// (T-20261106-no-shipped-agent-profile-can-organise-files-or).
+func TestShippedAssistant_GrantsEqualItsAllowlistAndCanMoveFiles(t *testing.T) {
+	ctx := context.Background()
+	agentsDir, _ := filepath.Abs(filepath.Join("..", "agents"))
+	src := newBuiltinFilesystemAgentSource(agentsDir).withSkillTools(profileSkillIndex(filepath.Join("..", "skills")))
+	got, err := src.DiscoverAgents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assistant *profileAgent
+	for _, p := range collectProfileAgents(got) {
+		if p.ID == "assistant" {
+			p := p
+			assistant = &p
+		}
+	}
+	if assistant == nil {
+		t.Fatal("the shipped assistant profile was not discovered")
+	}
+	for _, da := range got {
+		if da.Definition.ID == "assistant" {
+			if m := da.Manifest; m == nil || !slices.Contains(m.Capabilities, "file_organisation") {
+				t.Errorf("assistant manifest does not declare file_organisation: %+v", m)
+			}
+		}
+	}
+
+	reg := domain.NewInMemoryToolRegistry()
+	for _, n := range []string{"read_text_file", "read_file", "read_media_file", "read_multiple_files",
+		"list_directory", "list_directory_with_sizes", "directory_tree", "search_files", "get_file_info",
+		"list_allowed_directories", "write_file", "edit_file", "append_file", "create_directory",
+		"move_file", "copy_file"} {
+		reg.Register(domain.SystemTool{Name: "mcp:filesystem/" + n})
+	}
+	reg.Register(domain.SystemTool{Name: "mcp:shell/shell_execute"})
+	grants := domain.NewInMemoryGrantsStore()
+	newProfileGrantSync(grants, reg.All, []profileAgent{*assistant}).Sync(ctx, true)
+	gs, _ := grants.GrantsFor(ctx, "assistant")
+	names := grantNames(gs)
+	want := assistant.Allow.Expand(reg.All())
+	sort.Strings(want)
+	if !slices.Equal(names, want) {
+		t.Fatalf("grants %v != allowlist expansion %v", names, want)
+	}
+	for _, must := range []string{"mcp:filesystem/move_file", "mcp:filesystem/create_directory", "mcp:filesystem/list_directory"} {
+		if !slices.Contains(names, must) {
+			t.Errorf("assistant lacks %s: %v", must, names)
+		}
+	}
+	for _, never := range []string{"mcp:filesystem/edit_file", "mcp:filesystem/append_file", "mcp:filesystem/copy_file", "mcp:shell/shell_execute"} {
+		if slices.Contains(names, never) {
+			t.Errorf("assistant was granted %s, outside its allowlist", never)
+		}
+	}
+}

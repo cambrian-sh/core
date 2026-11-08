@@ -41,6 +41,12 @@ type DocumentFilter struct {
 	// would make adding a second label WIDEN it, which is the opposite of what
 	// selecting two labels means to the person doing it.
 	Tags []string
+	// Owners are the principals whose owner-scoped documents (owner:<id>, the
+	// owner fence, domain/owner_scope.go) this listing may include. Empty — the
+	// operator plane, an unresolved caller — lists NO owner-scoped document:
+	// titles and labels of a person's mailbox are that person's, not the
+	// deployment's. There is deliberately no "all owners" switch.
+	Owners []string
 }
 
 // DocumentSummary is one LISTING row — no body, no chunks.

@@ -52,6 +52,12 @@ type LeaseBinding struct {
 	// MemoryWriteGranted is the D12 explicit grant of memory write to a child
 	// (the spawn's toolset named the memory-write tool). Meaningless on a root lease.
 	MemoryWriteGranted bool
+	// ActedBy is the authenticated operator who opened this chat turn ON BEHALF OF
+	// the conversation's owner (operator act-for); "" when the owner acted
+	// themself. Audit only: whose notes, scope and credentials the turn uses is
+	// still the conversation owner (the run principal). Written by the kernel from
+	// domain.ActForActorFromContext, never by the agent.
+	ActedBy string
 }
 
 // IsChild reports whether the lease belongs to a D12 subagent.

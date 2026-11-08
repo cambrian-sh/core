@@ -182,7 +182,11 @@ func (b *FactBackfill) Run(ctx context.Context, opts FactBackfillOptions) (FactB
 	start := time.Now()
 	// The explicit kernel bypass and the system principal — see the type comment for
 	// why this pass reads as no principal and writes as the kernel.
-	ctx = domain.WithScope(ctx, &domain.TagPredicate{Bypass: true})
+	// ScopeMaintenance, not a plain Bypass: the backfill must read a person's
+	// owner-scoped chunks to extract their facts (which inherit the owner tag,
+	// buildFacts), and a plain Bypass keeps the owner fence (domain/owner_scope.go).
+	// Nothing read here reaches a principal.
+	ctx = domain.WithScope(ctx, domain.ScopeMaintenance)
 	ctx = domain.WithPrincipal(ctx, domain.SystemPrincipal)
 
 	filter := opts.Filter

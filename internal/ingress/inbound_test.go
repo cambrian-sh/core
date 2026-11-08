@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/identity"
 )
 
 type fakeBinder struct {
@@ -215,8 +216,9 @@ func TestAccept_BoundSenderRunsUnderTheBoundPrincipal(t *testing.T) {
 	if err := s.Accept(context.Background(), InboundMessage{Sender: domain.AgentPrincipal(tgAgent), ExternalID: "tg:12345", Text: "check my laptop"}); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	if len(turns.prins) != 1 || turns.prins[0] != domain.AgentPrincipal("afsin") {
-		t.Errorf("the turn must run under the bound principal; got %+v", turns.prins)
+	// ADR-0142 D3: a bound person is `user`, never `agent`, on every door.
+	if len(turns.prins) != 1 || turns.prins[0] != domain.UserPrincipal("afsin") {
+		t.Errorf("the turn must run under the bound person user:afsin; got %+v", turns.prins)
 	}
 }
 
@@ -280,5 +282,26 @@ func TestAccept_BlockedBindingStillRefuses(t *testing.T) {
 	}
 	if b.createN != 0 || len(turns.ran) != 0 {
 		t.Errorf("a blocked sender must leave no trace: %d convs, %d turns", b.createN, len(turns.ran))
+	}
+}
+
+// ADR-0142 D5 on the chat door: a bound person the registry holds suspended is
+// dropped like a blocked sender, before any conversation or turn.
+func TestAccept_SuspendedBoundPersonIsRefused(t *testing.T) {
+	s, _, turns := inboundFixture(t)
+	s.SetIdentityResolver(boundIdentities{bound: true, binding: domain.IdentityBinding{
+		Surface: "chat:telegram", ExternalID: "tg:12345",
+		BoundToKind: domain.BindPrincipal, BoundToID: "afsin",
+	}})
+	reg := identity.NewMemRegistry()
+	ctx := context.Background()
+	if _, _, err := reg.EnsurePrincipal(ctx, domain.Principal{ID: "afsin"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = reg.SetStatus(ctx, "afsin", domain.PrincipalSuspended)
+	s.SetPrincipals(reg)
+	err := s.Accept(ctx, InboundMessage{Sender: domain.AgentPrincipal(tgAgent), ExternalID: "tg:12345", Text: "hi"})
+	if err == nil || len(turns.prins) != 0 {
+		t.Fatalf("a suspended person reached a turn: err=%v turns=%v", err, turns.prins)
 	}
 }

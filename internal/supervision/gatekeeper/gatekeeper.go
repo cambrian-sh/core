@@ -71,6 +71,13 @@ type Gatekeeper struct {
 	// created on first use. Guarded by randMu.
 	Rand   *rand.Rand
 	randMu sync.Mutex
+
+	// Effects answers what each agent's tools can do, for the effect check that
+	// gates a step declaring required_effects (effects.go). It is set by the
+	// composition root once the ToolExecutor exists (it is built after the
+	// gatekeeper). Unset is FAIL-CLOSED, not open: a step that declares effects then
+	// admits no agent and is refused — the check can be missing, never skipped.
+	Effects domain.AgentEffectSource
 }
 
 // RouteScorer scores a candidate from its merit feature vector (ROUTE-07 / ADR-0076). The
@@ -95,6 +102,11 @@ func WithSearcher(s domain.ProfileSearcher) GatekeeperOption {
 	return func(g *Gatekeeper) { g.Searcher = s }
 }
 
+// WithEffects wires the effect source (effect-checked dispatch).
+func WithEffects(src domain.AgentEffectSource) GatekeeperOption {
+	return func(g *Gatekeeper) { g.Effects = src }
+}
+
 // WithRand seeds the Thompson sampler (ADR-0139 D6) — tests and reproducible runs.
 func WithRand(r *rand.Rand) GatekeeperOption {
 	return func(g *Gatekeeper) { g.Rand = r }
@@ -117,6 +129,12 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 		return nil, err
 	}
 
+	// Effect-checked dispatch: nil when the step declares no required effects
+	// (outcome none/unverified recorded on the task); otherwise every candidate —
+	// a hard-pinned one included — must hold every required effect.
+	effects := newEffectGate(ctx, task, g.Effects)
+	defer effects.log(ctx)
+
 	// Agent pinning. Resolved once so the hard short-circuit and the soft
 	// exemptions below cannot disagree about which agent is pinned.
 	pinnedID := ""
@@ -137,6 +155,17 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 			}
 			if agent.Trait == domain.TraitDaemon || domain.IsSystemDefinition(agent) {
 				return nil, fmt.Errorf("%w: %q is not dispatchable", domain.ErrPinnedAgentUnavailable, pinnedID)
+			}
+			// A hard pin never buys past the effect check: the user named an agent
+			// whose tools cannot do the step, so the step is refused (replan, then
+			// ask), never run by an agent that would have to imitate the action.
+			if effects != nil {
+				if ok, missing := effects.admits(ctx, agent.ID); !ok {
+					effects.result.PinRefused = agent.ID
+					slog.Warn("Gatekeeper: hard-pinned agent refused by the effect check",
+						"agent_id", pinnedID, "task_id", task.ID, "missing", missing)
+					return nil, effects.refusal()
+				}
 			}
 			slog.Info("Gatekeeper: hard agent pin bound", "agent_id", pinnedID, "task_id", task.ID)
 			return []domain.ScoredCandidate{{Agent: agent, Score: 1.0}}, nil
@@ -267,6 +296,24 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 				})
 			}
 			continue
+		}
+		if effects != nil {
+			if ok, missing := effects.admits(ctx, agent.ID); !ok {
+				if agent.ID == pinnedID {
+					// A soft pin is a preference inside eligibility, never past it.
+					effects.result.PinRefused = agent.ID
+				}
+				slog.Info("Gatekeeper: agent filtered by effect check", "agent_id", agent.ID,
+					"task_id", task.ID, "missing", missing)
+				if trace {
+					funnel.L1 = append(funnel.L1, domain.DeclarationResult{
+						AgentID: agent.ID,
+						Passed:  false,
+						Reason:  "effects: lacks " + strings.Join(missing, ",") + " (has " + strings.Join(effects.result.AgentEffects[agent.ID], ",") + ")",
+					})
+				}
+				continue
+			}
 		}
 		if trace {
 			funnel.L1 = append(funnel.L1, domain.DeclarationResult{AgentID: agent.ID, Passed: true})
@@ -400,7 +447,7 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 				// requirements L1 is a free pass, so L2 is the only filter there is and
 				// emptying the slate is legitimate (ADR-0023: tool agents must qualify
 				// semantically rather than winning everything).
-				l1Enforced := gateTask != nil && len(gateTask.RequiredCapabilities) > 0
+				l1Enforced := gateTask != nil && (len(gateTask.RequiredCapabilities) > 0 || effects != nil)
 				if l1Enforced && len(filtered) == 0 && len(candidates) > 0 {
 					slog.Warn("Gatekeeper: L2 eliminated every capability-eligible candidate — keeping the L1 set (eligibility is L1's decision, not L2's)",
 						"l1_survivors", len(candidates), "l2_threshold", DefaultSimilarityThreshold)
@@ -414,6 +461,13 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 				}
 			}
 		}
+	}
+
+	// Effect check: no candidate holds every required effect. Refuse the step by
+	// name rather than return an empty slate — and never fall back to an arbitrary
+	// agent (owner design, fail closed).
+	if effects != nil && len(effects.result.Eligible) == 0 {
+		return nil, effects.refusal()
 	}
 
 	// legacy: score only (byte-identical). Posterior modes: score, then the cost

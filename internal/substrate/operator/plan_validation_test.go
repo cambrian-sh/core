@@ -333,3 +333,27 @@ func TestSubmitPlan_EmptyStepsRejected(t *testing.T) {
 		t.Fatalf("code = %v, want InvalidArgument", codeOf(err))
 	}
 }
+
+// A fan-out step whose instruction has no {item} placeholder warns: the executor runs it
+// once over the whole set (T-20261107-fan-out-step-without-an-item-placeholder).
+func TestValidateAuthoredPlan_FanOutWithoutPlaceholderWarns(t *testing.T) {
+	t.Parallel()
+	src := 0
+	steps := []domain.Step{
+		{Query: "list the files"},
+		{Query: "handle each file", FanOutOver: &src, DependsOn: []int{0}},
+	}
+	issues, order := validateAuthoredPlan(steps, allAgentsKnown)
+	i, ok := issueWithCode(issues, IssueBadFanOut)
+	if !ok {
+		t.Fatalf("no fan-out issue in %+v", issues)
+	}
+	if i.Fatal || order == nil {
+		t.Fatalf("a missing placeholder should warn, not block: %+v", i)
+	}
+	steps[1].Query = "handle {item}"
+	issues, _ = validateAuthoredPlan(steps, allAgentsKnown)
+	if _, ok := issueWithCode(issues, IssueBadFanOut); ok {
+		t.Fatalf("templated step still warned: %+v", issues)
+	}
+}

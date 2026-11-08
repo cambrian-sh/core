@@ -18,7 +18,7 @@ import (
 // ── Logout (ADR-0130 D5, contract 0099) ─────────────────────────────────────
 
 // logoutVia runs Logout behind the production auth interceptor, as a client does.
-func logoutVia(t *testing.T, idp operator.OperatorIdentity, svc *operator.Service, token string) error {
+func logoutVia(t *testing.T, idp domain.Authenticator, svc *operator.Service, token string) error {
 	t.Helper()
 	_, err := operator.UnaryAuthInterceptor(idp, nil)(ctxWithToken(token), &pb.LogoutRequest{},
 		&grpc.UnaryServerInfo{FullMethod: "/cambrian.OperatorConsole/Logout"},
@@ -60,7 +60,7 @@ func TestLogout_ViewerMayLogOut(t *testing.T) {
 	if err := logoutVia(t, idp, svc, tok); err != nil {
 		t.Fatalf("viewer Logout: %v", err)
 	}
-	if _, _, err := idp.Resolve(tok); status.Code(err) != codes.Unauthenticated {
+	if _, err := idp.Resolve(context.Background(), tok); err == nil {
 		t.Fatalf("viewer token survived Logout: %v", err)
 	}
 }

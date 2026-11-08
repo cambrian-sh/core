@@ -47,6 +47,10 @@ type InboundService struct {
 	// identities resolves an external sender to a principal (contract 0077).
 	// nil ⇒ the surface remains the identity, which is the pre-0077 behaviour.
 	identities domain.IdentityResolver
+	// principals is the principal registry (ADR-0142 D3), read only for
+	// lifecycle: a bound person the registry holds suspended is refused like a
+	// blocked sender. nil ⇒ no lifecycle check (pre-registry behaviour).
+	principals domain.PrincipalRegistry
 	// router shapes what happens AROUND an admitted turn. nil ⇒ the turn runs
 	// directly, which is every deployment's behaviour today.
 	router domain.TurnRouter
@@ -211,8 +215,17 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 			// membership, so the sender keeps its own identity there, exactly as on
 			// the MCP path; an unbound sender is governed by the stranger policy
 			// below, unchanged.
+			//
+			// ADR-0142 D3: the person is `user` on every door — the same
+			// domain.PersonPrincipal the MCP hop and the worker owner use, so the
+			// beneficiary, the consent replier below and the fleet owner compare
+			// equal. Before, this ran as `agent:<person>`, which the premium
+			// Authorizer gave no owner-fence identity.
 			if binding.BoundToKind == domain.BindPrincipal && binding.BoundToID != "" {
-				ctx = domain.WithPrincipal(ctx, domain.AgentPrincipal(binding.BoundToID))
+				if !domain.PersonMayAct(ctx, s.principals, binding.BoundToID) {
+					return domain.NewBlockedSenderError(externalID)
+				}
+				ctx = domain.WithPrincipal(ctx, domain.PersonPrincipal(binding.BoundToID))
 			}
 		} else if pol := s.identities.StrangerPolicyFor(ctx, surface); pol.Mode == domain.StrangerRefuseUntilBound {
 			// Refused, and the caller REPLIES once rather than ignoring: silent
@@ -241,7 +254,7 @@ func (s *InboundService) Accept(ctx context.Context, m InboundMessage) error {
 	if s.consent != nil {
 		var replier domain.PrincipalRef
 		if bound && binding.BoundToKind == domain.BindPrincipal && binding.BoundToID != "" {
-			replier = domain.AgentPrincipal(binding.BoundToID)
+			replier = domain.PersonPrincipal(binding.BoundToID)
 		}
 		if s.consent.HandleReply(ctx, conv.ID, text, replier) {
 			return nil
@@ -323,14 +336,25 @@ func (s *InboundService) resolveConversation(ctx context.Context, addr domain.De
 }
 
 func (s *InboundService) open(ctx context.Context, addr domain.DeliveryAddress, policy string) (*domain.Conversation, error) {
+	owner := "ingress:" + addr.IngressAgentID + ":" + addr.ExternalID
+	// ADR-0142 D12: a sender BOUND to a person (Accept stamped the person, kind
+	// user, from the identity binding) opens a conversation the PERSON owns, so
+	// their Telegram material and their console or desktop material share one
+	// owner — and what an agent writes in it is private to that person. An
+	// unbound sender keeps the pseudonym, which still isolates. Existing
+	// conversations keep their owners (ADR-0142 migration item 4).
+	if p := domain.PrincipalFromContext(ctx); p.Kind == domain.PrincipalUser && p.ID != "" {
+		owner = p.ID
+	}
 	conv := domain.Conversation{
 		ID: s.newID(),
 		// Owner is derived from the ingress AND the external identity, so two people
 		// on the same ingress do not share a conversation owner. It is deliberately
 		// NOT presented as an authenticated identity — the external id is unverified
 		// until the linking table exists (ADR-0090 D4), so this is a pseudonym that
-		// isolates, not a principal that proves anything.
-		OwnerID:  "ingress:" + addr.IngressAgentID + ":" + addr.ExternalID,
+		// isolates, not a principal that proves anything. A bound person is the
+		// exception above.
+		OwnerID:  owner,
 		Status:   domain.ConversationOpen,
 		Profile:  s.Profile,
 		Delivery: addr,
@@ -369,3 +393,7 @@ func randomHex(n int) string {
 // in which two different people are governed by one rule because nobody is
 // distinguished.
 func (s *InboundService) SetIdentityResolver(r domain.IdentityResolver) { s.identities = r }
+
+// SetPrincipals wires the registry the lifecycle check reads (ADR-0142 D5:
+// deprovisioning a person revokes their access on every door).
+func (s *InboundService) SetPrincipals(reg domain.PrincipalRegistry) { s.principals = reg }

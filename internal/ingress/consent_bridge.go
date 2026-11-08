@@ -53,10 +53,10 @@ type ConsentAnswerGate interface {
 	HandleReply(ctx context.Context, conversationID, text string, sender domain.PrincipalRef) bool
 }
 
-// bridgeDefaultWindow mirrors the controller's unexported 120 s default
-// (domain.InMemoryConsentController), so an unconfigured window renders the
-// same expiry the controller enforces.
-const bridgeDefaultWindow = 120 * time.Second
+// bridgeDefaultWindow mirrors the hub's 120 s consent default
+// (domain.DefaultConsentWindow), so an unconfigured window renders the same
+// expiry the hub enforces.
+const bridgeDefaultWindow = domain.DefaultConsentWindow
 
 // consentPending is one prompt the bridge is holding for a conversation.
 type consentPending struct {
@@ -202,9 +202,10 @@ func (b *ConsentBridge) handlePrompt(ctx context.Context, p domain.ConsentPrompt
 // HandleReply is the inbound hook (ConsentAnswerGate): decide whether this
 // admitted message answers the conversation's pending prompt.
 //
-// The security invariant lives HERE and nowhere softer: the reply counts only
-// when the sender's resolved bound principal EQUALS the prompt's beneficiary
-// owner principal. A zero sender (unbound, group-bound, no identity resolver)
+// The reply counts only when the sender's resolved bound principal is the
+// prompt's beneficiary — and the hub enforces the same at answer time against
+// the prompt's approver rules (ADR-0142 D11), so the invariant no longer
+// depends on this bridge alone. A zero sender (unbound, group-bound, no identity resolver)
 // never equals anything, so strangers cannot answer; a zero beneficiary is
 // refused explicitly rather than letting two zeros match. Every refusal here
 // returns false WITHOUT consuming the message — it flows to chat exactly as if
@@ -223,7 +224,10 @@ func (b *ConsentBridge) HandleReply(ctx context.Context, conversationID, text st
 	p := ap.prompt
 	b.mu.Unlock()
 
-	if sender == (domain.PrincipalRef{}) || p.Beneficiary == (domain.PrincipalRef{}) || sender != p.Beneficiary {
+	// A UX pre-filter only: the hub re-checks the answerer against the prompt's
+	// approver rules at answer time (ADR-0142 D11), so this is not the security
+	// boundary any more — it keeps a stranger's chat message from being consumed.
+	if sender.IsZero() || p.Beneficiary.IsZero() || !domain.SamePerson(sender, p.Beneficiary) {
 		return false // not the beneficiary: an ordinary chat message
 	}
 	ans, ok := matchConsentReply(p, text)
@@ -231,6 +235,7 @@ func (b *ConsentBridge) HandleReply(ctx context.Context, conversationID, text st
 		return false // not an answer: let it flow to chat; the prompt stays pending
 	}
 	ans.AnsweredBy = sender.String()
+	ans.By = domain.Approver{Principal: sender}
 
 	// Submit BEFORE clearing local state: the controller is the authority on
 	// whether the prompt is still alive.

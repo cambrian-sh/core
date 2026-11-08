@@ -9,6 +9,7 @@ skills/
   file-report/            structured report from files, every claim checked
     SKILL.md
   summarise/              faithful summary; refuses when there is no source
+  organise-files/         create folders, move and rename files; never rewrite to move
   web-research/           search, read, cross-check, cite
   exploratory-analysis/   load, profile, clean, stats, findings (code sandbox)
   chart-report/           charts in the sandbox plus a report that references them

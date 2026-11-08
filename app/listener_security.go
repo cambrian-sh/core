@@ -225,9 +225,10 @@ func (p *peekConn) Read(b []byte) (int, error) { return p.r.Read(b) }
 //
 // The gRPC plane got the loopback default, the routable-bind refusal and TLS
 // above. The three HTTP listeners the 2026-10-31 audit found — the ingestion
-// and admin server, the premium chat ingress and the ingress-studio webhook
-// receiver — each built their own http.Server from env or config and
-// inherited none of it. Everything below exists so that a TCP listener,
+// and admin server, the premium chat ingress (deleted 2026-11-06, ADR-0142
+// K-5: the canonical conversation lane is OpenConversation/SendTurn on the
+// operator plane) and the ingress-studio webhook receiver — each built their
+// own http.Server from env or config and inherited none of it. Everything below exists so that a TCP listener,
 // gRPC or HTTP, kernel or plugin, is built in exactly one place: the same
 // bind address, the same transport decision, the same timeouts and the same
 // body cap. An http.Server literal written anywhere else is a review blocker

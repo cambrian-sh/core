@@ -298,7 +298,17 @@ type OpenConversationOpRequest struct {
 	// "customer". Empty defaults to "operator" (full recall) on this plane.
 	Profile string `protobuf:"bytes,5,opt,name=profile,proto3" json:"profile,omitempty"`
 	// policy is an optional system/policy prompt threaded into every turn of this conversation.
-	Policy        string `protobuf:"bytes,6,opt,name=policy,proto3" json:"policy,omitempty"`
+	Policy string `protobuf:"bytes,6,opt,name=policy,proto3" json:"policy,omitempty"`
+	// on_behalf_of opens the conversation FOR another principal (act-for,
+	// T-20261106-conversations-cannot-be-opened-as-a-given). The conversation's owner is
+	// then that principal: memory notes, conversation recall, skill grants, per-user
+	// credentials and the chat lane's read scope all resolve to them, never to the
+	// operator. Empty (or the caller's own id) = the caller owns it, as before.
+	// Allowed only for the Operator role; the principal must be KNOWN to the deployment's
+	// principal directory (premium authz) — an unknown one is refused (NotFound), and a
+	// kernel with no directory refuses act-for entirely (FailedPrecondition). Audited:
+	// the entry's actor is the operator, its target names the principal.
+	OnBehalfOf    string `protobuf:"bytes,7,opt,name=on_behalf_of,json=onBehalfOf,proto3" json:"on_behalf_of,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -375,6 +385,13 @@ func (x *OpenConversationOpRequest) GetPolicy() string {
 	return ""
 }
 
+func (x *OpenConversationOpRequest) GetOnBehalfOf() string {
+	if x != nil {
+		return x.OnBehalfOf
+	}
+	return ""
+}
+
 type OpenConversationOpResponse struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	CommandId      string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
@@ -441,8 +458,11 @@ type SendTurnOpRequest struct {
 	Reason         string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
 	ConversationId string                 `protobuf:"bytes,3,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
 	Text           string                 `protobuf:"bytes,4,opt,name=text,proto3" json:"text,omitempty"` // the user's message
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// on_behalf_of: act on a conversation owned by this principal (see
+	// OpenConversationOpRequest.on_behalf_of). Must equal the conversation's owner.
+	OnBehalfOf    string `protobuf:"bytes,5,opt,name=on_behalf_of,json=onBehalfOf,proto3" json:"on_behalf_of,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SendTurnOpRequest) Reset() {
@@ -499,6 +519,13 @@ func (x *SendTurnOpRequest) GetConversationId() string {
 func (x *SendTurnOpRequest) GetText() string {
 	if x != nil {
 		return x.Text
+	}
+	return ""
+}
+
+func (x *SendTurnOpRequest) GetOnBehalfOf() string {
+	if x != nil {
+		return x.OnBehalfOf
 	}
 	return ""
 }
@@ -568,6 +595,7 @@ type CloseConversationOpRequest struct {
 	CommandId      string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
 	Reason         string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
 	ConversationId string                 `protobuf:"bytes,3,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	OnBehalfOf     string                 `protobuf:"bytes,4,opt,name=on_behalf_of,json=onBehalfOf,proto3" json:"on_behalf_of,omitempty"` // act-for, as on OpenConversationOpRequest
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -623,9 +651,17 @@ func (x *CloseConversationOpRequest) GetConversationId() string {
 	return ""
 }
 
+func (x *CloseConversationOpRequest) GetOnBehalfOf() string {
+	if x != nil {
+		return x.OnBehalfOf
+	}
+	return ""
+}
+
 type ListConversationsOpRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Limit         int32                  `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"` // <= 0 means a server default
+	Limit         int32                  `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`                              // <= 0 means a server default
+	OnBehalfOf    string                 `protobuf:"bytes,2,opt,name=on_behalf_of,json=onBehalfOf,proto3" json:"on_behalf_of,omitempty"` // list that principal's conversations (act-for; Operator role)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -665,6 +701,13 @@ func (x *ListConversationsOpRequest) GetLimit() int32 {
 		return x.Limit
 	}
 	return 0
+}
+
+func (x *ListConversationsOpRequest) GetOnBehalfOf() string {
+	if x != nil {
+		return x.OnBehalfOf
+	}
+	return ""
 }
 
 type ListConversationsOpResponse struct {
@@ -719,6 +762,7 @@ type ConversationOp struct {
 	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`                        // "open" | "closed"
 	Profile       string                 `protobuf:"bytes,4,opt,name=profile,proto3" json:"profile,omitempty"`                      // "operator" | "employee" | "customer"
 	UpdatedAt     string                 `protobuf:"bytes,5,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // RFC3339
+	OwnerId       string                 `protobuf:"bytes,6,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`       // the principal that owns it (act-for makes this differ from the caller)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -788,11 +832,19 @@ func (x *ConversationOp) GetUpdatedAt() string {
 	return ""
 }
 
+func (x *ConversationOp) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
 type ListConversationMessagesOpRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	ConversationId string                 `protobuf:"bytes,1,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	AfterSeq       int64                  `protobuf:"varint,2,opt,name=after_seq,json=afterSeq,proto3" json:"after_seq,omitempty"` // return messages with seq strictly greater than this (0 = all)
-	Limit          int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`                       // <= 0 means no limit
+	AfterSeq       int64                  `protobuf:"varint,2,opt,name=after_seq,json=afterSeq,proto3" json:"after_seq,omitempty"`        // return messages with seq strictly greater than this (0 = all)
+	Limit          int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`                              // <= 0 means no limit
+	OnBehalfOf     string                 `protobuf:"bytes,4,opt,name=on_behalf_of,json=onBehalfOf,proto3" json:"on_behalf_of,omitempty"` // act-for, as on OpenConversationOpRequest
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -848,6 +900,235 @@ func (x *ListConversationMessagesOpRequest) GetLimit() int32 {
 	return 0
 }
 
+func (x *ListConversationMessagesOpRequest) GetOnBehalfOf() string {
+	if x != nil {
+		return x.OnBehalfOf
+	}
+	return ""
+}
+
+type ListScheduledTasksOpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OwnerId       string                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"` // "" = every principal's
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListScheduledTasksOpRequest) Reset() {
+	*x = ListScheduledTasksOpRequest{}
+	mi := &file_operator_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListScheduledTasksOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListScheduledTasksOpRequest) ProtoMessage() {}
+
+func (x *ListScheduledTasksOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListScheduledTasksOpRequest.ProtoReflect.Descriptor instead.
+func (*ListScheduledTasksOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ListScheduledTasksOpRequest) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+type ListScheduledTasksOpResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tasks         []*ScheduledTaskOp     `protobuf:"bytes,1,rep,name=tasks,proto3" json:"tasks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListScheduledTasksOpResponse) Reset() {
+	*x = ListScheduledTasksOpResponse{}
+	mi := &file_operator_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListScheduledTasksOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListScheduledTasksOpResponse) ProtoMessage() {}
+
+func (x *ListScheduledTasksOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListScheduledTasksOpResponse.ProtoReflect.Descriptor instead.
+func (*ListScheduledTasksOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ListScheduledTasksOpResponse) GetTasks() []*ScheduledTaskOp {
+	if x != nil {
+		return x.Tasks
+	}
+	return nil
+}
+
+// ScheduledTaskOp is one principal-owned recurring task: a premium schedule watch whose
+// action runs ONE chat turn, as its owner, in a conversation the owner holds.
+type ScheduledTaskOp struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // the watch id (deterministic from owner + spec)
+	OwnerId        string                 `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	Title          string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
+	Goal           string                 `protobuf:"bytes,4,opt,name=goal,proto3" json:"goal,omitempty"` // what the assistant is asked to do at each firing
+	Cron           string                 `protobuf:"bytes,5,opt,name=cron,proto3" json:"cron,omitempty"` // 5-field cron the scheduler runs (an RRULE is translated at propose time)
+	Timezone       string                 `protobuf:"bytes,6,opt,name=timezone,proto3" json:"timezone,omitempty"`
+	AgentId        string                 `protobuf:"bytes,7,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"` // the agent profile asked for (recorded; the chat lane's pool agent runs it today)
+	Delivery       string                 `protobuf:"bytes,8,opt,name=delivery,proto3" json:"delivery,omitempty"`              // "conversation" | "notify" | "email"
+	Active         bool                   `protobuf:"varint,9,opt,name=active,proto3" json:"active,omitempty"`
+	ConversationId string                 `protobuf:"bytes,10,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"` // where each run's reply lands (owned by owner_id)
+	CreatedAt      string                 `protobuf:"bytes,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`                // RFC3339
+	ApprovedBy     string                 `protobuf:"bytes,12,opt,name=approved_by,json=approvedBy,proto3" json:"approved_by,omitempty"`             // who approved the proposal
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ScheduledTaskOp) Reset() {
+	*x = ScheduledTaskOp{}
+	mi := &file_operator_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScheduledTaskOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScheduledTaskOp) ProtoMessage() {}
+
+func (x *ScheduledTaskOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScheduledTaskOp.ProtoReflect.Descriptor instead.
+func (*ScheduledTaskOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ScheduledTaskOp) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ScheduledTaskOp) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *ScheduledTaskOp) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *ScheduledTaskOp) GetGoal() string {
+	if x != nil {
+		return x.Goal
+	}
+	return ""
+}
+
+func (x *ScheduledTaskOp) GetCron() string {
+	if x != nil {
+		return x.Cron
+	}
+	return ""
+}
+
+func (x *ScheduledTaskOp) GetTimezone() string {
+	if x != nil {
+		return x.Timezone
+	}
+	return ""
+}
+
+func (x *ScheduledTaskOp) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *ScheduledTaskOp) GetDelivery() string {
+	if x != nil {
+		return x.Delivery
+	}
+	return ""
+}
+
+func (x *ScheduledTaskOp) GetActive() bool {
+	if x != nil {
+		return x.Active
+	}
+	return false
+}
+
+func (x *ScheduledTaskOp) GetConversationId() string {
+	if x != nil {
+		return x.ConversationId
+	}
+	return ""
+}
+
+func (x *ScheduledTaskOp) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *ScheduledTaskOp) GetApprovedBy() string {
+	if x != nil {
+		return x.ApprovedBy
+	}
+	return ""
+}
+
 type ListConversationMessagesOpResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Messages      []*MessageOp           `protobuf:"bytes,1,rep,name=messages,proto3" json:"messages,omitempty"`
@@ -857,7 +1138,7 @@ type ListConversationMessagesOpResponse struct {
 
 func (x *ListConversationMessagesOpResponse) Reset() {
 	*x = ListConversationMessagesOpResponse{}
-	mi := &file_operator_proto_msgTypes[13]
+	mi := &file_operator_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -869,7 +1150,7 @@ func (x *ListConversationMessagesOpResponse) String() string {
 func (*ListConversationMessagesOpResponse) ProtoMessage() {}
 
 func (x *ListConversationMessagesOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[13]
+	mi := &file_operator_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -882,7 +1163,7 @@ func (x *ListConversationMessagesOpResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use ListConversationMessagesOpResponse.ProtoReflect.Descriptor instead.
 func (*ListConversationMessagesOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{13}
+	return file_operator_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ListConversationMessagesOpResponse) GetMessages() []*MessageOp {
@@ -907,7 +1188,7 @@ type MessageOp struct {
 
 func (x *MessageOp) Reset() {
 	*x = MessageOp{}
-	mi := &file_operator_proto_msgTypes[14]
+	mi := &file_operator_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -919,7 +1200,7 @@ func (x *MessageOp) String() string {
 func (*MessageOp) ProtoMessage() {}
 
 func (x *MessageOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[14]
+	mi := &file_operator_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -932,7 +1213,7 @@ func (x *MessageOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageOp.ProtoReflect.Descriptor instead.
 func (*MessageOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{14}
+	return file_operator_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *MessageOp) GetId() string {
@@ -990,7 +1271,7 @@ type TagMemoryRequest struct {
 
 func (x *TagMemoryRequest) Reset() {
 	*x = TagMemoryRequest{}
-	mi := &file_operator_proto_msgTypes[15]
+	mi := &file_operator_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1002,7 +1283,7 @@ func (x *TagMemoryRequest) String() string {
 func (*TagMemoryRequest) ProtoMessage() {}
 
 func (x *TagMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[15]
+	mi := &file_operator_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1015,7 +1296,7 @@ func (x *TagMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TagMemoryRequest.ProtoReflect.Descriptor instead.
 func (*TagMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{15}
+	return file_operator_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *TagMemoryRequest) GetCommandId() string {
@@ -1067,7 +1348,7 @@ type SetScopeRequest struct {
 
 func (x *SetScopeRequest) Reset() {
 	*x = SetScopeRequest{}
-	mi := &file_operator_proto_msgTypes[16]
+	mi := &file_operator_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1079,7 +1360,7 @@ func (x *SetScopeRequest) String() string {
 func (*SetScopeRequest) ProtoMessage() {}
 
 func (x *SetScopeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[16]
+	mi := &file_operator_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1092,7 +1373,7 @@ func (x *SetScopeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetScopeRequest.ProtoReflect.Descriptor instead.
 func (*SetScopeRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{16}
+	return file_operator_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SetScopeRequest) GetCommandId() string {
@@ -1152,7 +1433,7 @@ type RegisterSkillRequest struct {
 
 func (x *RegisterSkillRequest) Reset() {
 	*x = RegisterSkillRequest{}
-	mi := &file_operator_proto_msgTypes[17]
+	mi := &file_operator_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1164,7 +1445,7 @@ func (x *RegisterSkillRequest) String() string {
 func (*RegisterSkillRequest) ProtoMessage() {}
 
 func (x *RegisterSkillRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[17]
+	mi := &file_operator_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1177,7 +1458,7 @@ func (x *RegisterSkillRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterSkillRequest.ProtoReflect.Descriptor instead.
 func (*RegisterSkillRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{17}
+	return file_operator_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *RegisterSkillRequest) GetCommandId() string {
@@ -1242,7 +1523,7 @@ type RegisterMCPRequest struct {
 
 func (x *RegisterMCPRequest) Reset() {
 	*x = RegisterMCPRequest{}
-	mi := &file_operator_proto_msgTypes[18]
+	mi := &file_operator_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1254,7 +1535,7 @@ func (x *RegisterMCPRequest) String() string {
 func (*RegisterMCPRequest) ProtoMessage() {}
 
 func (x *RegisterMCPRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[18]
+	mi := &file_operator_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1267,7 +1548,7 @@ func (x *RegisterMCPRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterMCPRequest.ProtoReflect.Descriptor instead.
 func (*RegisterMCPRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{18}
+	return file_operator_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *RegisterMCPRequest) GetCommandId() string {
@@ -1316,7 +1597,7 @@ type TriggerConsolidationRequest struct {
 
 func (x *TriggerConsolidationRequest) Reset() {
 	*x = TriggerConsolidationRequest{}
-	mi := &file_operator_proto_msgTypes[19]
+	mi := &file_operator_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1328,7 +1609,7 @@ func (x *TriggerConsolidationRequest) String() string {
 func (*TriggerConsolidationRequest) ProtoMessage() {}
 
 func (x *TriggerConsolidationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[19]
+	mi := &file_operator_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1341,7 +1622,7 @@ func (x *TriggerConsolidationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerConsolidationRequest.ProtoReflect.Descriptor instead.
 func (*TriggerConsolidationRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{19}
+	return file_operator_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *TriggerConsolidationRequest) GetCommandId() string {
@@ -1379,7 +1660,7 @@ type SetRuntimeConfigRequest struct {
 
 func (x *SetRuntimeConfigRequest) Reset() {
 	*x = SetRuntimeConfigRequest{}
-	mi := &file_operator_proto_msgTypes[20]
+	mi := &file_operator_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1391,7 +1672,7 @@ func (x *SetRuntimeConfigRequest) String() string {
 func (*SetRuntimeConfigRequest) ProtoMessage() {}
 
 func (x *SetRuntimeConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[20]
+	mi := &file_operator_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1404,7 +1685,7 @@ func (x *SetRuntimeConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRuntimeConfigRequest.ProtoReflect.Descriptor instead.
 func (*SetRuntimeConfigRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{20}
+	return file_operator_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SetRuntimeConfigRequest) GetCommandId() string {
@@ -1440,7 +1721,7 @@ type ResolveHITLRequest struct {
 
 func (x *ResolveHITLRequest) Reset() {
 	*x = ResolveHITLRequest{}
-	mi := &file_operator_proto_msgTypes[21]
+	mi := &file_operator_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1452,7 +1733,7 @@ func (x *ResolveHITLRequest) String() string {
 func (*ResolveHITLRequest) ProtoMessage() {}
 
 func (x *ResolveHITLRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[21]
+	mi := &file_operator_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1465,7 +1746,7 @@ func (x *ResolveHITLRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveHITLRequest.ProtoReflect.Descriptor instead.
 func (*ResolveHITLRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{21}
+	return file_operator_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ResolveHITLRequest) GetCommandId() string {
@@ -1507,7 +1788,7 @@ type SessionCommandRequest struct {
 
 func (x *SessionCommandRequest) Reset() {
 	*x = SessionCommandRequest{}
-	mi := &file_operator_proto_msgTypes[22]
+	mi := &file_operator_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1519,7 +1800,7 @@ func (x *SessionCommandRequest) String() string {
 func (*SessionCommandRequest) ProtoMessage() {}
 
 func (x *SessionCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[22]
+	mi := &file_operator_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1532,7 +1813,7 @@ func (x *SessionCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionCommandRequest.ProtoReflect.Descriptor instead.
 func (*SessionCommandRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{22}
+	return file_operator_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *SessionCommandRequest) GetCommandId() string {
@@ -1569,7 +1850,7 @@ type QueryAuditRequest struct {
 
 func (x *QueryAuditRequest) Reset() {
 	*x = QueryAuditRequest{}
-	mi := &file_operator_proto_msgTypes[23]
+	mi := &file_operator_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1581,7 +1862,7 @@ func (x *QueryAuditRequest) String() string {
 func (*QueryAuditRequest) ProtoMessage() {}
 
 func (x *QueryAuditRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[23]
+	mi := &file_operator_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1594,7 +1875,7 @@ func (x *QueryAuditRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAuditRequest.ProtoReflect.Descriptor instead.
 func (*QueryAuditRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{23}
+	return file_operator_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *QueryAuditRequest) GetActor() string {
@@ -1641,7 +1922,7 @@ type QueryAuditResponse struct {
 
 func (x *QueryAuditResponse) Reset() {
 	*x = QueryAuditResponse{}
-	mi := &file_operator_proto_msgTypes[24]
+	mi := &file_operator_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1653,7 +1934,7 @@ func (x *QueryAuditResponse) String() string {
 func (*QueryAuditResponse) ProtoMessage() {}
 
 func (x *QueryAuditResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[24]
+	mi := &file_operator_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1666,7 +1947,7 @@ func (x *QueryAuditResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAuditResponse.ProtoReflect.Descriptor instead.
 func (*QueryAuditResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{24}
+	return file_operator_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *QueryAuditResponse) GetEntries() []*AuditOp {
@@ -1688,7 +1969,7 @@ type CommandAck struct {
 
 func (x *CommandAck) Reset() {
 	*x = CommandAck{}
-	mi := &file_operator_proto_msgTypes[25]
+	mi := &file_operator_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1700,7 +1981,7 @@ func (x *CommandAck) String() string {
 func (*CommandAck) ProtoMessage() {}
 
 func (x *CommandAck) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[25]
+	mi := &file_operator_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1713,7 +1994,7 @@ func (x *CommandAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandAck.ProtoReflect.Descriptor instead.
 func (*CommandAck) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{25}
+	return file_operator_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *CommandAck) GetCommandId() string {
@@ -1743,7 +2024,7 @@ type SetToolGrantRequest struct {
 
 func (x *SetToolGrantRequest) Reset() {
 	*x = SetToolGrantRequest{}
-	mi := &file_operator_proto_msgTypes[26]
+	mi := &file_operator_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1755,7 +2036,7 @@ func (x *SetToolGrantRequest) String() string {
 func (*SetToolGrantRequest) ProtoMessage() {}
 
 func (x *SetToolGrantRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[26]
+	mi := &file_operator_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1768,7 +2049,7 @@ func (x *SetToolGrantRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetToolGrantRequest.ProtoReflect.Descriptor instead.
 func (*SetToolGrantRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{26}
+	return file_operator_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SetToolGrantRequest) GetCommandId() string {
@@ -1816,7 +2097,7 @@ type LoginRequest struct {
 
 func (x *LoginRequest) Reset() {
 	*x = LoginRequest{}
-	mi := &file_operator_proto_msgTypes[27]
+	mi := &file_operator_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1828,7 +2109,7 @@ func (x *LoginRequest) String() string {
 func (*LoginRequest) ProtoMessage() {}
 
 func (x *LoginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[27]
+	mi := &file_operator_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1841,7 +2122,7 @@ func (x *LoginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoginRequest.ProtoReflect.Descriptor instead.
 func (*LoginRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{27}
+	return file_operator_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *LoginRequest) GetUsername() string {
@@ -1859,16 +2140,22 @@ func (x *LoginRequest) GetPassword() string {
 }
 
 type LoginResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"` // present on every subsequent call as "authorization: Bearer <token>"
-	Role          string                 `protobuf:"bytes,2,opt,name=role,proto3" json:"role,omitempty"`   // "operator" | "viewer"
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Token string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"` // present on every subsequent call as "authorization: Bearer <token>"
+	Role  string                 `protobuf:"bytes,2,opt,name=role,proto3" json:"role,omitempty"`   // "operator" | "viewer" | "member" (ADR-0142: a person with no console role)
+	// principal is the registry person the credential resolved to, rendered
+	// "user:<id>" (ADR-0142 D3). Additive.
+	Principal string `protobuf:"bytes,3,opt,name=principal,proto3" json:"principal,omitempty"`
+	// roles is the person's full role SET (ADR-0142 D1); role above is the
+	// operator-plane role derived from it. Additive.
+	Roles         []string `protobuf:"bytes,4,rep,name=roles,proto3" json:"roles,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *LoginResponse) Reset() {
 	*x = LoginResponse{}
-	mi := &file_operator_proto_msgTypes[28]
+	mi := &file_operator_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1880,7 +2167,7 @@ func (x *LoginResponse) String() string {
 func (*LoginResponse) ProtoMessage() {}
 
 func (x *LoginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[28]
+	mi := &file_operator_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1893,7 +2180,7 @@ func (x *LoginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoginResponse.ProtoReflect.Descriptor instead.
 func (*LoginResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{28}
+	return file_operator_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *LoginResponse) GetToken() string {
@@ -1910,6 +2197,120 @@ func (x *LoginResponse) GetRole() string {
 	return ""
 }
 
+func (x *LoginResponse) GetPrincipal() string {
+	if x != nil {
+		return x.Principal
+	}
+	return ""
+}
+
+func (x *LoginResponse) GetRoles() []string {
+	if x != nil {
+		return x.Roles
+	}
+	return nil
+}
+
+type DescribeAuthRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DescribeAuthRequest) Reset() {
+	*x = DescribeAuthRequest{}
+	mi := &file_operator_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DescribeAuthRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DescribeAuthRequest) ProtoMessage() {}
+
+func (x *DescribeAuthRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DescribeAuthRequest.ProtoReflect.Descriptor instead.
+func (*DescribeAuthRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{32}
+}
+
+type DescribeAuthResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// password_login is true when Login(username, password) is served (local accounts).
+	PasswordLogin bool `protobuf:"varint,1,opt,name=password_login,json=passwordLogin,proto3" json:"password_login,omitempty"`
+	// oidc_issuer / oidc_client_id are set when ONE OIDC issuer is configured
+	// (identity.oidc): the client runs authorization code + PKCE against the issuer
+	// and presents the resulting access/ID token as its bearer.
+	OidcIssuer    string `protobuf:"bytes,2,opt,name=oidc_issuer,json=oidcIssuer,proto3" json:"oidc_issuer,omitempty"`
+	OidcClientId  string `protobuf:"bytes,3,opt,name=oidc_client_id,json=oidcClientId,proto3" json:"oidc_client_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DescribeAuthResponse) Reset() {
+	*x = DescribeAuthResponse{}
+	mi := &file_operator_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DescribeAuthResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DescribeAuthResponse) ProtoMessage() {}
+
+func (x *DescribeAuthResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DescribeAuthResponse.ProtoReflect.Descriptor instead.
+func (*DescribeAuthResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *DescribeAuthResponse) GetPasswordLogin() bool {
+	if x != nil {
+		return x.PasswordLogin
+	}
+	return false
+}
+
+func (x *DescribeAuthResponse) GetOidcIssuer() string {
+	if x != nil {
+		return x.OidcIssuer
+	}
+	return ""
+}
+
+func (x *DescribeAuthResponse) GetOidcClientId() string {
+	if x != nil {
+		return x.OidcClientId
+	}
+	return ""
+}
+
 // LogoutRequest carries nothing: the token to revoke is the call's own bearer.
 type LogoutRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1919,7 +2320,7 @@ type LogoutRequest struct {
 
 func (x *LogoutRequest) Reset() {
 	*x = LogoutRequest{}
-	mi := &file_operator_proto_msgTypes[29]
+	mi := &file_operator_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1931,7 +2332,7 @@ func (x *LogoutRequest) String() string {
 func (*LogoutRequest) ProtoMessage() {}
 
 func (x *LogoutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[29]
+	mi := &file_operator_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1944,7 +2345,7 @@ func (x *LogoutRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogoutRequest.ProtoReflect.Descriptor instead.
 func (*LogoutRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{29}
+	return file_operator_proto_rawDescGZIP(), []int{34}
 }
 
 type LogoutResponse struct {
@@ -1955,7 +2356,7 @@ type LogoutResponse struct {
 
 func (x *LogoutResponse) Reset() {
 	*x = LogoutResponse{}
-	mi := &file_operator_proto_msgTypes[30]
+	mi := &file_operator_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1967,7 +2368,7 @@ func (x *LogoutResponse) String() string {
 func (*LogoutResponse) ProtoMessage() {}
 
 func (x *LogoutResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[30]
+	mi := &file_operator_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1980,7 +2381,7 @@ func (x *LogoutResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogoutResponse.ProtoReflect.Descriptor instead.
 func (*LogoutResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{30}
+	return file_operator_proto_rawDescGZIP(), []int{35}
 }
 
 type SnapshotRequest struct {
@@ -1991,7 +2392,7 @@ type SnapshotRequest struct {
 
 func (x *SnapshotRequest) Reset() {
 	*x = SnapshotRequest{}
-	mi := &file_operator_proto_msgTypes[31]
+	mi := &file_operator_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2003,7 +2404,7 @@ func (x *SnapshotRequest) String() string {
 func (*SnapshotRequest) ProtoMessage() {}
 
 func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[31]
+	mi := &file_operator_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2016,7 +2417,7 @@ func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotRequest.ProtoReflect.Descriptor instead.
 func (*SnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{31}
+	return file_operator_proto_rawDescGZIP(), []int{36}
 }
 
 type SnapshotResponse struct {
@@ -2070,7 +2471,7 @@ type SnapshotResponse struct {
 
 func (x *SnapshotResponse) Reset() {
 	*x = SnapshotResponse{}
-	mi := &file_operator_proto_msgTypes[32]
+	mi := &file_operator_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2082,7 +2483,7 @@ func (x *SnapshotResponse) String() string {
 func (*SnapshotResponse) ProtoMessage() {}
 
 func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[32]
+	mi := &file_operator_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2095,7 +2496,7 @@ func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotResponse.ProtoReflect.Descriptor instead.
 func (*SnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{32}
+	return file_operator_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *SnapshotResponse) GetAsOfSeq() uint64 {
@@ -2191,7 +2592,7 @@ type PluginInfoOp struct {
 
 func (x *PluginInfoOp) Reset() {
 	*x = PluginInfoOp{}
-	mi := &file_operator_proto_msgTypes[33]
+	mi := &file_operator_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2203,7 +2604,7 @@ func (x *PluginInfoOp) String() string {
 func (*PluginInfoOp) ProtoMessage() {}
 
 func (x *PluginInfoOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[33]
+	mi := &file_operator_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2216,7 +2617,7 @@ func (x *PluginInfoOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginInfoOp.ProtoReflect.Descriptor instead.
 func (*PluginInfoOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{33}
+	return file_operator_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *PluginInfoOp) GetId() string {
@@ -2300,7 +2701,7 @@ type PluginPanelOp struct {
 
 func (x *PluginPanelOp) Reset() {
 	*x = PluginPanelOp{}
-	mi := &file_operator_proto_msgTypes[34]
+	mi := &file_operator_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2312,7 +2713,7 @@ func (x *PluginPanelOp) String() string {
 func (*PluginPanelOp) ProtoMessage() {}
 
 func (x *PluginPanelOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[34]
+	mi := &file_operator_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2325,7 +2726,7 @@ func (x *PluginPanelOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginPanelOp.ProtoReflect.Descriptor instead.
 func (*PluginPanelOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{34}
+	return file_operator_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *PluginPanelOp) GetId() string {
@@ -2363,7 +2764,7 @@ type PlanInFlightOp struct {
 
 func (x *PlanInFlightOp) Reset() {
 	*x = PlanInFlightOp{}
-	mi := &file_operator_proto_msgTypes[35]
+	mi := &file_operator_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2375,7 +2776,7 @@ func (x *PlanInFlightOp) String() string {
 func (*PlanInFlightOp) ProtoMessage() {}
 
 func (x *PlanInFlightOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[35]
+	mi := &file_operator_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2388,7 +2789,7 @@ func (x *PlanInFlightOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanInFlightOp.ProtoReflect.Descriptor instead.
 func (*PlanInFlightOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{35}
+	return file_operator_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *PlanInFlightOp) GetSessionId() string {
@@ -2444,7 +2845,7 @@ type SessionSummaryOp struct {
 
 func (x *SessionSummaryOp) Reset() {
 	*x = SessionSummaryOp{}
-	mi := &file_operator_proto_msgTypes[36]
+	mi := &file_operator_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2456,7 +2857,7 @@ func (x *SessionSummaryOp) String() string {
 func (*SessionSummaryOp) ProtoMessage() {}
 
 func (x *SessionSummaryOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[36]
+	mi := &file_operator_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2469,7 +2870,7 @@ func (x *SessionSummaryOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionSummaryOp.ProtoReflect.Descriptor instead.
 func (*SessionSummaryOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{36}
+	return file_operator_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *SessionSummaryOp) GetId() string {
@@ -2504,7 +2905,7 @@ type SubscribeRequest struct {
 
 func (x *SubscribeRequest) Reset() {
 	*x = SubscribeRequest{}
-	mi := &file_operator_proto_msgTypes[37]
+	mi := &file_operator_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2516,7 +2917,7 @@ func (x *SubscribeRequest) String() string {
 func (*SubscribeRequest) ProtoMessage() {}
 
 func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[37]
+	mi := &file_operator_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2529,7 +2930,7 @@ func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{37}
+	return file_operator_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *SubscribeRequest) GetLastSeq() uint64 {
@@ -2573,6 +2974,8 @@ type OperatorEvent struct {
 	//	*OperatorEvent_RetentionRun
 	//	*OperatorEvent_PipelineMeters
 	//	*OperatorEvent_PipelineStep
+	//	*OperatorEvent_IntegrationHealth
+	//	*OperatorEvent_HitlResolved
 	Payload       isOperatorEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2580,7 +2983,7 @@ type OperatorEvent struct {
 
 func (x *OperatorEvent) Reset() {
 	*x = OperatorEvent{}
-	mi := &file_operator_proto_msgTypes[38]
+	mi := &file_operator_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2592,7 +2995,7 @@ func (x *OperatorEvent) String() string {
 func (*OperatorEvent) ProtoMessage() {}
 
 func (x *OperatorEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[38]
+	mi := &file_operator_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2605,7 +3008,7 @@ func (x *OperatorEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperatorEvent.ProtoReflect.Descriptor instead.
 func (*OperatorEvent) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{38}
+	return file_operator_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *OperatorEvent) GetSeq() uint64 {
@@ -2854,6 +3257,24 @@ func (x *OperatorEvent) GetPipelineStep() *PipelineStepOp {
 	return nil
 }
 
+func (x *OperatorEvent) GetIntegrationHealth() *IntegrationHealthOp {
+	if x != nil {
+		if x, ok := x.Payload.(*OperatorEvent_IntegrationHealth); ok {
+			return x.IntegrationHealth
+		}
+	}
+	return nil
+}
+
+func (x *OperatorEvent) GetHitlResolved() *HITLResolvedOp {
+	if x != nil {
+		if x, ok := x.Payload.(*OperatorEvent_HitlResolved); ok {
+			return x.HitlResolved
+		}
+	}
+	return nil
+}
+
 type isOperatorEvent_Payload interface {
 	isOperatorEvent_Payload()
 }
@@ -2970,6 +3391,19 @@ type OperatorEvent_PipelineStep struct {
 	PipelineStep *PipelineStepOp `protobuf:"bytes,32,opt,name=pipeline_step,json=pipelineStep,proto3,oneof"` // ADR-0114 D38: one item through one node
 }
 
+type OperatorEvent_IntegrationHealth struct {
+	// Integrations: one MCP server's health changed (absolute state, sequenced
+	// and replayed like LLMHealthOp). Capability "integrations".
+	IntegrationHealth *IntegrationHealthOp `protobuf:"bytes,33,opt,name=integration_health,json=integrationHealth,proto3,oneof"`
+}
+
+type OperatorEvent_HitlResolved struct {
+	// ADR-0142 D11: a raised approval left the pending set — approved, denied,
+	// expired, withdrawn (its requester stopped waiting), needs_hierarchy or
+	// unroutable. Keyed by HITLRaisedOp.intervention_id. Sequenced and replayed.
+	HitlResolved *HITLResolvedOp `protobuf:"bytes,34,opt,name=hitl_resolved,json=hitlResolved,proto3,oneof"`
+}
+
 func (*OperatorEvent_Resync) isOperatorEvent_Payload() {}
 
 func (*OperatorEvent_Auction) isOperatorEvent_Payload() {}
@@ -3018,6 +3452,10 @@ func (*OperatorEvent_PipelineMeters) isOperatorEvent_Payload() {}
 
 func (*OperatorEvent_PipelineStep) isOperatorEvent_Payload() {}
 
+func (*OperatorEvent_IntegrationHealth) isOperatorEvent_Payload() {}
+
+func (*OperatorEvent_HitlResolved) isOperatorEvent_Payload() {}
+
 // PipelineStepOp is one item passing through one node — the flow view.
 //
 // Where PipelineMetersOp answers "how much and where is it piling up", this
@@ -3063,7 +3501,7 @@ type PipelineStepOp struct {
 
 func (x *PipelineStepOp) Reset() {
 	*x = PipelineStepOp{}
-	mi := &file_operator_proto_msgTypes[39]
+	mi := &file_operator_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3075,7 +3513,7 @@ func (x *PipelineStepOp) String() string {
 func (*PipelineStepOp) ProtoMessage() {}
 
 func (x *PipelineStepOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[39]
+	mi := &file_operator_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3088,7 +3526,7 @@ func (x *PipelineStepOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineStepOp.ProtoReflect.Descriptor instead.
 func (*PipelineStepOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{39}
+	return file_operator_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *PipelineStepOp) GetPipelineId() string {
@@ -3203,7 +3641,7 @@ type PipelineMetersOp struct {
 
 func (x *PipelineMetersOp) Reset() {
 	*x = PipelineMetersOp{}
-	mi := &file_operator_proto_msgTypes[40]
+	mi := &file_operator_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3215,7 +3653,7 @@ func (x *PipelineMetersOp) String() string {
 func (*PipelineMetersOp) ProtoMessage() {}
 
 func (x *PipelineMetersOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[40]
+	mi := &file_operator_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3228,7 +3666,7 @@ func (x *PipelineMetersOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineMetersOp.ProtoReflect.Descriptor instead.
 func (*PipelineMetersOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{40}
+	return file_operator_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *PipelineMetersOp) GetPipelineId() string {
@@ -3276,7 +3714,7 @@ type PipelineNodeMeterOp struct {
 
 func (x *PipelineNodeMeterOp) Reset() {
 	*x = PipelineNodeMeterOp{}
-	mi := &file_operator_proto_msgTypes[41]
+	mi := &file_operator_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3288,7 +3726,7 @@ func (x *PipelineNodeMeterOp) String() string {
 func (*PipelineNodeMeterOp) ProtoMessage() {}
 
 func (x *PipelineNodeMeterOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[41]
+	mi := &file_operator_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3301,7 +3739,7 @@ func (x *PipelineNodeMeterOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineNodeMeterOp.ProtoReflect.Descriptor instead.
 func (*PipelineNodeMeterOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{41}
+	return file_operator_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *PipelineNodeMeterOp) GetNode() string {
@@ -3389,7 +3827,7 @@ type RetentionRunOp struct {
 
 func (x *RetentionRunOp) Reset() {
 	*x = RetentionRunOp{}
-	mi := &file_operator_proto_msgTypes[42]
+	mi := &file_operator_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3401,7 +3839,7 @@ func (x *RetentionRunOp) String() string {
 func (*RetentionRunOp) ProtoMessage() {}
 
 func (x *RetentionRunOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[42]
+	mi := &file_operator_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3414,7 +3852,7 @@ func (x *RetentionRunOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetentionRunOp.ProtoReflect.Descriptor instead.
 func (*RetentionRunOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{42}
+	return file_operator_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *RetentionRunOp) GetSource() string {
@@ -3480,7 +3918,7 @@ type RetentionDeletionOp struct {
 
 func (x *RetentionDeletionOp) Reset() {
 	*x = RetentionDeletionOp{}
-	mi := &file_operator_proto_msgTypes[43]
+	mi := &file_operator_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3492,7 +3930,7 @@ func (x *RetentionDeletionOp) String() string {
 func (*RetentionDeletionOp) ProtoMessage() {}
 
 func (x *RetentionDeletionOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[43]
+	mi := &file_operator_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3505,7 +3943,7 @@ func (x *RetentionDeletionOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetentionDeletionOp.ProtoReflect.Descriptor instead.
 func (*RetentionDeletionOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{43}
+	return file_operator_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *RetentionDeletionOp) GetCategory() string {
@@ -3556,7 +3994,7 @@ type ScoutUsefulnessOp struct {
 
 func (x *ScoutUsefulnessOp) Reset() {
 	*x = ScoutUsefulnessOp{}
-	mi := &file_operator_proto_msgTypes[44]
+	mi := &file_operator_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3568,7 +4006,7 @@ func (x *ScoutUsefulnessOp) String() string {
 func (*ScoutUsefulnessOp) ProtoMessage() {}
 
 func (x *ScoutUsefulnessOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[44]
+	mi := &file_operator_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3581,7 +4019,7 @@ func (x *ScoutUsefulnessOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScoutUsefulnessOp.ProtoReflect.Descriptor instead.
 func (*ScoutUsefulnessOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{44}
+	return file_operator_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ScoutUsefulnessOp) GetSessionId() string {
@@ -3659,7 +4097,7 @@ type AgentStepOp struct {
 
 func (x *AgentStepOp) Reset() {
 	*x = AgentStepOp{}
-	mi := &file_operator_proto_msgTypes[45]
+	mi := &file_operator_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3671,7 +4109,7 @@ func (x *AgentStepOp) String() string {
 func (*AgentStepOp) ProtoMessage() {}
 
 func (x *AgentStepOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[45]
+	mi := &file_operator_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3684,7 +4122,7 @@ func (x *AgentStepOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentStepOp.ProtoReflect.Descriptor instead.
 func (*AgentStepOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{45}
+	return file_operator_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *AgentStepOp) GetSessionId() string {
@@ -3764,7 +4202,7 @@ type AgentLLMExchangeOp struct {
 
 func (x *AgentLLMExchangeOp) Reset() {
 	*x = AgentLLMExchangeOp{}
-	mi := &file_operator_proto_msgTypes[46]
+	mi := &file_operator_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3776,7 +4214,7 @@ func (x *AgentLLMExchangeOp) String() string {
 func (*AgentLLMExchangeOp) ProtoMessage() {}
 
 func (x *AgentLLMExchangeOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[46]
+	mi := &file_operator_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3789,7 +4227,7 @@ func (x *AgentLLMExchangeOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentLLMExchangeOp.ProtoReflect.Descriptor instead.
 func (*AgentLLMExchangeOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{46}
+	return file_operator_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *AgentLLMExchangeOp) GetSessionId() string {
@@ -3867,7 +4305,7 @@ type ResyncRequired struct {
 
 func (x *ResyncRequired) Reset() {
 	*x = ResyncRequired{}
-	mi := &file_operator_proto_msgTypes[47]
+	mi := &file_operator_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3879,7 +4317,7 @@ func (x *ResyncRequired) String() string {
 func (*ResyncRequired) ProtoMessage() {}
 
 func (x *ResyncRequired) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[47]
+	mi := &file_operator_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3892,7 +4330,7 @@ func (x *ResyncRequired) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResyncRequired.ProtoReflect.Descriptor instead.
 func (*ResyncRequired) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{47}
+	return file_operator_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *ResyncRequired) GetLatestSeq() uint64 {
@@ -3933,7 +4371,7 @@ type AuctionEventOp struct {
 
 func (x *AuctionEventOp) Reset() {
 	*x = AuctionEventOp{}
-	mi := &file_operator_proto_msgTypes[48]
+	mi := &file_operator_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3945,7 +4383,7 @@ func (x *AuctionEventOp) String() string {
 func (*AuctionEventOp) ProtoMessage() {}
 
 func (x *AuctionEventOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[48]
+	mi := &file_operator_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3958,7 +4396,7 @@ func (x *AuctionEventOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuctionEventOp.ProtoReflect.Descriptor instead.
 func (*AuctionEventOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{48}
+	return file_operator_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *AuctionEventOp) GetTaskId() string {
@@ -4046,7 +4484,7 @@ type BidEntryOp struct {
 
 func (x *BidEntryOp) Reset() {
 	*x = BidEntryOp{}
-	mi := &file_operator_proto_msgTypes[49]
+	mi := &file_operator_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4058,7 +4496,7 @@ func (x *BidEntryOp) String() string {
 func (*BidEntryOp) ProtoMessage() {}
 
 func (x *BidEntryOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[49]
+	mi := &file_operator_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4071,7 +4509,7 @@ func (x *BidEntryOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BidEntryOp.ProtoReflect.Descriptor instead.
 func (*BidEntryOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{49}
+	return file_operator_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *BidEntryOp) GetAgentId() string {
@@ -4126,7 +4564,7 @@ type GatekeeperFunnelOp struct {
 
 func (x *GatekeeperFunnelOp) Reset() {
 	*x = GatekeeperFunnelOp{}
-	mi := &file_operator_proto_msgTypes[50]
+	mi := &file_operator_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4138,7 +4576,7 @@ func (x *GatekeeperFunnelOp) String() string {
 func (*GatekeeperFunnelOp) ProtoMessage() {}
 
 func (x *GatekeeperFunnelOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[50]
+	mi := &file_operator_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4151,7 +4589,7 @@ func (x *GatekeeperFunnelOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GatekeeperFunnelOp.ProtoReflect.Descriptor instead.
 func (*GatekeeperFunnelOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{50}
+	return file_operator_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *GatekeeperFunnelOp) GetL1() []*DeclarationResultOp {
@@ -4200,7 +4638,7 @@ type DeclarationResultOp struct {
 
 func (x *DeclarationResultOp) Reset() {
 	*x = DeclarationResultOp{}
-	mi := &file_operator_proto_msgTypes[51]
+	mi := &file_operator_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4212,7 +4650,7 @@ func (x *DeclarationResultOp) String() string {
 func (*DeclarationResultOp) ProtoMessage() {}
 
 func (x *DeclarationResultOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[51]
+	mi := &file_operator_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4225,7 +4663,7 @@ func (x *DeclarationResultOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeclarationResultOp.ProtoReflect.Descriptor instead.
 func (*DeclarationResultOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{51}
+	return file_operator_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *DeclarationResultOp) GetAgentId() string {
@@ -4265,7 +4703,7 @@ type InterviewResultOp struct {
 
 func (x *InterviewResultOp) Reset() {
 	*x = InterviewResultOp{}
-	mi := &file_operator_proto_msgTypes[52]
+	mi := &file_operator_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4277,7 +4715,7 @@ func (x *InterviewResultOp) String() string {
 func (*InterviewResultOp) ProtoMessage() {}
 
 func (x *InterviewResultOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[52]
+	mi := &file_operator_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4290,7 +4728,7 @@ func (x *InterviewResultOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InterviewResultOp.ProtoReflect.Descriptor instead.
 func (*InterviewResultOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{52}
+	return file_operator_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *InterviewResultOp) GetAgentId() string {
@@ -4336,7 +4774,7 @@ type MeritResultOp struct {
 
 func (x *MeritResultOp) Reset() {
 	*x = MeritResultOp{}
-	mi := &file_operator_proto_msgTypes[53]
+	mi := &file_operator_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4348,7 +4786,7 @@ func (x *MeritResultOp) String() string {
 func (*MeritResultOp) ProtoMessage() {}
 
 func (x *MeritResultOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[53]
+	mi := &file_operator_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4361,7 +4799,7 @@ func (x *MeritResultOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeritResultOp.ProtoReflect.Descriptor instead.
 func (*MeritResultOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{53}
+	return file_operator_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *MeritResultOp) GetAgentId() string {
@@ -4453,7 +4891,7 @@ type AgentReadyOp struct {
 
 func (x *AgentReadyOp) Reset() {
 	*x = AgentReadyOp{}
-	mi := &file_operator_proto_msgTypes[54]
+	mi := &file_operator_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4465,7 +4903,7 @@ func (x *AgentReadyOp) String() string {
 func (*AgentReadyOp) ProtoMessage() {}
 
 func (x *AgentReadyOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[54]
+	mi := &file_operator_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4478,7 +4916,7 @@ func (x *AgentReadyOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentReadyOp.ProtoReflect.Descriptor instead.
 func (*AgentReadyOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{54}
+	return file_operator_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *AgentReadyOp) GetAgentId() string {
@@ -4606,7 +5044,7 @@ type SessionStateOp struct {
 
 func (x *SessionStateOp) Reset() {
 	*x = SessionStateOp{}
-	mi := &file_operator_proto_msgTypes[55]
+	mi := &file_operator_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4618,7 +5056,7 @@ func (x *SessionStateOp) String() string {
 func (*SessionStateOp) ProtoMessage() {}
 
 func (x *SessionStateOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[55]
+	mi := &file_operator_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4631,7 +5069,7 @@ func (x *SessionStateOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionStateOp.ProtoReflect.Descriptor instead.
 func (*SessionStateOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{55}
+	return file_operator_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *SessionStateOp) GetSessionId() string {
@@ -4693,7 +5131,7 @@ type SessionDormantOp struct {
 
 func (x *SessionDormantOp) Reset() {
 	*x = SessionDormantOp{}
-	mi := &file_operator_proto_msgTypes[56]
+	mi := &file_operator_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4705,7 +5143,7 @@ func (x *SessionDormantOp) String() string {
 func (*SessionDormantOp) ProtoMessage() {}
 
 func (x *SessionDormantOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[56]
+	mi := &file_operator_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4718,7 +5156,7 @@ func (x *SessionDormantOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionDormantOp.ProtoReflect.Descriptor instead.
 func (*SessionDormantOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{56}
+	return file_operator_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *SessionDormantOp) GetSessionId() string {
@@ -4754,7 +5192,7 @@ type SessionCompletedOp struct {
 
 func (x *SessionCompletedOp) Reset() {
 	*x = SessionCompletedOp{}
-	mi := &file_operator_proto_msgTypes[57]
+	mi := &file_operator_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4766,7 +5204,7 @@ func (x *SessionCompletedOp) String() string {
 func (*SessionCompletedOp) ProtoMessage() {}
 
 func (x *SessionCompletedOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[57]
+	mi := &file_operator_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4779,7 +5217,7 @@ func (x *SessionCompletedOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionCompletedOp.ProtoReflect.Descriptor instead.
 func (*SessionCompletedOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{57}
+	return file_operator_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *SessionCompletedOp) GetSessionId() string {
@@ -4807,7 +5245,7 @@ type MemoryPressureOp struct {
 
 func (x *MemoryPressureOp) Reset() {
 	*x = MemoryPressureOp{}
-	mi := &file_operator_proto_msgTypes[58]
+	mi := &file_operator_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4819,7 +5257,7 @@ func (x *MemoryPressureOp) String() string {
 func (*MemoryPressureOp) ProtoMessage() {}
 
 func (x *MemoryPressureOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[58]
+	mi := &file_operator_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4832,7 +5270,7 @@ func (x *MemoryPressureOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryPressureOp.ProtoReflect.Descriptor instead.
 func (*MemoryPressureOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{58}
+	return file_operator_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *MemoryPressureOp) GetTotalDocuments() int32 {
@@ -4866,7 +5304,7 @@ type DaemonCrashedOp struct {
 
 func (x *DaemonCrashedOp) Reset() {
 	*x = DaemonCrashedOp{}
-	mi := &file_operator_proto_msgTypes[59]
+	mi := &file_operator_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4878,7 +5316,7 @@ func (x *DaemonCrashedOp) String() string {
 func (*DaemonCrashedOp) ProtoMessage() {}
 
 func (x *DaemonCrashedOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[59]
+	mi := &file_operator_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4891,7 +5329,7 @@ func (x *DaemonCrashedOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DaemonCrashedOp.ProtoReflect.Descriptor instead.
 func (*DaemonCrashedOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{59}
+	return file_operator_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *DaemonCrashedOp) GetAgentId() string {
@@ -4919,7 +5357,7 @@ type WatchTriggeredOp struct {
 
 func (x *WatchTriggeredOp) Reset() {
 	*x = WatchTriggeredOp{}
-	mi := &file_operator_proto_msgTypes[60]
+	mi := &file_operator_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4931,7 +5369,7 @@ func (x *WatchTriggeredOp) String() string {
 func (*WatchTriggeredOp) ProtoMessage() {}
 
 func (x *WatchTriggeredOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[60]
+	mi := &file_operator_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4944,7 +5382,7 @@ func (x *WatchTriggeredOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchTriggeredOp.ProtoReflect.Descriptor instead.
 func (*WatchTriggeredOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{60}
+	return file_operator_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *WatchTriggeredOp) GetWatchConfigId() string {
@@ -4981,7 +5419,7 @@ type MemoryWrittenOp struct {
 
 func (x *MemoryWrittenOp) Reset() {
 	*x = MemoryWrittenOp{}
-	mi := &file_operator_proto_msgTypes[61]
+	mi := &file_operator_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4993,7 +5431,7 @@ func (x *MemoryWrittenOp) String() string {
 func (*MemoryWrittenOp) ProtoMessage() {}
 
 func (x *MemoryWrittenOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[61]
+	mi := &file_operator_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5006,7 +5444,7 @@ func (x *MemoryWrittenOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryWrittenOp.ProtoReflect.Descriptor instead.
 func (*MemoryWrittenOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{61}
+	return file_operator_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *MemoryWrittenOp) GetDocId() string {
@@ -5057,7 +5495,7 @@ type HITLRaisedOp struct {
 
 func (x *HITLRaisedOp) Reset() {
 	*x = HITLRaisedOp{}
-	mi := &file_operator_proto_msgTypes[62]
+	mi := &file_operator_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5069,7 +5507,7 @@ func (x *HITLRaisedOp) String() string {
 func (*HITLRaisedOp) ProtoMessage() {}
 
 func (x *HITLRaisedOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[62]
+	mi := &file_operator_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5082,7 +5520,7 @@ func (x *HITLRaisedOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HITLRaisedOp.ProtoReflect.Descriptor instead.
 func (*HITLRaisedOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{62}
+	return file_operator_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *HITLRaisedOp) GetInterventionId() string {
@@ -5133,7 +5571,7 @@ type VerifierRoundOp struct {
 
 func (x *VerifierRoundOp) Reset() {
 	*x = VerifierRoundOp{}
-	mi := &file_operator_proto_msgTypes[63]
+	mi := &file_operator_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5145,7 +5583,7 @@ func (x *VerifierRoundOp) String() string {
 func (*VerifierRoundOp) ProtoMessage() {}
 
 func (x *VerifierRoundOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[63]
+	mi := &file_operator_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5158,7 +5596,7 @@ func (x *VerifierRoundOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifierRoundOp.ProtoReflect.Descriptor instead.
 func (*VerifierRoundOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{63}
+	return file_operator_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *VerifierRoundOp) GetTaskId() string {
@@ -5207,7 +5645,7 @@ type LLMHealthOp struct {
 
 func (x *LLMHealthOp) Reset() {
 	*x = LLMHealthOp{}
-	mi := &file_operator_proto_msgTypes[64]
+	mi := &file_operator_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5219,7 +5657,7 @@ func (x *LLMHealthOp) String() string {
 func (*LLMHealthOp) ProtoMessage() {}
 
 func (x *LLMHealthOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[64]
+	mi := &file_operator_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5232,7 +5670,7 @@ func (x *LLMHealthOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LLMHealthOp.ProtoReflect.Descriptor instead.
 func (*LLMHealthOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{64}
+	return file_operator_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *LLMHealthOp) GetModelId() string {
@@ -5275,7 +5713,7 @@ type PlanStateOp struct {
 
 func (x *PlanStateOp) Reset() {
 	*x = PlanStateOp{}
-	mi := &file_operator_proto_msgTypes[65]
+	mi := &file_operator_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5287,7 +5725,7 @@ func (x *PlanStateOp) String() string {
 func (*PlanStateOp) ProtoMessage() {}
 
 func (x *PlanStateOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[65]
+	mi := &file_operator_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5300,7 +5738,7 @@ func (x *PlanStateOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanStateOp.ProtoReflect.Descriptor instead.
 func (*PlanStateOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{65}
+	return file_operator_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *PlanStateOp) GetSessionId() string {
@@ -5385,7 +5823,7 @@ type PlanStepOp struct {
 
 func (x *PlanStepOp) Reset() {
 	*x = PlanStepOp{}
-	mi := &file_operator_proto_msgTypes[66]
+	mi := &file_operator_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5397,7 +5835,7 @@ func (x *PlanStepOp) String() string {
 func (*PlanStepOp) ProtoMessage() {}
 
 func (x *PlanStepOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[66]
+	mi := &file_operator_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5410,7 +5848,7 @@ func (x *PlanStepOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanStepOp.ProtoReflect.Descriptor instead.
 func (*PlanStepOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{66}
+	return file_operator_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *PlanStepOp) GetIndex() int32 {
@@ -5490,7 +5928,7 @@ type TokenChunkOp struct {
 
 func (x *TokenChunkOp) Reset() {
 	*x = TokenChunkOp{}
-	mi := &file_operator_proto_msgTypes[67]
+	mi := &file_operator_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5502,7 +5940,7 @@ func (x *TokenChunkOp) String() string {
 func (*TokenChunkOp) ProtoMessage() {}
 
 func (x *TokenChunkOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[67]
+	mi := &file_operator_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5515,7 +5953,7 @@ func (x *TokenChunkOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TokenChunkOp.ProtoReflect.Descriptor instead.
 func (*TokenChunkOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{67}
+	return file_operator_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *TokenChunkOp) GetSessionId() string {
@@ -5607,7 +6045,7 @@ type AuditOp struct {
 
 func (x *AuditOp) Reset() {
 	*x = AuditOp{}
-	mi := &file_operator_proto_msgTypes[68]
+	mi := &file_operator_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5619,7 +6057,7 @@ func (x *AuditOp) String() string {
 func (*AuditOp) ProtoMessage() {}
 
 func (x *AuditOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[68]
+	mi := &file_operator_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5632,7 +6070,7 @@ func (x *AuditOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditOp.ProtoReflect.Descriptor instead.
 func (*AuditOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{68}
+	return file_operator_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *AuditOp) GetId() string {
@@ -5726,7 +6164,7 @@ type ToolPolicyOp struct {
 
 func (x *ToolPolicyOp) Reset() {
 	*x = ToolPolicyOp{}
-	mi := &file_operator_proto_msgTypes[69]
+	mi := &file_operator_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5738,7 +6176,7 @@ func (x *ToolPolicyOp) String() string {
 func (*ToolPolicyOp) ProtoMessage() {}
 
 func (x *ToolPolicyOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[69]
+	mi := &file_operator_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5751,7 +6189,7 @@ func (x *ToolPolicyOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolPolicyOp.ProtoReflect.Descriptor instead.
 func (*ToolPolicyOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{69}
+	return file_operator_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *ToolPolicyOp) GetAllowedPaths() []string {
@@ -5787,7 +6225,7 @@ type ToolGrantOp struct {
 
 func (x *ToolGrantOp) Reset() {
 	*x = ToolGrantOp{}
-	mi := &file_operator_proto_msgTypes[70]
+	mi := &file_operator_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5799,7 +6237,7 @@ func (x *ToolGrantOp) String() string {
 func (*ToolGrantOp) ProtoMessage() {}
 
 func (x *ToolGrantOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[70]
+	mi := &file_operator_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5812,7 +6250,7 @@ func (x *ToolGrantOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolGrantOp.ProtoReflect.Descriptor instead.
 func (*ToolGrantOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{70}
+	return file_operator_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *ToolGrantOp) GetAgentId() string {
@@ -5871,7 +6309,7 @@ type ToolOp struct {
 
 func (x *ToolOp) Reset() {
 	*x = ToolOp{}
-	mi := &file_operator_proto_msgTypes[71]
+	mi := &file_operator_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5883,7 +6321,7 @@ func (x *ToolOp) String() string {
 func (*ToolOp) ProtoMessage() {}
 
 func (x *ToolOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[71]
+	mi := &file_operator_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5896,7 +6334,7 @@ func (x *ToolOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolOp.ProtoReflect.Descriptor instead.
 func (*ToolOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{71}
+	return file_operator_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *ToolOp) GetName() string {
@@ -6010,7 +6448,7 @@ type ListToolsOpRequest struct {
 
 func (x *ListToolsOpRequest) Reset() {
 	*x = ListToolsOpRequest{}
-	mi := &file_operator_proto_msgTypes[72]
+	mi := &file_operator_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6022,7 +6460,7 @@ func (x *ListToolsOpRequest) String() string {
 func (*ListToolsOpRequest) ProtoMessage() {}
 
 func (x *ListToolsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[72]
+	mi := &file_operator_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6035,7 +6473,7 @@ func (x *ListToolsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListToolsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListToolsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{72}
+	return file_operator_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *ListToolsOpRequest) GetPage() int32 {
@@ -6084,7 +6522,7 @@ type ListToolsOpResponse struct {
 
 func (x *ListToolsOpResponse) Reset() {
 	*x = ListToolsOpResponse{}
-	mi := &file_operator_proto_msgTypes[73]
+	mi := &file_operator_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6096,7 +6534,7 @@ func (x *ListToolsOpResponse) String() string {
 func (*ListToolsOpResponse) ProtoMessage() {}
 
 func (x *ListToolsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[73]
+	mi := &file_operator_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6109,7 +6547,7 @@ func (x *ListToolsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListToolsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListToolsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{73}
+	return file_operator_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *ListToolsOpResponse) GetTools() []*ToolOp {
@@ -6154,7 +6592,7 @@ type ListSkillsOpRequest struct {
 
 func (x *ListSkillsOpRequest) Reset() {
 	*x = ListSkillsOpRequest{}
-	mi := &file_operator_proto_msgTypes[74]
+	mi := &file_operator_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6166,7 +6604,7 @@ func (x *ListSkillsOpRequest) String() string {
 func (*ListSkillsOpRequest) ProtoMessage() {}
 
 func (x *ListSkillsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[74]
+	mi := &file_operator_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6179,7 +6617,7 @@ func (x *ListSkillsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListSkillsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{74}
+	return file_operator_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *ListSkillsOpRequest) GetPage() int32 {
@@ -6271,7 +6709,7 @@ type SkillOp struct {
 
 func (x *SkillOp) Reset() {
 	*x = SkillOp{}
-	mi := &file_operator_proto_msgTypes[75]
+	mi := &file_operator_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6283,7 +6721,7 @@ func (x *SkillOp) String() string {
 func (*SkillOp) ProtoMessage() {}
 
 func (x *SkillOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[75]
+	mi := &file_operator_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6296,7 +6734,7 @@ func (x *SkillOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillOp.ProtoReflect.Descriptor instead.
 func (*SkillOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{75}
+	return file_operator_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *SkillOp) GetName() string {
@@ -6422,7 +6860,7 @@ type ListSkillsOpResponse struct {
 
 func (x *ListSkillsOpResponse) Reset() {
 	*x = ListSkillsOpResponse{}
-	mi := &file_operator_proto_msgTypes[76]
+	mi := &file_operator_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6434,7 +6872,7 @@ func (x *ListSkillsOpResponse) String() string {
 func (*ListSkillsOpResponse) ProtoMessage() {}
 
 func (x *ListSkillsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[76]
+	mi := &file_operator_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6447,7 +6885,7 @@ func (x *ListSkillsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListSkillsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{76}
+	return file_operator_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *ListSkillsOpResponse) GetSkills() []*SkillOp {
@@ -6500,7 +6938,7 @@ type QueryMemoryRequest struct {
 
 func (x *QueryMemoryRequest) Reset() {
 	*x = QueryMemoryRequest{}
-	mi := &file_operator_proto_msgTypes[77]
+	mi := &file_operator_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6512,7 +6950,7 @@ func (x *QueryMemoryRequest) String() string {
 func (*QueryMemoryRequest) ProtoMessage() {}
 
 func (x *QueryMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[77]
+	mi := &file_operator_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6525,7 +6963,7 @@ func (x *QueryMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryMemoryRequest.ProtoReflect.Descriptor instead.
 func (*QueryMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{77}
+	return file_operator_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *QueryMemoryRequest) GetQuery() string {
@@ -6622,7 +7060,7 @@ type MemoryOp struct {
 
 func (x *MemoryOp) Reset() {
 	*x = MemoryOp{}
-	mi := &file_operator_proto_msgTypes[78]
+	mi := &file_operator_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6634,7 +7072,7 @@ func (x *MemoryOp) String() string {
 func (*MemoryOp) ProtoMessage() {}
 
 func (x *MemoryOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[78]
+	mi := &file_operator_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6647,7 +7085,7 @@ func (x *MemoryOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryOp.ProtoReflect.Descriptor instead.
 func (*MemoryOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{78}
+	return file_operator_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *MemoryOp) GetDocId() string {
@@ -6748,7 +7186,7 @@ type QueryMemoryResponse struct {
 
 func (x *QueryMemoryResponse) Reset() {
 	*x = QueryMemoryResponse{}
-	mi := &file_operator_proto_msgTypes[79]
+	mi := &file_operator_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6760,7 +7198,7 @@ func (x *QueryMemoryResponse) String() string {
 func (*QueryMemoryResponse) ProtoMessage() {}
 
 func (x *QueryMemoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[79]
+	mi := &file_operator_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6773,7 +7211,7 @@ func (x *QueryMemoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryMemoryResponse.ProtoReflect.Descriptor instead.
 func (*QueryMemoryResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{79}
+	return file_operator_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *QueryMemoryResponse) GetResults() []*MemoryOp {
@@ -6818,7 +7256,7 @@ type AnswerMemoryRequest struct {
 
 func (x *AnswerMemoryRequest) Reset() {
 	*x = AnswerMemoryRequest{}
-	mi := &file_operator_proto_msgTypes[80]
+	mi := &file_operator_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6830,7 +7268,7 @@ func (x *AnswerMemoryRequest) String() string {
 func (*AnswerMemoryRequest) ProtoMessage() {}
 
 func (x *AnswerMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[80]
+	mi := &file_operator_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6843,7 +7281,7 @@ func (x *AnswerMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AnswerMemoryRequest.ProtoReflect.Descriptor instead.
 func (*AnswerMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{80}
+	return file_operator_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *AnswerMemoryRequest) GetQuery() string {
@@ -6924,7 +7362,7 @@ type MemoryCitation struct {
 
 func (x *MemoryCitation) Reset() {
 	*x = MemoryCitation{}
-	mi := &file_operator_proto_msgTypes[81]
+	mi := &file_operator_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6936,7 +7374,7 @@ func (x *MemoryCitation) String() string {
 func (*MemoryCitation) ProtoMessage() {}
 
 func (x *MemoryCitation) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[81]
+	mi := &file_operator_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6949,7 +7387,7 @@ func (x *MemoryCitation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryCitation.ProtoReflect.Descriptor instead.
 func (*MemoryCitation) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{81}
+	return file_operator_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *MemoryCitation) GetMarker() int32 {
@@ -7058,7 +7496,7 @@ type AnswerMemoryResponse struct {
 
 func (x *AnswerMemoryResponse) Reset() {
 	*x = AnswerMemoryResponse{}
-	mi := &file_operator_proto_msgTypes[82]
+	mi := &file_operator_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7070,7 +7508,7 @@ func (x *AnswerMemoryResponse) String() string {
 func (*AnswerMemoryResponse) ProtoMessage() {}
 
 func (x *AnswerMemoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[82]
+	mi := &file_operator_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7083,7 +7521,7 @@ func (x *AnswerMemoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AnswerMemoryResponse.ProtoReflect.Descriptor instead.
 func (*AnswerMemoryResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{82}
+	return file_operator_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *AnswerMemoryResponse) GetStatus() string {
@@ -7129,7 +7567,7 @@ type SetToolPolicyRequest struct {
 
 func (x *SetToolPolicyRequest) Reset() {
 	*x = SetToolPolicyRequest{}
-	mi := &file_operator_proto_msgTypes[83]
+	mi := &file_operator_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7141,7 +7579,7 @@ func (x *SetToolPolicyRequest) String() string {
 func (*SetToolPolicyRequest) ProtoMessage() {}
 
 func (x *SetToolPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[83]
+	mi := &file_operator_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7154,7 +7592,7 @@ func (x *SetToolPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetToolPolicyRequest.ProtoReflect.Descriptor instead.
 func (*SetToolPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{83}
+	return file_operator_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *SetToolPolicyRequest) GetCommandId() string {
@@ -7207,7 +7645,7 @@ type ExecuteToolOpRequest struct {
 
 func (x *ExecuteToolOpRequest) Reset() {
 	*x = ExecuteToolOpRequest{}
-	mi := &file_operator_proto_msgTypes[84]
+	mi := &file_operator_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7219,7 +7657,7 @@ func (x *ExecuteToolOpRequest) String() string {
 func (*ExecuteToolOpRequest) ProtoMessage() {}
 
 func (x *ExecuteToolOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[84]
+	mi := &file_operator_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7232,7 +7670,7 @@ func (x *ExecuteToolOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteToolOpRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteToolOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{84}
+	return file_operator_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *ExecuteToolOpRequest) GetCommandId() string {
@@ -7284,7 +7722,7 @@ type ExecuteToolOpResponse struct {
 
 func (x *ExecuteToolOpResponse) Reset() {
 	*x = ExecuteToolOpResponse{}
-	mi := &file_operator_proto_msgTypes[85]
+	mi := &file_operator_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7296,7 +7734,7 @@ func (x *ExecuteToolOpResponse) String() string {
 func (*ExecuteToolOpResponse) ProtoMessage() {}
 
 func (x *ExecuteToolOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[85]
+	mi := &file_operator_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7309,7 +7747,7 @@ func (x *ExecuteToolOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteToolOpResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteToolOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{85}
+	return file_operator_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *ExecuteToolOpResponse) GetCommandId() string {
@@ -7408,7 +7846,7 @@ type IngestMemoryOpRequest struct {
 
 func (x *IngestMemoryOpRequest) Reset() {
 	*x = IngestMemoryOpRequest{}
-	mi := &file_operator_proto_msgTypes[86]
+	mi := &file_operator_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7420,7 +7858,7 @@ func (x *IngestMemoryOpRequest) String() string {
 func (*IngestMemoryOpRequest) ProtoMessage() {}
 
 func (x *IngestMemoryOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[86]
+	mi := &file_operator_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7433,7 +7871,7 @@ func (x *IngestMemoryOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IngestMemoryOpRequest.ProtoReflect.Descriptor instead.
 func (*IngestMemoryOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{86}
+	return file_operator_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *IngestMemoryOpRequest) GetCommandId() string {
@@ -7547,7 +7985,7 @@ type MemoryPartOp struct {
 
 func (x *MemoryPartOp) Reset() {
 	*x = MemoryPartOp{}
-	mi := &file_operator_proto_msgTypes[87]
+	mi := &file_operator_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7559,7 +7997,7 @@ func (x *MemoryPartOp) String() string {
 func (*MemoryPartOp) ProtoMessage() {}
 
 func (x *MemoryPartOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[87]
+	mi := &file_operator_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7572,7 +8010,7 @@ func (x *MemoryPartOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryPartOp.ProtoReflect.Descriptor instead.
 func (*MemoryPartOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{87}
+	return file_operator_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *MemoryPartOp) GetText() string {
@@ -7615,7 +8053,7 @@ type IngestMemoryOpResponse struct {
 
 func (x *IngestMemoryOpResponse) Reset() {
 	*x = IngestMemoryOpResponse{}
-	mi := &file_operator_proto_msgTypes[88]
+	mi := &file_operator_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7627,7 +8065,7 @@ func (x *IngestMemoryOpResponse) String() string {
 func (*IngestMemoryOpResponse) ProtoMessage() {}
 
 func (x *IngestMemoryOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[88]
+	mi := &file_operator_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7640,7 +8078,7 @@ func (x *IngestMemoryOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IngestMemoryOpResponse.ProtoReflect.Descriptor instead.
 func (*IngestMemoryOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{88}
+	return file_operator_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *IngestMemoryOpResponse) GetCommandId() string {
@@ -7690,14 +8128,53 @@ type ApprovalOp struct {
 	// "" = a dangerous-tool approval; "skill_access" = an agent asks for a skill
 	// outside its effective set (tool_name "skill:<name>"). Approving (ResolveHITL)
 	// grants that skill to that agent durably (decisions/skill-access-grants.md).
-	Kind          string `protobuf:"bytes,6,opt,name=kind,proto3" json:"kind,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// "schedule" = an assistant proposes a recurring task for the principal it serves
+	// (tool_name "schedule_task", args_preview the owner + when + what); approving
+	// creates it, owned by that principal (capability "scheduled-tasks").
+	// ADR-0142 D11 adds "machine_consent", "choose_machine", "account_confirm"
+	// and "publish".
+	Kind string `protobuf:"bytes,6,opt,name=kind,proto3" json:"kind,omitempty"`
+	// ── ADR-0142 D11 (additive): the addressed hub. ──
+	// rule renders the approver rules, any-of: "self | operator", "role:compliance",
+	// "person:carol", "relationship:supervisor".
+	Rule string `protobuf:"bytes,7,opt,name=rule,proto3" json:"rule,omitempty"`
+	// answerable: the caller satisfies the rule (an audit view also streams items
+	// the caller may not answer).
+	Answerable bool `protobuf:"varint,8,opt,name=answerable,proto3" json:"answerable,omitempty"`
+	// beneficiary is the person the action is for ("user:alice"; "" = none).
+	Beneficiary string `protobuf:"bytes,9,opt,name=beneficiary,proto3" json:"beneficiary,omitempty"`
+	// state: pending | approved | denied | expired | withdrawn | needs_hierarchy |
+	// unroutable. Streams that predate it send only pending items.
+	State      string `protobuf:"bytes,10,opt,name=state,proto3" json:"state,omitempty"`
+	ResolvedBy string `protobuf:"bytes,11,opt,name=resolved_by,json=resolvedBy,proto3" json:"resolved_by,omitempty"`
+	// action_class is the policy class (tool, payment, public_record_release, …).
+	ActionClass string `protobuf:"bytes,12,opt,name=action_class,json=actionClass,proto3" json:"action_class,omitempty"`
+	// allow_standing: an approver may answer with a standing approval.
+	AllowStanding   bool  `protobuf:"varint,13,opt,name=allow_standing,json=allowStanding,proto3" json:"allow_standing,omitempty"`
+	RaisedAtUnixMs  int64 `protobuf:"varint,14,opt,name=raised_at_unix_ms,json=raisedAtUnixMs,proto3" json:"raised_at_unix_ms,omitempty"`
+	ExpiresAtUnixMs int64 `protobuf:"varint,15,opt,name=expires_at_unix_ms,json=expiresAtUnixMs,proto3" json:"expires_at_unix_ms,omitempty"`
+	// object names the exact object acted on, where known.
+	Object         string   `protobuf:"bytes,16,opt,name=object,proto3" json:"object,omitempty"`
+	ConversationId string   `protobuf:"bytes,17,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	Machine        string   `protobuf:"bytes,18,opt,name=machine,proto3" json:"machine,omitempty"`
+	Candidates     []string `protobuf:"bytes,19,rep,name=candidates,proto3" json:"candidates,omitempty"`
+	// detail explains a resolution (refusal reason, standing grant used, …).
+	Detail    string `protobuf:"bytes,20,opt,name=detail,proto3" json:"detail,omitempty"`
+	SessionId string `protobuf:"bytes,21,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// duplicate_notice (additive): an earlier side-effecting call of the same
+	// conversation that this one may duplicate, in the kernel's words: "Possible
+	// duplicate of <tool> (approval <id>) — done at <UTC time>, ids: …; same to,
+	// subject." Deterministic (identical arguments, or same target and subject);
+	// informational, never a refusal. "" = none found.
+	// T-20261107-approver-is-not-told-that-an-identical-side.
+	DuplicateNotice string `protobuf:"bytes,22,opt,name=duplicate_notice,json=duplicateNotice,proto3" json:"duplicate_notice,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ApprovalOp) Reset() {
 	*x = ApprovalOp{}
-	mi := &file_operator_proto_msgTypes[89]
+	mi := &file_operator_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7709,7 +8186,7 @@ func (x *ApprovalOp) String() string {
 func (*ApprovalOp) ProtoMessage() {}
 
 func (x *ApprovalOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[89]
+	mi := &file_operator_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7722,7 +8199,7 @@ func (x *ApprovalOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovalOp.ProtoReflect.Descriptor instead.
 func (*ApprovalOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{89}
+	return file_operator_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *ApprovalOp) GetId() string {
@@ -7767,6 +8244,1012 @@ func (x *ApprovalOp) GetKind() string {
 	return ""
 }
 
+func (x *ApprovalOp) GetRule() string {
+	if x != nil {
+		return x.Rule
+	}
+	return ""
+}
+
+func (x *ApprovalOp) GetAnswerable() bool {
+	if x != nil {
+		return x.Answerable
+	}
+	return false
+}
+
+func (x *ApprovalOp) GetBeneficiary() string {
+	if x != nil {
+		return x.Beneficiary
+	}
+	return ""
+}
+
+func (x *ApprovalOp) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *ApprovalOp) GetResolvedBy() string {
+	if x != nil {
+		return x.ResolvedBy
+	}
+	return ""
+}
+
+func (x *ApprovalOp) GetActionClass() string {
+	if x != nil {
+		return x.ActionClass
+	}
+	return ""
+}
+
+func (x *ApprovalOp) GetAllowStanding() bool {
+	if x != nil {
+		return x.AllowStanding
+	}
+	return false
+}
+
+func (x *ApprovalOp) GetRaisedAtUnixMs() int64 {
+	if x != nil {
+		return x.RaisedAtUnixMs
+	}
+	return 0
+}
+
+func (x *ApprovalOp) GetExpiresAtUnixMs() int64 {
+	if x != nil {
+		return x.ExpiresAtUnixMs
+	}
+	return 0
+}
+
+func (x *ApprovalOp) GetObject() string {
+	if x != nil {
+		return x.Object
+	}
+	return ""
+}
+
+func (x *ApprovalOp) GetConversationId() string {
+	if x != nil {
+		return x.ConversationId
+	}
+	return ""
+}
+
+func (x *ApprovalOp) GetMachine() string {
+	if x != nil {
+		return x.Machine
+	}
+	return ""
+}
+
+func (x *ApprovalOp) GetCandidates() []string {
+	if x != nil {
+		return x.Candidates
+	}
+	return nil
+}
+
+func (x *ApprovalOp) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+func (x *ApprovalOp) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ApprovalOp) GetDuplicateNotice() string {
+	if x != nil {
+		return x.DuplicateNotice
+	}
+	return ""
+}
+
+// HITLResolvedOp: a raised approval was resolved (ADR-0142 D11). outcome is the
+// terminal state: approved | denied | expired | withdrawn | needs_hierarchy |
+// unroutable.
+type HITLResolvedOp struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	InterventionId string                 `protobuf:"bytes,1,opt,name=intervention_id,json=interventionId,proto3" json:"intervention_id,omitempty"`
+	SessionId      string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	AgentId        string                 `protobuf:"bytes,3,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	Kind           string                 `protobuf:"bytes,4,opt,name=kind,proto3" json:"kind,omitempty"`
+	Outcome        string                 `protobuf:"bytes,5,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	ResolvedBy     string                 `protobuf:"bytes,6,opt,name=resolved_by,json=resolvedBy,proto3" json:"resolved_by,omitempty"`
+	Detail         string                 `protobuf:"bytes,7,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *HITLResolvedOp) Reset() {
+	*x = HITLResolvedOp{}
+	mi := &file_operator_proto_msgTypes[95]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HITLResolvedOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HITLResolvedOp) ProtoMessage() {}
+
+func (x *HITLResolvedOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[95]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HITLResolvedOp.ProtoReflect.Descriptor instead.
+func (*HITLResolvedOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{95}
+}
+
+func (x *HITLResolvedOp) GetInterventionId() string {
+	if x != nil {
+		return x.InterventionId
+	}
+	return ""
+}
+
+func (x *HITLResolvedOp) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *HITLResolvedOp) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *HITLResolvedOp) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *HITLResolvedOp) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *HITLResolvedOp) GetResolvedBy() string {
+	if x != nil {
+		return x.ResolvedBy
+	}
+	return ""
+}
+
+func (x *HITLResolvedOp) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+type WatchMyApprovalsOpRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// audit (operator role only): every item, each marked answerable or not.
+	Audit         bool `protobuf:"varint,1,opt,name=audit,proto3" json:"audit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchMyApprovalsOpRequest) Reset() {
+	*x = WatchMyApprovalsOpRequest{}
+	mi := &file_operator_proto_msgTypes[96]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchMyApprovalsOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchMyApprovalsOpRequest) ProtoMessage() {}
+
+func (x *WatchMyApprovalsOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[96]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchMyApprovalsOpRequest.ProtoReflect.Descriptor instead.
+func (*WatchMyApprovalsOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{96}
+}
+
+func (x *WatchMyApprovalsOpRequest) GetAudit() bool {
+	if x != nil {
+		return x.Audit
+	}
+	return false
+}
+
+type ListApprovalsOpRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// states filters (pending, approved, …); empty = pending only.
+	States []string `protobuf:"bytes,1,rep,name=states,proto3" json:"states,omitempty"`
+	// audit (operator role only): every item, not only those addressed to the caller.
+	Audit bool `protobuf:"varint,2,opt,name=audit,proto3" json:"audit,omitempty"`
+	// limit bounds the reply (0 = 200).
+	Limit         int32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListApprovalsOpRequest) Reset() {
+	*x = ListApprovalsOpRequest{}
+	mi := &file_operator_proto_msgTypes[97]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListApprovalsOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListApprovalsOpRequest) ProtoMessage() {}
+
+func (x *ListApprovalsOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[97]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListApprovalsOpRequest.ProtoReflect.Descriptor instead.
+func (*ListApprovalsOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{97}
+}
+
+func (x *ListApprovalsOpRequest) GetStates() []string {
+	if x != nil {
+		return x.States
+	}
+	return nil
+}
+
+func (x *ListApprovalsOpRequest) GetAudit() bool {
+	if x != nil {
+		return x.Audit
+	}
+	return false
+}
+
+func (x *ListApprovalsOpRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListApprovalsOpResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Approvals     []*ApprovalOp          `protobuf:"bytes,1,rep,name=approvals,proto3" json:"approvals,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListApprovalsOpResponse) Reset() {
+	*x = ListApprovalsOpResponse{}
+	mi := &file_operator_proto_msgTypes[98]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListApprovalsOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListApprovalsOpResponse) ProtoMessage() {}
+
+func (x *ListApprovalsOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[98]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListApprovalsOpResponse.ProtoReflect.Descriptor instead.
+func (*ListApprovalsOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{98}
+}
+
+func (x *ListApprovalsOpResponse) GetApprovals() []*ApprovalOp {
+	if x != nil {
+		return x.Approvals
+	}
+	return nil
+}
+
+type AnswerApprovalOpRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason    string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Id        string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	Approve   bool                   `protobuf:"varint,4,opt,name=approve,proto3" json:"approve,omitempty"`
+	// choice answers a choose_machine item (one of ApprovalOp.candidates).
+	Choice string `protobuf:"bytes,5,opt,name=choice,proto3" json:"choice,omitempty"`
+	// standing: also pre-approve this action class + resource + scope until
+	// revoked or expired (only where ApprovalOp.allow_standing).
+	Standing bool `protobuf:"varint,6,opt,name=standing,proto3" json:"standing,omitempty"`
+	// standing_ttl_seconds bounds the standing approval (0 = the policy maximum).
+	StandingTtlSeconds int64 `protobuf:"varint,7,opt,name=standing_ttl_seconds,json=standingTtlSeconds,proto3" json:"standing_ttl_seconds,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *AnswerApprovalOpRequest) Reset() {
+	*x = AnswerApprovalOpRequest{}
+	mi := &file_operator_proto_msgTypes[99]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AnswerApprovalOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AnswerApprovalOpRequest) ProtoMessage() {}
+
+func (x *AnswerApprovalOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[99]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AnswerApprovalOpRequest.ProtoReflect.Descriptor instead.
+func (*AnswerApprovalOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{99}
+}
+
+func (x *AnswerApprovalOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *AnswerApprovalOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *AnswerApprovalOpRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AnswerApprovalOpRequest) GetApprove() bool {
+	if x != nil {
+		return x.Approve
+	}
+	return false
+}
+
+func (x *AnswerApprovalOpRequest) GetChoice() string {
+	if x != nil {
+		return x.Choice
+	}
+	return ""
+}
+
+func (x *AnswerApprovalOpRequest) GetStanding() bool {
+	if x != nil {
+		return x.Standing
+	}
+	return false
+}
+
+func (x *AnswerApprovalOpRequest) GetStandingTtlSeconds() int64 {
+	if x != nil {
+		return x.StandingTtlSeconds
+	}
+	return 0
+}
+
+type AnswerApprovalOpResponse struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Deduped   bool                   `protobuf:"varint,2,opt,name=deduped,proto3" json:"deduped,omitempty"`
+	// ok: the answer was recorded.
+	Ok bool `protobuf:"varint,3,opt,name=ok,proto3" json:"ok,omitempty"`
+	// state is the item's state after the call.
+	State string `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"`
+	// refusal says why ok=false (not an addressee, already resolved, …).
+	Refusal string `protobuf:"bytes,5,opt,name=refusal,proto3" json:"refusal,omitempty"`
+	// standing_id names the standing approval this answer granted, if any.
+	StandingId    string `protobuf:"bytes,6,opt,name=standing_id,json=standingId,proto3" json:"standing_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AnswerApprovalOpResponse) Reset() {
+	*x = AnswerApprovalOpResponse{}
+	mi := &file_operator_proto_msgTypes[100]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AnswerApprovalOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AnswerApprovalOpResponse) ProtoMessage() {}
+
+func (x *AnswerApprovalOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[100]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AnswerApprovalOpResponse.ProtoReflect.Descriptor instead.
+func (*AnswerApprovalOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{100}
+}
+
+func (x *AnswerApprovalOpResponse) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *AnswerApprovalOpResponse) GetDeduped() bool {
+	if x != nil {
+		return x.Deduped
+	}
+	return false
+}
+
+func (x *AnswerApprovalOpResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *AnswerApprovalOpResponse) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *AnswerApprovalOpResponse) GetRefusal() string {
+	if x != nil {
+		return x.Refusal
+	}
+	return ""
+}
+
+func (x *AnswerApprovalOpResponse) GetStandingId() string {
+	if x != nil {
+		return x.StandingId
+	}
+	return ""
+}
+
+// StandingApprovalOp is one standing approval (owner acceptance 2026-11-06).
+type StandingApprovalOp struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	ActionClass     string                 `protobuf:"bytes,2,opt,name=action_class,json=actionClass,proto3" json:"action_class,omitempty"`
+	Resource        string                 `protobuf:"bytes,3,opt,name=resource,proto3" json:"resource,omitempty"`
+	Scope           string                 `protobuf:"bytes,4,opt,name=scope,proto3" json:"scope,omitempty"`
+	Beneficiary     string                 `protobuf:"bytes,5,opt,name=beneficiary,proto3" json:"beneficiary,omitempty"`
+	GrantedBy       string                 `protobuf:"bytes,6,opt,name=granted_by,json=grantedBy,proto3" json:"granted_by,omitempty"`
+	GrantedAtUnixMs int64                  `protobuf:"varint,7,opt,name=granted_at_unix_ms,json=grantedAtUnixMs,proto3" json:"granted_at_unix_ms,omitempty"`
+	// expires_at_unix_ms 0 = until revoked.
+	ExpiresAtUnixMs  int64  `protobuf:"varint,8,opt,name=expires_at_unix_ms,json=expiresAtUnixMs,proto3" json:"expires_at_unix_ms,omitempty"`
+	RevokedAtUnixMs  int64  `protobuf:"varint,9,opt,name=revoked_at_unix_ms,json=revokedAtUnixMs,proto3" json:"revoked_at_unix_ms,omitempty"`
+	RevokedBy        string `protobuf:"bytes,10,opt,name=revoked_by,json=revokedBy,proto3" json:"revoked_by,omitempty"`
+	Reason           string `protobuf:"bytes,11,opt,name=reason,proto3" json:"reason,omitempty"`
+	LastUsedAtUnixMs int64  `protobuf:"varint,12,opt,name=last_used_at_unix_ms,json=lastUsedAtUnixMs,proto3" json:"last_used_at_unix_ms,omitempty"`
+	UseCount         int32  `protobuf:"varint,13,opt,name=use_count,json=useCount,proto3" json:"use_count,omitempty"`
+	FromApproval     string `protobuf:"bytes,14,opt,name=from_approval,json=fromApproval,proto3" json:"from_approval,omitempty"`
+	Active           bool   `protobuf:"varint,15,opt,name=active,proto3" json:"active,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *StandingApprovalOp) Reset() {
+	*x = StandingApprovalOp{}
+	mi := &file_operator_proto_msgTypes[101]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StandingApprovalOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StandingApprovalOp) ProtoMessage() {}
+
+func (x *StandingApprovalOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[101]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StandingApprovalOp.ProtoReflect.Descriptor instead.
+func (*StandingApprovalOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{101}
+}
+
+func (x *StandingApprovalOp) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *StandingApprovalOp) GetActionClass() string {
+	if x != nil {
+		return x.ActionClass
+	}
+	return ""
+}
+
+func (x *StandingApprovalOp) GetResource() string {
+	if x != nil {
+		return x.Resource
+	}
+	return ""
+}
+
+func (x *StandingApprovalOp) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *StandingApprovalOp) GetBeneficiary() string {
+	if x != nil {
+		return x.Beneficiary
+	}
+	return ""
+}
+
+func (x *StandingApprovalOp) GetGrantedBy() string {
+	if x != nil {
+		return x.GrantedBy
+	}
+	return ""
+}
+
+func (x *StandingApprovalOp) GetGrantedAtUnixMs() int64 {
+	if x != nil {
+		return x.GrantedAtUnixMs
+	}
+	return 0
+}
+
+func (x *StandingApprovalOp) GetExpiresAtUnixMs() int64 {
+	if x != nil {
+		return x.ExpiresAtUnixMs
+	}
+	return 0
+}
+
+func (x *StandingApprovalOp) GetRevokedAtUnixMs() int64 {
+	if x != nil {
+		return x.RevokedAtUnixMs
+	}
+	return 0
+}
+
+func (x *StandingApprovalOp) GetRevokedBy() string {
+	if x != nil {
+		return x.RevokedBy
+	}
+	return ""
+}
+
+func (x *StandingApprovalOp) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *StandingApprovalOp) GetLastUsedAtUnixMs() int64 {
+	if x != nil {
+		return x.LastUsedAtUnixMs
+	}
+	return 0
+}
+
+func (x *StandingApprovalOp) GetUseCount() int32 {
+	if x != nil {
+		return x.UseCount
+	}
+	return 0
+}
+
+func (x *StandingApprovalOp) GetFromApproval() string {
+	if x != nil {
+		return x.FromApproval
+	}
+	return ""
+}
+
+func (x *StandingApprovalOp) GetActive() bool {
+	if x != nil {
+		return x.Active
+	}
+	return false
+}
+
+type ListStandingApprovalsOpRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	IncludeInactive bool                   `protobuf:"varint,1,opt,name=include_inactive,json=includeInactive,proto3" json:"include_inactive,omitempty"`
+	// audit (operator role only): every person's standing approvals.
+	Audit         bool `protobuf:"varint,2,opt,name=audit,proto3" json:"audit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListStandingApprovalsOpRequest) Reset() {
+	*x = ListStandingApprovalsOpRequest{}
+	mi := &file_operator_proto_msgTypes[102]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListStandingApprovalsOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListStandingApprovalsOpRequest) ProtoMessage() {}
+
+func (x *ListStandingApprovalsOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[102]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListStandingApprovalsOpRequest.ProtoReflect.Descriptor instead.
+func (*ListStandingApprovalsOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{102}
+}
+
+func (x *ListStandingApprovalsOpRequest) GetIncludeInactive() bool {
+	if x != nil {
+		return x.IncludeInactive
+	}
+	return false
+}
+
+func (x *ListStandingApprovalsOpRequest) GetAudit() bool {
+	if x != nil {
+		return x.Audit
+	}
+	return false
+}
+
+type ListStandingApprovalsOpResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Standing      []*StandingApprovalOp  `protobuf:"bytes,1,rep,name=standing,proto3" json:"standing,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListStandingApprovalsOpResponse) Reset() {
+	*x = ListStandingApprovalsOpResponse{}
+	mi := &file_operator_proto_msgTypes[103]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListStandingApprovalsOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListStandingApprovalsOpResponse) ProtoMessage() {}
+
+func (x *ListStandingApprovalsOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[103]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListStandingApprovalsOpResponse.ProtoReflect.Descriptor instead.
+func (*ListStandingApprovalsOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{103}
+}
+
+func (x *ListStandingApprovalsOpResponse) GetStanding() []*StandingApprovalOp {
+	if x != nil {
+		return x.Standing
+	}
+	return nil
+}
+
+type RevokeStandingApprovalOpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Id            string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeStandingApprovalOpRequest) Reset() {
+	*x = RevokeStandingApprovalOpRequest{}
+	mi := &file_operator_proto_msgTypes[104]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeStandingApprovalOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeStandingApprovalOpRequest) ProtoMessage() {}
+
+func (x *RevokeStandingApprovalOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[104]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeStandingApprovalOpRequest.ProtoReflect.Descriptor instead.
+func (*RevokeStandingApprovalOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{104}
+}
+
+func (x *RevokeStandingApprovalOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *RevokeStandingApprovalOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *RevokeStandingApprovalOpRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// ShareToTeamOpRequest publishes one of the caller's private (owner:<caller>)
+// documents to the team/org classification given by target_tags (ADR-0142 D12).
+type ShareToTeamOpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	DocumentId    string                 `protobuf:"bytes,3,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
+	TargetTags    []string               `protobuf:"bytes,4,rep,name=target_tags,json=targetTags,proto3" json:"target_tags,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShareToTeamOpRequest) Reset() {
+	*x = ShareToTeamOpRequest{}
+	mi := &file_operator_proto_msgTypes[105]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShareToTeamOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShareToTeamOpRequest) ProtoMessage() {}
+
+func (x *ShareToTeamOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[105]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShareToTeamOpRequest.ProtoReflect.Descriptor instead.
+func (*ShareToTeamOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{105}
+}
+
+func (x *ShareToTeamOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *ShareToTeamOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *ShareToTeamOpRequest) GetDocumentId() string {
+	if x != nil {
+		return x.DocumentId
+	}
+	return ""
+}
+
+func (x *ShareToTeamOpRequest) GetTargetTags() []string {
+	if x != nil {
+		return x.TargetTags
+	}
+	return nil
+}
+
+type ShareToTeamOpResponse struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Deduped   bool                   `protobuf:"varint,2,opt,name=deduped,proto3" json:"deduped,omitempty"`
+	// state: "shared" (applied) | "pending_approval" (waits for approval_id).
+	State      string `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`
+	ApprovalId string `protobuf:"bytes,4,opt,name=approval_id,json=approvalId,proto3" json:"approval_id,omitempty"`
+	// tags is the document's classification after the share (state "shared").
+	Tags          []string `protobuf:"bytes,5,rep,name=tags,proto3" json:"tags,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShareToTeamOpResponse) Reset() {
+	*x = ShareToTeamOpResponse{}
+	mi := &file_operator_proto_msgTypes[106]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShareToTeamOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShareToTeamOpResponse) ProtoMessage() {}
+
+func (x *ShareToTeamOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[106]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShareToTeamOpResponse.ProtoReflect.Descriptor instead.
+func (*ShareToTeamOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{106}
+}
+
+func (x *ShareToTeamOpResponse) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *ShareToTeamOpResponse) GetDeduped() bool {
+	if x != nil {
+		return x.Deduped
+	}
+	return false
+}
+
+func (x *ShareToTeamOpResponse) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *ShareToTeamOpResponse) GetApprovalId() string {
+	if x != nil {
+		return x.ApprovalId
+	}
+	return ""
+}
+
+func (x *ShareToTeamOpResponse) GetTags() []string {
+	if x != nil {
+		return x.Tags
+	}
+	return nil
+}
+
 // ── Watch CRUD (premium capability-gated; proto in OSS). A2.6. ────────────────
 // WatchConfigOp/WatchActionOp are the operator-plane watch shapes. Field names
 // mirror the agent-plane WatchConfigProto/WatchActionProto so a CLI reuses its
@@ -7784,7 +9267,7 @@ type WatchActionOp struct {
 
 func (x *WatchActionOp) Reset() {
 	*x = WatchActionOp{}
-	mi := &file_operator_proto_msgTypes[90]
+	mi := &file_operator_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7796,7 +9279,7 @@ func (x *WatchActionOp) String() string {
 func (*WatchActionOp) ProtoMessage() {}
 
 func (x *WatchActionOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[90]
+	mi := &file_operator_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7809,7 +9292,7 @@ func (x *WatchActionOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchActionOp.ProtoReflect.Descriptor instead.
 func (*WatchActionOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{90}
+	return file_operator_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *WatchActionOp) GetType() string {
@@ -7892,14 +9375,17 @@ type WatchConfigOp struct {
 	// Arms run IN ORDER and independently: one failing arm does not cancel the
 	// others, because a notification that succeeded has already been seen and
 	// pretending otherwise would misreport what happened.
-	Actions       []*WatchActionOp `protobuf:"bytes,23,rep,name=actions,proto3" json:"actions,omitempty"`
+	Actions []*WatchActionOp `protobuf:"bytes,23,rep,name=actions,proto3" json:"actions,omitempty"`
+	// owner_id is the principal a principal-owned scheduled task belongs to
+	// ("scheduled-tasks"); "" for an operator-registered watch.
+	OwnerId       string `protobuf:"bytes,24,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WatchConfigOp) Reset() {
 	*x = WatchConfigOp{}
-	mi := &file_operator_proto_msgTypes[91]
+	mi := &file_operator_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7911,7 +9397,7 @@ func (x *WatchConfigOp) String() string {
 func (*WatchConfigOp) ProtoMessage() {}
 
 func (x *WatchConfigOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[91]
+	mi := &file_operator_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7924,7 +9410,7 @@ func (x *WatchConfigOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchConfigOp.ProtoReflect.Descriptor instead.
 func (*WatchConfigOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{91}
+	return file_operator_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *WatchConfigOp) GetId() string {
@@ -8088,6 +9574,13 @@ func (x *WatchConfigOp) GetActions() []*WatchActionOp {
 	return nil
 }
 
+func (x *WatchConfigOp) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
 // WatchFireOp is one recorded evaluation of a watch.
 type WatchFireOp struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
@@ -8106,7 +9599,7 @@ type WatchFireOp struct {
 
 func (x *WatchFireOp) Reset() {
 	*x = WatchFireOp{}
-	mi := &file_operator_proto_msgTypes[92]
+	mi := &file_operator_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8118,7 +9611,7 @@ func (x *WatchFireOp) String() string {
 func (*WatchFireOp) ProtoMessage() {}
 
 func (x *WatchFireOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[92]
+	mi := &file_operator_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8131,7 +9624,7 @@ func (x *WatchFireOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchFireOp.ProtoReflect.Descriptor instead.
 func (*WatchFireOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{92}
+	return file_operator_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *WatchFireOp) GetAtUnixMs() int64 {
@@ -8173,7 +9666,7 @@ type ListWatchesOpRequest struct {
 
 func (x *ListWatchesOpRequest) Reset() {
 	*x = ListWatchesOpRequest{}
-	mi := &file_operator_proto_msgTypes[93]
+	mi := &file_operator_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8185,7 +9678,7 @@ func (x *ListWatchesOpRequest) String() string {
 func (*ListWatchesOpRequest) ProtoMessage() {}
 
 func (x *ListWatchesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[93]
+	mi := &file_operator_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8198,7 +9691,7 @@ func (x *ListWatchesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWatchesOpRequest.ProtoReflect.Descriptor instead.
 func (*ListWatchesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{93}
+	return file_operator_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *ListWatchesOpRequest) GetPage() int32 {
@@ -8233,7 +9726,7 @@ type ListWatchesOpResponse struct {
 
 func (x *ListWatchesOpResponse) Reset() {
 	*x = ListWatchesOpResponse{}
-	mi := &file_operator_proto_msgTypes[94]
+	mi := &file_operator_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8245,7 +9738,7 @@ func (x *ListWatchesOpResponse) String() string {
 func (*ListWatchesOpResponse) ProtoMessage() {}
 
 func (x *ListWatchesOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[94]
+	mi := &file_operator_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8258,7 +9751,7 @@ func (x *ListWatchesOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWatchesOpResponse.ProtoReflect.Descriptor instead.
 func (*ListWatchesOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{94}
+	return file_operator_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *ListWatchesOpResponse) GetConfigs() []*WatchConfigOp {
@@ -8293,7 +9786,7 @@ type RegisterWatchOpRequest struct {
 
 func (x *RegisterWatchOpRequest) Reset() {
 	*x = RegisterWatchOpRequest{}
-	mi := &file_operator_proto_msgTypes[95]
+	mi := &file_operator_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8305,7 +9798,7 @@ func (x *RegisterWatchOpRequest) String() string {
 func (*RegisterWatchOpRequest) ProtoMessage() {}
 
 func (x *RegisterWatchOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[95]
+	mi := &file_operator_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8318,7 +9811,7 @@ func (x *RegisterWatchOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterWatchOpRequest.ProtoReflect.Descriptor instead.
 func (*RegisterWatchOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{95}
+	return file_operator_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *RegisterWatchOpRequest) GetCommandId() string {
@@ -8353,7 +9846,7 @@ type DeleteWatchOpRequest struct {
 
 func (x *DeleteWatchOpRequest) Reset() {
 	*x = DeleteWatchOpRequest{}
-	mi := &file_operator_proto_msgTypes[96]
+	mi := &file_operator_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8365,7 +9858,7 @@ func (x *DeleteWatchOpRequest) String() string {
 func (*DeleteWatchOpRequest) ProtoMessage() {}
 
 func (x *DeleteWatchOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[96]
+	mi := &file_operator_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8378,7 +9871,7 @@ func (x *DeleteWatchOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteWatchOpRequest.ProtoReflect.Descriptor instead.
 func (*DeleteWatchOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{96}
+	return file_operator_proto_rawDescGZIP(), []int{113}
 }
 
 func (x *DeleteWatchOpRequest) GetCommandId() string {
@@ -8414,7 +9907,7 @@ type SetWatchActiveOpRequest struct {
 
 func (x *SetWatchActiveOpRequest) Reset() {
 	*x = SetWatchActiveOpRequest{}
-	mi := &file_operator_proto_msgTypes[97]
+	mi := &file_operator_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8426,7 +9919,7 @@ func (x *SetWatchActiveOpRequest) String() string {
 func (*SetWatchActiveOpRequest) ProtoMessage() {}
 
 func (x *SetWatchActiveOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[97]
+	mi := &file_operator_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8439,7 +9932,7 @@ func (x *SetWatchActiveOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetWatchActiveOpRequest.ProtoReflect.Descriptor instead.
 func (*SetWatchActiveOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{97}
+	return file_operator_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *SetWatchActiveOpRequest) GetCommandId() string {
@@ -8480,7 +9973,7 @@ type ListWatchDeadLettersOpRequest struct {
 
 func (x *ListWatchDeadLettersOpRequest) Reset() {
 	*x = ListWatchDeadLettersOpRequest{}
-	mi := &file_operator_proto_msgTypes[98]
+	mi := &file_operator_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8492,7 +9985,7 @@ func (x *ListWatchDeadLettersOpRequest) String() string {
 func (*ListWatchDeadLettersOpRequest) ProtoMessage() {}
 
 func (x *ListWatchDeadLettersOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[98]
+	mi := &file_operator_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8505,7 +9998,7 @@ func (x *ListWatchDeadLettersOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWatchDeadLettersOpRequest.ProtoReflect.Descriptor instead.
 func (*ListWatchDeadLettersOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{98}
+	return file_operator_proto_rawDescGZIP(), []int{115}
 }
 
 func (x *ListWatchDeadLettersOpRequest) GetLimit() int32 {
@@ -8524,7 +10017,7 @@ type ListWatchDeadLettersOpResponse struct {
 
 func (x *ListWatchDeadLettersOpResponse) Reset() {
 	*x = ListWatchDeadLettersOpResponse{}
-	mi := &file_operator_proto_msgTypes[99]
+	mi := &file_operator_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8536,7 +10029,7 @@ func (x *ListWatchDeadLettersOpResponse) String() string {
 func (*ListWatchDeadLettersOpResponse) ProtoMessage() {}
 
 func (x *ListWatchDeadLettersOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[99]
+	mi := &file_operator_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8549,7 +10042,7 @@ func (x *ListWatchDeadLettersOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWatchDeadLettersOpResponse.ProtoReflect.Descriptor instead.
 func (*ListWatchDeadLettersOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{99}
+	return file_operator_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *ListWatchDeadLettersOpResponse) GetEntries() []*WatchDeadLetterOp {
@@ -8575,7 +10068,7 @@ type WatchDeadLetterOp struct {
 
 func (x *WatchDeadLetterOp) Reset() {
 	*x = WatchDeadLetterOp{}
-	mi := &file_operator_proto_msgTypes[100]
+	mi := &file_operator_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8587,7 +10080,7 @@ func (x *WatchDeadLetterOp) String() string {
 func (*WatchDeadLetterOp) ProtoMessage() {}
 
 func (x *WatchDeadLetterOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[100]
+	mi := &file_operator_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8600,7 +10093,7 @@ func (x *WatchDeadLetterOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchDeadLetterOp.ProtoReflect.Descriptor instead.
 func (*WatchDeadLetterOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{100}
+	return file_operator_proto_rawDescGZIP(), []int{117}
 }
 
 func (x *WatchDeadLetterOp) GetId() string {
@@ -8668,7 +10161,7 @@ type GetWatchMetricsOpRequest struct {
 
 func (x *GetWatchMetricsOpRequest) Reset() {
 	*x = GetWatchMetricsOpRequest{}
-	mi := &file_operator_proto_msgTypes[101]
+	mi := &file_operator_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8680,7 +10173,7 @@ func (x *GetWatchMetricsOpRequest) String() string {
 func (*GetWatchMetricsOpRequest) ProtoMessage() {}
 
 func (x *GetWatchMetricsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[101]
+	mi := &file_operator_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8693,7 +10186,7 @@ func (x *GetWatchMetricsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWatchMetricsOpRequest.ProtoReflect.Descriptor instead.
 func (*GetWatchMetricsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{101}
+	return file_operator_proto_rawDescGZIP(), []int{118}
 }
 
 type GetWatchMetricsOpResponse struct {
@@ -8705,7 +10198,7 @@ type GetWatchMetricsOpResponse struct {
 
 func (x *GetWatchMetricsOpResponse) Reset() {
 	*x = GetWatchMetricsOpResponse{}
-	mi := &file_operator_proto_msgTypes[102]
+	mi := &file_operator_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8717,7 +10210,7 @@ func (x *GetWatchMetricsOpResponse) String() string {
 func (*GetWatchMetricsOpResponse) ProtoMessage() {}
 
 func (x *GetWatchMetricsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[102]
+	mi := &file_operator_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8730,7 +10223,7 @@ func (x *GetWatchMetricsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWatchMetricsOpResponse.ProtoReflect.Descriptor instead.
 func (*GetWatchMetricsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{102}
+	return file_operator_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *GetWatchMetricsOpResponse) GetMetrics() []*WatchMetricsOp {
@@ -8756,7 +10249,7 @@ type WatchMetricsOp struct {
 
 func (x *WatchMetricsOp) Reset() {
 	*x = WatchMetricsOp{}
-	mi := &file_operator_proto_msgTypes[103]
+	mi := &file_operator_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8768,7 +10261,7 @@ func (x *WatchMetricsOp) String() string {
 func (*WatchMetricsOp) ProtoMessage() {}
 
 func (x *WatchMetricsOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[103]
+	mi := &file_operator_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8781,7 +10274,7 @@ func (x *WatchMetricsOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchMetricsOp.ProtoReflect.Descriptor instead.
 func (*WatchMetricsOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{103}
+	return file_operator_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *WatchMetricsOp) GetWatchId() string {
@@ -8850,7 +10343,7 @@ type BacktestWatchOpRequest struct {
 
 func (x *BacktestWatchOpRequest) Reset() {
 	*x = BacktestWatchOpRequest{}
-	mi := &file_operator_proto_msgTypes[104]
+	mi := &file_operator_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8862,7 +10355,7 @@ func (x *BacktestWatchOpRequest) String() string {
 func (*BacktestWatchOpRequest) ProtoMessage() {}
 
 func (x *BacktestWatchOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[104]
+	mi := &file_operator_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8875,7 +10368,7 @@ func (x *BacktestWatchOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BacktestWatchOpRequest.ProtoReflect.Descriptor instead.
 func (*BacktestWatchOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{104}
+	return file_operator_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *BacktestWatchOpRequest) GetConfig() *WatchConfigOp {
@@ -8913,7 +10406,7 @@ type BacktestWatchOpResponse struct {
 
 func (x *BacktestWatchOpResponse) Reset() {
 	*x = BacktestWatchOpResponse{}
-	mi := &file_operator_proto_msgTypes[105]
+	mi := &file_operator_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8925,7 +10418,7 @@ func (x *BacktestWatchOpResponse) String() string {
 func (*BacktestWatchOpResponse) ProtoMessage() {}
 
 func (x *BacktestWatchOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[105]
+	mi := &file_operator_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8938,7 +10431,7 @@ func (x *BacktestWatchOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BacktestWatchOpResponse.ProtoReflect.Descriptor instead.
 func (*BacktestWatchOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{105}
+	return file_operator_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *BacktestWatchOpResponse) GetVerdicts() []*WatchBacktestVerdictOp {
@@ -8982,7 +10475,7 @@ type WatchBacktestVerdictOp struct {
 
 func (x *WatchBacktestVerdictOp) Reset() {
 	*x = WatchBacktestVerdictOp{}
-	mi := &file_operator_proto_msgTypes[106]
+	mi := &file_operator_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8994,7 +10487,7 @@ func (x *WatchBacktestVerdictOp) String() string {
 func (*WatchBacktestVerdictOp) ProtoMessage() {}
 
 func (x *WatchBacktestVerdictOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[106]
+	mi := &file_operator_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9007,7 +10500,7 @@ func (x *WatchBacktestVerdictOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchBacktestVerdictOp.ProtoReflect.Descriptor instead.
 func (*WatchBacktestVerdictOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{106}
+	return file_operator_proto_rawDescGZIP(), []int{123}
 }
 
 func (x *WatchBacktestVerdictOp) GetSeq() uint64 {
@@ -9059,7 +10552,7 @@ type PreviewRouteOpRequest struct {
 
 func (x *PreviewRouteOpRequest) Reset() {
 	*x = PreviewRouteOpRequest{}
-	mi := &file_operator_proto_msgTypes[107]
+	mi := &file_operator_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9071,7 +10564,7 @@ func (x *PreviewRouteOpRequest) String() string {
 func (*PreviewRouteOpRequest) ProtoMessage() {}
 
 func (x *PreviewRouteOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[107]
+	mi := &file_operator_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9084,7 +10577,7 @@ func (x *PreviewRouteOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewRouteOpRequest.ProtoReflect.Descriptor instead.
 func (*PreviewRouteOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{107}
+	return file_operator_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *PreviewRouteOpRequest) GetTaskDesc() string {
@@ -9126,7 +10619,7 @@ type PreviewCandidateOp struct {
 
 func (x *PreviewCandidateOp) Reset() {
 	*x = PreviewCandidateOp{}
-	mi := &file_operator_proto_msgTypes[108]
+	mi := &file_operator_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9138,7 +10631,7 @@ func (x *PreviewCandidateOp) String() string {
 func (*PreviewCandidateOp) ProtoMessage() {}
 
 func (x *PreviewCandidateOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[108]
+	mi := &file_operator_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9151,7 +10644,7 @@ func (x *PreviewCandidateOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewCandidateOp.ProtoReflect.Descriptor instead.
 func (*PreviewCandidateOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{108}
+	return file_operator_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *PreviewCandidateOp) GetAgentId() string {
@@ -9235,7 +10728,7 @@ type PreviewCapStatOp struct {
 
 func (x *PreviewCapStatOp) Reset() {
 	*x = PreviewCapStatOp{}
-	mi := &file_operator_proto_msgTypes[109]
+	mi := &file_operator_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9247,7 +10740,7 @@ func (x *PreviewCapStatOp) String() string {
 func (*PreviewCapStatOp) ProtoMessage() {}
 
 func (x *PreviewCapStatOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[109]
+	mi := &file_operator_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9260,7 +10753,7 @@ func (x *PreviewCapStatOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewCapStatOp.ProtoReflect.Descriptor instead.
 func (*PreviewCapStatOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{109}
+	return file_operator_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *PreviewCapStatOp) GetSuccessRate() float64 {
@@ -9294,7 +10787,7 @@ type PreviewRouteOpResponse struct {
 
 func (x *PreviewRouteOpResponse) Reset() {
 	*x = PreviewRouteOpResponse{}
-	mi := &file_operator_proto_msgTypes[110]
+	mi := &file_operator_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9306,7 +10799,7 @@ func (x *PreviewRouteOpResponse) String() string {
 func (*PreviewRouteOpResponse) ProtoMessage() {}
 
 func (x *PreviewRouteOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[110]
+	mi := &file_operator_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9319,7 +10812,7 @@ func (x *PreviewRouteOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewRouteOpResponse.ProtoReflect.Descriptor instead.
 func (*PreviewRouteOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{110}
+	return file_operator_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *PreviewRouteOpResponse) GetRanked() []*MeritResultOp {
@@ -9349,7 +10842,7 @@ type ReactiveBudgetOp struct {
 
 func (x *ReactiveBudgetOp) Reset() {
 	*x = ReactiveBudgetOp{}
-	mi := &file_operator_proto_msgTypes[111]
+	mi := &file_operator_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9361,7 +10854,7 @@ func (x *ReactiveBudgetOp) String() string {
 func (*ReactiveBudgetOp) ProtoMessage() {}
 
 func (x *ReactiveBudgetOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[111]
+	mi := &file_operator_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9374,7 +10867,7 @@ func (x *ReactiveBudgetOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactiveBudgetOp.ProtoReflect.Descriptor instead.
 func (*ReactiveBudgetOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{111}
+	return file_operator_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *ReactiveBudgetOp) GetResource() string {
@@ -9423,7 +10916,7 @@ type ExplainAccessOpRequest struct {
 
 func (x *ExplainAccessOpRequest) Reset() {
 	*x = ExplainAccessOpRequest{}
-	mi := &file_operator_proto_msgTypes[112]
+	mi := &file_operator_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9435,7 +10928,7 @@ func (x *ExplainAccessOpRequest) String() string {
 func (*ExplainAccessOpRequest) ProtoMessage() {}
 
 func (x *ExplainAccessOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[112]
+	mi := &file_operator_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9448,7 +10941,7 @@ func (x *ExplainAccessOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExplainAccessOpRequest.ProtoReflect.Descriptor instead.
 func (*ExplainAccessOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{112}
+	return file_operator_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *ExplainAccessOpRequest) GetPrincipalId() string {
@@ -9524,7 +11017,7 @@ type PolicyContributionOp struct {
 
 func (x *PolicyContributionOp) Reset() {
 	*x = PolicyContributionOp{}
-	mi := &file_operator_proto_msgTypes[113]
+	mi := &file_operator_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9536,7 +11029,7 @@ func (x *PolicyContributionOp) String() string {
 func (*PolicyContributionOp) ProtoMessage() {}
 
 func (x *PolicyContributionOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[113]
+	mi := &file_operator_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9549,7 +11042,7 @@ func (x *PolicyContributionOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PolicyContributionOp.ProtoReflect.Descriptor instead.
 func (*PolicyContributionOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{113}
+	return file_operator_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *PolicyContributionOp) GetPolicyId() string {
@@ -9613,7 +11106,7 @@ type AccessDecisionOp struct {
 
 func (x *AccessDecisionOp) Reset() {
 	*x = AccessDecisionOp{}
-	mi := &file_operator_proto_msgTypes[114]
+	mi := &file_operator_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9625,7 +11118,7 @@ func (x *AccessDecisionOp) String() string {
 func (*AccessDecisionOp) ProtoMessage() {}
 
 func (x *AccessDecisionOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[114]
+	mi := &file_operator_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9638,7 +11131,7 @@ func (x *AccessDecisionOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccessDecisionOp.ProtoReflect.Descriptor instead.
 func (*AccessDecisionOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{114}
+	return file_operator_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *AccessDecisionOp) GetAllowed() bool {
@@ -9706,7 +11199,7 @@ type ExplainAccessOpResponse struct {
 
 func (x *ExplainAccessOpResponse) Reset() {
 	*x = ExplainAccessOpResponse{}
-	mi := &file_operator_proto_msgTypes[115]
+	mi := &file_operator_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9718,7 +11211,7 @@ func (x *ExplainAccessOpResponse) String() string {
 func (*ExplainAccessOpResponse) ProtoMessage() {}
 
 func (x *ExplainAccessOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[115]
+	mi := &file_operator_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9731,7 +11224,7 @@ func (x *ExplainAccessOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExplainAccessOpResponse.ProtoReflect.Descriptor instead.
 func (*ExplainAccessOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{115}
+	return file_operator_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *ExplainAccessOpResponse) GetDecision() *AccessDecisionOp {
@@ -9749,7 +11242,7 @@ type ListClassificationTagsOpRequest struct {
 
 func (x *ListClassificationTagsOpRequest) Reset() {
 	*x = ListClassificationTagsOpRequest{}
-	mi := &file_operator_proto_msgTypes[116]
+	mi := &file_operator_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9761,7 +11254,7 @@ func (x *ListClassificationTagsOpRequest) String() string {
 func (*ListClassificationTagsOpRequest) ProtoMessage() {}
 
 func (x *ListClassificationTagsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[116]
+	mi := &file_operator_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9774,7 +11267,7 @@ func (x *ListClassificationTagsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListClassificationTagsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListClassificationTagsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{116}
+	return file_operator_proto_rawDescGZIP(), []int{133}
 }
 
 type ListClassificationTagsOpResponse struct {
@@ -9786,7 +11279,7 @@ type ListClassificationTagsOpResponse struct {
 
 func (x *ListClassificationTagsOpResponse) Reset() {
 	*x = ListClassificationTagsOpResponse{}
-	mi := &file_operator_proto_msgTypes[117]
+	mi := &file_operator_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9798,7 +11291,7 @@ func (x *ListClassificationTagsOpResponse) String() string {
 func (*ListClassificationTagsOpResponse) ProtoMessage() {}
 
 func (x *ListClassificationTagsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[117]
+	mi := &file_operator_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9811,7 +11304,7 @@ func (x *ListClassificationTagsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListClassificationTagsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListClassificationTagsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{117}
+	return file_operator_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *ListClassificationTagsOpResponse) GetTags() []string {
@@ -9847,7 +11340,7 @@ type ListDocumentsOpRequest struct {
 
 func (x *ListDocumentsOpRequest) Reset() {
 	*x = ListDocumentsOpRequest{}
-	mi := &file_operator_proto_msgTypes[118]
+	mi := &file_operator_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9859,7 +11352,7 @@ func (x *ListDocumentsOpRequest) String() string {
 func (*ListDocumentsOpRequest) ProtoMessage() {}
 
 func (x *ListDocumentsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[118]
+	mi := &file_operator_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9872,7 +11365,7 @@ func (x *ListDocumentsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDocumentsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListDocumentsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{118}
+	return file_operator_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *ListDocumentsOpRequest) GetLimit() int32 {
@@ -9938,7 +11431,7 @@ type DocumentSummaryOp struct {
 
 func (x *DocumentSummaryOp) Reset() {
 	*x = DocumentSummaryOp{}
-	mi := &file_operator_proto_msgTypes[119]
+	mi := &file_operator_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9950,7 +11443,7 @@ func (x *DocumentSummaryOp) String() string {
 func (*DocumentSummaryOp) ProtoMessage() {}
 
 func (x *DocumentSummaryOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[119]
+	mi := &file_operator_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9963,7 +11456,7 @@ func (x *DocumentSummaryOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DocumentSummaryOp.ProtoReflect.Descriptor instead.
 func (*DocumentSummaryOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{119}
+	return file_operator_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *DocumentSummaryOp) GetId() string {
@@ -10037,7 +11530,7 @@ type ListDocumentsOpResponse struct {
 
 func (x *ListDocumentsOpResponse) Reset() {
 	*x = ListDocumentsOpResponse{}
-	mi := &file_operator_proto_msgTypes[120]
+	mi := &file_operator_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10049,7 +11542,7 @@ func (x *ListDocumentsOpResponse) String() string {
 func (*ListDocumentsOpResponse) ProtoMessage() {}
 
 func (x *ListDocumentsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[120]
+	mi := &file_operator_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10062,7 +11555,7 @@ func (x *ListDocumentsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDocumentsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListDocumentsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{120}
+	return file_operator_proto_rawDescGZIP(), []int{137}
 }
 
 func (x *ListDocumentsOpResponse) GetDocuments() []*DocumentSummaryOp {
@@ -10097,7 +11590,7 @@ type ListSessionCheckpointsOpRequest struct {
 
 func (x *ListSessionCheckpointsOpRequest) Reset() {
 	*x = ListSessionCheckpointsOpRequest{}
-	mi := &file_operator_proto_msgTypes[121]
+	mi := &file_operator_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10109,7 +11602,7 @@ func (x *ListSessionCheckpointsOpRequest) String() string {
 func (*ListSessionCheckpointsOpRequest) ProtoMessage() {}
 
 func (x *ListSessionCheckpointsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[121]
+	mi := &file_operator_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10122,7 +11615,7 @@ func (x *ListSessionCheckpointsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionCheckpointsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListSessionCheckpointsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{121}
+	return file_operator_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *ListSessionCheckpointsOpRequest) GetSessionId() string {
@@ -10166,7 +11659,7 @@ type SessionCheckpointOp struct {
 
 func (x *SessionCheckpointOp) Reset() {
 	*x = SessionCheckpointOp{}
-	mi := &file_operator_proto_msgTypes[122]
+	mi := &file_operator_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10178,7 +11671,7 @@ func (x *SessionCheckpointOp) String() string {
 func (*SessionCheckpointOp) ProtoMessage() {}
 
 func (x *SessionCheckpointOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[122]
+	mi := &file_operator_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10191,7 +11684,7 @@ func (x *SessionCheckpointOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionCheckpointOp.ProtoReflect.Descriptor instead.
 func (*SessionCheckpointOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{122}
+	return file_operator_proto_rawDescGZIP(), []int{139}
 }
 
 func (x *SessionCheckpointOp) GetSessionId() string {
@@ -10252,7 +11745,7 @@ type ListSessionCheckpointsOpResponse struct {
 
 func (x *ListSessionCheckpointsOpResponse) Reset() {
 	*x = ListSessionCheckpointsOpResponse{}
-	mi := &file_operator_proto_msgTypes[123]
+	mi := &file_operator_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10264,7 +11757,7 @@ func (x *ListSessionCheckpointsOpResponse) String() string {
 func (*ListSessionCheckpointsOpResponse) ProtoMessage() {}
 
 func (x *ListSessionCheckpointsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[123]
+	mi := &file_operator_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10277,7 +11770,7 @@ func (x *ListSessionCheckpointsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionCheckpointsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListSessionCheckpointsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{123}
+	return file_operator_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *ListSessionCheckpointsOpResponse) GetCheckpoints() []*SessionCheckpointOp {
@@ -10295,7 +11788,7 @@ type ListMCPServersOpRequest struct {
 
 func (x *ListMCPServersOpRequest) Reset() {
 	*x = ListMCPServersOpRequest{}
-	mi := &file_operator_proto_msgTypes[124]
+	mi := &file_operator_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10307,7 +11800,7 @@ func (x *ListMCPServersOpRequest) String() string {
 func (*ListMCPServersOpRequest) ProtoMessage() {}
 
 func (x *ListMCPServersOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[124]
+	mi := &file_operator_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10320,7 +11813,7 @@ func (x *ListMCPServersOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMCPServersOpRequest.ProtoReflect.Descriptor instead.
 func (*ListMCPServersOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{124}
+	return file_operator_proto_rawDescGZIP(), []int{141}
 }
 
 // MCPServerOp is one configured external MCP server (ADR-0043).
@@ -10361,7 +11854,7 @@ type MCPServerOp struct {
 
 func (x *MCPServerOp) Reset() {
 	*x = MCPServerOp{}
-	mi := &file_operator_proto_msgTypes[125]
+	mi := &file_operator_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10373,7 +11866,7 @@ func (x *MCPServerOp) String() string {
 func (*MCPServerOp) ProtoMessage() {}
 
 func (x *MCPServerOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[125]
+	mi := &file_operator_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10386,7 +11879,7 @@ func (x *MCPServerOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServerOp.ProtoReflect.Descriptor instead.
 func (*MCPServerOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{125}
+	return file_operator_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *MCPServerOp) GetName() string {
@@ -10501,7 +11994,7 @@ type ListMCPServersOpResponse struct {
 
 func (x *ListMCPServersOpResponse) Reset() {
 	*x = ListMCPServersOpResponse{}
-	mi := &file_operator_proto_msgTypes[126]
+	mi := &file_operator_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10513,7 +12006,7 @@ func (x *ListMCPServersOpResponse) String() string {
 func (*ListMCPServersOpResponse) ProtoMessage() {}
 
 func (x *ListMCPServersOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[126]
+	mi := &file_operator_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10526,7 +12019,7 @@ func (x *ListMCPServersOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMCPServersOpResponse.ProtoReflect.Descriptor instead.
 func (*ListMCPServersOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{126}
+	return file_operator_proto_rawDescGZIP(), []int{143}
 }
 
 func (x *ListMCPServersOpResponse) GetServers() []*MCPServerOp {
@@ -10551,7 +12044,7 @@ type GetEmbeddingConfigOpRequest struct {
 
 func (x *GetEmbeddingConfigOpRequest) Reset() {
 	*x = GetEmbeddingConfigOpRequest{}
-	mi := &file_operator_proto_msgTypes[127]
+	mi := &file_operator_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10563,7 +12056,7 @@ func (x *GetEmbeddingConfigOpRequest) String() string {
 func (*GetEmbeddingConfigOpRequest) ProtoMessage() {}
 
 func (x *GetEmbeddingConfigOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[127]
+	mi := &file_operator_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10576,7 +12069,7 @@ func (x *GetEmbeddingConfigOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEmbeddingConfigOpRequest.ProtoReflect.Descriptor instead.
 func (*GetEmbeddingConfigOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{127}
+	return file_operator_proto_rawDescGZIP(), []int{144}
 }
 
 type EmbeddingConfigOp struct {
@@ -10594,7 +12087,7 @@ type EmbeddingConfigOp struct {
 
 func (x *EmbeddingConfigOp) Reset() {
 	*x = EmbeddingConfigOp{}
-	mi := &file_operator_proto_msgTypes[128]
+	mi := &file_operator_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10606,7 +12099,7 @@ func (x *EmbeddingConfigOp) String() string {
 func (*EmbeddingConfigOp) ProtoMessage() {}
 
 func (x *EmbeddingConfigOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[128]
+	mi := &file_operator_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10619,7 +12112,7 @@ func (x *EmbeddingConfigOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbeddingConfigOp.ProtoReflect.Descriptor instead.
 func (*EmbeddingConfigOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{128}
+	return file_operator_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *EmbeddingConfigOp) GetProvider() string {
@@ -10669,7 +12162,7 @@ type ClassifyInputOpRequest struct {
 
 func (x *ClassifyInputOpRequest) Reset() {
 	*x = ClassifyInputOpRequest{}
-	mi := &file_operator_proto_msgTypes[129]
+	mi := &file_operator_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10681,7 +12174,7 @@ func (x *ClassifyInputOpRequest) String() string {
 func (*ClassifyInputOpRequest) ProtoMessage() {}
 
 func (x *ClassifyInputOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[129]
+	mi := &file_operator_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10694,7 +12187,7 @@ func (x *ClassifyInputOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClassifyInputOpRequest.ProtoReflect.Descriptor instead.
 func (*ClassifyInputOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{129}
+	return file_operator_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *ClassifyInputOpRequest) GetText() string {
@@ -10739,7 +12232,7 @@ type ClassifiedInputOp struct {
 
 func (x *ClassifiedInputOp) Reset() {
 	*x = ClassifiedInputOp{}
-	mi := &file_operator_proto_msgTypes[130]
+	mi := &file_operator_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10751,7 +12244,7 @@ func (x *ClassifiedInputOp) String() string {
 func (*ClassifiedInputOp) ProtoMessage() {}
 
 func (x *ClassifiedInputOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[130]
+	mi := &file_operator_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10764,7 +12257,7 @@ func (x *ClassifiedInputOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClassifiedInputOp.ProtoReflect.Descriptor instead.
 func (*ClassifiedInputOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{130}
+	return file_operator_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *ClassifiedInputOp) GetClassification() string {
@@ -10810,7 +12303,7 @@ type ListGeneratorsOpRequest struct {
 
 func (x *ListGeneratorsOpRequest) Reset() {
 	*x = ListGeneratorsOpRequest{}
-	mi := &file_operator_proto_msgTypes[131]
+	mi := &file_operator_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10822,7 +12315,7 @@ func (x *ListGeneratorsOpRequest) String() string {
 func (*ListGeneratorsOpRequest) ProtoMessage() {}
 
 func (x *ListGeneratorsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[131]
+	mi := &file_operator_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10835,7 +12328,7 @@ func (x *ListGeneratorsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGeneratorsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListGeneratorsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{131}
+	return file_operator_proto_rawDescGZIP(), []int{148}
 }
 
 // GeneratorOp is one configured LLM generator plus its live pulse.
@@ -10886,7 +12379,7 @@ type GeneratorOp struct {
 
 func (x *GeneratorOp) Reset() {
 	*x = GeneratorOp{}
-	mi := &file_operator_proto_msgTypes[132]
+	mi := &file_operator_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10898,7 +12391,7 @@ func (x *GeneratorOp) String() string {
 func (*GeneratorOp) ProtoMessage() {}
 
 func (x *GeneratorOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[132]
+	mi := &file_operator_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10911,7 +12404,7 @@ func (x *GeneratorOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GeneratorOp.ProtoReflect.Descriptor instead.
 func (*GeneratorOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{132}
+	return file_operator_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *GeneratorOp) GetId() string {
@@ -11042,7 +12535,7 @@ type ListGeneratorsOpResponse struct {
 
 func (x *ListGeneratorsOpResponse) Reset() {
 	*x = ListGeneratorsOpResponse{}
-	mi := &file_operator_proto_msgTypes[133]
+	mi := &file_operator_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11054,7 +12547,7 @@ func (x *ListGeneratorsOpResponse) String() string {
 func (*ListGeneratorsOpResponse) ProtoMessage() {}
 
 func (x *ListGeneratorsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[133]
+	mi := &file_operator_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11067,7 +12560,7 @@ func (x *ListGeneratorsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGeneratorsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListGeneratorsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{133}
+	return file_operator_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *ListGeneratorsOpResponse) GetGenerators() []*GeneratorOp {
@@ -11085,7 +12578,7 @@ type ListRoleAssignmentsOpRequest struct {
 
 func (x *ListRoleAssignmentsOpRequest) Reset() {
 	*x = ListRoleAssignmentsOpRequest{}
-	mi := &file_operator_proto_msgTypes[134]
+	mi := &file_operator_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11097,7 +12590,7 @@ func (x *ListRoleAssignmentsOpRequest) String() string {
 func (*ListRoleAssignmentsOpRequest) ProtoMessage() {}
 
 func (x *ListRoleAssignmentsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[134]
+	mi := &file_operator_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11110,7 +12603,7 @@ func (x *ListRoleAssignmentsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRoleAssignmentsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListRoleAssignmentsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{134}
+	return file_operator_proto_rawDescGZIP(), []int{151}
 }
 
 // RoleAssignmentOp binds a system organ to the generator that serves it.
@@ -11131,7 +12624,7 @@ type RoleAssignmentOp struct {
 
 func (x *RoleAssignmentOp) Reset() {
 	*x = RoleAssignmentOp{}
-	mi := &file_operator_proto_msgTypes[135]
+	mi := &file_operator_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11143,7 +12636,7 @@ func (x *RoleAssignmentOp) String() string {
 func (*RoleAssignmentOp) ProtoMessage() {}
 
 func (x *RoleAssignmentOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[135]
+	mi := &file_operator_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11156,7 +12649,7 @@ func (x *RoleAssignmentOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoleAssignmentOp.ProtoReflect.Descriptor instead.
 func (*RoleAssignmentOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{135}
+	return file_operator_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *RoleAssignmentOp) GetRole() string {
@@ -11189,7 +12682,7 @@ type ListRoleAssignmentsOpResponse struct {
 
 func (x *ListRoleAssignmentsOpResponse) Reset() {
 	*x = ListRoleAssignmentsOpResponse{}
-	mi := &file_operator_proto_msgTypes[136]
+	mi := &file_operator_proto_msgTypes[153]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11201,7 +12694,7 @@ func (x *ListRoleAssignmentsOpResponse) String() string {
 func (*ListRoleAssignmentsOpResponse) ProtoMessage() {}
 
 func (x *ListRoleAssignmentsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[136]
+	mi := &file_operator_proto_msgTypes[153]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11214,7 +12707,7 @@ func (x *ListRoleAssignmentsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRoleAssignmentsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListRoleAssignmentsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{136}
+	return file_operator_proto_rawDescGZIP(), []int{153}
 }
 
 func (x *ListRoleAssignmentsOpResponse) GetAssignments() []*RoleAssignmentOp {
@@ -11233,7 +12726,7 @@ type TestGeneratorOpRequest struct {
 
 func (x *TestGeneratorOpRequest) Reset() {
 	*x = TestGeneratorOpRequest{}
-	mi := &file_operator_proto_msgTypes[137]
+	mi := &file_operator_proto_msgTypes[154]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11245,7 +12738,7 @@ func (x *TestGeneratorOpRequest) String() string {
 func (*TestGeneratorOpRequest) ProtoMessage() {}
 
 func (x *TestGeneratorOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[137]
+	mi := &file_operator_proto_msgTypes[154]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11258,7 +12751,7 @@ func (x *TestGeneratorOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestGeneratorOpRequest.ProtoReflect.Descriptor instead.
 func (*TestGeneratorOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{137}
+	return file_operator_proto_rawDescGZIP(), []int{154}
 }
 
 func (x *TestGeneratorOpRequest) GetGeneratorId() string {
@@ -11304,7 +12797,7 @@ type GeneratorTestResultOp struct {
 
 func (x *GeneratorTestResultOp) Reset() {
 	*x = GeneratorTestResultOp{}
-	mi := &file_operator_proto_msgTypes[138]
+	mi := &file_operator_proto_msgTypes[155]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11316,7 +12809,7 @@ func (x *GeneratorTestResultOp) String() string {
 func (*GeneratorTestResultOp) ProtoMessage() {}
 
 func (x *GeneratorTestResultOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[138]
+	mi := &file_operator_proto_msgTypes[155]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11329,7 +12822,7 @@ func (x *GeneratorTestResultOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GeneratorTestResultOp.ProtoReflect.Descriptor instead.
 func (*GeneratorTestResultOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{138}
+	return file_operator_proto_rawDescGZIP(), []int{155}
 }
 
 func (x *GeneratorTestResultOp) GetOk() bool {
@@ -11425,7 +12918,7 @@ type GeneratorSpecOp struct {
 
 func (x *GeneratorSpecOp) Reset() {
 	*x = GeneratorSpecOp{}
-	mi := &file_operator_proto_msgTypes[139]
+	mi := &file_operator_proto_msgTypes[156]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11437,7 +12930,7 @@ func (x *GeneratorSpecOp) String() string {
 func (*GeneratorSpecOp) ProtoMessage() {}
 
 func (x *GeneratorSpecOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[139]
+	mi := &file_operator_proto_msgTypes[156]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11450,7 +12943,7 @@ func (x *GeneratorSpecOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GeneratorSpecOp.ProtoReflect.Descriptor instead.
 func (*GeneratorSpecOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{139}
+	return file_operator_proto_rawDescGZIP(), []int{156}
 }
 
 func (x *GeneratorSpecOp) GetId() string {
@@ -11527,7 +13020,7 @@ type SaveGeneratorOpRequest struct {
 
 func (x *SaveGeneratorOpRequest) Reset() {
 	*x = SaveGeneratorOpRequest{}
-	mi := &file_operator_proto_msgTypes[140]
+	mi := &file_operator_proto_msgTypes[157]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11539,7 +13032,7 @@ func (x *SaveGeneratorOpRequest) String() string {
 func (*SaveGeneratorOpRequest) ProtoMessage() {}
 
 func (x *SaveGeneratorOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[140]
+	mi := &file_operator_proto_msgTypes[157]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11552,7 +13045,7 @@ func (x *SaveGeneratorOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveGeneratorOpRequest.ProtoReflect.Descriptor instead.
 func (*SaveGeneratorOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{140}
+	return file_operator_proto_rawDescGZIP(), []int{157}
 }
 
 func (x *SaveGeneratorOpRequest) GetGenerator() *GeneratorSpecOp {
@@ -11587,7 +13080,7 @@ type RemoveGeneratorOpRequest struct {
 
 func (x *RemoveGeneratorOpRequest) Reset() {
 	*x = RemoveGeneratorOpRequest{}
-	mi := &file_operator_proto_msgTypes[141]
+	mi := &file_operator_proto_msgTypes[158]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11599,7 +13092,7 @@ func (x *RemoveGeneratorOpRequest) String() string {
 func (*RemoveGeneratorOpRequest) ProtoMessage() {}
 
 func (x *RemoveGeneratorOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[141]
+	mi := &file_operator_proto_msgTypes[158]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11612,7 +13105,7 @@ func (x *RemoveGeneratorOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveGeneratorOpRequest.ProtoReflect.Descriptor instead.
 func (*RemoveGeneratorOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{141}
+	return file_operator_proto_rawDescGZIP(), []int{158}
 }
 
 func (x *RemoveGeneratorOpRequest) GetGeneratorId() string {
@@ -11652,7 +13145,7 @@ type SetRoleAssignmentOpRequest struct {
 
 func (x *SetRoleAssignmentOpRequest) Reset() {
 	*x = SetRoleAssignmentOpRequest{}
-	mi := &file_operator_proto_msgTypes[142]
+	mi := &file_operator_proto_msgTypes[159]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11664,7 +13157,7 @@ func (x *SetRoleAssignmentOpRequest) String() string {
 func (*SetRoleAssignmentOpRequest) ProtoMessage() {}
 
 func (x *SetRoleAssignmentOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[142]
+	mi := &file_operator_proto_msgTypes[159]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11677,7 +13170,7 @@ func (x *SetRoleAssignmentOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRoleAssignmentOpRequest.ProtoReflect.Descriptor instead.
 func (*SetRoleAssignmentOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{142}
+	return file_operator_proto_rawDescGZIP(), []int{159}
 }
 
 func (x *SetRoleAssignmentOpRequest) GetCommandId() string {
@@ -11737,7 +13230,7 @@ type MCPServerSpecOp struct {
 
 func (x *MCPServerSpecOp) Reset() {
 	*x = MCPServerSpecOp{}
-	mi := &file_operator_proto_msgTypes[143]
+	mi := &file_operator_proto_msgTypes[160]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11749,7 +13242,7 @@ func (x *MCPServerSpecOp) String() string {
 func (*MCPServerSpecOp) ProtoMessage() {}
 
 func (x *MCPServerSpecOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[143]
+	mi := &file_operator_proto_msgTypes[160]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11762,7 +13255,7 @@ func (x *MCPServerSpecOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServerSpecOp.ProtoReflect.Descriptor instead.
 func (*MCPServerSpecOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{143}
+	return file_operator_proto_rawDescGZIP(), []int{160}
 }
 
 func (x *MCPServerSpecOp) GetId() string {
@@ -11825,7 +13318,7 @@ type SaveMCPServerOpRequest struct {
 
 func (x *SaveMCPServerOpRequest) Reset() {
 	*x = SaveMCPServerOpRequest{}
-	mi := &file_operator_proto_msgTypes[144]
+	mi := &file_operator_proto_msgTypes[161]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11837,7 +13330,7 @@ func (x *SaveMCPServerOpRequest) String() string {
 func (*SaveMCPServerOpRequest) ProtoMessage() {}
 
 func (x *SaveMCPServerOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[144]
+	mi := &file_operator_proto_msgTypes[161]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11850,7 +13343,7 @@ func (x *SaveMCPServerOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveMCPServerOpRequest.ProtoReflect.Descriptor instead.
 func (*SaveMCPServerOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{144}
+	return file_operator_proto_rawDescGZIP(), []int{161}
 }
 
 func (x *SaveMCPServerOpRequest) GetServer() *MCPServerSpecOp {
@@ -11885,7 +13378,7 @@ type RemoveMCPServerOpRequest struct {
 
 func (x *RemoveMCPServerOpRequest) Reset() {
 	*x = RemoveMCPServerOpRequest{}
-	mi := &file_operator_proto_msgTypes[145]
+	mi := &file_operator_proto_msgTypes[162]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11897,7 +13390,7 @@ func (x *RemoveMCPServerOpRequest) String() string {
 func (*RemoveMCPServerOpRequest) ProtoMessage() {}
 
 func (x *RemoveMCPServerOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[145]
+	mi := &file_operator_proto_msgTypes[162]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11910,7 +13403,7 @@ func (x *RemoveMCPServerOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveMCPServerOpRequest.ProtoReflect.Descriptor instead.
 func (*RemoveMCPServerOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{145}
+	return file_operator_proto_rawDescGZIP(), []int{162}
 }
 
 func (x *RemoveMCPServerOpRequest) GetServerId() string {
@@ -11948,7 +13441,7 @@ type SetMCPServerTokenOpRequest struct {
 
 func (x *SetMCPServerTokenOpRequest) Reset() {
 	*x = SetMCPServerTokenOpRequest{}
-	mi := &file_operator_proto_msgTypes[146]
+	mi := &file_operator_proto_msgTypes[163]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11960,7 +13453,7 @@ func (x *SetMCPServerTokenOpRequest) String() string {
 func (*SetMCPServerTokenOpRequest) ProtoMessage() {}
 
 func (x *SetMCPServerTokenOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[146]
+	mi := &file_operator_proto_msgTypes[163]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11973,7 +13466,7 @@ func (x *SetMCPServerTokenOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMCPServerTokenOpRequest.ProtoReflect.Descriptor instead.
 func (*SetMCPServerTokenOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{146}
+	return file_operator_proto_rawDescGZIP(), []int{163}
 }
 
 func (x *SetMCPServerTokenOpRequest) GetCommandId() string {
@@ -12015,7 +13508,7 @@ type ClearMCPServerTokenOpRequest struct {
 
 func (x *ClearMCPServerTokenOpRequest) Reset() {
 	*x = ClearMCPServerTokenOpRequest{}
-	mi := &file_operator_proto_msgTypes[147]
+	mi := &file_operator_proto_msgTypes[164]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12027,7 +13520,7 @@ func (x *ClearMCPServerTokenOpRequest) String() string {
 func (*ClearMCPServerTokenOpRequest) ProtoMessage() {}
 
 func (x *ClearMCPServerTokenOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[147]
+	mi := &file_operator_proto_msgTypes[164]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12040,7 +13533,7 @@ func (x *ClearMCPServerTokenOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClearMCPServerTokenOpRequest.ProtoReflect.Descriptor instead.
 func (*ClearMCPServerTokenOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{147}
+	return file_operator_proto_rawDescGZIP(), []int{164}
 }
 
 func (x *ClearMCPServerTokenOpRequest) GetCommandId() string {
@@ -12076,7 +13569,7 @@ type TestMCPServerOpRequest struct {
 
 func (x *TestMCPServerOpRequest) Reset() {
 	*x = TestMCPServerOpRequest{}
-	mi := &file_operator_proto_msgTypes[148]
+	mi := &file_operator_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12088,7 +13581,7 @@ func (x *TestMCPServerOpRequest) String() string {
 func (*TestMCPServerOpRequest) ProtoMessage() {}
 
 func (x *TestMCPServerOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[148]
+	mi := &file_operator_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12101,7 +13594,7 @@ func (x *TestMCPServerOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestMCPServerOpRequest.ProtoReflect.Descriptor instead.
 func (*TestMCPServerOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{148}
+	return file_operator_proto_rawDescGZIP(), []int{165}
 }
 
 func (x *TestMCPServerOpRequest) GetServer() *MCPServerSpecOp {
@@ -12126,7 +13619,7 @@ type MCPServerTestResultOp struct {
 
 func (x *MCPServerTestResultOp) Reset() {
 	*x = MCPServerTestResultOp{}
-	mi := &file_operator_proto_msgTypes[149]
+	mi := &file_operator_proto_msgTypes[166]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12138,7 +13631,7 @@ func (x *MCPServerTestResultOp) String() string {
 func (*MCPServerTestResultOp) ProtoMessage() {}
 
 func (x *MCPServerTestResultOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[149]
+	mi := &file_operator_proto_msgTypes[166]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12151,7 +13644,7 @@ func (x *MCPServerTestResultOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServerTestResultOp.ProtoReflect.Descriptor instead.
 func (*MCPServerTestResultOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{149}
+	return file_operator_proto_rawDescGZIP(), []int{166}
 }
 
 func (x *MCPServerTestResultOp) GetOk() bool {
@@ -12196,7 +13689,7 @@ type RetryWatchDeadLetterOpRequest struct {
 
 func (x *RetryWatchDeadLetterOpRequest) Reset() {
 	*x = RetryWatchDeadLetterOpRequest{}
-	mi := &file_operator_proto_msgTypes[150]
+	mi := &file_operator_proto_msgTypes[167]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12208,7 +13701,7 @@ func (x *RetryWatchDeadLetterOpRequest) String() string {
 func (*RetryWatchDeadLetterOpRequest) ProtoMessage() {}
 
 func (x *RetryWatchDeadLetterOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[150]
+	mi := &file_operator_proto_msgTypes[167]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12221,7 +13714,7 @@ func (x *RetryWatchDeadLetterOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetryWatchDeadLetterOpRequest.ProtoReflect.Descriptor instead.
 func (*RetryWatchDeadLetterOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{150}
+	return file_operator_proto_rawDescGZIP(), []int{167}
 }
 
 func (x *RetryWatchDeadLetterOpRequest) GetCommandId() string {
@@ -12253,7 +13746,7 @@ type GetConfigSchemaOpRequest struct {
 
 func (x *GetConfigSchemaOpRequest) Reset() {
 	*x = GetConfigSchemaOpRequest{}
-	mi := &file_operator_proto_msgTypes[151]
+	mi := &file_operator_proto_msgTypes[168]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12265,7 +13758,7 @@ func (x *GetConfigSchemaOpRequest) String() string {
 func (*GetConfigSchemaOpRequest) ProtoMessage() {}
 
 func (x *GetConfigSchemaOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[151]
+	mi := &file_operator_proto_msgTypes[168]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12278,7 +13771,7 @@ func (x *GetConfigSchemaOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetConfigSchemaOpRequest.ProtoReflect.Descriptor instead.
 func (*GetConfigSchemaOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{151}
+	return file_operator_proto_rawDescGZIP(), []int{168}
 }
 
 type ConfigSchemaOp struct {
@@ -12314,7 +13807,7 @@ type ConfigSchemaOp struct {
 
 func (x *ConfigSchemaOp) Reset() {
 	*x = ConfigSchemaOp{}
-	mi := &file_operator_proto_msgTypes[152]
+	mi := &file_operator_proto_msgTypes[169]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12326,7 +13819,7 @@ func (x *ConfigSchemaOp) String() string {
 func (*ConfigSchemaOp) ProtoMessage() {}
 
 func (x *ConfigSchemaOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[152]
+	mi := &file_operator_proto_msgTypes[169]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12339,7 +13832,7 @@ func (x *ConfigSchemaOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigSchemaOp.ProtoReflect.Descriptor instead.
 func (*ConfigSchemaOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{152}
+	return file_operator_proto_rawDescGZIP(), []int{169}
 }
 
 func (x *ConfigSchemaOp) GetSchemaVersion() string {
@@ -12405,7 +13898,7 @@ type SetConfigOpRequest struct {
 
 func (x *SetConfigOpRequest) Reset() {
 	*x = SetConfigOpRequest{}
-	mi := &file_operator_proto_msgTypes[153]
+	mi := &file_operator_proto_msgTypes[170]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12417,7 +13910,7 @@ func (x *SetConfigOpRequest) String() string {
 func (*SetConfigOpRequest) ProtoMessage() {}
 
 func (x *SetConfigOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[153]
+	mi := &file_operator_proto_msgTypes[170]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12430,7 +13923,7 @@ func (x *SetConfigOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetConfigOpRequest.ProtoReflect.Descriptor instead.
 func (*SetConfigOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{153}
+	return file_operator_proto_rawDescGZIP(), []int{170}
 }
 
 func (x *SetConfigOpRequest) GetCommandId() string {
@@ -12465,7 +13958,7 @@ type DeleteConfigOpRequest struct {
 
 func (x *DeleteConfigOpRequest) Reset() {
 	*x = DeleteConfigOpRequest{}
-	mi := &file_operator_proto_msgTypes[154]
+	mi := &file_operator_proto_msgTypes[171]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12477,7 +13970,7 @@ func (x *DeleteConfigOpRequest) String() string {
 func (*DeleteConfigOpRequest) ProtoMessage() {}
 
 func (x *DeleteConfigOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[154]
+	mi := &file_operator_proto_msgTypes[171]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12490,7 +13983,7 @@ func (x *DeleteConfigOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteConfigOpRequest.ProtoReflect.Descriptor instead.
 func (*DeleteConfigOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{154}
+	return file_operator_proto_rawDescGZIP(), []int{171}
 }
 
 func (x *DeleteConfigOpRequest) GetCommandId() string {
@@ -12528,7 +14021,7 @@ type SetGeneratorKeyOpRequest struct {
 
 func (x *SetGeneratorKeyOpRequest) Reset() {
 	*x = SetGeneratorKeyOpRequest{}
-	mi := &file_operator_proto_msgTypes[155]
+	mi := &file_operator_proto_msgTypes[172]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12540,7 +14033,7 @@ func (x *SetGeneratorKeyOpRequest) String() string {
 func (*SetGeneratorKeyOpRequest) ProtoMessage() {}
 
 func (x *SetGeneratorKeyOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[155]
+	mi := &file_operator_proto_msgTypes[172]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12553,7 +14046,7 @@ func (x *SetGeneratorKeyOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetGeneratorKeyOpRequest.ProtoReflect.Descriptor instead.
 func (*SetGeneratorKeyOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{155}
+	return file_operator_proto_rawDescGZIP(), []int{172}
 }
 
 func (x *SetGeneratorKeyOpRequest) GetCommandId() string {
@@ -12595,7 +14088,7 @@ type ClearGeneratorKeyOpRequest struct {
 
 func (x *ClearGeneratorKeyOpRequest) Reset() {
 	*x = ClearGeneratorKeyOpRequest{}
-	mi := &file_operator_proto_msgTypes[156]
+	mi := &file_operator_proto_msgTypes[173]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12607,7 +14100,7 @@ func (x *ClearGeneratorKeyOpRequest) String() string {
 func (*ClearGeneratorKeyOpRequest) ProtoMessage() {}
 
 func (x *ClearGeneratorKeyOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[156]
+	mi := &file_operator_proto_msgTypes[173]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12620,7 +14113,7 @@ func (x *ClearGeneratorKeyOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClearGeneratorKeyOpRequest.ProtoReflect.Descriptor instead.
 func (*ClearGeneratorKeyOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{156}
+	return file_operator_proto_rawDescGZIP(), []int{173}
 }
 
 func (x *ClearGeneratorKeyOpRequest) GetCommandId() string {
@@ -12696,7 +14189,7 @@ type ConfigWriteOutcomeOp struct {
 
 func (x *ConfigWriteOutcomeOp) Reset() {
 	*x = ConfigWriteOutcomeOp{}
-	mi := &file_operator_proto_msgTypes[157]
+	mi := &file_operator_proto_msgTypes[174]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12708,7 +14201,7 @@ func (x *ConfigWriteOutcomeOp) String() string {
 func (*ConfigWriteOutcomeOp) ProtoMessage() {}
 
 func (x *ConfigWriteOutcomeOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[157]
+	mi := &file_operator_proto_msgTypes[174]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12721,7 +14214,7 @@ func (x *ConfigWriteOutcomeOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigWriteOutcomeOp.ProtoReflect.Descriptor instead.
 func (*ConfigWriteOutcomeOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{157}
+	return file_operator_proto_rawDescGZIP(), []int{174}
 }
 
 func (x *ConfigWriteOutcomeOp) GetKey() string {
@@ -12791,7 +14284,7 @@ type SetConfigOpResponse struct {
 
 func (x *SetConfigOpResponse) Reset() {
 	*x = SetConfigOpResponse{}
-	mi := &file_operator_proto_msgTypes[158]
+	mi := &file_operator_proto_msgTypes[175]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12803,7 +14296,7 @@ func (x *SetConfigOpResponse) String() string {
 func (*SetConfigOpResponse) ProtoMessage() {}
 
 func (x *SetConfigOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[158]
+	mi := &file_operator_proto_msgTypes[175]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12816,7 +14309,7 @@ func (x *SetConfigOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetConfigOpResponse.ProtoReflect.Descriptor instead.
 func (*SetConfigOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{158}
+	return file_operator_proto_rawDescGZIP(), []int{175}
 }
 
 func (x *SetConfigOpResponse) GetCommandId() string {
@@ -12879,7 +14372,7 @@ type AuthoredStepOp struct {
 
 func (x *AuthoredStepOp) Reset() {
 	*x = AuthoredStepOp{}
-	mi := &file_operator_proto_msgTypes[159]
+	mi := &file_operator_proto_msgTypes[176]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12891,7 +14384,7 @@ func (x *AuthoredStepOp) String() string {
 func (*AuthoredStepOp) ProtoMessage() {}
 
 func (x *AuthoredStepOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[159]
+	mi := &file_operator_proto_msgTypes[176]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12904,7 +14397,7 @@ func (x *AuthoredStepOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthoredStepOp.ProtoReflect.Descriptor instead.
 func (*AuthoredStepOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{159}
+	return file_operator_proto_rawDescGZIP(), []int{176}
 }
 
 func (x *AuthoredStepOp) GetQuery() string {
@@ -13009,7 +14502,7 @@ type SubmitPlanOpRequest struct {
 
 func (x *SubmitPlanOpRequest) Reset() {
 	*x = SubmitPlanOpRequest{}
-	mi := &file_operator_proto_msgTypes[160]
+	mi := &file_operator_proto_msgTypes[177]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13021,7 +14514,7 @@ func (x *SubmitPlanOpRequest) String() string {
 func (*SubmitPlanOpRequest) ProtoMessage() {}
 
 func (x *SubmitPlanOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[160]
+	mi := &file_operator_proto_msgTypes[177]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13034,7 +14527,7 @@ func (x *SubmitPlanOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitPlanOpRequest.ProtoReflect.Descriptor instead.
 func (*SubmitPlanOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{160}
+	return file_operator_proto_rawDescGZIP(), []int{177}
 }
 
 func (x *SubmitPlanOpRequest) GetCommandId() string {
@@ -13098,7 +14591,7 @@ type PlanValidationIssueOp struct {
 
 func (x *PlanValidationIssueOp) Reset() {
 	*x = PlanValidationIssueOp{}
-	mi := &file_operator_proto_msgTypes[161]
+	mi := &file_operator_proto_msgTypes[178]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13110,7 +14603,7 @@ func (x *PlanValidationIssueOp) String() string {
 func (*PlanValidationIssueOp) ProtoMessage() {}
 
 func (x *PlanValidationIssueOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[161]
+	mi := &file_operator_proto_msgTypes[178]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13123,7 +14616,7 @@ func (x *PlanValidationIssueOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanValidationIssueOp.ProtoReflect.Descriptor instead.
 func (*PlanValidationIssueOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{161}
+	return file_operator_proto_rawDescGZIP(), []int{178}
 }
 
 func (x *PlanValidationIssueOp) GetStepIndex() int32 {
@@ -13175,7 +14668,7 @@ type SubmitPlanOpResponse struct {
 
 func (x *SubmitPlanOpResponse) Reset() {
 	*x = SubmitPlanOpResponse{}
-	mi := &file_operator_proto_msgTypes[162]
+	mi := &file_operator_proto_msgTypes[179]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13187,7 +14680,7 @@ func (x *SubmitPlanOpResponse) String() string {
 func (*SubmitPlanOpResponse) ProtoMessage() {}
 
 func (x *SubmitPlanOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[162]
+	mi := &file_operator_proto_msgTypes[179]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13200,7 +14693,7 @@ func (x *SubmitPlanOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitPlanOpResponse.ProtoReflect.Descriptor instead.
 func (*SubmitPlanOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{162}
+	return file_operator_proto_rawDescGZIP(), []int{179}
 }
 
 func (x *SubmitPlanOpResponse) GetCommandId() string {
@@ -13279,7 +14772,7 @@ type ReactivePlaneBudgetOp struct {
 
 func (x *ReactivePlaneBudgetOp) Reset() {
 	*x = ReactivePlaneBudgetOp{}
-	mi := &file_operator_proto_msgTypes[163]
+	mi := &file_operator_proto_msgTypes[180]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13291,7 +14784,7 @@ func (x *ReactivePlaneBudgetOp) String() string {
 func (*ReactivePlaneBudgetOp) ProtoMessage() {}
 
 func (x *ReactivePlaneBudgetOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[163]
+	mi := &file_operator_proto_msgTypes[180]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13304,7 +14797,7 @@ func (x *ReactivePlaneBudgetOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactivePlaneBudgetOp.ProtoReflect.Descriptor instead.
 func (*ReactivePlaneBudgetOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{163}
+	return file_operator_proto_rawDescGZIP(), []int{180}
 }
 
 func (x *ReactivePlaneBudgetOp) GetGateEvaluationsThisHour() int64 {
@@ -13357,7 +14850,7 @@ type GetReactiveBudgetOpRequest struct {
 
 func (x *GetReactiveBudgetOpRequest) Reset() {
 	*x = GetReactiveBudgetOpRequest{}
-	mi := &file_operator_proto_msgTypes[164]
+	mi := &file_operator_proto_msgTypes[181]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13369,7 +14862,7 @@ func (x *GetReactiveBudgetOpRequest) String() string {
 func (*GetReactiveBudgetOpRequest) ProtoMessage() {}
 
 func (x *GetReactiveBudgetOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[164]
+	mi := &file_operator_proto_msgTypes[181]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13382,7 +14875,7 @@ func (x *GetReactiveBudgetOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReactiveBudgetOpRequest.ProtoReflect.Descriptor instead.
 func (*GetReactiveBudgetOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{164}
+	return file_operator_proto_rawDescGZIP(), []int{181}
 }
 
 type GetReactiveBudgetOpResponse struct {
@@ -13397,7 +14890,7 @@ type GetReactiveBudgetOpResponse struct {
 
 func (x *GetReactiveBudgetOpResponse) Reset() {
 	*x = GetReactiveBudgetOpResponse{}
-	mi := &file_operator_proto_msgTypes[165]
+	mi := &file_operator_proto_msgTypes[182]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13409,7 +14902,7 @@ func (x *GetReactiveBudgetOpResponse) String() string {
 func (*GetReactiveBudgetOpResponse) ProtoMessage() {}
 
 func (x *GetReactiveBudgetOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[165]
+	mi := &file_operator_proto_msgTypes[182]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13422,7 +14915,7 @@ func (x *GetReactiveBudgetOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReactiveBudgetOpResponse.ProtoReflect.Descriptor instead.
 func (*GetReactiveBudgetOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{165}
+	return file_operator_proto_rawDescGZIP(), []int{182}
 }
 
 func (x *GetReactiveBudgetOpResponse) GetBudget() *ReactivePlaneBudgetOp {
@@ -13449,7 +14942,7 @@ type GetTokenSeriesOpRequest struct {
 
 func (x *GetTokenSeriesOpRequest) Reset() {
 	*x = GetTokenSeriesOpRequest{}
-	mi := &file_operator_proto_msgTypes[166]
+	mi := &file_operator_proto_msgTypes[183]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13461,7 +14954,7 @@ func (x *GetTokenSeriesOpRequest) String() string {
 func (*GetTokenSeriesOpRequest) ProtoMessage() {}
 
 func (x *GetTokenSeriesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[166]
+	mi := &file_operator_proto_msgTypes[183]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13474,7 +14967,7 @@ func (x *GetTokenSeriesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTokenSeriesOpRequest.ProtoReflect.Descriptor instead.
 func (*GetTokenSeriesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{166}
+	return file_operator_proto_rawDescGZIP(), []int{183}
 }
 
 func (x *GetTokenSeriesOpRequest) GetHours() int32 {
@@ -13499,7 +14992,7 @@ type TokenSeriesPointOp struct {
 
 func (x *TokenSeriesPointOp) Reset() {
 	*x = TokenSeriesPointOp{}
-	mi := &file_operator_proto_msgTypes[167]
+	mi := &file_operator_proto_msgTypes[184]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13511,7 +15004,7 @@ func (x *TokenSeriesPointOp) String() string {
 func (*TokenSeriesPointOp) ProtoMessage() {}
 
 func (x *TokenSeriesPointOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[167]
+	mi := &file_operator_proto_msgTypes[184]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13524,7 +15017,7 @@ func (x *TokenSeriesPointOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TokenSeriesPointOp.ProtoReflect.Descriptor instead.
 func (*TokenSeriesPointOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{167}
+	return file_operator_proto_rawDescGZIP(), []int{184}
 }
 
 func (x *TokenSeriesPointOp) GetHourStartUnixMs() int64 {
@@ -13570,7 +15063,7 @@ type GetTokenSeriesOpResponse struct {
 
 func (x *GetTokenSeriesOpResponse) Reset() {
 	*x = GetTokenSeriesOpResponse{}
-	mi := &file_operator_proto_msgTypes[168]
+	mi := &file_operator_proto_msgTypes[185]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13582,7 +15075,7 @@ func (x *GetTokenSeriesOpResponse) String() string {
 func (*GetTokenSeriesOpResponse) ProtoMessage() {}
 
 func (x *GetTokenSeriesOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[168]
+	mi := &file_operator_proto_msgTypes[185]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13595,7 +15088,7 @@ func (x *GetTokenSeriesOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTokenSeriesOpResponse.ProtoReflect.Descriptor instead.
 func (*GetTokenSeriesOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{168}
+	return file_operator_proto_rawDescGZIP(), []int{185}
 }
 
 func (x *GetTokenSeriesOpResponse) GetPoints() []*TokenSeriesPointOp {
@@ -13626,7 +15119,7 @@ type ProposePlanOpRequest struct {
 
 func (x *ProposePlanOpRequest) Reset() {
 	*x = ProposePlanOpRequest{}
-	mi := &file_operator_proto_msgTypes[169]
+	mi := &file_operator_proto_msgTypes[186]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13638,7 +15131,7 @@ func (x *ProposePlanOpRequest) String() string {
 func (*ProposePlanOpRequest) ProtoMessage() {}
 
 func (x *ProposePlanOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[169]
+	mi := &file_operator_proto_msgTypes[186]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13651,7 +15144,7 @@ func (x *ProposePlanOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProposePlanOpRequest.ProtoReflect.Descriptor instead.
 func (*ProposePlanOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{169}
+	return file_operator_proto_rawDescGZIP(), []int{186}
 }
 
 func (x *ProposePlanOpRequest) GetGoal() string {
@@ -13687,7 +15180,7 @@ type InterviewOptionOp struct {
 
 func (x *InterviewOptionOp) Reset() {
 	*x = InterviewOptionOp{}
-	mi := &file_operator_proto_msgTypes[170]
+	mi := &file_operator_proto_msgTypes[187]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13699,7 +15192,7 @@ func (x *InterviewOptionOp) String() string {
 func (*InterviewOptionOp) ProtoMessage() {}
 
 func (x *InterviewOptionOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[170]
+	mi := &file_operator_proto_msgTypes[187]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13712,7 +15205,7 @@ func (x *InterviewOptionOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InterviewOptionOp.ProtoReflect.Descriptor instead.
 func (*InterviewOptionOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{170}
+	return file_operator_proto_rawDescGZIP(), []int{187}
 }
 
 func (x *InterviewOptionOp) GetLabel() string {
@@ -13753,7 +15246,7 @@ type InterviewQuestionOp struct {
 
 func (x *InterviewQuestionOp) Reset() {
 	*x = InterviewQuestionOp{}
-	mi := &file_operator_proto_msgTypes[171]
+	mi := &file_operator_proto_msgTypes[188]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13765,7 +15258,7 @@ func (x *InterviewQuestionOp) String() string {
 func (*InterviewQuestionOp) ProtoMessage() {}
 
 func (x *InterviewQuestionOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[171]
+	mi := &file_operator_proto_msgTypes[188]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13778,7 +15271,7 @@ func (x *InterviewQuestionOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InterviewQuestionOp.ProtoReflect.Descriptor instead.
 func (*InterviewQuestionOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{171}
+	return file_operator_proto_rawDescGZIP(), []int{188}
 }
 
 func (x *InterviewQuestionOp) GetQuestion() string {
@@ -13824,7 +15317,7 @@ type PlanProposalOp struct {
 
 func (x *PlanProposalOp) Reset() {
 	*x = PlanProposalOp{}
-	mi := &file_operator_proto_msgTypes[172]
+	mi := &file_operator_proto_msgTypes[189]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13836,7 +15329,7 @@ func (x *PlanProposalOp) String() string {
 func (*PlanProposalOp) ProtoMessage() {}
 
 func (x *PlanProposalOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[172]
+	mi := &file_operator_proto_msgTypes[189]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13849,7 +15342,7 @@ func (x *PlanProposalOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanProposalOp.ProtoReflect.Descriptor instead.
 func (*PlanProposalOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{172}
+	return file_operator_proto_rawDescGZIP(), []int{189}
 }
 
 func (x *PlanProposalOp) GetSteps() []*AuthoredStepOp {
@@ -13910,7 +15403,7 @@ type ProposePlanOpResponse struct {
 
 func (x *ProposePlanOpResponse) Reset() {
 	*x = ProposePlanOpResponse{}
-	mi := &file_operator_proto_msgTypes[173]
+	mi := &file_operator_proto_msgTypes[190]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13922,7 +15415,7 @@ func (x *ProposePlanOpResponse) String() string {
 func (*ProposePlanOpResponse) ProtoMessage() {}
 
 func (x *ProposePlanOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[173]
+	mi := &file_operator_proto_msgTypes[190]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13935,7 +15428,7 @@ func (x *ProposePlanOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProposePlanOpResponse.ProtoReflect.Descriptor instead.
 func (*ProposePlanOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{173}
+	return file_operator_proto_rawDescGZIP(), []int{190}
 }
 
 func (x *ProposePlanOpResponse) GetQuestions() []*InterviewQuestionOp {
@@ -13971,7 +15464,7 @@ type ExplainAccessBatchOpRequest struct {
 
 func (x *ExplainAccessBatchOpRequest) Reset() {
 	*x = ExplainAccessBatchOpRequest{}
-	mi := &file_operator_proto_msgTypes[174]
+	mi := &file_operator_proto_msgTypes[191]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13983,7 +15476,7 @@ func (x *ExplainAccessBatchOpRequest) String() string {
 func (*ExplainAccessBatchOpRequest) ProtoMessage() {}
 
 func (x *ExplainAccessBatchOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[174]
+	mi := &file_operator_proto_msgTypes[191]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13996,7 +15489,7 @@ func (x *ExplainAccessBatchOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExplainAccessBatchOpRequest.ProtoReflect.Descriptor instead.
 func (*ExplainAccessBatchOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{174}
+	return file_operator_proto_rawDescGZIP(), []int{191}
 }
 
 func (x *ExplainAccessBatchOpRequest) GetQueries() []*ExplainAccessOpRequest {
@@ -14026,7 +15519,7 @@ type ExplainAccessBatchOpResponse struct {
 
 func (x *ExplainAccessBatchOpResponse) Reset() {
 	*x = ExplainAccessBatchOpResponse{}
-	mi := &file_operator_proto_msgTypes[175]
+	mi := &file_operator_proto_msgTypes[192]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14038,7 +15531,7 @@ func (x *ExplainAccessBatchOpResponse) String() string {
 func (*ExplainAccessBatchOpResponse) ProtoMessage() {}
 
 func (x *ExplainAccessBatchOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[175]
+	mi := &file_operator_proto_msgTypes[192]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14051,7 +15544,7 @@ func (x *ExplainAccessBatchOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExplainAccessBatchOpResponse.ProtoReflect.Descriptor instead.
 func (*ExplainAccessBatchOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{175}
+	return file_operator_proto_rawDescGZIP(), []int{192}
 }
 
 func (x *ExplainAccessBatchOpResponse) GetDecisions() []*AccessDecisionOp {
@@ -14096,7 +15589,7 @@ type BlastRadiusPreviewOpRequest struct {
 
 func (x *BlastRadiusPreviewOpRequest) Reset() {
 	*x = BlastRadiusPreviewOpRequest{}
-	mi := &file_operator_proto_msgTypes[176]
+	mi := &file_operator_proto_msgTypes[193]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14108,7 +15601,7 @@ func (x *BlastRadiusPreviewOpRequest) String() string {
 func (*BlastRadiusPreviewOpRequest) ProtoMessage() {}
 
 func (x *BlastRadiusPreviewOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[176]
+	mi := &file_operator_proto_msgTypes[193]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14121,7 +15614,7 @@ func (x *BlastRadiusPreviewOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BlastRadiusPreviewOpRequest.ProtoReflect.Descriptor instead.
 func (*BlastRadiusPreviewOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{176}
+	return file_operator_proto_rawDescGZIP(), []int{193}
 }
 
 func (x *BlastRadiusPreviewOpRequest) GetMutation() string {
@@ -14182,7 +15675,7 @@ type AgentImpactOp struct {
 
 func (x *AgentImpactOp) Reset() {
 	*x = AgentImpactOp{}
-	mi := &file_operator_proto_msgTypes[177]
+	mi := &file_operator_proto_msgTypes[194]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14194,7 +15687,7 @@ func (x *AgentImpactOp) String() string {
 func (*AgentImpactOp) ProtoMessage() {}
 
 func (x *AgentImpactOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[177]
+	mi := &file_operator_proto_msgTypes[194]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14207,7 +15700,7 @@ func (x *AgentImpactOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentImpactOp.ProtoReflect.Descriptor instead.
 func (*AgentImpactOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{177}
+	return file_operator_proto_rawDescGZIP(), []int{194}
 }
 
 func (x *AgentImpactOp) GetAgentId() string {
@@ -14253,7 +15746,7 @@ type PlanImpactOp struct {
 
 func (x *PlanImpactOp) Reset() {
 	*x = PlanImpactOp{}
-	mi := &file_operator_proto_msgTypes[178]
+	mi := &file_operator_proto_msgTypes[195]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14265,7 +15758,7 @@ func (x *PlanImpactOp) String() string {
 func (*PlanImpactOp) ProtoMessage() {}
 
 func (x *PlanImpactOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[178]
+	mi := &file_operator_proto_msgTypes[195]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14278,7 +15771,7 @@ func (x *PlanImpactOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlanImpactOp.ProtoReflect.Descriptor instead.
 func (*PlanImpactOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{178}
+	return file_operator_proto_rawDescGZIP(), []int{195}
 }
 
 func (x *PlanImpactOp) GetSessionId() string {
@@ -14331,7 +15824,7 @@ type BlastRadiusPreviewOp struct {
 
 func (x *BlastRadiusPreviewOp) Reset() {
 	*x = BlastRadiusPreviewOp{}
-	mi := &file_operator_proto_msgTypes[179]
+	mi := &file_operator_proto_msgTypes[196]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14343,7 +15836,7 @@ func (x *BlastRadiusPreviewOp) String() string {
 func (*BlastRadiusPreviewOp) ProtoMessage() {}
 
 func (x *BlastRadiusPreviewOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[179]
+	mi := &file_operator_proto_msgTypes[196]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14356,7 +15849,7 @@ func (x *BlastRadiusPreviewOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BlastRadiusPreviewOp.ProtoReflect.Descriptor instead.
 func (*BlastRadiusPreviewOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{179}
+	return file_operator_proto_rawDescGZIP(), []int{196}
 }
 
 func (x *BlastRadiusPreviewOp) GetAffectedAgents() []*AgentImpactOp {
@@ -14430,7 +15923,7 @@ type ConversationProgressOp struct {
 
 func (x *ConversationProgressOp) Reset() {
 	*x = ConversationProgressOp{}
-	mi := &file_operator_proto_msgTypes[180]
+	mi := &file_operator_proto_msgTypes[197]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14442,7 +15935,7 @@ func (x *ConversationProgressOp) String() string {
 func (*ConversationProgressOp) ProtoMessage() {}
 
 func (x *ConversationProgressOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[180]
+	mi := &file_operator_proto_msgTypes[197]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14455,7 +15948,7 @@ func (x *ConversationProgressOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConversationProgressOp.ProtoReflect.Descriptor instead.
 func (*ConversationProgressOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{180}
+	return file_operator_proto_rawDescGZIP(), []int{197}
 }
 
 func (x *ConversationProgressOp) GetConversationId() string {
@@ -14528,7 +16021,7 @@ type LogAttrOp struct {
 
 func (x *LogAttrOp) Reset() {
 	*x = LogAttrOp{}
-	mi := &file_operator_proto_msgTypes[181]
+	mi := &file_operator_proto_msgTypes[198]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14540,7 +16033,7 @@ func (x *LogAttrOp) String() string {
 func (*LogAttrOp) ProtoMessage() {}
 
 func (x *LogAttrOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[181]
+	mi := &file_operator_proto_msgTypes[198]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14553,7 +16046,7 @@ func (x *LogAttrOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogAttrOp.ProtoReflect.Descriptor instead.
 func (*LogAttrOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{181}
+	return file_operator_proto_rawDescGZIP(), []int{198}
 }
 
 func (x *LogAttrOp) GetKey() string {
@@ -14661,7 +16154,7 @@ type LogRecordOp struct {
 
 func (x *LogRecordOp) Reset() {
 	*x = LogRecordOp{}
-	mi := &file_operator_proto_msgTypes[182]
+	mi := &file_operator_proto_msgTypes[199]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14673,7 +16166,7 @@ func (x *LogRecordOp) String() string {
 func (*LogRecordOp) ProtoMessage() {}
 
 func (x *LogRecordOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[182]
+	mi := &file_operator_proto_msgTypes[199]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14686,7 +16179,7 @@ func (x *LogRecordOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogRecordOp.ProtoReflect.Descriptor instead.
 func (*LogRecordOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{182}
+	return file_operator_proto_rawDescGZIP(), []int{199}
 }
 
 func (x *LogRecordOp) GetSeq() uint64 {
@@ -14768,7 +16261,7 @@ type LogFilterOp struct {
 
 func (x *LogFilterOp) Reset() {
 	*x = LogFilterOp{}
-	mi := &file_operator_proto_msgTypes[183]
+	mi := &file_operator_proto_msgTypes[200]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14780,7 +16273,7 @@ func (x *LogFilterOp) String() string {
 func (*LogFilterOp) ProtoMessage() {}
 
 func (x *LogFilterOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[183]
+	mi := &file_operator_proto_msgTypes[200]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14793,7 +16286,7 @@ func (x *LogFilterOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogFilterOp.ProtoReflect.Descriptor instead.
 func (*LogFilterOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{183}
+	return file_operator_proto_rawDescGZIP(), []int{200}
 }
 
 func (x *LogFilterOp) GetLevelAtLeast() string {
@@ -14853,7 +16346,7 @@ type LogWindowOp struct {
 
 func (x *LogWindowOp) Reset() {
 	*x = LogWindowOp{}
-	mi := &file_operator_proto_msgTypes[184]
+	mi := &file_operator_proto_msgTypes[201]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14865,7 +16358,7 @@ func (x *LogWindowOp) String() string {
 func (*LogWindowOp) ProtoMessage() {}
 
 func (x *LogWindowOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[184]
+	mi := &file_operator_proto_msgTypes[201]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14878,7 +16371,7 @@ func (x *LogWindowOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogWindowOp.ProtoReflect.Descriptor instead.
 func (*LogWindowOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{184}
+	return file_operator_proto_rawDescGZIP(), []int{201}
 }
 
 func (x *LogWindowOp) GetBootId() string {
@@ -14944,7 +16437,7 @@ type QueryLogsOpRequest struct {
 
 func (x *QueryLogsOpRequest) Reset() {
 	*x = QueryLogsOpRequest{}
-	mi := &file_operator_proto_msgTypes[185]
+	mi := &file_operator_proto_msgTypes[202]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14956,7 +16449,7 @@ func (x *QueryLogsOpRequest) String() string {
 func (*QueryLogsOpRequest) ProtoMessage() {}
 
 func (x *QueryLogsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[185]
+	mi := &file_operator_proto_msgTypes[202]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14969,7 +16462,7 @@ func (x *QueryLogsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryLogsOpRequest.ProtoReflect.Descriptor instead.
 func (*QueryLogsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{185}
+	return file_operator_proto_rawDescGZIP(), []int{202}
 }
 
 func (x *QueryLogsOpRequest) GetFilter() *LogFilterOp {
@@ -15003,7 +16496,7 @@ type QueryLogsOpResponse struct {
 
 func (x *QueryLogsOpResponse) Reset() {
 	*x = QueryLogsOpResponse{}
-	mi := &file_operator_proto_msgTypes[186]
+	mi := &file_operator_proto_msgTypes[203]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15015,7 +16508,7 @@ func (x *QueryLogsOpResponse) String() string {
 func (*QueryLogsOpResponse) ProtoMessage() {}
 
 func (x *QueryLogsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[186]
+	mi := &file_operator_proto_msgTypes[203]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15028,7 +16521,7 @@ func (x *QueryLogsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryLogsOpResponse.ProtoReflect.Descriptor instead.
 func (*QueryLogsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{186}
+	return file_operator_proto_rawDescGZIP(), []int{203}
 }
 
 func (x *QueryLogsOpResponse) GetRecords() []*LogRecordOp {
@@ -15057,7 +16550,7 @@ type TailLogsOpRequest struct {
 
 func (x *TailLogsOpRequest) Reset() {
 	*x = TailLogsOpRequest{}
-	mi := &file_operator_proto_msgTypes[187]
+	mi := &file_operator_proto_msgTypes[204]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15069,7 +16562,7 @@ func (x *TailLogsOpRequest) String() string {
 func (*TailLogsOpRequest) ProtoMessage() {}
 
 func (x *TailLogsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[187]
+	mi := &file_operator_proto_msgTypes[204]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15082,7 +16575,7 @@ func (x *TailLogsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TailLogsOpRequest.ProtoReflect.Descriptor instead.
 func (*TailLogsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{187}
+	return file_operator_proto_rawDescGZIP(), []int{204}
 }
 
 func (x *TailLogsOpRequest) GetFilter() *LogFilterOp {
@@ -15108,7 +16601,7 @@ type GetDocumentOpRequest struct {
 
 func (x *GetDocumentOpRequest) Reset() {
 	*x = GetDocumentOpRequest{}
-	mi := &file_operator_proto_msgTypes[188]
+	mi := &file_operator_proto_msgTypes[205]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15120,7 +16613,7 @@ func (x *GetDocumentOpRequest) String() string {
 func (*GetDocumentOpRequest) ProtoMessage() {}
 
 func (x *GetDocumentOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[188]
+	mi := &file_operator_proto_msgTypes[205]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15133,7 +16626,7 @@ func (x *GetDocumentOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDocumentOpRequest.ProtoReflect.Descriptor instead.
 func (*GetDocumentOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{188}
+	return file_operator_proto_rawDescGZIP(), []int{205}
 }
 
 func (x *GetDocumentOpRequest) GetId() string {
@@ -15162,7 +16655,7 @@ type GetDocumentOpResponse struct {
 
 func (x *GetDocumentOpResponse) Reset() {
 	*x = GetDocumentOpResponse{}
-	mi := &file_operator_proto_msgTypes[189]
+	mi := &file_operator_proto_msgTypes[206]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15174,7 +16667,7 @@ func (x *GetDocumentOpResponse) String() string {
 func (*GetDocumentOpResponse) ProtoMessage() {}
 
 func (x *GetDocumentOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[189]
+	mi := &file_operator_proto_msgTypes[206]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15187,7 +16680,7 @@ func (x *GetDocumentOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDocumentOpResponse.ProtoReflect.Descriptor instead.
 func (*GetDocumentOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{189}
+	return file_operator_proto_rawDescGZIP(), []int{206}
 }
 
 func (x *GetDocumentOpResponse) GetFound() bool {
@@ -15258,7 +16751,7 @@ type ListNodeItemsOpRequest struct {
 
 func (x *ListNodeItemsOpRequest) Reset() {
 	*x = ListNodeItemsOpRequest{}
-	mi := &file_operator_proto_msgTypes[190]
+	mi := &file_operator_proto_msgTypes[207]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15270,7 +16763,7 @@ func (x *ListNodeItemsOpRequest) String() string {
 func (*ListNodeItemsOpRequest) ProtoMessage() {}
 
 func (x *ListNodeItemsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[190]
+	mi := &file_operator_proto_msgTypes[207]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15283,7 +16776,7 @@ func (x *ListNodeItemsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNodeItemsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListNodeItemsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{190}
+	return file_operator_proto_rawDescGZIP(), []int{207}
 }
 
 func (x *ListNodeItemsOpRequest) GetPipelineId() string {
@@ -15329,7 +16822,7 @@ type NodeItemOp struct {
 
 func (x *NodeItemOp) Reset() {
 	*x = NodeItemOp{}
-	mi := &file_operator_proto_msgTypes[191]
+	mi := &file_operator_proto_msgTypes[208]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15341,7 +16834,7 @@ func (x *NodeItemOp) String() string {
 func (*NodeItemOp) ProtoMessage() {}
 
 func (x *NodeItemOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[191]
+	mi := &file_operator_proto_msgTypes[208]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15354,7 +16847,7 @@ func (x *NodeItemOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeItemOp.ProtoReflect.Descriptor instead.
 func (*NodeItemOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{191}
+	return file_operator_proto_rawDescGZIP(), []int{208}
 }
 
 func (x *NodeItemOp) GetRunId() string {
@@ -15437,7 +16930,7 @@ type ListNodeItemsOpResponse struct {
 
 func (x *ListNodeItemsOpResponse) Reset() {
 	*x = ListNodeItemsOpResponse{}
-	mi := &file_operator_proto_msgTypes[192]
+	mi := &file_operator_proto_msgTypes[209]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15449,7 +16942,7 @@ func (x *ListNodeItemsOpResponse) String() string {
 func (*ListNodeItemsOpResponse) ProtoMessage() {}
 
 func (x *ListNodeItemsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[192]
+	mi := &file_operator_proto_msgTypes[209]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15462,7 +16955,7 @@ func (x *ListNodeItemsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNodeItemsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListNodeItemsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{192}
+	return file_operator_proto_rawDescGZIP(), []int{209}
 }
 
 func (x *ListNodeItemsOpResponse) GetItems() []*NodeItemOp {
@@ -15493,7 +16986,7 @@ type ListPipelinesOpRequest struct {
 
 func (x *ListPipelinesOpRequest) Reset() {
 	*x = ListPipelinesOpRequest{}
-	mi := &file_operator_proto_msgTypes[193]
+	mi := &file_operator_proto_msgTypes[210]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15505,7 +16998,7 @@ func (x *ListPipelinesOpRequest) String() string {
 func (*ListPipelinesOpRequest) ProtoMessage() {}
 
 func (x *ListPipelinesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[193]
+	mi := &file_operator_proto_msgTypes[210]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15518,7 +17011,7 @@ func (x *ListPipelinesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPipelinesOpRequest.ProtoReflect.Descriptor instead.
 func (*ListPipelinesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{193}
+	return file_operator_proto_rawDescGZIP(), []int{210}
 }
 
 func (x *ListPipelinesOpRequest) GetArmedOnly() bool {
@@ -15544,7 +17037,7 @@ type ListPipelinesOpResponse struct {
 
 func (x *ListPipelinesOpResponse) Reset() {
 	*x = ListPipelinesOpResponse{}
-	mi := &file_operator_proto_msgTypes[194]
+	mi := &file_operator_proto_msgTypes[211]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15556,7 +17049,7 @@ func (x *ListPipelinesOpResponse) String() string {
 func (*ListPipelinesOpResponse) ProtoMessage() {}
 
 func (x *ListPipelinesOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[194]
+	mi := &file_operator_proto_msgTypes[211]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15569,7 +17062,7 @@ func (x *ListPipelinesOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPipelinesOpResponse.ProtoReflect.Descriptor instead.
 func (*ListPipelinesOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{194}
+	return file_operator_proto_rawDescGZIP(), []int{211}
 }
 
 func (x *ListPipelinesOpResponse) GetPipelines() []*PipelineOp {
@@ -15593,7 +17086,7 @@ type DryRunPipelineOpRequest struct {
 
 func (x *DryRunPipelineOpRequest) Reset() {
 	*x = DryRunPipelineOpRequest{}
-	mi := &file_operator_proto_msgTypes[195]
+	mi := &file_operator_proto_msgTypes[212]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15605,7 +17098,7 @@ func (x *DryRunPipelineOpRequest) String() string {
 func (*DryRunPipelineOpRequest) ProtoMessage() {}
 
 func (x *DryRunPipelineOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[195]
+	mi := &file_operator_proto_msgTypes[212]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15618,7 +17111,7 @@ func (x *DryRunPipelineOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DryRunPipelineOpRequest.ProtoReflect.Descriptor instead.
 func (*DryRunPipelineOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{195}
+	return file_operator_proto_rawDescGZIP(), []int{212}
 }
 
 func (x *DryRunPipelineOpRequest) GetPipelineId() string {
@@ -15679,7 +17172,7 @@ type DryRunPipelineOpResponse struct {
 
 func (x *DryRunPipelineOpResponse) Reset() {
 	*x = DryRunPipelineOpResponse{}
-	mi := &file_operator_proto_msgTypes[196]
+	mi := &file_operator_proto_msgTypes[213]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15691,7 +17184,7 @@ func (x *DryRunPipelineOpResponse) String() string {
 func (*DryRunPipelineOpResponse) ProtoMessage() {}
 
 func (x *DryRunPipelineOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[196]
+	mi := &file_operator_proto_msgTypes[213]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15704,7 +17197,7 @@ func (x *DryRunPipelineOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DryRunPipelineOpResponse.ProtoReflect.Descriptor instead.
 func (*DryRunPipelineOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{196}
+	return file_operator_proto_rawDescGZIP(), []int{213}
 }
 
 func (x *DryRunPipelineOpResponse) GetRefused() string {
@@ -15792,7 +17285,7 @@ type PipelineNodeExampleOp struct {
 
 func (x *PipelineNodeExampleOp) Reset() {
 	*x = PipelineNodeExampleOp{}
-	mi := &file_operator_proto_msgTypes[197]
+	mi := &file_operator_proto_msgTypes[214]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15804,7 +17297,7 @@ func (x *PipelineNodeExampleOp) String() string {
 func (*PipelineNodeExampleOp) ProtoMessage() {}
 
 func (x *PipelineNodeExampleOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[197]
+	mi := &file_operator_proto_msgTypes[214]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15817,7 +17310,7 @@ func (x *PipelineNodeExampleOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineNodeExampleOp.ProtoReflect.Descriptor instead.
 func (*PipelineNodeExampleOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{197}
+	return file_operator_proto_rawDescGZIP(), []int{214}
 }
 
 func (x *PipelineNodeExampleOp) GetNode() string {
@@ -15860,7 +17353,7 @@ type PipelineFailureOp struct {
 
 func (x *PipelineFailureOp) Reset() {
 	*x = PipelineFailureOp{}
-	mi := &file_operator_proto_msgTypes[198]
+	mi := &file_operator_proto_msgTypes[215]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15872,7 +17365,7 @@ func (x *PipelineFailureOp) String() string {
 func (*PipelineFailureOp) ProtoMessage() {}
 
 func (x *PipelineFailureOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[198]
+	mi := &file_operator_proto_msgTypes[215]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15885,7 +17378,7 @@ func (x *PipelineFailureOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineFailureOp.ProtoReflect.Descriptor instead.
 func (*PipelineFailureOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{198}
+	return file_operator_proto_rawDescGZIP(), []int{215}
 }
 
 func (x *PipelineFailureOp) GetNode() string {
@@ -15920,7 +17413,7 @@ type GetPipelineOpRequest struct {
 
 func (x *GetPipelineOpRequest) Reset() {
 	*x = GetPipelineOpRequest{}
-	mi := &file_operator_proto_msgTypes[199]
+	mi := &file_operator_proto_msgTypes[216]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15932,7 +17425,7 @@ func (x *GetPipelineOpRequest) String() string {
 func (*GetPipelineOpRequest) ProtoMessage() {}
 
 func (x *GetPipelineOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[199]
+	mi := &file_operator_proto_msgTypes[216]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15945,7 +17438,7 @@ func (x *GetPipelineOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPipelineOpRequest.ProtoReflect.Descriptor instead.
 func (*GetPipelineOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{199}
+	return file_operator_proto_rawDescGZIP(), []int{216}
 }
 
 func (x *GetPipelineOpRequest) GetPipelineId() string {
@@ -15993,7 +17486,7 @@ type GetPipelineOpResponse struct {
 
 func (x *GetPipelineOpResponse) Reset() {
 	*x = GetPipelineOpResponse{}
-	mi := &file_operator_proto_msgTypes[200]
+	mi := &file_operator_proto_msgTypes[217]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16005,7 +17498,7 @@ func (x *GetPipelineOpResponse) String() string {
 func (*GetPipelineOpResponse) ProtoMessage() {}
 
 func (x *GetPipelineOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[200]
+	mi := &file_operator_proto_msgTypes[217]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16018,7 +17511,7 @@ func (x *GetPipelineOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPipelineOpResponse.ProtoReflect.Descriptor instead.
 func (*GetPipelineOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{200}
+	return file_operator_proto_rawDescGZIP(), []int{217}
 }
 
 func (x *GetPipelineOpResponse) GetRefused() string {
@@ -16076,7 +17569,7 @@ type NodeReadsOp struct {
 
 func (x *NodeReadsOp) Reset() {
 	*x = NodeReadsOp{}
-	mi := &file_operator_proto_msgTypes[201]
+	mi := &file_operator_proto_msgTypes[218]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16088,7 +17581,7 @@ func (x *NodeReadsOp) String() string {
 func (*NodeReadsOp) ProtoMessage() {}
 
 func (x *NodeReadsOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[201]
+	mi := &file_operator_proto_msgTypes[218]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16101,7 +17594,7 @@ func (x *NodeReadsOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeReadsOp.ProtoReflect.Descriptor instead.
 func (*NodeReadsOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{201}
+	return file_operator_proto_rawDescGZIP(), []int{218}
 }
 
 func (x *NodeReadsOp) GetNode() string {
@@ -16127,7 +17620,7 @@ type ValidatePipelineOpRequest struct {
 
 func (x *ValidatePipelineOpRequest) Reset() {
 	*x = ValidatePipelineOpRequest{}
-	mi := &file_operator_proto_msgTypes[202]
+	mi := &file_operator_proto_msgTypes[219]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16139,7 +17632,7 @@ func (x *ValidatePipelineOpRequest) String() string {
 func (*ValidatePipelineOpRequest) ProtoMessage() {}
 
 func (x *ValidatePipelineOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[202]
+	mi := &file_operator_proto_msgTypes[219]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16152,7 +17645,7 @@ func (x *ValidatePipelineOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidatePipelineOpRequest.ProtoReflect.Descriptor instead.
 func (*ValidatePipelineOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{202}
+	return file_operator_proto_rawDescGZIP(), []int{219}
 }
 
 func (x *ValidatePipelineOpRequest) GetGraphJson() string {
@@ -16184,7 +17677,7 @@ type ValidatePipelineOpResponse struct {
 
 func (x *ValidatePipelineOpResponse) Reset() {
 	*x = ValidatePipelineOpResponse{}
-	mi := &file_operator_proto_msgTypes[203]
+	mi := &file_operator_proto_msgTypes[220]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16196,7 +17689,7 @@ func (x *ValidatePipelineOpResponse) String() string {
 func (*ValidatePipelineOpResponse) ProtoMessage() {}
 
 func (x *ValidatePipelineOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[203]
+	mi := &file_operator_proto_msgTypes[220]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16209,7 +17702,7 @@ func (x *ValidatePipelineOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidatePipelineOpResponse.ProtoReflect.Descriptor instead.
 func (*ValidatePipelineOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{203}
+	return file_operator_proto_rawDescGZIP(), []int{220}
 }
 
 func (x *ValidatePipelineOpResponse) GetRefused() string {
@@ -16272,7 +17765,7 @@ type SavePipelineOpRequest struct {
 
 func (x *SavePipelineOpRequest) Reset() {
 	*x = SavePipelineOpRequest{}
-	mi := &file_operator_proto_msgTypes[204]
+	mi := &file_operator_proto_msgTypes[221]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16284,7 +17777,7 @@ func (x *SavePipelineOpRequest) String() string {
 func (*SavePipelineOpRequest) ProtoMessage() {}
 
 func (x *SavePipelineOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[204]
+	mi := &file_operator_proto_msgTypes[221]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16297,7 +17790,7 @@ func (x *SavePipelineOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SavePipelineOpRequest.ProtoReflect.Descriptor instead.
 func (*SavePipelineOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{204}
+	return file_operator_proto_rawDescGZIP(), []int{221}
 }
 
 func (x *SavePipelineOpRequest) GetGraphJson() string {
@@ -16331,7 +17824,7 @@ type SavePipelineOpResponse struct {
 
 func (x *SavePipelineOpResponse) Reset() {
 	*x = SavePipelineOpResponse{}
-	mi := &file_operator_proto_msgTypes[205]
+	mi := &file_operator_proto_msgTypes[222]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16343,7 +17836,7 @@ func (x *SavePipelineOpResponse) String() string {
 func (*SavePipelineOpResponse) ProtoMessage() {}
 
 func (x *SavePipelineOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[205]
+	mi := &file_operator_proto_msgTypes[222]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16356,7 +17849,7 @@ func (x *SavePipelineOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SavePipelineOpResponse.ProtoReflect.Descriptor instead.
 func (*SavePipelineOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{205}
+	return file_operator_proto_rawDescGZIP(), []int{222}
 }
 
 func (x *SavePipelineOpResponse) GetRefused() string {
@@ -16404,7 +17897,7 @@ type TransitionPipelineOpRequest struct {
 
 func (x *TransitionPipelineOpRequest) Reset() {
 	*x = TransitionPipelineOpRequest{}
-	mi := &file_operator_proto_msgTypes[206]
+	mi := &file_operator_proto_msgTypes[223]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16416,7 +17909,7 @@ func (x *TransitionPipelineOpRequest) String() string {
 func (*TransitionPipelineOpRequest) ProtoMessage() {}
 
 func (x *TransitionPipelineOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[206]
+	mi := &file_operator_proto_msgTypes[223]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16429,7 +17922,7 @@ func (x *TransitionPipelineOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TransitionPipelineOpRequest.ProtoReflect.Descriptor instead.
 func (*TransitionPipelineOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{206}
+	return file_operator_proto_rawDescGZIP(), []int{223}
 }
 
 func (x *TransitionPipelineOpRequest) GetPipelineId() string {
@@ -16483,7 +17976,7 @@ type TransitionPipelineOpResponse struct {
 
 func (x *TransitionPipelineOpResponse) Reset() {
 	*x = TransitionPipelineOpResponse{}
-	mi := &file_operator_proto_msgTypes[207]
+	mi := &file_operator_proto_msgTypes[224]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16495,7 +17988,7 @@ func (x *TransitionPipelineOpResponse) String() string {
 func (*TransitionPipelineOpResponse) ProtoMessage() {}
 
 func (x *TransitionPipelineOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[207]
+	mi := &file_operator_proto_msgTypes[224]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16508,7 +18001,7 @@ func (x *TransitionPipelineOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TransitionPipelineOpResponse.ProtoReflect.Descriptor instead.
 func (*TransitionPipelineOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{207}
+	return file_operator_proto_rawDescGZIP(), []int{224}
 }
 
 func (x *TransitionPipelineOpResponse) GetRefused() string {
@@ -16558,7 +18051,7 @@ type RefusalOp struct {
 
 func (x *RefusalOp) Reset() {
 	*x = RefusalOp{}
-	mi := &file_operator_proto_msgTypes[208]
+	mi := &file_operator_proto_msgTypes[225]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16570,7 +18063,7 @@ func (x *RefusalOp) String() string {
 func (*RefusalOp) ProtoMessage() {}
 
 func (x *RefusalOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[208]
+	mi := &file_operator_proto_msgTypes[225]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16583,7 +18076,7 @@ func (x *RefusalOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefusalOp.ProtoReflect.Descriptor instead.
 func (*RefusalOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{208}
+	return file_operator_proto_rawDescGZIP(), []int{225}
 }
 
 func (x *RefusalOp) GetConstraint() string {
@@ -16629,7 +18122,7 @@ type ShadowEffectOp struct {
 
 func (x *ShadowEffectOp) Reset() {
 	*x = ShadowEffectOp{}
-	mi := &file_operator_proto_msgTypes[209]
+	mi := &file_operator_proto_msgTypes[226]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16641,7 +18134,7 @@ func (x *ShadowEffectOp) String() string {
 func (*ShadowEffectOp) ProtoMessage() {}
 
 func (x *ShadowEffectOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[209]
+	mi := &file_operator_proto_msgTypes[226]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16654,7 +18147,7 @@ func (x *ShadowEffectOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShadowEffectOp.ProtoReflect.Descriptor instead.
 func (*ShadowEffectOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{209}
+	return file_operator_proto_rawDescGZIP(), []int{226}
 }
 
 func (x *ShadowEffectOp) GetNode() string {
@@ -16704,7 +18197,7 @@ type DuplicateEffectKeyOp struct {
 
 func (x *DuplicateEffectKeyOp) Reset() {
 	*x = DuplicateEffectKeyOp{}
-	mi := &file_operator_proto_msgTypes[210]
+	mi := &file_operator_proto_msgTypes[227]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16716,7 +18209,7 @@ func (x *DuplicateEffectKeyOp) String() string {
 func (*DuplicateEffectKeyOp) ProtoMessage() {}
 
 func (x *DuplicateEffectKeyOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[210]
+	mi := &file_operator_proto_msgTypes[227]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16729,7 +18222,7 @@ func (x *DuplicateEffectKeyOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DuplicateEffectKeyOp.ProtoReflect.Descriptor instead.
 func (*DuplicateEffectKeyOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{210}
+	return file_operator_proto_rawDescGZIP(), []int{227}
 }
 
 func (x *DuplicateEffectKeyOp) GetEffectKey() string {
@@ -16767,7 +18260,7 @@ type PipelineTerminationOp struct {
 
 func (x *PipelineTerminationOp) Reset() {
 	*x = PipelineTerminationOp{}
-	mi := &file_operator_proto_msgTypes[211]
+	mi := &file_operator_proto_msgTypes[228]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16779,7 +18272,7 @@ func (x *PipelineTerminationOp) String() string {
 func (*PipelineTerminationOp) ProtoMessage() {}
 
 func (x *PipelineTerminationOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[211]
+	mi := &file_operator_proto_msgTypes[228]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16792,7 +18285,7 @@ func (x *PipelineTerminationOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineTerminationOp.ProtoReflect.Descriptor instead.
 func (*PipelineTerminationOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{211}
+	return file_operator_proto_rawDescGZIP(), []int{228}
 }
 
 func (x *PipelineTerminationOp) GetNode() string {
@@ -16871,7 +18364,7 @@ type PipelineOp struct {
 
 func (x *PipelineOp) Reset() {
 	*x = PipelineOp{}
-	mi := &file_operator_proto_msgTypes[212]
+	mi := &file_operator_proto_msgTypes[229]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16883,7 +18376,7 @@ func (x *PipelineOp) String() string {
 func (*PipelineOp) ProtoMessage() {}
 
 func (x *PipelineOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[212]
+	mi := &file_operator_proto_msgTypes[229]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16896,7 +18389,7 @@ func (x *PipelineOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineOp.ProtoReflect.Descriptor instead.
 func (*PipelineOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{212}
+	return file_operator_proto_rawDescGZIP(), []int{229}
 }
 
 func (x *PipelineOp) GetPipelineId() string {
@@ -17063,7 +18556,7 @@ type LinkOp struct {
 
 func (x *LinkOp) Reset() {
 	*x = LinkOp{}
-	mi := &file_operator_proto_msgTypes[213]
+	mi := &file_operator_proto_msgTypes[230]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17075,7 +18568,7 @@ func (x *LinkOp) String() string {
 func (*LinkOp) ProtoMessage() {}
 
 func (x *LinkOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[213]
+	mi := &file_operator_proto_msgTypes[230]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17088,7 +18581,7 @@ func (x *LinkOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LinkOp.ProtoReflect.Descriptor instead.
 func (*LinkOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{213}
+	return file_operator_proto_rawDescGZIP(), []int{230}
 }
 
 func (x *LinkOp) GetId() string {
@@ -17230,7 +18723,7 @@ type ConfirmLinkOpRequest struct {
 
 func (x *ConfirmLinkOpRequest) Reset() {
 	*x = ConfirmLinkOpRequest{}
-	mi := &file_operator_proto_msgTypes[214]
+	mi := &file_operator_proto_msgTypes[231]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17242,7 +18735,7 @@ func (x *ConfirmLinkOpRequest) String() string {
 func (*ConfirmLinkOpRequest) ProtoMessage() {}
 
 func (x *ConfirmLinkOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[214]
+	mi := &file_operator_proto_msgTypes[231]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17255,7 +18748,7 @@ func (x *ConfirmLinkOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfirmLinkOpRequest.ProtoReflect.Descriptor instead.
 func (*ConfirmLinkOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{214}
+	return file_operator_proto_rawDescGZIP(), []int{231}
 }
 
 func (x *ConfirmLinkOpRequest) GetCommandId() string {
@@ -17301,7 +18794,7 @@ type ConfirmLinkOpResponse struct {
 
 func (x *ConfirmLinkOpResponse) Reset() {
 	*x = ConfirmLinkOpResponse{}
-	mi := &file_operator_proto_msgTypes[215]
+	mi := &file_operator_proto_msgTypes[232]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17313,7 +18806,7 @@ func (x *ConfirmLinkOpResponse) String() string {
 func (*ConfirmLinkOpResponse) ProtoMessage() {}
 
 func (x *ConfirmLinkOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[215]
+	mi := &file_operator_proto_msgTypes[232]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17326,7 +18819,7 @@ func (x *ConfirmLinkOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfirmLinkOpResponse.ProtoReflect.Descriptor instead.
 func (*ConfirmLinkOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{215}
+	return file_operator_proto_rawDescGZIP(), []int{232}
 }
 
 func (x *ConfirmLinkOpResponse) GetCommandId() string {
@@ -17362,7 +18855,7 @@ type RetractLinkOpRequest struct {
 
 func (x *RetractLinkOpRequest) Reset() {
 	*x = RetractLinkOpRequest{}
-	mi := &file_operator_proto_msgTypes[216]
+	mi := &file_operator_proto_msgTypes[233]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17374,7 +18867,7 @@ func (x *RetractLinkOpRequest) String() string {
 func (*RetractLinkOpRequest) ProtoMessage() {}
 
 func (x *RetractLinkOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[216]
+	mi := &file_operator_proto_msgTypes[233]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17387,7 +18880,7 @@ func (x *RetractLinkOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetractLinkOpRequest.ProtoReflect.Descriptor instead.
 func (*RetractLinkOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{216}
+	return file_operator_proto_rawDescGZIP(), []int{233}
 }
 
 func (x *RetractLinkOpRequest) GetCommandId() string {
@@ -17433,7 +18926,7 @@ type RetractLinksByProducerOpRequest struct {
 
 func (x *RetractLinksByProducerOpRequest) Reset() {
 	*x = RetractLinksByProducerOpRequest{}
-	mi := &file_operator_proto_msgTypes[217]
+	mi := &file_operator_proto_msgTypes[234]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17445,7 +18938,7 @@ func (x *RetractLinksByProducerOpRequest) String() string {
 func (*RetractLinksByProducerOpRequest) ProtoMessage() {}
 
 func (x *RetractLinksByProducerOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[217]
+	mi := &file_operator_proto_msgTypes[234]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17458,7 +18951,7 @@ func (x *RetractLinksByProducerOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetractLinksByProducerOpRequest.ProtoReflect.Descriptor instead.
 func (*RetractLinksByProducerOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{217}
+	return file_operator_proto_rawDescGZIP(), []int{234}
 }
 
 func (x *RetractLinksByProducerOpRequest) GetCommandId() string {
@@ -17503,7 +18996,7 @@ type RetractLinksByProducerOpResponse struct {
 
 func (x *RetractLinksByProducerOpResponse) Reset() {
 	*x = RetractLinksByProducerOpResponse{}
-	mi := &file_operator_proto_msgTypes[218]
+	mi := &file_operator_proto_msgTypes[235]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17515,7 +19008,7 @@ func (x *RetractLinksByProducerOpResponse) String() string {
 func (*RetractLinksByProducerOpResponse) ProtoMessage() {}
 
 func (x *RetractLinksByProducerOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[218]
+	mi := &file_operator_proto_msgTypes[235]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17528,7 +19021,7 @@ func (x *RetractLinksByProducerOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetractLinksByProducerOpResponse.ProtoReflect.Descriptor instead.
 func (*RetractLinksByProducerOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{218}
+	return file_operator_proto_rawDescGZIP(), []int{235}
 }
 
 func (x *RetractLinksByProducerOpResponse) GetCommandId() string {
@@ -17563,7 +19056,7 @@ type ListLinkCandidatesOpRequest struct {
 
 func (x *ListLinkCandidatesOpRequest) Reset() {
 	*x = ListLinkCandidatesOpRequest{}
-	mi := &file_operator_proto_msgTypes[219]
+	mi := &file_operator_proto_msgTypes[236]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17575,7 +19068,7 @@ func (x *ListLinkCandidatesOpRequest) String() string {
 func (*ListLinkCandidatesOpRequest) ProtoMessage() {}
 
 func (x *ListLinkCandidatesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[219]
+	mi := &file_operator_proto_msgTypes[236]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17588,7 +19081,7 @@ func (x *ListLinkCandidatesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLinkCandidatesOpRequest.ProtoReflect.Descriptor instead.
 func (*ListLinkCandidatesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{219}
+	return file_operator_proto_rawDescGZIP(), []int{236}
 }
 
 func (x *ListLinkCandidatesOpRequest) GetNamespaceId() string {
@@ -17616,7 +19109,7 @@ type ListLinkCandidatesOpResponse struct {
 
 func (x *ListLinkCandidatesOpResponse) Reset() {
 	*x = ListLinkCandidatesOpResponse{}
-	mi := &file_operator_proto_msgTypes[220]
+	mi := &file_operator_proto_msgTypes[237]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17628,7 +19121,7 @@ func (x *ListLinkCandidatesOpResponse) String() string {
 func (*ListLinkCandidatesOpResponse) ProtoMessage() {}
 
 func (x *ListLinkCandidatesOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[220]
+	mi := &file_operator_proto_msgTypes[237]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17641,7 +19134,7 @@ func (x *ListLinkCandidatesOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLinkCandidatesOpResponse.ProtoReflect.Descriptor instead.
 func (*ListLinkCandidatesOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{220}
+	return file_operator_proto_rawDescGZIP(), []int{237}
 }
 
 func (x *ListLinkCandidatesOpResponse) GetCandidates() []*LinkOp {
@@ -17665,7 +19158,7 @@ type ListMemoryNotesOpRequest struct {
 
 func (x *ListMemoryNotesOpRequest) Reset() {
 	*x = ListMemoryNotesOpRequest{}
-	mi := &file_operator_proto_msgTypes[221]
+	mi := &file_operator_proto_msgTypes[238]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17677,7 +19170,7 @@ func (x *ListMemoryNotesOpRequest) String() string {
 func (*ListMemoryNotesOpRequest) ProtoMessage() {}
 
 func (x *ListMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[221]
+	mi := &file_operator_proto_msgTypes[238]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17690,7 +19183,7 @@ func (x *ListMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMemoryNotesOpRequest.ProtoReflect.Descriptor instead.
 func (*ListMemoryNotesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{221}
+	return file_operator_proto_rawDescGZIP(), []int{238}
 }
 
 func (x *ListMemoryNotesOpRequest) GetScope() string {
@@ -17742,7 +19235,7 @@ type MemoryNotesSummaryOp struct {
 
 func (x *MemoryNotesSummaryOp) Reset() {
 	*x = MemoryNotesSummaryOp{}
-	mi := &file_operator_proto_msgTypes[222]
+	mi := &file_operator_proto_msgTypes[239]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17754,7 +19247,7 @@ func (x *MemoryNotesSummaryOp) String() string {
 func (*MemoryNotesSummaryOp) ProtoMessage() {}
 
 func (x *MemoryNotesSummaryOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[222]
+	mi := &file_operator_proto_msgTypes[239]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17767,7 +19260,7 @@ func (x *MemoryNotesSummaryOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryNotesSummaryOp.ProtoReflect.Descriptor instead.
 func (*MemoryNotesSummaryOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{222}
+	return file_operator_proto_rawDescGZIP(), []int{239}
 }
 
 func (x *MemoryNotesSummaryOp) GetScope() string {
@@ -17837,7 +19330,7 @@ type ListMemoryNotesOpResponse struct {
 
 func (x *ListMemoryNotesOpResponse) Reset() {
 	*x = ListMemoryNotesOpResponse{}
-	mi := &file_operator_proto_msgTypes[223]
+	mi := &file_operator_proto_msgTypes[240]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17849,7 +19342,7 @@ func (x *ListMemoryNotesOpResponse) String() string {
 func (*ListMemoryNotesOpResponse) ProtoMessage() {}
 
 func (x *ListMemoryNotesOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[223]
+	mi := &file_operator_proto_msgTypes[240]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17862,7 +19355,7 @@ func (x *ListMemoryNotesOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMemoryNotesOpResponse.ProtoReflect.Descriptor instead.
 func (*ListMemoryNotesOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{223}
+	return file_operator_proto_rawDescGZIP(), []int{240}
 }
 
 func (x *ListMemoryNotesOpResponse) GetNotes() []*MemoryNotesSummaryOp {
@@ -17896,7 +19389,7 @@ type GetMemoryNotesOpRequest struct {
 
 func (x *GetMemoryNotesOpRequest) Reset() {
 	*x = GetMemoryNotesOpRequest{}
-	mi := &file_operator_proto_msgTypes[224]
+	mi := &file_operator_proto_msgTypes[241]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17908,7 +19401,7 @@ func (x *GetMemoryNotesOpRequest) String() string {
 func (*GetMemoryNotesOpRequest) ProtoMessage() {}
 
 func (x *GetMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[224]
+	mi := &file_operator_proto_msgTypes[241]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17921,7 +19414,7 @@ func (x *GetMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMemoryNotesOpRequest.ProtoReflect.Descriptor instead.
 func (*GetMemoryNotesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{224}
+	return file_operator_proto_rawDescGZIP(), []int{241}
 }
 
 func (x *GetMemoryNotesOpRequest) GetScope() string {
@@ -17959,7 +19452,7 @@ type MemoryNotesOp struct {
 
 func (x *MemoryNotesOp) Reset() {
 	*x = MemoryNotesOp{}
-	mi := &file_operator_proto_msgTypes[225]
+	mi := &file_operator_proto_msgTypes[242]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17971,7 +19464,7 @@ func (x *MemoryNotesOp) String() string {
 func (*MemoryNotesOp) ProtoMessage() {}
 
 func (x *MemoryNotesOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[225]
+	mi := &file_operator_proto_msgTypes[242]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17984,7 +19477,7 @@ func (x *MemoryNotesOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryNotesOp.ProtoReflect.Descriptor instead.
 func (*MemoryNotesOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{225}
+	return file_operator_proto_rawDescGZIP(), []int{242}
 }
 
 func (x *MemoryNotesOp) GetScope() string {
@@ -18070,7 +19563,7 @@ type SetMemoryNotesOpRequest struct {
 
 func (x *SetMemoryNotesOpRequest) Reset() {
 	*x = SetMemoryNotesOpRequest{}
-	mi := &file_operator_proto_msgTypes[226]
+	mi := &file_operator_proto_msgTypes[243]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18082,7 +19575,7 @@ func (x *SetMemoryNotesOpRequest) String() string {
 func (*SetMemoryNotesOpRequest) ProtoMessage() {}
 
 func (x *SetMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[226]
+	mi := &file_operator_proto_msgTypes[243]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18095,7 +19588,7 @@ func (x *SetMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMemoryNotesOpRequest.ProtoReflect.Descriptor instead.
 func (*SetMemoryNotesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{226}
+	return file_operator_proto_rawDescGZIP(), []int{243}
 }
 
 func (x *SetMemoryNotesOpRequest) GetCommandId() string {
@@ -18166,7 +19659,7 @@ type SetMemoryNotesOpResponse struct {
 
 func (x *SetMemoryNotesOpResponse) Reset() {
 	*x = SetMemoryNotesOpResponse{}
-	mi := &file_operator_proto_msgTypes[227]
+	mi := &file_operator_proto_msgTypes[244]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18178,7 +19671,7 @@ func (x *SetMemoryNotesOpResponse) String() string {
 func (*SetMemoryNotesOpResponse) ProtoMessage() {}
 
 func (x *SetMemoryNotesOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[227]
+	mi := &file_operator_proto_msgTypes[244]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18191,7 +19684,7 @@ func (x *SetMemoryNotesOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMemoryNotesOpResponse.ProtoReflect.Descriptor instead.
 func (*SetMemoryNotesOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{227}
+	return file_operator_proto_rawDescGZIP(), []int{244}
 }
 
 func (x *SetMemoryNotesOpResponse) GetCommandId() string {
@@ -18262,7 +19755,7 @@ type DeleteMemoryNotesOpRequest struct {
 
 func (x *DeleteMemoryNotesOpRequest) Reset() {
 	*x = DeleteMemoryNotesOpRequest{}
-	mi := &file_operator_proto_msgTypes[228]
+	mi := &file_operator_proto_msgTypes[245]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18274,7 +19767,7 @@ func (x *DeleteMemoryNotesOpRequest) String() string {
 func (*DeleteMemoryNotesOpRequest) ProtoMessage() {}
 
 func (x *DeleteMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[228]
+	mi := &file_operator_proto_msgTypes[245]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18287,7 +19780,7 @@ func (x *DeleteMemoryNotesOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMemoryNotesOpRequest.ProtoReflect.Descriptor instead.
 func (*DeleteMemoryNotesOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{228}
+	return file_operator_proto_rawDescGZIP(), []int{245}
 }
 
 func (x *DeleteMemoryNotesOpRequest) GetCommandId() string {
@@ -18339,7 +19832,7 @@ type SetMemoryNotesBudgetOpRequest struct {
 
 func (x *SetMemoryNotesBudgetOpRequest) Reset() {
 	*x = SetMemoryNotesBudgetOpRequest{}
-	mi := &file_operator_proto_msgTypes[229]
+	mi := &file_operator_proto_msgTypes[246]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18351,7 +19844,7 @@ func (x *SetMemoryNotesBudgetOpRequest) String() string {
 func (*SetMemoryNotesBudgetOpRequest) ProtoMessage() {}
 
 func (x *SetMemoryNotesBudgetOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[229]
+	mi := &file_operator_proto_msgTypes[246]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18364,7 +19857,7 @@ func (x *SetMemoryNotesBudgetOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMemoryNotesBudgetOpRequest.ProtoReflect.Descriptor instead.
 func (*SetMemoryNotesBudgetOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{229}
+	return file_operator_proto_rawDescGZIP(), []int{246}
 }
 
 func (x *SetMemoryNotesBudgetOpRequest) GetCommandId() string {
@@ -18423,7 +19916,7 @@ type ListSkillProposalsOpRequest struct {
 
 func (x *ListSkillProposalsOpRequest) Reset() {
 	*x = ListSkillProposalsOpRequest{}
-	mi := &file_operator_proto_msgTypes[230]
+	mi := &file_operator_proto_msgTypes[247]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18435,7 +19928,7 @@ func (x *ListSkillProposalsOpRequest) String() string {
 func (*ListSkillProposalsOpRequest) ProtoMessage() {}
 
 func (x *ListSkillProposalsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[230]
+	mi := &file_operator_proto_msgTypes[247]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18448,7 +19941,7 @@ func (x *ListSkillProposalsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillProposalsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListSkillProposalsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{230}
+	return file_operator_proto_rawDescGZIP(), []int{247}
 }
 
 func (x *ListSkillProposalsOpRequest) GetState() string {
@@ -18515,7 +20008,7 @@ type SkillProposalOp struct {
 
 func (x *SkillProposalOp) Reset() {
 	*x = SkillProposalOp{}
-	mi := &file_operator_proto_msgTypes[231]
+	mi := &file_operator_proto_msgTypes[248]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18527,7 +20020,7 @@ func (x *SkillProposalOp) String() string {
 func (*SkillProposalOp) ProtoMessage() {}
 
 func (x *SkillProposalOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[231]
+	mi := &file_operator_proto_msgTypes[248]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18540,7 +20033,7 @@ func (x *SkillProposalOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillProposalOp.ProtoReflect.Descriptor instead.
 func (*SkillProposalOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{231}
+	return file_operator_proto_rawDescGZIP(), []int{248}
 }
 
 func (x *SkillProposalOp) GetId() string {
@@ -18673,7 +20166,7 @@ type ListSkillProposalsOpResponse struct {
 
 func (x *ListSkillProposalsOpResponse) Reset() {
 	*x = ListSkillProposalsOpResponse{}
-	mi := &file_operator_proto_msgTypes[232]
+	mi := &file_operator_proto_msgTypes[249]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18685,7 +20178,7 @@ func (x *ListSkillProposalsOpResponse) String() string {
 func (*ListSkillProposalsOpResponse) ProtoMessage() {}
 
 func (x *ListSkillProposalsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[232]
+	mi := &file_operator_proto_msgTypes[249]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18698,7 +20191,7 @@ func (x *ListSkillProposalsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillProposalsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListSkillProposalsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{232}
+	return file_operator_proto_rawDescGZIP(), []int{249}
 }
 
 func (x *ListSkillProposalsOpResponse) GetProposals() []*SkillProposalOp {
@@ -18739,7 +20232,7 @@ type DecideSkillProposalOpRequest struct {
 
 func (x *DecideSkillProposalOpRequest) Reset() {
 	*x = DecideSkillProposalOpRequest{}
-	mi := &file_operator_proto_msgTypes[233]
+	mi := &file_operator_proto_msgTypes[250]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18751,7 +20244,7 @@ func (x *DecideSkillProposalOpRequest) String() string {
 func (*DecideSkillProposalOpRequest) ProtoMessage() {}
 
 func (x *DecideSkillProposalOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[233]
+	mi := &file_operator_proto_msgTypes[250]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18764,7 +20257,7 @@ func (x *DecideSkillProposalOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecideSkillProposalOpRequest.ProtoReflect.Descriptor instead.
 func (*DecideSkillProposalOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{233}
+	return file_operator_proto_rawDescGZIP(), []int{250}
 }
 
 func (x *DecideSkillProposalOpRequest) GetCommandId() string {
@@ -18815,7 +20308,7 @@ type DecideSkillProposalOpResponse struct {
 
 func (x *DecideSkillProposalOpResponse) Reset() {
 	*x = DecideSkillProposalOpResponse{}
-	mi := &file_operator_proto_msgTypes[234]
+	mi := &file_operator_proto_msgTypes[251]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18827,7 +20320,7 @@ func (x *DecideSkillProposalOpResponse) String() string {
 func (*DecideSkillProposalOpResponse) ProtoMessage() {}
 
 func (x *DecideSkillProposalOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[234]
+	mi := &file_operator_proto_msgTypes[251]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18840,7 +20333,7 @@ func (x *DecideSkillProposalOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecideSkillProposalOpResponse.ProtoReflect.Descriptor instead.
 func (*DecideSkillProposalOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{234}
+	return file_operator_proto_rawDescGZIP(), []int{251}
 }
 
 func (x *DecideSkillProposalOpResponse) GetCommandId() string {
@@ -18883,7 +20376,7 @@ type SetSkillLockOpRequest struct {
 
 func (x *SetSkillLockOpRequest) Reset() {
 	*x = SetSkillLockOpRequest{}
-	mi := &file_operator_proto_msgTypes[235]
+	mi := &file_operator_proto_msgTypes[252]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18895,7 +20388,7 @@ func (x *SetSkillLockOpRequest) String() string {
 func (*SetSkillLockOpRequest) ProtoMessage() {}
 
 func (x *SetSkillLockOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[235]
+	mi := &file_operator_proto_msgTypes[252]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18908,7 +20401,7 @@ func (x *SetSkillLockOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSkillLockOpRequest.ProtoReflect.Descriptor instead.
 func (*SetSkillLockOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{235}
+	return file_operator_proto_rawDescGZIP(), []int{252}
 }
 
 func (x *SetSkillLockOpRequest) GetCommandId() string {
@@ -18951,7 +20444,7 @@ type ListSkillLedgerOpRequest struct {
 
 func (x *ListSkillLedgerOpRequest) Reset() {
 	*x = ListSkillLedgerOpRequest{}
-	mi := &file_operator_proto_msgTypes[236]
+	mi := &file_operator_proto_msgTypes[253]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18963,7 +20456,7 @@ func (x *ListSkillLedgerOpRequest) String() string {
 func (*ListSkillLedgerOpRequest) ProtoMessage() {}
 
 func (x *ListSkillLedgerOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[236]
+	mi := &file_operator_proto_msgTypes[253]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18976,7 +20469,7 @@ func (x *ListSkillLedgerOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillLedgerOpRequest.ProtoReflect.Descriptor instead.
 func (*ListSkillLedgerOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{236}
+	return file_operator_proto_rawDescGZIP(), []int{253}
 }
 
 func (x *ListSkillLedgerOpRequest) GetSkillName() string {
@@ -19030,7 +20523,7 @@ type SkillLedgerEntryOp struct {
 
 func (x *SkillLedgerEntryOp) Reset() {
 	*x = SkillLedgerEntryOp{}
-	mi := &file_operator_proto_msgTypes[237]
+	mi := &file_operator_proto_msgTypes[254]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19042,7 +20535,7 @@ func (x *SkillLedgerEntryOp) String() string {
 func (*SkillLedgerEntryOp) ProtoMessage() {}
 
 func (x *SkillLedgerEntryOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[237]
+	mi := &file_operator_proto_msgTypes[254]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19055,7 +20548,7 @@ func (x *SkillLedgerEntryOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillLedgerEntryOp.ProtoReflect.Descriptor instead.
 func (*SkillLedgerEntryOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{237}
+	return file_operator_proto_rawDescGZIP(), []int{254}
 }
 
 func (x *SkillLedgerEntryOp) GetId() string {
@@ -19160,7 +20653,7 @@ type ListSkillLedgerOpResponse struct {
 
 func (x *ListSkillLedgerOpResponse) Reset() {
 	*x = ListSkillLedgerOpResponse{}
-	mi := &file_operator_proto_msgTypes[238]
+	mi := &file_operator_proto_msgTypes[255]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19172,7 +20665,7 @@ func (x *ListSkillLedgerOpResponse) String() string {
 func (*ListSkillLedgerOpResponse) ProtoMessage() {}
 
 func (x *ListSkillLedgerOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[238]
+	mi := &file_operator_proto_msgTypes[255]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19185,7 +20678,7 @@ func (x *ListSkillLedgerOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillLedgerOpResponse.ProtoReflect.Descriptor instead.
 func (*ListSkillLedgerOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{238}
+	return file_operator_proto_rawDescGZIP(), []int{255}
 }
 
 func (x *ListSkillLedgerOpResponse) GetEntries() []*SkillLedgerEntryOp {
@@ -19224,7 +20717,7 @@ type RollbackSkillOpRequest struct {
 
 func (x *RollbackSkillOpRequest) Reset() {
 	*x = RollbackSkillOpRequest{}
-	mi := &file_operator_proto_msgTypes[239]
+	mi := &file_operator_proto_msgTypes[256]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19236,7 +20729,7 @@ func (x *RollbackSkillOpRequest) String() string {
 func (*RollbackSkillOpRequest) ProtoMessage() {}
 
 func (x *RollbackSkillOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[239]
+	mi := &file_operator_proto_msgTypes[256]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19249,7 +20742,7 @@ func (x *RollbackSkillOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackSkillOpRequest.ProtoReflect.Descriptor instead.
 func (*RollbackSkillOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{239}
+	return file_operator_proto_rawDescGZIP(), []int{256}
 }
 
 func (x *RollbackSkillOpRequest) GetCommandId() string {
@@ -19293,7 +20786,7 @@ type RollbackSkillOpResponse struct {
 
 func (x *RollbackSkillOpResponse) Reset() {
 	*x = RollbackSkillOpResponse{}
-	mi := &file_operator_proto_msgTypes[240]
+	mi := &file_operator_proto_msgTypes[257]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19305,7 +20798,7 @@ func (x *RollbackSkillOpResponse) String() string {
 func (*RollbackSkillOpResponse) ProtoMessage() {}
 
 func (x *RollbackSkillOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[240]
+	mi := &file_operator_proto_msgTypes[257]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19318,7 +20811,7 @@ func (x *RollbackSkillOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackSkillOpResponse.ProtoReflect.Descriptor instead.
 func (*RollbackSkillOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{240}
+	return file_operator_proto_rawDescGZIP(), []int{257}
 }
 
 func (x *RollbackSkillOpResponse) GetCommandId() string {
@@ -19365,7 +20858,7 @@ type ListSkillGrantsOpRequest struct {
 
 func (x *ListSkillGrantsOpRequest) Reset() {
 	*x = ListSkillGrantsOpRequest{}
-	mi := &file_operator_proto_msgTypes[241]
+	mi := &file_operator_proto_msgTypes[258]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19377,7 +20870,7 @@ func (x *ListSkillGrantsOpRequest) String() string {
 func (*ListSkillGrantsOpRequest) ProtoMessage() {}
 
 func (x *ListSkillGrantsOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[241]
+	mi := &file_operator_proto_msgTypes[258]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19390,7 +20883,7 @@ func (x *ListSkillGrantsOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillGrantsOpRequest.ProtoReflect.Descriptor instead.
 func (*ListSkillGrantsOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{241}
+	return file_operator_proto_rawDescGZIP(), []int{258}
 }
 
 func (x *ListSkillGrantsOpRequest) GetAgentId() string {
@@ -19443,7 +20936,7 @@ type SkillGrantOp struct {
 
 func (x *SkillGrantOp) Reset() {
 	*x = SkillGrantOp{}
-	mi := &file_operator_proto_msgTypes[242]
+	mi := &file_operator_proto_msgTypes[259]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19455,7 +20948,7 @@ func (x *SkillGrantOp) String() string {
 func (*SkillGrantOp) ProtoMessage() {}
 
 func (x *SkillGrantOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[242]
+	mi := &file_operator_proto_msgTypes[259]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19468,7 +20961,7 @@ func (x *SkillGrantOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillGrantOp.ProtoReflect.Descriptor instead.
 func (*SkillGrantOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{242}
+	return file_operator_proto_rawDescGZIP(), []int{259}
 }
 
 func (x *SkillGrantOp) GetId() string {
@@ -19560,7 +21053,7 @@ type SkillAccessRequestOp struct {
 
 func (x *SkillAccessRequestOp) Reset() {
 	*x = SkillAccessRequestOp{}
-	mi := &file_operator_proto_msgTypes[243]
+	mi := &file_operator_proto_msgTypes[260]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19572,7 +21065,7 @@ func (x *SkillAccessRequestOp) String() string {
 func (*SkillAccessRequestOp) ProtoMessage() {}
 
 func (x *SkillAccessRequestOp) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[243]
+	mi := &file_operator_proto_msgTypes[260]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19585,7 +21078,7 @@ func (x *SkillAccessRequestOp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillAccessRequestOp.ProtoReflect.Descriptor instead.
 func (*SkillAccessRequestOp) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{243}
+	return file_operator_proto_rawDescGZIP(), []int{260}
 }
 
 func (x *SkillAccessRequestOp) GetId() string {
@@ -19661,7 +21154,7 @@ type ListSkillGrantsOpResponse struct {
 
 func (x *ListSkillGrantsOpResponse) Reset() {
 	*x = ListSkillGrantsOpResponse{}
-	mi := &file_operator_proto_msgTypes[244]
+	mi := &file_operator_proto_msgTypes[261]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19673,7 +21166,7 @@ func (x *ListSkillGrantsOpResponse) String() string {
 func (*ListSkillGrantsOpResponse) ProtoMessage() {}
 
 func (x *ListSkillGrantsOpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[244]
+	mi := &file_operator_proto_msgTypes[261]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19686,7 +21179,7 @@ func (x *ListSkillGrantsOpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSkillGrantsOpResponse.ProtoReflect.Descriptor instead.
 func (*ListSkillGrantsOpResponse) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{244}
+	return file_operator_proto_rawDescGZIP(), []int{261}
 }
 
 func (x *ListSkillGrantsOpResponse) GetGrants() []*SkillGrantOp {
@@ -19716,7 +21209,7 @@ type GrantSkillOpRequest struct {
 
 func (x *GrantSkillOpRequest) Reset() {
 	*x = GrantSkillOpRequest{}
-	mi := &file_operator_proto_msgTypes[245]
+	mi := &file_operator_proto_msgTypes[262]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19728,7 +21221,7 @@ func (x *GrantSkillOpRequest) String() string {
 func (*GrantSkillOpRequest) ProtoMessage() {}
 
 func (x *GrantSkillOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[245]
+	mi := &file_operator_proto_msgTypes[262]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19741,7 +21234,7 @@ func (x *GrantSkillOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GrantSkillOpRequest.ProtoReflect.Descriptor instead.
 func (*GrantSkillOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{245}
+	return file_operator_proto_rawDescGZIP(), []int{262}
 }
 
 func (x *GrantSkillOpRequest) GetCommandId() string {
@@ -19784,7 +21277,7 @@ type RevokeSkillGrantOpRequest struct {
 
 func (x *RevokeSkillGrantOpRequest) Reset() {
 	*x = RevokeSkillGrantOpRequest{}
-	mi := &file_operator_proto_msgTypes[246]
+	mi := &file_operator_proto_msgTypes[263]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19796,7 +21289,7 @@ func (x *RevokeSkillGrantOpRequest) String() string {
 func (*RevokeSkillGrantOpRequest) ProtoMessage() {}
 
 func (x *RevokeSkillGrantOpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_operator_proto_msgTypes[246]
+	mi := &file_operator_proto_msgTypes[263]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19809,7 +21302,7 @@ func (x *RevokeSkillGrantOpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeSkillGrantOpRequest.ProtoReflect.Descriptor instead.
 func (*RevokeSkillGrantOpRequest) Descriptor() ([]byte, []int) {
-	return file_operator_proto_rawDescGZIP(), []int{246}
+	return file_operator_proto_rawDescGZIP(), []int{263}
 }
 
 func (x *RevokeSkillGrantOpRequest) GetCommandId() string {
@@ -19836,6 +21329,2037 @@ func (x *RevokeSkillGrantOpRequest) GetAgentId() string {
 func (x *RevokeSkillGrantOpRequest) GetSkillName() string {
 	if x != nil {
 		return x.SkillName
+	}
+	return ""
+}
+
+type ListIntegrationCatalogOpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListIntegrationCatalogOpRequest) Reset() {
+	*x = ListIntegrationCatalogOpRequest{}
+	mi := &file_operator_proto_msgTypes[264]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListIntegrationCatalogOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListIntegrationCatalogOpRequest) ProtoMessage() {}
+
+func (x *ListIntegrationCatalogOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[264]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListIntegrationCatalogOpRequest.ProtoReflect.Descriptor instead.
+func (*ListIntegrationCatalogOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{264}
+}
+
+type ListIntegrationCatalogOpResponse struct {
+	state   protoimpl.MessageState       `protogen:"open.v1"`
+	Entries []*IntegrationCatalogEntryOp `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	// categories is the distinct category list, in catalog order, for grouping.
+	Categories    []string `protobuf:"bytes,2,rep,name=categories,proto3" json:"categories,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListIntegrationCatalogOpResponse) Reset() {
+	*x = ListIntegrationCatalogOpResponse{}
+	mi := &file_operator_proto_msgTypes[265]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListIntegrationCatalogOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListIntegrationCatalogOpResponse) ProtoMessage() {}
+
+func (x *ListIntegrationCatalogOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[265]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListIntegrationCatalogOpResponse.ProtoReflect.Descriptor instead.
+func (*ListIntegrationCatalogOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{265}
+}
+
+func (x *ListIntegrationCatalogOpResponse) GetEntries() []*IntegrationCatalogEntryOp {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *ListIntegrationCatalogOpResponse) GetCategories() []string {
+	if x != nil {
+		return x.Categories
+	}
+	return nil
+}
+
+// IntegrationCatalogEntryOp is one curated (or deployment-declared) MCP server
+// an operator can install. Everything here is descriptive; the policy fields
+// are what the kernel will ENFORCE once installed.
+type IntegrationCatalogEntryOp struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Description string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	Category    string                 `protobuf:"bytes,4,opt,name=category,proto3" json:"category,omitempty"`   // e.g. "web-search", "email-calendar", "database"
+	Publisher   string                 `protobuf:"bytes,5,opt,name=publisher,proto3" json:"publisher,omitempty"` // e.g. "Brave (official)"
+	License     string                 `protobuf:"bytes,6,opt,name=license,proto3" json:"license,omitempty"`
+	// trust_tier: "official" (the vendor or the MCP steering group) or
+	// "community". stdio servers run with the kernel user's privileges today
+	// (ADR-0139 D8 sandboxing is not built); a console should say so for both.
+	TrustTier         string                `protobuf:"bytes,7,opt,name=trust_tier,json=trustTier,proto3" json:"trust_tier,omitempty"`
+	DocsUrl           string                `protobuf:"bytes,8,opt,name=docs_url,json=docsUrl,proto3" json:"docs_url,omitempty"`
+	Version           string                `protobuf:"bytes,9,opt,name=version,proto3" json:"version,omitempty"`                                                // the pinned upstream version
+	Transport         string                `protobuf:"bytes,10,opt,name=transport,proto3" json:"transport,omitempty"`                                           // "stdio" | "http" | "sse"
+	Command           string                `protobuf:"bytes,11,opt,name=command,proto3" json:"command,omitempty"`                                               // stdio launcher ("npx", "uvx", ...); empty for http
+	Args              []string              `protobuf:"bytes,12,rep,name=args,proto3" json:"args,omitempty"`                                                     // stdio args; "${NAME}" is filled from a setting
+	Url               string                `protobuf:"bytes,13,opt,name=url,proto3" json:"url,omitempty"`                                                       // http/sse endpoint; empty for stdio
+	Runtimes          []string              `protobuf:"bytes,14,rep,name=runtimes,proto3" json:"runtimes,omitempty"`                                             // prerequisites, e.g. "node>=22", "uv", "docker"
+	Platforms         []string              `protobuf:"bytes,15,rep,name=platforms,proto3" json:"platforms,omitempty"`                                           // supported OSes ("linux","darwin","windows"); empty = all
+	PlatformSupported bool                  `protobuf:"varint,16,opt,name=platform_supported,json=platformSupported,proto3" json:"platform_supported,omitempty"` // false when this kernel's OS is not in platforms
+	Fields            []*IntegrationFieldOp `protobuf:"bytes,17,rep,name=fields,proto3" json:"fields,omitempty"`                                                 // credentials and settings to collect
+	// Policy the kernel enforces: per-tool entries, then the server default.
+	// has_default_policy=false means FAIL CLOSED: every unlisted tool is
+	// dangerous (approval) with read+write+egress.
+	ToolPolicies     []*IntegrationToolPolicyOp `protobuf:"bytes,18,rep,name=tool_policies,json=toolPolicies,proto3" json:"tool_policies,omitempty"`
+	HasDefaultPolicy bool                       `protobuf:"varint,19,opt,name=has_default_policy,json=hasDefaultPolicy,proto3" json:"has_default_policy,omitempty"`
+	DefaultPolicy    *IntegrationToolPolicyOp   `protobuf:"bytes,20,opt,name=default_policy,json=defaultPolicy,proto3" json:"default_policy,omitempty"`
+	PolicySummary    string                     `protobuf:"bytes,21,opt,name=policy_summary,json=policySummary,proto3" json:"policy_summary,omitempty"` // one human line, e.g. "read + egress (whole server)"
+	ProbeTool        string                     `protobuf:"bytes,22,opt,name=probe_tool,json=probeTool,proto3" json:"probe_tool,omitempty"`             // a harmless tool TestIntegration may call, or ""
+	Notes            string                     `protobuf:"bytes,23,opt,name=notes,proto3" json:"notes,omitempty"`                                      // caveats: OAuth consent, read-only flags, risks
+	Source           string                     `protobuf:"bytes,24,opt,name=source,proto3" json:"source,omitempty"`                                    // "builtin" | "deployment"
+	// multi_instance: the entry may be installed more than once under different
+	// ids (e.g. two Postgres databases).
+	MultiInstance bool `protobuf:"varint,25,opt,name=multi_instance,json=multiInstance,proto3" json:"multi_instance,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IntegrationCatalogEntryOp) Reset() {
+	*x = IntegrationCatalogEntryOp{}
+	mi := &file_operator_proto_msgTypes[266]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntegrationCatalogEntryOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntegrationCatalogEntryOp) ProtoMessage() {}
+
+func (x *IntegrationCatalogEntryOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[266]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntegrationCatalogEntryOp.ProtoReflect.Descriptor instead.
+func (*IntegrationCatalogEntryOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{266}
+}
+
+func (x *IntegrationCatalogEntryOp) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetCategory() string {
+	if x != nil {
+		return x.Category
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetPublisher() string {
+	if x != nil {
+		return x.Publisher
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetLicense() string {
+	if x != nil {
+		return x.License
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetTrustTier() string {
+	if x != nil {
+		return x.TrustTier
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetDocsUrl() string {
+	if x != nil {
+		return x.DocsUrl
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetTransport() string {
+	if x != nil {
+		return x.Transport
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetCommand() string {
+	if x != nil {
+		return x.Command
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetArgs() []string {
+	if x != nil {
+		return x.Args
+	}
+	return nil
+}
+
+func (x *IntegrationCatalogEntryOp) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetRuntimes() []string {
+	if x != nil {
+		return x.Runtimes
+	}
+	return nil
+}
+
+func (x *IntegrationCatalogEntryOp) GetPlatforms() []string {
+	if x != nil {
+		return x.Platforms
+	}
+	return nil
+}
+
+func (x *IntegrationCatalogEntryOp) GetPlatformSupported() bool {
+	if x != nil {
+		return x.PlatformSupported
+	}
+	return false
+}
+
+func (x *IntegrationCatalogEntryOp) GetFields() []*IntegrationFieldOp {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
+func (x *IntegrationCatalogEntryOp) GetToolPolicies() []*IntegrationToolPolicyOp {
+	if x != nil {
+		return x.ToolPolicies
+	}
+	return nil
+}
+
+func (x *IntegrationCatalogEntryOp) GetHasDefaultPolicy() bool {
+	if x != nil {
+		return x.HasDefaultPolicy
+	}
+	return false
+}
+
+func (x *IntegrationCatalogEntryOp) GetDefaultPolicy() *IntegrationToolPolicyOp {
+	if x != nil {
+		return x.DefaultPolicy
+	}
+	return nil
+}
+
+func (x *IntegrationCatalogEntryOp) GetPolicySummary() string {
+	if x != nil {
+		return x.PolicySummary
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetProbeTool() string {
+	if x != nil {
+		return x.ProbeTool
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetNotes() string {
+	if x != nil {
+		return x.Notes
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *IntegrationCatalogEntryOp) GetMultiInstance() bool {
+	if x != nil {
+		return x.MultiInstance
+	}
+	return false
+}
+
+// IntegrationFieldOp is one value an integration needs.
+type IntegrationFieldOp struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Name     string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`      // the env var (or token field) name, e.g. "BRAVE_API_KEY"
+	Label    string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`    // "Brave Search API key"
+	Secret   bool                   `protobuf:"varint,3,opt,name=secret,proto3" json:"secret,omitempty"` // true: write-only via SetIntegrationSecret; never read back
+	Required bool                   `protobuf:"varint,4,opt,name=required,proto3" json:"required,omitempty"`
+	Help     string                 `protobuf:"bytes,5,opt,name=help,proto3" json:"help,omitempty"` // where to get it, which scopes, ...
+	// kind: "env" (an environment variable of the server process) or "token"
+	// (the http/sse auth credential, sent as the configured auth header).
+	Kind          string `protobuf:"bytes,6,opt,name=kind,proto3" json:"kind,omitempty"`
+	DefaultValue  string `protobuf:"bytes,7,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"` // non-secret fields only
+	Placeholder   string `protobuf:"bytes,8,opt,name=placeholder,proto3" json:"placeholder,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IntegrationFieldOp) Reset() {
+	*x = IntegrationFieldOp{}
+	mi := &file_operator_proto_msgTypes[267]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntegrationFieldOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntegrationFieldOp) ProtoMessage() {}
+
+func (x *IntegrationFieldOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[267]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntegrationFieldOp.ProtoReflect.Descriptor instead.
+func (*IntegrationFieldOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{267}
+}
+
+func (x *IntegrationFieldOp) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *IntegrationFieldOp) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *IntegrationFieldOp) GetSecret() bool {
+	if x != nil {
+		return x.Secret
+	}
+	return false
+}
+
+func (x *IntegrationFieldOp) GetRequired() bool {
+	if x != nil {
+		return x.Required
+	}
+	return false
+}
+
+func (x *IntegrationFieldOp) GetHelp() string {
+	if x != nil {
+		return x.Help
+	}
+	return ""
+}
+
+func (x *IntegrationFieldOp) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *IntegrationFieldOp) GetDefaultValue() string {
+	if x != nil {
+		return x.DefaultValue
+	}
+	return ""
+}
+
+func (x *IntegrationFieldOp) GetPlaceholder() string {
+	if x != nil {
+		return x.Placeholder
+	}
+	return ""
+}
+
+type IntegrationToolPolicyOp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"` // tool name as advertised (unqualified); "" for a default
+	Dangerous     bool                   `protobuf:"varint,2,opt,name=dangerous,proto3" json:"dangerous,omitempty"`
+	Effects       []string               `protobuf:"bytes,3,rep,name=effects,proto3" json:"effects,omitempty"` // ADR-0086: read, write, egress, spend, admin
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IntegrationToolPolicyOp) Reset() {
+	*x = IntegrationToolPolicyOp{}
+	mi := &file_operator_proto_msgTypes[268]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntegrationToolPolicyOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntegrationToolPolicyOp) ProtoMessage() {}
+
+func (x *IntegrationToolPolicyOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[268]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntegrationToolPolicyOp.ProtoReflect.Descriptor instead.
+func (*IntegrationToolPolicyOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{268}
+}
+
+func (x *IntegrationToolPolicyOp) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *IntegrationToolPolicyOp) GetDangerous() bool {
+	if x != nil {
+		return x.Dangerous
+	}
+	return false
+}
+
+func (x *IntegrationToolPolicyOp) GetEffects() []string {
+	if x != nil {
+		return x.Effects
+	}
+	return nil
+}
+
+type ListIntegrationsOpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListIntegrationsOpRequest) Reset() {
+	*x = ListIntegrationsOpRequest{}
+	mi := &file_operator_proto_msgTypes[269]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListIntegrationsOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListIntegrationsOpRequest) ProtoMessage() {}
+
+func (x *ListIntegrationsOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[269]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListIntegrationsOpRequest.ProtoReflect.Descriptor instead.
+func (*ListIntegrationsOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{269}
+}
+
+type ListIntegrationsOpResponse struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Integrations []*IntegrationOp       `protobuf:"bytes,1,rep,name=integrations,proto3" json:"integrations,omitempty"`
+	// configured is true when this kernel can manage integrations at all; an
+	// empty list then means "none installed", not "cannot tell".
+	Configured    bool `protobuf:"varint,2,opt,name=configured,proto3" json:"configured,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListIntegrationsOpResponse) Reset() {
+	*x = ListIntegrationsOpResponse{}
+	mi := &file_operator_proto_msgTypes[270]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListIntegrationsOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListIntegrationsOpResponse) ProtoMessage() {}
+
+func (x *ListIntegrationsOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[270]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListIntegrationsOpResponse.ProtoReflect.Descriptor instead.
+func (*ListIntegrationsOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{270}
+}
+
+func (x *ListIntegrationsOpResponse) GetIntegrations() []*IntegrationOp {
+	if x != nil {
+		return x.Integrations
+	}
+	return nil
+}
+
+func (x *ListIntegrationsOpResponse) GetConfigured() bool {
+	if x != nil {
+		return x.Configured
+	}
+	return false
+}
+
+// IntegrationOp is one installed MCP server: catalog-derived, custom, from a
+// config file, or contributed by a plugin.
+type IntegrationOp struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Id        string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                // the server id; tools are mcp:<id>/<tool>
+	CatalogId string                 `protobuf:"bytes,2,opt,name=catalog_id,json=catalogId,proto3" json:"catalog_id,omitempty"` // "" for a custom / file / plugin server
+	Name      string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`                            // catalog name, else the id
+	Category  string                 `protobuf:"bytes,4,opt,name=category,proto3" json:"category,omitempty"`
+	// source: where the effective definition comes from:
+	//
+	//	"store"  (installed / edited from the console; ADR-0101 store),
+	//	"file"   (a config file, e.g. mcp.json),
+	//	"plugin" (contributed by a plugin; read-only here).
+	Source        string   `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
+	OverridesFile bool     `protobuf:"varint,6,opt,name=overrides_file,json=overridesFile,proto3" json:"overrides_file,omitempty"` // a store entry replaces a file entry with this id
+	Editable      bool     `protobuf:"varint,7,opt,name=editable,proto3" json:"editable,omitempty"`                                // false for plugin servers
+	Enabled       bool     `protobuf:"varint,8,opt,name=enabled,proto3" json:"enabled,omitempty"`                                  // false: not started, no tools
+	Transport     string   `protobuf:"bytes,9,opt,name=transport,proto3" json:"transport,omitempty"`
+	Command       string   `protobuf:"bytes,10,opt,name=command,proto3" json:"command,omitempty"`
+	Args          []string `protobuf:"bytes,11,rep,name=args,proto3" json:"args,omitempty"`
+	Url           string   `protobuf:"bytes,12,opt,name=url,proto3" json:"url,omitempty"`
+	// settings are the literal, NON-secret env values (env_values) given to the
+	// server process. Secrets are never here.
+	Settings           map[string]string           `protobuf:"bytes,13,rep,name=settings,proto3" json:"settings,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Secrets            []*IntegrationSecretStateOp `protobuf:"bytes,14,rep,name=secrets,proto3" json:"secrets,omitempty"`
+	Health             *IntegrationHealthOp        `protobuf:"bytes,15,opt,name=health,proto3" json:"health,omitempty"`
+	InstalledVersion   string                      `protobuf:"bytes,16,opt,name=installed_version,json=installedVersion,proto3" json:"installed_version,omitempty"` // the catalog version installed, when known
+	UpdateAvailable    bool                        `protobuf:"varint,17,opt,name=update_available,json=updateAvailable,proto3" json:"update_available,omitempty"`   // the catalog now pins a different version
+	MissingRequired    []string                    `protobuf:"bytes,18,rep,name=missing_required,json=missingRequired,proto3" json:"missing_required,omitempty"`    // required fields not yet set
+	ToolPolicies       []*IntegrationToolPolicyOp  `protobuf:"bytes,19,rep,name=tool_policies,json=toolPolicies,proto3" json:"tool_policies,omitempty"`
+	HasDefaultPolicy   bool                        `protobuf:"varint,20,opt,name=has_default_policy,json=hasDefaultPolicy,proto3" json:"has_default_policy,omitempty"`
+	DefaultPolicy      *IntegrationToolPolicyOp    `protobuf:"bytes,21,opt,name=default_policy,json=defaultPolicy,proto3" json:"default_policy,omitempty"`
+	PolicySummary      string                      `protobuf:"bytes,22,opt,name=policy_summary,json=policySummary,proto3" json:"policy_summary,omitempty"`
+	ClassificationTags []string                    `protobuf:"bytes,23,rep,name=classification_tags,json=classificationTags,proto3" json:"classification_tags,omitempty"`
+	TrustTier          string                      `protobuf:"bytes,24,opt,name=trust_tier,json=trustTier,proto3" json:"trust_tier,omitempty"`
+	PassthroughEnv     []string                    `protobuf:"bytes,25,rep,name=passthrough_env,json=passthroughEnv,proto3" json:"passthrough_env,omitempty"` // kernel env var names passed through (config `env`)
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *IntegrationOp) Reset() {
+	*x = IntegrationOp{}
+	mi := &file_operator_proto_msgTypes[271]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntegrationOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntegrationOp) ProtoMessage() {}
+
+func (x *IntegrationOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[271]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntegrationOp.ProtoReflect.Descriptor instead.
+func (*IntegrationOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{271}
+}
+
+func (x *IntegrationOp) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *IntegrationOp) GetCatalogId() string {
+	if x != nil {
+		return x.CatalogId
+	}
+	return ""
+}
+
+func (x *IntegrationOp) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *IntegrationOp) GetCategory() string {
+	if x != nil {
+		return x.Category
+	}
+	return ""
+}
+
+func (x *IntegrationOp) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *IntegrationOp) GetOverridesFile() bool {
+	if x != nil {
+		return x.OverridesFile
+	}
+	return false
+}
+
+func (x *IntegrationOp) GetEditable() bool {
+	if x != nil {
+		return x.Editable
+	}
+	return false
+}
+
+func (x *IntegrationOp) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *IntegrationOp) GetTransport() string {
+	if x != nil {
+		return x.Transport
+	}
+	return ""
+}
+
+func (x *IntegrationOp) GetCommand() string {
+	if x != nil {
+		return x.Command
+	}
+	return ""
+}
+
+func (x *IntegrationOp) GetArgs() []string {
+	if x != nil {
+		return x.Args
+	}
+	return nil
+}
+
+func (x *IntegrationOp) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *IntegrationOp) GetSettings() map[string]string {
+	if x != nil {
+		return x.Settings
+	}
+	return nil
+}
+
+func (x *IntegrationOp) GetSecrets() []*IntegrationSecretStateOp {
+	if x != nil {
+		return x.Secrets
+	}
+	return nil
+}
+
+func (x *IntegrationOp) GetHealth() *IntegrationHealthOp {
+	if x != nil {
+		return x.Health
+	}
+	return nil
+}
+
+func (x *IntegrationOp) GetInstalledVersion() string {
+	if x != nil {
+		return x.InstalledVersion
+	}
+	return ""
+}
+
+func (x *IntegrationOp) GetUpdateAvailable() bool {
+	if x != nil {
+		return x.UpdateAvailable
+	}
+	return false
+}
+
+func (x *IntegrationOp) GetMissingRequired() []string {
+	if x != nil {
+		return x.MissingRequired
+	}
+	return nil
+}
+
+func (x *IntegrationOp) GetToolPolicies() []*IntegrationToolPolicyOp {
+	if x != nil {
+		return x.ToolPolicies
+	}
+	return nil
+}
+
+func (x *IntegrationOp) GetHasDefaultPolicy() bool {
+	if x != nil {
+		return x.HasDefaultPolicy
+	}
+	return false
+}
+
+func (x *IntegrationOp) GetDefaultPolicy() *IntegrationToolPolicyOp {
+	if x != nil {
+		return x.DefaultPolicy
+	}
+	return nil
+}
+
+func (x *IntegrationOp) GetPolicySummary() string {
+	if x != nil {
+		return x.PolicySummary
+	}
+	return ""
+}
+
+func (x *IntegrationOp) GetClassificationTags() []string {
+	if x != nil {
+		return x.ClassificationTags
+	}
+	return nil
+}
+
+func (x *IntegrationOp) GetTrustTier() string {
+	if x != nil {
+		return x.TrustTier
+	}
+	return ""
+}
+
+func (x *IntegrationOp) GetPassthroughEnv() []string {
+	if x != nil {
+		return x.PassthroughEnv
+	}
+	return nil
+}
+
+// IntegrationSecretStateOp says whether one secret is set, never its value.
+type IntegrationSecretStateOp struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Label string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	Set   bool                   `protobuf:"varint,3,opt,name=set,proto3" json:"set,omitempty"`
+	// source: "store" (saved from the console), "env:<VAR>" (the kernel's
+	// environment wins over the store, ADR-0101 D5), or "" when unset.
+	Source          string `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	UpdatedAtUnixMs int64  `protobuf:"varint,5,opt,name=updated_at_unix_ms,json=updatedAtUnixMs,proto3" json:"updated_at_unix_ms,omitempty"` // when the stored value was last written; 0 if unknown
+	Required        bool   `protobuf:"varint,6,opt,name=required,proto3" json:"required,omitempty"`
+	Kind            string `protobuf:"bytes,7,opt,name=kind,proto3" json:"kind,omitempty"` // "env" | "token"
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *IntegrationSecretStateOp) Reset() {
+	*x = IntegrationSecretStateOp{}
+	mi := &file_operator_proto_msgTypes[272]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntegrationSecretStateOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntegrationSecretStateOp) ProtoMessage() {}
+
+func (x *IntegrationSecretStateOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[272]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntegrationSecretStateOp.ProtoReflect.Descriptor instead.
+func (*IntegrationSecretStateOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{272}
+}
+
+func (x *IntegrationSecretStateOp) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *IntegrationSecretStateOp) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *IntegrationSecretStateOp) GetSet() bool {
+	if x != nil {
+		return x.Set
+	}
+	return false
+}
+
+func (x *IntegrationSecretStateOp) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *IntegrationSecretStateOp) GetUpdatedAtUnixMs() int64 {
+	if x != nil {
+		return x.UpdatedAtUnixMs
+	}
+	return 0
+}
+
+func (x *IntegrationSecretStateOp) GetRequired() bool {
+	if x != nil {
+		return x.Required
+	}
+	return false
+}
+
+func (x *IntegrationSecretStateOp) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+// IntegrationHealthOp is one server's live state. Also the feed payload.
+type IntegrationHealthOp struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	ServerId string                 `protobuf:"bytes,1,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
+	// state: "stopped" (disabled, removed or never started), "starting"
+	// (launching / handshaking), "ready" (handshake done, tools registered),
+	// "error" (the last attempt failed; it is retried with backoff).
+	State               string `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	LastHandshakeUnixMs int64  `protobuf:"varint,3,opt,name=last_handshake_unix_ms,json=lastHandshakeUnixMs,proto3" json:"last_handshake_unix_ms,omitempty"` // last successful initialize; 0 = never
+	ToolCount           int32  `protobuf:"varint,4,opt,name=tool_count,json=toolCount,proto3" json:"tool_count,omitempty"`
+	LastError           string `protobuf:"bytes,5,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`           // redacted: no secret value ever appears
+	RestartCount        int32  `protobuf:"varint,6,opt,name=restart_count,json=restartCount,proto3" json:"restart_count,omitempty"` // reconnects after a drop, plus reconfigure bounces
+	ChangedAtUnixMs     int64  `protobuf:"varint,7,opt,name=changed_at_unix_ms,json=changedAtUnixMs,proto3" json:"changed_at_unix_ms,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *IntegrationHealthOp) Reset() {
+	*x = IntegrationHealthOp{}
+	mi := &file_operator_proto_msgTypes[273]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntegrationHealthOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntegrationHealthOp) ProtoMessage() {}
+
+func (x *IntegrationHealthOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[273]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntegrationHealthOp.ProtoReflect.Descriptor instead.
+func (*IntegrationHealthOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{273}
+}
+
+func (x *IntegrationHealthOp) GetServerId() string {
+	if x != nil {
+		return x.ServerId
+	}
+	return ""
+}
+
+func (x *IntegrationHealthOp) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *IntegrationHealthOp) GetLastHandshakeUnixMs() int64 {
+	if x != nil {
+		return x.LastHandshakeUnixMs
+	}
+	return 0
+}
+
+func (x *IntegrationHealthOp) GetToolCount() int32 {
+	if x != nil {
+		return x.ToolCount
+	}
+	return 0
+}
+
+func (x *IntegrationHealthOp) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+func (x *IntegrationHealthOp) GetRestartCount() int32 {
+	if x != nil {
+		return x.RestartCount
+	}
+	return 0
+}
+
+func (x *IntegrationHealthOp) GetChangedAtUnixMs() int64 {
+	if x != nil {
+		return x.ChangedAtUnixMs
+	}
+	return 0
+}
+
+// IntegrationCustomSpecOp declares a server that is not in the catalog.
+type IntegrationCustomSpecOp struct {
+	state          protoimpl.MessageState     `protogen:"open.v1"`
+	Name           string                     `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Category       string                     `protobuf:"bytes,2,opt,name=category,proto3" json:"category,omitempty"`
+	Transport      string                     `protobuf:"bytes,3,opt,name=transport,proto3" json:"transport,omitempty"` // "stdio" | "http" | "sse"
+	Endpoint       string                     `protobuf:"bytes,4,opt,name=endpoint,proto3" json:"endpoint,omitempty"`   // command (stdio) or URL (http/sse)
+	Args           []string                   `protobuf:"bytes,5,rep,name=args,proto3" json:"args,omitempty"`
+	AuthType       string                     `protobuf:"bytes,6,opt,name=auth_type,json=authType,proto3" json:"auth_type,omitempty"` // "none" | "bearer" | "header"
+	AuthHeader     string                     `protobuf:"bytes,7,opt,name=auth_header,json=authHeader,proto3" json:"auth_header,omitempty"`
+	SecretNames    []string                   `protobuf:"bytes,8,rep,name=secret_names,json=secretNames,proto3" json:"secret_names,omitempty"`          // env var names whose values are secrets (stdio)
+	PassthroughEnv []string                   `protobuf:"bytes,9,rep,name=passthrough_env,json=passthroughEnv,proto3" json:"passthrough_env,omitempty"` // kernel env var names to pass through
+	ToolPolicies   []*IntegrationToolPolicyOp `protobuf:"bytes,10,rep,name=tool_policies,json=toolPolicies,proto3" json:"tool_policies,omitempty"`
+	// has_default_policy=false (the default): unlisted tools FAIL CLOSED.
+	HasDefaultPolicy   bool                     `protobuf:"varint,11,opt,name=has_default_policy,json=hasDefaultPolicy,proto3" json:"has_default_policy,omitempty"`
+	DefaultPolicy      *IntegrationToolPolicyOp `protobuf:"bytes,12,opt,name=default_policy,json=defaultPolicy,proto3" json:"default_policy,omitempty"`
+	ClassificationTags []string                 `protobuf:"bytes,13,rep,name=classification_tags,json=classificationTags,proto3" json:"classification_tags,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *IntegrationCustomSpecOp) Reset() {
+	*x = IntegrationCustomSpecOp{}
+	mi := &file_operator_proto_msgTypes[274]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntegrationCustomSpecOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntegrationCustomSpecOp) ProtoMessage() {}
+
+func (x *IntegrationCustomSpecOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[274]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntegrationCustomSpecOp.ProtoReflect.Descriptor instead.
+func (*IntegrationCustomSpecOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{274}
+}
+
+func (x *IntegrationCustomSpecOp) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *IntegrationCustomSpecOp) GetCategory() string {
+	if x != nil {
+		return x.Category
+	}
+	return ""
+}
+
+func (x *IntegrationCustomSpecOp) GetTransport() string {
+	if x != nil {
+		return x.Transport
+	}
+	return ""
+}
+
+func (x *IntegrationCustomSpecOp) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
+}
+
+func (x *IntegrationCustomSpecOp) GetArgs() []string {
+	if x != nil {
+		return x.Args
+	}
+	return nil
+}
+
+func (x *IntegrationCustomSpecOp) GetAuthType() string {
+	if x != nil {
+		return x.AuthType
+	}
+	return ""
+}
+
+func (x *IntegrationCustomSpecOp) GetAuthHeader() string {
+	if x != nil {
+		return x.AuthHeader
+	}
+	return ""
+}
+
+func (x *IntegrationCustomSpecOp) GetSecretNames() []string {
+	if x != nil {
+		return x.SecretNames
+	}
+	return nil
+}
+
+func (x *IntegrationCustomSpecOp) GetPassthroughEnv() []string {
+	if x != nil {
+		return x.PassthroughEnv
+	}
+	return nil
+}
+
+func (x *IntegrationCustomSpecOp) GetToolPolicies() []*IntegrationToolPolicyOp {
+	if x != nil {
+		return x.ToolPolicies
+	}
+	return nil
+}
+
+func (x *IntegrationCustomSpecOp) GetHasDefaultPolicy() bool {
+	if x != nil {
+		return x.HasDefaultPolicy
+	}
+	return false
+}
+
+func (x *IntegrationCustomSpecOp) GetDefaultPolicy() *IntegrationToolPolicyOp {
+	if x != nil {
+		return x.DefaultPolicy
+	}
+	return nil
+}
+
+func (x *IntegrationCustomSpecOp) GetClassificationTags() []string {
+	if x != nil {
+		return x.ClassificationTags
+	}
+	return nil
+}
+
+type InstallIntegrationOpRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason    string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	// catalog_id selects a catalog entry; empty means `custom` must be set.
+	CatalogId string `protobuf:"bytes,3,opt,name=catalog_id,json=catalogId,proto3" json:"catalog_id,omitempty"`
+	// id is the server id to install under. Defaults to catalog_id. Must be
+	// unique; a multi_instance catalog entry may be installed under several ids.
+	Id       string            `protobuf:"bytes,4,opt,name=id,proto3" json:"id,omitempty"`
+	Settings map[string]string `protobuf:"bytes,5,rep,name=settings,proto3" json:"settings,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // non-secret field values
+	// secrets are stored encrypted with the install (write-only; never echoed
+	// and never audited). Optional: SetIntegrationSecret can follow.
+	Secrets            map[string]string        `protobuf:"bytes,6,rep,name=secrets,proto3" json:"secrets,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Enabled            bool                     `protobuf:"varint,7,opt,name=enabled,proto3" json:"enabled,omitempty"` // start it now
+	Custom             *IntegrationCustomSpecOp `protobuf:"bytes,8,opt,name=custom,proto3" json:"custom,omitempty"`
+	ClassificationTags []string                 `protobuf:"bytes,9,rep,name=classification_tags,json=classificationTags,proto3" json:"classification_tags,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *InstallIntegrationOpRequest) Reset() {
+	*x = InstallIntegrationOpRequest{}
+	mi := &file_operator_proto_msgTypes[275]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InstallIntegrationOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InstallIntegrationOpRequest) ProtoMessage() {}
+
+func (x *InstallIntegrationOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[275]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InstallIntegrationOpRequest.ProtoReflect.Descriptor instead.
+func (*InstallIntegrationOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{275}
+}
+
+func (x *InstallIntegrationOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *InstallIntegrationOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *InstallIntegrationOpRequest) GetCatalogId() string {
+	if x != nil {
+		return x.CatalogId
+	}
+	return ""
+}
+
+func (x *InstallIntegrationOpRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *InstallIntegrationOpRequest) GetSettings() map[string]string {
+	if x != nil {
+		return x.Settings
+	}
+	return nil
+}
+
+func (x *InstallIntegrationOpRequest) GetSecrets() map[string]string {
+	if x != nil {
+		return x.Secrets
+	}
+	return nil
+}
+
+func (x *InstallIntegrationOpRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *InstallIntegrationOpRequest) GetCustom() *IntegrationCustomSpecOp {
+	if x != nil {
+		return x.Custom
+	}
+	return nil
+}
+
+func (x *InstallIntegrationOpRequest) GetClassificationTags() []string {
+	if x != nil {
+		return x.ClassificationTags
+	}
+	return nil
+}
+
+type UpdateIntegrationOpRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason    string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Id        string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	// settings REPLACES the non-secret values (send the full map).
+	Settings map[string]string `protobuf:"bytes,4,rep,name=settings,proto3" json:"settings,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// custom replaces the spec of a custom (non-catalog) integration; ignored
+	// when unset.
+	Custom *IntegrationCustomSpecOp `protobuf:"bytes,5,opt,name=custom,proto3" json:"custom,omitempty"`
+	// classification_tags replaces the server-level tags when set_tags is true.
+	SetTags            bool     `protobuf:"varint,6,opt,name=set_tags,json=setTags,proto3" json:"set_tags,omitempty"`
+	ClassificationTags []string `protobuf:"bytes,7,rep,name=classification_tags,json=classificationTags,proto3" json:"classification_tags,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *UpdateIntegrationOpRequest) Reset() {
+	*x = UpdateIntegrationOpRequest{}
+	mi := &file_operator_proto_msgTypes[276]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateIntegrationOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateIntegrationOpRequest) ProtoMessage() {}
+
+func (x *UpdateIntegrationOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[276]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateIntegrationOpRequest.ProtoReflect.Descriptor instead.
+func (*UpdateIntegrationOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{276}
+}
+
+func (x *UpdateIntegrationOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *UpdateIntegrationOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *UpdateIntegrationOpRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *UpdateIntegrationOpRequest) GetSettings() map[string]string {
+	if x != nil {
+		return x.Settings
+	}
+	return nil
+}
+
+func (x *UpdateIntegrationOpRequest) GetCustom() *IntegrationCustomSpecOp {
+	if x != nil {
+		return x.Custom
+	}
+	return nil
+}
+
+func (x *UpdateIntegrationOpRequest) GetSetTags() bool {
+	if x != nil {
+		return x.SetTags
+	}
+	return false
+}
+
+func (x *UpdateIntegrationOpRequest) GetClassificationTags() []string {
+	if x != nil {
+		return x.ClassificationTags
+	}
+	return nil
+}
+
+type SetIntegrationSecretOpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Id            string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`   // an IntegrationFieldOp.name with secret=true
+	Value         string                 `protobuf:"bytes,5,opt,name=value,proto3" json:"value,omitempty"` // write-only
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetIntegrationSecretOpRequest) Reset() {
+	*x = SetIntegrationSecretOpRequest{}
+	mi := &file_operator_proto_msgTypes[277]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetIntegrationSecretOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetIntegrationSecretOpRequest) ProtoMessage() {}
+
+func (x *SetIntegrationSecretOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[277]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetIntegrationSecretOpRequest.ProtoReflect.Descriptor instead.
+func (*SetIntegrationSecretOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{277}
+}
+
+func (x *SetIntegrationSecretOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *SetIntegrationSecretOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *SetIntegrationSecretOpRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *SetIntegrationSecretOpRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SetIntegrationSecretOpRequest) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+type ClearIntegrationSecretOpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Id            string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClearIntegrationSecretOpRequest) Reset() {
+	*x = ClearIntegrationSecretOpRequest{}
+	mi := &file_operator_proto_msgTypes[278]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClearIntegrationSecretOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClearIntegrationSecretOpRequest) ProtoMessage() {}
+
+func (x *ClearIntegrationSecretOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[278]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClearIntegrationSecretOpRequest.ProtoReflect.Descriptor instead.
+func (*ClearIntegrationSecretOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{278}
+}
+
+func (x *ClearIntegrationSecretOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *ClearIntegrationSecretOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *ClearIntegrationSecretOpRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ClearIntegrationSecretOpRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type SetIntegrationEnabledOpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Id            string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	Enabled       bool                   `protobuf:"varint,4,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetIntegrationEnabledOpRequest) Reset() {
+	*x = SetIntegrationEnabledOpRequest{}
+	mi := &file_operator_proto_msgTypes[279]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetIntegrationEnabledOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetIntegrationEnabledOpRequest) ProtoMessage() {}
+
+func (x *SetIntegrationEnabledOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[279]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetIntegrationEnabledOpRequest.ProtoReflect.Descriptor instead.
+func (*SetIntegrationEnabledOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{279}
+}
+
+func (x *SetIntegrationEnabledOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *SetIntegrationEnabledOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *SetIntegrationEnabledOpRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *SetIntegrationEnabledOpRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+type RemoveIntegrationOpRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason    string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Id        string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	// keep_secrets leaves the stored credentials in place for a re-install.
+	KeepSecrets   bool `protobuf:"varint,4,opt,name=keep_secrets,json=keepSecrets,proto3" json:"keep_secrets,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveIntegrationOpRequest) Reset() {
+	*x = RemoveIntegrationOpRequest{}
+	mi := &file_operator_proto_msgTypes[280]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveIntegrationOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveIntegrationOpRequest) ProtoMessage() {}
+
+func (x *RemoveIntegrationOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[280]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveIntegrationOpRequest.ProtoReflect.Descriptor instead.
+func (*RemoveIntegrationOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{280}
+}
+
+func (x *RemoveIntegrationOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *RemoveIntegrationOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *RemoveIntegrationOpRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *RemoveIntegrationOpRequest) GetKeepSecrets() bool {
+	if x != nil {
+		return x.KeepSecrets
+	}
+	return false
+}
+
+type RevertIntegrationToFileOpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Id            string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevertIntegrationToFileOpRequest) Reset() {
+	*x = RevertIntegrationToFileOpRequest{}
+	mi := &file_operator_proto_msgTypes[281]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevertIntegrationToFileOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevertIntegrationToFileOpRequest) ProtoMessage() {}
+
+func (x *RevertIntegrationToFileOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[281]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevertIntegrationToFileOpRequest.ProtoReflect.Descriptor instead.
+func (*RevertIntegrationToFileOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{281}
+}
+
+func (x *RevertIntegrationToFileOpRequest) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *RevertIntegrationToFileOpRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *RevertIntegrationToFileOpRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type TestIntegrationOpRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// call_probe calls the catalog's probe tool when one is declared and its
+	// effective policy is non-dangerous.
+	CallProbe     bool `protobuf:"varint,2,opt,name=call_probe,json=callProbe,proto3" json:"call_probe,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TestIntegrationOpRequest) Reset() {
+	*x = TestIntegrationOpRequest{}
+	mi := &file_operator_proto_msgTypes[282]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TestIntegrationOpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TestIntegrationOpRequest) ProtoMessage() {}
+
+func (x *TestIntegrationOpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[282]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TestIntegrationOpRequest.ProtoReflect.Descriptor instead.
+func (*TestIntegrationOpRequest) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{282}
+}
+
+func (x *TestIntegrationOpRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *TestIntegrationOpRequest) GetCallProbe() bool {
+	if x != nil {
+		return x.CallProbe
+	}
+	return false
+}
+
+type IntegrationMutationOpResponse struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Deduped   bool                   `protobuf:"varint,2,opt,name=deduped,proto3" json:"deduped,omitempty"`
+	// outcome.effect: "live" (the server was started / stopped / restarted
+	// now), "restart_required" (stored; takes effect at the next boot; the
+	// error field says why), "shadowed" (stored, but a higher layer such as an
+	// env var wins), or "rejected" (nothing changed; error says why).
+	Outcome *ConfigWriteOutcomeOp `protobuf:"bytes,3,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	// integration is the state after the write (absent when removed, when
+	// rejected before lookup, and on a deduped replay).
+	Integration   *IntegrationOp `protobuf:"bytes,4,opt,name=integration,proto3" json:"integration,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IntegrationMutationOpResponse) Reset() {
+	*x = IntegrationMutationOpResponse{}
+	mi := &file_operator_proto_msgTypes[283]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntegrationMutationOpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntegrationMutationOpResponse) ProtoMessage() {}
+
+func (x *IntegrationMutationOpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[283]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntegrationMutationOpResponse.ProtoReflect.Descriptor instead.
+func (*IntegrationMutationOpResponse) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{283}
+}
+
+func (x *IntegrationMutationOpResponse) GetCommandId() string {
+	if x != nil {
+		return x.CommandId
+	}
+	return ""
+}
+
+func (x *IntegrationMutationOpResponse) GetDeduped() bool {
+	if x != nil {
+		return x.Deduped
+	}
+	return false
+}
+
+func (x *IntegrationMutationOpResponse) GetOutcome() *ConfigWriteOutcomeOp {
+	if x != nil {
+		return x.Outcome
+	}
+	return nil
+}
+
+func (x *IntegrationMutationOpResponse) GetIntegration() *IntegrationOp {
+	if x != nil {
+		return x.Integration
+	}
+	return nil
+}
+
+type IntegrationToolOp struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Description string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	Dangerous   bool                   `protobuf:"varint,3,opt,name=dangerous,proto3" json:"dangerous,omitempty"`
+	Effects     []string               `protobuf:"bytes,4,rep,name=effects,proto3" json:"effects,omitempty"`
+	// policy_source: "tool" (a per-tool entry), "default" (the server default),
+	// or "fail_closed" (unlisted, no default: dangerous read+write+egress).
+	PolicySource  string `protobuf:"bytes,5,opt,name=policy_source,json=policySource,proto3" json:"policy_source,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IntegrationToolOp) Reset() {
+	*x = IntegrationToolOp{}
+	mi := &file_operator_proto_msgTypes[284]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntegrationToolOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntegrationToolOp) ProtoMessage() {}
+
+func (x *IntegrationToolOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[284]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntegrationToolOp.ProtoReflect.Descriptor instead.
+func (*IntegrationToolOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{284}
+}
+
+func (x *IntegrationToolOp) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *IntegrationToolOp) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *IntegrationToolOp) GetDangerous() bool {
+	if x != nil {
+		return x.Dangerous
+	}
+	return false
+}
+
+func (x *IntegrationToolOp) GetEffects() []string {
+	if x != nil {
+		return x.Effects
+	}
+	return nil
+}
+
+func (x *IntegrationToolOp) GetPolicySource() string {
+	if x != nil {
+		return x.PolicySource
+	}
+	return ""
+}
+
+type IntegrationTestResultOp struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Ok                 bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	LatencyMs          int64                  `protobuf:"varint,2,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`
+	Error              string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"` // redacted
+	UsedLiveSession    bool                   `protobuf:"varint,4,opt,name=used_live_session,json=usedLiveSession,proto3" json:"used_live_session,omitempty"`
+	Tools              []*IntegrationToolOp   `protobuf:"bytes,5,rep,name=tools,proto3" json:"tools,omitempty"`
+	ProbeTool          string                 `protobuf:"bytes,6,opt,name=probe_tool,json=probeTool,proto3" json:"probe_tool,omitempty"` // the tool called, or "" when none was
+	ProbeOk            bool                   `protobuf:"varint,7,opt,name=probe_ok,json=probeOk,proto3" json:"probe_ok,omitempty"`
+	ProbeOutput        string                 `protobuf:"bytes,8,opt,name=probe_output,json=probeOutput,proto3" json:"probe_output,omitempty"` // truncated text result
+	ProbeSkippedReason string                 `protobuf:"bytes,9,opt,name=probe_skipped_reason,json=probeSkippedReason,proto3" json:"probe_skipped_reason,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *IntegrationTestResultOp) Reset() {
+	*x = IntegrationTestResultOp{}
+	mi := &file_operator_proto_msgTypes[285]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntegrationTestResultOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntegrationTestResultOp) ProtoMessage() {}
+
+func (x *IntegrationTestResultOp) ProtoReflect() protoreflect.Message {
+	mi := &file_operator_proto_msgTypes[285]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntegrationTestResultOp.ProtoReflect.Descriptor instead.
+func (*IntegrationTestResultOp) Descriptor() ([]byte, []int) {
+	return file_operator_proto_rawDescGZIP(), []int{285}
+}
+
+func (x *IntegrationTestResultOp) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *IntegrationTestResultOp) GetLatencyMs() int64 {
+	if x != nil {
+		return x.LatencyMs
+	}
+	return 0
+}
+
+func (x *IntegrationTestResultOp) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *IntegrationTestResultOp) GetUsedLiveSession() bool {
+	if x != nil {
+		return x.UsedLiveSession
+	}
+	return false
+}
+
+func (x *IntegrationTestResultOp) GetTools() []*IntegrationToolOp {
+	if x != nil {
+		return x.Tools
+	}
+	return nil
+}
+
+func (x *IntegrationTestResultOp) GetProbeTool() string {
+	if x != nil {
+		return x.ProbeTool
+	}
+	return ""
+}
+
+func (x *IntegrationTestResultOp) GetProbeOk() bool {
+	if x != nil {
+		return x.ProbeOk
+	}
+	return false
+}
+
+func (x *IntegrationTestResultOp) GetProbeOutput() string {
+	if x != nil {
+		return x.ProbeOutput
+	}
+	return ""
+}
+
+func (x *IntegrationTestResultOp) GetProbeSkippedReason() string {
+	if x != nil {
+		return x.ProbeSkippedReason
 	}
 	return ""
 }
@@ -19870,7 +23394,7 @@ const file_operator_proto_rawDesc = "" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x03 \x01(\tR\tsessionId\x12 \n" +
-	"\vinstruction\x18\x04 \x01(\tR\vinstruction\"\xc3\x01\n" +
+	"\vinstruction\x18\x04 \x01(\tR\vinstruction\"\xe5\x01\n" +
 	"\x19OpenConversationOpRequest\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
@@ -19878,43 +23402,74 @@ const file_operator_proto_rawDesc = "" +
 	"\x0fconversation_id\x18\x03 \x01(\tR\x0econversationId\x12\x14\n" +
 	"\x05title\x18\x04 \x01(\tR\x05title\x12\x18\n" +
 	"\aprofile\x18\x05 \x01(\tR\aprofile\x12\x16\n" +
-	"\x06policy\x18\x06 \x01(\tR\x06policy\"~\n" +
+	"\x06policy\x18\x06 \x01(\tR\x06policy\x12 \n" +
+	"\fon_behalf_of\x18\a \x01(\tR\n" +
+	"onBehalfOf\"~\n" +
 	"\x1aOpenConversationOpResponse\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x18\n" +
 	"\adeduped\x18\x02 \x01(\bR\adeduped\x12'\n" +
-	"\x0fconversation_id\x18\x03 \x01(\tR\x0econversationId\"\x87\x01\n" +
+	"\x0fconversation_id\x18\x03 \x01(\tR\x0econversationId\"\xa9\x01\n" +
 	"\x11SendTurnOpRequest\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12'\n" +
 	"\x0fconversation_id\x18\x03 \x01(\tR\x0econversationId\x12\x12\n" +
-	"\x04text\x18\x04 \x01(\tR\x04text\"x\n" +
+	"\x04text\x18\x04 \x01(\tR\x04text\x12 \n" +
+	"\fon_behalf_of\x18\x05 \x01(\tR\n" +
+	"onBehalfOf\"x\n" +
 	"\x12SendTurnOpResponse\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x18\n" +
 	"\adeduped\x18\x02 \x01(\bR\adeduped\x12)\n" +
-	"\x05reply\x18\x03 \x01(\v2\x13.cambrian.MessageOpR\x05reply\"|\n" +
+	"\x05reply\x18\x03 \x01(\v2\x13.cambrian.MessageOpR\x05reply\"\x9e\x01\n" +
 	"\x1aCloseConversationOpRequest\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12'\n" +
-	"\x0fconversation_id\x18\x03 \x01(\tR\x0econversationId\"2\n" +
+	"\x0fconversation_id\x18\x03 \x01(\tR\x0econversationId\x12 \n" +
+	"\fon_behalf_of\x18\x04 \x01(\tR\n" +
+	"onBehalfOf\"T\n" +
 	"\x1aListConversationsOpRequest\x12\x14\n" +
-	"\x05limit\x18\x01 \x01(\x05R\x05limit\"]\n" +
+	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12 \n" +
+	"\fon_behalf_of\x18\x02 \x01(\tR\n" +
+	"onBehalfOf\"]\n" +
 	"\x1bListConversationsOpResponse\x12>\n" +
-	"\rconversations\x18\x01 \x03(\v2\x18.cambrian.ConversationOpR\rconversations\"\x87\x01\n" +
+	"\rconversations\x18\x01 \x03(\v2\x18.cambrian.ConversationOpR\rconversations\"\xa2\x01\n" +
 	"\x0eConversationOp\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12\x18\n" +
 	"\aprofile\x18\x04 \x01(\tR\aprofile\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x05 \x01(\tR\tupdatedAt\"\x7f\n" +
+	"updated_at\x18\x05 \x01(\tR\tupdatedAt\x12\x19\n" +
+	"\bowner_id\x18\x06 \x01(\tR\aownerId\"\xa1\x01\n" +
 	"!ListConversationMessagesOpRequest\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x1b\n" +
 	"\tafter_seq\x18\x02 \x01(\x03R\bafterSeq\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\x05R\x05limit\"U\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\x12 \n" +
+	"\fon_behalf_of\x18\x04 \x01(\tR\n" +
+	"onBehalfOf\"8\n" +
+	"\x1bListScheduledTasksOpRequest\x12\x19\n" +
+	"\bowner_id\x18\x01 \x01(\tR\aownerId\"O\n" +
+	"\x1cListScheduledTasksOpResponse\x12/\n" +
+	"\x05tasks\x18\x01 \x03(\v2\x19.cambrian.ScheduledTaskOpR\x05tasks\"\xce\x02\n" +
+	"\x0fScheduledTaskOp\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
+	"\bowner_id\x18\x02 \x01(\tR\aownerId\x12\x14\n" +
+	"\x05title\x18\x03 \x01(\tR\x05title\x12\x12\n" +
+	"\x04goal\x18\x04 \x01(\tR\x04goal\x12\x12\n" +
+	"\x04cron\x18\x05 \x01(\tR\x04cron\x12\x1a\n" +
+	"\btimezone\x18\x06 \x01(\tR\btimezone\x12\x19\n" +
+	"\bagent_id\x18\a \x01(\tR\aagentId\x12\x1a\n" +
+	"\bdelivery\x18\b \x01(\tR\bdelivery\x12\x16\n" +
+	"\x06active\x18\t \x01(\bR\x06active\x12'\n" +
+	"\x0fconversation_id\x18\n" +
+	" \x01(\tR\x0econversationId\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\v \x01(\tR\tcreatedAt\x12\x1f\n" +
+	"\vapproved_by\x18\f \x01(\tR\n" +
+	"approvedBy\"U\n" +
 	"\"ListConversationMessagesOpResponse\x12/\n" +
 	"\bmessages\x18\x01 \x03(\v2\x13.cambrian.MessageOpR\bmessages\"\xa3\x01\n" +
 	"\tMessageOp\x12\x0e\n" +
@@ -20007,10 +23562,18 @@ const file_operator_proto_rawDesc = "" +
 	"\agranted\x18\x05 \x01(\bR\agranted\"F\n" +
 	"\fLoginRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1a\n" +
-	"\bpassword\x18\x02 \x01(\tR\bpassword\"9\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\"m\n" +
 	"\rLoginResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x12\n" +
-	"\x04role\x18\x02 \x01(\tR\x04role\"\x0f\n" +
+	"\x04role\x18\x02 \x01(\tR\x04role\x12\x1c\n" +
+	"\tprincipal\x18\x03 \x01(\tR\tprincipal\x12\x14\n" +
+	"\x05roles\x18\x04 \x03(\tR\x05roles\"\x15\n" +
+	"\x13DescribeAuthRequest\"\x84\x01\n" +
+	"\x14DescribeAuthResponse\x12%\n" +
+	"\x0epassword_login\x18\x01 \x01(\bR\rpasswordLogin\x12\x1f\n" +
+	"\voidc_issuer\x18\x02 \x01(\tR\n" +
+	"oidcIssuer\x12$\n" +
+	"\x0eoidc_client_id\x18\x03 \x01(\tR\foidcClientId\"\x0f\n" +
 	"\rLogoutRequest\"\x10\n" +
 	"\x0eLogoutResponse\"\x11\n" +
 	"\x0fSnapshotRequest\"\xbe\x02\n" +
@@ -20055,7 +23618,7 @@ const file_operator_proto_rawDesc = "" +
 	"\x04goal\x18\x02 \x01(\tR\x04goal\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\"-\n" +
 	"\x10SubscribeRequest\x12\x19\n" +
-	"\blast_seq\x18\x01 \x01(\x04R\alastSeq\"\x87\r\n" +
+	"\blast_seq\x18\x01 \x01(\x04R\alastSeq\"\x98\x0e\n" +
 	"\rOperatorEvent\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x04R\x03seq\x12*\n" +
 	"\x02ts\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12\x1d\n" +
@@ -20090,7 +23653,9 @@ const file_operator_proto_rawDesc = "" +
 	"\x15conversation_progress\x18\x1d \x01(\v2 .cambrian.ConversationProgressOpH\x00R\x14conversationProgress\x12?\n" +
 	"\rretention_run\x18\x1e \x01(\v2\x18.cambrian.RetentionRunOpH\x00R\fretentionRun\x12E\n" +
 	"\x0fpipeline_meters\x18\x1f \x01(\v2\x1a.cambrian.PipelineMetersOpH\x00R\x0epipelineMeters\x12?\n" +
-	"\rpipeline_step\x18  \x01(\v2\x18.cambrian.PipelineStepOpH\x00R\fpipelineStepB\t\n" +
+	"\rpipeline_step\x18  \x01(\v2\x18.cambrian.PipelineStepOpH\x00R\fpipelineStep\x12N\n" +
+	"\x12integration_health\x18! \x01(\v2\x1d.cambrian.IntegrationHealthOpH\x00R\x11integrationHealth\x12?\n" +
+	"\rhitl_resolved\x18\" \x01(\v2\x18.cambrian.HITLResolvedOpH\x00R\fhitlResolvedB\t\n" +
 	"\apayload\"\xe7\x02\n" +
 	"\x0ePipelineStepOp\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
@@ -20537,7 +24102,7 @@ const file_operator_proto_rawDesc = "" +
 	"\adeduped\x18\x02 \x01(\bR\adeduped\x12\x15\n" +
 	"\x06doc_id\x18\x03 \x01(\tR\x05docId\x12!\n" +
 	"\fduplicate_of\x18\x04 \x01(\tR\vduplicateOf\x12\x18\n" +
-	"\aversion\x18\x05 \x01(\x05R\aversion\"\xb2\x01\n" +
+	"\aversion\x18\x05 \x01(\x05R\aversion\"\xbe\x05\n" +
 	"\n" +
 	"ApprovalOp\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
@@ -20545,13 +24110,117 @@ const file_operator_proto_rawDesc = "" +
 	"\ttool_name\x18\x03 \x01(\tR\btoolName\x12!\n" +
 	"\fargs_preview\x18\x04 \x01(\tR\vargsPreview\x12%\n" +
 	"\x0eis_destructive\x18\x05 \x01(\bR\risDestructive\x12\x12\n" +
-	"\x04kind\x18\x06 \x01(\tR\x04kind\"v\n" +
+	"\x04kind\x18\x06 \x01(\tR\x04kind\x12\x12\n" +
+	"\x04rule\x18\a \x01(\tR\x04rule\x12\x1e\n" +
+	"\n" +
+	"answerable\x18\b \x01(\bR\n" +
+	"answerable\x12 \n" +
+	"\vbeneficiary\x18\t \x01(\tR\vbeneficiary\x12\x14\n" +
+	"\x05state\x18\n" +
+	" \x01(\tR\x05state\x12\x1f\n" +
+	"\vresolved_by\x18\v \x01(\tR\n" +
+	"resolvedBy\x12!\n" +
+	"\faction_class\x18\f \x01(\tR\vactionClass\x12%\n" +
+	"\x0eallow_standing\x18\r \x01(\bR\rallowStanding\x12)\n" +
+	"\x11raised_at_unix_ms\x18\x0e \x01(\x03R\x0eraisedAtUnixMs\x12+\n" +
+	"\x12expires_at_unix_ms\x18\x0f \x01(\x03R\x0fexpiresAtUnixMs\x12\x16\n" +
+	"\x06object\x18\x10 \x01(\tR\x06object\x12'\n" +
+	"\x0fconversation_id\x18\x11 \x01(\tR\x0econversationId\x12\x18\n" +
+	"\amachine\x18\x12 \x01(\tR\amachine\x12\x1e\n" +
+	"\n" +
+	"candidates\x18\x13 \x03(\tR\n" +
+	"candidates\x12\x16\n" +
+	"\x06detail\x18\x14 \x01(\tR\x06detail\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x15 \x01(\tR\tsessionId\x12)\n" +
+	"\x10duplicate_notice\x18\x16 \x01(\tR\x0fduplicateNotice\"\xda\x01\n" +
+	"\x0eHITLResolvedOp\x12'\n" +
+	"\x0fintervention_id\x18\x01 \x01(\tR\x0einterventionId\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x19\n" +
+	"\bagent_id\x18\x03 \x01(\tR\aagentId\x12\x12\n" +
+	"\x04kind\x18\x04 \x01(\tR\x04kind\x12\x18\n" +
+	"\aoutcome\x18\x05 \x01(\tR\aoutcome\x12\x1f\n" +
+	"\vresolved_by\x18\x06 \x01(\tR\n" +
+	"resolvedBy\x12\x16\n" +
+	"\x06detail\x18\a \x01(\tR\x06detail\"1\n" +
+	"\x19WatchMyApprovalsOpRequest\x12\x14\n" +
+	"\x05audit\x18\x01 \x01(\bR\x05audit\"\\\n" +
+	"\x16ListApprovalsOpRequest\x12\x16\n" +
+	"\x06states\x18\x01 \x03(\tR\x06states\x12\x14\n" +
+	"\x05audit\x18\x02 \x01(\bR\x05audit\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\"M\n" +
+	"\x17ListApprovalsOpResponse\x122\n" +
+	"\tapprovals\x18\x01 \x03(\v2\x14.cambrian.ApprovalOpR\tapprovals\"\xe0\x01\n" +
+	"\x17AnswerApprovalOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\x12\x18\n" +
+	"\aapprove\x18\x04 \x01(\bR\aapprove\x12\x16\n" +
+	"\x06choice\x18\x05 \x01(\tR\x06choice\x12\x1a\n" +
+	"\bstanding\x18\x06 \x01(\bR\bstanding\x120\n" +
+	"\x14standing_ttl_seconds\x18\a \x01(\x03R\x12standingTtlSeconds\"\xb4\x01\n" +
+	"\x18AnswerApprovalOpResponse\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x18\n" +
+	"\adeduped\x18\x02 \x01(\bR\adeduped\x12\x0e\n" +
+	"\x02ok\x18\x03 \x01(\bR\x02ok\x12\x14\n" +
+	"\x05state\x18\x04 \x01(\tR\x05state\x12\x18\n" +
+	"\arefusal\x18\x05 \x01(\tR\arefusal\x12\x1f\n" +
+	"\vstanding_id\x18\x06 \x01(\tR\n" +
+	"standingId\"\x82\x04\n" +
+	"\x12StandingApprovalOp\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
+	"\faction_class\x18\x02 \x01(\tR\vactionClass\x12\x1a\n" +
+	"\bresource\x18\x03 \x01(\tR\bresource\x12\x14\n" +
+	"\x05scope\x18\x04 \x01(\tR\x05scope\x12 \n" +
+	"\vbeneficiary\x18\x05 \x01(\tR\vbeneficiary\x12\x1d\n" +
+	"\n" +
+	"granted_by\x18\x06 \x01(\tR\tgrantedBy\x12+\n" +
+	"\x12granted_at_unix_ms\x18\a \x01(\x03R\x0fgrantedAtUnixMs\x12+\n" +
+	"\x12expires_at_unix_ms\x18\b \x01(\x03R\x0fexpiresAtUnixMs\x12+\n" +
+	"\x12revoked_at_unix_ms\x18\t \x01(\x03R\x0frevokedAtUnixMs\x12\x1d\n" +
+	"\n" +
+	"revoked_by\x18\n" +
+	" \x01(\tR\trevokedBy\x12\x16\n" +
+	"\x06reason\x18\v \x01(\tR\x06reason\x12.\n" +
+	"\x14last_used_at_unix_ms\x18\f \x01(\x03R\x10lastUsedAtUnixMs\x12\x1b\n" +
+	"\tuse_count\x18\r \x01(\x05R\buseCount\x12#\n" +
+	"\rfrom_approval\x18\x0e \x01(\tR\ffromApproval\x12\x16\n" +
+	"\x06active\x18\x0f \x01(\bR\x06active\"a\n" +
+	"\x1eListStandingApprovalsOpRequest\x12)\n" +
+	"\x10include_inactive\x18\x01 \x01(\bR\x0fincludeInactive\x12\x14\n" +
+	"\x05audit\x18\x02 \x01(\bR\x05audit\"[\n" +
+	"\x1fListStandingApprovalsOpResponse\x128\n" +
+	"\bstanding\x18\x01 \x03(\v2\x1c.cambrian.StandingApprovalOpR\bstanding\"h\n" +
+	"\x1fRevokeStandingApprovalOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\"\x8f\x01\n" +
+	"\x14ShareToTeamOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x1f\n" +
+	"\vdocument_id\x18\x03 \x01(\tR\n" +
+	"documentId\x12\x1f\n" +
+	"\vtarget_tags\x18\x04 \x03(\tR\n" +
+	"targetTags\"\x9b\x01\n" +
+	"\x15ShareToTeamOpResponse\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x18\n" +
+	"\adeduped\x18\x02 \x01(\bR\adeduped\x12\x14\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\x12\x1f\n" +
+	"\vapproval_id\x18\x04 \x01(\tR\n" +
+	"approvalId\x12\x12\n" +
+	"\x04tags\x18\x05 \x03(\tR\x04tags\"v\n" +
 	"\rWatchActionOp\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1f\n" +
 	"\vtarget_type\x18\x02 \x01(\tR\n" +
 	"targetType\x12\x16\n" +
 	"\x06target\x18\x03 \x01(\tR\x06target\x12\x18\n" +
-	"\apayload\x18\x04 \x01(\tR\apayload\"\xf3\a\n" +
+	"\apayload\x18\x04 \x01(\tR\apayload\"\x8e\b\n" +
 	"\rWatchConfigOp\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
@@ -20579,7 +24248,8 @@ const file_operator_proto_rawDesc = "" +
 	"\x16source_stream_refcount\x18\x15 \x01(\x05R\x14sourceStreamRefcount\x124\n" +
 	"\n" +
 	"last_fires\x18\x16 \x03(\v2\x15.cambrian.WatchFireOpR\tlastFires\x121\n" +
-	"\aactions\x18\x17 \x03(\v2\x17.cambrian.WatchActionOpR\aactions\x1a?\n" +
+	"\aactions\x18\x17 \x03(\v2\x17.cambrian.WatchActionOpR\aactions\x12\x19\n" +
+	"\bowner_id\x18\x18 \x01(\tR\aownerId\x1a?\n" +
 	"\x11DaemonParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"z\n" +
@@ -21619,9 +25289,218 @@ const file_operator_proto_rawDesc = "" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x19\n" +
 	"\bagent_id\x18\x03 \x01(\tR\aagentId\x12\x1d\n" +
 	"\n" +
-	"skill_name\x18\x04 \x01(\tR\tskillName2\xfd>\n" +
+	"skill_name\x18\x04 \x01(\tR\tskillName\"!\n" +
+	"\x1fListIntegrationCatalogOpRequest\"\x81\x01\n" +
+	" ListIntegrationCatalogOpResponse\x12=\n" +
+	"\aentries\x18\x01 \x03(\v2#.cambrian.IntegrationCatalogEntryOpR\aentries\x12\x1e\n" +
+	"\n" +
+	"categories\x18\x02 \x03(\tR\n" +
+	"categories\"\xe1\x06\n" +
+	"\x19IntegrationCatalogEntryOp\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x1a\n" +
+	"\bcategory\x18\x04 \x01(\tR\bcategory\x12\x1c\n" +
+	"\tpublisher\x18\x05 \x01(\tR\tpublisher\x12\x18\n" +
+	"\alicense\x18\x06 \x01(\tR\alicense\x12\x1d\n" +
+	"\n" +
+	"trust_tier\x18\a \x01(\tR\ttrustTier\x12\x19\n" +
+	"\bdocs_url\x18\b \x01(\tR\adocsUrl\x12\x18\n" +
+	"\aversion\x18\t \x01(\tR\aversion\x12\x1c\n" +
+	"\ttransport\x18\n" +
+	" \x01(\tR\ttransport\x12\x18\n" +
+	"\acommand\x18\v \x01(\tR\acommand\x12\x12\n" +
+	"\x04args\x18\f \x03(\tR\x04args\x12\x10\n" +
+	"\x03url\x18\r \x01(\tR\x03url\x12\x1a\n" +
+	"\bruntimes\x18\x0e \x03(\tR\bruntimes\x12\x1c\n" +
+	"\tplatforms\x18\x0f \x03(\tR\tplatforms\x12-\n" +
+	"\x12platform_supported\x18\x10 \x01(\bR\x11platformSupported\x124\n" +
+	"\x06fields\x18\x11 \x03(\v2\x1c.cambrian.IntegrationFieldOpR\x06fields\x12F\n" +
+	"\rtool_policies\x18\x12 \x03(\v2!.cambrian.IntegrationToolPolicyOpR\ftoolPolicies\x12,\n" +
+	"\x12has_default_policy\x18\x13 \x01(\bR\x10hasDefaultPolicy\x12H\n" +
+	"\x0edefault_policy\x18\x14 \x01(\v2!.cambrian.IntegrationToolPolicyOpR\rdefaultPolicy\x12%\n" +
+	"\x0epolicy_summary\x18\x15 \x01(\tR\rpolicySummary\x12\x1d\n" +
+	"\n" +
+	"probe_tool\x18\x16 \x01(\tR\tprobeTool\x12\x14\n" +
+	"\x05notes\x18\x17 \x01(\tR\x05notes\x12\x16\n" +
+	"\x06source\x18\x18 \x01(\tR\x06source\x12%\n" +
+	"\x0emulti_instance\x18\x19 \x01(\bR\rmultiInstance\"\xe1\x01\n" +
+	"\x12IntegrationFieldOp\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12\x16\n" +
+	"\x06secret\x18\x03 \x01(\bR\x06secret\x12\x1a\n" +
+	"\brequired\x18\x04 \x01(\bR\brequired\x12\x12\n" +
+	"\x04help\x18\x05 \x01(\tR\x04help\x12\x12\n" +
+	"\x04kind\x18\x06 \x01(\tR\x04kind\x12#\n" +
+	"\rdefault_value\x18\a \x01(\tR\fdefaultValue\x12 \n" +
+	"\vplaceholder\x18\b \x01(\tR\vplaceholder\"e\n" +
+	"\x17IntegrationToolPolicyOp\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
+	"\tdangerous\x18\x02 \x01(\bR\tdangerous\x12\x18\n" +
+	"\aeffects\x18\x03 \x03(\tR\aeffects\"\x1b\n" +
+	"\x19ListIntegrationsOpRequest\"y\n" +
+	"\x1aListIntegrationsOpResponse\x12;\n" +
+	"\fintegrations\x18\x01 \x03(\v2\x17.cambrian.IntegrationOpR\fintegrations\x12\x1e\n" +
+	"\n" +
+	"configured\x18\x02 \x01(\bR\n" +
+	"configured\"\x99\b\n" +
+	"\rIntegrationOp\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
+	"\n" +
+	"catalog_id\x18\x02 \x01(\tR\tcatalogId\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12\x1a\n" +
+	"\bcategory\x18\x04 \x01(\tR\bcategory\x12\x16\n" +
+	"\x06source\x18\x05 \x01(\tR\x06source\x12%\n" +
+	"\x0eoverrides_file\x18\x06 \x01(\bR\roverridesFile\x12\x1a\n" +
+	"\beditable\x18\a \x01(\bR\beditable\x12\x18\n" +
+	"\aenabled\x18\b \x01(\bR\aenabled\x12\x1c\n" +
+	"\ttransport\x18\t \x01(\tR\ttransport\x12\x18\n" +
+	"\acommand\x18\n" +
+	" \x01(\tR\acommand\x12\x12\n" +
+	"\x04args\x18\v \x03(\tR\x04args\x12\x10\n" +
+	"\x03url\x18\f \x01(\tR\x03url\x12A\n" +
+	"\bsettings\x18\r \x03(\v2%.cambrian.IntegrationOp.SettingsEntryR\bsettings\x12<\n" +
+	"\asecrets\x18\x0e \x03(\v2\".cambrian.IntegrationSecretStateOpR\asecrets\x125\n" +
+	"\x06health\x18\x0f \x01(\v2\x1d.cambrian.IntegrationHealthOpR\x06health\x12+\n" +
+	"\x11installed_version\x18\x10 \x01(\tR\x10installedVersion\x12)\n" +
+	"\x10update_available\x18\x11 \x01(\bR\x0fupdateAvailable\x12)\n" +
+	"\x10missing_required\x18\x12 \x03(\tR\x0fmissingRequired\x12F\n" +
+	"\rtool_policies\x18\x13 \x03(\v2!.cambrian.IntegrationToolPolicyOpR\ftoolPolicies\x12,\n" +
+	"\x12has_default_policy\x18\x14 \x01(\bR\x10hasDefaultPolicy\x12H\n" +
+	"\x0edefault_policy\x18\x15 \x01(\v2!.cambrian.IntegrationToolPolicyOpR\rdefaultPolicy\x12%\n" +
+	"\x0epolicy_summary\x18\x16 \x01(\tR\rpolicySummary\x12/\n" +
+	"\x13classification_tags\x18\x17 \x03(\tR\x12classificationTags\x12\x1d\n" +
+	"\n" +
+	"trust_tier\x18\x18 \x01(\tR\ttrustTier\x12'\n" +
+	"\x0fpassthrough_env\x18\x19 \x03(\tR\x0epassthroughEnv\x1a;\n" +
+	"\rSettingsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcb\x01\n" +
+	"\x18IntegrationSecretStateOp\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12\x10\n" +
+	"\x03set\x18\x03 \x01(\bR\x03set\x12\x16\n" +
+	"\x06source\x18\x04 \x01(\tR\x06source\x12+\n" +
+	"\x12updated_at_unix_ms\x18\x05 \x01(\x03R\x0fupdatedAtUnixMs\x12\x1a\n" +
+	"\brequired\x18\x06 \x01(\bR\brequired\x12\x12\n" +
+	"\x04kind\x18\a \x01(\tR\x04kind\"\x8d\x02\n" +
+	"\x13IntegrationHealthOp\x12\x1b\n" +
+	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x14\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\x123\n" +
+	"\x16last_handshake_unix_ms\x18\x03 \x01(\x03R\x13lastHandshakeUnixMs\x12\x1d\n" +
+	"\n" +
+	"tool_count\x18\x04 \x01(\x05R\ttoolCount\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\x05 \x01(\tR\tlastError\x12#\n" +
+	"\rrestart_count\x18\x06 \x01(\x05R\frestartCount\x12+\n" +
+	"\x12changed_at_unix_ms\x18\a \x01(\x03R\x0fchangedAtUnixMs\"\x92\x04\n" +
+	"\x17IntegrationCustomSpecOp\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
+	"\bcategory\x18\x02 \x01(\tR\bcategory\x12\x1c\n" +
+	"\ttransport\x18\x03 \x01(\tR\ttransport\x12\x1a\n" +
+	"\bendpoint\x18\x04 \x01(\tR\bendpoint\x12\x12\n" +
+	"\x04args\x18\x05 \x03(\tR\x04args\x12\x1b\n" +
+	"\tauth_type\x18\x06 \x01(\tR\bauthType\x12\x1f\n" +
+	"\vauth_header\x18\a \x01(\tR\n" +
+	"authHeader\x12!\n" +
+	"\fsecret_names\x18\b \x03(\tR\vsecretNames\x12'\n" +
+	"\x0fpassthrough_env\x18\t \x03(\tR\x0epassthroughEnv\x12F\n" +
+	"\rtool_policies\x18\n" +
+	" \x03(\v2!.cambrian.IntegrationToolPolicyOpR\ftoolPolicies\x12,\n" +
+	"\x12has_default_policy\x18\v \x01(\bR\x10hasDefaultPolicy\x12H\n" +
+	"\x0edefault_policy\x18\f \x01(\v2!.cambrian.IntegrationToolPolicyOpR\rdefaultPolicy\x12/\n" +
+	"\x13classification_tags\x18\r \x03(\tR\x12classificationTags\"\xa1\x04\n" +
+	"\x1bInstallIntegrationOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x1d\n" +
+	"\n" +
+	"catalog_id\x18\x03 \x01(\tR\tcatalogId\x12\x0e\n" +
+	"\x02id\x18\x04 \x01(\tR\x02id\x12O\n" +
+	"\bsettings\x18\x05 \x03(\v23.cambrian.InstallIntegrationOpRequest.SettingsEntryR\bsettings\x12L\n" +
+	"\asecrets\x18\x06 \x03(\v22.cambrian.InstallIntegrationOpRequest.SecretsEntryR\asecrets\x12\x18\n" +
+	"\aenabled\x18\a \x01(\bR\aenabled\x129\n" +
+	"\x06custom\x18\b \x01(\v2!.cambrian.IntegrationCustomSpecOpR\x06custom\x12/\n" +
+	"\x13classification_tags\x18\t \x03(\tR\x12classificationTags\x1a;\n" +
+	"\rSettingsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
+	"\fSecretsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf7\x02\n" +
+	"\x1aUpdateIntegrationOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\x12N\n" +
+	"\bsettings\x18\x04 \x03(\v22.cambrian.UpdateIntegrationOpRequest.SettingsEntryR\bsettings\x129\n" +
+	"\x06custom\x18\x05 \x01(\v2!.cambrian.IntegrationCustomSpecOpR\x06custom\x12\x19\n" +
+	"\bset_tags\x18\x06 \x01(\bR\asetTags\x12/\n" +
+	"\x13classification_tags\x18\a \x03(\tR\x12classificationTags\x1a;\n" +
+	"\rSettingsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x90\x01\n" +
+	"\x1dSetIntegrationSecretOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\x12\x14\n" +
+	"\x05value\x18\x05 \x01(\tR\x05value\"|\n" +
+	"\x1fClearIntegrationSecretOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\"\x81\x01\n" +
+	"\x1eSetIntegrationEnabledOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\x12\x18\n" +
+	"\aenabled\x18\x04 \x01(\bR\aenabled\"\x86\x01\n" +
+	"\x1aRemoveIntegrationOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\x12!\n" +
+	"\fkeep_secrets\x18\x04 \x01(\bR\vkeepSecrets\"i\n" +
+	" RevertIntegrationToFileOpRequest\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\"I\n" +
+	"\x18TestIntegrationOpRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
+	"\n" +
+	"call_probe\x18\x02 \x01(\bR\tcallProbe\"\xcd\x01\n" +
+	"\x1dIntegrationMutationOpResponse\x12\x1d\n" +
+	"\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x18\n" +
+	"\adeduped\x18\x02 \x01(\bR\adeduped\x128\n" +
+	"\aoutcome\x18\x03 \x01(\v2\x1e.cambrian.ConfigWriteOutcomeOpR\aoutcome\x129\n" +
+	"\vintegration\x18\x04 \x01(\v2\x17.cambrian.IntegrationOpR\vintegration\"\xa6\x01\n" +
+	"\x11IntegrationToolOp\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x1c\n" +
+	"\tdangerous\x18\x03 \x01(\bR\tdangerous\x12\x18\n" +
+	"\aeffects\x18\x04 \x03(\tR\aeffects\x12#\n" +
+	"\rpolicy_source\x18\x05 \x01(\tR\fpolicySource\"\xcc\x02\n" +
+	"\x17IntegrationTestResultOp\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x1d\n" +
+	"\n" +
+	"latency_ms\x18\x02 \x01(\x03R\tlatencyMs\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12*\n" +
+	"\x11used_live_session\x18\x04 \x01(\bR\x0fusedLiveSession\x121\n" +
+	"\x05tools\x18\x05 \x03(\v2\x1b.cambrian.IntegrationToolOpR\x05tools\x12\x1d\n" +
+	"\n" +
+	"probe_tool\x18\x06 \x01(\tR\tprobeTool\x12\x19\n" +
+	"\bprobe_ok\x18\a \x01(\bR\aprobeOk\x12!\n" +
+	"\fprobe_output\x18\b \x01(\tR\vprobeOutput\x120\n" +
+	"\x14probe_skipped_reason\x18\t \x01(\tR\x12probeSkippedReason2\xd6L\n" +
 	"\x0fOperatorConsole\x128\n" +
-	"\x05Login\x12\x16.cambrian.LoginRequest\x1a\x17.cambrian.LoginResponse\x12;\n" +
+	"\x05Login\x12\x16.cambrian.LoginRequest\x1a\x17.cambrian.LoginResponse\x12M\n" +
+	"\fDescribeAuth\x12\x1d.cambrian.DescribeAuthRequest\x1a\x1e.cambrian.DescribeAuthResponse\x12;\n" +
 	"\x06Logout\x12\x17.cambrian.LogoutRequest\x1a\x18.cambrian.LogoutResponse\x12E\n" +
 	"\fStreamEvents\x12\x1a.cambrian.SubscribeRequest\x1a\x17.cambrian.OperatorEvent0\x01\x12A\n" +
 	"\bSnapshot\x12\x19.cambrian.SnapshotRequest\x1a\x1a.cambrian.SnapshotResponse\x12C\n" +
@@ -21645,7 +25524,8 @@ const file_operator_proto_rawDesc = "" +
 	"\bSendTurn\x12\x1b.cambrian.SendTurnOpRequest\x1a\x1c.cambrian.SendTurnOpResponse\x12O\n" +
 	"\x11CloseConversation\x12$.cambrian.CloseConversationOpRequest\x1a\x14.cambrian.CommandAck\x12`\n" +
 	"\x11ListConversations\x12$.cambrian.ListConversationsOpRequest\x1a%.cambrian.ListConversationsOpResponse\x12u\n" +
-	"\x18ListConversationMessages\x12+.cambrian.ListConversationMessagesOpRequest\x1a,.cambrian.ListConversationMessagesOpResponse\x12H\n" +
+	"\x18ListConversationMessages\x12+.cambrian.ListConversationMessagesOpRequest\x1a,.cambrian.ListConversationMessagesOpResponse\x12c\n" +
+	"\x12ListScheduledTasks\x12%.cambrian.ListScheduledTasksOpRequest\x1a&.cambrian.ListScheduledTasksOpResponse\x12H\n" +
 	"\tListTools\x12\x1c.cambrian.ListToolsOpRequest\x1a\x1d.cambrian.ListToolsOpResponse\x12K\n" +
 	"\n" +
 	"ListSkills\x12\x1d.cambrian.ListSkillsOpRequest\x1a\x1e.cambrian.ListSkillsOpResponse\x12J\n" +
@@ -21656,7 +25536,13 @@ const file_operator_proto_rawDesc = "" +
 	"\rSetToolPolicy\x12\x1e.cambrian.SetToolPolicyRequest\x1a\x14.cambrian.CommandAck\x12N\n" +
 	"\vExecuteTool\x12\x1e.cambrian.ExecuteToolOpRequest\x1a\x1f.cambrian.ExecuteToolOpResponse\x12Q\n" +
 	"\fIngestMemory\x12\x1f.cambrian.IngestMemoryOpRequest\x1a .cambrian.IngestMemoryOpResponse\x12H\n" +
-	"\x12WatchToolApprovals\x12\x1a.cambrian.SubscribeRequest\x1a\x14.cambrian.ApprovalOp0\x01\x12N\n" +
+	"\x12WatchToolApprovals\x12\x1a.cambrian.SubscribeRequest\x1a\x14.cambrian.ApprovalOp0\x01\x12O\n" +
+	"\x10WatchMyApprovals\x12#.cambrian.WatchMyApprovalsOpRequest\x1a\x14.cambrian.ApprovalOp0\x01\x12T\n" +
+	"\rListApprovals\x12 .cambrian.ListApprovalsOpRequest\x1a!.cambrian.ListApprovalsOpResponse\x12W\n" +
+	"\x0eAnswerApproval\x12!.cambrian.AnswerApprovalOpRequest\x1a\".cambrian.AnswerApprovalOpResponse\x12l\n" +
+	"\x15ListStandingApprovals\x12(.cambrian.ListStandingApprovalsOpRequest\x1a).cambrian.ListStandingApprovalsOpResponse\x12Y\n" +
+	"\x16RevokeStandingApproval\x12).cambrian.RevokeStandingApprovalOpRequest\x1a\x14.cambrian.CommandAck\x12N\n" +
+	"\vShareToTeam\x12\x1e.cambrian.ShareToTeamOpRequest\x1a\x1f.cambrian.ShareToTeamOpResponse\x12N\n" +
 	"\vListWatches\x12\x1e.cambrian.ListWatchesOpRequest\x1a\x1f.cambrian.ListWatchesOpResponse\x12G\n" +
 	"\rRegisterWatch\x12 .cambrian.RegisterWatchOpRequest\x1a\x14.cambrian.CommandAck\x12C\n" +
 	"\vDeleteWatch\x12\x1e.cambrian.DeleteWatchOpRequest\x1a\x14.cambrian.CommandAck\x12I\n" +
@@ -21721,7 +25607,17 @@ const file_operator_proto_rawDesc = "" +
 	"\x0fListSkillGrants\x12\".cambrian.ListSkillGrantsOpRequest\x1a#.cambrian.ListSkillGrantsOpResponse\x12A\n" +
 	"\n" +
 	"GrantSkill\x12\x1d.cambrian.GrantSkillOpRequest\x1a\x14.cambrian.CommandAck\x12M\n" +
-	"\x10RevokeSkillGrant\x12#.cambrian.RevokeSkillGrantOpRequest\x1a\x14.cambrian.CommandAckB\x10Z\x0ecore/api/protob\x06proto3"
+	"\x10RevokeSkillGrant\x12#.cambrian.RevokeSkillGrantOpRequest\x1a\x14.cambrian.CommandAck\x12o\n" +
+	"\x16ListIntegrationCatalog\x12).cambrian.ListIntegrationCatalogOpRequest\x1a*.cambrian.ListIntegrationCatalogOpResponse\x12]\n" +
+	"\x10ListIntegrations\x12#.cambrian.ListIntegrationsOpRequest\x1a$.cambrian.ListIntegrationsOpResponse\x12d\n" +
+	"\x12InstallIntegration\x12%.cambrian.InstallIntegrationOpRequest\x1a'.cambrian.IntegrationMutationOpResponse\x12b\n" +
+	"\x11UpdateIntegration\x12$.cambrian.UpdateIntegrationOpRequest\x1a'.cambrian.IntegrationMutationOpResponse\x12h\n" +
+	"\x14SetIntegrationSecret\x12'.cambrian.SetIntegrationSecretOpRequest\x1a'.cambrian.IntegrationMutationOpResponse\x12l\n" +
+	"\x16ClearIntegrationSecret\x12).cambrian.ClearIntegrationSecretOpRequest\x1a'.cambrian.IntegrationMutationOpResponse\x12j\n" +
+	"\x15SetIntegrationEnabled\x12(.cambrian.SetIntegrationEnabledOpRequest\x1a'.cambrian.IntegrationMutationOpResponse\x12X\n" +
+	"\x0fTestIntegration\x12\".cambrian.TestIntegrationOpRequest\x1a!.cambrian.IntegrationTestResultOp\x12b\n" +
+	"\x11RemoveIntegration\x12$.cambrian.RemoveIntegrationOpRequest\x1a'.cambrian.IntegrationMutationOpResponse\x12n\n" +
+	"\x17RevertIntegrationToFile\x12*.cambrian.RevertIntegrationToFileOpRequest\x1a'.cambrian.IntegrationMutationOpResponseB\x10Z\x0ecore/api/protob\x06proto3"
 
 var (
 	file_operator_proto_rawDescOnce sync.Once
@@ -21735,7 +25631,7 @@ func file_operator_proto_rawDescGZIP() []byte {
 	return file_operator_proto_rawDescData
 }
 
-var file_operator_proto_msgTypes = make([]protoimpl.MessageInfo, 255)
+var file_operator_proto_msgTypes = make([]protoimpl.MessageInfo, 298)
 var file_operator_proto_goTypes = []any{
 	(*CreateSessionRequest)(nil),               // 0: cambrian.CreateSessionRequest
 	(*CreateSessionResponse)(nil),              // 1: cambrian.CreateSessionResponse
@@ -21750,595 +25646,699 @@ var file_operator_proto_goTypes = []any{
 	(*ListConversationsOpResponse)(nil),        // 10: cambrian.ListConversationsOpResponse
 	(*ConversationOp)(nil),                     // 11: cambrian.ConversationOp
 	(*ListConversationMessagesOpRequest)(nil),  // 12: cambrian.ListConversationMessagesOpRequest
-	(*ListConversationMessagesOpResponse)(nil), // 13: cambrian.ListConversationMessagesOpResponse
-	(*MessageOp)(nil),                          // 14: cambrian.MessageOp
-	(*TagMemoryRequest)(nil),                   // 15: cambrian.TagMemoryRequest
-	(*SetScopeRequest)(nil),                    // 16: cambrian.SetScopeRequest
-	(*RegisterSkillRequest)(nil),               // 17: cambrian.RegisterSkillRequest
-	(*RegisterMCPRequest)(nil),                 // 18: cambrian.RegisterMCPRequest
-	(*TriggerConsolidationRequest)(nil),        // 19: cambrian.TriggerConsolidationRequest
-	(*SetRuntimeConfigRequest)(nil),            // 20: cambrian.SetRuntimeConfigRequest
-	(*ResolveHITLRequest)(nil),                 // 21: cambrian.ResolveHITLRequest
-	(*SessionCommandRequest)(nil),              // 22: cambrian.SessionCommandRequest
-	(*QueryAuditRequest)(nil),                  // 23: cambrian.QueryAuditRequest
-	(*QueryAuditResponse)(nil),                 // 24: cambrian.QueryAuditResponse
-	(*CommandAck)(nil),                         // 25: cambrian.CommandAck
-	(*SetToolGrantRequest)(nil),                // 26: cambrian.SetToolGrantRequest
-	(*LoginRequest)(nil),                       // 27: cambrian.LoginRequest
-	(*LoginResponse)(nil),                      // 28: cambrian.LoginResponse
-	(*LogoutRequest)(nil),                      // 29: cambrian.LogoutRequest
-	(*LogoutResponse)(nil),                     // 30: cambrian.LogoutResponse
-	(*SnapshotRequest)(nil),                    // 31: cambrian.SnapshotRequest
-	(*SnapshotResponse)(nil),                   // 32: cambrian.SnapshotResponse
-	(*PluginInfoOp)(nil),                       // 33: cambrian.PluginInfoOp
-	(*PluginPanelOp)(nil),                      // 34: cambrian.PluginPanelOp
-	(*PlanInFlightOp)(nil),                     // 35: cambrian.PlanInFlightOp
-	(*SessionSummaryOp)(nil),                   // 36: cambrian.SessionSummaryOp
-	(*SubscribeRequest)(nil),                   // 37: cambrian.SubscribeRequest
-	(*OperatorEvent)(nil),                      // 38: cambrian.OperatorEvent
-	(*PipelineStepOp)(nil),                     // 39: cambrian.PipelineStepOp
-	(*PipelineMetersOp)(nil),                   // 40: cambrian.PipelineMetersOp
-	(*PipelineNodeMeterOp)(nil),                // 41: cambrian.PipelineNodeMeterOp
-	(*RetentionRunOp)(nil),                     // 42: cambrian.RetentionRunOp
-	(*RetentionDeletionOp)(nil),                // 43: cambrian.RetentionDeletionOp
-	(*ScoutUsefulnessOp)(nil),                  // 44: cambrian.ScoutUsefulnessOp
-	(*AgentStepOp)(nil),                        // 45: cambrian.AgentStepOp
-	(*AgentLLMExchangeOp)(nil),                 // 46: cambrian.AgentLLMExchangeOp
-	(*ResyncRequired)(nil),                     // 47: cambrian.ResyncRequired
-	(*AuctionEventOp)(nil),                     // 48: cambrian.AuctionEventOp
-	(*BidEntryOp)(nil),                         // 49: cambrian.BidEntryOp
-	(*GatekeeperFunnelOp)(nil),                 // 50: cambrian.GatekeeperFunnelOp
-	(*DeclarationResultOp)(nil),                // 51: cambrian.DeclarationResultOp
-	(*InterviewResultOp)(nil),                  // 52: cambrian.InterviewResultOp
-	(*MeritResultOp)(nil),                      // 53: cambrian.MeritResultOp
-	(*AgentReadyOp)(nil),                       // 54: cambrian.AgentReadyOp
-	(*SessionStateOp)(nil),                     // 55: cambrian.SessionStateOp
-	(*SessionDormantOp)(nil),                   // 56: cambrian.SessionDormantOp
-	(*SessionCompletedOp)(nil),                 // 57: cambrian.SessionCompletedOp
-	(*MemoryPressureOp)(nil),                   // 58: cambrian.MemoryPressureOp
-	(*DaemonCrashedOp)(nil),                    // 59: cambrian.DaemonCrashedOp
-	(*WatchTriggeredOp)(nil),                   // 60: cambrian.WatchTriggeredOp
-	(*MemoryWrittenOp)(nil),                    // 61: cambrian.MemoryWrittenOp
-	(*HITLRaisedOp)(nil),                       // 62: cambrian.HITLRaisedOp
-	(*VerifierRoundOp)(nil),                    // 63: cambrian.VerifierRoundOp
-	(*LLMHealthOp)(nil),                        // 64: cambrian.LLMHealthOp
-	(*PlanStateOp)(nil),                        // 65: cambrian.PlanStateOp
-	(*PlanStepOp)(nil),                         // 66: cambrian.PlanStepOp
-	(*TokenChunkOp)(nil),                       // 67: cambrian.TokenChunkOp
-	(*AuditOp)(nil),                            // 68: cambrian.AuditOp
-	(*ToolPolicyOp)(nil),                       // 69: cambrian.ToolPolicyOp
-	(*ToolGrantOp)(nil),                        // 70: cambrian.ToolGrantOp
-	(*ToolOp)(nil),                             // 71: cambrian.ToolOp
-	(*ListToolsOpRequest)(nil),                 // 72: cambrian.ListToolsOpRequest
-	(*ListToolsOpResponse)(nil),                // 73: cambrian.ListToolsOpResponse
-	(*ListSkillsOpRequest)(nil),                // 74: cambrian.ListSkillsOpRequest
-	(*SkillOp)(nil),                            // 75: cambrian.SkillOp
-	(*ListSkillsOpResponse)(nil),               // 76: cambrian.ListSkillsOpResponse
-	(*QueryMemoryRequest)(nil),                 // 77: cambrian.QueryMemoryRequest
-	(*MemoryOp)(nil),                           // 78: cambrian.MemoryOp
-	(*QueryMemoryResponse)(nil),                // 79: cambrian.QueryMemoryResponse
-	(*AnswerMemoryRequest)(nil),                // 80: cambrian.AnswerMemoryRequest
-	(*MemoryCitation)(nil),                     // 81: cambrian.MemoryCitation
-	(*AnswerMemoryResponse)(nil),               // 82: cambrian.AnswerMemoryResponse
-	(*SetToolPolicyRequest)(nil),               // 83: cambrian.SetToolPolicyRequest
-	(*ExecuteToolOpRequest)(nil),               // 84: cambrian.ExecuteToolOpRequest
-	(*ExecuteToolOpResponse)(nil),              // 85: cambrian.ExecuteToolOpResponse
-	(*IngestMemoryOpRequest)(nil),              // 86: cambrian.IngestMemoryOpRequest
-	(*MemoryPartOp)(nil),                       // 87: cambrian.MemoryPartOp
-	(*IngestMemoryOpResponse)(nil),             // 88: cambrian.IngestMemoryOpResponse
-	(*ApprovalOp)(nil),                         // 89: cambrian.ApprovalOp
-	(*WatchActionOp)(nil),                      // 90: cambrian.WatchActionOp
-	(*WatchConfigOp)(nil),                      // 91: cambrian.WatchConfigOp
-	(*WatchFireOp)(nil),                        // 92: cambrian.WatchFireOp
-	(*ListWatchesOpRequest)(nil),               // 93: cambrian.ListWatchesOpRequest
-	(*ListWatchesOpResponse)(nil),              // 94: cambrian.ListWatchesOpResponse
-	(*RegisterWatchOpRequest)(nil),             // 95: cambrian.RegisterWatchOpRequest
-	(*DeleteWatchOpRequest)(nil),               // 96: cambrian.DeleteWatchOpRequest
-	(*SetWatchActiveOpRequest)(nil),            // 97: cambrian.SetWatchActiveOpRequest
-	(*ListWatchDeadLettersOpRequest)(nil),      // 98: cambrian.ListWatchDeadLettersOpRequest
-	(*ListWatchDeadLettersOpResponse)(nil),     // 99: cambrian.ListWatchDeadLettersOpResponse
-	(*WatchDeadLetterOp)(nil),                  // 100: cambrian.WatchDeadLetterOp
-	(*GetWatchMetricsOpRequest)(nil),           // 101: cambrian.GetWatchMetricsOpRequest
-	(*GetWatchMetricsOpResponse)(nil),          // 102: cambrian.GetWatchMetricsOpResponse
-	(*WatchMetricsOp)(nil),                     // 103: cambrian.WatchMetricsOp
-	(*BacktestWatchOpRequest)(nil),             // 104: cambrian.BacktestWatchOpRequest
-	(*BacktestWatchOpResponse)(nil),            // 105: cambrian.BacktestWatchOpResponse
-	(*WatchBacktestVerdictOp)(nil),             // 106: cambrian.WatchBacktestVerdictOp
-	(*PreviewRouteOpRequest)(nil),              // 107: cambrian.PreviewRouteOpRequest
-	(*PreviewCandidateOp)(nil),                 // 108: cambrian.PreviewCandidateOp
-	(*PreviewCapStatOp)(nil),                   // 109: cambrian.PreviewCapStatOp
-	(*PreviewRouteOpResponse)(nil),             // 110: cambrian.PreviewRouteOpResponse
-	(*ReactiveBudgetOp)(nil),                   // 111: cambrian.ReactiveBudgetOp
-	(*ExplainAccessOpRequest)(nil),             // 112: cambrian.ExplainAccessOpRequest
-	(*PolicyContributionOp)(nil),               // 113: cambrian.PolicyContributionOp
-	(*AccessDecisionOp)(nil),                   // 114: cambrian.AccessDecisionOp
-	(*ExplainAccessOpResponse)(nil),            // 115: cambrian.ExplainAccessOpResponse
-	(*ListClassificationTagsOpRequest)(nil),    // 116: cambrian.ListClassificationTagsOpRequest
-	(*ListClassificationTagsOpResponse)(nil),   // 117: cambrian.ListClassificationTagsOpResponse
-	(*ListDocumentsOpRequest)(nil),             // 118: cambrian.ListDocumentsOpRequest
-	(*DocumentSummaryOp)(nil),                  // 119: cambrian.DocumentSummaryOp
-	(*ListDocumentsOpResponse)(nil),            // 120: cambrian.ListDocumentsOpResponse
-	(*ListSessionCheckpointsOpRequest)(nil),    // 121: cambrian.ListSessionCheckpointsOpRequest
-	(*SessionCheckpointOp)(nil),                // 122: cambrian.SessionCheckpointOp
-	(*ListSessionCheckpointsOpResponse)(nil),   // 123: cambrian.ListSessionCheckpointsOpResponse
-	(*ListMCPServersOpRequest)(nil),            // 124: cambrian.ListMCPServersOpRequest
-	(*MCPServerOp)(nil),                        // 125: cambrian.MCPServerOp
-	(*ListMCPServersOpResponse)(nil),           // 126: cambrian.ListMCPServersOpResponse
-	(*GetEmbeddingConfigOpRequest)(nil),        // 127: cambrian.GetEmbeddingConfigOpRequest
-	(*EmbeddingConfigOp)(nil),                  // 128: cambrian.EmbeddingConfigOp
-	(*ClassifyInputOpRequest)(nil),             // 129: cambrian.ClassifyInputOpRequest
-	(*ClassifiedInputOp)(nil),                  // 130: cambrian.ClassifiedInputOp
-	(*ListGeneratorsOpRequest)(nil),            // 131: cambrian.ListGeneratorsOpRequest
-	(*GeneratorOp)(nil),                        // 132: cambrian.GeneratorOp
-	(*ListGeneratorsOpResponse)(nil),           // 133: cambrian.ListGeneratorsOpResponse
-	(*ListRoleAssignmentsOpRequest)(nil),       // 134: cambrian.ListRoleAssignmentsOpRequest
-	(*RoleAssignmentOp)(nil),                   // 135: cambrian.RoleAssignmentOp
-	(*ListRoleAssignmentsOpResponse)(nil),      // 136: cambrian.ListRoleAssignmentsOpResponse
-	(*TestGeneratorOpRequest)(nil),             // 137: cambrian.TestGeneratorOpRequest
-	(*GeneratorTestResultOp)(nil),              // 138: cambrian.GeneratorTestResultOp
-	(*GeneratorSpecOp)(nil),                    // 139: cambrian.GeneratorSpecOp
-	(*SaveGeneratorOpRequest)(nil),             // 140: cambrian.SaveGeneratorOpRequest
-	(*RemoveGeneratorOpRequest)(nil),           // 141: cambrian.RemoveGeneratorOpRequest
-	(*SetRoleAssignmentOpRequest)(nil),         // 142: cambrian.SetRoleAssignmentOpRequest
-	(*MCPServerSpecOp)(nil),                    // 143: cambrian.MCPServerSpecOp
-	(*SaveMCPServerOpRequest)(nil),             // 144: cambrian.SaveMCPServerOpRequest
-	(*RemoveMCPServerOpRequest)(nil),           // 145: cambrian.RemoveMCPServerOpRequest
-	(*SetMCPServerTokenOpRequest)(nil),         // 146: cambrian.SetMCPServerTokenOpRequest
-	(*ClearMCPServerTokenOpRequest)(nil),       // 147: cambrian.ClearMCPServerTokenOpRequest
-	(*TestMCPServerOpRequest)(nil),             // 148: cambrian.TestMCPServerOpRequest
-	(*MCPServerTestResultOp)(nil),              // 149: cambrian.MCPServerTestResultOp
-	(*RetryWatchDeadLetterOpRequest)(nil),      // 150: cambrian.RetryWatchDeadLetterOpRequest
-	(*GetConfigSchemaOpRequest)(nil),           // 151: cambrian.GetConfigSchemaOpRequest
-	(*ConfigSchemaOp)(nil),                     // 152: cambrian.ConfigSchemaOp
-	(*SetConfigOpRequest)(nil),                 // 153: cambrian.SetConfigOpRequest
-	(*DeleteConfigOpRequest)(nil),              // 154: cambrian.DeleteConfigOpRequest
-	(*SetGeneratorKeyOpRequest)(nil),           // 155: cambrian.SetGeneratorKeyOpRequest
-	(*ClearGeneratorKeyOpRequest)(nil),         // 156: cambrian.ClearGeneratorKeyOpRequest
-	(*ConfigWriteOutcomeOp)(nil),               // 157: cambrian.ConfigWriteOutcomeOp
-	(*SetConfigOpResponse)(nil),                // 158: cambrian.SetConfigOpResponse
-	(*AuthoredStepOp)(nil),                     // 159: cambrian.AuthoredStepOp
-	(*SubmitPlanOpRequest)(nil),                // 160: cambrian.SubmitPlanOpRequest
-	(*PlanValidationIssueOp)(nil),              // 161: cambrian.PlanValidationIssueOp
-	(*SubmitPlanOpResponse)(nil),               // 162: cambrian.SubmitPlanOpResponse
-	(*ReactivePlaneBudgetOp)(nil),              // 163: cambrian.ReactivePlaneBudgetOp
-	(*GetReactiveBudgetOpRequest)(nil),         // 164: cambrian.GetReactiveBudgetOpRequest
-	(*GetReactiveBudgetOpResponse)(nil),        // 165: cambrian.GetReactiveBudgetOpResponse
-	(*GetTokenSeriesOpRequest)(nil),            // 166: cambrian.GetTokenSeriesOpRequest
-	(*TokenSeriesPointOp)(nil),                 // 167: cambrian.TokenSeriesPointOp
-	(*GetTokenSeriesOpResponse)(nil),           // 168: cambrian.GetTokenSeriesOpResponse
-	(*ProposePlanOpRequest)(nil),               // 169: cambrian.ProposePlanOpRequest
-	(*InterviewOptionOp)(nil),                  // 170: cambrian.InterviewOptionOp
-	(*InterviewQuestionOp)(nil),                // 171: cambrian.InterviewQuestionOp
-	(*PlanProposalOp)(nil),                     // 172: cambrian.PlanProposalOp
-	(*ProposePlanOpResponse)(nil),              // 173: cambrian.ProposePlanOpResponse
-	(*ExplainAccessBatchOpRequest)(nil),        // 174: cambrian.ExplainAccessBatchOpRequest
-	(*ExplainAccessBatchOpResponse)(nil),       // 175: cambrian.ExplainAccessBatchOpResponse
-	(*BlastRadiusPreviewOpRequest)(nil),        // 176: cambrian.BlastRadiusPreviewOpRequest
-	(*AgentImpactOp)(nil),                      // 177: cambrian.AgentImpactOp
-	(*PlanImpactOp)(nil),                       // 178: cambrian.PlanImpactOp
-	(*BlastRadiusPreviewOp)(nil),               // 179: cambrian.BlastRadiusPreviewOp
-	(*ConversationProgressOp)(nil),             // 180: cambrian.ConversationProgressOp
-	(*LogAttrOp)(nil),                          // 181: cambrian.LogAttrOp
-	(*LogRecordOp)(nil),                        // 182: cambrian.LogRecordOp
-	(*LogFilterOp)(nil),                        // 183: cambrian.LogFilterOp
-	(*LogWindowOp)(nil),                        // 184: cambrian.LogWindowOp
-	(*QueryLogsOpRequest)(nil),                 // 185: cambrian.QueryLogsOpRequest
-	(*QueryLogsOpResponse)(nil),                // 186: cambrian.QueryLogsOpResponse
-	(*TailLogsOpRequest)(nil),                  // 187: cambrian.TailLogsOpRequest
-	(*GetDocumentOpRequest)(nil),               // 188: cambrian.GetDocumentOpRequest
-	(*GetDocumentOpResponse)(nil),              // 189: cambrian.GetDocumentOpResponse
-	(*ListNodeItemsOpRequest)(nil),             // 190: cambrian.ListNodeItemsOpRequest
-	(*NodeItemOp)(nil),                         // 191: cambrian.NodeItemOp
-	(*ListNodeItemsOpResponse)(nil),            // 192: cambrian.ListNodeItemsOpResponse
-	(*ListPipelinesOpRequest)(nil),             // 193: cambrian.ListPipelinesOpRequest
-	(*ListPipelinesOpResponse)(nil),            // 194: cambrian.ListPipelinesOpResponse
-	(*DryRunPipelineOpRequest)(nil),            // 195: cambrian.DryRunPipelineOpRequest
-	(*DryRunPipelineOpResponse)(nil),           // 196: cambrian.DryRunPipelineOpResponse
-	(*PipelineNodeExampleOp)(nil),              // 197: cambrian.PipelineNodeExampleOp
-	(*PipelineFailureOp)(nil),                  // 198: cambrian.PipelineFailureOp
-	(*GetPipelineOpRequest)(nil),               // 199: cambrian.GetPipelineOpRequest
-	(*GetPipelineOpResponse)(nil),              // 200: cambrian.GetPipelineOpResponse
-	(*NodeReadsOp)(nil),                        // 201: cambrian.NodeReadsOp
-	(*ValidatePipelineOpRequest)(nil),          // 202: cambrian.ValidatePipelineOpRequest
-	(*ValidatePipelineOpResponse)(nil),         // 203: cambrian.ValidatePipelineOpResponse
-	(*SavePipelineOpRequest)(nil),              // 204: cambrian.SavePipelineOpRequest
-	(*SavePipelineOpResponse)(nil),             // 205: cambrian.SavePipelineOpResponse
-	(*TransitionPipelineOpRequest)(nil),        // 206: cambrian.TransitionPipelineOpRequest
-	(*TransitionPipelineOpResponse)(nil),       // 207: cambrian.TransitionPipelineOpResponse
-	(*RefusalOp)(nil),                          // 208: cambrian.RefusalOp
-	(*ShadowEffectOp)(nil),                     // 209: cambrian.ShadowEffectOp
-	(*DuplicateEffectKeyOp)(nil),               // 210: cambrian.DuplicateEffectKeyOp
-	(*PipelineTerminationOp)(nil),              // 211: cambrian.PipelineTerminationOp
-	(*PipelineOp)(nil),                         // 212: cambrian.PipelineOp
-	(*LinkOp)(nil),                             // 213: cambrian.LinkOp
-	(*ConfirmLinkOpRequest)(nil),               // 214: cambrian.ConfirmLinkOpRequest
-	(*ConfirmLinkOpResponse)(nil),              // 215: cambrian.ConfirmLinkOpResponse
-	(*RetractLinkOpRequest)(nil),               // 216: cambrian.RetractLinkOpRequest
-	(*RetractLinksByProducerOpRequest)(nil),    // 217: cambrian.RetractLinksByProducerOpRequest
-	(*RetractLinksByProducerOpResponse)(nil),   // 218: cambrian.RetractLinksByProducerOpResponse
-	(*ListLinkCandidatesOpRequest)(nil),        // 219: cambrian.ListLinkCandidatesOpRequest
-	(*ListLinkCandidatesOpResponse)(nil),       // 220: cambrian.ListLinkCandidatesOpResponse
-	(*ListMemoryNotesOpRequest)(nil),           // 221: cambrian.ListMemoryNotesOpRequest
-	(*MemoryNotesSummaryOp)(nil),               // 222: cambrian.MemoryNotesSummaryOp
-	(*ListMemoryNotesOpResponse)(nil),          // 223: cambrian.ListMemoryNotesOpResponse
-	(*GetMemoryNotesOpRequest)(nil),            // 224: cambrian.GetMemoryNotesOpRequest
-	(*MemoryNotesOp)(nil),                      // 225: cambrian.MemoryNotesOp
-	(*SetMemoryNotesOpRequest)(nil),            // 226: cambrian.SetMemoryNotesOpRequest
-	(*SetMemoryNotesOpResponse)(nil),           // 227: cambrian.SetMemoryNotesOpResponse
-	(*DeleteMemoryNotesOpRequest)(nil),         // 228: cambrian.DeleteMemoryNotesOpRequest
-	(*SetMemoryNotesBudgetOpRequest)(nil),      // 229: cambrian.SetMemoryNotesBudgetOpRequest
-	(*ListSkillProposalsOpRequest)(nil),        // 230: cambrian.ListSkillProposalsOpRequest
-	(*SkillProposalOp)(nil),                    // 231: cambrian.SkillProposalOp
-	(*ListSkillProposalsOpResponse)(nil),       // 232: cambrian.ListSkillProposalsOpResponse
-	(*DecideSkillProposalOpRequest)(nil),       // 233: cambrian.DecideSkillProposalOpRequest
-	(*DecideSkillProposalOpResponse)(nil),      // 234: cambrian.DecideSkillProposalOpResponse
-	(*SetSkillLockOpRequest)(nil),              // 235: cambrian.SetSkillLockOpRequest
-	(*ListSkillLedgerOpRequest)(nil),           // 236: cambrian.ListSkillLedgerOpRequest
-	(*SkillLedgerEntryOp)(nil),                 // 237: cambrian.SkillLedgerEntryOp
-	(*ListSkillLedgerOpResponse)(nil),          // 238: cambrian.ListSkillLedgerOpResponse
-	(*RollbackSkillOpRequest)(nil),             // 239: cambrian.RollbackSkillOpRequest
-	(*RollbackSkillOpResponse)(nil),            // 240: cambrian.RollbackSkillOpResponse
-	(*ListSkillGrantsOpRequest)(nil),           // 241: cambrian.ListSkillGrantsOpRequest
-	(*SkillGrantOp)(nil),                       // 242: cambrian.SkillGrantOp
-	(*SkillAccessRequestOp)(nil),               // 243: cambrian.SkillAccessRequestOp
-	(*ListSkillGrantsOpResponse)(nil),          // 244: cambrian.ListSkillGrantsOpResponse
-	(*GrantSkillOpRequest)(nil),                // 245: cambrian.GrantSkillOpRequest
-	(*RevokeSkillGrantOpRequest)(nil),          // 246: cambrian.RevokeSkillGrantOpRequest
-	nil,                                        // 247: cambrian.SetRuntimeConfigRequest.ParamsEntry
-	nil,                                        // 248: cambrian.PipelineNodeMeterOp.PortsEntry
-	nil,                                        // 249: cambrian.WatchConfigOp.DaemonParamsEntry
-	nil,                                        // 250: cambrian.PreviewCandidateOp.CapabilityStatsEntry
-	nil,                                        // 251: cambrian.ConfigSchemaOp.CurrentValuesEntry
-	nil,                                        // 252: cambrian.ConfigSchemaOp.ValueSourceEntry
-	nil,                                        // 253: cambrian.SetConfigOpRequest.ValuesEntry
-	nil,                                        // 254: cambrian.LogFilterOp.AttrEqualsEntry
-	(*timestamppb.Timestamp)(nil),              // 255: google.protobuf.Timestamp
+	(*ListScheduledTasksOpRequest)(nil),        // 13: cambrian.ListScheduledTasksOpRequest
+	(*ListScheduledTasksOpResponse)(nil),       // 14: cambrian.ListScheduledTasksOpResponse
+	(*ScheduledTaskOp)(nil),                    // 15: cambrian.ScheduledTaskOp
+	(*ListConversationMessagesOpResponse)(nil), // 16: cambrian.ListConversationMessagesOpResponse
+	(*MessageOp)(nil),                          // 17: cambrian.MessageOp
+	(*TagMemoryRequest)(nil),                   // 18: cambrian.TagMemoryRequest
+	(*SetScopeRequest)(nil),                    // 19: cambrian.SetScopeRequest
+	(*RegisterSkillRequest)(nil),               // 20: cambrian.RegisterSkillRequest
+	(*RegisterMCPRequest)(nil),                 // 21: cambrian.RegisterMCPRequest
+	(*TriggerConsolidationRequest)(nil),        // 22: cambrian.TriggerConsolidationRequest
+	(*SetRuntimeConfigRequest)(nil),            // 23: cambrian.SetRuntimeConfigRequest
+	(*ResolveHITLRequest)(nil),                 // 24: cambrian.ResolveHITLRequest
+	(*SessionCommandRequest)(nil),              // 25: cambrian.SessionCommandRequest
+	(*QueryAuditRequest)(nil),                  // 26: cambrian.QueryAuditRequest
+	(*QueryAuditResponse)(nil),                 // 27: cambrian.QueryAuditResponse
+	(*CommandAck)(nil),                         // 28: cambrian.CommandAck
+	(*SetToolGrantRequest)(nil),                // 29: cambrian.SetToolGrantRequest
+	(*LoginRequest)(nil),                       // 30: cambrian.LoginRequest
+	(*LoginResponse)(nil),                      // 31: cambrian.LoginResponse
+	(*DescribeAuthRequest)(nil),                // 32: cambrian.DescribeAuthRequest
+	(*DescribeAuthResponse)(nil),               // 33: cambrian.DescribeAuthResponse
+	(*LogoutRequest)(nil),                      // 34: cambrian.LogoutRequest
+	(*LogoutResponse)(nil),                     // 35: cambrian.LogoutResponse
+	(*SnapshotRequest)(nil),                    // 36: cambrian.SnapshotRequest
+	(*SnapshotResponse)(nil),                   // 37: cambrian.SnapshotResponse
+	(*PluginInfoOp)(nil),                       // 38: cambrian.PluginInfoOp
+	(*PluginPanelOp)(nil),                      // 39: cambrian.PluginPanelOp
+	(*PlanInFlightOp)(nil),                     // 40: cambrian.PlanInFlightOp
+	(*SessionSummaryOp)(nil),                   // 41: cambrian.SessionSummaryOp
+	(*SubscribeRequest)(nil),                   // 42: cambrian.SubscribeRequest
+	(*OperatorEvent)(nil),                      // 43: cambrian.OperatorEvent
+	(*PipelineStepOp)(nil),                     // 44: cambrian.PipelineStepOp
+	(*PipelineMetersOp)(nil),                   // 45: cambrian.PipelineMetersOp
+	(*PipelineNodeMeterOp)(nil),                // 46: cambrian.PipelineNodeMeterOp
+	(*RetentionRunOp)(nil),                     // 47: cambrian.RetentionRunOp
+	(*RetentionDeletionOp)(nil),                // 48: cambrian.RetentionDeletionOp
+	(*ScoutUsefulnessOp)(nil),                  // 49: cambrian.ScoutUsefulnessOp
+	(*AgentStepOp)(nil),                        // 50: cambrian.AgentStepOp
+	(*AgentLLMExchangeOp)(nil),                 // 51: cambrian.AgentLLMExchangeOp
+	(*ResyncRequired)(nil),                     // 52: cambrian.ResyncRequired
+	(*AuctionEventOp)(nil),                     // 53: cambrian.AuctionEventOp
+	(*BidEntryOp)(nil),                         // 54: cambrian.BidEntryOp
+	(*GatekeeperFunnelOp)(nil),                 // 55: cambrian.GatekeeperFunnelOp
+	(*DeclarationResultOp)(nil),                // 56: cambrian.DeclarationResultOp
+	(*InterviewResultOp)(nil),                  // 57: cambrian.InterviewResultOp
+	(*MeritResultOp)(nil),                      // 58: cambrian.MeritResultOp
+	(*AgentReadyOp)(nil),                       // 59: cambrian.AgentReadyOp
+	(*SessionStateOp)(nil),                     // 60: cambrian.SessionStateOp
+	(*SessionDormantOp)(nil),                   // 61: cambrian.SessionDormantOp
+	(*SessionCompletedOp)(nil),                 // 62: cambrian.SessionCompletedOp
+	(*MemoryPressureOp)(nil),                   // 63: cambrian.MemoryPressureOp
+	(*DaemonCrashedOp)(nil),                    // 64: cambrian.DaemonCrashedOp
+	(*WatchTriggeredOp)(nil),                   // 65: cambrian.WatchTriggeredOp
+	(*MemoryWrittenOp)(nil),                    // 66: cambrian.MemoryWrittenOp
+	(*HITLRaisedOp)(nil),                       // 67: cambrian.HITLRaisedOp
+	(*VerifierRoundOp)(nil),                    // 68: cambrian.VerifierRoundOp
+	(*LLMHealthOp)(nil),                        // 69: cambrian.LLMHealthOp
+	(*PlanStateOp)(nil),                        // 70: cambrian.PlanStateOp
+	(*PlanStepOp)(nil),                         // 71: cambrian.PlanStepOp
+	(*TokenChunkOp)(nil),                       // 72: cambrian.TokenChunkOp
+	(*AuditOp)(nil),                            // 73: cambrian.AuditOp
+	(*ToolPolicyOp)(nil),                       // 74: cambrian.ToolPolicyOp
+	(*ToolGrantOp)(nil),                        // 75: cambrian.ToolGrantOp
+	(*ToolOp)(nil),                             // 76: cambrian.ToolOp
+	(*ListToolsOpRequest)(nil),                 // 77: cambrian.ListToolsOpRequest
+	(*ListToolsOpResponse)(nil),                // 78: cambrian.ListToolsOpResponse
+	(*ListSkillsOpRequest)(nil),                // 79: cambrian.ListSkillsOpRequest
+	(*SkillOp)(nil),                            // 80: cambrian.SkillOp
+	(*ListSkillsOpResponse)(nil),               // 81: cambrian.ListSkillsOpResponse
+	(*QueryMemoryRequest)(nil),                 // 82: cambrian.QueryMemoryRequest
+	(*MemoryOp)(nil),                           // 83: cambrian.MemoryOp
+	(*QueryMemoryResponse)(nil),                // 84: cambrian.QueryMemoryResponse
+	(*AnswerMemoryRequest)(nil),                // 85: cambrian.AnswerMemoryRequest
+	(*MemoryCitation)(nil),                     // 86: cambrian.MemoryCitation
+	(*AnswerMemoryResponse)(nil),               // 87: cambrian.AnswerMemoryResponse
+	(*SetToolPolicyRequest)(nil),               // 88: cambrian.SetToolPolicyRequest
+	(*ExecuteToolOpRequest)(nil),               // 89: cambrian.ExecuteToolOpRequest
+	(*ExecuteToolOpResponse)(nil),              // 90: cambrian.ExecuteToolOpResponse
+	(*IngestMemoryOpRequest)(nil),              // 91: cambrian.IngestMemoryOpRequest
+	(*MemoryPartOp)(nil),                       // 92: cambrian.MemoryPartOp
+	(*IngestMemoryOpResponse)(nil),             // 93: cambrian.IngestMemoryOpResponse
+	(*ApprovalOp)(nil),                         // 94: cambrian.ApprovalOp
+	(*HITLResolvedOp)(nil),                     // 95: cambrian.HITLResolvedOp
+	(*WatchMyApprovalsOpRequest)(nil),          // 96: cambrian.WatchMyApprovalsOpRequest
+	(*ListApprovalsOpRequest)(nil),             // 97: cambrian.ListApprovalsOpRequest
+	(*ListApprovalsOpResponse)(nil),            // 98: cambrian.ListApprovalsOpResponse
+	(*AnswerApprovalOpRequest)(nil),            // 99: cambrian.AnswerApprovalOpRequest
+	(*AnswerApprovalOpResponse)(nil),           // 100: cambrian.AnswerApprovalOpResponse
+	(*StandingApprovalOp)(nil),                 // 101: cambrian.StandingApprovalOp
+	(*ListStandingApprovalsOpRequest)(nil),     // 102: cambrian.ListStandingApprovalsOpRequest
+	(*ListStandingApprovalsOpResponse)(nil),    // 103: cambrian.ListStandingApprovalsOpResponse
+	(*RevokeStandingApprovalOpRequest)(nil),    // 104: cambrian.RevokeStandingApprovalOpRequest
+	(*ShareToTeamOpRequest)(nil),               // 105: cambrian.ShareToTeamOpRequest
+	(*ShareToTeamOpResponse)(nil),              // 106: cambrian.ShareToTeamOpResponse
+	(*WatchActionOp)(nil),                      // 107: cambrian.WatchActionOp
+	(*WatchConfigOp)(nil),                      // 108: cambrian.WatchConfigOp
+	(*WatchFireOp)(nil),                        // 109: cambrian.WatchFireOp
+	(*ListWatchesOpRequest)(nil),               // 110: cambrian.ListWatchesOpRequest
+	(*ListWatchesOpResponse)(nil),              // 111: cambrian.ListWatchesOpResponse
+	(*RegisterWatchOpRequest)(nil),             // 112: cambrian.RegisterWatchOpRequest
+	(*DeleteWatchOpRequest)(nil),               // 113: cambrian.DeleteWatchOpRequest
+	(*SetWatchActiveOpRequest)(nil),            // 114: cambrian.SetWatchActiveOpRequest
+	(*ListWatchDeadLettersOpRequest)(nil),      // 115: cambrian.ListWatchDeadLettersOpRequest
+	(*ListWatchDeadLettersOpResponse)(nil),     // 116: cambrian.ListWatchDeadLettersOpResponse
+	(*WatchDeadLetterOp)(nil),                  // 117: cambrian.WatchDeadLetterOp
+	(*GetWatchMetricsOpRequest)(nil),           // 118: cambrian.GetWatchMetricsOpRequest
+	(*GetWatchMetricsOpResponse)(nil),          // 119: cambrian.GetWatchMetricsOpResponse
+	(*WatchMetricsOp)(nil),                     // 120: cambrian.WatchMetricsOp
+	(*BacktestWatchOpRequest)(nil),             // 121: cambrian.BacktestWatchOpRequest
+	(*BacktestWatchOpResponse)(nil),            // 122: cambrian.BacktestWatchOpResponse
+	(*WatchBacktestVerdictOp)(nil),             // 123: cambrian.WatchBacktestVerdictOp
+	(*PreviewRouteOpRequest)(nil),              // 124: cambrian.PreviewRouteOpRequest
+	(*PreviewCandidateOp)(nil),                 // 125: cambrian.PreviewCandidateOp
+	(*PreviewCapStatOp)(nil),                   // 126: cambrian.PreviewCapStatOp
+	(*PreviewRouteOpResponse)(nil),             // 127: cambrian.PreviewRouteOpResponse
+	(*ReactiveBudgetOp)(nil),                   // 128: cambrian.ReactiveBudgetOp
+	(*ExplainAccessOpRequest)(nil),             // 129: cambrian.ExplainAccessOpRequest
+	(*PolicyContributionOp)(nil),               // 130: cambrian.PolicyContributionOp
+	(*AccessDecisionOp)(nil),                   // 131: cambrian.AccessDecisionOp
+	(*ExplainAccessOpResponse)(nil),            // 132: cambrian.ExplainAccessOpResponse
+	(*ListClassificationTagsOpRequest)(nil),    // 133: cambrian.ListClassificationTagsOpRequest
+	(*ListClassificationTagsOpResponse)(nil),   // 134: cambrian.ListClassificationTagsOpResponse
+	(*ListDocumentsOpRequest)(nil),             // 135: cambrian.ListDocumentsOpRequest
+	(*DocumentSummaryOp)(nil),                  // 136: cambrian.DocumentSummaryOp
+	(*ListDocumentsOpResponse)(nil),            // 137: cambrian.ListDocumentsOpResponse
+	(*ListSessionCheckpointsOpRequest)(nil),    // 138: cambrian.ListSessionCheckpointsOpRequest
+	(*SessionCheckpointOp)(nil),                // 139: cambrian.SessionCheckpointOp
+	(*ListSessionCheckpointsOpResponse)(nil),   // 140: cambrian.ListSessionCheckpointsOpResponse
+	(*ListMCPServersOpRequest)(nil),            // 141: cambrian.ListMCPServersOpRequest
+	(*MCPServerOp)(nil),                        // 142: cambrian.MCPServerOp
+	(*ListMCPServersOpResponse)(nil),           // 143: cambrian.ListMCPServersOpResponse
+	(*GetEmbeddingConfigOpRequest)(nil),        // 144: cambrian.GetEmbeddingConfigOpRequest
+	(*EmbeddingConfigOp)(nil),                  // 145: cambrian.EmbeddingConfigOp
+	(*ClassifyInputOpRequest)(nil),             // 146: cambrian.ClassifyInputOpRequest
+	(*ClassifiedInputOp)(nil),                  // 147: cambrian.ClassifiedInputOp
+	(*ListGeneratorsOpRequest)(nil),            // 148: cambrian.ListGeneratorsOpRequest
+	(*GeneratorOp)(nil),                        // 149: cambrian.GeneratorOp
+	(*ListGeneratorsOpResponse)(nil),           // 150: cambrian.ListGeneratorsOpResponse
+	(*ListRoleAssignmentsOpRequest)(nil),       // 151: cambrian.ListRoleAssignmentsOpRequest
+	(*RoleAssignmentOp)(nil),                   // 152: cambrian.RoleAssignmentOp
+	(*ListRoleAssignmentsOpResponse)(nil),      // 153: cambrian.ListRoleAssignmentsOpResponse
+	(*TestGeneratorOpRequest)(nil),             // 154: cambrian.TestGeneratorOpRequest
+	(*GeneratorTestResultOp)(nil),              // 155: cambrian.GeneratorTestResultOp
+	(*GeneratorSpecOp)(nil),                    // 156: cambrian.GeneratorSpecOp
+	(*SaveGeneratorOpRequest)(nil),             // 157: cambrian.SaveGeneratorOpRequest
+	(*RemoveGeneratorOpRequest)(nil),           // 158: cambrian.RemoveGeneratorOpRequest
+	(*SetRoleAssignmentOpRequest)(nil),         // 159: cambrian.SetRoleAssignmentOpRequest
+	(*MCPServerSpecOp)(nil),                    // 160: cambrian.MCPServerSpecOp
+	(*SaveMCPServerOpRequest)(nil),             // 161: cambrian.SaveMCPServerOpRequest
+	(*RemoveMCPServerOpRequest)(nil),           // 162: cambrian.RemoveMCPServerOpRequest
+	(*SetMCPServerTokenOpRequest)(nil),         // 163: cambrian.SetMCPServerTokenOpRequest
+	(*ClearMCPServerTokenOpRequest)(nil),       // 164: cambrian.ClearMCPServerTokenOpRequest
+	(*TestMCPServerOpRequest)(nil),             // 165: cambrian.TestMCPServerOpRequest
+	(*MCPServerTestResultOp)(nil),              // 166: cambrian.MCPServerTestResultOp
+	(*RetryWatchDeadLetterOpRequest)(nil),      // 167: cambrian.RetryWatchDeadLetterOpRequest
+	(*GetConfigSchemaOpRequest)(nil),           // 168: cambrian.GetConfigSchemaOpRequest
+	(*ConfigSchemaOp)(nil),                     // 169: cambrian.ConfigSchemaOp
+	(*SetConfigOpRequest)(nil),                 // 170: cambrian.SetConfigOpRequest
+	(*DeleteConfigOpRequest)(nil),              // 171: cambrian.DeleteConfigOpRequest
+	(*SetGeneratorKeyOpRequest)(nil),           // 172: cambrian.SetGeneratorKeyOpRequest
+	(*ClearGeneratorKeyOpRequest)(nil),         // 173: cambrian.ClearGeneratorKeyOpRequest
+	(*ConfigWriteOutcomeOp)(nil),               // 174: cambrian.ConfigWriteOutcomeOp
+	(*SetConfigOpResponse)(nil),                // 175: cambrian.SetConfigOpResponse
+	(*AuthoredStepOp)(nil),                     // 176: cambrian.AuthoredStepOp
+	(*SubmitPlanOpRequest)(nil),                // 177: cambrian.SubmitPlanOpRequest
+	(*PlanValidationIssueOp)(nil),              // 178: cambrian.PlanValidationIssueOp
+	(*SubmitPlanOpResponse)(nil),               // 179: cambrian.SubmitPlanOpResponse
+	(*ReactivePlaneBudgetOp)(nil),              // 180: cambrian.ReactivePlaneBudgetOp
+	(*GetReactiveBudgetOpRequest)(nil),         // 181: cambrian.GetReactiveBudgetOpRequest
+	(*GetReactiveBudgetOpResponse)(nil),        // 182: cambrian.GetReactiveBudgetOpResponse
+	(*GetTokenSeriesOpRequest)(nil),            // 183: cambrian.GetTokenSeriesOpRequest
+	(*TokenSeriesPointOp)(nil),                 // 184: cambrian.TokenSeriesPointOp
+	(*GetTokenSeriesOpResponse)(nil),           // 185: cambrian.GetTokenSeriesOpResponse
+	(*ProposePlanOpRequest)(nil),               // 186: cambrian.ProposePlanOpRequest
+	(*InterviewOptionOp)(nil),                  // 187: cambrian.InterviewOptionOp
+	(*InterviewQuestionOp)(nil),                // 188: cambrian.InterviewQuestionOp
+	(*PlanProposalOp)(nil),                     // 189: cambrian.PlanProposalOp
+	(*ProposePlanOpResponse)(nil),              // 190: cambrian.ProposePlanOpResponse
+	(*ExplainAccessBatchOpRequest)(nil),        // 191: cambrian.ExplainAccessBatchOpRequest
+	(*ExplainAccessBatchOpResponse)(nil),       // 192: cambrian.ExplainAccessBatchOpResponse
+	(*BlastRadiusPreviewOpRequest)(nil),        // 193: cambrian.BlastRadiusPreviewOpRequest
+	(*AgentImpactOp)(nil),                      // 194: cambrian.AgentImpactOp
+	(*PlanImpactOp)(nil),                       // 195: cambrian.PlanImpactOp
+	(*BlastRadiusPreviewOp)(nil),               // 196: cambrian.BlastRadiusPreviewOp
+	(*ConversationProgressOp)(nil),             // 197: cambrian.ConversationProgressOp
+	(*LogAttrOp)(nil),                          // 198: cambrian.LogAttrOp
+	(*LogRecordOp)(nil),                        // 199: cambrian.LogRecordOp
+	(*LogFilterOp)(nil),                        // 200: cambrian.LogFilterOp
+	(*LogWindowOp)(nil),                        // 201: cambrian.LogWindowOp
+	(*QueryLogsOpRequest)(nil),                 // 202: cambrian.QueryLogsOpRequest
+	(*QueryLogsOpResponse)(nil),                // 203: cambrian.QueryLogsOpResponse
+	(*TailLogsOpRequest)(nil),                  // 204: cambrian.TailLogsOpRequest
+	(*GetDocumentOpRequest)(nil),               // 205: cambrian.GetDocumentOpRequest
+	(*GetDocumentOpResponse)(nil),              // 206: cambrian.GetDocumentOpResponse
+	(*ListNodeItemsOpRequest)(nil),             // 207: cambrian.ListNodeItemsOpRequest
+	(*NodeItemOp)(nil),                         // 208: cambrian.NodeItemOp
+	(*ListNodeItemsOpResponse)(nil),            // 209: cambrian.ListNodeItemsOpResponse
+	(*ListPipelinesOpRequest)(nil),             // 210: cambrian.ListPipelinesOpRequest
+	(*ListPipelinesOpResponse)(nil),            // 211: cambrian.ListPipelinesOpResponse
+	(*DryRunPipelineOpRequest)(nil),            // 212: cambrian.DryRunPipelineOpRequest
+	(*DryRunPipelineOpResponse)(nil),           // 213: cambrian.DryRunPipelineOpResponse
+	(*PipelineNodeExampleOp)(nil),              // 214: cambrian.PipelineNodeExampleOp
+	(*PipelineFailureOp)(nil),                  // 215: cambrian.PipelineFailureOp
+	(*GetPipelineOpRequest)(nil),               // 216: cambrian.GetPipelineOpRequest
+	(*GetPipelineOpResponse)(nil),              // 217: cambrian.GetPipelineOpResponse
+	(*NodeReadsOp)(nil),                        // 218: cambrian.NodeReadsOp
+	(*ValidatePipelineOpRequest)(nil),          // 219: cambrian.ValidatePipelineOpRequest
+	(*ValidatePipelineOpResponse)(nil),         // 220: cambrian.ValidatePipelineOpResponse
+	(*SavePipelineOpRequest)(nil),              // 221: cambrian.SavePipelineOpRequest
+	(*SavePipelineOpResponse)(nil),             // 222: cambrian.SavePipelineOpResponse
+	(*TransitionPipelineOpRequest)(nil),        // 223: cambrian.TransitionPipelineOpRequest
+	(*TransitionPipelineOpResponse)(nil),       // 224: cambrian.TransitionPipelineOpResponse
+	(*RefusalOp)(nil),                          // 225: cambrian.RefusalOp
+	(*ShadowEffectOp)(nil),                     // 226: cambrian.ShadowEffectOp
+	(*DuplicateEffectKeyOp)(nil),               // 227: cambrian.DuplicateEffectKeyOp
+	(*PipelineTerminationOp)(nil),              // 228: cambrian.PipelineTerminationOp
+	(*PipelineOp)(nil),                         // 229: cambrian.PipelineOp
+	(*LinkOp)(nil),                             // 230: cambrian.LinkOp
+	(*ConfirmLinkOpRequest)(nil),               // 231: cambrian.ConfirmLinkOpRequest
+	(*ConfirmLinkOpResponse)(nil),              // 232: cambrian.ConfirmLinkOpResponse
+	(*RetractLinkOpRequest)(nil),               // 233: cambrian.RetractLinkOpRequest
+	(*RetractLinksByProducerOpRequest)(nil),    // 234: cambrian.RetractLinksByProducerOpRequest
+	(*RetractLinksByProducerOpResponse)(nil),   // 235: cambrian.RetractLinksByProducerOpResponse
+	(*ListLinkCandidatesOpRequest)(nil),        // 236: cambrian.ListLinkCandidatesOpRequest
+	(*ListLinkCandidatesOpResponse)(nil),       // 237: cambrian.ListLinkCandidatesOpResponse
+	(*ListMemoryNotesOpRequest)(nil),           // 238: cambrian.ListMemoryNotesOpRequest
+	(*MemoryNotesSummaryOp)(nil),               // 239: cambrian.MemoryNotesSummaryOp
+	(*ListMemoryNotesOpResponse)(nil),          // 240: cambrian.ListMemoryNotesOpResponse
+	(*GetMemoryNotesOpRequest)(nil),            // 241: cambrian.GetMemoryNotesOpRequest
+	(*MemoryNotesOp)(nil),                      // 242: cambrian.MemoryNotesOp
+	(*SetMemoryNotesOpRequest)(nil),            // 243: cambrian.SetMemoryNotesOpRequest
+	(*SetMemoryNotesOpResponse)(nil),           // 244: cambrian.SetMemoryNotesOpResponse
+	(*DeleteMemoryNotesOpRequest)(nil),         // 245: cambrian.DeleteMemoryNotesOpRequest
+	(*SetMemoryNotesBudgetOpRequest)(nil),      // 246: cambrian.SetMemoryNotesBudgetOpRequest
+	(*ListSkillProposalsOpRequest)(nil),        // 247: cambrian.ListSkillProposalsOpRequest
+	(*SkillProposalOp)(nil),                    // 248: cambrian.SkillProposalOp
+	(*ListSkillProposalsOpResponse)(nil),       // 249: cambrian.ListSkillProposalsOpResponse
+	(*DecideSkillProposalOpRequest)(nil),       // 250: cambrian.DecideSkillProposalOpRequest
+	(*DecideSkillProposalOpResponse)(nil),      // 251: cambrian.DecideSkillProposalOpResponse
+	(*SetSkillLockOpRequest)(nil),              // 252: cambrian.SetSkillLockOpRequest
+	(*ListSkillLedgerOpRequest)(nil),           // 253: cambrian.ListSkillLedgerOpRequest
+	(*SkillLedgerEntryOp)(nil),                 // 254: cambrian.SkillLedgerEntryOp
+	(*ListSkillLedgerOpResponse)(nil),          // 255: cambrian.ListSkillLedgerOpResponse
+	(*RollbackSkillOpRequest)(nil),             // 256: cambrian.RollbackSkillOpRequest
+	(*RollbackSkillOpResponse)(nil),            // 257: cambrian.RollbackSkillOpResponse
+	(*ListSkillGrantsOpRequest)(nil),           // 258: cambrian.ListSkillGrantsOpRequest
+	(*SkillGrantOp)(nil),                       // 259: cambrian.SkillGrantOp
+	(*SkillAccessRequestOp)(nil),               // 260: cambrian.SkillAccessRequestOp
+	(*ListSkillGrantsOpResponse)(nil),          // 261: cambrian.ListSkillGrantsOpResponse
+	(*GrantSkillOpRequest)(nil),                // 262: cambrian.GrantSkillOpRequest
+	(*RevokeSkillGrantOpRequest)(nil),          // 263: cambrian.RevokeSkillGrantOpRequest
+	(*ListIntegrationCatalogOpRequest)(nil),    // 264: cambrian.ListIntegrationCatalogOpRequest
+	(*ListIntegrationCatalogOpResponse)(nil),   // 265: cambrian.ListIntegrationCatalogOpResponse
+	(*IntegrationCatalogEntryOp)(nil),          // 266: cambrian.IntegrationCatalogEntryOp
+	(*IntegrationFieldOp)(nil),                 // 267: cambrian.IntegrationFieldOp
+	(*IntegrationToolPolicyOp)(nil),            // 268: cambrian.IntegrationToolPolicyOp
+	(*ListIntegrationsOpRequest)(nil),          // 269: cambrian.ListIntegrationsOpRequest
+	(*ListIntegrationsOpResponse)(nil),         // 270: cambrian.ListIntegrationsOpResponse
+	(*IntegrationOp)(nil),                      // 271: cambrian.IntegrationOp
+	(*IntegrationSecretStateOp)(nil),           // 272: cambrian.IntegrationSecretStateOp
+	(*IntegrationHealthOp)(nil),                // 273: cambrian.IntegrationHealthOp
+	(*IntegrationCustomSpecOp)(nil),            // 274: cambrian.IntegrationCustomSpecOp
+	(*InstallIntegrationOpRequest)(nil),        // 275: cambrian.InstallIntegrationOpRequest
+	(*UpdateIntegrationOpRequest)(nil),         // 276: cambrian.UpdateIntegrationOpRequest
+	(*SetIntegrationSecretOpRequest)(nil),      // 277: cambrian.SetIntegrationSecretOpRequest
+	(*ClearIntegrationSecretOpRequest)(nil),    // 278: cambrian.ClearIntegrationSecretOpRequest
+	(*SetIntegrationEnabledOpRequest)(nil),     // 279: cambrian.SetIntegrationEnabledOpRequest
+	(*RemoveIntegrationOpRequest)(nil),         // 280: cambrian.RemoveIntegrationOpRequest
+	(*RevertIntegrationToFileOpRequest)(nil),   // 281: cambrian.RevertIntegrationToFileOpRequest
+	(*TestIntegrationOpRequest)(nil),           // 282: cambrian.TestIntegrationOpRequest
+	(*IntegrationMutationOpResponse)(nil),      // 283: cambrian.IntegrationMutationOpResponse
+	(*IntegrationToolOp)(nil),                  // 284: cambrian.IntegrationToolOp
+	(*IntegrationTestResultOp)(nil),            // 285: cambrian.IntegrationTestResultOp
+	nil,                                        // 286: cambrian.SetRuntimeConfigRequest.ParamsEntry
+	nil,                                        // 287: cambrian.PipelineNodeMeterOp.PortsEntry
+	nil,                                        // 288: cambrian.WatchConfigOp.DaemonParamsEntry
+	nil,                                        // 289: cambrian.PreviewCandidateOp.CapabilityStatsEntry
+	nil,                                        // 290: cambrian.ConfigSchemaOp.CurrentValuesEntry
+	nil,                                        // 291: cambrian.ConfigSchemaOp.ValueSourceEntry
+	nil,                                        // 292: cambrian.SetConfigOpRequest.ValuesEntry
+	nil,                                        // 293: cambrian.LogFilterOp.AttrEqualsEntry
+	nil,                                        // 294: cambrian.IntegrationOp.SettingsEntry
+	nil,                                        // 295: cambrian.InstallIntegrationOpRequest.SettingsEntry
+	nil,                                        // 296: cambrian.InstallIntegrationOpRequest.SecretsEntry
+	nil,                                        // 297: cambrian.UpdateIntegrationOpRequest.SettingsEntry
+	(*timestamppb.Timestamp)(nil),              // 298: google.protobuf.Timestamp
 }
 var file_operator_proto_depIdxs = []int32{
-	14,  // 0: cambrian.SendTurnOpResponse.reply:type_name -> cambrian.MessageOp
+	17,  // 0: cambrian.SendTurnOpResponse.reply:type_name -> cambrian.MessageOp
 	11,  // 1: cambrian.ListConversationsOpResponse.conversations:type_name -> cambrian.ConversationOp
-	14,  // 2: cambrian.ListConversationMessagesOpResponse.messages:type_name -> cambrian.MessageOp
-	247, // 3: cambrian.SetRuntimeConfigRequest.params:type_name -> cambrian.SetRuntimeConfigRequest.ParamsEntry
-	68,  // 4: cambrian.QueryAuditResponse.entries:type_name -> cambrian.AuditOp
-	35,  // 5: cambrian.SnapshotResponse.plans:type_name -> cambrian.PlanInFlightOp
-	36,  // 6: cambrian.SnapshotResponse.sessions:type_name -> cambrian.SessionSummaryOp
-	33,  // 7: cambrian.SnapshotResponse.plugins:type_name -> cambrian.PluginInfoOp
-	34,  // 8: cambrian.PluginInfoOp.panels:type_name -> cambrian.PluginPanelOp
-	255, // 9: cambrian.OperatorEvent.ts:type_name -> google.protobuf.Timestamp
-	47,  // 10: cambrian.OperatorEvent.resync:type_name -> cambrian.ResyncRequired
-	48,  // 11: cambrian.OperatorEvent.auction:type_name -> cambrian.AuctionEventOp
-	54,  // 12: cambrian.OperatorEvent.agent_ready:type_name -> cambrian.AgentReadyOp
-	56,  // 13: cambrian.OperatorEvent.session_dormant:type_name -> cambrian.SessionDormantOp
-	57,  // 14: cambrian.OperatorEvent.session_completed:type_name -> cambrian.SessionCompletedOp
-	58,  // 15: cambrian.OperatorEvent.memory_pressure:type_name -> cambrian.MemoryPressureOp
-	59,  // 16: cambrian.OperatorEvent.daemon_crashed:type_name -> cambrian.DaemonCrashedOp
-	60,  // 17: cambrian.OperatorEvent.watch_triggered:type_name -> cambrian.WatchTriggeredOp
-	61,  // 18: cambrian.OperatorEvent.memory_written:type_name -> cambrian.MemoryWrittenOp
-	62,  // 19: cambrian.OperatorEvent.hitl_raised:type_name -> cambrian.HITLRaisedOp
-	63,  // 20: cambrian.OperatorEvent.verifier_round:type_name -> cambrian.VerifierRoundOp
-	64,  // 21: cambrian.OperatorEvent.llm_health:type_name -> cambrian.LLMHealthOp
-	65,  // 22: cambrian.OperatorEvent.plan_state:type_name -> cambrian.PlanStateOp
-	68,  // 23: cambrian.OperatorEvent.audit:type_name -> cambrian.AuditOp
-	67,  // 24: cambrian.OperatorEvent.token:type_name -> cambrian.TokenChunkOp
-	44,  // 25: cambrian.OperatorEvent.scout_usefulness:type_name -> cambrian.ScoutUsefulnessOp
-	111, // 26: cambrian.OperatorEvent.reactive_budget:type_name -> cambrian.ReactiveBudgetOp
-	45,  // 27: cambrian.OperatorEvent.agent_step:type_name -> cambrian.AgentStepOp
-	46,  // 28: cambrian.OperatorEvent.llm_exchange:type_name -> cambrian.AgentLLMExchangeOp
-	55,  // 29: cambrian.OperatorEvent.session_state:type_name -> cambrian.SessionStateOp
-	180, // 30: cambrian.OperatorEvent.conversation_progress:type_name -> cambrian.ConversationProgressOp
-	42,  // 31: cambrian.OperatorEvent.retention_run:type_name -> cambrian.RetentionRunOp
-	40,  // 32: cambrian.OperatorEvent.pipeline_meters:type_name -> cambrian.PipelineMetersOp
-	39,  // 33: cambrian.OperatorEvent.pipeline_step:type_name -> cambrian.PipelineStepOp
-	41,  // 34: cambrian.PipelineMetersOp.nodes:type_name -> cambrian.PipelineNodeMeterOp
-	248, // 35: cambrian.PipelineNodeMeterOp.ports:type_name -> cambrian.PipelineNodeMeterOp.PortsEntry
-	255, // 36: cambrian.RetentionRunOp.started_at:type_name -> google.protobuf.Timestamp
-	255, // 37: cambrian.RetentionRunOp.finished_at:type_name -> google.protobuf.Timestamp
-	43,  // 38: cambrian.RetentionRunOp.deleted:type_name -> cambrian.RetentionDeletionOp
-	49,  // 39: cambrian.AuctionEventOp.bids:type_name -> cambrian.BidEntryOp
-	50,  // 40: cambrian.AuctionEventOp.funnel:type_name -> cambrian.GatekeeperFunnelOp
-	51,  // 41: cambrian.GatekeeperFunnelOp.l1:type_name -> cambrian.DeclarationResultOp
-	52,  // 42: cambrian.GatekeeperFunnelOp.l2:type_name -> cambrian.InterviewResultOp
-	53,  // 43: cambrian.GatekeeperFunnelOp.l3:type_name -> cambrian.MeritResultOp
-	255, // 44: cambrian.SessionStateOp.created_at:type_name -> google.protobuf.Timestamp
-	255, // 45: cambrian.SessionStateOp.updated_at:type_name -> google.protobuf.Timestamp
-	66,  // 46: cambrian.PlanStateOp.steps:type_name -> cambrian.PlanStepOp
-	69,  // 47: cambrian.ToolGrantOp.policy:type_name -> cambrian.ToolPolicyOp
-	70,  // 48: cambrian.ToolOp.grants:type_name -> cambrian.ToolGrantOp
-	71,  // 49: cambrian.ListToolsOpResponse.tools:type_name -> cambrian.ToolOp
-	255, // 50: cambrian.SkillOp.state_changed_at:type_name -> google.protobuf.Timestamp
-	255, // 51: cambrian.SkillOp.last_used_at:type_name -> google.protobuf.Timestamp
-	75,  // 52: cambrian.ListSkillsOpResponse.skills:type_name -> cambrian.SkillOp
-	255, // 53: cambrian.QueryMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
-	255, // 54: cambrian.QueryMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
-	255, // 55: cambrian.QueryMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
-	255, // 56: cambrian.MemoryOp.event_time:type_name -> google.protobuf.Timestamp
-	255, // 57: cambrian.MemoryOp.event_time_end:type_name -> google.protobuf.Timestamp
-	78,  // 58: cambrian.QueryMemoryResponse.results:type_name -> cambrian.MemoryOp
-	114, // 59: cambrian.QueryMemoryResponse.policy_note:type_name -> cambrian.AccessDecisionOp
-	255, // 60: cambrian.AnswerMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
-	255, // 61: cambrian.AnswerMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
-	255, // 62: cambrian.AnswerMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
-	255, // 63: cambrian.MemoryCitation.event_time:type_name -> google.protobuf.Timestamp
-	255, // 64: cambrian.MemoryCitation.event_time_end:type_name -> google.protobuf.Timestamp
-	81,  // 65: cambrian.AnswerMemoryResponse.citations:type_name -> cambrian.MemoryCitation
-	114, // 66: cambrian.AnswerMemoryResponse.policy_note:type_name -> cambrian.AccessDecisionOp
-	69,  // 67: cambrian.SetToolPolicyRequest.policy:type_name -> cambrian.ToolPolicyOp
-	255, // 68: cambrian.IngestMemoryOpRequest.occurred_at:type_name -> google.protobuf.Timestamp
-	87,  // 69: cambrian.IngestMemoryOpRequest.parts:type_name -> cambrian.MemoryPartOp
-	255, // 70: cambrian.MemoryPartOp.occurred_at:type_name -> google.protobuf.Timestamp
-	90,  // 71: cambrian.WatchConfigOp.action:type_name -> cambrian.WatchActionOp
-	249, // 72: cambrian.WatchConfigOp.daemon_params:type_name -> cambrian.WatchConfigOp.DaemonParamsEntry
-	92,  // 73: cambrian.WatchConfigOp.last_fires:type_name -> cambrian.WatchFireOp
-	90,  // 74: cambrian.WatchConfigOp.actions:type_name -> cambrian.WatchActionOp
-	91,  // 75: cambrian.ListWatchesOpResponse.configs:type_name -> cambrian.WatchConfigOp
-	91,  // 76: cambrian.RegisterWatchOpRequest.config:type_name -> cambrian.WatchConfigOp
-	100, // 77: cambrian.ListWatchDeadLettersOpResponse.entries:type_name -> cambrian.WatchDeadLetterOp
-	103, // 78: cambrian.GetWatchMetricsOpResponse.metrics:type_name -> cambrian.WatchMetricsOp
-	91,  // 79: cambrian.BacktestWatchOpRequest.config:type_name -> cambrian.WatchConfigOp
-	106, // 80: cambrian.BacktestWatchOpResponse.verdicts:type_name -> cambrian.WatchBacktestVerdictOp
-	108, // 81: cambrian.PreviewRouteOpRequest.candidates:type_name -> cambrian.PreviewCandidateOp
-	250, // 82: cambrian.PreviewCandidateOp.capability_stats:type_name -> cambrian.PreviewCandidateOp.CapabilityStatsEntry
-	53,  // 83: cambrian.PreviewRouteOpResponse.ranked:type_name -> cambrian.MeritResultOp
-	113, // 84: cambrian.AccessDecisionOp.decided_by:type_name -> cambrian.PolicyContributionOp
-	114, // 85: cambrian.ExplainAccessOpResponse.decision:type_name -> cambrian.AccessDecisionOp
-	119, // 86: cambrian.ListDocumentsOpResponse.documents:type_name -> cambrian.DocumentSummaryOp
-	122, // 87: cambrian.ListSessionCheckpointsOpResponse.checkpoints:type_name -> cambrian.SessionCheckpointOp
-	125, // 88: cambrian.ListMCPServersOpResponse.servers:type_name -> cambrian.MCPServerOp
-	132, // 89: cambrian.ListGeneratorsOpResponse.generators:type_name -> cambrian.GeneratorOp
-	135, // 90: cambrian.ListRoleAssignmentsOpResponse.assignments:type_name -> cambrian.RoleAssignmentOp
-	139, // 91: cambrian.SaveGeneratorOpRequest.generator:type_name -> cambrian.GeneratorSpecOp
-	143, // 92: cambrian.SaveMCPServerOpRequest.server:type_name -> cambrian.MCPServerSpecOp
-	143, // 93: cambrian.TestMCPServerOpRequest.server:type_name -> cambrian.MCPServerSpecOp
-	251, // 94: cambrian.ConfigSchemaOp.current_values:type_name -> cambrian.ConfigSchemaOp.CurrentValuesEntry
-	252, // 95: cambrian.ConfigSchemaOp.value_source:type_name -> cambrian.ConfigSchemaOp.ValueSourceEntry
-	253, // 96: cambrian.SetConfigOpRequest.values:type_name -> cambrian.SetConfigOpRequest.ValuesEntry
-	157, // 97: cambrian.SetConfigOpResponse.outcomes:type_name -> cambrian.ConfigWriteOutcomeOp
-	159, // 98: cambrian.SubmitPlanOpRequest.steps:type_name -> cambrian.AuthoredStepOp
-	161, // 99: cambrian.SubmitPlanOpResponse.issues:type_name -> cambrian.PlanValidationIssueOp
-	163, // 100: cambrian.GetReactiveBudgetOpResponse.budget:type_name -> cambrian.ReactivePlaneBudgetOp
-	167, // 101: cambrian.GetTokenSeriesOpResponse.points:type_name -> cambrian.TokenSeriesPointOp
-	170, // 102: cambrian.InterviewQuestionOp.options:type_name -> cambrian.InterviewOptionOp
-	159, // 103: cambrian.PlanProposalOp.steps:type_name -> cambrian.AuthoredStepOp
-	171, // 104: cambrian.ProposePlanOpResponse.questions:type_name -> cambrian.InterviewQuestionOp
-	172, // 105: cambrian.ProposePlanOpResponse.proposal:type_name -> cambrian.PlanProposalOp
-	112, // 106: cambrian.ExplainAccessBatchOpRequest.queries:type_name -> cambrian.ExplainAccessOpRequest
-	114, // 107: cambrian.ExplainAccessBatchOpResponse.decisions:type_name -> cambrian.AccessDecisionOp
-	177, // 108: cambrian.BlastRadiusPreviewOp.affected_agents:type_name -> cambrian.AgentImpactOp
-	178, // 109: cambrian.BlastRadiusPreviewOp.affected_plans:type_name -> cambrian.PlanImpactOp
-	181, // 110: cambrian.LogRecordOp.attrs:type_name -> cambrian.LogAttrOp
-	254, // 111: cambrian.LogFilterOp.attr_equals:type_name -> cambrian.LogFilterOp.AttrEqualsEntry
-	183, // 112: cambrian.QueryLogsOpRequest.filter:type_name -> cambrian.LogFilterOp
-	182, // 113: cambrian.QueryLogsOpResponse.records:type_name -> cambrian.LogRecordOp
-	184, // 114: cambrian.QueryLogsOpResponse.window:type_name -> cambrian.LogWindowOp
-	183, // 115: cambrian.TailLogsOpRequest.filter:type_name -> cambrian.LogFilterOp
-	191, // 116: cambrian.ListNodeItemsOpResponse.items:type_name -> cambrian.NodeItemOp
-	212, // 117: cambrian.ListPipelinesOpResponse.pipelines:type_name -> cambrian.PipelineOp
-	209, // 118: cambrian.DryRunPipelineOpResponse.effects:type_name -> cambrian.ShadowEffectOp
-	210, // 119: cambrian.DryRunPipelineOpResponse.duplicates:type_name -> cambrian.DuplicateEffectKeyOp
-	211, // 120: cambrian.DryRunPipelineOpResponse.terminations:type_name -> cambrian.PipelineTerminationOp
-	198, // 121: cambrian.DryRunPipelineOpResponse.failures:type_name -> cambrian.PipelineFailureOp
-	197, // 122: cambrian.DryRunPipelineOpResponse.node_examples:type_name -> cambrian.PipelineNodeExampleOp
-	212, // 123: cambrian.GetPipelineOpResponse.summary:type_name -> cambrian.PipelineOp
-	208, // 124: cambrian.GetPipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
-	201, // 125: cambrian.GetPipelineOpResponse.reads:type_name -> cambrian.NodeReadsOp
-	208, // 126: cambrian.ValidatePipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
-	208, // 127: cambrian.SavePipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
-	213, // 128: cambrian.ConfirmLinkOpResponse.link:type_name -> cambrian.LinkOp
-	213, // 129: cambrian.ListLinkCandidatesOpResponse.candidates:type_name -> cambrian.LinkOp
-	255, // 130: cambrian.MemoryNotesSummaryOp.updated_at:type_name -> google.protobuf.Timestamp
-	222, // 131: cambrian.ListMemoryNotesOpResponse.notes:type_name -> cambrian.MemoryNotesSummaryOp
-	255, // 132: cambrian.MemoryNotesOp.updated_at:type_name -> google.protobuf.Timestamp
-	255, // 133: cambrian.SkillProposalOp.created_at:type_name -> google.protobuf.Timestamp
-	255, // 134: cambrian.SkillProposalOp.decided_at:type_name -> google.protobuf.Timestamp
-	231, // 135: cambrian.ListSkillProposalsOpResponse.proposals:type_name -> cambrian.SkillProposalOp
-	255, // 136: cambrian.SkillLedgerEntryOp.at:type_name -> google.protobuf.Timestamp
-	237, // 137: cambrian.ListSkillLedgerOpResponse.entries:type_name -> cambrian.SkillLedgerEntryOp
-	255, // 138: cambrian.SkillGrantOp.granted_at:type_name -> google.protobuf.Timestamp
-	255, // 139: cambrian.SkillGrantOp.revoked_at:type_name -> google.protobuf.Timestamp
-	255, // 140: cambrian.SkillAccessRequestOp.requested_at:type_name -> google.protobuf.Timestamp
-	255, // 141: cambrian.SkillAccessRequestOp.decided_at:type_name -> google.protobuf.Timestamp
-	242, // 142: cambrian.ListSkillGrantsOpResponse.grants:type_name -> cambrian.SkillGrantOp
-	243, // 143: cambrian.ListSkillGrantsOpResponse.requests:type_name -> cambrian.SkillAccessRequestOp
-	109, // 144: cambrian.PreviewCandidateOp.CapabilityStatsEntry.value:type_name -> cambrian.PreviewCapStatOp
-	27,  // 145: cambrian.OperatorConsole.Login:input_type -> cambrian.LoginRequest
-	29,  // 146: cambrian.OperatorConsole.Logout:input_type -> cambrian.LogoutRequest
-	37,  // 147: cambrian.OperatorConsole.StreamEvents:input_type -> cambrian.SubscribeRequest
-	31,  // 148: cambrian.OperatorConsole.Snapshot:input_type -> cambrian.SnapshotRequest
-	26,  // 149: cambrian.OperatorConsole.SetToolGrant:input_type -> cambrian.SetToolGrantRequest
-	23,  // 150: cambrian.OperatorConsole.QueryAudit:input_type -> cambrian.QueryAuditRequest
-	21,  // 151: cambrian.OperatorConsole.ResolveHITL:input_type -> cambrian.ResolveHITLRequest
-	22,  // 152: cambrian.OperatorConsole.PauseSession:input_type -> cambrian.SessionCommandRequest
-	22,  // 153: cambrian.OperatorConsole.ResumeSession:input_type -> cambrian.SessionCommandRequest
-	22,  // 154: cambrian.OperatorConsole.CloseSession:input_type -> cambrian.SessionCommandRequest
-	15,  // 155: cambrian.OperatorConsole.TagMemory:input_type -> cambrian.TagMemoryRequest
-	16,  // 156: cambrian.OperatorConsole.SetScope:input_type -> cambrian.SetScopeRequest
-	17,  // 157: cambrian.OperatorConsole.RegisterSkill:input_type -> cambrian.RegisterSkillRequest
-	18,  // 158: cambrian.OperatorConsole.RegisterMCP:input_type -> cambrian.RegisterMCPRequest
-	19,  // 159: cambrian.OperatorConsole.TriggerConsolidation:input_type -> cambrian.TriggerConsolidationRequest
-	20,  // 160: cambrian.OperatorConsole.SetRuntimeConfig:input_type -> cambrian.SetRuntimeConfigRequest
-	0,   // 161: cambrian.OperatorConsole.CreateSession:input_type -> cambrian.CreateSessionRequest
-	2,   // 162: cambrian.OperatorConsole.SendMessage:input_type -> cambrian.SendMessageRequest
-	3,   // 163: cambrian.OperatorConsole.InjectCorrection:input_type -> cambrian.InjectCorrectionRequest
-	4,   // 164: cambrian.OperatorConsole.OpenConversation:input_type -> cambrian.OpenConversationOpRequest
-	6,   // 165: cambrian.OperatorConsole.SendTurn:input_type -> cambrian.SendTurnOpRequest
-	8,   // 166: cambrian.OperatorConsole.CloseConversation:input_type -> cambrian.CloseConversationOpRequest
-	9,   // 167: cambrian.OperatorConsole.ListConversations:input_type -> cambrian.ListConversationsOpRequest
-	12,  // 168: cambrian.OperatorConsole.ListConversationMessages:input_type -> cambrian.ListConversationMessagesOpRequest
-	72,  // 169: cambrian.OperatorConsole.ListTools:input_type -> cambrian.ListToolsOpRequest
-	74,  // 170: cambrian.OperatorConsole.ListSkills:input_type -> cambrian.ListSkillsOpRequest
-	77,  // 171: cambrian.OperatorConsole.QueryMemory:input_type -> cambrian.QueryMemoryRequest
-	118, // 172: cambrian.OperatorConsole.ListDocuments:input_type -> cambrian.ListDocumentsOpRequest
-	188, // 173: cambrian.OperatorConsole.GetDocument:input_type -> cambrian.GetDocumentOpRequest
-	80,  // 174: cambrian.OperatorConsole.AnswerMemory:input_type -> cambrian.AnswerMemoryRequest
-	83,  // 175: cambrian.OperatorConsole.SetToolPolicy:input_type -> cambrian.SetToolPolicyRequest
-	84,  // 176: cambrian.OperatorConsole.ExecuteTool:input_type -> cambrian.ExecuteToolOpRequest
-	86,  // 177: cambrian.OperatorConsole.IngestMemory:input_type -> cambrian.IngestMemoryOpRequest
-	37,  // 178: cambrian.OperatorConsole.WatchToolApprovals:input_type -> cambrian.SubscribeRequest
-	93,  // 179: cambrian.OperatorConsole.ListWatches:input_type -> cambrian.ListWatchesOpRequest
-	95,  // 180: cambrian.OperatorConsole.RegisterWatch:input_type -> cambrian.RegisterWatchOpRequest
-	96,  // 181: cambrian.OperatorConsole.DeleteWatch:input_type -> cambrian.DeleteWatchOpRequest
-	97,  // 182: cambrian.OperatorConsole.SetWatchActive:input_type -> cambrian.SetWatchActiveOpRequest
-	98,  // 183: cambrian.OperatorConsole.ListWatchDeadLetters:input_type -> cambrian.ListWatchDeadLettersOpRequest
-	193, // 184: cambrian.OperatorConsole.ListPipelines:input_type -> cambrian.ListPipelinesOpRequest
-	195, // 185: cambrian.OperatorConsole.DryRunPipeline:input_type -> cambrian.DryRunPipelineOpRequest
-	199, // 186: cambrian.OperatorConsole.GetPipeline:input_type -> cambrian.GetPipelineOpRequest
-	190, // 187: cambrian.OperatorConsole.ListNodeItems:input_type -> cambrian.ListNodeItemsOpRequest
-	202, // 188: cambrian.OperatorConsole.ValidatePipeline:input_type -> cambrian.ValidatePipelineOpRequest
-	204, // 189: cambrian.OperatorConsole.SavePipeline:input_type -> cambrian.SavePipelineOpRequest
-	206, // 190: cambrian.OperatorConsole.TransitionPipeline:input_type -> cambrian.TransitionPipelineOpRequest
-	185, // 191: cambrian.OperatorConsole.QueryLogs:input_type -> cambrian.QueryLogsOpRequest
-	187, // 192: cambrian.OperatorConsole.TailLogs:input_type -> cambrian.TailLogsOpRequest
-	101, // 193: cambrian.OperatorConsole.GetWatchMetrics:input_type -> cambrian.GetWatchMetricsOpRequest
-	104, // 194: cambrian.OperatorConsole.BacktestWatch:input_type -> cambrian.BacktestWatchOpRequest
-	107, // 195: cambrian.OperatorConsole.PreviewRoute:input_type -> cambrian.PreviewRouteOpRequest
-	112, // 196: cambrian.OperatorConsole.ExplainAccess:input_type -> cambrian.ExplainAccessOpRequest
-	116, // 197: cambrian.OperatorConsole.ListClassificationTags:input_type -> cambrian.ListClassificationTagsOpRequest
-	121, // 198: cambrian.OperatorConsole.ListSessionCheckpoints:input_type -> cambrian.ListSessionCheckpointsOpRequest
-	124, // 199: cambrian.OperatorConsole.ListMCPServers:input_type -> cambrian.ListMCPServersOpRequest
-	127, // 200: cambrian.OperatorConsole.GetEmbeddingConfig:input_type -> cambrian.GetEmbeddingConfigOpRequest
-	129, // 201: cambrian.OperatorConsole.ClassifyInput:input_type -> cambrian.ClassifyInputOpRequest
-	131, // 202: cambrian.OperatorConsole.ListGenerators:input_type -> cambrian.ListGeneratorsOpRequest
-	134, // 203: cambrian.OperatorConsole.ListRoleAssignments:input_type -> cambrian.ListRoleAssignmentsOpRequest
-	137, // 204: cambrian.OperatorConsole.TestGenerator:input_type -> cambrian.TestGeneratorOpRequest
-	151, // 205: cambrian.OperatorConsole.GetConfigSchema:input_type -> cambrian.GetConfigSchemaOpRequest
-	153, // 206: cambrian.OperatorConsole.SetConfig:input_type -> cambrian.SetConfigOpRequest
-	154, // 207: cambrian.OperatorConsole.DeleteConfig:input_type -> cambrian.DeleteConfigOpRequest
-	155, // 208: cambrian.OperatorConsole.SetGeneratorKey:input_type -> cambrian.SetGeneratorKeyOpRequest
-	156, // 209: cambrian.OperatorConsole.ClearGeneratorKey:input_type -> cambrian.ClearGeneratorKeyOpRequest
-	140, // 210: cambrian.OperatorConsole.SaveGenerator:input_type -> cambrian.SaveGeneratorOpRequest
-	141, // 211: cambrian.OperatorConsole.RemoveGenerator:input_type -> cambrian.RemoveGeneratorOpRequest
-	142, // 212: cambrian.OperatorConsole.SetRoleAssignment:input_type -> cambrian.SetRoleAssignmentOpRequest
-	144, // 213: cambrian.OperatorConsole.SaveMCPServer:input_type -> cambrian.SaveMCPServerOpRequest
-	145, // 214: cambrian.OperatorConsole.RemoveMCPServer:input_type -> cambrian.RemoveMCPServerOpRequest
-	146, // 215: cambrian.OperatorConsole.SetMCPServerToken:input_type -> cambrian.SetMCPServerTokenOpRequest
-	147, // 216: cambrian.OperatorConsole.ClearMCPServerToken:input_type -> cambrian.ClearMCPServerTokenOpRequest
-	148, // 217: cambrian.OperatorConsole.TestMCPServer:input_type -> cambrian.TestMCPServerOpRequest
-	214, // 218: cambrian.OperatorConsole.ConfirmLink:input_type -> cambrian.ConfirmLinkOpRequest
-	216, // 219: cambrian.OperatorConsole.RetractLink:input_type -> cambrian.RetractLinkOpRequest
-	217, // 220: cambrian.OperatorConsole.RetractLinksByProducer:input_type -> cambrian.RetractLinksByProducerOpRequest
-	219, // 221: cambrian.OperatorConsole.ListLinkCandidates:input_type -> cambrian.ListLinkCandidatesOpRequest
-	160, // 222: cambrian.OperatorConsole.SubmitPlan:input_type -> cambrian.SubmitPlanOpRequest
-	164, // 223: cambrian.OperatorConsole.GetReactiveBudget:input_type -> cambrian.GetReactiveBudgetOpRequest
-	166, // 224: cambrian.OperatorConsole.GetTokenSeries:input_type -> cambrian.GetTokenSeriesOpRequest
-	169, // 225: cambrian.OperatorConsole.ProposePlan:input_type -> cambrian.ProposePlanOpRequest
-	174, // 226: cambrian.OperatorConsole.ExplainAccessBatch:input_type -> cambrian.ExplainAccessBatchOpRequest
-	176, // 227: cambrian.OperatorConsole.GetBlastRadiusPreview:input_type -> cambrian.BlastRadiusPreviewOpRequest
-	150, // 228: cambrian.OperatorConsole.RetryWatchDeadLetter:input_type -> cambrian.RetryWatchDeadLetterOpRequest
-	221, // 229: cambrian.OperatorConsole.ListMemoryNotes:input_type -> cambrian.ListMemoryNotesOpRequest
-	224, // 230: cambrian.OperatorConsole.GetMemoryNotes:input_type -> cambrian.GetMemoryNotesOpRequest
-	226, // 231: cambrian.OperatorConsole.SetMemoryNotes:input_type -> cambrian.SetMemoryNotesOpRequest
-	228, // 232: cambrian.OperatorConsole.DeleteMemoryNotes:input_type -> cambrian.DeleteMemoryNotesOpRequest
-	229, // 233: cambrian.OperatorConsole.SetMemoryNotesBudget:input_type -> cambrian.SetMemoryNotesBudgetOpRequest
-	230, // 234: cambrian.OperatorConsole.ListSkillProposals:input_type -> cambrian.ListSkillProposalsOpRequest
-	233, // 235: cambrian.OperatorConsole.DecideSkillProposal:input_type -> cambrian.DecideSkillProposalOpRequest
-	235, // 236: cambrian.OperatorConsole.SetSkillLock:input_type -> cambrian.SetSkillLockOpRequest
-	236, // 237: cambrian.OperatorConsole.ListSkillLedger:input_type -> cambrian.ListSkillLedgerOpRequest
-	239, // 238: cambrian.OperatorConsole.RollbackSkill:input_type -> cambrian.RollbackSkillOpRequest
-	241, // 239: cambrian.OperatorConsole.ListSkillGrants:input_type -> cambrian.ListSkillGrantsOpRequest
-	245, // 240: cambrian.OperatorConsole.GrantSkill:input_type -> cambrian.GrantSkillOpRequest
-	246, // 241: cambrian.OperatorConsole.RevokeSkillGrant:input_type -> cambrian.RevokeSkillGrantOpRequest
-	28,  // 242: cambrian.OperatorConsole.Login:output_type -> cambrian.LoginResponse
-	30,  // 243: cambrian.OperatorConsole.Logout:output_type -> cambrian.LogoutResponse
-	38,  // 244: cambrian.OperatorConsole.StreamEvents:output_type -> cambrian.OperatorEvent
-	32,  // 245: cambrian.OperatorConsole.Snapshot:output_type -> cambrian.SnapshotResponse
-	25,  // 246: cambrian.OperatorConsole.SetToolGrant:output_type -> cambrian.CommandAck
-	24,  // 247: cambrian.OperatorConsole.QueryAudit:output_type -> cambrian.QueryAuditResponse
-	25,  // 248: cambrian.OperatorConsole.ResolveHITL:output_type -> cambrian.CommandAck
-	25,  // 249: cambrian.OperatorConsole.PauseSession:output_type -> cambrian.CommandAck
-	25,  // 250: cambrian.OperatorConsole.ResumeSession:output_type -> cambrian.CommandAck
-	25,  // 251: cambrian.OperatorConsole.CloseSession:output_type -> cambrian.CommandAck
-	25,  // 252: cambrian.OperatorConsole.TagMemory:output_type -> cambrian.CommandAck
-	25,  // 253: cambrian.OperatorConsole.SetScope:output_type -> cambrian.CommandAck
-	25,  // 254: cambrian.OperatorConsole.RegisterSkill:output_type -> cambrian.CommandAck
-	25,  // 255: cambrian.OperatorConsole.RegisterMCP:output_type -> cambrian.CommandAck
-	25,  // 256: cambrian.OperatorConsole.TriggerConsolidation:output_type -> cambrian.CommandAck
-	25,  // 257: cambrian.OperatorConsole.SetRuntimeConfig:output_type -> cambrian.CommandAck
-	1,   // 258: cambrian.OperatorConsole.CreateSession:output_type -> cambrian.CreateSessionResponse
-	25,  // 259: cambrian.OperatorConsole.SendMessage:output_type -> cambrian.CommandAck
-	25,  // 260: cambrian.OperatorConsole.InjectCorrection:output_type -> cambrian.CommandAck
-	5,   // 261: cambrian.OperatorConsole.OpenConversation:output_type -> cambrian.OpenConversationOpResponse
-	7,   // 262: cambrian.OperatorConsole.SendTurn:output_type -> cambrian.SendTurnOpResponse
-	25,  // 263: cambrian.OperatorConsole.CloseConversation:output_type -> cambrian.CommandAck
-	10,  // 264: cambrian.OperatorConsole.ListConversations:output_type -> cambrian.ListConversationsOpResponse
-	13,  // 265: cambrian.OperatorConsole.ListConversationMessages:output_type -> cambrian.ListConversationMessagesOpResponse
-	73,  // 266: cambrian.OperatorConsole.ListTools:output_type -> cambrian.ListToolsOpResponse
-	76,  // 267: cambrian.OperatorConsole.ListSkills:output_type -> cambrian.ListSkillsOpResponse
-	79,  // 268: cambrian.OperatorConsole.QueryMemory:output_type -> cambrian.QueryMemoryResponse
-	120, // 269: cambrian.OperatorConsole.ListDocuments:output_type -> cambrian.ListDocumentsOpResponse
-	189, // 270: cambrian.OperatorConsole.GetDocument:output_type -> cambrian.GetDocumentOpResponse
-	82,  // 271: cambrian.OperatorConsole.AnswerMemory:output_type -> cambrian.AnswerMemoryResponse
-	25,  // 272: cambrian.OperatorConsole.SetToolPolicy:output_type -> cambrian.CommandAck
-	85,  // 273: cambrian.OperatorConsole.ExecuteTool:output_type -> cambrian.ExecuteToolOpResponse
-	88,  // 274: cambrian.OperatorConsole.IngestMemory:output_type -> cambrian.IngestMemoryOpResponse
-	89,  // 275: cambrian.OperatorConsole.WatchToolApprovals:output_type -> cambrian.ApprovalOp
-	94,  // 276: cambrian.OperatorConsole.ListWatches:output_type -> cambrian.ListWatchesOpResponse
-	25,  // 277: cambrian.OperatorConsole.RegisterWatch:output_type -> cambrian.CommandAck
-	25,  // 278: cambrian.OperatorConsole.DeleteWatch:output_type -> cambrian.CommandAck
-	25,  // 279: cambrian.OperatorConsole.SetWatchActive:output_type -> cambrian.CommandAck
-	99,  // 280: cambrian.OperatorConsole.ListWatchDeadLetters:output_type -> cambrian.ListWatchDeadLettersOpResponse
-	194, // 281: cambrian.OperatorConsole.ListPipelines:output_type -> cambrian.ListPipelinesOpResponse
-	196, // 282: cambrian.OperatorConsole.DryRunPipeline:output_type -> cambrian.DryRunPipelineOpResponse
-	200, // 283: cambrian.OperatorConsole.GetPipeline:output_type -> cambrian.GetPipelineOpResponse
-	192, // 284: cambrian.OperatorConsole.ListNodeItems:output_type -> cambrian.ListNodeItemsOpResponse
-	203, // 285: cambrian.OperatorConsole.ValidatePipeline:output_type -> cambrian.ValidatePipelineOpResponse
-	205, // 286: cambrian.OperatorConsole.SavePipeline:output_type -> cambrian.SavePipelineOpResponse
-	207, // 287: cambrian.OperatorConsole.TransitionPipeline:output_type -> cambrian.TransitionPipelineOpResponse
-	186, // 288: cambrian.OperatorConsole.QueryLogs:output_type -> cambrian.QueryLogsOpResponse
-	182, // 289: cambrian.OperatorConsole.TailLogs:output_type -> cambrian.LogRecordOp
-	102, // 290: cambrian.OperatorConsole.GetWatchMetrics:output_type -> cambrian.GetWatchMetricsOpResponse
-	105, // 291: cambrian.OperatorConsole.BacktestWatch:output_type -> cambrian.BacktestWatchOpResponse
-	110, // 292: cambrian.OperatorConsole.PreviewRoute:output_type -> cambrian.PreviewRouteOpResponse
-	115, // 293: cambrian.OperatorConsole.ExplainAccess:output_type -> cambrian.ExplainAccessOpResponse
-	117, // 294: cambrian.OperatorConsole.ListClassificationTags:output_type -> cambrian.ListClassificationTagsOpResponse
-	123, // 295: cambrian.OperatorConsole.ListSessionCheckpoints:output_type -> cambrian.ListSessionCheckpointsOpResponse
-	126, // 296: cambrian.OperatorConsole.ListMCPServers:output_type -> cambrian.ListMCPServersOpResponse
-	128, // 297: cambrian.OperatorConsole.GetEmbeddingConfig:output_type -> cambrian.EmbeddingConfigOp
-	130, // 298: cambrian.OperatorConsole.ClassifyInput:output_type -> cambrian.ClassifiedInputOp
-	133, // 299: cambrian.OperatorConsole.ListGenerators:output_type -> cambrian.ListGeneratorsOpResponse
-	136, // 300: cambrian.OperatorConsole.ListRoleAssignments:output_type -> cambrian.ListRoleAssignmentsOpResponse
-	138, // 301: cambrian.OperatorConsole.TestGenerator:output_type -> cambrian.GeneratorTestResultOp
-	152, // 302: cambrian.OperatorConsole.GetConfigSchema:output_type -> cambrian.ConfigSchemaOp
-	158, // 303: cambrian.OperatorConsole.SetConfig:output_type -> cambrian.SetConfigOpResponse
-	158, // 304: cambrian.OperatorConsole.DeleteConfig:output_type -> cambrian.SetConfigOpResponse
-	158, // 305: cambrian.OperatorConsole.SetGeneratorKey:output_type -> cambrian.SetConfigOpResponse
-	25,  // 306: cambrian.OperatorConsole.ClearGeneratorKey:output_type -> cambrian.CommandAck
-	158, // 307: cambrian.OperatorConsole.SaveGenerator:output_type -> cambrian.SetConfigOpResponse
-	158, // 308: cambrian.OperatorConsole.RemoveGenerator:output_type -> cambrian.SetConfigOpResponse
-	158, // 309: cambrian.OperatorConsole.SetRoleAssignment:output_type -> cambrian.SetConfigOpResponse
-	158, // 310: cambrian.OperatorConsole.SaveMCPServer:output_type -> cambrian.SetConfigOpResponse
-	158, // 311: cambrian.OperatorConsole.RemoveMCPServer:output_type -> cambrian.SetConfigOpResponse
-	158, // 312: cambrian.OperatorConsole.SetMCPServerToken:output_type -> cambrian.SetConfigOpResponse
-	25,  // 313: cambrian.OperatorConsole.ClearMCPServerToken:output_type -> cambrian.CommandAck
-	149, // 314: cambrian.OperatorConsole.TestMCPServer:output_type -> cambrian.MCPServerTestResultOp
-	215, // 315: cambrian.OperatorConsole.ConfirmLink:output_type -> cambrian.ConfirmLinkOpResponse
-	25,  // 316: cambrian.OperatorConsole.RetractLink:output_type -> cambrian.CommandAck
-	218, // 317: cambrian.OperatorConsole.RetractLinksByProducer:output_type -> cambrian.RetractLinksByProducerOpResponse
-	220, // 318: cambrian.OperatorConsole.ListLinkCandidates:output_type -> cambrian.ListLinkCandidatesOpResponse
-	162, // 319: cambrian.OperatorConsole.SubmitPlan:output_type -> cambrian.SubmitPlanOpResponse
-	165, // 320: cambrian.OperatorConsole.GetReactiveBudget:output_type -> cambrian.GetReactiveBudgetOpResponse
-	168, // 321: cambrian.OperatorConsole.GetTokenSeries:output_type -> cambrian.GetTokenSeriesOpResponse
-	173, // 322: cambrian.OperatorConsole.ProposePlan:output_type -> cambrian.ProposePlanOpResponse
-	175, // 323: cambrian.OperatorConsole.ExplainAccessBatch:output_type -> cambrian.ExplainAccessBatchOpResponse
-	179, // 324: cambrian.OperatorConsole.GetBlastRadiusPreview:output_type -> cambrian.BlastRadiusPreviewOp
-	25,  // 325: cambrian.OperatorConsole.RetryWatchDeadLetter:output_type -> cambrian.CommandAck
-	223, // 326: cambrian.OperatorConsole.ListMemoryNotes:output_type -> cambrian.ListMemoryNotesOpResponse
-	225, // 327: cambrian.OperatorConsole.GetMemoryNotes:output_type -> cambrian.MemoryNotesOp
-	227, // 328: cambrian.OperatorConsole.SetMemoryNotes:output_type -> cambrian.SetMemoryNotesOpResponse
-	25,  // 329: cambrian.OperatorConsole.DeleteMemoryNotes:output_type -> cambrian.CommandAck
-	25,  // 330: cambrian.OperatorConsole.SetMemoryNotesBudget:output_type -> cambrian.CommandAck
-	232, // 331: cambrian.OperatorConsole.ListSkillProposals:output_type -> cambrian.ListSkillProposalsOpResponse
-	234, // 332: cambrian.OperatorConsole.DecideSkillProposal:output_type -> cambrian.DecideSkillProposalOpResponse
-	25,  // 333: cambrian.OperatorConsole.SetSkillLock:output_type -> cambrian.CommandAck
-	238, // 334: cambrian.OperatorConsole.ListSkillLedger:output_type -> cambrian.ListSkillLedgerOpResponse
-	240, // 335: cambrian.OperatorConsole.RollbackSkill:output_type -> cambrian.RollbackSkillOpResponse
-	244, // 336: cambrian.OperatorConsole.ListSkillGrants:output_type -> cambrian.ListSkillGrantsOpResponse
-	25,  // 337: cambrian.OperatorConsole.GrantSkill:output_type -> cambrian.CommandAck
-	25,  // 338: cambrian.OperatorConsole.RevokeSkillGrant:output_type -> cambrian.CommandAck
-	242, // [242:339] is the sub-list for method output_type
-	145, // [145:242] is the sub-list for method input_type
-	145, // [145:145] is the sub-list for extension type_name
-	145, // [145:145] is the sub-list for extension extendee
-	0,   // [0:145] is the sub-list for field type_name
+	15,  // 2: cambrian.ListScheduledTasksOpResponse.tasks:type_name -> cambrian.ScheduledTaskOp
+	17,  // 3: cambrian.ListConversationMessagesOpResponse.messages:type_name -> cambrian.MessageOp
+	286, // 4: cambrian.SetRuntimeConfigRequest.params:type_name -> cambrian.SetRuntimeConfigRequest.ParamsEntry
+	73,  // 5: cambrian.QueryAuditResponse.entries:type_name -> cambrian.AuditOp
+	40,  // 6: cambrian.SnapshotResponse.plans:type_name -> cambrian.PlanInFlightOp
+	41,  // 7: cambrian.SnapshotResponse.sessions:type_name -> cambrian.SessionSummaryOp
+	38,  // 8: cambrian.SnapshotResponse.plugins:type_name -> cambrian.PluginInfoOp
+	39,  // 9: cambrian.PluginInfoOp.panels:type_name -> cambrian.PluginPanelOp
+	298, // 10: cambrian.OperatorEvent.ts:type_name -> google.protobuf.Timestamp
+	52,  // 11: cambrian.OperatorEvent.resync:type_name -> cambrian.ResyncRequired
+	53,  // 12: cambrian.OperatorEvent.auction:type_name -> cambrian.AuctionEventOp
+	59,  // 13: cambrian.OperatorEvent.agent_ready:type_name -> cambrian.AgentReadyOp
+	61,  // 14: cambrian.OperatorEvent.session_dormant:type_name -> cambrian.SessionDormantOp
+	62,  // 15: cambrian.OperatorEvent.session_completed:type_name -> cambrian.SessionCompletedOp
+	63,  // 16: cambrian.OperatorEvent.memory_pressure:type_name -> cambrian.MemoryPressureOp
+	64,  // 17: cambrian.OperatorEvent.daemon_crashed:type_name -> cambrian.DaemonCrashedOp
+	65,  // 18: cambrian.OperatorEvent.watch_triggered:type_name -> cambrian.WatchTriggeredOp
+	66,  // 19: cambrian.OperatorEvent.memory_written:type_name -> cambrian.MemoryWrittenOp
+	67,  // 20: cambrian.OperatorEvent.hitl_raised:type_name -> cambrian.HITLRaisedOp
+	68,  // 21: cambrian.OperatorEvent.verifier_round:type_name -> cambrian.VerifierRoundOp
+	69,  // 22: cambrian.OperatorEvent.llm_health:type_name -> cambrian.LLMHealthOp
+	70,  // 23: cambrian.OperatorEvent.plan_state:type_name -> cambrian.PlanStateOp
+	73,  // 24: cambrian.OperatorEvent.audit:type_name -> cambrian.AuditOp
+	72,  // 25: cambrian.OperatorEvent.token:type_name -> cambrian.TokenChunkOp
+	49,  // 26: cambrian.OperatorEvent.scout_usefulness:type_name -> cambrian.ScoutUsefulnessOp
+	128, // 27: cambrian.OperatorEvent.reactive_budget:type_name -> cambrian.ReactiveBudgetOp
+	50,  // 28: cambrian.OperatorEvent.agent_step:type_name -> cambrian.AgentStepOp
+	51,  // 29: cambrian.OperatorEvent.llm_exchange:type_name -> cambrian.AgentLLMExchangeOp
+	60,  // 30: cambrian.OperatorEvent.session_state:type_name -> cambrian.SessionStateOp
+	197, // 31: cambrian.OperatorEvent.conversation_progress:type_name -> cambrian.ConversationProgressOp
+	47,  // 32: cambrian.OperatorEvent.retention_run:type_name -> cambrian.RetentionRunOp
+	45,  // 33: cambrian.OperatorEvent.pipeline_meters:type_name -> cambrian.PipelineMetersOp
+	44,  // 34: cambrian.OperatorEvent.pipeline_step:type_name -> cambrian.PipelineStepOp
+	273, // 35: cambrian.OperatorEvent.integration_health:type_name -> cambrian.IntegrationHealthOp
+	95,  // 36: cambrian.OperatorEvent.hitl_resolved:type_name -> cambrian.HITLResolvedOp
+	46,  // 37: cambrian.PipelineMetersOp.nodes:type_name -> cambrian.PipelineNodeMeterOp
+	287, // 38: cambrian.PipelineNodeMeterOp.ports:type_name -> cambrian.PipelineNodeMeterOp.PortsEntry
+	298, // 39: cambrian.RetentionRunOp.started_at:type_name -> google.protobuf.Timestamp
+	298, // 40: cambrian.RetentionRunOp.finished_at:type_name -> google.protobuf.Timestamp
+	48,  // 41: cambrian.RetentionRunOp.deleted:type_name -> cambrian.RetentionDeletionOp
+	54,  // 42: cambrian.AuctionEventOp.bids:type_name -> cambrian.BidEntryOp
+	55,  // 43: cambrian.AuctionEventOp.funnel:type_name -> cambrian.GatekeeperFunnelOp
+	56,  // 44: cambrian.GatekeeperFunnelOp.l1:type_name -> cambrian.DeclarationResultOp
+	57,  // 45: cambrian.GatekeeperFunnelOp.l2:type_name -> cambrian.InterviewResultOp
+	58,  // 46: cambrian.GatekeeperFunnelOp.l3:type_name -> cambrian.MeritResultOp
+	298, // 47: cambrian.SessionStateOp.created_at:type_name -> google.protobuf.Timestamp
+	298, // 48: cambrian.SessionStateOp.updated_at:type_name -> google.protobuf.Timestamp
+	71,  // 49: cambrian.PlanStateOp.steps:type_name -> cambrian.PlanStepOp
+	74,  // 50: cambrian.ToolGrantOp.policy:type_name -> cambrian.ToolPolicyOp
+	75,  // 51: cambrian.ToolOp.grants:type_name -> cambrian.ToolGrantOp
+	76,  // 52: cambrian.ListToolsOpResponse.tools:type_name -> cambrian.ToolOp
+	298, // 53: cambrian.SkillOp.state_changed_at:type_name -> google.protobuf.Timestamp
+	298, // 54: cambrian.SkillOp.last_used_at:type_name -> google.protobuf.Timestamp
+	80,  // 55: cambrian.ListSkillsOpResponse.skills:type_name -> cambrian.SkillOp
+	298, // 56: cambrian.QueryMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
+	298, // 57: cambrian.QueryMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
+	298, // 58: cambrian.QueryMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
+	298, // 59: cambrian.MemoryOp.event_time:type_name -> google.protobuf.Timestamp
+	298, // 60: cambrian.MemoryOp.event_time_end:type_name -> google.protobuf.Timestamp
+	83,  // 61: cambrian.QueryMemoryResponse.results:type_name -> cambrian.MemoryOp
+	131, // 62: cambrian.QueryMemoryResponse.policy_note:type_name -> cambrian.AccessDecisionOp
+	298, // 63: cambrian.AnswerMemoryRequest.reference_time:type_name -> google.protobuf.Timestamp
+	298, // 64: cambrian.AnswerMemoryRequest.event_after:type_name -> google.protobuf.Timestamp
+	298, // 65: cambrian.AnswerMemoryRequest.event_before:type_name -> google.protobuf.Timestamp
+	298, // 66: cambrian.MemoryCitation.event_time:type_name -> google.protobuf.Timestamp
+	298, // 67: cambrian.MemoryCitation.event_time_end:type_name -> google.protobuf.Timestamp
+	86,  // 68: cambrian.AnswerMemoryResponse.citations:type_name -> cambrian.MemoryCitation
+	131, // 69: cambrian.AnswerMemoryResponse.policy_note:type_name -> cambrian.AccessDecisionOp
+	74,  // 70: cambrian.SetToolPolicyRequest.policy:type_name -> cambrian.ToolPolicyOp
+	298, // 71: cambrian.IngestMemoryOpRequest.occurred_at:type_name -> google.protobuf.Timestamp
+	92,  // 72: cambrian.IngestMemoryOpRequest.parts:type_name -> cambrian.MemoryPartOp
+	298, // 73: cambrian.MemoryPartOp.occurred_at:type_name -> google.protobuf.Timestamp
+	94,  // 74: cambrian.ListApprovalsOpResponse.approvals:type_name -> cambrian.ApprovalOp
+	101, // 75: cambrian.ListStandingApprovalsOpResponse.standing:type_name -> cambrian.StandingApprovalOp
+	107, // 76: cambrian.WatchConfigOp.action:type_name -> cambrian.WatchActionOp
+	288, // 77: cambrian.WatchConfigOp.daemon_params:type_name -> cambrian.WatchConfigOp.DaemonParamsEntry
+	109, // 78: cambrian.WatchConfigOp.last_fires:type_name -> cambrian.WatchFireOp
+	107, // 79: cambrian.WatchConfigOp.actions:type_name -> cambrian.WatchActionOp
+	108, // 80: cambrian.ListWatchesOpResponse.configs:type_name -> cambrian.WatchConfigOp
+	108, // 81: cambrian.RegisterWatchOpRequest.config:type_name -> cambrian.WatchConfigOp
+	117, // 82: cambrian.ListWatchDeadLettersOpResponse.entries:type_name -> cambrian.WatchDeadLetterOp
+	120, // 83: cambrian.GetWatchMetricsOpResponse.metrics:type_name -> cambrian.WatchMetricsOp
+	108, // 84: cambrian.BacktestWatchOpRequest.config:type_name -> cambrian.WatchConfigOp
+	123, // 85: cambrian.BacktestWatchOpResponse.verdicts:type_name -> cambrian.WatchBacktestVerdictOp
+	125, // 86: cambrian.PreviewRouteOpRequest.candidates:type_name -> cambrian.PreviewCandidateOp
+	289, // 87: cambrian.PreviewCandidateOp.capability_stats:type_name -> cambrian.PreviewCandidateOp.CapabilityStatsEntry
+	58,  // 88: cambrian.PreviewRouteOpResponse.ranked:type_name -> cambrian.MeritResultOp
+	130, // 89: cambrian.AccessDecisionOp.decided_by:type_name -> cambrian.PolicyContributionOp
+	131, // 90: cambrian.ExplainAccessOpResponse.decision:type_name -> cambrian.AccessDecisionOp
+	136, // 91: cambrian.ListDocumentsOpResponse.documents:type_name -> cambrian.DocumentSummaryOp
+	139, // 92: cambrian.ListSessionCheckpointsOpResponse.checkpoints:type_name -> cambrian.SessionCheckpointOp
+	142, // 93: cambrian.ListMCPServersOpResponse.servers:type_name -> cambrian.MCPServerOp
+	149, // 94: cambrian.ListGeneratorsOpResponse.generators:type_name -> cambrian.GeneratorOp
+	152, // 95: cambrian.ListRoleAssignmentsOpResponse.assignments:type_name -> cambrian.RoleAssignmentOp
+	156, // 96: cambrian.SaveGeneratorOpRequest.generator:type_name -> cambrian.GeneratorSpecOp
+	160, // 97: cambrian.SaveMCPServerOpRequest.server:type_name -> cambrian.MCPServerSpecOp
+	160, // 98: cambrian.TestMCPServerOpRequest.server:type_name -> cambrian.MCPServerSpecOp
+	290, // 99: cambrian.ConfigSchemaOp.current_values:type_name -> cambrian.ConfigSchemaOp.CurrentValuesEntry
+	291, // 100: cambrian.ConfigSchemaOp.value_source:type_name -> cambrian.ConfigSchemaOp.ValueSourceEntry
+	292, // 101: cambrian.SetConfigOpRequest.values:type_name -> cambrian.SetConfigOpRequest.ValuesEntry
+	174, // 102: cambrian.SetConfigOpResponse.outcomes:type_name -> cambrian.ConfigWriteOutcomeOp
+	176, // 103: cambrian.SubmitPlanOpRequest.steps:type_name -> cambrian.AuthoredStepOp
+	178, // 104: cambrian.SubmitPlanOpResponse.issues:type_name -> cambrian.PlanValidationIssueOp
+	180, // 105: cambrian.GetReactiveBudgetOpResponse.budget:type_name -> cambrian.ReactivePlaneBudgetOp
+	184, // 106: cambrian.GetTokenSeriesOpResponse.points:type_name -> cambrian.TokenSeriesPointOp
+	187, // 107: cambrian.InterviewQuestionOp.options:type_name -> cambrian.InterviewOptionOp
+	176, // 108: cambrian.PlanProposalOp.steps:type_name -> cambrian.AuthoredStepOp
+	188, // 109: cambrian.ProposePlanOpResponse.questions:type_name -> cambrian.InterviewQuestionOp
+	189, // 110: cambrian.ProposePlanOpResponse.proposal:type_name -> cambrian.PlanProposalOp
+	129, // 111: cambrian.ExplainAccessBatchOpRequest.queries:type_name -> cambrian.ExplainAccessOpRequest
+	131, // 112: cambrian.ExplainAccessBatchOpResponse.decisions:type_name -> cambrian.AccessDecisionOp
+	194, // 113: cambrian.BlastRadiusPreviewOp.affected_agents:type_name -> cambrian.AgentImpactOp
+	195, // 114: cambrian.BlastRadiusPreviewOp.affected_plans:type_name -> cambrian.PlanImpactOp
+	198, // 115: cambrian.LogRecordOp.attrs:type_name -> cambrian.LogAttrOp
+	293, // 116: cambrian.LogFilterOp.attr_equals:type_name -> cambrian.LogFilterOp.AttrEqualsEntry
+	200, // 117: cambrian.QueryLogsOpRequest.filter:type_name -> cambrian.LogFilterOp
+	199, // 118: cambrian.QueryLogsOpResponse.records:type_name -> cambrian.LogRecordOp
+	201, // 119: cambrian.QueryLogsOpResponse.window:type_name -> cambrian.LogWindowOp
+	200, // 120: cambrian.TailLogsOpRequest.filter:type_name -> cambrian.LogFilterOp
+	208, // 121: cambrian.ListNodeItemsOpResponse.items:type_name -> cambrian.NodeItemOp
+	229, // 122: cambrian.ListPipelinesOpResponse.pipelines:type_name -> cambrian.PipelineOp
+	226, // 123: cambrian.DryRunPipelineOpResponse.effects:type_name -> cambrian.ShadowEffectOp
+	227, // 124: cambrian.DryRunPipelineOpResponse.duplicates:type_name -> cambrian.DuplicateEffectKeyOp
+	228, // 125: cambrian.DryRunPipelineOpResponse.terminations:type_name -> cambrian.PipelineTerminationOp
+	215, // 126: cambrian.DryRunPipelineOpResponse.failures:type_name -> cambrian.PipelineFailureOp
+	214, // 127: cambrian.DryRunPipelineOpResponse.node_examples:type_name -> cambrian.PipelineNodeExampleOp
+	229, // 128: cambrian.GetPipelineOpResponse.summary:type_name -> cambrian.PipelineOp
+	225, // 129: cambrian.GetPipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
+	218, // 130: cambrian.GetPipelineOpResponse.reads:type_name -> cambrian.NodeReadsOp
+	225, // 131: cambrian.ValidatePipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
+	225, // 132: cambrian.SavePipelineOpResponse.refusals:type_name -> cambrian.RefusalOp
+	230, // 133: cambrian.ConfirmLinkOpResponse.link:type_name -> cambrian.LinkOp
+	230, // 134: cambrian.ListLinkCandidatesOpResponse.candidates:type_name -> cambrian.LinkOp
+	298, // 135: cambrian.MemoryNotesSummaryOp.updated_at:type_name -> google.protobuf.Timestamp
+	239, // 136: cambrian.ListMemoryNotesOpResponse.notes:type_name -> cambrian.MemoryNotesSummaryOp
+	298, // 137: cambrian.MemoryNotesOp.updated_at:type_name -> google.protobuf.Timestamp
+	298, // 138: cambrian.SkillProposalOp.created_at:type_name -> google.protobuf.Timestamp
+	298, // 139: cambrian.SkillProposalOp.decided_at:type_name -> google.protobuf.Timestamp
+	248, // 140: cambrian.ListSkillProposalsOpResponse.proposals:type_name -> cambrian.SkillProposalOp
+	298, // 141: cambrian.SkillLedgerEntryOp.at:type_name -> google.protobuf.Timestamp
+	254, // 142: cambrian.ListSkillLedgerOpResponse.entries:type_name -> cambrian.SkillLedgerEntryOp
+	298, // 143: cambrian.SkillGrantOp.granted_at:type_name -> google.protobuf.Timestamp
+	298, // 144: cambrian.SkillGrantOp.revoked_at:type_name -> google.protobuf.Timestamp
+	298, // 145: cambrian.SkillAccessRequestOp.requested_at:type_name -> google.protobuf.Timestamp
+	298, // 146: cambrian.SkillAccessRequestOp.decided_at:type_name -> google.protobuf.Timestamp
+	259, // 147: cambrian.ListSkillGrantsOpResponse.grants:type_name -> cambrian.SkillGrantOp
+	260, // 148: cambrian.ListSkillGrantsOpResponse.requests:type_name -> cambrian.SkillAccessRequestOp
+	266, // 149: cambrian.ListIntegrationCatalogOpResponse.entries:type_name -> cambrian.IntegrationCatalogEntryOp
+	267, // 150: cambrian.IntegrationCatalogEntryOp.fields:type_name -> cambrian.IntegrationFieldOp
+	268, // 151: cambrian.IntegrationCatalogEntryOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
+	268, // 152: cambrian.IntegrationCatalogEntryOp.default_policy:type_name -> cambrian.IntegrationToolPolicyOp
+	271, // 153: cambrian.ListIntegrationsOpResponse.integrations:type_name -> cambrian.IntegrationOp
+	294, // 154: cambrian.IntegrationOp.settings:type_name -> cambrian.IntegrationOp.SettingsEntry
+	272, // 155: cambrian.IntegrationOp.secrets:type_name -> cambrian.IntegrationSecretStateOp
+	273, // 156: cambrian.IntegrationOp.health:type_name -> cambrian.IntegrationHealthOp
+	268, // 157: cambrian.IntegrationOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
+	268, // 158: cambrian.IntegrationOp.default_policy:type_name -> cambrian.IntegrationToolPolicyOp
+	268, // 159: cambrian.IntegrationCustomSpecOp.tool_policies:type_name -> cambrian.IntegrationToolPolicyOp
+	268, // 160: cambrian.IntegrationCustomSpecOp.default_policy:type_name -> cambrian.IntegrationToolPolicyOp
+	295, // 161: cambrian.InstallIntegrationOpRequest.settings:type_name -> cambrian.InstallIntegrationOpRequest.SettingsEntry
+	296, // 162: cambrian.InstallIntegrationOpRequest.secrets:type_name -> cambrian.InstallIntegrationOpRequest.SecretsEntry
+	274, // 163: cambrian.InstallIntegrationOpRequest.custom:type_name -> cambrian.IntegrationCustomSpecOp
+	297, // 164: cambrian.UpdateIntegrationOpRequest.settings:type_name -> cambrian.UpdateIntegrationOpRequest.SettingsEntry
+	274, // 165: cambrian.UpdateIntegrationOpRequest.custom:type_name -> cambrian.IntegrationCustomSpecOp
+	174, // 166: cambrian.IntegrationMutationOpResponse.outcome:type_name -> cambrian.ConfigWriteOutcomeOp
+	271, // 167: cambrian.IntegrationMutationOpResponse.integration:type_name -> cambrian.IntegrationOp
+	284, // 168: cambrian.IntegrationTestResultOp.tools:type_name -> cambrian.IntegrationToolOp
+	126, // 169: cambrian.PreviewCandidateOp.CapabilityStatsEntry.value:type_name -> cambrian.PreviewCapStatOp
+	30,  // 170: cambrian.OperatorConsole.Login:input_type -> cambrian.LoginRequest
+	32,  // 171: cambrian.OperatorConsole.DescribeAuth:input_type -> cambrian.DescribeAuthRequest
+	34,  // 172: cambrian.OperatorConsole.Logout:input_type -> cambrian.LogoutRequest
+	42,  // 173: cambrian.OperatorConsole.StreamEvents:input_type -> cambrian.SubscribeRequest
+	36,  // 174: cambrian.OperatorConsole.Snapshot:input_type -> cambrian.SnapshotRequest
+	29,  // 175: cambrian.OperatorConsole.SetToolGrant:input_type -> cambrian.SetToolGrantRequest
+	26,  // 176: cambrian.OperatorConsole.QueryAudit:input_type -> cambrian.QueryAuditRequest
+	24,  // 177: cambrian.OperatorConsole.ResolveHITL:input_type -> cambrian.ResolveHITLRequest
+	25,  // 178: cambrian.OperatorConsole.PauseSession:input_type -> cambrian.SessionCommandRequest
+	25,  // 179: cambrian.OperatorConsole.ResumeSession:input_type -> cambrian.SessionCommandRequest
+	25,  // 180: cambrian.OperatorConsole.CloseSession:input_type -> cambrian.SessionCommandRequest
+	18,  // 181: cambrian.OperatorConsole.TagMemory:input_type -> cambrian.TagMemoryRequest
+	19,  // 182: cambrian.OperatorConsole.SetScope:input_type -> cambrian.SetScopeRequest
+	20,  // 183: cambrian.OperatorConsole.RegisterSkill:input_type -> cambrian.RegisterSkillRequest
+	21,  // 184: cambrian.OperatorConsole.RegisterMCP:input_type -> cambrian.RegisterMCPRequest
+	22,  // 185: cambrian.OperatorConsole.TriggerConsolidation:input_type -> cambrian.TriggerConsolidationRequest
+	23,  // 186: cambrian.OperatorConsole.SetRuntimeConfig:input_type -> cambrian.SetRuntimeConfigRequest
+	0,   // 187: cambrian.OperatorConsole.CreateSession:input_type -> cambrian.CreateSessionRequest
+	2,   // 188: cambrian.OperatorConsole.SendMessage:input_type -> cambrian.SendMessageRequest
+	3,   // 189: cambrian.OperatorConsole.InjectCorrection:input_type -> cambrian.InjectCorrectionRequest
+	4,   // 190: cambrian.OperatorConsole.OpenConversation:input_type -> cambrian.OpenConversationOpRequest
+	6,   // 191: cambrian.OperatorConsole.SendTurn:input_type -> cambrian.SendTurnOpRequest
+	8,   // 192: cambrian.OperatorConsole.CloseConversation:input_type -> cambrian.CloseConversationOpRequest
+	9,   // 193: cambrian.OperatorConsole.ListConversations:input_type -> cambrian.ListConversationsOpRequest
+	12,  // 194: cambrian.OperatorConsole.ListConversationMessages:input_type -> cambrian.ListConversationMessagesOpRequest
+	13,  // 195: cambrian.OperatorConsole.ListScheduledTasks:input_type -> cambrian.ListScheduledTasksOpRequest
+	77,  // 196: cambrian.OperatorConsole.ListTools:input_type -> cambrian.ListToolsOpRequest
+	79,  // 197: cambrian.OperatorConsole.ListSkills:input_type -> cambrian.ListSkillsOpRequest
+	82,  // 198: cambrian.OperatorConsole.QueryMemory:input_type -> cambrian.QueryMemoryRequest
+	135, // 199: cambrian.OperatorConsole.ListDocuments:input_type -> cambrian.ListDocumentsOpRequest
+	205, // 200: cambrian.OperatorConsole.GetDocument:input_type -> cambrian.GetDocumentOpRequest
+	85,  // 201: cambrian.OperatorConsole.AnswerMemory:input_type -> cambrian.AnswerMemoryRequest
+	88,  // 202: cambrian.OperatorConsole.SetToolPolicy:input_type -> cambrian.SetToolPolicyRequest
+	89,  // 203: cambrian.OperatorConsole.ExecuteTool:input_type -> cambrian.ExecuteToolOpRequest
+	91,  // 204: cambrian.OperatorConsole.IngestMemory:input_type -> cambrian.IngestMemoryOpRequest
+	42,  // 205: cambrian.OperatorConsole.WatchToolApprovals:input_type -> cambrian.SubscribeRequest
+	96,  // 206: cambrian.OperatorConsole.WatchMyApprovals:input_type -> cambrian.WatchMyApprovalsOpRequest
+	97,  // 207: cambrian.OperatorConsole.ListApprovals:input_type -> cambrian.ListApprovalsOpRequest
+	99,  // 208: cambrian.OperatorConsole.AnswerApproval:input_type -> cambrian.AnswerApprovalOpRequest
+	102, // 209: cambrian.OperatorConsole.ListStandingApprovals:input_type -> cambrian.ListStandingApprovalsOpRequest
+	104, // 210: cambrian.OperatorConsole.RevokeStandingApproval:input_type -> cambrian.RevokeStandingApprovalOpRequest
+	105, // 211: cambrian.OperatorConsole.ShareToTeam:input_type -> cambrian.ShareToTeamOpRequest
+	110, // 212: cambrian.OperatorConsole.ListWatches:input_type -> cambrian.ListWatchesOpRequest
+	112, // 213: cambrian.OperatorConsole.RegisterWatch:input_type -> cambrian.RegisterWatchOpRequest
+	113, // 214: cambrian.OperatorConsole.DeleteWatch:input_type -> cambrian.DeleteWatchOpRequest
+	114, // 215: cambrian.OperatorConsole.SetWatchActive:input_type -> cambrian.SetWatchActiveOpRequest
+	115, // 216: cambrian.OperatorConsole.ListWatchDeadLetters:input_type -> cambrian.ListWatchDeadLettersOpRequest
+	210, // 217: cambrian.OperatorConsole.ListPipelines:input_type -> cambrian.ListPipelinesOpRequest
+	212, // 218: cambrian.OperatorConsole.DryRunPipeline:input_type -> cambrian.DryRunPipelineOpRequest
+	216, // 219: cambrian.OperatorConsole.GetPipeline:input_type -> cambrian.GetPipelineOpRequest
+	207, // 220: cambrian.OperatorConsole.ListNodeItems:input_type -> cambrian.ListNodeItemsOpRequest
+	219, // 221: cambrian.OperatorConsole.ValidatePipeline:input_type -> cambrian.ValidatePipelineOpRequest
+	221, // 222: cambrian.OperatorConsole.SavePipeline:input_type -> cambrian.SavePipelineOpRequest
+	223, // 223: cambrian.OperatorConsole.TransitionPipeline:input_type -> cambrian.TransitionPipelineOpRequest
+	202, // 224: cambrian.OperatorConsole.QueryLogs:input_type -> cambrian.QueryLogsOpRequest
+	204, // 225: cambrian.OperatorConsole.TailLogs:input_type -> cambrian.TailLogsOpRequest
+	118, // 226: cambrian.OperatorConsole.GetWatchMetrics:input_type -> cambrian.GetWatchMetricsOpRequest
+	121, // 227: cambrian.OperatorConsole.BacktestWatch:input_type -> cambrian.BacktestWatchOpRequest
+	124, // 228: cambrian.OperatorConsole.PreviewRoute:input_type -> cambrian.PreviewRouteOpRequest
+	129, // 229: cambrian.OperatorConsole.ExplainAccess:input_type -> cambrian.ExplainAccessOpRequest
+	133, // 230: cambrian.OperatorConsole.ListClassificationTags:input_type -> cambrian.ListClassificationTagsOpRequest
+	138, // 231: cambrian.OperatorConsole.ListSessionCheckpoints:input_type -> cambrian.ListSessionCheckpointsOpRequest
+	141, // 232: cambrian.OperatorConsole.ListMCPServers:input_type -> cambrian.ListMCPServersOpRequest
+	144, // 233: cambrian.OperatorConsole.GetEmbeddingConfig:input_type -> cambrian.GetEmbeddingConfigOpRequest
+	146, // 234: cambrian.OperatorConsole.ClassifyInput:input_type -> cambrian.ClassifyInputOpRequest
+	148, // 235: cambrian.OperatorConsole.ListGenerators:input_type -> cambrian.ListGeneratorsOpRequest
+	151, // 236: cambrian.OperatorConsole.ListRoleAssignments:input_type -> cambrian.ListRoleAssignmentsOpRequest
+	154, // 237: cambrian.OperatorConsole.TestGenerator:input_type -> cambrian.TestGeneratorOpRequest
+	168, // 238: cambrian.OperatorConsole.GetConfigSchema:input_type -> cambrian.GetConfigSchemaOpRequest
+	170, // 239: cambrian.OperatorConsole.SetConfig:input_type -> cambrian.SetConfigOpRequest
+	171, // 240: cambrian.OperatorConsole.DeleteConfig:input_type -> cambrian.DeleteConfigOpRequest
+	172, // 241: cambrian.OperatorConsole.SetGeneratorKey:input_type -> cambrian.SetGeneratorKeyOpRequest
+	173, // 242: cambrian.OperatorConsole.ClearGeneratorKey:input_type -> cambrian.ClearGeneratorKeyOpRequest
+	157, // 243: cambrian.OperatorConsole.SaveGenerator:input_type -> cambrian.SaveGeneratorOpRequest
+	158, // 244: cambrian.OperatorConsole.RemoveGenerator:input_type -> cambrian.RemoveGeneratorOpRequest
+	159, // 245: cambrian.OperatorConsole.SetRoleAssignment:input_type -> cambrian.SetRoleAssignmentOpRequest
+	161, // 246: cambrian.OperatorConsole.SaveMCPServer:input_type -> cambrian.SaveMCPServerOpRequest
+	162, // 247: cambrian.OperatorConsole.RemoveMCPServer:input_type -> cambrian.RemoveMCPServerOpRequest
+	163, // 248: cambrian.OperatorConsole.SetMCPServerToken:input_type -> cambrian.SetMCPServerTokenOpRequest
+	164, // 249: cambrian.OperatorConsole.ClearMCPServerToken:input_type -> cambrian.ClearMCPServerTokenOpRequest
+	165, // 250: cambrian.OperatorConsole.TestMCPServer:input_type -> cambrian.TestMCPServerOpRequest
+	231, // 251: cambrian.OperatorConsole.ConfirmLink:input_type -> cambrian.ConfirmLinkOpRequest
+	233, // 252: cambrian.OperatorConsole.RetractLink:input_type -> cambrian.RetractLinkOpRequest
+	234, // 253: cambrian.OperatorConsole.RetractLinksByProducer:input_type -> cambrian.RetractLinksByProducerOpRequest
+	236, // 254: cambrian.OperatorConsole.ListLinkCandidates:input_type -> cambrian.ListLinkCandidatesOpRequest
+	177, // 255: cambrian.OperatorConsole.SubmitPlan:input_type -> cambrian.SubmitPlanOpRequest
+	181, // 256: cambrian.OperatorConsole.GetReactiveBudget:input_type -> cambrian.GetReactiveBudgetOpRequest
+	183, // 257: cambrian.OperatorConsole.GetTokenSeries:input_type -> cambrian.GetTokenSeriesOpRequest
+	186, // 258: cambrian.OperatorConsole.ProposePlan:input_type -> cambrian.ProposePlanOpRequest
+	191, // 259: cambrian.OperatorConsole.ExplainAccessBatch:input_type -> cambrian.ExplainAccessBatchOpRequest
+	193, // 260: cambrian.OperatorConsole.GetBlastRadiusPreview:input_type -> cambrian.BlastRadiusPreviewOpRequest
+	167, // 261: cambrian.OperatorConsole.RetryWatchDeadLetter:input_type -> cambrian.RetryWatchDeadLetterOpRequest
+	238, // 262: cambrian.OperatorConsole.ListMemoryNotes:input_type -> cambrian.ListMemoryNotesOpRequest
+	241, // 263: cambrian.OperatorConsole.GetMemoryNotes:input_type -> cambrian.GetMemoryNotesOpRequest
+	243, // 264: cambrian.OperatorConsole.SetMemoryNotes:input_type -> cambrian.SetMemoryNotesOpRequest
+	245, // 265: cambrian.OperatorConsole.DeleteMemoryNotes:input_type -> cambrian.DeleteMemoryNotesOpRequest
+	246, // 266: cambrian.OperatorConsole.SetMemoryNotesBudget:input_type -> cambrian.SetMemoryNotesBudgetOpRequest
+	247, // 267: cambrian.OperatorConsole.ListSkillProposals:input_type -> cambrian.ListSkillProposalsOpRequest
+	250, // 268: cambrian.OperatorConsole.DecideSkillProposal:input_type -> cambrian.DecideSkillProposalOpRequest
+	252, // 269: cambrian.OperatorConsole.SetSkillLock:input_type -> cambrian.SetSkillLockOpRequest
+	253, // 270: cambrian.OperatorConsole.ListSkillLedger:input_type -> cambrian.ListSkillLedgerOpRequest
+	256, // 271: cambrian.OperatorConsole.RollbackSkill:input_type -> cambrian.RollbackSkillOpRequest
+	258, // 272: cambrian.OperatorConsole.ListSkillGrants:input_type -> cambrian.ListSkillGrantsOpRequest
+	262, // 273: cambrian.OperatorConsole.GrantSkill:input_type -> cambrian.GrantSkillOpRequest
+	263, // 274: cambrian.OperatorConsole.RevokeSkillGrant:input_type -> cambrian.RevokeSkillGrantOpRequest
+	264, // 275: cambrian.OperatorConsole.ListIntegrationCatalog:input_type -> cambrian.ListIntegrationCatalogOpRequest
+	269, // 276: cambrian.OperatorConsole.ListIntegrations:input_type -> cambrian.ListIntegrationsOpRequest
+	275, // 277: cambrian.OperatorConsole.InstallIntegration:input_type -> cambrian.InstallIntegrationOpRequest
+	276, // 278: cambrian.OperatorConsole.UpdateIntegration:input_type -> cambrian.UpdateIntegrationOpRequest
+	277, // 279: cambrian.OperatorConsole.SetIntegrationSecret:input_type -> cambrian.SetIntegrationSecretOpRequest
+	278, // 280: cambrian.OperatorConsole.ClearIntegrationSecret:input_type -> cambrian.ClearIntegrationSecretOpRequest
+	279, // 281: cambrian.OperatorConsole.SetIntegrationEnabled:input_type -> cambrian.SetIntegrationEnabledOpRequest
+	282, // 282: cambrian.OperatorConsole.TestIntegration:input_type -> cambrian.TestIntegrationOpRequest
+	280, // 283: cambrian.OperatorConsole.RemoveIntegration:input_type -> cambrian.RemoveIntegrationOpRequest
+	281, // 284: cambrian.OperatorConsole.RevertIntegrationToFile:input_type -> cambrian.RevertIntegrationToFileOpRequest
+	31,  // 285: cambrian.OperatorConsole.Login:output_type -> cambrian.LoginResponse
+	33,  // 286: cambrian.OperatorConsole.DescribeAuth:output_type -> cambrian.DescribeAuthResponse
+	35,  // 287: cambrian.OperatorConsole.Logout:output_type -> cambrian.LogoutResponse
+	43,  // 288: cambrian.OperatorConsole.StreamEvents:output_type -> cambrian.OperatorEvent
+	37,  // 289: cambrian.OperatorConsole.Snapshot:output_type -> cambrian.SnapshotResponse
+	28,  // 290: cambrian.OperatorConsole.SetToolGrant:output_type -> cambrian.CommandAck
+	27,  // 291: cambrian.OperatorConsole.QueryAudit:output_type -> cambrian.QueryAuditResponse
+	28,  // 292: cambrian.OperatorConsole.ResolveHITL:output_type -> cambrian.CommandAck
+	28,  // 293: cambrian.OperatorConsole.PauseSession:output_type -> cambrian.CommandAck
+	28,  // 294: cambrian.OperatorConsole.ResumeSession:output_type -> cambrian.CommandAck
+	28,  // 295: cambrian.OperatorConsole.CloseSession:output_type -> cambrian.CommandAck
+	28,  // 296: cambrian.OperatorConsole.TagMemory:output_type -> cambrian.CommandAck
+	28,  // 297: cambrian.OperatorConsole.SetScope:output_type -> cambrian.CommandAck
+	28,  // 298: cambrian.OperatorConsole.RegisterSkill:output_type -> cambrian.CommandAck
+	28,  // 299: cambrian.OperatorConsole.RegisterMCP:output_type -> cambrian.CommandAck
+	28,  // 300: cambrian.OperatorConsole.TriggerConsolidation:output_type -> cambrian.CommandAck
+	28,  // 301: cambrian.OperatorConsole.SetRuntimeConfig:output_type -> cambrian.CommandAck
+	1,   // 302: cambrian.OperatorConsole.CreateSession:output_type -> cambrian.CreateSessionResponse
+	28,  // 303: cambrian.OperatorConsole.SendMessage:output_type -> cambrian.CommandAck
+	28,  // 304: cambrian.OperatorConsole.InjectCorrection:output_type -> cambrian.CommandAck
+	5,   // 305: cambrian.OperatorConsole.OpenConversation:output_type -> cambrian.OpenConversationOpResponse
+	7,   // 306: cambrian.OperatorConsole.SendTurn:output_type -> cambrian.SendTurnOpResponse
+	28,  // 307: cambrian.OperatorConsole.CloseConversation:output_type -> cambrian.CommandAck
+	10,  // 308: cambrian.OperatorConsole.ListConversations:output_type -> cambrian.ListConversationsOpResponse
+	16,  // 309: cambrian.OperatorConsole.ListConversationMessages:output_type -> cambrian.ListConversationMessagesOpResponse
+	14,  // 310: cambrian.OperatorConsole.ListScheduledTasks:output_type -> cambrian.ListScheduledTasksOpResponse
+	78,  // 311: cambrian.OperatorConsole.ListTools:output_type -> cambrian.ListToolsOpResponse
+	81,  // 312: cambrian.OperatorConsole.ListSkills:output_type -> cambrian.ListSkillsOpResponse
+	84,  // 313: cambrian.OperatorConsole.QueryMemory:output_type -> cambrian.QueryMemoryResponse
+	137, // 314: cambrian.OperatorConsole.ListDocuments:output_type -> cambrian.ListDocumentsOpResponse
+	206, // 315: cambrian.OperatorConsole.GetDocument:output_type -> cambrian.GetDocumentOpResponse
+	87,  // 316: cambrian.OperatorConsole.AnswerMemory:output_type -> cambrian.AnswerMemoryResponse
+	28,  // 317: cambrian.OperatorConsole.SetToolPolicy:output_type -> cambrian.CommandAck
+	90,  // 318: cambrian.OperatorConsole.ExecuteTool:output_type -> cambrian.ExecuteToolOpResponse
+	93,  // 319: cambrian.OperatorConsole.IngestMemory:output_type -> cambrian.IngestMemoryOpResponse
+	94,  // 320: cambrian.OperatorConsole.WatchToolApprovals:output_type -> cambrian.ApprovalOp
+	94,  // 321: cambrian.OperatorConsole.WatchMyApprovals:output_type -> cambrian.ApprovalOp
+	98,  // 322: cambrian.OperatorConsole.ListApprovals:output_type -> cambrian.ListApprovalsOpResponse
+	100, // 323: cambrian.OperatorConsole.AnswerApproval:output_type -> cambrian.AnswerApprovalOpResponse
+	103, // 324: cambrian.OperatorConsole.ListStandingApprovals:output_type -> cambrian.ListStandingApprovalsOpResponse
+	28,  // 325: cambrian.OperatorConsole.RevokeStandingApproval:output_type -> cambrian.CommandAck
+	106, // 326: cambrian.OperatorConsole.ShareToTeam:output_type -> cambrian.ShareToTeamOpResponse
+	111, // 327: cambrian.OperatorConsole.ListWatches:output_type -> cambrian.ListWatchesOpResponse
+	28,  // 328: cambrian.OperatorConsole.RegisterWatch:output_type -> cambrian.CommandAck
+	28,  // 329: cambrian.OperatorConsole.DeleteWatch:output_type -> cambrian.CommandAck
+	28,  // 330: cambrian.OperatorConsole.SetWatchActive:output_type -> cambrian.CommandAck
+	116, // 331: cambrian.OperatorConsole.ListWatchDeadLetters:output_type -> cambrian.ListWatchDeadLettersOpResponse
+	211, // 332: cambrian.OperatorConsole.ListPipelines:output_type -> cambrian.ListPipelinesOpResponse
+	213, // 333: cambrian.OperatorConsole.DryRunPipeline:output_type -> cambrian.DryRunPipelineOpResponse
+	217, // 334: cambrian.OperatorConsole.GetPipeline:output_type -> cambrian.GetPipelineOpResponse
+	209, // 335: cambrian.OperatorConsole.ListNodeItems:output_type -> cambrian.ListNodeItemsOpResponse
+	220, // 336: cambrian.OperatorConsole.ValidatePipeline:output_type -> cambrian.ValidatePipelineOpResponse
+	222, // 337: cambrian.OperatorConsole.SavePipeline:output_type -> cambrian.SavePipelineOpResponse
+	224, // 338: cambrian.OperatorConsole.TransitionPipeline:output_type -> cambrian.TransitionPipelineOpResponse
+	203, // 339: cambrian.OperatorConsole.QueryLogs:output_type -> cambrian.QueryLogsOpResponse
+	199, // 340: cambrian.OperatorConsole.TailLogs:output_type -> cambrian.LogRecordOp
+	119, // 341: cambrian.OperatorConsole.GetWatchMetrics:output_type -> cambrian.GetWatchMetricsOpResponse
+	122, // 342: cambrian.OperatorConsole.BacktestWatch:output_type -> cambrian.BacktestWatchOpResponse
+	127, // 343: cambrian.OperatorConsole.PreviewRoute:output_type -> cambrian.PreviewRouteOpResponse
+	132, // 344: cambrian.OperatorConsole.ExplainAccess:output_type -> cambrian.ExplainAccessOpResponse
+	134, // 345: cambrian.OperatorConsole.ListClassificationTags:output_type -> cambrian.ListClassificationTagsOpResponse
+	140, // 346: cambrian.OperatorConsole.ListSessionCheckpoints:output_type -> cambrian.ListSessionCheckpointsOpResponse
+	143, // 347: cambrian.OperatorConsole.ListMCPServers:output_type -> cambrian.ListMCPServersOpResponse
+	145, // 348: cambrian.OperatorConsole.GetEmbeddingConfig:output_type -> cambrian.EmbeddingConfigOp
+	147, // 349: cambrian.OperatorConsole.ClassifyInput:output_type -> cambrian.ClassifiedInputOp
+	150, // 350: cambrian.OperatorConsole.ListGenerators:output_type -> cambrian.ListGeneratorsOpResponse
+	153, // 351: cambrian.OperatorConsole.ListRoleAssignments:output_type -> cambrian.ListRoleAssignmentsOpResponse
+	155, // 352: cambrian.OperatorConsole.TestGenerator:output_type -> cambrian.GeneratorTestResultOp
+	169, // 353: cambrian.OperatorConsole.GetConfigSchema:output_type -> cambrian.ConfigSchemaOp
+	175, // 354: cambrian.OperatorConsole.SetConfig:output_type -> cambrian.SetConfigOpResponse
+	175, // 355: cambrian.OperatorConsole.DeleteConfig:output_type -> cambrian.SetConfigOpResponse
+	175, // 356: cambrian.OperatorConsole.SetGeneratorKey:output_type -> cambrian.SetConfigOpResponse
+	28,  // 357: cambrian.OperatorConsole.ClearGeneratorKey:output_type -> cambrian.CommandAck
+	175, // 358: cambrian.OperatorConsole.SaveGenerator:output_type -> cambrian.SetConfigOpResponse
+	175, // 359: cambrian.OperatorConsole.RemoveGenerator:output_type -> cambrian.SetConfigOpResponse
+	175, // 360: cambrian.OperatorConsole.SetRoleAssignment:output_type -> cambrian.SetConfigOpResponse
+	175, // 361: cambrian.OperatorConsole.SaveMCPServer:output_type -> cambrian.SetConfigOpResponse
+	175, // 362: cambrian.OperatorConsole.RemoveMCPServer:output_type -> cambrian.SetConfigOpResponse
+	175, // 363: cambrian.OperatorConsole.SetMCPServerToken:output_type -> cambrian.SetConfigOpResponse
+	28,  // 364: cambrian.OperatorConsole.ClearMCPServerToken:output_type -> cambrian.CommandAck
+	166, // 365: cambrian.OperatorConsole.TestMCPServer:output_type -> cambrian.MCPServerTestResultOp
+	232, // 366: cambrian.OperatorConsole.ConfirmLink:output_type -> cambrian.ConfirmLinkOpResponse
+	28,  // 367: cambrian.OperatorConsole.RetractLink:output_type -> cambrian.CommandAck
+	235, // 368: cambrian.OperatorConsole.RetractLinksByProducer:output_type -> cambrian.RetractLinksByProducerOpResponse
+	237, // 369: cambrian.OperatorConsole.ListLinkCandidates:output_type -> cambrian.ListLinkCandidatesOpResponse
+	179, // 370: cambrian.OperatorConsole.SubmitPlan:output_type -> cambrian.SubmitPlanOpResponse
+	182, // 371: cambrian.OperatorConsole.GetReactiveBudget:output_type -> cambrian.GetReactiveBudgetOpResponse
+	185, // 372: cambrian.OperatorConsole.GetTokenSeries:output_type -> cambrian.GetTokenSeriesOpResponse
+	190, // 373: cambrian.OperatorConsole.ProposePlan:output_type -> cambrian.ProposePlanOpResponse
+	192, // 374: cambrian.OperatorConsole.ExplainAccessBatch:output_type -> cambrian.ExplainAccessBatchOpResponse
+	196, // 375: cambrian.OperatorConsole.GetBlastRadiusPreview:output_type -> cambrian.BlastRadiusPreviewOp
+	28,  // 376: cambrian.OperatorConsole.RetryWatchDeadLetter:output_type -> cambrian.CommandAck
+	240, // 377: cambrian.OperatorConsole.ListMemoryNotes:output_type -> cambrian.ListMemoryNotesOpResponse
+	242, // 378: cambrian.OperatorConsole.GetMemoryNotes:output_type -> cambrian.MemoryNotesOp
+	244, // 379: cambrian.OperatorConsole.SetMemoryNotes:output_type -> cambrian.SetMemoryNotesOpResponse
+	28,  // 380: cambrian.OperatorConsole.DeleteMemoryNotes:output_type -> cambrian.CommandAck
+	28,  // 381: cambrian.OperatorConsole.SetMemoryNotesBudget:output_type -> cambrian.CommandAck
+	249, // 382: cambrian.OperatorConsole.ListSkillProposals:output_type -> cambrian.ListSkillProposalsOpResponse
+	251, // 383: cambrian.OperatorConsole.DecideSkillProposal:output_type -> cambrian.DecideSkillProposalOpResponse
+	28,  // 384: cambrian.OperatorConsole.SetSkillLock:output_type -> cambrian.CommandAck
+	255, // 385: cambrian.OperatorConsole.ListSkillLedger:output_type -> cambrian.ListSkillLedgerOpResponse
+	257, // 386: cambrian.OperatorConsole.RollbackSkill:output_type -> cambrian.RollbackSkillOpResponse
+	261, // 387: cambrian.OperatorConsole.ListSkillGrants:output_type -> cambrian.ListSkillGrantsOpResponse
+	28,  // 388: cambrian.OperatorConsole.GrantSkill:output_type -> cambrian.CommandAck
+	28,  // 389: cambrian.OperatorConsole.RevokeSkillGrant:output_type -> cambrian.CommandAck
+	265, // 390: cambrian.OperatorConsole.ListIntegrationCatalog:output_type -> cambrian.ListIntegrationCatalogOpResponse
+	270, // 391: cambrian.OperatorConsole.ListIntegrations:output_type -> cambrian.ListIntegrationsOpResponse
+	283, // 392: cambrian.OperatorConsole.InstallIntegration:output_type -> cambrian.IntegrationMutationOpResponse
+	283, // 393: cambrian.OperatorConsole.UpdateIntegration:output_type -> cambrian.IntegrationMutationOpResponse
+	283, // 394: cambrian.OperatorConsole.SetIntegrationSecret:output_type -> cambrian.IntegrationMutationOpResponse
+	283, // 395: cambrian.OperatorConsole.ClearIntegrationSecret:output_type -> cambrian.IntegrationMutationOpResponse
+	283, // 396: cambrian.OperatorConsole.SetIntegrationEnabled:output_type -> cambrian.IntegrationMutationOpResponse
+	285, // 397: cambrian.OperatorConsole.TestIntegration:output_type -> cambrian.IntegrationTestResultOp
+	283, // 398: cambrian.OperatorConsole.RemoveIntegration:output_type -> cambrian.IntegrationMutationOpResponse
+	283, // 399: cambrian.OperatorConsole.RevertIntegrationToFile:output_type -> cambrian.IntegrationMutationOpResponse
+	285, // [285:400] is the sub-list for method output_type
+	170, // [170:285] is the sub-list for method input_type
+	170, // [170:170] is the sub-list for extension type_name
+	170, // [170:170] is the sub-list for extension extendee
+	0,   // [0:170] is the sub-list for field type_name
 }
 
 func init() { file_operator_proto_init() }
@@ -22346,7 +26346,7 @@ func file_operator_proto_init() {
 	if File_operator_proto != nil {
 		return
 	}
-	file_operator_proto_msgTypes[38].OneofWrappers = []any{
+	file_operator_proto_msgTypes[43].OneofWrappers = []any{
 		(*OperatorEvent_Resync)(nil),
 		(*OperatorEvent_Auction)(nil),
 		(*OperatorEvent_AgentReady)(nil),
@@ -22371,21 +26371,23 @@ func file_operator_proto_init() {
 		(*OperatorEvent_RetentionRun)(nil),
 		(*OperatorEvent_PipelineMeters)(nil),
 		(*OperatorEvent_PipelineStep)(nil),
+		(*OperatorEvent_IntegrationHealth)(nil),
+		(*OperatorEvent_HitlResolved)(nil),
 	}
-	file_operator_proto_msgTypes[181].OneofWrappers = []any{
+	file_operator_proto_msgTypes[198].OneofWrappers = []any{
 		(*LogAttrOp_S)(nil),
 		(*LogAttrOp_I)(nil),
 		(*LogAttrOp_F)(nil),
 		(*LogAttrOp_B)(nil),
 	}
-	file_operator_proto_msgTypes[212].OneofWrappers = []any{}
+	file_operator_proto_msgTypes[229].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_operator_proto_rawDesc), len(file_operator_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   255,
+			NumMessages:   298,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

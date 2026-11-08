@@ -78,6 +78,9 @@ func TestExpandFanOut_ExpandsAndRemaps(t *testing.T) {
 		if got.Steps[idx].FanOutOver != nil {
 			t.Errorf("child %d must be concrete", idx)
 		}
+		if want := []string{"intro", "rotor", "tail"}[c]; got.Steps[idx].FanOutItem != want {
+			t.Errorf("child %d FanOutItem = %q, want %q", idx, got.Steps[idx].FanOutItem, want)
+		}
 		if !reflect.DeepEqual(got.Steps[idx].DependsOn, []int{0}) {
 			t.Errorf("child %d deps = %v, want [0]", idx, got.Steps[idx].DependsOn)
 		}
@@ -162,20 +165,124 @@ func TestExpandFanOut_Rejects(t *testing.T) {
 	}
 }
 
-func TestPendingFanOut(t *testing.T) {
+func TestPendingFanOuts(t *testing.T) {
 	t.Parallel()
 	plan := &ExecutionPlan{Steps: []Step{
 		{Query: "scan"},
 		{Query: "write {item}", FanOutOver: iptr(0)},
+		{Query: "other"},
+		{Query: "check {item}", FanOutOver: iptr(0)}, // a SIBLING fan-out over the same source
 	}}
-	if got := PendingFanOut(plan, 0); got != 1 {
-		t.Errorf("PendingFanOut(src=0) = %d, want 1", got)
+	if got := PendingFanOuts(plan, 0); !reflect.DeepEqual(got, []int{1, 3}) {
+		t.Errorf("PendingFanOuts(src=0) = %v, want [1 3] — every fan-out over the source", got)
 	}
-	if got := PendingFanOut(plan, 1); got != -1 {
-		t.Errorf("PendingFanOut(src=1) = %d, want -1", got)
+	if got := PendingFanOuts(plan, 1); got != nil {
+		t.Errorf("PendingFanOuts(src=1) = %v, want nil", got)
 	}
-	if got := PendingFanOut(nil, 0); got != -1 {
-		t.Errorf("nil plan must yield -1, got %d", got)
+	if got := PendingFanOuts(nil, 0); got != nil {
+		t.Errorf("nil plan must yield nil, got %v", got)
+	}
+}
+
+// Two parametric steps over ONE source, and a step depending on both: expanding them in
+// turn (as the executor does) leaves the dependent barriering over BOTH child sets
+// (T-20261107-only-the-first-fan-out-step-over-a-source).
+func TestExpandFanOut_SiblingsOverOneSource(t *testing.T) {
+	t.Parallel()
+	plan := &ExecutionPlan{Steps: []Step{
+		{Query: "aging report"}, // 0
+		{Query: "contact for {item}", FanOutOver: iptr(0), DependsOn: []int{0}},  // 1
+		{Query: "invoices for {item}", FanOutOver: iptr(0), DependsOn: []int{0}}, // 2
+		{Query: "draft reminders", DependsOn: []int{1, 2}},                       // 3
+	}}
+	items := []string{"acme", "bolt"}
+	cur := plan
+	for _, fi := range PendingFanOuts(plan, 0) {
+		next, err := ExpandFanOut(cur, fi, items, 0)
+		if err != nil {
+			t.Fatalf("ExpandFanOut(%d): %v", fi, err)
+		}
+		cur = next
+	}
+	if len(cur.Steps) != 8 {
+		t.Fatalf("want 4 + 2 + 2 steps, got %d", len(cur.Steps))
+	}
+	wantQ := []string{"contact for acme", "contact for bolt", "invoices for acme", "invoices for bolt"}
+	for c, q := range wantQ {
+		if got := cur.Steps[4+c].Query; got != q {
+			t.Errorf("child %d query = %q, want %q", 4+c, got, q)
+		}
+	}
+	if got := cur.Steps[3].DependsOn; !reflect.DeepEqual(got, []int{4, 5, 6, 7}) {
+		t.Errorf("the dependent must barrier over both child sets, deps = %v", got)
+	}
+}
+
+// A parametric step whose query lacks the {item} token must NEVER become N identical
+// children: substitution is a no-op, so each child would carry the whole-set instruction
+// and a side-effecting step would repeat every write N times
+// (T-20261107-fan-out-step-without-an-item-placeholder). It is demoted to ONE concrete
+// step over the whole set instead.
+func TestExpandFanOut_UntemplatedStepIsDemotedNotMultiplied(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		step Step
+	}{
+		{"default var", Step{Query: "For each incident lacking an OPS issue, create one", FanOutOver: iptr(0), DependsOn: []int{0}}},
+		{"custom var, item token used", Step{Query: "create an issue for {item}", FanOutOver: iptr(0), FanOutVar: "inc", DependsOn: []int{0}}},
+		{"no dependency declared", Step{Query: "create the issues", FanOutOver: iptr(0)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := &ExecutionPlan{Steps: []Step{
+				{Query: "find incidents"},
+				tc.step,
+				{Query: "summarise", DependsOn: []int{1}},
+			}}
+			got, err := ExpandFanOut(plan, 1, []string{"INC-1040", "INC-1043", "INC-1046"}, 2) // width cap below 3 is moot
+			if err != nil {
+				t.Fatalf("ExpandFanOut: %v", err)
+			}
+			if len(got.Steps) != 3 {
+				t.Fatalf("an untemplated step must not expand: %d steps, want 3", len(got.Steps))
+			}
+			queries := map[string]int{}
+			for _, s := range got.Steps {
+				queries[s.Query]++
+			}
+			if queries[tc.step.Query] != 1 {
+				t.Errorf("the whole-set query must appear exactly once, got %d", queries[tc.step.Query])
+			}
+			d := got.Steps[1]
+			if d.FanOutOver != nil || d.FanOutVar != "" || d.FanOutItem != "" {
+				t.Errorf("demoted step must be concrete and not a child: %+v", d)
+			}
+			if !reflect.DeepEqual(d.DependsOn, []int{0}) {
+				t.Errorf("demoted step must depend on its source exactly once, deps = %v", d.DependsOn)
+			}
+			if !reflect.DeepEqual(got.Steps[2].DependsOn, []int{1}) {
+				t.Errorf("a dependent keeps depending on the demoted step, deps = %v", got.Steps[2].DependsOn)
+			}
+			if plan.Steps[1].FanOutOver == nil {
+				t.Error("ExpandFanOut mutated the input plan")
+			}
+		})
+	}
+}
+
+func TestStep_FanOutTemplated(t *testing.T) {
+	t.Parallel()
+	if !(Step{Query: "write {item}"}).FanOutTemplated() {
+		t.Error("{item} is the default token")
+	}
+	if !(Step{Query: "patch {file}", FanOutVar: "file"}).FanOutTemplated() {
+		t.Error("{file} with FanOutVar=file is templated")
+	}
+	if (Step{Query: "patch {item}", FanOutVar: "file"}).FanOutTemplated() {
+		t.Error("{item} is not the token when FanOutVar=file")
+	}
+	if (Step{Query: "write all of them"}).FanOutTemplated() {
+		t.Error("no token ⇒ not templated")
 	}
 }
 

@@ -19,8 +19,14 @@ func (s *Service) SetSteeringSources(hub *ExecutionControlHub, hitl domain.Appro
 }
 
 // ResolveHITL approves or rejects a raised HITL intervention, reusing the
-// kernel ApprovalHub (ADR-0047 D11). Idempotent against the intervention id via
+// kernel approval hub (ADR-0047 D11). Idempotent against the intervention id via
 // command_id; audited.
+//
+// ADR-0142 D11: the hub authorises the answer at answer time. A caller who
+// satisfies none of the item's approver rules (an operator on a self-ruled
+// machine consent, say) is refused with PERMISSION_DENIED BEFORE anything is
+// audited as resolved. An unknown or already-resolved id stays a no-op ack, as
+// it always was (a console racing another console's answer).
 func (s *Service) ResolveHITL(ctx context.Context, req *pb.ResolveHITLRequest) (*pb.CommandAck, error) {
 	if s.hitl == nil {
 		return nil, status.Error(codes.Unimplemented, "operator HITL hub not configured")
@@ -29,6 +35,15 @@ func (s *Service) ResolveHITL(ctx context.Context, req *pb.ResolveHITLRequest) (
 		return nil, status.Error(codes.InvalidArgument, "command_id, reason and intervention_id are required")
 	}
 	actor, role, _ := PrincipalFromContext(ctx)
+	me, ok := callerApprover(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "approvals require an authenticated caller")
+	}
+	if it, err := s.hitl.Get(ctx, req.GetInterventionId()); err == nil && it.State == domain.ApprovalPending {
+		if ok, why := s.hitl.Answerable(ctx, it, me); !ok {
+			return nil, status.Error(codes.PermissionDenied, why)
+		}
+	}
 
 	deduped, err := s.recordAndEmit(ctx, domain.AuditEntry{
 		ID: newAuditID(), CommandID: req.GetCommandId(), At: time.Now().UTC(),
@@ -40,7 +55,10 @@ func (s *Service) ResolveHITL(ctx context.Context, req *pb.ResolveHITLRequest) (
 		return nil, err
 	}
 	if !deduped {
-		s.hitl.Submit(req.GetInterventionId(), req.GetApprove(), actor)
+		// Unknown / already resolved / expired: the answer lands nowhere, as before.
+		_, _ = s.hitl.Answer(ctx, req.GetInterventionId(), domain.ApprovalAnswer{
+			Approved: req.GetApprove(), By: me, Reason: req.GetReason(),
+		})
 	}
 	return &pb.CommandAck{CommandId: req.GetCommandId(), Deduped: deduped}, nil
 }

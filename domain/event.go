@@ -683,3 +683,23 @@ type ReactiveBudgetEvent struct {
 
 func (ReactiveBudgetEvent) domainEvent()      {}
 func (ReactiveBudgetEvent) EventType() string { return EventTypeReactiveBudget }
+
+// EventTypeMCPServerHealth: one MCP server's health changed (integrations
+// surface). Bridged to OperatorEvent.integration_health.
+const EventTypeMCPServerHealth = "mcp.server_health"
+
+// MCPServerHealthEvent is the absolute health state of one MCP server, published
+// on every change (state, error, tool count, restarts). LastError is already
+// redacted by the connector: no injected secret value can appear in it.
+type MCPServerHealthEvent struct {
+	ServerID      string
+	State         string // "stopped" | "starting" | "ready" | "error"
+	LastHandshake time.Time
+	ToolCount     int
+	LastError     string
+	Restarts      int
+	ChangedAt     time.Time
+}
+
+func (MCPServerHealthEvent) domainEvent()      {}
+func (MCPServerHealthEvent) EventType() string { return EventTypeMCPServerHealth }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -64,8 +65,8 @@ func contextByteSize(ctx map[string]string) int {
 type StepFunc func(ctx context.Context, stepIndex int, handoff *domain.Handoff) (*domain.Handoff, error)
 
 // finalResultKey is the master-context key under which DAGExecutor stores the
-// result of the last topologically ordered step, for Server.Execute to return
-// as the response payload. It is an internal convention; callers must delete it
+// plan's report (buildPlanReport: the result of every final step, labelled when
+// there are several), for Server.Execute to return as the response payload. It is an internal convention; callers must delete it
 // before exposing the context to external consumers.
 const finalResultKey = "_dag_final_result"
 
@@ -146,13 +147,19 @@ type DAGExecutor struct {
 	// (PrimeForStep, the executor-push LTM path this once selected, was deleted
 	// 2026-11-01 — ADR-0048 D3 / T-20261031-primeforstep-is-unwired-so-activation-threshold.)
 	UseGlobalWorkspace      bool
-	StepFactCosineThreshold float64          // AGENTCONTEXTREQ REQ2: min cosine for forwarding a planning fact to a step (default 0.55)
-	MaxReplanAttempts       int              // max replan attempts; 0 disables replan
-	MaxFanOutWidth          int              // ADR-0078 R2: cap on parametric fan-out expansion; 0 disables the cap
-	MaxPlanCost             float64          // total plan budget; 0 disables budget enforcement
-	DefaultInputCostPer1M   float64          // cost per 1M input tokens for cost estimation
-	DefaultOutputCostPer1M  float64          // cost per 1M output tokens for cost estimation
-	CurrentSessionID        domain.SessionID // session the run belongs to; empty = no session
+	StepFactCosineThreshold float64 // AGENTCONTEXTREQ REQ2: min cosine for forwarding a planning fact to a step (default 0.55)
+	MaxReplanAttempts       int     // max replan attempts; 0 disables replan
+	MaxFanOutWidth          int     // ADR-0078 R2: cap on parametric fan-out expansion; 0 disables the cap
+	// FanOutConcurrency bounds how many children of fan-out expansions (Step.FanOutItem
+	// set) run at once in one plan (execution.plan.fan_out_concurrency). > 1 also serves
+	// each child on a dedicated agent instance (domain.WithDedicatedInstance), because an
+	// agent process runs one Execute at a time; <= 1 runs children one at a time on the
+	// agent's shared instance.
+	FanOutConcurrency      int
+	MaxPlanCost            float64          // total plan budget; 0 disables budget enforcement
+	DefaultInputCostPer1M  float64          // cost per 1M input tokens for cost estimation
+	DefaultOutputCostPer1M float64          // cost per 1M output tokens for cost estimation
+	CurrentSessionID       domain.SessionID // session the run belongs to; empty = no session
 	// CurrentRunID is the execution checkpoints are written under. Checkpoints are keyed by
 	// RUN because a step index only means something relative to the plan of the run it was
 	// taken against. Empty ⇒ no checkpointing.
@@ -194,6 +201,11 @@ type DAGExecutor struct {
 	pendingInjection string // ADR-0047 A1.1: operator instruction folded in on resume
 	replanCount      int
 	errorPause       bool // true when pause was triggered by step error (auto-replan)
+	// effectReplans counts replans spent on an effect-check refusal in this run.
+	// The owner rule is ONE: the first refusal replans with the reason ("no agent
+	// can move"); a second ends the plan, and the server turns it into a question
+	// for the user — never a dispatch to an arbitrary agent.
+	effectReplans int
 }
 
 // InjectPlanner composes the new forward plan for an operator InjectCorrection
@@ -261,6 +273,12 @@ func (d *DAGExecutor) executeStep(
 		}
 	}
 
+	// The step as dispatched: a fan-out source is told to end with its items as a
+	// JSON array (fanout_source.go). The cache key reads the dispatched query, so a
+	// result cached without that instruction is never replayed to a source.
+	dispatched := plan.Steps[stepIndex]
+	dispatched.Query = fanOutSourceQuery(plan, stepIndex)
+
 	// ADR-0026: step-level cache lookup. On hit, skip stepFn entirely.
 	var cacheKey string
 	if d.StepCache != nil {
@@ -268,7 +286,7 @@ func (d *DAGExecutor) executeStep(
 		// Phase 3 the snapshot carries no step_N_result keys, so a dependent step's
 		// key used to ignore its inputs and replay another plan's answer for the same
 		// subject and query (T-20261105-a-planner-thought-step-that-depends-on-two).
-		cacheKey = stepCacheKey(plan.Subject, planID, plan.Steps[stepIndex], deps.results)
+		cacheKey = stepCacheKey(plan.Subject, planID, dispatched, deps.results)
 		if cached, ok, getErr := d.StepCache.Get(ctx, cacheKey); getErr != nil {
 			slog.Warn("StepCache.Get failed, falling through to live execution", "step", stepIndex, "err", getErr)
 		} else if ok && cached != nil {
@@ -301,14 +319,19 @@ func (d *DAGExecutor) executeStep(
 	}
 
 	stepHandoff := &domain.Handoff{
-		Payload:       &domain.Payload{Data: []byte(plan.Steps[stepIndex].Query)},
+		Payload:       &domain.Payload{Data: []byte(dispatched.Query)},
 		Context:       snapshot,
 		WorkingMemory: workingMemory,
 	}
+	// The callback may hold an older copy of the plan (fan-out and replan rewrite it
+	// mid-run), so hand it THIS plan's step: its routing contract must travel with it.
+	// An agent step carries the planner's query there (it is the auction's task
+	// description; the agent reads the handoff payload), a thought step the
+	// dispatched one, since the thought call reads its task from the ctx step.
 	if plan.Steps[stepIndex].IsThought && d.ThoughtFn != nil {
-		resp, stepErr = d.ThoughtFn(ctx, stepIndex, stepHandoff)
+		resp, stepErr = d.ThoughtFn(domain.WithPlanStep(ctx, dispatched), stepIndex, stepHandoff)
 	} else {
-		resp, stepErr = stepFn(ctx, stepIndex, stepHandoff)
+		resp, stepErr = stepFn(domain.WithPlanStep(ctx, plan.Steps[stepIndex]), stepIndex, stepHandoff)
 	}
 
 	if stepErr != nil {
@@ -565,7 +588,10 @@ func (d *DAGExecutor) applyReplannedPlan(newPlan *domain.ExecutionPlan, plan **d
 // children at fresh indices and leaves every existing index intact, so — unlike
 // applyReplannedPlan — the completed and alreadyDispatched maps and all masterContext
 // step_N keys stay valid and are NOT cleared. The inert parametric node is marked completed
-// so it is fully accounted (the dispatch guard already prevents it from ever running).
+// so it is fully accounted (the dispatch guard already prevents it from ever running); a
+// demoted node (domain.ResolveFanOut: no item placeholder, or a side-effecting step over
+// an unstructured source, or any step over JSON with no recognisable list) is an
+// ordinary step again and is left to dispatch.
 // Runs in the coordinator goroutine.
 func (d *DAGExecutor) applyExpandedPlan(expanded *domain.ExecutionPlan, plan **domain.ExecutionPlan, n *int, completed map[int]bool, topoOrder *[]int, fanIdx int) error {
 	order, err := TopologicalSort(expanded.Steps)
@@ -575,7 +601,12 @@ func (d *DAGExecutor) applyExpandedPlan(expanded *domain.ExecutionPlan, plan **d
 	*plan = expanded
 	*n = len(expanded.Steps)
 	*topoOrder = order
-	completed[fanIdx] = true
+	// An expanded node is inert and done (its children carry the work). A DEMOTED one
+	// (domain.ResolveFanOut) is now an ordinary step that still has to run, so it is
+	// left for dispatch.
+	if expanded.Steps[fanIdx].FanOutOver != nil {
+		completed[fanIdx] = true
+	}
 	return nil
 }
 
@@ -770,7 +801,7 @@ func (d *DAGExecutor) HotSwap(newPlan *domain.ExecutionPlan) {
 //     before Execute returns — no goroutine leaks regardless of failure mode.
 //   - masterContext["step_{i}_result"]   = resp.Payload.Data for step i
 //   - masterContext["step_{i}_{k}"]      = resp.Context[k]   for step i
-//   - masterContext[finalResultKey]       = result of last step in topo order
+//   - masterContext[finalResultKey]       = buildPlanReport: every final (sink) step's result
 func (d *DAGExecutor) Execute(
 	ctx context.Context,
 	plan *domain.ExecutionPlan,
@@ -862,6 +893,7 @@ func (d *DAGExecutor) ExecuteFrom(
 	d.resumeCh = make(chan struct{}, 1)
 	d.hotSwapPlan = nil
 	d.replanCount = 0
+	d.effectReplans = 0
 	d.errorPause = false
 	d.pausedMu.Unlock()
 
@@ -887,6 +919,10 @@ func (d *DAGExecutor) ExecuteFrom(
 	var wg sync.WaitGroup
 	// Buffered with n: every goroutine sends exactly one result, never blocks.
 	results := make(chan stepResult, n)
+	// fanOutSem bounds how many fan-out CHILDREN of this plan execute at once
+	// (execution.plan.fan_out_concurrency; <= 1 ⇒ one at a time on the agent's shared
+	// instance, the pre-2026-11-07 effective behaviour). Ordinary steps are not bounded.
+	fanOutSem := make(chan struct{}, max(1, d.FanOutConcurrency))
 
 	var mu sync.Mutex
 	// ADR-0016: Enrich initial context with cross-session LTM facts before cloneMap.
@@ -1076,10 +1112,45 @@ func (d *DAGExecutor) ExecuteFrom(
 			stepIdx := i
 			stepWorkingMemory := workingMemory
 			stepContextSnapshot := contextSnapshot
+			// The plan VALUE at dispatch, not the variable: the coordinator reassigns
+			// plan when a sibling's fan-out expands (applyExpandedPlan) or a replan
+			// lands, while this goroutine may still be starting. ExpandFanOut clones,
+			// so the captured plan is never mutated
+			// (T-20261106-dag-executor-step-goroutine-reads-the-plan).
+			stepPlan := plan
+			fanOutChild := plan.Steps[i].FanOutItem != ""
 			go func() {
 				defer wg.Done()
-				results <- d.executeStep(cancelCtx, plan, stepIdx,
+				stepCtx := cancelCtx
+				if fanOutChild {
+					// Fan-out children run under the plan's fan-out bound
+					// (execution.plan.fan_out_concurrency). The wait happens HERE, before
+					// the step's deadline is stamped (dispatch), so a queued child does
+					// not burn its step timeout waiting for a slot.
+					select {
+					case fanOutSem <- struct{}{}:
+					case <-cancelCtx.Done():
+						results <- stepResult{index: stepIdx, err: context.Cause(cancelCtx)}
+						return
+					}
+					if d.FanOutConcurrency > 1 {
+						// An agent process serves ONE Execute at a time (SDK runtime,
+						// ADR-0036 D2), and every call to an agent id goes to its one
+						// cached instance — so concurrently dispatched children of one
+						// fan-out used to queue on that process and run strictly one
+						// after another, ~11 s each, overrunning the 240 s chat turn
+						// (T-20261107-plan-fan-out-steps-run-one-at-a-time-on-a). A
+						// dedicated instance per child (the ADR-0139 D12 subagent
+						// mechanism) is what lets the bound be real parallelism.
+						stepCtx = domain.WithDedicatedInstance(stepCtx)
+					}
+				}
+				res := d.executeStep(stepCtx, stepPlan, stepIdx,
 					stepContextSnapshot, stepWorkingMemory, deps, stepFn, planID)
+				if fanOutChild {
+					<-fanOutSem // free the slot before reporting, so the next child can start
+				}
+				results <- res
 			}()
 		}
 	}
@@ -1157,7 +1228,13 @@ coordinate:
 					// The rejection BECOMES the plan's error, exactly as the returned
 					// PartialPlanError used to report it — so the completion block
 					// records the same LastError the caller sees.
-					firstErr = fmt.Errorf("replan validation: replanned plan repeats the same step that failed: %s", newPlan.Steps[0].Query)
+					if domain.IsDispatchRefusal(firstErr) {
+						// Keep the refusal in the chain: the server turns it into a
+						// question for the user rather than a generic failure.
+						firstErr = fmt.Errorf("replan validation: replanned plan repeats the same step that failed: %s: %w", newPlan.Steps[0].Query, firstErr)
+					} else {
+						firstErr = fmt.Errorf("replan validation: replanned plan repeats the same step that failed: %s", newPlan.Steps[0].Query)
+					}
 					break coordinate
 				}
 
@@ -1241,9 +1318,18 @@ coordinate:
 				dispatch()
 				continue
 			case <-cancelCtx.Done():
-				return nil, cancelCtx.Err()
-			case <-ctx.Done():
-				return nil, ctx.Err()
+				// The plan's ctx ended while it was paused (its caller's deadline or
+				// cancellation, or a plan ceiling). It used to RETURN the bare ctx error
+				// from here, past the completion block: no PlanEvent, no plan outcome, and
+				// no report — the caller learned nothing of the steps that had completed
+				// (T-20261107-a-delegated-plan-stopped-by-its-caller-s). It now leaves the
+				// loop like every other abort, as a PartialPlanError carrying the report.
+				// cancelCtx is a child of ctx, so this case covers both.
+				if firstErr == nil {
+					firstErr = context.Cause(cancelCtx)
+					failedStepIdx = -1 // no step failed: the plan was stopped between steps
+				}
+				break coordinate
 			}
 		}
 
@@ -1254,9 +1340,20 @@ coordinate:
 			if firstErr == nil {
 				firstErr = r.err
 				failedStepIdx = r.index
+				replan := d.ReplanHandler != nil && d.MaxReplanAttempts != 0
+				// Effect-checked dispatch: an effect refusal gets exactly one replan.
+				if replan && domain.IsDispatchRefusal(r.err) {
+					if d.effectReplans >= 1 {
+						slog.Warn("DAGExecutor: effect check refused a step again after its replan; ending the plan so the user is asked",
+							"step", r.index, "err", r.err)
+						replan = false
+					} else {
+						d.effectReplans++
+					}
+				}
 				// If ReplanHandler is wired, pause for replanning instead of
 				// immediately cancelling. In-flight siblings continue normally.
-				if d.ReplanHandler != nil && d.MaxReplanAttempts != 0 {
+				if replan {
 					d.pausedMu.Lock()
 					d.paused = true
 					d.errorPause = true
@@ -1331,16 +1428,30 @@ coordinate:
 			}
 		}
 
-		// ADR-0078 R2: if a parametric fan-out node is waiting on the step that just
-		// completed, expand it now — a deterministic plan rewrite over the step's output,
-		// so "discover N → do N" adapts the plan with no planner round-trip. On over-width
-		// it is routed to replan (no silent truncation); on any other extraction issue the
-		// node simply expands to whatever items were found.
+		// ADR-0078 R2: if parametric fan-out nodes are waiting on the step that just
+		// completed, expand them now — a deterministic plan rewrite over the step's output,
+		// so "discover N → do N" adapts the plan with no planner round-trip. EVERY pending
+		// node over this source is expanded, in plan order: several parametric steps may
+		// share one source, and expanding only the first left its siblings and their
+		// dependents undispatched forever (T-20261107-only-the-first-fan-out-step-over-a-
+		// source). Expansion appends and never renumbers, so expanding one after another on
+		// the evolving plan keeps every index — and a dependent of two siblings ends up
+		// barriering over both child sets. On over-width it is routed to replan (no silent
+		// truncation); on any other extraction issue the node simply expands to whatever
+		// items were found. domain.ResolveFanOut DEMOTES a node to one ordinary step —
+		// dispatched rather than marked completed — when its query has no {item} token,
+		// or when it is side-effecting and the source is not a structured list (free text
+		// split into lines made every markdown heading a write child,
+		// T-20261107-fan-out-over-a-prose-source-splits-markdown), or when the source
+		// holds JSON with no recognisable item list (its lines made 26 read children for
+		// 3 customers, T-20261107-read-only-fan-out-over-an-unrecognised-json).
 		if firstErr == nil {
-			if fanIdx := domain.PendingFanOut(plan, r.index); fanIdx >= 0 {
-				srcOut := masterContext[fmt.Sprintf("step_%d_result", r.index)]
-				items := domain.ExtractFanOutItems(srcOut)
-				expanded, expErr := domain.ExpandFanOut(plan, fanIdx, items, d.MaxFanOutWidth)
+			srcOut := masterContext[fmt.Sprintf("step_%d_result", r.index)]
+			for _, fanIdx := range domain.PendingFanOuts(plan, r.index) {
+				if completed[fanIdx] {
+					continue // already expanded (an inert node keeps its FanOutOver tag)
+				}
+				expanded, items, how, expErr := domain.ResolveFanOut(plan, fanIdx, srcOut, d.MaxFanOutWidth)
 				if expErr != nil {
 					slog.Info("DAGExecutor: fan-out over-width; routing to replan",
 						"src", r.index, "fan_step", fanIdx, "items", len(items), "err", expErr)
@@ -1352,21 +1463,40 @@ coordinate:
 						d.errorPause = true
 						d.pausedMu.Unlock()
 					}
-				} else if err := d.applyExpandedPlan(expanded, &plan, &n, completed, &topoOrder, fanIdx); err != nil {
+					break
+				}
+				if err := d.applyExpandedPlan(expanded, &plan, &n, completed, &topoOrder, fanIdx); err != nil {
 					slog.Warn("DAGExecutor: fan-out expansion produced an invalid plan", "err", err)
 					firstErr = err
 					failedStepIdx = fanIdx
-				} else {
-					if len(items) == 0 {
-						// Nothing to fan out over: the inert node stays a dependency of its
-						// dependents (domain.ExpandFanOut) and is recorded as an empty
-						// result, so they are told it produced nothing.
-						mu.Lock()
-						masterContext[fmt.Sprintf("step_%d_result", fanIdx)] = ""
-						delete(masterContext, fmt.Sprintf("step_%d_cid", fanIdx))
-						mu.Unlock()
-					}
-					slog.Info("DAGExecutor: fan-out expanded", "src", r.index, "fan_step", fanIdx, "children", len(items))
+					break
+				}
+				switch {
+				case how == domain.FanOutDemotedUntemplated:
+					slog.Warn("DAGExecutor: fan-out step has no item placeholder; running it ONCE over the whole set instead of once per item",
+						"src", r.index, "fan_step", fanIdx, "query", plan.Steps[fanIdx].Query)
+				case how == domain.FanOutDemotedUnstructured:
+					slog.Warn("DAGExecutor: side-effecting fan-out over a source that is not a structured list; running it ONCE over the whole source instead of splitting free text into items",
+						"src", r.index, "fan_step", fanIdx, "source_bytes", len(srcOut), "query", plan.Steps[fanIdx].Query)
+				case how == domain.FanOutDemotedUnrecognisedJSON:
+					slog.Warn("DAGExecutor: fan-out source holds JSON but no recognisable item list; running the step ONCE over the whole source instead of once per line of JSON",
+						"src", r.index, "fan_step", fanIdx, "source_bytes", len(srcOut), "source_head", fanOutSourceHead(srcOut))
+				case len(items) == 0:
+					// Nothing to fan out over: the inert node stays a dependency of its
+					// dependents (domain.ExpandFanOut) and is recorded as an empty
+					// result, so they are told it produced nothing.
+					mu.Lock()
+					masterContext[fmt.Sprintf("step_%d_result", fanIdx)] = ""
+					delete(masterContext, fmt.Sprintf("step_%d_cid", fanIdx))
+					mu.Unlock()
+					slog.Info("DAGExecutor: fan-out expanded", "src", r.index, "fan_step", fanIdx, "children", 0,
+						"source_bytes", len(srcOut), "source_head", fanOutSourceHead(srcOut))
+				default:
+					// The items and the source's size are logged so a wrong split is
+					// diagnosable from the log alone (the step's answer_preview is 300
+					// chars; T-20261107-read-only-fan-out-over-an-unrecognised-json).
+					slog.Info("DAGExecutor: fan-out expanded", "src", r.index, "fan_step", fanIdx, "children", len(items),
+						"source_bytes", len(srcOut), "items_head", fanOutItemsHead(items))
 				}
 			}
 		}
@@ -1429,7 +1559,10 @@ coordinate:
 	// ADR-0049 A2.2 / ADR-0095: the plan-outcome hook — close the episode, write the
 	// A2.3 failure record, feed the procedures — for BOTH success and failure.
 	if d.MemoryRecorder != nil {
-		_ = d.MemoryRecorder.RecordPlanOutcome(ctx, domain.PlanRecord{
+		// WithoutCancel (AGENTS.md §2.7): a plan stopped by its caller's deadline or
+		// cancellation still has an outcome to record — that is when ctx is already
+		// done, and the write would otherwise be dropped. Values (scope, session) stay.
+		_ = d.MemoryRecorder.RecordPlanOutcome(context.WithoutCancel(ctx), domain.PlanRecord{
 			PlanID:   planID,
 			Goal:     plan.Subject,
 			Success:  !planFailed,
@@ -1455,6 +1588,10 @@ coordinate:
 	// An abort carries its own error verbatim — a topology error stays a topology error,
 	// and the replan-budget exit keeps the PartialPlanError it built at the exit site.
 	if abortErr != nil {
+		var pe *PartialPlanError
+		if errors.As(abortErr, &pe) && pe.Report == "" {
+			pe.Report = buildPlanReport(plan, masterContext, completed)
+		}
 		return nil, abortErr
 	}
 
@@ -1464,10 +1601,11 @@ coordinate:
 			LastError:   firstErr,
 			Context:     cloneMap(masterContext),
 			ReplanCount: d.replanCount,
+			Report:      buildPlanReport(plan, masterContext, completed),
 		}
 	}
 
-	masterContext[finalResultKey] = masterContext[fmt.Sprintf("step_%d_result", topoOrder[n-1])]
+	masterContext[finalResultKey] = buildPlanReport(plan, masterContext, completed)
 	return masterContext, nil
 }
 
@@ -1508,6 +1646,10 @@ type PartialPlanError struct {
 	LastError   error
 	Context     map[string]string
 	ReplanCount int
+	// Report is buildPlanReport over the steps that completed before the plan stopped
+	// (its completed frontier), so the caller is told what DID happen, not only what
+	// failed. "" when nothing completed.
+	Report string
 }
 
 func (e *PartialPlanError) Error() string {

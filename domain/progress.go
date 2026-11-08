@@ -77,6 +77,78 @@ type ProgressUpdate struct {
 	// feed "something went wrong" back into the model's context on the next turn, and it
 	// would break the existing invariant that a failed turn stores nothing.
 	Note string
+	// Language is the conversation's language ("en", "tr"; T-20261107-chat-progress-status-
+	// line-phases-are-english). Text renders the phase in it from progressPhrasings, a fixed
+	// catalogue — never a model, which may be exactly what is unavailable. Empty or unknown
+	// is English. The chat turn sets it; emitters that do not know it (the planner's step
+	// progress) leave it empty and the kernel's progress holder fills it in from the
+	// conversation's turn. Phase itself stays the English closed-vocabulary identity.
+	Language string
+}
+
+// progressPhrasing is one language's rendering of the closed phase vocabulary.
+type progressPhrasing struct {
+	phases map[ProgressPhase]string
+	// step renders the counter suffix appended to the phase.
+	step func(step, total int) string
+	// still marks a repeated phase as ongoing, with how long it has run.
+	still func(phase, elapsed string) string
+}
+
+// progressPhrasings is the catalogue. English is the vocabulary itself, so English output is
+// unchanged. Adding a language is one entry here (and its failure sentences in
+// internal/chat locale.go; a test there keeps the two language sets equal).
+var progressPhrasings = map[string]progressPhrasing{
+	"en": {
+		phases: map[ProgressPhase]string{
+			PhaseUnderstanding: string(PhaseUnderstanding),
+			PhasePlanning:      string(PhasePlanning),
+			PhaseSearching:     string(PhaseSearching),
+			PhaseRunningTool:   string(PhaseRunningTool),
+			PhaseWorking:       string(PhaseWorking),
+			PhaseWriting:       string(PhaseWriting),
+		},
+		step:  func(step, total int) string { return " — step " + itoa(step) + " of " + itoa(total) },
+		still: func(phase, elapsed string) string { return "still " + phase + " (" + elapsed + ")" },
+	},
+	"tr": {
+		phases: map[ProgressPhase]string{
+			PhaseUnderstanding: "istek anlaşılıyor",
+			PhasePlanning:      "iş planlanıyor",
+			PhaseSearching:     "bellekte aranıyor",
+			PhaseRunningTool:   "bir araç çalıştırılıyor",
+			PhaseWorking:       "üzerinde çalışılıyor",
+			PhaseWriting:       "yanıt yazılıyor",
+		},
+		step:  func(step, total int) string { return " — adım " + itoa(step) + " / " + itoa(total) },
+		still: func(phase, elapsed string) string { return "hâlâ " + phase + " (" + elapsed + ")" },
+	},
+}
+
+// ProgressLanguages lists the languages the phase catalogue covers.
+func ProgressLanguages() []string {
+	out := make([]string, 0, len(progressPhrasings))
+	for k := range progressPhrasings {
+		out = append(out, k)
+	}
+	return out
+}
+
+func phrasingFor(lang string) progressPhrasing {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	if i := strings.IndexAny(lang, "-_"); i > 0 {
+		lang = lang[:i]
+	}
+	if p, ok := progressPhrasings[lang]; ok {
+		return p
+	}
+	return progressPhrasings["en"]
+}
+
+// StillText marks a repeated phase line as still going after elapsed (a delivery bridge
+// that re-sends the same phase says so), in the update's language.
+func (u ProgressUpdate) StillText(elapsed string) string {
+	return phrasingFor(u.Language).still(u.Text(), elapsed)
 }
 
 // Text renders the update as one short human-facing line.
@@ -93,10 +165,12 @@ func (u ProgressUpdate) Text() string {
 	if !phase.Valid() {
 		phase = PhaseWorking
 	}
+	p := phrasingFor(u.Language)
+	text := p.phases[phase]
 	if u.TotalSteps > 0 && u.Step > 0 {
-		return string(phase) + " — step " + itoa(u.Step) + " of " + itoa(u.TotalSteps)
+		return text + p.step(u.Step, u.TotalSteps)
 	}
-	return string(phase)
+	return text
 }
 
 // Validate checks the invariants a sink may rely on.

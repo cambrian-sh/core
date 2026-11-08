@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -31,17 +32,25 @@ func (p *PgVectorAdapter) RetagDocument(ctx context.Context, documentID string, 
 	if documentID == "" {
 		return nil
 	}
-	if tags == nil {
-		tags = []string{}
-	}
-	// The chunk cache is JSON, so the tag list is marshalled once and spliced into
-	// each chunk's metadata by key — leaving every other metadata key untouched.
-	tagsJSON, err := json.Marshal(tags)
-	if err != nil {
-		return mapError("RetagDocument", err)
-	}
-
-	err = pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
+		// The owner fence (domain/owner_scope.go) is not a label a retag may move:
+		// dropping owner:X would publish X's personal material to everyone, and
+		// adding one would hide a row behind someone else's identity. So owner tags
+		// are carried over from the row as stored (locked, so a concurrent retag
+		// cannot interleave) and any owner tag in the request is ignored.
+		var current []string
+		if terr := tx.QueryRow(ctx,
+			`SELECT tags FROM `+TableDocuments+` WHERE id = $1 FOR UPDATE`, documentID).Scan(&current); terr != nil && !errors.Is(terr, pgx.ErrNoRows) {
+			return terr
+		}
+		final := retagPreservingOwner(current, tags)
+		// The chunk cache is JSON, so the tag list is marshalled once and spliced into
+		// each chunk's metadata by key — leaving every other metadata key untouched.
+		tagsJSON, merr := json.Marshal(final)
+		if merr != nil {
+			return merr
+		}
+		tags := final
 		if _, terr := tx.Exec(ctx,
 			`UPDATE `+TableDocuments+` SET tags = $2, updated_at = (now() AT TIME ZONE 'UTC') WHERE id = $1`, // UTC wall clock (0019_event_time.sql)
 			documentID, tags); terr != nil {
@@ -57,6 +66,23 @@ func (p *PgVectorAdapter) RetagDocument(ctx context.Context, documentID string, 
 		return terr
 	})
 	return mapError("RetagDocument", err)
+}
+
+// retagPreservingOwner is the requested classification minus any owner-namespace
+// tag, plus the owner tags the document already carries. Never nil.
+func retagPreservingOwner(current, requested []string) []string {
+	out := []string{}
+	for _, t := range requested {
+		if !domain.IsOwnerTag(t) {
+			out = append(out, t)
+		}
+	}
+	for _, t := range current {
+		if domain.IsOwnerTag(t) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // DocumentTags returns the authoritative classification for a document.

@@ -165,7 +165,7 @@ func TestMiddleware_MachineTokenAuthenticatesAsWorkerCarryingItsOwner(t *testing
 	if next.principal.Kind != domain.PrincipalMachine || next.principal.ID != "afsin-laptop" {
 		t.Errorf("principal = %v, want machine:afsin-laptop", next.principal)
 	}
-	if next.workerOwner != domain.AgentPrincipal("owner-afsin") {
+	if next.workerOwner != domain.UserPrincipal("owner-afsin") {
 		t.Errorf("worker owner = %v, want the issuance binding owner-afsin", next.workerOwner)
 	}
 

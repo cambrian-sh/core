@@ -65,7 +65,8 @@ func (w *EnforcingKnowledgeWriter) PutClassifiedItem(ctx context.Context, item d
 			slog.String("kind", item.Kind))
 		return domain.KnowledgeItem{}, false, fmt.Errorf("knowledge item %s: %w", item.ID, ErrWriteDenied)
 	}
-	item.Classification = append([]string(nil), final...)
+	// ADR-0142 D12: private to the conversation owner the work is for.
+	item.Classification = domain.StampPrivateOwner(ctx, append([]string(nil), final...))
 	item = domain.RekeyFactItem(item)
 	id, inserted, err := w.inner.PutItem(ctx, item)
 	if err != nil {

@@ -182,10 +182,16 @@ func (s *PgKnowledgeStore) deriveKeysHiding(ctx context.Context, q pgxQuerier, i
 // — the fail-closed decision belongs to the enforcing decorator. Args are numbered from
 // $startIdx+1.
 func itemScopeSQL(scope *domain.TagPredicate, alias string, startIdx int) (string, []any) {
-	if scope == nil || scope.Bypass {
+	return textArrayScopeSQL(scope, alias+".classification", startIdx)
+}
+
+// textArrayScopeSQL is itemScopeSQL over any native TEXT[] tag column. The owner
+// fence (domain/owner_scope.go) applies to every predicate, Bypass included; only
+// ScopeMaintenance adds nothing.
+func textArrayScopeSQL(scope *domain.TagPredicate, col string, startIdx int) (string, []any) {
+	if scope == nil || scope.Unfiltered() {
 		return "", nil
 	}
-	col := alias + ".classification"
 	conds := ""
 	var args []any
 	n := startIdx
@@ -193,6 +199,10 @@ func itemScopeSQL(scope *domain.TagPredicate, alias string, startIdx int) (strin
 		n++
 		conds += fmt.Sprintf(" AND "+cond, n)
 		args = append(args, val)
+	}
+	add(ownerFenceTextArray(col), scope.HeldOwnerTags())
+	if scope.Bypass {
+		return conds, args
 	}
 	if len(scope.RequiredTags) > 0 {
 		add(col+" @> $%d::text[]", scope.RequiredTags)
@@ -209,6 +219,16 @@ func itemScopeSQL(scope *domain.TagPredicate, alias string, startIdx int) (strin
 		add("NOT ("+col+" && $%d::text[])", scope.PartyScopedTags)
 	}
 	return conds, args
+}
+
+// ownerFenceTextArray is the TEXT[] mirror of the owner fence: no element in the
+// owner namespace outside the bound held-tags array. The held array is never
+// NULL (HeldOwnerTags returns '{}' when empty) — `t <> ALL(NULL)` is NULL, which
+// would make the NOT EXISTS admit every owner row. The prefix is a constant.
+// One %d placeholder, for the held tags.
+func ownerFenceTextArray(col string) string {
+	return "NOT EXISTS (SELECT 1 FROM unnest(" + col + ") AS owner_tag(t) WHERE starts_with(owner_tag.t, '" +
+		domain.OwnerTagPrefix + "') AND owner_tag.t <> ALL($%d::text[]))"
 }
 
 const assessmentColumns = `id, namespace_id, kind, authority, authority_version, prompt_hash,

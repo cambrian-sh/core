@@ -99,8 +99,8 @@ func TestGrantRevoke_AuditedAndIdempotent(t *testing.T) {
 }
 
 // answer subscribes to the hub and answers the first request with approve.
-func answer(hub *domain.InMemoryApprovalController, approve bool) (<-chan domain.ApprovalRequest, func()) {
-	ch, cancel := hub.Watch()
+func answer(hub *domain.AddressedHub, approve bool) (<-chan domain.ApprovalRequest, func()) {
+	ch, cancel := opRequests(hub)
 	seen := make(chan domain.ApprovalRequest, 1)
 	go func() {
 		r, ok := <-ch
@@ -108,7 +108,7 @@ func answer(hub *domain.InMemoryApprovalController, approve bool) (<-chan domain
 			return
 		}
 		seen <- r
-		hub.Submit(r.ID, approve, "op-ann")
+		opSubmit(hub, r.ID, approve, "op-ann")
 	}()
 	return seen, cancel
 }
@@ -116,7 +116,7 @@ func answer(hub *domain.InMemoryApprovalController, approve bool) (<-chan domain
 // Request → an operator approves live → a durable grant, granted in the same call.
 func TestRequest_ApprovedLiveGrantsDurably(t *testing.T) {
 	st := newMemStore()
-	hub := domain.NewInMemoryApprovalController(time.Minute)
+	hub := domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: time.Minute})
 	svc := newSvc(t, st, hub, Config{RequestTimeout: 5 * time.Second})
 	seen, cancel := answer(hub, true)
 	defer cancel()
@@ -145,8 +145,8 @@ func TestRequest_ApprovedLiveGrantsDurably(t *testing.T) {
 // resolves it and the NEXT run has the skill.
 func TestRequest_TimeoutIsPendingThenLaterGrantApplies(t *testing.T) {
 	st := newMemStore()
-	hub := domain.NewInMemoryApprovalController(time.Minute)
-	_, cancel := hub.Watch() // an operator is watching but never answers
+	hub := domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: time.Minute})
+	_, cancel := opRequests(hub) // an operator is watching but never answers
 	defer cancel()
 	svc := newSvc(t, st, hub, Config{RequestTimeout: 30 * time.Millisecond})
 	out := svc.Request(context.Background(), RequestInput{AgentID: "analyst", Skill: "proposed-x", RunID: "run-1"})
@@ -173,7 +173,7 @@ func TestRequest_TimeoutIsPendingThenLaterGrantApplies(t *testing.T) {
 
 // No operator subscribed → pending at once (the hub fails closed without a ruling).
 func TestRequest_NoApproverIsPending(t *testing.T) {
-	svc := newSvc(t, newMemStore(), domain.NewInMemoryApprovalController(time.Minute), Config{})
+	svc := newSvc(t, newMemStore(), domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: time.Minute}), Config{})
 	if out := svc.Request(context.Background(), RequestInput{AgentID: "analyst", Skill: "s"}); out.Access != domain.SkillAccessPending {
 		t.Fatalf("outcome = %+v", out)
 	}
@@ -181,7 +181,7 @@ func TestRequest_NoApproverIsPending(t *testing.T) {
 
 func TestRequest_DeniedIsRecorded(t *testing.T) {
 	st := newMemStore()
-	hub := domain.NewInMemoryApprovalController(time.Minute)
+	hub := domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: time.Minute})
 	svc := newSvc(t, st, hub, Config{RequestTimeout: 5 * time.Second})
 	_, cancel := answer(hub, false)
 	defer cancel()

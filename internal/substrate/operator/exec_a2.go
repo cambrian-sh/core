@@ -52,6 +52,11 @@ func (s *Service) ExecuteTool(ctx context.Context, req *pb.ExecuteToolOpRequest)
 		return &pb.ExecuteToolOpResponse{CommandId: req.GetCommandId(), Deduped: true, ResultJson: prior[0].After}, nil
 	}
 
+	// ADR-0140 D4: an operator running a tool directly runs it FOR themselves,
+	// so a per_user integration uses the operator's own connected account.
+	if me, _, ok := PrincipalFromContext(ctx); ok && me != "" {
+		ctx = domain.WithRunPrincipal(ctx, me)
+	}
 	resp := s.toolRunner.Execute(ctx, domain.ToolCallRequest{
 		System:   true, // ScopeSystem: bypass per-agent grant/scope/approval (A2.2)
 		ToolName: req.GetToolName(),

@@ -36,6 +36,7 @@ last. `Pair.StaticHash()` is the identity of both files' static text.
 | `planner` / `planner_cap` + `planner_input` | `internal/awareness/planner.go` |
 | `replan` / `replan_cap` + `replan_input` | `internal/awareness/replan_handler.go` |
 | `router` + `router_input` | `internal/router/default_router.go` |
+| `fanout_source` (fragment appended to a fan-out source step's task) | `internal/metabolism/executer/fanout_source.go` |
 | `chat_agent` + `chat_agent_turn` (fragment sets) | `agents/chat_agent.py` (Python, via the SDK loader) |
 | `retrieval_<op>` + `retrieval_<op>_input`, `retrieval_synthesis_guidance` | `agents/system/retrieval_agent/planner.py` (Python, via the SDK loader) |
 

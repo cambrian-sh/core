@@ -49,6 +49,13 @@ type SystemTool struct {
 	// operators so the un-migrated tools are enumerable, and it is what strict
 	// mode refuses to produce.
 	EffectsInferred bool
+
+	// EffectsDefaulted marks a tool whose effects are the fail-closed DEFAULT for a
+	// tool its operator said nothing about (an unlisted MCP tool, ADR-0139 D8:
+	// read+write+egress, dangerous). Those effects bound authorization, but they are
+	// not evidence of what the tool does, so effect-checked dispatch derives nothing
+	// from such a tool (domain/step_effects.go).
+	EffectsDefaulted bool
 }
 
 // ToolGrant authorizes one agent to call one tool, bounded by a resource policy

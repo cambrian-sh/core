@@ -16,6 +16,12 @@ service OperatorConsole {
   // token bound to {principal, role}. The only unauthenticated RPC. ADR-0047 D13.
   rpc Login(LoginRequest) returns (LoginResponse);
 
+  // DescribeAuth tells a client HOW to sign in before it has a token (ADR-0142 D1):
+  // whether this kernel takes a password (local accounts), and which OIDC issuer and
+  // client id to run authorization code + PKCE (or the device grant) against. Like
+  // Login it is reachable without a token; it carries no secret. Capability "auth-describe".
+  rpc DescribeAuth(DescribeAuthRequest) returns (DescribeAuthResponse);
+
   // Logout revokes the bearer token this call carries (ADR-0130 D5 / 1f; contract
   // 0099). Every later call with that token is UNAUTHENTICATED, exactly like an
   // expired or never-issued one. Open to every authenticated role: a Viewer must be
@@ -90,6 +96,12 @@ service OperatorConsole {
   // ListConversationMessages returns one conversation's transcript, ordered, after a seq.
   rpc ListConversations(ListConversationsOpRequest) returns (ListConversationsOpResponse);
   rpc ListConversationMessages(ListConversationMessagesOpRequest) returns (ListConversationMessagesOpResponse);
+  // ListScheduledTasks is the operator view of principal-owned recurring tasks
+  // (T-20261106-the-assistant-cannot-set-up-a-recurring-task): every principal's
+  // schedules, or one owner's. Operator-only read (it is other people's business).
+  // Pause/resume/delete reuse SetWatchActive / DeleteWatch on the same id — a
+  // scheduled task IS a premium schedule watch. Capability "scheduled-tasks".
+  rpc ListScheduledTasks(ListScheduledTasksOpRequest) returns (ListScheduledTasksOpResponse);
 
   // ── ADR-0047 Amendment A2 (CORE-OPS-1): operator-plane read/exec/approval
   // surface. Distinct messages from the agent-plane equivalents (D1): the CLI
@@ -155,6 +167,41 @@ service OperatorConsole {
   // (Operator-only). Resolve reuses ResolveHITL over the shared ApprovalHub
   // id-space. A2.5.
   rpc WatchToolApprovals(SubscribeRequest) returns (stream ApprovalOp);
+
+  // ── ADR-0142 D11: the ONE addressed approval hub (capability
+  // "addressed-approvals"). Approvals are durable, routed to their approvers by
+  // policy (self / a named person / a role / operator / relationship), and
+  // ANSWERED only by someone who satisfies the item's rule — checked by the hub
+  // at answer time, an operator included. Open to every authenticated role: a
+  // person answers their own approvals. WatchToolApprovals / ResolveHITL stay
+  // for operator consoles (filtered to what the caller may answer).
+  //
+  // WatchMyApprovals streams the items addressed to the caller (raised AND
+  // resolved, ApprovalOp.state). audit=true (operator role only) streams every
+  // item, each marked answerable or not — the operator's audit view.
+  rpc WatchMyApprovals(WatchMyApprovalsOpRequest) returns (stream ApprovalOp);
+  // Read RPC: pending (and recent) items addressed to the caller, or all with
+  // audit=true (operator role only). An inbox's initial load.
+  rpc ListApprovals(ListApprovalsOpRequest) returns (ListApprovalsOpResponse);
+  // Answers one approval as the authenticated caller. A refusal (not an
+  // addressee, already resolved, standing not allowed) is ok=false with the
+  // reason. standing=true records a standing approval of the item's action
+  // class + resource + scope (revocable, audited). command_id + reason, audited.
+  rpc AnswerApproval(AnswerApprovalOpRequest) returns (AnswerApprovalOpResponse);
+  // Read RPC: the caller's standing approvals (as beneficiary or granter); all
+  // with audit=true (operator role only).
+  rpc ListStandingApprovals(ListStandingApprovalsOpRequest) returns (ListStandingApprovalsOpResponse);
+  // Revokes a standing approval: its beneficiary, its granter, or an operator.
+  // command_id + reason, audited.
+  rpc RevokeStandingApproval(RevokeStandingApprovalOpRequest) returns (CommandAck);
+
+  // ADR-0142 D12: material an agent writes in a person's conversation is
+  // private to that person (owner:<id>). ShareToTeam is the explicit,
+  // policy-checked publish: the caller must own the document, the target tags
+  // must be within what the caller may write, and the approval policy for class
+  // "publish" decides whether it applies at once (self) or waits for an approver
+  // (state "pending_approval"). command_id + reason, audited.
+  rpc ShareToTeam(ShareToTeamOpRequest) returns (ShareToTeamOpResponse);
 
   // ── Watch surfaces — PREMIUM capability-gated (D14/A2.6). The proto lives in
   // OSS in full (defining ≠ implementing); OSS handlers return Unimplemented and
@@ -483,6 +530,14 @@ service OperatorConsole {
   // one is live: credentials are injected at connect time, so without the bounce
   // a healthy session would keep using the old token indefinitely and "saved"
   // would mean nothing observable.
+  //
+  // Deprecated (ADR-0141 D11): on a kernel with the premium accounts provider
+  // both are thin aliases for the ORG ACCOUNT bound to the server's "token"
+  // slot (Set rotates it, creating and binding one when none is; Clear unbinds
+  // it) — the same slot SetIntegrationSecret writes. New clients use
+  // SetIntegrationSecret or AccountsAdmin. In OSS they still write the
+  // consumer-named secret mcp:<id>:token. Removal is an owner decision
+  // (T-20261106-accounts-delete-legacy-consumer-secrets-after).
   rpc SetMCPServerToken(SetMCPServerTokenOpRequest) returns (SetConfigOpResponse);
   rpc ClearMCPServerToken(ClearMCPServerTokenOpRequest) returns (CommandAck);
 
@@ -674,6 +729,62 @@ service OperatorConsole {
   // RevokeSkillGrant ends an active grant (NOT_FOUND when there is none). A skill
   // the agent's profile lists stays available through the profile.
   rpc RevokeSkillGrant(RevokeSkillGrantOpRequest) returns (CommandAck);
+
+  // ── Integrations (capability "integrations") ─────────────────────────────
+  //
+  // The product surface over the MCP server substrate (ADR-0043, contract 0097):
+  // a non-developer connects a tool (mail, drive, calendar, a database, web
+  // search) from the console without editing mcp.json. It is NOT a second
+  // pathway — every write lands on the same per-id ADR-0101 store entries and
+  // the same live connector that SaveMCPServer uses; ListMCPServers and
+  // ListIntegrations read the same runtime list.
+  //
+  // - The CATALOG is a data file shipped with the kernel (curated, version-
+  //   pinned servers with their credential fields and default tool policies),
+  //   extended by an optional deployment catalog file (mcp.catalog_file).
+  // - An INTEGRATION is one installed server: catalog-derived or custom. Its
+  //   state lives in the ADR-0101 store under mcp.server_overrides.<id>, merged
+  //   BY ID over the mcp.json file layer (a stored entry replaces the file entry
+  //   with the same id; mcp.json is never rewritten).
+  // - SECRETS are write-only: encrypted at rest, injected only into that
+  //   server's process environment (stdio) or auth header (http) at launch,
+  //   never returned — a read carries set / source / updated_at only.
+  // - LIFECYCLE is live: install / enable / disable / reconfigure / secret
+  //   changes start, stop or restart that one server's process and update the
+  //   tool registry; the outcome's effect says "restart_required" when not.
+  // - HEALTH is on IntegrationOp.health and pushed as IntegrationHealthOp on
+  //   the operator feed on every state change.
+  //
+  // Reads: any authenticated role (no secret material is ever carried).
+  // Mutations and TestIntegration: Operator-only; mutations take command_id +
+  // reason, are audited (never with a secret value) and dedupe on command_id.
+  rpc ListIntegrationCatalog(ListIntegrationCatalogOpRequest) returns (ListIntegrationCatalogOpResponse);
+  rpc ListIntegrations(ListIntegrationsOpRequest) returns (ListIntegrationsOpResponse);
+  rpc InstallIntegration(InstallIntegrationOpRequest) returns (IntegrationMutationOpResponse);
+  rpc UpdateIntegration(UpdateIntegrationOpRequest) returns (IntegrationMutationOpResponse);
+  rpc SetIntegrationSecret(SetIntegrationSecretOpRequest) returns (IntegrationMutationOpResponse);
+  rpc ClearIntegrationSecret(ClearIntegrationSecretOpRequest) returns (IntegrationMutationOpResponse);
+  rpc SetIntegrationEnabled(SetIntegrationEnabledOpRequest) returns (IntegrationMutationOpResponse);
+  // TestIntegration handshakes the installed server (the live session when it
+  // is ready, otherwise an ephemeral launch with the stored config and
+  // secrets), lists its tools with the policy each would get, and — when the
+  // catalog names a probe tool whose policy is non-dangerous — calls it once.
+  // A failed test is a SUCCESSFUL RPC carrying ok=false.
+  rpc TestIntegration(TestIntegrationOpRequest) returns (IntegrationTestResultOp);
+  rpc RemoveIntegration(RemoveIntegrationOpRequest) returns (IntegrationMutationOpResponse);
+  // RevertIntegrationToFile drops the console's stored override (or removal
+  // tombstone) for a server that a config file (mcp.json) declares, so the
+  // file entry applies again, and restarts that server live on it. Only for
+  // an integration whose IntegrationOp.overrides_file is true, or a file
+  // server the console removed; rejected otherwise. Stored secrets are kept
+  // (the file entry may name the same ones). Operator-only, command_id +
+  // reason, audited.
+  rpc RevertIntegrationToFile(RevertIntegrationToFileOpRequest) returns (IntegrationMutationOpResponse);
+
+  // Per-user accounts (connect my account, list, disconnect, revoke) are NOT
+  // on this service: they are the premium AccountsAdmin plane (ADR-0141,
+  // capability "accounts"), because the account layer is a premium capability
+  // (ADR-0057). ADR-0140 had put six RPCs here; they were never released.
 }
 
 message CreateSessionRequest {
@@ -715,6 +826,16 @@ message OpenConversationOpRequest {
   string profile = 5;
   // policy is an optional system/policy prompt threaded into every turn of this conversation.
   string policy = 6;
+  // on_behalf_of opens the conversation FOR another principal (act-for,
+  // T-20261106-conversations-cannot-be-opened-as-a-given). The conversation's owner is
+  // then that principal: memory notes, conversation recall, skill grants, per-user
+  // credentials and the chat lane's read scope all resolve to them, never to the
+  // operator. Empty (or the caller's own id) = the caller owns it, as before.
+  // Allowed only for the Operator role; the principal must be KNOWN to the deployment's
+  // principal directory (premium authz) — an unknown one is refused (NotFound), and a
+  // kernel with no directory refuses act-for entirely (FailedPrecondition). Audited:
+  // the entry's actor is the operator, its target names the principal.
+  string on_behalf_of = 7;
 }
 
 message OpenConversationOpResponse {
@@ -728,6 +849,9 @@ message SendTurnOpRequest {
   string reason = 2;
   string conversation_id = 3;
   string text = 4;           // the user's message
+  // on_behalf_of: act on a conversation owned by this principal (see
+  // OpenConversationOpRequest.on_behalf_of). Must equal the conversation's owner.
+  string on_behalf_of = 5;
 }
 
 message SendTurnOpResponse {
@@ -740,10 +864,12 @@ message CloseConversationOpRequest {
   string command_id = 1;
   string reason = 2;
   string conversation_id = 3;
+  string on_behalf_of = 4;   // act-for, as on OpenConversationOpRequest
 }
 
 message ListConversationsOpRequest {
   int32 limit = 1;           // <= 0 means a server default
+  string on_behalf_of = 2;   // list that principal's conversations (act-for; Operator role)
 }
 
 message ListConversationsOpResponse {
@@ -757,12 +883,39 @@ message ConversationOp {
   string status = 3;         // "open" | "closed"
   string profile = 4;        // "operator" | "employee" | "customer"
   string updated_at = 5;     // RFC3339
+  string owner_id = 6;       // the principal that owns it (act-for makes this differ from the caller)
 }
 
 message ListConversationMessagesOpRequest {
   string conversation_id = 1;
   int64 after_seq = 2;       // return messages with seq strictly greater than this (0 = all)
   int32 limit = 3;           // <= 0 means no limit
+  string on_behalf_of = 4;   // act-for, as on OpenConversationOpRequest
+}
+
+message ListScheduledTasksOpRequest {
+  string owner_id = 1;       // "" = every principal's
+}
+
+message ListScheduledTasksOpResponse {
+  repeated ScheduledTaskOp tasks = 1;
+}
+
+// ScheduledTaskOp is one principal-owned recurring task: a premium schedule watch whose
+// action runs ONE chat turn, as its owner, in a conversation the owner holds.
+message ScheduledTaskOp {
+  string id = 1;             // the watch id (deterministic from owner + spec)
+  string owner_id = 2;
+  string title = 3;
+  string goal = 4;           // what the assistant is asked to do at each firing
+  string cron = 5;           // 5-field cron the scheduler runs (an RRULE is translated at propose time)
+  string timezone = 6;
+  string agent_id = 7;       // the agent profile asked for (recorded; the chat lane's pool agent runs it today)
+  string delivery = 8;       // "conversation" | "notify" | "email"
+  bool active = 9;
+  string conversation_id = 10; // where each run's reply lands (owned by owner_id)
+  string created_at = 11;    // RFC3339
+  string approved_by = 12;   // who approved the proposal
 }
 
 message ListConversationMessagesOpResponse {
@@ -876,7 +1029,25 @@ message LoginRequest {
 
 message LoginResponse {
   string token = 1; // present on every subsequent call as "authorization: Bearer <token>"
-  string role = 2;  // "operator" | "viewer"
+  string role = 2;  // "operator" | "viewer" | "member" (ADR-0142: a person with no console role)
+  // principal is the registry person the credential resolved to, rendered
+  // "user:<id>" (ADR-0142 D3). Additive.
+  string principal = 3;
+  // roles is the person's full role SET (ADR-0142 D1); role above is the
+  // operator-plane role derived from it. Additive.
+  repeated string roles = 4;
+}
+
+message DescribeAuthRequest {}
+
+message DescribeAuthResponse {
+  // password_login is true when Login(username, password) is served (local accounts).
+  bool password_login = 1;
+  // oidc_issuer / oidc_client_id are set when ONE OIDC issuer is configured
+  // (identity.oidc): the client runs authorization code + PKCE against the issuer
+  // and presents the resulting access/ID token as its bearer.
+  string oidc_issuer = 2;
+  string oidc_client_id = 3;
 }
 
 // LogoutRequest carries nothing: the token to revoke is the call's own bearer.
@@ -1042,6 +1213,13 @@ message OperatorEvent {
     RetentionRunOp retention_run = 30;       // ADR-0102 A1: a retention/compaction pass deleted data
     PipelineMetersOp pipeline_meters = 31;   // ADR-0114 D37: live per-node counters
     PipelineStepOp pipeline_step = 32;       // ADR-0114 D38: one item through one node
+    // Integrations: one MCP server's health changed (absolute state, sequenced
+    // and replayed like LLMHealthOp). Capability "integrations".
+    IntegrationHealthOp integration_health = 33;
+    // ADR-0142 D11: a raised approval left the pending set — approved, denied,
+    // expired, withdrawn (its requester stopped waiting), needs_hierarchy or
+    // unroutable. Keyed by HITLRaisedOp.intervention_id. Sequenced and replayed.
+    HITLResolvedOp hitl_resolved = 34;
   }
 }
 
@@ -1872,7 +2050,160 @@ message ApprovalOp {
   // "" = a dangerous-tool approval; "skill_access" = an agent asks for a skill
   // outside its effective set (tool_name "skill:<name>"). Approving (ResolveHITL)
   // grants that skill to that agent durably (decisions/skill-access-grants.md).
+  // "schedule" = an assistant proposes a recurring task for the principal it serves
+  // (tool_name "schedule_task", args_preview the owner + when + what); approving
+  // creates it, owned by that principal (capability "scheduled-tasks").
+  // ADR-0142 D11 adds "machine_consent", "choose_machine", "account_confirm"
+  // and "publish".
   string kind = 6;
+
+  // ── ADR-0142 D11 (additive): the addressed hub. ──
+  // rule renders the approver rules, any-of: "self | operator", "role:compliance",
+  // "person:carol", "relationship:supervisor".
+  string rule = 7;
+  // answerable: the caller satisfies the rule (an audit view also streams items
+  // the caller may not answer).
+  bool answerable = 8;
+  // beneficiary is the person the action is for ("user:alice"; "" = none).
+  string beneficiary = 9;
+  // state: pending | approved | denied | expired | withdrawn | needs_hierarchy |
+  // unroutable. Streams that predate it send only pending items.
+  string state = 10;
+  string resolved_by = 11;
+  // action_class is the policy class (tool, payment, public_record_release, …).
+  string action_class = 12;
+  // allow_standing: an approver may answer with a standing approval.
+  bool allow_standing = 13;
+  int64 raised_at_unix_ms = 14;
+  int64 expires_at_unix_ms = 15;
+  // object names the exact object acted on, where known.
+  string object = 16;
+  string conversation_id = 17;
+  string machine = 18;
+  repeated string candidates = 19;
+  // detail explains a resolution (refusal reason, standing grant used, …).
+  string detail = 20;
+  string session_id = 21;
+  // duplicate_notice (additive): an earlier side-effecting call of the same
+  // conversation that this one may duplicate, in the kernel's words: "Possible
+  // duplicate of <tool> (approval <id>) — done at <UTC time>, ids: …; same to,
+  // subject." Deterministic (identical arguments, or same target and subject);
+  // informational, never a refusal. "" = none found.
+  // T-20261107-approver-is-not-told-that-an-identical-side.
+  string duplicate_notice = 22;
+}
+
+// HITLResolvedOp: a raised approval was resolved (ADR-0142 D11). outcome is the
+// terminal state: approved | denied | expired | withdrawn | needs_hierarchy |
+// unroutable.
+message HITLResolvedOp {
+  string intervention_id = 1;
+  string session_id = 2;
+  string agent_id = 3;
+  string kind = 4;
+  string outcome = 5;
+  string resolved_by = 6;
+  string detail = 7;
+}
+
+message WatchMyApprovalsOpRequest {
+  // audit (operator role only): every item, each marked answerable or not.
+  bool audit = 1;
+}
+
+message ListApprovalsOpRequest {
+  // states filters (pending, approved, …); empty = pending only.
+  repeated string states = 1;
+  // audit (operator role only): every item, not only those addressed to the caller.
+  bool audit = 2;
+  // limit bounds the reply (0 = 200).
+  int32 limit = 3;
+}
+
+message ListApprovalsOpResponse {
+  repeated ApprovalOp approvals = 1;
+}
+
+message AnswerApprovalOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string id = 3;
+  bool approve = 4;
+  // choice answers a choose_machine item (one of ApprovalOp.candidates).
+  string choice = 5;
+  // standing: also pre-approve this action class + resource + scope until
+  // revoked or expired (only where ApprovalOp.allow_standing).
+  bool standing = 6;
+  // standing_ttl_seconds bounds the standing approval (0 = the policy maximum).
+  int64 standing_ttl_seconds = 7;
+}
+
+message AnswerApprovalOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  // ok: the answer was recorded.
+  bool ok = 3;
+  // state is the item's state after the call.
+  string state = 4;
+  // refusal says why ok=false (not an addressee, already resolved, …).
+  string refusal = 5;
+  // standing_id names the standing approval this answer granted, if any.
+  string standing_id = 6;
+}
+
+// StandingApprovalOp is one standing approval (owner acceptance 2026-11-06).
+message StandingApprovalOp {
+  string id = 1;
+  string action_class = 2;
+  string resource = 3;
+  string scope = 4;
+  string beneficiary = 5;
+  string granted_by = 6;
+  int64 granted_at_unix_ms = 7;
+  // expires_at_unix_ms 0 = until revoked.
+  int64 expires_at_unix_ms = 8;
+  int64 revoked_at_unix_ms = 9;
+  string revoked_by = 10;
+  string reason = 11;
+  int64 last_used_at_unix_ms = 12;
+  int32 use_count = 13;
+  string from_approval = 14;
+  bool active = 15;
+}
+
+message ListStandingApprovalsOpRequest {
+  bool include_inactive = 1;
+  // audit (operator role only): every person's standing approvals.
+  bool audit = 2;
+}
+
+message ListStandingApprovalsOpResponse {
+  repeated StandingApprovalOp standing = 1;
+}
+
+message RevokeStandingApprovalOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string id = 3;
+}
+
+// ShareToTeamOpRequest publishes one of the caller's private (owner:<caller>)
+// documents to the team/org classification given by target_tags (ADR-0142 D12).
+message ShareToTeamOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string document_id = 3;
+  repeated string target_tags = 4;
+}
+
+message ShareToTeamOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  // state: "shared" (applied) | "pending_approval" (waits for approval_id).
+  string state = 3;
+  string approval_id = 4;
+  // tags is the document's classification after the share (state "shared").
+  repeated string tags = 5;
 }
 
 // ── Watch CRUD (premium capability-gated; proto in OSS). A2.6. ────────────────
@@ -1941,6 +2272,10 @@ message WatchConfigOp {
   // others, because a notification that succeeded has already been seen and
   // pretending otherwise would misreport what happened.
   repeated WatchActionOp actions = 23;
+
+  // owner_id is the principal a principal-owned scheduled task belongs to
+  // ("scheduled-tasks"); "" for an operator-registered watch.
+  string owner_id = 24;
 }
 
 // WatchFireOp is one recorded evaluation of a watch.
@@ -3753,3 +4088,272 @@ message RevokeSkillGrantOpRequest {
   string agent_id = 3;
   string skill_name = 4;
 }
+
+// ── Integrations (capability "integrations") ─────────────────────────────────
+
+message ListIntegrationCatalogOpRequest {}
+
+message ListIntegrationCatalogOpResponse {
+  repeated IntegrationCatalogEntryOp entries = 1;
+  // categories is the distinct category list, in catalog order, for grouping.
+  repeated string categories = 2;
+}
+
+// IntegrationCatalogEntryOp is one curated (or deployment-declared) MCP server
+// an operator can install. Everything here is descriptive; the policy fields
+// are what the kernel will ENFORCE once installed.
+message IntegrationCatalogEntryOp {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string category = 4;          // e.g. "web-search", "email-calendar", "database"
+  string publisher = 5;         // e.g. "Brave (official)"
+  string license = 6;
+  // trust_tier: "official" (the vendor or the MCP steering group) or
+  // "community". stdio servers run with the kernel user's privileges today
+  // (ADR-0139 D8 sandboxing is not built); a console should say so for both.
+  string trust_tier = 7;
+  string docs_url = 8;
+  string version = 9;           // the pinned upstream version
+  string transport = 10;        // "stdio" | "http" | "sse"
+  string command = 11;          // stdio launcher ("npx", "uvx", ...); empty for http
+  repeated string args = 12;    // stdio args; "${NAME}" is filled from a setting
+  string url = 13;              // http/sse endpoint; empty for stdio
+  repeated string runtimes = 14;   // prerequisites, e.g. "node>=22", "uv", "docker"
+  repeated string platforms = 15;  // supported OSes ("linux","darwin","windows"); empty = all
+  bool platform_supported = 16;    // false when this kernel's OS is not in platforms
+  repeated IntegrationFieldOp fields = 17;  // credentials and settings to collect
+  // Policy the kernel enforces: per-tool entries, then the server default.
+  // has_default_policy=false means FAIL CLOSED: every unlisted tool is
+  // dangerous (approval) with read+write+egress.
+  repeated IntegrationToolPolicyOp tool_policies = 18;
+  bool has_default_policy = 19;
+  IntegrationToolPolicyOp default_policy = 20;
+  string policy_summary = 21;   // one human line, e.g. "read + egress (whole server)"
+  string probe_tool = 22;       // a harmless tool TestIntegration may call, or ""
+  string notes = 23;            // caveats: OAuth consent, read-only flags, risks
+  string source = 24;           // "builtin" | "deployment"
+  // multi_instance: the entry may be installed more than once under different
+  // ids (e.g. two Postgres databases).
+  bool multi_instance = 25;
+}
+
+// IntegrationFieldOp is one value an integration needs.
+message IntegrationFieldOp {
+  string name = 1;     // the env var (or token field) name, e.g. "BRAVE_API_KEY"
+  string label = 2;    // "Brave Search API key"
+  bool secret = 3;     // true: write-only via SetIntegrationSecret; never read back
+  bool required = 4;
+  string help = 5;     // where to get it, which scopes, ...
+  // kind: "env" (an environment variable of the server process) or "token"
+  // (the http/sse auth credential, sent as the configured auth header).
+  string kind = 6;
+  string default_value = 7;  // non-secret fields only
+  string placeholder = 8;
+}
+
+message IntegrationToolPolicyOp {
+  string name = 1;               // tool name as advertised (unqualified); "" for a default
+  bool dangerous = 2;
+  repeated string effects = 3;   // ADR-0086: read, write, egress, spend, admin
+}
+
+message ListIntegrationsOpRequest {}
+
+message ListIntegrationsOpResponse {
+  repeated IntegrationOp integrations = 1;
+  // configured is true when this kernel can manage integrations at all; an
+  // empty list then means "none installed", not "cannot tell".
+  bool configured = 2;
+}
+
+// IntegrationOp is one installed MCP server: catalog-derived, custom, from a
+// config file, or contributed by a plugin.
+message IntegrationOp {
+  string id = 1;                 // the server id; tools are mcp:<id>/<tool>
+  string catalog_id = 2;         // "" for a custom / file / plugin server
+  string name = 3;               // catalog name, else the id
+  string category = 4;
+  // source: where the effective definition comes from:
+  //   "store"  (installed / edited from the console; ADR-0101 store),
+  //   "file"   (a config file, e.g. mcp.json),
+  //   "plugin" (contributed by a plugin; read-only here).
+  string source = 5;
+  bool overrides_file = 6;       // a store entry replaces a file entry with this id
+  bool editable = 7;             // false for plugin servers
+  bool enabled = 8;              // false: not started, no tools
+  string transport = 9;
+  string command = 10;
+  repeated string args = 11;
+  string url = 12;
+  // settings are the literal, NON-secret env values (env_values) given to the
+  // server process. Secrets are never here.
+  map<string, string> settings = 13;
+  repeated IntegrationSecretStateOp secrets = 14;
+  IntegrationHealthOp health = 15;
+  string installed_version = 16; // the catalog version installed, when known
+  bool update_available = 17;    // the catalog now pins a different version
+  repeated string missing_required = 18; // required fields not yet set
+  repeated IntegrationToolPolicyOp tool_policies = 19;
+  bool has_default_policy = 20;
+  IntegrationToolPolicyOp default_policy = 21;
+  string policy_summary = 22;
+  repeated string classification_tags = 23;
+  string trust_tier = 24;
+  repeated string passthrough_env = 25; // kernel env var names passed through (config `env`)
+}
+
+// IntegrationSecretStateOp says whether one secret is set, never its value.
+message IntegrationSecretStateOp {
+  string name = 1;
+  string label = 2;
+  bool set = 3;
+  // source: "store" (saved from the console), "env:<VAR>" (the kernel's
+  // environment wins over the store, ADR-0101 D5), or "" when unset.
+  string source = 4;
+  int64 updated_at_unix_ms = 5;  // when the stored value was last written; 0 if unknown
+  bool required = 6;
+  string kind = 7;               // "env" | "token"
+}
+
+// IntegrationHealthOp is one server's live state. Also the feed payload.
+message IntegrationHealthOp {
+  string server_id = 1;
+  // state: "stopped" (disabled, removed or never started), "starting"
+  // (launching / handshaking), "ready" (handshake done, tools registered),
+  // "error" (the last attempt failed; it is retried with backoff).
+  string state = 2;
+  int64 last_handshake_unix_ms = 3;  // last successful initialize; 0 = never
+  int32 tool_count = 4;
+  string last_error = 5;             // redacted: no secret value ever appears
+  int32 restart_count = 6;           // reconnects after a drop, plus reconfigure bounces
+  int64 changed_at_unix_ms = 7;
+}
+
+// IntegrationCustomSpecOp declares a server that is not in the catalog.
+message IntegrationCustomSpecOp {
+  string name = 1;
+  string category = 2;
+  string transport = 3;            // "stdio" | "http" | "sse"
+  string endpoint = 4;             // command (stdio) or URL (http/sse)
+  repeated string args = 5;
+  string auth_type = 6;            // "none" | "bearer" | "header"
+  string auth_header = 7;
+  repeated string secret_names = 8;  // env var names whose values are secrets (stdio)
+  repeated string passthrough_env = 9; // kernel env var names to pass through
+  repeated IntegrationToolPolicyOp tool_policies = 10;
+  // has_default_policy=false (the default): unlisted tools FAIL CLOSED.
+  bool has_default_policy = 11;
+  IntegrationToolPolicyOp default_policy = 12;
+  repeated string classification_tags = 13;
+}
+
+message InstallIntegrationOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  // catalog_id selects a catalog entry; empty means `custom` must be set.
+  string catalog_id = 3;
+  // id is the server id to install under. Defaults to catalog_id. Must be
+  // unique; a multi_instance catalog entry may be installed under several ids.
+  string id = 4;
+  map<string, string> settings = 5;   // non-secret field values
+  // secrets are stored encrypted with the install (write-only; never echoed
+  // and never audited). Optional: SetIntegrationSecret can follow.
+  map<string, string> secrets = 6;
+  bool enabled = 7;                   // start it now
+  IntegrationCustomSpecOp custom = 8;
+  repeated string classification_tags = 9;
+}
+
+message UpdateIntegrationOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string id = 3;
+  // settings REPLACES the non-secret values (send the full map).
+  map<string, string> settings = 4;
+  // custom replaces the spec of a custom (non-catalog) integration; ignored
+  // when unset.
+  IntegrationCustomSpecOp custom = 5;
+  // classification_tags replaces the server-level tags when set_tags is true.
+  bool set_tags = 6;
+  repeated string classification_tags = 7;
+}
+
+message SetIntegrationSecretOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string id = 3;
+  string name = 4;    // an IntegrationFieldOp.name with secret=true
+  string value = 5;   // write-only
+}
+
+message ClearIntegrationSecretOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string id = 3;
+  string name = 4;
+}
+
+message SetIntegrationEnabledOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string id = 3;
+  bool enabled = 4;
+}
+
+message RemoveIntegrationOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string id = 3;
+  // keep_secrets leaves the stored credentials in place for a re-install.
+  bool keep_secrets = 4;
+}
+
+message RevertIntegrationToFileOpRequest {
+  string command_id = 1;
+  string reason = 2;
+  string id = 3;
+}
+
+message TestIntegrationOpRequest {
+  string id = 1;
+  // call_probe calls the catalog's probe tool when one is declared and its
+  // effective policy is non-dangerous.
+  bool call_probe = 2;
+}
+
+message IntegrationMutationOpResponse {
+  string command_id = 1;
+  bool deduped = 2;
+  // outcome.effect: "live" (the server was started / stopped / restarted
+  // now), "restart_required" (stored; takes effect at the next boot; the
+  // error field says why), "shadowed" (stored, but a higher layer such as an
+  // env var wins), or "rejected" (nothing changed; error says why).
+  ConfigWriteOutcomeOp outcome = 3;
+  // integration is the state after the write (absent when removed, when
+  // rejected before lookup, and on a deduped replay).
+  IntegrationOp integration = 4;
+}
+
+message IntegrationToolOp {
+  string name = 1;
+  string description = 2;
+  bool dangerous = 3;
+  repeated string effects = 4;
+  // policy_source: "tool" (a per-tool entry), "default" (the server default),
+  // or "fail_closed" (unlisted, no default: dangerous read+write+egress).
+  string policy_source = 5;
+}
+
+message IntegrationTestResultOp {
+  bool ok = 1;
+  int64 latency_ms = 2;
+  string error = 3;                 // redacted
+  bool used_live_session = 4;
+  repeated IntegrationToolOp tools = 5;
+  string probe_tool = 6;            // the tool called, or "" when none was
+  bool probe_ok = 7;
+  string probe_output = 8;          // truncated text result
+  string probe_skipped_reason = 9;
+}
+

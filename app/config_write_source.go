@@ -65,7 +65,9 @@ type configWriteSource struct {
 	// applyMCPServer arms a saved server on the running kernel (connector
 	// AddServer: drop the old session/tools, start the health loop). Returns
 	// false when there is no live connector, making the write restart-required.
-	applyMCPServer func(s config.MCPServerConfig) bool
+	// source is the runtime source the entry now comes from: mcpSourceStore for
+	// a save, mcpSourceFile for a revert-to-file.
+	applyMCPServer func(s config.MCPServerConfig, source string) bool
 	// detachMCPServer stops a removed server live (session, watch, tools).
 	detachMCPServer func(id string) bool
 	// bounceMCPServer reconnects one server so a credential change is picked up
@@ -134,6 +136,21 @@ func (c configWriteSource) setOne(key string, v float64) operator.ConfigWriteOut
 		res.Effect = operator.EffectRejected
 		res.Error = fmt.Sprintf("value %g is outside the permitted range [%g, %g]", v, t.Min, t.Max)
 		return res
+	}
+	// The catalogue range is per key; the load-time rules also judge a key against
+	// its neighbours (trust_score_cal_weight + trust_score_abs_weight ≤ 1, a
+	// facts tunable only when its switch is on). Re-run them over the full merged
+	// config with this value in place, so a write the next boot would refuse is
+	// refused now instead of stored as a kernel that will not start
+	// (T-20261106-executionconfig-validate-has-no-production). Without a config
+	// bundle (configPath "", tests only) there is nothing to re-merge and the
+	// catalogue range is the whole check.
+	if c.configPath != "" {
+		if errs := config.ValidateOverride(c.configPath, c.store, key, v); len(errs) > 0 {
+			res.Effect = operator.EffectRejected
+			res.Error = "value would make the configuration invalid: " + strings.Join(errs, "; ")
+			return res
+		}
 	}
 
 	if err := c.persist(key, v, &res); err != nil {
@@ -713,51 +730,104 @@ func (c configWriteSource) SetRoleAssignment(role, generatorID string) (operator
 	return res, nil
 }
 
-// ── MCP server write half (contract 0097) ────────────────────────────────────
+// ── MCP server write half (contract 0097; per-id since the integrations surface) ──
 
-// mcpServersKey is the store key holding the WHOLE MCP server list — one key
-// because koanf replaces lists wholesale, so a per-server key would leave only
-// the last server written. (Generators moved to per-id keys merged by id in
-// ADR-0101 D9; MCP servers did not — D9 is scoped to generators. Under D8 a save
-// is written into mcp.json when that file sets mcp.servers.)
-const mcpServersKey = "mcp.servers"
+// mcpServersKey is the config path of the MCP server list. Outcomes report it;
+// the STORE no longer holds it: servers are stored per id under
+// config.MCPServerOverrideKey and merged by id over the file layers' list
+// (internal/config/store_mcp.go), so a stored server can no longer hide one added
+// to mcp.json, and a console write never rewrites mcp.json.
+const mcpServersKey = config.MCPServersKey
 
 // validMCPTransports is the closed transport vocabulary the connector dials.
 var validMCPTransports = map[string]bool{"stdio": true, "http": true, "sse": true}
 
-// effectiveMCPServers is the list a save applies on top of: the store's; else the
-// file that sets mcp.servers (D8 writes saves there, so after the first save it
-// is the durable answer); else the booted config. Durable-first is what makes
-// two saves in one process compose (the effectiveGenerators reasoning).
-func (c configWriteSource) effectiveMCPServers() []config.MCPServerConfig {
-	decode := func(raw any) ([]config.MCPServerConfig, bool) {
-		b, err := json.Marshal(raw)
-		if err != nil {
-			return nil, false
+// baseMCPServers is the list stored servers merge over: the file layers' list as
+// it is on disk now (what boot merges over), or — with no config bundle — the
+// booted runtime list.
+func (c configWriteSource) baseMCPServers() []config.MCPServerConfig {
+	if c.configPath != "" {
+		o, ok := config.ResolveFileSetting(c.configPath, mcpServersKey)
+		if !ok {
+			return nil
 		}
 		var list []config.MCPServerConfig
-		return list, json.Unmarshal(b, &list) == nil
-	}
-	if c.store != nil {
-		if overrides, err := c.store.Overrides(); err == nil {
-			if raw, ok := overrides[mcpServersKey]; ok {
-				if list, ok := decode(raw); ok {
-					return list
-				}
-			}
+		if b, err := json.Marshal(o.Value); err == nil {
+			_ = json.Unmarshal(b, &list)
 		}
-	}
-	if c.configPath != "" {
-		if o, ok := config.ResolveFileSetting(c.configPath, mcpServersKey); ok {
-			if list, ok := decode(o.Value); ok {
-				return list
-			}
-		}
+		return list
 	}
 	if c.mcpServerList != nil {
 		return c.mcpServerList()
 	}
 	return nil
+}
+
+// storedMCPServers returns the store's per-id entries (legacy list included).
+func (c configWriteSource) storedMCPServers() map[string]config.StoredMCPServer {
+	if c.store == nil {
+		return nil
+	}
+	overrides, err := c.store.Overrides()
+	if err != nil {
+		return nil
+	}
+	stored, _, _ := config.SplitMCPServerOverrides(overrides)
+	return stored
+}
+
+// effectiveMCPServers is the server list as the next boot would see it: the
+// base list with the store's per-id entries merged over it — the same
+// config.MergeMCPServers boot uses. Computed from durable state on every call so
+// two saves in one process compose (the effectiveGenerators reasoning).
+func (c configWriteSource) effectiveMCPServers() []config.MCPServerConfig {
+	return config.MergeMCPServers(c.baseMCPServers(), c.storedMCPServers())
+}
+
+// fileMCPServerIDs are the ids the file layers declare — which decides whether a
+// removal needs a tombstone and whether a stored entry overrides a file entry.
+//
+// With no config bundle the base is the booted list, and its ids count the same
+// way: a removal of a booted server must tombstone it, or it would come back.
+func (c configWriteSource) fileMCPServerIDs() map[string]bool {
+	ids := map[string]bool{}
+	for _, s := range c.baseMCPServers() {
+		ids[s.ID] = true
+	}
+	return ids
+}
+
+// persistMCPServer stores one server under its own key, or removes it: a plain
+// delete when only the store declared it, a tombstone when a file declares it
+// (mcp.json is never edited from here). A contract-0097 whole-list entry is
+// migrated first so it cannot shadow or resurrect the per-id write.
+func (c configWriteSource) persistMCPServer(entry config.MCPServerConfig, remove bool, res *operator.ConfigWriteOutcome) error {
+	if ids, err := config.MigrateStoredMCPServers(c.store); err != nil {
+		return err
+	} else if len(ids) > 0 {
+		slog.Info("config store: migrated the stored MCP server list to per-id entries", "ids", ids)
+	}
+	key := config.MCPServerOverrideKey(entry.ID)
+	inFile := c.fileMCPServerIDs()[entry.ID]
+	fileSource := "file"
+	if inFile {
+		if o, ok := config.ResolveFileSetting(c.configPath, mcpServersKey); ok {
+			fileSource = o.Source
+		}
+	}
+	if remove {
+		if !inFile {
+			return c.store.DeleteOverride(key)
+		}
+		res.Overrides = fileSource
+		return c.store.SetOverride(key, config.StoredMCPServer{MCPServerConfig: config.MCPServerConfig{ID: entry.ID}, Removed: true})
+	}
+	if inFile {
+		// The stored entry REPLACES the file entry for this id; say so, so the
+		// console can show "overrides mcp.json".
+		res.Overrides = fileSource
+	}
+	return c.store.SetOverride(key, config.StoredMCPServer{MCPServerConfig: entry})
 }
 
 // mcpConfigFromSpec builds the config entry an operator's spec describes,
@@ -785,108 +855,194 @@ func mcpConfigFromSpec(spec operator.MCPServerSpec, prior *config.MCPServerConfi
 		// strip the key a stdio server needs to start.
 		entry.DefaultToolPolicy = prior.DefaultToolPolicy
 		entry.Env = prior.Env
+		// And the integration fields: a contract-0097 save of an installed
+		// integration must not drop its on/off state, settings, secret names or
+		// catalog provenance.
+		entry.Enabled = prior.Enabled
+		entry.EnvValues = prior.EnvValues
+		entry.SecretEnv = prior.SecretEnv
+		entry.CatalogID = prior.CatalogID
+		entry.CatalogVersion = prior.CatalogVersion
+		entry.DisplayName = prior.DisplayName
+		entry.Category = prior.Category
 	}
 	return entry
 }
 
-// SaveMCPServer creates or replaces one server, stores the whole list, and arms
-// the server live.
-func (c configWriteSource) SaveMCPServer(spec operator.MCPServerSpec) (operator.ConfigWriteOutcome, error) {
-	res := operator.ConfigWriteOutcome{Key: mcpServersKey}
+// saveMCPEntry validates, stores and live-applies one full server entry. It is
+// the ONE write path for an MCP server: SaveMCPServer (contract 0097) and every
+// integrations mutation end here.
+func (c configWriteSource) saveMCPEntry(entry config.MCPServerConfig) operator.ConfigWriteOutcome {
+	res := operator.ConfigWriteOutcome{Key: config.MCPServerOverrideKey(entry.ID)}
 	if c.store == nil {
-		return res, fmt.Errorf("no configuration store is available")
-	}
-	if !validMCPTransports[spec.Transport] {
 		res.Effect = operator.EffectRejected
-		res.Error = fmt.Sprintf("unknown transport %q (want stdio, http or sse)", spec.Transport)
-		return res, nil
+		res.Error = "no configuration store is available"
+		return res
 	}
-	if spec.AuthType == "header" && spec.AuthHeader == "" {
+	if !validMCPTransports[entry.Transport] {
+		res.Effect = operator.EffectRejected
+		res.Error = fmt.Sprintf("unknown transport %q (want stdio, http or sse)", entry.Transport)
+		return res
+	}
+	if entry.Endpoint == "" {
+		res.Effect = operator.EffectRejected
+		res.Error = "endpoint is required"
+		return res
+	}
+	if entry.Auth.Type == "header" && entry.Auth.Header == "" {
 		res.Effect = operator.EffectRejected
 		res.Error = `auth_type "header" requires auth_header to name the header`
-		return res, nil
+		return res
 	}
-
-	list := c.effectiveMCPServers()
-	var entry config.MCPServerConfig
-	replaced := false
-	for i := range list {
-		if list[i].ID == spec.ID {
-			entry = mcpConfigFromSpec(spec, &list[i])
-			list[i] = entry
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		entry = mcpConfigFromSpec(spec, nil)
-		list = append(list, entry)
-	}
-
-	if err := c.persist(mcpServersKey, list, &res); err != nil {
+	if errs := config.ValidateMCPServer(entry); len(errs) > 0 {
 		res.Effect = operator.EffectRejected
-		res.Error = "could not write the MCP server list: " + err.Error()
-		return res, nil
+		res.Error = strings.Join(errs, "; ")
+		return res
+	}
+	if err := c.persistMCPServer(entry, false, &res); err != nil {
+		res.Effect = operator.EffectRejected
+		res.Error = "could not write the MCP server: " + err.Error()
+		return res
 	}
 	res.Set = true
-
 	if pin := c.prov.PinnedAbove(mcpServersKey); pin != "" {
 		res.Effect = operator.EffectShadowed
 		res.ShadowedBy = pin
-		return res, nil
+		return res
 	}
-	// Live when a connector exists: the health loop is armed now, and the tools
-	// appear as soon as the server answers. "live" here means the KERNEL acted;
-	// whether the server is reachable is the list read's `connected` to report.
-	if c.applyMCPServer != nil && c.applyMCPServer(entry) {
+	// Live when a connector exists: an enabled server's health loop is armed
+	// now (tools appear as soon as it answers), a disabled one is stopped. "live"
+	// means the KERNEL acted; reachability is the health read's to report.
+	if c.applyMCPServer != nil && c.applyMCPServer(entry, mcpSourceStore) {
 		res.Effect = operator.EffectLive
-		return res, nil
+		return res
 	}
 	res.Effect = operator.EffectRestartRequired
-	return res, nil
+	res.Error = "no live MCP connector on this kernel; the change takes effect at the next boot"
+	return res
 }
 
-// RemoveMCPServer drops one server from the stored list and the running kernel.
-func (c configWriteSource) RemoveMCPServer(id string) (operator.ConfigWriteOutcome, error) {
-	res := operator.ConfigWriteOutcome{Key: mcpServersKey}
+// removeMCPEntry drops one server from durable state and the running kernel.
+func (c configWriteSource) removeMCPEntry(id string) operator.ConfigWriteOutcome {
+	res := operator.ConfigWriteOutcome{Key: config.MCPServerOverrideKey(id)}
 	if c.store == nil {
-		return res, fmt.Errorf("no configuration store is available")
+		res.Effect = operator.EffectRejected
+		res.Error = "no configuration store is available"
+		return res
 	}
-
-	list := c.effectiveMCPServers()
-	kept := make([]config.MCPServerConfig, 0, len(list))
 	found := false
-	for _, s := range list {
+	for _, s := range c.effectiveMCPServers() {
 		if s.ID == id {
 			found = true
-			continue
+			break
 		}
-		kept = append(kept, s)
 	}
 	if !found {
 		res.Effect = operator.EffectRejected
 		res.Error = "no MCP server with id " + id
-		return res, nil
+		return res
 	}
-
-	if err := c.persist(mcpServersKey, kept, &res); err != nil {
+	if err := c.persistMCPServer(config.MCPServerConfig{ID: id}, true, &res); err != nil {
 		res.Effect = operator.EffectRejected
-		res.Error = "could not write the MCP server list: " + err.Error()
-		return res, nil
+		res.Error = "could not remove the MCP server: " + err.Error()
+		return res
 	}
 	res.Set = true
-
 	if pin := c.prov.PinnedAbove(mcpServersKey); pin != "" {
 		res.Effect = operator.EffectShadowed
 		res.ShadowedBy = pin
-		return res, nil
+		return res
 	}
 	if c.detachMCPServer != nil && c.detachMCPServer(id) {
 		res.Effect = operator.EffectLive
-		return res, nil
+		return res
 	}
 	res.Effect = operator.EffectRestartRequired
-	return res, nil
+	return res
+}
+
+// revertMCPEntryToFile drops the store's per-id entry for a server a config
+// file declares — a full override or a removal tombstone — so the file entry
+// applies again, and re-applies that file entry live
+// (T-20261106-integrations-no-revert-to-file-for-an-mcp). It is the inverse of
+// persistMCPServer's "inFile" branches and touches nothing else: secrets stay,
+// mcp.json is not read for writing, and the live step is the same
+// applyMCPServer every save uses (arm when enabled, stop when disabled).
+func (c configWriteSource) revertMCPEntryToFile(id string) operator.ConfigWriteOutcome {
+	key := config.MCPServerOverrideKey(id)
+	res := operator.ConfigWriteOutcome{Key: key}
+	if c.store == nil {
+		res.Effect = operator.EffectRejected
+		res.Error = "no configuration store is available"
+		return res
+	}
+	if ids, err := config.MigrateStoredMCPServers(c.store); err != nil {
+		res.Effect = operator.EffectRejected
+		res.Error = "could not migrate the stored MCP server list: " + err.Error()
+		return res
+	} else if len(ids) > 0 {
+		slog.Info("config store: migrated the stored MCP server list to per-id entries", "ids", ids)
+	}
+	var fileEntry *config.MCPServerConfig
+	for _, s := range c.baseMCPServers() {
+		if s.ID == id {
+			s := s
+			fileEntry = &s
+			break
+		}
+	}
+	if fileEntry == nil {
+		res.Effect = operator.EffectRejected
+		res.Error = fmt.Sprintf("no config file declares an MCP server %q: there is nothing to revert to (use RemoveIntegration to uninstall it)", id)
+		return res
+	}
+	if _, stored := c.storedMCPServers()[id]; !stored {
+		res.Effect = operator.EffectRejected
+		res.Error = fmt.Sprintf("integration %q already uses its config-file entry; there is no console override to drop", id)
+		return res
+	}
+	if err := c.store.DeleteOverride(key); err != nil {
+		res.Effect = operator.EffectRejected
+		res.Error = "could not drop the stored override: " + err.Error()
+		return res
+	}
+	res.Set = true
+	if pin := c.prov.PinnedAbove(mcpServersKey); pin != "" {
+		res.Effect = operator.EffectShadowed
+		res.ShadowedBy = pin
+		return res
+	}
+	if c.applyMCPServer != nil && c.applyMCPServer(*fileEntry, mcpSourceFile) {
+		res.Effect = operator.EffectLive
+		return res
+	}
+	res.Effect = operator.EffectRestartRequired
+	res.Error = "no live MCP connector on this kernel; the change takes effect at the next boot"
+	return res
+}
+
+// SaveMCPServer creates or replaces one server and arms it live.
+func (c configWriteSource) SaveMCPServer(spec operator.MCPServerSpec) (operator.ConfigWriteOutcome, error) {
+	if c.store == nil {
+		return operator.ConfigWriteOutcome{Key: mcpServersKey}, fmt.Errorf("no configuration store is available")
+	}
+	var prior *config.MCPServerConfig
+	for _, s := range c.effectiveMCPServers() {
+		if s.ID == spec.ID {
+			s := s
+			prior = &s
+			break
+		}
+	}
+	return c.saveMCPEntry(mcpConfigFromSpec(spec, prior)), nil
+}
+
+// RemoveMCPServer drops one server from the stored list and the running kernel.
+func (c configWriteSource) RemoveMCPServer(id string) (operator.ConfigWriteOutcome, error) {
+	if c.store == nil {
+		return operator.ConfigWriteOutcome{Key: mcpServersKey}, fmt.Errorf("no configuration store is available")
+	}
+	return c.removeMCPEntry(id), nil
 }
 
 // SetMCPServerToken stores a server credential and bounces the connection so
@@ -914,28 +1070,34 @@ func (c configWriteSource) SetMCPServerToken(id, token string) (operator.ConfigW
 		res.Error = fmt.Sprintf("no MCP server with id %q is configured", id)
 		return res, nil
 	}
+	return c.setMCPSecret(id, mcp.TokenSecretName(id), envVar, token), nil
+}
 
-	if err := c.store.SetSecret(res.Key, token); err != nil {
+// setMCPSecret stores one credential of one server — in the ADR-0101 store,
+// or in the bound org account when an account provider is installed
+// (shared_credentials.go, ADR-0141) — and bounces that server (credentials are injected at CONNECT time; a healthy session would
+// otherwise keep the old one forever). envVar is the kernel variable that
+// outranks the store (D5), "" when none does.
+func (c configWriteSource) setMCPSecret(id, secretName, envVar, value string) operator.ConfigWriteOutcome {
+	res := operator.ConfigWriteOutcome{Key: secretName}
+	if err := writeSharedMCPCredential(c.store, id, secretName, value); err != nil {
 		res.Effect = operator.EffectRejected
 		res.Error = "could not write to the credential store: " + err.Error()
-		return res, nil
+		return res
 	}
 	res.Set = true
-
 	if envVar != "" && os.Getenv(envVar) != "" {
 		res.Effect = operator.EffectShadowed
 		res.ShadowedBy = "env:" + envVar
-		return res, nil
+		return res
 	}
-
-	// Tokens are injected at CONNECT time, so unlike a generator key a live
-	// session keeps the old one; the bounce is what makes "saved" observable.
 	if c.bounceMCPServer != nil && c.bounceMCPServer(id) {
 		res.Effect = operator.EffectLive
-		return res, nil
+		return res
 	}
 	res.Effect = operator.EffectRestartRequired
-	return res, nil
+	res.Error = "the server is not running on this kernel; the credential is used when it next starts"
+	return res
 }
 
 // ClearMCPServerToken removes a stored credential and bounces the connection.
@@ -943,7 +1105,7 @@ func (c configWriteSource) ClearMCPServerToken(id string) error {
 	if c.store == nil {
 		return fmt.Errorf("no credential store is available")
 	}
-	if err := c.store.ClearSecret(mcp.TokenSecretName(id)); err != nil {
+	if err := clearSharedMCPCredential(c.store, id, mcp.TokenSecretName(id)); err != nil {
 		return err
 	}
 	if c.bounceMCPServer != nil {
@@ -964,6 +1126,7 @@ func (c configWriteSource) TestMCPServer(ctx context.Context, spec operator.MCPS
 	var prior *config.MCPServerConfig
 	for _, s := range c.effectiveMCPServers() {
 		if s.ID == spec.ID {
+			s := s
 			prior = &s
 			break
 		}

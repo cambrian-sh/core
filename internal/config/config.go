@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -62,6 +63,25 @@ type PlanConfig struct {
 	// (it was their hard cap) — see renameDeprecatedExecutionKeys.
 	PlanMaxDurationMs int `json:"plan_max_duration_ms"`
 
+	// CallerDeadlineReserveMs is how long before its CALLER's deadline a plan is
+	// stopped (ms), so Execute can still answer with what the plan did — the
+	// completed steps' results and the side-effecting calls (the "COMPLETED
+	// ACTIONS" ledger) — instead of being killed by the deadline with no reply.
+	// A chat turn delegates with a gRPC deadline of its remaining time minus a
+	// reply reserve (agents/chat_agent.py); a plan that ran to that deadline
+	// returned nothing although its steps had written (run
+	// 20261107T120552Z_usecases_full, a cases.decide call lost to the reply;
+	// T-20261107-a-delegated-plan-stopped-by-its-caller-s). The stopped plan is
+	// reported as a timed-out partial plan. A caller that grants less than twice
+	// the reserve gets half its time. Default 5000
+	// (DefaultCallerDeadlineReserveMs); 0 disables it (the plan runs to the
+	// caller's deadline). Only callers that set a deadline are affected. The
+	// router's classification and the planner's call before the plan are held to
+	// the same instant: a reserve cut there answers "ran out of time while
+	// planning … nothing was executed" in time
+	// (T-20261107-planner-llm-call-is-not-bounded-by-the-caller).
+	CallerDeadlineReserveMs int `json:"caller_deadline_reserve_ms"`
+
 	// ContextGrowthK is the scalar used in ContextGrowthPenalty = k * growthBytes.
 	// Penalises agents that inflate the DAG context with large payloads.
 	ContextGrowthK float64 `json:"context_growth_k"`
@@ -98,6 +118,16 @@ type PlanConfig struct {
 	// structured error routed to replan — never a silent truncation. Default: 64;
 	// 0 disables the cap.
 	MaxFanOutWidth int `json:"max_fanout_width"`
+
+	// FanOutConcurrency bounds how many children of fan-out expansions run at once in
+	// one plan. An agent process serves one Execute at a time (ADR-0036 D2), so above 1
+	// each child is served on a dedicated instance of its agent, booted for that child
+	// and evicted after it (the ADR-0139 D12 subagent mechanism) — the bound is then
+	// real parallelism, paid for with one agent boot per child. 0 or 1 runs children one
+	// at a time on the agent's shared instance (the effective behaviour before
+	// 2026-11-07, when they queued on that process). Default: 4
+	// (T-20261107-plan-fan-out-steps-run-one-at-a-time-on-a).
+	FanOutConcurrency int `json:"fan_out_concurrency"`
 
 	// MaxPartialContextBytes caps the size of partial context returned in
 	// PartialPlanError to bound memory usage. Default: 51200 (50 KB).
@@ -423,6 +453,73 @@ type CapabilityConfig struct {
 	// wrong merge silently misroutes. Empty by default — every entry should be
 	// added because a real step failed to route, not speculatively.
 	CapabilityAliases map[string]string `json:"capability_aliases"`
+
+	// EffectVocabulary is the step-effect vocabulary of effect-checked dispatch
+	// (T-20261106-kernel-does-not-check-that-a-declared, owner option B): the terms the
+	// planner may put in a step's required_effects, and how each is DERIVED from the
+	// ADR-0086 effect classes tool policies declare. A class term (`classes`) holds for
+	// a tool declaring any of those classes; a refined term (`refines` + `tools`) holds
+	// for a tool declaring that class whose base name matches a glob, because the
+	// classes alone cannot tell a move from a write. Dispatch admits only agents whose
+	// granted tools cover a step's required effects, and refuses the step otherwise —
+	// an effect not listed here matches no agent. Data, not Go: widen a refined term
+	// by adding a glob here when a real tool is named differently.
+	EffectVocabulary []EffectTermConfig `json:"effect_vocabulary"`
+}
+
+// EffectTermConfig is one effect_vocabulary entry (see CapabilityConfig.EffectVocabulary
+// and domain.StepEffectTerm).
+type EffectTermConfig struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Classes     []string `json:"classes,omitempty"`
+	Refines     string   `json:"refines,omitempty"`
+	Tools       []string `json:"tools,omitempty"`
+}
+
+// StepEffectVocabulary builds the validated vocabulary from config.
+func (c CapabilityConfig) StepEffectVocabulary() (*domain.StepEffectVocabulary, error) {
+	terms := make([]domain.StepEffectTerm, 0, len(c.EffectVocabulary))
+	for _, t := range c.EffectVocabulary {
+		term := domain.StepEffectTerm{
+			Name:        t.Name,
+			Description: t.Description,
+			Refines:     domain.ToolEffect(t.Refines),
+			Tools:       t.Tools,
+		}
+		for _, cl := range t.Classes {
+			term.Classes = append(term.Classes, domain.ToolEffect(cl))
+		}
+		terms = append(terms, term)
+	}
+	return domain.NewStepEffectVocabulary(terms)
+}
+
+// DefaultEffectVocabulary is the shipped vocabulary. The class terms are the five
+// ADR-0086 classes one to one (egress keeps its name; send is its refinement); the
+// refined terms are the distinctions a plan step needs that the classes cannot
+// express. Tool globs match the tool's base name (after the last '/').
+func DefaultEffectVocabulary() []EffectTermConfig {
+	return []EffectTermConfig{
+		{Name: "read", Classes: []string{"read"},
+			Description: "observe without changing anything: read or list files and folders, look up records, search"},
+		{Name: "write", Classes: []string{"write"},
+			Description: "create or change files, folders or records"},
+		{Name: "move", Refines: "write", Tools: []string{"*move*", "*rename*"},
+			Description: "move or rename existing files, folders or records"},
+		{Name: "delete", Refines: "write", Tools: []string{"*delete*", "*remove*", "*trash*", "*unlink*"},
+			Description: "delete or remove files, folders or records"},
+		{Name: "execute", Refines: "write", Tools: []string{"*execute*", "*exec_*", "*shell*", "*run_command*", "*run_code*", "*terminal*"},
+			Description: "run a command, a script or code"},
+		{Name: "egress", Classes: []string{"egress"},
+			Description: "reach outside this deployment: fetch a web page, search the web, call an external service"},
+		{Name: "send", Refines: "egress", Tools: []string{"*send*", "*reply*", "*forward*", "*post_message*", "*publish*"},
+			Description: "send or publish something to someone: an email, a chat message, a post"},
+		{Name: "spend", Classes: []string{"spend"},
+			Description: "incur cost or move money"},
+		{Name: "admin", Classes: []string{"admin"},
+			Description: "change the system's own configuration"},
+	}
 }
 
 // SessionConfig — Session lifecycle: idle timeout, retention sweeps and token TTL.
@@ -1161,6 +1258,10 @@ const DefaultPlanIdleTimeoutMs = 180000
 // absolute safety cap on one plan, 30 min (owner decision 2026-11-05).
 const DefaultPlanMaxDurationMs = 1800000
 
+// DefaultCallerDeadlineReserveMs is the default of plan.caller_deadline_reserve_ms:
+// time to unwind the cancelled steps and send the partial report back.
+const DefaultCallerDeadlineReserveMs = 5000
+
 // DefaultDependencyResultsMaxChars is the default of plan.dependency_results_max_chars.
 const DefaultDependencyResultsMaxChars = 24000
 
@@ -1217,6 +1318,25 @@ type ToolsConfig struct {
 	// only — default false (fail-closed: dangerous tools require an operator).
 	ToolsAutoApprove bool `json:"tools_auto_approve,omitempty"`
 
+	// MaxUnroutableApprovalsPerRun bounds repeated unroutable approvals in one plan
+	// run: once this many calls of a tool in a run were refused because their
+	// approval could not be routed to anyone (unroutable, needs_hierarchy), further
+	// calls of that tool in the run are refused without raising another approval.
+	// Agents varied the arguments of a refused call and raised 39 such approvals in
+	// one run (T-20261107-chat-agent-re-delegates-after-a-deterministic). A human
+	// denial or an expired approval is not counted: asking again may get a yes.
+	// Default 3; 0 disables the bound.
+	MaxUnroutableApprovalsPerRun int `json:"max_unroutable_approvals_per_run"`
+
+	// DuplicateNoticeWindowMinutes is how far back an approval for a
+	// side-effecting tool call looks, in the same conversation, for an earlier call
+	// it may duplicate (identical arguments, or the same target and subject); a
+	// match is shown to the approver as a "Possible duplicate of … at …" notice on
+	// the approval item. Informational only: the call is never refused for it
+	// (T-20261107-approver-is-not-told-that-an-identical-side). Default 1440 (one
+	// day); 0 disables the history and the notice.
+	DuplicateNoticeWindowMinutes int `json:"duplicate_notice_window_minutes"`
+
 	// ToolRetrievalFloor (ADR-0044) is the minimum cosine similarity for a tool to
 	// be served by semantic retrieval. Below it, "no tool fits" ⇒ an empty menu
 	// (grounding safeguard). 0 ⇒ no floor (any top-k is returned). Tunable.
@@ -1259,6 +1379,30 @@ type ChatConfig struct {
 	// ChatPoolAcquireTimeoutSeconds bounds how long an admitted turn waits for a worker
 	// before being shed. 0 means wait for the caller's context.
 	ChatPoolAcquireTimeoutSeconds int `json:"chat_pool_acquire_timeout_seconds,omitempty"`
+
+	// ChatTurnTimeoutSeconds bounds one chat turn: the worker's tool calls, model
+	// calls and any plan it delegates (internal/chat TurnService.TurnTimeout, and the
+	// TTL of the turn's managed-LLM lease). The deadline reaches the chat agent as
+	// deadline_remaining_ms, and the agent budgets its delegations against it, so
+	// raising it needs no agent change. Raise it for slow models or long delegated
+	// work. Default 240 (internal/chat DefaultTurnTimeout); 0 uses the default.
+	// T-20261107-chat-turn-timeout-is-hardcoded-at-240-s.
+	ChatTurnTimeoutSeconds int `json:"chat_turn_timeout_seconds,omitempty"`
+
+	// ChatStallTimeoutSeconds fails a turn that reports no progress at all for this
+	// long — no progress event, no model call in flight on its lease, no movement in
+	// a plan it delegated — well before ChatTurnTimeoutSeconds would. Default 90
+	// (internal/chat DefaultStallTimeout); 0 uses the default.
+	ChatStallTimeoutSeconds int `json:"chat_stall_timeout_seconds,omitempty"`
+
+	// ChatDefaultLanguage is the language of the kernel's and the chat agent's fixed
+	// failure and fallback sentences when nothing the user wrote identifies one (a first
+	// message of "ok" or a number). The turn's language is otherwise detected from what
+	// the user wrote (internal/chat locale.go), never translated by a model. A language
+	// code the message catalogue has ("en", "tr"); an unknown one falls back to English
+	// with a warning at startup. Default "en".
+	// T-20261107-chat-failure-texts-are-english-only-in-non.
+	ChatDefaultLanguage string `json:"chat_default_language,omitempty"`
 }
 
 // AgentsConfig — Agent process runtime: resource caps, env passthrough and daemon restart policy.
@@ -1531,6 +1675,11 @@ type ExecutionConfig struct {
 	// gateway deltas on both model lanes, agent-pushed output, caps and the MCP
 	// progress wait (step_output.go).
 	StepOutput StepOutputConfig `json:"step_output"`
+
+	// Schedules is principal-owned recurring tasks proposed by an assistant
+	// (T-20261106-the-assistant-cannot-set-up-a-recurring-task): the approval window
+	// and the per-principal caps (schedules.go).
+	Schedules SchedulesConfig `json:"schedules"`
 }
 
 // Hook kinds accepted in execution.hooks.entries[].kind (ADR-0139 D11).
@@ -2041,6 +2190,15 @@ type Config struct {
 	// lanes need, and a verb nobody declared is refused at the write rather
 	// than admitted at some default. See relations.go.
 	Relations []RelationConfig `json:"relations,omitempty"`
+	// Approvals is the approval policy data (ADR-0142 D11): who may answer which
+	// action class, never-self-approvable classes, standing-approval bounds.
+	// See approvals.go. Absent ⇒ the shipped policy (today's routing).
+	Approvals ApprovalsConfig `json:"approvals,omitempty"`
+	// Privacy holds the ADR-0142 D12 private-by-default switch (privacy.go).
+	Privacy PrivacyConfig `json:"privacy,omitempty"`
+	// Identity is how people sign in (ADR-0142 D1): local accounts always, plus
+	// at most one OIDC issuer. See identity.go.
+	Identity IdentityConfig `json:"identity"`
 }
 
 // MCPEndpointConfig configures the inbound Cambrian MCP endpoint (ADR-0126 D3),
@@ -2330,6 +2488,81 @@ type MCPConfig struct {
 	// a kernel restart drops them (the known phase-4 residual); expiry fails
 	// the step visibly with a recorded decision, never silently.
 	WorkerParkDeadlineMs int `json:"worker_park_deadline_ms,omitempty"`
+
+	// CatalogFile is an optional deployment integration catalog (JSON, the shape
+	// of the built-in internal/integrations/catalog.json) whose entries are
+	// offered in the console beside the curated built-in set; an entry with a
+	// built-in id replaces it. Relative paths resolve against the primary config
+	// file's directory. "" ⇒ the built-in catalog only. Read at boot by the
+	// integrations surface.
+	CatalogFile string `json:"catalog_file,omitempty"`
+
+	// UserSessions bounds the per-(server, principal) MCP sessions a per_user
+	// or either server is served by (ADR-0140 D4, kept in core by ADR-0141:
+	// credential DELIVERY is the connector's job; the accounts themselves —
+	// sign-in, storage, refresh — are premium's accounts plugin).
+	UserSessions MCPUserSessionsConfig `json:"user_sessions,omitempty"`
+
+	// Sandbox is trust-tier containment for stdio servers (ADR-0139 D8):
+	// mcp_sandbox.go. Unset ⇒ the internal/sandbox defaults.
+	Sandbox MCPSandboxConfig `json:"sandbox,omitempty"`
+}
+
+// MCPUserSessionsConfig is mcp.user_sessions (ADR-0141). Every field uses
+// 0 ⇒ the documented default, so an explicit 0 and "unset" behave identically.
+//
+// It replaced ADR-0140's mcp.oauth block, which was never released: the
+// sign-in listener, provider table, flow TTL and refresh skew moved with the
+// account layer to premium (CAMBRIAN_ACCOUNTS_* in the accounts plugin), and
+// only the two session-pool limits stayed here, renamed from
+// max_user_instances / user_instance_idle_seconds.
+type MCPUserSessionsConfig struct {
+	// Max caps the live per-principal MCP sessions across all per-user
+	// integrations (a stdio one is a process). 0 ⇒ 32.
+	Max int `json:"max,omitempty"`
+	// IdleSeconds closes a per-principal session unused this long (and kills
+	// its process). 0 ⇒ 600.
+	IdleSeconds int `json:"idle_seconds,omitempty"`
+}
+
+// MCPUserCredentialConfig is a server's credential model (ADR-0140 D1),
+// copied from its catalog entry at install and overridable per deployment.
+//
+//	shared   — one credential for the server (the per-server model; default)
+//	per_user — every tool call uses the REQUESTING principal's own credential;
+//	           none ⇒ the call fails with "connect your account", never another
+//	           principal's and never the shared one
+//	either   — the principal's credential when connected; otherwise the
+//	           shared one ONLY when shared_fallback is true
+type MCPUserCredentialConfig struct {
+	Scope    string   `json:"scope"`
+	Provider string   `json:"provider,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
+	// Inject says how the principal's access token reaches the server:
+	// "env" (stdio: environment variable Name of a per-principal process),
+	// "bearer" (http/sse: Authorization: Bearer per request), or "header"
+	// (http/sse: header Name per request).
+	Inject string `json:"inject,omitempty"`
+	Name   string `json:"name,omitempty"`
+	// SharedFallback lets an "either" server use the shared credential for a
+	// principal with no connection of their own. Meaningless otherwise.
+	SharedFallback bool `json:"shared_fallback,omitempty"`
+}
+
+// Credential scopes (ADR-0140 D1).
+const (
+	CredentialShared  = "shared"
+	CredentialPerUser = "per_user"
+	CredentialEither  = "either"
+)
+
+// CredentialScope returns the server's effective credential scope; an absent
+// block is "shared" (every pre-ADR-0140 server).
+func (s MCPServerConfig) CredentialScope() string {
+	if s.UserCredential == nil || s.UserCredential.Scope == "" {
+		return CredentialShared
+	}
+	return s.UserCredential.Scope
 }
 
 // MCPServerConfig describes one MCP server. Auth secrets are referenced by env
@@ -2358,6 +2591,40 @@ type MCPServerConfig struct {
 	// LANGFUSE_* never pass.
 	Env []string `json:"env,omitempty"`
 
+	// Enabled is the integration on/off switch (T-20261105-mcp-servers-have-no-
+	// enabled-flag-every). nil means true, so every pre-existing mcp.json entry
+	// keeps being dialled. A disabled server is not started, has no session and
+	// publishes no tools; it stays configured so the console can turn it back
+	// on. Read by the composition root (boot ConnectAll/Watch filter) and by the
+	// integrations write path (start/stop live). Use IsEnabled.
+	Enabled *bool `json:"enabled,omitempty"`
+	// EnvValues are LITERAL, non-secret environment values given to this stdio
+	// server only (T-20261105-mcp-server-config-cannot-set-literal-env-values):
+	// SANDBOX_NETWORK_MODE=none for the code sandbox, ALLOW_COMMANDS for the
+	// shell, SQLITE_DATABASE. A credential-shaped name is REFUSED here (it
+	// belongs in SecretEnv, encrypted), and CAMBRIAN_* / LANGFUSE_* are refused
+	// outright. An args element "${NAME}" is replaced by EnvValues[NAME] at
+	// launch, which is how a catalog entry takes a path argument (filesystem
+	// roots, a git repository). An explicit value wins over a passthrough of the
+	// same name.
+	EnvValues map[string]string `json:"env_values,omitempty"`
+	// SecretEnv names environment variables whose values are SECRETS held in the
+	// ADR-0101 encrypted store under mcp:<id>:env:<NAME> (see
+	// mcp.EnvSecretName), injected into this server's process only, at launch.
+	// The ADR-0101 D5 precedence holds: when NAME is also in Env (passthrough)
+	// and set in the kernel's environment, the kernel's value wins. Values never
+	// appear in config, logs or any read.
+	SecretEnv []string `json:"secret_env,omitempty"`
+	// CatalogID / CatalogVersion record which integration-catalog entry (and
+	// which pinned version of it) this server was installed from. Empty for a
+	// hand-written or custom server. Descriptive: the launch spec above is what
+	// runs, so moving a catalog pin never silently upgrades an installed server.
+	CatalogID      string `json:"catalog_id,omitempty"`
+	CatalogVersion string `json:"catalog_version,omitempty"`
+	// DisplayName / Category label a custom integration in the console.
+	DisplayName string `json:"display_name,omitempty"`
+	Category    string `json:"category,omitempty"`
+
 	// ClassificationTags apply to EVERY tool this server advertises (ADR-0085 D2 /
 	// ADR-0090). A remote server's tools are discovered dynamically, so without a
 	// server-level default they arrive UNTAGGED — and an untagged resource has no
@@ -2368,6 +2635,21 @@ type MCPServerConfig struct {
 	// of the whole integration: every tau2-airline tool touches airline data. A
 	// per-tool list, when present, is used INSTEAD of this for that tool.
 	ClassificationTags []string `json:"classification_tags,omitempty"`
+
+	// UserCredential is the server's credential model (ADR-0140): shared,
+	// per_user or either, and for the latter two the OAuth provider, scopes
+	// and how a principal's token is injected. nil ⇒ shared.
+	UserCredential *MCPUserCredentialConfig `json:"user_credential,omitempty"`
+
+	// TrustTier is the server's containment tier (ADR-0139 D8): first-party,
+	// vetted or third-party. "" ⇒ its catalog entry's tier (through
+	// mcp.sandbox.catalog_tiers), else mcp.sandbox.default_tier. An explicit
+	// value is an operator decision and wins over the catalog.
+	TrustTier string `json:"trust_tier,omitempty"`
+	// Sandbox is what the server declares about its own containment (network
+	// egress, an extra writable root, the runner and image, limit overrides).
+	// nil ⇒ its catalog entry's declaration, else nothing (no network).
+	Sandbox *MCPServerSandboxConfig `json:"sandbox,omitempty"`
 }
 
 // MCPToolConfig is operator policy for one tool the server advertises (ADR-0043).
@@ -2428,12 +2710,14 @@ func DefaultConfig() *Config {
 				// the 30 min cap.
 				PlanIdleTimeoutMs:           DefaultPlanIdleTimeoutMs,
 				PlanMaxDurationMs:           DefaultPlanMaxDurationMs,
+				CallerDeadlineReserveMs:     DefaultCallerDeadlineReserveMs,
 				ContextGrowthK:              0.001,
 				MaxRecursionDepth:           3,
 				FallbackConfidenceThreshold: 0.4,
 				FallbackEnabled:             true,
 				MaxReplanAttempts:           2,
 				MaxFanOutWidth:              64,
+				FanOutConcurrency:           4,
 				MaxPartialContextBytes:      51200,
 				PlanDriftDays:               7,
 				ContextRefSnippetChars:      500,
@@ -2490,6 +2774,7 @@ func DefaultConfig() *Config {
 				CanonicalVocab:       false,               // ROUTE-04 arm toggle; OFF = declared strings verbatim
 				CapabilityResolution: true,                // ADR-0100 D5 ladder; only fires for steps that declare requirements
 				CapabilityAliases:    map[string]string{}, // authored, reviewed; add an entry only when a real step failed to route
+				EffectVocabulary:     DefaultEffectVocabulary(),
 			},
 			Session: SessionConfig{
 				SessionTTLDays:                  7,
@@ -2673,10 +2958,15 @@ func DefaultConfig() *Config {
 				SubagentResultMaxChars:       16000,
 				SubagentWithheldTools: []string{
 					"clarify", "clarify_*", "ask_user*",
-					"memory_write*", "memory_note*", "propose_memory_note", "ingest_memory*",
+					"memory_write*", "memory_note*", "propose_memory_note", "propose_knowledge", "ingest_memory*",
 					"send_message*", "message_*", "*_send_message", "notify*",
 				},
-				SubagentMemoryWriteTools: []string{"memory_write*", "memory_note*", "propose_memory_note"},
+				SubagentMemoryWriteTools: []string{"memory_write*", "memory_note*", "propose_memory_note", "propose_knowledge"},
+			},
+			Tools: ToolsConfig{
+				// T-20261107-chat-agent-re-delegates-after-a-deterministic (part 2).
+				MaxUnroutableApprovalsPerRun: 3,
+				DuplicateNoticeWindowMinutes: 1440,
 			},
 			Supervision: SupervisionConfig{
 				ProfileAggregatorIntervalSeconds: 300,
@@ -2706,6 +2996,10 @@ func DefaultConfig() *Config {
 				ChatPoolSize:      2,
 				ChatPoolQueueSize: 8,
 				ChatPoolAgentID:   "chat_agent",
+				// The values internal/chat hardcoded until 2026-11-07.
+				ChatTurnTimeoutSeconds:  240,
+				ChatStallTimeoutSeconds: 90,
+				ChatDefaultLanguage:     "en",
 			},
 			Pipelines: PipelinesConfig{
 				DrainerEnabled: true, // owner default 2026-08-11
@@ -2882,6 +3176,30 @@ func LoadConfig(path string) (*Config, error) {
 // that re-applied precedence separately could, and a provenance report that
 // disagrees with the running config is worse than none.
 func LoadConfigWithStore(path string, store Store) (*Config, Provenance, error) {
+	cfg, prov, err := loadMerged(path, store)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Validation runs ONCE, here: after every layer (defaults, files, store, env)
+	// has merged and after the per-layer v1→v2 migration, so each rule judges the
+	// value the kernel will actually run with. Every block's checks — required
+	// secrets, the endpoint/provider blocks, the chunker routing table and the
+	// whole execution tree — are aggregated into one error that names each key.
+	// The execution and chunker checks existed for months with no production
+	// caller (T-20261106-executionconfig-validate-has-no-production); a rule that
+	// never runs tells the operator their value was accepted and then ignores it.
+	if err := cfg.Validate(); err != nil {
+		return nil, nil, err
+	}
+
+	return cfg, prov, nil
+}
+
+// loadMerged is the layered merge alone — defaults, files, store, env, the
+// per-layer v1→v2 migration and the post-unmarshal defaults — with NO validation.
+// LoadConfigWithStore validates its result; ValidateOverride uses it to judge a
+// pending runtime write against the same merge.
+func loadMerged(path string, store Store) (*Config, Provenance, error) {
 	// All secondary paths are derived from the directory of the primary `path`
 	// (FileLayers), not from the process CWD. This keeps the layering
 	// deterministic across invocation contexts (tests, systemd, dev shells).
@@ -2929,9 +3247,19 @@ func LoadConfigWithStore(path string, store Store) (*Config, Provenance, error) 
 	// (storedGens below), because a stored list would replace the file list
 	// wholesale and hide every generator added to a file.
 	var storedGens map[string]StoredGenerator
+	var storedMCP map[string]StoredMCPServer
 	if store != nil {
 		if overrides, err := store.Overrides(); err == nil && len(overrides) > 0 {
 			gens, rest, legacy := SplitGeneratorOverrides(overrides)
+			// MCP servers are split the same way (store_mcp.go): per-id entries
+			// merged by id over the file list below, never a wholesale list.
+			mcpStored, rest2, mcpLegacy := SplitMCPServerOverrides(rest)
+			rest = rest2
+			storedMCP = mcpStored
+			if mcpLegacy {
+				slog.Info("config store holds the contract-0097 MCP server list; merging it per id",
+					slog.Int("servers", len(mcpStored)))
+			}
 			if legacy {
 				// Normally migrated (persisted) at boot by app.Run; a read-only
 				// reader (CLI) still sees the right merge from the in-memory split.
@@ -3012,6 +3340,13 @@ func LoadConfigWithStore(path string, store Store) (*Config, Provenance, error) 
 		t.prov[GeneratorsKey] = SourceStore
 	}
 
+	// Integrations: stored MCP servers merge by id over the file layers' list,
+	// with the same env-pins-the-whole-list exception as generators.
+	if len(storedMCP) > 0 && !strings.HasPrefix(t.prov[MCPServersKey], SourceEnvPrefix) {
+		cfg.MCP.Servers = MergeMCPServers(cfg.MCP.Servers, storedMCP)
+		t.prov[MCPServersKey] = SourceStore
+	}
+
 	// ADR-0042 defaults for the llm_provider block.
 	ApplyGeneratorDefaults(cfg.LLMProvider.Generators)
 	if cfg.LLMProvider.configured() {
@@ -3023,11 +3358,119 @@ func LoadConfigWithStore(path string, store Store) (*Config, Provenance, error) 
 		}
 	}
 
-	if err := cfg.validateSecrets(); err != nil {
-		return nil, nil, err
-	}
-
 	return &cfg, t.prov, nil
+}
+
+// Validate runs every load-time rule over a fully merged Config and returns one
+// aggregated error naming each offending key, or nil. It is what
+// LoadConfigWithStore runs after the layers merge, and what a runtime config
+// write is checked against (ValidateOverride) — one rule set for both paths.
+func (c *Config) Validate() *ConfigError {
+	if errs := c.validationErrors(); len(errs) > 0 {
+		return &ConfigError{Field: "validation", Message: strings.Join(errs, "; ")}
+	}
+	return nil
+}
+
+// validationErrors is Validate's unjoined form: one string per violated rule.
+// ValidateOverride diffs two of these lists, which a joined message cannot do.
+func (c *Config) validationErrors() []string {
+	errs := c.secretErrors()
+	if cerr := c.Chunker.Validate(); cerr != nil {
+		errs = append(errs, splitConfigError(cerr)...)
+	}
+	if eerr := c.Execution.Validate(); eerr != nil {
+		errs = append(errs, splitConfigError(eerr)...)
+	}
+	if aerr := c.Approvals.Validate(); aerr != nil {
+		errs = append(errs, splitConfigError(aerr)...)
+	}
+	return errs
+}
+
+// splitConfigError recovers the per-rule strings of a block validator's joined
+// message.
+func splitConfigError(e *ConfigError) []string {
+	if e == nil || e.Message == "" {
+		return nil
+	}
+	return strings.Split(e.Message, "; ")
+}
+
+// ValidateOverride reports the validation errors that storing value under key in
+// the config store would INTRODUCE. It reloads the full layered config from path
+// with the pending override placed in the store layer (above the files, below
+// the environment — exactly where a durable console write lands, ADR-0101 D1),
+// runs the same rules boot runs, and returns only the errors the current
+// effective config does not already have. Pre-existing problems (a file edited
+// since boot) are not blamed on an unrelated write; they will fail the next boot
+// on their own.
+//
+// A key that a writable file already sets is written into that file instead
+// (ADR-0101 D8), but since the store layer outranks every file, overlaying it in
+// the store yields the same merged value, so one check covers both destinations.
+func ValidateOverride(path string, store Store, key string, value any) []string {
+	before := mergedValidationErrors(path, store)
+	after := mergedValidationErrors(path, overlayStore{base: store, key: key, value: value})
+	seen := make(map[string]struct{}, len(before))
+	for _, e := range before {
+		seen[e] = struct{}{}
+	}
+	var introduced []string
+	for _, e := range after {
+		if _, ok := seen[e]; !ok {
+			introduced = append(introduced, e)
+		}
+	}
+	return introduced
+}
+
+// mergedValidationErrors loads path+store without failing on validation and
+// returns the rule violations of the merged result.
+func mergedValidationErrors(path string, store Store) []string {
+	cfg, _, err := loadMerged(path, store)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return cfg.validationErrors()
+}
+
+// overlayStore is a read-only view of a Store with one pending override applied.
+// The other spelling of a legacy flat execution key is dropped so the pending
+// value cannot lose to a stale override stored under the v1 name.
+type overlayStore struct {
+	base  Store
+	key   string
+	value any
+}
+
+func (o overlayStore) Overrides() (map[string]any, error) {
+	out := map[string]any{}
+	if o.base != nil {
+		cur, err := o.base.Overrides()
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range cur {
+			out[k] = v
+		}
+	}
+	canon := CanonicalKey(o.key)
+	for k := range out {
+		if k == o.key || CanonicalKey(k) == canon {
+			delete(out, k)
+		}
+	}
+	out[o.key] = o.value
+	return out, nil
+}
+
+func (overlayStore) SetOverride(string, any) error {
+	return fmt.Errorf("config: overlay store is read-only")
+}
+
+func (overlayStore) DeleteOverride(string) error {
+	return fmt.Errorf("config: overlay store is read-only")
 }
 
 // loadIfPresent loads the JSON file at p into k when the file exists. A missing
@@ -3088,8 +3531,11 @@ func scratchBytes(b []byte) *koanf.Koanf {
 	return sk
 }
 
-// validateSecrets checks that required fields are non-empty after all layers merge.
-func (c *Config) validateSecrets() *ConfigError {
+// secretErrors checks that required fields are non-empty after all layers merge,
+// plus the non-execution blocks (database migrations, provider, endpoints, MCP).
+// It was once the ONLY load-time check (validateSecrets); Config.Validate now
+// runs it together with the chunker and execution rules.
+func (c *Config) secretErrors() []string {
 	var errs []string
 
 	if c.Database.Host == "" {
@@ -3110,14 +3556,15 @@ func (c *Config) validateSecrets() *ConfigError {
 	errs = append(errs, c.Server.A2A.validate(c.Server.Port, c.Server.MCP)...)
 	errs = append(errs, c.A2A.validate()...)
 	errs = append(errs, c.Server.RateLimit.validate()...)
-
-	if len(errs) > 0 {
-		return &ConfigError{
-			Field:   "validation",
-			Message: strings.Join(errs, "; "),
-		}
+	// ADR-0142: the identity block, and its refusal of insecure_localhost.
+	errs = append(errs, c.Identity.validate(c.Server.InsecureLocalhost)...)
+	// Integrations: literal env values must not be credentials or kernel vars.
+	for _, s := range c.MCP.Servers {
+		errs = append(errs, ValidateMCPServer(s)...)
 	}
-	return nil
+	// ADR-0139 D8: trust-tier containment policy.
+	errs = append(errs, c.MCP.Sandbox.validate()...)
+	return errs
 }
 
 // Validate checks that ExecutionConfig values are within acceptable ranges.
@@ -3163,6 +3610,24 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	if c.Plan.MaxReplanAttempts < 0 {
 		errs = append(errs, "max_replan_attempts must be >= 0")
+	}
+	if c.Tools.MaxUnroutableApprovalsPerRun < 0 {
+		errs = append(errs, "max_unroutable_approvals_per_run must be >= 0 (0 disables the bound)")
+	}
+	if c.Tools.DuplicateNoticeWindowMinutes < 0 {
+		errs = append(errs, "duplicate_notice_window_minutes must be >= 0 (0 disables the duplicate notice)")
+	}
+	if c.Plan.CallerDeadlineReserveMs < 0 {
+		errs = append(errs, "caller_deadline_reserve_ms must be >= 0 (0 disables it)")
+	}
+	if c.Chat.ChatTurnTimeoutSeconds < 0 {
+		errs = append(errs, "chat_turn_timeout_seconds must be >= 0 (0 uses the default)")
+	}
+	if c.Chat.ChatStallTimeoutSeconds < 0 {
+		errs = append(errs, "chat_stall_timeout_seconds must be >= 0 (0 uses the default)")
+	}
+	if c.Plan.FanOutConcurrency < 0 {
+		errs = append(errs, "fan_out_concurrency must be >= 0 (0 and 1 = fan-out children one at a time)")
 	}
 	if c.Plan.MaxPartialContextBytes < 0 {
 		errs = append(errs, "max_partial_context_bytes must be >= 0")
@@ -3313,6 +3778,7 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	errs = append(errs, c.MemoryNotes.validate()...)
 	errs = append(errs, c.StepOutput.validate()...)
 	errs = append(errs, c.Skills.validate()...)
+	errs = append(errs, c.Schedules.validate()...)
 	if c.Facts.CardinalityMinVotes < 0 {
 		errs = append(errs, "facts.cardinality_min_votes must be >= 0 (0 = the default 3)")
 	}
@@ -3362,8 +3828,17 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 			errs = append(errs, fmt.Sprintf("hippocampus_default_policy %q is not a key in hippocampus_policies", c.Hippocampus.HippocampusDefaultPolicy))
 		}
 	}
+	// Effect-checked dispatch: an invalid vocabulary is refused at load, never
+	// discovered at the first dispatch it would have refused. (This check once
+	// lived in validateSecrets only because this method had no production caller.)
+	if _, verr := c.Capability.StepEffectVocabulary(); verr != nil {
+		errs = append(errs, "capability.effect_vocabulary: "+verr.Error())
+	}
 
 	if len(errs) > 0 {
+		for i, e := range errs {
+			errs[i] = qualifyExecutionKey(e)
+		}
 		return &ConfigError{
 			Field:   "validation",
 			Message: strings.Join(errs, "; "),
@@ -3371,3 +3846,41 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	}
 	return nil
 }
+
+// leadingKeyRE matches the config key a validation message starts with.
+var leadingKeyRE = regexp.MustCompile(`^[a-z0-9_]+`)
+
+// qualifyExecutionKey rewrites a validation message so it names the FULL config
+// path of the key it is about. The rules above were written against several
+// spellings — the v1 flat name ("ewma_alpha"), a block-relative one
+// ("retrieval.hnsw_max_scan_tuples") and a few full paths — and an operator
+// reading a boot error needs the one path they can put in a file or a
+// CAMBRIAN_EXECUTION__… variable. A v1 flat name is routed through the same
+// legacyExecutionKey table the migration uses, so the two cannot disagree.
+func qualifyExecutionKey(msg string) string {
+	if strings.HasPrefix(msg, "execution.") {
+		return msg
+	}
+	head := leadingKeyRE.FindString(msg)
+	if _, isBlock := executionBlockNames[head]; isBlock {
+		return "execution." + msg
+	}
+	if block, ok := legacyExecutionKey[head]; ok {
+		return "execution." + block + "." + msg
+	}
+	return "execution." + msg
+}
+
+// executionBlockNames is the set of ExecutionConfig's block json names
+// ("plan", "retrieval", "facts", …).
+var executionBlockNames = func() map[string]struct{} {
+	t := reflect.TypeOf(ExecutionConfig{})
+	out := make(map[string]struct{}, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			out[name] = struct{}{}
+		}
+	}
+	return out
+}()

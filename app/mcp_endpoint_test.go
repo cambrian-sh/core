@@ -32,7 +32,7 @@ func mcpCfg(bind string, insecure bool, port int) *config.Config {
 // listener exists would be a port that briefly served).
 func TestStartMCPEndpoint_RefusesPlaintextOnRoutableBind(t *testing.T) {
 	for _, bind := range []string{"0.0.0.0", "192.168.1.10", "::", "example.internal"} {
-		srv, err := startMCPEndpoint(mcpCfg(bind, false, 0), nil, nil, nil)
+		srv, err := startMCPEndpoint(mcpCfg(bind, false, 0), nil, nil, nil, nil)
 		if err == nil {
 			if srv != nil {
 				_ = srv.Close()
@@ -51,7 +51,7 @@ func TestStartMCPEndpoint_RefusesPlaintextOnRoutableBind(t *testing.T) {
 // Default disabled: nothing is bound and nothing is validated. An operator who
 // never asked for the endpoint gets no listener and no error.
 func TestStartMCPEndpoint_DisabledBindsNothing(t *testing.T) {
-	srv, err := startMCPEndpoint(cfgWith("0.0.0.0", "", "", false), nil, nil, nil)
+	srv, err := startMCPEndpoint(cfgWith("0.0.0.0", "", "", false), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("a disabled endpoint must not fail the boot: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestStartMCPEndpoint_DisabledBindsNothing(t *testing.T) {
 func TestStartMCPEndpoint_RefusesAnUnservableSurface(t *testing.T) {
 	cfg := mcpCfg("127.0.0.1", false, 0)
 	cfg.Server.MCP.Clients = nil
-	srv, err := startMCPEndpoint(cfg, nil, nil, nil)
+	srv, err := startMCPEndpoint(cfg, nil, nil, nil, nil)
 	if err == nil {
 		if srv != nil {
 			_ = srv.Close()
@@ -80,7 +80,7 @@ func TestStartMCPEndpoint_RefusesAnUnservableSurface(t *testing.T) {
 // published tools. Port 0 lets the OS choose, so the test binds nothing a
 // developer's machine might already hold.
 func TestStartMCPEndpoint_LoopbackServesAndDrains(t *testing.T) {
-	srv, err := startMCPEndpoint(mcpCfg("127.0.0.1", false, 0), domain.PublishedToolSurface{}, nil, nil)
+	srv, err := startMCPEndpoint(mcpCfg("127.0.0.1", false, 0), domain.PublishedToolSurface{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("loopback plaintext refused: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestBootOrder_MCPEndpointStartsBeforeConnectAll(t *testing.T) {
 		t.Fatalf("read app.go: %v", err)
 	}
 	start := strings.Index(string(src), "startMCPEndpoint(")
-	connect := strings.Index(string(src), "mcpConnector.ConnectAll(ctx, servers)")
+	connect := strings.Index(string(src), "mcpConnector.ConnectAll(ctx, enabledMCP)")
 	if start < 0 || connect < 0 {
 		t.Fatalf("call sites not found (startMCPEndpoint=%d ConnectAll=%d); "+
 			"if either was renamed, keep the ordering and update this test", start, connect)

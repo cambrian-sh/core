@@ -2,27 +2,60 @@ package domain
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
-// ApprovalRequest is a pending operator decision for a dangerous tool call
-// (ADR-0039 D10), or — Kind ApprovalKindSkillAccess — an agent's request for a
-// skill outside its effective set (decisions/skill-access-grants.md). Both ride
-// the one operator approval hub, so an operator answers them in one place.
+// ApprovalRequest is one decision a person must make: a dangerous tool call
+// (ADR-0039 D10), an agent's request for a skill outside its effective set
+// (Kind ApprovalKindSkillAccess, decisions/skill-access-grants.md), a proposed
+// schedule, a proactive plan, a machine consent or choice, an account
+// confirmation, a publish. Every kind rides the one addressed hub
+// (AddressedHub, ADR-0142 D11), which routes it to its approvers by policy.
 type ApprovalRequest struct {
 	ID          string
 	AgentID     string
 	ToolName    string // for skill_access: "skill:<name>", so a console that predates Kind still renders it
 	ArgsPreview string
 	// Kind is "" for a dangerous-tool approval, ApprovalKindSkillAccess for a skill
-	// access request.
+	// access request, etc. (the closed set in approval_policy.go).
 	Kind string
-	// Timeout, when > 0, replaces the controller's default grace window for this
+	// Timeout, when > 0, replaces the hub's default grace window for this
 	// request (skill access waits execution.skills.access_request_timeout_seconds).
 	Timeout time.Duration
+
+	// ActionClass overrides the policy class ("" ⇒ the policy derives it from
+	// Kind and, for tools, approvals.tool_classes).
+	ActionClass string
+	// Resource keys a standing approval ("" ⇒ the tool / machine+tool name).
+	Resource string
+	// Object names the exact object acted on, where known.
+	Object string
+	// Machine / Candidates carry a machine consent or choice (ADR-0127).
+	Machine    string
+	Candidates []string
+	// Beneficiary is the person the action is for — the subject of a "self"
+	// rule. Kernel-derived (conversation owner, task beneficiary, schedule
+	// owner), never from a payload (INV-5).
+	Beneficiary PrincipalRef
+	// ConversationID routes delivery to the ordering conversation (the bridge).
+	ConversationID string
+	TaskID         string
+	SessionID      string
+	// Args is the call's full argument JSON, for the approval POLICY only (ADR-0142
+	// stage 2: a limit such as "expense amount > 5000 escalates to the supervisor"
+	// reads the measure from it). It is never persisted and never delivered to an
+	// approver surface — ArgsPreview is the bounded, displayable form.
+	Args []byte
+	// DuplicateNotice tells the approver that an earlier side-effecting call of
+	// this conversation matches this one ("Possible duplicate of … at …";
+	// RenderDuplicateNotice), or "". Kernel-computed from the ActionHistory, never
+	// from a payload; informational: it never changes routing or the decision
+	// (T-20261107-approver-is-not-told-that-an-identical-side).
+	DuplicateNotice string
 }
 
-// ApprovalDecision is an operator's (or automated approver's) ruling.
+// ApprovalDecision is the hub's answer to one request.
 type ApprovalDecision struct {
 	Approved   bool
 	ApproverID string
@@ -31,25 +64,43 @@ type ApprovalDecision struct {
 	// cancellation). Tool approvals treat both as a denial; skill access reports
 	// the second as "pending" and keeps the request open for a later grant.
 	Decided bool
+	// State is the item's terminal state (approved, denied, expired, withdrawn,
+	// needs_hierarchy, unroutable).
+	State ApprovalState
+	// Choice is a choose_machine answer.
+	Choice string
+	// ApprovalID is the hub item that carried the decision.
+	ApprovalID string
+	// Detail is why the item ended in State when nobody ruled (unroutable,
+	// needs_hierarchy, …) or the resolver's note. Callers surface it verbatim so
+	// a fail-closed request is never mistaken for a person saying no
+	// (T-20261107-tool-approvals-raised-by-chat-delegated-plan).
+	Detail string
 }
 
-// ApprovalController gates dangerous tool calls on an operator decision
-// (ADR-0039 D10). Request blocks until decided or times out; it is fail-closed
-// (no approver / timeout ⇒ a non-approved decision). The operator-plane
-// WatchApprovals / SubmitApprovalDecision RPCs drive the default implementation.
+// ApprovalController gates an action on a person's decision. Request blocks
+// until decided or failed closed (no eligible approver / timeout / cancellation
+// ⇒ a non-approved decision).
 type ApprovalController interface {
 	Request(ctx context.Context, req ApprovalRequest) (ApprovalDecision, error)
 }
 
-// ApprovalHub is the full approval surface the operator-plane RPCs drive:
-// the ApprovalController (used by ToolExecutor) plus Watch (WatchApprovals
-// stream) and Submit (SubmitApprovalDecision). InMemoryApprovalController
-// satisfies it.
+// ApprovalHub is the full approval surface the planes drive: requests, addressed
+// delivery, answers checked at answer time, and standing approvals. Implemented
+// by *AddressedHub — the only implementation (ADR-0142 D11).
 type ApprovalHub interface {
 	ApprovalController
-	Watch() (<-chan ApprovalRequest, func())
-	Submit(id string, approved bool, approverID string) bool
+	Raise(ctx context.Context, req ApprovalRequest) (ApprovalItem, error)
+	Watch(spec ApprovalWatch) (<-chan ApprovalEvent, func())
+	Answer(ctx context.Context, id string, ans ApprovalAnswer) (ApprovalItem, error)
+	Answerable(ctx context.Context, it ApprovalItem, by Approver) (bool, string)
+	Get(ctx context.Context, id string) (ApprovalItem, error)
+	List(ctx context.Context, q ApprovalQuery) ([]ApprovalItem, error)
+	ListStanding(ctx context.Context, q StandingQuery) ([]StandingApproval, error)
+	RevokeStanding(ctx context.Context, id string, by Approver, reason string) (StandingApproval, error)
 }
+
+var _ ApprovalHub = (*AddressedHub)(nil)
 
 // AlwaysApproveController is a non-interactive ApprovalController that approves
 // every dangerous-tool call (ADR-0039). It is installed only when the operator
@@ -75,3 +126,40 @@ type EgressAuditor interface {
 // (The former ToolScopeResolver seam is gone: the data-store regime now asks
 // domain.Authorizer for the principal's predicate, so tools, memory, skills, and
 // artifacts all resolve access through one port. ADR-0085.)
+
+// ApprovalDenyReason renders a non-approved decision as the deny reason an agent
+// reads (T-20261107-tool-approvals-raised-by-chat-delegated-plan). It always
+// starts "not approved", then says WHICH kind of no it was, because the right
+// next move differs: a person who denied, or a window that closed, may be
+// worth asking about again; a request that failed closed without a ruling
+// (unroutable, needs_hierarchy, …) will be refused identically on every retry,
+// so the reason says so in words the model cannot read as "try again".
+func ApprovalDenyReason(dec ApprovalDecision, err error) string {
+	const noRetry = " Retrying this call will be refused the same way; report that it needs approval and could not be routed."
+	if err != nil {
+		return "not approved: the approval could not be raised (" + err.Error() + ")"
+	}
+	detail := strings.TrimSpace(dec.Detail)
+	with := func(s string) string {
+		if detail == "" {
+			return s
+		}
+		return s + ": " + detail
+	}
+	switch dec.State {
+	case ApprovalDenied:
+		if dec.ApproverID != "" {
+			return with("not approved: denied by " + dec.ApproverID)
+		}
+		return with("not approved: denied")
+	case ApprovalExpired:
+		return "not approved: nobody answered the approval before it expired"
+	case ApprovalWithdrawn:
+		return with("not approved: the approval was withdrawn")
+	case ApprovalUnroutable, ApprovalNeedsHierarchy:
+		return with("not approved: "+string(dec.State)) + "." + noRetry
+	case "":
+		return "not approved"
+	}
+	return with("not approved: " + string(dec.State))
+}

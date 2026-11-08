@@ -34,7 +34,7 @@ var CapabilityVocabulary = []string{
 	"general_purpose",
 	"analysis", "data_analysis", "code_execution",
 	"research", "web_research",
-	"file_read", "file_write",
+	"file_read", "file_write", "file_organisation",
 	"summarisation",
 }
 

@@ -203,6 +203,8 @@ type WatchConfigRecord struct {
 	ConditionPayloadKeys []string       `json:"condition_payload_keys,omitempty"` // REACT-03 / ADR-0063
 	Approved             bool           `json:"approved,omitempty"`               // REACT-03 / ADR-0063
 	DryRun               bool           `json:"dry_run,omitempty"`                // REACT-05 / ADR-0071
+	// Owner: the principal a scheduled task belongs to (domain.ScheduledTurnAction).
+	Owner string `json:"owner,omitempty"`
 }
 
 // ContradictionResolutionRecord is the raw JSON shape stored in the bbolt contradiction_resolutions bucket.

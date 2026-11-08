@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	OperatorConsole_Login_FullMethodName                    = "/cambrian.OperatorConsole/Login"
+	OperatorConsole_DescribeAuth_FullMethodName             = "/cambrian.OperatorConsole/DescribeAuth"
 	OperatorConsole_Logout_FullMethodName                   = "/cambrian.OperatorConsole/Logout"
 	OperatorConsole_StreamEvents_FullMethodName             = "/cambrian.OperatorConsole/StreamEvents"
 	OperatorConsole_Snapshot_FullMethodName                 = "/cambrian.OperatorConsole/Snapshot"
@@ -43,6 +44,7 @@ const (
 	OperatorConsole_CloseConversation_FullMethodName        = "/cambrian.OperatorConsole/CloseConversation"
 	OperatorConsole_ListConversations_FullMethodName        = "/cambrian.OperatorConsole/ListConversations"
 	OperatorConsole_ListConversationMessages_FullMethodName = "/cambrian.OperatorConsole/ListConversationMessages"
+	OperatorConsole_ListScheduledTasks_FullMethodName       = "/cambrian.OperatorConsole/ListScheduledTasks"
 	OperatorConsole_ListTools_FullMethodName                = "/cambrian.OperatorConsole/ListTools"
 	OperatorConsole_ListSkills_FullMethodName               = "/cambrian.OperatorConsole/ListSkills"
 	OperatorConsole_QueryMemory_FullMethodName              = "/cambrian.OperatorConsole/QueryMemory"
@@ -53,6 +55,12 @@ const (
 	OperatorConsole_ExecuteTool_FullMethodName              = "/cambrian.OperatorConsole/ExecuteTool"
 	OperatorConsole_IngestMemory_FullMethodName             = "/cambrian.OperatorConsole/IngestMemory"
 	OperatorConsole_WatchToolApprovals_FullMethodName       = "/cambrian.OperatorConsole/WatchToolApprovals"
+	OperatorConsole_WatchMyApprovals_FullMethodName         = "/cambrian.OperatorConsole/WatchMyApprovals"
+	OperatorConsole_ListApprovals_FullMethodName            = "/cambrian.OperatorConsole/ListApprovals"
+	OperatorConsole_AnswerApproval_FullMethodName           = "/cambrian.OperatorConsole/AnswerApproval"
+	OperatorConsole_ListStandingApprovals_FullMethodName    = "/cambrian.OperatorConsole/ListStandingApprovals"
+	OperatorConsole_RevokeStandingApproval_FullMethodName   = "/cambrian.OperatorConsole/RevokeStandingApproval"
+	OperatorConsole_ShareToTeam_FullMethodName              = "/cambrian.OperatorConsole/ShareToTeam"
 	OperatorConsole_ListWatches_FullMethodName              = "/cambrian.OperatorConsole/ListWatches"
 	OperatorConsole_RegisterWatch_FullMethodName            = "/cambrian.OperatorConsole/RegisterWatch"
 	OperatorConsole_DeleteWatch_FullMethodName              = "/cambrian.OperatorConsole/DeleteWatch"
@@ -116,6 +124,16 @@ const (
 	OperatorConsole_ListSkillGrants_FullMethodName          = "/cambrian.OperatorConsole/ListSkillGrants"
 	OperatorConsole_GrantSkill_FullMethodName               = "/cambrian.OperatorConsole/GrantSkill"
 	OperatorConsole_RevokeSkillGrant_FullMethodName         = "/cambrian.OperatorConsole/RevokeSkillGrant"
+	OperatorConsole_ListIntegrationCatalog_FullMethodName   = "/cambrian.OperatorConsole/ListIntegrationCatalog"
+	OperatorConsole_ListIntegrations_FullMethodName         = "/cambrian.OperatorConsole/ListIntegrations"
+	OperatorConsole_InstallIntegration_FullMethodName       = "/cambrian.OperatorConsole/InstallIntegration"
+	OperatorConsole_UpdateIntegration_FullMethodName        = "/cambrian.OperatorConsole/UpdateIntegration"
+	OperatorConsole_SetIntegrationSecret_FullMethodName     = "/cambrian.OperatorConsole/SetIntegrationSecret"
+	OperatorConsole_ClearIntegrationSecret_FullMethodName   = "/cambrian.OperatorConsole/ClearIntegrationSecret"
+	OperatorConsole_SetIntegrationEnabled_FullMethodName    = "/cambrian.OperatorConsole/SetIntegrationEnabled"
+	OperatorConsole_TestIntegration_FullMethodName          = "/cambrian.OperatorConsole/TestIntegration"
+	OperatorConsole_RemoveIntegration_FullMethodName        = "/cambrian.OperatorConsole/RemoveIntegration"
+	OperatorConsole_RevertIntegrationToFile_FullMethodName  = "/cambrian.OperatorConsole/RevertIntegrationToFile"
 )
 
 // OperatorConsoleClient is the client API for OperatorConsole service.
@@ -131,6 +149,11 @@ type OperatorConsoleClient interface {
 	// Login authenticates a human operator (username/password) and returns a
 	// token bound to {principal, role}. The only unauthenticated RPC. ADR-0047 D13.
 	Login(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*LoginResponse, error)
+	// DescribeAuth tells a client HOW to sign in before it has a token (ADR-0142 D1):
+	// whether this kernel takes a password (local accounts), and which OIDC issuer and
+	// client id to run authorization code + PKCE (or the device grant) against. Like
+	// Login it is reachable without a token; it carries no secret. Capability "auth-describe".
+	DescribeAuth(ctx context.Context, in *DescribeAuthRequest, opts ...grpc.CallOption) (*DescribeAuthResponse, error)
 	// Logout revokes the bearer token this call carries (ADR-0130 D5 / 1f; contract
 	// 0099). Every later call with that token is UNAUTHENTICATED, exactly like an
 	// expired or never-issued one. Open to every authenticated role: a Viewer must be
@@ -194,6 +217,12 @@ type OperatorConsoleClient interface {
 	// ListConversationMessages returns one conversation's transcript, ordered, after a seq.
 	ListConversations(ctx context.Context, in *ListConversationsOpRequest, opts ...grpc.CallOption) (*ListConversationsOpResponse, error)
 	ListConversationMessages(ctx context.Context, in *ListConversationMessagesOpRequest, opts ...grpc.CallOption) (*ListConversationMessagesOpResponse, error)
+	// ListScheduledTasks is the operator view of principal-owned recurring tasks
+	// (T-20261106-the-assistant-cannot-set-up-a-recurring-task): every principal's
+	// schedules, or one owner's. Operator-only read (it is other people's business).
+	// Pause/resume/delete reuse SetWatchActive / DeleteWatch on the same id — a
+	// scheduled task IS a premium schedule watch. Capability "scheduled-tasks".
+	ListScheduledTasks(ctx context.Context, in *ListScheduledTasksOpRequest, opts ...grpc.CallOption) (*ListScheduledTasksOpResponse, error)
 	// Paged reads (any authenticated role; never folded into Snapshot). A2.1/D8.
 	ListTools(ctx context.Context, in *ListToolsOpRequest, opts ...grpc.CallOption) (*ListToolsOpResponse, error)
 	ListSkills(ctx context.Context, in *ListSkillsOpRequest, opts ...grpc.CallOption) (*ListSkillsOpResponse, error)
@@ -247,6 +276,39 @@ type OperatorConsoleClient interface {
 	// (Operator-only). Resolve reuses ResolveHITL over the shared ApprovalHub
 	// id-space. A2.5.
 	WatchToolApprovals(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ApprovalOp], error)
+	// ── ADR-0142 D11: the ONE addressed approval hub (capability
+	// "addressed-approvals"). Approvals are durable, routed to their approvers by
+	// policy (self / a named person / a role / operator / relationship), and
+	// ANSWERED only by someone who satisfies the item's rule — checked by the hub
+	// at answer time, an operator included. Open to every authenticated role: a
+	// person answers their own approvals. WatchToolApprovals / ResolveHITL stay
+	// for operator consoles (filtered to what the caller may answer).
+	//
+	// WatchMyApprovals streams the items addressed to the caller (raised AND
+	// resolved, ApprovalOp.state). audit=true (operator role only) streams every
+	// item, each marked answerable or not — the operator's audit view.
+	WatchMyApprovals(ctx context.Context, in *WatchMyApprovalsOpRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ApprovalOp], error)
+	// Read RPC: pending (and recent) items addressed to the caller, or all with
+	// audit=true (operator role only). An inbox's initial load.
+	ListApprovals(ctx context.Context, in *ListApprovalsOpRequest, opts ...grpc.CallOption) (*ListApprovalsOpResponse, error)
+	// Answers one approval as the authenticated caller. A refusal (not an
+	// addressee, already resolved, standing not allowed) is ok=false with the
+	// reason. standing=true records a standing approval of the item's action
+	// class + resource + scope (revocable, audited). command_id + reason, audited.
+	AnswerApproval(ctx context.Context, in *AnswerApprovalOpRequest, opts ...grpc.CallOption) (*AnswerApprovalOpResponse, error)
+	// Read RPC: the caller's standing approvals (as beneficiary or granter); all
+	// with audit=true (operator role only).
+	ListStandingApprovals(ctx context.Context, in *ListStandingApprovalsOpRequest, opts ...grpc.CallOption) (*ListStandingApprovalsOpResponse, error)
+	// Revokes a standing approval: its beneficiary, its granter, or an operator.
+	// command_id + reason, audited.
+	RevokeStandingApproval(ctx context.Context, in *RevokeStandingApprovalOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// ADR-0142 D12: material an agent writes in a person's conversation is
+	// private to that person (owner:<id>). ShareToTeam is the explicit,
+	// policy-checked publish: the caller must own the document, the target tags
+	// must be within what the caller may write, and the approval policy for class
+	// "publish" decides whether it applies at once (self) or waits for an approver
+	// (state "pending_approval"). command_id + reason, audited.
+	ShareToTeam(ctx context.Context, in *ShareToTeamOpRequest, opts ...grpc.CallOption) (*ShareToTeamOpResponse, error)
 	// ── Watch surfaces — PREMIUM capability-gated (D14/A2.6). The proto lives in
 	// OSS in full (defining ≠ implementing); OSS handlers return Unimplemented and
 	// the WatchTriggered class never publishes. Advertised only on premium builds.
@@ -545,6 +607,14 @@ type OperatorConsoleClient interface {
 	// one is live: credentials are injected at connect time, so without the bounce
 	// a healthy session would keep using the old token indefinitely and "saved"
 	// would mean nothing observable.
+	//
+	// Deprecated (ADR-0141 D11): on a kernel with the premium accounts provider
+	// both are thin aliases for the ORG ACCOUNT bound to the server's "token"
+	// slot (Set rotates it, creating and binding one when none is; Clear unbinds
+	// it) — the same slot SetIntegrationSecret writes. New clients use
+	// SetIntegrationSecret or AccountsAdmin. In OSS they still write the
+	// consumer-named secret mcp:<id>:token. Removal is an owner decision
+	// (T-20261106-accounts-delete-legacy-consumer-secrets-after).
 	SetMCPServerToken(ctx context.Context, in *SetMCPServerTokenOpRequest, opts ...grpc.CallOption) (*SetConfigOpResponse, error)
 	ClearMCPServerToken(ctx context.Context, in *ClearMCPServerTokenOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
 	// TestMCPServer dials the SUBMITTED spec once — connect, list tools,
@@ -724,6 +794,56 @@ type OperatorConsoleClient interface {
 	// RevokeSkillGrant ends an active grant (NOT_FOUND when there is none). A skill
 	// the agent's profile lists stays available through the profile.
 	RevokeSkillGrant(ctx context.Context, in *RevokeSkillGrantOpRequest, opts ...grpc.CallOption) (*CommandAck, error)
+	// ── Integrations (capability "integrations") ─────────────────────────────
+	//
+	// The product surface over the MCP server substrate (ADR-0043, contract 0097):
+	// a non-developer connects a tool (mail, drive, calendar, a database, web
+	// search) from the console without editing mcp.json. It is NOT a second
+	// pathway — every write lands on the same per-id ADR-0101 store entries and
+	// the same live connector that SaveMCPServer uses; ListMCPServers and
+	// ListIntegrations read the same runtime list.
+	//
+	//   - The CATALOG is a data file shipped with the kernel (curated, version-
+	//     pinned servers with their credential fields and default tool policies),
+	//     extended by an optional deployment catalog file (mcp.catalog_file).
+	//   - An INTEGRATION is one installed server: catalog-derived or custom. Its
+	//     state lives in the ADR-0101 store under mcp.server_overrides.<id>, merged
+	//     BY ID over the mcp.json file layer (a stored entry replaces the file entry
+	//     with the same id; mcp.json is never rewritten).
+	//   - SECRETS are write-only: encrypted at rest, injected only into that
+	//     server's process environment (stdio) or auth header (http) at launch,
+	//     never returned — a read carries set / source / updated_at only.
+	//   - LIFECYCLE is live: install / enable / disable / reconfigure / secret
+	//     changes start, stop or restart that one server's process and update the
+	//     tool registry; the outcome's effect says "restart_required" when not.
+	//   - HEALTH is on IntegrationOp.health and pushed as IntegrationHealthOp on
+	//     the operator feed on every state change.
+	//
+	// Reads: any authenticated role (no secret material is ever carried).
+	// Mutations and TestIntegration: Operator-only; mutations take command_id +
+	// reason, are audited (never with a secret value) and dedupe on command_id.
+	ListIntegrationCatalog(ctx context.Context, in *ListIntegrationCatalogOpRequest, opts ...grpc.CallOption) (*ListIntegrationCatalogOpResponse, error)
+	ListIntegrations(ctx context.Context, in *ListIntegrationsOpRequest, opts ...grpc.CallOption) (*ListIntegrationsOpResponse, error)
+	InstallIntegration(ctx context.Context, in *InstallIntegrationOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error)
+	UpdateIntegration(ctx context.Context, in *UpdateIntegrationOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error)
+	SetIntegrationSecret(ctx context.Context, in *SetIntegrationSecretOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error)
+	ClearIntegrationSecret(ctx context.Context, in *ClearIntegrationSecretOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error)
+	SetIntegrationEnabled(ctx context.Context, in *SetIntegrationEnabledOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error)
+	// TestIntegration handshakes the installed server (the live session when it
+	// is ready, otherwise an ephemeral launch with the stored config and
+	// secrets), lists its tools with the policy each would get, and — when the
+	// catalog names a probe tool whose policy is non-dangerous — calls it once.
+	// A failed test is a SUCCESSFUL RPC carrying ok=false.
+	TestIntegration(ctx context.Context, in *TestIntegrationOpRequest, opts ...grpc.CallOption) (*IntegrationTestResultOp, error)
+	RemoveIntegration(ctx context.Context, in *RemoveIntegrationOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error)
+	// RevertIntegrationToFile drops the console's stored override (or removal
+	// tombstone) for a server that a config file (mcp.json) declares, so the
+	// file entry applies again, and restarts that server live on it. Only for
+	// an integration whose IntegrationOp.overrides_file is true, or a file
+	// server the console removed; rejected otherwise. Stored secrets are kept
+	// (the file entry may name the same ones). Operator-only, command_id +
+	// reason, audited.
+	RevertIntegrationToFile(ctx context.Context, in *RevertIntegrationToFileOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error)
 }
 
 type operatorConsoleClient struct {
@@ -738,6 +858,16 @@ func (c *operatorConsoleClient) Login(ctx context.Context, in *LoginRequest, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(LoginResponse)
 	err := c.cc.Invoke(ctx, OperatorConsole_Login_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) DescribeAuth(ctx context.Context, in *DescribeAuthRequest, opts ...grpc.CallOption) (*DescribeAuthResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DescribeAuthResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_DescribeAuth_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -983,6 +1113,16 @@ func (c *operatorConsoleClient) ListConversationMessages(ctx context.Context, in
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListScheduledTasks(ctx context.Context, in *ListScheduledTasksOpRequest, opts ...grpc.CallOption) (*ListScheduledTasksOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListScheduledTasksOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListScheduledTasks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *operatorConsoleClient) ListTools(ctx context.Context, in *ListToolsOpRequest, opts ...grpc.CallOption) (*ListToolsOpResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListToolsOpResponse)
@@ -1091,6 +1231,75 @@ func (c *operatorConsoleClient) WatchToolApprovals(ctx context.Context, in *Subs
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type OperatorConsole_WatchToolApprovalsClient = grpc.ServerStreamingClient[ApprovalOp]
+
+func (c *operatorConsoleClient) WatchMyApprovals(ctx context.Context, in *WatchMyApprovalsOpRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ApprovalOp], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &OperatorConsole_ServiceDesc.Streams[2], OperatorConsole_WatchMyApprovals_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WatchMyApprovalsOpRequest, ApprovalOp]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type OperatorConsole_WatchMyApprovalsClient = grpc.ServerStreamingClient[ApprovalOp]
+
+func (c *operatorConsoleClient) ListApprovals(ctx context.Context, in *ListApprovalsOpRequest, opts ...grpc.CallOption) (*ListApprovalsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListApprovalsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListApprovals_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) AnswerApproval(ctx context.Context, in *AnswerApprovalOpRequest, opts ...grpc.CallOption) (*AnswerApprovalOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AnswerApprovalOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_AnswerApproval_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListStandingApprovals(ctx context.Context, in *ListStandingApprovalsOpRequest, opts ...grpc.CallOption) (*ListStandingApprovalsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListStandingApprovalsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListStandingApprovals_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RevokeStandingApproval(ctx context.Context, in *RevokeStandingApprovalOpRequest, opts ...grpc.CallOption) (*CommandAck, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommandAck)
+	err := c.cc.Invoke(ctx, OperatorConsole_RevokeStandingApproval_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ShareToTeam(ctx context.Context, in *ShareToTeamOpRequest, opts ...grpc.CallOption) (*ShareToTeamOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ShareToTeamOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ShareToTeam_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 func (c *operatorConsoleClient) ListWatches(ctx context.Context, in *ListWatchesOpRequest, opts ...grpc.CallOption) (*ListWatchesOpResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -1224,7 +1433,7 @@ func (c *operatorConsoleClient) QueryLogs(ctx context.Context, in *QueryLogsOpRe
 
 func (c *operatorConsoleClient) TailLogs(ctx context.Context, in *TailLogsOpRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[LogRecordOp], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &OperatorConsole_ServiceDesc.Streams[2], OperatorConsole_TailLogs_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &OperatorConsole_ServiceDesc.Streams[3], OperatorConsole_TailLogs_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1731,6 +1940,106 @@ func (c *operatorConsoleClient) RevokeSkillGrant(ctx context.Context, in *Revoke
 	return out, nil
 }
 
+func (c *operatorConsoleClient) ListIntegrationCatalog(ctx context.Context, in *ListIntegrationCatalogOpRequest, opts ...grpc.CallOption) (*ListIntegrationCatalogOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListIntegrationCatalogOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListIntegrationCatalog_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ListIntegrations(ctx context.Context, in *ListIntegrationsOpRequest, opts ...grpc.CallOption) (*ListIntegrationsOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListIntegrationsOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ListIntegrations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) InstallIntegration(ctx context.Context, in *InstallIntegrationOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntegrationMutationOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_InstallIntegration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) UpdateIntegration(ctx context.Context, in *UpdateIntegrationOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntegrationMutationOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_UpdateIntegration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SetIntegrationSecret(ctx context.Context, in *SetIntegrationSecretOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntegrationMutationOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetIntegrationSecret_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) ClearIntegrationSecret(ctx context.Context, in *ClearIntegrationSecretOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntegrationMutationOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_ClearIntegrationSecret_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) SetIntegrationEnabled(ctx context.Context, in *SetIntegrationEnabledOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntegrationMutationOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_SetIntegrationEnabled_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) TestIntegration(ctx context.Context, in *TestIntegrationOpRequest, opts ...grpc.CallOption) (*IntegrationTestResultOp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntegrationTestResultOp)
+	err := c.cc.Invoke(ctx, OperatorConsole_TestIntegration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RemoveIntegration(ctx context.Context, in *RemoveIntegrationOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntegrationMutationOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_RemoveIntegration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *operatorConsoleClient) RevertIntegrationToFile(ctx context.Context, in *RevertIntegrationToFileOpRequest, opts ...grpc.CallOption) (*IntegrationMutationOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntegrationMutationOpResponse)
+	err := c.cc.Invoke(ctx, OperatorConsole_RevertIntegrationToFile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OperatorConsoleServer is the server API for OperatorConsole service.
 // All implementations must embed UnimplementedOperatorConsoleServer
 // for forward compatibility.
@@ -1744,6 +2053,11 @@ type OperatorConsoleServer interface {
 	// Login authenticates a human operator (username/password) and returns a
 	// token bound to {principal, role}. The only unauthenticated RPC. ADR-0047 D13.
 	Login(context.Context, *LoginRequest) (*LoginResponse, error)
+	// DescribeAuth tells a client HOW to sign in before it has a token (ADR-0142 D1):
+	// whether this kernel takes a password (local accounts), and which OIDC issuer and
+	// client id to run authorization code + PKCE (or the device grant) against. Like
+	// Login it is reachable without a token; it carries no secret. Capability "auth-describe".
+	DescribeAuth(context.Context, *DescribeAuthRequest) (*DescribeAuthResponse, error)
 	// Logout revokes the bearer token this call carries (ADR-0130 D5 / 1f; contract
 	// 0099). Every later call with that token is UNAUTHENTICATED, exactly like an
 	// expired or never-issued one. Open to every authenticated role: a Viewer must be
@@ -1807,6 +2121,12 @@ type OperatorConsoleServer interface {
 	// ListConversationMessages returns one conversation's transcript, ordered, after a seq.
 	ListConversations(context.Context, *ListConversationsOpRequest) (*ListConversationsOpResponse, error)
 	ListConversationMessages(context.Context, *ListConversationMessagesOpRequest) (*ListConversationMessagesOpResponse, error)
+	// ListScheduledTasks is the operator view of principal-owned recurring tasks
+	// (T-20261106-the-assistant-cannot-set-up-a-recurring-task): every principal's
+	// schedules, or one owner's. Operator-only read (it is other people's business).
+	// Pause/resume/delete reuse SetWatchActive / DeleteWatch on the same id — a
+	// scheduled task IS a premium schedule watch. Capability "scheduled-tasks".
+	ListScheduledTasks(context.Context, *ListScheduledTasksOpRequest) (*ListScheduledTasksOpResponse, error)
 	// Paged reads (any authenticated role; never folded into Snapshot). A2.1/D8.
 	ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error)
 	ListSkills(context.Context, *ListSkillsOpRequest) (*ListSkillsOpResponse, error)
@@ -1860,6 +2180,39 @@ type OperatorConsoleServer interface {
 	// (Operator-only). Resolve reuses ResolveHITL over the shared ApprovalHub
 	// id-space. A2.5.
 	WatchToolApprovals(*SubscribeRequest, grpc.ServerStreamingServer[ApprovalOp]) error
+	// ── ADR-0142 D11: the ONE addressed approval hub (capability
+	// "addressed-approvals"). Approvals are durable, routed to their approvers by
+	// policy (self / a named person / a role / operator / relationship), and
+	// ANSWERED only by someone who satisfies the item's rule — checked by the hub
+	// at answer time, an operator included. Open to every authenticated role: a
+	// person answers their own approvals. WatchToolApprovals / ResolveHITL stay
+	// for operator consoles (filtered to what the caller may answer).
+	//
+	// WatchMyApprovals streams the items addressed to the caller (raised AND
+	// resolved, ApprovalOp.state). audit=true (operator role only) streams every
+	// item, each marked answerable or not — the operator's audit view.
+	WatchMyApprovals(*WatchMyApprovalsOpRequest, grpc.ServerStreamingServer[ApprovalOp]) error
+	// Read RPC: pending (and recent) items addressed to the caller, or all with
+	// audit=true (operator role only). An inbox's initial load.
+	ListApprovals(context.Context, *ListApprovalsOpRequest) (*ListApprovalsOpResponse, error)
+	// Answers one approval as the authenticated caller. A refusal (not an
+	// addressee, already resolved, standing not allowed) is ok=false with the
+	// reason. standing=true records a standing approval of the item's action
+	// class + resource + scope (revocable, audited). command_id + reason, audited.
+	AnswerApproval(context.Context, *AnswerApprovalOpRequest) (*AnswerApprovalOpResponse, error)
+	// Read RPC: the caller's standing approvals (as beneficiary or granter); all
+	// with audit=true (operator role only).
+	ListStandingApprovals(context.Context, *ListStandingApprovalsOpRequest) (*ListStandingApprovalsOpResponse, error)
+	// Revokes a standing approval: its beneficiary, its granter, or an operator.
+	// command_id + reason, audited.
+	RevokeStandingApproval(context.Context, *RevokeStandingApprovalOpRequest) (*CommandAck, error)
+	// ADR-0142 D12: material an agent writes in a person's conversation is
+	// private to that person (owner:<id>). ShareToTeam is the explicit,
+	// policy-checked publish: the caller must own the document, the target tags
+	// must be within what the caller may write, and the approval policy for class
+	// "publish" decides whether it applies at once (self) or waits for an approver
+	// (state "pending_approval"). command_id + reason, audited.
+	ShareToTeam(context.Context, *ShareToTeamOpRequest) (*ShareToTeamOpResponse, error)
 	// ── Watch surfaces — PREMIUM capability-gated (D14/A2.6). The proto lives in
 	// OSS in full (defining ≠ implementing); OSS handlers return Unimplemented and
 	// the WatchTriggered class never publishes. Advertised only on premium builds.
@@ -2158,6 +2511,14 @@ type OperatorConsoleServer interface {
 	// one is live: credentials are injected at connect time, so without the bounce
 	// a healthy session would keep using the old token indefinitely and "saved"
 	// would mean nothing observable.
+	//
+	// Deprecated (ADR-0141 D11): on a kernel with the premium accounts provider
+	// both are thin aliases for the ORG ACCOUNT bound to the server's "token"
+	// slot (Set rotates it, creating and binding one when none is; Clear unbinds
+	// it) — the same slot SetIntegrationSecret writes. New clients use
+	// SetIntegrationSecret or AccountsAdmin. In OSS they still write the
+	// consumer-named secret mcp:<id>:token. Removal is an owner decision
+	// (T-20261106-accounts-delete-legacy-consumer-secrets-after).
 	SetMCPServerToken(context.Context, *SetMCPServerTokenOpRequest) (*SetConfigOpResponse, error)
 	ClearMCPServerToken(context.Context, *ClearMCPServerTokenOpRequest) (*CommandAck, error)
 	// TestMCPServer dials the SUBMITTED spec once — connect, list tools,
@@ -2337,6 +2698,56 @@ type OperatorConsoleServer interface {
 	// RevokeSkillGrant ends an active grant (NOT_FOUND when there is none). A skill
 	// the agent's profile lists stays available through the profile.
 	RevokeSkillGrant(context.Context, *RevokeSkillGrantOpRequest) (*CommandAck, error)
+	// ── Integrations (capability "integrations") ─────────────────────────────
+	//
+	// The product surface over the MCP server substrate (ADR-0043, contract 0097):
+	// a non-developer connects a tool (mail, drive, calendar, a database, web
+	// search) from the console without editing mcp.json. It is NOT a second
+	// pathway — every write lands on the same per-id ADR-0101 store entries and
+	// the same live connector that SaveMCPServer uses; ListMCPServers and
+	// ListIntegrations read the same runtime list.
+	//
+	//   - The CATALOG is a data file shipped with the kernel (curated, version-
+	//     pinned servers with their credential fields and default tool policies),
+	//     extended by an optional deployment catalog file (mcp.catalog_file).
+	//   - An INTEGRATION is one installed server: catalog-derived or custom. Its
+	//     state lives in the ADR-0101 store under mcp.server_overrides.<id>, merged
+	//     BY ID over the mcp.json file layer (a stored entry replaces the file entry
+	//     with the same id; mcp.json is never rewritten).
+	//   - SECRETS are write-only: encrypted at rest, injected only into that
+	//     server's process environment (stdio) or auth header (http) at launch,
+	//     never returned — a read carries set / source / updated_at only.
+	//   - LIFECYCLE is live: install / enable / disable / reconfigure / secret
+	//     changes start, stop or restart that one server's process and update the
+	//     tool registry; the outcome's effect says "restart_required" when not.
+	//   - HEALTH is on IntegrationOp.health and pushed as IntegrationHealthOp on
+	//     the operator feed on every state change.
+	//
+	// Reads: any authenticated role (no secret material is ever carried).
+	// Mutations and TestIntegration: Operator-only; mutations take command_id +
+	// reason, are audited (never with a secret value) and dedupe on command_id.
+	ListIntegrationCatalog(context.Context, *ListIntegrationCatalogOpRequest) (*ListIntegrationCatalogOpResponse, error)
+	ListIntegrations(context.Context, *ListIntegrationsOpRequest) (*ListIntegrationsOpResponse, error)
+	InstallIntegration(context.Context, *InstallIntegrationOpRequest) (*IntegrationMutationOpResponse, error)
+	UpdateIntegration(context.Context, *UpdateIntegrationOpRequest) (*IntegrationMutationOpResponse, error)
+	SetIntegrationSecret(context.Context, *SetIntegrationSecretOpRequest) (*IntegrationMutationOpResponse, error)
+	ClearIntegrationSecret(context.Context, *ClearIntegrationSecretOpRequest) (*IntegrationMutationOpResponse, error)
+	SetIntegrationEnabled(context.Context, *SetIntegrationEnabledOpRequest) (*IntegrationMutationOpResponse, error)
+	// TestIntegration handshakes the installed server (the live session when it
+	// is ready, otherwise an ephemeral launch with the stored config and
+	// secrets), lists its tools with the policy each would get, and — when the
+	// catalog names a probe tool whose policy is non-dangerous — calls it once.
+	// A failed test is a SUCCESSFUL RPC carrying ok=false.
+	TestIntegration(context.Context, *TestIntegrationOpRequest) (*IntegrationTestResultOp, error)
+	RemoveIntegration(context.Context, *RemoveIntegrationOpRequest) (*IntegrationMutationOpResponse, error)
+	// RevertIntegrationToFile drops the console's stored override (or removal
+	// tombstone) for a server that a config file (mcp.json) declares, so the
+	// file entry applies again, and restarts that server live on it. Only for
+	// an integration whose IntegrationOp.overrides_file is true, or a file
+	// server the console removed; rejected otherwise. Stored secrets are kept
+	// (the file entry may name the same ones). Operator-only, command_id +
+	// reason, audited.
+	RevertIntegrationToFile(context.Context, *RevertIntegrationToFileOpRequest) (*IntegrationMutationOpResponse, error)
 	mustEmbedUnimplementedOperatorConsoleServer()
 }
 
@@ -2349,6 +2760,9 @@ type UnimplementedOperatorConsoleServer struct{}
 
 func (UnimplementedOperatorConsoleServer) Login(context.Context, *LoginRequest) (*LoginResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Login not implemented")
+}
+func (UnimplementedOperatorConsoleServer) DescribeAuth(context.Context, *DescribeAuthRequest) (*DescribeAuthResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DescribeAuth not implemented")
 }
 func (UnimplementedOperatorConsoleServer) Logout(context.Context, *LogoutRequest) (*LogoutResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Logout not implemented")
@@ -2419,6 +2833,9 @@ func (UnimplementedOperatorConsoleServer) ListConversations(context.Context, *Li
 func (UnimplementedOperatorConsoleServer) ListConversationMessages(context.Context, *ListConversationMessagesOpRequest) (*ListConversationMessagesOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListConversationMessages not implemented")
 }
+func (UnimplementedOperatorConsoleServer) ListScheduledTasks(context.Context, *ListScheduledTasksOpRequest) (*ListScheduledTasksOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListScheduledTasks not implemented")
+}
 func (UnimplementedOperatorConsoleServer) ListTools(context.Context, *ListToolsOpRequest) (*ListToolsOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListTools not implemented")
 }
@@ -2448,6 +2865,24 @@ func (UnimplementedOperatorConsoleServer) IngestMemory(context.Context, *IngestM
 }
 func (UnimplementedOperatorConsoleServer) WatchToolApprovals(*SubscribeRequest, grpc.ServerStreamingServer[ApprovalOp]) error {
 	return status.Error(codes.Unimplemented, "method WatchToolApprovals not implemented")
+}
+func (UnimplementedOperatorConsoleServer) WatchMyApprovals(*WatchMyApprovalsOpRequest, grpc.ServerStreamingServer[ApprovalOp]) error {
+	return status.Error(codes.Unimplemented, "method WatchMyApprovals not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListApprovals(context.Context, *ListApprovalsOpRequest) (*ListApprovalsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListApprovals not implemented")
+}
+func (UnimplementedOperatorConsoleServer) AnswerApproval(context.Context, *AnswerApprovalOpRequest) (*AnswerApprovalOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AnswerApproval not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListStandingApprovals(context.Context, *ListStandingApprovalsOpRequest) (*ListStandingApprovalsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListStandingApprovals not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RevokeStandingApproval(context.Context, *RevokeStandingApprovalOpRequest) (*CommandAck, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeStandingApproval not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ShareToTeam(context.Context, *ShareToTeamOpRequest) (*ShareToTeamOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ShareToTeam not implemented")
 }
 func (UnimplementedOperatorConsoleServer) ListWatches(context.Context, *ListWatchesOpRequest) (*ListWatchesOpResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWatches not implemented")
@@ -2638,6 +3073,36 @@ func (UnimplementedOperatorConsoleServer) GrantSkill(context.Context, *GrantSkil
 func (UnimplementedOperatorConsoleServer) RevokeSkillGrant(context.Context, *RevokeSkillGrantOpRequest) (*CommandAck, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeSkillGrant not implemented")
 }
+func (UnimplementedOperatorConsoleServer) ListIntegrationCatalog(context.Context, *ListIntegrationCatalogOpRequest) (*ListIntegrationCatalogOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListIntegrationCatalog not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ListIntegrations(context.Context, *ListIntegrationsOpRequest) (*ListIntegrationsOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListIntegrations not implemented")
+}
+func (UnimplementedOperatorConsoleServer) InstallIntegration(context.Context, *InstallIntegrationOpRequest) (*IntegrationMutationOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InstallIntegration not implemented")
+}
+func (UnimplementedOperatorConsoleServer) UpdateIntegration(context.Context, *UpdateIntegrationOpRequest) (*IntegrationMutationOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateIntegration not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetIntegrationSecret(context.Context, *SetIntegrationSecretOpRequest) (*IntegrationMutationOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetIntegrationSecret not implemented")
+}
+func (UnimplementedOperatorConsoleServer) ClearIntegrationSecret(context.Context, *ClearIntegrationSecretOpRequest) (*IntegrationMutationOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClearIntegrationSecret not implemented")
+}
+func (UnimplementedOperatorConsoleServer) SetIntegrationEnabled(context.Context, *SetIntegrationEnabledOpRequest) (*IntegrationMutationOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetIntegrationEnabled not implemented")
+}
+func (UnimplementedOperatorConsoleServer) TestIntegration(context.Context, *TestIntegrationOpRequest) (*IntegrationTestResultOp, error) {
+	return nil, status.Error(codes.Unimplemented, "method TestIntegration not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RemoveIntegration(context.Context, *RemoveIntegrationOpRequest) (*IntegrationMutationOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveIntegration not implemented")
+}
+func (UnimplementedOperatorConsoleServer) RevertIntegrationToFile(context.Context, *RevertIntegrationToFileOpRequest) (*IntegrationMutationOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevertIntegrationToFile not implemented")
+}
 func (UnimplementedOperatorConsoleServer) mustEmbedUnimplementedOperatorConsoleServer() {}
 func (UnimplementedOperatorConsoleServer) testEmbeddedByValue()                         {}
 
@@ -2673,6 +3138,24 @@ func _OperatorConsole_Login_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(OperatorConsoleServer).Login(ctx, req.(*LoginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_DescribeAuth_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DescribeAuthRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).DescribeAuth(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_DescribeAuth_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).DescribeAuth(ctx, req.(*DescribeAuthRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3084,6 +3567,24 @@ func _OperatorConsole_ListConversationMessages_Handler(srv interface{}, ctx cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListScheduledTasks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListScheduledTasksOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListScheduledTasks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListScheduledTasks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListScheduledTasks(ctx, req.(*ListScheduledTasksOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OperatorConsole_ListTools_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListToolsOpRequest)
 	if err := dec(in); err != nil {
@@ -3256,6 +3757,107 @@ func _OperatorConsole_WatchToolApprovals_Handler(srv interface{}, stream grpc.Se
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type OperatorConsole_WatchToolApprovalsServer = grpc.ServerStreamingServer[ApprovalOp]
+
+func _OperatorConsole_WatchMyApprovals_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchMyApprovalsOpRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(OperatorConsoleServer).WatchMyApprovals(m, &grpc.GenericServerStream[WatchMyApprovalsOpRequest, ApprovalOp]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type OperatorConsole_WatchMyApprovalsServer = grpc.ServerStreamingServer[ApprovalOp]
+
+func _OperatorConsole_ListApprovals_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListApprovalsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListApprovals(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListApprovals_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListApprovals(ctx, req.(*ListApprovalsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_AnswerApproval_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AnswerApprovalOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).AnswerApproval(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_AnswerApproval_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).AnswerApproval(ctx, req.(*AnswerApprovalOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListStandingApprovals_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListStandingApprovalsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListStandingApprovals(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListStandingApprovals_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListStandingApprovals(ctx, req.(*ListStandingApprovalsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RevokeStandingApproval_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeStandingApprovalOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RevokeStandingApproval(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RevokeStandingApproval_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RevokeStandingApproval(ctx, req.(*RevokeStandingApprovalOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ShareToTeam_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ShareToTeamOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ShareToTeam(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ShareToTeam_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ShareToTeam(ctx, req.(*ShareToTeamOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
 
 func _OperatorConsole_ListWatches_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListWatchesOpRequest)
@@ -4384,6 +4986,186 @@ func _OperatorConsole_RevokeSkillGrant_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OperatorConsole_ListIntegrationCatalog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListIntegrationCatalogOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListIntegrationCatalog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListIntegrationCatalog_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListIntegrationCatalog(ctx, req.(*ListIntegrationCatalogOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ListIntegrations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListIntegrationsOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ListIntegrations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ListIntegrations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ListIntegrations(ctx, req.(*ListIntegrationsOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_InstallIntegration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InstallIntegrationOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).InstallIntegration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_InstallIntegration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).InstallIntegration(ctx, req.(*InstallIntegrationOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_UpdateIntegration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateIntegrationOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).UpdateIntegration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_UpdateIntegration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).UpdateIntegration(ctx, req.(*UpdateIntegrationOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SetIntegrationSecret_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetIntegrationSecretOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetIntegrationSecret(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetIntegrationSecret_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetIntegrationSecret(ctx, req.(*SetIntegrationSecretOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_ClearIntegrationSecret_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClearIntegrationSecretOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).ClearIntegrationSecret(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_ClearIntegrationSecret_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).ClearIntegrationSecret(ctx, req.(*ClearIntegrationSecretOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_SetIntegrationEnabled_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetIntegrationEnabledOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).SetIntegrationEnabled(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_SetIntegrationEnabled_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).SetIntegrationEnabled(ctx, req.(*SetIntegrationEnabledOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_TestIntegration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TestIntegrationOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).TestIntegration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_TestIntegration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).TestIntegration(ctx, req.(*TestIntegrationOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RemoveIntegration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveIntegrationOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RemoveIntegration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RemoveIntegration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RemoveIntegration(ctx, req.(*RemoveIntegrationOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OperatorConsole_RevertIntegrationToFile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevertIntegrationToFileOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OperatorConsoleServer).RevertIntegrationToFile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OperatorConsole_RevertIntegrationToFile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OperatorConsoleServer).RevertIntegrationToFile(ctx, req.(*RevertIntegrationToFileOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OperatorConsole_ServiceDesc is the grpc.ServiceDesc for OperatorConsole service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -4394,6 +5176,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Login",
 			Handler:    _OperatorConsole_Login_Handler,
+		},
+		{
+			MethodName: "DescribeAuth",
+			Handler:    _OperatorConsole_DescribeAuth_Handler,
 		},
 		{
 			MethodName: "Logout",
@@ -4484,6 +5270,10 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _OperatorConsole_ListConversationMessages_Handler,
 		},
 		{
+			MethodName: "ListScheduledTasks",
+			Handler:    _OperatorConsole_ListScheduledTasks_Handler,
+		},
+		{
 			MethodName: "ListTools",
 			Handler:    _OperatorConsole_ListTools_Handler,
 		},
@@ -4518,6 +5308,26 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "IngestMemory",
 			Handler:    _OperatorConsole_IngestMemory_Handler,
+		},
+		{
+			MethodName: "ListApprovals",
+			Handler:    _OperatorConsole_ListApprovals_Handler,
+		},
+		{
+			MethodName: "AnswerApproval",
+			Handler:    _OperatorConsole_AnswerApproval_Handler,
+		},
+		{
+			MethodName: "ListStandingApprovals",
+			Handler:    _OperatorConsole_ListStandingApprovals_Handler,
+		},
+		{
+			MethodName: "RevokeStandingApproval",
+			Handler:    _OperatorConsole_RevokeStandingApproval_Handler,
+		},
+		{
+			MethodName: "ShareToTeam",
+			Handler:    _OperatorConsole_ShareToTeam_Handler,
 		},
 		{
 			MethodName: "ListWatches",
@@ -4767,6 +5577,46 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "RevokeSkillGrant",
 			Handler:    _OperatorConsole_RevokeSkillGrant_Handler,
 		},
+		{
+			MethodName: "ListIntegrationCatalog",
+			Handler:    _OperatorConsole_ListIntegrationCatalog_Handler,
+		},
+		{
+			MethodName: "ListIntegrations",
+			Handler:    _OperatorConsole_ListIntegrations_Handler,
+		},
+		{
+			MethodName: "InstallIntegration",
+			Handler:    _OperatorConsole_InstallIntegration_Handler,
+		},
+		{
+			MethodName: "UpdateIntegration",
+			Handler:    _OperatorConsole_UpdateIntegration_Handler,
+		},
+		{
+			MethodName: "SetIntegrationSecret",
+			Handler:    _OperatorConsole_SetIntegrationSecret_Handler,
+		},
+		{
+			MethodName: "ClearIntegrationSecret",
+			Handler:    _OperatorConsole_ClearIntegrationSecret_Handler,
+		},
+		{
+			MethodName: "SetIntegrationEnabled",
+			Handler:    _OperatorConsole_SetIntegrationEnabled_Handler,
+		},
+		{
+			MethodName: "TestIntegration",
+			Handler:    _OperatorConsole_TestIntegration_Handler,
+		},
+		{
+			MethodName: "RemoveIntegration",
+			Handler:    _OperatorConsole_RemoveIntegration_Handler,
+		},
+		{
+			MethodName: "RevertIntegrationToFile",
+			Handler:    _OperatorConsole_RevertIntegrationToFile_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -4777,6 +5627,11 @@ var OperatorConsole_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "WatchToolApprovals",
 			Handler:       _OperatorConsole_WatchToolApprovals_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "WatchMyApprovals",
+			Handler:       _OperatorConsole_WatchMyApprovals_Handler,
 			ServerStreams: true,
 		},
 		{

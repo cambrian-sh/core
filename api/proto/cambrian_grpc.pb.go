@@ -43,6 +43,10 @@ const (
 	Orchestrator_ProposeMemoryNote_FullMethodName      = "/cambrian.Orchestrator/ProposeMemoryNote"
 	Orchestrator_ProposeSkill_FullMethodName           = "/cambrian.Orchestrator/ProposeSkill"
 	Orchestrator_EmitStepOutput_FullMethodName         = "/cambrian.Orchestrator/EmitStepOutput"
+	Orchestrator_ProposeScheduledTask_FullMethodName   = "/cambrian.Orchestrator/ProposeScheduledTask"
+	Orchestrator_ListScheduledTasks_FullMethodName     = "/cambrian.Orchestrator/ListScheduledTasks"
+	Orchestrator_ManageScheduledTask_FullMethodName    = "/cambrian.Orchestrator/ManageScheduledTask"
+	Orchestrator_ProposeKnowledge_FullMethodName       = "/cambrian.Orchestrator/ProposeKnowledge"
 )
 
 // OrchestratorClient is the client API for Orchestrator service.
@@ -159,6 +163,30 @@ type OrchestratorClient interface {
 	// agent that pushes should declare streams_output (profile / manifest) so the
 	// kernel stops forwarding gateway deltas for its steps.
 	EmitStepOutput(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[StepOutputChunk, EmitStepOutputAck], error)
+	// Principal-owned recurring tasks (T-20261106-the-assistant-cannot-set-up-a-recurring-task;
+	// additive within contract 0101, capability "scheduled-tasks"). The OWNER is the run
+	// principal resolved from the presented lease (conversation owner -> task beneficiary
+	// -> configured default) — never a request field. ProposeScheduledTask asks the
+	// principal's approval through the operator approval hub (kind "schedule", the console
+	// Inbox) and creates the task only on an explicit approve; a denial or no answer within
+	// execution.schedules.approval_timeout_seconds creates nothing. Once created it is a
+	// premium schedule watch that runs ONE chat turn, as its owner, at each firing.
+	ProposeScheduledTask(ctx context.Context, in *ProposeScheduledTaskRequest, opts ...grpc.CallOption) (*ProposeScheduledTaskResponse, error)
+	// The run principal's own scheduled tasks.
+	ListScheduledTasks(ctx context.Context, in *ListScheduledTasksRequest, opts ...grpc.CallOption) (*ListScheduledTasksResponse, error)
+	// Pause, resume or delete one of the run principal's own scheduled tasks. A task owned
+	// by anyone else is NOT_FOUND (no existence leak).
+	ManageScheduledTask(ctx context.Context, in *ManageScheduledTaskRequest, opts ...grpc.CallOption) (*ManageScheduledTaskResponse, error)
+	// Knowledge proposals (T-20261107-knowledge-substrate-extensions-for-case; additive
+	// within contract 0101). An agent proposes a knowledge item — stored as a CANDIDATE
+	// asserted by the calling agent (resolved from the lease, never a request field) —
+	// and may ask for it to be committed: a knowledge_commit approval for the run
+	// principal, whose approver becomes the committed item's asserter. Or it proposes a
+	// candidate link (mechanism scored, capped at candidate; evidence required). An agent
+	// can never write a committed value or a confirmed link. Only kinds the deployment
+	// resolves by designated_actor accept proposals. A refusal is an OK response with
+	// accepted=false and a detail; UNIMPLEMENTED when the kernel has no knowledge bridge.
+	ProposeKnowledge(ctx context.Context, in *ProposeKnowledgeRequest, opts ...grpc.CallOption) (*ProposeKnowledgeResponse, error)
 }
 
 type orchestratorClient struct {
@@ -436,6 +464,46 @@ func (c *orchestratorClient) EmitStepOutput(ctx context.Context, opts ...grpc.Ca
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Orchestrator_EmitStepOutputClient = grpc.ClientStreamingClient[StepOutputChunk, EmitStepOutputAck]
 
+func (c *orchestratorClient) ProposeScheduledTask(ctx context.Context, in *ProposeScheduledTaskRequest, opts ...grpc.CallOption) (*ProposeScheduledTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProposeScheduledTaskResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_ProposeScheduledTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orchestratorClient) ListScheduledTasks(ctx context.Context, in *ListScheduledTasksRequest, opts ...grpc.CallOption) (*ListScheduledTasksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListScheduledTasksResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_ListScheduledTasks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orchestratorClient) ManageScheduledTask(ctx context.Context, in *ManageScheduledTaskRequest, opts ...grpc.CallOption) (*ManageScheduledTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ManageScheduledTaskResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_ManageScheduledTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orchestratorClient) ProposeKnowledge(ctx context.Context, in *ProposeKnowledgeRequest, opts ...grpc.CallOption) (*ProposeKnowledgeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProposeKnowledgeResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_ProposeKnowledge_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OrchestratorServer is the server API for Orchestrator service.
 // All implementations must embed UnimplementedOrchestratorServer
 // for forward compatibility.
@@ -550,6 +618,30 @@ type OrchestratorServer interface {
 	// agent that pushes should declare streams_output (profile / manifest) so the
 	// kernel stops forwarding gateway deltas for its steps.
 	EmitStepOutput(grpc.ClientStreamingServer[StepOutputChunk, EmitStepOutputAck]) error
+	// Principal-owned recurring tasks (T-20261106-the-assistant-cannot-set-up-a-recurring-task;
+	// additive within contract 0101, capability "scheduled-tasks"). The OWNER is the run
+	// principal resolved from the presented lease (conversation owner -> task beneficiary
+	// -> configured default) — never a request field. ProposeScheduledTask asks the
+	// principal's approval through the operator approval hub (kind "schedule", the console
+	// Inbox) and creates the task only on an explicit approve; a denial or no answer within
+	// execution.schedules.approval_timeout_seconds creates nothing. Once created it is a
+	// premium schedule watch that runs ONE chat turn, as its owner, at each firing.
+	ProposeScheduledTask(context.Context, *ProposeScheduledTaskRequest) (*ProposeScheduledTaskResponse, error)
+	// The run principal's own scheduled tasks.
+	ListScheduledTasks(context.Context, *ListScheduledTasksRequest) (*ListScheduledTasksResponse, error)
+	// Pause, resume or delete one of the run principal's own scheduled tasks. A task owned
+	// by anyone else is NOT_FOUND (no existence leak).
+	ManageScheduledTask(context.Context, *ManageScheduledTaskRequest) (*ManageScheduledTaskResponse, error)
+	// Knowledge proposals (T-20261107-knowledge-substrate-extensions-for-case; additive
+	// within contract 0101). An agent proposes a knowledge item — stored as a CANDIDATE
+	// asserted by the calling agent (resolved from the lease, never a request field) —
+	// and may ask for it to be committed: a knowledge_commit approval for the run
+	// principal, whose approver becomes the committed item's asserter. Or it proposes a
+	// candidate link (mechanism scored, capped at candidate; evidence required). An agent
+	// can never write a committed value or a confirmed link. Only kinds the deployment
+	// resolves by designated_actor accept proposals. A refusal is an OK response with
+	// accepted=false and a detail; UNIMPLEMENTED when the kernel has no knowledge bridge.
+	ProposeKnowledge(context.Context, *ProposeKnowledgeRequest) (*ProposeKnowledgeResponse, error)
 	mustEmbedUnimplementedOrchestratorServer()
 }
 
@@ -631,6 +723,18 @@ func (UnimplementedOrchestratorServer) ProposeSkill(context.Context, *ProposeSki
 }
 func (UnimplementedOrchestratorServer) EmitStepOutput(grpc.ClientStreamingServer[StepOutputChunk, EmitStepOutputAck]) error {
 	return status.Error(codes.Unimplemented, "method EmitStepOutput not implemented")
+}
+func (UnimplementedOrchestratorServer) ProposeScheduledTask(context.Context, *ProposeScheduledTaskRequest) (*ProposeScheduledTaskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProposeScheduledTask not implemented")
+}
+func (UnimplementedOrchestratorServer) ListScheduledTasks(context.Context, *ListScheduledTasksRequest) (*ListScheduledTasksResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListScheduledTasks not implemented")
+}
+func (UnimplementedOrchestratorServer) ManageScheduledTask(context.Context, *ManageScheduledTaskRequest) (*ManageScheduledTaskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ManageScheduledTask not implemented")
+}
+func (UnimplementedOrchestratorServer) ProposeKnowledge(context.Context, *ProposeKnowledgeRequest) (*ProposeKnowledgeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProposeKnowledge not implemented")
 }
 func (UnimplementedOrchestratorServer) mustEmbedUnimplementedOrchestratorServer() {}
 func (UnimplementedOrchestratorServer) testEmbeddedByValue()                      {}
@@ -1038,6 +1142,78 @@ func _Orchestrator_EmitStepOutput_Handler(srv interface{}, stream grpc.ServerStr
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Orchestrator_EmitStepOutputServer = grpc.ClientStreamingServer[StepOutputChunk, EmitStepOutputAck]
 
+func _Orchestrator_ProposeScheduledTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProposeScheduledTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).ProposeScheduledTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_ProposeScheduledTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).ProposeScheduledTask(ctx, req.(*ProposeScheduledTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Orchestrator_ListScheduledTasks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListScheduledTasksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).ListScheduledTasks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_ListScheduledTasks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).ListScheduledTasks(ctx, req.(*ListScheduledTasksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Orchestrator_ManageScheduledTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ManageScheduledTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).ManageScheduledTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_ManageScheduledTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).ManageScheduledTask(ctx, req.(*ManageScheduledTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Orchestrator_ProposeKnowledge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProposeKnowledgeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).ProposeKnowledge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_ProposeKnowledge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).ProposeKnowledge(ctx, req.(*ProposeKnowledgeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Orchestrator_ServiceDesc is the grpc.ServiceDesc for Orchestrator service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1120,6 +1296,22 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ProposeSkill",
 			Handler:    _Orchestrator_ProposeSkill_Handler,
+		},
+		{
+			MethodName: "ProposeScheduledTask",
+			Handler:    _Orchestrator_ProposeScheduledTask_Handler,
+		},
+		{
+			MethodName: "ListScheduledTasks",
+			Handler:    _Orchestrator_ListScheduledTasks_Handler,
+		},
+		{
+			MethodName: "ManageScheduledTask",
+			Handler:    _Orchestrator_ManageScheduledTask_Handler,
+		},
+		{
+			MethodName: "ProposeKnowledge",
+			Handler:    _Orchestrator_ProposeKnowledge_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

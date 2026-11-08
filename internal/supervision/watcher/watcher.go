@@ -278,6 +278,9 @@ func (w *Watcher) queueForApproval(ctx context.Context, s domain.Signal, plan *d
 		AgentID:     s.FromAgent,
 		ToolName:    ProactivePlanApprovalKind,
 		ArgsPreview: planPreview(s, plan),
+		// ADR-0142 D11: wire kind stays "" (consoles render it as before); the
+		// policy routes it by its own class.
+		ActionClass: domain.ApprovalKindProactivePlan,
 	}
 	go func() {
 		defer func() { <-w.pending }()

@@ -54,6 +54,7 @@ func (w *EnforcingDocumentStore) SaveDocument(ctx context.Context, doc domain.So
 			slog.String("detail", dec.Detail))
 		return nil, ErrDocumentWriteDenied
 	}
-	doc.Tags = final
+	// ADR-0142 D12: private to the conversation owner the work is for.
+	doc.Tags = domain.StampPrivateOwner(ctx, final)
 	return w.inner.SaveDocument(ctx, doc)
 }

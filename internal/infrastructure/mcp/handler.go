@@ -50,14 +50,31 @@ func (h *Handler) Execute(ctx context.Context, call domain.ToolCall) ([]byte, er
 	if h.Sessions == nil {
 		return nil, fmt.Errorf("mcp: no session source configured")
 	}
-	sess, ok := h.Sessions.Session(serverID)
-	if !ok {
-		return nil, fmt.Errorf("mcp server %q not connected", serverID)
+	// ADR-0140: a per_user server's session depends on WHO the call is for
+	// (the run principal on ctx), so a source that can select per call is
+	// asked per call; a plain SessionSource serves the shared session.
+	var (
+		sess    *mcpsdk.ClientSession
+		release = func(bool) {}
+	)
+	if cs, ok := h.Sessions.(CallSessionSource); ok {
+		var err error
+		sess, release, err = cs.SessionForCall(ctx, serverID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var ok bool
+		sess, ok = h.Sessions.Session(serverID)
+		if !ok {
+			return nil, fmt.Errorf("mcp server %q not connected", serverID)
+		}
 	}
 
 	var args any
 	if len(call.ArgsJSON) > 0 {
 		if err := json.Unmarshal(call.ArgsJSON, &args); err != nil {
+			release(false)
 			return nil, fmt.Errorf("mcp tool args: %w", err)
 		}
 	}
@@ -68,6 +85,9 @@ func (h *Handler) Execute(ctx context.Context, call domain.ToolCall) ([]byte, er
 		defer cancel()
 	}
 	res, err := sess.CallTool(ctx, &mcpsdk.CallToolParams{Name: toolName, Arguments: args})
+	// A transport failure retires a per-principal session (its process or
+	// connection is suspect); a tool-level error (res.IsError) does not.
+	release(err != nil && ctx.Err() == nil)
 	if err != nil {
 		return nil, fmt.Errorf("mcp call %q: %w", toolName, err)
 	}

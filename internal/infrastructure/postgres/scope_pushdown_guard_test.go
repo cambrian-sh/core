@@ -43,9 +43,11 @@ func TestScopePredicateNeverTargetsDocuments(t *testing.T) {
 func TestScopeExpressions_ForbiddenIsANegation(t *testing.T) {
 	t.Parallel()
 	exprs := scopeExpressions(&domain.TagPredicate{ForbiddenTags: []string{"confidential"}})
-	if len(exprs) != 1 {
-		t.Fatalf("expected one predicate, got %d", len(exprs))
+	// The owner fence (always first, domain/owner_scope.go) plus the forbid.
+	if len(exprs) != 2 {
+		t.Fatalf("expected the owner fence and one forbid, got %d", len(exprs))
 	}
+	exprs = exprs[1:]
 	sql, _, err := dialect.From(TableChunks).Where(exprs...).ToSQL()
 	if err != nil {
 		t.Fatalf("render: %v", err)

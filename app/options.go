@@ -34,6 +34,13 @@ type Options struct {
 	// that constructs the ReactiveEngine. ADR-0032 / ADR-0057.
 	NewSignalReceiver func(KernelServices) (domain.SignalReceiver, domain.WatchConfigHandler)
 
+	// NewCredentialSource, when non-nil, builds the outbound-credential provider
+	// (ADR-0141): the domain.CredentialSource the MCP connector asks for a
+	// per_user / either server's credential on every call. OSS default: nil →
+	// no per-user accounts (those servers fail closed; shared servers use the
+	// config-stored credential as always). Premium injects its accounts plugin.
+	NewCredentialSource NewCredentialSourceFunc
+
 	// Entitlements decides which plugins may activate (ADR-0082 D3). It is consulted at
 	// the single chokepoint in applyPlugins, BEFORE a plugin registers, so an unentitled
 	// plugin contributes nothing at all. nil ⇒ every declared plugin activates: the OSS
@@ -77,6 +84,13 @@ type Options struct {
 	// governed by the same rule as a named colleague — not because they are
 	// different people, but because nobody is.
 	IdentityResolver domain.IdentityResolver
+
+	// NewAuthenticator, when non-nil, builds the Authenticator every operator-plane
+	// interceptor and the HTTP admin routes resolve bearers through (ADR-0142 D1).
+	// It receives the principal registry and the OSS default (local accounts plus
+	// the one configured OIDC issuer), so it may wrap or replace it. nil ⇒ the OSS
+	// default. Tier-1 replace-one (Registry.SetAuthenticator).
+	NewAuthenticator NewAuthenticatorFunc
 
 	// PolicyAdmin is the policy ADMINISTRATION surface behind the operator plane's
 	// scope/vocabulary/explain RPCs. nil in OSS ⇒ those RPCs return Unimplemented,
@@ -175,6 +189,11 @@ type Options struct {
 // package — which is blocked until the watch RPCs move to a premium-owned proto (D8).
 // Until then they remain, documented as debt rather than silently tolerated.
 type KernelServices struct {
+	// Principals is the principal registry (ADR-0142 D3): the ONE store of record
+	// for persons. Premium's referenced-principal import writes through it, and its
+	// PrincipalDirectory answers registry ∪ legacy references during migration.
+	Principals domain.PrincipalRegistry
+
 	Manager    ReactiveAgentDispatcher // direct dispatch + daemon lifecycle
 	Dispatcher domain.StepDispatcher   // selection + invocation (the Dispatcher)
 	// Ingestor is the full-fidelity memory write (ADR-0104 D3): one write path, so
@@ -338,6 +357,29 @@ type KernelServices struct {
 	// nil ⇒ turns run directly, which is every deployment's behaviour today.
 	RegisterTurnRouter func(domain.TurnRouter)
 
+	// RegisterPrincipalSchedules contributes the store of principal-owned recurring
+	// tasks (T-20261106-the-assistant-cannot-set-up-a-recurring-task): the premium
+	// reactive plugin implements it on its schedule watches (the ONE scheduler).
+	// The kernel then serves the agent-plane ProposeScheduledTask /
+	// ListScheduledTasks / ManageScheduledTask (approval-gated, owner = the lease's
+	// run principal) and the operator ListScheduledTasks, and advertises
+	// "scheduled-tasks". nil in a kernel built without a registry.
+	RegisterPrincipalSchedules func(domain.PrincipalSchedules)
+
+	// RunOwnedTurn runs ONE chat turn for a principal, in a conversation that
+	// principal owns (created if absent, refused if someone else holds it). The run
+	// principal is therefore the owner (ADR-0139 D14): their notes, per-user
+	// credentials and read scope apply. A scheduled task's action calls it at each
+	// firing. Errors when the chat lane is off; nil only in tests.
+	RunOwnedTurn func(ctx context.Context, t domain.OwnedTurn) (domain.Message, error)
+
+	// RegisterPrincipalDirectory contributes the directory that answers "is this a
+	// principal the deployment knows?" (T-20261106-conversations-cannot-be-opened-as-a-given).
+	// The premium policy plugin implements it; the operator plane consults it before
+	// letting an operator open a conversation on a principal's behalf, and refuses
+	// act-for when none is registered.
+	RegisterPrincipalDirectory func(domain.PrincipalDirectory)
+
 	// IngressTraffic reports who has come through an entry point, from the
 	// durable conversation record.
 	//
@@ -394,6 +436,13 @@ type KernelServices struct {
 	// step refuses with a recorded decision. nil in tests and in kernels built
 	// without the lane — a plugin must degrade rather than panic.
 	WorkerConsent domain.WorkerConsentHub
+
+	// Approvals is THE addressed approval hub (ADR-0142 D11). A plugin raises
+	// approvals addressed to people (Raise; e.g. premium account confirmation),
+	// registers the effect of its async kinds (HandleKind), and — stage 2 —
+	// installs the hierarchy resolver for relationship rules (SetRelationships).
+	// nil in tests and kernels built without it.
+	Approvals *domain.AddressedHub
 
 	SQL *pgxpool.Pool
 
@@ -532,6 +581,17 @@ type KernelServices struct {
 	// path. nil when no Postgres is configured.
 	QueryKnowledge func(ctx context.Context, principal domain.PrincipalRef, q domain.KnowledgeQuery) (domain.QueryResult, error)
 
+	// KnowledgeCatalog returns the substrate's names-and-counts surface
+	// (domain.SubstrateCatalog: entities, predicates, event types, item kinds,
+	// actors, overview counts) BOUND to the given principal's read predicate —
+	// QueryKnowledge's discipline for the reads the closed AST has no shape for.
+	// Every name and count is over rows that principal may read, owner fence
+	// included, so "hidden" and "never existed" read the same (ADR-0128 D12).
+	// A plugin needing substrate names uses this, never raw SQL over the
+	// substrate tables (T-20261107-ask-knowledge-catalog-reads-entity-ids-and).
+	// Denied principal ⇒ domain.ErrQueryDenied. nil when no Postgres is configured.
+	KnowledgeCatalog func(ctx context.Context, principal domain.PrincipalRef) (domain.SubstrateCatalog, error)
+
 	// StageEvidenceContent makes one delivery's ORIGINAL bytes durable in the
 	// content-addressed store before anything else touches them (ADR-0112 §6).
 	// The raw-delivery lane sends the returned CID — never the body — through
@@ -580,6 +640,32 @@ type KernelServices struct {
 	StoreNamedSecret  func(name, value string) error
 	ClearNamedSecret  func(name string) error
 	NamedSecretStatus func(name string) (configured bool, lastFour string)
+
+	// ResolveCredential asks the installed outbound-credential provider
+	// (ADR-0141; premium accounts) for a consumer's credential — e.g. an
+	// ingress poller's account (Purpose domain.CredentialPurposeIngress,
+	// ServerID = the ingress id, Slot = the binding name, AccountID = the
+	// spec's `account`, PrincipalID = the ingress owner for personal ingest).
+	// Late-bound: answers ErrCredentialNotConnected until the provider is
+	// built, and always in OSS. The provider decides ownership; the caller
+	// never chooses whose account it gets beyond what its own definition names.
+	ResolveCredential func(ctx context.Context, req domain.CredentialRequest) (domain.Credential, error)
+	// OrgCredentials returns the provider's org-credential writer, or nil
+	// (OSS, or before the provider is built): the one place a consumer's org
+	// credential is written (ADR-0141 phase 2/3).
+	OrgCredentials func() domain.OrgCredentialWriter
+
+	// OperatorCaller, RunOperatorMutation and RecordAudit let a premium operator
+	// plane behave like an OperatorConsole command (ADR-0142 stage 2; the same
+	// seams app.CredentialServices hands the accounts provider): the
+	// authenticated caller (principal id, whether it holds Operator), the
+	// mutation contract (command_id + reason, deduped, audited with the caller
+	// BEFORE apply runs) and an audit write for changes made outside an RPC (a
+	// SCIM push, a directory reconcile). RunOperatorMutation answers an error
+	// until the operator plane exists; RecordAudit queues (bounded) until then.
+	OperatorCaller      func(ctx context.Context) (principal string, isOperator bool, ok bool)
+	RunOperatorMutation func(ctx context.Context, commandID, reason, action, targetType, targetID string, apply func() error) (deduped bool, err error)
+	RecordAudit         func(ctx context.Context, e domain.AuditEntry) error
 }
 
 // SessionScopeReader returns the caller term persisted on a session record. It is
@@ -757,3 +843,8 @@ func DefaultOptions() Options {
 		TraceWrapper: func(g domain.Generator, _ string) domain.Generator { return g },
 	}
 }
+
+// NewAuthenticatorFunc builds the kernel Authenticator from the principal registry
+// and the OSS default one (ADR-0142 D1). Returning an error fails the boot: an
+// identity backend that cannot be built must not silently fall back to another.
+type NewAuthenticatorFunc func(reg domain.PrincipalRegistry, oss domain.Authenticator) (domain.Authenticator, error)

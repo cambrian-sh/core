@@ -623,7 +623,7 @@ func mcpSource(t *testing.T, applied map[string]config.MCPServerConfig) configWr
 		return []config.MCPServerConfig{booted}
 	}
 	if applied != nil {
-		src.applyMCPServer = func(s config.MCPServerConfig) bool {
+		src.applyMCPServer = func(s config.MCPServerConfig, _ string) bool {
 			applied[s.ID] = s
 			return true
 		}

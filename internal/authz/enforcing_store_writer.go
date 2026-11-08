@@ -95,6 +95,9 @@ func (w *EnforcingStoreWriter) classify(ctx context.Context, doc *domain.Documen
 			slog.String("principal", principal.String()),
 			slog.Any("requested", DocTags(doc)))
 	}
+	// ADR-0142 D12: a write made while working a person's conversation is
+	// private to that person (owner:<id>), whatever the writer's own tags.
+	final = domain.StampPrivateOwner(ctx, final)
 	if doc.Metadata == nil {
 		doc.Metadata = make(map[string]interface{})
 	}

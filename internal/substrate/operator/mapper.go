@@ -174,6 +174,18 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			IsDestructive:  e.IsDestructive,
 		}}
 
+	case domain.HITLResolvedEvent:
+		out.SessionId = e.SessionID
+		out.Payload = &pb.OperatorEvent_HitlResolved{HitlResolved: &pb.HITLResolvedOp{
+			InterventionId: e.InterventionID,
+			SessionId:      e.SessionID,
+			AgentId:        e.AgentID,
+			Kind:           e.Kind,
+			Outcome:        e.Outcome,
+			ResolvedBy:     e.ResolvedBy,
+			Detail:         e.Detail,
+		}}
+
 	case domain.VerifierRoundEvent:
 		out.Payload = &pb.OperatorEvent_VerifierRound{VerifierRound: &pb.VerifierRoundOp{
 			TaskId:        e.TaskID,
@@ -189,6 +201,9 @@ func toOperatorEvent(se domain.SequencedEvent) *pb.OperatorEvent {
 			State:   e.State,
 			Reason:  e.Reason,
 		}}
+
+	case domain.MCPServerHealthEvent:
+		out.Payload = &pb.OperatorEvent_IntegrationHealth{IntegrationHealth: IntegrationHealthToOp(e)}
 
 	case domain.PlanStateChanged:
 		out.SessionId = e.SessionID

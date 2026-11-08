@@ -31,7 +31,8 @@ func goldenWorkspace() *stubWorkspace {
 func plannerRequestFor(t *testing.T, capContract bool, input string) (domain.GenerateRequest, *domain.ExecutionPlan) {
 	t.Helper()
 	gen := &requestRecorder{reply: `{"reasoning":"one step","subject":"s","cache_policy":"tool","steps":[{"query":"q","depends_on":[]}]}`}
-	p := NewPlanner(gen, &vocabAgents{agents: goldenAgents(), caps: map[string][]string{"worker_agent": {"file_read"}}}, nil)
+	p := NewPlanner(gen, &vocabAgents{agents: goldenAgents(), caps: map[string][]string{"worker_agent": {"file_read"}},
+		tools: map[string][]string{"worker_agent": {"mcp:filesystem/read_*", "mcp:filesystem/move_file", "mcp:pdf-reader/*"}}}, nil)
 	p.SetCapabilityContract(capContract)
 	p.goos = "linux"
 	p.WorkspaceStage = goldenWorkspace()
@@ -142,6 +143,7 @@ func TestPlannerPrompt_NoDeadFormatExample(t *testing.T) {
 type vocabAgents struct {
 	agents []domain.AgentDefinition
 	caps   map[string][]string
+	tools  map[string][]string // manifest ToolAllowlist per agent (profile agents)
 }
 
 func (v *vocabAgents) GetAllAgents(context.Context) ([]domain.AgentDefinition, error) {
@@ -149,7 +151,7 @@ func (v *vocabAgents) GetAllAgents(context.Context) ([]domain.AgentDefinition, e
 }
 
 func (v *vocabAgents) GetManifest(_ context.Context, id string) (*domain.AgentManifest, error) {
-	return &domain.AgentManifest{Capabilities: v.caps[id]}, nil
+	return &domain.AgentManifest{Capabilities: v.caps[id], ToolAllowlist: v.tools[id]}, nil
 }
 
 // ── Replan ────────────────────────────────────────────────────────────────────

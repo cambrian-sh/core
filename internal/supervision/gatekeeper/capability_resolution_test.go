@@ -209,3 +209,32 @@ func TestResolution_L2MayEmptySlateWhenL1DidNotGate(t *testing.T) {
 		t.Errorf("candidates = %v, want none — without a capability contract L2 is the only gate", ids(got))
 	}
 }
+
+// A file-move step reaches only an agent that can move files. The fleet is the
+// shipped starter profiles' capability sets; every agent sits at the same neutral
+// merit, so without the contract the choice was arbitrary — the receipts step
+// landed on an agent whose tools could write a file but not move one
+// (T-20261106-planner-routes-a-file-move-step-to-an-agent). With file_organisation
+// required — the tag only the agent holding move_file declares — no other agent is
+// a candidate.
+func TestResolution_FileMoveStepReachesOnlyTheFileOrganiser(t *testing.T) {
+	src := newMockAgentDeclarationSource(
+		[]domain.AgentDefinition{{ID: "assistant"}, {ID: "researcher"}, {ID: "data-analyst"}},
+		map[string]*domain.AgentManifest{
+			"assistant":    {Capabilities: []string{"general_purpose", "summarisation", "file_read", "file_write", "file_organisation"}},
+			"researcher":   {Capabilities: []string{"research", "web_research", "summarisation"}},
+			"data-analyst": {Capabilities: []string{"analysis", "data_analysis", "code_execution", "file_read"}},
+		},
+	)
+	g := NewGatekeeper(src, resolutionCfg())
+	got, err := g.FindCandidates(context.Background(), &domain.DispatchTask{
+		ID: "task-12", Description: "Rename receipt(2).pdf by its date and title, then move it to Documents/Receipts",
+		RequiredCapabilities: []string{"file_organisation"},
+	})
+	if err != nil {
+		t.Fatalf("FindCandidates: %v", err)
+	}
+	if len(got) != 1 || got[0].Agent.ID != "assistant" {
+		t.Errorf("candidates = %v, want only the file organiser", ids(got))
+	}
+}

@@ -114,3 +114,53 @@ func SessionIDFromContext(ctx context.Context) (SessionID, bool) {
 	v, ok := ctx.Value(sessionIDCtxKey{}).(SessionID)
 	return v, ok && v != ""
 }
+
+// runPrincipalCtxKey carries the principal a unit of work is done FOR — the
+// person whose own integration credentials a tool call may use (ADR-0140 D4).
+//
+// It is distinct from PrincipalFromContext, which on the agent plane is the
+// AGENT making the call: an agent has no mailbox. The run principal is resolved
+// by the kernel from facts on the presented lease (the ADR-0139 D14 binding:
+// conversation owner → task beneficiary → configured default) or, on the
+// operator plane, is the authenticated operator. It is never read from a
+// request payload, model output or a header a caller sets (INV-5): it selects
+// whose credential is used, so a forgeable value would be a credential-theft
+// primitive.
+type runPrincipalCtxKey struct{}
+
+// WithRunPrincipal returns a child context carrying the run principal id.
+func WithRunPrincipal(ctx context.Context, principalID string) context.Context {
+	return context.WithValue(ctx, runPrincipalCtxKey{}, principalID)
+}
+
+// RunPrincipalFromContext returns the run principal id, "" when none was
+// resolved. Consumers that select a per-user credential treat "" fail-closed.
+func RunPrincipalFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(runPrincipalCtxKey{}).(string)
+	return v
+}
+
+// actForActorCtxKey carries the authenticated human who is acting ON BEHALF OF
+// the run principal (operator act-for, OpenConversation/SendTurn on_behalf_of),
+// so work done for the person can be audited as "for <person>, by <operator>"
+// (T-20261107-a-person-s-assistant-cannot-save-that-person-s). It is an AUDIT
+// fact only: it never selects a scope, a credential or whose material is read or
+// written — the run principal does that. Set by the operator plane after the
+// act-for checks, never from a payload (INV-5).
+type actForActorCtxKey struct{}
+
+// WithActForActor returns a child context naming the acting operator. "" leaves
+// ctx unchanged.
+func WithActForActor(ctx context.Context, actor string) context.Context {
+	if actor == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, actForActorCtxKey{}, actor)
+}
+
+// ActForActorFromContext returns the operator acting on behalf of the run
+// principal, "" when the principal acts as themself.
+func ActForActorFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(actForActorCtxKey{}).(string)
+	return v
+}

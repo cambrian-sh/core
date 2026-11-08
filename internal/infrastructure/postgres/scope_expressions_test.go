@@ -70,16 +70,25 @@ func TestScopeExpressionsOn_EmptyAliasMatchesLegacy(t *testing.T) {
 	}
 }
 
-// TestScopeExpressionsOn_NilAndBypass: both yield no terms. For the single-table callers
-// that is correct (the chokepoint refuses the read first). ChunksMentioningEntity does NOT
-// rely on it — it guards nil itself, because nothing sits in front of that lookup.
+// TestScopeExpressionsOn_NilAndBypass: nil and ScopeMaintenance yield no terms. For the
+// single-table callers nil is correct (the chokepoint refuses the read first).
+// ChunksMentioningEntity does NOT rely on it — it guards nil itself, because nothing sits
+// in front of that lookup. A plain Bypass yields exactly ONE term: the owner fence
+// (domain/owner_scope.go), which Bypass does not waive.
 func TestScopeExpressionsOn_NilAndBypass(t *testing.T) {
 	t.Parallel()
 	if got := scopeExpressionsOn(nil, "c"); got != nil {
 		t.Errorf("nil predicate: expected no expressions, got %d", len(got))
 	}
-	if got := scopeExpressionsOn(&domain.TagPredicate{Bypass: true}, "c"); got != nil {
-		t.Errorf("bypass predicate: expected no expressions, got %d", len(got))
+	if got := scopeExpressionsOn(domain.ScopeMaintenance, "c"); got != nil {
+		t.Errorf("maintenance predicate: expected no expressions, got %d", len(got))
+	}
+	got := scopeExpressionsOn(&domain.TagPredicate{Bypass: true}, "c")
+	if len(got) != 1 {
+		t.Fatalf("bypass predicate: expected only the owner fence, got %d", len(got))
+	}
+	if sql := render(t, got); !strings.Contains(sql, "jsonb_path_exists(c.metadata") || !strings.Contains(sql, "owner:") {
+		t.Errorf("bypass term is not the owner fence: %s", sql)
 	}
 }
 

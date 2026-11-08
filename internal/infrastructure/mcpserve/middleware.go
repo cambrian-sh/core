@@ -31,6 +31,9 @@ type authMiddleware struct {
 	authz       domain.Authorizer
 	identity    domain.IdentityResolver
 	workerOwner func(client string) (string, bool)
+	// persons is the principal registry (ADR-0142 D3), consulted only for
+	// lifecycle: a suspended or deprovisioned person is refused at the door.
+	persons domain.PrincipalRegistry
 	// sem holds one buffered channel per configured client, built ONCE at
 	// construction so the request path only ever sends and receives — a map
 	// grown per request would be a data race in the one place that must not
@@ -61,6 +64,7 @@ func newAuthMiddleware(opts Options, next http.Handler) (http.Handler, error) {
 		authz:       opts.Authorizer,
 		identity:    opts.Identity,
 		workerOwner: opts.WorkerOwner,
+		persons:     opts.Principals,
 		sem:         make(map[string]chan struct{}, len(opts.Clients)),
 	}
 	for _, c := range m.clients {
@@ -101,15 +105,21 @@ func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// kind, so policy can target the whole class — carrying its owner principal
 	// on the context, and it skips the identity hop: the binding was made at
 	// token issuance and is exactly the fact a registry binding would state.
-	// The owner rides as an AgentPrincipal because that is what the D4 hop
-	// resolves a bound principal to, and the fleet key must equal what a task's
-	// beneficiary resolves to or the two never meet.
+	// The owner rides as domain.PersonPrincipal(owner) — a `user` (ADR-0142 D3),
+	// the SAME function the D4 hop below resolves a bound person through — because
+	// the fleet key must equal what a task's beneficiary resolves to or the two
+	// never meet (feasibility K-7: worker owner and beneficiary move together).
 	ctx := r.Context()
 	var principal domain.PrincipalRef
 	if m.workerOwner != nil {
 		if owner, isWorker := m.workerOwner(client); isWorker && owner != "" {
+			if !domain.PersonMayAct(ctx, m.persons, owner) {
+				// A suspended owner's machines go dark with them (ADR-0142 D5).
+				http.Error(w, "this machine's owner is not active", http.StatusForbidden)
+				return
+			}
 			principal = domain.MachinePrincipal(client)
-			ctx = domain.WithWorkerOwner(ctx, domain.AgentPrincipal(owner))
+			ctx = domain.WithWorkerOwner(ctx, domain.PersonPrincipal(owner))
 		}
 	}
 	if principal.IsZero() {
@@ -149,13 +159,14 @@ func (m *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //   - With a resolver the answer only ever gets NARROWER or is re-pointed by an
 //     operator's explicit act. Nothing here can widen reach on its own.
 //
-// The kind stays PrincipalAgent across both paths, including for a re-pointed
-// binding. An external coding agent IS an agent, the ADR requires a registered
-// client to be scoped by the same agent_scopes machinery as an internal one, and
-// holding the kind steady means a binding changes WHO is asking without silently
-// changing HOW the decision point evaluates them — an agent principal the scope
-// store has never heard of fails closed, which is the direction a re-point should
-// fail in.
+// An UNBOUND client stays an agent (`agent:mcp:<client>`): an external app with
+// no person behind it is software, scoped by the same agent_scopes machinery as
+// an internal agent. A `principal` binding names the PERSON at the keyboard, and
+// since ADR-0142 D3 a person is `user` on every door: before, the re-pointed
+// client ran as `agent:<person>`, which the premium Authorizer gave no owner-fence
+// identity (ownersFor answers only for user readers), so a person reaching
+// Cambrian over MCP could not read their own personal ingest. The guest principal
+// of a stranger policy stays an agent: it is a shared bucket, not a person.
 func (m *authMiddleware) principalFor(ctx context.Context, client string) (domain.PrincipalRef, bool) {
 	externalID := principalPrefix + client
 	self := domain.AgentPrincipal(externalID)
@@ -186,7 +197,10 @@ func (m *authMiddleware) principalFor(ctx context.Context, client string) (domai
 		// identity and the group's policy terms reach it through the decision
 		// point, exactly as they do for an internal agent.
 		if binding.BoundToKind == domain.BindPrincipal && binding.BoundToID != "" {
-			return domain.AgentPrincipal(binding.BoundToID), true
+			if !domain.PersonMayAct(ctx, m.persons, binding.BoundToID) {
+				return domain.PrincipalRef{}, false
+			}
+			return domain.PersonPrincipal(binding.BoundToID), true
 		}
 		return self, true
 	}

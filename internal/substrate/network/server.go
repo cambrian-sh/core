@@ -22,6 +22,7 @@ import (
 	"github.com/cambrian-sh/core/internal/memorynotes"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
+	"github.com/cambrian-sh/core/internal/scheduledtask"
 	"github.com/cambrian-sh/core/internal/stepoutput"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 
@@ -213,6 +214,42 @@ type Server struct {
 	// principal; nil ⇒ no principal, so runs see only org notes (fail-closed).
 	MemoryNotes          *memorynotes.Service
 	MemoryNotesPrincipal MemoryNotesPrincipalFunc
+	// RunPrincipal resolves a lease binding to the person the run is FOR
+	// (ADR-0140 D4) — the same lease → principal resolution as
+	// MemoryNotesPrincipal (conversation owner → task beneficiary → default),
+	// wired to the same function. ExecuteTool stamps it on ctx
+	// (domain.WithRunPrincipal) so a per_user integration uses that person's
+	// own credential. nil ⇒ no run principal: per_user tools fail closed.
+	RunPrincipal MemoryNotesPrincipalFunc
+	// PrincipalNames is the ADR-0142 registry, read for the display name of the
+	// person a plan's steps act for (domain.HandoffKeyActingForName, acting_for.go).
+	// nil ⇒ steps carry the principal id only.
+	PrincipalNames PrincipalNameSource
+
+	// ScheduledTasks is the gate for principal-owned recurring tasks
+	// (ProposeScheduledTask / ListScheduledTasks / ManageScheduledTask,
+	// scheduled_tasks_rpc.go). The owner is always RunPrincipal of the presented
+	// lease. nil ⇒ the three RPCs answer Unimplemented (no premium schedule store,
+	// or execution.schedules.disabled).
+	ScheduledTasks *scheduledtask.Service
+
+	// Knowledge is the knowledge proposal bridge behind ProposeKnowledge
+	// (knowledge_propose_rpc.go; knowledgecommit.Service). nil ⇒ the RPC answers
+	// Unimplemented.
+	Knowledge KnowledgeProposer
+
+	// ConversationOwner resolves a lease binding to the owner of the conversation
+	// it was issued under (on the lease, or on its task session); "" when the work
+	// is not for a conversation. withCallerSession and QueryMemory stamp it on ctx
+	// (domain.WithConversationOwner) so the decision point narrows the agent's
+	// reads by the owner's entitlements. Unlike RunPrincipal it never falls back
+	// to a beneficiary or a default principal. nil ⇒ nothing is stamped.
+	ConversationOwner MemoryNotesPrincipalFunc
+	// PrivateByDefault (ADR-0142 D12, config privacy.private_by_default, on by
+	// default): when the conversation owner is stamped, the context is also
+	// MARKED so every write chokepoint owner-scopes what the agent writes to
+	// that person (domain.WithPrivateWrites / StampPrivateOwner).
+	PrivateByDefault bool
 
 	// Subagents is the ADR-0139 D12 runtime behind SpawnSubagent (subagent.go):
 	// per-root trees, child-lease ceilings and counters. The composition root also
@@ -242,6 +279,11 @@ type Server struct {
 	// so operator PauseSession/ResumeSession can steer them). Both may be nil.
 	EventBus   domain.EventBus
 	ControlHub *operator.ExecutionControlHub
+
+	// Delegations ties a plan to the chat turn that ordered it (turn_delegation.go):
+	// the turn's end cancels the plan and revokes its leases, and the turn's stall
+	// watchdog reads the plan's progress. nil ⇒ no chat lane; plans are unaffected.
+	Delegations *TurnDelegations
 
 	// StepOutput is the live step-output stream (ADR-0139 amendment 2026-11-06,
 	// superseding ADR-0047 D12's token tier): gateway deltas from both model lanes
@@ -278,6 +320,10 @@ type Server struct {
 	// the gateway meter through). Execute reads it to end a plan visibly at the
 	// session ceiling and to report the plan's spend. nil → no ceiling, no report.
 	SpendMeter *llm.SpendMeter
+
+	// planActions is the per-run ledger of side-effecting tool calls (plan_actions.go),
+	// recorded at ExecuteTool and reported in Execute's result.
+	planActions planActionLedger
 }
 
 // AgentCallLogger observes LLM calls made by cognitive agents through the
@@ -404,6 +450,34 @@ func planWithValidation(ctx context.Context, planner Planner, userInput string) 
 	}
 }
 
+// planningOutOfTime is Execute's answer when the caller-deadline reserve instant
+// passed while the request was still being routed or planned
+// (T-20261107-planner-llm-call-is-not-bounded-by-the-caller). Before it, the
+// planner's model call ran under the bare caller ctx: a slow planner spent the
+// caller's whole budget and the caller got DEADLINE_EXCEEDED with no payload. It
+// is answered in time instead, as a timed-out partial plan that says nothing ran —
+// which is the one thing a caller deciding whether to retry must know.
+func (s *Server) planningOutOfTime(in *pb.Handoff, phase string, cause error, sessionID domain.SessionID, base llm.SessionSpend) *pb.Handoff {
+	meta := map[string]string{
+		"_partial_plan":     "true",
+		PlanTimedOutKey:     "true",
+		PlanTimeoutCauseKey: cause.Error(),
+	}
+	if sessionID != "" {
+		meta["_session_id"] = string(sessionID)
+	}
+	s.stampSpend(meta, sessionID, base)
+	slog.Warn("⏱️ ran out of time before the plan started", "phase", phase, "cause", cause)
+	text := fmt.Sprintf("The plan did not start: it ran out of time while %s the request, so nothing was executed (%v).", phase, cause)
+	return &pb.Handoff{
+		Id:        in.GetId(),
+		FromAgent: "orchestrator",
+		ToAgent:   "user",
+		Payload:   &pb.Object{Data: []byte(text)},
+		Metadata:  meta,
+	}
+}
+
 // Execute handles requests from the external world and manages the agent chain.
 func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, error) {
 	rawInput := string(in.Payload.Data)
@@ -420,6 +494,11 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	// there is nothing for the router to classify — and running it anyway could
 	// route the plan's own text to CHAT and answer instead of executing it.
 	authoredPlanJSON := in.GetMetadata()[AuthoredPlanMetadataKey]
+
+	// The caller-deadline reserve (plan_watchdog.go), fixed once for this Execute:
+	// routing, planning and the plan all end by the same instant, so whichever phase
+	// is running when the time is up still leaves Execute the reserve to answer.
+	reserve := newCallerReserve(ctx, callerDeadlineReserve(s.ExecCfg.Plan))
 
 	// ADR-0131 (owner decision 2026-11-01): router classification is request-path
 	// spend — it counts against the session ceiling and in this Execute's _llm_*
@@ -452,7 +531,15 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			SourceType: "grpc",
 			Metadata:   in.GetMetadata(),
 		}
-		decision, err := s.Router.Resolve(routeCtx, routerInput)
+		boundedRouteCtx, stopRouteReserve := reserve.bound(routeCtx, errPlanningCallerDeadline("routing", reserve.reserve))
+		decision, err := s.Router.Resolve(boundedRouteCtx, routerInput)
+		routeCut := planCeilingCause(ctx, boundedRouteCtx)
+		stopRouteReserve()
+		// Cut by the reserve: answered as out of time even when a decision arrived
+		// on the edge, since no time is left to act on it.
+		if routeCut != nil {
+			return s.planningOutOfTime(in, "classifying", routeCut, "", llm.SessionSpend{}), nil
+		}
 		if err != nil {
 			if errors.Is(err, llm.ErrSpendCeiling) && callerSession != "" {
 				// The visible ADR-0131 D3 ending, with its TaskEvent record.
@@ -558,6 +645,23 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		}
 	}
 
+	// A plan a chat turn delegated lives no longer than the turn
+	// (turn_delegation.go, T-20261106-a-chat-turn-that-fails-deadline-exceeded-or):
+	// it runs under a context the turn's end cancels, and a late Execute from a
+	// turn that has already ended is refused. The ordering turn is read from the
+	// caller's lease binding only, like the conversation link above.
+	var delegated *DelegatedRun
+	if s.Delegations != nil {
+		if b, known := s.resolveBindingFromHandoff(ctx, in.GetMetadata()); known {
+			runCtx, run, derr := s.Delegations.BeginRun(ctx, b)
+			if derr != nil {
+				return nil, status.Error(codes.FailedPrecondition, derr.Error())
+			}
+			ctx, delegated = runCtx, run
+			defer run.End()
+		}
+	}
+
 	// ADR-0025: FetchContext retired from planning path.
 	// LTM enrichment now handled exclusively by WorkspaceStage.PrimeForPlanning
 	// inside the Planner, injecting typed <FactLTM> and <NegativeLTM> sections.
@@ -614,7 +718,15 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		plan = &authored
 		slog.Info("📝 OPERATOR-AUTHORED PLAN", "subject", plan.Subject, "steps", len(plan.Steps))
 	default:
-		p, perr := planWithValidation(ctx, planBudget.planner(s.Planner), userInput)
+		planningCtx, stopPlanningReserve := reserve.bound(ctx, errPlanningCallerDeadline("planning", reserve.reserve))
+		p, perr := planWithValidation(planningCtx, planBudget.planner(s.Planner), userInput)
+		planningCut := planCeilingCause(ctx, planningCtx)
+		stopPlanningReserve()
+		// Cut by the reserve — even a plan that arrived on the edge has no time
+		// left to run, and dispatching it would start steps it cannot finish.
+		if planningCut != nil {
+			return s.planningOutOfTime(in, "planning", planningCut, sessionID, spendBase), nil
+		}
 		if perr != nil {
 			if errors.Is(perr, llm.ErrSpendCeiling) {
 				return nil, s.endPlanAtSpendCeiling(sessionID, "", spendBase, perr)
@@ -661,6 +773,10 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	if resumed != nil {
 		executionID = resumed.Run.ID
 	}
+	// The run's side-effecting tool calls are recorded from here until Execute returns,
+	// and reported in its result (plan_actions.go).
+	s.planActions.begin(executionID)
+	defer s.planActions.end(executionID)
 
 	// Persist the run (with its plan) so it can be resumed later. ADR-0012 §3 always
 	// specified storing "the associated ExecutionPlan (for replay)"; without it a step
@@ -691,18 +807,30 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	var confMu sync.Mutex
 	var confValues []float64
 
+	// Whom this run's steps act for: the run principal of its step leases, the
+	// person ExecuteTool's per_user credentials belong to. Every step carries it
+	// (domain.HandoffKeyActingFor) so a worker reading a task that names that
+	// person knows the person IS the user its tools authenticate as
+	// (T-20261107-delegated-steps-name-the-conversation-owner-in).
+	actingForID, actingForName := s.actingForRun(ctx, sessionID, executionID)
+
 	// Named results: the lease's deferred Complete stamps the gateway's overrun
 	// verdict on the handoff this function hands back (see the defer below).
 	stepFn := func(stepCtx context.Context, i int, handoff *domain.Handoff) (stepResp *domain.Handoff, stepErr error) {
 		// The DAGExecutor may replan (ADR-0005) or fan-out expand (ADR-0078) its plan
-		// mid-run, growing it beyond the `plan` this closure captured, and then dispatch
-		// a step whose index is out of range HERE. The executor builds the handoff from
-		// its CURRENT plan's step, so trust the handoff's query and reconstruct a minimal
-		// step rather than index a stale slice — an out-of-range index must never panic
-		// and crash the whole kernel. (RequiredCapabilities is unavailable for a
-		// replanned step; routing falls back to query-only selection.)
+		// mid-run, so the `plan` this closure captured is stale: a fan-out child's index
+		// is past its end, and a replanned plan's index i is a DIFFERENT step. The
+		// executor hands its CURRENT step on ctx (domain.WithPlanStep), and that wins,
+		// so the step's routing contract (RequiredCapabilities, pin, budget) travels to
+		// every fan-out child and replanned step. Before it did, every fan-out child
+		// routed with no capability requirement — to whichever agent ranked first —
+		// (T-20261106-planner-routes-a-file-move-step-to-an-agent). Without it (an
+		// executor that does not stamp ctx), index the captured plan when in range, else
+		// trust the handoff's query: an out-of-range index must never panic the kernel.
 		var step domain.Step
-		if i >= 0 && i < len(plan.Steps) {
+		if cur, ok := domain.PlanStepFrom(stepCtx); ok {
+			step = cur
+		} else if i >= 0 && i < len(plan.Steps) {
 			step = plan.Steps[i]
 		} else {
 			q := ""
@@ -729,6 +857,9 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		// ADR-0023 Fix 1+3: inject session token and step index so cognitive agents
 		// can call GenerateViaModelStream and log their position in the plan.
 		handoff.Context["_step_index"] = fmt.Sprintf("%d", i)
+		// Kernel-authored, always overwritten or removed: a caller's Execute
+		// metadata (which reaches the plan context) cannot name whom a step acts for.
+		domain.StampActingFor(handoff.Context, actingForID, actingForName)
 		if s.LLMGateway != nil {
 			// The step's model allocation is deliberately EMPTY here, and the gateway
 			// resolves it: an empty Winner makes StreamChunks fall through to the
@@ -767,6 +898,8 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 					StepIndex: i,
 				})
 			}
+			// Revoked with the ordering chat turn, even once Completed (turn_delegation.go).
+			delegated.AddLease(tokenID)
 			handoff.Context["_session_token_id"] = string(tokenID)
 			defer func() {
 				usage, cerr := s.LLMGateway.Complete(stepCtx, tokenID)
@@ -835,6 +968,10 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			// the overwhelmingly common case and changes nothing downstream.
 			auctionTask.PreferredAgent = step.PreferredAgent
 			auctionTask.AgentPin = step.AgentPin
+			// Effect-checked dispatch: carried unconditionally (it is a fail-closed
+			// eligibility gate, not an A/B arm). nil stays nil — "declared nothing"
+			// (a legacy plan, logged unverified) differs from an empty "needs none".
+			auctionTask.RequiredEffects = step.RequiredEffects
 			// ADR-0100 D4: carry the step's budget + verification flag so dispatch
 			// can pick its per-step policy. The auction ignores both, so this is
 			// inert on that arm.
@@ -931,9 +1068,18 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	// failure (T-20261105-slow-model-reliability-hardcoded-20-s).
 	planAct := newPlanActivity()
 	maxDuration, idleTimeout := planLimits(s.ExecCfg.Plan)
-	planCtx, stopPlanCeiling := startPlanCeiling(ctx, maxDuration, idleTimeout,
-		s.planLivenessProbe(ctx, planAct, executionID, sessionID))
+	planProbe := s.planLivenessProbe(ctx, planAct, executionID, sessionID)
+	// And it stops a reserve BEFORE its caller's deadline (a chat turn's delegation
+	// carries one), so the answer below — what completed, and the ledger of what it
+	// wrote — still reaches the caller (T-20261107-a-delegated-plan-stopped-by-its-caller-s).
+	reservedCtx, stopCallerReserve := reserve.bound(ctx, errPlanCallerDeadline(reserve.reserve))
+	defer stopCallerReserve()
+	planCtx, stopPlanCeiling := startPlanCeiling(reservedCtx, maxDuration, idleTimeout, planProbe)
 	defer stopPlanCeiling()
+	// The same probe is the ordering chat turn's view of this plan's progress, so
+	// the chat stall watchdog sees step dispatch, tool calls, approvals in flight and
+	// model calls on the step leases (T-20261106-chat-stall-detection-cancels-a-turn-whose).
+	delegated.Attach(executionID, planProbe)
 
 	var replanner executer.ReplanHandler = inFlightReplanner{inner: s.replanHandler(planBudget), own: planAct}
 
@@ -971,6 +1117,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		ReplanHandler:          replanner,
 		MaxReplanAttempts:      s.ExecCfg.Plan.MaxReplanAttempts,
 		MaxFanOutWidth:         s.ExecCfg.Plan.MaxFanOutWidth,
+		FanOutConcurrency:      s.ExecCfg.Plan.FanOutConcurrency, // fan-out children in parallel, dedicated instances (T-20261107)
 		MaxPlanCost:            s.ExecCfg.Plan.MaxPlanCost,
 		DefaultInputCostPer1M:  s.Manager.DefaultInputCostPer1M,
 		DefaultOutputCostPer1M: s.Manager.DefaultOutputCostPer1M,
@@ -1016,6 +1163,16 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 
 	if err != nil {
 		var partialErr *executer.PartialPlanError
+		// Effect-checked dispatch: a step the effect check refused, after its one
+		// replan, ends as a QUESTION for the user — which agent should get the tool,
+		// or how to proceed — never as a dispatch to an arbitrary agent.
+		if errors.As(err, &partialErr) && ceilingCause == nil {
+			var noEffect *domain.NoEffectMatchError
+			if errors.As(partialErr.LastError, &noEffect) {
+				s.stampSpend(partialErr.Context, sessionID, spendBase)
+				return effectRefusalClarification(in.Id, noEffect, partialErr.Context)
+			}
+		}
 		if errors.As(err, &partialErr) {
 			slog.Warn("⚠️ Partial plan failure", "failed_step", partialErr.FailedStep, "context_entries", len(partialErr.Context))
 			partialErr.Context["_partial_plan"] = "true"
@@ -1026,11 +1183,18 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 				slog.Warn("⏱️ plan cut by its ceiling", "run", executionID, "cause", ceilingCause)
 			}
 			s.stampSpend(partialErr.Context, sessionID, spendBase)
+			// The payload says what DID happen before the failure — the completed
+			// steps' results and the side-effecting calls — not only the error: a
+			// caller told just "failed at step 3" re-orders the writes of steps 0-2.
+			actions := s.planActions.snapshot(executionID)
+			if j := planActionsJSON(actions); j != "" {
+				partialErr.Context[PlanActionsKey] = j
+			}
 			return &pb.Handoff{
 				Id:        in.Id,
 				FromAgent: "orchestrator",
 				ToAgent:   "user",
-				Payload:   &pb.Object{Data: []byte(partialErr.Error())},
+				Payload:   &pb.Object{Data: []byte(partialPlanPayload(partialFailure(partialErr, ceilingCause), partialErr.Report, actions))},
 				Metadata:  partialErr.Context,
 			}, nil
 		}
@@ -1046,8 +1210,15 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 
 	// Experiential memory removed: no procedural-memory (Hippocampus) plan write-back.
 
-	finalResult := masterCtx[finalResultKey]
+	// The executor's report of EVERY final step (not only the last in topological
+	// order), followed by the kernel's ledger of the side-effecting calls the plan
+	// made (T-20261107-plan-result-is-only-the-last-topo-step-a-plan).
+	actions := s.planActions.snapshot(executionID)
+	finalResult := planResultPayload(masterCtx[finalResultKey], actions)
 	delete(masterCtx, finalResultKey)
+	if j := planActionsJSON(actions); j != "" {
+		masterCtx[PlanActionsKey] = j
+	}
 	if sessionID != "" {
 		masterCtx["_session_id"] = string(sessionID)
 	}
@@ -1186,7 +1357,18 @@ func (s *Server) thoughtFn(plan *domain.ExecutionPlan) executer.StepFunc {
 		if err != nil {
 			return nil, err
 		}
-		req, err := buildThoughtRequest(plan.Subject, plan.Steps[i].Query, results)
+		// The step as the executor's CURRENT plan has it (domain.WithPlanStep): the
+		// captured plan is stale after a fan-out or replan, and indexing it would
+		// read another step's query or run past its end (see stepFn).
+		var query string
+		if cur, ok := domain.PlanStepFrom(ctx); ok {
+			query = cur.Query
+		} else if i >= 0 && i < len(plan.Steps) {
+			query = plan.Steps[i].Query
+		} else if handoff != nil && handoff.Payload != nil {
+			query = string(handoff.Payload.Data)
+		}
+		req, err := buildThoughtRequest(plan.Subject, query, results)
 		if err != nil {
 			return nil, err
 		}
@@ -1386,6 +1568,57 @@ func (s *Server) loadOrCreateSession(ctx context.Context, goal string) *domain.S
 }
 
 // runFallback tries runner-up candidates in score order when the winner fails.
+// effectRefusalClarification is the ask that ends a plan whose step no agent's tools
+// can do (owner design, effect-checked dispatch): the same payload.type
+// "clarification" sentinel the router's clarification uses, so every client that
+// renders a clarification renders this one. The metadata keeps the partial plan's
+// context (results of the steps that did run) and names the refusal.
+func effectRefusalClarification(id string, e *domain.NoEffectMatchError, meta map[string]string) (*pb.Handoff, error) {
+	// Options use the router clarification's option shape (serializeClarification),
+	// so a client that renders one renders this one; the decision is left empty: the
+	// answer is a new user turn, not a routing decision.
+	type optionJSON struct {
+		Label       string `json:"label"`
+		Decision    string `json:"decision"`
+		Recommended bool   `json:"recommended"`
+	}
+	type bodyJSON struct {
+		Question string       `json:"question"`
+		Options  []optionJSON `json:"options"`
+		Missing  []string     `json:"missing_effects"`
+		Detail   string       `json:"detail"`
+	}
+	missing := strings.Join(e.Missing, " + ")
+	body := bodyJSON{
+		Question: fmt.Sprintf("None of the available agents has a tool that can %s, which this request needs. "+
+			"How should I proceed?", missing),
+		Options: []optionJSON{
+			{Label: fmt.Sprintf("Give an agent a tool that can %s (install an integration or widen an agent profile), then ask again", missing), Recommended: true},
+			{Label: "Do the rest without that action"},
+			{Label: "Cancel the request"},
+		},
+		Missing: e.Missing,
+		Detail:  e.Error(),
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("effectRefusalClarification: %w", err)
+	}
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	meta["_partial_plan"] = "true"
+	meta["_effect_refused"] = strings.Join(e.Missing, ",")
+	slog.Warn("plan ended on an effect-check refusal; asking the user", "missing", e.Missing, "check", e.Check.Summary())
+	return &pb.Handoff{
+		Id:        id,
+		FromAgent: "orchestrator",
+		ToAgent:   "user",
+		Payload:   &pb.Object{Type: "clarification", Data: data},
+		Metadata:  meta,
+	}, nil
+}
+
 // serializeClarification serializes a DecisionClarification into a pb.Handoff
 // with payload.type = "clarification" and payload.data = JSON{question, options}.
 // Follows the payload.type sentinel pattern (ADR-0031).

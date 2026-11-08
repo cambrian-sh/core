@@ -18,7 +18,8 @@ func ClassifyArtifactWrite(ctx context.Context, a domain.Authorizer, principal d
 	if !dec.Allowed {
 		return nil, ErrWriteDenied
 	}
-	return final, nil
+	// ADR-0142 D12: private to the conversation owner the work is for.
+	return domain.StampPrivateOwner(ctx, final), nil
 }
 
 // FilterArtifacts returns only the artifacts a reader holding this predicate may

@@ -1,0 +1,2665 @@
+{
+  "_comment": "The curated MCP integration catalog the kernel ships (internal/integrations). Generated 2026-11-06 from configs/mcp.json.example and configs/mcp.integrations.json.example (policies, args, env) plus product metadata; see configs/MCP.md for the review notes behind each pin. Edit entries here directly from now on, and keep MCP.md in step. A deployment adds or replaces entries with mcp.catalog_file (same shape). Every entry declares its tool policy (tools and/or default_tool_policy) or says fail_closed: true; the loader refuses one that does neither.",
+  "schema_version": 1,
+  "entries": [
+    {
+      "id": "brave-search",
+      "name": "Brave Search",
+      "description": "Web, news, image and local search through the Brave Search API.",
+      "category": "web-search",
+      "publisher": "Brave (official)",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/brave/brave-search-mcp-server",
+      "version": "2.1.4",
+      "runtimes": [
+        "node>=22"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@brave/brave-search-mcp-server@2.1.4"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org",
+            "api.search.brave.com"
+          ]
+        },
+        "env": [
+          "BRAVE_API_KEY"
+        ],
+        "default_tool_policy": {
+          "effects": [
+            "read",
+            "egress"
+          ]
+        }
+      },
+      "fields": [
+        {
+          "name": "BRAVE_API_KEY",
+          "label": "Brave Search API key",
+          "secret": true,
+          "required": true,
+          "kind": "env",
+          "help": "From api-dashboard.search.brave.com. Paid beyond the free tier."
+        }
+      ],
+      "notes": "Official Brave Search server (brave/brave-search-mcp-server, MIT). BRAVE_API_KEY. Paid API beyond the free tier."
+    },
+    {
+      "id": "tavily",
+      "name": "Tavily search",
+      "description": "Search, extract, crawl and map the web through Tavily.",
+      "category": "web-search",
+      "publisher": "Tavily (official)",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/tavily-ai/tavily-mcp",
+      "version": "0.2.22",
+      "runtimes": [
+        "node>=22"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "tavily-mcp@0.2.22"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org",
+            "api.tavily.com"
+          ]
+        },
+        "env": [
+          "TAVILY_API_KEY"
+        ],
+        "default_tool_policy": {
+          "effects": [
+            "read",
+            "egress"
+          ]
+        }
+      },
+      "fields": [
+        {
+          "name": "TAVILY_API_KEY",
+          "label": "Tavily API key",
+          "secret": true,
+          "required": true,
+          "kind": "env",
+          "help": "From app.tavily.com."
+        }
+      ],
+      "notes": "Official Tavily server (tavily-ai/tavily-mcp, MIT): search, extract, crawl, map. TAVILY_API_KEY. Paid API."
+    },
+    {
+      "id": "exa",
+      "name": "Exa search",
+      "description": "Neural web search, code context and crawling through Exa.",
+      "category": "web-search",
+      "publisher": "Exa (official)",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/exa-labs/exa-mcp-server",
+      "version": "3.4.3",
+      "runtimes": [
+        "node>=22"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "exa-mcp-server@3.4.3"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org",
+            "api.exa.ai"
+          ]
+        },
+        "env": [
+          "EXA_API_KEY"
+        ],
+        "default_tool_policy": {
+          "effects": [
+            "read",
+            "egress"
+          ]
+        }
+      },
+      "fields": [
+        {
+          "name": "EXA_API_KEY",
+          "label": "Exa API key",
+          "secret": true,
+          "required": true,
+          "kind": "env",
+          "help": "From dashboard.exa.ai."
+        }
+      ],
+      "notes": "Official Exa server (exa-labs/exa-mcp-server, MIT). EXA_API_KEY. Paid API."
+    },
+    {
+      "id": "searxng",
+      "name": "SearXNG (self-hosted search)",
+      "description": "Keyless meta-search against your own SearXNG instance.",
+      "category": "web-search",
+      "publisher": "ihor-sokoliuk (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/ihor-sokoliuk/mcp-searxng",
+      "version": "2.10.0",
+      "runtimes": [
+        "node>=22"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "mcp-searxng@2.10.0"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org",
+            "the configured SEARXNG_URL host"
+          ]
+        },
+        "env": [
+          "SEARXNG_URL"
+        ],
+        "tools": [
+          {
+            "name": "searxng_web_search",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "web_url_read",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          }
+        ]
+      },
+      "fields": [
+        {
+          "name": "SEARXNG_URL",
+          "label": "SearXNG URL",
+          "secret": false,
+          "required": true,
+          "kind": "env",
+          "help": "Base URL of your SearXNG instance.",
+          "placeholder": "http://searxng.internal:8080"
+        }
+      ],
+      "notes": "Keyless meta-search against YOUR SearXNG instance (ihor-sokoliuk/mcp-searxng, MIT, community). SEARXNG_URL names the instance (not a secret)."
+    },
+    {
+      "id": "web-search",
+      "name": "Web search (DuckDuckGo, no key)",
+      "description": "Keyless web search through DuckDuckGo. Rate-limited; use a keyed provider for production.",
+      "category": "web-search",
+      "publisher": "Nick Clyde (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/nickclyde/duckduckgo-mcp-server",
+      "version": "0.7.0",
+      "runtimes": [
+        "uv"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "duckduckgo-mcp-server==0.7.0"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "pypi.org",
+            "files.pythonhosted.org",
+            "duckduckgo.com",
+            "html.duckduckgo.com"
+          ]
+        },
+        "tools": [
+          {
+            "name": "search",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "fetch_content",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          }
+        ]
+      },
+      "notes": "Keyless DuckDuckGo search (nickclyde/duckduckgo-mcp-server, MIT, community). Rate-limited by DuckDuckGo; for production use a keyed provider (brave-search/tavily/exa) or self-hosted SearXNG from mcp.integrations.json.example."
+    },
+    {
+      "id": "fetch",
+      "name": "Web page fetch",
+      "description": "Fetch a URL and return it as Markdown.",
+      "category": "web",
+      "publisher": "MCP steering group (official reference)",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+      "version": "2026.11.4",
+      "runtimes": [
+        "uv"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "mcp-server-fetch==2026.11.4"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "pypi.org",
+            "files.pythonhosted.org",
+            "*"
+          ]
+        },
+        "tools": [
+          {
+            "name": "fetch",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          }
+        ]
+      },
+      "notes": "Official reference server (modelcontextprotocol/servers, MIT). Fetches a URL and returns Markdown. Network read: egress, no approval. It can reach localhost/intranet URLs - see MCP.md trust notes."
+    },
+    {
+      "id": "google-workspace",
+      "name": "Google Workspace, one shared account (Gmail, Drive, Calendar)",
+      "description": "One Google account for every principal, read-only. For people, use google-workspace-personal.",
+      "category": "email-calendar",
+      "publisher": "Taylor Wilsdon (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/taylorwilsdon/google_workspace_mcp",
+      "version": "2.3.0",
+      "runtimes": [
+        "uv"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "workspace-mcp==2.3.0",
+          "--tools",
+          "gmail",
+          "drive",
+          "calendar",
+          "--tool-tier",
+          "core",
+          "--read-only"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "pypi.org",
+            "files.pythonhosted.org",
+            "*.googleapis.com",
+            "accounts.google.com"
+          ]
+        },
+        "env": [
+          "GOOGLE_OAUTH_CLIENT_ID",
+          "GOOGLE_OAUTH_CLIENT_SECRET",
+          "USER_GOOGLE_EMAIL"
+        ],
+        "default_tool_policy": {
+          "effects": [
+            "read",
+            "egress"
+          ]
+        }
+      },
+      "fields": [
+        {
+          "name": "GOOGLE_OAUTH_CLIENT_ID",
+          "label": "OAuth client ID",
+          "secret": true,
+          "required": true,
+          "kind": "env",
+          "help": "From your Google Cloud project (APIs & Services > Credentials, Desktop app)."
+        },
+        {
+          "name": "GOOGLE_OAUTH_CLIENT_SECRET",
+          "label": "OAuth client secret",
+          "secret": true,
+          "required": true,
+          "kind": "env",
+          "help": "From the same OAuth client."
+        },
+        {
+          "name": "USER_GOOGLE_EMAIL",
+          "label": "Google account email",
+          "secret": false,
+          "required": true,
+          "kind": "env",
+          "help": "The account the agents act as.",
+          "placeholder": "me@example.com"
+        }
+      ],
+      "notes": "Gmail, Drive, Calendar (taylorwilsdon/google_workspace_mcp, MIT, community; Google's own remote Workspace MCP servers are preview and OAuth-only). GOOGLE_OAUTH_CLIENT_ID/SECRET from your Cloud project; first use opens a browser OAuth consent and caches the user's token on disk (one Google account for every principal). --read-only drops send/modify tools; remove it AND the default_tool_policy to allow writes. SHARED ONLY: this stdio mode has no injected-token mode, so it cannot be per user; it acts as the single account whose consent is cached on the kernel host. Per-person Gmail/Drive/Calendar: google-workspace-personal (read) and google-workspace-personal-write (ADR-0141 owner position 5)."
+    },
+    {
+      "id": "google-workspace-personal",
+      "name": "Google Workspace, per person (Gmail, Drive, Calendar read)",
+      "description": "Each person's own Gmail, Drive and Calendar, read-only, with their own Google sign-in.",
+      "category": "email-calendar",
+      "publisher": "Taylor Wilsdon (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/taylorwilsdon/google_workspace_mcp",
+      "version": "2.3.0",
+      "runtimes": [
+        "uv"
+      ],
+      "server": {
+        "transport": "http",
+        "endpoint": "http://127.0.0.1:8000/mcp",
+        "auth": {
+          "type": "none"
+        },
+        "default_tool_policy": {
+          "effects": [
+            "read",
+            "egress"
+          ]
+        },
+        "tools": [
+          {
+            "name": "send_gmail_message",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "draft_gmail_message",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "modify_gmail_message_labels",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "batch_modify_gmail_message_labels",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "manage_gmail_label",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "manage_gmail_filter",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "start_google_auth",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "manage_event",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "create_calendar",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "manage_out_of_office",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "manage_focus_time",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "create_drive_file",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "create_drive_folder",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "import_to_google_doc",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "import_to_google_slides",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "import_to_google_sheets",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "update_drive_file",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "copy_drive_file",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "manage_drive_access",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "set_drive_file_permissions",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          }
+        ],
+        "user_credential": {
+          "scope": "per_user",
+          "provider": "google",
+          "scopes": [
+            "openid",
+            "email",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/drive.readonly"
+          ],
+          "inject": "bearer"
+        }
+      },
+      "notes": "PER USER (ADR-0140/0141): every request carries the requesting person's own Google access token (Authorization: Bearer); the server holds no token and never refreshes (the premium accounts plugin refreshes). The kernel does NOT launch this server: the operator runs workspace-mcp 2.3.0 in external-OAuth mode as a loopback HTTP sidecar, outside the ADR-0139 D8 stdio sandbox (run it in a container where that matters): uvx workspace-mcp==2.3.0 --transport streamable-http --tools gmail drive calendar --tool-tier extended --read-only with MCP_ENABLE_OAUTH21=true EXTERNAL_OAUTH21_PROVIDER=true WORKSPACE_MCP_STATELESS_MODE=true WORKSPACE_MCP_HOST=127.0.0.1 GOOGLE_OAUTH_CLIENT_ID=<the client id stored as oauth:google:client_id> PORT=8000. WORKSPACE_MCP_HOST=127.0.0.1 is required: with OAuth 2.1 on, the server binds 0.0.0.0 by default. It validates each token against Google userinfo (hence openid+email) and does not check the token's audience, so keep it on loopback. --read-only requests only read scopes and drops write tools; the dangerous tool list is defence in depth. Operator: a Google Cloud OAuth client (Web application) with redirect URI <CAMBRIAN_ACCOUNTS_PUBLIC_BASE_URL>/oauth/callback, Gmail/Calendar/Drive APIs enabled, stored as oauth:google:client_id / client_secret. gmail.readonly and drive.readonly are Google RESTRICTED scopes: an External-audience app needs Google verification (security assessment); an Internal (Workspace-only) app does not. Live handshake not verified (ticket T-20261106-per-user-google-workspace-curated-server-cannot). Google's own remote servers (gmailmcp/calendarmcp/drivemcp.googleapis.com) are Developer Preview: see configs/MCP.md."
+    },
+    {
+      "id": "google-workspace-personal-write",
+      "name": "Google Workspace, per person (send mail, manage events)",
+      "description": "Each person's own Gmail and Calendar with send, draft and event tools; every write needs approval.",
+      "category": "email-calendar",
+      "publisher": "Taylor Wilsdon (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/taylorwilsdon/google_workspace_mcp",
+      "version": "2.3.0",
+      "runtimes": [
+        "uv"
+      ],
+      "fail_closed": true,
+      "server": {
+        "transport": "http",
+        "endpoint": "http://127.0.0.1:8001/mcp",
+        "auth": {
+          "type": "none"
+        },
+        "tools": [
+          {
+            "name": "search_gmail_messages",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "get_gmail_message_content",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "get_gmail_messages_content_batch",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "get_gmail_thread_content",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "get_gmail_attachment_content",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "list_gmail_labels",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "list_calendars",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "get_events",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "query_freebusy",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "send_gmail_message",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "draft_gmail_message",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "manage_event",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          }
+        ],
+        "user_credential": {
+          "scope": "per_user",
+          "provider": "google",
+          "scopes": [
+            "openid",
+            "email",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.compose",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/calendar.events"
+          ],
+          "inject": "bearer"
+        }
+      },
+      "notes": "Same server as google-workspace-personal with Gmail send/draft and Calendar create/update/delete (manage_event covers all three). A separate entry so the read entry's grant never holds send scopes: each person signs in once per entry (grants are per server and person). Fail-closed: any tool not listed is dangerous. Operator-run loopback sidecar, NOT launched by the kernel: uvx workspace-mcp==2.3.0 --transport streamable-http --tools gmail calendar --tool-tier extended --disabled-tools manage_gmail_label manage_gmail_filter list_gmail_filters modify_gmail_message_labels create_calendar manage_out_of_office manage_focus_time with MCP_ENABLE_OAUTH21=true EXTERNAL_OAUTH21_PROVIDER=true WORKSPACE_MCP_STATELESS_MODE=true WORKSPACE_MCP_HOST=127.0.0.1 GOOGLE_OAUTH_CLIENT_ID=<the client id stored as oauth:google:client_id> PORT=8001. Prompt injection: a mail the agent reads can ask it to send data out; send stays dangerous (approval) and should not be granted to profiles that read untrusted mail unattended. gmail.send/compose are Google sensitive scopes, gmail.readonly restricted (verification for External apps). Live handshake not verified."
+    },
+    {
+      "id": "microsoft-365",
+      "name": "Microsoft 365 (Outlook, OneDrive, Calendar)",
+      "description": "Outlook mail, calendar, OneDrive, contacts and to-do through Microsoft Graph (read-only).",
+      "category": "email-calendar",
+      "publisher": "Softeria (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/Softeria/ms-365-mcp-server",
+      "version": "0.179.1",
+      "runtimes": [
+        "node>=22"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@softeria/ms-365-mcp-server@0.179.1",
+          "--read-only"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org",
+            "graph.microsoft.com",
+            "login.microsoftonline.com"
+          ]
+        },
+        "env": [
+          "MS365_MCP_CLIENT_ID",
+          "MS365_MCP_TENANT_ID"
+        ],
+        "default_tool_policy": {
+          "effects": [
+            "read",
+            "egress"
+          ]
+        },
+        "user_credential": {
+          "scope": "per_user",
+          "provider": "microsoft",
+          "scopes": [
+            "openid",
+            "email",
+            "offline_access",
+            "User.Read",
+            "Mail.Read",
+            "Calendars.Read",
+            "Files.Read",
+            "Contacts.Read",
+            "Tasks.Read"
+          ],
+          "inject": "env",
+          "name": "MS365_MCP_OAUTH_TOKEN"
+        }
+      },
+      "fields": [
+        {
+          "name": "MS365_MCP_CLIENT_ID",
+          "label": "App (client) ID",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "Shared mode only (one account for everyone, device-code sign-in on the kernel host). Per-user mode uses the OAuth client stored as oauth:microsoft:client_id."
+        },
+        {
+          "name": "MS365_MCP_TENANT_ID",
+          "label": "Tenant ID",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "Your Entra tenant; leave empty for the common endpoint."
+        }
+      ],
+      "notes": "Outlook mail, calendar, OneDrive, (with --org-mode) Teams and SharePoint via Microsoft Graph (Softeria/ms-365-mcp-server, MIT, community; Microsoft's own Agent 365 / Work IQ servers are tenant-managed and OAuth-only). Device-code sign-in on first use; token cached on disk. --read-only drops write tools; remove it AND the default_tool_policy to allow sending. PER USER (ADR-0140): each person connects their own Microsoft account from the console (Accounts in the console; premium accounts plugin, ADR-0141); the kernel runs one server process per person with that person's token in MS365_MCP_OAUTH_TOKEN (the server's bring-your-own-token mode; it does not refresh, so the kernel refreshes and relaunches). The operator registers an Entra app (delegated, read-only Graph scopes above) with redirect URI <CAMBRIAN_ACCOUNTS_PUBLIC_BASE_URL>/oauth/callback (premium accounts plugin, ADR-0141) and stores oauth:microsoft:client_id / client_secret. The client/tenant fields below are only for the shared (device-code) mode."
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "description": "Read channels, threads and search; posting needs approval and is off unless enabled.",
+      "category": "chat",
+      "publisher": "korotovsky (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/korotovsky/slack-mcp-server",
+      "version": "1.3.0",
+      "runtimes": [
+        "node>=22"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "slack-mcp-server@1.3.0",
+          "--transport",
+          "stdio"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org",
+            "slack.com",
+            "*.slack.com"
+          ]
+        },
+        "env": [
+          "SLACK_MCP_XOXP_TOKEN",
+          "SLACK_MCP_XOXB_TOKEN",
+          "SLACK_MCP_ADD_MESSAGE_TOOL"
+        ],
+        "tools": [
+          {
+            "name": "channels_list",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "conversations_history",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "conversations_replies",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "conversations_search_messages",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "attachment_get_data",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "usergroups_list",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "usergroups_me",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "conversations_add_message",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "reactions_add",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "reactions_remove",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "usergroups_create",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "usergroups_update",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "usergroups_users_update",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          }
+        ],
+        "user_credential": {
+          "scope": "per_user",
+          "provider": "slack",
+          "scopes": [
+            "channels:history",
+            "channels:read",
+            "groups:history",
+            "groups:read",
+            "im:history",
+            "im:read",
+            "mpim:history",
+            "mpim:read",
+            "search:read",
+            "users:read",
+            "usergroups:read"
+          ],
+          "inject": "env",
+          "name": "SLACK_MCP_XOXP_TOKEN"
+        }
+      },
+      "fields": [
+        {
+          "name": "SLACK_MCP_XOXP_TOKEN",
+          "label": "User token (xoxp-)",
+          "secret": true,
+          "required": false,
+          "kind": "env",
+          "help": "A Slack user OAuth token. Set this OR the bot token."
+        },
+        {
+          "name": "SLACK_MCP_XOXB_TOKEN",
+          "label": "Bot token (xoxb-)",
+          "secret": true,
+          "required": false,
+          "kind": "env",
+          "help": "A bot token: invited channels only, no search."
+        },
+        {
+          "name": "SLACK_MCP_ADD_MESSAGE_TOOL",
+          "label": "Enable posting",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "Set to true (or a channel list) to expose the posting tool. Posting always needs approval."
+        }
+      ],
+      "notes": "Slack (korotovsky/slack-mcp-server, MIT, community; Slack's official remote server at mcp.slack.com is OAuth-only with no dynamic client registration). User token xoxp- in SLACK_MCP_XOXP_TOKEN (or bot xoxb- in SLACK_MCP_XOXB_TOKEN: invited channels only, no search). Posting is OFF unless SLACK_MCP_ADD_MESSAGE_TOOL is set; it is dangerous here either way. PER USER (ADR-0140): each person connects their own Slack account; their user token (xoxp-, read scopes only; posting would need chat:write, which is not requested) goes into SLACK_MCP_XOXP_TOKEN of a process run for that person alone. The shared token fields below are not given to per-user processes."
+    },
+    {
+      "id": "filesystem",
+      "name": "Files (one folder)",
+      "description": "Read, search and (with approval) write files inside ONE folder you choose.",
+      "category": "files",
+      "publisher": "MCP steering group (official reference)",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      "version": "1.0.0",
+      "runtimes": [
+        "node>=22"
+      ],
+      "multi_instance": true,
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem@1.0.0",
+          "${FILESYSTEM_ROOT}"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org"
+          ]
+        },
+        "tools": [
+          {
+            "name": "read_text_file",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "read_file",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "read_media_file",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "read_multiple_files",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_directory",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_directory_with_sizes",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "directory_tree",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "search_files",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_file_info",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_allowed_directories",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "write_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "edit_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "append_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "create_directory",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "move_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "copy_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          }
+        ]
+      },
+      "fields": [
+        {
+          "name": "FILESYSTEM_ROOT",
+          "label": "Folder to expose",
+          "secret": false,
+          "required": true,
+          "kind": "env",
+          "help": "Absolute path of the only folder the server may reach, e.g. C:\\Users\\me\\Documents\\shared. Nothing outside it is reachable.",
+          "placeholder": "/srv/shared"
+        }
+      ],
+      "notes": "Official reference server. ONLY the directories given as args are reachable - replace ./workspace with the absolute roots you want to expose. Pinned to 1.0.0 because 2.x declares node>=24 (2.2.0 is current). Write tools are dangerous."
+    },
+    {
+      "id": "pdf-reader",
+      "name": "Document reader (PDF / Office)",
+      "description": "Read PDF, DOCX, PPTX, XLSX and HTML as Markdown; outline and search.",
+      "category": "documents",
+      "publisher": "SylphxAI (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/SylphxAI/pdf-reader-mcp",
+      "version": "8.5.9",
+      "runtimes": [
+        "node>=22"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@sylphx/pdf-reader-mcp@8.5.9"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org"
+          ]
+        },
+        "tools": [
+          {
+            "name": "read",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "outline",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "search",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "inspect",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          }
+        ]
+      },
+      "notes": "@sylphx/pdf-reader-mcp (now the SylphxAI/anymd project, MIT): PDF/DOCX/PPTX/XLSX/HTML to Markdown, outline, search, page render/OCR. A `source` may be a URL, so reads carry egress. Unlisted tools fail closed."
+    },
+    {
+      "id": "markitdown",
+      "name": "MarkItDown (Office to Markdown)",
+      "description": "Convert Office, PDF, HTML, CSV and images to Markdown.",
+      "category": "documents",
+      "publisher": "Microsoft",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/microsoft/markitdown",
+      "version": "0.0.1a8",
+      "runtimes": [
+        "uv"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "--prerelease=allow",
+          "markitdown-mcp==0.0.1a8"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "pypi.org",
+            "files.pythonhosted.org",
+            "*"
+          ]
+        },
+        "tools": [
+          {
+            "name": "convert_to_markdown",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          }
+        ]
+      },
+      "notes": "Microsoft MarkItDown MCP (microsoft/markitdown, MIT; package is pre-release 0.0.1a8): converts docx/xlsx/pptx/pdf/html/csv/images to Markdown. The uri may be http(s), file: or data:, so reads carry egress. Upstream says local, trusted use only. Needs --prerelease=allow: a transitive dependency (azure-ai-contentunderstanding) is only published as a pre-release. Handshake verified 2026-11-05 (tool: convert_to_markdown)."
+    },
+    {
+      "id": "excel",
+      "name": "Excel workbooks",
+      "description": "Create and edit .xlsx workbooks. Every tool needs approval.",
+      "category": "office",
+      "publisher": "Haris Musa (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/haris-musa/excel-mcp-server",
+      "version": "2.2.6",
+      "runtimes": [
+        "uv"
+      ],
+      "fail_closed": true,
+      "server": {
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "excel-mcp-server==2.2.6",
+          "stdio"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "pypi.org",
+            "files.pythonhosted.org"
+          ]
+        },
+        "env": [
+          "EXCEL_FILES_PATH"
+        ]
+      },
+      "fields": [
+        {
+          "name": "EXCEL_FILES_PATH",
+          "label": "Working folder",
+          "secret": false,
+          "required": true,
+          "kind": "env",
+          "help": "Folder the server reads and writes workbooks in.",
+          "placeholder": "/srv/excel"
+        }
+      ],
+      "notes": "Optional, keyless: create/edit .xlsx (haris-musa/excel-mcp-server, MIT, community). EXCEL_FILES_PATH (not a secret) is its working directory. Fails closed."
+    },
+    {
+      "id": "word",
+      "name": "Word documents",
+      "description": "Create and edit .docx documents. Every tool needs approval.",
+      "category": "office",
+      "publisher": "GongRzhe (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/GongRzhe/Office-Word-MCP-Server",
+      "version": "1.1.11",
+      "runtimes": [
+        "uv"
+      ],
+      "fail_closed": true,
+      "server": {
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "office-word-mcp-server==1.1.11"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "pypi.org",
+            "files.pythonhosted.org"
+          ]
+        }
+      },
+      "notes": "Optional, keyless: create/edit .docx (GongRzhe/Office-Word-MCP-Server, MIT, community; last release 2025-12-31). Fails closed. Reading Office files is better served by markitdown/pdf-reader in mcp.json.example."
+    },
+    {
+      "id": "postgres",
+      "name": "PostgreSQL database",
+      "description": "Inspect and query a PostgreSQL database. Raw SQL needs approval; connect with a read-only role.",
+      "category": "database",
+      "publisher": "Google (MCP Toolbox for Databases)",
+      "license": "Apache-2.0",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/googleapis/genai-toolbox",
+      "version": "1.15.0",
+      "runtimes": [
+        "node>=22"
+      ],
+      "multi_instance": true,
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@toolbox-sdk/server@1.15.0",
+          "--prebuilt=postgres",
+          "--stdio"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org",
+            "the configured database host"
+          ]
+        },
+        "env": [
+          "POSTGRES_HOST",
+          "POSTGRES_PORT",
+          "POSTGRES_DATABASE",
+          "POSTGRES_USER",
+          "POSTGRES_PASSWORD",
+          "POSTGRES_QUERY_PARAMS"
+        ],
+        "tools": [
+          {
+            "name": "execute_sql",
+            "dangerous": true,
+            "effects": [
+              "read",
+              "write"
+            ]
+          },
+          {
+            "name": "get_query_plan",
+            "dangerous": true,
+            "effects": [
+              "read",
+              "write"
+            ]
+          },
+          {
+            "name": "list_tables",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_views",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_schemas",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_indexes",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_invalid_indexes",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_sequences",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_triggers",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_stored_procedure",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_roles",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_tablespaces",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_table_stats",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_top_bloated_tables",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_database_stats",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_query_stats",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_active_queries",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "long_running_transactions",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_locks",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_pg_settings",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_memory_configurations",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_autovacuum_configurations",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_available_extensions",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_installed_extensions",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_publication_tables",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_replication_slots",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "replication_stats",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "database_overview",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_column_cardinality",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          }
+        ]
+      },
+      "fields": [
+        {
+          "name": "POSTGRES_HOST",
+          "label": "Host",
+          "secret": false,
+          "required": true,
+          "kind": "env",
+          "help": "Database host name.",
+          "placeholder": "db.internal"
+        },
+        {
+          "name": "POSTGRES_PORT",
+          "label": "Port",
+          "secret": false,
+          "required": true,
+          "kind": "env",
+          "help": "Database port.",
+          "default_value": "5432"
+        },
+        {
+          "name": "POSTGRES_DATABASE",
+          "label": "Database",
+          "secret": false,
+          "required": true,
+          "kind": "env",
+          "help": "Database name."
+        },
+        {
+          "name": "POSTGRES_USER",
+          "label": "User",
+          "secret": false,
+          "required": true,
+          "kind": "env",
+          "help": "Prefer a read-only role."
+        },
+        {
+          "name": "POSTGRES_PASSWORD",
+          "label": "Password",
+          "secret": true,
+          "required": true,
+          "kind": "env",
+          "help": "The role's password."
+        },
+        {
+          "name": "POSTGRES_QUERY_PARAMS",
+          "label": "Connection parameters",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "Optional, e.g. sslmode=require."
+        }
+      ],
+      "notes": "Google MCP Toolbox, prebuilt postgres toolset (Apache-2.0). The reference @modelcontextprotocol/server-postgres is deprecated. Connect with a READ-ONLY database role: execute_sql takes raw SQL. get_query_plan is kept dangerous because it templates caller SQL."
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite database",
+      "description": "Query a SQLite file. Raw SQL needs approval; use a copy of the file.",
+      "category": "database",
+      "publisher": "Google (MCP Toolbox for Databases)",
+      "license": "Apache-2.0",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/googleapis/genai-toolbox",
+      "version": "1.15.0",
+      "runtimes": [
+        "node>=22"
+      ],
+      "multi_instance": true,
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@toolbox-sdk/server@1.15.0",
+          "--prebuilt=sqlite",
+          "--stdio"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org"
+          ]
+        },
+        "env": [
+          "SQLITE_DATABASE"
+        ],
+        "tools": [
+          {
+            "name": "list_tables",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "execute_sql",
+            "dangerous": true,
+            "effects": [
+              "read",
+              "write"
+            ]
+          }
+        ]
+      },
+      "fields": [
+        {
+          "name": "SQLITE_DATABASE",
+          "label": "Database file",
+          "secret": false,
+          "required": true,
+          "kind": "env",
+          "help": "Path to the .db / .sqlite file.",
+          "placeholder": "/srv/data/app.db"
+        }
+      ],
+      "notes": "Google MCP Toolbox for Databases (googleapis/mcp-toolbox, Apache-2.0), prebuilt sqlite toolset. The reference mcp-server-sqlite is archived. SQLITE_DATABASE (kernel env) names the database file. execute_sql takes raw SQL and can write: dangerous. Point it at a copy or open a read-only file when you only need analysis."
+    },
+    {
+      "id": "github",
+      "name": "GitHub (read-only)",
+      "description": "Repositories, issues, pull requests and Actions, read-only.",
+      "category": "developer",
+      "publisher": "GitHub (official)",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/github/github-mcp-server",
+      "version": "2.1.0",
+      "server": {
+        "transport": "http",
+        "endpoint": "https://api.githubcopilot.com/mcp/readonly",
+        "auth": {
+          "type": "bearer",
+          "token_env": "GITHUB_MCP_PAT"
+        },
+        "default_tool_policy": {
+          "effects": [
+            "read",
+            "egress"
+          ]
+        },
+        "user_credential": {
+          "scope": "per_user",
+          "provider": "github",
+          "scopes": [],
+          "inject": "bearer"
+        }
+      },
+      "fields": [
+        {
+          "name": "GITHUB_MCP_PAT",
+          "label": "GitHub personal access token",
+          "secret": true,
+          "required": false,
+          "kind": "token",
+          "help": "Shared mode only. Per-user mode: each person connects their own GitHub account from the console."
+        }
+      ],
+      "notes": "Official GitHub MCP server, remote (github/github-mcp-server, MIT). /readonly keeps only read tools. Fine-grained PAT in GITHUB_MCP_PAT (repo read scopes). For writes use the github-write entry below. PER USER (ADR-0140): each person connects their own GitHub account; every request carries that person's token (Authorization: Bearer). Register a GitHub App (its user-to-server tokens carry the app's fine-grained permissions, so no OAuth scopes are requested; give it read-only repository permissions for this entry) with callback <CAMBRIAN_ACCOUNTS_PUBLIC_BASE_URL>/oauth/callback (premium accounts plugin, ADR-0141), and store oauth:github:client_id / client_secret."
+    },
+    {
+      "id": "github-write",
+      "name": "GitHub (read and write)",
+      "description": "GitHub with create/update tools. Every tool needs approval until you list the read tools.",
+      "category": "developer",
+      "publisher": "GitHub (official)",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/github/github-mcp-server",
+      "version": "2.1.0",
+      "fail_closed": true,
+      "server": {
+        "transport": "http",
+        "endpoint": "https://api.githubcopilot.com/mcp/",
+        "auth": {
+          "type": "bearer",
+          "token_env": "GITHUB_MCP_PAT"
+        },
+        "user_credential": {
+          "scope": "per_user",
+          "provider": "github",
+          "scopes": [],
+          "inject": "bearer"
+        }
+      },
+      "fields": [
+        {
+          "name": "GITHUB_MCP_PAT",
+          "label": "GitHub personal access token",
+          "secret": true,
+          "required": false,
+          "kind": "token",
+          "help": "Shared mode only. Per-user mode: each person connects their own GitHub account from the console."
+        }
+      ],
+      "notes": "Same server with write tools (issues, PRs, files, branches). No default policy: every tool is dangerous (approval) until you list read tools explicitly. Use a PAT scoped to the repos the agents may change. PER USER (ADR-0140): each person connects their own GitHub account; every request carries that person's token (Authorization: Bearer). Register a GitHub App (its user-to-server tokens carry the app's fine-grained permissions, so no OAuth scopes are requested; give it read-only repository permissions for this entry) with callback <CAMBRIAN_ACCOUNTS_PUBLIC_BASE_URL>/oauth/callback (premium accounts plugin, ADR-0141), and store oauth:github:client_id / client_secret."
+    },
+    {
+      "id": "git",
+      "name": "Git (one repository)",
+      "description": "History, diffs and (with approval) commits and branches in ONE repository. No push.",
+      "category": "developer",
+      "publisher": "MCP steering group (official reference)",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+      "version": "2026.11.4",
+      "runtimes": [
+        "uv"
+      ],
+      "multi_instance": true,
+      "server": {
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "mcp-server-git==2026.11.4",
+          "--repository",
+          "${GIT_REPOSITORY}"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "pypi.org",
+            "files.pythonhosted.org"
+          ]
+        },
+        "tools": [
+          {
+            "name": "git_status",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_diff_unstaged",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_diff_staged",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_diff",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_log",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_show",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_branch",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_remote",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "git_add",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "git_commit",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "git_reset",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "git_create_branch",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "git_checkout",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "git_merge",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          }
+        ]
+      },
+      "fields": [
+        {
+          "name": "GIT_REPOSITORY",
+          "label": "Repository path",
+          "secret": false,
+          "required": true,
+          "kind": "env",
+          "help": "Absolute path of the git repository.",
+          "placeholder": "/srv/repos/project"
+        }
+      ],
+      "notes": "Official reference server. --repository scopes it to one repo; replace the path. History and diff reads are safe; anything that changes the index, HEAD or branches is dangerous. It has no push tool."
+    },
+    {
+      "id": "notion",
+      "name": "Notion",
+      "description": "Search and read Notion pages and databases. Every tool needs approval until you list the read ones.",
+      "category": "knowledge",
+      "publisher": "Notion (official)",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/makenotion/notion-mcp-server",
+      "version": "2.6.1",
+      "runtimes": [
+        "node>=22"
+      ],
+      "fail_closed": true,
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@notionhq/notion-mcp-server@2.6.1"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org",
+            "api.notion.com"
+          ]
+        },
+        "env": [
+          "NOTION_TOKEN"
+        ]
+      },
+      "fields": [
+        {
+          "name": "NOTION_TOKEN",
+          "label": "Integration secret",
+          "secret": true,
+          "required": true,
+          "kind": "env",
+          "help": "An internal integration secret (notion.so/my-integrations), shared only with the pages it may touch."
+        }
+      ],
+      "notes": "Official Notion server, local (makenotion/notion-mcp-server, MIT). NOTION_TOKEN = an internal integration secret shared only with the pages it may touch. Notion now prioritises its remote server (mcp.notion.com, OAuth-only). Tool names are generated from Notion's OpenAPI spec, so none are listed: every tool is dangerous until you list the read ones."
+    },
+    {
+      "id": "atlassian",
+      "name": "Atlassian (Jira, Confluence)",
+      "description": "Jira, Confluence, JSM, Bitbucket and Compass through Atlassian's hosted server. Writes need approval.",
+      "category": "project-management",
+      "publisher": "Atlassian (official)",
+      "license": "proprietary (hosted)",
+      "trust_tier": "official",
+      "docs_url": "https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassian-remote-mcp-server/",
+      "version": "v2",
+      "fail_closed": true,
+      "server": {
+        "transport": "http",
+        "endpoint": "https://mcp.atlassian.com/v2/mcp",
+        "auth": {
+          "type": "bearer",
+          "token_env": "ATLASSIAN_MCP_API_KEY"
+        }
+      },
+      "fields": [
+        {
+          "name": "ATLASSIAN_MCP_API_KEY",
+          "label": "Service account API key",
+          "secret": true,
+          "required": true,
+          "kind": "token",
+          "help": "Needs an org admin to enable API-token auth for the Rovo MCP server."
+        }
+      ],
+      "notes": "Official Atlassian Rovo MCP server, remote (Jira, Confluence, JSM, Bitbucket, Compass). Headless auth needs an org admin to enable API-token auth; a service-account API key goes in ATLASSIAN_MCP_API_KEY (Bearer). A personal token instead needs Authorization: Basic base64(email:token): use auth {type: header, header: Authorization, token_env: ...} with the full 'Basic ...' value. Writes exist: no default policy."
+    },
+    {
+      "id": "linear",
+      "name": "Linear (read-only)",
+      "description": "Find issues, projects and comments in Linear (read-only).",
+      "category": "project-management",
+      "publisher": "Linear (official)",
+      "license": "proprietary (hosted)",
+      "trust_tier": "official",
+      "docs_url": "https://linear.app/docs/mcp",
+      "version": "hosted",
+      "server": {
+        "transport": "http",
+        "endpoint": "https://mcp.linear.app/mcp/readonly",
+        "auth": {
+          "type": "bearer",
+          "token_env": "LINEAR_API_KEY"
+        },
+        "default_tool_policy": {
+          "effects": [
+            "read",
+            "egress"
+          ]
+        }
+      },
+      "fields": [
+        {
+          "name": "LINEAR_API_KEY",
+          "label": "Linear API key",
+          "secret": true,
+          "required": true,
+          "kind": "token",
+          "help": "Linear > Settings > Security & access > Personal API keys."
+        }
+      ],
+      "notes": "Official Linear MCP server, remote. Accepts a Linear API key as Bearer. /mcp/readonly exposes read tools only; use https://mcp.linear.app/mcp (and drop the default policy) for writes."
+    },
+    {
+      "id": "code-sandbox",
+      "name": "Code sandbox (Docker)",
+      "description": "Run Python (and JS, R, Go) for data analysis in a throwaway Docker container; plots come back as images.",
+      "category": "code",
+      "publisher": "Duy Huynh / vndee (community)",
+      "license": "MIT",
+      "trust_tier": "curated",
+      "docs_url": "https://github.com/vndee/llm-sandbox",
+      "version": "0.3.46",
+      "runtimes": [
+        "uv",
+        "docker"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "uv",
+        "args": [
+          "run",
+          "--no-project",
+          "--with",
+          "llm-sandbox[mcp-docker]==0.3.46",
+          "python",
+          "-m",
+          "llm_sandbox.mcp_server.server"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "pypi.org",
+            "files.pythonhosted.org",
+            "the local Docker engine"
+          ]
+        },
+        "env": [
+          "BACKEND",
+          "DOCKER_HOST",
+          "SANDBOX_NETWORK_MODE",
+          "SANDBOX_READ_ONLY",
+          "SANDBOX_CAP_DROP",
+          "SANDBOX_SECURITY_OPT",
+          "SANDBOX_MEMORY",
+          "SANDBOX_CPU_COUNT"
+        ],
+        "tools": [
+          {
+            "name": "execute_code",
+            "dangerous": true,
+            "effects": [
+              "read",
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "get_supported_languages",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_language_details",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          }
+        ]
+      },
+      "fields": [
+        {
+          "name": "BACKEND",
+          "label": "Container backend",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "docker (default), podman or kubernetes.",
+          "default_value": "docker"
+        },
+        {
+          "name": "SANDBOX_NETWORK_MODE",
+          "label": "Network",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "none keeps the sandbox offline (on-demand pip installs then fail: use an image with your libraries).",
+          "default_value": "none"
+        },
+        {
+          "name": "SANDBOX_READ_ONLY",
+          "label": "Read-only root filesystem",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "true hardens the container.",
+          "default_value": "true"
+        },
+        {
+          "name": "SANDBOX_CAP_DROP",
+          "label": "Dropped capabilities",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "ALL drops every Linux capability.",
+          "default_value": "ALL"
+        },
+        {
+          "name": "SANDBOX_SECURITY_OPT",
+          "label": "Security options",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "no-new-privileges:true blocks privilege escalation.",
+          "default_value": "no-new-privileges:true"
+        },
+        {
+          "name": "SANDBOX_MEMORY",
+          "label": "Memory limit",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "e.g. 2g.",
+          "default_value": "2g"
+        },
+        {
+          "name": "SANDBOX_CPU_COUNT",
+          "label": "CPU limit",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "Number of CPUs.",
+          "default_value": "1"
+        },
+        {
+          "name": "DOCKER_HOST",
+          "label": "Docker host",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "Only if Docker is not on the default socket."
+        }
+      ],
+      "notes": "Sandboxed code execution for data analysis (vndee/llm-sandbox, MIT). Runs Python (and JS, R, Go, ...) in a throwaway Docker container; captures matplotlib plots as images; installs pandas/numpy on demand. Needs Docker running. HARDEN via the kernel environment: BACKEND=docker SANDBOX_NETWORK_MODE=none SANDBOX_READ_ONLY=true SANDBOX_CAP_DROP=ALL SANDBOX_SECURITY_OPT=no-new-privileges:true SANDBOX_MEMORY=2g SANDBOX_CPU_COUNT=1 (with network none, on-demand pip installs fail: pre-bake an image). execute_code is dangerous with write+egress until those settings are proven to take."
+    },
+    {
+      "id": "terminal",
+      "name": "Terminal (Desktop Commander)",
+      "description": "PowerShell / cmd / bash sessions, file operations and process management. Every write or exec needs approval. Not a sandbox.",
+      "category": "code",
+      "publisher": "wonderwhy-er (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/wonderwhy-er/DesktopCommanderMCP",
+      "version": "0.3.1",
+      "runtimes": [
+        "node>=22"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@wonderwhy-er/desktop-commander@0.3.1"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org",
+            "*"
+          ]
+        },
+        "tools": [
+          {
+            "name": "get_config",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "read_file",
+            "dangerous": false,
+            "effects": [
+              "read",
+              "egress"
+            ]
+          },
+          {
+            "name": "read_multiple_files",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_directory",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "start_search",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_more_search_results",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "stop_search",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_searches",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_file_info",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "read_process_output",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_sessions",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "list_processes",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_usage_stats",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "get_recent_tool_calls",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          },
+          {
+            "name": "write_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "write_pdf",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "create_directory",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "move_file",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "edit_block",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "start_process",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "interact_with_process",
+            "dangerous": true,
+            "effects": [
+              "write",
+              "egress"
+            ]
+          },
+          {
+            "name": "force_terminate",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "kill_process",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "set_config_value",
+            "dangerous": true,
+            "effects": [
+              "write"
+            ]
+          },
+          {
+            "name": "give_feedback_to_desktop_commander",
+            "dangerous": true,
+            "effects": [
+              "egress"
+            ]
+          }
+        ]
+      },
+      "notes": "Desktop Commander (@wonderwhy-er/desktop-commander, MIT): Windows/macOS/Linux terminal (PowerShell/cmd/bash sessions, REPLs), file ops, search, process management. Handshake verified on Windows 2026-11-05 (25 tools). NOT a sandbox: its allowedDirectories restricts only its file tools, never terminal commands, and its blockedCommands list is bypassable (upstream README). Every write/exec tool is dangerous (approval required). NEVER grant set_config_value to an agent (it can widen its own allowedDirectories/blockedCommands) nor give_feedback_to_desktop_commander. Telemetry is ON by default upstream: set \"telemetryEnabled\": false in ~/.claude-server-commander/config.json (done on the owner's host 2026-11-05). For isolation run its Docker image (ADR-0139 D8)."
+    },
+    {
+      "id": "shell",
+      "name": "Shell (allow-listed commands)",
+      "description": "Run only the executables you allow. Not a sandbox: allowed programs run with the kernel user's rights. Linux and macOS only.",
+      "category": "code",
+      "publisher": "tumf (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/tumf/mcp-shell-server",
+      "version": "1.1.14",
+      "runtimes": [
+        "uv"
+      ],
+      "platforms": [
+        "linux",
+        "darwin"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "mcp-shell-server==1.1.14"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "pypi.org",
+            "files.pythonhosted.org",
+            "*"
+          ]
+        },
+        "env": [
+          "ALLOW_COMMANDS",
+          "ALLOW_PATTERNS"
+        ],
+        "tools": [
+          {
+            "name": "shell_execute",
+            "dangerous": true,
+            "effects": [
+              "read",
+              "write",
+              "egress"
+            ]
+          }
+        ]
+      },
+      "fields": [
+        {
+          "name": "ALLOW_COMMANDS",
+          "label": "Allowed commands",
+          "secret": false,
+          "required": true,
+          "kind": "env",
+          "help": "Comma-separated executables, e.g. git,ls,cat. Never an interpreter, curl or a package manager.",
+          "placeholder": "ls,cat,git"
+        },
+        {
+          "name": "ALLOW_PATTERNS",
+          "label": "Allowed patterns",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "Optional regex patterns of allowed commands."
+        }
+      ],
+      "notes": "Replacement for the dead @cfdude/super-shell-mcp (npm 404). tumf/mcp-shell-server (MIT): runs ONLY executables named in ALLOW_COMMANDS (set it in the kernel environment, e.g. ALLOW_COMMANDS=git,ls,cat). It is NOT a sandbox: an allowed program runs with the kernel user's files, network and credentials. Always dangerous. Windows execution is unverified (developed for POSIX shells). VERIFIED 2026-11-05: does NOT run on Windows (imports the Unix-only `pwd` module); use it only on Linux/macOS deployments."
+    },
+    {
+      "id": "playwright",
+      "name": "Browser (Playwright)",
+      "description": "Drive a real headless browser: navigate, click, fill forms. Every tool needs approval.",
+      "category": "browser",
+      "publisher": "Microsoft",
+      "license": "Apache-2.0",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/microsoft/playwright-mcp",
+      "version": "0.0.84",
+      "runtimes": [
+        "node>=22"
+      ],
+      "fail_closed": true,
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@playwright/mcp@0.0.84",
+          "--headless",
+          "--isolated"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org",
+            "*"
+          ],
+          "memory_mb": 4096,
+          "max_processes": 256
+        }
+      },
+      "notes": "Optional, keyless: Microsoft Playwright browser automation (microsoft/playwright-mcp, Apache-2.0). Drives a real browser: navigates, clicks, fills forms, can submit anything. --isolated keeps no profile between sessions. Every tool fails closed (dangerous). First run downloads a browser build."
+    },
+    {
+      "id": "time",
+      "name": "Time and time zones",
+      "description": "Current time and time-zone conversion.",
+      "category": "utilities",
+      "publisher": "MCP steering group (official reference)",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/time",
+      "version": "2026.11.4",
+      "runtimes": [
+        "uv"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "mcp-server-time==2026.11.4"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "pypi.org",
+            "files.pythonhosted.org"
+          ]
+        },
+        "default_tool_policy": {
+          "effects": [
+            "read"
+          ]
+        }
+      },
+      "probe_tool": {
+        "name": "get_current_time",
+        "arguments": {
+          "timezone": "UTC"
+        }
+      },
+      "notes": "Official reference server: current time and timezone conversion. Pure read."
+    },
+    {
+      "id": "calculator",
+      "name": "Calculator",
+      "description": "Exact arithmetic, so the model does not multiply in its head.",
+      "category": "utilities",
+      "publisher": "He Jie / githejie (community)",
+      "license": "MIT",
+      "trust_tier": "community",
+      "docs_url": "https://github.com/githejie/mcp-server-calculator",
+      "version": "0.2.1",
+      "runtimes": [
+        "uv"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "uvx",
+        "args": [
+          "mcp-server-calculator==0.2.1"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "pypi.org",
+            "files.pythonhosted.org"
+          ]
+        },
+        "tools": [
+          {
+            "name": "calculate",
+            "dangerous": false,
+            "effects": [
+              "read"
+            ]
+          }
+        ]
+      },
+      "probe_tool": {
+        "name": "calculate",
+        "arguments": {
+          "expression": "2+2"
+        }
+      },
+      "notes": "Exact arithmetic (githejie/mcp-server-calculator, MIT, community, ~160 stars). One tool, calculate(expression): an AST walker over numbers, + - * / // % ** and the math module (pi, e, sqrt, log, ...); no eval, no I/O, no network. Pure read. Caveat: a huge power (9**9**9) is not capped and can spin the server until call_timeout_ms. PyPI 0.2.1 (2026-08-08) checked on the registry 2026-11-05; live handshake NOT verified yet."
+    },
+    {
+      "id": "sequential-thinking",
+      "name": "Sequential thinking",
+      "description": "A scratchpad for step-by-step reasoning. No I/O.",
+      "category": "utilities",
+      "publisher": "MCP steering group (official reference)",
+      "license": "MIT",
+      "trust_tier": "official",
+      "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
+      "version": "1.0.0",
+      "runtimes": [
+        "node>=22"
+      ],
+      "server": {
+        "transport": "stdio",
+        "endpoint": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-sequential-thinking@1.0.0"
+        ],
+        "auth": {
+          "type": "none"
+        },
+        "sandbox": {
+          "network": "egress",
+          "hosts": [
+            "registry.npmjs.org"
+          ]
+        },
+        "default_tool_policy": {
+          "effects": [
+            "read"
+          ]
+        }
+      },
+      "notes": "Official reference server: a scratchpad for step-by-step reasoning. No I/O. Pinned to 1.0.0 because 2.x declares node>=24."
+    }
+  ]
+}

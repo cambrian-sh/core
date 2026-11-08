@@ -1,0 +1,96 @@
+package domain
+
+import (
+	"context"
+	"time"
+)
+
+// SubstrateCatalog is the substrate's NAMES-AND-COUNTS read surface: what the
+// store holds (entities, predicates, event types, item kinds, actors, per-source
+// and per-kind counts), never a value. It exists beside the closed query AST
+// (QueryPlane) because two consumers need it and the AST has no shape for it —
+// the operator explore surface (Overview, ListEntities) and the NL AST-former's
+// grounding catalog (ADR-0118 explore/ask).
+//
+// Names are not harmless metadata. ADR-0128 D12 made existence protected
+// content, so every method answers ONLY over rows the bound scope may read —
+// the same evidence-classification test (owner fence included) the query plane
+// applies to the rows those names stand for. A name derived only from rows the
+// reader cannot see is absent, and so is every count it would have contributed:
+// "hidden" and "never existed" must read the same.
+//
+// A catalog is BOUND to one scope when it is obtained (PgQueryPlane.Catalog);
+// plugins never hold the unbound form. They receive a principal-resolving seam
+// (KernelServices.KnowledgeCatalog), so the caller can no more choose its own
+// predicate here than on QueryKnowledge.
+type SubstrateCatalog interface {
+	// Overview reports what the store holds for this reader.
+	Overview(ctx context.Context) (SubstrateOverview, error)
+	// Entities lists entity handles the reader can reach a row of, newest first.
+	Entities(ctx context.Context, f EntityFilter) ([]CatalogEntity, error)
+	// Predicates lists distinct observation predicates over readable rows.
+	Predicates(ctx context.Context, limit int) ([]string, error)
+	// EventTypes lists distinct event types over readable events.
+	EventTypes(ctx context.Context, limit int) ([]string, error)
+	// ItemKinds lists the kinds of readable items with a live resolution.
+	ItemKinds(ctx context.Context, limit int) ([]string, error)
+	// Actors lists the actors of readable live resolutions about the given
+	// entities (all entities when entityIDs is empty).
+	Actors(ctx context.Context, entityIDs []string, limit int) ([]string, error)
+}
+
+// EntityFilter narrows SubstrateCatalog.Entities. Zero fields do not filter.
+// Exactly the shapes its consumers ask; it is not a query language.
+type EntityFilter struct {
+	// IDs keeps only these exact entity ids.
+	IDs []string
+	// Substrings keeps ids containing any of these, case-insensitively. Literal:
+	// the implementation escapes LIKE metacharacters.
+	Substrings []string
+	// Predicate keeps entities with a readable observation of this predicate.
+	Predicate string
+	// EventType keeps entities that took part in a readable event of this type.
+	EventType string
+	// IncludeResolutions also discovers entities through readable live
+	// resolutions (item-backed), not only through observations/events.
+	IncludeResolutions bool
+	// Limit bounds the result (implementation default and cap apply).
+	Limit int
+	// PredicateLimit bounds CatalogEntity.Predicates per entity (0 = default).
+	PredicateLimit int
+}
+
+// CatalogEntity is one entity handle as the catalog reports it. Counts and
+// predicates are over READABLE observations only.
+type CatalogEntity struct {
+	ID               string
+	ObservationCount int64
+	Predicates       []string
+	LastSeen         time.Time
+}
+
+// SubstrateOverview is the explore surface's summary, every figure over rows the
+// reader may read.
+type SubstrateOverview struct {
+	EvidenceCount, EventCount, ObservationCount int64
+	KnowledgeItemCount, LiveResolutionCount     int64
+	EntityCount, ActorCount, OutboxPending      int64
+	Earliest, Latest                            time.Time // zero when nothing is readable
+	Sources                                     []CatalogSource
+	Kinds                                       []CatalogKindCount
+}
+
+// CatalogSource is one evidence source with the distinct classification tags
+// of its READABLE evidence (so an owner tag appears only to its owner).
+type CatalogSource struct {
+	SourceID       string
+	EvidenceCount  int64
+	LastSeen       time.Time
+	Classification []string
+}
+
+// CatalogKindCount is one knowledge-item kind and its readable item count.
+type CatalogKindCount struct {
+	Kind  string
+	Count int64
+}

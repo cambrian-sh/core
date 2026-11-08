@@ -4,6 +4,7 @@
       "analysis",
       "code_execution",
       "data_analysis",
+      "file_organisation",
       "file_read",
       "file_write",
       "general_purpose",
@@ -1473,7 +1474,7 @@
     },
     {
       "name": "shipped-assistant",
-      "text": "# Agent stack v2 starter profile (agents/profiles/README.md). Run by agents/worker_agent.py.\nname: assistant\nversion: 1.0.0\ndescription: General-purpose helper for everyday tasks. Reads local files and documents, summarises them faithfully and writes structured reports checked against their sources.\nrole: \"You are a careful general-purpose assistant. Answer directly, use your tools to read sources instead of guessing, and say when you do not know. For any arithmetic beyond small mental sums, call the calculator tool and report its result; never compute large numbers in your head.\"\ncapabilities:\n  - general_purpose\n  - summarisation\n  - file_read\n  - file_write\nskills:\n  - file-report\n  - summarise\ntools:\n  - mcp:filesystem/read_*\n  - mcp:filesystem/list_*\n  - mcp:filesystem/directory_tree\n  - mcp:filesystem/search_files\n  - mcp:filesystem/get_file_info\n  - mcp:filesystem/write_file\n  - mcp:pdf-reader/*\n  - mcp:markitdown/*\n  - mcp:time/*\n  - mcp:calculator/calculate\nexamples:\n  - Summarise the PDF report in my downloads folder in five bullet points\n  - Read these meeting notes and write a structured report of the decisions and owners\n  - What is 18.5 percent of 4,382,950?\ntrust_tier: first-party\nmax_tool_rounds: 12\n",
+      "text": "# Agent stack v2 starter profile (agents/profiles/README.md). Run by agents/worker_agent.py.\nname: assistant\nversion: 1.1.0\ndescription: General-purpose helper for everyday tasks. Reads local files and documents, summarises them faithfully, writes structured reports checked against their sources, and organises files and folders by creating folders and moving or renaming files.\nrole: \"You are a careful general-purpose assistant. Answer directly, use your tools to read sources instead of guessing, and say when you do not know. For any arithmetic beyond small mental sums, call the calculator tool and report its result; never compute large numbers in your head. To file, move or rename files, use the organise-files skill: move files with move_file and never rewrite a file to move it.\"\ncapabilities:\n  - general_purpose\n  - summarisation\n  - file_read\n  - file_write\n  - file_organisation\nskills:\n  - file-report\n  - summarise\n  - organise-files\ntools:\n  - mcp:filesystem/read_*\n  - mcp:filesystem/list_*\n  - mcp:filesystem/directory_tree\n  - mcp:filesystem/search_files\n  - mcp:filesystem/get_file_info\n  - mcp:filesystem/write_file\n  - mcp:filesystem/create_directory\n  - mcp:filesystem/move_file\n  - mcp:pdf-reader/*\n  - mcp:markitdown/*\n  - mcp:time/*\n  - mcp:calculator/calculate\nexamples:\n  - Summarise the PDF report in my downloads folder in five bullet points\n  - Read these meeting notes and write a structured report of the decisions and owners\n  - What is 18.5 percent of 4,382,950?\n  - Move last month's PDF receipts from Downloads into Documents/Receipts and rename them by date and title\ntrust_tier: first-party\nmax_tool_rounds: 24\n",
       "expected_name": "assistant",
       "skills": {
         "chart-report": [
@@ -1498,6 +1499,16 @@
           "mcp:filesystem/read_multiple_files",
           "mcp:filesystem/write_file"
         ],
+        "organise-files": [
+          "mcp:filesystem/list_directory",
+          "mcp:filesystem/directory_tree",
+          "mcp:filesystem/search_files",
+          "mcp:filesystem/get_file_info",
+          "mcp:filesystem/read_text_file",
+          "mcp:pdf-reader/read",
+          "mcp:filesystem/create_directory",
+          "mcp:filesystem/move_file"
+        ],
         "summarise": [
           "mcp:filesystem/read_text_file",
           "mcp:filesystem/read_file",
@@ -1515,17 +1526,19 @@
       "valid": true,
       "profile": {
         "name": "assistant",
-        "description": "General-purpose helper for everyday tasks. Reads local files and documents, summarises them faithfully and writes structured reports checked against their sources.",
-        "role": "You are a careful general-purpose assistant. Answer directly, use your tools to read sources instead of guessing, and say when you do not know. For any arithmetic beyond small mental sums, call the calculator tool and report its result; never compute large numbers in your head.",
+        "description": "General-purpose helper for everyday tasks. Reads local files and documents, summarises them faithfully, writes structured reports checked against their sources, and organises files and folders by creating folders and moving or renaming files.",
+        "role": "You are a careful general-purpose assistant. Answer directly, use your tools to read sources instead of guessing, and say when you do not know. For any arithmetic beyond small mental sums, call the calculator tool and report its result; never compute large numbers in your head. To file, move or rename files, use the organise-files skill: move files with move_file and never rewrite a file to move it.",
         "capabilities": [
           "general_purpose",
           "summarisation",
           "file_read",
-          "file_write"
+          "file_write",
+          "file_organisation"
         ],
         "skills": [
           "file-report",
-          "summarise"
+          "summarise",
+          "organise-files"
         ],
         "tools": [
           "mcp:filesystem/read_*",
@@ -1534,6 +1547,8 @@
           "mcp:filesystem/search_files",
           "mcp:filesystem/get_file_info",
           "mcp:filesystem/write_file",
+          "mcp:filesystem/create_directory",
+          "mcp:filesystem/move_file",
           "mcp:pdf-reader/*",
           "mcp:markitdown/*",
           "mcp:time/*",
@@ -1541,13 +1556,14 @@
         ],
         "trust_tier": "first-party",
         "model": "",
-        "max_tool_rounds": 12,
+        "max_tool_rounds": 24,
         "max_tokens": null,
-        "version": "1.0.0",
+        "version": "1.1.0",
         "examples": [
           "Summarise the PDF report in my downloads folder in five bullet points",
           "Read these meeting notes and write a structured report of the decisions and owners",
-          "What is 18.5 percent of 4,382,950?"
+          "What is 18.5 percent of 4,382,950?",
+          "Move last month's PDF receipts from Downloads into Documents/Receipts and rename them by date and title"
         ],
         "streams_output": false
       },
@@ -1579,6 +1595,16 @@
           "mcp:filesystem/read_file",
           "mcp:filesystem/read_multiple_files",
           "mcp:filesystem/write_file"
+        ],
+        "organise-files": [
+          "mcp:filesystem/list_directory",
+          "mcp:filesystem/directory_tree",
+          "mcp:filesystem/search_files",
+          "mcp:filesystem/get_file_info",
+          "mcp:filesystem/read_text_file",
+          "mcp:pdf-reader/read",
+          "mcp:filesystem/create_directory",
+          "mcp:filesystem/move_file"
         ],
         "summarise": [
           "mcp:filesystem/read_text_file",
@@ -1657,6 +1683,16 @@
           "mcp:filesystem/read_file",
           "mcp:filesystem/read_multiple_files",
           "mcp:filesystem/write_file"
+        ],
+        "organise-files": [
+          "mcp:filesystem/list_directory",
+          "mcp:filesystem/directory_tree",
+          "mcp:filesystem/search_files",
+          "mcp:filesystem/get_file_info",
+          "mcp:filesystem/read_text_file",
+          "mcp:pdf-reader/read",
+          "mcp:filesystem/create_directory",
+          "mcp:filesystem/move_file"
         ],
         "summarise": [
           "mcp:filesystem/read_text_file",

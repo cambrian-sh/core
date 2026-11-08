@@ -97,7 +97,7 @@ func closurePlane(t *testing.T, links domain.LinkStore, specs []domain.RelationS
 
 func TestIdentityClosure_DefaultDepthStops(t *testing.T) {
 	p := closurePlane(t, chain(domain.RelationSameAs, 5), nil)
-	got, err := p.identityClosure(context.Background(), "k/a0", domain.ClosureDefaultDepth)
+	got, err := p.identityClosure(context.Background(), "k/a0", domain.ClosureDefaultDepth, domain.ScopeMaintenance)
 	if err != nil {
 		t.Fatalf("closure: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestIdentityClosure_SetCapRefusesLoudly(t *testing.T) {
 		f.byRef[root] = append(f.byRef[root], l)
 	}
 	p := closurePlane(t, f, nil)
-	_, err := p.identityClosure(context.Background(), "k/a0", 1)
+	_, err := p.identityClosure(context.Background(), "k/a0", 1, domain.ScopeMaintenance)
 	if !errors.Is(err, domain.ErrCannotExpress) {
 		t.Fatalf("want a typed refusal past the set cap, got %v", err)
 	}
@@ -141,7 +141,7 @@ func TestIdentityClosure_FanOutFlagsAndExcludes(t *testing.T) {
 		f.byRef[root] = append(f.byRef[root], aliasLink(fmt.Sprintf("lnk%d", i), root, to, domain.RelationSameAs))
 	}
 	p := closurePlane(t, f, nil)
-	got, err := p.identityClosure(context.Background(), "k/a0", 1)
+	got, err := p.identityClosure(context.Background(), "k/a0", 1, domain.ScopeMaintenance)
 	if err != nil {
 		t.Fatalf("fan-out must flag, not refuse: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestIdentityClosure_VerbSetIsRegistryDriven(t *testing.T) {
 	p := closurePlane(t, f, []domain.RelationSpec{
 		{Name: verb, Family: domain.LinkFamilyIdentity},
 	})
-	got, err := p.identityClosure(context.Background(), "k/a0", 2)
+	got, err := p.identityClosure(context.Background(), "k/a0", 2, domain.ScopeMaintenance)
 	if err != nil {
 		t.Fatalf("closure: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestIdentityClosure_VerbSetIsRegistryDriven(t *testing.T) {
 	p = closurePlane(t, f, []domain.RelationSpec{
 		{Name: verb, Family: domain.LinkFamilyIdentity, Symmetric: true, Closure: domain.ClosureIdentity},
 	})
-	got, err = p.identityClosure(context.Background(), "k/a0", 2)
+	got, err = p.identityClosure(context.Background(), "k/a0", 2, domain.ScopeMaintenance)
 	if err != nil {
 		t.Fatalf("closure: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestIdentityClosure_VerbSetIsRegistryDriven(t *testing.T) {
 // about identity" is true, and a 500 is not.
 func TestIdentityClosure_AbsentPlaneAnswersEmpty(t *testing.T) {
 	p := NewPgQueryPlane(nil, nil, nil, nil, nil, nil, nil)
-	got, err := p.identityClosure(context.Background(), "k/a0", 2)
+	got, err := p.identityClosure(context.Background(), "k/a0", 2, domain.ScopeMaintenance)
 	if err != nil || len(got.members) != 0 {
 		t.Fatalf("absent identity plane must answer empty, got %+v / %v", got, err)
 	}

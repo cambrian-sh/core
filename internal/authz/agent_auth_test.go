@@ -8,6 +8,7 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/identity"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 
 	"google.golang.org/grpc"
@@ -54,7 +55,7 @@ func (r *recordingOrchestrator) SignalStream(ss pb.Orchestrator_SignalStreamServ
 func startAgentPlane(t *testing.T, store secretStore, waived bool) (pb.OrchestratorClient, *recordingOrchestrator) {
 	t.Helper()
 	verifier := authz.NewAgentCredentialVerifier(store.resolve, waived)
-	idp := operator.NewStaticIdentity(nil)
+	idp := identity.NewChain(identity.NewLocalAccounts(identity.NewMemRegistry(), identity.NewMemRegistry()), nil)
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(

@@ -133,6 +133,14 @@ func (h *PlannerReplanHandler) Replan(
 			promptVersion = replanPromptHashCap
 		}
 	}
+	// Effect-checked dispatch: a replan under the contract arm keeps the effect
+	// contract (replan_cap v3) — the same block and vocabulary the planner shows.
+	var effectVocab *domain.StepEffectVocabulary
+	if es, ok := h.caps.(EffectContractSource); ok && pair.System.ID == replanCapPrompts.System.ID {
+		var effBlock string
+		effBlock, effectVocab = es.EffectContract(ctx)
+		capBlock = appendBlock(capBlock, effBlock)
+	}
 
 	failure := fmt.Sprintf("Original subject: %s\nFailed step: step %d — %s\nError: %s\nSteps completed: %d",
 		originalPlan.Subject, failedStep, failedStepQuery, errMsg, len(keys))
@@ -144,6 +152,9 @@ func (h *PlannerReplanHandler) Replan(
 	}, replanCacheTTL)
 	if rerr != nil {
 		return nil, rerr
+	}
+	if err := applyEffectSchema(&req, effectVocab); err != nil {
+		return nil, fmt.Errorf("replan: %w", err)
 	}
 
 	slog.Info("🔄 Replanning", "failed_step", failedStep, "error", errMsg)
@@ -171,6 +182,7 @@ func (h *PlannerReplanHandler) Replan(
 	// Same ROUTE-03 vocabulary guard as the planner: a replanned step must not be
 	// able to hard-fail on a capability tag the model was not shown.
 	dropInventedCapabilities(ctx, &plan, capVocab, canonical)
+	normalizeDeclaredEffects(ctx, &plan, effectVocab)
 
 	slog.Info("✅ Replan produced", "steps", len(plan.Steps), "subject", plan.Subject)
 	return &plan, nil

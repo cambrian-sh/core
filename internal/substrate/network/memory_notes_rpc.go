@@ -52,6 +52,7 @@ func (s *Server) notesCaller(ctx context.Context, leaseField string) (memorynote
 		Child:              b.IsChild(),
 		MemoryWriteGranted: b.MemoryWriteGranted,
 		Session:            b.SessionID,
+		ActedBy:            b.ActedBy,
 	}
 	if p.AgentID == "" {
 		p.AgentID, _ = callerAgentIdentity(ctx)

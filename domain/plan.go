@@ -41,6 +41,15 @@ type Step struct {
 	// compatible). Populated only under the capability_contract arm.
 	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 
+	// RequiredEffects are the effects an ACTION step needs its executor's tools to
+	// produce, from the configured vocabulary (execution.capability.effect_vocabulary:
+	// read, write, move, delete, execute, egress, send, spend, admin). Dispatch admits
+	// only agents whose tool-derived effects cover every one, and refuses the step
+	// when none does (domain/step_effects.go). nil ⇒ the planner declared nothing
+	// (a legacy plan): the step dispatches as before, logged "unverified". An empty
+	// non-nil list is the planner saying the step needs no effect.
+	RequiredEffects []string `json:"required_effects,omitempty"`
+
 	// PreferredAgent names the agent this step should run on, emitted by the planner
 	// when the USER named one. Empty ⇒ ordinary discovery + selection, which stays the
 	// default: the planner is instructed to describe capabilities, not pick agents.
@@ -66,6 +75,13 @@ type Step struct {
 	// FanOutVar is the template variable substituted per item in Query. "" ⇒ "item",
 	// i.e. Query "write the file for {item}" becomes one step per discovered item.
 	FanOutVar string `json:"fan_out_var,omitempty"`
+
+	// FanOutItem is set only on a CONCRETE CHILD of a fan-out expansion (ExpandFanOut):
+	// the one item this child was made for. Non-empty ⇒ this step is a fan-out child, so
+	// the executor runs it under the execution.plan.fan_out_concurrency bound, on a
+	// dedicated agent instance when that bound is above 1
+	// (T-20261107-plan-fan-out-steps-run-one-at-a-time-on-a). The planner never emits it.
+	FanOutItem string `json:"fan_out_item,omitempty"`
 }
 
 // ExecutionPlan carries the structured plan produced by the Planner.
@@ -115,6 +131,7 @@ func (e *ExecutionPlan) Clone() *ExecutionPlan {
 				CheckpointQuery: s.CheckpointQuery,
 				CacheTTLSeconds: s.CacheTTLSeconds,
 				FanOutVar:       s.FanOutVar,
+				FanOutItem:      s.FanOutItem,
 				// This clone is field-by-field, so a field omitted here vanishes on
 				// every replan and plan freeze without a compiler error — the same
 				// silent-drop shape that made the EFE arm exempt from the capability
@@ -133,6 +150,9 @@ func (e *ExecutionPlan) Clone() *ExecutionPlan {
 			if len(s.RequiredCapabilities) > 0 {
 				cloned.Steps[i].RequiredCapabilities = make([]string, len(s.RequiredCapabilities))
 				copy(cloned.Steps[i].RequiredCapabilities, s.RequiredCapabilities)
+			}
+			if s.RequiredEffects != nil { // nil vs empty is meaningful (declared vs legacy)
+				cloned.Steps[i].RequiredEffects = append([]string{}, s.RequiredEffects...)
 			}
 		}
 	}

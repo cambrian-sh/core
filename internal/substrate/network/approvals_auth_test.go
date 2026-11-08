@@ -17,36 +17,44 @@ import (
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/identity"
 	"github.com/cambrian-sh/core/internal/substrate/network"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
-// recordingHub is an ApprovalHub that records who the kernel says approved.
+// recordingHub is the real addressed hub (ADR-0142 D11) recording who the
+// kernel says answered.
 type recordingHub struct {
+	*domain.AddressedHub
 	mu        sync.Mutex
 	approvers []string
-	ch        chan domain.ApprovalRequest
 }
 
-func (h *recordingHub) Request(context.Context, domain.ApprovalRequest) (domain.ApprovalDecision, error) {
-	return domain.ApprovalDecision{}, nil
+func newRecordingHub() *recordingHub {
+	return &recordingHub{AddressedHub: domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: 5 * time.Second})}
 }
 
-func (h *recordingHub) Watch() (<-chan domain.ApprovalRequest, func()) {
-	return h.ch, func() {}
-}
-
-func (h *recordingHub) Submit(_ string, _ bool, approverID string) bool {
+func (h *recordingHub) Answer(ctx context.Context, id string, ans domain.ApprovalAnswer) (domain.ApprovalItem, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.approvers = append(h.approvers, approverID)
-	return true
+	h.approvers = append(h.approvers, ans.By.Principal.ID)
+	h.mu.Unlock()
+	return h.AddressedHub.Answer(ctx, id, ans)
+}
+
+// pendingToolApproval raises an operator-ruled approval nobody blocks on.
+func pendingToolApproval(t *testing.T, h *recordingHub, tool string) string {
+	t.Helper()
+	it, err := h.Raise(context.Background(), domain.ApprovalRequest{AgentID: "worker", ToolName: tool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return it.ID
 }
 
 // startApprovalServer serves the Orchestrator behind the SAME interceptor chain
 // app.go installs (surface stamp, then operator auth), so the tests exercise the
 // production gate rather than a re-statement of it.
-func startApprovalServer(t *testing.T, hub domain.ApprovalHub, idp operator.OperatorIdentity) pb.OrchestratorClient {
+func startApprovalServer(t *testing.T, hub domain.ApprovalHub, idp domain.Authenticator) pb.OrchestratorClient {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer(
@@ -66,20 +74,21 @@ func startApprovalServer(t *testing.T, hub domain.ApprovalHub, idp operator.Oper
 	return pb.NewOrchestratorClient(conn)
 }
 
-func approvalIDP(t *testing.T) (*operator.StaticIdentity, string, string) {
+func approvalIDP(t *testing.T) (*identity.LocalAccounts, string, string) {
 	t.Helper()
-	idp := operator.NewStaticIdentity(map[string]struct {
-		Password string
-		Role     operator.Role
-	}{
-		"alice":  {Password: "pw", Role: operator.RoleOperator},
-		"viewer": {Password: "pw", Role: operator.RoleViewer},
-	})
-	op, _, _, err := idp.Login("alice", "pw")
+	ctx := context.Background()
+	reg := identity.NewMemRegistry()
+	idp := identity.NewLocalAccounts(reg, reg)
+	for u, r := range map[string]string{"alice": "operator", "viewer": "viewer"} {
+		if _, err := idp.EnsureAccount(ctx, u, "pw", []string{r}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	op, _, err := idp.Login(ctx, "alice", "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
-	vw, _, _, err := idp.Login("viewer", "pw")
+	vw, _, err := idp.Login(ctx, "viewer", "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,9 +105,9 @@ func withMD(kv ...string) context.Context {
 func TestSubmitApprovalDecision_RequiresOperatorBearer(t *testing.T) {
 	t.Parallel()
 	idp, opTok, viewerTok := approvalIDP(t)
-	hub := &recordingHub{}
+	hub := newRecordingHub()
 	c := startApprovalServer(t, hub, idp)
-	req := &pb.ApprovalDecisionRequest{Id: "a1", Approve: true, ApproverId: "spoofed-boss"}
+	req := &pb.ApprovalDecisionRequest{Id: pendingToolApproval(t, hub, "shell"), Approve: true, ApproverId: "spoofed-boss"}
 
 	// No x-agent-id, no bearer: the pre-fix bypass.
 	if _, err := c.SubmitApprovalDecision(context.Background(), req); status.Code(err) != codes.Unauthenticated {
@@ -134,7 +143,7 @@ func TestSubmitApprovalDecision_RequiresOperatorBearer(t *testing.T) {
 func TestWatchApprovals_RequiresOperatorBearer(t *testing.T) {
 	t.Parallel()
 	idp, opTok, _ := approvalIDP(t)
-	hub := &recordingHub{ch: make(chan domain.ApprovalRequest, 1)}
+	hub := newRecordingHub()
 	c := startApprovalServer(t, hub, idp)
 
 	recvErr := func(ctx context.Context) error {
@@ -154,16 +163,28 @@ func TestWatchApprovals_RequiresOperatorBearer(t *testing.T) {
 		t.Fatalf("agent watch must be refused, got %v", err)
 	}
 
-	hub.ch <- domain.ApprovalRequest{ID: "a1", AgentID: "worker", ToolName: "shell"}
 	ctx, cancel := context.WithTimeout(withMD("authorization", "Bearer "+opTok), 5*time.Second)
 	defer cancel()
 	s, err := c.WatchApprovals(ctx, &pb.WatchApprovalsRequest{})
 	if err != nil {
 		t.Fatalf("operator watch: %v", err)
 	}
+	// The server subscribes asynchronously; raise until the stream sees one.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			case <-time.After(20 * time.Millisecond):
+				_, _ = hub.Raise(context.Background(), domain.ApprovalRequest{AgentID: "worker", ToolName: "shell", ArgsPreview: string(rune('a' + i%26))})
+			}
+		}
+	}()
 	got, err := s.Recv()
-	if err != nil || got.GetId() != "a1" {
-		t.Fatalf("operator must receive the pending approval: got=%v err=%v", got, err)
+	if err != nil || got.GetId() == "" || got.GetRule() != "operator" || got.GetToolName() != "shell" {
+		t.Fatalf("operator must receive the pending approval with its rule: got=%v err=%v", got, err)
 	}
 }
 
@@ -171,7 +192,7 @@ func TestWatchApprovals_RequiresOperatorBearer(t *testing.T) {
 // fall back to "no x-agent-id means operator": it fails closed.
 func TestSubmitApprovalDecision_FailsClosedWithoutInterceptor(t *testing.T) {
 	t.Parallel()
-	hub := &recordingHub{}
+	hub := newRecordingHub()
 	s := &network.Server{ApprovalHub: hub}
 	_, err := s.SubmitApprovalDecision(context.Background(), &pb.ApprovalDecisionRequest{Id: "a1", Approve: true})
 	if status.Code(err) != codes.Unauthenticated {

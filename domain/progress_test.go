@@ -141,3 +141,39 @@ func TestEmitProgress_PreservesCallerTimestamp(t *testing.T) {
 		t.Errorf("caller timestamp overwritten: got %v want %v", sink.got[0].UpdatedAt, when)
 	}
 }
+
+// T-20261107-chat-progress-status-line-phases-are-english: the line follows the
+// conversation's language from a fixed catalogue; English is unchanged.
+func TestProgressText_FollowsTheLanguage(t *testing.T) {
+	en := ProgressUpdate{ConversationID: "c", Phase: PhaseSearching, Step: 2, TotalSteps: 4}
+	if got := en.Text(); got != "searching memory — step 2 of 4" {
+		t.Errorf("English text changed: %q", got)
+	}
+	if got := en.StillText("3s"); got != "still searching memory — step 2 of 4 (3s)" {
+		t.Errorf("English still text changed: %q", got)
+	}
+	tr := en
+	tr.Language = "tr-TR"
+	if got := tr.Text(); got != "bellekte aranıyor — adım 2 / 4" {
+		t.Errorf("Turkish text = %q", got)
+	}
+	if got := tr.StillText("3s"); got != "hâlâ bellekte aranıyor — adım 2 / 4 (3s)" {
+		t.Errorf("Turkish still text = %q", got)
+	}
+	unknown := ProgressUpdate{ConversationID: "c", Phase: PhaseWriting, Language: "xx"}
+	if got := unknown.Text(); got != string(PhaseWriting) {
+		t.Errorf("unknown language must fall back to English, got %q", got)
+	}
+	for _, lang := range ProgressLanguages() {
+		p := progressPhrasings[lang]
+		for _, ph := range []ProgressPhase{PhaseUnderstanding, PhasePlanning, PhaseSearching, PhaseRunningTool, PhaseWorking, PhaseWriting} {
+			if p.phases[ph] == "" {
+				t.Errorf("language %q lacks phase %q", lang, ph)
+			}
+		}
+	}
+	// A final note is the caller's text, already in the language.
+	if got := (ProgressUpdate{ConversationID: "c", Final: true, Note: "x", Language: "tr"}).Text(); got != "x" {
+		t.Errorf("final note = %q", got)
+	}
+}

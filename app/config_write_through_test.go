@@ -434,21 +434,21 @@ func TestConfigCLI_ListWithNoStoreCreatesNothing(t *testing.T) {
 	}
 }
 
-// MCP servers keep their whole-list key (D9 is generators only), but D8 still
-// applies: with mcp.json setting mcp.servers, saves land in mcp.json and two
-// saves in one process compose through the file.
-func TestD8_MCPSavesGoToMCPJSONAndCompose(t *testing.T) {
+// MCP servers are stored PER ID and merged over mcp.json (integrations surface,
+// internal/config/store_mcp.go). A console save never rewrites mcp.json: two
+// saves compose in the store, the file's own server stays visible, and the file
+// is byte-for-byte untouched.
+func TestMCPSavesGoToTheStorePerIDAndNeverRewriteMCPJSON(t *testing.T) {
 	mcpJSON := `{"mcp": {"servers": [{"id": "fs", "transport": "stdio", "endpoint": "fs-server"}]}, "other": true}`
 	src, dir := d8Source(t, map[string]string{"mcp.json": mcpJSON})
 	for _, id := range []string{"web", "git"} {
 		out, err := src.SaveMCPServer(operator.MCPServerSpec{ID: id, Transport: "http", Endpoint: "http://" + id})
-		if err != nil || out.WrittenTo != config.SourceMCP {
+		if err != nil || !out.Set || out.WrittenTo != "" {
 			t.Fatalf("save %s: %+v err=%v", id, out, err)
 		}
 	}
-	got := readFile(t, filepath.Join(dir, "mcp.json"))
-	if !strings.Contains(got, `"other": true`) {
-		t.Fatalf("unrelated content lost:\n%s", got)
+	if got := readFile(t, filepath.Join(dir, "mcp.json")); got != mcpJSON {
+		t.Fatalf("mcp.json was rewritten:\n%s", got)
 	}
 	cfg, _, err := config.LoadConfigWithStore(src.configPath, src.store)
 	if err != nil {
@@ -457,7 +457,26 @@ func TestD8_MCPSavesGoToMCPJSONAndCompose(t *testing.T) {
 	if n := len(cfg.MCP.Servers); n != 3 {
 		t.Fatalf("want fs, web, git; got %d: %+v", n, cfg.MCP.Servers)
 	}
-	if ov, _ := src.store.Overrides(); len(ov) != 0 {
-		t.Fatalf("store must stay empty: %v", ov)
+	ov, _ := src.store.Overrides()
+	if _, ok := ov[config.MCPServerOverrideKey("web")]; !ok {
+		t.Fatalf("web not stored per id: %v", ov)
+	}
+	// Editing the FILE's server stores an override that names the file it beats.
+	out, _ := src.SaveMCPServer(operator.MCPServerSpec{ID: "fs", Transport: "stdio", Endpoint: "fs-server-2"})
+	if out.Overrides != config.SourceMCP {
+		t.Fatalf("an override of a file server must name the file: %+v", out)
+	}
+	// Removing it tombstones the file entry rather than editing mcp.json.
+	if out, _ := src.RemoveMCPServer("fs"); !out.Set {
+		t.Fatalf("remove: %+v", out)
+	}
+	cfg, _, _ = config.LoadConfigWithStore(src.configPath, src.store)
+	for _, s := range cfg.MCP.Servers {
+		if s.ID == "fs" {
+			t.Fatal("tombstoned file server is still configured")
+		}
+	}
+	if got := readFile(t, filepath.Join(dir, "mcp.json")); got != mcpJSON {
+		t.Fatal("mcp.json was rewritten by a removal")
 	}
 }

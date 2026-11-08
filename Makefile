@@ -185,6 +185,7 @@ leak:
 	#   grep -rl goleak.VerifyTestMain --include=*_test.go . | xargs -n1 dirname | sort
 	go test ./internal/agentpool/... -v
 	go test ./internal/chat/... -v
+	go test ./internal/infrastructure/mcp/... -v
 	go test ./internal/memory/... -v
 	go test ./internal/metabolism/executer/... -v
 	go test ./internal/metabolism/interview/... -v

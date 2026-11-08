@@ -214,11 +214,13 @@ func fallbackRegistry() *Registry {
 // OPERATOR'S configuration: every known chunker is registered and chunkerCfg
 // supplies the default plus the sourceType/ext routing table.
 //
-// An invalid chunkerCfg is a startup error, not a silent downgrade. NewRegistry
-// already rejects a route naming an unregistered chunker; the error is logged and
-// the manager falls back to option_c so ingestion still runs, because refusing to
-// ingest anything is a worse answer to a typo in one route than ingesting with the
-// documented default. The log line is the loud part.
+// An invalid chunkerCfg is a startup error, not a silent downgrade: the kernel's
+// config load runs config.ChunkerConfig.Validate (via Config.Validate), so a
+// config that names an unknown chunker never reaches this constructor on the
+// boot path. NewRegistry re-checks against the chunkers actually registered; if
+// that still fails (a direct caller with a hand-built config), the error is
+// logged and the manager falls back to option_c so ingestion still runs. The
+// log line is the loud part.
 func NewIngestionManager(embedder domain.Embedder, agent *Agent, cfg IngestionConfig, chunkerCfg config.ChunkerConfig) *IngestionManager {
 	registry := fallbackRegistry()
 	if chunkerCfg.Default != "" {

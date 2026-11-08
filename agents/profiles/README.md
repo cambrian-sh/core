@@ -20,9 +20,19 @@ covers its procedure, a skill. Do not write an agent.
 
 | Profile | For | Skills | Tools |
 | --- | --- | --- | --- |
-| [`assistant`](assistant.yaml) | General help: read files and documents, summarise, write checked reports | `file-report`, `summarise` | filesystem reads + `write_file`, pdf-reader, markitdown, time, calculator |
+| [`assistant`](assistant.yaml) | General help: read files and documents, summarise, write checked reports, organise files (create folders, move and rename) | `file-report`, `summarise`, `organise-files` | filesystem reads + `write_file`, `create_directory`, `move_file`, pdf-reader, markitdown, time, calculator |
 | [`researcher`](researcher.yaml) | Web research with citations | `web-research`, `summarise` | web-search, fetch, pdf-reader, markitdown, filesystem reads, time |
 | [`data-analyst`](data-analyst.yaml) | Data analysis and charts in a sandbox | `exploratory-analysis`, `chart-report` | code-sandbox, filesystem reads + `write_file`, sqlite |
+
+File organising is part of `assistant`, not a separate agent (decision 2026-11-06,
+`T-20261106-no-shipped-agent-profile-can-organise-files-or`): under the agent-stack-v2
+rule an agent exists only if it brings something a skill cannot, and a file organiser
+would bring no code, data access, trust tier or model of its own — `assistant` already
+writes files under the same first-party tier, and every write tool still needs the
+user's approval. So the procedure is the `organise-files` skill and the reach is two
+more allowlist entries. No starter profile reaches `shell` or `terminal`: a deployment
+that wants terminal commands writes its own profile (the use-case suite's
+`uc-personal-assistant` is an example).
 
 `assistant` is also what a bare `python worker_agent.py` runs. The kernel never launches
 it bare: it registers one agent per profile (see "How the kernel runs profiles").
@@ -79,7 +89,12 @@ The SDK's `CAPABILITY_VOCABULARY` (and its kernel port) is the current fleet voc
 which since part B is what the starter profiles declare:
 
 `general_purpose`, `analysis`, `data_analysis`, `code_execution`, `research`,
-`web_research`, `file_read`, `file_write`, `summarisation`
+`web_research`, `file_read`, `file_write`, `file_organisation`, `summarisation`
+
+A tag is a routing contract, so declare one only when the profile's tools can do it:
+`file_organisation` means the allowlist holds `move_file` and `create_directory`, not
+just `write_file`. The planner sees each agent's tags AND its allowlist (next
+section), and is told to choose tags whose agents hold a tool for the step's action.
 
 (The tags only the deleted thin agents declared, such as `planning`, `calculation` and
 `shell_execution`, left with them.)
@@ -88,6 +103,21 @@ A tag outside it is accepted with a warning (a new tag routes only when a planne
 asks for it). `conversation` and `chat` are reserved for the chat front desk and are
 refused. `general_purpose` makes an agent a generalist fallback (the last rung of the
 resolution ladder); declare it on at most one or two profiles.
+
+### What the planner sees
+
+Under `execution.capability_contract` the planner's `<capability_clusters>` lists each
+tag with the agents that declare it, then one line per profile agent with its
+allowlist grouped by server (`- assistant can call: filesystem (read_*, ...,
+move_file); pdf-reader (all tools); ...`; `internal/awareness/planner.go`
+`agentToolLine`). The allowlist is the ceiling the kernel enforces, so the line is
+exactly what the agent could ever call. `planner_cap` / `replan_cap` v2 tell the
+planner to pick, for a step that acts on something, a tag only agents with a tool
+for that action declare. The step's tags then travel with it into the auction,
+including into every fan-out child (`domain.WithPlanStep`), where L1 Declaration
+admits only agents that declare them. An agent that still lacks the tool for its step
+yields it (`yield_subgoal` with a capability hint) or says so; the SDK's
+`react-anti-patterns` v2 forbids imitating the action with a destructive substitute.
 
 ### Tool globs
 
@@ -179,10 +209,10 @@ lists, and every tool a skill names is listed. `TestShippedProfiles_ToolIDsMatch
 
 | Server id | Tool names used | Used by |
 | --- | --- | --- |
-| `filesystem` | `read_*`, `list_*`, `directory_tree`, `search_files`, `get_file_info`, `write_file`; skills name `read_text_file`, `read_file`, `read_multiple_files`, `list_directory`, `get_file_info`, `write_file` | assistant, researcher (reads), data-analyst; file-report, summarise, exploratory-analysis, chart-report |
+| `filesystem` | `read_*`, `list_*`, `directory_tree`, `search_files`, `get_file_info`, `write_file`, `create_directory` and `move_file` (assistant); skills name `read_text_file`, `read_file`, `read_multiple_files`, `list_directory`, `directory_tree`, `search_files`, `get_file_info`, `write_file`, `create_directory`, `move_file` | assistant, researcher (reads), data-analyst; file-report, summarise, organise-files, exploratory-analysis, chart-report |
 | `fetch` | `*`; skill names `fetch` | researcher; web-research |
 | `web-search` | `*`; skills name `search`, `fetch_content` | researcher; web-research |
-| `pdf-reader` | `*`; skills name `read` | assistant, researcher; summarise, web-research |
+| `pdf-reader` | `*`; skills name `read` | assistant, researcher; summarise, organise-files, web-research |
 | `markitdown` | `*`; skills name `convert_to_markdown` | assistant, researcher; summarise |
 | `code-sandbox` | `*`; skills name `execute_code` | data-analyst; exploratory-analysis, chart-report |
 | `sqlite` | `*`; skills name `list_tables`, `execute_sql` | data-analyst; exploratory-analysis |

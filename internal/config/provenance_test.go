@@ -18,7 +18,7 @@ func writeCfg(t *testing.T, dir, name, body string) {
 	}
 }
 
-// baseBundle writes the minimum that makes validateSecrets pass, so a test can
+// baseBundle writes the minimum that makes Config.Validate pass, so a test can
 // assert on layering rather than on required-field errors.
 func baseBundle(t *testing.T) string {
 	t.Helper()

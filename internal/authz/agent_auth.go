@@ -3,6 +3,7 @@ package authz
 import (
 	"context"
 	"crypto/subtle"
+	"net"
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
@@ -10,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -126,7 +128,13 @@ func (v *AgentCredentialVerifier) Authenticate(ctx context.Context, fullMethod s
 		return ctx, nil
 	}
 	asserted := incomingMetadataValue(ctx, "x-agent-id")
-	if v == nil || v.waived {
+	if v == nil || (v.waived && !routablePeer(ctx)) {
+		// D2 waiver, SCOPED to the host it is named for (ADR-0142 K-2): it
+		// applies only to a caller on a loopback address (or an in-process call
+		// with no network peer). A caller from another machine on a routable bind
+		// — which insecure_localhost is what permits — still needs the credential,
+		// so the flag no longer means "anyone on the network is any agent".
+		//
 		// D2 waiver: the header is the principal, exactly as before ADR-0130. An
 		// absent header leaves the context anonymous, which the handlers that
 		// read x-agent-id themselves already fail closed on.
@@ -145,6 +153,22 @@ func (v *AgentCredentialVerifier) Authenticate(ctx context.Context, fullMethod s
 		return ctx, errAgentUnauthenticated
 	}
 	return domain.WithPrincipal(ctx, domain.AgentPrincipal(asserted)), nil
+}
+
+// routablePeer reports whether the call came over the network from a
+// NON-loopback address. An absent peer, or one whose address is not an IP
+// (bufconn, a unix socket), is local by construction.
+func routablePeer(ctx context.Context) bool {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.Addr == nil {
+		return false
+	}
+	host := p.Addr.String()
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && !ip.IsLoopback()
 }
 
 // UnaryAgentAuthInterceptor authenticates unary agent-plane RPCs (ADR-0130 D1).

@@ -254,3 +254,63 @@ func TestPlanClone_PreservesFollowedProcedures(t *testing.T) {
 		t.Error("Clone aliased the provenance slice instead of copying it")
 	}
 }
+
+// The planner is shown each profile agent's tool surface, so it can tell the agent
+// that can MOVE a file from one that can only write one
+// (T-20261106-planner-routes-a-file-move-step-to-an-agent). The tool lines are not
+// capability tags: the vocabulary the guard checks is unchanged by them.
+func TestCapabilityClusterShowsEachAgentsTools(t *testing.T) {
+	agents := []domain.AgentDefinition{{ID: "assistant"}, {ID: "researcher"}, {ID: "legacy"}}
+	prov := &vocabAgents{
+		agents: agents,
+		caps: map[string][]string{
+			"assistant":  {"file_write", "file_organisation"},
+			"researcher": {"web_research", "file_write"},
+			"legacy":     {"analysis"},
+		},
+		tools: map[string][]string{
+			"assistant":  {"mcp:filesystem/read_*", "mcp:filesystem/write_file", "mcp:filesystem/move_file", "mcp:time/*"},
+			"researcher": {"mcp:filesystem/write_file", "web_search"},
+		},
+	}
+	block, vocab := buildCapabilityClusterFromManifests(context.Background(), agents, prov, false, nil)
+	for _, want := range []string{
+		"- file_organisation: assistant",
+		"- file_write: assistant, researcher",
+		"\n\nTools each agent can call (agents not listed declare no tool allowlist):\n",
+		"- assistant can call: filesystem (read_*, write_file, move_file); time (all tools)",
+		"- researcher can call: filesystem (write_file); native (web_search)",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("block lacks %q:\n%s", want, block)
+		}
+	}
+	if strings.Contains(block, "legacy can call") {
+		t.Errorf("an agent with no allowlist must not get a tool line:\n%s", block)
+	}
+	if len(vocab) != 4 {
+		t.Errorf("tool lines leaked into the vocabulary: %v", vocab)
+	}
+	if strings.Index(block, "Tools each agent") < strings.Index(block, "- web_research:") {
+		t.Errorf("tool lines must follow the capability list:\n%s", block)
+	}
+}
+
+func TestCapabilityClusterWithoutAllowlistsHasNoToolSection(t *testing.T) {
+	agents := []domain.AgentDefinition{{ID: "a"}}
+	block, _ := buildCapabilityClusterFromManifests(context.Background(), agents,
+		&vocabAgents{agents: agents, caps: map[string][]string{"a": {"analysis"}}}, false, nil)
+	if block != "- analysis: a" {
+		t.Errorf("block changed for a fleet without allowlists: %q", block)
+	}
+}
+
+// The tool-surface rule is in the bytes the capability arm sends, planner and
+// replanner alike (one rule, two producers of capability-contract plans).
+func TestCapabilityPromptsCarryTheToolSurfaceRule(t *testing.T) {
+	for name, text := range map[string]string{"planner_cap": plannerCapPrompts.System.Body, "replan_cap": replanCapPrompts.System.Body} {
+		if !strings.Contains(text, "An agent can only do what its tools allow.") {
+			t.Errorf("%s lacks the tool-surface rule", name)
+		}
+	}
+}

@@ -1,0 +1,158 @@
+package network
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/knowledgecommit"
+)
+
+// Orchestrator/ProposeKnowledge (T-20261107-knowledge-substrate-extensions-for-case):
+// the agent plane's write door into the knowledge substrate, capped at CANDIDATE.
+//
+// The asserter is the agent the presented lease is bound to, and the commit's
+// beneficiary is the lease's run principal (RunPrincipal) — kernel-held facts, never
+// request fields (INV-5). The request carries no actor field to forge. A refusal the
+// model can act on (a named lifecycle constraint, a kind that takes no proposals, a
+// link without evidence) is an OK response with accepted=false and the detail, the
+// shape a tool result shows; infrastructure failures are UNAVAILABLE.
+
+// KnowledgeProposer is the bridge the RPC drives (knowledgecommit.Service).
+type KnowledgeProposer interface {
+	Propose(ctx context.Context, by, forPerson domain.PrincipalRef, p knowledgecommit.Proposal, commit bool, reason string) (knowledgecommit.Result, error)
+	ProposeLink(ctx context.Context, by domain.PrincipalRef, p knowledgecommit.LinkProposal) (bool, error)
+}
+
+// ProposeKnowledge implements the RPC.
+func (s *Server) ProposeKnowledge(ctx context.Context, req *pb.ProposeKnowledgeRequest) (*pb.ProposeKnowledgeResponse, error) {
+	if s.Knowledge == nil {
+		return nil, status.Error(codes.Unimplemented, "knowledge proposals are not enabled on this kernel")
+	}
+	lease := domain.LeaseID(req.GetLeaseId())
+	if lease == "" {
+		lease = domain.LeaseID(mdValue(ctx, leaseHeader))
+	}
+	if lease == "" {
+		return nil, status.Error(codes.PermissionDenied, "a lease is required")
+	}
+	b, ok := s.resolveLeaseFor(ctx, lease)
+	if !ok {
+		return nil, status.Error(codes.PermissionDenied, "lease is missing, foreign or expired")
+	}
+	agentID := b.AgentID
+	if agentID == "" {
+		agentID, _ = callerAgentIdentity(ctx)
+	}
+	if agentID == "" {
+		return nil, status.Error(codes.PermissionDenied, "no agent identity is bound to this lease")
+	}
+	// A subagent writes to memory only with its parent's grant (ADR-0139 D12) — the
+	// same rule ProposeMemoryNote applies; "propose_knowledge" is in the default
+	// subagent memory-write toolset, so a parent can hand the right on.
+	if b.IsChild() && !b.MemoryWriteGranted {
+		return &pb.ProposeKnowledgeResponse{Accepted: false,
+			Detail: "a subagent may propose knowledge only when its parent granted memory write"}, nil
+	}
+	by := domain.AgentPrincipal(agentID)
+	var forPerson domain.PrincipalRef
+	if s.RunPrincipal != nil {
+		if id := s.RunPrincipal(ctx, b); id != "" {
+			forPerson = domain.UserPrincipal(id)
+		}
+	}
+	// What the agent writes for a conversation's owner is that owner's (ADR-0142 D12).
+	if s.ConversationOwner != nil {
+		if owner := s.ConversationOwner(ctx, b); owner != "" {
+			ctx = domain.WithConversationOwner(ctx, owner)
+			if s.PrivateByDefault {
+				ctx = domain.WithPrivateWrites(ctx, owner)
+			}
+		}
+	}
+
+	switch p := req.GetProposal().(type) {
+	case *pb.ProposeKnowledgeRequest_Item:
+		prop, err := proposalFromPB(p.Item, req.GetClientRef())
+		if err != nil {
+			return &pb.ProposeKnowledgeResponse{Accepted: false, Detail: err.Error()}, nil
+		}
+		res, err := s.Knowledge.Propose(ctx, by, forPerson, prop, req.GetRequestCommit(), req.GetReason())
+		if refusal(err) {
+			return &pb.ProposeKnowledgeResponse{Accepted: false, Detail: err.Error(), CandidateId: string(res.CandidateID)}, nil
+		}
+		if err != nil {
+			slog.Warn("knowledge proposal failed", "agent", agentID, "err", err)
+			return nil, status.Error(codes.Unavailable, "knowledge proposals are unavailable")
+		}
+		return &pb.ProposeKnowledgeResponse{
+			Accepted: true, CandidateId: string(res.CandidateID), Created: res.Inserted,
+			ApprovalId: res.ApprovalID, ApprovalState: string(res.ApprovalState),
+		}, nil
+	case *pb.ProposeKnowledgeRequest_Link:
+		if req.GetRequestCommit() {
+			return &pb.ProposeKnowledgeResponse{Accepted: false,
+				Detail: "a link proposal cannot request a commit: a candidate link is confirmed by a person through the link review"}, nil
+		}
+		l := p.Link
+		created, err := s.Knowledge.ProposeLink(ctx, by, knowledgecommit.LinkProposal{
+			Family: l.GetFamily(), FromRef: l.GetFromRef(), ToRef: l.GetToRef(), Relation: l.GetRelation(),
+			EvidenceID: domain.EvidenceID(l.GetEvidenceId()), Confidence: l.GetConfidence(), ClientRef: req.GetClientRef(),
+		})
+		if refusal(err) {
+			return &pb.ProposeKnowledgeResponse{Accepted: false, Detail: err.Error()}, nil
+		}
+		if err != nil {
+			slog.Warn("knowledge link proposal failed", "agent", agentID, "err", err)
+			return nil, status.Error(codes.Unavailable, "knowledge proposals are unavailable")
+		}
+		return &pb.ProposeKnowledgeResponse{Accepted: true, Created: created}, nil
+	}
+	return nil, status.Error(codes.InvalidArgument, "a proposal (item or link) is required")
+}
+
+// refusal reports whether err is a permanent, nameable refusal the model should see.
+func refusal(err error) bool {
+	return err != nil && (errors.Is(err, knowledgecommit.ErrNotProposable) || errors.Is(err, domain.ErrKindRefused) ||
+		errors.Is(err, domain.ErrLinkRefused) || errors.Is(err, authz.ErrWriteDenied) || errors.Is(err, authz.ErrForgedAssertion))
+}
+
+func proposalFromPB(it *pb.ProposedKnowledgeItem, clientRef string) (knowledgecommit.Proposal, error) {
+	p := knowledgecommit.Proposal{
+		Kind: it.GetKind(), EntityID: it.GetEntityId(), Negation: it.GetNegation(),
+		EvidenceID: domain.EvidenceID(it.GetEvidenceId()), Classification: it.GetClassification(),
+		ClientRef: clientRef,
+	}
+	if it.GetValidFrom() != nil {
+		p.ValidFrom = it.GetValidFrom().AsTime()
+	}
+	if it.GetValidTo() != nil {
+		p.ValidTo = it.GetValidTo().AsTime()
+	}
+	for _, v := range it.GetValues() {
+		sv := domain.StatementValue{Predicate: v.GetPredicate(), Type: v.GetType()}
+		switch v.GetType() {
+		case "text":
+			sv.Text = v.GetText()
+		case "number":
+			sv.Number = v.GetNumber()
+		case "date":
+			if v.GetDate() == nil {
+				return p, errors.New("value " + v.GetPredicate() + ": a date value needs date")
+			}
+			sv.Date = v.GetDate().AsTime()
+		case "entity":
+			sv.EntityRef = v.GetEntityRef()
+		default:
+			return p, errors.New("value " + v.GetPredicate() + ": type must be text|number|date|entity")
+		}
+		p.Values = append(p.Values, sv)
+	}
+	return p, nil
+}

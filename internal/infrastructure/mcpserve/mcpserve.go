@@ -125,6 +125,10 @@ type Options struct {
 	// would otherwise state. nil, or a miss, means an ordinary client
 	// (phase-1/2 behaviour verbatim).
 	WorkerOwner func(client string) (owner string, ok bool)
+	// Principals is the principal registry (ADR-0142 D3). Optional: it is read
+	// only for lifecycle, so a suspended person bound to a client — or owning a
+	// worker machine — is refused at the door. nil ⇒ no lifecycle check.
+	Principals domain.PrincipalRegistry
 	// ServerName / ServerVersion are the implementation identity reported at
 	// initialize.
 	ServerName    string

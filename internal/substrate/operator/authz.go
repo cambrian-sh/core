@@ -2,12 +2,7 @@ package operator
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/hex"
 	"strings"
-	"sync"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -18,13 +13,42 @@ import (
 	"github.com/cambrian-sh/core/internal/authz"
 )
 
-// Role is the operator-plane authorization role (ADR-0047 D13).
+// Role is the operator-plane authorization role (ADR-0047 D13), DERIVED from the
+// person's role set (ADR-0142 D1) by RoleFromRoles.
 type Role string
 
 const (
 	RoleOperator Role = "operator" // full surface, including mutating commands
 	RoleViewer   Role = "viewer"   // read + feed only; commands denied
+	// RoleMember is a signed-in person with no console role (ADR-0142): an OIDC user
+	// the claim map gave no operator/viewer role, a local account created for chat.
+	// They may use only their OWN surfaces on this plane — the canonical conversation
+	// lane (owner-scoped, act-for refused), their own accounts, Logout — and nothing
+	// that reads or changes the deployment. See memberMethods.
+	RoleMember Role = "member"
 )
+
+// RoleFromRoles maps a person's role set to the operator-plane role: `operator`
+// (or `admin`) wins, then `viewer`, else member. Plane access stays a role check;
+// what the person may READ stays the Authorizer's decision.
+func RoleFromRoles(roles []string) Role {
+	has := func(r string) bool {
+		for _, x := range roles {
+			if x == r {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case has(string(RoleOperator)) || has("admin"):
+		return RoleOperator
+	case has(string(RoleViewer)):
+		return RoleViewer
+	default:
+		return RoleMember
+	}
+}
 
 // operatorMethodPrefix scopes the interceptors: OperatorConsole RPCs are gated,
 // and agent-facing Orchestrator/AgentService RPCs (UDS) pass through — except
@@ -41,23 +65,12 @@ const operatorMethodPrefix = "/cambrian.OperatorConsole/"
 // semantics apply (x-agent-id principal, SurfaceAgent).
 const premiumMethodPrefix = "/cambrian.premium."
 
-// loginMethod is the one OperatorConsole RPC reachable without a token.
-const loginMethod = operatorMethodPrefix + "Login"
-
-// OperatorIdentity is the auth port (ADR-0047 D13). The production backend
-// (OIDC/SSO/directory) is deferred behind it; V1 ships StaticIdentity. A single
-// global shared secret is intentionally not modelled — every principal is named
-// so the audit actor and role are attributable.
-type OperatorIdentity interface {
-	// Login verifies credentials and returns a token bound to {principal, role}.
-	Login(username, password string) (token, principal string, role Role, err error)
-	// Resolve maps a previously-issued token to its principal and role.
-	Resolve(token string) (principal string, role Role, err error)
-	// Revoke invalidates a previously-issued token (Logout, ADR-0130 D5 / 1f), so
-	// every later Resolve of it is Unauthenticated. Revoking an unknown or already
-	// revoked token is not an error: the outcome the caller wants already holds.
-	Revoke(token string) error
-}
+// loginMethod and describeAuthMethod are the OperatorConsole RPCs reachable
+// without a token: one signs in, the other says how to (ADR-0142 D1).
+const (
+	loginMethod        = operatorMethodPrefix + "Login"
+	describeAuthMethod = operatorMethodPrefix + "DescribeAuth"
+)
 
 type principalCtxKey struct{}
 
@@ -75,99 +88,14 @@ func PrincipalFromContext(ctx context.Context) (principal string, role Role, ok 
 	return v.principal, v.role, true
 }
 
-// OperatorTokenTTL bounds an operator token's life (ADR-0130 1f): 12 hours
-// from issue, checked lazily on use. Before this a token was valid until the
-// process restarted — a leaked one had no horizon at all. Expiry is absolute,
-// not sliding: a token kept warm by a background poller would otherwise never
-// expire. The explicit Logout RPC (contract 0099) ends a token before its horizon.
-const OperatorTokenTTL = 12 * time.Hour
+// The operator token TTL (ADR-0130 1f, 12 h absolute) now lives with the backend
+// that mints tokens: identity.SessionTTL.
 
-// StaticIdentity is the V1 OperatorIdentity stub: a fixed user table and an
-// in-memory token store. Concurrency-safe. The production backend swaps in
-// behind the OperatorIdentity port with no interceptor change.
-type StaticIdentity struct {
-	mu     sync.Mutex
-	users  map[string]staticUser  // username → {password, role}
-	tokens map[string]issuedToken // token → {principal, role, expiry}
-	now    func() time.Time
-}
-
-type staticUser struct {
-	password string
-	role     Role
-}
-
-type issuedToken struct {
-	principalInfo
-	expires time.Time
-}
-
-// NewStaticIdentity builds a StaticIdentity from a username→(password,role) table.
-func NewStaticIdentity(users map[string]struct {
-	Password string
-	Role     Role
-}) *StaticIdentity {
-	m := make(map[string]staticUser, len(users))
-	for u, c := range users {
-		m[u] = staticUser{password: c.Password, role: c.Role}
-	}
-	return &StaticIdentity{users: m, tokens: make(map[string]issuedToken), now: time.Now}
-}
-
-// Login implements OperatorIdentity.
-func (s *StaticIdentity) Login(username, password string) (string, string, Role, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	u, ok := s.users[username]
-	// Constant-time compare: Login is the one unauthenticated RPC, and a `!=`
-	// on the password leaked where the mismatch occurred to a timing observer
-	// (2026-10-31 audit, T-20261031-operator-login-has-no-brute-force-limiter-non).
-	// The unknown-user branch still compares against an empty string so both
-	// failure paths cost the same.
-	var stored string
-	if ok {
-		stored = u.password
-	}
-	if subtle.ConstantTimeCompare([]byte(stored), []byte(password)) != 1 || !ok {
-		return "", "", "", status.Error(codes.Unauthenticated, "invalid credentials")
-	}
-	var b [24]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", "", "", status.Error(codes.Internal, "token generation failed")
-	}
-	token := hex.EncodeToString(b[:])
-	s.tokens[token] = issuedToken{
-		principalInfo: principalInfo{principal: username, role: u.role},
-		expires:       s.now().Add(OperatorTokenTTL),
-	}
-	return token, username, u.role, nil
-}
-
-// Resolve implements OperatorIdentity. Expiry is LAZY: an expired token is
-// deleted on the first use after its horizon, and the answer is the same
-// Unauthenticated a token that never existed gets.
-func (s *StaticIdentity) Resolve(token string) (string, Role, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	v, ok := s.tokens[token]
-	if ok && !s.now().Before(v.expires) {
-		delete(s.tokens, token)
-		ok = false
-	}
-	if !ok {
-		return "", "", status.Error(codes.Unauthenticated, "invalid or expired token")
-	}
-	return v.principal, v.role, nil
-}
-
-// Revoke implements OperatorIdentity: the token is forgotten, so the next Resolve
-// answers exactly as for a token that never existed.
-func (s *StaticIdentity) Revoke(token string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.tokens, token)
-	return nil
-}
+// The V1 StaticIdentity (one env user, plaintext compare in memory) is gone:
+// ADR-0142 D1 replaced it with domain.Authenticator, whose OSS default is
+// internal/identity.Chain (local accounts with argon2id hashes, plus one optional
+// OIDC issuer). The env bootstrap operator is now a local account re-asserted on
+// every boot (app.buildAuthenticator), so a deployment upgrades with no change.
 
 // bearerToken extracts the token from "authorization: Bearer <token>" metadata.
 func bearerToken(ctx context.Context) string {
@@ -194,7 +122,7 @@ func serviceOf(fullMethod string) string {
 // authorize is the shared gate for both interceptors. It returns the principal
 // context for OperatorConsole and premium operator-plane methods, passing
 // through the agent plane (core and declared-premium alike).
-func authorize(ctx context.Context, fullMethod string, idp OperatorIdentity, agentPlane map[string]bool) (context.Context, error) {
+func authorize(ctx context.Context, fullMethod string, idp domain.Authenticator, agentPlane map[string]bool) (context.Context, error) {
 	// The approval surface is declared on Orchestrator but is operator-plane
 	// (ADR-0039 D10): it takes the same bearer as the console. The list lives in
 	// authz.IsOperatorGatedAgentServiceMethod so the surface stamp and this gate
@@ -210,21 +138,34 @@ func authorize(ctx context.Context, fullMethod string, idp OperatorIdentity, age
 	if premium && agentPlane[serviceOf(fullMethod)] {
 		return ctx, nil
 	}
-	// Login is the only unauthenticated operator RPC.
-	if fullMethod == loginMethod {
+	// Login and DescribeAuth are the only unauthenticated operator RPCs.
+	if fullMethod == loginMethod || fullMethod == describeAuthMethod {
 		return ctx, nil
 	}
-	principal, role, err := idp.Resolve(bearerToken(ctx))
-	if err != nil {
-		return ctx, err // already an Unauthenticated status
+	if idp == nil {
+		return ctx, status.Error(codes.Unauthenticated, "no authenticator configured")
+	}
+	id, err := idp.Resolve(ctx, bearerToken(ctx))
+	if err != nil || id.Principal.IsZero() {
+		// One undetailed answer for unknown, expired, badly signed, wrong-audience
+		// and suspended alike; the backend logged which.
+		return ctx, status.Error(codes.Unauthenticated, "invalid or expired token")
+	}
+	principal, role := id.Principal.ID, RoleFromRoles(id.Roles)
+	// A member reaches only its own surfaces (memberMethods), fail-closed.
+	if role == RoleMember && !memberMethods[fullMethod] {
+		return ctx, status.Errorf(codes.PermissionDenied, "role %q may not call %s", role, fullMethod)
 	}
 	// Viewer is denied mutating commands; reads/feed are allowed for any role.
 	// Premium operator planes follow the same naming convention, fail-closed:
 	// anything not spelled like a read is a command.
-	if isOperatorOnly(fullMethod) && role != RoleOperator {
+	if role == RoleViewer && isOperatorOnly(fullMethod) {
 		return ctx, status.Errorf(codes.PermissionDenied, "role %q may not call %s", role, fullMethod)
 	}
 	ctx = context.WithValue(ctx, principalCtxKey{}, principalInfo{principal: principal, role: role})
+	// ADR-0142 D11: the approval hub authorises an answer against the person's
+	// FULL role set (role:compliance, …), not just the plane role derived above.
+	ctx = domain.WithPrincipalRoles(ctx, id.Roles)
 	// And the DOMAIN principal, once, for every operator-plane RPC.
 	//
 	// The line above is an operator-plane private value; the rest of the kernel
@@ -238,8 +179,44 @@ func authorize(ctx context.Context, fullMethod string, idp OperatorIdentity, age
 	// fails CLOSED — the documented path was broken in exactly the deployments
 	// that enforce access control. It was patched at one call site
 	// (substrate/operator ingest) instead, which is a workaround, not the fix.
-	return domain.WithPrincipal(ctx, domain.UserPrincipal(principal)), nil
+	//
+	// ADR-0142 D3: the principal is the Authenticator's registry person (kind
+	// user), not a bare username re-wrapped here.
+	return domain.WithPrincipal(ctx, id.Principal), nil
 }
+
+// memberMethods are the operator-plane RPCs a RoleMember may call (ADR-0142).
+// Each handler scopes to the caller: the conversation lane checks ownership and
+// refuses act-for to every role but operator (CanActFor), and the accounts
+// self-service methods name no principal. Matched on the FULL method name.
+var memberMethods = map[string]bool{
+	operatorMethodPrefix + "Logout":                   true,
+	operatorMethodPrefix + "OpenConversation":         true,
+	operatorMethodPrefix + "SendTurn":                 true,
+	operatorMethodPrefix + "CloseConversation":        true,
+	operatorMethodPrefix + "ListConversations":        true,
+	operatorMethodPrefix + "ListConversationMessages": true,
+	accountsAdminService + "StartAccountConnect":      true,
+	accountsAdminService + "DisconnectMyAccount":      true,
+	accountsAdminService + "ConfirmMyAccount":         true,
+	accountsAdminService + "ListMyAccounts":           true,
+	// ADR-0142 D11/D12: a person answers their OWN approvals, manages their own
+	// standing approvals and shares their own private material. Each handler
+	// scopes to the caller; the hub authorises every answer at answer time.
+	operatorMethodPrefix + "WatchMyApprovals":       true,
+	operatorMethodPrefix + "ListApprovals":          true,
+	operatorMethodPrefix + "AnswerApproval":         true,
+	operatorMethodPrefix + "ListStandingApprovals":  true,
+	operatorMethodPrefix + "RevokeStandingApproval": true,
+	operatorMethodPrefix + "ShareToTeam":            true,
+	// ADR-0142 stage 2: a person reads their OWN reporting chain (unit path,
+	// manager chain); the handler names no principal.
+	orgDirectoryService + "GetMyOrgChain": true,
+}
+
+// Premium organisation-hierarchy plane (ADR-0142 stage 2, cambrian-premium
+// api/proto/org). Core only knows the names that need an exception.
+const orgDirectoryService = "/cambrian.premium.org.OrgDirectoryAdmin/"
 
 // isOperatorOnly reports whether an OperatorConsole method is a mutating command
 // (Operator-only). Reads (StreamEvents/Snapshot/Login and Query* reads) are open
@@ -256,6 +233,51 @@ func authorize(ctx context.Context, fullMethod string, idp OperatorIdentity, age
 var operatorOnlyReads = map[string]bool{
 	"QueryLogs": true,
 	"TailLogs":  true,
+	// Every principal's recurring tasks (scheduled_tasks.go) — other people's
+	// business, like ListAccounts.
+	"ListScheduledTasks": true,
+}
+
+// Premium accounts plane (ADR-0141, cambrian-premium api/proto/accounts).
+// Matched on the FULL method so an OperatorConsole RPC of the same short name
+// can never inherit these exceptions. Core only knows the names; the handlers
+// live in premium and act on the authenticated caller (OperatorCaller).
+const accountsAdminService = "/cambrian.premium.accounts.AccountsAdmin/"
+
+// selfServiceMethods are open to every authenticated role: connecting and
+// disconnecting one's OWN account (an employee connects their own mailbox).
+// No request field names a principal.
+var selfServiceMethods = map[string]bool{
+	accountsAdminService + "StartAccountConnect": true,
+	accountsAdminService + "DisconnectMyAccount": true,
+	// Phase 2 (owner position 4): confirming one's own pending account.
+	accountsAdminService + "ConfirmMyAccount": true,
+	// ADR-0142 D11/D12: answering one's own approvals, revoking one's own
+	// standing approvals, sharing one's own material — the hub and the share
+	// policy decide; the plane role does not.
+	operatorMethodPrefix + "WatchMyApprovals":       true,
+	operatorMethodPrefix + "AnswerApproval":         true,
+	operatorMethodPrefix + "RevokeStandingApproval": true,
+	operatorMethodPrefix + "ShareToTeam":            true,
+	orgDirectoryService + "GetMyOrgChain":           true,
+}
+
+// operatorOnlyFullMethods are reads that are other people's business: who has
+// connected which account. A Viewer reads only their own (ListMyAccounts).
+var operatorOnlyFullMethods = map[string]bool{
+	accountsAdminService + "ListAccounts": true,
+	// Phase 2: the organisation's accounts and OAuth client registrations
+	// (metadata only, but who holds which org credential is operator business).
+	accountsAdminService + "ListOrgAccounts":     true,
+	accountsAdminService + "ListProviderClients": true,
+	// Every consumer bound to an account (what breaks if it is revoked):
+	// operator business. ListSystems stays open to every role — its handler
+	// returns a non-operator only the catalog and the caller's own accounts.
+	accountsAdminService + "ListAccountConsumers": true,
+	// ADR-0142 stage 2: which directories may push to this kernel and the
+	// reconcile account's health are operator business.
+	orgDirectoryService + "ListScimConnections": true,
+	orgDirectoryService + "GetReconcileStatus":  true,
 }
 
 func isOperatorOnly(fullMethod string) bool {
@@ -268,6 +290,12 @@ func isOperatorOnly(fullMethod string) bool {
 	// and the token it revokes is the caller's own.
 	case "Login", "Logout", "StreamEvents", "Snapshot":
 		return false
+	}
+	if selfServiceMethods[fullMethod] {
+		return false
+	}
+	if operatorOnlyFullMethods[fullMethod] {
+		return true
 	}
 	// Checked BEFORE the naming convention, so a read cannot open itself to a
 	// Viewer by being named like one.
@@ -287,7 +315,7 @@ func isOperatorOnly(fullMethod string) bool {
 // UnaryAuthInterceptor gates unary OperatorConsole and premium operator-plane
 // RPCs (ADR-0047 D13; ADR-0118 D3). agentPlane names the premium services
 // DECLARED agent-facing at registration — exempt from the operator bearer.
-func UnaryAuthInterceptor(idp OperatorIdentity, agentPlane map[string]bool) grpc.UnaryServerInterceptor {
+func UnaryAuthInterceptor(idp domain.Authenticator, agentPlane map[string]bool) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		ctx, err := authorize(ctx, info.FullMethod, idp, agentPlane)
 		if err != nil {
@@ -299,7 +327,7 @@ func UnaryAuthInterceptor(idp OperatorIdentity, agentPlane map[string]bool) grpc
 
 // StreamAuthInterceptor gates streaming OperatorConsole and premium
 // operator-plane RPCs (e.g. StreamEvents).
-func StreamAuthInterceptor(idp OperatorIdentity, agentPlane map[string]bool) grpc.StreamServerInterceptor {
+func StreamAuthInterceptor(idp domain.Authenticator, agentPlane map[string]bool) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		ctx, err := authorize(ss.Context(), info.FullMethod, idp, agentPlane)
 		if err != nil {

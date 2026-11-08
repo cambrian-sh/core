@@ -83,6 +83,14 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 	// session), and without this the executor saw no session at all: node reads fell back to
 	// ownerless-only, and artifacts were stamped with the per-step lease instead — so
 	// ListStepArtifacts(sessionID) could never find them.
+	//
+	// The lease is the one in the REQUEST (the SDK sends it there and in no header), made
+	// the header every resolution below reads (withPresentedLease): before that, an SDK
+	// tool call resolved no session, no conversation and no conversation owner, so a
+	// dangerous-tool approval named no beneficiary
+	// (T-20261107-tool-approvals-raised-by-chat-delegated-plan).
+	sessionToken := leaseIDOf(req.GetLeaseId(), req.GetSessionTokenId())
+	ctx = withPresentedLease(ctx, sessionToken)
 	ctx = s.withCallerSession(ctx)
 
 	// ADR-0098: tool calls are the other place a turn spends real time. The tool's NAME is
@@ -99,13 +107,26 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 	if agentID != "" {
 		ctx = domain.WithPrincipal(ctx, domain.AgentPrincipal(agentID))
 	}
-	sessionToken := leaseIDOf(req.GetLeaseId(), req.GetSessionTokenId())
 	// ADR-0139 D8: a lease not bound to this agent (another agent's, or an
 	// agent-unbound one) confers nothing — not its skill
 	// grants, not an evaluation lease's approval bypass, not its spend. Refused as a
 	// denial (not an RPC error) so the agent's loop sees it like any other refusal.
 	if s.leaseForeignToCaller(ctx, sessionToken) {
 		return &pb.ExecuteToolResponse{Denied: true, DenyReason: "lease is not valid for this caller"}, nil
+	}
+	ctx = s.withRunPrincipal(ctx, sessionToken)
+	// Work a chat turn ordered dies with the turn (turn_delegation.go): a lease of an
+	// ended turn is refused BEFORE authorisation, so no approval can be raised for it,
+	// and a call in flight when the turn ends is cancelled — which withdraws the
+	// approval it may be waiting on (T-20261106-a-chat-turn-that-fails-deadline-exceeded-or).
+	if s.Delegations != nil {
+		b, known := s.resolveLeaseFor(ctx, sessionToken)
+		gctx, release, ok := s.Delegations.GuardToolCall(ctx, sessionToken, b, known)
+		if !ok {
+			return &pb.ExecuteToolResponse{Denied: true, DenyReason: ErrTurnEnded.Error()}, nil
+		}
+		defer release()
+		ctx = gctx
 	}
 	// A tool call is plan (and chat-turn) activity for as long as it runs: a page
 	// fetch or a confined process can take minutes without a model call on the
@@ -130,16 +151,28 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 		Tool: req.GetToolName(), Args: redactedArgs(req.GetArgsJson()),
 	})
 
-	resp := s.ToolExecutor.Execute(ctx, domain.ToolCallRequest{
-		AgentID:  agentID,
-		ToolName: req.GetToolName(),
-		ArgsJSON: []byte(req.GetArgsJson()),
-		// Phase 1: lease_id wins; the deprecated session_token_id is the fallback.
-		SessionTokenID: sessionToken,
-		TaskID:         mdValue(ctx, "x-task-id"), // ADR-0049 D3: per-step correlation key
-	})
+	var resp domain.ToolCallResponse
+	if why, ok := s.unroutableBound(ctx, sessionToken, req.GetToolName()); !ok {
+		// A running plan's earlier calls of this tool were all unroutable: refuse
+		// without raising another approval nobody can answer (plan_actions.go).
+		resp = domain.ToolCallResponse{Denied: true, DenyReason: why, ApprovalState: domain.ApprovalUnroutable}
+	} else {
+		resp = s.ToolExecutor.Execute(ctx, domain.ToolCallRequest{
+			AgentID:  agentID,
+			ToolName: req.GetToolName(),
+			ArgsJSON: []byte(req.GetArgsJson()),
+			// Phase 1: lease_id wins; the deprecated session_token_id is the fallback.
+			SessionTokenID: sessionToken,
+			TaskID:         mdValue(ctx, "x-task-id"), // ADR-0049 D3: per-step correlation key
+		})
+	}
 
 	s.Subagents.RecordToolResult(sessionToken, resp.ResultCID, resp.Denied)
+	// The plan's result reports every side-effecting call its steps made, so the
+	// caller never re-orders a write that already happened (plan_actions.go).
+	s.recordPlanAction(ctx, sessionToken, domain.ToolCallRequest{
+		AgentID: agentID, ToolName: req.GetToolName(), ArgsJSON: []byte(req.GetArgsJson()),
+	}, resp)
 	s.reportActivity(domain.AgentActivity{
 		SessionTokenID: string(sessionToken), AgentID: agentID,
 		Tool: req.GetToolName(), Done: true,
@@ -228,21 +261,34 @@ func (s *Server) WatchApprovals(_ *pb.WatchApprovalsRequest, stream pb.Orchestra
 	if s.ApprovalHub == nil {
 		return status.Error(codes.Unimplemented, "approval channel not configured")
 	}
-	if _, err := approvalOperator(stream.Context()); err != nil {
+	op, err := approvalOperator(stream.Context())
+	if err != nil {
 		return err
 	}
-	ch, cancel := s.ApprovalHub.Watch()
+	// ADR-0142 D11: addressed — the items this operator may answer, pending only
+	// (this stream predates resolution events; they ride the operator feed).
+	ch, cancel := s.ApprovalHub.Watch(domain.ApprovalWatch{For: approverOf(stream.Context(), op)})
 	defer cancel()
 	for {
 		select {
 		case <-stream.Context().Done():
 			return nil
-		case r, ok := <-ch:
+		case ev, ok := <-ch:
 			if !ok {
 				return nil
 			}
+			if ev.Type != domain.ApprovalEventRaised {
+				continue
+			}
+			r := ev.Item
+			ben := ""
+			if !r.Beneficiary.IsZero() {
+				ben = r.Beneficiary.String()
+			}
 			if err := stream.Send(&pb.ApprovalRequest{
 				Id: r.ID, AgentId: r.AgentID, ToolName: r.ToolName, ArgsPreview: r.ArgsPreview, Kind: r.Kind,
+				Rule: r.RuleSummary(), Beneficiary: ben, ActionClass: r.ActionClass,
+				DuplicateNotice: r.DuplicateNotice,
 			}); err != nil {
 				return err
 			}
@@ -265,8 +311,30 @@ func (s *Server) SubmitApprovalDecision(ctx context.Context, req *pb.ApprovalDec
 	if err != nil {
 		return nil, err
 	}
-	ok := s.ApprovalHub.Submit(req.GetId(), req.GetApprove(), approver.ID)
-	return &pb.ApprovalDecisionResponse{Ok: ok}, nil
+	// ADR-0142 D11: the hub authorises the answer — an operator who satisfies
+	// none of the item's rules (a self-ruled machine consent) is refused (ok=false).
+	_, aerr := s.ApprovalHub.Answer(ctx, req.GetId(), domain.ApprovalAnswer{
+		Approved: req.GetApprove(), By: approverOf(ctx, approver),
+	})
+	return &pb.ApprovalDecisionResponse{Ok: aerr == nil}, nil
+}
+
+// approverOf is the verified answerer on the operator-gated agent-service
+// approval methods: the interceptor admitted only the operator role to them
+// (operator.isOperatorOnly), so the caller holds "operator" plus whatever full
+// role set the interceptor stamped.
+func approverOf(ctx context.Context, p domain.PrincipalRef) domain.Approver {
+	roles := append([]string(nil), domain.PrincipalRolesFromContext(ctx)...)
+	has := false
+	for _, r := range roles {
+		if r == domain.ApprovalRoleOperator {
+			has = true
+		}
+	}
+	if !has {
+		roles = append(roles, domain.ApprovalRoleOperator)
+	}
+	return domain.Approver{Principal: p, Roles: roles}
 }
 
 // approvalOperator returns the operator principal the auth interceptor stamped.
@@ -323,4 +391,24 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// withRunPrincipal stamps the person this call is FOR on ctx (ADR-0140 D4),
+// resolved from kernel-held facts on the presented lease under the ADR-0139 D8
+// ownership rule — never from the request, the model or a header. A per_user
+// integration selects that person's credential by it; with no lease, no
+// binding or no resolver the context carries none, and such a tool fails
+// closed ("not acting for a person"), never with someone else's credential.
+func (s *Server) withRunPrincipal(ctx context.Context, lease domain.LeaseID) context.Context {
+	if s.RunPrincipal == nil || lease == "" {
+		return ctx
+	}
+	b, ok := s.resolveLeaseFor(ctx, lease)
+	if !ok {
+		return ctx
+	}
+	if p := s.RunPrincipal(ctx, b); p != "" {
+		return domain.WithRunPrincipal(ctx, p)
+	}
+	return ctx
 }

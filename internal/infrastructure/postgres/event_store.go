@@ -39,6 +39,12 @@ func (s *PgEventStore) RecordEvent(ctx context.Context, ev domain.Event) (domain
 	if ev.Type == "" || ev.OccurredAt.IsZero() {
 		return "", false, fmt.Errorf("event record: type and occurred_at are required")
 	}
+	// A DECLARED event type (KindSpec.EventTypes) must carry its declared roles;
+	// an undeclared type passes (ADR-0110 D2 monotonic adoption). The refusal
+	// names the constraint and wraps domain.ErrKindRefused.
+	if err := s.reg.ValidateEvent(ev); err != nil {
+		return "", false, err
+	}
 	ns := ev.NamespaceID
 	if ns == "" {
 		ns = "default"

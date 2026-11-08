@@ -300,6 +300,7 @@ func toWatchConfigOp(c domain.WatchConfig) *pb.WatchConfigOp {
 		ConditionPayloadKeys: c.ConditionPayloadKeys,
 		Approved:             c.Approved,
 		DryRun:               c.DryRun,
+		OwnerId:              c.Owner, // a principal-owned scheduled task ("" = operator watch)
 		// MissedFirePolicy was declared on the wire by REACT-06 and dropped here,
 		// so a schedule watch round-tripped through the console silently lost its
 		// catch-up behaviour and reverted to "skip". Fixed with contract 0074.

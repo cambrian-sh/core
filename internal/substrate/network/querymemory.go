@@ -64,6 +64,11 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 		ctx = domain.WithSurface(ctx, authz.ResolveSurfaceForTurn(ctx, s.SessionMgr, s.ConvSurfaces, convID))
 	}
 
+	// The conversation this recall is for: its owner's read predicate narrows the
+	// agent's (T-20261106-conversations-cannot-be-opened-as-a-given). Resolved from
+	// the lease, like the session above.
+	ctx = s.withConversationOwner(ctx)
+
 	slog.Info("QueryMemory called", "caller", callerID, "query", req.GetQuery())
 
 	// The agentic control row is a loop artifact, not a memory: its Text is the

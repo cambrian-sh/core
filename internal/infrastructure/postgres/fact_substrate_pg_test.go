@@ -56,6 +56,12 @@ func newFactSubstrate(t *testing.T) (*PgKnowledgeStore, *PgFactItemReader, conte
 		} {
 			_, _ = pool.Exec(c, q)
 		}
+		// Deleted embeddings stay in the HNSW graph until vacuumed, and the tests
+		// here reuse the same few unit vectors: a filtered top-k whose plan walks
+		// the index then meets mostly dead tuples and underfills, so the result
+		// depended on which tests ran before (it was why
+		// TestPg_FactItems_ScopeAppliedInSQL failed in a full-package run).
+		_, _ = pool.Exec(c, `VACUUM knowledge_item_embeddings`)
 	}
 	clean()
 	t.Cleanup(clean)

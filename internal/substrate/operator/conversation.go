@@ -75,7 +75,8 @@ func mapConvError(err error) error {
 	}
 }
 
-// OpenConversation creates a conversation owned by the resolved operator principal. The
+// OpenConversation creates a conversation owned by the resolved operator principal — or,
+// with on_behalf_of, by the principal the operator acts for (actfor.go). The
 // conversation_id is client-supplied, which makes this idempotent on the id itself: a retry
 // returns deduped=true rather than erroring. Audited.
 func (s *Service) OpenConversation(ctx context.Context, req *pb.OpenConversationOpRequest) (*pb.OpenConversationOpResponse, error) {
@@ -97,16 +98,28 @@ func (s *Service) OpenConversation(ctx context.Context, req *pb.OpenConversation
 	}
 
 	actor, role, _ := PrincipalFromContext(ctx)
-	existed, err := s.convOps.Open(ctx, req.GetConversationId(), actor, req.GetTitle(), profile, req.GetPolicy())
+	// Act-for (actfor.go): the owner is the named principal, refused unless the
+	// role may act for others and the directory knows them.
+	ctx, owner, err := s.actingPrincipal(ctx, req.GetOnBehalfOf())
+	if err != nil {
+		return nil, err
+	}
+	existed, err := s.convOps.Open(ctx, req.GetConversationId(), owner, req.GetTitle(), profile, req.GetPolicy())
 	if err != nil {
 		return nil, mapConvError(err)
 	}
 
+	after := req.GetTitle()
+	action := "open_conversation"
+	if note := actForNote(actor, owner); note != "" {
+		action = "open_conversation_on_behalf"
+		after = note + "; title=" + req.GetTitle()
+	}
 	_, _ = s.recordAndEmit(ctx, domain.AuditEntry{
 		ID: newAuditID(), CommandID: req.GetCommandId(), At: time.Now().UTC(),
-		Actor: actor, Role: string(role), ActionType: "open_conversation",
+		Actor: actor, Role: string(role), ActionType: action,
 		TargetType: "conversation", TargetID: req.GetConversationId(),
-		After: req.GetTitle(), Reason: req.GetReason(), Result: "ok",
+		After: after, Reason: req.GetReason(), Result: "ok",
 	})
 	return &pb.OpenConversationOpResponse{
 		CommandId:      req.GetCommandId(),
@@ -132,7 +145,11 @@ func (s *Service) SendTurn(ctx context.Context, req *pb.SendTurnOpRequest) (*pb.
 		return nil, status.Error(codes.InvalidArgument, "conversation_id and text are required")
 	}
 	actor, role, _ := PrincipalFromContext(ctx)
-	if err := s.assertOwner(ctx, req.GetConversationId(), actor); err != nil {
+	ctx, owner, err := s.actingPrincipal(ctx, req.GetOnBehalfOf())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.assertOwner(ctx, req.GetConversationId(), owner); err != nil {
 		return nil, err
 	}
 
@@ -141,11 +158,15 @@ func (s *Service) SendTurn(ctx context.Context, req *pb.SendTurnOpRequest) (*pb.
 		return nil, mapConvError(err)
 	}
 
+	action := "send_turn"
+	if actForNote(actor, owner) != "" {
+		action = "send_turn_on_behalf"
+	}
 	_, _ = s.recordAndEmit(ctx, domain.AuditEntry{
 		ID: newAuditID(), CommandID: req.GetCommandId(), At: time.Now().UTC(),
-		Actor: actor, Role: string(role), ActionType: "send_turn",
+		Actor: actor, Role: string(role), ActionType: action,
 		TargetType: "conversation", TargetID: req.GetConversationId(),
-		Reason: req.GetReason(), Result: "ok",
+		After: actForNote(actor, owner), Reason: req.GetReason(), Result: "ok",
 	})
 	return &pb.SendTurnOpResponse{CommandId: req.GetCommandId(), Reply: messageToProto(reply)}, nil
 }
@@ -157,11 +178,15 @@ func (s *Service) CloseConversation(ctx context.Context, req *pb.CloseConversati
 		return nil, err
 	}
 	actor, _, _ := PrincipalFromContext(ctx)
-	if err := s.assertOwner(ctx, req.GetConversationId(), actor); err != nil {
+	ctx, owner, err := s.actingPrincipal(ctx, req.GetOnBehalfOf())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.assertOwner(ctx, req.GetConversationId(), owner); err != nil {
 		return nil, err
 	}
 	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(), "close_conversation", "conversation",
-		req.GetConversationId(), "", func() error { return mapConvError(s.convOps.Close(ctx, req.GetConversationId())) })
+		req.GetConversationId(), actForNote(actor, owner), func() error { return mapConvError(s.convOps.Close(ctx, req.GetConversationId())) })
 }
 
 // ListConversationMessages returns a conversation's transcript. Read RPC (no command_id),
@@ -170,8 +195,11 @@ func (s *Service) ListConversationMessages(ctx context.Context, req *pb.ListConv
 	if err := s.requireConvOps(); err != nil {
 		return nil, err
 	}
-	actor, _, _ := PrincipalFromContext(ctx)
-	if err := s.assertOwner(ctx, req.GetConversationId(), actor); err != nil {
+	ctx, owner, err := s.actingPrincipal(ctx, req.GetOnBehalfOf())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.assertOwner(ctx, req.GetConversationId(), owner); err != nil {
 		return nil, err
 	}
 	msgs, err := s.convOps.Messages(ctx, req.GetConversationId(), req.GetAfterSeq(), int(req.GetLimit()))
@@ -191,12 +219,15 @@ func (s *Service) ListConversations(ctx context.Context, req *pb.ListConversatio
 	if err := s.requireConvOps(); err != nil {
 		return nil, err
 	}
-	actor, _, _ := PrincipalFromContext(ctx)
+	ctx, owner, err := s.actingPrincipal(ctx, req.GetOnBehalfOf())
+	if err != nil {
+		return nil, err
+	}
 	limit := int(req.GetLimit())
 	if limit <= 0 {
 		limit = 100
 	}
-	convs, err := s.convOps.List(ctx, actor, limit)
+	convs, err := s.convOps.List(ctx, owner, limit)
 	if err != nil {
 		return nil, mapConvError(err)
 	}
@@ -208,6 +239,7 @@ func (s *Service) ListConversations(ctx context.Context, req *pb.ListConversatio
 			Status:    string(c.Status),
 			Profile:   string(c.Profile),
 			UpdatedAt: c.UpdatedAt.UTC().Format(time.RFC3339),
+			OwnerId:   c.OwnerID,
 		}
 	}
 	return &pb.ListConversationsOpResponse{Conversations: out}, nil

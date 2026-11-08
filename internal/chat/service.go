@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,7 +36,10 @@ type TokenAcquirer func(ctx context.Context, tokenLimit int, ttl time.Duration) 
 
 // Defaults chosen to mirror the premium manager's proven values.
 const (
-	// DefaultTurnTimeout bounds one dispatched turn (tool calls + LLM).
+	// DefaultTurnTimeout bounds one dispatched turn (tool calls + LLM) when the
+	// operator sets none: the composition root sets TurnTimeout from
+	// execution.chat.chat_turn_timeout_seconds (default 240) and StallTimeout from
+	// chat_stall_timeout_seconds (default 90).
 	DefaultTurnTimeout = 240 * time.Second
 	// DefaultStallTimeout is how long a turn may report NOTHING before it is treated as
 	// wedged.
@@ -81,6 +85,14 @@ type Deliverer interface {
 	Deliver(ctx context.Context, conversationID, text, txnID string) error
 }
 
+// DelegationEnder ends the work a turn delegated (network.TurnDelegations):
+// its live plans are cancelled, its leases revoked and the tool calls in flight on
+// them — with any approval they wait on — cancelled. Called on EVERY exit of a turn
+// (T-20261106-a-chat-turn-that-fails-deadline-exceeded-or).
+type DelegationEnder interface {
+	EndTurn(conversationID, originMessageID string, turnLease domain.LeaseID, cause error)
+}
+
 type TurnService struct {
 	store        domain.ConversationStore
 	pool         Dispatcher
@@ -103,6 +115,24 @@ type TurnService struct {
 	// liveness reports when a conversation last showed signs of work. Supplied by the
 	// composition root; nil disables stall detection.
 	liveness func(conversationID string) time.Time
+	// delegations ends a turn's delegated work when the turn ends. nil ⇒ no
+	// kernel-side delegation tracking (a test, or an embedder without a planner).
+	delegations DelegationEnder
+	// workSystems renders the MCP systems the planner's agents can call
+	// (awareness.Planner.WorkSystems), so the front desk delegates a work-system ask
+	// instead of answering "I have no tool for that"
+	// (T-20261107-chat-agent-tells-the-user-it-has-no-tool-for). nil ⇒ no summary.
+	workSystems func(ctx context.Context) string
+
+	// active holds the turns running per conversation, so closing a conversation
+	// cancels them (CloseConversation).
+	activeMu sync.Mutex
+	active   map[string]map[*activeTurn]struct{}
+
+	// now and stallPoll are the stall watchdog's clock and poll interval; zero means
+	// time.Now and StallTimeout/4 (floor 1 s). Tests drive them with a fake clock.
+	now       func() time.Time
+	stallPoll time.Duration
 
 	TurnTimeout  time.Duration
 	HistoryLimit int
@@ -114,6 +144,68 @@ type TurnService struct {
 	// a wedged turn holds its worker, its lease and the user's attention for the full
 	// TurnTimeout while reporting nothing — truthfully, and uselessly.
 	StallTimeout time.Duration
+	// DefaultLanguage is the language of the kernel's fixed failure sentences when nothing
+	// the user wrote identifies one (execution.chat.chat_default_language). Empty or a
+	// language the catalogue lacks means English (locale.go).
+	DefaultLanguage string
+}
+
+// SetDelegationEnder wires the end of a turn to the end of the work it delegated.
+func (s *TurnService) SetDelegationEnder(d DelegationEnder) { s.delegations = d }
+
+// activeTurn is one running turn, cancellable by CloseConversation.
+type activeTurn struct {
+	cancel context.CancelFunc
+	closed atomic.Bool
+}
+
+func (s *TurnService) trackActive(conversationID string, cancel context.CancelFunc) (*activeTurn, func()) {
+	at := &activeTurn{cancel: cancel}
+	s.activeMu.Lock()
+	if s.active == nil {
+		s.active = map[string]map[*activeTurn]struct{}{}
+	}
+	if s.active[conversationID] == nil {
+		s.active[conversationID] = map[*activeTurn]struct{}{}
+	}
+	s.active[conversationID][at] = struct{}{}
+	s.activeMu.Unlock()
+	return at, func() {
+		s.activeMu.Lock()
+		delete(s.active[conversationID], at)
+		if len(s.active[conversationID]) == 0 {
+			delete(s.active, conversationID)
+		}
+		s.activeMu.Unlock()
+	}
+}
+
+// CloseConversation closes a conversation and cancels the turns running in it. A
+// cancelled turn ends like any other — through its own exit path, which ends the
+// work it delegated (DelegationEnder) — and reports ErrConversationClosed. Closing
+// is idempotent.
+func (s *TurnService) CloseConversation(ctx context.Context, conversationID string) error {
+	if err := s.store.SetConversationStatus(ctx, conversationID, domain.ConversationClosed); err != nil {
+		return err
+	}
+	s.activeMu.Lock()
+	running := make([]*activeTurn, 0, len(s.active[conversationID]))
+	for at := range s.active[conversationID] {
+		running = append(running, at)
+	}
+	s.activeMu.Unlock()
+	for _, at := range running {
+		at.closed.Store(true)
+		at.cancel()
+	}
+	return nil
+}
+
+func (s *TurnService) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // SetLivenessProbe wires stall detection. Optional: without it a turn is bounded only by
@@ -155,9 +247,12 @@ func (s *TurnService) watchStall(ctx context.Context, conversationID string, can
 		return
 	}
 	// Poll at a fraction of the window so detection is prompt without being chatty.
-	tick := s.StallTimeout / 4
-	if tick < time.Second {
-		tick = time.Second
+	tick := s.stallPoll
+	if tick <= 0 {
+		tick = s.StallTimeout / 4
+		if tick < time.Second {
+			tick = time.Second
+		}
 	}
 	t := time.NewTicker(tick)
 	defer t.Stop()
@@ -170,10 +265,10 @@ func (s *TurnService) watchStall(ctx context.Context, conversationID string, can
 			if last.IsZero() {
 				continue // nothing has reported yet; the turn has only just begun
 			}
-			if time.Since(last) > s.StallTimeout {
+			if silent := s.clock().Sub(last); silent > s.StallTimeout {
 				stalled.Store(true)
 				slog.Warn("chat: turn stopped making progress; cancelling",
-					"conversation", conversationID, "silent_for", time.Since(last).Round(time.Second))
+					"conversation", conversationID, "silent_for", silent.Round(time.Second))
 				cancel()
 				return
 			}
@@ -189,10 +284,12 @@ func (s *TurnService) SetProgressSink(sink domain.ProgressSink) { s.progress = s
 //
 // Best-effort by construction (ADR-0098 D5) — it cannot return an error, so a progress
 // problem can never fail the turn it describes.
-func (s *TurnService) emitProgress(ctx context.Context, conversationID string, phase domain.ProgressPhase) {
+// lang is the turn's language: the line is rendered in it (domain.ProgressUpdate.Language).
+func (s *TurnService) emitProgress(ctx context.Context, conversationID string, phase domain.ProgressPhase, lang string) {
 	domain.EmitProgress(ctx, s.progress, domain.ProgressUpdate{
 		ConversationID: conversationID,
 		Phase:          phase,
+		Language:       lang,
 	})
 }
 
@@ -204,6 +301,12 @@ func (s *TurnService) SetLeaseBinder(r domain.LeaseResolver, agentID string) {
 	s.leases = r
 	s.leaseAgentID = agentID
 }
+
+// SetWorkSystems wires the capability summary each turn carries as the
+// "work_systems" handoff key: the MCP systems the planner's agents can call, read
+// from the planner's own live tool menu (awareness.Planner.WorkSystems), so the
+// front desk and the planner see one set. nil leaves turns without it.
+func (s *TurnService) SetWorkSystems(f func(ctx context.Context) string) { s.workSystems = f }
 
 // SetDeliverer wires the outbound path (ADR-0090 D8). nil leaves conversations
 // store-only, which is correct for a console-only deployment: the console reads
@@ -318,7 +421,11 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 
 	// The user is now waiting. Say something immediately: the gap between "sent" and the
 	// first sign of life is what makes a working system indistinguishable from a hung one.
-	s.emitProgress(ctx, req.ConversationID, domain.PhaseUnderstanding)
+	// The language the status line and the failure line are said in. Refined once the
+	// history is loaded (an "ok" in a Turkish conversation is still Turkish); the deferred
+	// emission below reads whatever it holds when the turn ends.
+	lang := s.turnLanguage(req.Text, nil)
+	s.emitProgress(ctx, req.ConversationID, domain.PhaseUnderstanding, lang)
 
 	// ADR-0098 D3, on EVERY exit path. The happy path clears itself — the reply supersedes
 	// the status line — but a turn that fails before replying delivers nothing, and an
@@ -333,7 +440,8 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		domain.EmitProgress(context.WithoutCancel(ctx), s.progress, domain.ProgressUpdate{
 			ConversationID: req.ConversationID,
 			Final:          true,
-			Note:           humanFailure(turnErr), // empty on success ⇒ the line is cleared
+			Note:           humanFailure(turnErr, lang), // empty on success ⇒ the line is cleared
+			Language:       lang,
 		})
 	}()
 
@@ -341,6 +449,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	if err != nil {
 		return domain.Message{}, err
 	}
+	lang = s.turnLanguage(req.Text, history)
 
 	turnCtx := ctx
 	turnCancel := context.CancelFunc(func() {})
@@ -350,6 +459,8 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		turnCtx, turnCancel = context.WithCancel(ctx)
 	}
 	defer turnCancel()
+	turn, untrack := s.trackActive(req.ConversationID, turnCancel)
+	defer untrack()
 
 	// A turn that goes quiet is cut loose long before TurnTimeout would notice.
 	var stalled atomic.Bool
@@ -376,21 +487,37 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 					ConversationID:  conv.ID,
 					OriginMessageID: userMsg.ID,
 					AgentID:         s.leaseAgentID,
+					// Operator act-for: who opened this turn for the owner (audit).
+					ActedBy: domain.ActForActorFromContext(ctx),
 				})
 			}
 		}
 	}
 
-	// Everything after this point is the agent's own loop, which is where the minutes go.
-	s.emitProgress(ctx, req.ConversationID, domain.PhaseWorking)
+	// Whatever ends this turn — a reply, the deadline, a stall, a failure, a closed
+	// conversation — ends the work it delegated: its plans are cancelled, its leases
+	// revoked, and approvals they wait on withdrawn, so nothing goes on acting for a
+	// request the user has already been answered on. Deferred AFTER the lease release
+	// so it runs BEFORE it: the turn lease is still bound while its work is ended.
+	if s.delegations != nil {
+		defer func() {
+			s.delegations.EndTurn(req.ConversationID, userMsg.ID, domain.LeaseID(sessionToken), turnErr)
+		}()
+	}
 
-	h := s.buildHandoff(conv, req, history, sessionToken)
+	// Everything after this point is the agent's own loop, which is where the minutes go.
+	s.emitProgress(ctx, req.ConversationID, domain.PhaseWorking, lang)
+
+	h := s.buildHandoff(turnCtx, conv, req, history, sessionToken)
 	resp, err := s.pool.Dispatch(turnCtx, h)
 	if err != nil {
 		// Distinguish "we gave up on a wedged turn" from an ordinary cancellation, so the
 		// user is told what actually happened rather than a generic failure.
 		if stalled.Load() {
 			return domain.Message{}, ErrTurnStalled
+		}
+		if turn.closed.Load() {
+			return domain.Message{}, domain.ErrConversationClosed
 		}
 		return domain.Message{}, err // ErrPoolBusy / ErrWorkerLost pass through
 	}
@@ -422,7 +549,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	// dead-lettered by the delivery path rather than swallowed here.
 	// ADR-0098 D3: the answer supersedes the progress. A user must never be left looking at
 	// "working on it" after the reply has arrived.
-	s.emitProgress(ctx, req.ConversationID, domain.PhaseWriting)
+	s.emitProgress(ctx, req.ConversationID, domain.PhaseWriting, lang)
 
 	msg, derr := s.Emit(ctx, req.ConversationID, reply)
 	if derr != nil {
@@ -462,8 +589,9 @@ func (s *TurnService) loadHistory(ctx context.Context, conversationID string, up
 
 // buildHandoff produces the per-turn contract the session agent already expects (ADR-0080):
 // the message as the payload, with policy + transcript in metadata and the managed-LLM lease
-// on the handoff context.
-func (s *TurnService) buildHandoff(conv *domain.Conversation, req TurnRequest, history []domain.Message, sessionToken string) *domain.Handoff {
+// on the handoff context. ctx is the turn's context; it reaches the work-systems summary,
+// whose tool menu lookups are I/O.
+func (s *TurnService) buildHandoff(ctx context.Context, conv *domain.Conversation, req TurnRequest, history []domain.Message, sessionToken string) *domain.Handoff {
 	handoffCtx := map[string]string{}
 	if sessionToken != "" {
 		handoffCtx["_session_token_id"] = sessionToken
@@ -476,22 +604,39 @@ func (s *TurnService) buildHandoff(conv *domain.Conversation, req TurnRequest, h
 		policy = conv.Policy
 	}
 
+	md := map[string]string{
+		"_conversation_id": conv.ID,
+		"policy":           policy,
+		"transcript":       renderTranscript(history),
+		// The conversation's posture travels with the turn so a worker cannot be
+		// pointed at shared memory just because some agent default says so
+		// (ADR-0084 D7).
+		"profile":       string(conv.Profile),
+		"recall_lookup": fmt.Sprintf("%t", conv.Profile.Recall()),
+		// The conversation's language, so the worker's own fixed fallback sentence is
+		// said in it (agents/chat_agent.py). Detected here once, deterministically, from
+		// what the user wrote — never by a model (locale.go).
+		"language": s.turnLanguage(req.Text, history),
+	}
+	// The systems the planner's agents can reach, so a "what's in my CRM?" ask is
+	// delegated rather than answered "I have no tool" from the front desk's own
+	// skills menu (T-20261107-chat-agent-tells-the-user-it-has-no-tool-for). Not for
+	// a customer-facing conversation: the summary names the deployment's internal
+	// systems, which an external end user is not told about; such a turn can still
+	// delegate, it is only not shown the list.
+	if s.workSystems != nil && conv.Profile != domain.ProfileCustomer {
+		if ws := strings.TrimSpace(s.workSystems(ctx)); ws != "" {
+			md["work_systems"] = ws
+		}
+	}
+
 	return &domain.Handoff{
 		FromAgent: "chat_ingress",
 		Context:   handoffCtx,
 		Payload: &domain.Payload{
-			Type: "text",
-			Data: []byte(req.Text),
-			Metadata: map[string]string{
-				"_conversation_id": conv.ID,
-				"policy":           policy,
-				"transcript":       renderTranscript(history),
-				// The conversation's posture travels with the turn so a worker cannot be
-				// pointed at shared memory just because some agent default says so
-				// (ADR-0084 D7).
-				"profile":       string(conv.Profile),
-				"recall_lookup": fmt.Sprintf("%t", conv.Profile.Recall()),
-			},
+			Type:     "text",
+			Data:     []byte(req.Text),
+			Metadata: md,
 		},
 	}
 }

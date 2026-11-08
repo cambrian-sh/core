@@ -17,6 +17,7 @@ package procenv
 import (
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -86,8 +87,9 @@ func IsSecretName(name string) bool {
 	return false
 }
 
-// isKernelName reports whether a variable belongs to the kernel itself.
-func isKernelName(name string) bool {
+// IsKernelName reports whether a variable belongs to the kernel itself
+// (CAMBRIAN_*, LANGFUSE_*). No launched process ever receives one.
+func IsKernelName(name string) bool {
 	u := strings.ToUpper(name)
 	for _, p := range kernelPrefixes {
 		if strings.HasPrefix(u, p) {
@@ -136,13 +138,55 @@ func build(passthrough []string, namedSecretsAllowed bool) []string {
 		}
 		name := kv[:eq]
 		k := Key(name)
-		if !keep[k] || isKernelName(name) {
+		if !keep[k] || IsKernelName(name) {
 			continue
 		}
 		if IsSecretName(name) && !(namedSecretsAllowed && named[k]) {
 			continue
 		}
 		out = append(out, kv)
+	}
+	return out
+}
+
+// ServerEnv is AllowlistedNamedSecrets plus EXPLICIT per-server values: the
+// literal settings and the stored secrets an integration declares (MCP stdio
+// servers, T-20261105-mcp-server-config-cannot-set-literal-env-values). An
+// explicit value replaces an inherited variable of the same name. Kernel
+// variables (CAMBRIAN_*, LANGFUSE_*) are dropped even when given explicitly —
+// the one rule no configuration can relax. Values are never logged here.
+//
+// Output order is deterministic (inherited order, then explicit names sorted),
+// so two launches of one config see an identical environment.
+func ServerEnv(passthrough []string, explicit map[string]string) []string {
+	base := AllowlistedNamedSecrets(passthrough)
+	if len(explicit) == 0 {
+		return base
+	}
+	set := make(map[string]bool, len(explicit))
+	for name := range explicit {
+		if name == "" || IsKernelName(name) || strings.ContainsAny(name, "=\x00") {
+			continue
+		}
+		set[Key(name)] = true
+	}
+	out := make([]string, 0, len(base)+len(set))
+	for _, kv := range base {
+		eq := strings.IndexByte(kv, '=')
+		if eq > 0 && set[Key(kv[:eq])] {
+			continue // replaced by the explicit value below
+		}
+		out = append(out, kv)
+	}
+	names := make([]string, 0, len(explicit))
+	for name := range explicit {
+		if set[Key(name)] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		out = append(out, name+"="+explicit[name])
 	}
 	return out
 }

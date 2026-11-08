@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"time"
@@ -31,7 +32,7 @@ type Service struct {
 	feed       *Spool
 	projection *Projection
 	sessions   SessionLister
-	idp        OperatorIdentity
+	idp        domain.Authenticator
 	// logins is the per-source failure window Login consults BEFORE the
 	// credential is evaluated (ADR-0130 1f). Built in NewService — always on,
 	// never attached later.
@@ -46,6 +47,8 @@ type Service struct {
 	logs    *util.LogRing
 	hitl    domain.ApprovalHub
 	effects CommandEffects
+	// sharer applies the ADR-0142 D12 publish (ShareToTeam). nil ⇒ Unimplemented.
+	sharer MemorySharer
 
 	// ADR-0047 Amendment A2 read sources (CORE-OPS-1).
 	tools      ToolCatalog
@@ -113,6 +116,8 @@ type Service struct {
 	// nil ⇒ Save/Remove/SetToken/Test return Unimplemented, which a console
 	// renders as "this kernel's MCP servers are file-configured".
 	mcpWriter MCPWriter
+	// integrations is the integrations surface (capability "integrations").
+	integrations IntegrationManager
 	// linkWriter is the identity plane's review lane (contract 0098, five-planes
 	// step 2). nil ⇒ Confirm/Retract/ListLinkCandidates return Unimplemented,
 	// which a console renders as "this kernel holds no assertions about identity"
@@ -132,6 +137,12 @@ type Service struct {
 
 	sessionOps SessionOps
 	convOps    ConversationOps // ADR-0084 D9: OSS chat lane
+	// principals answers "is this a principal the deployment knows?" for act-for
+	// conversations (actfor.go). nil ⇒ act-for is refused (fail closed).
+	principals domain.PrincipalDirectory
+	// schedules is the operator view of principal-owned scheduled tasks
+	// (scheduled_tasks.go). nil ⇒ ListScheduledTasks answers Unimplemented.
+	schedules domain.PrincipalSchedules
 
 	kernelVersion   string
 	contractVersion string
@@ -171,8 +182,10 @@ func NewService(feed *Spool) *Service {
 	return &Service{feed: feed, projection: NewProjection(), logins: newLoginLimiter()}
 }
 
-// SetIdentity wires the OperatorIdentity backing the Login RPC (ADR-0047 D13).
-func (s *Service) SetIdentity(idp OperatorIdentity) { s.idp = idp }
+// SetIdentity wires the Authenticator backing Login, Logout and DescribeAuth
+// (ADR-0142 D1; ADR-0047 D13). Login is served only when it also implements
+// domain.PasswordLogin.
+func (s *Service) SetIdentity(idp domain.Authenticator) { s.idp = idp }
 
 // SetLoginObserver wires the hook failed (and successful) logins are reported
 // to — a receipt or decision-observation plane when the deployment has one
@@ -208,15 +221,42 @@ func (s *Service) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginRes
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"too many failed logins from this source; retry in %s", wait.Round(time.Second))
 	}
-	token, _, role, err := s.idp.Login(req.GetUsername(), req.GetPassword())
+	pl, ok := s.idp.(domain.PasswordLogin)
+	if !ok {
+		// An OIDC-only kernel: the person signs in at the issuer (DescribeAuth says
+		// which) and presents its token; there is no password to check here.
+		return nil, status.Error(codes.FailedPrecondition,
+			"password login is not enabled on this kernel; sign in through the identity provider (DescribeAuth)")
+	}
+	token, id, err := pl.Login(ctx, req.GetUsername(), req.GetPassword())
 	if err != nil {
 		n := s.logins.Fail(source)
 		s.observeLogin(LoginAttempt{Username: req.GetUsername(), Source: source, Failures: n, At: time.Now()})
-		return nil, err
+		if errors.Is(err, domain.ErrUnauthenticated) {
+			return nil, status.Error(codes.Unauthenticated, "invalid credentials")
+		}
+		return nil, status.Error(codes.Internal, "login failed")
 	}
 	s.logins.Reset(source)
 	s.observeLogin(LoginAttempt{Username: req.GetUsername(), Source: source, Success: true, At: time.Now()})
-	return &pb.LoginResponse{Token: token, Role: string(role)}, nil
+	return &pb.LoginResponse{Token: token, Role: string(RoleFromRoles(id.Roles)),
+		Principal: id.Principal.String(), Roles: id.Roles}, nil
+}
+
+// DescribeAuth tells a client how to sign in (ADR-0142 D1). Unauthenticated by
+// design (the interceptor lets it through); it carries no secret.
+func (s *Service) DescribeAuth(_ context.Context, _ *pb.DescribeAuthRequest) (*pb.DescribeAuthResponse, error) {
+	out := &pb.DescribeAuthResponse{}
+	if s.idp == nil {
+		return out, nil
+	}
+	if src, ok := s.idp.(domain.AuthMetadataSource); ok {
+		m := src.AuthMetadata()
+		out.PasswordLogin, out.OidcIssuer, out.OidcClientId = m.PasswordLogin, m.OIDCIssuer, m.OIDCClientID
+	} else {
+		_, out.PasswordLogin = s.idp.(domain.PasswordLogin)
+	}
+	return out, nil
 }
 
 // Logout revokes the bearer token this call carries (ADR-0130 D5 / 1f, contract
@@ -234,7 +274,7 @@ func (s *Service) Logout(ctx context.Context, _ *pb.LogoutRequest) (*pb.LogoutRe
 		return nil, status.Error(codes.Unauthenticated, "no bearer token to revoke")
 	}
 	principal, role, _ := PrincipalFromContext(ctx)
-	if err := s.idp.Revoke(token); err != nil {
+	if err := s.idp.Revoke(ctx, token); err != nil {
 		return nil, status.Errorf(codes.Internal, "revoke token: %v", err)
 	}
 	slog.Info("operator logout", "user", principal, "role", string(role))
@@ -440,6 +480,9 @@ var feedEventTypes = []string{
 	domain.EventTypeWatchTriggered,
 	domain.EventTypeMemoryWritten,
 	domain.EventTypeHITLRaised,
+	// ADR-0142 D11: every resolution (approved, denied, expired, withdrawn, …)
+	// leaves the pending set on every console, not only the one that answered.
+	domain.EventTypeHITLResolved,
 	domain.EventTypeVerifierRound,
 	domain.EventTypeLLMHealth,
 	domain.EventTypePlanState,
@@ -462,4 +505,7 @@ var feedEventTypes = []string{
 	// exists — the feed_bridge test asserts exactly this pairing, because three
 	// features have shipped blank by missing it.
 	domain.EventTypePipelineStep,
+	// Integrations: MCP server health (stopped/starting/ready/error) so the
+	// console shows a server going down or coming up without polling.
+	domain.EventTypeMCPServerHealth,
 }

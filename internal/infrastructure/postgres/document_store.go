@@ -49,7 +49,9 @@ func (p *PgVectorAdapter) SaveDocument(ctx context.Context, doc domain.SourceDoc
 			title       = EXCLUDED.title,
 			source_type = EXCLUDED.source_type,
 			text        = EXCLUDED.text,
-			tags        = EXCLUDED.tags,
+			tags        = EXCLUDED.tags || ARRAY(
+				SELECT t FROM unnest(` + TableDocuments + `.tags) AS t
+				WHERE starts_with(t, '` + domain.OwnerTagPrefix + `') AND NOT (t = ANY(EXCLUDED.tags))),
 			metadata    = EXCLUDED.metadata,
 			updated_at  = (now() AT TIME ZONE 'UTC'),
 			written_by  = COALESCE(` + TableDocuments + `.written_by, EXCLUDED.written_by),
@@ -59,19 +61,28 @@ func (p *PgVectorAdapter) SaveDocument(ctx context.Context, doc domain.SourceDoc
 			set += ",\n\t\t\t" + col + " = " + keepStatedTime(TableDocuments, col)
 		}
 	}
-	_, err := p.pool.Exec(ctx, `
+	// The owner fence survives a re-ingest (domain/owner_scope.go): a revision
+	// that arrives without the owner:<id> tag the stored row carries keeps it, so
+	// an upsert can never publish a principal's personal material. RETURNING
+	// hands the caller what actually landed, which is what it stamps on chunks.
+	var stored []string
+	err := p.pool.QueryRow(ctx, `
 		INSERT INTO `+TableDocuments+` (id, title, source_type, text, tags, metadata,
 			event_time, event_time_end, time_source, time_precision, claimed_time,
 			written_by, content_digest)
 		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, NULLIF($12, ''), NULLIF($13, ''))
-		ON CONFLICT (id) DO UPDATE SET`+set,
+		ON CONFLICT (id) DO UPDATE SET`+set+`
+		RETURNING tags`,
 		doc.ID, doc.Title, doc.SourceType, doc.Text, tags, string(meta),
 		st["event_time"], st["event_time_end"], st["time_source"], st["time_precision"], st["claimed_time"],
-		doc.WrittenBy, doc.ContentDigest)
+		doc.WrittenBy, doc.ContentDigest).Scan(&stored)
 	if err != nil {
 		return nil, mapError("SaveDocument", err)
 	}
-	return tags, nil
+	if stored == nil {
+		stored = []string{}
+	}
+	return stored, nil
 }
 
 // compile-time proof the adapter satisfies the ingest port.

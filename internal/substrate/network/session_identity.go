@@ -177,6 +177,15 @@ func legacySessionFallbackAllowed(ctx context.Context) bool {
 	return false
 }
 
+// callerConversation returns the conversation this caller is working for, or "".
+func (s *Server) callerConversation(ctx context.Context) string {
+	b, ok := s.resolveCallerBinding(ctx)
+	if !ok {
+		return ""
+	}
+	return b.ConversationID
+}
+
 // resolveCallerSession returns the durable TASK SESSION of the inbound caller, or "" when
 // the caller has none.
 //
@@ -200,15 +209,6 @@ func legacySessionFallbackAllowed(ctx context.Context) bool {
 // surface, the MCP task lane and non-agent in-process calls may name a session by id.
 // Every lease, on either header, resolves through resolveLeaseFor, so a lease an agent
 // caller does not own (bound to another agent, or unbound) is treated as unknown.
-// callerConversation returns the conversation this caller is working for, or "".
-func (s *Server) callerConversation(ctx context.Context) string {
-	b, ok := s.resolveCallerBinding(ctx)
-	if !ok {
-		return ""
-	}
-	return b.ConversationID
-}
-
 func (s *Server) resolveCallerSession(ctx context.Context) domain.SessionID {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
@@ -308,6 +308,7 @@ type TaskBeneficiarySource interface {
 // A session with no beneficiary seeds nothing and contributed resolution stays
 // fail-closed — the pre-phase-4 behaviour for every non-task session.
 func (s *Server) withCallerSession(ctx context.Context) context.Context {
+	ctx = s.withConversationOwner(ctx)
 	sid := s.resolveCallerSession(ctx)
 	if sid == "" {
 		return ctx
@@ -318,16 +319,73 @@ func (s *Server) withCallerSession(ctx context.Context) context.Context {
 			ctx = domain.WithTaskBeneficiary(ctx, owner)
 		}
 	}
-	// ADR-0127 CL-2: the ordering conversation, when the lease carries one, so
-	// a consent prompt raised at the tool chokepoint can route to the
-	// conversation surface that ordered the work (ADR-0098). Same trust rule as
+	// ADR-0127 CL-2 / ADR-0142 D11: the ordering conversation, so an approval or
+	// consent prompt raised at the tool chokepoint names (and can be delivered
+	// to) the conversation that ordered the work (ADR-0098). Same trust rule as
 	// everything above: only the lease binding is believed, never a header a
-	// caller could set. Cheap (a second lookup on the already-resolved lease);
-	// the session-record second hop stays resolveCallerConversation's business.
-	if b, known := s.resolveCallerBinding(ctx); known && b.ConversationID != "" {
-		ctx = domain.WithConversationID(ctx, b.ConversationID)
+	// caller could set. A chat turn's lease carries the conversation itself; a
+	// plan step's lease carries only its task session, whose conversation link
+	// (ADR-0084 D2) is the second hop — without it every approval raised by a
+	// chat-delegated plan step named no conversation
+	// (T-20261107-tool-approvals-raised-by-chat-delegated-plan).
+	if b, known := s.resolveCallerBinding(ctx); known {
+		if conv := s.conversationOfBinding(ctx, b); conv != "" {
+			ctx = domain.WithConversationID(ctx, conv)
+		}
 	}
 	return ctx
+}
+
+// withPresentedLease makes the lease an RPC carries in its REQUEST BODY the lease
+// every header-based resolution in this file reads (resolveCallerSession,
+// resolveCallerBinding, withConversationOwner, resolveCallerConversation).
+//
+// T-20261107-tool-approvals-raised-by-chat-delegated-plan: the SDK's execute_tool
+// sends the per-step lease ONLY as ExecuteToolRequest.lease_id, never as the
+// x-lease-id header. ExecuteTool authorised on the body lease (foreign-lease
+// check, run principal, turn guard, subagent admission) but resolved the task
+// session, conversation and conversation owner from the headers — so for every
+// SDK tool call they were all empty, and a dangerous-tool approval raised from a
+// plan step named no beneficiary and was unroutable under any self or
+// relationship rule. Projecting the body lease onto the header makes the one
+// lease the request presents the only identity input, resolved by the same code
+// and under the same ADR-0139 D8 ownership rule as every other lane: a lease the
+// caller may not use still resolves to nothing.
+//
+// The body lease is authoritative because it is the one the RPC already
+// authorises on; a different x-lease-id header is overwritten (and logged), so a
+// call can never be authorised as one lease and attributed to another.
+func withPresentedLease(ctx context.Context, lease domain.LeaseID) context.Context {
+	if lease == "" {
+		return ctx
+	}
+	md, _ := metadata.FromIncomingContext(ctx)
+	if prior := firstMD(md, leaseHeader); prior == string(lease) {
+		return ctx
+	} else if prior != "" {
+		slog.Warn("x-lease-id header differs from the request's lease; the request's lease is used",
+			"agent", agentIDFromMetadata(ctx))
+	}
+	md = md.Copy()
+	md.Set(leaseHeader, string(lease))
+	return metadata.NewIncomingContext(ctx, md)
+}
+
+// conversationOfBinding is the conversation a resolved lease binding works for:
+// on the lease itself (a chat turn), else on its task session (a plan step a
+// chat turn ordered — the ADR-0084 D2 link). "" when neither names one.
+func (s *Server) conversationOfBinding(ctx context.Context, b domain.LeaseBinding) string {
+	if b.ConversationID != "" {
+		return b.ConversationID
+	}
+	if b.SessionID == "" || s.SessionMgr == nil {
+		return ""
+	}
+	ses, err := s.SessionMgr.GetSession(ctx, b.SessionID)
+	if err != nil || ses == nil {
+		return ""
+	}
+	return ses.ConversationID
 }
 
 // firstMD returns the first value for key, or "".
@@ -374,27 +432,13 @@ func (s *Server) resolveCallerConversation(ctx context.Context) string {
 	if !known {
 		return ""
 	}
-	if binding.ConversationID != "" {
-		return binding.ConversationID
-	}
-
-	// Second hop, and the one that actually matters in practice.
-	//
 	// Only the chat turn's OWN lease carries a conversation. The moment that turn delegates
 	// to the planner, each step runs under a fresh step lease bound to a SessionID — so the
-	// agents doing the slow work (retrieval, tools, file writes) resolve to no conversation
-	// at all, and the user watching sees one static line while the system is busiest.
-	//
-	// ADR-0084 D2 linked the session back to the conversation that ordered it precisely so
-	// this attribution is possible server-side, without an agent naming anything.
-	if binding.SessionID == "" || s.SessionMgr == nil {
-		return ""
-	}
-	ses, err := s.SessionMgr.GetSession(ctx, binding.SessionID)
-	if err != nil || ses == nil {
-		return ""
-	}
-	return ses.ConversationID
+	// agents doing the slow work (retrieval, tools, file writes) would resolve to no
+	// conversation at all, and the user watching would see one static line while the system
+	// is busiest. conversationOfBinding takes the second hop through the session's ADR-0084
+	// D2 link, so this attribution is possible server-side, without an agent naming anything.
+	return s.conversationOfBinding(ctx, binding)
 }
 
 // reportProgress tells whoever is waiting on this caller's conversation what the kernel is
@@ -432,4 +476,32 @@ func (s *Server) liveCallerSession(ctx context.Context) domain.SessionID {
 		return ""
 	}
 	return ses.ID
+}
+
+// withConversationOwner stamps the owner of the conversation the caller's lease
+// was issued under (domain.WithConversationOwner) — on the lease itself, or on its
+// task session — so the decision point narrows the agent's reads and calls by what
+// that person may see (T-20261106-conversations-cannot-be-opened-as-a-given).
+// Kernel-held facts only: the lease binding and the conversation record, never a
+// header the caller sets. Runs BEFORE the "no session" early return in
+// withCallerSession because a chat turn's lease carries a conversation and no
+// session. No lease, no conversation or no resolver ⇒ ctx unchanged (the agent's
+// own scope governs, as before).
+func (s *Server) withConversationOwner(ctx context.Context) context.Context {
+	if s.ConversationOwner == nil || domain.ConversationOwnerFromContext(ctx) != "" {
+		return ctx
+	}
+	b, known := s.resolveCallerBinding(ctx)
+	if !known {
+		return ctx
+	}
+	if owner := s.ConversationOwner(ctx, b); owner != "" {
+		ctx = domain.WithConversationOwner(ctx, owner)
+		if s.PrivateByDefault {
+			// ADR-0142 D12: what the agent writes for this person is theirs.
+			ctx = domain.WithPrivateWrites(ctx, owner)
+		}
+		return ctx
+	}
+	return ctx
 }

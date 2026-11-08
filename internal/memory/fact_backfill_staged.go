@@ -229,8 +229,12 @@ func (e *FactExtractor) reloadWindow(ctx context.Context, row domain.ExtractionW
 	if !ok {
 		return stagedWindow{}, false
 	}
-	sys := domain.WithScope(ctx, domain.ScopeSystem)
-	got, err := sr.FactsByID(sys, row.ItemIDs, domain.ScopeSystem)
+	// ScopeMaintenance: a journaled window of an owner's facts must reload as
+	// itself — under the owner fence its items would read as missing and the
+	// window would be re-extracted (an LLM call) on every run. The facts reload
+	// into the extractor, never to a principal.
+	sys := domain.WithScope(ctx, domain.ScopeMaintenance)
+	got, err := sr.FactsByID(sys, row.ItemIDs, domain.ScopeMaintenance)
 	if err != nil {
 		slog.WarnContext(ctx, "FactExtractor: journaled window unreadable; extracting it again", "document_id", row.DocumentID, "err", err)
 		return stagedWindow{}, false

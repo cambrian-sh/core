@@ -31,15 +31,26 @@ Dependencies:
 - Reference only indices that exist, and never form a cycle.
 
 Fan-out:
+- When a list or search tool already returns the fields you need for every
+  record, use one step that calls it instead of a per-record fan-out. Fan out only
+  when each item needs its own action, or a lookup the list does not answer.
 - When a step must run once per item of a set whose size is known only after an
   earlier step has observed it ("for each missing section, write it" after a step
   that scans the folder), write one parametric step: set fan_out_over to the
   index of the step whose output is the set, and put {item} in its query (or set
   fan_out_var to "x" and use {x}). Do not guess the count or list the items
   yourself; the runtime expands the step when it runs.
+- A parametric step's query describes one item and contains {item}. Do not write
+  a whole-set instruction ("for each incident, ...") in it.
+- The step whose output is the set returns its items as a JSON array of strings,
+  one per item, each the value that replaces {item}, and its query asks for that
+  ("... and return their IDs as a JSON array"). This holds for a thought step that
+  selects the items too. Over a plain-text list, a step that changes something
+  runs once for the whole set instead of once per item.
 - A step that must run after all the items, such as a summary, depends on the
   parametric step.
-- Example: {"query": "write the file for {item}", "depends_on": [0], "fan_out_over": 0}
+- Example: {"query": "list the files in the folder and return their names as a JSON array", "depends_on": []}
+  followed by {"query": "write the file for {item}", "depends_on": [0], "fan_out_over": 0}
 
 Checkpoints:
 - Set checkpoint_after to true on a step whose output gates irreversible or

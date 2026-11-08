@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -11,6 +12,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.etcd.io/bbolt"
@@ -26,6 +29,25 @@ var (
 	configOverrideBucket = []byte("config_overrides")
 	secretBucket         = []byte("secrets")
 	configMetaBucket     = []byte("config_meta")
+	// secretMetaBucket records WHEN each secret was last written (unix ms), so a
+	// console can say "set 3 days ago" without the value ever leaving the store.
+	// Kept apart from secretBucket so nothing that iterates sealed values can
+	// mistake a timestamp for a credential. Added without a schema bump: an
+	// absent bucket or entry reads as "unknown" (0).
+	secretMetaBucket = []byte("secret_meta")
+	// sealedRecordBucket holds provider-owned sealed records (ADR-0141): each
+	// value is ONE sealed blob whose shape the owning provider defines (premium
+	// accounts: tokens AND connection metadata — an account email is personal
+	// data — so nothing about a person's account is readable from the file
+	// without the key). Keys are "<namespace>/<key>"; a provider sees only its
+	// own namespace (SealedRecords). Added without a schema bump, like
+	// secret_meta: an absent bucket reads empty.
+	sealedRecordBucket = []byte("sealed_records")
+	// legacyUserCredentialBucket is ADR-0140's per-user credential bucket.
+	// Migrated into sealedRecordBucket under namespace "accounts" on open and
+	// then deleted (migrateLegacyUserCredentials), so a deployment that
+	// connected accounts before ADR-0141 keeps them.
+	legacyUserCredentialBucket = []byte("user_credentials")
 )
 
 // ConfigStoreSchemaVersion versions the bucket layout. The Postgres migration
@@ -64,10 +86,13 @@ func OpenConfigStoreTimeout(dbPath string, timeout time.Duration) (*BoltConfigSt
 		return nil, fmt.Errorf("config store: open %s: %w", dbPath, err)
 	}
 	if err := db.Update(func(tx *bbolt.Tx) error {
-		for _, b := range [][]byte{configOverrideBucket, secretBucket, configMetaBucket} {
+		for _, b := range [][]byte{configOverrideBucket, secretBucket, configMetaBucket, secretMetaBucket, sealedRecordBucket} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
+		}
+		if err := migrateLegacyUserCredentials(tx); err != nil {
+			return err
 		}
 		meta := tx.Bucket(configMetaBucket)
 		if meta.Get([]byte("schema_version")) == nil {
@@ -182,15 +207,40 @@ func (s *BoltConfigStore) SetSecret(name, value string) error {
 		return err
 	}
 	return s.db.Update(func(tx *bbolt.Tx) error {
-		return tx.Bucket(secretBucket).Put([]byte(name), sealed)
+		if err := tx.Bucket(secretBucket).Put([]byte(name), sealed); err != nil {
+			return err
+		}
+		return tx.Bucket(secretMetaBucket).Put([]byte(name), []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)))
 	})
 }
 
 // ClearSecret removes a credential.
 func (s *BoltConfigStore) ClearSecret(name string) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
-		return tx.Bucket(secretBucket).Delete([]byte(name))
+		if err := tx.Bucket(secretBucket).Delete([]byte(name)); err != nil {
+			return err
+		}
+		return tx.Bucket(secretMetaBucket).Delete([]byte(name))
 	})
+}
+
+// SecretUpdatedAt reports when the secret under name was last written, or the
+// zero time when it is absent or was written before timestamps were kept. It
+// never touches the sealed value.
+func (s *BoltConfigStore) SecretUpdatedAt(name string) time.Time {
+	var ms int64
+	_ = s.db.View(func(tx *bbolt.Tx) error {
+		if b := tx.Bucket(secretMetaBucket); b != nil {
+			if v := b.Get([]byte(name)); v != nil {
+				ms, _ = strconv.ParseInt(string(v), 10, 64)
+			}
+		}
+		return nil
+	})
+	if ms <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms)
 }
 
 // Configured reports whether a credential is stored under name, without
@@ -236,6 +286,124 @@ func (s *BoltConfigStore) Resolve(name, envVar string) string {
 		return ""
 	}
 	return v
+}
+
+// ── provider-owned sealed records (ADR-0141) ───────────────────────────────
+
+// LegacyAccountsNamespace is the namespace ADR-0140's per-user credentials
+// are migrated into: premium's accounts provider (ADR-0141) reads them there.
+// The record bytes are copied unchanged — sealed with the same key, keyed
+// "<integration>\x1f<principal>" (unit-separator) exactly as before — so no re-encryption runs.
+const LegacyAccountsNamespace = "accounts"
+
+// migrateLegacyUserCredentials moves every record of the ADR-0140 bucket into
+// the sealed-record bucket under LegacyAccountsNamespace, then deletes the old
+// bucket, inside the open transaction (all or nothing). Idempotent: with no
+// legacy bucket it does nothing; a key already present in the new namespace
+// is kept (the newer write wins over the legacy copy).
+func migrateLegacyUserCredentials(tx *bbolt.Tx) error {
+	old := tx.Bucket(legacyUserCredentialBucket)
+	if old == nil {
+		return nil
+	}
+	dst := tx.Bucket(sealedRecordBucket)
+	if err := old.ForEach(func(k, v []byte) error {
+		nk := []byte(LegacyAccountsNamespace + "/" + string(k))
+		if dst.Get(nk) != nil {
+			return nil
+		}
+		return dst.Put(nk, append([]byte(nil), v...))
+	}); err != nil {
+		return fmt.Errorf("config store: migrate user_credentials: %w", err)
+	}
+	return tx.DeleteBucket(legacyUserCredentialBucket)
+}
+
+// SealedRecords returns the sealed-record store of one namespace (a provider
+// id such as "accounts"). The namespace must be non-empty and contain no "/".
+func (s *BoltConfigStore) SealedRecords(namespace string) (*SealedRecords, error) {
+	if namespace == "" || strings.Contains(namespace, "/") {
+		return nil, fmt.Errorf("config store: invalid sealed-record namespace %q", namespace)
+	}
+	return &SealedRecords{s: s, prefix: namespace + "/"}, nil
+}
+
+// SealedRecords is one namespace of the sealed-record bucket. It implements
+// domain.SealedRecordStore.
+type SealedRecords struct {
+	s      *BoltConfigStore
+	prefix string
+}
+
+// PutSealed seals plaintext and stores it under key.
+func (r *SealedRecords) PutSealed(key string, plaintext []byte) error {
+	sealed, err := r.s.seal(plaintext)
+	if err != nil {
+		return err
+	}
+	return r.s.db.Update(func(tx *bbolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(sealedRecordBucket)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(r.prefix+key), sealed)
+	})
+}
+
+// GetSealed returns the decrypted record under key.
+func (r *SealedRecords) GetSealed(key string) ([]byte, bool, error) {
+	var sealed []byte
+	if err := r.s.db.View(func(tx *bbolt.Tx) error {
+		if b := tx.Bucket(sealedRecordBucket); b != nil {
+			if v := b.Get([]byte(r.prefix + key)); v != nil {
+				sealed = append([]byte(nil), v...)
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, false, err
+	}
+	if sealed == nil {
+		return nil, false, nil
+	}
+	plain, err := r.s.open(sealed)
+	if err != nil {
+		return nil, false, fmt.Errorf("config store: sealed record %q cannot be decrypted: %w", r.prefix+key, err)
+	}
+	return plain, true, nil
+}
+
+// DeleteSealed removes the record under key, reporting whether one existed.
+func (r *SealedRecords) DeleteSealed(key string) (bool, error) {
+	existed := false
+	err := r.s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(sealedRecordBucket)
+		if b == nil {
+			return nil
+		}
+		existed = b.Get([]byte(r.prefix+key)) != nil
+		return b.Delete([]byte(r.prefix + key))
+	})
+	return existed, err
+}
+
+// SealedKeys lists the keys (never values) of this namespace's records,
+// without the namespace prefix.
+func (r *SealedRecords) SealedKeys() ([]string, error) {
+	var keys []string
+	err := r.s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(sealedRecordBucket)
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+		p := []byte(r.prefix)
+		for k, _ := c.Seek(p); k != nil && bytes.HasPrefix(k, p); k, _ = c.Next() {
+			keys = append(keys, string(k[len(p):]))
+		}
+		return nil
+	})
+	return keys, err
 }
 
 // reveal decrypts one stored secret. Unexported on purpose: it is the only path

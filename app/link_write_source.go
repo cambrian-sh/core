@@ -24,6 +24,15 @@ import (
 // change, and something has to translate.
 type linkWriteSource struct {
 	links domain.LinkStore
+	// review is the query plane's scoped read of the candidate inbox. The
+	// inbox is a READ, and reads of the substrate go through the plane, which
+	// judges each candidate on its own evidence (owner fence included). nil
+	// review lists nothing rather than falling back to the raw store: an
+	// unfenced fallback would be the leak this field closes
+	// (T-20261107-link-review-inbox-and-entity-op-candidates-skip).
+	review interface {
+		ReviewCandidates(ctx context.Context, namespace string, limit int, scope *domain.TagPredicate) ([]domain.Link, error)
+	}
 }
 
 var _ operator.LinkWriter = linkWriteSource{}
@@ -68,8 +77,16 @@ func (w linkWriteSource) RetractLinksByProducer(ctx context.Context, namespace, 
 	return w.links.RetractByProducer(ctx, namespace, producer, actor)
 }
 
+// ListLinkCandidates reads the review inbox at domain.ScopeSystem — the operator
+// plane's scope, which waives policy tag terms but NOT the owner fence
+// (domain/owner_scope.go). A candidate proposed from someone's owner:X evidence
+// is therefore not listed to the operator, and nothing reports how many were
+// withheld. Only ScopeMaintenance would list it, and no operator RPC uses it.
 func (w linkWriteSource) ListLinkCandidates(ctx context.Context, namespace string, limit int) ([]operator.LinkRecord, error) {
-	rows, err := w.links.Candidates(ctx, namespace, limit)
+	if w.review == nil {
+		return []operator.LinkRecord{}, nil
+	}
+	rows, err := w.review.ReviewCandidates(ctx, namespace, limit, domain.ScopeSystem)
 	if err != nil {
 		return nil, err
 	}

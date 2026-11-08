@@ -63,6 +63,9 @@ func (s *Server) UploadArtifact(ctx context.Context, req *pb.UploadArtifactReque
 	if s.ArtifactBytes == nil || s.ArtifactMeta == nil {
 		return nil, status.Error(codes.Unimplemented, "artifact storage not configured")
 	}
+	// ADR-0142 D12: an artifact uploaded while working a person's conversation
+	// is private to that person (the owner comes from the lease, never the request).
+	ctx = s.withConversationOwner(ctx)
 	principal := artifactPrincipal(ctx)
 	tags, err := authz.ClassifyArtifactWrite(ctx, s.authorizer(), principal, req.GetTags())
 	if err != nil {

@@ -115,6 +115,80 @@ func errPlanIdle(silent, idle time.Duration) error {
 		silent.Round(time.Millisecond), idle, context.DeadlineExceeded)
 }
 
+// errPlanCallerDeadline is the third cause: the plan was stopped reserve before its
+// CALLER's deadline. Like the other two it wraps context.DeadlineExceeded, so the
+// plan reads as timed out; unlike a deadline that is allowed to pass, it leaves
+// Execute the reserve to answer with what the plan did.
+func errPlanCallerDeadline(reserve time.Duration) error {
+	return fmt.Errorf("plan stopped %s before its caller's deadline to report what it did (execution.plan.caller_deadline_reserve_ms): %w",
+		reserve, context.DeadlineExceeded)
+}
+
+// callerDeadlineReserve resolves execution.plan.caller_deadline_reserve_ms; 0
+// (or negative) disables it.
+func callerDeadlineReserve(c config.PlanConfig) time.Duration {
+	if c.CallerDeadlineReserveMs <= 0 {
+		return 0
+	}
+	return time.Duration(c.CallerDeadlineReserveMs) * time.Millisecond
+}
+
+// callerReserve ends Execute's work a reserve before the caller's deadline
+// (T-20261107-a-delegated-plan-stopped-by-its-caller-s). A plan that ran into the
+// deadline itself died with its RPC: the caller got DEADLINE_EXCEEDED and no
+// payload, although steps had finished and written — a chat turn's delegated plan
+// approved a case and the reply could not say so. Stopped reserve early, the plan
+// returns through Execute's partial-plan path: the completed steps' report and the
+// side-effect ledger, marked timed out. A caller with no deadline is untouched; one
+// that grants less than twice the reserve gets half its time, so a short deadline
+// does not stop the work before it starts.
+//
+// It is the caller-deadline reserve, fixed ONCE per Execute: the
+// instant every pre-answer phase must end by (the caller's deadline minus the
+// reserve, the reserve capped at half the time the caller granted). Execute's
+// phases — routing, planning, the plan itself — are bounded by the same instant,
+// so a slow planner cannot spend the time the plan's answer needs, and the cap is
+// computed from the caller's whole budget rather than re-derived from whatever is
+// left when the plan starts
+// (T-20261107-planner-llm-call-is-not-bounded-by-the-caller).
+type callerReserve struct {
+	at      time.Time
+	reserve time.Duration
+	ok      bool
+}
+
+func newCallerReserve(ctx context.Context, reserve time.Duration) callerReserve {
+	dl, ok := ctx.Deadline()
+	if !ok || reserve <= 0 {
+		return callerReserve{}
+	}
+	remaining := time.Until(dl)
+	if remaining <= 0 {
+		return callerReserve{}
+	}
+	if reserve > remaining/2 {
+		reserve = remaining / 2
+	}
+	return callerReserve{at: dl.Add(-reserve), reserve: reserve, ok: true}
+}
+
+// bound derives ctx ending at the reserve instant with cause; ctx itself when no
+// reserve applies.
+func (r callerReserve) bound(ctx context.Context, cause error) (context.Context, context.CancelFunc) {
+	if !r.ok {
+		return ctx, func() {}
+	}
+	return context.WithDeadlineCause(ctx, r.at, cause)
+}
+
+// errPlanningCallerDeadline is the reserve's cause while the request is still
+// being routed or planned: nothing has been dispatched yet, so the answer can only
+// be that it ran out of time before anything ran.
+func errPlanningCallerDeadline(phase string, reserve time.Duration) error {
+	return fmt.Errorf("%s stopped %s before its caller's deadline, before any step ran (execution.plan.caller_deadline_reserve_ms): %w",
+		phase, reserve, context.DeadlineExceeded)
+}
+
 // startPlanCeiling derives the plan context: the absolute cap as a deadline, and
 // — when idle > 0 — one watchdog goroutine that cancels it once probe() is older
 // than idle. stop releases both and waits for the watchdog to exit (one owner,
@@ -248,17 +322,18 @@ func (r inFlightReplanner) Replan(ctx context.Context, failedStep int, err error
 
 // Execute response metadata for a plan its ceiling cut (partial-plan responses).
 const (
-	// PlanTimedOutKey is "true" when the plan idle watchdog or the max-duration
-	// cap ended the plan.
+	// PlanTimedOutKey is "true" when the plan idle watchdog, the max-duration
+	// cap or the caller-deadline reserve ended the plan.
 	PlanTimedOutKey = "_plan_timed_out"
 	// PlanTimeoutCauseKey carries the cause, naming the limit and its config key.
 	PlanTimeoutCauseKey = "_plan_timeout_cause"
 )
 
 // planCeilingCause is the plan ceiling's verdict once the plan has returned: the
-// idle or max-duration cause when one of them ended planCtx, nil otherwise —
-// including when the CALLER's ctx ended first, which is the caller giving up, not
-// the plan timing out.
+// idle, max-duration or caller-deadline-reserve cause when one of them ended
+// planCtx, nil otherwise — including when the CALLER's ctx ended first, which is
+// the caller giving up (or its deadline passing with no reserve), not the plan
+// timing out.
 func planCeilingCause(parent, planCtx context.Context) error {
 	if parent.Err() != nil || planCtx.Err() == nil {
 		return nil

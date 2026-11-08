@@ -145,6 +145,30 @@
       "static_hash": "221a9e75ff4f0c84db8a9f16a9c753e4ab588f5ab00d080e40e8ec107ad28e09"
     },
     {
+      "id": "chat_agent",
+      "version": 2,
+      "tier": "stable",
+      "inputs": [
+        "policy",
+        "work_systems"
+      ],
+      "description": "The chat front desk's stable system text: its role, its output rule, when to answer directly and when to delegate, the work systems the planner's agents can use, its answering rules for each recall posture, and the conversation's policy.",
+      "has_schema": false,
+      "static_hash": "7f9d95a4f24f7ff30f50470eb135f22e95fe9414e5d126623768ef1fc22a2d2e"
+    },
+    {
+      "id": "chat_agent",
+      "version": 3,
+      "tier": "stable",
+      "inputs": [
+        "policy",
+        "work_systems"
+      ],
+      "description": "The chat front desk's stable system text: its role, its output rule, when to answer directly and when to delegate, the work systems the planner's agents can use, its answering rules for each recall posture, and the conversation's policy.",
+      "has_schema": false,
+      "static_hash": "24ceb389273e722aeaff1eb901cfada5a1ab5c159f73cde9074fceb19fbfc707"
+    },
+    {
       "id": "chat_agent_turn",
       "version": 1,
       "tier": "volatile",
@@ -156,6 +180,62 @@
       "description": "The chat front desk's per-turn task text: the earlier conversation, the recalled memory and the latest message as tagged data, the reply instruction last, and the retry note for a narrated delegation.",
       "has_schema": false,
       "static_hash": "c1b81f90eceb77b2cd08dff1bc1f7bda6eff80d8e06a56d018ffd4c416f9bb33"
+    },
+    {
+      "id": "chat_agent_turn",
+      "version": 2,
+      "tier": "volatile",
+      "inputs": [
+        "transcript",
+        "memories",
+        "message",
+        "planner_result"
+      ],
+      "description": "The chat front desk's per-turn task text: the earlier conversation, the recalled memory and the latest message as tagged data, the reply instruction last, the retry note for a narrated delegation, and the retry note for a reply that denied access after a delegation returned a result.",
+      "has_schema": false,
+      "static_hash": "02bd4e7104bc69f0395b3184a4bd003787005321000caf2e4866476669ab4a27"
+    },
+    {
+      "id": "chat_agent_turn",
+      "version": 3,
+      "tier": "volatile",
+      "inputs": [
+        "transcript",
+        "memories",
+        "message",
+        "planner_result"
+      ],
+      "description": "The chat front desk's per-turn task text: the earlier conversation, the recalled memory and the latest message as tagged data, the reply instruction last, the retry note for a narrated delegation, the retry note for a reply that denied access after a delegation returned a result, and the note returned instead of a new plan after a final refusal.",
+      "has_schema": false,
+      "static_hash": "dcba723677e11d90fec4182215b1f205d969ac76678a519b6869fa323ab081a2"
+    },
+    {
+      "id": "chat_agent_turn",
+      "version": 4,
+      "tier": "volatile",
+      "inputs": [
+        "transcript",
+        "memories",
+        "message",
+        "planner_result"
+      ],
+      "description": "The chat front desk's per-turn task text: the earlier conversation, the recalled memory and the latest message as tagged data, the reply instruction last, the retry note for a narrated delegation, the retry note for a reply that denied access after a delegation returned a result, the note returned instead of a new plan after a final refusal, and the two notes returned when the turn is running out of time: instead of a new plan, and in place of a plan that did not finish in time.",
+      "has_schema": false,
+      "static_hash": "fa924b8ff7d5c4f070f99316e1306bdf6baec1c389c29cf25eb76d482fcbef95"
+    },
+    {
+      "id": "chat_agent_turn",
+      "version": 5,
+      "tier": "volatile",
+      "inputs": [
+        "transcript",
+        "memories",
+        "message",
+        "planner_result"
+      ],
+      "description": "The chat front desk's per-turn task text: the earlier conversation, the recalled memory and the latest message as tagged data, the reply instruction last, the retry note for a narrated delegation, the retry note for a reply that denied access after a delegation returned a result, the note returned instead of a new plan after a final refusal, and the two notes returned when the turn is running out of time: instead of a new plan, and in place of a plan that did not finish in time.",
+      "has_schema": false,
+      "static_hash": "ccdb741135b76fb3d00ca6b42ec8720bb792f170890c9abb335d4a7e70c263b1"
     },
     {
       "id": "clarifier",
@@ -233,6 +313,17 @@
       "static_hash": "c1590ea2c5c89e0a98014837627f81870b45a3c52ea7b0bad9b24e2a5605dfa6"
     },
     {
+      "id": "fanout_source",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "follow_up"
+      ],
+      "description": "Appended to the task of a plan step whose result is the item list of a later per-item step: asks for the items as one fenced JSON array after the answer.",
+      "has_schema": false,
+      "static_hash": "10a695274e3e3903f9398cbe82bcf76a17417cdc79395892f8eaec451e2f3d85"
+    },
+    {
       "id": "kg_triplets",
       "version": 1,
       "tier": "stable",
@@ -273,6 +364,15 @@
       "static_hash": "9cc1aaa29a8364b310612f8c6f394745c554b15908d56839ad269f6f02de2aff"
     },
     {
+      "id": "planner",
+      "version": 2,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Turn a user request into a dependency-ordered execution plan of capability-described steps.",
+      "has_schema": true,
+      "static_hash": "05fe765376a0d95e8dffc4b95f9a62e9cecaffd14ada8a16bb0a876e54223c0e"
+    },
+    {
       "id": "planner_cap",
       "version": 1,
       "tier": "stable",
@@ -280,6 +380,42 @@
       "description": "Turn a user request into a dependency-ordered execution plan whose steps declare the capability tags their executor must have.",
       "has_schema": true,
       "static_hash": "411f9f491e03ee466ae8e149cdd9ef0dfc4c323d0803627e23f131a8a06e278a"
+    },
+    {
+      "id": "planner_cap",
+      "version": 2,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Turn a user request into a dependency-ordered execution plan whose steps declare the capability tags their executor must have.",
+      "has_schema": true,
+      "static_hash": "e5ce656f2dd384aef3769735087800ca498ccf87f0077b95a2f984d360aab86a"
+    },
+    {
+      "id": "planner_cap",
+      "version": 3,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Turn a user request into a dependency-ordered execution plan whose steps declare the capability tags their executor must have and the effects they perform.",
+      "has_schema": true,
+      "static_hash": "d25ce4247cabbfc50a421269fac1261d560bbdc573f349cb4fff8b8a52936c0c"
+    },
+    {
+      "id": "planner_cap",
+      "version": 4,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Turn a user request into a dependency-ordered execution plan whose steps declare the capability tags their executor must have and the effects they perform.",
+      "has_schema": true,
+      "static_hash": "59bcbff430fbb37b6db23fc9561373c43529ac83fc544582726bf918e5ef9d05"
+    },
+    {
+      "id": "planner_cap",
+      "version": 5,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Turn a user request into a dependency-ordered execution plan whose steps declare the capability tags their executor must have and the effects they perform.",
+      "has_schema": true,
+      "static_hash": "43b05e94c88542031559808bb4f5c62306a15d13f23dfd10bbec187e39b20b19"
     },
     {
       "id": "planner_input",
@@ -305,6 +441,15 @@
       "static_hash": "23f491196e0f767133bfba93f5eb615f3565eb4ad2b6cfeecc9c3dda62b0fdcc"
     },
     {
+      "id": "replan",
+      "version": 2,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Revise a partly failed execution plan into a plan for the remaining work only.",
+      "has_schema": true,
+      "static_hash": "d7e851cc997b08c715bc6df9dd2feac87405903c3c67ee74abcba2232e87783d"
+    },
+    {
       "id": "replan_cap",
       "version": 1,
       "tier": "stable",
@@ -312,6 +457,42 @@
       "description": "Revise a partly failed execution plan into a plan for the remaining work whose steps declare the capability tags their executor must have.",
       "has_schema": true,
       "static_hash": "9f400614478281c60b88ef4367b019628bab7064de71d43c7a489867975dfd4f"
+    },
+    {
+      "id": "replan_cap",
+      "version": 2,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Revise a partly failed execution plan into a plan for the remaining work whose steps declare the capability tags their executor must have.",
+      "has_schema": true,
+      "static_hash": "bf0c6a8a5b15306f6d3cf64438cff4fc766b59724806e3aad0cd3767b78b377e"
+    },
+    {
+      "id": "replan_cap",
+      "version": 3,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Revise a partly failed execution plan into a plan for the remaining work whose steps declare the capability tags their executor must have and the effects they perform.",
+      "has_schema": true,
+      "static_hash": "a235a6050738078091adac6dda48f7281ef167d8abd90f663bc9f209b3515649"
+    },
+    {
+      "id": "replan_cap",
+      "version": 4,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Revise a partly failed execution plan into a plan for the remaining work whose steps declare the capability tags their executor must have and the effects they perform.",
+      "has_schema": true,
+      "static_hash": "9d08c1eedb3b1b573ce77c36d75cc8cf8b29151f3aa4370381f9ae82c68054bb"
+    },
+    {
+      "id": "replan_cap",
+      "version": 5,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Revise a partly failed execution plan into a plan for the remaining work whose steps declare the capability tags their executor must have and the effects they perform.",
+      "has_schema": true,
+      "static_hash": "3a6c00d322e4288c12a0192e93acd84ba4852b16de3c9d3b3e4e72572b40f434"
     },
     {
       "id": "replan_input",

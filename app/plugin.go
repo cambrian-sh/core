@@ -185,6 +185,8 @@ type Registry struct {
 	agentCallLogger  subnetwork.AgentCallLogger
 	signalReceiver   func(KernelServices) (domain.SignalReceiver, domain.WatchConfigHandler)
 	signalOwner      string
+	credentialSource NewCredentialSourceFunc
+	credentialOwner  string
 	grpcServices     []func(*grpc.Server)
 	lifecycles       []Lifecycle
 	selectorOwner    string
@@ -197,6 +199,8 @@ type Registry struct {
 	ingressResolver  domain.IngressResolver
 	identityResolver domain.IdentityResolver
 	identityOwner    string
+	authenticator    NewAuthenticatorFunc
+	authnOwner       string
 	ingressOwner     string
 	decisionObs      []domain.DecisionObserver
 	activityObs      []domain.AgentActivityObserver
@@ -265,6 +269,22 @@ func (r *Registry) SetIdentityResolver(owner string, res domain.IdentityResolver
 	}
 	r.identityResolver = res
 	r.identityOwner = owner
+	return nil
+}
+
+// SetAuthenticator installs the factory that builds the kernel's Authenticator
+// (ADR-0142 D1/D7: core ships local accounts + one OIDC issuer; premium's
+// multi-issuer federation replaces it here). Tier-1 replace-one, the ADR-0141 D6
+// SetCredentialSource pattern: two authenticators could disagree about who a
+// token names, and there would be no way to say which answer held.
+func (r *Registry) SetAuthenticator(owner string, f NewAuthenticatorFunc) error {
+	if f == nil {
+		return nil
+	}
+	if r.authenticator != nil {
+		return fmt.Errorf("authenticator already registered by plugin %q; %q cannot also own it", r.authnOwner, owner)
+	}
+	r.authenticator, r.authnOwner = f, owner
 	return nil
 }
 
@@ -812,6 +832,10 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 	if opts.NewSignalReceiver == nil && reg.signalReceiver != nil {
 		opts.NewSignalReceiver = reg.signalReceiver
 	}
+	// NewCredentialSource (ADR-0141): plugin wins only if not set directly.
+	if opts.NewCredentialSource == nil && reg.credentialSource != nil {
+		opts.NewCredentialSource = reg.credentialSource
+	}
 	// Authorizer + PolicyAdmin: plugin wins only if not set directly.
 	if opts.Authorizer == nil && reg.authorizer != nil {
 		opts.Authorizer = reg.authorizer
@@ -821,6 +845,9 @@ func applyPlugins(opts Options) (composedPlugins, error) {
 	}
 	if opts.IdentityResolver == nil && reg.identityResolver != nil {
 		opts.IdentityResolver = reg.identityResolver
+	}
+	if opts.NewAuthenticator == nil && reg.authenticator != nil {
+		opts.NewAuthenticator = reg.authenticator
 	}
 	if opts.IngressResolver == nil && reg.ingressResolver != nil {
 		opts.IngressResolver = reg.ingressResolver

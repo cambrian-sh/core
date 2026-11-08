@@ -559,6 +559,9 @@ func (b *CoreBackends) listDocuments(ctx context.Context, args json.RawMessage) 
 		UnlabelledOnly: in.UnlabelledOnly,
 		IDPrefix:       in.IDPrefix,
 		Tags:           in.Tags,
+		// Owner fence: the caller's own owner-scoped documents only, and only
+		// when it is a user acting as itself (domain/owner_scope.go).
+		Owners: listingOwners(ctx),
 	})
 	if err != nil {
 		return domain.PublishedToolResult{}, fmt.Errorf("list documents: %w", err)
@@ -579,6 +582,19 @@ func (b *CoreBackends) listDocuments(ctx context.Context, args json.RawMessage) 
 }
 
 // ── small helpers ────────────────────────────────────────────────────────────
+
+// listingOwners is who a list_documents caller acts as for the owner fence:
+// the owners on its resolved read scope when one is on ctx, else the caller
+// itself when it is a user principal, else nobody.
+func listingOwners(ctx context.Context) []string {
+	if s, ok := domain.ScopeFromContext(ctx); ok && s != nil {
+		return s.Owners
+	}
+	if p := domain.PrincipalFromContext(ctx); p.Kind == domain.PrincipalUser && p.ID != "" {
+		return []string{p.ID}
+	}
+	return nil
+}
 
 // parseArgs unmarshals the raw arguments; absent args mean "all defaults".
 func parseArgs(args json.RawMessage, into any) error {

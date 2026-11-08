@@ -3,6 +3,8 @@ package domain
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 )
 
 // The ToolExecutor side of ADR-0139 D11: the authorization pass a hook-rewritten
@@ -44,7 +46,11 @@ func (e *ToolExecutor) authorize(ctx context.Context, req *ToolCallRequest, tool
 	// not scope-gated here.
 	if !req.System && (len(tool.DataReadKinds) > 0 || len(tool.DataWriteKinds) > 0) {
 		if !e.scopeAllows(ctx, req.AgentID, tool) {
-			return ToolGrant{}, "scope", false
+			// Named like the Regime 3 reasons (ToolAccessDenyReason): which check, and
+			// what the tool presented. It was the bare word "scope".
+			return ToolGrant{}, "data scope not permitted: the tool's data kinds (" +
+				strings.Join(append(append([]string(nil), tool.DataReadKinds...), tool.DataWriteKinds...), ",") +
+				") are outside the reader's scope", false
 		}
 	}
 
@@ -57,10 +63,44 @@ func (e *ToolExecutor) authorize(ctx context.Context, req *ToolCallRequest, tool
 	// effect-gated; the resource-arg policy and process confinement still apply.
 	if !req.System {
 		if dec := e.effectDecision(ctx, *req, tool); !dec.Allowed {
-			return ToolGrant{}, "effect not permitted: " + dec.Detail, false
+			return ToolGrant{}, ToolAccessDenyReason(ctx, dec, tool.AuthzTags()), false
 		}
 	}
 	return grant, "", true
+}
+
+// ToolAccessDenyReason renders an authorizer denial of a tool call for the agent
+// and the operator. The decision point checks the tool's classification TAGS
+// first and its EFFECTS second (ADR-0086); before
+// T-20261107-acting-for-user-is-denied-their-own-finance every denial was
+// prefixed "effect not permitted: ", so a tag denial — whose Detail is a tag or
+// an any_of clause — read as an effect denial and sent the reader to the wrong
+// policy. The reason now names which check refused, what the tool presented,
+// and the conversation owner whose terms were folded in, if any.
+func ToolAccessDenyReason(ctx context.Context, dec AccessDecision, toolTags []string) string {
+	detail := dec.Detail
+	if detail == "" {
+		detail = string(dec.Reason)
+	}
+	var b strings.Builder
+	switch dec.Reason {
+	case ReasonEffectNotPermitted:
+		fmt.Fprintf(&b, "effect not permitted: %s", detail)
+	case ReasonForbiddenTag, ReasonMissingRequiredTag, ReasonAnyOfUnsatisfied, ReasonNotOwner, ReasonNotAParty:
+		presented := "none (unclassified tool)"
+		if len(toolTags) > 0 {
+			presented = strings.Join(toolTags, ",")
+		}
+		fmt.Fprintf(&b, "classification not permitted (%s): %s; the tool's classification tags: %s", dec.Reason, detail, presented)
+	case ReasonNoPrincipal:
+		fmt.Fprintf(&b, "principal not authorised: %s", detail)
+	default:
+		fmt.Fprintf(&b, "access denied (%s): %s", dec.Reason, detail)
+	}
+	if owner := ConversationOwnerFromContext(ctx); owner != "" && dec.Reason != ReasonEffectNotPermitted {
+		fmt.Fprintf(&b, " (acting for %s, whose access bounds this call)", UserPrincipal(owner).String())
+	}
+	return b.String()
 }
 
 // toolHookEvent builds the immutable event a tool hook sees.

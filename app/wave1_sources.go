@@ -122,7 +122,9 @@ func (m mcpLister) MCPServers() []operator.MCPServerInfo {
 		if m.connector != nil {
 			_, connected := m.connector.Session(s.ID)
 			info.Connected = connected
-			if !connected {
+			if !connected && m.runtime != nil && !m.runtime.enabled(s.ID) {
+				info.LastError = "disabled — not started (enable it from Integrations)"
+			} else if !connected {
 				// Distinguishable from a server that is simply idle: an operator
 				// reading "connected: false" with no reason cannot tell a
 				// misconfiguration from a server that has not been reached yet.
@@ -138,13 +140,16 @@ func (m mcpLister) MCPServers() []operator.MCPServerInfo {
 }
 
 // tokenFacts mirrors generatorRegistry.keyFacts: it reports the source the
-// connector will actually use (env first, store second — the mcp.tokenFor
-// precedence), never the credential.
+// connector will actually use (env first, then the org account or the store —
+// the mcp.tokenFor precedence), never the credential.
 func (m mcpLister) tokenFacts(s mcp.ServerConfig) (configured bool, source string) {
 	if s.AuthTokenEnv != "" && os.Getenv(s.AuthTokenEnv) != "" {
 		return true, "env:" + s.AuthTokenEnv
 	}
-	if m.secrets != nil && m.secrets.Configured(mcp.TokenSecretName(s.ID)) {
+	if ok, _ := sharedMCPCredentialStatus(m.secrets, s.ID, mcp.TokenSecretName(s.ID)); ok {
+		if orgCredentialWriter() != nil {
+			return true, "account" // ADR-0141: the org account bound to the server
+		}
 		return true, "store"
 	}
 	return false, ""

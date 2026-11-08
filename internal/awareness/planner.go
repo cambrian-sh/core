@@ -125,6 +125,14 @@ type Planner struct {
 	// Planner built as a bare struct literal still reports truthfully instead of
 	// silently claiming no OS.
 	goos string
+	// effects is the effect-checked-dispatch source (effects.go): the vocabulary and
+	// each agent's tool-derived effects, shown to the planner under the capability
+	// contract arm. nil ⇒ no effect block and no schema enum.
+	effects domain.AgentEffectSource
+	// toolMenu lists each agent's CALLABLE tools (tool_menu.go), so the capability
+	// block shows the live tool surface with one-line summaries instead of the
+	// declared allowlist globs. nil ⇒ the declared globs (the pre-fix rendering).
+	toolMenu ToolMenuSource
 }
 
 // hostGOOS is the OS the planner should be told about. Never hardcoded: it is
@@ -241,7 +249,18 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 			// REQ-CACHE-1: exact-match fast-path — bypass LLM entirely when
 			// similarity and confidence are extremely high and the prompt version
 			// matches (ensuring the agent pool and ruleset are identical).
-			if similarity >= 0.95 && conf >= 0.90 && priorPlan.PlannerPromptVersion == plannerPromptHash {
+			// The hash compared is the ACTIVE arm's: under the capability contract a
+			// plan is stamped plannerPromptHashCap, and comparing against the default
+			// arm's hash both disabled the fast path for contract plans and let a
+			// control-arm plan (no required_capabilities, no required_effects) be
+			// replayed under the contract arm. A new prompt version (planner_cap v3,
+			// required_effects) is a new hash, so older cached plans are never replayed
+			// verbatim; they still inform planning as <PlanLTM> references.
+			activeHash := plannerPromptHash
+			if p.capabilityContract {
+				activeHash = plannerPromptHashCap
+			}
+			if similarity >= 0.95 && conf >= 0.90 && priorPlan.PlannerPromptVersion == activeHash {
 				slog.Info("planner_exact_match_cache_hit", "similarity", similarity,
 					"confidence", conf, "prompt_version", priorPlan.PlannerPromptVersion)
 				return priorPlan.Clone(), nil
@@ -273,7 +292,10 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	if p.capabilityContract {
 		// manifest-derived vocabulary so the emitted required_capabilities
 		// match what L1 Declaration enforces (NOT the clusterer's labels).
-		clusterBlock, capVocab = buildCapabilityClusterFromManifests(ctx, agents, p.provider, p.canonicalVocab)
+		clusterBlock, capVocab = buildCapabilityClusterFromManifests(ctx, agents, p.provider, p.canonicalVocab, p.toolMenu)
+		// Effect-checked dispatch: the vocabulary and each agent's tool-derived
+		// effects, so the planner can declare required_effects (planner_cap v3).
+		clusterBlock = appendBlock(clusterBlock, buildEffectBlock(ctx, p.effects, agents))
 		pair = plannerCapPrompts
 		promptVersion = plannerPromptHashCap
 	}
@@ -285,6 +307,13 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	}, plannerCacheTTL)
 	if err != nil {
 		return nil, err
+	}
+	var effectVocab *domain.StepEffectVocabulary
+	if p.capabilityContract && p.effects != nil {
+		effectVocab = p.effects.Vocabulary()
+		if err := applyEffectSchema(&req, effectVocab); err != nil {
+			return nil, fmt.Errorf("planner: %w", err)
+		}
 	}
 
 	resp, err := domain.GenerateVia(ctx, p.client, req)
@@ -332,6 +361,8 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	// Same shape as the cache_policy validation directly below: an LLM-emitted name is
 	// checked against the configured set and silently normalised when unknown.
 	dropInventedCapabilities(ctx, &plan, capVocab, p.canonicalVocab)
+	// Effect contract: normalised and checked, but never dropped (fail closed).
+	normalizeDeclaredEffects(ctx, &plan, effectVocab)
 
 	// ADR-0027: validate LLM-emitted cache_policy against the configured policy set.
 	// Unknown names are normalised to "" so the Hippocampus falls back to default.
@@ -348,7 +379,7 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 		}
 		// preferred_agent / agent_pin are logged so a pinned plan is observable without the
 		// prompt-exchange capture, which covers the agent plane only (E2E 20261105T000624Z E12).
-		slog.Info("planner_step_generated", "index", i, "query", step.Query, "is_thought", step.IsThought, "depends_on", step.DependsOn, "fan_out_over", fanOut, "subject", plan.Subject, "preferred_agent", step.PreferredAgent, "agent_pin", step.AgentPin)
+		slog.Info("planner_step_generated", "index", i, "query", step.Query, "is_thought", step.IsThought, "depends_on", step.DependsOn, "fan_out_over", fanOut, "subject", plan.Subject, "preferred_agent", step.PreferredAgent, "agent_pin", step.AgentPin, "required_effects", step.RequiredEffects)
 	}
 
 	if p.advisor != nil {
@@ -429,7 +460,7 @@ func (p *Planner) CapabilityContract(ctx context.Context) (block string, vocab m
 		slog.WarnContext(ctx, "planner: capability vocabulary unavailable for replan", "err", err)
 		return "", nil, p.canonicalVocab, true
 	}
-	block, vocab = buildCapabilityClusterFromManifests(ctx, agents, p.provider, p.canonicalVocab)
+	block, vocab = buildCapabilityClusterFromManifests(ctx, agents, p.provider, p.canonicalVocab, p.toolMenu)
 	return block, vocab, p.canonicalVocab, true
 }
 
@@ -495,9 +526,15 @@ func buildLTMBlock(plan *domain.PlanLTMEntry, enrichment domain.LTMEnrichment) s
 // It returns BOTH the rendered block and the vocabulary set it rendered, from one
 // pass. Two passes would be two sources of truth for "what capabilities exist", and
 // the guard in Plan() depends on the set being exactly what the planner was shown.
-func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.AgentDefinition, provider AgentProvider, canonical bool) (string, map[string]struct{}) {
+//
+// menu, when set, renders the tool lines from each agent's live callable tools
+// (tool_menu.go) — the fix for T-20261107-world-system-asks-are-planned-as-local-file.
+// nil keeps the declared-glob rendering of agentToolLine.
+func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.AgentDefinition, provider AgentProvider, canonical bool, menu ToolMenuSource) (string, map[string]struct{}) {
 	clusters := make(map[string][]string)
 	var uncategorized []domain.AgentDefinition
+	var toolLines []string
+	live := newLiveToolMenu()
 	for _, a := range agents {
 		if a.Trait == domain.TraitModel {
 			continue
@@ -505,6 +542,14 @@ func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.Ag
 		var caps []string
 		if m, err := provider.GetManifest(ctx, a.ID); err == nil && m != nil {
 			caps = m.Capabilities
+			switch {
+			case len(m.ToolAllowlist) == 0:
+				// No allowlist: no tool line.
+			case menu != nil:
+				live.add(a.ID, menu.AvailableTools(ctx, a.ID))
+			default:
+				toolLines = append(toolLines, agentToolLine(a.ID, m.ToolAllowlist))
+			}
 		}
 		// ROUTE-04 / ADR-0067: fold format/typo-variant declared caps under one
 		// normalized tag so the planner emits a tag L1 (also normalizing) will match.
@@ -537,7 +582,66 @@ func buildCapabilityClusterFromManifests(ctx context.Context, agents []domain.Ag
 	for _, a := range uncategorized {
 		fmt.Fprintf(&sb, "- (uncategorized): %s — %q\n", a.ID, a.Description)
 	}
+	if len(toolLines) > 0 {
+		sort.Strings(toolLines)
+		sb.WriteString("\nTools each agent can call (agents not listed declare no tool allowlist):\n")
+		for _, l := range toolLines {
+			sb.WriteString(l)
+			sb.WriteByte('\n')
+		}
+	}
+	if block := live.render(); block != "" {
+		sb.WriteString("\n")
+		sb.WriteString(block)
+	}
 	return strings.TrimRight(sb.String(), "\n"), vocab
+}
+
+// agentToolLine renders one agent's tool surface for the planner — its declared
+// tool allowlist (a profile's `tools`, ADR-0139 / agent stack v2 D3), grouped by
+// MCP server — or "" when it declares none.
+//
+// Why the planner sees it: a capability tag says what an agent is FOR, not what it
+// can DO. Shown only tags, the planner tagged a "rename and move each receipt" step
+// with nothing a mover alone declared, and the step reached an agent whose
+// allowlist had no move tool, which then offered to rewrite the PDFs as
+// placeholder text (T-20261106-planner-routes-a-file-move-step-to-an-agent). The
+// allowlist is the right source: it is the ceiling the kernel enforces on that
+// agent (domain.ProfileToolCeiling), so the planner is shown exactly what the agent
+// could ever call — never a self-asserted list.
+//
+// This is the FALLBACK, used only when the planner has no ToolMenuSource. The
+// globs are rendered as declared ("read_*"); a server's "*" reads "all tools".
+// That was the production rendering until 2026-11-07 and it is what planned an
+// accounts-receivable ask as a local file search: a glob naming a server that is
+// not connected still showed its tools by name, while the one live server read
+// "vantis-emp-904 (all tools)" with nothing saying it held finance and mail
+// (T-20261107-world-system-asks-are-planned-as-local-file). With a source wired the
+// lines come from the live callable set instead (tool_menu.go).
+func agentToolLine(agentID string, allowlist []string) string {
+	if len(allowlist) == 0 {
+		return ""
+	}
+	var order []string
+	byServer := make(map[string][]string)
+	for _, g := range allowlist {
+		server, tool := "native", g
+		if rest, ok := strings.CutPrefix(g, "mcp:"); ok {
+			server, tool, _ = strings.Cut(rest, "/")
+		}
+		if _, seen := byServer[server]; !seen {
+			order = append(order, server)
+		}
+		if tool == "*" {
+			tool = "all tools"
+		}
+		byServer[server] = append(byServer[server], tool)
+	}
+	parts := make([]string, 0, len(order))
+	for _, s := range order {
+		parts = append(parts, fmt.Sprintf("%s (%s)", s, strings.Join(byServer[s], ", ")))
+	}
+	return fmt.Sprintf("- %s can call: %s", agentID, strings.Join(parts, "; "))
 }
 
 // buildHostBlock reports the OS the kernel is running on, as a DYNAMIC prompt

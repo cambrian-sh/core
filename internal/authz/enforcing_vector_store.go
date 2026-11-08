@@ -34,7 +34,8 @@ var ErrScopeMissing = errors.New("authz: refusing unfiltered Search (fail-closed
 //
 // Enforcement policy on Search:
 //   - no predicate (neither opts nor ctx)   → ErrScopeMissing (fail-closed)
-//   - bypass predicate (ScopeSystem or OSS) → delegate unfiltered (audited)
+//   - bypass predicate (ScopeSystem or OSS) → delegate with only the owner fence
+//     (domain/owner_scope.go); ScopeMaintenance alone is fully unfiltered
 //   - unsatisfiable predicate               → proceed (zero rows) + warn, and the
 //     caller's Explain surfaces the reason so the empty result is never silent
 //   - otherwise                             → delegate with opts.Scope set
@@ -103,7 +104,7 @@ func (s *EnforcingVectorStore) GetByID(ctx context.Context, id string) (*domain.
 	if err != nil || doc == nil {
 		return doc, err
 	}
-	if !eff.Bypass && !eff.Allows(DocTags(doc)) {
+	if !eff.Allows(DocTags(doc)) { // Allows keeps the owner fence under Bypass
 		s.logger.DebugContext(ctx, "authz: filtered by-id read",
 			slog.String("event", "authz_filtered"), slog.String("op", "GetByID"))
 		return nil, nil
@@ -119,7 +120,7 @@ func (s *EnforcingVectorStore) GetBatch(ctx context.Context, ids []string) ([]do
 		return nil, err
 	}
 	docs, err := s.inner.GetBatch(ctx, ids)
-	if err != nil || eff.Bypass {
+	if err != nil || eff.Unfiltered() {
 		return docs, err
 	}
 	return s.filter(ctx, docs, "GetBatch"), nil
@@ -145,7 +146,7 @@ func (s *EnforcingVectorStore) ChunksByIDs(ctx context.Context, ids []string) ([
 	} else {
 		docs, err = s.inner.GetBatch(ctx, ids)
 	}
-	if err != nil || eff.Bypass {
+	if err != nil || eff.Unfiltered() {
 		return docs, err
 	}
 	return s.filter(ctx, docs, "ChunksByIDs"), nil
@@ -160,7 +161,7 @@ func (s *EnforcingVectorStore) QueryByMetadata(ctx context.Context, filter map[s
 		return nil, err
 	}
 	docs, err := s.inner.QueryByMetadata(ctx, filter, limit)
-	if err != nil || eff.Bypass {
+	if err != nil || eff.Unfiltered() {
 		return docs, err
 	}
 	return s.filter(ctx, docs, "QueryByMetadata"), nil
@@ -240,7 +241,9 @@ func (s *EnforcingVectorStore) Search(ctx context.Context, vector []float32, opt
 		return nil, ErrScopeMissing
 	}
 
-	// Explicit, greppable bypass for kernel-internal reads and unscoped OSS.
+	// Explicit, greppable bypass for kernel-internal reads and unscoped OSS. The
+	// store still applies the owner fence from opts.Scope (scopeExpressions); only
+	// ScopeMaintenance reads other principals' owner-scoped rows.
 	if eff.Bypass {
 		opts.Scope = eff
 		return s.inner.Search(ctx, vector, opts)

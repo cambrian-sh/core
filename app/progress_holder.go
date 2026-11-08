@@ -41,6 +41,12 @@ type progressHolder struct {
 	// nothing else in the system can currently tell apart.
 	mu           sync.Mutex
 	lastActivity map[string]time.Time
+	// language is each in-flight conversation's language, as its chat turn stated it
+	// (ProgressUpdate.Language). Updates from emitters that do not know it — the
+	// planner's step progress, the operator-send failure — are rendered in it, so a
+	// Turkish turn's status line stays Turkish through the plan it delegated
+	// (T-20261107-chat-progress-status-line-phases-are-english). Forgotten with the turn.
+	language map[string]string
 }
 
 // set installs (or clears) the delegate. Safe to call at any point during boot.
@@ -68,6 +74,7 @@ func (h *progressHolder) setFeed(f func(domain.DomainEvent)) {
 // points are on the turn path, and progress must never be able to fail the work it
 // describes (ADR-0098 D5).
 func (h *progressHolder) Progress(ctx context.Context, u domain.ProgressUpdate) {
+	u.Language = h.languageFor(u.ConversationID, u.Language, u.Final)
 	h.touch(u.ConversationID, u.Final)
 	if p := h.sink.Load(); p != nil {
 		(*p).Progress(ctx, u)
@@ -104,6 +111,29 @@ func (h *progressHolder) touch(conversationID string, final bool) {
 		return
 	}
 	h.lastActivity[conversationID] = time.Now()
+}
+
+// languageFor records a stated language for the conversation, or returns the one recorded
+// when the update states none. A final update ends the turn and forgets it.
+func (h *progressHolder) languageFor(conversationID, stated string, final bool) string {
+	if conversationID == "" {
+		return stated
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.language == nil {
+		h.language = map[string]string{}
+	}
+	lang := stated
+	if lang == "" {
+		lang = h.language[conversationID]
+	}
+	if final {
+		delete(h.language, conversationID)
+	} else if stated != "" {
+		h.language[conversationID] = stated
+	}
+	return lang
 }
 
 // LastActivity returns when a conversation last reported progress, or the zero time if it

@@ -257,6 +257,14 @@ const (
 	// enumerates other people.
 	ReasonNotAParty DecisionReason = "not_a_party"
 
+	// ReasonNotOwner: the resource carries another principal's owner:<id> scope
+	// tag (ADR-0141 position 3, the owner fence) and the reader is not acting as
+	// that principal. Structural, not policy: no grant, policy or bypass short of
+	// the kernel-maintenance sentinel (ScopeMaintenance) admits it. Detail is the
+	// generic "owner-scoped row" — never the owner's id, which would enumerate
+	// whose private material exists.
+	ReasonNotOwner DecisionReason = "not_owner"
+
 	// ReasonWorkerNotOwned: a contributed local:<machine>/<tool> step named a
 	// machine that is not in the task beneficiary's fleet (ADR-0127 D1/D9 —
 	// authority owner must equal task beneficiary, per call). An unknown
@@ -490,8 +498,19 @@ func (AllowAllAuthorizer) Filter(_ context.Context, _ PrincipalRef, _ SurfaceRef
 	return candidates, nil
 }
 
-func (a AllowAllAuthorizer) ReadFilter(_ context.Context, principal PrincipalRef, surface SurfaceRef) (*TagPredicate, AccessDecision) {
-	return allowAllPredicate, AccessDecision{
+func (a AllowAllAuthorizer) ReadFilter(ctx context.Context, principal PrincipalRef, surface SurfaceRef) (*TagPredicate, AccessDecision) {
+	pred := allowAllPredicate
+	// The owner fence is core semantics (ADR-0142 D7/D12): with private-by-default
+	// stamping, an unscoped deployment also holds owner:<person> rows, so the
+	// reader must act as someone or it would see none of them — not even its own
+	// assistant's notes. The reader acts as itself when it is a person, and as the
+	// conversation owner when it is an agent working that person's conversation
+	// (kernel-resolved from the lease, never a payload) — the same rule the
+	// premium Authorizer's ownersFor applies.
+	if owners := allowAllOwners(ctx, principal); len(owners) > 0 {
+		pred = &TagPredicate{Bypass: true, Owners: owners}
+	}
+	return pred, AccessDecision{
 		Allowed:   true,
 		Principal: principal,
 		Surface:   surface,

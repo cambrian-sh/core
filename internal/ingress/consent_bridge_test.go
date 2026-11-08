@@ -86,9 +86,9 @@ func awaitResult(t *testing.T, ch <-chan reqResult) reqResult {
 	}
 }
 
-func bridgeFixture(t *testing.T, grace, window time.Duration) (*ConsentBridge, *domain.InMemoryConsentController, *fakePoster) {
+func bridgeFixture(t *testing.T, grace, window time.Duration) (*ConsentBridge, domain.WorkerConsentHub, *fakePoster) {
 	t.Helper()
-	hub := domain.NewInMemoryConsentController(grace)
+	hub := domain.NewAddressedHub(domain.AddressedHubConfig{ConsentTimeout: grace}).Consent()
 	fp := &fakePoster{}
 	b := NewConsentBridge(hub, fp, window)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -98,7 +98,7 @@ func bridgeFixture(t *testing.T, grace, window time.Duration) (*ConsentBridge, *
 	return b, hub, fp
 }
 
-var fleetOwner = domain.AgentPrincipal("afsin")
+var fleetOwner = domain.UserPrincipal("afsin")
 
 func approvePrompt(conv string) domain.ConsentPrompt {
 	return domain.ConsentPrompt{
@@ -156,7 +156,7 @@ func TestConsentBridge_BeneficiaryApproveResolvesTheStep(t *testing.T) {
 	if r.err != nil || r.outcome != domain.ConsentAnswered || !r.ans.Approved {
 		t.Fatalf("expected an approved answer, got %+v", r)
 	}
-	if r.ans.AnsweredBy != fleetOwner.String() {
+	if r.ans.AnsweredBy != domain.ApproverLabel(fleetOwner) {
 		t.Errorf("the decision record must name the approver: %q", r.ans.AnsweredBy)
 	}
 	waitForPosts(t, fp, 2)
@@ -195,7 +195,7 @@ func TestConsentBridge_OnlyTheBeneficiaryCanAnswer(t *testing.T) {
 	res := requestAsync(hub, approvePrompt("conv-s"))
 	waitForPosts(t, fp, 1)
 
-	if b.HandleReply(context.Background(), "conv-s", "approve", domain.AgentPrincipal("mallory")) {
+	if b.HandleReply(context.Background(), "conv-s", "approve", domain.UserPrincipal("mallory")) {
 		t.Fatal("a different principal must never answer another owner's prompt")
 	}
 	if b.HandleReply(context.Background(), "conv-s", "approve", domain.PrincipalRef{}) {
@@ -212,20 +212,23 @@ func TestConsentBridge_OnlyTheBeneficiaryCanAnswer(t *testing.T) {
 }
 
 // A zero beneficiary can never be matched by a zero sender: two nothings must
-// not add up to an approval.
+// not add up to an approval. Since ADR-0142 D11 the hub refuses such a prompt
+// up front — nobody satisfies "self" for nobody — so it fails closed at once
+// (no subscriber can reach an eligible approver) and is never posted.
 func TestConsentBridge_ZeroBeneficiaryNeverMatches(t *testing.T) {
 	b, hub, fp := bridgeFixture(t, 200*time.Millisecond, 3*time.Second)
 
 	p := approvePrompt("conv-z")
 	p.Beneficiary = domain.PrincipalRef{}
 	res := requestAsync(hub, p)
-	waitForPosts(t, fp, 1)
-
+	if r := awaitResult(t, res); r.outcome != domain.ConsentNoSubscriber || r.ans.Approved {
+		t.Fatalf("expected the fail-closed no-approver outcome, got %+v", r)
+	}
 	if b.HandleReply(context.Background(), "conv-z", "approve", domain.PrincipalRef{}) {
 		t.Fatal("a zero sender must not match a zero beneficiary")
 	}
-	if r := awaitResult(t, res); r.outcome != domain.ConsentTimedOut {
-		t.Fatalf("expected the fail-closed timeout, got %+v", r)
+	if n := fp.count(); n != 0 {
+		t.Fatalf("a prompt nobody can answer must not be posted; got %d posts", n)
 	}
 }
 
@@ -343,8 +346,12 @@ func TestConsentBridge_ExpiryUnblocksTheQueue(t *testing.T) {
 	pB.Tool = "local:laptop/delete_file"
 	resB := requestAsync(hub, pB)
 
-	// Deterministic promotion: expire A through the timer's own path.
-	b.expire("conv-e", "consent-1")
+	// Deterministic promotion: expire A through the timer's own path. Hub ids are
+	// content-derived (ADR-0142 D11), so read A's from the bridge's active slot.
+	b.mu.Lock()
+	idA := b.active["conv-e"].prompt.ID
+	b.mu.Unlock()
+	b.expire("conv-e", idA)
 	waitForPosts(t, fp, 2)
 	if _, text := fp.at(1); !strings.Contains(text, "local:laptop/delete_file") {
 		t.Fatalf("the queued prompt must be promoted on expiry: %q", text)
@@ -358,7 +365,7 @@ func TestConsentBridge_ExpiryUnblocksTheQueue(t *testing.T) {
 	}
 	// A itself resolves through the controller (still pending there until its
 	// own window ends; submit its id to release the goroutine promptly).
-	hub.Submit("consent-1", domain.ConsentAnswer{})
+	hub.Submit(idA, domain.ConsentAnswer{By: domain.Approver{Principal: fleetOwner}})
 	awaitResult(t, resA)
 }
 

@@ -119,14 +119,27 @@ type TagPredicate struct {
 	// the direction of access.
 	PartyIdentities []string `json:"party_identities,omitempty"`
 
-	// Bypass, when true, admits everything. It marks either the explicit
-	// ScopeSystem sentinel (kernel-internal maintenance reads) or an unscoped
-	// deployment. It must never be produced by combining two predicates — the
-	// kernel does not combine predicates at all.
+	// Owners are the principal ids this reader ACTS AS for the owner fence
+	// (owner_scope.go, ADR-0141 position 3): a row carrying owner:X is admitted
+	// only when X is listed. Resolved by the decision point from the reader
+	// (never from a policy term), and applied by the kernel as data. Empty denies
+	// every owner-scoped row — fail closed. Unlike every other term it applies
+	// under Bypass too.
+	Owners []string `json:"owners,omitempty"`
+	// AllOwners lifts the owner fence. Honoured ONLY together with Bypass — i.e.
+	// only on ScopeMaintenance, which no decision point ever hands a principal.
+	AllOwners bool `json:"all_owners,omitempty"`
+
+	// Bypass, when true, admits everything EXCEPT other principals' owner-scoped
+	// rows (the owner fence survives Bypass; only ScopeMaintenance lifts it). It
+	// marks either the explicit ScopeSystem sentinel (kernel-internal reads, the
+	// operator plane) or an unscoped deployment. It must never be produced by
+	// combining two predicates — the kernel does not combine predicates at all.
 	Bypass bool `json:"bypass,omitempty"`
 }
 
 // ScopeSystem is the explicit, greppable sentinel that bypasses tag filtering for
+// (everything but the owner fence — see ScopeMaintenance, owner_scope.go)
 // kernel-internal / maintenance reads that run on behalf of no principal
 // (temporal decay & GC, spreading-activation expansion, episodic indexing). A
 // security review can enumerate every use by grepping for this one identifier —
@@ -168,6 +181,12 @@ func (p *TagPredicate) Allows(tags []string) bool {
 func (p *TagPredicate) Check(tags []string) (AccessDecision, bool) {
 	if p == nil {
 		return AccessDecision{Reason: ReasonNoPrincipal, Detail: "no effective predicate (fail-closed)"}, false
+	}
+	// The owner fence first, and BEFORE Bypass: it is the one term a bypass does
+	// not waive (owner_scope.go). Detail is generic on purpose — naming the owner
+	// would tell the reader whose private material exists.
+	if p.foreignOwnerTag(tags) != "" {
+		return AccessDecision{Reason: ReasonNotOwner, Detail: "owner-scoped row"}, false
 	}
 	if p.Bypass {
 		return AccessDecision{Allowed: true, Reason: ReasonBypass}, true

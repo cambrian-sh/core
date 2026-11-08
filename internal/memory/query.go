@@ -1737,7 +1737,8 @@ func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]do
 // SearchSystem is the operator-plane fact recall at ScopeSystem (ADR-0047 D13 /
 // Amendment A2). It seeds domain.ScopeSystem into ctx server-side, so the read
 // bypasses both scope filtering and the per-caller ACL — the operator sees all
-// data. Single-pass (never the agentic loop): the operator memory explorer is a
+// data EXCEPT other principals' owner-scoped (personal-ingest) rows: the owner
+// fence survives ScopeSystem (domain/owner_scope.go, ADR-0141). Single-pass (never the agentic loop): the operator memory explorer is a
 // direct query, not an agent's grounding retrieval.
 func (q *QueryService) SearchSystem(ctx context.Context, query string) ([]domain.SearchResult, error) {
 	ctx = domain.WithScope(ctx, domain.ScopeSystem)

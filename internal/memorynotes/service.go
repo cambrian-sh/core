@@ -76,6 +76,11 @@ type Principal struct {
 	MemoryWriteGranted bool
 	// Session correlates authorization decisions with the run.
 	Session domain.SessionID
+	// ActedBy is the operator who opened the run's conversation turn on behalf of
+	// ID (operator act-for), "" otherwise. AUDIT ONLY: it is named in the writer of
+	// record and never selects whose notes are read or written, nor the scope the
+	// write is authorized under — that is ID's.
+	ActedBy string
 }
 
 func (p Principal) ref() domain.PrincipalRef {
@@ -85,6 +90,9 @@ func (p Principal) ref() domain.PrincipalRef {
 // writerOfRecord renders "agent:<id> for <principal>" for UpdatedBy.
 func (p Principal) writerOfRecord() string {
 	switch {
+	case p.AgentID != "" && p.ID != "" && p.ActedBy != "" && p.ActedBy != p.ID:
+		// Act-for: the subject is the owner, the human behind the turn is named too.
+		return "agent:" + p.AgentID + " for " + p.ID + " (on behalf, by operator:" + p.ActedBy + ")"
 	case p.AgentID != "" && p.ID != "":
 		return "agent:" + p.AgentID + " for " + p.ID
 	case p.AgentID != "":
@@ -152,14 +160,46 @@ func (s *Service) budgetFor(ctx context.Context, key Key) (budget int, overridde
 
 // ── authorization (C8) ───────────────────────────────────────────────────────
 
+// resourceFor is the decision-point view of a document. A PERSONAL document is
+// owner-scoped: it carries owner:<owner> (ADR-0142 D12 — "anything an agent
+// writes while acting in a person's conversation carries owner:<person>. This
+// covers memory notes"), so the owner fence makes it readable by that person
+// alone, whoever else holds a broad policy — the operator included
+// (T-20261107-a-person-s-assistant-cannot-save-that-person-s). The premium
+// decision point checks a person's OWN owner-scoped resource without their
+// floor's positive classification terms (authz.ownScopedCheck), which is what
+// lets a person with a narrow read floor keep their own notes.
 func resourceFor(key Key) (domain.ResourceRef, []string) {
-	return domain.ResourceRef{Kind: domain.KindMemory, ID: "memory-notes:" + key.String()},
-		[]string{"memory-notes", "memory-notes:" + string(key.Scope)}
+	tags := classificationTags(key)
+	if key.Scope == ScopePersonal && key.OwnerID != "" {
+		tags = append(tags, domain.OwnerTag(key.OwnerID))
+	}
+	return domain.ResourceRef{Kind: domain.KindMemory, ID: "memory-notes:" + key.String()}, tags
+}
+
+// classificationTags are a document's tags without the owner fence.
+func classificationTags(key Key) []string {
+	return []string{"memory-notes", "memory-notes:" + string(key.Scope)}
 }
 
 func (s *Service) allowed(ctx context.Context, who domain.PrincipalRef, surface domain.SurfaceRef,
 	session domain.SessionID, key Key, write bool) bool {
 	res, tags := resourceFor(key)
+	return s.decide(ctx, who, surface, session, res, tags, write)
+}
+
+// adminAllowed authorizes an operator-plane ADMINISTRATIVE mutation (Set, Delete,
+// SetBudget) on a document by its classification alone, without the owner fence.
+// These are audited operator acts on the deployment's notes (moderation, erasure,
+// budgets), not reads of a person's material: reading another person's notes
+// (List, Get) stays owner-fenced.
+func (s *Service) adminAllowed(ctx context.Context, who domain.PrincipalRef, key Key) bool {
+	res, _ := resourceFor(key)
+	return s.decide(ctx, who, operatorSurface, "", res, classificationTags(key), true)
+}
+
+func (s *Service) decide(ctx context.Context, who domain.PrincipalRef, surface domain.SurfaceRef,
+	session domain.SessionID, res domain.ResourceRef, tags []string, write bool) bool {
 	req := domain.AccessRequest{Principal: who, Surface: surface, Resource: res, Tags: tags, Session: session}
 	if write {
 		req.Effects = []domain.ToolEffect{domain.EffectWrite}
@@ -575,7 +615,7 @@ func (s *Service) Set(ctx context.Context, c Caller, key Key, content, ifMatch s
 	if err := key.validate(); err != nil {
 		return WriteResult{}, err
 	}
-	if !s.allowed(ctx, c.ref(), operatorSurface, "", key, true) {
+	if !s.adminAllowed(ctx, c.ref(), key) {
 		return WriteResult{Rejection: RejectScopeDenied, Detail: "the access policy denies this write"}, nil
 	}
 	flagged, detail := s.scan.ScanNote(content)
@@ -600,7 +640,7 @@ func (s *Service) Delete(ctx context.Context, c Caller, key Key, reason string) 
 	if err := key.validate(); err != nil {
 		return Document{}, err
 	}
-	if !s.allowed(ctx, c.ref(), operatorSurface, "", key, true) {
+	if !s.adminAllowed(ctx, c.ref(), key) {
 		return Document{}, ErrNotFound
 	}
 	for attempt := 0; ; attempt++ {
@@ -630,7 +670,7 @@ func (s *Service) SetBudget(ctx context.Context, c Caller, scope Scope, owner st
 		return fmt.Errorf("%w: scope is required", ErrInvalid)
 	}
 	key := Key{Scope: scope, OwnerID: owner}
-	if owner != "" && !s.allowed(ctx, c.ref(), operatorSurface, "", key, true) {
+	if owner != "" && !s.adminAllowed(ctx, c.ref(), key) {
 		return ErrNotFound
 	}
 	if clear {

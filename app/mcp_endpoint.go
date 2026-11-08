@@ -31,7 +31,7 @@ import (
 // `claude mcp add` against a booting kernel must reach a live endpoint, not a
 // timeout.
 func startMCPEndpoint(cfg *config.Config, surface domain.PublishedToolSurface,
-	authorizer domain.Authorizer, identity domain.IdentityResolver) (*http.Server, error) {
+	authorizer domain.Authorizer, identity domain.IdentityResolver, principals domain.PrincipalRegistry) (*http.Server, error) {
 	m := cfg.Server.MCP
 	if !m.Enabled {
 		return nil, nil
@@ -67,6 +67,8 @@ func startMCPEndpoint(cfg *config.Config, surface domain.PublishedToolSurface,
 		WorkerOwner: func(client string) (string, bool) {
 			return resolveNamedSecret(mcpserve.WorkerOwnerSecretName(client))
 		},
+		// ADR-0142 D3: lifecycle (suspension) of bound persons and worker owners.
+		Principals: principals,
 		// D12: the server-instructions text every client receives at initialize.
 		Instructions: mcpserve.CoreInstructions,
 		// The same constant as the operator handshake (see SetHandshake), so the

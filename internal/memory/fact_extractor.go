@@ -867,7 +867,14 @@ func (e *FactExtractor) planAssessment(ctx context.Context, facts []domain.Fact,
 	// Candidates are read with the explicit kernel bypass, but within each new fact's own
 	// subject reference (scope key + subject): they are facts of exactly this
 	// classification, which is what lets them into this prompt.
-	sys := domain.WithScope(ctx, domain.ScopeSystem)
+	// Each fact's candidates are read under the kernel bypass that may see the
+	// owner-scoped rows of exactly that fact's owners (domain.ScopeSystemFor):
+	// X's fact is judged against X's facts and the unowned corpus, never Y's — and
+	// an unowned fact never against anyone's private ones (domain/owner_scope.go).
+	sysFor := func(f domain.Fact) (context.Context, *domain.TagPredicate) {
+		sc := domain.ScopeSystemFor(domain.OwnersOf(f.Tags)...)
+		return domain.WithScope(ctx, sc), sc
+	}
 	cards := map[string]string{}
 	sorted := append([]domain.Fact(nil), facts...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
@@ -897,7 +904,8 @@ func (e *FactExtractor) planAssessment(ctx context.Context, facts []domain.Fact,
 		var cands []domain.Fact
 		seen := map[string]bool{f.ID: true}
 		if e.cardinalityOf(ctx, f.AttributeKey, cards) == domain.CardinalityUnknown {
-			chain, err := e.reader.FactChain(sys, f, domain.ScopeSystem)
+			sys, sc := sysFor(f)
+			chain, err := e.reader.FactChain(sys, f, sc)
 			if err != nil {
 				slog.WarnContext(ctx, "FactExtractor: exact-key candidates unavailable", "item", f.ID, "err", err)
 			}
@@ -916,12 +924,13 @@ func (e *FactExtractor) planAssessment(ctx context.Context, facts []domain.Fact,
 				sim []domain.Fact
 				err error
 			)
+			sys, sc := sysFor(f)
 			if staged != nil {
 				// The top-k and the derived-empty filter depend on which items exist, so
 				// the hidden items are excluded inside the read, not after it.
-				sim, err = staged.SimilarFactsHiding(sys, f, f.Embedding, e.cfg.FuzzyCandidates, domain.ScopeSystem, vis.bySubject(f))
+				sim, err = staged.SimilarFactsHiding(sys, f, f.Embedding, e.cfg.FuzzyCandidates, sc, vis.bySubject(f))
 			} else {
-				sim, err = e.reader.SimilarFacts(sys, f, f.Embedding, e.cfg.FuzzyCandidates, domain.ScopeSystem)
+				sim, err = e.reader.SimilarFacts(sys, f, f.Embedding, e.cfg.FuzzyCandidates, sc)
 			}
 			if err != nil {
 				slog.WarnContext(ctx, "FactExtractor: fuzzy candidates unavailable", "item", f.ID, "err", err)

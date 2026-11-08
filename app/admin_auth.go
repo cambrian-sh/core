@@ -17,7 +17,7 @@ import (
 // Contract 0099 removed every route with an OperatorConsole equivalent; the one
 // left, /v1/admin/agents/{id}/write-tags, has no RPC yet. It takes the SAME
 // operator bearer the gRPC console takes, resolved through the SAME
-// OperatorIdentity instance, so there is one operator token vocabulary and one
+// Authenticator instance (ADR-0142 D1), so there is one operator token vocabulary and one
 // place it is minted (Login), expires (ADR-0130 1f) and is revoked (Logout).
 
 // requireOperatorBearer gates an HTTP handler on `Authorization: Bearer
@@ -27,7 +27,7 @@ import (
 //
 // The 401 carries no detail: "no token", "unknown token" and "expired token"
 // must be the same answer, as on the gRPC plane.
-func requireOperatorBearer(idp operator.OperatorIdentity, next http.Handler) http.Handler {
+func requireOperatorBearer(idp domain.Authenticator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if idp == nil {
 			http.Error(w, "operator identity not configured", http.StatusServiceUnavailable)
@@ -39,18 +39,18 @@ func requireOperatorBearer(idp operator.OperatorIdentity, next http.Handler) htt
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		principal, role, err := idp.Resolve(strings.TrimSpace(token))
-		if err != nil {
+		id, err := idp.Resolve(r.Context(), strings.TrimSpace(token))
+		if err != nil || id.Principal.IsZero() {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		if role != operator.RoleOperator {
+		if role := operator.RoleFromRoles(id.Roles); role != operator.RoleOperator {
 			http.Error(w, "role "+string(role)+" may not use the admin surface", http.StatusForbidden)
 			return
 		}
 		// The domain principal, as the gRPC interceptor sets it, so a mutation
 		// made here is attributed to the same operator it would be over gRPC.
-		next.ServeHTTP(w, r.WithContext(domain.WithPrincipal(r.Context(), domain.UserPrincipal(principal))))
+		next.ServeHTTP(w, r.WithContext(domain.WithPrincipal(r.Context(), id.Principal)))
 	})
 }

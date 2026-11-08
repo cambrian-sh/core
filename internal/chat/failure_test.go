@@ -21,7 +21,7 @@ func TestHumanFailure_NeverLeaksInternals(t *testing.T) {
 	leaky := []string{"lease-", "rpc error", "code =", "CallDaemon", "agentpool", "_agent", "stream"}
 
 	for _, err := range internal {
-		got := humanFailure(err)
+		got := humanFailure(err, "en")
 		if got == "" {
 			t.Errorf("every failure must say something; %v produced silence", err)
 			continue
@@ -35,7 +35,7 @@ func TestHumanFailure_NeverLeaksInternals(t *testing.T) {
 }
 
 func TestHumanFailure_NilIsSilent(t *testing.T) {
-	if got := humanFailure(nil); got != "" {
+	if got := humanFailure(nil, "en"); got != "" {
 		t.Errorf("a successful turn must produce no notice, got %q", got)
 	}
 }
@@ -51,7 +51,7 @@ func TestHumanFailure_RecognisesTheCommonCases(t *testing.T) {
 		{errors.New("pool busy"), "capacity"},
 	}
 	for _, tc := range cases {
-		if got := humanFailure(tc.err); !strings.Contains(got, tc.want) {
+		if got := humanFailure(tc.err, "en"); !strings.Contains(got, tc.want) {
 			t.Errorf("humanFailure(%v) = %q, expected it to mention %q", tc.err, got, tc.want)
 		}
 	}

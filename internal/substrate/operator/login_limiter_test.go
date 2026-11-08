@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/cambrian-sh/core/api/proto"
+	"github.com/cambrian-sh/core/internal/identity"
 )
 
 func limiterAt(now *time.Time) *loginLimiter {
@@ -71,10 +72,12 @@ func peerCtx(host string) context.Context {
 func TestLogin_PerSourceLockoutAndObservation(t *testing.T) {
 	t.Parallel()
 	svc := NewService(NewSpool(SpoolConfig{}))
-	svc.SetIdentity(NewStaticIdentity(map[string]struct {
-		Password string
-		Role     Role
-	}{"op": {Password: "pw", Role: RoleOperator}}))
+	reg := identity.NewMemRegistry()
+	la := identity.NewLocalAccounts(reg, reg)
+	if _, err := la.EnsureAccount(context.Background(), "op", "pw", []string{"operator"}); err != nil {
+		t.Fatal(err)
+	}
+	svc.SetIdentity(la)
 	obs := &recordingLoginObserver{}
 	svc.SetLoginObserver(obs)
 
@@ -109,29 +112,5 @@ func TestLogin_PerSourceLockoutAndObservation(t *testing.T) {
 	}
 }
 
-// ADR-0130 1f: tokens expire 12 h after issue, lazily, and an expired token
-// answers exactly like an unknown one.
-func TestStaticIdentity_TokenTTL(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
-	idp := NewStaticIdentity(map[string]struct {
-		Password string
-		Role     Role
-	}{"op": {Password: "pw", Role: RoleOperator}})
-	idp.now = func() time.Time { return now }
-	tok, _, _, err := idp.Login("op", "pw")
-	if err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(OperatorTokenTTL - time.Minute)
-	if _, _, err := idp.Resolve(tok); err != nil {
-		t.Fatalf("token refused before its horizon: %v", err)
-	}
-	now = now.Add(2 * time.Minute)
-	if _, _, err := idp.Resolve(tok); status.Code(err) != codes.Unauthenticated {
-		t.Fatalf("expired token answered %v, want Unauthenticated", err)
-	}
-	if _, ok := idp.tokens[tok]; ok {
-		t.Fatal("expired token was not deleted on use")
-	}
-}
+// The ADR-0130 1f token TTL moved with the token minting to the local-accounts
+// backend (ADR-0142 D1); identity.TestLocalAccounts pins it.

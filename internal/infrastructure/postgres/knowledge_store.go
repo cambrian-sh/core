@@ -72,6 +72,13 @@ func (s *PgKnowledgeStore) PutItem(ctx context.Context, item domain.KnowledgeIte
 	if err := s.reg.ValidateValues(item.Kind, item.Values); err != nil {
 		return "", false, err
 	}
+	entityScoped := s.reg.EntityScoped(item.Kind)
+	if entityScoped && item.AssertedBy == domain.ResolutionActorAll {
+		// "*" is the entity row's actor column; an actor of that name would be
+		// indistinguishable from the cross-actor belief.
+		return "", false, fmt.Errorf("knowledge put: kind %q: actor %q is reserved for the entity-scoped resolution: %w",
+			item.Kind, domain.ResolutionActorAll, domain.ErrKindRefused)
+	}
 	ns := item.NamespaceID
 	if ns == "" {
 		ns = "default"
@@ -92,8 +99,32 @@ func (s *PgKnowledgeStore) PutItem(ctx context.Context, item domain.KnowledgeIte
 	// must serialize or the second could close a version it never read. An
 	// advisory xact lock keyed on the resolution key is simpler and less
 	// deadlock-prone than juggling row locks across two tables.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, resolutionLockKey(ns, item.Kind, item.EntityID, item.AssertedBy)); err != nil {
+	//
+	// An ENTITY-scoped kind locks the entity key instead: its cross-actor row
+	// reads every actor's items, so every writer of the entity must serialize, and
+	// the per-actor rows it also maintains are derived under the same lock.
+	lockActor := item.AssertedBy
+	if entityScoped {
+		lockActor = domain.ResolutionActorAll
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, resolutionLockKey(ns, item.Kind, item.EntityID, lockActor)); err != nil {
 		return "", false, err
+	}
+
+	// Lifecycle rules (KindSpec.Lifecycle) are checked against the key's CURRENT
+	// resolution, read inside the lock so no concurrent writer can move the state
+	// between the check and the write. Read before the insert, checked only for a
+	// NEW item: a replay changes nothing, whatever the state has become since.
+	var current *domain.KnowledgeItem
+	if s.reg.HasLifecycle(item.Kind) {
+		policy, _, perr := s.policyFor(item.Kind)
+		if perr != nil {
+			return "", false, perr
+		}
+		current, err = currentResolvedItem(ctx, tx, ns, item.Kind, item.EntityID, lockActor, policy)
+		if err != nil {
+			return "", false, fmt.Errorf("knowledge put: read current state: %w", err)
+		}
 	}
 
 	gotID, inserted, err := insertItemTx(ctx, tx, ns, id, item)
@@ -108,13 +139,43 @@ func (s *PgKnowledgeStore) PutItem(ctx context.Context, item domain.KnowledgeIte
 		}
 		return domain.KnowledgeItemID(gotID), false, nil
 	}
+	if err := s.reg.ValidateTransition(item.Kind, current, item); err != nil {
+		return "", false, err // the deferred rollback discards the insert
+	}
 	if err := s.rederive(ctx, tx, ns, item.Kind, item.EntityID, item.AssertedBy); err != nil {
 		return "", false, err
+	}
+	if entityScoped {
+		if err := s.rederive(ctx, tx, ns, item.Kind, item.EntityID, domain.ResolutionActorAll); err != nil {
+			return "", false, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", false, err
 	}
 	return domain.KnowledgeItemID(gotID), true, nil
+}
+
+// currentResolvedItem loads the item the key's CURRENT resolution names under
+// policy; nil when there is no current resolution or its latest word was a negation.
+func currentResolvedItem(ctx context.Context, tx pgx.Tx, ns, kind, entity, actor, policy string) (*domain.KnowledgeItem, error) {
+	var itemID *string
+	err := tx.QueryRow(ctx, `
+		SELECT item_id FROM resolutions
+		WHERE namespace_id=$1 AND kind=$2 AND entity_id=$3 AND actor=$4 AND policy=$5
+		  AND system_to IS NULL`,
+		ns, kind, entity, actor, policy).Scan(&itemID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && itemID == nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	items, err := loadItems(ctx, tx, `WHERE ki.id = $1`, *itemID)
+	if err != nil || len(items) == 0 {
+		return nil, err
+	}
+	return &items[0], nil
 }
 
 // insertItemTx inserts one item and its values on tx. inserted=false (and the existing
@@ -213,10 +274,26 @@ func (s *PgKnowledgeStore) policyFor(kind string) (string, domain.ResolutionAuth
 // authority registry (ADR-0110 D3) — an undeclared kind derives under
 // latest_assertion, exactly as before the registry existed. An input-taking
 // authority (ADR-0136 A1) derives from the widened read (deriveKeys).
+//
+// An ENTITY-scoped kind (KindSpec.ResolutionScope) has two row families: the
+// cross-actor row (actor = domain.ResolutionActorAll) derived under the kind's
+// policy from EVERY actor's items, and one row per actor under latest_assertion —
+// each speaker's current word, so `current` and `contradictions` still show what
+// everyone said. NewKindRegistry refuses entity scope for latest_assertion and for
+// input-taking authorities, so the two families never share a policy.
 func (s *PgKnowledgeStore) rederive(ctx context.Context, tx pgx.Tx, ns, kind, entity, actor string) error {
 	policy, authority, err := s.policyFor(kind)
 	if err != nil {
 		return err
+	}
+	spec, _ := s.reg.Spec(kind)
+	allActors := false
+	if spec.ResolutionScope == domain.ResolutionScopeEntity {
+		if actor == domain.ResolutionActorAll {
+			allActors = true
+		} else {
+			policy, authority = domain.ResolutionPolicyLatestAssertion, domain.LatestAssertionAuthority{}
+		}
 	}
 	if ia, ok := authority.(domain.InputResolutionAuthority); ok {
 		k := resolutionKey{entity: entity, actor: actor}
@@ -243,10 +320,10 @@ func (s *PgKnowledgeStore) rederive(ctx context.Context, tx pgx.Tx, ns, kind, en
 	}
 
 	rows, err := tx.Query(ctx, `
-		SELECT id, asserted_at, source_ref, negation, valid_from
+		SELECT id, asserted_by, asserted_at, source_ref, negation, valid_from
 		FROM knowledge_items
-		WHERE namespace_id=$1 AND kind=$2 AND entity_id=$3 AND asserted_by=$4`,
-		ns, kind, entity, actor)
+		WHERE namespace_id=$1 AND kind=$2 AND entity_id=$3 AND ($5 OR asserted_by=$4)`,
+		ns, kind, entity, actor, allActors)
 	if err != nil {
 		return err
 	}
@@ -255,7 +332,7 @@ func (s *PgKnowledgeStore) rederive(ctx context.Context, tx pgx.Tx, ns, kind, en
 		var it domain.KnowledgeItem
 		var itemID string
 		var validFrom *time.Time
-		if err := rows.Scan(&itemID, &it.AssertedAt, &it.SourceRef, &it.Negation, &validFrom); err != nil {
+		if err := rows.Scan(&itemID, &it.AssertedBy, &it.AssertedAt, &it.SourceRef, &it.Negation, &validFrom); err != nil {
 			rows.Close()
 			return err
 		}
@@ -278,7 +355,17 @@ func (s *PgKnowledgeStore) rederive(ctx context.Context, tx pgx.Tx, ns, kind, en
 		return closeResolution(ctx, tx, ns, kind, entity, actor, policy)
 	}
 
-	winner, reason := authority.Resolve(items)
+	var winner *domain.KnowledgeItem
+	var reason string
+	if ka, ok := authority.(domain.KindAwareAuthority); ok {
+		winner, reason = ka.ResolveKind(spec, items)
+	} else {
+		winner, reason = authority.Resolve(items)
+	}
+	if winner == nil && reason == domain.ReasonNoDesignated {
+		// Nobody eligible has spoken: there is no belief, not a "nothing" belief.
+		return closeResolution(ctx, tx, ns, kind, entity, actor, policy)
+	}
 	var winnerID *string
 	var validFrom *time.Time
 	if winner != nil {
@@ -568,9 +655,14 @@ func (s *PgKnowledgeStore) EraseItemsTx(ctx context.Context, tx pgx.Tx, namespac
 	}
 	var ids []string
 	keys := map[resolutionKey]bool{}
+	entityScoped := s.reg.EntityScoped(kind)
 	for _, v := range victims {
 		ids = append(ids, string(v.ID))
 		keys[resolutionKey{v.EntityID, v.AssertedBy}] = true
+		if entityScoped {
+			// The cross-actor row read this item too.
+			keys[resolutionKey{v.EntityID, domain.ResolutionActorAll}] = true
+		}
 	}
 	// Assessments citing an erased item go too: they name it and carry the model's
 	// verbatim answer about it. Keys of the OTHER items they cited lose an input, so

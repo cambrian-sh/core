@@ -465,6 +465,7 @@ func (m *AgentMapper) WatchConfigToRecord(cfg domain.WatchConfig) storage.WatchC
 		ConditionPayloadKeys: cfg.ConditionPayloadKeys,
 		Approved:             cfg.Approved,
 		DryRun:               cfg.DryRun,
+		Owner:                cfg.Owner,
 	}
 }
 
@@ -497,6 +498,7 @@ func (m *AgentMapper) WatchConfigFromRecord(rec storage.WatchConfigRecord) domai
 		ConditionPayloadKeys: rec.ConditionPayloadKeys,
 		Approved:             rec.Approved,
 		DryRun:               rec.DryRun,
+		Owner:                rec.Owner,
 	}
 }
 

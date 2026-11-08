@@ -2,8 +2,6 @@ package domain
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"time"
 )
 
@@ -18,10 +16,12 @@ import (
 //   - "which machine?" — ladder rung 4 (D6), when a bare capability resolves to
 //     no single machine.
 //
-// The seam mirrors InMemoryApprovalController (ADR-0039 D10) deliberately: the
-// kernel raises a prompt, streams it to whatever surfaces subscribed, blocks on
-// a per-prompt channel, and is resolved by a separate Submit — failing CLOSED
-// on no-subscriber, on timeout, and on cancellation. The controller is
+// Since ADR-0142 D11 the seam is a view over the ONE addressed approval hub
+// (AddressedHub.Consent): the kernel raises a prompt, the hub persists it,
+// routes it (default rule: self — the beneficiary), delivers it to whatever
+// surfaces can reach an eligible approver, blocks, and is resolved by an
+// answer the hub authorises — failing CLOSED on no eligible subscriber, on
+// timeout, and on cancellation. The controller is
 // surface-agnostic; a premium bridge (Telegram via the ADR-0098 conversation
 // lane, the operator console) subscribes through Watch and answers through
 // Submit. OSS core ships the seam and the in-memory hub; with nothing
@@ -91,8 +91,13 @@ type ConsentAnswer struct {
 	Approved bool
 	// Machine is the chosen machine (choose_machine answers).
 	Machine string
-	// AnsweredBy identifies who answered, for the decision record.
+	// AnsweredBy identifies who answered, for the decision record (set by the hub
+	// from the verified answerer).
 	AnsweredBy string
+	// By is the verified answerer a surface submits as. The hub refuses an
+	// answer whose By satisfies none of the prompt's approver rules (default:
+	// self — the beneficiary), ADR-0142 D11.
+	By Approver
 }
 
 // ConsentOutcome distinguishes WHY a prompt resolved the way it did, so each
@@ -119,9 +124,11 @@ type ConsentController interface {
 	Notify(ctx context.Context, p ConsentPrompt)
 }
 
-// WorkerConsentHub is the full surface a conversation bridge drives:
-// the controller plus Watch (subscribe) and Submit (answer). Mirrors
-// domain.ApprovalHub.
+// WorkerConsentHub is the full surface a conversation bridge drives: the
+// controller plus Watch (subscribe) and Submit (answer as ans.By). Since
+// ADR-0142 D11 it is a VIEW over the one AddressedHub (AddressedHub.Consent),
+// not a second implementation: prompts are durable hub items, and an answer is
+// authorised by the hub's answer-time check.
 type WorkerConsentHub interface {
 	ConsentController
 	Watch() (<-chan ConsentPrompt, func())
@@ -134,129 +141,8 @@ type WorkerConsentHub interface {
 // than hangs.
 const defaultConsentGrace = 120 * time.Second
 
-// InMemoryConsentController is the default WorkerConsentHub. Same shape and
-// same fail-closed posture as InMemoryApprovalController: no subscriber and
-// timeout both deny.
-type InMemoryConsentController struct {
-	grace   time.Duration
-	mu      sync.Mutex
-	counter int
-	pending map[string]chan ConsentAnswer
-	subs    map[int]chan ConsentPrompt
-	nextSub int
-}
-
-// NewInMemoryConsentController constructs the hub. grace ≤ 0 falls back to the
-// package default (120s).
-func NewInMemoryConsentController(grace time.Duration) *InMemoryConsentController {
-	if grace <= 0 {
-		grace = defaultConsentGrace
-	}
-	return &InMemoryConsentController{
-		grace:   grace,
-		pending: map[string]chan ConsentAnswer{},
-		subs:    map[int]chan ConsentPrompt{},
-	}
-}
-
-var _ WorkerConsentHub = (*InMemoryConsentController)(nil)
-
-// Request blocks for a surface's answer; fails closed on no-subscriber and on
-// timeout. ctx cancellation returns ctx's error with an unapproved answer.
-func (c *InMemoryConsentController) Request(ctx context.Context, p ConsentPrompt) (ConsentAnswer, ConsentOutcome, error) {
-	c.mu.Lock()
-	if len(c.subs) == 0 {
-		c.mu.Unlock()
-		return ConsentAnswer{}, ConsentNoSubscriber, nil // fail-closed: nobody to ask
-	}
-	c.counter++
-	p.ID = fmt.Sprintf("consent-%d", c.counter)
-	ansCh := make(chan ConsentAnswer, 1)
-	c.pending[p.ID] = ansCh
-	subs := make([]chan ConsentPrompt, 0, len(c.subs))
-	for _, s := range c.subs {
-		subs = append(subs, s)
-	}
-	c.mu.Unlock()
-
-	for _, s := range subs {
-		select {
-		case s <- p:
-		default: // a saturated subscriber is skipped, never waited on
-		}
-	}
-
-	defer func() {
-		c.mu.Lock()
-		delete(c.pending, p.ID)
-		c.mu.Unlock()
-	}()
-
-	timer := time.NewTimer(c.grace)
-	defer timer.Stop()
-	select {
-	case ans := <-ansCh:
-		return ans, ConsentAnswered, nil
-	case <-timer.C:
-		return ConsentAnswer{}, ConsentTimedOut, nil // fail-closed: unanswered
-	case <-ctx.Done():
-		return ConsentAnswer{}, ConsentTimedOut, ctx.Err()
-	}
-}
-
-// Notify broadcasts a notice to every subscriber, non-blocking.
-func (c *InMemoryConsentController) Notify(_ context.Context, p ConsentPrompt) {
-	c.mu.Lock()
-	c.counter++
-	p.ID = fmt.Sprintf("consent-%d", c.counter)
-	if p.Kind == "" {
-		p.Kind = ConsentPromptNotice
-	}
-	subs := make([]chan ConsentPrompt, 0, len(c.subs))
-	for _, s := range c.subs {
-		subs = append(subs, s)
-	}
-	c.mu.Unlock()
-	for _, s := range subs {
-		select {
-		case s <- p:
-		default:
-		}
-	}
-}
-
-// Watch subscribes a surface to prompts and notices. The returned cancel
-// removes the subscription.
-func (c *InMemoryConsentController) Watch() (<-chan ConsentPrompt, func()) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	id := c.nextSub
-	c.nextSub++
-	ch := make(chan ConsentPrompt, 16)
-	c.subs[id] = ch
-	return ch, func() {
-		c.mu.Lock()
-		delete(c.subs, id)
-		c.mu.Unlock()
-	}
-}
-
-// Submit resolves a pending prompt. false when the id is unknown (already
-// resolved, timed out, or never existed).
-func (c *InMemoryConsentController) Submit(id string, ans ConsentAnswer) bool {
-	c.mu.Lock()
-	ansCh, ok := c.pending[id]
-	c.mu.Unlock()
-	if !ok {
-		return false
-	}
-	select {
-	case ansCh <- ans:
-		return true
-	default:
-		return false
-	}
-}
+// DefaultConsentWindow is defaultConsentGrace, for surfaces that render it.
+const DefaultConsentWindow = defaultConsentGrace
 
 // ContributedStepEffectful classifies a contributed step's effect class for the
 // D7 consent gate. Read and egress are the lane's silent baseline — egress is

@@ -14,23 +14,36 @@ import (
 type WebhookReceiver struct {
 	token   string
 	enqueue func(domain.ExternalDocument) bool
+	// preauthenticated is set only by NewPreauthenticatedWebhookReceiver: the
+	// caller was already authenticated by a wrapping handler (the operator bearer).
+	preauthenticated bool
 }
 
-// NewWebhookReceiver constructs a WebhookReceiver. enqueue must be non-nil.
-// An empty token string disables token validation (useful for local dev/tests).
+// NewWebhookReceiver constructs a WebhookReceiver checking X-Ingest-Token.
+// enqueue must be non-nil.
+//
+// An EMPTY token now refuses every request (ADR-0142 trust holes, feasibility
+// K-3). It used to disable the check — "useful for local dev" — which made
+// /v1/ingest an anonymous write into memory with no principal at all. A
+// deployment without an ingest token authenticates pushers with the operator
+// bearer instead (NewPreauthenticatedWebhookReceiver behind requireOperatorBearer).
 func NewWebhookReceiver(token string, enqueue func(domain.ExternalDocument) bool) *WebhookReceiver {
 	return &WebhookReceiver{token: token, enqueue: enqueue}
 }
 
+// NewPreauthenticatedWebhookReceiver builds a receiver that performs NO token
+// check because the handler wrapping it already authenticated the caller. It is
+// only correct behind such a wrapper; app.go mounts it behind the operator bearer.
+func NewPreauthenticatedWebhookReceiver(enqueue func(domain.ExternalDocument) bool) *WebhookReceiver {
+	return &WebhookReceiver{enqueue: enqueue, preauthenticated: true}
+}
+
 // ServeHTTP handles POST /v1/ingest requests.
 func (wr *WebhookReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Constant-time compare (2026-10-31 audit). An empty configured token still
-	// means "no auth" — the documented ADR-0028 behaviour for a loopback-only
-	// dev listener. The listener itself is now bound by the ADR-0130 D3 policy
-	// (app/listener_security.go: loopback default, routable-bind refusal, body
-	// cap, timeouts) and /v1/admin/* takes the operator bearer, so an empty
-	// ingest token no longer means an unauthenticated port on every interface.
-	if wr.token != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Ingest-Token")), []byte(wr.token)) != 1 {
+	// Constant-time compare (2026-10-31 audit). Fail closed: an empty configured
+	// token matches nothing (ADR-0142, K-3); see NewWebhookReceiver.
+	if !wr.preauthenticated && (wr.token == "" ||
+		subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Ingest-Token")), []byte(wr.token)) != 1) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}

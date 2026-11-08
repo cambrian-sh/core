@@ -103,7 +103,10 @@ func TestEntityOp_ReturnsIncomingLineage(t *testing.T) {
 
 	res, err := plane.Query(context.Background(),
 		domain.KnowledgeQuery{Kind: domain.QueryEntity, EntityID: "customer/C-1"},
-		&domain.TagPredicate{Bypass: true})
+		// ScopeMaintenance: this pins the lineage SHAPE with no database, and a
+		// plain Bypass now resolves link evidence for the owner fence
+		// (domain/owner_scope.go); only the maintenance sentinel skips it.
+		domain.ScopeMaintenance)
 	if err != nil {
 		t.Fatalf("entity op: %v", err)
 	}

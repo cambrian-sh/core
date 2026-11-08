@@ -80,6 +80,15 @@ func validateAuthoredPlan(steps []domain.Step, knownAgent func(string) bool) ([]
 					Message: fmt.Sprintf("this step fans out over step %d but does not depend on it, so it may run before that output exists", fo),
 				})
 			}
+			if fo >= 0 && fo < len(steps) && fo != i && !st.FanOutTemplated() {
+				// Not fatal: the executor demotes it to ONE step over the whole set
+				// (domain.ExpandFanOut) rather than N identical copies. But the author
+				// asked for a per-item step and will not get one.
+				issues = append(issues, PlanIssue{
+					StepIndex: i, Code: IssueBadFanOut, Fatal: false,
+					Message: fmt.Sprintf("this step fans out over step %d but its instruction has no {%s} placeholder, so it will run once over the whole set, not once per item", fo, st.FanOutVarName()),
+				})
+			}
 		}
 	}
 

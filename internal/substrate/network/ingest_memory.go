@@ -53,6 +53,11 @@ type IngestionProcessor interface {
 // not a per-item fact ID. Falls back to MemoryWriter when IngestionProcessor
 // is nil (legacy path).
 func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) (*pb.IngestMemoryResponse, error) {
+	// ADR-0142 D12: knowledge an agent commits while working a person's
+	// conversation is private to that person — the owner is resolved from the
+	// presented lease (never the request) and every chunk, document and fact the
+	// write chokepoints classify under ctx carries owner:<person>.
+	ctx = s.withConversationOwner(ctx)
 	// Fail closed on an unknown principal, BEFORE any work.
 	//
 	// This check lived only in RememberService — on the raw-write fallback that

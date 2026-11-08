@@ -58,6 +58,12 @@ func (c *conversationOps) SendTurn(ctx context.Context, id, text, clientID strin
 }
 
 func (c *conversationOps) Close(ctx context.Context, id string) error {
+	// Through the chat lane when there is one, so a turn running in the conversation
+	// — and the plan it delegated — is cancelled rather than left acting for a
+	// conversation that no longer exists.
+	if c.turns != nil {
+		return c.turns.CloseConversation(ctx, id)
+	}
 	return c.store.SetConversationStatus(ctx, id, domain.ConversationClosed)
 }
 

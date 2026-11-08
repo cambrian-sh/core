@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/memory"
 )
 
@@ -43,6 +44,10 @@ func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f memory.DocumentFi
 		args = append(args, v)
 		return "$" + strconv.Itoa(len(args))
 	}
+	// The owner fence, unconditionally (domain/owner_scope.go): a listing returns
+	// titles and labels, and a personal mailbox's subject lines are content.
+	held := (&domain.TagPredicate{Owners: f.Owners}).HeldOwnerTags()
+	filters = append(filters, strings.Replace(ownerFenceTextArray("d.tags"), "$%d", placeholder(held), 1))
 	if f.UnlabelledOnly {
 		filters = append(filters, "cardinality(d.tags) = 0")
 	}

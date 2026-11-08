@@ -69,8 +69,8 @@ func (e chanPlanExecutor) Execute(context.Context, *domain.ExecutionPlan, *domai
 func TestSignalStream_OSSWatcherPlansOnceAndQueuesForApproval(t *testing.T) {
 	t.Parallel()
 	planner := &countingPlanner{}
-	hub := domain.NewInMemoryApprovalController(5 * time.Second)
-	reqs, cancel := hub.Watch()
+	hub := domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: 5 * time.Second})
+	reqs, cancel := opRequests(hub)
 	defer cancel()
 	exec := chanPlanExecutor{ran: make(chan struct{}, 1)}
 	w := supwatcher.New(tokenManager{}, nil, planner, hub, exec, supwatcher.WatcherConfig{})
@@ -95,7 +95,7 @@ func TestSignalStream_OSSWatcherPlansOnceAndQueuesForApproval(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("plan was not queued for operator approval")
 	}
-	hub.Submit(req.ID, true, "operator")
+	opSubmit(hub, req.ID, true, "operator")
 	select {
 	case <-exec.ran:
 	case <-time.After(2 * time.Second):

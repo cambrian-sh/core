@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -385,6 +386,32 @@ func TestTurn_BindsConversationOntoTheLease(t *testing.T) {
 	// presenting it is refused by the transport.
 	if b.AgentID != "chat_agent" {
 		t.Errorf("AgentID = %q, want chat_agent (the pool's worker agent)", b.AgentID)
+	}
+}
+
+// Operator act-for (T-20261107-a-person-s-assistant-cannot-save-that-person-s): the
+// operator who opened the turn for the owner rides on the lease for audit; a turn
+// the owner opens themself carries none.
+func TestTurn_BindsActForActorOntoTheLease(t *testing.T) {
+	svc, _, _ := setup(t, domain.ProfileOperator)
+	binder := &recordingBinder{}
+	svc.SetLeaseBinder(binder, "chat_agent")
+	n := 0
+	svc.acquireToken = func(context.Context, int, time.Duration) (string, func(), error) {
+		n++
+		return fmt.Sprintf("lease-%d", n), func() {}, nil
+	}
+	if _, err := svc.Turn(domain.WithActForActor(context.Background(), "operator"), TurnRequest{ConversationID: "c1", Text: "remember this"}); err != nil {
+		t.Fatalf("turn: %v", err)
+	}
+	if got := binder.bound["lease-1"].ActedBy; got != "operator" {
+		t.Fatalf("ActedBy = %q, want operator", got)
+	}
+	if _, err := svc.Turn(context.Background(), TurnRequest{ConversationID: "c1", Text: "again"}); err != nil {
+		t.Fatalf("turn: %v", err)
+	}
+	if got := binder.bound["lease-2"].ActedBy; got != "" {
+		t.Fatalf("a turn without act-for carries ActedBy %q", got)
 	}
 }
 

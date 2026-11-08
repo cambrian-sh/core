@@ -25,16 +25,36 @@ func (f *fakeControls) Inject(instruction string) error {
 	return nil
 }
 
-// fakeApprovalHub records Submit calls.
+// fakeApprovalHub records Answer calls; every other hub method is inert.
 type fakeApprovalHub struct{ submits []string }
 
 func (f *fakeApprovalHub) Request(context.Context, domain.ApprovalRequest) (domain.ApprovalDecision, error) {
 	return domain.ApprovalDecision{}, nil
 }
-func (f *fakeApprovalHub) Watch() (<-chan domain.ApprovalRequest, func()) { return nil, func() {} }
-func (f *fakeApprovalHub) Submit(id string, approved bool, _ string) bool {
+func (f *fakeApprovalHub) Raise(context.Context, domain.ApprovalRequest) (domain.ApprovalItem, error) {
+	return domain.ApprovalItem{}, nil
+}
+func (f *fakeApprovalHub) Watch(domain.ApprovalWatch) (<-chan domain.ApprovalEvent, func()) {
+	return nil, func() {}
+}
+func (f *fakeApprovalHub) Answer(_ context.Context, id string, _ domain.ApprovalAnswer) (domain.ApprovalItem, error) {
 	f.submits = append(f.submits, id)
-	return true
+	return domain.ApprovalItem{ID: id}, nil
+}
+func (f *fakeApprovalHub) Answerable(context.Context, domain.ApprovalItem, domain.Approver) (bool, string) {
+	return true, ""
+}
+func (f *fakeApprovalHub) Get(context.Context, string) (domain.ApprovalItem, error) {
+	return domain.ApprovalItem{}, domain.ErrApprovalNotFound
+}
+func (f *fakeApprovalHub) List(context.Context, domain.ApprovalQuery) ([]domain.ApprovalItem, error) {
+	return nil, nil
+}
+func (f *fakeApprovalHub) ListStanding(context.Context, domain.StandingQuery) ([]domain.StandingApproval, error) {
+	return nil, nil
+}
+func (f *fakeApprovalHub) RevokeStanding(context.Context, string, domain.Approver, string) (domain.StandingApproval, error) {
+	return domain.StandingApproval{}, nil
 }
 
 func TestExecutionControlHub_RegisterLookupDeregister(t *testing.T) {

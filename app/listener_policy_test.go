@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cambrian-sh/core/internal/substrate/operator"
+	"github.com/cambrian-sh/core/internal/identity"
 )
 
 // ADR-0130 gate criterion 3: every http.Server the kernel or a plugin builds is
@@ -186,28 +186,29 @@ func TestServeHTTPListener_RequiresAttachedPolicy(t *testing.T) {
 // a missing versus a wrong token.
 func TestRequireOperatorBearer(t *testing.T) {
 	t.Parallel()
-	idp := operator.NewStaticIdentity(map[string]struct {
-		Password string
-		Role     operator.Role
-	}{
-		"op":     {Password: "pw", Role: operator.RoleOperator},
-		"viewer": {Password: "pw", Role: operator.RoleViewer},
-	})
-	opTok, _, _, err := idp.Login("op", "pw")
+	ctx := context.Background()
+	reg := identity.NewMemRegistry()
+	idp := identity.NewLocalAccounts(reg, reg)
+	for u, r := range map[string]string{"op": "operator", "viewer": "viewer"} {
+		if _, err := idp.EnsureAccount(ctx, u, "pw", []string{r}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opTok, _, err := idp.Login(ctx, "op", "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
-	viewTok, _, _, err := idp.Login("viewer", "pw")
+	viewTok, _, err := idp.Login(ctx, "viewer", "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A logged-out token (Logout, contract 0099) must close the HTTP door too:
 	// both planes resolve through the one identity.
-	goneTok, _, _, err := idp.Login("op", "pw")
+	goneTok, _, err := idp.Login(ctx, "op", "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := idp.Revoke(goneTok); err != nil {
+	if err := idp.Revoke(ctx, goneTok); err != nil {
 		t.Fatal(err)
 	}
 	called := 0

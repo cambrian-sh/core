@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
@@ -90,7 +92,11 @@ func (p *PgQueryPlane) Query(ctx context.Context, q domain.KnowledgeQuery, scope
 		err     error
 	)
 	if q.Kind == domain.QueryEntity || (q.ExpandAliases && q.SupportsAliasExpansion()) {
-		closure, err = p.identityClosure(ctx, q.EntityID, closureDepth(q))
+		// Scoped: the closure walks only links this caller can read, so the
+		// widened subjects, ClosureSize, the fan-out flags and the set-cap
+		// refusal never count an alias the caller could not justify (no hidden
+		// counts; T-20261107-link-review-inbox-and-entity-op-candidates-skip).
+		closure, err = p.identityClosure(ctx, q.EntityID, closureDepth(q), scope)
 		if err != nil {
 			return domain.QueryResult{}, err
 		}
@@ -280,7 +286,7 @@ func obsRow(ob *domain.Observation) domain.QueryRow {
 // any limit so authorized rows fill the window (no scope-induced starvation
 // of the result set on top of the denial itself).
 func (p *PgQueryPlane) filterObservations(ctx context.Context, scope *domain.TagPredicate, obs []domain.Observation) ([]domain.Observation, error) {
-	if scope.Bypass {
+	if scope.Unfiltered() {
 		return obs, nil
 	}
 	ids := make([]string, 0, len(obs))
@@ -303,20 +309,37 @@ func (p *PgQueryPlane) filterObservations(ctx context.Context, scope *domain.Tag
 	return kept, nil
 }
 
-// point — ENFORCED via the observation's evidence classification.
+// point — ENFORCED in SQL: the answer is the latest observation the caller may
+// READ, not the latest observation filtered afterwards.
+//
+// The order matters. Taking the newest row and then filtering it meant a newer
+// row from someone else's owner:X evidence turned a reader's ordinary answer
+// into "not found" — so the presence of an answer told the reader whether a
+// newer private row existed (an existence oracle, ADR-0128 D12;
+// T-20261107-substratelane-pointlookup-history). Only ScopeMaintenance, which
+// filters nothing, keeps the store's own PointLookup.
 func (p *PgQueryPlane) point(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate) ([]domain.QueryRow, error) {
-	ob, err := p.events.PointLookup(ctx, defaultNamespace, q.EntityID, q.Predicate)
-	if err != nil || ob == nil {
-		return nil, err
+	if scope.Unfiltered() {
+		ob, err := p.events.PointLookup(ctx, defaultNamespace, q.EntityID, q.Predicate)
+		if err != nil || ob == nil {
+			return nil, err
+		}
+		return []domain.QueryRow{obsRow(ob)}, nil
 	}
-	kept, err := p.filterObservations(ctx, scope, []domain.Observation{*ob})
+	args := []any{defaultNamespace, q.EntityID, q.Predicate}
+	scopeCond, extra := evidenceScopeSQL(scope, len(args))
+	args = append(args, extra...)
+	ob, err := scanObservation(p.pool.QueryRow(ctx, `
+		SELECT `+observationColumns+` FROM observations
+		WHERE namespace_id=$1 AND entity_id=$2 AND predicate=$3`+scopeCond+`
+		ORDER BY occurred_at DESC, id DESC LIMIT 1`, args...))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	if len(kept) == 0 {
-		return nil, nil
-	}
-	return []domain.QueryRow{obsRow(&kept[0])}, nil
+	return []domain.QueryRow{obsRow(ob)}, nil
 }
 
 // history — ENFORCED via each observation's evidence classification.
@@ -399,9 +422,11 @@ func (p *PgQueryPlane) asOf(ctx context.Context, q domain.KnowledgeQuery, scope 
 	for _, r := range scanned {
 		it, err := p.knowledge.GetItem(ctx, domain.KnowledgeItemID(r.itemID))
 		if err != nil || it == nil {
-			if scope.Bypass {
-				// Bypass keeps the pre-0118 shape: the resolution row without
+			if scope.Unfiltered() {
+				// Maintenance keeps the pre-0118 shape: the resolution row without
 				// its values, rather than silently narrowing a maintenance read.
+				// A plain Bypass no longer does: an item it cannot classify may
+				// be another principal's owner-scoped row (owner fence).
 				out = append(out, domain.QueryRow{
 					"entity_id": r.entity, "actor": r.actor, "policy": r.policy,
 					"reason_code": r.reason, "system_from": r.sysFrom, "item_id": r.itemID,
@@ -409,7 +434,7 @@ func (p *PgQueryPlane) asOf(ctx context.Context, q domain.KnowledgeQuery, scope 
 			}
 			continue
 		}
-		if !scope.Bypass && !scope.Allows(it.Classification) {
+		if !scope.Allows(it.Classification) { // Allows applies the owner fence under Bypass too
 			continue
 		}
 		out = append(out, domain.QueryRow{
@@ -439,7 +464,7 @@ func (p *PgQueryPlane) current(ctx context.Context, q domain.KnowledgeQuery, sco
 		if q.EntityID != "" && r.EntityID != q.EntityID {
 			continue
 		}
-		if !scope.Bypass && (r.Item == nil || !scope.Allows(r.Item.Classification)) {
+		if r.Item == nil || !scope.Allows(r.Item.Classification) { // owner fence holds under Bypass
 			continue
 		}
 		out = append(out, domain.QueryRow{
@@ -474,7 +499,7 @@ func (p *PgQueryPlane) contradictions(ctx context.Context, q domain.KnowledgeQue
 		if q.EntityID != "" && r.EntityID != q.EntityID {
 			continue
 		}
-		if !scope.Bypass && (r.Item == nil || !scope.Allows(r.Item.Classification)) {
+		if r.Item == nil || !scope.Allows(r.Item.Classification) { // owner fence holds under Bypass
 			continue
 		}
 		for pred, val := range itemValues(r.Item) {
@@ -518,6 +543,30 @@ func (p *PgQueryPlane) contradictions(ctx context.Context, q domain.KnowledgeQue
 // disjoint (NOT &&), each any-of clause overlapping (&&). Args are appended
 // after the caller's, starting at $startIdx+1.
 func evidenceScopeSQL(scope *domain.TagPredicate, startIdx int) (string, []any) {
+	return evidenceScopeSQLOn(scope, "observations.evidence_id", startIdx)
+}
+
+// evidenceScopeSQLOn is evidenceScopeSQL for any column that references
+// evidence.id (observations, events, the outbox). It is the ONE SQL rendering
+// of "may this reader see the row this evidence backs", shared by the aggregate
+// shape and the names-and-counts catalog (query_plane_catalog.go) so the two can
+// never disagree. "" for ScopeMaintenance, the only unfiltered predicate.
+func evidenceScopeSQLOn(scope *domain.TagPredicate, refCol string, startIdx int) (string, []any) {
+	if scope.Unfiltered() {
+		return "", nil
+	}
+	conds, args := evidenceRowConds(scope, "e", startIdx)
+	return ` AND EXISTS (SELECT 1 FROM evidence e
+		WHERE e.id = ` + refCol + conds + `)`, args
+}
+
+// evidenceRowConds renders the scope as " AND …" conditions over an evidence
+// row aliased `alias` — the body of evidenceScopeSQLOn, also used directly when
+// the evidence table itself is the one being read. "" for ScopeMaintenance.
+func evidenceRowConds(scope *domain.TagPredicate, alias string, startIdx int) (string, []any) {
+	if scope.Unfiltered() {
+		return "", nil
+	}
 	conds := ""
 	var args []any
 	n := startIdx
@@ -526,15 +575,22 @@ func evidenceScopeSQL(scope *domain.TagPredicate, startIdx int) (string, []any) 
 		conds += fmt.Sprintf(" AND "+cond, n)
 		args = append(args, val)
 	}
+	// The owner fence (domain/owner_scope.go): every predicate but
+	// ScopeMaintenance, Bypass included.
+	add(ownerFenceTextArray(alias+".classification"), scope.HeldOwnerTags())
+	if scope.Bypass {
+		return conds, args
+	}
+	col := alias + ".classification"
 	if len(scope.RequiredTags) > 0 {
-		add("e.classification @> $%d", scope.RequiredTags)
+		add(col+" @> $%d", scope.RequiredTags)
 	}
 	if len(scope.ForbiddenTags) > 0 {
-		add("NOT (e.classification && $%d)", scope.ForbiddenTags)
+		add("NOT ("+col+" && $%d)", scope.ForbiddenTags)
 	}
 	for _, clause := range scope.AnyOfClauses {
 		if len(clause) > 0 {
-			add("e.classification && $%d", clause)
+			add(col+" && $%d", clause)
 		}
 	}
 	// Party-scoping (ADR-0121 D1): a material implication — if the row carries a
@@ -551,11 +607,10 @@ func evidenceScopeSQL(scope *domain.TagPredicate, startIdx int) (string, []any) 
 	if len(scope.PartyScopedTags) > 0 {
 		n += 2
 		conds += fmt.Sprintf(
-			" AND (NOT (e.classification && $%d) OR e.parties && $%d)", n-1, n)
+			" AND (NOT ("+col+" && $%d) OR "+alias+".parties && $%d)", n-1, n)
 		args = append(args, scope.PartyScopedTags, identityArg(scope.PartyIdentities))
 	}
-	return ` AND EXISTS (SELECT 1 FROM evidence e
-		WHERE e.id = observations.evidence_id` + conds + `)`, args
+	return conds, args
 }
 
 // aggregate — ENFORCED in SQL: summed rows cannot be post-filtered, so under a
@@ -579,7 +634,7 @@ func (p *PgQueryPlane) aggregate(ctx context.Context, q domain.KnowledgeQuery, s
 	}
 	args := []any{defaultNamespace, q.EntityID, q.Predicate, from.UTC(), to.UTC()}
 	scopeCond := ""
-	if !scope.Bypass {
+	if !scope.Unfiltered() {
 		var extra []any
 		scopeCond, extra = evidenceScopeSQL(scope, len(args))
 		args = append(args, extra...)
@@ -603,7 +658,7 @@ func (p *PgQueryPlane) aggregate(ctx context.Context, q domain.KnowledgeQuery, s
 // filterEvents keeps events whose evidence classification passes the scope,
 // resolving provenance in one batch (fail closed on unresolvable evidence).
 func (p *PgQueryPlane) filterEvents(ctx context.Context, scope *domain.TagPredicate, evs []domain.Event) ([]domain.Event, error) {
-	if scope.Bypass {
+	if scope.Unfiltered() {
 		return evs, nil
 	}
 	ids := make([]string, 0, len(evs))
@@ -707,7 +762,7 @@ func (p *PgQueryPlane) evidenceRow(ctx context.Context, q domain.KnowledgeQuery,
 	// AllowsRow: this shape reads the evidence row itself, so its parties are in
 	// hand and a party-scoped tag can be answered properly rather than denied for
 	// want of the information (ADR-0121).
-	if !scope.Bypass && !scope.AllowsRow(ev.Classification, ev.Parties) {
+	if !scope.AllowsRow(ev.Classification, ev.Parties) {
 		return nil, nil
 	}
 	return []domain.QueryRow{{
@@ -739,17 +794,24 @@ func (p *PgQueryPlane) evidenceRow(ctx context.Context, q domain.KnowledgeQuery,
 // the ADR-0118 access rule restated for links, and it is the property the
 // non-widening test pins.
 //
-// One consequence is deliberate and worth naming: closure MEMBERSHIP may stand
-// where the joining link's evidence is unreadable. The membership is metadata —
-// "we believe these two ids are one thing" — while the link's basis is content,
-// and only content is what scope protects. Such a member comes back with its
-// justification fields DROPPED and justified=false, which is an honest "we
-// cannot show you why" rather than a silent omission that would make the closure
-// look smaller than it is.
+// Closure MEMBERSHIP is itself content (ADR-0128 D12): "these two systems'
+// records are one counterparty" is frequently the sensitive part. So the walk
+// itself is scoped (identityClosure): a member is admitted only through a link
+// the caller can read, a hop does not continue through one it cannot, and a
+// member the caller cannot justify is not listed, not counted, and not used to
+// widen a subject. An earlier version listed such members with their
+// justification dropped; that disclosed exactly the relationship the rule
+// protects, in a form that looked careful.
+//
+// The same holds for candidates (entityOp) and for the operator review inbox
+// (ReviewCandidates): a link is judged on its own evidence, and the operator
+// plane's plain Bypass still applies the owner fence — only ScopeMaintenance
+// reads every link, and no principal-serving read uses it.
 
 // closureMember is one entity the identity closure admitted, carrying the
-// justification that admitted it. Empty justification fields mean the caller's
-// scope could not see the joining link's evidence (see SCOPE RULE above).
+// justification that admitted it. Every member was admitted through a link the
+// caller's scope can read (see SCOPE RULE above), so justified is always true;
+// the field stays on the wire so a consumer never has to infer it.
 type closureMember struct {
 	entityID  string
 	viaRef    string
@@ -785,7 +847,14 @@ type closureResult struct {
 //     mechanism is FLAGGED and contributes no expansion
 //   - set size — over ClosureMaxEntities the whole query is REFUSED, loudly,
 //     rather than truncated into something that looks like an answer
-func (p *PgQueryPlane) identityClosure(ctx context.Context, entityID string, depth int) (closureResult, error) {
+//
+// SCOPED: every hop reads only the links whose evidence the caller may read
+// (filterLinks), and the walk does not continue through one it may not — the
+// traverse precedent: a forbidden edge is not a bridge. Every guard therefore
+// counts READABLE links only. Counting the unfiltered set would leak through the
+// guards themselves: a flagged row would say "more than 16 links you cannot
+// see", and a set-cap refusal would say "at least N aliases exist".
+func (p *PgQueryPlane) identityClosure(ctx context.Context, entityID string, depth int, scope *domain.TagPredicate) (closureResult, error) {
 	var out closureResult
 	if p.links == nil || entityID == "" {
 		return out, nil
@@ -810,6 +879,9 @@ func (p *PgQueryPlane) identityClosure(ctx context.Context, entityID string, dep
 				State:  domain.LinkStateConfirmed,
 			})
 			if err != nil {
+				return closureResult{}, err
+			}
+			if links, err = p.filterLinks(ctx, scope, links); err != nil {
 				return closureResult{}, err
 			}
 			perMechanism := map[string]int{}
@@ -865,38 +937,6 @@ func (p *PgQueryPlane) identityClosure(ctx context.Context, entityID string, dep
 	return out, nil
 }
 
-// justifiedMembers keeps only the closure members whose joining link's evidence
-// the caller can read, and DROPS the rest.
-//
-// This used to redact the justification and leave membership intact, on the
-// reading that membership was harmless metadata. ADR-0128 D12 settled that
-// question the other way: an identity closure is itself a disclosure — it tells
-// the reader that two systems' records belong to one counterparty, which is
-// frequently the sensitive part — so a membership the caller cannot justify is
-// not listed at all. Listing it while withholding the reason discloses exactly
-// the relationship the rule protects, and does so in a form that looks careful.
-func (p *PgQueryPlane) justifiedMembers(ctx context.Context, scope *domain.TagPredicate, members []closureMember) ([]closureMember, error) {
-	if scope.Bypass || len(members) == 0 {
-		return members, nil
-	}
-	ids := make([]string, 0, len(members))
-	for _, m := range members {
-		ids = append(ids, m.evidence)
-	}
-	tags, err := p.evidenceTags(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	kept := members[:0]
-	for _, m := range members {
-		t, resolvable := tags[m.evidence]
-		if resolvable && scope.AllowsRow(t.tags, t.parties) {
-			kept = append(kept, m)
-		}
-	}
-	return kept, nil
-}
-
 // mayKnowEntityExists answers the question ADR-0128 D12 introduced: is this
 // caller allowed to learn that this handle exists at all?
 //
@@ -910,7 +950,7 @@ func (p *PgQueryPlane) justifiedMembers(ctx context.Context, scope *domain.TagPr
 // simply not disclosed by this route, and the caller may still reach it through
 // a row they can read (see the gate in entityOp).
 func (p *PgQueryPlane) mayKnowEntityExists(ctx context.Context, scope *domain.TagPredicate, firstSeen string) (bool, error) {
-	if scope.Bypass {
+	if scope.Unfiltered() {
 		return true, nil
 	}
 	if firstSeen == "" {
@@ -928,13 +968,17 @@ func (p *PgQueryPlane) mayKnowEntityExists(ctx context.Context, scope *domain.Ta
 // resolving provenance in one batch — the filterEvents/filterObservations shape
 // applied to link rows.
 //
-// Fail closed on unresolvable evidence, as everywhere else on this plane. The one
-// case that costs is a `human` link, which the admissibility rule lets carry no
-// evidence at all: such a link is visible only to a bypass (operator) scope. That
+// Fail closed on unresolvable evidence, as everywhere else on this plane — for
+// a plain Bypass (the operator plane, ScopeSystem) too, which still owes the
+// owner fence. The one case that costs is a `human` link, which the
+// admissibility rule lets carry no evidence at all: such a link is visible only
+// to ScopeMaintenance (scope.Unfiltered), i.e. to no principal-serving read. That
 // is the conservative reading and the right one — a bare human assertion joining
-// two ids is exactly the row whose visibility nobody has decided yet.
+// two ids is exactly the row whose visibility nobody has decided yet. (A
+// ConfirmLink row inherits its candidate's evidence, so a confirmed candidate
+// stays visible to whoever could read the candidate.)
 func (p *PgQueryPlane) filterLinks(ctx context.Context, scope *domain.TagPredicate, links []domain.Link) ([]domain.Link, error) {
-	if scope.Bypass {
+	if scope.Unfiltered() {
 		return links, nil
 	}
 	ids := make([]string, 0, len(links))
@@ -985,13 +1029,15 @@ func linkRow(l domain.Link, kind string) domain.QueryRow {
 // the candidates awaiting review.
 //
 // ENFORCED per row: every link is filtered on its OWN evidence (filterLinks), and
-// closure justification is redacted the same way. The closure itself is not an
-// access decision (SCOPE RULE).
+// the closure was walked over readable links only (SCOPE RULE), so an alias row
+// appears only when the caller can read the link that admitted it.
 //
 // Candidates are withheld from every non-bypass caller by construction. A
 // candidate is an unreviewed machine proposal, and an agent that reads one as an
 // answer has done precisely what the review lane exists to prevent; the operator
-// console, which is where review happens, reads with a bypass predicate.
+// console, which is where review happens, reads with a bypass predicate. Even
+// there each candidate passes filterLinks: a plain Bypass still applies the owner
+// fence, so a candidate drawn from someone's owner:X evidence is not shown.
 func (p *PgQueryPlane) entityOp(ctx context.Context, q domain.KnowledgeQuery,
 	scope *domain.TagPredicate, closure closureResult, limit int) ([]domain.QueryRow, error) {
 	out := []domain.QueryRow{}
@@ -1055,10 +1101,7 @@ func (p *PgQueryPlane) entityOp(ctx context.Context, q domain.KnowledgeQuery,
 		return []domain.QueryRow{}
 	}
 
-	members, err := p.justifiedMembers(ctx, scope, closure.members)
-	if err != nil {
-		return nil, err
-	}
+	members := closure.members
 	for _, m := range members {
 		row := domain.QueryRow{
 			"row": "alias", "entity_id": m.entityID, "hop": m.hop,
@@ -1162,6 +1205,9 @@ func (p *PgQueryPlane) entityOp(ctx context.Context, q domain.KnowledgeQuery,
 	if scope.Bypass {
 		cands, err := p.links.Candidates(ctx, defaultNamespace, limit)
 		if err != nil {
+			return nil, err
+		}
+		if cands, err = p.filterLinks(ctx, scope, cands); err != nil {
 			return nil, err
 		}
 		for _, l := range cands {
@@ -1428,7 +1474,7 @@ func (p *PgQueryPlane) entitySharedObjectHops(ctx context.Context, scope *domain
 	if err := sqlRows.Err(); err != nil {
 		return nil, err
 	}
-	if scope.Bypass || len(found) == 0 {
+	if scope.Unfiltered() || len(found) == 0 {
 		return found, nil
 	}
 	ids := make([]string, 0, len(found)*2)
@@ -1512,7 +1558,7 @@ func (p *PgQueryPlane) sharedObjectHops(ctx context.Context, scope *domain.TagPr
 	if err := sqlRows.Err(); err != nil {
 		return nil, err
 	}
-	if scope.Bypass || len(found) == 0 {
+	if scope.Unfiltered() || len(found) == 0 {
 		return found, nil
 	}
 	ids := make([]string, 0, len(found))

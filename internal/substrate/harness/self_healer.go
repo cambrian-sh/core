@@ -132,6 +132,17 @@ func (sh *SelfHealer) Wrap(inner StepFunc) StepFunc {
 				}
 			}
 
+			// A deterministic dispatch refusal (the effect check found no agent whose
+			// tools can do the step) is the same answer on every attempt: stop now so
+			// the plan replans with the reason, instead of re-asking the gatekeeper.
+			if domain.IsDispatchRefusal(err) {
+				return nil, &HealingExhaustedError{
+					AttemptCount: attempt + 1,
+					StepIndex:    sh.StepIndex,
+					LastError:    err,
+				}
+			}
+
 			timedOut := isTimeout(err, st.Code())
 
 			// Loop detection: only possible after the first attempt, and never for

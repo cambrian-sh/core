@@ -187,6 +187,167 @@ service Orchestrator {
   // agent that pushes should declare streams_output (profile / manifest) so the
   // kernel stops forwarding gateway deltas for its steps.
   rpc EmitStepOutput(stream StepOutputChunk) returns (EmitStepOutputAck);
+
+  // Principal-owned recurring tasks (T-20261106-the-assistant-cannot-set-up-a-recurring-task;
+  // additive within contract 0101, capability "scheduled-tasks"). The OWNER is the run
+  // principal resolved from the presented lease (conversation owner -> task beneficiary
+  // -> configured default) — never a request field. ProposeScheduledTask asks the
+  // principal's approval through the operator approval hub (kind "schedule", the console
+  // Inbox) and creates the task only on an explicit approve; a denial or no answer within
+  // execution.schedules.approval_timeout_seconds creates nothing. Once created it is a
+  // premium schedule watch that runs ONE chat turn, as its owner, at each firing.
+  rpc ProposeScheduledTask(ProposeScheduledTaskRequest) returns (ProposeScheduledTaskResponse);
+  // The run principal's own scheduled tasks.
+  rpc ListScheduledTasks(ListScheduledTasksRequest) returns (ListScheduledTasksResponse);
+  // Pause, resume or delete one of the run principal's own scheduled tasks. A task owned
+  // by anyone else is NOT_FOUND (no existence leak).
+  rpc ManageScheduledTask(ManageScheduledTaskRequest) returns (ManageScheduledTaskResponse);
+
+  // Knowledge proposals (T-20261107-knowledge-substrate-extensions-for-case; additive
+  // within contract 0101). An agent proposes a knowledge item — stored as a CANDIDATE
+  // asserted by the calling agent (resolved from the lease, never a request field) —
+  // and may ask for it to be committed: a knowledge_commit approval for the run
+  // principal, whose approver becomes the committed item's asserter. Or it proposes a
+  // candidate link (mechanism scored, capped at candidate; evidence required). An agent
+  // can never write a committed value or a confirmed link. Only kinds the deployment
+  // resolves by designated_actor accept proposals. A refusal is an OK response with
+  // accepted=false and a detail; UNIMPLEMENTED when the kernel has no knowledge bridge.
+  rpc ProposeKnowledge(ProposeKnowledgeRequest) returns (ProposeKnowledgeResponse);
+}
+
+// One typed predicate value of a proposed knowledge item. Exactly one value field is
+// read, chosen by type ("text" | "number" | "date" | "entity").
+message KnowledgeValue {
+  string predicate = 1;
+  string type = 2;
+  string text = 3;
+  double number = 4;
+  google.protobuf.Timestamp date = 5;
+  string entity_ref = 6;
+}
+
+message ProposedKnowledgeItem {
+  string kind = 1;
+  string entity_id = 2;
+  repeated KnowledgeValue values = 3;
+  google.protobuf.Timestamp valid_from = 4;
+  google.protobuf.Timestamp valid_to = 5;
+  // A retraction proposal (the committed value would be withdrawn).
+  bool negation = 6;
+  string evidence_id = 7;
+  // A classification HINT; the kernel's decision point replaces it.
+  repeated string classification = 8;
+}
+
+message ProposedKnowledgeLink {
+  // identity | relation | lineage ("" = relation).
+  string family = 1;
+  string from_ref = 2;
+  string to_ref = 3;
+  string relation = 4;
+  // Required: a proposal that cannot say why is not an assertion.
+  string evidence_id = 5;
+  double confidence = 6;
+}
+
+message ProposeKnowledgeRequest {
+  string lease_id = 1; // the step's lease (else x-lease-id)
+  oneof proposal {
+    ProposedKnowledgeItem item = 2;
+    ProposedKnowledgeLink link = 3;
+  }
+  // Items only: also raise a knowledge_commit approval for the run principal.
+  bool request_commit = 4;
+  // Why; shown to the approver.
+  string reason = 5;
+  // Optional idempotency key; a retry with the same key and content is a replay.
+  string client_ref = 6;
+}
+
+message ProposeKnowledgeResponse {
+  bool accepted = 1;
+  // Why it was refused (named constraint), when accepted=false.
+  string detail = 2;
+  // The candidate item's id (items).
+  string candidate_id = 3;
+  // false when an identical proposal was already recorded (a replay).
+  bool created = 4;
+  // Set when request_commit raised an approval.
+  string approval_id = 5;
+  string approval_state = 6;
+}
+
+message ProposeScheduledTaskRequest {
+  string lease_id = 1;       // the step's lease (else x-lease-id)
+  string title = 2;          // short name shown in the Inbox and the list
+  string goal = 3;           // what to do at each firing, written as the user's request
+  string cron = 4;           // 5-field cron or @daily/@weekly/...; exactly one of cron / rrule
+  string rrule = 5;          // RFC 5545 RRULE subset (FREQ=HOURLY|DAILY|WEEKLY|MONTHLY, BYHOUR, BYMINUTE, BYDAY, BYMONTHDAY)
+  string timezone = 6;       // IANA zone the schedule is read in ("" = UTC)
+  // agent_id: the agent profile the user asked to run it. RECORDED, not yet routed: every
+  // firing runs on the chat lane's pool agent today (T-20261106-scheduled-task-agent-id-is-recorded-but-not).
+  string agent_id = 7;
+  // delivery: "conversation" (default: the reply lands in a conversation the owner holds),
+  // "notify" (also a notification event), "email" (the run is asked to email the result
+  // through the owner's own mail integration).
+  string delivery = 8;
+}
+
+enum ScheduledTaskRejection {
+  SCHEDULED_TASK_REJECTION_UNSPECIFIED = 0;
+  SCHEDULED_TASK_REJECTION_INVALID = 1;      // bad cron/rrule/timezone/delivery, empty goal
+  SCHEDULED_TASK_REJECTION_LIMIT = 2;        // per-principal cap reached
+  SCHEDULED_TASK_REJECTION_TOO_FREQUENT = 3; // fires more often than the minimum interval
+  SCHEDULED_TASK_REJECTION_DENIED = 4;       // the principal (or an operator for them) said no
+  SCHEDULED_TASK_REJECTION_NO_DECISION = 5;  // nobody answered within the approval window
+  SCHEDULED_TASK_REJECTION_NO_PRINCIPAL = 6; // the run is not acting for anyone
+}
+
+message ProposeScheduledTaskResponse {
+  bool created = 1;
+  ScheduledTask task = 2;    // set when created
+  ScheduledTaskRejection rejection = 3;
+  string detail = 4;
+}
+
+message ScheduledTask {
+  string id = 1;
+  string owner_id = 2;
+  string title = 3;
+  string goal = 4;
+  string cron = 5;
+  string timezone = 6;
+  string agent_id = 7;
+  string delivery = 8;
+  bool active = 9;
+  string conversation_id = 10;
+  string created_at = 11;    // RFC3339
+}
+
+message ListScheduledTasksRequest {
+  string lease_id = 1;
+}
+
+message ListScheduledTasksResponse {
+  repeated ScheduledTask tasks = 1;
+}
+
+enum ScheduledTaskAction {
+  SCHEDULED_TASK_ACTION_UNSPECIFIED = 0;
+  SCHEDULED_TASK_ACTION_PAUSE = 1;
+  SCHEDULED_TASK_ACTION_RESUME = 2;
+  SCHEDULED_TASK_ACTION_DELETE = 3;
+}
+
+message ManageScheduledTaskRequest {
+  string lease_id = 1;
+  string id = 2;
+  ScheduledTaskAction action = 3;
+}
+
+message ManageScheduledTaskResponse {
+  bool ok = 1;
+  string detail = 2;
 }
 
 // StepOutputKind classifies one pushed chunk.
@@ -297,6 +458,16 @@ message ApprovalRequest {
   // a skill outside its effective set (tool_name "skill:<name>"; approving grants
   // it durably to that agent, decisions/skill-access-grants.md). Additive.
   string kind = 5;
+  // ADR-0142 D11 (additive): the approver rules ("operator", "self | operator",
+  // "role:compliance", …), the person the action is for, and its policy class.
+  // The stream carries only items the caller may answer.
+  string rule = 6;
+  string beneficiary = 7;
+  string action_class = 8;
+  // Additive: an earlier side-effecting call of the same conversation this one
+  // may duplicate ("Possible duplicate of <tool> … at <UTC time> …"); "" = none.
+  // Same text as operator.proto ApprovalOp.duplicate_notice.
+  string duplicate_notice = 9;
 }
 message ApprovalDecisionRequest {
   string id = 1;

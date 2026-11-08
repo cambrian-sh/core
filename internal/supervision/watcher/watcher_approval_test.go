@@ -34,8 +34,8 @@ func onePlan(calls *int32) *testPlanner {
 func TestWatcher_OnSignal_ApprovedPlanExecutes(t *testing.T) {
 	t.Parallel()
 	var calls int32
-	hub := domain.NewInMemoryApprovalController(5 * time.Second)
-	reqs, cancel := hub.Watch() // an operator is watching
+	hub := domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: 5 * time.Second})
+	reqs, cancel := opRequests(hub) // an operator is watching
 	defer cancel()
 	exec := &recordingExecutor{ran: make(chan *domain.ExecutionPlan, 1)}
 	w := New(nil, nil, onePlan(&calls), hub, exec, WatcherConfig{})
@@ -62,7 +62,7 @@ func TestWatcher_OnSignal_ApprovedPlanExecutes(t *testing.T) {
 	default:
 	}
 
-	if !hub.Submit(req.ID, true, "op-1") {
+	if !opSubmit(hub, req.ID, true, "op-1") {
 		t.Fatal("Submit: unknown approval id")
 	}
 	select {
@@ -81,15 +81,15 @@ func TestWatcher_OnSignal_ApprovedPlanExecutes(t *testing.T) {
 func TestWatcher_OnSignal_RejectedPlanDoesNotExecute(t *testing.T) {
 	t.Parallel()
 	var calls int32
-	hub := domain.NewInMemoryApprovalController(5 * time.Second)
-	reqs, cancel := hub.Watch()
+	hub := domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: 5 * time.Second})
+	reqs, cancel := opRequests(hub)
 	defer cancel()
 	exec := &recordingExecutor{ran: make(chan *domain.ExecutionPlan, 1)}
 	w := New(nil, nil, onePlan(&calls), hub, exec, WatcherConfig{})
 
 	_ = w.OnSignal(t.Context(), domain.Signal{StreamID: "STOCK_LOW", FromAgent: "d"})
 	req := <-reqs
-	hub.Submit(req.ID, false, "op-1")
+	opSubmit(hub, req.ID, false, "op-1")
 
 	select {
 	case <-exec.ran:
@@ -102,7 +102,7 @@ func TestWatcher_OnSignal_RejectedPlanDoesNotExecute(t *testing.T) {
 func TestWatcher_OnSignal_NoApproverFailsClosed(t *testing.T) {
 	t.Parallel()
 	var calls int32
-	hub := domain.NewInMemoryApprovalController(5 * time.Second)
+	hub := domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: 5 * time.Second})
 	exec := &recordingExecutor{ran: make(chan *domain.ExecutionPlan, 1)}
 	w := New(nil, nil, onePlan(&calls), hub, exec, WatcherConfig{})
 
@@ -131,8 +131,8 @@ func TestWatcher_OnSignal_UnwiredApprovalNeverExecutes(t *testing.T) {
 func TestWatcher_OnSignal_PendingPlansBounded(t *testing.T) {
 	t.Parallel()
 	var calls int32
-	hub := domain.NewInMemoryApprovalController(5 * time.Second)
-	reqs, cancel := hub.Watch()
+	hub := domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: 5 * time.Second})
+	reqs, cancel := opRequests(hub)
 	defer cancel()
 	exec := &recordingExecutor{ran: make(chan *domain.ExecutionPlan, 4)}
 	w := New(nil, nil, onePlan(&calls), hub, exec, WatcherConfig{MaxPendingPlans: 1})
@@ -146,5 +146,5 @@ func TestWatcher_OnSignal_PendingPlansBounded(t *testing.T) {
 		t.Fatalf("second plan was queued past the bound: %+v", r)
 	case <-time.After(200 * time.Millisecond):
 	}
-	hub.Submit(first.ID, false, "op")
+	opSubmit(hub, first.ID, false, "op")
 }

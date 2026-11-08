@@ -7,7 +7,8 @@ import (
 	"strings"
 )
 
-// humanFailure maps a turn error onto one short sentence a user can act on.
+// humanFailure maps a turn error onto one short sentence a user can act on, in the
+// conversation's language (lang; locale.go — a catalogue, never a model translation).
 //
 // The mapping exists for the same reason the ADR-0098 progress vocabulary does: internal
 // error text names leases, pools, RPC codes and agent ids, none of which mean anything to
@@ -24,18 +25,25 @@ import (
 // request is usually worth retrying immediately, a timed-out one usually needs narrowing.
 var ErrTurnStalled = errors.New("chat: turn stopped making progress")
 
-func humanFailure(err error) string {
-	switch {
-	case err == nil:
+func humanFailure(err error, lang string) string {
+	if err == nil {
 		return ""
+	}
+	return Message(failureMessage(err), lang)
+}
+
+// failureMessage picks the catalogue sentence for a turn error (locale.go holds the text in
+// every supported language).
+func failureMessage(err error) MessageID {
+	switch {
 	case errors.Is(err, ErrTurnStalled):
-		return "That request stopped making progress, so I stopped waiting on it. Worth trying again."
+		return MsgTurnStalled
 	case errors.Is(err, ErrEmptyReply):
-		return "I wasn't able to produce an answer for that one. Try rephrasing it?"
+		return MsgEmptyReply
 	case errors.Is(err, context.DeadlineExceeded):
-		return "That took longer than I'm allowed to spend on one message, so I stopped. A narrower request usually gets through."
+		return MsgTurnTimeout
 	case errors.Is(err, context.Canceled):
-		return "That was cancelled before I finished."
+		return MsgTurnCancelled
 	}
 
 	// Fall back to shape rather than exact identity, so errors from layers this package
@@ -43,13 +51,13 @@ func humanFailure(err error) string {
 	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "busy"), strings.Contains(msg, "capacity"):
-		return "I'm at capacity right now. Give me a moment and try again."
+		return MsgAtCapacity
 	case strings.Contains(msg, "session not found"), strings.Contains(msg, "lease"):
-		return "I lost my working session part-way through that one. Trying again usually works."
+		return MsgSessionLost
 	case strings.Contains(msg, "deadline"), strings.Contains(msg, "timeout"):
-		return "That took too long and I had to stop."
+		return MsgTookTooLong
 	}
-	return "Something went wrong on my side and I couldn't finish that one."
+	return MsgGenericFail
 }
 
 // finalAnswerEnvelope is the structured output an SDK ReAct loop produces on its last

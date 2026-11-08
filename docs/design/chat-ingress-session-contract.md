@@ -5,6 +5,12 @@
 > any point where the outside world enters Cambrian (Telegram, webhook, websocket, inbound
 > API), of which chat is one payload type. The contract below is unchanged; only the noun is.
 
+> **Superseded lane (2026-11-06, ADR-0142 K-5).** The premium Go chat ingress described
+> below as the default in-process manager was DELETED; the SDK `HTTPChatIngress` is
+> deprecated (loopback-only). The canonical conversation lane is the operator-plane
+> `OpenConversation`/`SendTurn`, authenticated per person through the kernel Authenticator.
+> Decision: `cambrian-knowledge/decisions/canonical-conversation-lane.md`.
+
 Companion to **ADR-0080** (Chat Daemon Ownership). Defines the two interfaces of the
 two-tier chat hierarchy so a Chat Ingress (default or user-authored) and a Session daemon
 can be built independently.

@@ -890,18 +890,23 @@ func scopeExpressions(eff *domain.TagPredicate) []goqu.Expression {
 // this reason. Read documents through the enforcing store's post-fetch filter,
 // which reads tags from the domain object rather than from a column.
 func scopeExpressionsOn(eff *domain.TagPredicate, alias string) []goqu.Expression {
-	if eff == nil || eff.Bypass {
+	if eff == nil || eff.Unfiltered() {
 		return nil
 	}
 	col := "metadata"
 	if alias != "" {
 		col = alias + ".metadata"
 	}
+	// The owner fence (domain/owner_scope.go) — on EVERY predicate, Bypass
+	// included; only ScopeMaintenance (Unfiltered, above) skips it.
+	exprs := []goqu.Expression{ownerFenceJSONB(col, eff)}
+	if eff.Bypass {
+		return exprs
+	}
 	contains := func(tag string) string {
 		b, _ := json.Marshal(map[string][]string{"tags": {tag}})
 		return string(b)
 	}
-	var exprs []goqu.Expression
 	// Required: a doc must carry ALL → one AND containment term per tag.
 	for _, r := range eff.RequiredTags {
 		exprs = append(exprs, goqu.L(col+" @> ?::jsonb", contains(r)))
@@ -935,6 +940,31 @@ func scopeExpressionsOn(eff *domain.TagPredicate, alias string) []goqu.Expressio
 		exprs = append(exprs, goqu.L("NOT ("+col+" @> ?::jsonb)", contains(t)))
 	}
 	return exprs
+}
+
+// ownerFenceJSONB is the SQL mirror of the owner fence in TagPredicate.Check
+// for tables that carry tags in jsonb `metadata.tags`: no tag in the reserved
+// owner namespace other than the reader's own.
+//
+// The jsonpath text is built from CONSTANTS and positional variable names only;
+// every reader-derived value (the held owner tags) travels in the vars object,
+// so nothing a principal id contains can change the path. It is bound as a
+// parameter rather than inlined because jsonpath's filter syntax uses '?',
+// which goqu would read as a placeholder.
+//
+// A row with no tags, or no owner tag, matches nothing in the path and passes.
+func ownerFenceJSONB(col string, eff *domain.TagPredicate) goqu.Expression {
+	held := eff.HeldOwnerTags()
+	cond := `@ starts with "` + domain.OwnerTagPrefix + `"`
+	vars := make(map[string]string, len(held))
+	for i, t := range held {
+		name := fmt.Sprintf("o%d", i)
+		cond += " && @ != $" + name
+		vars[name] = t
+	}
+	b, _ := json.Marshal(vars)
+	return goqu.L("NOT jsonb_path_exists("+col+", ?::jsonpath, ?::jsonb)",
+		"lax $.tags[*] ? ("+cond+")", string(b))
 }
 
 // isolationExpressions builds the SQL mirror of domain.SessionIsolation.Allows
@@ -2069,4 +2099,10 @@ func (p *PgVectorAdapter) PageRankMeta(ctx context.Context) (time.Time, int, int
 		return time.Time{}, 0, 0, mapError("PageRankMeta", err)
 	}
 	return computedAt, chunkCount, tripletCount, nil
+}
+
+// OpenPlainPool opens a plain pool for offline CLI tools (`principal`, ADR-0142):
+// the same connection the migration CLI uses. The caller closes it.
+func OpenPlainPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
+	return migrationPool(ctx, cfg)
 }

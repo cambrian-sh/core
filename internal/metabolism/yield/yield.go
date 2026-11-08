@@ -210,7 +210,11 @@ func (u *run) resolve(ctx context.Context, task *domain.DispatchTask, in, first 
 		subIn := subHandoff(in, intent, subTask.ID)
 		subRes, err := u.r.inner.Execute(ctx, subTask, subIn)
 		if err != nil {
-			return nil, fmt.Errorf("yield: dispatch sub-goal %q (from %q): %w", intent, agentID, err)
+			// Worded for the replanner (replan_cap v3): a yielded action the agent did
+			// not perform itself — typically for lack of a tool — that no other agent
+			// could take either is the under-declaration signal, and the replan adds
+			// the action's effect to the step's required_effects.
+			return nil, fmt.Errorf("yield: agent %q did not perform %q itself (it yielded it, e.g. for lack of a tool) and dispatching it failed: %w", agentID, intent, err)
 		}
 		if subRes == nil || subRes.Handoff == nil {
 			return nil, fmt.Errorf("yield: dispatch sub-goal %q (from %q): no response", intent, agentID)

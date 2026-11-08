@@ -256,6 +256,11 @@ type WatchConfig struct {
 	// restart: "fire_once" fires a single catch-up if a scheduled time was missed while
 	// down; "skip" (default) resumes at the next future time.
 	MissedFirePolicy string `json:"missed_fire_policy,omitempty"`
+	// Owner is the principal a principal-owned scheduled task belongs to
+	// (ScheduledTurnAction; T-20261106-the-assistant-cannot-set-up-a-recurring-task).
+	// "" for an operator-registered watch. Set only by the kernel from the run
+	// principal of the lease that proposed it — never from a request field.
+	Owner string `json:"owner,omitempty"`
 }
 
 // WatchMetrics is the per-watch observability snapshot (REACT-05 / ADR-0071): how many

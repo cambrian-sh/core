@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -164,12 +165,16 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 		// no generalist exists. Surface it on the feed as well as to the caller —
 		// this is the failure mode that used to die as a generic "no candidates".
 		var noMatch *domain.NoCapabilityMatchError
-		if errors.As(err, &noMatch) {
+		var noEffect *domain.NoEffectMatchError
+		if errors.As(err, &noMatch) || errors.As(err, &noEffect) {
+			// The effect-check refusal is surfaced the same way: the feed's ErrorMsg
+			// carries the required effects, each agent's derived effects and the
+			// (empty) eligible set, so the console can show why the step was refused.
 			d.emit(domain.SelectionEventPayload{
 				TaskID:   task.ID,
 				TaskDesc: task.Description,
 				Status:   "failed",
-				ErrorMsg: noMatch.Error(),
+				ErrorMsg: err.Error(),
 				Funnel:   task.Funnel,
 			})
 			if d.Observer != nil {
@@ -215,10 +220,16 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 	for _, sc := range scored {
 		// IsTool is deliberately left false: it recorded the static-bidder path
 		// (deprecated with TraitTool), and dispatch solicits no bids at all.
+		rationale := "merit-rank (dispatch: no bid solicited)"
+		if ec := task.EffectCheck; ec != nil && ec.Outcome == domain.EffectCheckEligible {
+			// Why this agent was eligible at all: its tools cover the step's effects.
+			rationale += "; effects [" + strings.Join(ec.Required, ",") + "] ⊆ [" +
+				strings.Join(ec.AgentEffects[sc.Agent.ID], ",") + "]"
+		}
 		bids = append(bids, domain.CandidateEntry{
 			AgentID:    sc.Agent.ID,
 			Confidence: float32(sc.Score),
-			Rationale:  "merit-rank (dispatch: no bid solicited)",
+			Rationale:  rationale,
 		})
 	}
 

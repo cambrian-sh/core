@@ -39,3 +39,34 @@ func QueryKnowledgeFunc(authorizer domain.Authorizer, plane domain.QueryPlane, l
 		return plane.Query(ctx, q, pred)
 	}
 }
+
+// CatalogSource is what KnowledgeCatalogFunc binds: the query plane's
+// names-and-counts surface, scoped by a predicate the caller never chooses.
+type CatalogSource interface {
+	Catalog(scope *domain.TagPredicate) domain.SubstrateCatalog
+}
+
+// KnowledgeCatalogFunc is QueryKnowledgeFunc for the substrate catalog
+// (domain.SubstrateCatalog): principal in, the predicate resolved here from the
+// effective Authorizer and the transport surface on the context, a catalog BOUND
+// to that predicate out. No read predicate fails closed with ErrQueryDenied, the
+// same refusal the query seam gives — so a caller cannot use one seam to learn
+// what the other withholds.
+func KnowledgeCatalogFunc(authorizer domain.Authorizer, src CatalogSource, log *slog.Logger) func(context.Context, domain.PrincipalRef) (domain.SubstrateCatalog, error) {
+	if authorizer == nil {
+		authorizer = domain.AllowAllAuthorizer{}
+	}
+	return func(ctx context.Context, principal domain.PrincipalRef) (domain.SubstrateCatalog, error) {
+		surface := domain.SurfaceFromContext(ctx)
+		pred, dec := authorizer.ReadFilter(ctx, principal, surface)
+		if pred == nil {
+			if log != nil {
+				log.Warn("knowledge catalog denied: no read predicate",
+					"principal", principal.ID, "principal_kind", string(principal.Kind),
+					"surface", string(surface.Kind), "reason", string(dec.Reason))
+			}
+			return nil, fmt.Errorf("%w: %s", domain.ErrQueryDenied, dec.Reason)
+		}
+		return src.Catalog(pred), nil
+	}
+}

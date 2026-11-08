@@ -2,6 +2,7 @@ package operator_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -9,17 +10,23 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/identity"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
 )
 
-func newIDP() *operator.StaticIdentity {
-	return operator.NewStaticIdentity(map[string]struct {
-		Password string
-		Role     operator.Role
-	}{
-		"op":     {Password: "pw", Role: operator.RoleOperator},
-		"viewer": {Password: "pw", Role: operator.RoleViewer},
-	})
+// newIDP is the ADR-0142 local-accounts backend over an in-memory registry,
+// seeded with an operator and a viewer — what the env bootstrap now builds.
+func newIDP() *identity.LocalAccounts {
+	ctx := context.Background()
+	reg := identity.NewMemRegistry()
+	idp := identity.NewLocalAccounts(reg, reg)
+	for u, r := range map[string]string{"op": "operator", "viewer": "viewer"} {
+		if _, err := idp.EnsureAccount(ctx, u, "pw", []string{r}); err != nil {
+			panic(err)
+		}
+	}
+	return idp
 }
 
 func ctxWithToken(token string) context.Context {
@@ -27,16 +34,16 @@ func ctxWithToken(token string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), md)
 }
 
-func login(t *testing.T, idp *operator.StaticIdentity, user, pw string) string {
+func login(t *testing.T, idp *identity.LocalAccounts, user, pw string) string {
 	t.Helper()
-	token, _, _, err := idp.Login(user, pw)
+	token, _, err := idp.Login(context.Background(), user, pw)
 	if err != nil {
 		t.Fatalf("login(%s): %v", user, err)
 	}
 	return token
 }
 
-func callUnary(idp operator.OperatorIdentity, ctx context.Context, method string) (called bool, err error) {
+func callUnary(idp domain.Authenticator, ctx context.Context, method string) (called bool, err error) {
 	interceptor := operator.UnaryAuthInterceptor(idp, nil)
 	_, err = interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method},
 		func(context.Context, any) (any, error) { called = true; return nil, nil })
@@ -118,13 +125,13 @@ func TestAuth_PrincipalInContext(t *testing.T) {
 }
 
 // Bad credentials and bad tokens are rejected.
-func TestAuth_StaticIdentityRejectsBadCreds(t *testing.T) {
+func TestAuth_LocalAccountsRejectBadCreds(t *testing.T) {
 	t.Parallel()
 	idp := newIDP()
-	if _, _, _, err := idp.Login("op", "wrong"); status.Code(err) != codes.Unauthenticated {
+	if _, _, err := idp.Login(context.Background(), "op", "wrong"); !errors.Is(err, domain.ErrUnauthenticated) {
 		t.Fatalf("bad password should be Unauthenticated, got %v", err)
 	}
-	if _, _, err := idp.Resolve("not-a-token"); status.Code(err) != codes.Unauthenticated {
+	if _, err := callUnary(idp, ctxWithToken("not-a-token"), "/cambrian.OperatorConsole/Snapshot"); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("bad token should be Unauthenticated, got %v", err)
 	}
 }

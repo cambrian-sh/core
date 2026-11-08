@@ -175,12 +175,12 @@ func TestListSkills_RequestApprovedServesSameCall(t *testing.T) {
 // End to end over the real access service and the real approval hub: an operator
 // approving live gives the body in the same ListSkills call.
 func TestListSkills_LiveApprovalOverHub(t *testing.T) {
-	hub := domain.NewInMemoryApprovalController(time.Minute)
-	ch, cancel := hub.Watch()
+	hub := domain.NewAddressedHub(domain.AddressedHubConfig{DefaultTimeout: time.Minute})
+	ch, cancel := opRequests(hub)
 	defer cancel()
 	go func() {
 		if r, ok := <-ch; ok {
-			hub.Submit(r.ID, true, "op")
+			opSubmit(hub, r.ID, true, "op")
 		}
 	}()
 	svc, err := access.New(&oneGrantStore{}, func(id string) ([]string, bool) {

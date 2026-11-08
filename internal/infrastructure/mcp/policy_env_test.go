@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/goleak"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -28,18 +29,27 @@ func TestMain(m *testing.M) {
 			os.Exit(0)
 		}
 	}
-	os.Exit(m.Run())
+	// goleak (AGENTS.md §3.3): the connector's per-server watch loops and the
+	// stdio process plumbing must all be gone once a test has closed them.
+	// Ignored: the SERVER side of the in-process Streamable-HTTP fixtures
+	// (httptest servers built by these tests); closing the httptest listener does
+	// not end the SDK's server sessions. That is fixture plumbing, not the
+	// connector — a leaked watch loop, client session or stdio pipe still fails.
+	goleak.VerifyTestMain(m,
+		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
+		goleak.IgnoreTopFunction("github.com/modelcontextprotocol/go-sdk/mcp.(*streamableServerConn).Read"))
 }
 
 type envOut struct {
-	Env []string `json:"env"`
+	Env  []string `json:"env"`
+	Args []string `json:"args"`
 }
 
 func runEnvServer() {
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "envsrv", Version: "1.0.0"}, nil)
 	mcpsdk.AddTool(server, &mcpsdk.Tool{Name: "env", Description: "report the environment"},
 		func(_ context.Context, _ *mcpsdk.CallToolRequest, _ struct{}) (*mcpsdk.CallToolResult, envOut, error) {
-			return nil, envOut{Env: os.Environ()}, nil
+			return nil, envOut{Env: os.Environ(), Args: os.Args[1:]}, nil
 		})
 	_ = server.Run(context.Background(), &mcpsdk.StdioTransport{})
 }
@@ -179,6 +189,7 @@ func TestStdio_EnvironmentIsAllowlisted(t *testing.T) {
 		ID: "envsrv", Transport: "stdio", Endpoint: exe, Args: []string{envServerFlag},
 		Env:           []string{"FIRECRAWL_API_KEY", "TAU2_HUB_URL", "CAMBRIAN_SECRET_KEY"},
 		DefaultPolicy: &ToolPolicy{Effects: []string{"read"}},
+		Sandbox:       testSandboxSpec(t, "envsrv"),
 	}})
 	toolByName(t, tools, "mcp:envsrv/env")
 

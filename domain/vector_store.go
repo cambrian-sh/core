@@ -61,7 +61,8 @@ type SearchOptions struct {
 	// explicit, compiler-visible chokepoint parameter (ADR-0034 D5). The
 	// authz.EnforcingVectorStore decorator (ADR-0085) seeds it (from ctx or an explicit value) and
 	// fails closed when it is nil; the pgvector adapter translates it into the
-	// three-set/CNF jsonb containment predicate. ScopeSystem bypasses filtering.
+	// three-set/CNF jsonb containment predicate. ScopeSystem bypasses the tag terms but
+	// keeps the owner fence (owner_scope.go); only ScopeMaintenance is unfiltered.
 	Scope *TagPredicate
 	// Isolation is the session boundary applied to this search (BRAIN-01) — a
 	// SECOND predicate beside Scope, never more terms on it. Scope answers "may
