@@ -318,8 +318,7 @@ def test_no_access_claim_detection(reply, hit):
 #    T-20261107-answers-grounded-in-rule-or-regulation (chat_agent v3) ──
 
 
-def test_chat_agent_prompt_is_v3_and_v2_is_unchanged():
-    assert ca._LIBRARY.get("chat_agent").version == 3
+def test_chat_agent_prompt_v2_is_unchanged():
     v2 = ca._LIBRARY.get_version("chat_agent", 2)
     assert "A draft written only in your reply is saved nowhere" not in v2.body
 
@@ -450,16 +449,21 @@ def test_a_second_plan_is_not_started_when_the_first_used_up_the_turn(clock):
 
     stub = _Stub([
         _delegate("Evaluate the tenders against the Instructions to Tenderers"),
-        _delegate("Find the Instructions to Tenderers"),
-        _answer("I found the bids but not the Instructions to Tenderers; I can keep looking."),
+        # The one final reply call answers in plain text.
+        "I found the bids but not the Instructions to Tenderers; I can keep looking.",
     ])
     a = _agent(stub)
     sub = _DelegatingSubstrate(a.substrate, slow_plan)
     a.substrate = sub
     out = a.run(_deadline_task("which tender breaches which rule?", 240_000))
     assert len(sub.executed) == 1, "no plan may start without time to finish it and reply"
-    assert out.data.decode().startswith("I found the bids")
-    assert "No new plan was run: too little of this turn's time is left" in _all_content(stub.stream_reqs[2])
+    # The plan came back with 50 s left: no plan can start after it, so the loop ends and
+    # ONE call writes the reply from the result.
+    assert out.data.decode() == "I found the bids but not the Instructions to Tenderers; I can keep looking."
+    assert len(stub.stream_reqs) == 2
+    final = _all_content(stub.stream_reqs[1])
+    assert "INCOMPLETE ANALYSIS: the Instructions to Tenderers could not be located." in final
+    assert "No time is left in this turn for another tool call or plan" in final
 
 
 def test_a_plan_that_runs_out_of_time_still_gets_a_reply(clock):
@@ -470,7 +474,11 @@ def test_a_plan_that_runs_out_of_time_still_gets_a_reply(clock):
     a.substrate = sub
     out = a.run(_deadline_task("evaluate the tenders", 240_000))
     assert out.data.decode().startswith("That evaluation did not finish in time")
-    assert "did not finish this request in the time this turn has" in _all_content(stub.stream_reqs[1])
+    final = _all_content(stub.stream_reqs[1])
+    assert "No time is left in this turn for another tool call or plan" in final
+    assert "<planner_result>
+(none)
+</planner_result>" in final
 
 
 def test_another_plan_failure_is_still_a_tool_error_not_a_timeout_note(clock):
@@ -506,14 +514,14 @@ def test_chat_agent_turn_v4_kept_the_v3_sections():
         assert v3[name].body == v4[name].body, name
 
 
-def test_chat_agent_turn_is_v5_and_only_the_time_notes_changed():
+def test_chat_agent_turn_v5_time_notes_ended_with_the_language_line():
     from cambrian_agent_sdk.prompt_library import sections as _sections
-    assert ca._LIBRARY.get("chat_agent_turn").version == 5
     v4 = _sections(ca._LIBRARY.get_version("chat_agent_turn", 4))
+    v5 = _sections(ca._LIBRARY.get_version("chat_agent_turn", 5))
     for name in ("conversation", "memory", "message", "force-delegate", "report-delegated", "denial-final"):
-        assert v4[name].body == ca._TURN[name].body, name
+        assert v4[name].body == v5[name].body, name
     for name in ("no-time-to-delegate", "delegation-timeout"):
-        text = ca._TURN[name].render()
+        text = v5[name].render()
         assert text.endswith("Write the reply in the language of the latest message."), name
         assert text.startswith(v4[name].render().strip()), name
 

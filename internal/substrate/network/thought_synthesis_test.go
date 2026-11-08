@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/config"
@@ -47,7 +48,9 @@ func thoughtPlan() *domain.ExecutionPlan {
 // thought step) and the upstream-results manifest in the metadata.
 func thoughtHandoff(t *testing.T, deps []domain.StepDependency) *domain.Handoff {
 	t.Helper()
-	ctx := map[string]string{"_task_id": "step-0-x", "other": "ignored"}
+	ctx := map[string]string{"_task_id": "step-0-x", "other": "ignored",
+		// The executor stamps the organisation's date on every step (domain.Calendar).
+		domain.HandoffKeyCurrentDate: domain.CalendarBlock(time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC))}
 	if deps != nil {
 		m, err := domain.EncodeStepDependencies(deps)
 		if err != nil {
@@ -238,5 +241,33 @@ func TestThoughtFn_RendersPriorPlanAndFailedResults(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("missing %q in:\n%s", want, msg)
 		}
+	}
+}
+
+// A thought step is where a plan filters records by a window ("no activity in the
+// last two weeks", o1 2026-11-07): it is shown the date the executor stamped on its
+// handoff, and the kernel's calendar when nothing was stamped
+// (T-20261107-planner-and-chat-agent-are-not-told-today-s).
+func TestThoughtFn_IsToldToday(t *testing.T) {
+	gen := &thoughtCapture{}
+	istanbul := time.FixedZone("Europe/Istanbul", 3*3600)
+	s := &Server{Planner: &mockPlanner{}, ThoughtLLM: gen,
+		Calendar: domain.NewCalendar(istanbul, func() time.Time { return time.Date(2026, 11, 7, 22, 30, 0, 0, time.UTC) })}
+
+	stamped := thoughtHandoff(t, nil)
+	if _, err := s.thoughtFn(thoughtPlan())(t.Context(), 0, stamped); err != nil {
+		t.Fatal(err)
+	}
+	unstamped := thoughtHandoff(t, nil)
+	delete(unstamped.Context, domain.HandoffKeyCurrentDate)
+	if _, err := s.thoughtFn(thoughtPlan())(t.Context(), 0, unstamped); err != nil {
+		t.Fatal(err)
+	}
+	if msg := gen.reqs[0].Messages[0].Content; !strings.Contains(msg, "<today>\ntoday: 2026-11-07 (Saturday)\n") ||
+		!strings.Contains(msg, "14 days ago: 2026-10-24 (Saturday)") {
+		t.Errorf("the stamped date is not shown:\n%s", msg)
+	}
+	if msg := gen.reqs[1].Messages[0].Content; !strings.Contains(msg, "<today>\ntoday: 2026-11-08 (Sunday)\ntimezone: Europe/Istanbul\n") {
+		t.Errorf("an unstamped step must be dated by the server calendar:\n%s", msg)
 	}
 }
