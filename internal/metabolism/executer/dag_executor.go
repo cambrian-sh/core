@@ -156,6 +156,14 @@ type DAGExecutor struct {
 	// agent process runs one Execute at a time; <= 1 runs children one at a time on the
 	// agent's shared instance.
 	FanOutConcurrency      int
+	// Calendar is the kernel's one "today" (domain.Calendar). Its block is stamped on
+	// every step's handoff (domain.HandoffKeyCurrentDate) so an agent or thought step
+	// resolves "the last two weeks" against the organisation's date, and it scopes the
+	// step cache to that date: a step that sees the date has it as an input, so
+	// yesterday's answer to a relative ask is never replayed today
+	// (T-20261107-planner-and-chat-agent-are-not-told-today-s). nil ⇒ the wall clock
+	// in UTC.
+	Calendar *domain.Calendar
 	MaxPlanCost            float64          // total plan budget; 0 disables budget enforcement
 	DefaultInputCostPer1M  float64          // cost per 1M input tokens for cost estimation
 	DefaultOutputCostPer1M float64          // cost per 1M output tokens for cost estimation
@@ -278,6 +286,9 @@ func (d *DAGExecutor) executeStep(
 	// result cached without that instruction is never replayed to a source.
 	dispatched := plan.Steps[stepIndex]
 	dispatched.Query = fanOutSourceQuery(plan, stepIndex)
+	// The date the step is told is today, read once so the stamp and the cache key
+	// agree even across midnight.
+	today := d.Calendar.Block()
 
 	// ADR-0026: step-level cache lookup. On hit, skip stepFn entirely.
 	var cacheKey string
@@ -286,7 +297,7 @@ func (d *DAGExecutor) executeStep(
 		// Phase 3 the snapshot carries no step_N_result keys, so a dependent step's
 		// key used to ignore its inputs and replay another plan's answer for the same
 		// subject and query (T-20261105-a-planner-thought-step-that-depends-on-two).
-		cacheKey = stepCacheKey(plan.Subject, planID, dispatched, deps.results)
+		cacheKey = dayScopedCacheKey(stepCacheKey(plan.Subject, planID, dispatched, deps.results), today)
 		if cached, ok, getErr := d.StepCache.Get(ctx, cacheKey); getErr != nil {
 			slog.Warn("StepCache.Get failed, falling through to live execution", "step", stepIndex, "err", getErr)
 		} else if ok && cached != nil {
@@ -309,6 +320,8 @@ func (d *DAGExecutor) executeStep(
 	}
 	snapshot["_task_id"] = formatTaskID(stepIndex, planID)
 	snapshot["_step_index"] = strconv.Itoa(stepIndex)
+	// Kernel-authored, always overwritten: the organisation's date (domain.Calendar).
+	domain.StampCurrentDate(snapshot, today)
 	// The upstream results, structured (domain.StepDependency), on every dependent
 	// step whichever executor runs it. Kernel-authored: always overwritten, and a
 	// root step carries none even if an earlier context held the key.
@@ -357,6 +370,7 @@ func (d *DAGExecutor) executeStep(
 	// The step's own input manifest, echoed back by step functions that return
 	// the handoff context (thoughtFn does); it must not merge into the plan context.
 	delete(resp.Context, domain.HandoffKeyStepDependencies)
+	delete(resp.Context, domain.HandoffKeyCurrentDate) // kernel-stamped input, likewise
 	sizeAfter := contextByteSize(resp.Context)
 	growthBytes := sizeAfter - sizeBefore
 	if growthBytes < 0 {

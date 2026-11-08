@@ -22,7 +22,8 @@ import (
 // system block per arm (prompts/planner, prompts/planner_cap — no slots, so the
 // provider can cache it) and one user-message template shared by both arms
 // (prompts/planner_input), whose tagged regions carry the per-call data: the
-// capability clusters, the host, remembered context and, last, the request.
+// capability clusters, the host, today's date, remembered context and, last, the
+// request.
 //
 // The prompt version stamped on every plan is the pair's static hash
 // (prompts.Pair.StaticHash), computed from the very files that are rendered. It
@@ -46,7 +47,7 @@ var (
 // plannerDataTags are the data regions of planner_input. A closing tag of any of
 // them inside a value is neutralised before rendering (prompts SPEC.md §3.1), so
 // a fact, an agent description or the request cannot end its region early.
-var plannerDataTags = []string{"capability_clusters", "host", "documents", "request"}
+var plannerDataTags = []string{"capability_clusters", "host", "today", "documents", "request"}
 
 // plannerCacheTTL: planning is human-paced (an operator or user request), so the
 // long breakpoint lifetime (ADR-0139 D1: 1h for human-paced work) keeps the
@@ -133,7 +134,19 @@ type Planner struct {
 	// block shows the live tool surface with one-line summaries instead of the
 	// declared allowlist globs. nil ⇒ the declared globs (the pre-fix rendering).
 	toolMenu ToolMenuSource
+	// calendar is the kernel's one "today" (domain.Calendar), shown in planner_input's
+	// <today> region so relative asks resolve against the organisation's date, not an
+	// assumed one (T-20261107-planner-and-chat-agent-are-not-told-today-s). nil ⇒ the
+	// wall clock in UTC, so a bare Planner still tells the truth.
+	calendar *domain.Calendar
 }
+
+// SetCalendar wires the kernel's calendar (nil ⇒ the wall clock in UTC).
+func (p *Planner) SetCalendar(c *domain.Calendar) { p.calendar = c }
+
+// Calendar is the calendar the planner dates its prompts with; the replanner shows
+// the same one.
+func (p *Planner) Calendar() *domain.Calendar { return p.calendar }
 
 // hostGOOS is the OS the planner should be told about. Never hardcoded: it is
 // the live host unless a test pinned it.
@@ -302,6 +315,7 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	req, err := planRequest(pair, plannerDataTags, map[string]string{
 		"capability_clusters": clusterBlock,
 		"host":                buildHostBlock(p.hostGOOS()),
+		"today":               p.calendar.Block(),
 		"documents":           buildLTMBlock(planEntry, ltmEnrichment),
 		"request":             userInput,
 	}, plannerCacheTTL)

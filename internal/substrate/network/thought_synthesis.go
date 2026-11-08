@@ -27,7 +27,7 @@ const (
 )
 
 // thoughtDataTags are the data regions of thought_synthesis_input.
-var thoughtDataTags = []string{"goal", "task", "results", "result", "objective", "content", "error"}
+var thoughtDataTags = []string{"goal", "today", "task", "results", "result", "objective", "content", "error"}
 
 // thoughtNoResults fills the results region of a thought step that depends on no
 // earlier step, so the model is told there is nothing upstream rather than shown an
@@ -108,8 +108,21 @@ func renderThoughtResults(deps []domain.StepDependency) string {
 	return rb.String()
 }
 
+// thoughtToday is the date block a thought step is shown: the one the executor
+// stamped on its handoff (domain.HandoffKeyCurrentDate), so the step sees the same
+// date its sibling agent steps were told; the kernel's calendar when the handoff
+// carries none (an executor that does not stamp).
+func thoughtToday(handoff *domain.Handoff, cal *domain.Calendar) string {
+	if handoff != nil {
+		if v := strings.TrimSpace(handoff.Context[domain.HandoffKeyCurrentDate]); v != "" {
+			return v
+		}
+	}
+	return cal.Block()
+}
+
 // buildThoughtRequest renders one thought step's synthesis call.
-func buildThoughtRequest(goal, task string, deps []domain.StepDependency) (domain.GenerateRequest, error) {
+func buildThoughtRequest(goal, today, task string, deps []domain.StepDependency) (domain.GenerateRequest, error) {
 	sys, err := prompts.Get(thoughtSystemPromptID)
 	if err != nil {
 		return domain.GenerateRequest{}, fmt.Errorf("thought step: %w", err)
@@ -120,6 +133,7 @@ func buildThoughtRequest(goal, task string, deps []domain.StepDependency) (domai
 	}
 	msg, err := in.Render(map[string]string{
 		"goal":    prompts.NeutraliseClosingTags(strings.TrimSpace(goal), thoughtDataTags...),
+		"today":   prompts.NeutraliseClosingTags(strings.TrimSpace(today), thoughtDataTags...),
 		"task":    prompts.NeutraliseClosingTags(strings.TrimSpace(task), thoughtDataTags...),
 		"results": renderThoughtResults(deps),
 	})

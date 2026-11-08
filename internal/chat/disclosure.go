@@ -70,9 +70,9 @@ var (
 	reEmail = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}`)
 	// IBAN: country code, two check digits, then 11-30 alphanumerics, optionally in groups
 	// of four. Validated with the ISO 13616 mod-97 check.
-	reIBAN = regexp.MustCompile(`[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}`)
+	reIBAN = regexp.MustCompile(`[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}`)
 	// Letter-framed national numbers: the UK National Insurance number ("QQ 12 34 56 C").
-	reNINO = regexp.MustCompile(`[A-Z]{2} ?\d{2} ?\d{2} ?\d{2} ?[A-D]`)
+	reNINO = regexp.MustCompile(`[A-Z]{2} ?\d{2} ?\d{2} ?\d{2} ?[A-D]`)
 	// The US Social Security number.
 	reSSN = regexp.MustCompile(`\d{3}-\d{2}-\d{4}`)
 	// A payment card number in groups of four (Luhn-checked).
@@ -82,6 +82,7 @@ var (
 	// A phone number: optional "+country", optional area code in parentheses (alone or
 	// after a trunk prefix, "0 (509)"), then two to six groups of digits separated by one
 	// space, dot or dash. classifyPhone then requires 10-15 digits in all.
+	reNANP  = regexp.MustCompile(`^\d{3}[ .\-]\d{3}[ .\-]\d{4}$`)
 	rePhone = regexp.MustCompile(`(?:\+\d{1,3}[ .\-]?)?(?:\(\d{1,5}\)[ .\-]?|\d{1,5}[ .\-]?\(\d{1,5}\)[ .\-]?)?\d{2,6}(?:[ .\-]\d{2,6}){1,5}`)
 )
 
@@ -165,12 +166,19 @@ func classifyPlain(s string) (identifierKind, bool) {
 	return "", false
 }
 
-// classifyPhone accepts a grouped number of phone length (10-15 digits). Dates
-// ("24.09.2026", 8 digits) are too short; a dot-grouped amount ("1.234.567.890", every
-// group after the first three digits long) is an amount, not a phone number.
+// classifyPhone accepts a grouped number of phone length (10-15 digits) written the way
+// phone numbers are written: with an international "+", a trunk "0", an area code in
+// parentheses, or the North American 3-3-4 grouping. That keeps a list of years ("2024 2025
+// 2026") or of page numbers from reading as a phone number. Dates ("24.09.2026", 8 digits)
+// are too short; a dot-grouped amount ("1.234.567.890", every group after the first three
+// digits long) is an amount.
 func classifyPhone(s string) (identifierKind, bool) {
 	digits := len(onlyDigits(s))
 	if digits < 10 || digits > 15 {
+		return "", false
+	}
+	if !(strings.HasPrefix(s, "+") || strings.HasPrefix(s, "0") || strings.Contains(s, "(") ||
+		reNANP.MatchString(s)) {
 		return "", false
 	}
 	if !strings.ContainsAny(s, " -()+") {
@@ -413,6 +421,18 @@ func guardDisclosure(reply string, profile domain.ConversationProfile, userText 
 		}
 	}
 	return strings.TrimRight(b.String(), " \t\n") + "\n\n" + fmt.Sprintf(cat.line, strings.Join(kinds, ", ")), held
+}
+
+// userTexts is everything the user wrote in this conversation: the latest message and the
+// earlier user messages in the loaded history.
+func userTexts(latest string, history []domain.Message) []string {
+	out := []string{latest}
+	for _, m := range history {
+		if m.Role == domain.MessageRoleUser {
+			out = append(out, m.Content)
+		}
+	}
+	return out
 }
 
 // normaliseIdentifier is the comparison form of an identifier: digits and letters only,

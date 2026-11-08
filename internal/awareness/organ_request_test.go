@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/prompts"
@@ -23,6 +24,11 @@ import (
 
 var updatePromptGolden = flag.Bool("update-prompt-golden", false,
 	"rewrite testdata/*.golden from the rendered organ requests")
+
+// goldenCalendar pins "today" for the request goldens: the o1 business date.
+func goldenCalendar() *domain.Calendar {
+	return domain.NewCalendar(time.UTC, func() time.Time { return time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC) })
+}
 
 // requestRecorder is a C1 generator: it records every GenerateRequest and
 // answers with reply. Its legacy Generate fails, so a test using it proves the

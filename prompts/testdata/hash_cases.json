@@ -169,6 +169,18 @@
       "static_hash": "24ceb389273e722aeaff1eb901cfada5a1ab5c159f73cde9074fceb19fbfc707"
     },
     {
+      "id": "chat_agent",
+      "version": 4,
+      "tier": "stable",
+      "inputs": [
+        "policy",
+        "work_systems"
+      ],
+      "description": "The chat front desk's stable system text: its role, its output rule, when to answer directly and when to delegate, the work systems the planner's agents can use, its answering rules for each recall posture, and the conversation's policy.",
+      "has_schema": false,
+      "static_hash": "05014a641b9b1ed502d33ae7b30d963d329eaf95a3833cc46fd66369a3f95c5e"
+    },
+    {
       "id": "chat_agent_turn",
       "version": 1,
       "tier": "volatile",
@@ -238,6 +250,21 @@
       "static_hash": "ccdb741135b76fb3d00ca6b42ec8720bb792f170890c9abb335d4a7e70c263b1"
     },
     {
+      "id": "chat_agent_turn",
+      "version": 6,
+      "tier": "volatile",
+      "inputs": [
+        "transcript",
+        "memories",
+        "message",
+        "planner_result",
+        "language"
+      ],
+      "description": "The chat front desk's per-turn task text: the earlier conversation, the recalled memory and the latest message as tagged data, the reply instruction last, the retry note for a narrated delegation, the retry note for a reply that denied access after a delegation returned a result, the note returned instead of a new plan after a final refusal, the reply-language line naming the language to write the reply in, and the reply-now note for the one final reply call made when the turn has no time left for another tool call or plan.",
+      "has_schema": false,
+      "static_hash": "02630a15f7d7d2e4097f8f20475dbe5621686c1a464f5ebd831121e975b38939"
+    },
+    {
       "id": "clarifier",
       "version": 1,
       "tier": "stable",
@@ -269,6 +296,17 @@
       "description": "The user message of one clarification call: the classification vocabulary and the operator's goal, as tagged data.",
       "has_schema": false,
       "static_hash": "712ba9e5a9616d22321e7fcc8ad65f2c2ea023b852cee0025bd34af55d49e7d1"
+    },
+    {
+      "id": "current_date",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "today"
+      ],
+      "description": "Today's date for the chat front desk's turn: the kernel's calendar block, and how to use it for relative dates.",
+      "has_schema": false,
+      "static_hash": "3dc83ce2f00f71423a497129fec955acec818eeed8f3b83081f9d7520caa3808"
     },
     {
       "id": "fact_assess",
@@ -432,6 +470,21 @@
       "static_hash": "332a812f7f81b6b1d12469b03056dc15454159ccd59ce57b1a367c894d489efc"
     },
     {
+      "id": "planner_input",
+      "version": 2,
+      "tier": "volatile",
+      "inputs": [
+        "capability_clusters",
+        "host",
+        "today",
+        "documents",
+        "request"
+      ],
+      "description": "The user message of one planning call: the capability clusters, the host, today's date, remembered context and the request, as tagged data.",
+      "has_schema": false,
+      "static_hash": "57b330540ceb909db2f91b537947d5e68a7ecb265a462b27f2da64b3adccc8d2"
+    },
+    {
       "id": "replan",
       "version": 1,
       "tier": "stable",
@@ -507,6 +560,21 @@
       "description": "The user message of one replanning call: the capability vocabulary, the partial results, the budget marker and the failure, as tagged data.",
       "has_schema": false,
       "static_hash": "8161bf6822494a1a7f71cd00bd1bc82a44b6d7f8abd9663e31c418bdd022047f"
+    },
+    {
+      "id": "replan_input",
+      "version": 2,
+      "tier": "volatile",
+      "inputs": [
+        "capability_clusters",
+        "today",
+        "partial_results",
+        "budget",
+        "failure"
+      ],
+      "description": "The user message of one replanning call: the capability vocabulary, today's date, the partial results, the budget marker and the failure, as tagged data.",
+      "has_schema": false,
+      "static_hash": "78ce941414f962b1a462fd19d3741a6037381fa9635239c53a4129ff495419e5"
     },
     {
       "id": "retrieval_answer_subq",
@@ -765,6 +833,20 @@
       "description": "The user message of a thought step, carrying the plan goal, the step task and the earlier step results as tagged data.",
       "has_schema": false,
       "static_hash": "388f76ffaf8eb6e13929837c76120a7f0e58b83c78272a6970016d081ba01ff8"
+    },
+    {
+      "id": "thought_synthesis_input",
+      "version": 2,
+      "tier": "volatile",
+      "inputs": [
+        "goal",
+        "today",
+        "task",
+        "results"
+      ],
+      "description": "The user message of a thought step, carrying the plan goal, today's date, the step task and the earlier step results as tagged data.",
+      "has_schema": false,
+      "static_hash": "d58d0c2b1515e7de42b1ce59b722c973a7396a90ca2db7f70702143ccfb491d4"
     }
   ]
 }

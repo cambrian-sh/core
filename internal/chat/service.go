@@ -124,6 +124,12 @@ type TurnService struct {
 	// (T-20261107-chat-agent-tells-the-user-it-has-no-tool-for). nil ⇒ no summary.
 	workSystems func(ctx context.Context) string
 
+	// calendar is the kernel's one "today" (domain.Calendar), sent on every turn as
+	// the "current_date" metadata so the front desk resolves "the last two weeks"
+	// against the organisation's date (T-20261107-planner-and-chat-agent-are-not-told-
+	// today-s). nil ⇒ the wall clock in UTC.
+	calendar *domain.Calendar
+
 	// active holds the turns running per conversation, so closing a conversation
 	// cancels them (CloseConversation).
 	activeMu sync.Mutex
@@ -307,6 +313,10 @@ func (s *TurnService) SetLeaseBinder(r domain.LeaseResolver, agentID string) {
 // from the planner's own live tool menu (awareness.Planner.WorkSystems), so the
 // front desk and the planner see one set. nil leaves turns without it.
 func (s *TurnService) SetWorkSystems(f func(ctx context.Context) string) { s.workSystems = f }
+
+// SetCalendar wires the kernel's calendar the turn handoff is dated with (nil ⇒ the
+// wall clock in UTC).
+func (s *TurnService) SetCalendar(c *domain.Calendar) { s.calendar = c }
 
 // SetDeliverer wires the outbound path (ADR-0090 D8). nil leaves conversations
 // store-only, which is correct for a console-only deployment: the console reads
@@ -542,6 +552,15 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	if reply == "" {
 		return domain.Message{}, ErrEmptyReply
 	}
+	// The reply disclosure guard (disclosure.go): a deterministic check, after whatever the
+	// agent's own prompts and guards did, that the reply does not state a personal
+	// identifier it declares withheld, nor a strong identifier to a customer. Values the
+	// user wrote themselves are never masked.
+	if guarded, held := guardDisclosure(reply, conv.Profile, userTexts(req.Text, history), lang); held.total() > 0 {
+		slog.Warn("chat: reply disclosure guard held back personal identifiers",
+			"conversation", req.ConversationID, "held", held)
+		reply = guarded
+	}
 
 	// Through Emit, so a reply to an ingress-borne conversation reaches the person
 	// who asked. A DELIVERY failure does not fail the turn: the reply is already
@@ -617,6 +636,11 @@ func (s *TurnService) buildHandoff(ctx context.Context, conv *domain.Conversatio
 		// said in it (agents/chat_agent.py). Detected here once, deterministically, from
 		// what the user wrote — never by a model (locale.go).
 		"language": s.turnLanguage(req.Text, history),
+		// Today, in the organisation's timezone, with the reference dates of the
+		// common relative asks — computed by the kernel (domain.Calendar), so the
+		// front desk neither guesses the date nor does the date arithmetic; it
+		// subtracted "two weeks" forward once (o1, 2026-11-07).
+		"current_date": s.calendar.Block(),
 	}
 	// The systems the planner's agents can reach, so a "what's in my CRM?" ask is
 	// delegated rather than answered "I have no tool" from the front desk's own

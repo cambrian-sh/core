@@ -841,6 +841,12 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	pp := config.NewStaticPolicyProvider(cfg.Execution.Hippocampus.HippocampusPolicies, cfg.Execution.Hippocampus.HippocampusDefaultPolicy)
 	aw := kernel.NewAwarenessStack(awarenessGen, reg, mem.Hippocampus, mem.WorkspaceStage, pp)
+	// The kernel's ONE "today" (domain.Calendar), in the organisation's timezone: the
+	// planner, the plan executor (stamped on every step), replans, thought steps and
+	// the chat turn handoff all date their prompts with this instance
+	// (T-20261107-planner-and-chat-agent-are-not-told-today-s).
+	calendar := domain.NewCalendar(organisationLocation(cfg), nil)
+	aw.Planner.SetCalendar(calendar)
 	// ADR-0018: the LLM Gateway is constructed HERE, before the metabolism stack,
 	// so the verification worker receives it as a constructor argument and mints
 	// a lease for every verifier call (ADR-0131;
@@ -2060,6 +2066,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if idStores.registry != nil {
 		cambrianServer.PrincipalNames = idStores.registry
 	}
+	cambrianServer.Calendar = calendar
 	// The conversation owner ALONE (no beneficiary/default fallback): its read
 	// predicate narrows a chat-lane agent's reads and calls
 	// (T-20261106-conversations-cannot-be-opened-as-a-given).
@@ -2268,6 +2275,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// (T-20261107-chat-agent-tells-the-user-it-has-no-tool-for).
 	if chatTurns != nil && aw.Planner != nil {
 		chatTurns.SetWorkSystems(aw.Planner.WorkSystems)
+	}
+	if chatTurns != nil {
+		chatTurns.SetCalendar(calendar)
 	}
 	cambrianServer.ApprovalHub = toolApproval
 	// Principal-owned recurring tasks: approval-gated through this same hub
@@ -4801,4 +4811,16 @@ func secondsOr(secs int, def time.Duration) time.Duration {
 		return def
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// organisationLocation is the timezone of the kernel's calendar: organisation.timezone,
+// else UTC. Load validates the zone, so an error here means a config that skipped
+// validation; it is logged, never silent, and the calendar falls back to UTC.
+func organisationLocation(cfg *config.Config) *time.Location {
+	loc, err := cfg.Organisation.Location()
+	if err != nil {
+		slog.Error("organisation.timezone unusable; dating prompts in UTC", "err", err)
+		return time.UTC
+	}
+	return loc
 }

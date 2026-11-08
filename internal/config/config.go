@@ -2199,6 +2199,10 @@ type Config struct {
 	// Identity is how people sign in (ADR-0142 D1): local accounts always, plus
 	// at most one OIDC issuer. See identity.go.
 	Identity IdentityConfig `json:"identity"`
+	// Organisation is facts about the deployment's organisation the kernel tells its
+	// models — today its timezone, the calendar "today" is computed in. See
+	// organisation.go.
+	Organisation OrganisationConfig `json:"organisation,omitempty"`
 }
 
 // MCPEndpointConfig configures the inbound Cambrian MCP endpoint (ADR-0126 D3),
@@ -3385,6 +3389,7 @@ func (c *Config) validationErrors() []string {
 	if aerr := c.Approvals.Validate(); aerr != nil {
 		errs = append(errs, splitConfigError(aerr)...)
 	}
+	errs = append(errs, c.Organisation.validationErrors()...)
 	return errs
 }
 

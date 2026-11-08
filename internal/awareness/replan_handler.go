@@ -30,7 +30,7 @@ var (
 )
 
 // replanDataTags are the data regions of replan_input.
-var replanDataTags = []string{"capability_clusters", "partial_results", "failure"}
+var replanDataTags = []string{"capability_clusters", "today", "partial_results", "failure"}
 
 // replanCacheTTL: a replan runs inside DAG execution, daemon-paced and in bursts
 // minutes apart at most, so the short (5 minute) breakpoint lifetime is the right
@@ -64,6 +64,10 @@ type CapabilityContractSource interface {
 type PlannerReplanHandler struct {
 	planner Generator
 	caps    CapabilityContractSource // nil ⇒ the default (no capability contract) arm
+	// calendar dates the replan prompt's <today> region — the planner's calendar, so
+	// a replan resolves "the last two weeks" against the date the plan was made for.
+	// nil ⇒ the wall clock in UTC.
+	calendar *domain.Calendar
 }
 
 // ReplanOption configures a PlannerReplanHandler.
@@ -73,6 +77,12 @@ type ReplanOption func(*PlannerReplanHandler)
 // capability_contract arm. src may be nil (no-op).
 func WithCapabilityContract(src CapabilityContractSource) ReplanOption {
 	return func(h *PlannerReplanHandler) { h.caps = src }
+}
+
+// WithCalendar dates the replan prompt with the kernel's calendar (nil ⇒ the wall
+// clock in UTC).
+func WithCalendar(c *domain.Calendar) ReplanOption {
+	return func(h *PlannerReplanHandler) { h.calendar = c }
 }
 
 // NewPlannerReplanHandler creates a replan handler backed by any Generator.
@@ -146,6 +156,7 @@ func (h *PlannerReplanHandler) Replan(
 		originalPlan.Subject, failedStep, failedStepQuery, errMsg, len(keys))
 	req, rerr := planRequest(pair, replanDataTags, map[string]string{
 		"capability_clusters": capBlock, // empty on the default arm
+		"today":               h.calendar.Block(),
 		"partial_results":     partialResults.String(),
 		"budget":              budget,
 		"failure":             failure,

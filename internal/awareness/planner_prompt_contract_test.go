@@ -35,6 +35,7 @@ func plannerRequestFor(t *testing.T, capContract bool, input string) (domain.Gen
 		tools: map[string][]string{"worker_agent": {"mcp:filesystem/read_*", "mcp:filesystem/move_file", "mcp:pdf-reader/*"}}}, nil)
 	p.SetCapabilityContract(capContract)
 	p.goos = "linux"
+	p.SetCalendar(goldenCalendar())
 	p.WorkspaceStage = goldenWorkspace()
 	plan, err := p.GetExecutionPlan(context.Background(), input)
 	if err != nil {

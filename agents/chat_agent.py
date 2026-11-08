@@ -64,6 +64,10 @@ def _prompts_root() -> Path:
 _LIBRARY = PromptLibrary.load(_prompts_root())
 _SYSTEM = sections(_LIBRARY.get("chat_agent"))
 _TURN = sections(_LIBRARY.get("chat_agent_turn"))
+# Today's date, from the kernel's calendar (the "current_date" turn metadata; never this
+# process's clock): its own prompt, rendered before the latest message
+# (T-20261107-planner-and-chat-agent-are-not-told-today-s).
+_TODAY = _LIBRARY.get("current_date")
 PROMPT_VERSIONS = {pid: _LIBRARY.get(pid).static_hash for pid in ("chat_agent", "chat_agent_turn")}
 
 # Tags that hold untrusted or kernel-supplied text in the turn (and the policy and the
@@ -131,10 +135,115 @@ _DEFAULT_LANGUAGE = "en"
 _SAFE_FALLBACK = _SAFE_FALLBACKS[_DEFAULT_LANGUAGE]
 
 
+def _language_code(language: str) -> str:
+    """"tr", "tr-TR", "TR_tr" -> "tr"."""
+    return (language or "").strip().lower().replace("_", "-").split("-")[0]
+
+
 def _safe_fallback(language: str = "") -> str:
     """The fallback sentence in ``language`` ("tr", "tr-TR", ...), else English."""
-    code = (language or "").strip().lower().replace("_", "-").split("-")[0]
-    return _SAFE_FALLBACKS.get(code, _SAFE_FALLBACKS[_DEFAULT_LANGUAGE])
+    return _SAFE_FALLBACKS.get(_language_code(language), _SAFE_FALLBACKS[_DEFAULT_LANGUAGE])
+
+
+# The language the reply is written in, named for the model (chat_agent_turn reply-language).
+# T-20261108-turkish-asks-still-answered-in-english-in-3-of: with no rule on the reply's
+# language, the front desk relayed English planner results in English to Turkish asks. The
+# kernel's detected language (the "language" turn key) now reaches the model by name, after
+# the reply instruction and after every planner result. A code without a name here renders
+# no line; the system text's general rule (the latest message's language) still holds.
+_LANGUAGE_NAMES = {
+    "en": "English",
+    "tr": "Turkish",
+}
+
+
+def _language_name(language: str) -> str:
+    return _LANGUAGE_NAMES.get(_language_code(language), "")
+
+
+# What the user is told when the turn runs out of time AND the one final reply call could
+# not be made or failed (T-20261108-chat-turn-still-overruns-240-s-after-a-deadline). Fixed
+# per language, like _SAFE_FALLBACKS: it is said exactly when the model is not available in
+# time. With results, the planner's own text follows it, so the partial work still reaches
+# the user instead of an empty turn.
+_OUT_OF_TIME = {
+    "en": {
+        "results": "I ran out of time before I could finish this. Here is what came back so far:",
+        "none": "I ran out of time on this one before any result came back. Some steps may already "
+                "have run; ask me to continue and I'll check where it stands.",
+    },
+    "tr": {
+        "results": "Bunu bitirmeden süre doldu. Şu ana kadar gelen sonuçlar:",
+        "none": "Herhangi bir sonuç gelmeden bu iş için süre doldu. Bazı adımlar çalışmış olabilir; "
+                "devam etmemi isterseniz nerede kaldığını kontrol ederim.",
+    },
+}
+
+
+def _out_of_time_reply(language: str, results) -> str:
+    texts = _OUT_OF_TIME.get(_language_code(language), _OUT_OF_TIME[_DEFAULT_LANGUAGE])
+    body = "\n\n".join(r.strip() for r in results if (r or "").strip())
+    return f"{texts['results']}\n\n{body}" if body else texts["none"]
+
+
+class _ReplyNow(BaseException):
+    """Ends the ReAct loop because the turn has no time left for another round.
+
+    A BaseException on purpose: it is raised from inside run_think (the delegate tool and
+    the deadline-guarded substrate), and both the SDK's tool registry and the loop turn an
+    Exception into an error the model sees and answers in yet another round, which is
+    exactly the round there is no time for. ChatAgent.run catches it and writes the reply
+    in one call.
+    """
+
+
+class _DeadlineGuardedSubstrate:
+    """The agent's substrate client for one turn, refusing to START a model call once the
+    turn is inside its reply reserve.
+
+    run_think's model calls carry no client deadline (the SDK sends timeout_ms=0 so a slow
+    model is not strangled), and nothing bounded how many rounds the loop took after a
+    deadline-cut plan: a further tool call, the tool-budget nudge, an inferred-answer
+    reprompt, 7-14 s each, ended three turns past their deadline with no reply
+    (T-20261108-chat-turn-still-overruns-240-s-after-a-deadline). Any model call the loop
+    would start inside the reserve raises _ReplyNow instead. Everything else (execute, the
+    tool and memory calls) passes straight through.
+    """
+
+    _MODEL_CALLS = frozenset({"generate", "generate_request", "generate_stream", "generate_with_tools"})
+
+    def __init__(self, inner, agent):
+        self._inner, self._agent = inner, agent
+
+    def __getattr__(self, name):
+        attr = getattr(self._inner, name)
+        if name not in self._MODEL_CALLS or not callable(attr):
+            return attr
+
+        def guarded(*args, **kwargs):
+            if self._agent._inside_reply_reserve():
+                _log.warning("chat_agent: %.0f s left in the turn; writing the reply now instead of "
+                             "another loop round", self._agent._time_left() or 0.0)
+                raise _ReplyNow()
+            return attr(*args, **kwargs)
+
+        return guarded
+
+
+def _plain_reply(text: str) -> str:
+    """The words of a final reply written as plain text. A model that answers the one final
+    call with its usual final_answer envelope anyway still gets its answer through."""
+    t = (text or "").strip()
+    if t.startswith("{"):
+        try:
+            import json
+            obj = json.loads(t)
+        except ValueError:
+            return t
+        if isinstance(obj, dict):
+            answer = obj.get("answer")
+            return answer.strip() if isinstance(answer, str) else ""
+    return t
 
 # When the model merely PROMISES an action ("I'll delegate this", "I'll now create the file")
 # instead of emitting the delegate_to_planner tool action, NOTHING happens — the turn ends and
@@ -309,10 +418,20 @@ class ChatAgent(CognitiveAgent):
     # started and the model is told to answer with what it has (the 184 delegations in that
     # run took 18-233 s, median ~40 s; about a third finished within 30 s). A deployment
     # with a slower model raises these on a subclass.
+    #
+    # Inside the reply reserve the loop gets no further round: the turn's reply is then
+    # written in ONE call (_reply_now), bounded by the time left minus final_margin_s, the
+    # time kept for the reply to travel back to the kernel. A plan that returns with less
+    # than reply_reserve_s + min_delegation_s left ends the loop the same way: no plan can
+    # start after it, so every further round would only spend the reserve
+    # (T-20261108-chat-turn-still-overruns-240-s-after-a-deadline).
     reply_reserve_s = 25.0
     min_delegation_s = 30.0
+    final_margin_s = 3.0
     # time.monotonic() value of the turn deadline, or 0.0 when the kernel sent none.
     _turn_deadline = 0.0
+    # Every planner result this turn, in order: the material of the one final reply.
+    _turn_results: list = []
 
     def _time_left(self):
         """Seconds until the turn deadline, or None when the turn has none."""
@@ -323,6 +442,9 @@ class ChatAgent(CognitiveAgent):
     def _has_time_for(self, seconds: float) -> bool:
         left = self._time_left()
         return left is None or left >= seconds
+
+    def _inside_reply_reserve(self) -> bool:
+        return not self._has_time_for(self.reply_reserve_s)
 
     @tool
     def delegate_to_planner(self, task_description: str) -> str:
@@ -350,8 +472,10 @@ class ChatAgent(CognitiveAgent):
         budget = None if left is None else left - self.reply_reserve_s
         if budget is not None and budget < self.min_delegation_s:
             # A plan started now would be killed by the turn deadline, and the reply with it.
+            # Answering the model with a note let the loop run on for rounds the turn did not
+            # have; the reply is written now, in one call, from what this turn already has.
             _log.warning("chat_agent: %.0f s left in the turn; not starting another plan", left)
-            return _TURN["no-time-to-delegate"].render()
+            raise _ReplyNow()
         self._delegated = True
         try:
             result = self.substrate.execute(
@@ -368,11 +492,57 @@ class ChatAgent(CognitiveAgent):
             _log.warning("chat_agent: delegated plan did not finish within %.0f s; replying without it",
                          budget or 0.0)
             self._delegation_result = ""
-            return _TURN["delegation-timeout"].render()
+            raise _ReplyNow()
         self._delegation_result = _result_text(result)
+        self._turn_results.append(self._delegation_result)
         if _reports_final_denial(self._delegation_result):
             self._final_denial = self._delegation_result
-        return result
+        if not self._has_time_for(self.reply_reserve_s + self.min_delegation_s):
+            # No plan can start after this one, so every further loop round (a memory query,
+            # a refused delegation, the tool-budget nudge, a reprompt) only spends the time
+            # the reply needs: write the reply now from the results.
+            _log.warning("chat_agent: %.0f s left after the plan; writing the reply now",
+                         self._time_left() or 0.0)
+            raise _ReplyNow()
+        # The result is often in another language than the conversation (the planner and its
+        # agents work in English); the reply's language is restated right where the model
+        # reads the result it is about to relay.
+        lang_line = self._reply_language_line()
+        return f"{self._delegation_result}\n\n{lang_line}" if lang_line else result
+
+    def _reply_language_line(self) -> str:
+        name = _language_name(self._turn_language)
+        return _TURN["reply-language"].render({"language": name}) if name else ""
+
+    def _reply_now(self, task: "AgentTask", substrate, recall: bool) -> str:
+        """The turn's reply in ONE model call, when the turn has no time for another loop
+        round: the conversation, the latest message and every planner result of the turn,
+        with the reply-now note. Its gRPC deadline is the time left minus final_margin_s, so
+        it cannot carry the turn past its deadline; when there is no time even for that, or
+        the call fails, the user gets the fixed out-of-time sentence with the results."""
+        language = self._meta(task, "language")
+        left = self._time_left()
+        budget_s = None if left is None else left - self.final_margin_s
+        if budget_s is not None and budget_s < 1.0:
+            _log.warning("chat_agent: no time left for the final reply call; sending the results as they are")
+            return _out_of_time_reply(language, self._turn_results)
+        role, constraints, turn_text, _ = self.compose(task, recall=recall, reply_now=True)
+        system = "\n\n".join([role, self.output_schema, "\n".join(constraints)])
+        try:
+            res = substrate.generate_request(
+                task.session_token_id,
+                system=[{"text": system, "cache": True}],
+                messages=[{"role": "user", "content": turn_text}],
+                cache_ttl=self.cache_ttl,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                timeout_ms=int(budget_s * 1000) if budget_s is not None else 0,
+            )
+            text = _plain_reply(getattr(res, "text", res) if not isinstance(res, str) else res)
+        except Exception as e:  # noqa: BLE001 — a failed last call must still leave a reply
+            _log.warning("chat_agent: final reply call failed (%r); sending the results as they are", e)
+            return _out_of_time_reply(language, self._turn_results)
+        return text or _out_of_time_reply(language, self._turn_results)
 
     def _meta(self, task: "AgentTask", key: str, default: str = "") -> str:
         return task.metadata.get(key) or task.context.get(key) or default
@@ -424,13 +594,15 @@ class ChatAgent(CognitiveAgent):
         return "\n".join(items)
 
     def compose(self, task: "AgentTask", *, recall: bool, force_delegate: bool = False,
-                report_result: str = ""):
+                report_result: str = "", reply_now: bool = False):
         """The turn's prompt parts: ``(role, constraints, turn_text, max_memory_queries)``.
 
         System (stable for the conversation, cached): role, rules, the posture's answering
         rule, the work systems the planner's agents can use, and the policy. User turn
         (volatile): the transcript, recalled memory and the latest message, each in its own
-        tag, the reply instruction last; on a retry, the retry note after it.
+        tag, the reply instruction; on a retry, the retry note after it; for the one final
+        reply call (``reply_now``), the turn's planner results and the reply-now note; the
+        reply-language line last.
         """
         from cambrian_agent_sdk.react import _DEFAULT_MAX_MEMORY_QUERIES
 
@@ -455,14 +627,28 @@ class ChatAgent(CognitiveAgent):
         parts = []
         if transcript:
             parts.append(_TURN["conversation"].render({"transcript": _neutralise(transcript)}))
-        memories = self._seed_memories(task, user_msg) if recall else ""
+        # Recalled once per turn: a retry or the final reply call reuses it rather than
+        # spending another recall round trip.
+        if recall and self._seed_cache is None:
+            self._seed_cache = self._seed_memories(task, user_msg)
+        memories = self._seed_cache if recall else ""
         if memories:
             parts.append(_TURN["memory"].render({"memories": memories}))
+        today = self._meta(task, "current_date").strip()
+        if today:
+            today = re.sub(r"(?i)</\s*today\s*>", "[/today]", today)
+            parts.append(_TODAY.render({"today": today}).text)
         parts.append(_TURN["message"].render({"message": _neutralise(user_msg)}))
         if force_delegate:
             parts.append(_TURN["force-delegate"].render())
         if report_result:
             parts.append(_TURN["report-delegated"].render({"planner_result": _neutralise(report_result)}))
+        if reply_now:
+            results = "\n\n---\n\n".join(r.strip() for r in self._turn_results if (r or "").strip())
+            parts.append(_TURN["reply-now"].render({"planner_result": _neutralise(results or "(none)")}))
+        lang_line = self._reply_language_line()
+        if lang_line:
+            parts.append(lang_line)
         # Tools-only: the menu advertises NO memory query (max 0 => memory-none), so the
         # posture holds in what the model is offered, not only in the skipped seed recall.
         # With recall, the seed above spent one query of the loop's default budget.

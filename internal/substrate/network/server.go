@@ -225,6 +225,11 @@ type Server struct {
 	// person a plan's steps act for (domain.HandoffKeyActingForName, acting_for.go).
 	// nil ⇒ steps carry the principal id only.
 	PrincipalNames PrincipalNameSource
+	// Calendar is the kernel's one "today" (domain.Calendar, built from
+	// organisation.timezone): the plan executor stamps it on every step, a replan and
+	// a thought step are dated with it. The planner holds the same instance. nil ⇒
+	// the wall clock in UTC.
+	Calendar *domain.Calendar
 
 	// ScheduledTasks is the gate for principal-owned recurring tasks
 	// (ProposeScheduledTask / ListScheduledTasks / ManageScheduledTask,
@@ -1118,6 +1123,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		MaxReplanAttempts:      s.ExecCfg.Plan.MaxReplanAttempts,
 		MaxFanOutWidth:         s.ExecCfg.Plan.MaxFanOutWidth,
 		FanOutConcurrency:      s.ExecCfg.Plan.FanOutConcurrency, // fan-out children in parallel, dedicated instances (T-20261107)
+		Calendar:               s.Calendar,
 		MaxPlanCost:            s.ExecCfg.Plan.MaxPlanCost,
 		DefaultInputCostPer1M:  s.Manager.DefaultInputCostPer1M,
 		DefaultOutputCostPer1M: s.Manager.DefaultOutputCostPer1M,
@@ -1310,7 +1316,8 @@ func (s *Server) replanHandler(budget *planCallBudget) executer.ReplanHandler {
 	// The concrete *awareness.Planner reports its capability_contract arm, so a
 	// replan under that arm keeps required_capabilities (and the vocabulary guard).
 	caps, _ := s.Planner.(awareness.CapabilityContractSource)
-	return awareness.NewPlannerReplanHandler(budget.generator(s.Planner), awareness.WithCapabilityContract(caps))
+	return awareness.NewPlannerReplanHandler(budget.generator(s.Planner), awareness.WithCapabilityContract(caps),
+		awareness.WithCalendar(s.Calendar))
 }
 
 // taskEventWriter resolves the TaskEvent sink: the registry when it can write
@@ -1368,7 +1375,7 @@ func (s *Server) thoughtFn(plan *domain.ExecutionPlan) executer.StepFunc {
 		} else if handoff != nil && handoff.Payload != nil {
 			query = string(handoff.Payload.Data)
 		}
-		req, err := buildThoughtRequest(plan.Subject, query, results)
+		req, err := buildThoughtRequest(plan.Subject, thoughtToday(handoff, s.Calendar), query, results)
 		if err != nil {
 			return nil, err
 		}

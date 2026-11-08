@@ -59,6 +59,21 @@ func resolveCacheTTL(step domain.Step, policies map[string]int) time.Duration {
 	return 7 * 24 * time.Hour
 }
 
+// dayScopedCacheKey binds a step cache key to the date the step was told is today
+// (domain.Calendar.Block, stamped as domain.HandoffKeyCurrentDate). The date is an
+// input of every step that resolves a relative ask, so a result computed for one day
+// must not answer the same query on another. An empty date leaves the key unchanged.
+func dayScopedCacheKey(key, today string) string {
+	if today == "" {
+		return key
+	}
+	h := sha256.New()
+	io.WriteString(h, key)       //nolint:errcheck
+	io.WriteString(h, "|today|") //nolint:errcheck
+	io.WriteString(h, today)     //nolint:errcheck
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // stepCacheKey computes a deterministic cache key for a single step.
 //
 // Dependent steps (DependsOn non-empty) are keyed by plan subject, step query,
