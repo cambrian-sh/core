@@ -10,8 +10,8 @@ type guardOutcome struct {
 	// stop: refuse the call with resp.
 	stop bool
 	resp ToolCallResponse
-	// unrequested: a write no open write/document item asked for; it goes to
-	// approval with a notice.
+	// unrequested: a write no open write item asked for; it goes to approval
+	// with a notice.
 	unrequested bool
 	// finish settles the write record with the call's outcome (nil when nothing
 	// was reserved or recorded).
@@ -24,8 +24,14 @@ type guardOutcome struct {
 //     already executed a write (the repair only corrects the envelope);
 //  3. a side-effecting call whose target the request already wrote (or is
 //     writing) is refused, whatever its wording;
-//  4. a side-effecting call on a step that answers no open write/document item of
-//     a checklist is marked unrequested (approval with a notice).
+//  4. a side-effecting call on a step that answers document items and no open
+//     write item is refused (a document is satisfied inside Cambrian; only a write
+//     item puts anything into an outside system, D14.6);
+//  5. a side-effecting call on a step that answers no open write or document item
+//     of a checklist is marked unrequested (approval with a notice).
+//
+// A constraint never refuses a class the step's own write items need
+// (StepGuard.Carries, D14.6).
 //
 // Outside a plan step, or with no guards wired, nothing applies.
 func (e *ToolExecutor) requestGuards(ctx context.Context, req ToolCallRequest, tool SystemTool, argHash string) guardOutcome {
@@ -37,7 +43,7 @@ func (e *ToolExecutor) requestGuards(ctx context.Context, req ToolCallRequest, t
 		return guardOutcome{}
 	}
 	g := sc.Guard
-	if c, class, hit := ForbiddenBy(tool, g.Constraints); hit {
+	if c, class, hit := ForbiddenBy(tool, g.Constraints, g.Carries...); hit {
 		slog.Info("ADR-0145 D14: call refused by the person's constraint", "tool", req.ToolName,
 			"item", c.Item, "class", string(class), "run", sc.RunID, "step", sc.StepIndex)
 		return guardOutcome{stop: true, resp: denied(ConstraintRefusal(req.ToolName, c, class), argHash)}
@@ -52,6 +58,11 @@ func (e *ToolExecutor) requestGuards(ctx context.Context, req ToolCallRequest, t
 				"tool", req.ToolName, "run", sc.RunID, "step", sc.StepIndex)
 			return guardOutcome{stop: true, resp: denied(RepairWriteRefusal(req.ToolName, done), argHash)}
 		}
+	}
+	if len(g.WriteItems) == 0 && len(g.Documents) > 0 {
+		slog.Info("ADR-0145 D14: outside write refused on a drafting step (a document is finished inside Cambrian)",
+			"tool", req.ToolName, "documents", g.Documents, "run", sc.RunID, "step", sc.StepIndex)
+		return guardOutcome{stop: true, resp: denied(DocumentWriteRefusal(req.ToolName, g.Documents), argHash)}
 	}
 	out := guardOutcome{unrequested: g.Checklist && len(g.WriteItems) == 0}
 	target := e.Guards.Targets.Key(req.ToolName, req.ArgsJSON)

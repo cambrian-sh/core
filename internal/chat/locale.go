@@ -40,18 +40,22 @@ const (
 	// checklist items in the person's own words.
 	MsgReplyUnverified MessageID = "reply_unverified"
 	MsgReplyUncovered  MessageID = "reply_uncovered"
+	// MsgReplySource names, after the one retry, the organisation documents a value
+	// stated from recalled memory comes from when the reply still does not
+	// (T-20261109-chat-agent-answers-a-published-rule): {sources}.
+	MsgReplySource MessageID = "reply_source"
 )
 
 // allMessageIDs is the closed set every catalogue language must cover.
 var allMessageIDs = []MessageID{
 	MsgTurnStalled, MsgEmptyReply, MsgTurnTimeout, MsgTurnCancelled,
 	MsgAtCapacity, MsgSessionLost, MsgTookTooLong, MsgGenericFail,
-	MsgReplyUnverified, MsgReplyUncovered,
+	MsgReplyUnverified, MsgReplyUncovered, MsgReplySource,
 }
 
 // replyCheckMessageIDs are the catalogue's non-failure sentences (the reply
 // check's gap statements); every other id is a turn failure humanFailure says.
-var replyCheckMessageIDs = []MessageID{MsgReplyUnverified, MsgReplyUncovered}
+var replyCheckMessageIDs = []MessageID{MsgReplyUnverified, MsgReplyUncovered, MsgReplySource}
 
 // messageCatalogue holds every fixed failure sentence, keyed by language then message id.
 // The English entries are the strings humanFailure returned before the catalogue existed,
@@ -68,6 +72,7 @@ var messageCatalogue = map[string]map[MessageID]string{
 		MsgGenericFail:     "Something went wrong on my side and I couldn't finish that one.",
 		MsgReplyUnverified: "Note: I could not confirm these against the records read for this request: {values}.",
 		MsgReplyUncovered:  "Not covered in this answer: {items}.",
+		MsgReplySource:     "Source in the organisation's documents: {sources}.",
 	},
 	"tr": {
 		MsgTurnStalled:     "Bu istek ilerlemeyi bıraktı, bu yüzden beklemeyi bıraktım. Yeniden denemeye değer.",
@@ -80,6 +85,7 @@ var messageCatalogue = map[string]map[MessageID]string{
 		MsgGenericFail:     "Benim tarafımda bir sorun oluştu ve bu isteği tamamlayamadım.",
 		MsgReplyUnverified: "Not: Şu değerleri bu istek için okunan kayıtlarla doğrulayamadım: {values}.",
 		MsgReplyUncovered:  "Bu yanıtta karşılanmayan kısımlar: {items}.",
+		MsgReplySource:     "Kurum belgelerindeki kaynak: {sources}.",
 	},
 }
 

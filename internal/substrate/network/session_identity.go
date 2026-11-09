@@ -265,6 +265,24 @@ func (s *Server) resolveCallerBinding(ctx context.Context) (domain.LeaseBinding,
 	return s.resolveLeaseFor(ctx, domain.LeaseID(lease))
 }
 
+// callerLeaseID is the lease the caller presented: the gRPC header first (then the
+// legacy session slot), else the handoff metadata's _session_token_id — the same
+// order resolveBindingFromHandoff trusts.
+func callerLeaseID(ctx context.Context, meta map[string]string) domain.LeaseID {
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if l := firstMD(md, leaseHeader); l != "" {
+			return domain.LeaseID(l)
+		}
+		if l := firstMD(md, sessionHeader); l != "" {
+			return domain.LeaseID(l)
+		}
+	}
+	if meta == nil {
+		return ""
+	}
+	return domain.LeaseID(meta["_session_token_id"])
+}
+
 // resolveBindingFromHandoff resolves the caller's identity when the lease arrived INSIDE
 // the request rather than as a gRPC header.
 //

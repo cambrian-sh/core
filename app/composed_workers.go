@@ -42,6 +42,14 @@ type composerAgents interface {
 // Called after the run ledger (wireEvidencePipeline) and
 // the skill access service are wired. Off ⇒ nothing is touched.
 func wireComposedWorkers(cfg config.ExecutionConfig, server *subnetwork.Server, d *dispatch.Dispatcher, agents composerAgents) {
+	// ADR-0145 D14 worker delegation (any worker, composed or not): the server
+	// marks a step lease whose worker waits on delegate_to_planner and the
+	// dispatcher neither times that step out nor re-dispatches it
+	// (T-20261109-a-plan-step-is-re-dispatched-to-a-legacy-agent).
+	if server != nil && d != nil && server.WorkerDelegations == nil {
+		server.WorkerDelegations = domain.NewActiveDelegations()
+		d.Delegations = server.WorkerDelegations
+	}
 	w := cfg.Workers
 	if !w.Composed {
 		return

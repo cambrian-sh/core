@@ -334,6 +334,11 @@ type Server struct {
 	// workers are off. That agent holds nothing of its own: without a composed
 	// lease it gets no tool, no menu and no skill (composed_workers.go).
 	ComposedRuntimeID string
+	// WorkerDelegations tracks the step leases whose worker is waiting on its own
+	// delegation to the planner (ADR-0145 D14), shared with the dispatcher so such
+	// a step is neither timed out nor re-dispatched while it waits
+	// (T-20261109-a-plan-step-is-re-dispatched-to-a-legacy-agent). nil: not tracked.
+	WorkerDelegations *domain.ActiveDelegations
 
 	// Embedder backs the Embed RPC (ADR-0041) used by an agent's Local Recurrent
 	// Workspace for relevance ranking. nil → Embed returns Unimplemented.
@@ -694,6 +699,12 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 				b.DelegationDepth, s.ExecCfg.Plan.MaxWorkerDelegationDepth)
 		}
 		ctx = domain.WithDedicatedInstance(domain.WithDelegationDepth(ctx, depth))
+		// The nested run may cite the delegating run's ledger entries (readable
+		// under the person's access; T-20261109-staged-planner-names-earlier-stage-ledger).
+		ctx = domain.WithParentRun(ctx, b.RunID)
+		// The delegating step is in progress while the nested run works: the
+		// dispatcher neither times it out nor re-dispatches it until we return.
+		defer s.WorkerDelegations.Begin(callerLeaseID(ctx, in.GetMetadata()))()
 		slog.Info("ADR-0145 D14: worker delegation to the planner", "from_run", b.RunID, "from_step", b.StepIndex, "depth", depth)
 	}
 	var delegated *DelegatedRun

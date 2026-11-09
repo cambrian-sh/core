@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
@@ -117,7 +118,19 @@ type Dispatcher struct {
 	// step whose winner is a code or service agent is dispatched to it unchanged.
 	// nil ⇒ the legacy agent-per-step path.
 	Composer WorkerComposer
+
+	// Delegations reports the step leases whose worker is waiting on its own
+	// delegation to the planner (ADR-0145 D14). Such a step is never re-dispatched,
+	// and its per-step deadline does not fire while the delegation runs (it restarts
+	// when the delegation returns). nil ⇒ plain per-step deadlines
+	// (T-20261109-a-plan-step-is-re-dispatched-to-a-legacy-agent).
+	Delegations *domain.ActiveDelegations
 }
+
+// ErrStepDelegating refuses to dispatch a step whose worker is still waiting on
+// its own delegation: the step is in progress, and handing its lease to another
+// agent would cut the waiting worker off from its own step.
+var ErrStepDelegating = errors.New("dispatch: the step's worker is waiting on its own delegation to the planner; the step is not re-dispatched")
 
 // handoffLeaseKey is the handoff context key that carries the step's BudgetLease to the
 // agent (kernel-internal; the wire name predates the lease rename, see domain/llm_gateway.go).
@@ -226,6 +239,15 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 			task.ID, task.RequiredCapabilities)
 	}
 
+	// ADR-0145 D14: a step whose worker is waiting on its own delegation is in
+	// progress; a second dispatch (a heal retry, a runner-up) would re-bind its
+	// lease and cut the waiting worker off.
+	if lease := leaseOf(in); lease != "" && d.Delegations.Active(lease) {
+		slog.Warn("dispatch: step not re-dispatched; its worker is waiting on its own delegation",
+			"task", task.ID, "lease", lease)
+		return nil, ErrStepDelegating
+	}
+
 	winner, reason := d.selectWinner(ctx, task, scored)
 	// ADR-0145 D12: the eligible professions become one composed worker. Only a
 	// plan step (the kernel stamps _step_index) is composed; the selected agent is
@@ -314,9 +336,10 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 	// ctx already carries. See stepTimeout for where the latency term comes from
 	// and why a winner without one gets no per-step deadline.
 	callCtx := ctx
+	var stepDeadline time.Time
 	if timeout := d.stepTimeout(ctx, winner); timeout > 0 {
 		var cancel context.CancelFunc
-		callCtx, cancel = context.WithTimeout(ctx, timeout)
+		callCtx, cancel, stepDeadline = d.withStepDeadline(ctx, timeout, leaseOf(in))
 		defer cancel()
 	}
 	// The task's Deadline is the one the step actually runs under — the per-step
@@ -327,7 +350,7 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 	if dl, ok := callCtx.Deadline(); ok {
 		task.Deadline = dl
 	} else {
-		task.Deadline = time.Time{}
+		task.Deadline = stepDeadline
 	}
 
 	d.bindLease(winner.Agent.ID, in)
@@ -339,8 +362,14 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 		// Name the step deadline when it is what fired, so a timed-out step reads
 		// as "timed out" in the log rather than as the agent's generic failure.
 		// The parent still being alive is what tells the two apart.
-		if errors.Is(callCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-			err = fmt.Errorf("dispatch: step timed out (agent %s): %w", winner.Agent.ID, err)
+		if errors.Is(context.Cause(callCtx), context.DeadlineExceeded) && ctx.Err() == nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				err = fmt.Errorf("dispatch: step timed out (agent %s): %w", winner.Agent.ID, err)
+			} else {
+				// A delegation-aware deadline cancels with a cause; the call itself
+				// reports context.Canceled.
+				err = fmt.Errorf("dispatch: step timed out (agent %s): %w (%w)", winner.Agent.ID, err, context.DeadlineExceeded)
+			}
 		}
 		return &domain.DispatchResult{Confidence: winner.Score, RunnerUps: runnerUps}, err
 	}
@@ -370,6 +399,71 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 		RunnerUps:      runnerUps,
 		StepAllocation: d.selectModelCandidates(ctx, winner.Agent.ID),
 	}, nil
+}
+
+// leaseOf is the step lease a handoff carries ("" when none).
+func leaseOf(in *domain.Handoff) domain.LeaseID {
+	if in == nil || in.Context == nil {
+		return ""
+	}
+	return domain.LeaseID(in.Context[handoffLeaseKey])
+}
+
+// delegationRecheck bounds how often an extended step deadline looks again at a
+// delegation that is still running.
+const delegationRecheck = 30 * time.Second
+
+// withStepDeadline is the per-step deadline (ADR-0001 D5) that does not fire
+// while the step's worker waits on its own delegation to the planner (ADR-0145
+// D14): when the timer fires during a delegation it is re-armed, and once the
+// delegation has returned the worker gets a full step timeout from that moment to
+// finish. Without a tracker or a lease it is a plain context.WithTimeout. The
+// cause of an expiry is context.DeadlineExceeded either way; the returned time is
+// the deadline as first armed (for DispatchTask.Deadline).
+func (d *Dispatcher) withStepDeadline(ctx context.Context, timeout time.Duration, lease domain.LeaseID) (context.Context, context.CancelFunc, time.Time) {
+	first := time.Now().Add(timeout)
+	if d.Delegations == nil || lease == "" {
+		c, cancel := context.WithTimeout(ctx, timeout)
+		return c, cancel, first
+	}
+	c, cancel := context.WithCancelCause(ctx)
+	var mu sync.Mutex
+	var timer *time.Timer
+	var fire func()
+	fire = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if c.Err() != nil {
+			return
+		}
+		if d.Delegations.Active(lease) {
+			timer = time.AfterFunc(minDuration(timeout, delegationRecheck), fire)
+			return
+		}
+		if ended := d.Delegations.LastEnded(lease); !ended.IsZero() {
+			if left := timeout - time.Since(ended); left > 0 {
+				timer = time.AfterFunc(left, fire)
+				return
+			}
+		}
+		cancel(context.DeadlineExceeded)
+	}
+	mu.Lock()
+	timer = time.AfterFunc(timeout, fire)
+	mu.Unlock()
+	return c, func() {
+		mu.Lock()
+		timer.Stop()
+		mu.Unlock()
+		cancel(context.Canceled)
+	}, first
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // stepTimeout is the ADR-0001 D5 per-step deadline for the winner:

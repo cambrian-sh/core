@@ -195,20 +195,22 @@ func coverageText(r *requestRequirements) string {
 // effectsOfTool maps a tool to the constraint terms it falls under: every term of
 // execution.tools.constraint_classes whose classes include one of the tool's
 // ADR-0086 classes (D14: constraints hold by tool class).
-func (s *Server) effectsOfTool() func(string) []string {
+func (s *Server) effectsOfTool() func(domain.PlanAction) []string {
 	terms, err := s.ExecCfg.Tools.ConstraintTerms()
 	if err != nil || s.ToolExecutor == nil || s.ToolExecutor.Registry == nil {
 		return nil
 	}
-	return func(name string) []string {
-		t, ok := s.ToolExecutor.Registry.Get(name)
+	return func(a domain.PlanAction) []string {
+		t, ok := s.ToolExecutor.Registry.Get(a.Tool)
 		if !ok {
 			return nil
 		}
 		var out []string
 		for term, classes := range terms {
 			for _, c := range classes {
-				if t.HasEffect(c) {
+				// ADR-0145 D14.6: a class the call's step needed for the request's
+				// own write item is not a constraint violation.
+				if t.HasEffect(c) && !containsToolEffect(a.Carries, c) {
 					out = append(out, term)
 					break
 				}
@@ -219,18 +221,20 @@ func (s *Server) effectsOfTool() func(string) []string {
 	}
 }
 
+func containsToolEffect(xs []domain.ToolEffect, x domain.ToolEffect) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
 // planRunID is the root run of the Execute a planner call belongs to (its ledger
 // provenance), "" when unknown — the write record's scope then falls back to the
 // conversation turn alone.
 func planRunID(ctx context.Context) domain.RunID {
-	run := domain.LedgerProvenanceFromContext(ctx).RunID
-	if i := strings.Index(run, "-s"); i > 0 {
-		run = run[:i]
-	}
-	if i := strings.Index(run, "-g"); i > 0 {
-		run = run[:i]
-	}
-	return domain.RunID(run)
+	return domain.RunID(domain.RootRunID(domain.LedgerProvenanceFromContext(ctx).RunID))
 }
 
 // stepActionsOf returns the kernel's records of one step's calls in the CURRENT

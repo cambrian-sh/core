@@ -206,7 +206,9 @@ func coverage(p *domain.ExecutionPlan, c *domain.RequirementChecklist, staged bo
 func writtenTargets(p *domain.ExecutionPlan, c *domain.RequirementChecklist, v *domain.StepEffectVocabulary, written []domain.WrittenTarget) []Violation {
 	writes := func(st domain.Step) bool {
 		for _, id := range st.Answers {
-			if it := c.Item(id); it != nil && (it.Type == domain.RequirementWrite || it.Type == domain.RequirementDocument) {
+			// ADR-0145 D14.6: only a write item puts anything into an outside system
+			// (a document is finished inside Cambrian).
+			if it := c.Item(id); it != nil && it.Type == domain.RequirementWrite {
 				return true
 			}
 		}

@@ -30,7 +30,10 @@ func TestStepGuard_FromTheChecklistAndCoverage(t *testing.T) {
 	ctx := domain.WithLedgerProvenance(context.Background(), domain.LedgerProvenance{ConversationID: "c1", TurnID: "m7"})
 
 	g := s.stepGuard(ctx, domain.Step{Answers: []string{"R1", "R2", "R3"}}, reqs, "run-1")
-	if g == nil || g.Request != "turn:c1/m7" || !g.Checklist || !reflect.DeepEqual(g.WriteItems, []string{"R2"}) {
+	// ADR-0145 D14.6: a document item is not a write item (it is finished inside
+	// Cambrian); R3 is settled.
+	if g == nil || g.Request != "turn:c1/m7" || !g.Checklist || len(g.WriteItems) != 0 ||
+		!reflect.DeepEqual(g.Documents, []string{"R2"}) || len(g.Carries) != 0 {
 		t.Fatalf("guard = %+v", g)
 	}
 	if len(g.Constraints) != 1 || !reflect.DeepEqual(g.Constraints[0].Classes, []domain.ToolEffect{domain.EffectEgress}) {
@@ -61,5 +64,49 @@ func TestPlanRunIDStripsStagesAndGenerations(t *testing.T) {
 		if got := planRunID(ctx); got != want {
 			t.Errorf("%s → %s, want %s", in, got, want)
 		}
+	}
+}
+
+// T-20261109-d14-constraint-forbids-change-refuses-the-send (o3x replay, runs
+// 2a8623eec5f262dc / f3104e8631ba3491): "Send them now, exactly as drafted" derived
+// R1 write "Send the drafts" + R2 constraint forbids [change]. The step answering
+// R1 carries the write class (and egress, from does: [send]), so the constraint
+// does not refuse the send it asks for; a step not answering R1 is still held to it.
+func TestStepGuard_ConstraintDoesNotBlockTheRequestsOwnWrite(t *testing.T) {
+	s := &Server{ToolExecutor: &domain.ToolExecutor{Guards: &domain.RequestGuards{}}}
+	s.ExecCfg.Tools.RequestGuards = true
+	cl := domain.RequirementChecklist{Items: []domain.RequirementItem{
+		{ID: "R1", Type: domain.RequirementWrite, Text: "Send the drafts", Quote: "Send them now", Does: []string{"send"}},
+		{ID: "R2", Type: domain.RequirementConstraint, Quote: "exactly as drafted", Forbids: []string{"change"}},
+	}}
+	reqs := &requestRequirements{checklist: &cl, coverage: requirements.NewCoverage(cl)}
+	send := domain.SystemTool{Name: "mail_send_draft", Effects: []domain.ToolEffect{domain.EffectWrite, domain.EffectEgress}}
+
+	g := s.stepGuard(context.Background(), domain.Step{Answers: []string{"R1"}}, reqs, "run-1")
+	if !reflect.DeepEqual(g.Carries, []domain.ToolEffect{domain.EffectEgress, domain.EffectWrite}) {
+		t.Fatalf("carries = %v", g.Carries)
+	}
+	if c, cl, hit := domain.ForbiddenBy(send, g.Constraints, g.Carries...); hit {
+		t.Fatalf("the requested send was refused by %s (%s)", c.Item, cl)
+	}
+	other := s.stepGuard(context.Background(), domain.Step{Answers: []string{}}, reqs, "run-1")
+	if _, _, hit := domain.ForbiddenBy(send, other.Constraints, other.Carries...); !hit {
+		t.Fatal("a step not carrying out R1 must still be held to 'exactly as drafted'")
+	}
+	// Without does, a write item still carries the write class: the 'change'
+	// constraint (write) does not refuse it, but a 'send' constraint (egress) would.
+	cl.Items[0].Does = nil
+	g = s.stepGuard(context.Background(), domain.Step{Answers: []string{"R1"}}, reqs, "run-1")
+	if _, _, hit := domain.ForbiddenBy(send, g.Constraints, g.Carries...); hit {
+		t.Fatal("a write item always carries the write class")
+	}
+	draftOnly := domain.RequirementChecklist{Items: []domain.RequirementItem{
+		{ID: "R1", Type: domain.RequirementWrite, Text: "Save the reply as a draft in the mailbox", Quote: "save it as a draft in my mail"},
+		{ID: "R2", Type: domain.RequirementConstraint, Quote: "don't send it", Forbids: []string{"send"}},
+	}}
+	reqs = &requestRequirements{checklist: &draftOnly, coverage: requirements.NewCoverage(draftOnly)}
+	g = s.stepGuard(context.Background(), domain.Step{Answers: []string{"R1"}}, reqs, "run-1")
+	if _, cls, hit := domain.ForbiddenBy(send, g.Constraints, g.Carries...); !hit || cls != domain.EffectEgress {
+		t.Fatal("'save as a draft, don't send it': the drafting write must not license a send")
 	}
 }

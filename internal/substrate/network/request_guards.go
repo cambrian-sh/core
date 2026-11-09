@@ -49,6 +49,10 @@ func (s *Server) stepGuard(ctx context.Context, step domain.Step, reqs *requestR
 	} else {
 		g.Constraints = domain.ResolveConstraints(reqs.checklist, terms)
 	}
+	// ADR-0145 D14.6: only a WRITE item may put anything into an outside system; a
+	// document item is finished inside Cambrian. The classes the step's own write
+	// items need are never ruled out by a constraint on this step.
+	var writes []domain.RequirementItem
 	for _, id := range step.Answers {
 		it := reqs.checklist.Item(id)
 		if it == nil || (it.Type != domain.RequirementWrite && it.Type != domain.RequirementDocument) {
@@ -57,8 +61,14 @@ func (s *Server) stepGuard(ctx context.Context, step domain.Step, reqs *requestR
 		if reqs.coverage != nil && reqs.coverage.Status(id).Final() {
 			continue
 		}
+		if it.Type == domain.RequirementDocument {
+			g.Documents = append(g.Documents, id)
+			continue
+		}
 		g.WriteItems = append(g.WriteItems, id)
+		writes = append(writes, *it)
 	}
+	g.Carries = domain.CarriedClasses(writes, terms)
 	return g
 }
 

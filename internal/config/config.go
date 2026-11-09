@@ -1561,7 +1561,11 @@ func DefaultConstraintClasses() map[string][]string {
 		"read": {"read"}, "write": {"write"}, "egress": {"egress"}, "spend": {"spend"}, "admin": {"admin"},
 		"send": {"egress"}, "publish": {"egress"}, "post": {"egress"},
 		"change": {"write"}, "delete": {"write"},
-		"pay": {"spend"}, "purchase": {"spend"},
+		// ADR-0145 D14.6: "exactly as drafted" constrains editing, not the write
+		// it qualifies (the guard never refuses a class the step's own write item
+		// needs, so "edit" stops edits elsewhere in the request).
+		"edit": {"write"},
+		"pay":  {"spend"}, "purchase": {"spend"},
 	}
 }
 

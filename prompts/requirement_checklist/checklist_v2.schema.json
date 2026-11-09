@@ -1,0 +1,24 @@
+{
+  "title": "RequirementChecklist",
+  "description": "The derived checklist. Decoded by internal/requirements/deriver.go; ids and statuses are assigned by code.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "text", "quote"],
+        "properties": {
+          "type": {"type": "string", "enum": ["answer", "figure", "document", "write", "constraint"]},
+          "text": {"type": "string", "description": "What the item requires, in English, one short sentence."},
+          "quote": {"type": "string", "description": "The verbatim span of the request the item comes from."},
+          "forbids": {"type": "array", "items": {"type": "string"}, "description": "Constraint only: the effects it rules out."},
+          "does": {"type": "array", "items": {"type": "string"}, "description": "Write only: the effects the write itself is (send for a send), from the same list."}
+        }
+      }
+    }
+  }
+}

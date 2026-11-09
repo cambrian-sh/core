@@ -7,8 +7,11 @@
 package requirements
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -58,7 +61,11 @@ func ValidateEnvelope(env *domain.AnswerEnvelope, items []domain.RequirementItem
 		kept := r
 		kept.Values = nil
 		for _, v := range r.Values {
-			if why := checkValue(v, ev); why != nil {
+			v, why := resolveRecordIDs(v, ev)
+			if why == nil {
+				why = checkValue(v, ev)
+			}
+			if why != nil {
 				why.Item = r.Item
 				vs = append(vs, *why)
 				continue
@@ -74,12 +81,162 @@ func ValidateEnvelope(env *domain.AnswerEnvelope, items []domain.RequirementItem
 		}
 	}
 	for _, ref := range env.EvidenceRefs {
-		if _, ok := ev.Entries[ref]; !ok {
-			vs = append(vs, domain.EnvelopeViolation{Rule: domain.ViolationForeignEvidence,
-				Detail: fmt.Sprintf("evidence_refs names %q, which is not a result of this step's own tool calls or inputs", ref)})
+		if _, ok := ev.Entries[ref]; ok {
+			continue
 		}
+		if !domain.IsLedgerID(ref) {
+			if _, n := ev.entryContaining(ref); n == 1 {
+				continue // a record id the step's evidence holds (resolved like a value's)
+			}
+		}
+		vs = append(vs, domain.EnvelopeViolation{Rule: domain.ViolationForeignEvidence,
+			Detail: fmt.Sprintf("evidence_refs names %q, which is not a result of this step's own tool calls or inputs; %s", ref, ev.available())})
 	}
 	return out, vs
+}
+
+// resolveRecordIDs is the deterministic repair of a value that cites or holds a
+// record identifier of a system where a ledger id belongs
+// (T-20261109-d6-envelope-keeps-items-open-when-the-model: "Draft MSG-000173" typed
+// ref, a case reference as evidence_ref). No model is involved:
+//   - an evidence_ref that is not a ledger id is replaced by the ONE entry of the
+//     step's evidence whose content contains it;
+//   - a ref value that is not a ledger id is the record identifier it names: the
+//     value becomes an id (the identifier as the evidence states it) citing the ONE
+//     entry whose content contains it (the cited entry when it already does).
+//
+// Zero or several matching entries keep the item open with a violation that lists
+// the ledger ids the step may cite.
+func resolveRecordIDs(v domain.EnvelopeValue, ev Evidence) (domain.EnvelopeValue, *domain.EnvelopeViolation) {
+	if ref := strings.TrimSpace(v.EvidenceRef); ref != "" && !domain.IsLedgerID(ref) {
+		id, n := ev.entryContaining(ref)
+		if n != 1 {
+			return v, &domain.EnvelopeViolation{Value: v.Name, Rule: domain.ViolationForeignEvidence,
+				Detail: fmt.Sprintf("evidence_ref %q is not a ledger id and %s; %s", ref, matchCount(n), ev.available())}
+		}
+		v.EvidenceRef = id
+	}
+	if v.Type != domain.ValueRef {
+		return v, nil
+	}
+	text := strings.TrimSpace(v.Text())
+	if text == "" || domain.IsLedgerID(text) {
+		return v, nil
+	}
+	// The cited entry holds the identifier: it is the evidence.
+	if e, ok := ev.Entries[v.EvidenceRef]; ok {
+		if needle := recordNeedle(text, func(n string) bool { return bodyContains(e.Body, n) }); needle != "" {
+			return asID(v, needle, v.EvidenceRef), nil
+		}
+	}
+	for _, needle := range needleCandidates(text) {
+		id, n := ev.entryContaining(needle)
+		if n == 1 {
+			return asID(v, needle, id), nil
+		}
+		if n > 1 {
+			return v, &domain.EnvelopeViolation{Value: v.Name, Rule: domain.ViolationBadType,
+				Detail: fmt.Sprintf("a ref must be a ledger id (led_…); %q appears in %d entries, so it names no single one: cite the entry as evidence_ref and give the identifier as type id; %s", needle, n, ev.available())}
+		}
+	}
+	return v, &domain.EnvelopeViolation{Value: v.Name, Rule: domain.ViolationBadType,
+		Detail: fmt.Sprintf("a ref must be a ledger id (led_…); %q is not one and no entry of this step contains it: give a record identifier as type id citing the entry it appears in; %s", text, ev.available())}
+}
+
+func asID(v domain.EnvelopeValue, needle, entry string) domain.EnvelopeValue {
+	raw, _ := json.Marshal(needle)
+	v.Type, v.Value, v.EvidenceRef = domain.ValueID, raw, entry
+	return v
+}
+
+func matchCount(n int) string {
+	if n == 0 {
+		return "no entry of this step contains it"
+	}
+	return fmt.Sprintf("%d entries of this step contain it, so it names no single one", n)
+}
+
+// needleCandidates are what a free-text ref may name, most specific first: the
+// whole text, then each token that carries a digit (an identifier such as
+// MSG-000173 or FOI-2026-0001 inside "Draft MSG-000173").
+func needleCandidates(text string) []string {
+	out := []string{text}
+	for _, tok := range strings.FieldsFunc(text, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(",;:()[]{}\"'`", r)
+	}) {
+		tok = strings.Trim(tok, ".")
+		if len(tok) >= 3 && strings.IndexFunc(tok, unicode.IsDigit) >= 0 && tok != text {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+// recordNeedle is the first candidate of text that has(candidate).
+func recordNeedle(text string, has func(string) bool) string {
+	for _, n := range needleCandidates(text) {
+		if has(n) {
+			return n
+		}
+	}
+	return ""
+}
+
+func bodyContains(body []byte, needle string) bool {
+	return needle != "" && strings.Contains(strings.ToLower(string(body)), strings.ToLower(needle))
+}
+
+// entryContaining returns the one evidence entry whose content contains needle
+// (case-insensitively) and how many do.
+func (ev Evidence) entryContaining(needle string) (string, int) {
+	needle = strings.TrimSpace(needle)
+	if len(needle) < 3 {
+		return "", 0
+	}
+	found, n := "", 0
+	for _, id := range ev.ids() {
+		if bodyContains(ev.Entries[id].Body, needle) {
+			found, n = id, n+1
+		}
+	}
+	if n != 1 {
+		return "", n
+	}
+	return found, 1
+}
+
+func (ev Evidence) ids() []string {
+	ids := make([]string, 0, len(ev.Entries))
+	for id := range ev.Entries {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// maxListedEvidence bounds the ledger ids a violation lists.
+const maxListedEvidence = 20
+
+// available names the ledger ids the step may cite, for a violation message.
+func (ev Evidence) available() string {
+	ids := ev.ids()
+	if len(ids) == 0 {
+		return "this step has no ledger entries to cite: call a tool for the evidence"
+	}
+	parts := make([]string, 0, len(ids))
+	for i, id := range ids {
+		if i == maxListedEvidence {
+			parts = append(parts, fmt.Sprintf("… %d more", len(ids)-maxListedEvidence))
+			break
+		}
+		e := ev.Entries[id]
+		label := string(e.Kind)
+		if e.ToolName != "" {
+			label = e.ToolName
+		}
+		parts = append(parts, id+" ("+label+")")
+	}
+	return "the ledger ids this step may cite: " + strings.Join(parts, ", ")
 }
 
 func checkValue(v domain.EnvelopeValue, ev Evidence) *domain.EnvelopeViolation {
@@ -93,7 +250,7 @@ func checkValue(v domain.EnvelopeValue, ev Evidence) *domain.EnvelopeViolation {
 	e, ok := ev.Entries[v.EvidenceRef]
 	if !ok {
 		return &domain.EnvelopeViolation{Value: v.Name, Rule: domain.ViolationForeignEvidence,
-			Detail: fmt.Sprintf("%s is not a result of this step's own tool calls or inputs", v.EvidenceRef)}
+			Detail: fmt.Sprintf("%s is not a result of this step's own tool calls or inputs; %s", v.EvidenceRef, ev.available())}
 	}
 	if domain.FigureValueType(v.Type) && e.Kind != domain.LedgerToolResult && e.Kind != domain.LedgerComputed {
 		return &domain.EnvelopeViolation{Value: v.Name, Rule: domain.ViolationFigureFromText,

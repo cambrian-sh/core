@@ -244,6 +244,10 @@ func (d *DAGExecutor) checkEnvelope(ctx context.Context, stepIndex int, items []
 	if !ok {
 		env = nil
 	}
+	if env != nil {
+		obs.AnswerText = env.AnswerText
+		d.admitRequestEvidence(ctx, env, &ev, &obs)
+	}
 	results, vs := requirements.ValidateEnvelope(env, items, ev)
 	return results, vs, obs
 }
@@ -326,6 +330,70 @@ func (d *DAGExecutor) stepEvidence(ctx context.Context, stepIndex int, inputs []
 		}
 	}
 	return ev
+}
+
+// admitRequestEvidence adds to ev the cited ledger entries that belong to the
+// same request but not to this step's own calls or inputs: entries of EARLIER
+// stages or plan generations of this Execute (same root run, another run id) and
+// entries of the run whose worker delegated this one (domain.ParentRunsFrom), or
+// of the same conversation turn. Each is read through the ENFORCED reader under
+// the run's read scope, so only what the person may read is admitted
+// (T-20261109-staged-planner-names-earlier-stage-ledger: the stage planner named
+// stage-1 entries in the step query, the worker fetched them with ledger_get, and
+// D6 rejected 28 values as foreign_evidence). Entries of other steps of the same
+// stage stay outside, as before (only dependencies count).
+func (d *DAGExecutor) admitRequestEvidence(ctx context.Context, env *domain.AnswerEnvelope, ev *requirements.Evidence, obs *requirements.StepObservation) {
+	if d.LedgerReader == nil || env == nil {
+		return
+	}
+	var cited []string
+	for _, r := range env.ItemResults {
+		for _, v := range r.Values {
+			cited = append(cited, v.EvidenceRef)
+			if v.Type == domain.ValueRef {
+				cited = append(cited, v.Text())
+			}
+		}
+	}
+	cited = append(cited, env.EvidenceRefs...)
+	p := d.ledgerProvenance(ctx)
+	root := domain.RootRunID(p.RunID)
+	parents := map[string]bool{}
+	for _, r := range domain.ParentRunsFrom(ctx) {
+		parents[domain.RootRunID(string(r))] = true
+	}
+	scope := d.LedgerReadScope
+	if scope == nil {
+		scope = &domain.TagPredicate{Bypass: true}
+	}
+	rctx := domain.WithScope(ctx, scope)
+	for _, id := range cited {
+		id = strings.TrimSpace(id)
+		if !domain.IsLedgerID(id) {
+			continue
+		}
+		if _, have := ev.Entries[id]; have {
+			continue
+		}
+		e, err := d.LedgerReader.Get(rctx, id)
+		if err != nil || e == nil {
+			continue // absent, or not readable under the person's access
+		}
+		switch e.Kind {
+		case domain.LedgerToolResult, domain.LedgerComputed, domain.LedgerArtifact, domain.LedgerStepOutput:
+		default:
+			continue
+		}
+		er := domain.RootRunID(e.RunID)
+		sameRequest := (er != "" && er == root && e.RunID != p.RunID) || // an earlier stage or generation
+			(er != "" && parents[er]) || // the delegating run (any of its stages)
+			(p.TurnID != "" && e.TurnID == p.TurnID && e.ConversationID == p.ConversationID) // the same turn
+		if !sameRequest {
+			continue
+		}
+		ev.Entries[id] = *e
+		obs.EvidenceKinds[id] = e.Kind
+	}
 }
 
 // depsOf is the transitive dependency set of step in the CURRENT plan (set by

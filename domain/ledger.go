@@ -29,7 +29,9 @@ import (
 type LedgerKind string
 
 const (
-	// LedgerToolResult is one tool call's result (read or write).
+	// LedgerToolResult is one tool call's result (read or write). A memory recall
+	// (the kernel's seed recall and every memory_query, QueryMemory) is recorded as
+	// a tool result of the pseudo-tool RecallToolName.
 	LedgerToolResult LedgerKind = "tool_result"
 	// LedgerStepOutput is one plan step's output.
 	LedgerStepOutput LedgerKind = "step_output"
@@ -50,6 +52,10 @@ func ValidLedgerKind(k LedgerKind) bool {
 	}
 	return false
 }
+
+// RecallToolName is the ToolName of a memory recall's ledger entry (ADR-0145 D1:
+// what a reply rests on is in the ledger, recalled memory included).
+const RecallToolName = "memory_recall"
 
 // LedgerIDPrefix marks a ledger reference wherever one travels as a "cid" (a
 // step dependency, a tool result offload), so a reader can route it to the ledger
@@ -163,8 +169,14 @@ type LedgerRecord struct {
 	// classifications forward (LedgerEntry.SourceTags); a step output also inherits
 	// its own step's tool results without being told. Unknown ids are ignored.
 	DerivedFrom []string
-	ContentType string
-	Body        []byte
+	// SourceClassifications are the classifications of what the content was built
+	// from OUTSIDE the ledger: a memory recall's entry carries each recalled
+	// chunk's own tags (T-20261109-chat-agent-answers-a-published-rule). They join
+	// LedgerEntry.SourceTags, so the entry is never easier to read than the most
+	// restrictive chunk in it.
+	SourceClassifications [][]string
+	ContentType           string
+	Body                  []byte
 }
 
 // LedgerEntryReadable is the ledger's one row test: the reader's predicate must

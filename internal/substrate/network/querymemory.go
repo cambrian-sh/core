@@ -177,6 +177,11 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 		})
 	}
 
+	// ADR-0145 D1/D8: the recall is a ledger entry of the caller's turn or step, so
+	// what a reply or a step answer states from memory can be cited and checked
+	// (recall_ledger.go; T-20261109-chat-agent-answers-a-published-rule).
+	recallRef := s.recordRecall(ctx, callerID, req.GetQuery(), results)
+
 	pbResults := make([]*pb.MemoryResult, 0, len(results))
 	for _, r := range results {
 		// ADR-0048 A1 (D10): fold the provenance/freshness facts the SDK renders into
@@ -190,6 +195,19 @@ func (s *Server) QueryMemory(ctx context.Context, req *pb.MemoryRequest) (*pb.Me
 		meta := make(map[string]any, len(r.Document.Metadata)+3)
 		maps.Copy(meta, r.Document.Metadata)
 		meta["_activation_strength"] = r.Document.ActivationStrength
+		// Where the fact comes from, for the agent to name in its reply (the source
+		// document and its section), and the recall's ledger entry to cite.
+		if doc, sec := recallSource(r.Document); doc != "" || sec != "" {
+			if doc != "" {
+				meta["_source_document"] = doc
+			}
+			if sec != "" {
+				meta["_section_path"] = sec
+			}
+		}
+		if recallRef != "" && r.Document.ID != domain.SubstrateCitationsID {
+			meta["_ledger_ref"] = recallRef
+		}
 		if !r.Document.CreatedAt.IsZero() {
 			meta["_created_at"] = r.Document.CreatedAt.UTC().Format(time.RFC3339)
 		}

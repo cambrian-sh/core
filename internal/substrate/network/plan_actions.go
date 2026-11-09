@@ -167,6 +167,11 @@ func (s *Server) recordPlanAction(ctx context.Context, lease domain.LeaseID, req
 	if s.ToolExecutor != nil && s.ToolExecutor.Guards != nil {
 		a.Target = s.ToolExecutor.Guards.Targets.Key(req.ToolName, req.ArgsJSON)
 	}
+	if b.Guard != nil {
+		// ADR-0145 D14.6: the classes the step's own write items need; coverage does
+		// not count them against a constraint.
+		a.Carries = append([]domain.ToolEffect(nil), b.Guard.Carries...)
+	}
 	switch {
 	case resp.Denied:
 		if !toolKnown {

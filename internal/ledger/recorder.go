@@ -187,7 +187,7 @@ func (r *Recorder) sourceTags(ctx context.Context, rec domain.LedgerRecord) [][]
 			srcs = append(srcs, *e)
 		}
 	}
-	if len(srcs) == 0 {
+	if len(srcs) == 0 && len(rec.SourceClassifications) == 0 {
 		return nil
 	}
 	seen := map[string]bool{}
@@ -207,6 +207,10 @@ func (r *Recorder) sourceTags(ctx context.Context, rec domain.LedgerRecord) [][]
 		for _, st := range e.SourceTags {
 			add(st)
 		}
+	}
+	// Classifications of content from outside the ledger (recalled chunks).
+	for _, st := range rec.SourceClassifications {
+		add(st)
 	}
 	return out
 }

@@ -121,6 +121,10 @@ type StepObservation struct {
 	// are what not_permitted is accepted on
 	// (T-20261108-coverage-cannot-accept-not-permitted-for-a).
 	Denials []domain.PlanAction
+	// AnswerText is the step's envelope answer_text. For a document item it is the
+	// draft itself: the step output is recorded in the run ledger by the executor,
+	// so a document is finished inside Cambrian (ADR-0145 D14.6).
+	AnswerText string
 }
 
 // ExpectMembers ties an item to a set: one accepted result per member is required.
@@ -261,7 +265,12 @@ func (c *Coverage) judge(st *ItemState, o StepObservation, r domain.ItemResult) 
 			if a, ok := doneAction(o.Actions); ok {
 				return true, domain.RequirementSatisfied, "drafted by " + a.Tool + st.refusedTargetsNote()
 			}
-			return false, "", "no artifact or draft in the ledger"
+			// ADR-0145 D14.6: the draft is the step's own answer, kept in the run
+			// ledger as its step output; nothing has to leave Cambrian for it.
+			if strings.TrimSpace(o.AnswerText) != "" {
+				return true, domain.RequirementSatisfied, "drafted in the step's answer (ledger step output)"
+			}
+			return false, "", "no draft: return the full text of the document as the answer"
 		case domain.RequirementWrite:
 			if a, ok := doneAction(o.Actions); ok {
 				return true, domain.RequirementSatisfied, "executed by " + a.Tool + st.refusedTargetsNote()
@@ -301,10 +310,11 @@ func (c *Coverage) judge(st *ItemState, o StepObservation, r domain.ItemResult) 
 }
 
 // ObserveActions checks the constraints against the plan's side-effecting calls
-// (D5.3 constraint: checked continuously). effectsOf maps a tool to the effect
-// terms it produces. A forbidden effect on a done or failed (attempted) call fails
-// the constraint; a refused call did not run and violates nothing.
-func (c *Coverage) ObserveActions(actions []domain.PlanAction, effectsOf func(tool string) []string) {
+// (D5.3 constraint: checked continuously). effectsOf maps a call to the effect
+// terms it produced (without the classes its step needed for the request's own
+// write items, ADR-0145 D14.6). A forbidden effect on a done or failed (attempted)
+// call fails the constraint; a refused call did not run and violates nothing.
+func (c *Coverage) ObserveActions(actions []domain.PlanAction, effectsOf func(a domain.PlanAction) []string) {
 	if effectsOf == nil {
 		return
 	}
@@ -318,7 +328,7 @@ func (c *Coverage) ObserveActions(actions []domain.PlanAction, effectsOf func(to
 			if a.Status == domain.PlanActionRefused {
 				continue
 			}
-			for _, e := range effectsOf(a.Tool) {
+			for _, e := range effectsOf(a) {
 				if containsStr(st.Item.Forbids, domain.NormalizeStepEffect(e)) {
 					st.Status = domain.RequirementFailed
 					st.Reason = fmt.Sprintf("violated: step %d called %s (%s)", a.Step, a.Tool, e)

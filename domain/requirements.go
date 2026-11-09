@@ -84,6 +84,13 @@ type RequirementItem struct {
 	// Forbids names the effect terms a constraint rules out (send, write, ...),
 	// from the effect vocabulary. Only on a constraint.
 	Forbids []string `json:"forbids,omitempty"`
+	// Does names, on a write item, the constraint terms its own action is (a
+	// "send the drafts" item does [send]); from the same vocabulary as Forbids.
+	// ADR-0145 D14.6: a checklist constraint never blocks a call that carries out
+	// one of the request's own write items, so a step answering this item is not
+	// held to a constraint over the classes the item itself needs (every write
+	// item needs the write class; Does adds the rest). Only on a write item.
+	Does []string `json:"does,omitempty"`
 }
 
 // RequirementChecklistVersion is the shape version of RequirementChecklist.

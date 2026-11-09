@@ -235,3 +235,17 @@ func LedgerRunID(run string, generation int) string {
 	}
 	return fmt.Sprintf("%s-g%d", run, generation)
 }
+
+// RootRunID is the run an id belongs to with its coverage-stage ("-s<n>") and
+// plan-generation ("-g<n>") suffixes removed: every stage and replan of one
+// Execute share it. Run ids are hex (newPlanID), so the first "-s"/"-g" is the
+// suffix.
+func RootRunID(run string) string {
+	if i := strings.Index(run, "-s"); i > 0 {
+		run = run[:i]
+	}
+	if i := strings.Index(run, "-g"); i > 0 {
+		run = run[:i]
+	}
+	return run
+}

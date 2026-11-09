@@ -47,9 +47,21 @@ type StepGuard struct {
 	Checklist bool
 	// Constraints are the checklist's "don't" constraints, resolved to tool classes.
 	Constraints []ConstraintGuard
-	// WriteItems are the open write or document items the step answers. Empty on a
-	// step with a checklist: a side-effecting call is not part of the request.
+	// WriteItems are the open WRITE items the step answers. Only a write item may
+	// put anything into an outside system (ADR-0145 D14.6): with a checklist and no
+	// write item, a side-effecting call is not part of the request.
 	WriteItems []string
+	// Documents are the open DOCUMENT items the step answers. A document is
+	// satisfied inside Cambrian (the draft is the step's answer, a ledger entry), so
+	// a step that answers documents and no write item has every side-effecting call
+	// refused with that reason (T-20261109-d14-lets-a-drafting-step-answers-only-the).
+	Documents []string
+	// Carries are the tool classes the step's write items themselves need: the
+	// write class for any write item, plus the classes of each item's Does terms.
+	// A checklist constraint never refuses one of these classes on this step: it
+	// stops other actions of that kind, never the request's own write
+	// (ADR-0145 D14.6; T-20261109-d14-constraint-forbids-change-refuses-the-send).
+	Carries []ToolEffect
 	// Repair marks the step's envelope repair turn (D6): a write the step already
 	// executed is never run again in it.
 	Repair bool
@@ -94,16 +106,68 @@ func ResolveConstraints(c *RequirementChecklist, terms map[string][]ToolEffect) 
 }
 
 // ForbiddenBy returns the constraint that rules out a call of t and the class it
-// matched. A tool's declared (or fail-closed default) classes are what count.
-func ForbiddenBy(t SystemTool, cons []ConstraintGuard) (ConstraintGuard, ToolEffect, bool) {
+// matched. A tool's declared (or fail-closed default) classes are what count. A
+// class in carries (the classes the step's own write items need, StepGuard.Carries)
+// is never ruled out: a constraint stops other actions of that kind, not the
+// request's own write (ADR-0145 D14.6).
+func ForbiddenBy(t SystemTool, cons []ConstraintGuard, carries ...ToolEffect) (ConstraintGuard, ToolEffect, bool) {
 	for _, c := range cons {
 		for _, cl := range c.Classes {
+			if containsEffect(carries, cl) {
+				continue
+			}
 			if t.HasEffect(cl) {
 				return c, cl, true
 			}
 		}
 	}
 	return ConstraintGuard{}, "", false
+}
+
+func containsEffect(xs []ToolEffect, x ToolEffect) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
+// CarriedClasses are the tool classes the given write items need (StepGuard.Carries):
+// the write class for any write item, plus the classes their Does terms map to
+// through terms (execution.tools.constraint_classes). Sorted, unique; nil for no
+// write item.
+func CarriedClasses(items []RequirementItem, terms map[string][]ToolEffect) []ToolEffect {
+	seen := map[ToolEffect]bool{}
+	for _, it := range items {
+		if it.Type != RequirementWrite {
+			continue
+		}
+		seen[EffectWrite] = true
+		for _, d := range it.Does {
+			for _, cl := range terms[NormalizeStepEffect(d)] {
+				seen[cl] = true
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]ToolEffect, 0, len(seen))
+	for cl := range seen {
+		out = append(out, cl)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// DocumentWriteRefusal words the refusal of a side-effecting call on a step that
+// answers document items and no write item (ADR-0145 D14.6).
+func DocumentWriteRefusal(tool string, documents []string) string {
+	return fmt.Sprintf("%s is refused: this step drafts %s, and a draft is finished inside Cambrian: return the full text "+
+		"as your answer (it is kept in the ledger). Nothing goes into an outside system from a drafting step; "+
+		"only a step that answers a write item of the request may create, send, file or record anything.",
+		tool, strings.Join(documents, ", "))
 }
 
 // ConstraintRefusal words the refusal of a call a constraint rules out.
@@ -371,12 +435,12 @@ func RepairWriteRefusal(tool string, done []WrittenTarget) string {
 }
 
 // UnrequestedWriteNoticePrefix opens the approval notice of a write no open write
-// or document item of the request asked for (D14 guard 3).
+// item of the request asked for (D14 guard 3).
 const UnrequestedWriteNoticePrefix = "This write was not part of the request"
 
 // UnrequestedWriteNotice words that notice for the approver.
 func UnrequestedWriteNotice(tool string) string {
-	return UnrequestedWriteNoticePrefix + ": no open write or document item of the person's request asks for it (" +
+	return UnrequestedWriteNoticePrefix + ": no open write item of the person's request asks for it (" +
 		tool + "). Approve only if the person wants it."
 }
 

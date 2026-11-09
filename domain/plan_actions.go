@@ -57,6 +57,10 @@ type PlanAction struct {
 	// Target is the write's target as the ADR-0145 D14 write record identifies it
 	// ("<tool>|<field>=<value>", WriteTargets.Key); "" when none. Not rendered.
 	Target string
+	// Carries are the tool classes the call's step needed for the request's own
+	// write items (StepGuard.Carries, ADR-0145 D14.6): a checklist constraint is not
+	// violated by them. Not rendered.
+	Carries []ToolEffect
 }
 
 // planActionIDKeys are result fields that name what a write created or touched, in

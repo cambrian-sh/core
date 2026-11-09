@@ -120,17 +120,26 @@ func (c *Composer) Compose(ctx context.Context, task *domain.DispatchTask, winne
 			"task", task.ID, "winner", winner.Agent.ID)
 		return domain.ScoredCandidate{}, domain.WorkerComposition{}, false
 	}
-	if _, bound := c.Leases.For(lease); bound {
-		// A yield sub-goal dispatched on its parent's step lease (yield.subHandoff):
-		// the lease already carries the step's composition, which keeps bounding the
-		// delegate; re-composing would replace the parent's bounds mid-step.
-		return domain.ScoredCandidate{}, domain.WorkerComposition{}, false
-	}
 	runtime, err := c.Agents.GetAgentByName(ctx, c.RuntimeID)
 	if err != nil || runtime == nil {
 		slog.ErrorContext(ctx, "ADR-0145 D12: composed runtime agent is not registered; step runs on the selected agent",
 			"runtime", c.RuntimeID, "task", task.ID, "winner", winner.Agent.ID, "err", err)
 		return domain.ScoredCandidate{}, domain.WorkerComposition{}, false
+	}
+	if prior, bound := c.Leases.For(lease); bound {
+		// The lease already carries the step's composition: a retry of the step (the
+		// self-healer re-dispatches on the same lease) or a yield sub-goal dispatched
+		// on its parent's step lease (yield.subHandoff). It runs on the runtime under
+		// that SAME composition: re-composing would replace the step's bounds
+		// mid-step, and the composed path never falls back to a pre-built agent
+		// (T-20261109-a-plan-step-is-re-dispatched-to-a-legacy-agent: a heal retry
+		// that fell through to the selected profile agent took the lease from the
+		// worker still running the step). Nothing new is recorded.
+		in.Context[domain.HandoffKeyComposition] = prior.Encode()
+		in.Context[HandoffKeyCompositionID] = prior.ID()
+		slog.InfoContext(ctx, "ADR-0145 D12: step re-dispatched under its lease's existing composition",
+			"task", task.ID, "composition", prior.ID(), "runtime", runtime.ID)
+		return domain.ScoredCandidate{Agent: *runtime, Score: winner.Score}, prior, true
 	}
 
 	professions := c.professions(ctx, task, winner, scored)

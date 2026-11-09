@@ -96,3 +96,26 @@ func TestDerivedEntryRequiresEverySourceToBeReadable(t *testing.T) {
 		t.Fatal("nil predicate must fail closed")
 	}
 }
+
+// T-20261109-chat-agent-answers-a-published-rule: a memory recall's entry carries
+// each recalled chunk's own tags (LedgerRecord.SourceClassifications), so a reader
+// who could not read one of the chunks cannot read the entry either.
+func TestRecallEntryIsNeverWiderThanItsChunks(t *testing.T) {
+	ctx := context.Background()
+	st := newMem()
+	r := NewRecorder(st, domain.AllowAllAuthorizer{}, RecorderConfig{Retention: time.Hour})
+	e, err := r.Record(ctx, domain.LedgerRecord{Kind: domain.LedgerToolResult,
+		Provenance: domain.LedgerProvenance{ConversationID: "conv", TurnID: "m1", StepIndex: -1},
+		ToolName:   domain.RecallToolName, ArgsJSON: []byte(`{"query":"deadline"}`), Writer: domain.AgentPrincipal("chat_agent"),
+		SourceClassifications: [][]string{{"public"}, {"hr"}}, ContentType: "application/json", Body: []byte(`{"hits":[]}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := authz.NewEnforcingLedger(st, nil)
+	if got, _ := reader.Get(domain.WithScope(ctx, &domain.TagPredicate{ForbiddenTags: []string{"hr"}}), e.ID); got != nil {
+		t.Fatal("a reader without the hr scope read a recall that contains an hr chunk")
+	}
+	if got, _ := reader.Get(domain.WithScope(ctx, &domain.TagPredicate{}), e.ID); got == nil {
+		t.Fatal("a reader of every chunk could not read the recall entry")
+	}
+}

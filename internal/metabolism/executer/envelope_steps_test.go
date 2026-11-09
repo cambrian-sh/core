@@ -244,3 +244,77 @@ func TestEnvelope_LegacyPathIsUntouched(t *testing.T) {
 		t.Fatalf("result = %q", master["step_0_result"])
 	}
 }
+
+// T-20261109-staged-planner-names-earlier-stage-ledger (records replay, nested run
+// 88cf901650cd3e82-s2): stage 2's step cited stage-1 entries (named in its query,
+// fetched with ledger_get) and the parent run's registry_get results; D6 rejected them
+// as foreign_evidence. Entries of earlier stages of the same request and of the
+// delegating run count; an entry of an unrelated run does not.
+func TestEnvelope_EarlierStageAndParentRunEntriesAreEvidence(t *testing.T) {
+	led := newRunLedger()
+	stage1 := led.addToolResult("nest", 1, "registry_get", `{"record_no":"HDC/DS/2025/00109","title":"Flood survey"}`)
+	parent := led.addToolResult("parent", 1, "registry_get", `{"record_no":"HDC/DS/2025/00110","title":"Drainage plan"}`)
+	foreign := led.addToolResult("someone-else", 0, "registry_get", `{"record_no":"HDC/DS/2025/00111"}`)
+	cl := &domain.RequirementChecklist{Items: []domain.RequirementItem{{ID: "R2", Type: domain.RequirementAnswer, Text: "the records"}}}
+	cov := requirements.NewCoverage(*cl)
+	d := &DAGExecutor{Ledger: led, LedgerReader: led, CurrentRunID: "nest-s2", Requirements: NewStepRequirements(cl, cov, nil)}
+	stepFn := func(_ context.Context, _ int, _ *domain.Handoff) (*domain.Handoff, error) {
+		return &domain.Handoff{Payload: &domain.Payload{Data: envelope(t, "records",
+			domain.ItemResult{Item: "R2", Status: domain.RequirementSatisfied, Values: []domain.EnvelopeValue{
+				value("record", domain.ValueID, "HDC/DS/2025/00109", stage1),
+				value("record", domain.ValueID, "HDC/DS/2025/00110", parent),
+				value("record", domain.ValueID, "HDC/DS/2025/00111", foreign),
+			}})}}, nil
+	}
+	plan := &domain.ExecutionPlan{Steps: []domain.Step{{Query: "From the ledger entries " + stage1 + " ...", Answers: []string{"R2"}}}}
+	ctx := domain.WithParentRun(context.Background(), "parent")
+	if _, err := d.Execute(ctx, plan, nil, stepFn); err != nil {
+		t.Fatal(err)
+	}
+	st := stateOf(cov, "R2")
+	if st.Status != domain.RequirementSatisfied || len(st.Values) != 2 {
+		t.Fatalf("R2 = %+v", st)
+	}
+	for _, v := range st.Values {
+		if v.EvidenceRef == foreign {
+			t.Fatal("an unrelated run's entry was admitted as evidence")
+		}
+	}
+}
+
+// T-20261109-d6-envelope-repair-turn-re-runs-the-step-s (o3x replay, run
+// 6054ba5658061005 step 0): the repair turn is handed the step's earlier READ results
+// by ledger reference, so it can cite them instead of calling the tool again.
+func TestEnvelope_RepairTurnIsHandedTheStepsEarlierReads(t *testing.T) {
+	led := newRunLedger()
+	cl := &domain.RequirementChecklist{Items: []domain.RequirementItem{{ID: "R1", Type: domain.RequirementFigure, Text: "the total"}}}
+	cov := requirements.NewCoverage(*cl)
+	d := &DAGExecutor{Ledger: led, LedgerReader: led, CurrentRunID: "run-1", Requirements: NewStepRequirements(cl, cov, nil)}
+	var aging, prior string
+	calls := 0
+	stepFn := func(_ context.Context, _ int, h *domain.Handoff) (*domain.Handoff, error) {
+		calls++
+		if calls == 1 {
+			aging = led.addToolResult("run-1", 0, "finance_aging_report", `{"ledger":"ar","total":1330.5}`)
+			// First envelope cites nothing.
+			return &domain.Handoff{Payload: &domain.Payload{Data: envelope(t, "1330.5",
+				domain.ItemResult{Item: "R1", Status: domain.RequirementSatisfied, Values: []domain.EnvelopeValue{
+					value("total", domain.ValueMoney, "1330.50", "")}})}}, nil
+		}
+		prior = h.Context[domain.HandoffKeyRepairPriorCalls]
+		return &domain.Handoff{Payload: &domain.Payload{Data: envelope(t, "1330.5",
+			domain.ItemResult{Item: "R1", Status: domain.RequirementSatisfied, Values: []domain.EnvelopeValue{
+				value("total", domain.ValueMoney, "1330.50", aging)}})}}, nil
+	}
+	plan := &domain.ExecutionPlan{Steps: []domain.Step{{Query: "total overdue", Answers: []string{"R1"}}}}
+	if _, err := d.Execute(context.Background(), plan, nil, stepFn); err != nil {
+		t.Fatal(err)
+	}
+	var pc []domain.RepairPriorCall
+	if err := json.Unmarshal([]byte(prior), &pc); err != nil || len(pc) != 1 || pc[0].LedgerRef != aging || pc[0].Tool != "finance_aging_report" {
+		t.Fatalf("repair prior calls = %q (%v)", prior, err)
+	}
+	if st := stateOf(cov, "R1"); st.Status != domain.RequirementSatisfied {
+		t.Fatalf("R1 = %+v", st)
+	}
+}

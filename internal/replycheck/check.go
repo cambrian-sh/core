@@ -1,11 +1,15 @@
 package replycheck
 
 import (
+	"encoding/json"
 	"math"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+
+	"github.com/cambrian-sh/core/domain"
 )
 
 // Entry is one ledger entry of the turn's evidence.
@@ -86,14 +90,29 @@ type Report struct {
 	UnknownMarkers []string  `json:"unknown_markers,omitempty"`
 	Unanswered     []ItemGap `json:"unanswered,omitempty"`
 	Unverified     []ItemGap `json:"unverified,omitempty"`
-	EvidenceCount  int       `json:"evidence"`
-	Items          int       `json:"items"`
+	// MissingSource are values the reply states from recalled memory (an
+	// organisation's document: a rule, a deadline, a fee) without naming the
+	// document or the article/section they come from
+	// (T-20261109-chat-agent-answers-a-published-rule).
+	MissingSource []SourceGap `json:"missing_source,omitempty"`
+	EvidenceCount int         `json:"evidence"`
+	Items         int         `json:"items"`
 }
 
 // Violations counts what the D8 check treats as violations: values no evidence
 // backs, and checklist items neither answered nor stated as gaps. Miscitations,
 // unknown markers and unverified gaps are reported, not counted.
-func (r Report) Violations() int { return len(r.Uncited) + len(r.Unanswered) }
+func (r Report) Violations() int { return len(r.Uncited) + len(r.Unanswered) + len(r.MissingSource) }
+
+// SourceGap is one value stated from recalled memory whose source the reply does
+// not name.
+type SourceGap struct {
+	Raw string `json:"raw"`
+	// Entry is the recall's ledger entry; Sources the document and section labels
+	// the reply could have named (any one of them suffices).
+	Entry   string   `json:"entry"`
+	Sources []string `json:"sources"`
+}
 
 // UncitedRaw lists the uncited values as written, for the retry note.
 func (r Report) UncitedRaw() []string {
@@ -318,7 +337,186 @@ func Check(reply string, ev Evidence, opt Options) Report {
 	sort.Strings(rep.UnknownMarkers)
 
 	rep.Unanswered, rep.Unverified = checkItems(reply, mentions, ev.Items)
+	rep.MissingSource = checkSources(reply, mentions, ev)
 	return rep
+}
+
+// ── sources of recalled organisation facts ──────────────────────────────────
+
+// recallBody is the body of a memory recall's ledger entry
+// (network/recall_ledger.go): the recalled chunks with their source document and
+// section.
+type recallBody struct {
+	Hits []struct {
+		Text     string `json:"text"`
+		Document string `json:"document"`
+		Section  string `json:"section"`
+	} `json:"hits"`
+}
+
+// headingRe finds a numbered heading in a recalled chunk ("**4. Time for
+// compliance**", "MADDE 4 – Cevap süresi", "Section 12 Fees"): an optional word,
+// a number, and the title after it, on its own line.
+var headingRe = regexp.MustCompile(`(?m)^[\s*#_]*((?:[\p{L}§]+\.?\s+)?\d+(?:\.\d+)*[.)]?(?:\s*[–—:-])?\s*[^\n*]{0,80}?)[\s*_]*$`)
+
+// sourceBlock is one part of a recalled chunk a reply may name: the text under
+// one heading (or the whole chunk when it has none) with its labels.
+type sourceBlock struct {
+	ix     *index
+	labels []string
+}
+
+// sourceBlocks splits a recalled chunk at its numbered headings. Each block's
+// labels are the chunk's document and section path plus its own heading (whole,
+// the designator with its number such as "MADDE 4", and a title of two words or
+// more), so a value is tied to the heading it sits under.
+func sourceBlocks(document, section, text string) []sourceBlock {
+	var base []string
+	add := func(dst *[]string, l string) {
+		l = strings.TrimSpace(strings.Trim(strings.TrimSpace(l), "*_#:–—-."))
+		if len([]rune(l)) >= 4 {
+			*dst = appendNew(*dst, l)
+		}
+	}
+	add(&base, document)
+	for _, seg := range strings.Split(section, ">") {
+		addHeading(func(l string) { add(&base, l) }, seg)
+	}
+	locs := headingRe.FindAllStringSubmatchIndex(text, -1)
+	if len(locs) == 0 {
+		return []sourceBlock{{ix: newIndex(text), labels: base}}
+	}
+	var out []sourceBlock
+	if pre := strings.TrimSpace(text[:locs[0][0]]); pre != "" {
+		out = append(out, sourceBlock{ix: newIndex(pre), labels: base})
+	}
+	for i, loc := range locs {
+		end := len(text)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		labels := append([]string(nil), base...)
+		addHeading(func(l string) { add(&labels, l) }, text[loc[2]:loc[3]])
+		out = append(out, sourceBlock{ix: newIndex(text[loc[0]:end]), labels: labels})
+	}
+	return out
+}
+
+// sourceLabels are every label of a recalled chunk (all its blocks).
+func sourceLabels(document, section, text string) []string {
+	var out []string
+	for _, b := range sourceBlocks(document, section, text) {
+		out = appendNew(out, b.labels...)
+	}
+	return out
+}
+
+var designatorRe = regexp.MustCompile(`^\s*((?:[\p{L}§]+\.?\s+)?\d+(?:\.\d+)*)[.)]?\s*[–—:-]?\s*(.*)$`)
+
+func addHeading(add func(string), h string) {
+	add(h)
+	if m := designatorRe.FindStringSubmatch(strings.TrimSpace(h)); m != nil {
+		if strings.IndexFunc(m[1], unicode.IsLetter) >= 0 {
+			add(m[1]) // "MADDE 4", "Section 12": a designator with its word
+		}
+		if len(strings.Fields(m[2])) >= 2 {
+			add(m[2]) // "Time for compliance", "Cevap süresi"; one word is too common to count
+		}
+	}
+}
+
+// checkSources reports the values the reply states that ONLY recalled memory
+// backs (not a tool result, a checklist value or the person's own words) when the
+// reply names none of the recalled chunk's source labels (D8 + the grounded-reply
+// rule: an organisation's rule or figure names its document and article/section).
+func checkSources(reply string, mentions []Mention, ev Evidence) []SourceGap {
+	type hit struct {
+		entry  string
+		ix     *index
+		labels []string
+	}
+
+	var hits []hit
+	var other []string
+	for _, e := range ev.Entries {
+		if !citable(e.Kind) {
+			continue
+		}
+		if e.Tool != domain.RecallToolName {
+			other = append(other, e.Body)
+			continue
+		}
+		var b recallBody
+		if json.Unmarshal([]byte(e.Body), &b) != nil {
+			other = append(other, e.Body)
+			continue
+		}
+		for _, h := range b.Hits {
+			for _, blk := range sourceBlocks(h.Document, h.Section, h.Text) {
+				hits = append(hits, hit{entry: e.ID, ix: blk.ix, labels: blk.labels})
+			}
+		}
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+	for _, it := range ev.Items {
+		for _, v := range it.Values {
+			other = append(other, v.Text)
+		}
+	}
+	other = append(other, ev.Context...)
+	nonRecall := newIndex(other...)
+	lower := strings.ToLower(StripMarkers(reply))
+	var out []SourceGap
+	seen := map[string]bool{}
+	for _, m := range mentions {
+		if nonRecall.backs(m) {
+			continue
+		}
+		var gap *SourceGap
+		named := false
+		for _, h := range hits {
+			if len(h.labels) == 0 || !h.ix.backs(m) {
+				continue
+			}
+			for _, l := range h.labels {
+				if strings.Contains(lower, strings.ToLower(l)) {
+					named = true
+					break
+				}
+			}
+			if named {
+				break
+			}
+			if gap == nil {
+				gap = &SourceGap{Raw: m.Raw, Entry: h.entry}
+			}
+			gap.Sources = appendNew(gap.Sources, h.labels...)
+		}
+		if named || gap == nil || seen[m.Raw] {
+			continue
+		}
+		seen[m.Raw] = true
+		out = append(out, *gap)
+	}
+	return out
+}
+
+func appendNew(xs []string, ys ...string) []string {
+	for _, y := range ys {
+		dup := false
+		for _, x := range xs {
+			if x == y {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			xs = append(xs, y)
+		}
+	}
+	return xs
 }
 
 // checkItems decides, per checklist item, whether the reply answers it or states

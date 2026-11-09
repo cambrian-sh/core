@@ -53,6 +53,7 @@ type modelItem struct {
 	Text    string   `json:"text"`
 	Quote   string   `json:"quote"`
 	Forbids []string `json:"forbids"`
+	Does    []string `json:"does"`
 }
 
 type modelChecklist struct {
@@ -124,16 +125,29 @@ func (d *Deriver) anchor(request string, items []modelItem) (good []domain.Requi
 		}
 		it := domain.RequirementItem{Type: t, Text: strings.TrimSpace(m.Text), Quote: strings.TrimSpace(m.Quote)}
 		if t == domain.RequirementConstraint {
-			for _, f := range m.Forbids {
-				n := domain.NormalizeStepEffect(f)
-				if _, known := d.Constraints[n]; known && !containsStr(it.Forbids, n) {
-					it.Forbids = append(it.Forbids, n)
-				}
-			}
+			it.Forbids = d.vocabulary(m.Forbids)
+		}
+		if t == domain.RequirementWrite {
+			// ADR-0145 D14.6: the effects the write itself is; a constraint never
+			// refuses them on the step that carries the write out.
+			it.Does = d.vocabulary(m.Does)
 		}
 		good = append(good, it)
 	}
 	return good, bad
+}
+
+// vocabulary keeps the terms of the constraint vocabulary (normalised, unique,
+// in order); anything else is dropped.
+func (d *Deriver) vocabulary(terms []string) []string {
+	var out []string
+	for _, f := range terms {
+		n := domain.NormalizeStepEffect(f)
+		if _, known := d.Constraints[n]; known && !containsStr(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func (d *Deriver) call(ctx context.Context, request, repair string) ([]modelItem, error) {

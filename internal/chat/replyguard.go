@@ -138,6 +138,12 @@ func (s *TurnService) reviseReply(turnCtx context.Context, conv *domain.Conversa
 		}
 		rev.Gaps = append(rev.Gaps, fmt.Sprintf("%s (%s, %s)", label, g.Status, g.Reason))
 	}
+	// A value stated from recalled memory names the document and article/section
+	// it comes from (T-20261109-chat-agent-answers-a-published-rule).
+	for _, m := range rep.MissingSource {
+		rev.Gaps = append(rev.Gaps, fmt.Sprintf("%q comes from recalled memory [%s]: name its source (one of: %s)",
+			m.Raw, m.Entry, strings.Join(m.Sources, "; ")))
+	}
 	b, err := json.Marshal(rev)
 	if err != nil {
 		return "", false
@@ -230,8 +236,29 @@ func gapStatement(rep replycheck.Report, lang string) string {
 	if len(items) > 0 {
 		parts = append(parts, strings.ReplaceAll(Message(MsgReplyUncovered, lang), "{items}", strings.Join(items, ", ")))
 	}
+	// The sources a value from recalled memory rests on, named from the recall's
+	// own ledger entry (the heading the value sits under first).
+	var sources []string
+	seen := map[string]bool{}
+	for _, m := range rep.MissingSource {
+		for i, src := range m.Sources {
+			if i == maxSourcesNamed {
+				break
+			}
+			if !seen[src] {
+				seen[src] = true
+				sources = append(sources, src)
+			}
+		}
+	}
+	if len(sources) > 0 {
+		parts = append(parts, strings.ReplaceAll(Message(MsgReplySource, lang), "{sources}", strings.Join(sources, "; ")))
+	}
 	return strings.Join(parts, " ")
 }
+
+// maxSourcesNamed bounds the labels named per value in the source statement.
+const maxSourcesNamed = 2
 
 // observeReplyCheck logs, counts, records and traces one check. delegated says
 // whether the turn delegated anything: a reply with uncited values from a turn that

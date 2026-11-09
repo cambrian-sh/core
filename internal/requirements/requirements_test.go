@@ -199,8 +199,8 @@ func TestCoverage_PerTypeRulesAreDecidedFromKernelRecords(t *testing.T) {
 		t.Fatalf("R3 = %s", s)
 	}
 	// A constraint is never satisfied; a forbidden call fails it, a refused one does not.
-	effects := func(tool string) []string {
-		if strings.Contains(tool, "send") {
+	effects := func(a domain.PlanAction) []string {
+		if strings.Contains(a.Tool, "send") {
 			return []string{"send"}
 		}
 		return []string{"write"}
@@ -358,5 +358,164 @@ func TestCoverage_ARefusalDoesNotEraseExecutedWrites(t *testing.T) {
 	}
 	if brisa.Status != domain.RequirementSatisfied || len(snap.Items[0].Targets) != 3 {
 		t.Fatalf("targets = %+v", snap.Items[0].Targets)
+	}
+}
+
+// ADR-0145 D14.6 (T-20261109-d14-lets-a-drafting-step-answers-only-the): a document
+// item is finished inside Cambrian — the draft is the step's answer, kept as its
+// ledger step output — so no outside write is needed to satisfy it.
+func TestCoverage_DocumentSatisfiedByTheDraftInTheAnswer(t *testing.T) {
+	c := NewCoverage(domain.RequirementChecklist{Items: []domain.RequirementItem{{ID: "R1", Type: domain.RequirementDocument, Text: "Draft a response letter"}}})
+	claim := []domain.ItemResult{{Item: "R1", Status: domain.RequirementSatisfied}}
+	c.ObserveStep(StepObservation{Step: 3, Results: claim})
+	if s, _ := status(c, "R1"); s == domain.RequirementSatisfied {
+		t.Fatal("a document with no draft text was accepted")
+	}
+	c.ObserveStep(StepObservation{Step: 3, Results: claim, AnswerText: "Dear Mr Morris,\n\nThank you for your request of 3 September 2026 ..."})
+	if s, why := status(c, "R1"); s != domain.RequirementSatisfied {
+		t.Fatalf("R1 = %s %q", s, why)
+	}
+}
+
+// ADR-0145 D14.6: a call whose step needed the class for the request's own write
+// item does not violate a constraint over that class (effectsOf leaves it out).
+func TestCoverage_ConstraintNotViolatedByTheRequestsOwnWrite(t *testing.T) {
+	c := NewCoverage(domain.RequirementChecklist{Items: []domain.RequirementItem{
+		{ID: "R1", Type: domain.RequirementWrite, Does: []string{"send"}},
+		{ID: "R2", Type: domain.RequirementConstraint, Quote: "exactly as drafted", Forbids: []string{"change"}},
+	}})
+	classes := map[string][]domain.ToolEffect{"change": {domain.EffectWrite}}
+	effects := func(a domain.PlanAction) []string {
+		var out []string
+		for term, cls := range classes {
+			for _, cl := range cls {
+				carried := false
+				for _, x := range a.Carries {
+					carried = carried || x == cl
+				}
+				if !carried {
+					out = append(out, term)
+				}
+			}
+		}
+		return out
+	}
+	c.ObserveActions([]domain.PlanAction{{Step: 0, Tool: "mail_send_draft", Status: domain.PlanActionDone,
+		Carries: []domain.ToolEffect{domain.EffectEgress, domain.EffectWrite}}}, effects)
+	if s, why := status(c, "R2"); s == domain.RequirementFailed {
+		t.Fatalf("the requested send failed the constraint: %q", why)
+	}
+	c.ObserveActions([]domain.PlanAction{{Step: 1, Tool: "mail_update_draft", Status: domain.PlanActionDone}}, effects)
+	if s, _ := status(c, "R2"); s != domain.RequirementFailed {
+		t.Fatal("an edit outside the write item must still violate 'exactly as drafted'")
+	}
+}
+
+// ADR-0145 D14.6 derivation fixtures (requirement_checklist v2). The model replies
+// are the shapes v2 asks for; the test pins that the v2 rules are what the model
+// is sent and that does/forbids keep only vocabulary terms.
+func TestDerive_V2ScopesConstraintsAndMakesOutsideSavesWrites(t *testing.T) {
+	if checklistPrompts.System.Version < 2 {
+		t.Fatalf("the deriver runs requirement_checklist v%d; v2 carries the D14.6 rules", checklistPrompts.System.Version)
+	}
+	for _, rule := range []string{"forbids edit, never write or send", "\"Save it as a draft in my mail\"", "does"} {
+		if !strings.Contains(checklistPrompts.System.Body, rule) {
+			t.Fatalf("v2 system block lacks %q", rule)
+		}
+	}
+	terms := map[string][]domain.ToolEffect{"send": {domain.EffectEgress}, "edit": {domain.EffectWrite}, "change": {domain.EffectWrite}}
+
+	// o3x replay turn 1 (T-20261109-d14-constraint-forbids-change-refuses-the-send).
+	o3x := "These look right. Send them now, exactly as drafted."
+	g := &scriptedGen{replies: []string{`{"items":[
+	 {"type":"write","text":"Send the drafted reminders","quote":"Send them now","does":["send","teleport"]},
+	 {"type":"constraint","text":"Send the drafts without editing them","quote":"exactly as drafted","forbids":["edit"]}]}`}}
+	cl := (&Deriver{LLM: g, Constraints: terms}).Derive(context.Background(), o3x)
+	if len(cl.Items) != 2 || cl.Items[0].Type != domain.RequirementWrite || !equalStrs(cl.Items[0].Does, []string{"send"}) ||
+		!equalStrs(cl.Items[1].Forbids, []string{"edit"}) {
+		t.Fatalf("checklist = %+v", cl.Items)
+	}
+	if !strings.Contains(g.prompts[0], "- edit: rules out") {
+		t.Fatal("the effects block must offer edit")
+	}
+	// The guard: the send step carries write+egress, so 'edit' (write) does not refuse it.
+	carried := domain.CarriedClasses(cl.Items[:1], terms)
+	send := domain.SystemTool{Name: "mail_send_draft", Effects: []domain.ToolEffect{domain.EffectWrite, domain.EffectEgress}}
+	if _, _, hit := domain.ForbiddenBy(send, domain.ResolveConstraints(&cl, terms), carried...); hit {
+		t.Fatal("the derived checklist refuses the send it asks for")
+	}
+
+	// "save it as a draft in my mail" is a write (T-20261109-d14-lets-a-drafting-step-answers-only-the).
+	mail := "Write a polite reply to Ayla and save it as a draft in my mail, don't send it."
+	g = &scriptedGen{replies: []string{`{"items":[
+	 {"type":"document","text":"Write a polite reply to Ayla","quote":"Write a polite reply to Ayla"},
+	 {"type":"write","text":"Save the reply as a draft in the mailbox","quote":"save it as a draft in my mail"},
+	 {"type":"constraint","text":"Do not send it","quote":"don't send it","forbids":["send"]}]}`}}
+	cl = (&Deriver{LLM: g, Constraints: terms}).Derive(context.Background(), mail)
+	if len(cl.Items) != 3 || cl.Items[1].Type != domain.RequirementWrite || len(cl.Items[1].Does) != 0 {
+		t.Fatalf("checklist = %+v", cl.Items)
+	}
+	carried = domain.CarriedClasses(cl.Items[1:2], terms)
+	if _, _, hit := domain.ForbiddenBy(send, domain.ResolveConstraints(&cl, terms), carried...); !hit {
+		t.Fatal("'save as a draft, don't send it': the send must stay refused")
+	}
+}
+
+func equalStrs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// T-20261109-d6-envelope-keeps-items-open-when-the-model (o3x replay: run
+// 6054ba5658061005 step 6, run 2a8623eec5f262dc step 3 — 'Draft MSG-000173' and 'Draft
+// email message ID' typed ref). A non-ledger ref / evidence_ref is resolved in code to
+// the ONE entry of the step that contains it; otherwise the item stays open with the
+// ledger ids the step may cite.
+func TestValidateEnvelope_RecordIDsResolveToTheOneEntryThatHoldsThem(t *testing.T) {
+	ev := Evidence{Entries: map[string]domain.LedgerEntry{
+		"led_draft1": {ID: "led_draft1", Kind: domain.LedgerToolResult, ToolName: "mail_draft", Body: []byte(`{"id":"MSG-000173","to":"brisa@wychwood.example"}`)},
+		"led_draft2": {ID: "led_draft2", Kind: domain.LedgerToolResult, ToolName: "mail_draft", Body: []byte(`{"id":"MSG-000174","to":"ops@marlowe.example"}`)},
+		"led_case":   {ID: "led_case", Kind: domain.LedgerToolResult, ToolName: "cases_get", Body: []byte(`{"ref":"FOI-2026-0001","status":"open","note":"see MSG-000174"}`)},
+	}}
+	its := []domain.RequirementItem{{ID: "R1", Type: domain.RequirementWrite}, {ID: "R2", Type: domain.RequirementAnswer}}
+	env := &domain.AnswerEnvelope{ItemResults: []domain.ItemResult{
+		{Item: "R1", Status: domain.RequirementSatisfied, Values: []domain.EnvelopeValue{
+			val("draft", domain.ValueRef, "Draft MSG-000173", ""),         // one entry holds it → id, cites led_draft1
+			val("draft2", domain.ValueRef, "MSG-000174", "led_draft2"),    // cited entry holds it → kept on that entry
+			val("message", domain.ValueRef, "Draft email message ID", ""), // nothing holds it → open, ids listed
+			val("dup", domain.ValueRef, "MSG-000174", ""),                 // two entries hold it → open
+		}},
+		{Item: "R2", Status: domain.RequirementSatisfied, Values: []domain.EnvelopeValue{
+			val("case", domain.ValueID, "FOI-2026-0001", "FOI-2026-0001"), // evidence_ref is the case ref → led_case
+		}},
+	}}
+	got, vs := ValidateEnvelope(env, its, ev)
+	if len(got) != 2 || len(got[0].Values) != 2 || len(got[1].Values) != 1 {
+		t.Fatalf("accepted = %+v (violations %+v)", got, vs)
+	}
+	d1, d2, c := got[0].Values[0], got[0].Values[1], got[1].Values[0]
+	if d1.Type != domain.ValueID || d1.Text() != "MSG-000173" || d1.EvidenceRef != "led_draft1" {
+		t.Fatalf("draft = %+v", d1)
+	}
+	if d2.Type != domain.ValueID || d2.EvidenceRef != "led_draft2" {
+		t.Fatalf("draft2 = %+v", d2)
+	}
+	if c.EvidenceRef != "led_case" {
+		t.Fatalf("case = %+v", c)
+	}
+	if len(vs) != 2 {
+		t.Fatalf("violations = %+v", vs)
+	}
+	for _, v := range vs {
+		if !strings.Contains(v.Detail, "led_case (cases_get)") || !strings.Contains(v.Detail, "led_draft1 (mail_draft)") {
+			t.Fatalf("a violation must list the ledger ids the step may cite: %q", v.Detail)
+		}
 	}
 }

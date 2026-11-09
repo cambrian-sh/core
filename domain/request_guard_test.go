@@ -240,3 +240,63 @@ func TestWriteTargets_KeyNormalisesRecipients(t *testing.T) {
 		t.Fatalf("no target expected, got %q", k)
 	}
 }
+
+// T-20261109-d14-lets-a-drafting-step-answers-only-the (records replay, run
+// f278c4d74121d508): step 3 answered only R1 (document "Draft a response letter")
+// and called cases_respond_request FOI-2026-0001; step 4 (answering R7, write
+// "Record the response in the case system") then had its own write refused as a
+// duplicate target. ADR-0145 D14.6: a document is finished inside Cambrian; the
+// drafting step's outside write is refused with that reason, writes nothing, takes
+// no target, and the planned write step goes through.
+func TestD14_DraftingStepCannotWriteOutside_ThePlannedWriteStepCan(t *testing.T) {
+	h := &countingHandler{result: []byte(`{"id":"W-000001"}`)}
+	ap := &scriptedApprover{}
+	e := d14Exec(h, ap)
+	write := ToolCallRequest{AgentID: "w", ToolName: "cases_respond_request",
+		ArgsJSON: []byte(`{"ref":"FOI-2026-0001","release":[],"withhold":[]}`)}
+	got := e.Execute(guardStep("run-d", 3, StepGuard{Checklist: true, Documents: []string{"R1"}}), write)
+	if !got.Denied || !strings.Contains(got.DenyReason, "inside Cambrian") || !strings.Contains(got.DenyReason, "R1") {
+		t.Fatalf("drafting step's outside write not refused with the reason: %+v", got)
+	}
+	if h.n.Load() != 0 || ap.count() != 0 {
+		t.Fatalf("refused write ran (%d) or asked an approver (%d)", h.n.Load(), ap.count())
+	}
+	got = e.Execute(guardStep("run-d", 4, StepGuard{Checklist: true, WriteItems: []string{"R7"}}), write)
+	if got.Denied || h.n.Load() != 1 {
+		t.Fatalf("the planned write step was refused: %+v (ran %d)", got, h.n.Load())
+	}
+	// A step that answers a document AND a write item may write (the write item licenses it).
+	e2 := d14Exec(h, ap)
+	if got := e2.Execute(guardStep("run-d2", 0, StepGuard{Checklist: true, Documents: []string{"R1"}, WriteItems: []string{"R2"}}),
+		draft("a@b.example", "the letter")); got.Denied {
+		t.Fatalf("a step answering a write item was refused: %+v", got)
+	}
+	// Reads are untouched on a drafting step.
+	if got := e2.Execute(guardStep("run-d2", 1, StepGuard{Checklist: true, Documents: []string{"R1"}}),
+		ToolCallRequest{AgentID: "w", ToolName: "crm_search", ArgsJSON: []byte(`{}`)}); got.Denied {
+		t.Fatalf("a read on a drafting step: %+v", got)
+	}
+}
+
+// T-20261109-d14-constraint-forbids-change-refuses-the-send (o3x replay): "Send them
+// now, exactly as drafted" → R1 write (does send) + R2 forbids change (write). The
+// step carrying out R1 sends; a step that does not carry it out is still refused.
+func TestD14_ConstraintNeverBlocksTheRequestsOwnWrite(t *testing.T) {
+	h := &countingHandler{result: []byte(`{"id":"MSG-000173"}`)}
+	e := d14Exec(h, &scriptedApprover{})
+	terms := map[string][]ToolEffect{"change": {EffectWrite}, "send": {EffectEgress}}
+	cl := &RequirementChecklist{Items: []RequirementItem{
+		{ID: "R1", Type: RequirementWrite, Text: "Send the drafts", Quote: "Send them now", Does: []string{"send"}},
+		{ID: "R2", Type: RequirementConstraint, Quote: "exactly as drafted", Forbids: []string{"change"}},
+	}}
+	cons := ResolveConstraints(cl, terms)
+	carries := CarriedClasses([]RequirementItem{cl.Items[0]}, terms)
+	send := ToolCallRequest{AgentID: "w", ToolName: "mail_send", ArgsJSON: []byte(`{"to":"brisa@wychwood.example"}`)}
+	if got := e.Execute(guardStep("run-s", 0, StepGuard{Checklist: true, WriteItems: []string{"R1"}, Constraints: cons, Carries: carries}), send); got.Denied {
+		t.Fatalf("the send the person asked for was refused: %+v", got)
+	}
+	got := e.Execute(guardStep("run-s", 1, StepGuard{Checklist: true, Constraints: cons}), draft("x@y.example", "edited"))
+	if !got.Denied || !strings.Contains(got.DenyReason, "exactly as drafted") {
+		t.Fatalf("a write not carrying out R1 must still be held to the constraint: %+v", got)
+	}
+}

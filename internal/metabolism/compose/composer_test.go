@@ -207,12 +207,20 @@ func TestCompose_DoesNotRecomposeALeaseThatAlreadyCarriesOne(t *testing.T) {
 	if _, _, ok := c.Compose(context.Background(), task, w, nil, stepHandoff("lease-y")); !ok {
 		t.Fatal("first composition failed")
 	}
+	// A second dispatch on the same lease (a heal retry, a yield sub-goal) runs on
+	// the composed runtime under the lease's EXISTING composition — never on the
+	// selected profile agent (T-20261109-a-plan-step-is-re-dispatched-to-a-legacy-agent).
 	a := domain.ScoredCandidate{Agent: profileAgent("assistant")}
-	if _, _, ok := c.Compose(context.Background(), task, a, nil, stepHandoff("lease-y")); ok {
-		t.Fatal("a yield sub-goal re-composed its parent's lease")
+	in := stepHandoff("lease-y")
+	rt, comp, ok := c.Compose(context.Background(), task, a, nil, in)
+	if !ok || rt.Agent.ID != c.RuntimeID {
+		t.Fatalf("a re-dispatch on a composed lease left the runtime: ok=%v agent=%q", ok, rt.Agent.ID)
+	}
+	if !reflect.DeepEqual(comp.Professions, []string{"researcher"}) || in.Context[domain.HandoffKeyComposition] == "" {
+		t.Fatalf("re-dispatch did not reuse the lease's composition: %+v", comp)
 	}
 	if cmp, _ := c.Leases.For("lease-y"); !reflect.DeepEqual(cmp.Professions, []string{"researcher"}) || len(led.recs) != 1 {
-		t.Fatalf("parent composition replaced: %+v", cmp)
+		t.Fatalf("parent composition replaced or re-recorded: %+v (records %d)", cmp, len(led.recs))
 	}
 }
 

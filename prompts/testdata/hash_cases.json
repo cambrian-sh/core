@@ -193,6 +193,18 @@
       "static_hash": "29aac8df50c88e1692cb0e70ed7a556bd97bf682b83bef2c5d9195c4c27fd63a"
     },
     {
+      "id": "chat_agent",
+      "version": 6,
+      "tier": "stable",
+      "inputs": [
+        "policy",
+        "work_systems"
+      ],
+      "description": "The chat front desk's stable system text: its role, its output rule, when to answer directly and when to delegate, the work systems the planner's agents can use, its answering rules for each recall posture, the conversation's policy, and (ADR-0145 phase 3, each behind its own execution.chat key) the grounded-reply, delegation, ledger-tool, turn-index and ask-back rules.",
+      "has_schema": false,
+      "static_hash": "bb950a4897ce8bf70b9ea203598af05544a759d145d5b09a388767dac6d154ef"
+    },
+    {
       "id": "chat_agent_turn",
       "version": 1,
       "tier": "volatile",
@@ -756,6 +768,15 @@
       "description": "Split a delegated request into a checklist of requirement items (answers, figures, documents, writes, constraints), each anchored by a verbatim quote from the user's own message.",
       "has_schema": true,
       "static_hash": "99ba4ca2812aac01869c190b744437c989bb623cdb79261eb06a5808f3715220"
+    },
+    {
+      "id": "requirement_checklist",
+      "version": 2,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Split a delegated request into a checklist of requirement items (answers, figures, documents, writes, constraints), each anchored by a verbatim quote from the user's own message.",
+      "has_schema": true,
+      "static_hash": "241e05e25b1b93b100cd2ca542dc19851148cd5643903a49e73abb633a91ec55"
     },
     {
       "id": "requirement_checklist_input",

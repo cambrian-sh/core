@@ -309,3 +309,87 @@ func TestTheUsersOwnWordsAndTodayBackAValue(t *testing.T) {
 		t.Errorf("uncited = %v", raws(r.Uncited))
 	}
 }
+
+// ── recalled organisation rules (T-20261109-chat-agent-answers-a-published-rule) ──
+//
+// Replies and recalled chunks copied from the citizen gate run
+// cambrian-benchmarks/runs/20261109T0320Z_gate2_citizen_live (transcripts/*, and the
+// <recalled_memory> of traces/agent-chat_agent-*.jsonl). The recall is now a ledger
+// entry (tool memory_recall), so the figures are backed; a reply that drops the
+// procedure's section / madde is reported as missing its source.
+
+func recallEntry(t *testing.T, id string, hits ...[3]string) Entry {
+	t.Helper()
+	var b recallBody
+	for _, h := range hits {
+		b.Hits = append(b.Hits, struct {
+			Text     string `json:"text"`
+			Document string `json:"document"`
+			Section  string `json:"section"`
+		}{Text: h[0], Document: h[1], Section: h[2]})
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Entry{ID: id, Kind: "tool_result", Tool: "memory_recall", Body: string(raw)}
+}
+
+const (
+	enFOIChunk        = "**4. Time for compliance**\nThe council responds promptly and in any event within 20 working days (s.10 FOIA). Where the public interest test must be considered the council may extend by up to a further 20 working days and will tell the requester (s.10(3)).\n**5. Redaction**\nWhere exempt information can be separated, the remainder of a record is released with the exempt parts redacted; third parties' personal data is redacted under s.40(2)."
+	enComplaintsChunk = "**4. Stage 1**\nStage 1 complaints receive a full response within 10 working days.\n**5. Stage 2**\nA complainant who is dissatisfied may escalate to stage 2, answered within 20 working days; thereafter they may contact the Local Government and Social Care Ombudsman."
+	trFOIChunk        = "**MADDE 3 – Başvuru**\n(1) Başvurular dilekçe, elektronik posta, e-Belediye veya CİMER aracılığıyla yapılabilir.\n**MADDE 4 – Cevap süresi**\n(1) Başvurulara 4982 sayılı Kanunun 11 inci maddesi uyarınca 15 iş günü içinde cevap verilir. (2) Bilgi veya belgenin başka bir birimden sağlanması gerekirse süre 30 iş gününe uzatılır; uzatma ve gerekçesi süre içinde başvurana bildirilir.\n**MADDE 5 – Ayrılabilir belgeler**"
+	trPurposeChunk    = "**MADDE 1 – Amaç**\n(1) Bu Yönergenin amacı, 4982 sayılı Bilgi Edinme Hakkı Kanunu kapsamındaki başvuruların Belediyede ele alınış usulünü belirlemektir."
+)
+
+func TestRecalledRuleFiguresAreBackedButMustNameTheirSource(t *testing.T) {
+	en := Evidence{Entries: []Entry{recallEntry(t, "led_recall_en",
+		[3]string{enFOIChunk, "", ""}, [3]string{enComplaintsChunk, "", ""})},
+		Context: []string{"How many working days does the council have to answer my FOI request?"}}
+	// The recorded EN final reply (g-en-citizen-records-deadline attempt 1).
+	recorded := "The council has 20 working days to answer your FOI request. If the public interest test must be considered, the council may extend by up to a further 20 working days and will tell you."
+	rep := Check(recorded, en, Options{MinInteger: 10, Lang: "en"})
+	if len(rep.Uncited) != 0 {
+		t.Fatalf("memory-grounded figures counted as uncited: %+v", rep.Uncited)
+	}
+	if len(rep.MissingSource) != 1 || rep.MissingSource[0].Entry != "led_recall_en" || rep.Violations() != 1 {
+		t.Fatalf("the reply drops section 4 and s.10; want one missing source, got %+v", rep.MissingSource)
+	}
+	fixed := "Under section 4 (Time for compliance) of the council's Freedom of Information procedure, the council answers within 20 working days [led_recall_en] (s.10 FOIA)."
+	if rep := Check(fixed, en, Options{MinInteger: 10, Lang: "en"}); len(rep.MissingSource) != 0 || rep.Violations() != 0 {
+		t.Fatalf("a reply naming the section was flagged: %+v", rep)
+	}
+
+	tr := Evidence{Entries: []Entry{recallEntry(t, "led_recall_tr",
+		[3]string{trFOIChunk, "", ""}, [3]string{trPurposeChunk, "", ""})},
+		Context: []string{"Bilgi edinme başvuruma kaç iş günü içinde cevap verilmesi gerekir?"}}
+	recordedTR := "Bilgi edinme başvurunuza **15 iş günü** içinde cevap verilmesi gerekir. Ancak, istediğiniz bilgi veya belgenin başka bir birimden sağlanması gerekirse, bu süre **30 iş gününe uzatılır**. Eğer süre uzatılması söz konusuysa, uzatma kararı ve gerekçesi bu süre içinde size bildirilmelidir.\n\nBu hüküm, 4982 sayılı Bilgi Edinme Hakkı Kanununa dayanılarak belirlenmiştir."
+	rep = Check(recordedTR, tr, Options{MinInteger: 10, Lang: "tr"})
+	if len(rep.Uncited) != 0 || len(rep.MissingSource) == 0 {
+		t.Fatalf("TR: uncited %+v, missing source %+v", rep.Uncited, rep.MissingSource)
+	}
+	fixedTR := "Bilgi Edinme Yönergesi MADDE 4 (Cevap süresi) uyarınca başvurunuza 15 iş günü içinde cevap verilir [led_recall_tr]; başka bir birimden bilgi gerekirse süre 30 iş gününe uzar. Dayanak: 4982 sayılı Kanunun 11 inci maddesi."
+	if rep := Check(fixedTR, tr, Options{MinInteger: 10, Lang: "tr"}); len(rep.MissingSource) != 0 {
+		t.Fatalf("TR: a reply naming Madde 4 was flagged: %+v", rep.MissingSource)
+	}
+	// A figure a tool result backs needs no document source.
+	tool := Evidence{Entries: []Entry{{ID: "led_tool", Kind: "tool_result", Tool: "cases_get", Body: `{"due_in_working_days": 20}`},
+		recallEntry(t, "led_recall_en", [3]string{enFOIChunk, "", ""})}}
+	if rep := Check("You will hear back within 20 working days.", tool, Options{MinInteger: 10}); len(rep.MissingSource) != 0 {
+		t.Fatalf("a tool-backed figure was asked for a document source: %+v", rep.MissingSource)
+	}
+}
+
+func TestSourceLabelsFromSectionPathDocumentAndHeadings(t *testing.T) {
+	got := sourceLabels("Freedom of Information procedure", "FOI procedure > 4. Time for compliance", "**MADDE 4 – Cevap süresi**\n(1) text")
+	want := []string{"Freedom of Information procedure", "FOI procedure", "4. Time for compliance", "Time for compliance", "MADDE 4 – Cevap süresi", "MADDE 4", "Cevap süresi"}
+	for _, w := range want {
+		found := false
+		for _, g := range got {
+			found = found || g == w
+		}
+		if !found {
+			t.Errorf("label %q missing from %q", w, got)
+		}
+	}
+}
