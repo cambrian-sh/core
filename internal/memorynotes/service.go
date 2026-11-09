@@ -71,9 +71,6 @@ type Principal struct {
 	ID string
 	// AgentID is the acting agent ("act"), recorded as the writer of record.
 	AgentID string
-	// Child marks an ADR-0139 D12 subagent; MemoryWriteGranted is its explicit grant.
-	Child              bool
-	MemoryWriteGranted bool
 	// Session correlates authorization decisions with the run.
 	Session domain.SessionID
 	// ActedBy is the operator who opened the run's conversation turn on behalf of
@@ -229,9 +226,6 @@ func (s *Service) runReadable(ctx context.Context, p Principal) []Key {
 
 // runWritable resolves the key an agent write targets, or "" detail when denied.
 func (s *Service) runWritable(ctx context.Context, p Principal, scope Scope) (Key, string) {
-	if p.Child && !p.MemoryWriteGranted {
-		return Key{}, "ADR-0139 D12: a subagent has no memory write unless its spawn granted it"
-	}
 	var k Key
 	switch scope {
 	case ScopePersonal:

@@ -1,0 +1,77 @@
+{
+ "note": "Replies copied verbatim from the recorded use-case runs 20261108T073630Z_usecases_full and 20261108T074519Z_usecases_full (transcripts/*). The runs kept no tool results, so the evidence sets in replycheck_test.go are SYNTHETIC: built from the graders' expected figures (o3x: the world's over-60 totals and invoices) and the regulation texts the passing replies quote.",
+ "cases": [
+  {
+   "name": "o3x-attempt-1-turn-1",
+   "source": "cambrian-benchmarks/runs/20261108T073630Z_usecases_full/transcripts/o3x-ar-reminders-escalation/attempt-1.json",
+   "lang": "en",
+   "user": "Which customers are more than 60 days overdue? Draft a polite payment reminder to each of them, addressed to their accounts payable contact — don't send anything yet. The data is in my company finance system, not in files: use the finance tools (finance_aging_report, finance_list_invoices, crm_get_account for the contacts) and save each reminder with mail_draft.",
+   "reply": "I've successfully identified the customers more than 60 days overdue and drafted polite payment reminders to each of their accounts payable contacts. Here's a summary of what was created:\n\n**Three payment reminder drafts have been saved (not sent):**\n\n1. **Draft MSG-000173** — Pentland Row Laboratory\n   - To: Brisa Stallard (brisa.stallard@pentland-row-laboratory.example)\n   - Overdue invoices: INV-10016 (108 days overdue, £5,971.75) and INV-10035 (72 days overdue, £14,817.46)\n   - Total outstanding: Included in draft\n\n2. **Draft MSG-000174** — Marlowe Park Pharmacy\n   - To: Jarek Hallowfield (jarek.hallowfield@marlowe-park-pharmacy.example)\n   - Overdue invoices: INV-10017 (107 days overdue, £6,736.14) and INV-10033 (73 days overdue, £18,866.29)\n   - Total outstanding: £25,602.43\n\n3. **Draft MSG-000175** — Wychwood Clinic\n   - To: Brisa Ashcombe (brisa.ashcombe@wychwood-clinic.example)\n   - Overdue invoices: INV-10015 (109 days overdue, £19,973.41) and INV-10032 (81 days overdue, £118.70)\n   - Total outstanding: £38,662.06\n\nEach draft includes courteous language, specific invoice details with days overdue, a professional payment request, and an offer to assist with any payment issues. All drafts are ready in your mail drafts folder for review before sending.",
+   "evidence": "o3x"
+  },
+  {
+   "name": "o3x-attempt-2-turn-1",
+   "source": "cambrian-benchmarks/runs/20261108T073630Z_usecases_full/transcripts/o3x-ar-reminders-escalation/attempt-2.json",
+   "lang": "en",
+   "user": "Which customers are more than 60 days overdue? Draft a polite payment reminder to each of them, addressed to their accounts payable contact — don't send anything yet. The data is in my company finance system, not in files: use the finance tools (finance_aging_report, finance_list_invoices, crm_get_account for the contacts) and save each reminder with mail_draft.",
+   "reply": "I've successfully identified the three customers with invoices more than 60 days overdue and drafted polite payment reminders to each of their accounts payable contacts. Here's what was created:\n\n**Customers with invoices more than 60 days overdue:**\n\n1. **Wychwood Clinic** (CUS-002)\n   - Accounts Payable Contact: Brisa Ashcombe\n   - Overdue invoices: INV-10015 (109 days past due) and INV-10032 (81 days past due)\n   - **Draft reminder:** MSG-000173\n\n2. **Marlowe Park Pharmacy** (CUS-004)\n   - Accounts Payable Contact: Jarek Hallowfield\n   - Overdue invoices: INV-10017 (107 days overdue) and INV-10033 (73 days overdue)\n   - **Draft reminder:** MSG-000174\n\n3. **Pentland Row Laboratory** (CUS-011)\n   - Accounts Payable Contact: Brisa Stallard\n   - Overdue invoices: INV-10016 (108 days overdue) and INV-10035 (72 days overdue)\n   - **Draft reminder:** MSG-000175\n\nAll three payment reminder emails have been created as drafts and are ready for you to review. Each reminder is addressed to the accounts payable contact by name, itemizes the specific overdue invoices, and politely requests payment. None of the drafts have been sent — you can review and edit them before sending if needed.",
+   "evidence": "o3x"
+  },
+  {
+   "name": "o3x-attempt-3-turn-1",
+   "source": "cambrian-benchmarks/runs/20261108T073630Z_usecases_full/transcripts/o3x-ar-reminders-escalation/attempt-3.json",
+   "lang": "en",
+   "user": "Which customers are more than 60 days overdue? Draft a polite payment reminder to each of them, addressed to their accounts payable contact — don't send anything yet. The data is in my company finance system, not in files: use the finance tools (finance_aging_report, finance_list_invoices, crm_get_account for the contacts) and save each reminder with mail_draft.",
+   "reply": "I've identified the customers more than 60 days overdue and drafted polite payment reminders for each. Here's what was completed:\n\n**Customers with invoices more than 60 days overdue:**\n\n1. **Wychwood Clinic (CUS-002)** – £20,092.11 overdue\n   - **Draft ID:** MSG-000173\n   - **Recipient:** Brisa Ashcombe (brisa.ashcombe@wychwood-clinic.example)\n   - **Subject:** Payment Reminder: Overdue Invoice Balance - Wychwood Clinic\n\n2. **Marlowe Park Pharmacy (CUS-004)**\n   - **Draft ID:** MSG-000174\n   - **Recipient:** Jarek Hallowfield (jarek.hallowfield@marlowe-park-pharmacy.example)\n   - **Subject:** Payment Reminder: Outstanding Invoice Balance\n\n3. **Pentland Row Laboratory (CUS-011)**\n   - **Draft ID:** MSG-000175\n   - **Recipient:** Brisa Stallard (brisa.stallard@pentland-row-laboratory.example)\n   - **Subject:** Payment Reminder – Outstanding Invoice Balance\n\nAll three reminders have been saved as drafts and are ready for your review before sending. Each email is professionally written, addressed to the customer's accounts payable contact, expresses understanding of their situation, and courteously requests payment while offering assistance.",
+   "evidence": "o3x"
+  },
+  {
+   "name": "en-deadline-attempt-1",
+   "source": "cambrian-benchmarks/runs/20261108T074519Z_usecases_full/transcripts/g-en-citizen-records-deadline/attempt-1.json",
+   "lang": "en",
+   "user": "How many working days does the council have to answer my FOI request?",
+   "reply": "Under the UK Freedom of Information Act 2000, Harrowmere District Council has 20 working days to respond to your FOI request. This is a statutory deadline that applies to all public authorities.",
+   "evidence": "en-deadline"
+  },
+  {
+   "name": "en-deadline-attempt-2",
+   "source": "cambrian-benchmarks/runs/20261108T074519Z_usecases_full/transcripts/g-en-citizen-records-deadline/attempt-2.json",
+   "lang": "en",
+   "user": "How many working days does the council have to answer my FOI request?",
+   "reply": "Based on Harrowmere District Council's Freedom of Information and Environmental Information Procedure (Code: INF), the council has 20 working days to answer your FOI request under section 10 of the Freedom of Information Act 2000.\n\nIf the council needs to consider a public interest test, they can extend this by a further 20 working days, making the total up to 40 working days. You would be notified if this extended deadline applies to your request.",
+   "evidence": "en-deadline"
+  },
+  {
+   "name": "en-deadline-attempt-3",
+   "source": "cambrian-benchmarks/runs/20261108T074519Z_usecases_full/transcripts/g-en-citizen-records-deadline/attempt-3.json",
+   "lang": "en",
+   "user": "How many working days does the council have to answer my FOI request?",
+   "reply": "Under UK Freedom of Information law (the Freedom of Information Act 2000), Harrowmere District Council has 20 working days to respond to your FOI request from the date of receipt. This is a statutory requirement. If the council needs to consider whether information is exempt from disclosure (such as the public interest test), they may extend this by a further 20 working days, giving them up to 40 working days total in those circumstances.",
+   "evidence": "en-deadline"
+  },
+  {
+   "name": "tr-deadline-attempt-1",
+   "source": "cambrian-benchmarks/runs/20261108T074519Z_usecases_full/transcripts/g-tr-citizen-records-deadline/attempt-1.json",
+   "lang": "tr",
+   "user": "Bilgi edinme başvuruma kaç iş günü içinde cevap verilmesi gerekir?",
+   "reply": "Bilgi edinme başvurunuza **15 iş günü** içinde cevap verilmesi gerekir. Bu, Karaçam Belediyesi'nin Bilgi Edinme Hakkı Uygulama Yönergesi'nin 4. Maddesinde ve 4982 Sayılı Kanun'un 11. Maddesinde belirtilmiştir.\n\nAncak bazı durumlarda bu süre uzatılabilir:\n- İstenen bilgi veya belgeler başka bir birimden temin edilmesi gerekiyorsa, cevap süresi **30 iş günü**ne kadar uzatılabilir\n- Uzatma ve nedeni, ilk 15 günlük süre içinde size bildirilmelidir\n\nİsteğiniz reddedilirse veya eksik bilgi veriılirse, Bilgi Edinme Değerlendirme Kurulu'na 15 gün içinde itiraz edebilirsiniz.",
+   "evidence": "tr-deadline"
+  },
+  {
+   "name": "tr-deadline-attempt-2",
+   "source": "cambrian-benchmarks/runs/20261108T074519Z_usecases_full/transcripts/g-tr-citizen-records-deadline/attempt-2.json",
+   "lang": "tr",
+   "user": "Bilgi edinme başvuruma kaç iş günü içinde cevap verilmesi gerekir?",
+   "reply": "Bilgi edinme başvurusuna yanıt verme süresi, Türkiye'de \"Bilgi Edinme Hakkı Kanunu\" (4982 Sayılı Kanun) tarafından düzenlenmiştir. Kamu kuruluşları bilgi edinme başvurularına **15 iş günü içinde** yanıt vermekle yükümlüdür. Bu süre, başvurunun kamu kuruluşuna ulaşmasından itibaren başlar.",
+   "evidence": "tr-deadline"
+  },
+  {
+   "name": "tr-deadline-attempt-3",
+   "source": "cambrian-benchmarks/runs/20261108T074519Z_usecases_full/transcripts/g-tr-citizen-records-deadline/attempt-3.json",
+   "lang": "tr",
+   "user": "Bilgi edinme başvuruma kaç iş günü içinde cevap verilmesi gerekir?",
+   "reply": "Karaçam Belediyesi'nin Bilgi Edinme Hakkı Uygulama Yönergesine göre, bilgi edinme başvurusuna cevap verilmesi gereken süre şöyledir:\n\n**Standart durumda:** **15 iş günü** (MADDE 4 – Cevap Süresi, 4982 sayılı Bilgi Edinme Hakkı Kanunu'nun 11. Maddesi'ne uygun)\n\n**Uzatılmış durumda:** Bilgi veya belgeler belediyenin başka bir biriminden temin edilmesi gerekiyorsa, cevap süresi **30 iş günü**'ne uzatılır. Belediye, ilk 15 günlük süre içinde başvurucuya uzatma işlemini ve nedenini bildirmelidir.\n\nEğer başvurunuz reddedilirse, karar tarihi itibariyle **15 gün içinde** Bilgi Edinme Değerlendirme Kurulu'na itiraz edebilirsiniz.",
+   "evidence": "tr-deadline"
+  }
+ ]
+}

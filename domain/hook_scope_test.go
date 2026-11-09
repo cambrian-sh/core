@@ -119,14 +119,14 @@ func TestNewHookChain_ValidatesScope(t *testing.T) {
 	}
 }
 
-var testGuards = []GuardedArg{{Tool: "yield_subgoal", Arg: "intent"}, {Tool: "spawn_subagent", Arg: "objective"},
+var testGuards = []GuardedArg{{Tool: "yield_subgoal", Arg: "intent"}, {Tool: "delegate_to_planner", Arg: "task"},
 	{Tool: "final_answer", Arg: "answer"}} // the last repeats the deliverable: listed once
 
 func controlCalls(spawnArgs string) []ModelToolCall {
 	return []ModelToolCall{
 		{ID: "c0", Name: "yield_subgoal", Arguments: []byte(`{"intent":"look up sk-7","capability_hint":"web"}`)},
 		{ID: "c1", Name: "write_file", Arguments: []byte(`{"body":"sk-1"}`)},
-		{ID: "c2", Name: "spawn_subagent", Arguments: []byte(spawnArgs)},
+		{ID: "c2", Name: "delegate_to_planner", Arguments: []byte(spawnArgs)},
 		{ID: "c3", Name: "final_answer", Arguments: []byte(`{"answer":"done sk-9"}`)},
 	}
 }
@@ -141,10 +141,10 @@ func controlEvent(spawnArgs string) HookEvent {
 
 func TestHookGuardedView(t *testing.T) {
 	t.Parallel()
-	gs := HookGuardedView(controlCalls(`{"objective":"run sk-8","mode":"fork"}`), "final_answer", "answer", testGuards)
+	gs := HookGuardedView(controlCalls(`{"task":"run sk-8","mode":"fork"}`), "final_answer", "answer", testGuards)
 	want := []HookGuardedArg{
 		{Tool: "yield_subgoal", Arg: "intent", Call: 0, Value: "look up sk-7"},
-		{Tool: "spawn_subagent", Arg: "objective", Call: 2, Value: "run sk-8"},
+		{Tool: "delegate_to_planner", Arg: "task", Call: 2, Value: "run sk-8"},
 		{Tool: "final_answer", Arg: "answer", Call: 3, Value: "done sk-9"},
 	}
 	if len(gs) != len(want) {
@@ -157,7 +157,7 @@ func TestHookGuardedView(t *testing.T) {
 	}
 	// A control verb that omits (or nulls) its argument has nothing to guard; an
 	// empty argument blob neither.
-	for _, args := range []string{`{"mode":"fork"}`, `{"objective":null}`, ``} {
+	for _, args := range []string{`{"mode":"fork"}`, `{"task":null}`, ``} {
 		for _, g := range HookGuardedView(controlCalls(args), "final_answer", "answer", testGuards) {
 			if g.Call == 2 {
 				t.Errorf("%q: unexpected entry %+v", args, g)
@@ -166,10 +166,10 @@ func TestHookGuardedView(t *testing.T) {
 	}
 	// Present but unreadable: bad JSON, not an object, a non-string value.
 	for args, why := range map[string]string{
-		`{"objective": "x"`:      "not a JSON object",
-		`["x"]`:                  "not a JSON object",
-		`{"objective":{"a":1}}`:  "not a string",
-		`{"objective":["sk-8"]}`: "not a string",
+		`{"task": "x"`:      "not a JSON object",
+		`["x"]`:             "not a JSON object",
+		`{"task":{"a":1}}`:  "not a string",
+		`{"task":["sk-8"]}`: "not a string",
 	} {
 		var hit *HookGuardedArg
 		for _, g := range HookGuardedView(controlCalls(args), "final_answer", "answer", testGuards) {
@@ -214,7 +214,7 @@ func TestHookChain_GuardedArgRewritesAreWrittenIntoTheCalls(t *testing.T) {
 			seen = ev
 			return HookResult{}, nil
 		}})
-	ev := controlEvent(`{"objective":"run sk-8","mode":"fork"}`)
+	ev := controlEvent(`{"task":"run sk-8","mode":"fork"}`)
 	out := c.Run(context.Background(), ev)
 	if out.Verdict != HookAllow || !out.GuardedArgsRewritten {
 		t.Fatalf("outcome = %+v", out)
@@ -225,8 +225,8 @@ func TestHookChain_GuardedArgRewritesAreWrittenIntoTheCalls(t *testing.T) {
 	if got := argOf(t, out.ToolCalls[0].Args, "capability_hint"); got != "web" {
 		t.Errorf("other fields lost: %s", out.ToolCalls[0].Args)
 	}
-	if got := argOf(t, out.ToolCalls[2].Args, "objective"); got != "run [R]-8" {
-		t.Errorf("objective = %q", got)
+	if got := argOf(t, out.ToolCalls[2].Args, "task"); got != "run [R]-8" {
+		t.Errorf("task = %q", got)
 	}
 	if string(out.ToolCalls[1].Args) != `{"body":"sk-1"}` {
 		t.Errorf("an unguarded call was rewritten: %s", out.ToolCalls[1].Args)
@@ -256,44 +256,44 @@ func TestHookChain_GuardedArgRules(t *testing.T) {
 		called = true
 		return HookResult{}, nil
 	}})
-	out := c.Run(context.Background(), controlEvent(`{"objective": "sk-8"`))
-	if out.Verdict != HookDeny || called || !strings.Contains(out.Reason, "spawn_subagent.objective") {
+	out := c.Run(context.Background(), controlEvent(`{"task": "sk-8"`))
+	if out.Verdict != HookDeny || called || !strings.Contains(out.Reason, "delegate_to_planner.task") {
 		t.Fatalf("unreadable: %+v called=%v", out, called)
 	}
 	c = mustChain(t, nil, funcHook{postModelSpec("watch", false), func(context.Context, HookEvent) (HookResult, error) {
 		called = true
 		return HookResult{}, nil
 	}})
-	if out := c.Run(context.Background(), controlEvent(`{"objective": "sk-8"`)); out.Verdict != HookAllow || !called {
+	if out := c.Run(context.Background(), controlEvent(`{"task": "sk-8"`)); out.Verdict != HookAllow || !called {
 		t.Fatalf("non-rewriter: %+v called=%v", out, called)
 	}
 
 	// Deny on a guarded argument refuses the whole reply.
 	c = mustChain(t, nil, funcHook{postModelSpec("dlp", false), func(_ context.Context, ev HookEvent) (HookResult, error) {
 		for _, g := range ev.GuardedArgs {
-			if g.Tool == "spawn_subagent" && strings.Contains(g.Value, "sk-") {
-				return HookResult{Verdict: HookDeny, Reason: "secret in objective"}, nil
+			if g.Tool == "delegate_to_planner" && strings.Contains(g.Value, "sk-") {
+				return HookResult{Verdict: HookDeny, Reason: "secret in task"}, nil
 			}
 		}
 		return HookResult{}, nil
 	}})
-	if out := c.Run(context.Background(), controlEvent(`{"objective":"run sk-8"}`)); out.Verdict != HookDeny || out.Reason != "secret in objective" {
+	if out := c.Run(context.Background(), controlEvent(`{"task":"run sk-8"}`)); out.Verdict != HookDeny || out.Reason != "secret in task" {
 		t.Fatalf("deny: %+v", out)
 	}
-	if out := c.Run(context.Background(), controlEvent(`{"objective":"fine"}`)); out.Verdict != HookAllow {
+	if out := c.Run(context.Background(), controlEvent(`{"task":"fine"}`)); out.Verdict != HookAllow {
 		t.Fatalf("allow: %+v", out)
 	}
 
 	// A rewrite naming an argument the event does not list is malformed (failed
 	// open under on_failure allow, nothing changed).
 	c = mustChain(t, nil, funcHook{postModelSpec("rw", true), answer(HookResult{GuardedArgs: []HookArgRewrite{{Call: 1, Arg: "body", Value: "x"}}})})
-	out = c.Run(context.Background(), controlEvent(`{"objective":"o"}`))
+	out = c.Run(context.Background(), controlEvent(`{"task":"o"}`))
 	if out.GuardedArgsRewritten || !out.Invocations[0].FailedOpen || string(out.ToolCalls[1].Args) != `{"body":"sk-1"}` {
 		t.Fatalf("unlisted rewrite: %+v", out)
 	}
 	// Without may_rewrite: ignored and recorded.
 	c = mustChain(t, nil, funcHook{postModelSpec("nr", false), answer(HookResult{GuardedArgs: []HookArgRewrite{{Call: 0, Arg: "intent", Value: "x"}}})})
-	out = c.Run(context.Background(), controlEvent(`{"objective":"o"}`))
+	out = c.Run(context.Background(), controlEvent(`{"task":"o"}`))
 	if out.GuardedArgsRewritten || !hasEffect(out.Invocations[0].Effects, "rewrite_ignored") {
 		t.Fatalf("no may_rewrite: %+v", out)
 	}

@@ -91,10 +91,34 @@ func (h *Handler) Execute(ctx context.Context, call domain.ToolCall) ([]byte, er
 	if err != nil {
 		return nil, fmt.Errorf("mcp call %q: %w", toolName, err)
 	}
-	// A tool-level error (res.IsError) is data, not a transport failure — the MCP
-	// spec carries it in Content so the model can see it; we return it as the
-	// result bytes and let the reasoning loop reconcile.
+	// A tool-level error (res.IsError) is not a transport failure (the session
+	// stays), but it IS a failed call: returned as the call's error, so the kernel
+	// records it as failed (action ledger, write record, run ledger) and the model
+	// still sees the tool's own message. It used to come back as an ordinary
+	// result, which reported a failed write as done (ADR-0145 D14: refusals and
+	// failures are never reported as success).
+	if res.IsError {
+		return nil, fmt.Errorf("mcp tool %q reported an error: %s", toolName, errorText(res))
+	}
 	return marshalResult(res)
+}
+
+// errorText is the text of an error result's content (its text blocks joined),
+// or the content as JSON when it has no text block.
+func errorText(res *mcpsdk.CallToolResult) string {
+	var parts []string
+	for _, c := range res.Content {
+		if t, ok := c.(*mcpsdk.TextContent); ok && strings.TrimSpace(t.Text) != "" {
+			parts = append(parts, strings.TrimSpace(t.Text))
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "; ")
+	}
+	if b, err := marshalResult(res); err == nil {
+		return string(b)
+	}
+	return "no detail"
 }
 
 // ParseToolName splits mcp:<server>/<tool> into its parts. ok=false for any name

@@ -28,6 +28,16 @@ type FilesystemAgentSource struct {
 	// skillTools is the skill index declarative profiles are validated against
 	// (storage.DiscoverOptions.SkillTools); nil skips the skill checks.
 	skillTools map[string][]string
+	// composedRuntimeID registers the ADR-0145 D12 composed runtime under this id
+	// (storage.DiscoverOptions.ComposedRuntimeID); "" ⇒ not registered.
+	composedRuntimeID string
+}
+
+// withComposedRuntime registers the composed-worker runtime (execution.workers.composed)
+// under id beside the profile agents. Only the kernel's own source calls it.
+func (s *FilesystemAgentSource) withComposedRuntime(id string) *FilesystemAgentSource {
+	s.composedRuntimeID = id
+	return s
 }
 
 // withSkillTools sets the skill index profiles in this directory are validated
@@ -78,7 +88,8 @@ func (s *FilesystemAgentSource) Name() string { return "filesystem:" + s.dir }
 // DiscoverAgents scans the directory and returns each agent's definition + manifest,
 // skipping any whose exec path does not resolve on disk.
 func (s *FilesystemAgentSource) DiscoverAgents(_ context.Context) ([]DiscoveredAgent, error) {
-	discovered, err := storage.DiscoverFilesystemAgentsWith(s.dir, s.isSystemAgent, storage.DiscoverOptions{SkillTools: s.skillTools})
+	discovered, err := storage.DiscoverFilesystemAgentsWith(s.dir, s.isSystemAgent, storage.DiscoverOptions{
+		SkillTools: s.skillTools, ComposedRuntimeID: s.composedRuntimeID})
 	if err != nil {
 		return nil, err
 	}

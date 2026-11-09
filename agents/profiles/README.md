@@ -196,6 +196,22 @@ Ticket `T-20261105-agent-stack-v2-worker-agent-runtime-plus`, part B.
 Only profiles get allowlist grants. A `tool_allowlist` in an ordinary agent's own
 `AGENT_MANIFEST` is not turned into grants: that would be a self-asserted privilege.
 
+## Composed workers (ADR-0145 D12, `execution.workers.composed`, default off)
+
+With the flag on, a profile is a **profession**, not the agent that runs a plan step. The
+gatekeeper still decides which professions cover a step (capabilities and effects); the
+kernel then composes ONE worker for the step on the runtime `worker_agent.py --composed`
+(agent id `composed_worker`): the professions' skills (profile + grants, served by the
+kernel, sorted, capped by `max_skills`), the tools inside their allowlists that the person's
+scope also allows (a step's declared effects do not narrow them, ADR-0145 D14), the step's brief and its input ledger
+references. The composition is bound to the step's lease and enforced there (tool ceiling,
+skill index, no operator skill request), recorded in the run ledger, and sent to the
+runtime as data (`_composition`). The runtime's role and rules are developer-written
+(`prompts/composed_worker`); a profile's `role` is not used for composed steps. A step
+whose selected agent is not a profile (a code or service agent) is dispatched to it as
+before. Code: `internal/metabolism/compose`, `app/composed_workers.go`,
+`sdk/cambrian_agent_sdk/composition.py`.
+
 ## Tool ids (reconciled)
 
 The profiles and skills use the server ids and tool names of the curated set in

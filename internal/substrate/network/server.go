@@ -150,6 +150,10 @@ type Server struct {
 	ContentStore      domain.ContentStore      // ADR-0022 Phase 1: may be nil; nil disables CAS
 	StepCache         domain.StepCache         // ADR-0026: may be nil; nil disables step-level memoization
 
+	// RunTracer records step outputs and kernel-executed tool calls as OTel GenAI
+	// spans (ADR-0145 D10, run_trace.go). nil ⇒ off (execution.trace.enabled).
+	RunTracer domain.RunTracer
+
 	// TokenRecorder taps token usage for the hourly spend series (contract 0075).
 	// nil ⇒ no tap and the resolved event writer is used unchanged, which is what
 	// a build with no operator console wants.
@@ -203,6 +207,17 @@ type Server struct {
 	ArtifactBytes ArtifactByteStore // CAS byte store (ArtifactVault)
 	ArtifactMeta  ArtifactMetaStore // metadata + tags persistence
 
+	// Ledger is the ADR-0145 D1 run ledger (kernel.LedgerStack), nil when
+	// execution.ledger.enabled is off. On: the DAG executor records every step
+	// output to it and reads dependants' results from it, the plan executor gets no
+	// content store (step results are no longer plan-scoped scratch there), and
+	// GetContextNode resolves led_… ids through its enforced reader (ledger.go).
+	Ledger *LedgerAccess
+	// Checklist derives a delegated request's requirement checklist (ADR-0145 D5,
+	// requirements.Deriver). Used only when execution.plan.checklist_enabled is on
+	// and the ledger is wired (checklistOn); nil ⇒ the legacy single-plan path.
+	Checklist ChecklistDeriver
+
 	// Authz is the access-control decision point (ADR-0085). nil ⇒ the OSS
 	// allow-all default: the server still ASKS at every enforcement point, and in
 	// an unscoped deployment the answer is always yes.
@@ -255,12 +270,6 @@ type Server struct {
 	// MARKED so every write chokepoint owner-scopes what the agent writes to
 	// that person (domain.WithPrivateWrites / StampPrivateOwner).
 	PrivateByDefault bool
-
-	// Subagents is the ADR-0139 D12 runtime behind SpawnSubagent (subagent.go):
-	// per-root trees, child-lease ceilings and counters. The composition root also
-	// hands it to the ToolExecutor (LeaseCeiling) and the gateway (SetLeaseGate).
-	// nil ⇒ SpawnSubagent answers Unimplemented.
-	Subagents *SubagentService
 
 	// IngestionProcessor is the ONLY way memory is written (ADR-0060 D8/D9): the
 	// body goes through the chunker registry, a source-doc entity is minted, and
@@ -316,6 +325,15 @@ type Server struct {
 	// operator-approved grants and runs use_skill access requests
 	// (skills_rpc.go; decisions/skill-access-grants.md). nil = no agent is bounded.
 	SkillAccess SkillAccess
+	// Compositions holds the ADR-0145 D12 worker composition bound to each composed
+	// step lease (execution.workers.composed). ListTools serves the composition as
+	// the menu, ListSkills serves nothing outside its skill index and opens no access
+	// request for it, and the lease's completion forgets it. nil = no composed workers.
+	Compositions *domain.ComposedLeases
+	// ComposedRuntimeID is the composed runtime's agent id; "" when composed
+	// workers are off. That agent holds nothing of its own: without a composed
+	// lease it gets no tool, no menu and no skill (composed_workers.go).
+	ComposedRuntimeID string
 
 	// Embedder backs the Embed RPC (ADR-0041) used by an agent's Local Recurrent
 	// Workspace for relevance ranking. nil → Embed returns Unimplemented.
@@ -401,6 +419,8 @@ func NewServer(
 			// The step-output stream's per-lease state (seq, caps, dedupe) ends
 			// with the lease.
 			s.StepOutput.EndLease(lease)
+			// ADR-0145 D12: a composed step's bounds end with its lease.
+			s.Compositions.Forget(lease)
 		})
 	}
 	return s
@@ -484,7 +504,7 @@ func (s *Server) planningOutOfTime(in *pb.Handoff, phase string, cause error, se
 }
 
 // Execute handles requests from the external world and manages the agent chain.
-func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, error) {
+func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Handoff, execErr error) {
 	rawInput := string(in.Payload.Data)
 
 	// ADR-0050 D1: benchmark React-baseline arm. Skips Router classification,
@@ -650,11 +670,32 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		}
 	}
 
+	// ADR-0145 D5a resume: the ask-back round and the pending InputRequired a
+	// delegated request answers are kernel state the chat lane bound on the turn
+	// lease, never an agent's metadata.
+	stampAskBack(in, func(md map[string]string) (domain.LeaseBinding, bool) {
+		return s.resolveBindingFromHandoff(ctx, md)
+	})
+
 	// A plan a chat turn delegated lives no longer than the turn
 	// (turn_delegation.go, T-20261106-a-chat-turn-that-fails-deadline-exceeded-or):
 	// it runs under a context the turn's end cancels, and a late Execute from a
 	// turn that has already ended is refused. The ordering turn is read from the
 	// caller's lease binding only, like the conversation link above.
+	// ADR-0145 D14: a WORKER (a plan step's lease) handing extra work to the
+	// planner. The nested run is one level deeper (bounded), and its steps run on
+	// dedicated agent instances: the delegating worker's own process is still
+	// inside its step and would otherwise serve the nested steps after it.
+	if b, known := s.resolveBindingFromHandoff(ctx, in.GetMetadata()); known && b.RunID != "" && b.StepIndex >= 0 {
+		depth := b.DelegationDepth + 1
+		if depth > s.ExecCfg.Plan.MaxWorkerDelegationDepth {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"worker delegation refused: this work already runs at delegation depth %d (execution.plan.max_worker_delegation_depth %d); finish the step with what you have and report what is missing",
+				b.DelegationDepth, s.ExecCfg.Plan.MaxWorkerDelegationDepth)
+		}
+		ctx = domain.WithDedicatedInstance(domain.WithDelegationDepth(ctx, depth))
+		slog.Info("ADR-0145 D14: worker delegation to the planner", "from_run", b.RunID, "from_step", b.StepIndex, "depth", depth)
+	}
 	var delegated *DelegatedRun
 	if s.Delegations != nil {
 		if b, known := s.resolveBindingFromHandoff(ctx, in.GetMetadata()); known {
@@ -663,7 +704,15 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 				return nil, status.Error(codes.FailedPrecondition, derr.Error())
 			}
 			ctx, delegated = runCtx, run
-			defer run.End()
+			// The turn's chat lane reads every direct delegation's structured result
+			// kernel-side (ADR-0145 D2/D5a/D8: turn index, ask-back, reply check),
+			// whichever return path produced it.
+			defer func() {
+				if execOut != nil {
+					run.SetResult(execOut.GetMetadata())
+				}
+				run.End()
+			}()
 		}
 	}
 
@@ -701,7 +750,19 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 
 	// One planner-call budget for the whole plan: the validation retry below and
 	// the DAG's replans draw on the same 1 + max_replan_attempts calls.
-	planBudget := newPlanCallBudget(s.ExecCfg.Plan.MaxReplanAttempts)
+	planBudget := newPlanCallBudget(s.planCallLimit())
+
+	// ADR-0145 D5: the requirement checklist, derived ONCE from the user's own words
+	// before planning (coverage_stages.go). Not for an operator-authored plan or a
+	// resumed run: there is no request to derive it from.
+	var reqs *requestRequirements
+	// staged is the ADR-0145 D11 staged planner's state across this Execute's
+	// stages (staged_planner.go); nil unless execution.plan.staged_planner.
+	var staged *stagedRun
+	if s.checklistOn() && authoredPlanJSON == "" && resumed == nil {
+		reqs = s.deriveRequirements(ctx, rawInput)
+		ctx = domain.WithRequirementChecklist(ctx, reqs.checklist)
+	}
 
 	var plan *domain.ExecutionPlan
 	switch {
@@ -724,13 +785,26 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		slog.Info("📝 OPERATOR-AUTHORED PLAN", "subject", plan.Subject, "steps", len(plan.Steps))
 	default:
 		planningCtx, stopPlanningReserve := reserve.bound(ctx, errPlanningCallerDeadline("planning", reserve.reserve))
-		p, perr := planWithValidation(planningCtx, planBudget.planner(s.Planner), userInput)
+		var p *domain.ExecutionPlan
+		var perr error
+		var early *pb.Handoff
+		if reqs != nil && s.stagedOn() {
+			// ADR-0145 D11: stage 1 of the staged planner, which may instead ask
+			// the person or find nothing to plan (staged_planner.go).
+			p, staged, early, perr = s.planFirstStage(planningCtx, planBudget.planner(s.Planner), userInput, in, sessionID, reqs)
+		} else {
+			p, perr = s.planChecked(planningCtx, planBudget.planner(s.Planner), userInput)
+		}
 		planningCut := planCeilingCause(ctx, planningCtx)
 		stopPlanningReserve()
 		// Cut by the reserve — even a plan that arrived on the edge has no time
 		// left to run, and dispatching it would start steps it cannot finish.
 		if planningCut != nil {
 			return s.planningOutOfTime(in, "planning", planningCut, sessionID, spendBase), nil
+		}
+		if early != nil {
+			s.stampSpend(early.Metadata, sessionID, spendBase)
+			return early, nil
 		}
 		if perr != nil {
 			if errors.Is(perr, llm.ErrSpendCeiling) {
@@ -778,6 +852,24 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 	if resumed != nil {
 		executionID = resumed.Run.ID
 	}
+	// ADR-0145 D1: the run's ledger provenance (ordering conversation, turn, owner)
+	// rides the plan ctx to the step-output choke point; the executor reads its own
+	// run's entries acting for that owner.
+	var ledgerScope *domain.TagPredicate
+	if s.ledgerOn() {
+		prov := s.runProvenance(ctx, in.GetMetadata(), executionID, sessionID)
+		ctx = domain.WithLedgerProvenance(ctx, prov)
+		ledgerScope = runLedgerScope(prov.Owner)
+	}
+	// ADR-0145 D5: the checklist is stored in the run ledger; stepRun is the run id
+	// the CURRENT stage's leases and ledger entries are bound to (a coverage stage
+	// is a new plan with its own step indices, so it gets its own run id).
+	stepRun := executionID
+	if reqs != nil {
+		s.recordChecklist(ctx, reqs)
+		reqs.exec = executer.NewStepRequirements(reqs.checklist, reqs.coverage, s.stepActionsOf(&stepRun))
+	}
+
 	// The run's side-effecting tool calls are recorded from here until Execute returns,
 	// and reported in its result (plan_actions.go).
 	s.planActions.begin(executionID)
@@ -899,8 +991,16 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 				// — so the ADR-0139 D8 ownership check applies to this lease too.
 				r.BindLease(tokenID, domain.LeaseBinding{
 					SessionID: sessionID,
-					RunID:     executionID,
+					RunID:     stepRun,
 					StepIndex: i,
+					// ADR-0145 D14: the request facts the tool executor's guards
+					// need (nil unless execution.tools.request_guards).
+					Guard: s.stepGuard(stepCtx, step, reqs, executionID),
+					// ADR-0145 D14: how deep this run is in worker delegations.
+					DelegationDepth: domain.DelegationDepthFrom(stepCtx),
+					// The executor's plan generation (0 until a replan): the step's
+					// ledger entries record under domain.LedgerRunID(run, generation).
+					PlanGeneration: domain.PlanGenerationFrom(stepCtx),
 				})
 			}
 			// Revoked with the ordering chat turn, even once Completed (turn_delegation.go).
@@ -1090,53 +1190,80 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 
 	eventWriter := s.taskEventWriter()
 
-	executor := &executer.DAGExecutor{
-		EventWriter:         eventWriter,
-		EnqueueVerification: s.EnqueueVerification,
-		// ADR-0049 §A2.2 / ADR-0095: the plan lifecycle (BeginExperience,
-		// RecordPlanOutcome). Self-gates on RecordOutcomes
-		// (execution.experience_records_enabled), default TRUE since the owner
-		// decision of 2026-07-28. The raw step-result path (RecordExecution) that
-		// used to sit behind this recorder was deleted 2026-11-05.
-		MemoryRecorder:         s.MemoryAgent,
-		Surprise:               s.SurpriseOracle, // ADR-0049 A2.3: may be nil ⇒ surprise unknown (-1)
-		WorkspaceStage:         s.WorkspaceStage,
-		ArtifactLister:         s.ArtifactMeta, // ADR-0034: surface prior-step artifacts (scope-filtered)
-		Authz:                  s.Authz,        // ADR-0085: artifact discovery filter (may be nil)
-		LLMGateway:             s.LLMGateway,
-		Observer:               s.TelemetryObserver,
-		ContentStore:           s.ContentStore,
-		StepCache:              s.StepCache,
-		UseGlobalWorkspace:     s.ExecCfg.Workspace.UseGlobalWorkspace,
-		ContextRefSnippetChars: s.ExecCfg.Plan.ContextRefSnippetChars,
-		// The one bound on upstream results handed to a dependent step (agent or
-		// thought), domain.StepDependency; <= 0 reads as the config default.
-		DependencyResultsMaxChars: dependencyResultsMaxChars(s.ExecCfg.Plan.DependencyResultsMaxChars),
-		// A thought step is an in-kernel model call on no step lease: in flight
-		// for the plan idle watchdog while it runs.
-		ThoughtFn: inFlightStepFunc(planAct, executer.StepFunc(s.thoughtFn(plan))),
-		// No mid-plan checkpoint gate: the LLM checkpoint validator and the executor
-		// gate that consumed it were deleted (ADR-0139 D10 / owner Q5). It failed open
-		// and trusted the agent's self-report; verification is the async
-		// VerificationWorker's job.
-		ReplanHandler:          replanner,
-		MaxReplanAttempts:      s.ExecCfg.Plan.MaxReplanAttempts,
-		MaxFanOutWidth:         s.ExecCfg.Plan.MaxFanOutWidth,
-		FanOutConcurrency:      s.ExecCfg.Plan.FanOutConcurrency, // fan-out children in parallel, dedicated instances (T-20261107)
-		Calendar:               s.Calendar,
-		MaxPlanCost:            s.ExecCfg.Plan.MaxPlanCost,
-		DefaultInputCostPer1M:  s.Manager.DefaultInputCostPer1M,
-		DefaultOutputCostPer1M: s.Manager.DefaultOutputCostPer1M,
-		CurrentSessionID:       sessionID,
-		CurrentRunID:           executionID,
-		// Close the task when its plan finishes. Nothing else did: `completed`
-		// was only ever set by the operator's explicit command, so finished work
-		// stayed open indefinitely.
-		SessionCloser:     s.SessionMgr,
-		CheckpointStore:   s.executorCheckpointStore(),
-		StepCachePolicies: s.ExecCfg.Plan.StepCachePolicies,
-		EventBus:          s.EventBus, // ADR-0047 0047-17: PlanStateChanged → operator feed
+	// newExecutor builds the DAG executor of one stage (the first plan, then each
+	// ADR-0145 coverage stage) over the run id its steps are bound to.
+	newExecutor := func(runID domain.RunID) *executer.DAGExecutor {
+		executor := &executer.DAGExecutor{
+			EventWriter:         eventWriter,
+			EnqueueVerification: s.EnqueueVerification,
+			// ADR-0049 §A2.2 / ADR-0095: the plan lifecycle (BeginExperience,
+			// RecordPlanOutcome). Self-gates on RecordOutcomes
+			// (execution.experience_records_enabled), default TRUE since the owner
+			// decision of 2026-07-28. The raw step-result path (RecordExecution) that
+			// used to sit behind this recorder was deleted 2026-11-05.
+			MemoryRecorder:         s.MemoryAgent,
+			Surprise:               s.SurpriseOracle, // ADR-0049 A2.3: may be nil ⇒ surprise unknown (-1)
+			WorkspaceStage:         s.WorkspaceStage,
+			ArtifactLister:         s.ArtifactMeta, // ADR-0034: surface prior-step artifacts (scope-filtered)
+			Authz:                  s.Authz,        // ADR-0085: artifact discovery filter (may be nil)
+			LLMGateway:             s.LLMGateway,
+			Observer:               s.TelemetryObserver,
+			ContentStore:           s.planContentStore(),
+			StepCache:              s.StepCache,
+			UseGlobalWorkspace:     s.ExecCfg.Workspace.UseGlobalWorkspace,
+			ContextRefSnippetChars: s.ExecCfg.Plan.ContextRefSnippetChars,
+			// The one bound on upstream results handed to a dependent step (agent or
+			// thought), domain.StepDependency; <= 0 reads as the config default.
+			DependencyResultsMaxChars: dependencyResultsMaxChars(s.ExecCfg.Plan.DependencyResultsMaxChars),
+			// A thought step is an in-kernel model call on no step lease: in flight
+			// for the plan idle watchdog while it runs.
+			ThoughtFn: inFlightStepFunc(planAct, executer.StepFunc(s.thoughtFn(plan))),
+			// No mid-plan checkpoint gate: the LLM checkpoint validator and the executor
+			// gate that consumed it were deleted (ADR-0139 D10 / owner Q5). It failed open
+			// and trusted the agent's self-report; verification is the async
+			// VerificationWorker's job.
+			ReplanHandler:          replanner,
+			MaxReplanAttempts:      s.ExecCfg.Plan.MaxReplanAttempts,
+			MaxFanOutWidth:         s.ExecCfg.Plan.MaxFanOutWidth,
+			FanOutConcurrency:      s.ExecCfg.Plan.FanOutConcurrency, // fan-out children in parallel, dedicated instances (T-20261107)
+			Calendar:               s.Calendar,
+			MaxPlanCost:            s.ExecCfg.Plan.MaxPlanCost,
+			DefaultInputCostPer1M:  s.Manager.DefaultInputCostPer1M,
+			DefaultOutputCostPer1M: s.Manager.DefaultOutputCostPer1M,
+			CurrentSessionID:       sessionID,
+			CurrentRunID:           runID,
+			// Close the task when its plan finishes. Nothing else did: `completed`
+			// was only ever set by the operator's explicit command, so finished work
+			// stayed open indefinitely.
+			SessionCloser:     s.SessionMgr,
+			CheckpointStore:   s.executorCheckpointStore(),
+			StepCachePolicies: s.ExecCfg.Plan.StepCachePolicies,
+			EventBus:          s.EventBus, // ADR-0047 0047-17: PlanStateChanged → operator feed
+			// ADR-0145 D9: only read-only steps are cached, for this TTL (step_cache_wiring.go).
+			EffectVocabulary:    stepCacheVocabulary(s.ExecCfg.Capability),
+			StepCacheDefaultTTL: stepCacheDefaultTTL(s.ExecCfg.Plan),
+			RunTracer:           s.RunTracer, // ADR-0145 D10: step-output spans
+		}
+
+		if s.ledgerOn() {
+			// ADR-0145 D1: the step-output choke point and the dependants' read path.
+			executor.Ledger = s.Ledger.Writer
+			executor.LedgerReader = s.Ledger.Reader
+			executor.LedgerReadScope = ledgerScope
+		}
+		if reqs != nil {
+			// ADR-0145 D5/D6: item keys, envelope validation, code-decided coverage.
+			executor.Requirements = reqs.exec
+			// No mid-stage replan under the checklist: replan_cap emits no answers,
+			// inputs or for_each, so its steps would answer nothing. A failed step
+			// ends the stage; the next coverage stage plans the open items
+			// (runStages; T-20261108-replanner-replan-cap-does-not-emit-answers).
+			executor.ReplanHandler = nil
+			executor.MaxReplanAttempts = 0
+		}
+		return executor
 	}
+	executor := newExecutor(executionID)
 
 	// ADR-0047 0047-18: register this live execution's controls so the operator
 	// PauseSession/ResumeSession commands can steer it; deregister on completion.
@@ -1165,6 +1292,17 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			cause = llm.ErrSpendCeiling
 		}
 		return nil, s.endPlanAtSpendCeiling(sessionID, executionID, spendBase, cause)
+	}
+
+	// ADR-0145 D5.5: under the checklist the first stage stopping part-way is a
+	// stage result like any other: what it settled stands and the coverage stages
+	// below plan the rest (staged_planner.go stageStoppedPartway). A plan ceiling
+	// and an effect-check refusal keep their own endings.
+	if reqs != nil && err != nil && ceilingCause == nil {
+		if m, ok := stageStoppedPartway(err); ok {
+			slog.Info("ADR-0145 D5.5: the first stage stopped part-way; its results stand", "run", executionID, "err", err)
+			masterCtx, err = m, nil
+		}
 	}
 
 	if err != nil {
@@ -1196,11 +1334,23 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 			if j := planActionsJSON(actions); j != "" {
 				partialErr.Context[PlanActionsKey] = j
 			}
+			payload := partialPlanPayload(partialFailure(partialErr, ceilingCause), partialErr.Report, actions)
+			if reqs != nil {
+				// ADR-0145 D5: the plan stopped; every open item closes as a gap.
+				reqs.coverage.ObserveActions(actions, s.effectsOfTool())
+				reqs.coverage.CloseGaps("the plan stopped before it finished")
+				payload += "\n\n" + coverageText(reqs)
+			}
+			// ADR-0145 D8: the structured result rides the metadata, the text stays the payload.
+			s.stampExecuteResult(partialErr.Context, payload, executionID, sessionID, actions, partialErr, ceilingCause)
+			if reqs != nil {
+				s.attachCoverage(ctx, partialErr.Context, reqs)
+			}
 			return &pb.Handoff{
 				Id:        in.Id,
 				FromAgent: "orchestrator",
 				ToAgent:   "user",
-				Payload:   &pb.Object{Data: []byte(partialPlanPayload(partialFailure(partialErr, ceilingCause), partialErr.Report, actions))},
+				Payload:   &pb.Object{Data: []byte(payload)},
 				Metadata:  partialErr.Context,
 			}, nil
 		}
@@ -1216,10 +1366,27 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 
 	// Experiential memory removed: no procedural-memory (Hippocampus) plan write-back.
 
+	// ADR-0145 D5.5 / D11: code decides whether the request is done, stage by
+	// stage (coverage_stages.go runStages): settled, stalled, the runaway cap, or —
+	// under the staged planner — the planner having nothing more, or a question
+	// for the person.
+	var allActions []domain.PlanAction
+	var askBack *domain.InputRequired
+	if reqs != nil {
+		out := s.runStages(stageLoop{reqs: reqs, executionID: executionID, stepRun: &stepRun, ctx: ctx, planCtx: planCtx,
+			userInput: userInput, initialCtx: initialCtx, newExecutor: newExecutor,
+			stepFn: activityStepFunc(planAct, executer.StepFunc(stepFn)), staged: staged}, masterCtx)
+		allActions, askBack = out.actions, out.askBack
+		masterCtx[finalResultKey] = strings.Join(out.reports, "\n\n") + "\n\n" + coverageText(reqs)
+	}
+
 	// The executor's report of EVERY final step (not only the last in topological
 	// order), followed by the kernel's ledger of the side-effecting calls the plan
 	// made (T-20261107-plan-result-is-only-the-last-topo-step-a-plan).
 	actions := s.planActions.snapshot(executionID)
+	if reqs != nil {
+		actions = allActions // every stage's calls (the first stage's included)
+	}
 	finalResult := planResultPayload(masterCtx[finalResultKey], actions)
 	delete(masterCtx, finalResultKey)
 	if j := planActionsJSON(actions); j != "" {
@@ -1229,6 +1396,13 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (*pb.Handoff, erro
 		masterCtx["_session_id"] = string(sessionID)
 	}
 	s.stampSpend(masterCtx, sessionID, spendBase)
+	// ADR-0145 D8: the structured result rides the metadata, the text stays the payload.
+	s.stampExecuteResult(masterCtx, finalResult, executionID, sessionID, actions, nil, nil)
+	if reqs != nil {
+		s.attachCoverage(ctx, masterCtx, reqs)
+	}
+	// ADR-0145 D5a: a later stage asked the person (staged_planner.go).
+	attachInputRequired(masterCtx, askBack)
 
 	return &pb.Handoff{
 		Id:        in.Id,
@@ -1255,6 +1429,16 @@ func (s *Server) GetContextNode(ctx context.Context, req *pb.ContextNodeRequest)
 	// so the "owned by its session" gate was really "owned by its step" and an agent
 	// could not read back its own offload from an earlier step.
 	ctx = s.withCallerSession(ctx)
+
+	// ADR-0145 D1: a ledger reference (a step result handed to a dependant, a
+	// large tool result) resolves through the ledger's ENFORCED reader under the
+	// caller's own predicate — never through the content store.
+	if domain.IsLedgerID(req.Cid) {
+		if !s.ledgerOn() {
+			return &pb.ContextNodeResponse{Cid: req.Cid}, nil
+		}
+		return s.readLedgerNode(ctx, req.Cid), nil
+	}
 
 	// ADR-0048 D5: drill-down serves ONLY ContentStore CIDs (transient working-memory
 	// / tool-result blobs). The former pgvector fallback returned raw LTM document

@@ -61,6 +61,10 @@ type Provider struct {
 	// per-call-site wrapping to forget (ADR-0042 + ADR-0019).
 	traceWrapper func(gen domain.Generator, subsystem string) domain.Generator
 
+	// runTracer records every call's full request and response as a JSONL span
+	// (ADR-0145 D10, run_trace_layer.go). Nil = off (execution.trace.enabled).
+	runTracer domain.RunTracer
+
 	// sem bounds the number of concurrent in-flight LLM calls across EVERY call path
 	// (agents + planner + verifier + agentic-retrieval + consolidator). Nil ⇒ no cap.
 	// It composes with the LLMGateway CONWIP semaphore (which only gates agent calls);
@@ -270,6 +274,11 @@ func (p *Provider) decorate(id string, client domain.Generator, tracePurpose, me
 	// Health-recording (inner) so the breaker sees outcomes; tracing (outer) so
 	// every call is observed by purpose. Tracing is a no-op when unset.
 	gen := newHealthGenerator(id, client, p.breaker)
+	// ADR-0145 D10: the run trace sits inside the schema-repair layer, so each
+	// attempt is its own span with exactly what the model was sent.
+	if p.runTracer != nil {
+		gen = &runTraceGenerator{inner: gen, tracer: p.runTracer, id: id, purpose: tracePurpose}
+	}
 	if p.traceWrapper != nil {
 		gen = p.traceWrapped(gen, tracePurpose)
 	}

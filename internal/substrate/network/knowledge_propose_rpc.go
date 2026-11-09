@@ -53,13 +53,6 @@ func (s *Server) ProposeKnowledge(ctx context.Context, req *pb.ProposeKnowledgeR
 	if agentID == "" {
 		return nil, status.Error(codes.PermissionDenied, "no agent identity is bound to this lease")
 	}
-	// A subagent writes to memory only with its parent's grant (ADR-0139 D12) — the
-	// same rule ProposeMemoryNote applies; "propose_knowledge" is in the default
-	// subagent memory-write toolset, so a parent can hand the right on.
-	if b.IsChild() && !b.MemoryWriteGranted {
-		return &pb.ProposeKnowledgeResponse{Accepted: false,
-			Detail: "a subagent may propose knowledge only when its parent granted memory write"}, nil
-	}
 	by := domain.AgentPrincipal(agentID)
 	var forPerson domain.PrincipalRef
 	if s.RunPrincipal != nil {

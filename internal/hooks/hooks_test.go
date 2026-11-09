@@ -237,7 +237,7 @@ func TestRedactOutput_PostModelRedactsTheFinalAnswer(t *testing.T) {
 
 // T-20261106-post-model-hooks-do-not-guard-control-verb: redact_output at post_model
 // redacts the guarded control-verb arguments (yield_subgoal's intent,
-// spawn_subagent's objective) with the configured defaults, and leaves an
+// delegate_to_planner's task) with the configured defaults, and leaves an
 // unguarded call alone.
 func TestRedactOutput_PostModelRedactsGuardedControlVerbArgs(t *testing.T) {
 	t.Parallel()
@@ -253,7 +253,7 @@ func TestRedactOutput_PostModelRedactsGuardedControlVerbArgs(t *testing.T) {
 	}
 	calls := []domain.ModelToolCall{
 		{ID: "c0", Name: "yield_subgoal", Arguments: []byte(`{"intent":"fetch with sk-sub-1","capability_hint":"web"}`)},
-		{ID: "c1", Name: "spawn_subagent", Arguments: []byte(`{"objective":"use sk-obj-2 to log in","mode":"isolated"}`)},
+		{ID: "c1", Name: "delegate_to_planner", Arguments: []byte(`{"task":"use sk-obj-2 to log in","mode":"isolated"}`)},
 		{ID: "c2", Name: "write_file", Arguments: []byte(`{"body":"sk-other-3"}`)},
 	}
 	ev := domain.HookEvent{Point: domain.HookPostModel}
@@ -269,19 +269,19 @@ func TestRedactOutput_PostModelRedactsGuardedControlVerbArgs(t *testing.T) {
 	if y["intent"] != "fetch with [REDACTED]" || y["capability_hint"] != "web" {
 		t.Errorf("yield_subgoal args = %s", out.ToolCalls[0].Args)
 	}
-	if s["objective"] != "use [REDACTED] to log in" || s["mode"] != "isolated" {
-		t.Errorf("spawn_subagent args = %s", out.ToolCalls[1].Args)
+	if s["task"] != "use [REDACTED] to log in" || s["mode"] != "isolated" {
+		t.Errorf("delegate_to_planner args = %s", out.ToolCalls[1].Args)
 	}
 	if got := string(out.ToolCalls[2].Args); got != `{"body":"sk-other-3"}` {
 		t.Errorf("an unguarded call was rewritten: %s", got)
 	}
 
 	// An unreadable guarded argument fails closed: the reply is refused.
-	bad := []domain.ModelToolCall{{ID: "c0", Name: "spawn_subagent", Arguments: []byte(`{"objective": 42}`)}}
+	bad := []domain.ModelToolCall{{ID: "c0", Name: "delegate_to_planner", Arguments: []byte(`{"task": 42}`)}}
 	ev.ToolCalls, ev.FinalAnswer = domain.HookReplyView(bad, "final_answer", "answer")
 	ev.GuardedArgs = domain.HookGuardedView(bad, "final_answer", "answer", config.HooksConfig{}.GuardedArgumentList())
 	if out := c.Run(context.Background(), ev); out.Verdict != domain.HookDeny {
-		t.Fatalf("unreadable objective: %+v", out)
+		t.Fatalf("unreadable task: %+v", out)
 	}
 }
 

@@ -33,6 +33,22 @@ What it does with the profile:
   same globs as a hard ceiling, also under ``tools_unrestricted``
   (app/profile_agents.go, domain/tool_ceiling.go).
 
+**Composed mode (ADR-0145 D12).** ``--composed`` runs the one runtime the kernel
+composes plan-step workers on (``execution.workers.composed``). It has no profile: for
+each step the kernel sends the composition (``_composition``: the professions' skills,
+the tools inside their allowlists AND the person's scope, the brief, the input ledger
+references) and binds it to the step's lease, where it is enforced. A step's declared
+effects no longer narrow its tools (ADR-0145 D14).
+
+**More work than the step (ADR-0145 D14).** A worker that finds work beyond its step
+hands it to the planner with the local tool ``delegate_to_planner``, exactly as the chat
+agent delegates: a kernel Execute carrying the step's lease, so the kernel plans it,
+applies the person's access and approvals, bounds the nesting
+(``execution.plan.max_worker_delegation_depth``) and records it. There are no subagents
+(``spawn_subagent`` was removed) and an agent never addresses another agent
+(decisions/all-agent-communication-passes-through-the-kernel.md). The role and rules are developer-written (``prompts/composed_worker``); the
+composition is data. Without a composition the runtime refuses the task.
+
 **How the kernel sees this file.** The kernel registers one agent per valid profile
 (internal/storage/profile_discovery.go): id = the profile name, this file as the exec
 path, launched with ``--profile <name> --agent-id <id>``, described and routed by the
@@ -48,8 +64,10 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from cambrian_agent_sdk import CognitiveAgent
+from cambrian_agent_sdk import AgentResult, CognitiveAgent, tool
 from cambrian_agent_sdk._logging import configure_logging
+from cambrian_agent_sdk.composition import ComposedScopedSubstrate, composition_from_task
+from cambrian_agent_sdk.prompt_library import PromptLibrary, sections
 from cambrian_agent_sdk.profiles import (
     InvalidProfile,
     Profile,
@@ -108,7 +126,48 @@ def resolve_agent_id(profile: Profile, argv: Optional[Sequence[str]] = None) -> 
             or profile.name)
 
 
-class WorkerAgent(CognitiveAgent):
+class PlannerDelegation:
+    """ADR-0145 D14: the worker's way to hand extra work to the planner.
+
+    The same kernel path the chat agent's ``delegate_to_planner`` takes (Execute with
+    the caller's lease), so all delegation passes through the kernel. A refusal or a
+    failure comes back as such, never as a finished result."""
+
+    _step_lease = ""
+
+    def _bind_step(self, task) -> None:
+        self._step_lease = getattr(task, "session_token_id", "") or ""
+
+    @tool
+    def delegate_to_planner(self, task: str):
+        """Hand work that is outside your step to the planner and return its result: a
+        separate lookup, record or action your step needs but was not asked to do. Pass
+        the whole sub-task with every limit the person set. Do not use it for your own
+        step's work, and never to repeat a write that already happened."""
+        task = (task or "").strip()
+        if not task:
+            return {"error": "delegate_to_planner needs the sub-task to hand over."}
+        substrate = getattr(self, "substrate", None)
+        if substrate is None or not hasattr(substrate, "execute"):
+            return {"error": "delegation is not available here (no kernel connection)."}
+        try:
+            result = substrate.execute(task, session_token_id=self._step_lease)
+        except Exception as exc:  # noqa: BLE001 — a refusal is data for the loop, never a success
+            details = getattr(exc, "details", None)
+            detail = details() if callable(details) else str(exc)
+            _log.warning("worker_delegation_refused", extra={"detail": str(detail)[:300]})
+            # A dict with "error": the loop records it as a failed call (its status,
+            # the recurrence gate), never as a finished result.
+            return {"error": f"denied: the planner did not take the work: {detail}"}
+        text = str(getattr(result, "text", result) or "")
+        failed = (getattr(result, "partial", False) or getattr(result, "timed_out", False)
+                  or getattr(result, "error", "") or getattr(result, "failed_step", -1) not in (-1, None))
+        if failed:
+            why = getattr(result, "error", "") or "it stopped before every step completed"
+            return {"error": f"the delegated work did not finish ({why}). What it reported: {text}"}
+        return text
+
+class WorkerAgent(PlannerDelegation, CognitiveAgent):
     """A CognitiveAgent configured entirely by a :class:`Profile`."""
 
     #: Seed the FULL granted menu (query="") and let the allowlist bound it, instead of
@@ -116,11 +175,8 @@ class WorkerAgent(CognitiveAgent):
     #: afterwards, could leave a profile with none of its own tools on the menu.
     seed_tools_full = True
 
-    #: ADR-0139 D12 / D14 / D13: a worker may spawn subagents, write principal memory
-    #: notes and propose skills (owner-recorded default, ticket
-    #: T-20261105-adr-0139-d12-in-agent-subagents-via-spawn). Each verb is offered only
-    #: when the kernel serves it; the kernel bounds what a child may do.
-    allow_subagents = True
+    #: ADR-0139 D14 / D13: a worker may write principal memory notes and propose
+    #: skills. Each verb is offered only when the kernel serves it.
     allow_memory_note_writes = True
     allow_skill_proposals = True
 
@@ -146,6 +202,7 @@ class WorkerAgent(CognitiveAgent):
         self._substrate = value
 
     def think(self, task, *, max_memory_queries=None, max_tool_rounds=None):
+        self._bind_step(task)
         if max_tool_rounds is None:
             max_tool_rounds = self.profile.max_tool_rounds
         return super().think(task, max_memory_queries=max_memory_queries,
@@ -155,10 +212,85 @@ class WorkerAgent(CognitiveAgent):
         return manifest_json(self.profile)
 
 
-def build_agent(argv: Optional[Sequence[str]] = None) -> WorkerAgent:
+#: The agent id a bare ``--composed`` launch runs as (config.DefaultComposedRuntimeAgentID).
+COMPOSED_AGENT_ID = "composed_worker"
+
+
+def prompts_dir() -> Path:
+    """``$CAMBRIAN_PROMPTS_DIR``, else the nearest ancestor ``prompts/`` holding the
+    composed worker's prompt (the repo and the image both put prompts/ beside agents/)."""
+    env = os.environ.get("CAMBRIAN_PROMPTS_DIR", "").strip()
+    if env:
+        return Path(env)
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "prompts" / "composed_worker" / "v1.md").is_file():
+            return parent / "prompts"
+    raise RuntimeError("worker_agent --composed: cannot find the kernel prompt library; set CAMBRIAN_PROMPTS_DIR")
+
+
+class ComposedWorkerAgent(PlannerDelegation, CognitiveAgent):
+    """The ADR-0145 D12 runtime: one ReAct loop, composed per step by the kernel."""
+
+    #: The composition is the menu: the kernel serves it whole for the step's lease.
+    seed_tools_full = True
+    allow_memory_note_writes = True
+    allow_skill_proposals = True
+
+    def __init__(self, agent_id: str = COMPOSED_AGENT_ID, prompts: Optional[Path] = None) -> None:
+        super().__init__(agent_id, description="Composed worker runtime (ADR-0145 D12).")
+        text = sections(PromptLibrary.load(prompts or prompts_dir()).get("composed_worker"))
+        # Developer-written and fixed for every step: the system block stays cacheable.
+        self.role = text["role"].render()
+        self.constraints = [ln for ln in text["rules"].render().splitlines() if ln.strip()]
+        self._substrate = None
+
+    @property
+    def substrate(self):
+        return self._substrate
+
+    @substrate.setter
+    def substrate(self, value) -> None:
+        if value is not None and not isinstance(value, ComposedScopedSubstrate):
+            value = ComposedScopedSubstrate(value)
+        self._substrate = value
+
+    def run(self, task):
+        comp = composition_from_task(task)
+        if comp is None:
+            # The kernel never dispatches to the runtime without one; a task without
+            # it gets no tools and no skills here or kernel-side, so refuse plainly.
+            _log.error("composed_worker_no_composition", extra={"agent_id": self.agent_id})
+            # A refusal, never a finished result (ADR-0145 D14).
+            return AgentResult.from_text(
+                "This worker runs only steps the kernel composed; the task carried no composition.",
+                type="error")
+        self._bind_step(task)
+        if self._substrate is not None:
+            self._substrate.bind(comp, getattr(task, "session_token_id", "") or "")
+        _log.info("composed_worker_step", extra={
+            "agent_id": self.agent_id, "professions": list(comp.professions),
+            "skills": len(comp.skills), "tools": len(comp.tools), "step": comp.step})
+        try:
+            return self.think(task)
+        finally:
+            if self._substrate is not None:
+                self._substrate.bind(None, "")
+
+
+def is_composed(argv: Optional[Sequence[str]] = None) -> bool:
+    argv = sys.argv if argv is None else argv
+    return "--composed" in argv
+
+
+def build_agent(argv: Optional[Sequence[str]] = None) -> CognitiveAgent:
     """Resolve and validate the profile, then construct the agent. An invalid profile
     raises :class:`InvalidProfile`; the caller (``__main__``) exits non-zero on it, so a
-    bad profile fails at boot, loudly, instead of serving with a guessed configuration."""
+    bad profile fails at boot, loudly, instead of serving with a guessed configuration.
+    ``--composed`` builds the ADR-0145 D12 runtime instead (no profile)."""
+    if is_composed(argv):
+        a = sys.argv if argv is None else argv
+        return ComposedWorkerAgent(_flag(a, "--agent-id") or os.environ.get("CAMBRIAN_AGENT_ID", "").strip()
+                                   or COMPOSED_AGENT_ID)
     name = resolve_profile_name(argv)
     sdir = skills_dir()
     if sdir is None:
@@ -180,8 +312,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"worker_agent: {exc}", file=sys.stderr)
         return 2
     configure_logging(agent_id=agent.agent_id)
-    _log.info("worker_agent_start", extra={"profile": agent.profile.name,
-                                           "agent_id": agent.agent_id})
+    _log.info("worker_agent_start", extra={
+        "profile": agent.profile.name if isinstance(agent, WorkerAgent) else "(composed)",
+        "agent_id": agent.agent_id})
     agent.serve()
     return 0
 

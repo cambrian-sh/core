@@ -128,6 +128,30 @@ func (v *StepEffectVocabulary) Known(name string) bool {
 	return ok
 }
 
+// ReadOnly reports whether name is a vocabulary term that only observes: a class
+// term whose classes are all `read`, or a refined term that refines `read`. An
+// unknown term is not read-only (fail closed). The step cache serves and stores
+// only steps whose every declared effect is read-only (ADR-0145 D9).
+func (v *StepEffectVocabulary) ReadOnly(name string) bool {
+	if v == nil {
+		return false
+	}
+	i, ok := v.index[NormalizeStepEffect(name)]
+	if !ok {
+		return false
+	}
+	t := v.terms[i]
+	if t.Refines != "" {
+		return t.Refines == EffectRead
+	}
+	for _, c := range t.Classes {
+		if c != EffectRead {
+			return false
+		}
+	}
+	return len(t.Classes) > 0
+}
+
 // NormalizeStepEffect is the only normalisation an emitted effect gets.
 func NormalizeStepEffect(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 

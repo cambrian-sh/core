@@ -256,3 +256,34 @@ func TestMCPHandler_OverBudgetCallDenied(t *testing.T) {
 		t.Errorf("deny reason should be budget_exhausted, got %q", resp.DenyReason)
 	}
 }
+
+// ADR-0145 D14: an MCP tool-level error is a FAILED call, never a result the
+// kernel would record as done.
+func TestMCPHandler_ToolErrorIsAFailedCall(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "stub", Version: "1.0.0"}, nil)
+	mcpsdk.AddTool(server, &mcpsdk.Tool{Name: "draft", Description: "save a draft"},
+		func(_ context.Context, _ *mcpsdk.CallToolRequest, in echoIn) (*mcpsdk.CallToolResult, echoOut, error) {
+			return &mcpsdk.CallToolResult{IsError: true, Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "mailbox is read-only"}}}, echoOut{}, nil
+		})
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	ss, err := server.Connect(ctx, serverT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ss.Close() })
+	sess, err := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "cambrian", Version: "1.0.0"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	reg := domain.NewInMemoryToolRegistry()
+	reg.Register(domain.SystemTool{Name: "mcp:stub/draft", Effects: []domain.ToolEffect{domain.EffectWrite}})
+	exec := &domain.ToolExecutor{Registry: reg, MCPHandler: &Handler{Sessions: staticSource{"stub": sess}},
+		InlineThreshold: 1 << 20, Unrestricted: true}
+	resp := exec.Execute(ctx, domain.ToolCallRequest{AgentID: "a", ToolName: "mcp:stub/draft", ArgsJSON: []byte(`{"value":"x"}`)})
+	if resp.Error == "" || !strings.Contains(resp.Error, "mailbox is read-only") || len(resp.ResultJSON) != 0 {
+		t.Fatalf("tool error reported as a result: %+v", resp)
+	}
+}

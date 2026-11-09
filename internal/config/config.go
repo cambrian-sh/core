@@ -113,6 +113,13 @@ type PlanConfig struct {
 	// both. Default: 2.
 	MaxReplanAttempts int `json:"max_replan_attempts"`
 
+	// MaxWorkerDelegationDepth bounds how deep plan runs may nest when a worker
+	// hands extra work to the planner through Execute (ADR-0145 D14, which
+	// replaced spawn_subagent): a worker of a run at depth d may delegate only
+	// while d+1 <= this value. Default 1 (a worker of a delegated run may not
+	// delegate again). 0 refuses every worker delegation.
+	MaxWorkerDelegationDepth int `json:"max_worker_delegation_depth"`
+
 	// MaxFanOutWidth caps how many concrete children a parametric fan-out step
 	// (ADR-0079 R2) may expand into from a discovered set. Exceeding it is a hard,
 	// structured error routed to replan — never a silent truncation. Default: 64;
@@ -122,7 +129,7 @@ type PlanConfig struct {
 	// FanOutConcurrency bounds how many children of fan-out expansions run at once in
 	// one plan. An agent process serves one Execute at a time (ADR-0036 D2), so above 1
 	// each child is served on a dedicated instance of its agent, booted for that child
-	// and evicted after it (the ADR-0139 D12 subagent mechanism) — the bound is then
+	// and evicted after it (domain.WithDedicatedInstance) — the bound is then
 	// real parallelism, paid for with one agent boot per child. 0 or 1 runs children one
 	// at a time on the agent's shared instance (the effective behaviour before
 	// 2026-11-07, when they queued on that process). Default: 4
@@ -166,6 +173,116 @@ type PlanConfig struct {
 	// matches a registered policy. Zero or absent = use heuristic.
 	// Example: {"thought": 2, "tool": 168}
 	StepCachePolicies map[string]int `json:"step_cache_policies,omitempty"`
+
+	// StepCacheDefaultTTLMinutes is how long a cacheable step's result is kept when
+	// no step_cache_policies entry names it (ADR-0145 D9). It replaced a hardcoded
+	// 7 days: a week-old read replayed into a new plan is stale data presented as
+	// fresh. Only read-only steps are cached at all, and the key is scoped to the
+	// session and principal (executer/step_cache_guard.go). Default 60; 0 = 60.
+	StepCacheDefaultTTLMinutes int `json:"step_cache_default_ttl_minutes"`
+
+	// ChecklistEnabled turns on the ADR-0145 phase-2 evidence pipeline for planned
+	// work (T-20261108-adr-0145-phase-2-requirement-checklist-with). Default false.
+	// On: before planning, the kernel derives a requirement checklist from the
+	// user's own words (D5; one model call, quotes checked in code); the planner
+	// arm is planner_cap v7 (steps carry answers, inputs and for_each); every agent
+	// step that answers items returns the fixed answer envelope, which the executor
+	// validates against the ledger (D6: types, evidence from the step's own tool
+	// calls or inputs, IDs/numbers/dates present in the cited entry; one repair);
+	// item statuses are decided in code; and the run continues in coverage stages
+	// until every item is final or a stage makes no progress (D5.5), when the open
+	// items close as gaps. Requires execution.ledger.enabled. Off: the single plan
+	// with no checklist, planner_cap v6 (the legacy path).
+	ChecklistEnabled bool `json:"checklist_enabled,omitempty"`
+	// CoverageMaxStages is the runaway cap on coverage stages per request (the
+	// no-budget decision: termination is by progress; this only stops a loop that
+	// keeps "progressing" for ever). 0 = 25.
+	CoverageMaxStages int `json:"coverage_max_stages,omitempty"`
+	// PlanValidator replaces the DAG-only plan check with the ADR-0145 D7 validator
+	// (structure, bindings, fan-out, coverage of checklist items, constraints,
+	// effects, one write per target, date literals). A rejected plan goes back to
+	// the planner with the structured violations. Default false (DAG-only check).
+	PlanValidator bool `json:"plan_validator,omitempty"`
+	// PlanValidatorMaxRepairs bounds the planner repair rounds after a D7 rejection
+	// (very high per the no-budget decision; a runaway guard). 0 = 25.
+	PlanValidatorMaxRepairs int `json:"plan_validator_max_repairs,omitempty"`
+
+	// StagedPlanner turns the coverage stages into the ADR-0145 D11 staged
+	// planner (requires checklist_enabled; network/coverage_stages.go). Default
+	// false. On: every planner call is planner_cap v8 + planner_input v4 with a
+	// short fresh context (the checklist with item statuses, a compact index of the
+	// run's ledger, the earlier stages' step results as references, today) and
+	// returns the next stage, a question for the person or nothing more; the
+	// planner never declares done (code does, D5); it may read the ledger between
+	// its calls (ledger_get / ledger_find under the caller's read predicate);
+	// thought steps are retired. Off: the phase-2 coverage stages (planner_cap v7).
+	StagedPlanner bool `json:"staged_planner,omitempty"`
+	// StageLedgerReadRounds bounds the ledger read rounds of one staged planner
+	// call (a runaway guard per the no-budget decision). 0 = 25.
+	StageLedgerReadRounds int `json:"stage_ledger_read_rounds,omitempty"`
+	// StageLedgerIndexEntries bounds the entries listed in the staged planner's
+	// ledger index (the planner reads the rest with ledger_find). 0 = 200.
+	StageLedgerIndexEntries int `json:"stage_ledger_index_entries,omitempty"`
+	// AskBackEnabled lets a delegated run from a CONVERSATION stop and ask the
+	// person when the staged planner returns a question (ADR-0145 D5a.2): the
+	// Execute result carries domain.InputRequired and the chat agent asks. Default
+	// false: the planner is told it cannot ask and proceeds with stated assumptions.
+	AskBackEnabled bool `json:"ask_back_enabled,omitempty"`
+	// AskBackMaxRounds is the limit on ask-back rounds per request (D5a.4); after
+	// it the plan proceeds with stated assumptions. 0 = 5.
+	AskBackMaxRounds int `json:"ask_back_max_rounds,omitempty"`
+	// AskBackOtherPaths is what a run that cannot ask (no conversation: ingress,
+	// reactive and scheduled work, agent-to-agent Execute, the benchmark
+	// transport) does when the planner has a question (D5a.3): "proceed" (default,
+	// today's behaviour: re-plan with stated assumptions) or "report" (stop and
+	// return the questions as input required, for a caller that handles it).
+	AskBackOtherPaths string `json:"ask_back_other_paths,omitempty"`
+}
+
+// StageReadRounds is StageLedgerReadRounds with its default applied.
+func (c PlanConfig) StageReadRounds() int {
+	if c.StageLedgerReadRounds > 0 {
+		return c.StageLedgerReadRounds
+	}
+	return 25
+}
+
+// StageIndexEntries is StageLedgerIndexEntries with its default applied.
+func (c PlanConfig) StageIndexEntries() int {
+	if c.StageLedgerIndexEntries > 0 {
+		return c.StageLedgerIndexEntries
+	}
+	return 200
+}
+
+// AskBackRounds is AskBackMaxRounds with its default applied.
+func (c PlanConfig) AskBackRounds() int {
+	if c.AskBackMaxRounds > 0 {
+		return c.AskBackMaxRounds
+	}
+	return 5
+}
+
+// AskBackReportsOnOtherPaths reports whether a run that cannot ask stops and
+// reports the planner's questions instead of proceeding with assumptions.
+func (c PlanConfig) AskBackReportsOnOtherPaths() bool {
+	return strings.EqualFold(strings.TrimSpace(c.AskBackOtherPaths), "report")
+}
+
+// CoverageStages is CoverageMaxStages with its default applied.
+func (c PlanConfig) CoverageStages() int {
+	if c.CoverageMaxStages > 0 {
+		return c.CoverageMaxStages
+	}
+	return 25
+}
+
+// ValidatorRepairs is PlanValidatorMaxRepairs with its default applied.
+func (c PlanConfig) ValidatorRepairs() int {
+	if c.PlanValidatorMaxRepairs > 0 {
+		return c.PlanValidatorMaxRepairs
+	}
+	return 25
 }
 
 // GatekeeperConfig — Gatekeeper admission scoring: candidate cap and the w1..w4 signal weights.
@@ -1349,6 +1466,127 @@ type ToolsConfig struct {
 	// through the SEC-01 allowlist (owner rule 2026-08-11: knobs never depend
 	// on .env; the env layer is for secrets and deployment overrides).
 	ToolMenuK int `json:"tool_menu_k,omitempty"`
+
+	// RequestGuards turns on the ADR-0145 D14 request-tied guards in the tool
+	// executor (the per-step effect menu they replace was removed): a checklist
+	// constraint refuses every tool of the classes it rules out
+	// (ConstraintClasses); a target the request already wrote cannot be written
+	// again in that request, whatever the wording (WriteTargets); a step's envelope
+	// repair turn never re-runs a write the step executed; a side-effecting call on
+	// a step that answers no open write or document item goes to approval with a
+	// "not part of the request" notice; and an identical call a step already had
+	// refused is answered from a per-step record without running again. The
+	// constraint and unrequested-write guards need execution.plan.checklist_enabled.
+	// Default false.
+	RequestGuards bool `json:"request_guards,omitempty"`
+	// WriteTargets says how a side-effecting call's target is read from its
+	// arguments (D14 per-target write record). nil: DefaultWriteTargets.
+	WriteTargets *WriteTargetsConfig `json:"write_targets,omitempty"`
+	// ConstraintClasses maps each term a checklist constraint may forbid to the
+	// ADR-0086 tool classes it rules out (D14: forbids: send ⇒ every egress tool).
+	// The checklist deriver offers exactly these terms. nil: DefaultConstraintClasses.
+	ConstraintClasses map[string][]string `json:"constraint_classes,omitempty"`
+	// ValidateArgs validates every tool call's arguments against the tool's JSON
+	// Schema at the dispatch boundary (ADR-0145 D9), coercing what is
+	// unambiguous (a JSON-encoded array or object sent as a string, a numeric or
+	// boolean string) and refusing the rest with an error the model can correct.
+	// Default false.
+	ValidateArgs bool `json:"validate_args,omitempty"`
+	// IdempotentWrites gives every side-effecting tool call made by a plan step an
+	// idempotency key, hash(run, step, tool, canonical arguments) (ADR-0145 D9): a
+	// retry of the same call returns the stored result instead of running again.
+	// Default false.
+	IdempotentWrites bool `json:"idempotent_writes,omitempty"`
+	// CalcTools serves the ADR-0145 D4 calculation tools (internal/calc) as
+	// kernel tools on every agent's menu (no grant needed):
+	// calc_date_window (windows from the kernel calendar), calc_date_add and
+	// calc_working_days (working days with the organisation's holiday calendar,
+	// organisation.holidays / organisation.weekend), calc_aggregate (sum, count,
+	// min, max, avg, group-by and filters over ledger rows by reference) and
+	// calc_compare (threshold and rule comparisons). With the run ledger on, every
+	// result is recorded as a computed ledger entry with its inputs, so a figure
+	// can cite it. Default false.
+	CalcTools bool `json:"calc_tools,omitempty"`
+}
+
+// WriteTargetsConfig is execution.tools.write_targets (ADR-0145 D14): rules
+// matched in order by tool base-name globs, each naming the argument fields that
+// identify what the write reaches; DefaultKeys apply when no rule names a field
+// the call carries. A call none of them names has no target.
+type WriteTargetsConfig struct {
+	Rules       []WriteTargetRuleConfig `json:"rules,omitempty"`
+	DefaultKeys []string                `json:"default_keys,omitempty"`
+}
+
+// WriteTargetRuleConfig is one write-target rule.
+type WriteTargetRuleConfig struct {
+	Tools []string `json:"tools"`
+	Keys  []string `json:"keys"`
+}
+
+// DefaultWriteTargets is the shipped rule set: messages are identified by their
+// recipients; everything else by the record it acts on (a case, request, ticket,
+// account, draft or file). Containers (a project, a folder, a channel list) are
+// not targets: two different issues in one project are two writes.
+func DefaultWriteTargets() WriteTargetsConfig {
+	return WriteTargetsConfig{
+		Rules: []WriteTargetRuleConfig{
+			{Tools: []string{"*mail*", "*email*", "*message*", "*reply*", "*sms*", "*notify*"},
+				Keys: []string{"to", "recipient", "recipients", "email", "emails", "address", "phone", "phone_number", "chat_id", "user_id"}},
+		},
+		DefaultKeys: []string{"ref", "reference", "reference_id", "case_id", "case_ref", "case_number", "request_id",
+			"request_ref", "record_id", "record_ref", "ticket_id", "issue_key", "issue_id", "order_id", "invoice_id",
+			"account_id", "customer_id", "contact_id", "draft_id", "document_id", "doc_id", "event_id", "message_id",
+			"path", "file_path", "to", "recipient", "recipients", "id"},
+	}
+}
+
+// Domain converts the config (nil ⇒ the defaults) to the executor's rule set.
+func (c *WriteTargetsConfig) Domain() *domain.WriteTargets {
+	src := DefaultWriteTargets()
+	if c != nil {
+		src = *c
+	}
+	out := &domain.WriteTargets{DefaultKeys: append([]string(nil), src.DefaultKeys...)}
+	for _, r := range src.Rules {
+		out.Rules = append(out.Rules, domain.WriteTargetRule{Tools: append([]string(nil), r.Tools...), Keys: append([]string(nil), r.Keys...)})
+	}
+	return out
+}
+
+// DefaultConstraintClasses is the shipped constraint vocabulary: the five ADR-0086
+// classes, plus the words people use for them.
+func DefaultConstraintClasses() map[string][]string {
+	return map[string][]string{
+		"read": {"read"}, "write": {"write"}, "egress": {"egress"}, "spend": {"spend"}, "admin": {"admin"},
+		"send": {"egress"}, "publish": {"egress"}, "post": {"egress"},
+		"change": {"write"}, "delete": {"write"},
+		"pay": {"spend"}, "purchase": {"spend"},
+	}
+}
+
+// ConstraintTerms returns execution.tools.constraint_classes (nil ⇒ the defaults)
+// as tool classes, validated: an unknown class is an error.
+func (c ToolsConfig) ConstraintTerms() (map[string][]domain.ToolEffect, error) {
+	src := c.ConstraintClasses
+	if src == nil {
+		src = DefaultConstraintClasses()
+	}
+	out := make(map[string][]domain.ToolEffect, len(src))
+	for term, classes := range src {
+		n := domain.NormalizeStepEffect(term)
+		if n == "" {
+			return nil, fmt.Errorf("execution.tools.constraint_classes: empty term")
+		}
+		for _, cl := range classes {
+			e := domain.ToolEffect(strings.ToLower(strings.TrimSpace(cl)))
+			if !domain.ValidToolEffect(e) {
+				return nil, fmt.Errorf("execution.tools.constraint_classes[%q]: %q is not a tool class (read, write, egress, spend, admin)", term, cl)
+			}
+			out[n] = append(out[n], e)
+		}
+	}
+	return out, nil
 }
 
 // ChatConfig — Chat session worker pool.
@@ -1403,6 +1641,45 @@ type ChatConfig struct {
 	// with a warning at startup. Default "en".
 	// T-20261107-chat-failure-texts-are-english-only-in-non.
 	ChatDefaultLanguage string `json:"chat_default_language,omitempty"`
+
+	// ADR-0145 phase 3, the chat side (D2, D3, D5a, D8). Every key is off by default
+	// and read once at the composition root (app/chat_grounding.go); defaults and
+	// validation in chat_grounding.go. All but transcript_budget_tokens without a
+	// summary need the run ledger (execution.ledger.enabled).
+	//
+	// TranscriptBudgetTokens bounds the verbatim transcript a turn carries by
+	// estimated tokens (D2.1) instead of the fixed 40-message window; when older
+	// messages fall outside it, a summary call condenses them (D2.3, kept in the
+	// ledger). 0 = the legacy 40-message window, no summary.
+	TranscriptBudgetTokens int `json:"transcript_budget_tokens,omitempty"`
+	// TurnIndex records an index entry per delegated turn (run ids, checklist and
+	// statuses, key values by name with ledger refs, actions with their ids) and
+	// shows the chat agent a compact index of recent turns (D2.2).
+	TurnIndex bool `json:"turn_index,omitempty"`
+	// TurnIndexTurns is how many recent delegated turns the index shows. 0 ⇒ 8.
+	TurnIndexTurns int `json:"turn_index_turns,omitempty"`
+	// GroundedReply makes the chat agent write the reply over the structured
+	// Execute evidence with evidence ids inline (D8 composer).
+	GroundedReply bool `json:"grounded_reply,omitempty"`
+	// ReplyCheck is the deterministic D8 reply check: "" or "off", "observe" (log
+	// and count violations, change nothing) or "enforce" (one retry naming the
+	// uncited values, then the gaps are stated).
+	ReplyCheck string `json:"reply_check,omitempty"`
+	// ReplyCheckMinInteger: bare integers below it are not checked (counts, list
+	// positions). 0 ⇒ 10.
+	ReplyCheckMinInteger int `json:"reply_check_min_integer,omitempty"`
+	// ReplyCheckMaxEntries bounds how many of the turn's ledger entries the check
+	// reads. 0 ⇒ 200.
+	ReplyCheckMaxEntries int `json:"reply_check_max_entries,omitempty"`
+	// DelegationRule turns on the D3 chat-side routing rule (an organisation
+	// question with no evidence is delegated, never answered from general
+	// knowledge) and sends the person's message verbatim with EVERY delegation.
+	DelegationRule bool `json:"delegation_rule,omitempty"`
+	// LedgerTools offers the chat agent ledger_get / ledger_find for follow-ups.
+	LedgerTools bool `json:"ledger_tools,omitempty"`
+	// AskBack saves a delegated request's "input required" questions with the turn
+	// and resumes from them on the next message (D5a, conversation path only).
+	AskBack bool `json:"ask_back,omitempty"`
 }
 
 // AgentsConfig — Agent process runtime: resource caps, env passthrough and daemon restart policy.
@@ -1454,49 +1731,6 @@ type AgentsConfig struct {
 	// (full-jitter) restart backoff. Defaults 1000 / 30000.
 	DaemonRestartBaseBackoffMs int `json:"daemon_restart_base_backoff_ms"`
 	DaemonRestartMaxBackoffMs  int `json:"daemon_restart_max_backoff_ms"`
-
-	// ── ADR-0139 D12: in-agent subagents (Orchestrator.SpawnSubagent) ──
-	// Every limit below is enforced by the kernel (internal/substrate/network/
-	// subagent.go), never by the agent: a child is a separate kernel dispatch on
-	// its own lease that rolls up to the parent's ROOT lease.
-
-	// SubagentMaxDepth is how deep a spawn chain may go, counted from the lease
-	// chain (a root step lease is depth 0, its child depth 1). A spawn that would
-	// exceed it ends with exit_reason DEPTH and never runs. Default 1 (D12):
-	// children may not spawn grandchildren. 0 disables spawning entirely.
-	SubagentMaxDepth int `json:"subagent_max_depth"`
-	// SubagentMaxConcurrency is how many children of one ROOT lease may run at
-	// once. A spawn beyond it waits for a slot until its timeout, then ends with
-	// TIMEOUT. Default 4 (D12). <= 0 is read as 1.
-	SubagentMaxConcurrency int `json:"subagent_max_concurrency"`
-	// SubagentTreeMaxToolRounds is the tree-wide iteration cap: the tool calls
-	// all children of one root may make together. A child's max_tool_rounds is
-	// clamped to what remains. Default 64. <= 0 = no tree cap.
-	SubagentTreeMaxToolRounds int `json:"subagent_tree_max_tool_rounds"`
-	// SubagentDefaultMaxToolRounds is a child's tool-call cap when the spawn
-	// asks for 0. Default 16.
-	SubagentDefaultMaxToolRounds int `json:"subagent_default_max_tool_rounds"`
-	// SubagentTreeTokenBudget caps the model tokens all children of one root may
-	// spend together. 0 (default) = no tree cap beyond the session spend ceiling
-	// (ADR-0131), which still binds every child call. A spawn's token_budget is
-	// clamped to what remains.
-	SubagentTreeTokenBudget int `json:"subagent_tree_token_budget"`
-	// SubagentDefaultTimeoutMs is a child's wall-clock limit when the spawn asks
-	// for 0. Always clamped to the parent call's own deadline. Default 300000.
-	SubagentDefaultTimeoutMs int `json:"subagent_default_timeout_ms"`
-	// SubagentResultMaxChars caps the child's text / structured_json in the
-	// result; a longer answer is cut and marked truncated. Default 16000.
-	SubagentResultMaxChars int `json:"subagent_result_max_chars"`
-	// SubagentWithheldTools are the tool-name globs a "*" toolset does NOT pass
-	// to a child (D12: no clarify, memory write or messaging unless granted). A
-	// child gets one only when the spawn names it explicitly.
-	SubagentWithheldTools []string `json:"subagent_withheld_tools"`
-	// SubagentMemoryWriteTools are the names (globs) that grant a child memory
-	// write when the spawn's toolset names them explicitly: the lease is then
-	// bound MemoryWriteGranted, which the D14 notes service reads. They are
-	// control verbs, not registry tools, so they are not checked against the
-	// parent's tool menu — only against the parent's own memory-write right.
-	SubagentMemoryWriteTools []string `json:"subagent_memory_write_tools"`
 }
 
 // SupervisionConfig — Supervision statistics: aggregation cadence, EWMA/latency windows and histogram sizing.
@@ -1680,6 +1914,19 @@ type ExecutionConfig struct {
 	// (T-20261106-the-assistant-cannot-set-up-a-recurring-task): the approval window
 	// and the per-principal caps (schedules.go).
 	Schedules SchedulesConfig `json:"schedules"`
+
+	// Ledger is the ADR-0145 D1 run ledger: every tool result and step output,
+	// scope-enforced, read by reference (ledger.go). Default off.
+	Ledger LedgerConfig `json:"ledger"`
+
+	// Trace is the ADR-0145 D10 decision-level run trace: model calls, tool calls
+	// and step outputs as OTel GenAI spans in JSONL files (trace.go). Default off.
+	Trace TraceConfig `json:"trace"`
+
+	// Workers is ADR-0145 D12 (plan steps run by a worker the kernel composes from
+	// one runtime, skills and bounded tools) and the D3 SDK evidence re-prompt
+	// (workers.go). Default off.
+	Workers WorkersConfig `json:"workers"`
 }
 
 // Hook kinds accepted in execution.hooks.entries[].kind (ADR-0139 D11).
@@ -1720,7 +1967,7 @@ type HookConfig struct {
 	// Kind: deny_args_regex | require_approval | redact_output | command.
 	Kind string `json:"kind"`
 	// Points the hook attaches to (pre_tool, post_tool, pre_model, post_model,
-	// pre_compact, post_compact, run_start, run_end, subagent_start, subagent_end).
+	// pre_compact, post_compact, run_start, run_end).
 	// Empty ⇒ the kind's natural point: deny_args_regex and require_approval →
 	// pre_tool, redact_output → post_tool. A command hook must name its points.
 	Points []string `json:"points,omitempty"`
@@ -1752,7 +1999,7 @@ type HookConfig struct {
 	// the OS essentials. Secret-shaped names are stripped regardless (procenv).
 	Env []string `json:"env,omitempty"`
 	// Agents scopes the hook to events of these agent ids (fnmatch globs, as
-	// Tools). Applies at every point: tool, model and subagent events all carry
+	// Tools). Applies at every point: tool and model events all carry
 	// the acting agent. Empty = every event; a non-empty list never matches an
 	// event with no agent (an organ call such as the planner's has none).
 	Agents []string `json:"agents,omitempty"`
@@ -1775,12 +2022,12 @@ type GuardedArgumentConfig struct {
 // DefaultGuardedArguments are the SDK's control-verb arguments that leave a model
 // reply without passing the ToolExecutor (sdk/cambrian_agent_sdk/react.py
 // _YIELD_TOOL_DEF and _KERNEL_VERB_DEFS): a subgoal's intent becomes a plan step,
-// a spawn's objective a child's task, a memory note's content and a proposed
-// skill's body are persisted. spawn_subagent's context_summary is NOT a model
-// argument (the SDK builds it for the SpawnSubagent RPC), so it is not here.
+// a worker's delegate_to_planner task becomes a new Execute request (ADR-0145
+// D14, which replaced spawn_subagent), a memory note's content and a proposed
+// skill's body are persisted.
 var DefaultGuardedArguments = []GuardedArgumentConfig{
 	{Tool: "yield_subgoal", Arg: "intent"},
-	{Tool: "spawn_subagent", Arg: "objective"},
+	{Tool: "delegate_to_planner", Arg: "task"},
 	{Tool: "propose_memory_note", Arg: "content"},
 	{Tool: "propose_skill", Arg: "skill_md"},
 }
@@ -2720,6 +2967,7 @@ func DefaultConfig() *Config {
 				FallbackConfidenceThreshold: 0.4,
 				FallbackEnabled:             true,
 				MaxReplanAttempts:           2,
+				MaxWorkerDelegationDepth:    1,
 				MaxFanOutWidth:              64,
 				FanOutConcurrency:           4,
 				MaxPartialContextBytes:      51200,
@@ -2729,6 +2977,7 @@ func DefaultConfig() *Config {
 				BudgetExhaustionAlarmRate:   0.05,
 				MinStepEnergy:               256,
 				MaxStepEnergy:               32768,
+				StepCacheDefaultTTLMinutes:  60, // ADR-0145 D9; was a hardcoded 7 days
 			},
 			Gatekeeper: GatekeeperConfig{
 				GatekeeperMaxCandidates: 5,
@@ -2952,20 +3201,6 @@ func DefaultConfig() *Config {
 				// T-20261102-kg-extractor-cold-start-drops-the-first-kg: 10 s killed
 				// the kg_extractor (spaCy load) while the kernel booted its agents.
 				AgentBootTimeoutMs: 30000,
-				// ADR-0139 D12 subagent limits (depth 1 and concurrency 4 are the
-				// ADR's and the proto's stated defaults).
-				SubagentMaxDepth:             1,
-				SubagentMaxConcurrency:       4,
-				SubagentTreeMaxToolRounds:    64,
-				SubagentDefaultMaxToolRounds: 16,
-				SubagentDefaultTimeoutMs:     300000,
-				SubagentResultMaxChars:       16000,
-				SubagentWithheldTools: []string{
-					"clarify", "clarify_*", "ask_user*",
-					"memory_write*", "memory_note*", "propose_memory_note", "propose_knowledge", "ingest_memory*",
-					"send_message*", "message_*", "*_send_message", "notify*",
-				},
-				SubagentMemoryWriteTools: []string{"memory_write*", "memory_note*", "propose_memory_note", "propose_knowledge"},
 			},
 			Tools: ToolsConfig{
 				// T-20261107-chat-agent-re-delegates-after-a-deterministic (part 2).
@@ -3631,6 +3866,9 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	if c.Chat.ChatStallTimeoutSeconds < 0 {
 		errs = append(errs, "chat_stall_timeout_seconds must be >= 0 (0 uses the default)")
 	}
+	if c.Plan.StepCacheDefaultTTLMinutes < 0 {
+		errs = append(errs, "step_cache_default_ttl_minutes must be >= 0 (0 uses the default, 60)")
+	}
 	if c.Plan.FanOutConcurrency < 0 {
 		errs = append(errs, "fan_out_concurrency must be >= 0 (0 and 1 = fan-out children one at a time)")
 	}
@@ -3784,6 +4022,30 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	errs = append(errs, c.StepOutput.validate()...)
 	errs = append(errs, c.Skills.validate()...)
 	errs = append(errs, c.Schedules.validate()...)
+	errs = append(errs, c.Ledger.validate()...)
+	errs = append(errs, c.Chat.validateGrounding(c.Ledger.Enabled)...)
+	errs = append(errs, c.Workers.validate(c.Ledger.Enabled)...)
+	if c.Plan.ChecklistEnabled && !c.Ledger.Enabled {
+		errs = append(errs, "execution.plan.checklist_enabled requires execution.ledger.enabled: item evidence is read from the run ledger")
+	}
+	if c.Plan.CoverageMaxStages < 0 || c.Plan.PlanValidatorMaxRepairs < 0 {
+		errs = append(errs, "execution.plan.coverage_max_stages and plan_validator_max_repairs must be >= 0")
+	}
+	if c.Plan.StagedPlanner && !c.Plan.ChecklistEnabled {
+		errs = append(errs, "execution.plan.staged_planner requires execution.plan.checklist_enabled: stages are decided from item statuses")
+	}
+	if c.Plan.AskBackEnabled && !c.Plan.StagedPlanner {
+		errs = append(errs, "execution.plan.ask_back_enabled requires execution.plan.staged_planner: the staged planner is what asks")
+	}
+	if c.Plan.StageLedgerReadRounds < 0 || c.Plan.StageLedgerIndexEntries < 0 || c.Plan.AskBackMaxRounds < 0 {
+		errs = append(errs, "execution.plan.stage_ledger_read_rounds, stage_ledger_index_entries and ask_back_max_rounds must be >= 0")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Plan.AskBackOtherPaths)) {
+	case "", "proceed", "report":
+	default:
+		errs = append(errs, fmt.Sprintf("execution.plan.ask_back_other_paths %q must be proceed or report", c.Plan.AskBackOtherPaths))
+	}
+	errs = append(errs, c.Trace.validate()...)
 	if c.Facts.CardinalityMinVotes < 0 {
 		errs = append(errs, "facts.cardinality_min_votes must be >= 0 (0 = the default 3)")
 	}

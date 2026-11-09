@@ -39,6 +39,7 @@ import (
 	"github.com/cambrian-sh/core/internal/integrations"
 	"github.com/cambrian-sh/core/internal/kernel"
 	"github.com/cambrian-sh/core/internal/knowledgecommit"
+	"github.com/cambrian-sh/core/internal/ledger"
 	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/memory/vault"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
@@ -204,6 +205,9 @@ type Kernel struct {
 	// deterministic curator worker (nil unless execution.skills.curator.enabled).
 	SkillLifecycle *skilllifecycle.Service
 	SkillCurator   *skilllifecycle.Curator
+	// LedgerSweeper is the ADR-0145 D1 run ledger's retention sweeper; nil when
+	// execution.ledger.enabled is off. Started with the kernel, drained by Shutdown.
+	LedgerSweeper *ledger.Sweeper
 	// SkillAccess is per-agent skill access (decisions/skill-access-grants.md):
 	// profile skills + grants. nil only if it could not be built.
 	SkillAccess *skillaccess.Service
@@ -381,6 +385,9 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 	}
 	if k.SkillCurator != nil {
 		k.SkillCurator.Stop() // ADR-0139 D13
+	}
+	if k.LedgerSweeper != nil {
+		k.LedgerSweeper.Stop() // ADR-0145 D1
 	}
 	if k.ArtifactVault != nil {
 		_ = k.ArtifactVault.Close()
@@ -749,6 +756,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if opts.TraceWrapper != nil {
 		llmProvider.SetTraceWrapper(opts.TraceWrapper)
 	}
+	// ADR-0145 D10: the decision-level run trace (execution.trace.*, default off).
+	runTracer := wireRunTrace(cfg.Execution.Trace)
+	if runTracer != nil {
+		llmProvider.SetRunTracer(runTracer)
+	}
 
 	// Each organ Acquires a purpose-bound generator (live failover + tracing per call).
 	memoryGen := llmProvider.GeneratorFor(domain.PurposeMemory)
@@ -766,7 +778,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Agent stack v2: the built-in source also registers one agent per declarative
 	// profile (agents/profiles/*.yaml), validated against the skills this kernel
 	// serves (the same "skills" directory LoadRegistry reads below).
-	builtinSource := newBuiltinFilesystemAgentSource(cfg.Metabolism.AgentsDir).withSkillTools(profileSkillIndex("skills"))
+	builtinSource := newBuiltinFilesystemAgentSource(cfg.Metabolism.AgentsDir).withSkillTools(profileSkillIndex("skills")).
+		withComposedRuntime(composedRuntimeID(cfg.Execution.Workers)) // ADR-0145 D12, "" when off
 	registeredAgents := registerAgentSources(ctx, reg, append([]AgentSource{builtinSource}, composed.agentSources...))
 	profiles := collectProfileAgents(registeredAgents)
 	reconcileProfileAgents(ctx, reg, registeredAgents)
@@ -1755,6 +1768,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 	cambrianServer := kernel.ProvideServer(cfg.Execution, mem, aw, meta, watcher, llmProvider, sessionMgr, llmGateway, observer, storeHandle.ContentStore, storeHandle.StepCache, signalRcv, watchHandler)
 	cambrianServer.Delegations = turnDelegations
+	cambrianServer.RunTracer = runTracer // ADR-0145 D10: step outputs + kernel tool calls
 	// Orchestrator/ProposeKnowledge: candidates and commit requests (knowledgeBridge above).
 	cambrianServer.Knowledge = knowledgeBridge
 	// ADR-0139 amendment 2026-11-06: the live step-output stream (step_output_wiring.go).
@@ -2255,20 +2269,27 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// window is 0 (disabled).
 		History: domain.NewActionHistory(time.Duration(cfg.Execution.Tools.DuplicateNoticeWindowMinutes)*time.Minute, nil),
 	}
-	// ADR-0139 D12: in-agent subagents. One service is the SpawnSubagent runtime,
-	// the per-lease tool ceiling the executor enforces on child leases, and the
-	// gateway's per-call gate for child token budgets — wired here together so a
-	// child can never run with its ceiling or its budget missing.
-	subagents := subnetwork.NewSubagentService(cfg.Execution.Agents, hookChain)
-	cambrianServer.Subagents = subagents
-	cambrianServer.ToolExecutor.LeaseCeiling = subagents
-	llmGateway.SetLeaseGate(subagents)
+	// ADR-0145 D1: the run ledger (execution.ledger, off by default): every tool
+	// result and step output recorded, scope-enforced, read by reference. Threaded
+	// to the executor, the server and the turn end here; nil sweeper when off.
+	ledgerSweeper := wireLedger(ctx, cfg.Execution.Ledger, vec.Pool(), artifactVault, reg, authorizer,
+		cfg.Privacy.PrivateByDefaultOn(), cambrianServer, turnDelegations)
 	// Effect-checked dispatch (T-20261106-kernel-does-not-check-that-a-declared): an
 	// agent's effects are derived from the tools the executor would let it call
 	// (grants × profile ceiling × live registry), so routing and enforcement read one
 	// source. Wired here because the executor is built after the gatekeeper; until it
 	// is set, a step that declares effects is refused, never routed unchecked.
 	wireEffectCheck(cfg.Execution.Capability, cambrianServer.ToolExecutor, meta.Gatekeeper, aw.Planner)
+	// ADR-0145 phase 2 / D14: checklist, plan validator, request-tied guards,
+	// argument validation and idempotent writes (all default off), after the ledger above.
+	var plannerGen domain.Generator
+	if aw.Planner != nil {
+		plannerGen = aw.Planner
+	}
+	wireEvidencePipeline(cfg.Execution, cambrianServer, plannerGen)
+	// ADR-0145 D4: calculation tools (execution.tools.calc_tools, default off),
+	// after the ledger so they read and record through it.
+	wireCalcTools(cfg, cambrianServer, cambrianServer.Calendar)
 	// The chat front desk is told which work systems the planner's agents can reach,
 	// from the planner's own live tool menu (the one wireEffectCheck just set), so a
 	// work-system ask is delegated instead of answered "I have no tool for that"
@@ -2279,6 +2300,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if chatTurns != nil {
 		chatTurns.SetCalendar(calendar)
 	}
+	// ADR-0145 phase 3, the chat side (execution.chat grounding keys, default off):
+	// after the ledger, which holds the turn state and the reply check's evidence.
+	wireChatGrounding(cfg.Execution.Chat, chatTurns, cambrianServer, turnDelegations, plannerGen, runTracer)
 	cambrianServer.ApprovalHub = toolApproval
 	// Principal-owned recurring tasks: approval-gated through this same hub
 	// (kind "schedule"), stored by the premium schedule store a plugin registered
@@ -2436,6 +2460,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	if skillAccess != nil {
 		cambrianServer.SkillAccess = skillAccess // typed-nil guard: only a built service
 	}
+	// ADR-0145 D12: plan steps on workers the kernel composes (execution.workers.composed,
+	// default off), after the ledger, the effect vocabulary and skill access are wired.
+	wireComposedWorkers(cfg.Execution, cambrianServer, meta.Dispatcher, reg)
 	skillLifecycle, skillCurator := wireSkillLifecycle(ctx, cfg.Execution.Skills, vec.Pool(), skillReg, skillIndexer, discoveredSkills, proposerGrants)
 	if skillLifecycle != nil {
 		cambrianServer.SkillLifecycle = skillLifecycle // typed-nil guard: only a built service
@@ -2639,6 +2666,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		CircadianRhythm:    circadianRhythm,
 		SkillLifecycle:     skillLifecycle,
 		SkillCurator:       skillCurator,
+		LedgerSweeper:      ledgerSweeper,
 		SkillAccess:        skillAccess,
 		ArtifactVault:      artifactVault,
 		EventBus:           eventBus,
@@ -2683,6 +2711,11 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	// off by default). Non-blocking; drained by Shutdown.
 	if k.SkillCurator != nil {
 		k.SkillCurator.Start(ctx)
+	}
+
+	// ADR-0145 D1: the run ledger's retention sweeper (execution.ledger.enabled).
+	if k.LedgerSweeper != nil {
+		k.LedgerSweeper.Start(ctx)
 	}
 
 	// ADR-0141: the outbound-credential provider (premium accounts), built and

@@ -17,6 +17,9 @@ type stepDeps struct {
 	// key: the manifest is bounded, the cache key must not be (two results that share
 	// a preview are still different inputs).
 	results map[string]string
+	// refs are the ledger ids of the completed upstream outputs (ADR-0145 D6: a
+	// step may cite its inputs).
+	refs []string
 }
 
 // buildStepDependencies lists the results of step's DependsOn steps, in DependsOn
@@ -36,12 +39,27 @@ type stepDeps struct {
 // "summarise what you found" step, or any root step of a replanned plan, is otherwise
 // blind to everything the run already did.
 func buildStepDependencies(master map[string]string, plan *domain.ExecutionPlan, stepIdx, budget int, prior *priorPlanResults) stepDeps {
+	return buildStepDependenciesFrom(master, plan, stepIdx, budget, prior, nil)
+}
+
+// dependencyResolver reads a completed upstream step's result by its reference
+// (step_N_cid). With the run ledger on (ADR-0145 D1) it is the ledger read, and
+// it is the ONLY source of a dependant's content: the masterContext string is a
+// view, not the source of truth. nil means the legacy path (masterContext content).
+type dependencyResolver func(ref string) (string, error)
+
+// buildStepDependenciesFrom is buildStepDependencies with the content of each
+// completed dependency read through resolve when it is non-nil. A dependency the
+// resolver cannot read is listed as unavailable with the reason, never silently
+// replaced by the in-memory string.
+func buildStepDependenciesFrom(master map[string]string, plan *domain.ExecutionPlan, stepIdx, budget int, prior *priorPlanResults, resolve dependencyResolver) stepDeps {
 	step := plan.Steps[stepIdx]
 	if len(step.DependsOn) == 0 {
 		return prior.forRootStep(stepIdx, budget)
 	}
 	deps := make([]domain.StepDependency, 0, len(step.DependsOn))
 	results := make(map[string]string, len(step.DependsOn))
+	var refs []string
 	for _, idx := range step.DependsOn {
 		dep := domain.StepDependency{Step: idx}
 		if idx >= 0 && idx < len(plan.Steps) {
@@ -59,6 +77,21 @@ func buildStepDependencies(master map[string]string, plan *domain.ExecutionPlan,
 			dep.Content = res
 			dep.Bytes = len(res)
 			dep.CID = master[fmt.Sprintf("step_%d_cid", idx)]
+			if domain.IsLedgerID(dep.CID) {
+				refs = append(refs, dep.CID)
+			}
+			if resolve != nil {
+				content, err := resolve(dep.CID)
+				if err != nil {
+					dep.Status = domain.StepDependencyUnavailable
+					dep.Content, dep.Bytes = "", 0
+					dep.Error = err.Error()
+					slog.Warn("ADR-0145: upstream result not readable from the ledger", "step", stepIdx, "dependency", idx, "err", err)
+				} else {
+					dep.Content, dep.Bytes = content, len(content)
+					res = content
+				}
+			}
 		}
 		results[key] = dep.Status + "\x00" + res
 		deps = append(deps, dep)
@@ -71,7 +104,7 @@ func buildStepDependencies(master map[string]string, plan *domain.ExecutionPlan,
 		slog.Error("step dependencies not encoded; the step runs without its upstream results",
 			"step", stepIdx, "err", err)
 	}
-	return stepDeps{manifest: manifest, results: results}
+	return stepDeps{manifest: manifest, results: results, refs: refs}
 }
 
 // stepFailure is the failed step of a plan being swapped out, if any.

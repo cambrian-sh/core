@@ -48,11 +48,9 @@ func (s *Server) notesCaller(ctx context.Context, leaseField string) (memorynote
 		return memorynotes.Principal{}, "", status.Error(codes.PermissionDenied, "lease is missing, foreign or expired")
 	}
 	p := memorynotes.Principal{
-		AgentID:            b.AgentID,
-		Child:              b.IsChild(),
-		MemoryWriteGranted: b.MemoryWriteGranted,
-		Session:            b.SessionID,
-		ActedBy:            b.ActedBy,
+		AgentID: b.AgentID,
+		Session: b.SessionID,
+		ActedBy: b.ActedBy,
 	}
 	if p.AgentID == "" {
 		p.AgentID, _ = callerAgentIdentity(ctx)

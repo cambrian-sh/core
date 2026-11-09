@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync"
@@ -56,6 +57,61 @@ type TurnDelegations struct {
 	ended   map[string]time.Time
 	revoked map[domain.LeaseID]time.Time
 	now     func() time.Time
+	// onTurnEnd runs once per EndTurn, after the turn's work is cancelled: the
+	// run ledger's scratch cleanup (ADR-0145 D1, scratch lives for the turn). nil ⇒
+	// nothing. Set once at the composition root (SetTurnEndHook), before serving.
+	onTurnEnd func(conversationID, originMessageID string)
+	// results holds the structured result (domain.ExecuteResult) of every run a
+	// turn delegated directly, in completion order, until the turn ends: the chat
+	// lane reads them kernel-side (TurnResults) for the reply check, the turn index
+	// and ask-back (ADR-0145 D2/D5a/D8), instead of trusting the agent to relay them.
+	results map[string][]domain.ExecuteResult
+}
+
+// TurnResults returns the structured results of the runs the turn delegated
+// directly, in the order they finished (ADR-0145 D8). Nested plans a step agent
+// delegated are not included. Read before EndTurn, which forgets them.
+func (d *TurnDelegations) TurnResults(originMessageID string) []domain.ExecuteResult {
+	if d == nil || originMessageID == "" {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]domain.ExecuteResult(nil), d.results[originMessageID]...)
+}
+
+// SetResult records the run's structured result, read from the Execute
+// response metadata (domain.HandoffKeyExecuteResult). A nested run, a missing or
+// undecodable result, and a run of an ended turn record nothing.
+func (r *DelegatedRun) SetResult(meta map[string]string) {
+	if r == nil || !r.direct || meta == nil || meta[domain.HandoffKeyExecuteResult] == "" {
+		return
+	}
+	var res domain.ExecuteResult
+	if err := json.Unmarshal([]byte(meta[domain.HandoffKeyExecuteResult]), &res); err != nil {
+		slog.Warn("ADR-0145: delegated run result not decodable; the chat lane will not see it", "err", err)
+		return
+	}
+	d := r.reg
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, gone := d.ended[r.origin]; gone {
+		return
+	}
+	if d.results == nil {
+		d.results = map[string][]domain.ExecuteResult{}
+	}
+	d.results[r.origin] = append(d.results[r.origin], res)
+}
+
+// SetTurnEndHook installs the turn-end hook (see onTurnEnd). Composition root only.
+func (d *TurnDelegations) SetTurnEndHook(fn func(conversationID, originMessageID string)) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	d.onTurnEnd = fn
+	d.mu.Unlock()
 }
 
 // tombstoneRetention bounds the ended-turn and revoked-lease tombstones. An hour
@@ -88,6 +144,9 @@ type DelegatedRun struct {
 	// is planning — an in-kernel planner call — and reads as active.
 	runID domain.RunID
 	probe func() time.Time
+	// direct is set when the chat turn itself ordered the run (its lease names the
+	// turn), not a step agent of one of the turn's plans.
+	direct bool
 }
 
 // NewTurnDelegations constructs an empty registry.
@@ -149,7 +208,7 @@ func (d *TurnDelegations) BeginRun(ctx context.Context, binding domain.LeaseBind
 		return ctx, nil, ErrTurnEnded
 	}
 	runCtx, cancel := context.WithCancelCause(ctx)
-	r := &DelegatedRun{reg: d, origin: origin, cancel: cancel}
+	r := &DelegatedRun{reg: d, origin: origin, cancel: cancel, direct: binding.OriginMessageID != ""}
 	tw := d.turnLocked(origin, binding.ConversationID)
 	if tw.conversationID == "" {
 		tw.conversationID = binding.ConversationID
@@ -266,6 +325,8 @@ func (d *TurnDelegations) EndTurn(conversationID, originMessageID string, turnLe
 	}
 	tw := d.turns[originMessageID]
 	delete(d.turns, originMessageID)
+	delete(d.results, originMessageID)
+	hook := d.onTurnEnd
 	var cancels []context.CancelCauseFunc
 	runs := 0
 	if tw != nil {
@@ -283,6 +344,9 @@ func (d *TurnDelegations) EndTurn(conversationID, originMessageID string, turnLe
 	d.mu.Unlock()
 	for _, c := range cancels {
 		c(cause)
+	}
+	if hook != nil {
+		hook(conversationID, originMessageID)
 	}
 	if runs > 0 || len(cancels) > 0 {
 		slog.Warn("chat turn ended; cancelling the work it delegated",

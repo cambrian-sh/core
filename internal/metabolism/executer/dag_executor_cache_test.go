@@ -44,10 +44,10 @@ func TestDAGExecutor_CacheHit_SkipsStepFn(t *testing.T) {
 		getOk: true,
 	}
 
-	ex := &DAGExecutor{StepCache: mc}
+	ex := &DAGExecutor{StepCache: mc, CurrentSessionID: "ses-test"} // ADR-0145 D9: an identified run
 	plan := &domain.ExecutionPlan{
 		Subject: "test plan",
-		Steps:   []domain.Step{{Query: "step 0"}},
+		Steps:   []domain.Step{{Query: "step 0", RequiredEffects: []string{}}}, // no effect: cacheable
 	}
 
 	stepFnCalled := false
@@ -75,10 +75,10 @@ func TestDAGExecutor_CacheHit_SkipsStepFn(t *testing.T) {
 func TestDAGExecutor_CacheMiss_CallsStepFnAndPuts(t *testing.T) {
 	mc := &mockStepCache{getOk: false}
 
-	ex := &DAGExecutor{StepCache: mc}
+	ex := &DAGExecutor{StepCache: mc, CurrentSessionID: "ses-test"} // ADR-0145 D9: an identified run
 	plan := &domain.ExecutionPlan{
 		Subject: "test plan",
-		Steps:   []domain.Step{{Query: "step 0"}},
+		Steps:   []domain.Step{{Query: "step 0", RequiredEffects: []string{}}}, // no effect: cacheable
 	}
 
 	stepFnCalled := false
@@ -109,10 +109,10 @@ func TestDAGExecutor_CacheMiss_CallsStepFnAndPuts(t *testing.T) {
 func TestDAGExecutor_CacheGetError_FallsThrough(t *testing.T) {
 	mc := &mockStepCache{getErr: errors.New("bbolt transient error")}
 
-	ex := &DAGExecutor{StepCache: mc}
+	ex := &DAGExecutor{StepCache: mc, CurrentSessionID: "ses-test"} // ADR-0145 D9: an identified run
 	plan := &domain.ExecutionPlan{
 		Subject: "test plan",
-		Steps:   []domain.Step{{Query: "step 0"}},
+		Steps:   []domain.Step{{Query: "step 0", RequiredEffects: []string{}}}, // no effect: cacheable
 	}
 
 	stepFnCalled := false
@@ -138,7 +138,7 @@ func TestDAGExecutor_NilCache_BackwardCompatible(t *testing.T) {
 	ex := &DAGExecutor{StepCache: nil}
 	plan := &domain.ExecutionPlan{
 		Subject: "test plan",
-		Steps:   []domain.Step{{Query: "step 0"}},
+		Steps:   []domain.Step{{Query: "step 0", RequiredEffects: []string{}}}, // no effect: cacheable
 	}
 
 	result, err := ex.Execute(t.Context(), plan, nil, okStep("plain result", nil))
@@ -163,10 +163,10 @@ func TestDAGExecutor_CacheHit_SkipsLiveStepFn(t *testing.T) {
 		return &domain.Handoff{Payload: &domain.Payload{Data: []byte("live")}}, nil
 	}
 
-	ex := &DAGExecutor{StepCache: mc}
+	ex := &DAGExecutor{StepCache: mc, CurrentSessionID: "ses-test"} // ADR-0145 D9: an identified run
 	plan := &domain.ExecutionPlan{
 		Subject: "test plan",
-		Steps:   []domain.Step{{Query: "step 0"}},
+		Steps:   []domain.Step{{Query: "step 0", RequiredEffects: []string{}}}, // no effect: cacheable
 	}
 
 	if _, err := ex.Execute(t.Context(), plan, nil, liveStep); err != nil {

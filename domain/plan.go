@@ -82,7 +82,39 @@ type Step struct {
 	// dedicated agent instance when that bound is above 1
 	// (T-20261107-plan-fan-out-steps-run-one-at-a-time-on-a). The planner never emits it.
 	FanOutItem string `json:"fan_out_item,omitempty"`
+
+	// FanOutItemJSON is the child's whole item as compact JSON (ADR-0145 D6.3): the
+	// source element FanOutItem labels — a record with its amount, date and id — or
+	// the JSON string of a scalar item. Stamped on the child's handoff as
+	// HandoffKeyFanOutItem. Set only by ExpandFanOut/ResolveFanOut.
+	FanOutItemJSON string `json:"fan_out_item_json,omitempty"`
+
+	// Answers lists the requirement checklist items this step produces results
+	// for (ADR-0145 D6: "R1", "R2"; RequirementChecklist). The plan validator checks
+	// they name real items and that every item has a producing step; the executor
+	// asks the step's worker for the answer envelope for exactly these items. Set
+	// by the planner only under execution.plan.checklist_enabled.
+	Answers []string `json:"answers,omitempty"`
+	// Inputs are bindings to earlier steps' values (ADR-0145 D6): "s0" (the whole
+	// output of step 0), "s0.overdue" (the values step 0's envelope named
+	// "overdue"), with an optional "[*]" for a list. Every binding names a step this
+	// one depends on (plan validator). The executor resolves them from the ledger
+	// and hands them to the worker (HandoffKeyStepInputs).
+	Inputs []string `json:"inputs,omitempty"`
+	// ForEach ties the step's items to a set found earlier ("s0.overdue"): code
+	// then requires one result per member of the set (ADR-0145 D5.6). On a
+	// fan-out step it is implied by fan_out_over.
+	ForEach string `json:"for_each,omitempty"`
 }
+
+// HandoffKeyStepInputs carries a step's resolved input bindings (Step.Inputs) as
+// JSON []StepInputValue. Kernel-authored, like HandoffKeyStepDependencies.
+const HandoffKeyStepInputs = "_step_inputs"
+
+// HandoffKeyFanOutItem is the handoff context key a fan-out child receives its
+// whole item object under (Step.FanOutItemJSON). Kernel-authored: stamped on a
+// child's dispatch, removed from every other step's.
+const HandoffKeyFanOutItem = "_fan_out_item"
 
 // ExecutionPlan carries the structured plan produced by the Planner.
 type ExecutionPlan struct {
@@ -132,6 +164,7 @@ func (e *ExecutionPlan) Clone() *ExecutionPlan {
 				CacheTTLSeconds: s.CacheTTLSeconds,
 				FanOutVar:       s.FanOutVar,
 				FanOutItem:      s.FanOutItem,
+				FanOutItemJSON:  s.FanOutItemJSON,
 				// This clone is field-by-field, so a field omitted here vanishes on
 				// every replan and plan freeze without a compiler error — the same
 				// silent-drop shape that made the EFE arm exempt from the capability
@@ -154,6 +187,9 @@ func (e *ExecutionPlan) Clone() *ExecutionPlan {
 			if s.RequiredEffects != nil { // nil vs empty is meaningful (declared vs legacy)
 				cloned.Steps[i].RequiredEffects = append([]string{}, s.RequiredEffects...)
 			}
+			cloned.Steps[i].Answers = append([]string(nil), s.Answers...)
+			cloned.Steps[i].Inputs = append([]string(nil), s.Inputs...)
+			cloned.Steps[i].ForEach = s.ForEach
 		}
 	}
 	return cloned

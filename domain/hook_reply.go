@@ -20,8 +20,8 @@ import (
 // The deliverable generalises to GUARDED ARGUMENTS (ticket
 // T-20261106-post-model-hooks-do-not-guard-control-verb): the string arguments of
 // the SDK's control verbs that leave the reply without ever reaching the
-// ToolExecutor — yield_subgoal's intent becomes a plan step, spawn_subagent's
-// objective a child's task, a memory note's content and a proposed skill's body
+// ToolExecutor — yield_subgoal's intent becomes a plan step, delegate_to_planner's
+// task a new Execute request, a memory note's content and a proposed skill's body
 // are persisted. Which tool/argument pairs are guarded is configuration
 // (execution.hooks.guarded_arguments; the SDK's vocabulary, Zero-Hardcode Rule),
 // and the final answer is always among them.

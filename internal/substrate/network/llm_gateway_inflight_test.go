@@ -90,6 +90,34 @@ func TestGateway_ConversationActivityCountsAnInFlightUnaryCall(t *testing.T) {
 	}
 }
 
+// The keepalive extends a lease's expiry but never shortens the TTL it was acquired
+// with: a chat turn lease (acquired for the whole turn) must survive a delegated plan
+// that runs longer than the keepalive window
+// (T-20261109-chat-turn-lease-is-evicted-while-its-delegated).
+func TestGateway_KeepaliveNeverShortensTheAcquiredTTL(t *testing.T) {
+	gw := NewLLMGateway(config.DefaultConfig().Execution)
+	turnEnd := time.Now().Add(2 * time.Hour)
+	long := &domain.BudgetLeaseState{ExpiresAt: turnEnd}
+	gw.mu.Lock()
+	gw.touchLocked(long)
+	gw.mu.Unlock()
+	if !long.ExpiresAt.Equal(turnEnd) {
+		t.Fatalf("keepalive moved a 2h expiry to %v", long.ExpiresAt)
+	}
+	short := &domain.BudgetLeaseState{ExpiresAt: time.Now().Add(time.Second)}
+	gw.mu.Lock()
+	gw.touchLocked(short)
+	gw.mu.Unlock()
+	if time.Until(short.ExpiresAt) < time.Minute {
+		t.Fatalf("keepalive did not extend a short expiry: %v", short.ExpiresAt)
+	}
+	gw.AddSession("turn", long)
+	gw.EvictExpired()
+	if gw.GetBudgetLeaseState("turn") == nil {
+		t.Fatal("a turn lease within its acquired TTL was evicted")
+	}
+}
+
 // A lease with a call in flight is not swept as leaked, whatever its TTL says.
 func TestGateway_EvictExpiredSparesALeaseWithACallInFlight(t *testing.T) {
 	gw := NewLLMGateway(config.DefaultConfig().Execution)

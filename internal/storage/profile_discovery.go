@@ -42,6 +42,12 @@ type DiscoverOptions struct {
 	// skill checks (the SDK's skills_dir=None); the composition root always passes
 	// the index of the skills directory it serves.
 	SkillTools map[string][]string
+	// ComposedRuntimeID, when set (execution.workers.composed), also registers the
+	// ADR-0145 D12 composed-worker runtime under this id: the same runtime file,
+	// launched `--composed --agent-id <id>`, holding no profile, no capability and
+	// no grant of its own, and marked System so selection never picks it — the
+	// dispatcher calls it with a composition bound to the step lease. "" ⇒ none.
+	ComposedRuntimeID string
 }
 
 // IsProfileRuntime reports whether an agent record runs the profile runtime —
@@ -77,6 +83,7 @@ func profileAgentRecords(agentsDir string, isSystemAgent func(string) bool, opt 
 	if len(loaded) == 0 {
 		return nil
 	}
+
 	runtime, rerr := os.ReadFile(filepath.Join(agentsDir, ProfileRuntimeFile))
 	if rerr != nil {
 		slog.Error("agent profiles: the profile runtime is missing; no profile agents registered",
@@ -138,7 +145,50 @@ func profileAgentRecords(agentsDir string, isSystemAgent func(string) bool, opt 
 			},
 		})
 	}
+	if rt, ok := composedRuntimeRecord(agentsDir, opt.ComposedRuntimeID, runtime, taken, len(out)); ok {
+		out = append(out, rt)
+	}
 	return out
+}
+
+// ComposedRuntimeVersion is the composed runtime's manifest version.
+const ComposedRuntimeVersion = "1.0.0"
+
+// composedRuntimeRecord builds the ADR-0145 D12 runtime agent: registered only when
+// an id is configured, at least one valid profile exists (with none there is no
+// profession to compose from), and the id is not already taken.
+func composedRuntimeRecord(agentsDir, id string, runtime []byte, taken map[string]bool, profiles int) (DiscoveredAgent, bool) {
+	if id == "" || profiles == 0 {
+		return DiscoveredAgent{}, false
+	}
+	if taken[id] {
+		slog.Error("composed worker runtime NOT registered: its id is already an agent id", "id", id)
+		return DiscoveredAgent{}, false
+	}
+	taken[id] = true
+	return DiscoveredAgent{
+		Agent: AgentRecord{
+			ID:              id,
+			Name:            "Composed Worker",
+			Description:     "Composed worker runtime (ADR-0145 D12): runs plan steps with the skills and tools the kernel composes for each step; never selected by capability.",
+			Runtime:         "python",
+			ExecPath:        ProfileRuntimeFile,
+			Dir:             filepath.ToSlash(agentsDir),
+			SourceHash:      ComputeProfileSourceHash(ComposedRuntimeVersion, runtime, []byte("composed:"+id)),
+			ManifestVersion: ComposedRuntimeVersion,
+			Provisional:     true,
+			// Kernel-invoked, never a selection candidate (domain.IsSystemDefinition):
+			// granted here, by the kernel's own discovery of its own runtime file.
+			System:     true,
+			LaunchArgs: []string{"--composed", "--agent-id", id},
+			TrustTier:  "first-party",
+		},
+		Manifest: ManifestRecord{
+			Version:          ComposedRuntimeVersion,
+			SupportedFormats: []string{"text"},
+			ReleaseNotes:     "ADR-0145 D12 composed worker runtime.",
+		},
+	}, true
 }
 
 func humanizeProfileName(id string) string {

@@ -704,7 +704,8 @@ def test_plain_reply_unwraps_a_final_answer_envelope():
 
 def test_chat_agent_turn_is_v6_and_kept_the_v5_sections():
     from cambrian_agent_sdk.prompt_library import sections as _sections
-    assert ca._LIBRARY.get("chat_agent_turn").version == 6
+    # v7 (ADR-0145 phase 3) only added sections; v6 is the version this test pinned.
+    assert ca._LIBRARY.get("chat_agent_turn").version == 7
     v5 = _sections(ca._LIBRARY.get_version("chat_agent_turn", 5))
     for name in ("conversation", "memory", "message", "force-delegate", "report-delegated", "denial-final"):
         assert v5[name].body == ca._TURN[name].body, name
@@ -747,7 +748,8 @@ def test_the_language_reaches_the_final_reply_call(clock):
 
 
 def test_chat_agent_v4_rules_set_the_reply_language_and_the_redaction_wording():
-    assert ca._LIBRARY.get("chat_agent").version == 4
+    # v5 (ADR-0145 phase 3) only added sections, rendered behind their keys.
+    assert ca._LIBRARY.get("chat_agent").version == 5
     stub = _Stub([_answer("Hi!")])
     _agent(stub).run(_task("hi"))
     system = stub.stream_reqs[0].system[0].text

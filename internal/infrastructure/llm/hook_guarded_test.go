@@ -42,7 +42,7 @@ func builtinRedact(t *testing.T, agents, purposes []string) domain.Hook {
 func controlVerbReply() string {
 	return openAIReplyWithCalls("delegating",
 		[2]string{"yield_subgoal", `{"intent":"look up ` + secret + `","capability_hint":"web"}`},
-		[2]string{"spawn_subagent", `{"objective":"log in with ` + secret + `","mode":"isolated"}`},
+		[2]string{"delegate_to_planner", `{"task":"log in with ` + secret + `","mode":"isolated"}`},
 		[2]string{"write_file", `{"body":"` + secret + `"}`})
 }
 
@@ -60,8 +60,8 @@ func TestPostModel_RedactOutputGuardsControlVerbArguments(t *testing.T) {
 	if got := finalArg(t, resp.ToolCalls, "yield_subgoal", "capability_hint"); got != "web" {
 		t.Errorf("other fields must survive: %q", got)
 	}
-	if got := finalArg(t, resp.ToolCalls, "spawn_subagent", "objective"); got != "log in with [REDACTED]" {
-		t.Errorf("spawn_subagent objective = %q", got)
+	if got := finalArg(t, resp.ToolCalls, "delegate_to_planner", "task"); got != "log in with [REDACTED]" {
+		t.Errorf("delegate_to_planner task = %q", got)
 	}
 	// Not guarded: the ToolExecutor's pre_tool hooks own it.
 	if got := finalArg(t, resp.ToolCalls, "write_file", "body"); got != secret {
@@ -90,7 +90,7 @@ func TestPostModel_GuardedArgumentsAreConfigured(t *testing.T) {
 	if got := finalArg(t, resp.ToolCalls, "write_file", "body"); got != "[REDACTED]" {
 		t.Errorf("configured guard: %q", got)
 	}
-	if got := finalArg(t, resp.ToolCalls, "spawn_subagent", "objective"); got != "log in with "+secret {
+	if got := finalArg(t, resp.ToolCalls, "delegate_to_planner", "task"); got != "log in with "+secret {
 		t.Errorf("default guard still applied after replacement: %q", got)
 	}
 }
@@ -117,10 +117,10 @@ func TestPostModel_DenyOnAGuardedArgumentRefusesTheReply(t *testing.T) {
 func TestPostModel_UnreadableGuardedArgumentFailsClosed(t *testing.T) {
 	t.Parallel()
 	h := builtinRedact(t, nil, nil)
-	srv, _ := captureServer(t, openAIReplyWithCalls("x", [2]string{"spawn_subagent", `{"objective":["` + secret + `"]}`}))
+	srv, _ := captureServer(t, openAIReplyWithCalls("x", [2]string{"delegate_to_planner", `{"task":["` + secret + `"]}`}))
 	p := sseProvider(t, chainOf(t, h), srv.URL)
 	resp, _, err := p.GenerateOn(context.Background(), []string{"a"}, toolReq())
-	if !errors.Is(err, domain.ErrHookDenied) || !strings.Contains(err.Error(), "spawn_subagent.objective") || resp.ToolCalls != nil {
+	if !errors.Is(err, domain.ErrHookDenied) || !strings.Contains(err.Error(), "delegate_to_planner.task") || resp.ToolCalls != nil {
 		t.Fatalf("resp=%+v err=%v", resp, err)
 	}
 }

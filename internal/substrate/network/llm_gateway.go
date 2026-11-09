@@ -107,61 +107,6 @@ type SubstrateLLMGateway struct {
 	// unhealthy id is skipped by the Provider's chain walk and the next rung serves.
 	// Nil, or "" for an agent, ⇒ the chain is unchanged.
 	agentModel atomic.Pointer[func(agentID string) string]
-
-	// gate is the ADR-0139 D12 per-lease admission seam: the subagent service
-	// refuses a call on a child lease whose token_budget, or whose tree's
-	// tree-wide budget, is spent, and counts every call's usage toward both.
-	// Nil ⇒ no gate (every lease admitted, as before).
-	gate atomic.Pointer[leaseGateBox]
-}
-
-// LeaseGate is the optional per-lease admission check every managed call runs
-// after the session-ceiling check, and the usage observer every booked call
-// reports to. Implementations must be prompt and non-blocking: AdmitLeaseCall
-// runs on the call path, ObserveLeaseUsage after it, outside the gateway lock.
-type LeaseGate interface {
-	AdmitLeaseCall(lease domain.LeaseID) error
-	ObserveLeaseUsage(lease domain.LeaseID, u llm.TokenUsage)
-}
-
-type leaseGateBox struct{ g LeaseGate }
-
-// SetLeaseGate attaches the D12 lease gate. Nil clears it.
-func (g *SubstrateLLMGateway) SetLeaseGate(gate LeaseGate) {
-	if gate == nil {
-		g.gate.Store(nil)
-		return
-	}
-	g.gate.Store(&leaseGateBox{gate})
-}
-
-func (g *SubstrateLLMGateway) leaseGate() LeaseGate {
-	if b := g.gate.Load(); b != nil {
-		return b.g
-	}
-	return nil
-}
-
-// observeLeaseUsage reports one booked call's usage to the lease gate.
-func (g *SubstrateLLMGateway) observeLeaseUsage(lease domain.LeaseID, u llm.TokenUsage) {
-	if gate := g.leaseGate(); gate != nil && !u.IsZero() {
-		gate.ObserveLeaseUsage(lease, u)
-	}
-}
-
-// RollUpLease adds a completed CHILD lease's usage to its parent lease (ADR-0139
-// D1/D12: subagent spend rolls up the lease chain to the root) WITHOUT
-// reporting it to the lease gate, which already counted every call of the child
-// as it was made. Unknown parents are ignored, as in ChargeLease.
-func (g *SubstrateLLMGateway) RollUpLease(parent domain.LeaseID, u llm.TokenUsage) {
-	if g == nil || parent == "" || u.IsZero() {
-		return
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if ss, ok := g.sessions[parent]; ok {
-		addLeaseUsageLocked(ss, u)
-	}
 }
 
 // SetAgentModelPreference attaches the per-agent model preference resolver (see
@@ -424,7 +369,6 @@ func (g *SubstrateLLMGateway) ChargeLease(leaseID domain.LeaseID, u llm.TokenUsa
 	}
 	g.mu.Unlock()
 	if ok {
-		g.observeLeaseUsage(leaseID, u)
 	}
 }
 
@@ -554,12 +498,6 @@ func (g *SubstrateLLMGateway) beginLeaseCall(ctx context.Context, sessionID doma
 	// ADR-0131 D3: the session ceiling is checked before any model is touched.
 	if err := admitLease(lc.meter, ss, lc.sid, lc.prompt); err != nil {
 		return nil, err
-	}
-	// ADR-0139 D12: a child lease's own and tree-wide budgets.
-	if gate := g.leaseGate(); gate != nil {
-		if err := gate.AdmitLeaseCall(sessionID); err != nil {
-			return nil, err
-		}
 	}
 	return lc, nil
 }
@@ -704,10 +642,20 @@ func (g *SubstrateLLMGateway) TrackLeaseWork(leaseID domain.LeaseID) func() {
 }
 
 // touchLocked refreshes a lease's keepalive TTL. Callers hold g.mu.
+//
+// The keepalive only ever EXTENDS the expiry: it never brings forward the TTL the lease
+// was acquired with. A chat turn's lease is acquired for the whole turn (TurnTimeout),
+// then goes quiet while the plan it delegated runs on leases of its own; when the
+// keepalive overwrote the expiry with now+5 min, a delegation longer than that had its
+// turn lease swept as leaked and the chat agent's next call failed "session not found"
+// (T-20261109-chat-turn-lease-is-evicted-while-its-delegated).
 func (g *SubstrateLLMGateway) touchLocked(s *domain.BudgetLeaseState) {
 	ttl := time.Duration(float64(time.Minute) * g.cfg.Session.SessionTokenTTLMultiplier)
-	s.ExpiresAt = time.Now().Add(ttl)
-	s.LastActivityAt = time.Now()
+	now := time.Now()
+	if next := now.Add(ttl); next.After(s.ExpiresAt) {
+		s.ExpiresAt = next
+	}
+	s.LastActivityAt = now
 }
 
 // StreamChunks opens a managed stream on the step's model chain (ADR-0018,
@@ -832,7 +780,6 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		}
 	}
 	g.mu.Unlock()
-	g.observeLeaseUsage(sessionID, reconciled)
 	lc.meter.RecordSessionTally(lc.sid, lc.ss.Tally, g.leasePurpose(lc.ss), modelID, reconciled)
 	return nil
 }
@@ -901,7 +848,6 @@ func (g *SubstrateLLMGateway) GenerateWithToolsObserved(ctx context.Context, ses
 		addLeaseUsageLocked(st, reconciled)
 	}
 	g.mu.Unlock()
-	g.observeLeaseUsage(sessionID, reconciled)
 	lc.meter.RecordSessionTally(lc.sid, lc.ss.Tally, g.leasePurpose(lc.ss), modelID, reconciled)
 	return resp, nil
 }

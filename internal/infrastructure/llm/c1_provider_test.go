@@ -296,6 +296,7 @@ func decoratorsAround(inner domain.Generator) map[string]domain.Generator {
 		"meteredGenerator":     &meteredGenerator{inner: inner, meter: meter, purpose: "p", generatorID: "g1"},
 		"schemaGenerator":      &schemaGenerator{inner: inner},
 		"traceBypass":          &traceBypass{traced: inner, untraced: inner},
+		"runTraceGenerator":    &runTraceGenerator{inner: inner, tracer: &memTracer{}, id: "g1", purpose: "p"},
 	}
 }
 

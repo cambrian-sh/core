@@ -46,8 +46,9 @@ import (
 // HookChain.Run call at that site; nothing else is missing):
 //
 //   - pre_compact / post_compact — ADR-0139 D3 (context engine compaction);
-//   - run_start / run_end — ADR-0139 C6/D7 (durable runs and the event log);
-//   - subagent_start / subagent_end — ADR-0139 D12 (spawn_subagent).
+//   - run_start / run_end — ADR-0139 C6/D7 (durable runs and the event log).
+//
+// subagent_start / subagent_end were removed with spawn_subagent (ADR-0145 D14).
 
 // ErrHookDenied is returned on a model path a hook narrowed. The model path has no
 // approval channel, so a hook's ask is refused there like a deny. It is a
@@ -58,23 +59,20 @@ var ErrHookDenied = errors.New("denied by hook")
 type HookPoint string
 
 const (
-	HookPreTool       HookPoint = "pre_tool"
-	HookPostTool      HookPoint = "post_tool"
-	HookPreModel      HookPoint = "pre_model"
-	HookPostModel     HookPoint = "post_model"
-	HookPreCompact    HookPoint = "pre_compact"
-	HookPostCompact   HookPoint = "post_compact"
-	HookRunStart      HookPoint = "run_start"
-	HookRunEnd        HookPoint = "run_end"
-	HookSubagentStart HookPoint = "subagent_start"
-	HookSubagentEnd   HookPoint = "subagent_end"
+	HookPreTool     HookPoint = "pre_tool"
+	HookPostTool    HookPoint = "post_tool"
+	HookPreModel    HookPoint = "pre_model"
+	HookPostModel   HookPoint = "post_model"
+	HookPreCompact  HookPoint = "pre_compact"
+	HookPostCompact HookPoint = "post_compact"
+	HookRunStart    HookPoint = "run_start"
+	HookRunEnd      HookPoint = "run_end"
 )
 
 // AllHookPoints lists every declared point, in lifecycle order.
 var AllHookPoints = []HookPoint{
 	HookPreTool, HookPostTool, HookPreModel, HookPostModel,
 	HookPreCompact, HookPostCompact, HookRunStart, HookRunEnd,
-	HookSubagentStart, HookSubagentEnd,
 }
 
 // Valid reports whether p is a declared hook point.
@@ -91,7 +89,7 @@ func (p HookPoint) Valid() bool {
 // Those default to on_failure: block; the rest default to allow.
 func (p HookPoint) before() bool {
 	switch p {
-	case HookPreTool, HookPreModel, HookPreCompact, HookRunStart, HookSubagentStart:
+	case HookPreTool, HookPreModel, HookPreCompact, HookRunStart:
 		return true
 	}
 	return false

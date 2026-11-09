@@ -108,33 +108,67 @@ func listLines(raw string) []string {
 // Free text, markdown lists and tables are NOT structured: their lines are prose a
 // fan-out cannot tell from items.
 func ExtractStructuredFanOutItems(raw string) ([]string, bool) {
+	arr, ok := structuredFanOutArray(raw)
+	if !ok {
+		return nil, false
+	}
+	return dedupe(itemsFromArray(arr)), true
+}
+
+// structuredFanOutArray is the element list ExtractStructuredFanOutItems derives its
+// items from (same selection rules), kept whole so a child can receive its item
+// OBJECT, not only the label the item is named by (FanOutItemObjects).
+func structuredFanOutArray(raw string) ([]any, bool) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return nil, false
 	}
 	var whole any
 	if json.Unmarshal([]byte(s), &whole) == nil {
-		if items, ok := listFromJSON(whole, 0); ok {
-			return dedupe(items), true
-		}
-		return nil, false
+		return arrayFromJSON(whole, 0)
 	}
 	vals := scanJSONValues(s)
 	if n := len(vals); n > 0 && vals[n-1].atEnd {
-		if items, ok := listFromJSON(vals[n-1].val, 0); ok {
-			return dedupe(items), true
+		if arr, ok := arrayFromJSON(vals[n-1].val, 0); ok {
+			return arr, true
 		}
 	}
-	var lists [][]string
+	var lists [][]any
 	for _, v := range vals {
-		if items, ok := listFromJSON(v.val, 0); ok {
-			lists = append(lists, items)
+		if arr, ok := arrayFromJSON(v.val, 0); ok {
+			lists = append(lists, arr)
 		}
 	}
 	if len(lists) == 1 {
-		return dedupe(lists[0]), true
+		return lists[0], true
 	}
 	return nil, false
+}
+
+// FanOutItemObjects maps each item label of a structured source output to the
+// whole element it was taken from, as compact JSON (ADR-0145 D6.3: a fan-out child
+// receives its whole item object — the record's amount, date and id, not only the
+// name it is labelled by). nil when the source holds no structured list. The first
+// element of a repeated label wins, matching dedupe.
+func FanOutItemObjects(raw string) map[string]string {
+	arr, ok := structuredFanOutArray(raw)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(arr))
+	for _, e := range arr {
+		labels := itemsFromArray([]any{e})
+		if len(labels) != 1 {
+			continue
+		}
+		if _, seen := out[labels[0]]; seen {
+			continue
+		}
+		if b, err := json.Marshal(e); err == nil {
+			out[labels[0]] = string(b)
+		}
+	}
+	return out
 }
 
 // SourceHoldsJSON reports whether a fan-out source output carries JSON: a decodable
@@ -279,16 +313,25 @@ func isDigits(s string) bool {
 // listFromJSON reads a decoded JSON value as an item list; ok=false means "not a list
 // we understand". depth counts the wrapper objects already descended.
 func listFromJSON(v any, depth int) ([]string, bool) {
+	arr, ok := arrayFromJSON(v, depth)
+	if !ok {
+		return nil, false
+	}
+	return itemsFromArray(arr), true
+}
+
+// arrayFromJSON is listFromJSON before the elements become item labels.
+func arrayFromJSON(v any, depth int) ([]any, bool) {
 	switch t := v.(type) {
 	case []any:
-		return itemsFromArray(t), true
+		return t, true
 	case map[string]any:
 		if depth >= fanOutWrapperDepth {
 			return nil, false
 		}
 		for _, k := range fanOutArrayKeys {
 			if arr, ok := t[k].([]any); ok {
-				return itemsFromArray(arr), true
+				return arr, true
 			}
 		}
 		// Exactly one array-valued field ⇒ unambiguous; more than one ⇒ refuse to guess.
@@ -305,9 +348,9 @@ func listFromJSON(v any, depth int) ([]string, bool) {
 		}
 		switch {
 		case arrays == 1:
-			return itemsFromArray(arr), true
+			return arr, true
 		case arrays == 0 && objects == 1:
-			return listFromJSON(obj, depth+1) // a wrapper one level down
+			return arrayFromJSON(obj, depth+1) // a wrapper one level down
 		}
 		return nil, false
 	}
@@ -507,13 +550,25 @@ func ExpandFanOut(plan *ExecutionPlan, fanIdx int, items []string, maxWidth int)
 	}
 	// Append the children: the parametric node, once per item, made concrete.
 	varTok := "{" + base.FanOutVarName() + "}"
+	// A child depends on the node's own deps AND on the fan-out source (ADR-0145
+	// D6.3): the source's output is what the child's item came from, so the child
+	// receives it like any other upstream result — it used to inherit only the
+	// node's own DependsOn and never saw the record its item names.
 	childDeps := append([]int(nil), base.DependsOn...) // the node's own deps (unchanged indices)
+	if src := *base.FanOutOver; src >= 0 && !slices.Contains(childDeps, src) {
+		childDeps = append(childDeps, src)
+	}
 	for _, item := range items {
 		c := base
 		c.FanOutOver = nil // a child is concrete — never re-expands
 		c.FanOutVar = ""
 		c.Query = strings.ReplaceAll(base.Query, varTok, item) // templated: checked above
 		c.FanOutItem = item
+		// The whole item; a scalar item is its own object. ResolveFanOut replaces
+		// it with the source element the label was taken from (FanOutItemObjects).
+		if b, err := json.Marshal(item); err == nil {
+			c.FanOutItemJSON = string(b)
+		}
 		c.DependsOn = append([]int(nil), childDeps...)
 		out.Steps = append(out.Steps, c)
 	}
@@ -639,6 +694,14 @@ func ResolveFanOut(plan *ExecutionPlan, fanIdx int, srcOutput string, maxWidth i
 	out, err := ExpandFanOut(plan, fanIdx, items, maxWidth)
 	if err != nil {
 		return nil, nil, FanOutExpanded, err
+	}
+	// Each child receives the whole element its item was taken from (ADR-0145 D6.3).
+	if objs := FanOutItemObjects(srcOutput); len(objs) > 0 {
+		for i := len(plan.Steps); i < len(out.Steps); i++ {
+			if o, ok := objs[out.Steps[i].FanOutItem]; ok {
+				out.Steps[i].FanOutItemJSON = o
+			}
+		}
 	}
 	return out, items, FanOutExpanded, nil
 }

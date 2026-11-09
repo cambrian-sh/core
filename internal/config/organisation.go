@@ -19,6 +19,51 @@ type OrganisationConfig struct {
 	// T-20261107-planner-and-chat-agent-are-not-told-today-s). Empty ⇒ UTC. Read by
 	// app → domain.NewCalendar.
 	Timezone string `json:"timezone,omitempty"`
+	// Holidays is the organisation's holiday calendar for working-day
+	// calculations (ADR-0145 D4, the calc_working_days / calc_date_add kernel
+	// tools): "YYYY-MM-DD" for a dated holiday, "MM-DD" for one that falls on the
+	// same day every year. Empty ⇒ no holidays. Read by app → internal/calc.
+	Holidays []string `json:"holidays,omitempty"`
+	// Weekend names the weekdays that are not working days ("saturday",
+	// "sunday", ...). Empty ⇒ Saturday and Sunday.
+	Weekend []string `json:"weekend,omitempty"`
+}
+
+// WeekendDays resolves Weekend (empty ⇒ Saturday and Sunday).
+func (o OrganisationConfig) WeekendDays() ([]time.Weekday, error) {
+	if len(o.Weekend) == 0 {
+		return []time.Weekday{time.Saturday, time.Sunday}, nil
+	}
+	var out []time.Weekday
+	for _, w := range o.Weekend {
+		d, ok := weekdayNames[strings.ToLower(strings.TrimSpace(w))]
+		if !ok {
+			return nil, fmt.Errorf("organisation.weekend %q is not a weekday name", w)
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+var weekdayNames = map[string]time.Weekday{
+	"sunday": time.Sunday, "monday": time.Monday, "tuesday": time.Tuesday, "wednesday": time.Wednesday,
+	"thursday": time.Thursday, "friday": time.Friday, "saturday": time.Saturday,
+}
+
+// holidayErrors reports holidays that are neither YYYY-MM-DD nor MM-DD.
+func (o OrganisationConfig) holidayErrors() []string {
+	var errs []string
+	for _, h := range o.Holidays {
+		h = strings.TrimSpace(h)
+		if _, err := time.Parse("2006-01-02", h); err == nil {
+			continue
+		}
+		if _, err := time.Parse("01-02", h); err == nil {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("organisation.holidays %q must be YYYY-MM-DD or MM-DD", h))
+	}
+	return errs
 }
 
 // Location resolves Timezone (empty ⇒ UTC).
@@ -34,10 +79,15 @@ func (o OrganisationConfig) Location() (*time.Location, error) {
 	return loc, nil
 }
 
-// validationErrors reports an unresolvable timezone.
+// validationErrors reports an unresolvable timezone, an unknown weekend day and
+// a malformed holiday.
 func (o OrganisationConfig) validationErrors() []string {
+	var errs []string
 	if _, err := o.Location(); err != nil {
-		return []string{err.Error()}
+		errs = append(errs, err.Error())
 	}
-	return nil
+	if _, err := o.WeekendDays(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	return append(errs, o.holidayErrors()...)
 }

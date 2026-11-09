@@ -67,7 +67,7 @@ func TestHumanFailure_TurkishOnEveryPath(t *testing.T) {
 		}
 		seen[tr] = true
 	}
-	if len(seen) != len(allMessageIDs) {
+	if len(seen) != len(allMessageIDs)-len(replyCheckMessageIDs) {
 		t.Errorf("expected every message id to be reachable, saw %d distinct texts", len(seen))
 	}
 	// A regional tag uses its primary language; an unknown language falls back to English.

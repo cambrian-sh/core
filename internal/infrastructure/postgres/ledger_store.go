@@ -1,0 +1,282 @@
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/cambrian-sh/core/domain"
+)
+
+// LedgerBodyStore is the artifact vault's byte store as the ledger uses it
+// (satisfied by *vault.ArtifactVault): content-addressed, so a body shared with an
+// artifact or another entry is stored once.
+type LedgerBodyStore interface {
+	Store(content []byte) (string, error)
+	Load(hash string) ([]byte, error)
+	Delete(hash string) error
+}
+
+// PgLedgerStore is the RAW run-ledger store (ADR-0145 D1): metadata in the
+// 0034_ledger_entries table beside the artifact vault, bodies in the vault's byte
+// store. It applies NO read enforcement — kernel.NewLedgerStack is the only place
+// it is constructed, and it hands readers authz.EnforcingLedger over it, never
+// this type (AGENTS.md §2.1/§2.2).
+type PgLedgerStore struct {
+	pool   *pgxpool.Pool
+	bodies LedgerBodyStore
+	// ArtifactReferenced reports whether an artifact record names hash, so the
+	// retention purge never deletes vault bytes an artifact still uses. nil ⇒
+	// vault bytes are never deleted (the safe answer when the caller cannot tell).
+	ArtifactReferenced func(hash string) bool
+}
+
+var _ domain.LedgerStore = (*PgLedgerStore)(nil)
+
+// NewPgLedgerStore wraps the shared pool and the vault byte store.
+func NewPgLedgerStore(pool *pgxpool.Pool, bodies LedgerBodyStore) *PgLedgerStore {
+	return &PgLedgerStore{pool: pool, bodies: bodies}
+}
+
+// ledgerUnreadableSourceTag stands in for a source classification that could not
+// be decoded (scanLedgerEntry); no reader predicate is expected to hold it.
+const ledgerUnreadableSourceTag = "ledger:unreadable-source-classification"
+
+// Ready reports whether the 0034 table and the 0035 source_tags column exist.
+func (s *PgLedgerStore) Ready(ctx context.Context) bool {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
+WHERE table_name = 'ledger_entries' AND column_name = 'source_tags'`).Scan(&n)
+	return err == nil && n == 1
+}
+
+// ledgerSearchHead bounds the body text kept for ledger_find's text filter.
+const ledgerSearchHead = 16 * 1024
+
+// Put stores e's body in the vault and its metadata row. An existing id is left
+// unchanged (the id is derived from the content, so it is the same entry).
+func (s *PgLedgerStore) Put(ctx context.Context, e domain.LedgerEntry) error {
+	if e.ID == "" || !domain.ValidLedgerKind(e.Kind) {
+		return fmt.Errorf("ledger put: invalid entry (id %q, kind %q)", e.ID, e.Kind)
+	}
+	hash := e.BodyHash
+	if hash == "" && len(e.Body) > 0 {
+		h, err := s.bodies.Store(e.Body)
+		if err != nil {
+			return fmt.Errorf("ledger put: vault: %w", err)
+		}
+		hash = h
+	}
+	tags := e.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	tagsJSON, _ := json.Marshal(tags)
+	sources := e.SourceTags
+	if sources == nil {
+		sources = [][]string{}
+	}
+	sourcesJSON, _ := json.Marshal(sources)
+	var args []byte
+	if len(e.Args) > 0 && json.Valid(e.Args) {
+		args = e.Args
+	}
+	search := e.ToolName + " " + string(args) + " " + e.Preview
+	if len(e.Body) > 0 && isText(e.Body) {
+		head := e.Body
+		if len(head) > ledgerSearchHead {
+			head = head[:ledgerSearchHead]
+		}
+		search += " " + string(head)
+	}
+	_, err := s.pool.Exec(ctx, `
+INSERT INTO ledger_entries (id, kind, conversation_id, turn_id, run_id, step_index, tool_name, args,
+    writer, owner, tags, content_type, body_hash, size_bytes, truncated, preview, content_hash,
+    search_text, created_at, expires_at, source_tags)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+ON CONFLICT (id) DO NOTHING`,
+		e.ID, string(e.Kind), e.ConversationID, e.TurnID, e.RunID, e.StepIndex, e.ToolName, args,
+		e.Writer, e.Owner, tagsJSON, e.ContentType, hash, e.SizeBytes, e.Truncated, e.Preview, e.ContentHash,
+		sanitizeText(search), e.CreatedAt.UTC(), e.ExpiresAt.UTC(), sourcesJSON)
+	if err != nil {
+		return fmt.Errorf("ledger put: %w", err)
+	}
+	return nil
+}
+
+const runLedgerCols = `id, kind, conversation_id, turn_id, run_id, step_index, tool_name, args, writer, owner,
+    tags, content_type, body_hash, size_bytes, truncated, preview, content_hash, created_at, expires_at, source_tags`
+
+func scanLedgerEntry(row pgx.Row) (domain.LedgerEntry, error) {
+	var e domain.LedgerEntry
+	var kind string
+	var args, tags, sources []byte
+	if err := row.Scan(&e.ID, &kind, &e.ConversationID, &e.TurnID, &e.RunID, &e.StepIndex, &e.ToolName, &args,
+		&e.Writer, &e.Owner, &tags, &e.ContentType, &e.BodyHash, &e.SizeBytes, &e.Truncated, &e.Preview,
+		&e.ContentHash, &e.CreatedAt, &e.ExpiresAt, &sources); err != nil {
+		return e, err
+	}
+	e.Kind = domain.LedgerKind(kind)
+	if len(args) > 0 {
+		e.Args = json.RawMessage(args)
+	}
+	_ = json.Unmarshal(tags, &e.Tags) // a JSONB array the writer encoded; empty on a malformed row
+	if err := json.Unmarshal(sources, &e.SourceTags); err != nil && len(sources) > 0 {
+		// A derived entry whose inherited classification cannot be read must not
+		// read as "derived from nothing": that is the fail-open answer. An
+		// unsatisfiable source set makes it unreadable to every predicate but a
+		// bypass (the kernel's own reads), which is the fail-closed one.
+		e.SourceTags = [][]string{{ledgerUnreadableSourceTag}}
+	}
+	return e, nil
+}
+
+// Get reads one entry with its body; nil when absent or expired.
+func (s *PgLedgerStore) Get(ctx context.Context, id string) (*domain.LedgerEntry, error) {
+	e, err := scanLedgerEntry(s.pool.QueryRow(ctx,
+		`SELECT `+runLedgerCols+` FROM ledger_entries WHERE id = $1 AND expires_at > now()`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ledger get: %w", err)
+	}
+	if e.BodyHash != "" {
+		body, lerr := s.bodies.Load(e.BodyHash)
+		if lerr != nil {
+			return nil, fmt.Errorf("ledger get: vault load: %w", lerr)
+		}
+		e.Body = body
+	}
+	return &e, nil
+}
+
+// Find lists entries (metadata only, no body) in creation order. It requires a
+// conversation, turn or run, so a query never spans the whole ledger.
+func (s *PgLedgerStore) Find(ctx context.Context, q domain.LedgerQuery) ([]domain.LedgerEntry, error) {
+	if !q.Scoped() {
+		return nil, fmt.Errorf("ledger find: a conversation, turn or run is required")
+	}
+	where := []string{"expires_at > now()"}
+	var args []any
+	add := func(cond string, v any) {
+		args = append(args, v)
+		where = append(where, fmt.Sprintf(cond, len(args)))
+	}
+	if q.ConversationID != "" {
+		add("conversation_id = $%d", q.ConversationID)
+	}
+	if q.TurnID != "" {
+		add("turn_id = $%d", q.TurnID)
+	}
+	if q.RunID != "" {
+		add("run_id = $%d", q.RunID)
+	}
+	if q.HasStep {
+		add("step_index = $%d", q.StepIndex)
+	}
+	if q.ToolName != "" {
+		add("tool_name = $%d", q.ToolName)
+	}
+	if q.Kind != "" {
+		add("kind = $%d", string(q.Kind))
+	}
+	if q.Text != "" {
+		add("strpos(lower(search_text), lower($%d)) > 0", q.Text)
+	}
+	limit := q.Limit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	sql := `SELECT ` + runLedgerCols + ` FROM ledger_entries WHERE `
+	for i, w := range where {
+		if i > 0 {
+			sql += " AND "
+		}
+		sql += w
+	}
+	sql += fmt.Sprintf(" ORDER BY created_at, id LIMIT %d", limit)
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("ledger find: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.LedgerEntry
+	for rows.Next() {
+		e, serr := scanLedgerEntry(rows)
+		if serr != nil {
+			return nil, fmt.Errorf("ledger find: scan: %w", serr)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// DeleteScratch removes a turn's scratch entries (ADR-0145 D1: scratch lives for
+// the turn only).
+func (s *PgLedgerStore) DeleteScratch(ctx context.Context, turnID string) (int, error) {
+	if turnID == "" {
+		return 0, nil
+	}
+	return s.deleteReturning(ctx, `DELETE FROM ledger_entries WHERE turn_id = $1 AND kind = 'scratch' RETURNING body_hash`, turnID)
+}
+
+// PurgeExpired removes entries whose retention ended (execution.ledger.retention_hours).
+func (s *PgLedgerStore) PurgeExpired(ctx context.Context, now time.Time) (int, error) {
+	return s.deleteReturning(ctx, `DELETE FROM ledger_entries WHERE expires_at <= $1 RETURNING body_hash`, now.UTC())
+}
+
+// deleteReturning runs a DELETE ... RETURNING body_hash and then drops the vault
+// bytes no remaining entry and no artifact record names.
+func (s *PgLedgerStore) deleteReturning(ctx context.Context, sql string, arg any) (int, error) {
+	rows, err := s.pool.Query(ctx, sql, arg)
+	if err != nil {
+		return 0, fmt.Errorf("ledger delete: %w", err)
+	}
+	hashes := map[string]bool{}
+	n := 0
+	for rows.Next() {
+		var h string
+		if serr := rows.Scan(&h); serr == nil && h != "" {
+			hashes[h] = true
+		}
+		n++
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return n, fmt.Errorf("ledger delete: %w", err)
+	}
+	if s.ArtifactReferenced == nil {
+		return n, nil
+	}
+	for h := range hashes {
+		var still bool
+		if qerr := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM ledger_entries WHERE body_hash = $1)`, h).Scan(&still); qerr != nil || still {
+			continue
+		}
+		if s.ArtifactReferenced(h) {
+			continue
+		}
+		if derr := s.bodies.Delete(h); derr != nil {
+			slog.Warn("ledger: vault body not deleted", "hash", h, "err", derr)
+		}
+	}
+	return n, nil
+}
+
+func isText(b []byte) bool { return utf8.Valid(b) }
+
+// sanitizeText makes s storable in a TEXT column: Postgres refuses NUL bytes and
+// invalid UTF-8 (a head cut mid-rune), so both are dropped.
+func sanitizeText(s string) string {
+	s = strings.ToValidUTF8(s, "")
+	return strings.ReplaceAll(s, string(rune(0)), "")
+}

@@ -50,6 +50,13 @@ type PlanAction struct {
 	// ApprovalState is the approval resolution of a call refused at the approval
 	// gate (ToolCallResponse.ApprovalState); "" otherwise. Not rendered.
 	ApprovalState ApprovalState
+	// Generation is the plan generation of the step (LeaseBinding.PlanGeneration):
+	// step indices restart after a replan, so a step's own calls are (Generation,
+	// Step). Not rendered.
+	Generation int
+	// Target is the write's target as the ADR-0145 D14 write record identifies it
+	// ("<tool>|<field>=<value>", WriteTargets.Key); "" when none. Not rendered.
+	Target string
 }
 
 // planActionIDKeys are result fields that name what a write created or touched, in

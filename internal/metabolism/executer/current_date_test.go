@@ -19,8 +19,8 @@ func fixedCalendar(y int, m time.Month, d int) *domain.Calendar {
 func TestDAGExecutor_StampsTheCurrentDateOnEveryStep(t *testing.T) {
 	cal := fixedCalendar(2026, 11, 7)
 	plan := &domain.ExecutionPlan{Subject: "s", Steps: []domain.Step{
-		{Query: "list the opportunities"},
-		{Query: "keep those idle for the last two weeks", DependsOn: []int{0}},
+		{Query: "list the opportunities", RequiredEffects: []string{}},
+		{Query: "keep those idle for the last two weeks", DependsOn: []int{0}, RequiredEffects: []string{}},
 	}}
 	var mu sync.Mutex
 	seen := map[int]string{}
@@ -72,8 +72,8 @@ func (c *recordingCache) Put(_ context.Context, key string, _ *domain.Handoff, _
 func TestDAGExecutor_StepCacheIsScopedToTheDate(t *testing.T) {
 	plan := func() *domain.ExecutionPlan {
 		return &domain.ExecutionPlan{Subject: "s", Steps: []domain.Step{
-			{Query: "list the opportunities"},
-			{Query: "keep those idle for the last two weeks", DependsOn: []int{0}},
+			{Query: "list the opportunities", RequiredEffects: []string{}},
+			{Query: "keep those idle for the last two weeks", DependsOn: []int{0}, RequiredEffects: []string{}},
 		}}
 	}
 	stepFn := func(_ context.Context, _ int, _ *domain.Handoff) (*domain.Handoff, error) {
@@ -81,7 +81,7 @@ func TestDAGExecutor_StepCacheIsScopedToTheDate(t *testing.T) {
 	}
 	dependentKey := func(cal *domain.Calendar) string {
 		c := &recordingCache{}
-		if _, err := (&DAGExecutor{Calendar: cal, StepCache: c}).Execute(t.Context(), plan(), nil, stepFn); err != nil {
+		if _, err := (&DAGExecutor{Calendar: cal, StepCache: c, CurrentSessionID: "ses-test"}).Execute(t.Context(), plan(), nil, stepFn); err != nil {
 			t.Fatal(err)
 		}
 		if len(c.puts) != 2 {

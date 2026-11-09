@@ -34,20 +34,35 @@ import (
 // hash is the same on every host.
 
 var (
-	plannerPrompts    = prompts.MustPair("planner", "planner_input")
-	plannerCapPrompts = prompts.MustPair("planner_cap", "planner_input")
+	// The two legacy arms are PINNED to the versions they were measured on
+	// (planner v3, planner_cap v6, planner_input v2): planner_cap v7 and
+	// planner_input v3 belong to the checklist arm only (ADR-0145 phase 2), so a
+	// kernel with execution.plan.checklist_enabled off sends byte-identical text.
+	plannerPrompts    = prompts.MustPairVersions("planner", 3, "planner_input", 2)
+	plannerCapPrompts = prompts.MustPairVersions("planner_cap", 6, "planner_input", 2)
+	// plannerChecklistPrompts is the checklist arm (execution.plan.checklist_enabled,
+	// ADR-0145 D5/D6): steps carry answers, inputs and for_each, and the user
+	// message carries the kernel-derived checklist in <requirements>.
+	plannerChecklistPrompts = prompts.MustPairVersions("planner_cap", 10, "planner_input", 3)
+	// plannerStagedPrompts is the staged arm (execution.plan.staged_planner,
+	// ADR-0145 D11): one call per stage, replying the next stage, ledger reads, a
+	// question for the person or nothing more. With the flag off the checklist arm
+	// stays on v10 + v3, byte for byte.
+	plannerStagedPrompts = prompts.MustPairVersions("planner_cap", 9, "planner_input", 4)
 
 	// plannerPromptHash / plannerPromptHashCap are written to
 	// ExecutionPlan.PlannerPromptVersion and forwarded to PlanEvent. The two arms
 	// differ, so provenance distinguishes them for free.
-	plannerPromptHash    = plannerPrompts.StaticHash()
-	plannerPromptHashCap = plannerCapPrompts.StaticHash()
+	plannerPromptHash          = plannerPrompts.StaticHash()
+	plannerPromptHashCap       = plannerCapPrompts.StaticHash()
+	plannerPromptHashChecklist = plannerChecklistPrompts.StaticHash()
+	plannerPromptHashStaged    = plannerStagedPrompts.StaticHash()
 )
 
 // plannerDataTags are the data regions of planner_input. A closing tag of any of
 // them inside a value is neutralised before rendering (prompts SPEC.md §3.1), so
 // a fact, an agent description or the request cannot end its region early.
-var plannerDataTags = []string{"capability_clusters", "host", "today", "documents", "request"}
+var plannerDataTags = []string{"capability_clusters", "host", "today", "documents", "request", "requirements", "stage", "ledger_reads"}
 
 // plannerCacheTTL: planning is human-paced (an operator or user request), so the
 // long breakpoint lifetime (ADR-0139 D1: 1h for human-paced work) keeps the
@@ -57,6 +72,8 @@ const plannerCacheTTL = domain.CacheTTLLong
 func init() {
 	registerPairPrompt("planner.plan", plannerPrompts)
 	registerPairPrompt("planner.plan.capability_contract", plannerCapPrompts)
+	registerPairPrompt("planner.plan.checklist", plannerChecklistPrompts)
+	registerPairPrompt("planner.plan.staged", plannerStagedPrompts)
 }
 
 // registerPairPrompt records a library pair in the compile-time PromptRegistry
@@ -79,6 +96,12 @@ func registerPairPrompt(id string, p prompts.Pair) {
 type planReply struct {
 	Reasoning string `json:"reasoning"`
 	domain.ExecutionPlan
+	// The staged arm's reply fields (planner_cap v8; ADR-0145 D11). Absent on
+	// every other arm, so they decode as empty there.
+	Outcome     string                 `json:"outcome,omitempty"`
+	LedgerReads []domain.LedgerLookup  `json:"ledger_reads,omitempty"`
+	Questions   []domain.InputQuestion `json:"questions,omitempty"`
+	Assumptions []string               `json:"assumptions,omitempty"`
 }
 
 // ── End planner prompts ──────────────────────────────────────────────────────
@@ -244,11 +267,21 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch agent list: %v", err)
 	}
+	checklist := domain.RequirementChecklistFrom(ctx)
+	// ADR-0145 D11: the staged arm. After the first stage each call's context is
+	// short and fresh — the checklist with statuses, the ledger index, the earlier
+	// stages by reference — so remembered context (LTM, prior plans) is not
+	// gathered again; it informed the first stage already.
+	staged := domain.StagePlanningFrom(ctx)
+	if checklist == nil {
+		staged = nil // the staged arm plans against a checklist; without one it is the legacy planner
+	}
+	fresh := staged != nil && staged.Number > 1
 
 	// ADR-0016: Enrich Planner with cross-session LTM facts.
 	// ADR-0025: Retrieve typed LTM enrichment and prior plan for XML-tag injection.
 	var ltmEnrichment domain.LTMEnrichment
-	if p.WorkspaceStage != nil {
+	if p.WorkspaceStage != nil && !fresh {
 		if enriched, err := p.WorkspaceStage.PrimeForPlanning(ctx, userInput); err == nil {
 			ltmEnrichment = enriched
 		}
@@ -256,28 +289,14 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 
 	// Retrieve prior successful plan from Hippocampus (procedural memory).
 	var planEntry *domain.PlanLTMEntry
-	if p.hippocampus != nil {
+	if p.hippocampus != nil && !fresh {
 		priorPlan, similarity, conf, _ := p.hippocampus.Retrieve(ctx, userInput)
 		if priorPlan != nil {
-			// REQ-CACHE-1: exact-match fast-path — bypass LLM entirely when
-			// similarity and confidence are extremely high and the prompt version
-			// matches (ensuring the agent pool and ruleset are identical).
-			// The hash compared is the ACTIVE arm's: under the capability contract a
-			// plan is stamped plannerPromptHashCap, and comparing against the default
-			// arm's hash both disabled the fast path for contract plans and let a
-			// control-arm plan (no required_capabilities, no required_effects) be
-			// replayed under the contract arm. A new prompt version (planner_cap v3,
-			// required_effects) is a new hash, so older cached plans are never replayed
-			// verbatim; they still inform planning as <PlanLTM> references.
-			activeHash := plannerPromptHash
-			if p.capabilityContract {
-				activeHash = plannerPromptHashCap
-			}
-			if similarity >= 0.95 && conf >= 0.90 && priorPlan.PlannerPromptVersion == activeHash {
-				slog.Info("planner_exact_match_cache_hit", "similarity", similarity,
-					"confidence", conf, "prompt_version", priorPlan.PlannerPromptVersion)
-				return priorPlan.Clone(), nil
-			}
+			// The REQ-CACHE-1 exact-match fast path (replay a stored plan verbatim,
+			// skipping the model) was removed (ADR-0145 D9, owner 2026-11-08):
+			// Hippocampus.Store has no production caller, so its only possible hits
+			// were old dated plans replayed as new. A prior plan still informs
+			// planning as a <PlanLTM> structural reference.
 			priorJSON, err := json.Marshal(priorPlan)
 			if err == nil {
 				planEntry = &domain.PlanLTMEntry{
@@ -302,7 +321,7 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 	// The capability vocabulary the planner was actually shown. nil when the contract
 	// arm is off, which disables the guard below along with the feature itself.
 	var capVocab map[string]struct{}
-	if p.capabilityContract {
+	if p.capabilityContract || checklist != nil {
 		// manifest-derived vocabulary so the emitted required_capabilities
 		// match what L1 Declaration enforces (NOT the clusterer's labels).
 		clusterBlock, capVocab = buildCapabilityClusterFromManifests(ctx, agents, p.provider, p.canonicalVocab, p.toolMenu)
@@ -312,24 +331,113 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 		pair = plannerCapPrompts
 		promptVersion = plannerPromptHashCap
 	}
-	req, err := planRequest(pair, plannerDataTags, map[string]string{
+	values := map[string]string{
 		"capability_clusters": clusterBlock,
 		"host":                buildHostBlock(p.hostGOOS()),
 		"today":               p.calendar.Block(),
 		"documents":           buildLTMBlock(planEntry, ltmEnrichment),
 		"request":             userInput,
-	}, plannerCacheTTL)
+	}
+	// ADR-0145 D5/D6: the checklist arm. The checklist rides ctx from the server
+	// (it is derived once per request, before planning) and is shown to the
+	// planner in <requirements>; the coverage stage's open items ride the same block.
+	switch {
+	case staged != nil:
+		pair = plannerStagedPrompts
+		promptVersion = plannerPromptHashStaged
+		values["requirements"] = RenderStagedRequirements(checklist, domain.CoverageStageFrom(ctx))
+		values["stage"] = RenderStageBlock(staged)
+		values["ledger_reads"] = ""
+		if fresh {
+			values["documents"] = ""
+		}
+	case checklist != nil:
+		pair = plannerChecklistPrompts
+		promptVersion = plannerPromptHashChecklist
+		stage := domain.CoverageStageFrom(ctx)
+		values["requirements"] = RenderRequirementsBlock(checklist, stage)
+		if stage != nil && stage.Earlier != "" {
+			values["documents"] = appendBlock(values["documents"], stage.Earlier)
+		}
+	}
+	var effectVocab *domain.StepEffectVocabulary
+	if (p.capabilityContract || checklist != nil) && p.effects != nil {
+		effectVocab = p.effects.Vocabulary()
+	}
+	buildRequest := func() (domain.GenerateRequest, error) {
+		req, err := planRequest(pair, plannerDataTags, values, plannerCacheTTL)
+		if err != nil {
+			return req, err
+		}
+		if effectVocab != nil {
+			if err := applyEffectSchema(&req, effectVocab); err != nil {
+				return req, fmt.Errorf("planner: %w", err)
+			}
+		}
+		return req, nil
+	}
+	req, err := buildRequest()
 	if err != nil {
 		return nil, err
 	}
-	var effectVocab *domain.StepEffectVocabulary
-	if p.capabilityContract && p.effects != nil {
-		effectVocab = p.effects.Vocabulary()
-		if err := applyEffectSchema(&req, effectVocab); err != nil {
-			return nil, fmt.Errorf("planner: %w", err)
+
+	var reply planReply
+	for readRound := 0; ; readRound++ {
+		if reply, err = p.planCall(ctx, req, promptVersion); err != nil {
+			return nil, err
+		}
+		if staged == nil {
+			break
+		}
+		// The staged arm (ADR-0145 D11): exactly one outcome per call.
+		outcome := strings.TrimSpace(reply.Outcome)
+		if outcome == domain.StageOutcomeRead {
+			if readRound >= staged.MaxLookupRounds {
+				return nil, fmt.Errorf("planner: still asking for ledger reads after %d rounds (execution.plan.stage_ledger_read_rounds)", readRound)
+			}
+			values["ledger_reads"] = appendBlock(values["ledger_reads"], serveLedgerReads(ctx, staged, reply.LedgerReads))
+			if req, err = buildRequest(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		staged.AddAssumptions(reply.Assumptions)
+		switch outcome {
+		case domain.StageOutcomeInputRequired:
+			qs := normalizeQuestions(reply.Questions)
+			if len(qs) == 0 {
+				return nil, fmt.Errorf("planner: input_required without a question")
+			}
+			slog.Info("ADR-0145 D11: planner asks the person", "stage", staged.Number, "questions", len(qs), "can_ask", staged.CanAsk)
+			return nil, &domain.InputRequiredError{Questions: qs, Reason: reply.Reasoning}
+		case domain.StageOutcomeNothingMore:
+			slog.Info("ADR-0145 D11: planner has nothing more to add", "stage", staged.Number, "reasoning", reply.Reasoning)
+			return nil, domain.ErrNoFurtherStage
+		}
+		// "stage" (or an unstated outcome): the next stage. An empty stage adds
+		// nothing.
+		if len(reply.Steps) == 0 {
+			return nil, domain.ErrNoFurtherStage
+		}
+		break
+	}
+	plan := reply.ExecutionPlan
+	if staged != nil {
+		// Thought steps are retired on the staged arm (ADR-0145 D6): a step that
+		// only reasons runs on an agent with the ledger and calculation tools.
+		for i := range plan.Steps {
+			if plan.Steps[i].IsThought {
+				slog.Warn("ADR-0145 D11: thought step retired; it runs on an agent", "step", i)
+				plan.Steps[i].IsThought = false
+			}
 		}
 	}
+	return p.finishPlan(ctx, plan, ltmEnrichment, promptVersion, capVocab, effectVocab)
+}
 
+// planCall is one planner model call and its decode.
+func (p *Planner) planCall(ctx context.Context, req domain.GenerateRequest, promptVersion string) (planReply, error) {
+	var reply planReply
 	resp, err := domain.GenerateVia(ctx, p.client, req)
 	if err != nil {
 		// Log it HERE. A bare `return nil, err` made a provider refusal invisible
@@ -343,16 +451,20 @@ func (p *Planner) GetExecutionPlan(ctx context.Context, userInput string) (*doma
 			"err", err,
 			"prompt_chars", len(domain.FlattenRequest(req)),
 			"prompt_version", promptVersion)
-		return nil, err
+		return reply, err
 	}
-	var reply planReply
 	if err := decodePlanReply(resp, &reply); err != nil {
-		return nil, fmt.Errorf("planner: %w", err)
+		return reply, fmt.Errorf("planner: %w", err)
 	}
 	if reply.Reasoning != "" {
 		slog.Debug("planner reasoning", "reasoning", reply.Reasoning, "prompt_version", promptVersion)
 	}
-	plan := reply.ExecutionPlan
+	return reply, nil
+}
+
+// finishPlan applies the post-processing every arm shares to a decoded plan.
+func (p *Planner) finishPlan(ctx context.Context, plan domain.ExecutionPlan, ltmEnrichment domain.LTMEnrichment,
+	promptVersion string, capVocab map[string]struct{}, effectVocab *domain.StepEffectVocabulary) (*domain.ExecutionPlan, error) {
 
 	// AGENTCONTEXTREQ REQ1: forward planning-time facts to DAGExecutor so agents
 	// execute with the same background knowledge that informed the Planner.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -53,6 +54,23 @@ func (v *ArtifactVault) Load(hash string) ([]byte, error) {
 		return nil, err
 	}
 	return data, nil
+}
+
+// Delete removes the bytes stored under hash. A missing file is not an error. The
+// vault is content-addressed and shared (artifacts and ledger bodies can name the
+// same bytes), so the caller decides that nothing references hash any more: the
+// ledger's retention purge checks its own rows and the artifact metadata first
+// (ADR-0145 D1). A hash that is not a plain hex name is refused, so no path can
+// escape the vault directory.
+func (v *ArtifactVault) Delete(hash string) error {
+	if hash == "" || strings.ContainsAny(hash, `/\.:`) {
+		return fmt.Errorf("vault delete: invalid hash %q", hash)
+	}
+	err := os.Remove(filepath.Join(v.VaultPath, hash))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("vault delete: %w", err)
+	}
+	return nil
 }
 
 // Verify re-hashes the stored file and compares to the provided hash.

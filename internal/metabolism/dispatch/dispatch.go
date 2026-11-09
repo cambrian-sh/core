@@ -67,7 +67,17 @@ const (
 	ReasonCheapestCompetent = "cheapest-competent"
 	ReasonExploration       = "exploration"
 	ReasonSoleCandidate     = "sole-candidate"
+	// ReasonComposed: the step runs on a worker the kernel composed for it
+	// (ADR-0145 D12); the selected profession is recorded in the composition.
+	ReasonComposed = "composed"
 )
+
+// WorkerComposer composes the worker a step runs on (ADR-0145 D12,
+// internal/metabolism/compose). ok=false leaves the step to the selected winner.
+type WorkerComposer interface {
+	Compose(ctx context.Context, task *domain.DispatchTask, winner domain.ScoredCandidate,
+		scored []domain.ScoredCandidate, in *domain.Handoff) (domain.ScoredCandidate, domain.WorkerComposition, bool)
+}
 
 // Dispatcher selects and invokes the executor for one step. It satisfies
 // domain.StepDispatcher so it is a drop-in at the DAG call site.
@@ -101,6 +111,12 @@ type Dispatcher struct {
 	// the executing agent is known. nil ⇒ the lease stays agent-unbound (tests), and an
 	// agent-unbound lease is refused to every agent (Server.resolveLeaseFor).
 	Leases domain.LeaseAgentBinder
+
+	// Composer, when set (execution.workers.composed), runs a plan step on a worker
+	// composed for it instead of on the selected profile agent (ADR-0145 D12). A
+	// step whose winner is a code or service agent is dispatched to it unchanged.
+	// nil ⇒ the legacy agent-per-step path.
+	Composer WorkerComposer
 }
 
 // handoffLeaseKey is the handoff context key that carries the step's BudgetLease to the
@@ -211,6 +227,17 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 	}
 
 	winner, reason := d.selectWinner(ctx, task, scored)
+	// ADR-0145 D12: the eligible professions become one composed worker. Only a
+	// plan step (the kernel stamps _step_index) is composed; the selected agent is
+	// kept in `selected` for the event's rationale.
+	composed := false
+	compositionID := ""
+	if d.Composer != nil && in != nil && in.Context != nil && in.Context["_step_index"] != "" {
+		if rt, comp, ok := d.Composer.Compose(ctx, task, winner, scored, in); ok {
+			slog.Debug("dispatch: step composed", "task", task.ID, "selected", winner.Agent.ID, "runtime", rt.Agent.ID)
+			winner, reason, composed, compositionID = rt, ReasonComposed, true, comp.ID()
+		}
+	}
 
 	// The candidate slate is reported on the same event the auction used, so the
 	// orchestration suite scores routing accuracy identically across both arms.
@@ -225,6 +252,9 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 			// Why this agent was eligible at all: its tools cover the step's effects.
 			rationale += "; effects [" + strings.Join(ec.Required, ",") + "] ⊆ [" +
 				strings.Join(ec.AgentEffects[sc.Agent.ID], ",") + "]"
+		}
+		if composed {
+			rationale += "; profession of composition " + compositionID
 		}
 		bids = append(bids, domain.CandidateEntry{
 			AgentID:    sc.Agent.ID,
@@ -252,6 +282,11 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 
 	runnerUps := make([]domain.ScoredCandidate, 0, len(scored))
 	for _, sc := range scored {
+		// A composed step has no runner-ups: falling back to a pre-built agent
+		// would run the step outside its composition (ADR-0145 D12).
+		if composed {
+			break
+		}
 		if sc.Agent.ID != winner.Agent.ID {
 			runnerUps = append(runnerUps, sc)
 		}

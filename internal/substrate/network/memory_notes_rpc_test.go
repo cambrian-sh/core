@@ -79,24 +79,6 @@ func TestMemoryNotesRPC_FrozenPerRunAndVisibleNextRun(t *testing.T) {
 	}
 }
 
-func TestMemoryNotesRPC_ChildDeniedWithoutGrant(t *testing.T) {
-	t.Parallel()
-	s, gw := notesServer(t)
-	parent := bindNotesLease(t, gw, domain.LeaseBinding{RunID: "r", AgentID: "planner", ConversationID: "conv-of-alice"})
-	child := bindNotesLease(t, gw, domain.LeaseBinding{RunID: "r", AgentID: "web", ConversationID: "conv-of-alice", ParentLeaseID: parent})
-	w, err := s.ProposeMemoryNote(agentPlaneCtx("web"), &pb.ProposeMemoryNoteRequest{LeaseId: string(child),
-		Op: pb.MemoryNoteOp_MEMORY_NOTE_OP_APPEND, Content: "x"})
-	if err != nil || w.GetAccepted() || w.GetRejection() != pb.MemoryNoteRejection_MEMORY_NOTE_REJECTION_SCOPE_DENIED {
-		t.Fatalf("child: %+v %v", w, err)
-	}
-	granted := bindNotesLease(t, gw, domain.LeaseBinding{RunID: "r", AgentID: "web", ConversationID: "conv-of-alice",
-		ParentLeaseID: parent, MemoryWriteGranted: true})
-	if w, _ := s.ProposeMemoryNote(agentPlaneCtx("web"), &pb.ProposeMemoryNoteRequest{LeaseId: string(granted),
-		Op: pb.MemoryNoteOp_MEMORY_NOTE_OP_APPEND, Content: "x"}); !w.GetAccepted() {
-		t.Fatalf("granted child: %+v", w)
-	}
-}
-
 func TestMemoryNotesRPC_RefusalsAndErrors(t *testing.T) {
 	t.Parallel()
 	s, gw := notesServer(t)

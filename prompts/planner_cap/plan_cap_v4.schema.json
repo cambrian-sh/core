@@ -1,0 +1,106 @@
+{
+  "title": "ExecutionPlanWithRequirements",
+  "description": "A plan whose steps declare capability tags, required effects, the checklist items they answer and their input bindings (ADR-0145 D6). Decoded into domain.ExecutionPlan by internal/awareness/planner.go under execution.plan.checklist_enabled.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reasoning",
+    "subject",
+    "cache_policy",
+    "steps"
+  ],
+  "properties": {
+    "reasoning": {
+      "type": "string",
+      "description": "A few sentences on the approach; logged, never executed."
+    },
+    "subject": {
+      "type": "string"
+    },
+    "cache_policy": {
+      "type": "string",
+      "description": "codegen, cognitive, tool, research or default."
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query",
+          "depends_on",
+          "required_capabilities",
+          "required_effects",
+          "answers"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The complete natural-language instruction for this step."
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Zero-based indices of the steps that must finish first."
+          },
+          "required_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Capability tags from <capability_clusters>; empty when none is needed."
+          },
+          "required_effects": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Effects from the effect vocabulary in <capability_clusters> that the step performs; empty for a thought step or a step that only reasons and answers. The runtime adds the configured vocabulary as an enum on items when it sends this schema."
+          },
+          "checkpoint_after": {
+            "type": "boolean"
+          },
+          "fan_out_over": {
+            "type": "integer",
+            "description": "Index of the earlier step whose output is the set to expand over."
+          },
+          "fan_out_var": {
+            "type": "string",
+            "description": "Placeholder name used in the query; default item."
+          },
+          "preferred_agent": {
+            "type": "string",
+            "description": "An agent ID, only when the request names one."
+          },
+          "agent_pin": {
+            "type": "string",
+            "enum": [
+              "soft",
+              "hard"
+            ]
+          },
+          "answers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of the requirements items this step produces results for."
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Bindings to earlier steps: s<N>, s<N>.<name>, optionally ending in [*]."
+          },
+          "for_each": {
+            "type": "string",
+            "description": "The set binding an item is answered once per member of, e.g. s0.overdue."
+          }
+        }
+      }
+    }
+  }
+}

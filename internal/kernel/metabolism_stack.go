@@ -99,6 +99,13 @@ func NewMetabolismStack(
 	if m := cfg.Execution.Retrieval.RerankerModel; m != "" {
 		envExtras = append(envExtras, "RERANK_MODEL="+m)
 	}
+	// ADR-0145 D10: agents trace their own model and tool calls into the kernel's
+	// run-trace directory (sdk cambrian_agent_sdk/run_trace.py).
+	envExtras = append(envExtras, traceEnv(cfg.Execution.Trace)...)
+	// ADR-0145 D3: the SDK's evidence re-prompt (sdk react.py, EVIDENCE_REPROMPT_ENV).
+	if cfg.Execution.Workers.EvidenceReprompt {
+		envExtras = append(envExtras, "CAMBRIAN_EVIDENCE_REPROMPT=1")
+	}
 	if len(envExtras) > 0 {
 		manager.SetEnvExtras(envExtras)
 	}

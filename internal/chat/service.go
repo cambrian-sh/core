@@ -154,6 +154,11 @@ type TurnService struct {
 	// the user wrote identifies one (execution.chat.chat_default_language). Empty or a
 	// language the catalogue lacks means English (locale.go).
 	DefaultLanguage string
+
+	// Grounding is the ADR-0145 phase-3 chat configuration (grounding.go); the
+	// zero value is the pre-phase-3 turn path.
+	Grounding Grounding
+	g         groundingDeps
 }
 
 // SetDelegationEnder wires the end of a turn to the end of the work it delegated.
@@ -455,11 +460,20 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		})
 	}()
 
-	history, err := s.loadHistory(ctx, req.ConversationID, userMsg.Seq)
+	// The transcript: the fixed message window, or (ADR-0145 D2) the token-budgeted
+	// one with the rolling summary of what no longer fits.
+	var history []domain.Message
+	tc := &turnContext{}
+	if s.Grounding.TranscriptBudgetTokens > 0 {
+		history, tc.summary, err = s.loadBudgetedHistory(ctx, conv, userMsg.Seq, userMsg.ID)
+	} else {
+		history, err = s.loadHistory(ctx, req.ConversationID, userMsg.Seq)
+	}
 	if err != nil {
 		return domain.Message{}, err
 	}
 	lang = s.turnLanguage(req.Text, history)
+	s.loadTurnContext(ctx, conv, history, tc)
 
 	turnCtx := ctx
 	turnCancel := context.CancelFunc(func() {})
@@ -493,13 +507,23 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 			// delegates to the planner, Execute resolves this lease and links the session
 			// it opens back to this exchange — without the agent naming it.
 			if s.leases != nil {
-				s.leases.BindLease(domain.LeaseID(tok), domain.LeaseBinding{
+				b := domain.LeaseBinding{
 					ConversationID:  conv.ID,
 					OriginMessageID: userMsg.ID,
 					AgentID:         s.leaseAgentID,
 					// Operator act-for: who opened this turn for the owner (audit).
 					ActedBy: domain.ActForActorFromContext(ctx),
-				})
+				}
+				// ADR-0145 D5a: this message answers the previous turn's ask-back;
+				// Execute resumes from the pending state named here, by the kernel.
+				if tc.pending != nil {
+					b.AskBackRound = tc.pending.Round
+					if b.AskBackRound <= 0 {
+						b.AskBackRound = 1
+					}
+					b.AskBackPendingRef = tc.pendingRef
+				}
+				s.leases.BindLease(domain.LeaseID(tok), b)
 			}
 		}
 	}
@@ -519,6 +543,7 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	s.emitProgress(ctx, req.ConversationID, domain.PhaseWorking, lang)
 
 	h := s.buildHandoff(turnCtx, conv, req, history, sessionToken)
+	s.addTurnContext(h, tc)
 	resp, err := s.pool.Dispatch(turnCtx, h)
 	if err != nil {
 		// Distinguish "we gave up on a wedged turn" from an ordinary cancellation, so the
@@ -552,6 +577,17 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	if reply == "" {
 		return domain.Message{}, ErrEmptyReply
 	}
+	// ADR-0145 D8: the reply check (observe or enforce) over the turn's evidence,
+	// then the evidence markers are stripped. The runs the turn delegated are read
+	// kernel-side, before the turn's end forgets them.
+	var results []domain.ExecuteResult
+	if s.g.results != nil {
+		results = s.g.results(userMsg.ID)
+	}
+	reply = s.groundReply(turnCtx, ctx, conv, userMsg, history, h, reply, results, tc.shownIndex, lang)
+	if reply == "" {
+		return domain.Message{}, ErrEmptyReply
+	}
 	// The reply disclosure guard (disclosure.go): a deterministic check, after whatever the
 	// agent's own prompts and guards did, that the reply does not state a personal
 	// identifier it declares withheld, nor a strong identifier to a customer. Values the
@@ -578,6 +614,8 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 	if msg.ID == "" {
 		return domain.Message{}, derr
 	}
+	// ADR-0145 D2/D5a: the turn's index entry (and any ask-back it left open).
+	s.recordTurnIndex(context.WithoutCancel(ctx), conv, userMsg, results)
 	return msg, nil
 }
 

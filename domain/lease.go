@@ -42,26 +42,37 @@ type LeaseBinding struct {
 	// trusting the agent to name one it was not dispatched under.
 	ConversationID  string
 	OriginMessageID string
-	// ParentLeaseID is set when this lease belongs to an ADR-0139 D12 subagent: the
-	// lease of the parent that spawned it. Non-empty marks the holder as a CHILD.
-	// D12: children get no memory write (and no clarify or messaging) unless the
-	// spawn granted it, so a child lease is refused memory-note writes
-	// (MEMORY_NOTE_REJECTION_SCOPE_DENIED) unless MemoryWriteGranted is set.
-	// Written by the kernel at spawn, never by the agent.
-	ParentLeaseID LeaseID
-	// MemoryWriteGranted is the D12 explicit grant of memory write to a child
-	// (the spawn's toolset named the memory-write tool). Meaningless on a root lease.
-	MemoryWriteGranted bool
+	// Guard are the request facts the tool executor's ADR-0145 D14 guards need
+	// for a plan step (the request scope of the write record, the checklist's
+	// constraints, the write items the step answers, the repair turn). nil on
+	// every non-step lease. Written by the kernel at dispatch, never by the agent.
+	Guard *StepGuard
+	// DelegationDepth is the run's depth in a chain of worker delegations
+	// (ADR-0145 D14: a worker hands extra work to the planner through Execute):
+	// 0 for a run a person, chat turn or pipeline ordered. Server.Execute refuses a
+	// worker delegation past execution.plan.max_worker_delegation_depth.
+	DelegationDepth int
+	// PlanGeneration is the executor's plan generation the step belongs to (0 =
+	// the plan the run started with; +1 per replan). A tool call's ledger entry is
+	// recorded under LedgerRunID(RunID, PlanGeneration), so a replanned step N
+	// never sees the swapped-out plan's step N results. Written by the kernel at
+	// dispatch (T-20261108-ledger-step-indices-collide-across-replans-in).
+	PlanGeneration int
 	// ActedBy is the authenticated operator who opened this chat turn ON BEHALF OF
 	// the conversation's owner (operator act-for); "" when the owner acted
 	// themself. Audit only: whose notes, scope and credentials the turn uses is
 	// still the conversation owner (the run principal). Written by the kernel from
 	// domain.ActForActorFromContext, never by the agent.
 	ActedBy string
+	// AskBackRound and AskBackPendingRef are set by the chat lane on a turn lease
+	// when the previous turn ended with a delegated run asking the person
+	// (ADR-0145 D5a): the ask-back round this message answers, and the ledger id
+	// of the pending InputRequired to resume from. Server.Execute stamps them on
+	// the request as HandoffKeyAskBackRound / HandoffKeyAskBackPendingRef,
+	// replacing anything a caller sent. Written by the kernel, never by the agent.
+	AskBackRound      int
+	AskBackPendingRef string
 }
-
-// IsChild reports whether the lease belongs to a D12 subagent.
-func (b LeaseBinding) IsChild() bool { return b.ParentLeaseID != "" }
 
 // IsZero reports whether the binding carries no identity at all. A zero binding must never
 // be used to grant ownership or narrow a scope — it means "this lease was never bound".

@@ -25,6 +25,7 @@ not push its specifics into this file.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -73,7 +74,159 @@ PROMPT_VERSIONS = {pid: _LIBRARY.get(pid).static_hash for pid in ("chat_agent", 
 # Tags that hold untrusted or kernel-supplied text in the turn (and the policy and the
 # work systems in the system text).
 _DATA_TAGS = ("conversation", "recalled_memory", "memory", "latest_message", "policy",
-              "work_systems", "planner_result", "user_request")
+              "work_systems", "planner_result", "user_request",
+              # ADR-0145 phase 3 (chat_agent_turn v7)
+              "conversation_summary", "turn_index", "pending_request", "evidence", "questions",
+              "draft_reply", "problems")
+
+# ── ADR-0145 phase 3, the chat side ─────────────────────────────────────────
+# Turn keys the kernel sends (internal/chat replyguard.go, turnindex.go), each only when
+# its execution.chat key is on. Absent, the turn is the pre-phase-3 one and the rendered
+# prompts are byte-identical to chat_agent v4 / chat_agent_turn v6.
+_KEY_GROUNDED = "grounded_reply"          # D8 composer: the reply is written over the evidence
+_KEY_REPLY_CHECK = "reply_check"          # D8 check mode: observe | enforce
+_KEY_DELEGATION_RULE = "delegation_rule"  # D3: org questions delegated; the message verbatim every time
+_KEY_LEDGER_TOOLS = "ledger_tools"        # ledger_get / ledger_find on the menu
+_KEY_TURN_INDEX = "turn_index"            # D2.2: the rendered index of earlier delegated turns
+_KEY_SUMMARY = "conversation_summary"     # D2.3: the rolling summary
+_KEY_PENDING = "pending_input"            # D5a: the previous turn's open ask-back
+_KEY_ASK_BACK = "ask_back"                # D5a: a delegated run may stop to ask the user
+_KEY_REVISION = "reply_revision"          # D8 enforce: the one retry
+_KEY_REVISION_EVIDENCE = "reply_evidence"
+_KEY_PENDING_REQUEST = "pending_request"  # D5a: the pending request's own words, verbatim
+_LEDGER_TOOLS = ("ledger_get", "ledger_find")
+
+
+def _flag(task, key: str) -> bool:
+    v = task.metadata.get(key) or task.context.get(key) or ""
+    return str(v).strip().lower() == "true"
+
+
+def _run_think_takes_d3() -> bool:
+    """Whether the SDK's run_think has the D3 keywords (delegation_tool, turn_evidence)."""
+    try:
+        import inspect
+        from cambrian_agent_sdk.react import run_think
+        params = inspect.signature(run_think).parameters
+    except (ImportError, TypeError, ValueError):
+        return False
+    return "delegation_tool" in params and "turn_evidence" in params
+
+
+_RUN_THINK_D3 = _run_think_takes_d3()
+
+
+def _evidence_reprompt_on() -> bool:
+    """The SDK's structural D3 re-prompt (CAMBRIAN_EVIDENCE_REPROMPT, set by the kernel from
+    execution.workers.evidence_reprompt; agent:claude-p3work). With it on, a reply that
+    promises work without a tool call is re-prompted toward delegate_to_planner by the loop
+    itself, decided by what the turn did, not by English words."""
+    try:
+        from cambrian_agent_sdk.react import _evidence_reprompt_default
+    except ImportError:  # an SDK without the D3 re-prompt
+        return False
+    return _evidence_reprompt_default()
+
+
+def _fmt_value(v) -> str:
+    if isinstance(v, str):
+        return v
+    return json.dumps(v, ensure_ascii=False)
+
+
+def render_evidence(result) -> str:
+    """The D8 evidence block of one delegated run, from the structured Execute result
+    (SDK ExecuteResult): the checklist items with the kernel-decided status and the
+    accepted values, each with the ledger id it came from; the actions with the ids the
+    systems returned, numbered per tool; the completed steps' ledger refs; the planner's
+    report last. English labels (internal language); data as the run recorded it."""
+    lines = []
+    req = getattr(result, "requirements", None) or {}
+    items = (req.get("items") or []) if isinstance(req, dict) else []
+    if items:
+        lines.append("Checklist (status decided by the kernel):")
+        for it in items:
+            item = it.get("item") or {}
+            line = f"- [{item.get('id', '')}] {item.get('type', '')} {it.get('status', '')}: {item.get('text', '')}"
+            if item.get("quote"):
+                line += f" (asked as \"{item['quote']}\")"
+            if it.get("reason") and it.get("status") != "satisfied":
+                line += f" - {it['reason']}"
+            lines.append(line)
+            for v in it.get("values") or []:
+                name = v.get("name") or v.get("type") or "value"
+                val = f"    {name} = {_fmt_value(v.get('value'))}"
+                if v.get("evidence_ref"):
+                    val += f" [{v['evidence_ref']}]"
+                lines.append(val)
+    actions = getattr(result, "actions", None) or []
+    if actions:
+        lines.append("Actions taken:")
+        per_tool = {}
+        for a in actions:
+            tool_name = a.get("tool", "")
+            per_tool[tool_name] = per_tool.get(tool_name, 0) + 1
+            line = f"- {tool_name} #{per_tool[tool_name]} {a.get('status', '')}"
+            if a.get("ids"):
+                line += " ids=" + ",".join(a["ids"])
+            if a.get("detail"):
+                line += f" ({a['detail']})"
+            lines.append(line)
+    steps = [st for st in (getattr(result, "steps", None) or [])
+             if st.get("ref") and st.get("status") == "completed"]
+    if steps:
+        lines.append("Step results (read in full with ledger_get):")
+        for st in steps:
+            lines.append(f"- step {st.get('step')} [{st['ref']}]: {(st.get('preview') or '').strip()[:300]}")
+    report = _result_text(result).strip()
+    if report:
+        lines.append("Planner report:")
+        lines.append(report)
+    return "\n".join(lines)
+
+
+def input_required_of(result):
+    """The run's "input required" (ADR-0145 D5a, domain.InputRequired), or None."""
+    structured = getattr(result, "structured", None) or {}
+    ir = structured.get("input_required") if isinstance(structured, dict) else None
+    return ir if isinstance(ir, dict) and ir.get("questions") else None
+
+
+def render_questions(ir) -> str:
+    out = []
+    for q in ir.get("questions") or []:
+        line = f"- {q.get('question', '')}"
+        if q.get("options"):
+            line += " (options: " + " | ".join(str(o) for o in q["options"]) + ")"
+        if q.get("quote"):
+            line += f" (about: \"{q['quote']}\")"
+        out.append(line)
+    return "\n".join(out)
+
+
+class _MenuView:
+    """The agent's @tool registry with some tools hidden for a turn (the ledger tools are
+    offered only when the kernel sends ledger_tools, execution.chat.ledger_tools)."""
+
+    def __init__(self, inner, hidden):
+        self._inner, self._hidden = inner, frozenset(hidden)
+
+    def names(self):
+        return [n for n in self._inner.names() if n not in self._hidden]
+
+    def __contains__(self, name):
+        return name not in self._hidden and name in self._inner
+
+    def schema(self, name):
+        return self._inner.schema(name)
+
+    def specs(self):
+        return [s for s in self._inner.specs() if s.name not in self._hidden]
+
+    def call(self, name, **kwargs):
+        if name in self._hidden:
+            return {"error": f"unknown tool '{name}'", "tool": name}
+        return self._inner.call(name, **kwargs)
 
 
 def _neutralise(value: str) -> str:
@@ -384,7 +537,6 @@ class ChatAgent(CognitiveAgent):
     # either sets the attribute on a subclass (ticket
     # T-20261105-adr-0139-d12-in-agent-subagents-via-spawn records the decision).
     allow_memory_note_writes = True
-    allow_subagents = False
     allow_skill_proposals = False
     # The front desk is where a person says "every Monday at 8, send me ...": it may
     # PROPOSE a recurring task for them and manage theirs (capability
@@ -393,6 +545,13 @@ class ChatAgent(CognitiveAgent):
     # (T-20261106-the-assistant-cannot-set-up-a-recurring-task). Offered only when the
     # kernel serves the RPCs.
     allow_scheduled_tasks = True
+    # ADR-0145 D3 (the SDK's structural evidence re-prompt, agent:claude-p3work): the tool a
+    # plain-text reply with no evidence behind it is pointed at, instead of final_answer.
+    delegation_tool = "delegate_to_planner"
+    # The loop's tool rounds: delegate_to_planner, then summarise its result (+1 slack);
+    # with the ledger tools on, more rounds for reading earlier results (ADR-0145 D2/D3).
+    max_tool_rounds = 3
+    ledger_tool_rounds = 2
 
     # The managed-LLM budget lease for the turn in flight (ADR-0018). Stashed in run() so the
     # planner-delegation tool can charge a sub-plan to the same lease.
@@ -432,12 +591,22 @@ class ChatAgent(CognitiveAgent):
     _turn_deadline = 0.0
     # Every planner result this turn, in order: the material of the one final reply.
     _turn_results: list = []
+    # The structured result of every delegation this turn (ADR-0145 D8: run id, action
+    # ledger, step ledger refs, partial/timeout flags), kept whole for the composer;
+    # the reply is still written from _turn_results' text for now.
+    _turn_executions: list = []
     # The turn's language (the kernel's "language" key) and its seed recall, once per turn.
     _turn_language = ""
     _seed_cache = None
     # The latest message, and whether the turn's first delegation carried it to the planner.
     _turn_message = ""
     _scope_sent = False
+    # ADR-0145 phase 3: the turn's flags (the kernel's keys) and state.
+    _grounded = False
+    _delegation_rule = False
+    _pending_request = ""
+    # The questions a delegated run returned this turn (D5a): the turn ends with them.
+    _asked_back = ""
 
     def _time_left(self):
         """Seconds until the turn deadline, or None when the turn has none."""
@@ -469,6 +638,11 @@ class ChatAgent(CognitiveAgent):
         if self._replay_delegation and self._delegated:
             # The report retry: the plan already ran this turn; hand back its result.
             return self._delegation_result
+        if self._asked_back:
+            # A run this turn stopped to ask the user (D5a): nothing more runs until they
+            # answer; the turn ends with the questions.
+            _log.warning("chat_agent: re-delegation after an ask-back suppressed")
+            return self._ask_person_note(self._asked_back)
         if self._final_denial:
             # A result this turn carried a refusal a retry cannot change: never run another
             # plan for it (reworded or split up, it is refused the same way).
@@ -501,8 +675,24 @@ class ChatAgent(CognitiveAgent):
             raise _ReplyNow()
         self._delegation_result = _result_text(result)
         self._turn_results.append(self._delegation_result)
+        # The whole result (SDK ExecuteResult, ADR-0145 D8); an older SDK returns text only.
+        as_dict = getattr(result, "as_dict", None)
+        if callable(as_dict):
+            self._turn_executions.append(as_dict())
+            _log.info("chat_agent: delegated run %s finished (%d steps, partial=%s)",
+                      getattr(result, "run_id", ""), len(getattr(result, "steps", []) or []),
+                      getattr(result, "partial", False))
         if _reports_final_denial(self._delegation_result):
             self._final_denial = self._delegation_result
+        input_required = input_required_of(result)
+        if input_required is not None:
+            # ADR-0145 D5a: the run stopped for the user's answer. The kernel saved the
+            # pending state with the turn (internal/chat turnindex.go); the turn ends with the
+            # questions, asked in the user's language.
+            self._asked_back = render_questions(input_required)
+            _log.info("chat_agent: delegated run %s needs the user's input (%d questions)",
+                      getattr(result, "run_id", ""), len(input_required.get("questions") or []))
+            return self._ask_person_note(self._asked_back)
         if not self._has_time_for(self.reply_reserve_s + self.min_delegation_s):
             # No plan can start after this one, so every further loop round (a memory query,
             # a refused delegation, the tool-budget nudge, a reprompt) only spends the time
@@ -514,7 +704,59 @@ class ChatAgent(CognitiveAgent):
         # agents work in English); the reply's language is restated right where the model
         # reads the result it is about to relay.
         lang_line = self._reply_language_line()
+        if self._grounded:
+            # ADR-0145 D8 composer: the model writes over the evidence (values with their
+            # ledger ids, checklist statuses, actions), not over the report prose alone.
+            block = _TURN["evidence"].render({"evidence": _neutralise(render_evidence(result))})
+            return f"{block}\n\n{lang_line}" if lang_line else block
         return f"{self._delegation_result}\n\n{lang_line}" if lang_line else result
+
+    def _ask_person_note(self, questions: str) -> str:
+        name = _language_name(self._turn_language) or "the language of the latest message"
+        return _TURN["ask-person"].render({"questions": _neutralise(questions), "language": name})
+
+    # ── ADR-0145 D2/D3: the run ledger for follow-ups ─────────────────────────
+    # Kernel-served tools (internal/ledger), called through ExecuteTool with the turn's
+    # lease, so the kernel resolves the scope (conversation, turn) and applies the read
+    # predicate; nothing here widens what the user may read. On the menu only when the
+    # kernel sends ledger_tools (execution.chat.ledger_tools).
+
+    def _ledger_call(self, tool_name: str, args: dict) -> str:
+        resp = self.substrate.execute_tool(tool_name, json.dumps(args), session_token_id=self._turn_token)
+        if resp.get("denied"):
+            return f"not permitted: {resp.get('deny_reason', '')}"
+        if resp.get("error"):
+            return f"error: {resp['error']}"
+        return resp.get("result_json") or ""
+
+    @tool
+    def ledger_get(self, id: str, path: str = "", rows: str = "", page: int = 0) -> str:
+        """Read a result recorded earlier in this conversation by its ledger id (led_...),
+        from the turn index or an evidence block. Optional: path selects part of a JSON body
+        (a.b[0].c), rows a slice of a JSON list ("10:20"), page a page of a long text. Use the
+        exact figures, ids and dates it returns."""
+        args = {"id": id}
+        if path:
+            args["path"] = path
+        if rows:
+            args["rows"] = rows
+        if page and page > 0:
+            args["page"] = page
+        return self._ledger_call("ledger_get", args)
+
+    @tool
+    def ledger_find(self, scope: str = "conversation", tool: str = "", kind: str = "", text: str = "") -> str:
+        """Search the results recorded in this conversation: scope is turn or conversation;
+        filter by tool name, kind (tool_result, step_output, computed, artifact) or text.
+        Returns ids and previews; read an entry with ledger_get."""
+        args = {"scope": scope if scope in ("run", "turn", "conversation") else "conversation"}
+        if tool:
+            args["tool"] = tool
+        if kind:
+            args["kind"] = kind
+        if text:
+            args["text"] = text
+        return self._ledger_call("ledger_find", args)
 
     def _scoped_task(self, task_description: str) -> str:
         """The task sent to the planner. The FIRST delegation of a turn carries the user's
@@ -531,6 +773,21 @@ class ChatAgent(CognitiveAgent):
         as written; a task_description that already holds the message is sent unchanged.
         """
         message = (self._turn_message or "").strip()
+        if self._pending_request and message:
+            # ADR-0145 D5a: the latest message answers a pending request; the planner gets
+            # both, verbatim, so the checklist is derived from the user's own words.
+            message = f"{self._pending_request}\n\n{message}"
+        if self._delegation_rule:
+            # ADR-0145 D3: EVERY delegation carries the user's words verbatim; the kernel
+            # builds the checklist from them (domain.UserRequestText), never from a
+            # task_description the front desk may have narrowed or decided on.
+            if not message:
+                return task_description
+            self._scope_sent = True
+            return _TURN["delegation-scope"].render({
+                "task_description": task_description.strip(),
+                "message": _neutralise(message),
+            })
         if self._scope_sent or not message or message in task_description:
             return task_description
         self._scope_sent = True
@@ -572,6 +829,45 @@ class ChatAgent(CognitiveAgent):
             _log.warning("chat_agent: final reply call failed (%r); sending the results as they are", e)
             return _out_of_time_reply(language, self._turn_results)
         return text or _out_of_time_reply(language, self._turn_results)
+
+    def _revise_reply(self, task: "AgentTask", revision: str, substrate, recall: bool, fallback: str):
+        """The kernel's one retry of a reply the D8 reply check refused (execution.chat.
+        reply_check=enforce; internal/chat replyguard.go): ONE plain call rewrites the reply
+        over the evidence the kernel attached, naming the values no evidence backs and the
+        checklist items left unanswered. No tools and no delegation: the turn's work already
+        ran. If the call fails, the draft goes back and the kernel states the gaps."""
+        try:
+            rev = json.loads(revision)
+        except ValueError:
+            rev = {}
+        draft = str(rev.get("draft") or "")
+        problems = []
+        if rev.get("uncited"):
+            problems.append("Values no evidence of this turn backs: " + ", ".join(str(v) for v in rev["uncited"]))
+        for g in rev.get("gaps") or []:
+            problems.append(f"Checklist item neither answered nor stated as a gap: {g}")
+        revise = {"draft": draft, "problems": "\n".join(problems) or "(none)",
+                  "evidence": self._meta(task, _KEY_REVISION_EVIDENCE)}
+        role, constraints, turn_text, _ = self.compose(task, recall=False, revise=revise)
+        system = "\n\n".join([role, self.output_schema, "\n".join(constraints)])
+        left = self._time_left()
+        budget_s = None if left is None else left - self.final_margin_s
+        try:
+            res = substrate.generate_request(
+                task.session_token_id,
+                system=[{"text": system, "cache": True}],
+                messages=[{"role": "user", "content": turn_text}],
+                cache_ttl=self.cache_ttl,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                timeout_ms=int(budget_s * 1000) if budget_s is not None and budget_s > 1 else 0,
+            )
+            text = _plain_reply(getattr(res, "text", res) if not isinstance(res, str) else res)
+        except Exception as e:  # noqa: BLE001 — the kernel keeps the draft and states the gaps
+            _log.warning("chat_agent: reply revision call failed (%r); returning the draft", e)
+            text = draft
+        spoken = _spoken_only(text or draft, self._turn_language)
+        return AgentResult(data=spoken.encode("utf-8"), type="text", confidence=0.7)
 
     def _meta(self, task: "AgentTask", key: str, default: str = "") -> str:
         return task.metadata.get(key) or task.context.get(key) or default
@@ -623,7 +919,7 @@ class ChatAgent(CognitiveAgent):
         return "\n".join(items)
 
     def compose(self, task: "AgentTask", *, recall: bool, force_delegate: bool = False,
-                report_result: str = "", reply_now: bool = False):
+                report_result: str = "", reply_now: bool = False, revise=None):
         """The turn's prompt parts: ``(role, constraints, turn_text, max_memory_queries)``.
 
         System (stable for the conversation, cached): role, rules, the posture's answering
@@ -652,10 +948,28 @@ class ChatAgent(CognitiveAgent):
             role += "\n\n" + _SYSTEM["policy"].render({"policy": _neutralise(policy)})
         posture = "answer-memory" if recall else "answer-tools-only"
         constraints = list(self.constraints) + _SYSTEM[posture].render().splitlines()
+        summary = self._meta(task, _KEY_SUMMARY).strip()
+        turn_index = self._meta(task, _KEY_TURN_INDEX).strip()
+        pending = self._meta(task, _KEY_PENDING).strip()
+        # ADR-0145 phase 3 rules (chat_agent v5), each only when the kernel turned its key
+        # on, so with every key off the system text is chat_agent v4's.
+        for section, on in (
+            ("rules-grounded", _flag(task, _KEY_GROUNDED)),
+            ("rules-delegation", _flag(task, _KEY_DELEGATION_RULE)),
+            ("rules-ledger-tools", _flag(task, _KEY_LEDGER_TOOLS)),
+            ("rules-turn-index", bool(turn_index)),
+            ("rules-ask-back", bool(pending) or _flag(task, _KEY_ASK_BACK)),
+        ):
+            if on:
+                constraints += _SYSTEM[section].render().splitlines()
 
         parts = []
+        if summary:
+            parts.append(_TURN["summary"].render({"summary": _neutralise(summary)}))
         if transcript:
             parts.append(_TURN["conversation"].render({"transcript": _neutralise(transcript)}))
+        if turn_index:
+            parts.append(_TURN["turn-index"].render({"turn_index": _neutralise(turn_index)}))
         # Recalled once per turn: a retry or the final reply call reuses it rather than
         # spending another recall round trip.
         if recall and self._seed_cache is None:
@@ -667,6 +981,8 @@ class ChatAgent(CognitiveAgent):
         if today:
             today = re.sub(r"(?i)</\s*today\s*>", "[/today]", today)
             parts.append(_TODAY.render({"today": today}).text)
+        if pending:
+            parts.append(_TURN["pending"].render({"pending": _neutralise(pending)}))
         parts.append(_TURN["message"].render({"message": _neutralise(user_msg)}))
         if force_delegate:
             parts.append(_TURN["force-delegate"].render())
@@ -675,6 +991,12 @@ class ChatAgent(CognitiveAgent):
         if reply_now:
             results = "\n\n---\n\n".join(r.strip() for r in self._turn_results if (r or "").strip())
             parts.append(_TURN["reply-now"].render({"planner_result": _neutralise(results or "(none)")}))
+        if revise is not None:
+            parts.append(_TURN["revise-reply"].render({
+                "draft": _neutralise(revise["draft"]), "problems": _neutralise(revise["problems"]),
+                "evidence": _neutralise(revise["evidence"] or "(none)"),
+                "language": _language_name(self._turn_language) or "the language of the latest message",
+            }))
         lang_line = self._reply_language_line()
         if lang_line:
             parts.append(lang_line)
@@ -693,6 +1015,7 @@ class ChatAgent(CognitiveAgent):
         recall = self._recall(task)
         # The conversation's language, detected by the kernel (internal/chat buildHandoff).
         fallback = _safe_fallback(self._meta(task, "language"))
+        ledger_tools = _flag(task, _KEY_LEDGER_TOOLS)
 
         def _think(force_delegate: bool, report_result: str = ""):
             role, constraints, turn_text, max_mem = self.compose(
@@ -716,6 +1039,14 @@ class ChatAgent(CognitiveAgent):
             # find_tools. yield_subgoal is disabled: a subgoal is a step INSIDE a plan bound by a
             # kernel coordinator a directly-dispatched chat worker doesn't have; the front desk
             # delegates WHOLE work instead.
+            kwargs = {}
+            if _RUN_THINK_D3:
+                # ADR-0145 D3: the SDK's structural re-prompt (evidence_reprompt) points a reply
+                # with no evidence behind it at delegate_to_planner; the turn's evidence seeded
+                # outside the loop (recalled memory, the turn index of earlier delegated turns)
+                # counts as evidence.
+                kwargs["delegation_tool"] = self.delegation_tool
+                kwargs["turn_evidence"] = bool(self._seed_cache) or bool(self._meta(task, _KEY_TURN_INDEX).strip())
             return run_think(
                 self, turn,
                 role=role,
@@ -726,11 +1057,13 @@ class ChatAgent(CognitiveAgent):
                 seed_system_tools=False,
                 allow_yield_subgoal=False,
                 max_memory_queries=max_mem,
-                # Rounds: delegate_to_planner, then summarise its result (+1 slack).
-                max_tool_rounds=3,
+                # Rounds: delegate_to_planner, then summarise its result (+1 slack); more
+                # when the ledger tools are on the menu.
+                max_tool_rounds=self.max_tool_rounds + (self.ledger_tool_rounds if ledger_tools else 0),
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 cache_ttl=self.cache_ttl,
+                **kwargs,
             )
 
         self._delegated = False
@@ -738,16 +1071,29 @@ class ChatAgent(CognitiveAgent):
         self._replay_delegation = False
         self._final_denial = ""
         self._turn_results = []
+        self._turn_executions = []
         self._turn_language = self._meta(task, "language")
         self._seed_cache = None
         self._turn_message = task.text or ""
         self._scope_sent = False
+        self._grounded = _flag(task, _KEY_GROUNDED)
+        self._delegation_rule = _flag(task, _KEY_DELEGATION_RULE)
+        self._pending_request = self._meta(task, _KEY_PENDING_REQUEST).strip()
+        self._asked_back = ""
+        # The ledger tools are on the menu only when the kernel offers them this turn.
+        from cambrian_agent_sdk.tools import ToolRegistry
+        full_menu = ToolRegistry(self)
+        self._tools = full_menu if ledger_tools else _MenuView(full_menu, _LEDGER_TOOLS)
         remaining_ms = getattr(task, "deadline_remaining_ms", 0) or 0
         self._turn_deadline = _now() + remaining_ms / 1000.0 if remaining_ms > 0 else 0.0
         substrate = self.substrate
         if self._turn_deadline:
             self.substrate = _DeadlineGuardedSubstrate(substrate, self)
+        revision = self._meta(task, _KEY_REVISION).strip()
         try:
+            if revision:
+                # ADR-0145 D8 enforce: the kernel's one retry of a reply that failed the check.
+                return self._revise_reply(task, revision, substrate, recall, fallback)
             return self._run_turn(task, _think, recall, fallback, substrate, ReActLoopError)
         finally:
             self.substrate = substrate
@@ -764,7 +1110,10 @@ class ChatAgent(CognitiveAgent):
             # call the tool. The retry note goes in the user turn, so the system text is unchanged.
             # Only with time for a plan and a reply: a retry the deadline cuts off replaces a
             # reply with none.
-            if (not self._delegated and _ACTION_PROMISE.search(raw or "")
+            # Retired (not run) under the SDK's structural D3 re-prompt (CAMBRIAN_EVIDENCE_REPROMPT):
+            # the loop itself then turns a no-tool, no-evidence draft toward delegate_to_planner,
+            # in any language. Deleted when that flag defaults on.
+            if (not self._delegated and not _evidence_reprompt_on() and _ACTION_PROMISE.search(raw or "")
                     and self._has_time_for(self.reply_reserve_s + self.min_delegation_s)):
                 _log.warning("chat_agent: reply promised delegation but no tool call fired; forcing retry")
                 result = _think(True)
@@ -773,7 +1122,11 @@ class ChatAgent(CognitiveAgent):
             # no tool or no access. Retry once with the result as data; a repeated delegation
             # in that retry is served from the turn's result, never a second plan. Only with
             # time left for one more reply.
-            if (self._delegated and _contradicts_delegation(raw, self._delegation_result)
+            # Retired (not run) when the kernel enforces the D8 reply check: a reply that leaves
+            # the results' items unanswered is then retried kernel-side, in any language.
+            # Deleted when reply_check=enforce is the default.
+            if (self._delegated and self._meta(task, _KEY_REPLY_CHECK).strip() != "enforce"
+                    and _contradicts_delegation(raw, self._delegation_result)
                     and self._has_time_for(self.reply_reserve_s)):
                 _log.warning("chat_agent: reply denied access after a delegation returned a result; "
                              "retrying with the result")

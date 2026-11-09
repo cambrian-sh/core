@@ -21,7 +21,7 @@ import (
 //   - post_model sees the whole reply — text, tool calls, the native tool
 //     lane's deliverable (the configured final-answer call's answer argument) and
 //     the configured guarded control-verb arguments (yield_subgoal.intent,
-//     spawn_subagent.objective, …) — and may rewrite the text, the deliverable
+//     delegate_to_planner.task, …) — and may rewrite the text, the deliverable
 //     and the guarded arguments (may_rewrite) or refuse the reply, tool calls
 //     included. A rewritten argument is written back into that call's JSON
 //     arguments; the other calls are left to the ToolExecutor's pre_tool hooks.

@@ -6,9 +6,15 @@ incomplete without them, so they ship with the OSS runtime.
 
 | Agent | Role | ADR |
 |---|---|---|
-| `scout_agent` | pre-plan discovery | 0051 |
 | `kg_extractor_agent` | deterministic triplet extraction (ingest path) | 0053 D2 |
 | `reranker_agent` | bge cross-encoder relevance scoring (recall path) | 0054 |
+| `docling_agent` | document-structure parsing (ingest path) | 0060 |
+| `retrieval_agent` | the LLM ops of the Go-driven agentic retrieval loop | AGENTIC_RETRIEVAL_SPEC |
+
+(The `scout_agent` of ADR-0051 was removed 2026-08-07.) These are the class-(b) code and
+service agents of the ADR-0145 D12 inventory (`cambrian-core/CONTEXT.md`, "Agent
+inventory"): they stay agents, called directly by the kernel; plan steps run on workers
+the kernel composes from skills and tools.
 
 Each system organ ships as a Python package (its own directory) so the
 seeder (`internal/storage/bbolt_adapter.go::Seed`) detects it via the
@@ -19,9 +25,6 @@ is no sys.path glue at runtime.
 
 ```
 agents/system/
-├── scout_agent/             # ADR-0051
-│   ├── __init__.py
-│   └── agent.py             # the gRPC entry point
 ├── kg_extractor_agent/      # ADR-0053 D2
 │   ├── __init__.py
 │   ├── agent.py
@@ -41,7 +44,6 @@ These agents are Python processes built on the SDK:
 
 ```sh
 pip install cambrian-agent-sdk   # the SDK (published separately)
-python agents/system/scout_agent/agent.py
 python agents/system/reranker_agent/agent.py
 python agents/system/kg_extractor_agent/agent.py
 ```

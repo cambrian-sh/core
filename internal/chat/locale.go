@@ -35,37 +35,51 @@ const (
 	MsgSessionLost   MessageID = "session_lost"
 	MsgTookTooLong   MessageID = "took_too_long"
 	MsgGenericFail   MessageID = "generic_failure"
+	// The ADR-0145 D8 reply check's gap statements (enforce mode, after the one
+	// retry): {values} is the uncited values as written, {items} the unanswered
+	// checklist items in the person's own words.
+	MsgReplyUnverified MessageID = "reply_unverified"
+	MsgReplyUncovered  MessageID = "reply_uncovered"
 )
 
 // allMessageIDs is the closed set every catalogue language must cover.
 var allMessageIDs = []MessageID{
 	MsgTurnStalled, MsgEmptyReply, MsgTurnTimeout, MsgTurnCancelled,
 	MsgAtCapacity, MsgSessionLost, MsgTookTooLong, MsgGenericFail,
+	MsgReplyUnverified, MsgReplyUncovered,
 }
+
+// replyCheckMessageIDs are the catalogue's non-failure sentences (the reply
+// check's gap statements); every other id is a turn failure humanFailure says.
+var replyCheckMessageIDs = []MessageID{MsgReplyUnverified, MsgReplyUncovered}
 
 // messageCatalogue holds every fixed failure sentence, keyed by language then message id.
 // The English entries are the strings humanFailure returned before the catalogue existed,
 // byte for byte, so an English conversation sees no change.
 var messageCatalogue = map[string]map[MessageID]string{
 	"en": {
-		MsgTurnStalled:   "That request stopped making progress, so I stopped waiting on it. Worth trying again.",
-		MsgEmptyReply:    "I wasn't able to produce an answer for that one. Try rephrasing it?",
-		MsgTurnTimeout:   "That took longer than I'm allowed to spend on one message, so I stopped. A narrower request usually gets through.",
-		MsgTurnCancelled: "That was cancelled before I finished.",
-		MsgAtCapacity:    "I'm at capacity right now. Give me a moment and try again.",
-		MsgSessionLost:   "I lost my working session part-way through that one. Trying again usually works.",
-		MsgTookTooLong:   "That took too long and I had to stop.",
-		MsgGenericFail:   "Something went wrong on my side and I couldn't finish that one.",
+		MsgTurnStalled:     "That request stopped making progress, so I stopped waiting on it. Worth trying again.",
+		MsgEmptyReply:      "I wasn't able to produce an answer for that one. Try rephrasing it?",
+		MsgTurnTimeout:     "That took longer than I'm allowed to spend on one message, so I stopped. A narrower request usually gets through.",
+		MsgTurnCancelled:   "That was cancelled before I finished.",
+		MsgAtCapacity:      "I'm at capacity right now. Give me a moment and try again.",
+		MsgSessionLost:     "I lost my working session part-way through that one. Trying again usually works.",
+		MsgTookTooLong:     "That took too long and I had to stop.",
+		MsgGenericFail:     "Something went wrong on my side and I couldn't finish that one.",
+		MsgReplyUnverified: "Note: I could not confirm these against the records read for this request: {values}.",
+		MsgReplyUncovered:  "Not covered in this answer: {items}.",
 	},
 	"tr": {
-		MsgTurnStalled:   "Bu istek ilerlemeyi bıraktı, bu yüzden beklemeyi bıraktım. Yeniden denemeye değer.",
-		MsgEmptyReply:    "Bu isteğe bir yanıt üretemedim. Farklı bir şekilde sormayı dener misiniz?",
-		MsgTurnTimeout:   "Bu, tek bir mesaja ayırabileceğim süreden uzun sürdü, bu yüzden durdum. Daha dar kapsamlı bir istek genellikle sonuçlanır.",
-		MsgTurnCancelled: "Bu istek ben bitirmeden iptal edildi.",
-		MsgAtCapacity:    "Şu anda kapasitem dolu. Biraz bekleyip yeniden deneyin.",
-		MsgSessionLost:   "Bu isteğin ortasında çalışma oturumumu kaybettim. Yeniden denemek genellikle işe yarar.",
-		MsgTookTooLong:   "Bu çok uzun sürdü ve durmak zorunda kaldım.",
-		MsgGenericFail:   "Benim tarafımda bir sorun oluştu ve bu isteği tamamlayamadım.",
+		MsgTurnStalled:     "Bu istek ilerlemeyi bıraktı, bu yüzden beklemeyi bıraktım. Yeniden denemeye değer.",
+		MsgEmptyReply:      "Bu isteğe bir yanıt üretemedim. Farklı bir şekilde sormayı dener misiniz?",
+		MsgTurnTimeout:     "Bu, tek bir mesaja ayırabileceğim süreden uzun sürdü, bu yüzden durdum. Daha dar kapsamlı bir istek genellikle sonuçlanır.",
+		MsgTurnCancelled:   "Bu istek ben bitirmeden iptal edildi.",
+		MsgAtCapacity:      "Şu anda kapasitem dolu. Biraz bekleyip yeniden deneyin.",
+		MsgSessionLost:     "Bu isteğin ortasında çalışma oturumumu kaybettim. Yeniden denemek genellikle işe yarar.",
+		MsgTookTooLong:     "Bu çok uzun sürdü ve durmak zorunda kaldım.",
+		MsgGenericFail:     "Benim tarafımda bir sorun oluştu ve bu isteği tamamlayamadım.",
+		MsgReplyUnverified: "Not: Şu değerleri bu istek için okunan kayıtlarla doğrulayamadım: {values}.",
+		MsgReplyUncovered:  "Bu yanıtta karşılanmayan kısımlar: {items}.",
 	},
 }
 

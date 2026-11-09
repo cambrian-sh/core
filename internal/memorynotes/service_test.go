@@ -208,20 +208,10 @@ func TestLoweredBudgetTruncatesSnapshotNotStore(t *testing.T) {
 	}
 }
 
-func TestChildScopeDeniedWithoutGrant(t *testing.T) {
+func TestNoPrincipalScopeDenied(t *testing.T) {
 	svc, _ := newTestService(t, Config{})
-	ctx := context.Background()
-	child := Principal{ID: "alice", AgentID: "web", Child: true}
-	r, err := svc.Propose(ctx, child, Proposal{Op: OpAppend, Content: "note"})
-	if err != nil || r.Accepted || r.Rejection != RejectScopeDenied {
-		t.Fatalf("child without grant: %+v %v", r, err)
-	}
-	child.MemoryWriteGranted = true
-	if r, _ := svc.Propose(ctx, child, Proposal{Op: OpAppend, Content: "note"}); !r.Accepted {
-		t.Fatalf("granted child: %+v", r)
-	}
 	// No principal: fail-closed.
-	if r, _ := svc.Propose(ctx, Principal{AgentID: "x"}, Proposal{Op: OpAppend, Content: "n"}); r.Rejection != RejectScopeDenied {
+	if r, _ := svc.Propose(context.Background(), Principal{AgentID: "x"}, Proposal{Op: OpAppend, Content: "n"}); r.Rejection != RejectScopeDenied {
 		t.Fatalf("no principal: %+v", r)
 	}
 }

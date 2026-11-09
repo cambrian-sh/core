@@ -49,7 +49,7 @@ func TestHooksConfig_GuardedArguments(t *testing.T) {
 	t.Parallel()
 	def := HooksConfig{}.GuardedArgumentList()
 	want := map[domain.GuardedArg]bool{
-		{Tool: "yield_subgoal", Arg: "intent"}: true, {Tool: "spawn_subagent", Arg: "objective"}: true,
+		{Tool: "yield_subgoal", Arg: "intent"}: true, {Tool: "delegate_to_planner", Arg: "task"}: true,
 		{Tool: "propose_memory_note", Arg: "content"}: true, {Tool: "propose_skill", Arg: "skill_md"}: true,
 	}
 	if len(def) != len(want) {

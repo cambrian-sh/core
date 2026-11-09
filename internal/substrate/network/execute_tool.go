@@ -114,6 +114,10 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 	if s.leaseForeignToCaller(ctx, sessionToken) {
 		return &pb.ExecuteToolResponse{Denied: true, DenyReason: "lease is not valid for this caller"}, nil
 	}
+	// ADR-0145 D12: the composed runtime acts only under a composed step lease.
+	if why, refuse := s.composedToolRefusal(ctx, agentID); refuse {
+		return &pb.ExecuteToolResponse{Denied: true, DenyReason: why}, nil
+	}
 	ctx = s.withRunPrincipal(ctx, sessionToken)
 	// Work a chat turn ordered dies with the turn (turn_delegation.go): a lease of an
 	// ended turn is refused BEFORE authorisation, so no approval can be raised for it,
@@ -134,12 +138,6 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 	// (T-20261105-owner-decision-needed-120-s-plan-timeout-ms).
 	defer s.trackLeaseWork(sessionToken)()
 
-	// ADR-0139 D12: a subagent's tool calls count against its max_tool_rounds and
-	// the tree-wide iteration cap, kernel-side (the agent's own loop cap is advisory).
-	if ok, why := s.Subagents.AdmitToolCall(sessionToken); !ok {
-		return &pb.ExecuteToolResponse{Denied: true, DenyReason: why}, nil
-	}
-
 	// The operator-facing counterpart, which DOES name the tool.
 	//
 	// Emitted around the call rather than after it: a page fetch or a web search
@@ -151,6 +149,25 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 		Tool: req.GetToolName(), Args: redactedArgs(req.GetArgsJson()),
 	})
 
+	// ADR-0145 D1: where this call's ledger entry comes from (run, step, turn,
+	// conversation, owner), resolved from the lease — also the scope ledger_find
+	// searches within.
+	if s.ledgerOn() {
+		ctx = domain.WithLedgerProvenance(ctx, s.toolCallProvenance(ctx, sessionToken))
+	}
+
+	// ADR-0145 D9/D14: the plan step this call is for (run, step, the request
+	// facts its guards need), from the lease binding, for the tool executor's
+	// idempotency key and request-tied guards.
+	if b, known := s.resolveLeaseFor(ctx, sessionToken); known && b.RunID != "" && b.StepIndex >= 0 {
+		sc := domain.StepCall{RunID: b.RunID, StepIndex: b.StepIndex}
+		if b.Guard != nil {
+			sc.Guard = *b.Guard
+		}
+		ctx = domain.WithStepCall(ctx, sc)
+	}
+
+	toolStart := time.Now() // ADR-0145 D10: the execute_tool span's start (run_trace.go)
 	var resp domain.ToolCallResponse
 	if why, ok := s.unroutableBound(ctx, sessionToken, req.GetToolName()); !ok {
 		// A running plan's earlier calls of this tool were all unroutable: refuse
@@ -167,7 +184,7 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 		})
 	}
 
-	s.Subagents.RecordToolResult(sessionToken, resp.ResultCID, resp.Denied)
+	s.traceToolCall(ctx, toolStart, agentID, sessionToken, req, resp)
 	// The plan's result reports every side-effecting call its steps made, so the
 	// caller never re-orders a write that already happened (plan_actions.go).
 	s.recordPlanAction(ctx, sessionToken, domain.ToolCallRequest{
@@ -208,6 +225,10 @@ func (s *Server) ListTools(ctx context.Context, _ *pb.ListToolsRequest) (*pb.Lis
 	// metadata), serve the top-k task-relevant tools instead of the full menu.
 	// k from x-tool-k (default 3). No query ⇒ the full granted menu (unchanged).
 	agentID := agentIDFromMetadata(ctx)
+	// ADR-0145 D12: the composed runtime without a composed lease has no menu.
+	if _, _, runtimeOnly := s.composedFor(ctx, agentID); runtimeOnly {
+		return &pb.ListToolsResponse{}, nil
+	}
 	var tools []domain.SystemTool
 	switch {
 	case len(toolNamesFromMetadata(ctx)) > 0:
@@ -226,6 +247,10 @@ func (s *Server) ListTools(ctx context.Context, _ *pb.ListToolsRequest) (*pb.Lis
 	// ExecuteTool enforces). A lease the caller may not use filters nothing here:
 	// callerOverlayToken returns "" for it, and the menu stays the agent's own.
 	if tok := s.callerOverlayToken(ctx); tok != "" {
+		// ADR-0145 D12: a composed step's menu is exactly its composition (the
+		// runtime holds no standing grants; the composed tools are its lease's
+		// run-scoped grants, filtered by the same ceilings below).
+		tools = s.withComposedTools(ctx, agentID, tok, tools)
 		kept := tools[:0:0]
 		for _, t := range tools {
 			if s.ToolExecutor.WithinLeaseCeiling(tok, t.Name) {
@@ -234,6 +259,10 @@ func (s *Server) ListTools(ctx context.Context, _ *pb.ListToolsRequest) (*pb.Lis
 		}
 		tools = kept
 	}
+	// ADR-0145: the kernel-served tools (ledger_get, ledger_find) are on every
+	// menu — they need no grant and read only what the caller's predicate admits.
+	// A describe_tool request lists them only when it names them.
+	tools = appendKernelTools(tools, s.ToolExecutor.KernelToolSpecs(), toolNamesFromMetadata(ctx))
 	// ADR-0045: serve Tier-1 (terse summary + arg-names-only schema) by default;
 	// Tier-2 (full description + full schema) only when x-tool-full is set (the
 	// describe_tool path). One render function (domain.ToolDisclosure) keeps the
@@ -411,4 +440,28 @@ func (s *Server) withRunPrincipal(ctx context.Context, lease domain.LeaseID) con
 		return domain.WithRunPrincipal(ctx, p)
 	}
 	return ctx
+}
+
+// appendKernelTools adds the kernel tools to a menu: all of them, or only those
+// named when the menu is a describe_tool request. A name already on the menu is
+// not repeated.
+func appendKernelTools(tools, kernel []domain.SystemTool, named []string) []domain.SystemTool {
+	if len(kernel) == 0 {
+		return tools
+	}
+	have := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		have[t.Name] = true
+	}
+	want := map[string]bool{}
+	for _, n := range named {
+		want[n] = true
+	}
+	for _, k := range kernel {
+		if have[k.Name] || (len(named) > 0 && !want[k.Name]) {
+			continue
+		}
+		tools = append(tools, k)
+	}
+	return tools
 }

@@ -22,7 +22,8 @@ var codeGenKeywords = []string{"write", "implement", "generate code"}
 //  1. Explicit Step.CacheTTLSeconds > 0 — Planner intent beats all heuristics.
 //  2. IsThought=true → policies["thought"] or 1h.
 //  3. Code-gen query → policies["code_gen"] or 0 (never cache).
-//  4. Default → policies["tool"] or 7 days.
+//  4. Default → policies["tool"], else defaultTTL
+//     (execution.plan.step_cache_default_ttl_minutes), else one hour.
 //
 // A former rung keyed off Step.RecommendedModel — a step carrying a planner-assigned
 // model got policies["cognitive"] or 24h. That was a PROXY: the routing field happened
@@ -30,11 +31,13 @@ var codeGenKeywords = []string{"write", "implement", "generate code"}
 // The planner no longer assigns models, so the proxy has no carrier and was removed
 // rather than replaced with an invented one. A step that needs a shorter TTL says so
 // explicitly via CacheTTLSeconds (rung 1), which already outranks every heuristic.
-// CONSEQUENCE: steps that previously matched rung 4 now take the 7-day tool default
-// instead of 24h. Tune step_cache_policies.tool if that is too long.
+// The rung-4 fallback was a hardcoded 7 days until ADR-0145 D9 (2026-11-08): a
+// week-old read replayed into a new plan is stale data presented as fresh. It is
+// config now and defaults to one hour; the cache key is also session- and
+// principal-scoped and only read-only steps are cached (step_cache_guard.go).
 //
 // policies may be nil — nil map lookups return the zero value without panicking.
-func resolveCacheTTL(step domain.Step, policies map[string]int) time.Duration {
+func resolveCacheTTL(step domain.Step, policies map[string]int, defaultTTL time.Duration) time.Duration {
 	if step.CacheTTLSeconds > 0 {
 		return time.Duration(step.CacheTTLSeconds) * time.Second
 	}
@@ -56,7 +59,10 @@ func resolveCacheTTL(step domain.Step, policies map[string]int) time.Duration {
 	if h := policies["tool"]; h > 0 {
 		return time.Duration(h) * time.Hour
 	}
-	return 7 * 24 * time.Hour
+	if defaultTTL > 0 {
+		return defaultTTL
+	}
+	return time.Hour
 }
 
 // dayScopedCacheKey binds a step cache key to the date the step was told is today

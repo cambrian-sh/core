@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -72,7 +73,10 @@ func (r *InMemorySkillRegistry) Unregister(name string) {
 	delete(r.skills, name)
 }
 
-// All returns every registered system skill (unordered).
+// All returns every registered system skill, sorted by name. The order is part of
+// the contract: the full skill menu is rendered into a worker's system prompt, and a
+// map-iteration order changed that prompt between the steps of one run, which defeats
+// provider prompt caching and replay (T-20261108-system-prompt-skill-list-order-is-not-stable).
 func (r *InMemorySkillRegistry) All() []Skill {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -80,6 +84,7 @@ func (r *InMemorySkillRegistry) All() []Skill {
 	for _, s := range r.skills {
 		out = append(out, s)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

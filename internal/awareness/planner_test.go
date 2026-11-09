@@ -298,42 +298,30 @@ func TestGetExecutionPlan_InjectedPlanJSONIsDeserializable(t *testing.T) {
 	}
 }
 
-// Test 4b: REQ-CACHE-1 exact-match cache hit — similarity >= 0.95, confidence >= 0.90,
-// and PlannerPromptVersion matches current hash. LLM must NOT be called.
-func TestGetExecutionPlan_ExactMatchCacheHit(t *testing.T) {
+// Test 4b: the REQ-CACHE-1 exact-match plan cache is REMOVED (ADR-0145 D9, owner
+// 2026-11-08). A prior plan that would have hit it (similarity 0.96, confidence
+// 0.92, same prompt hash) is no longer replayed: the planner is called, and the
+// prior plan reaches it only as a <PlanLTM> reference.
+func TestGetExecutionPlan_ExactMatchCacheRemoved(t *testing.T) {
 	t.Parallel()
 	prior := priorPlan()
-	prior.PlannerPromptVersion = plannerPromptHash // must match current template hash
-
-	// score 0.96 >= 0.95 threshold; conf 0.92 >= 0.90 floor
+	prior.PlannerPromptVersion = plannerPromptHash
 	store := &plannerFakePlanStore{preset: prior, conf: 0.92, score: 0.96}
-
-	gen := &mockGenerator{response: "SHOULD NOT BE CALLED"}
+	gen := &mockGenerator{response: minimalPlanJSON()}
 	planner := newTestPlanner(gen, store)
 
 	plan, err := planner.GetExecutionPlan(context.Background(), "query")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	if len(gen.capturedPrompts) != 0 {
-		t.Error("LLM should NOT be called for exact-match cache hit")
+	if len(gen.capturedPrompts) != 1 {
+		t.Fatalf("the planner must be called even for a former exact-match hit, got %d calls", len(gen.capturedPrompts))
 	}
-
-	if plan == nil {
-		t.Fatal("expected non-nil plan from cache")
+	if plan.Subject == prior.Subject {
+		t.Fatal("the stored plan was replayed instead of planned")
 	}
-	if plan.Subject != prior.Subject {
-		t.Errorf("cached plan subject = %q, want %q", plan.Subject, prior.Subject)
-	}
-	if plan.PlannerPromptVersion != plannerPromptHash {
-		t.Errorf("cached plan prompt version = %q, want %q", plan.PlannerPromptVersion, plannerPromptHash)
-	}
-
-	// Verify it's a deep clone — mutation must not affect the original
-	plan.Subject = "MUTATED"
-	if prior.Subject == "MUTATED" {
-		t.Error("cache returned a reference, not a deep clone")
+	if !strings.Contains(gen.capturedPrompts[0], "PlanLTM") {
+		t.Error("the prior plan should still inform planning as a <PlanLTM> reference")
 	}
 }
 

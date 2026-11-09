@@ -172,9 +172,9 @@ func TestBuildStepDependencies_UnavailableAndBounded(t *testing.T) {
 func TestStepCache_DependentKeyedOnUpstreamResults(t *testing.T) {
 	keysFor := func(upstream string) string {
 		cache := &mockStepCache{}
-		ex := &DAGExecutor{UseGlobalWorkspace: true, WorkspaceStage: &mockWorkspaceStage{}, StepCache: cache}
+		ex := &DAGExecutor{UseGlobalWorkspace: true, WorkspaceStage: &mockWorkspaceStage{}, StepCache: cache, CurrentSessionID: "ses-test"}
 		plan := &domain.ExecutionPlan{Subject: "s", Steps: []domain.Step{
-			{Query: "root"}, {Query: "dependent", DependsOn: []int{0}},
+			{Query: "root", RequiredEffects: []string{}}, {Query: "dependent", DependsOn: []int{0}, RequiredEffects: []string{}},
 		}}
 		_, err := ex.Execute(t.Context(), plan, nil,
 			func(_ context.Context, i int, _ *domain.Handoff) (*domain.Handoff, error) {

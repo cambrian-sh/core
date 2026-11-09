@@ -109,18 +109,10 @@ func TestProposeKnowledgeRPC_RefusalsAreData(t *testing.T) {
 	}
 }
 
-func TestProposeKnowledgeRPC_ChildNeedsAGrantAndNilIsUnimplemented(t *testing.T) {
+func TestProposeKnowledgeRPC_NilIsUnimplemented(t *testing.T) {
 	t.Parallel()
-	s, gw, fp := knowledgeServer(t)
+	s, gw, _ := knowledgeServer(t)
 	parent := bindNotesLease(t, gw, domain.LeaseBinding{RunID: "r", AgentID: "planner"})
-	child := bindNotesLease(t, gw, domain.LeaseBinding{RunID: "r", AgentID: "planner", ParentLeaseID: parent})
-	if resp, err := s.ProposeKnowledge(agentPlaneCtx("planner"), itemReq(child)); err != nil || resp.GetAccepted() || !fp.by.IsZero() {
-		t.Fatalf("ungranted child: %+v %v", resp, err)
-	}
-	granted := bindNotesLease(t, gw, domain.LeaseBinding{RunID: "r", AgentID: "planner", ParentLeaseID: parent, MemoryWriteGranted: true})
-	if resp, err := s.ProposeKnowledge(agentPlaneCtx("planner"), itemReq(granted)); err != nil || !resp.GetAccepted() {
-		t.Fatalf("granted child: %+v %v", resp, err)
-	}
 	s.Knowledge = nil
 	if _, err := s.ProposeKnowledge(agentPlaneCtx("planner"), itemReq(parent)); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("nil bridge: %v", err)

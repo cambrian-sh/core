@@ -215,3 +215,156 @@ def test_profile_manifest_keeps_allowlist_out_of_legacy_tools_key():
     manifest = prof.manifest()
     assert "tools" not in manifest  # the kernel reads manifest tools as capability tags
     assert manifest["tool_allowlist"] == list(prof.tools)
+
+
+# ── ADR-0145 D12: the composed runtime (--composed) ─────────────────────────
+
+_COMPOSITION = {
+    "runtime": "composed_worker", "professions": ["researcher"],
+    "skills": ["web-research", "summarise"], "tools": ["mcp:fetch/fetch", "mcp:web-search/search"],
+    "effects": ["read"], "effects_declared": True, "brief": "find the filing deadline",
+    "ledger_refs": ["led_up"], "system_prompt": "composed_worker", "step": 1,
+}
+
+
+class _ComposedKernel(_Kernel):
+    """Serves, for the composed lease, exactly the composition (as the kernel does) and
+    records the lease every menu / skill call presented."""
+
+    def __init__(self, script, lease="lease-7"):
+        super().__init__(script)
+        self.lease = lease
+        self.leases_seen = []
+
+    def list_tools(self, query="", k=0, names=None, full=False, session_token_id=""):
+        self.leases_seen.append(("tools", session_token_id))
+        if session_token_id != self.lease:
+            return []
+        served = _COMPOSITION["tools"] + ["ledger_get"]  # the kernel adds its own tools
+        return [{"name": n, "description": f"tool {n}", "schema_json": _SCHEMA}
+                for n in served if not names or n in names]
+
+    def list_skills(self, query="", k=0, names=None, full=False, session_token_id=""):
+        self.leases_seen.append(("skills", session_token_id))
+        return super().list_skills(query=query, k=k, names=names, full=full)
+
+
+def _composed_task(lease="lease-7", comp=_COMPOSITION):
+    ctx = {"_composition": json.dumps(comp)} if comp is not None else {}
+    return AgentTask(text=_COMPOSITION["brief"], session_token_id=lease, context=ctx)
+
+
+def test_composed_mode_builds_the_runtime_with_the_developer_written_prompt():
+    agent = wa.build_agent(["worker_agent.py", "--composed", "--agent-id", "composed_worker"])
+    assert isinstance(agent, wa.ComposedWorkerAgent)
+    assert agent.agent_id == "composed_worker"
+    assert "composed for one step" in agent.role
+    # D13 guideline in the runtime's rules.
+    assert any("judgement over a set of records" in c for c in agent.constraints)
+    assert any("calculation tool" in c for c in agent.constraints)
+
+
+def test_composed_step_gets_exactly_its_tools_and_skills():
+    agent = wa.build_agent(["worker_agent.py", "--composed"])
+    kernel = _ComposedKernel([_call("use_skill", {"skill": "exploratory-analysis"}),
+                              _call("use_skill", {"skill": "summarise"}), ("done", [])])
+    agent.substrate = kernel
+    res = agent.run(_composed_task())
+    assert res.text == "done"
+    # Every menu and skill call presented the step's lease (the kernel resolves the
+    # composition from it).
+    assert kernel.leases_seen and all(lease == "lease-7" for _, lease in kernel.leases_seen)
+    offered = set(kernel.tools_sent[0])
+    assert {_san("mcp:fetch/fetch"), _san("mcp:web-search/search")} <= offered
+    assert not any(t.startswith("mcp_filesystem") or t.startswith("mcp_code") for t in offered)
+    # The skill index is the composition, sorted, in the system prompt.
+    prompt = kernel.systems[0]
+    assert prompt.index("summarise") < prompt.index("web-research")
+    assert "exploratory-analysis procedure" not in prompt
+    # A load outside the composition was never fetched with a body; the composed one was.
+    loads = [c for c in kernel.skill_calls if c["full"]]
+    assert {"query": "", "names": ["summarise"], "full": True} in loads
+    assert "Follow the exploratory-analysis steps." not in "".join(kernel.systems)
+
+
+def test_composed_tool_call_outside_the_composition_is_refused_locally():
+    agent = wa.build_agent(["worker_agent.py", "--composed"])
+    kernel = _ComposedKernel([])
+    agent.substrate = kernel
+    agent.substrate.bind(wa.composition_from_task(_composed_task()), "lease-7")
+    agent.substrate.list_tools(full=True)
+    assert agent.substrate.execute_tool("mcp:filesystem/write_file", args_json="{}")["denied"]
+    assert not agent.substrate.execute_tool("ledger_get", args_json="{}").get("denied")
+    assert kernel.executed == ["ledger_get"]
+
+
+def test_composed_runtime_refuses_a_task_without_a_composition():
+    agent = wa.build_agent(["worker_agent.py", "--composed"])
+    kernel = _ComposedKernel([("should not run", [])])
+    agent.substrate = kernel
+    res = agent.run(_composed_task(comp=None))
+    assert "carried no composition" in res.text
+    # A refusal is never reported as a finished result (ADR-0145 D14).
+    assert res.type == "error"
+    assert kernel.tools_sent == []
+
+
+# ── ADR-0145 D14: no subagents; extra work goes to the planner through the kernel ──
+
+
+class _ExecKernel:
+    def __init__(self, result=None, exc=None):
+        self.result, self.exc, self.calls = result, exc, []
+
+    def execute(self, description, session_token_id="", target=None, timeout_ms=0):
+        self.calls.append((description, session_token_id))
+        if self.exc is not None:
+            raise self.exc
+        return self.result
+
+
+class _Result(str):
+    partial = False
+    timed_out = False
+    error = ""
+    failed_step = -1
+
+    @property
+    def text(self):
+        return str(self)
+
+
+def _delegating_agent(kernel):
+    agent = wa.build_agent(["worker_agent.py", "--composed"])
+    agent._substrate = kernel  # bypass the scoping wrapper: only execute() is exercised
+    agent._bind_step(AgentTask(text="step", session_token_id="lease-step-3"))
+    return agent
+
+
+def test_workers_have_no_subagent_verb_and_delegate_to_the_planner():
+    for cls in (wa.WorkerAgent, wa.ComposedWorkerAgent):
+        assert not getattr(cls, "allow_subagents", False)
+    agent = wa.build_agent(["worker_agent.py", "--composed"])
+    assert "delegate_to_planner" in agent.tools
+    assert "spawn_subagent" not in agent.tools
+
+
+def test_delegate_to_planner_is_a_kernel_execute_with_the_step_lease():
+    kernel = _ExecKernel(result=_Result("Found 3 overdue invoices."))
+    agent = _delegating_agent(kernel)
+    out = agent.tools.call("delegate_to_planner", task="list overdue invoices for CUS-4")
+    assert out == "Found 3 overdue invoices."
+    assert kernel.calls == [("list overdue invoices for CUS-4", "lease-step-3")]
+
+
+def test_delegate_to_planner_never_reports_a_refusal_or_partial_run_as_success():
+    class Refused(Exception):
+        def details(self):
+            return "worker delegation refused: this work already runs at delegation depth 1"
+
+    out = _delegating_agent(_ExecKernel(exc=Refused())).tools.call("delegate_to_planner", task="x")
+    assert isinstance(out, dict) and "delegation depth" in out["error"]
+    partial = _Result("step 1 done")
+    partial.partial = True
+    out = _delegating_agent(_ExecKernel(result=partial)).tools.call("delegate_to_planner", task="x")
+    assert out["error"].startswith("the delegated work did not finish")

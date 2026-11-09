@@ -26,6 +26,9 @@ const PlanActionsKey = "_plan_actions"
 type planActionLedger struct {
 	mu   sync.Mutex
 	runs map[domain.RunID][]domain.PlanAction
+	// denials are the run's refused READ calls (not actions: nothing changed), kept
+	// for coverage's not_permitted check (ADR-0145 D5.3). Same lifetime as runs.
+	denials map[domain.RunID][]domain.PlanAction
 }
 
 // begin opens run's record. A resumed run is begun again by its new Execute: the
@@ -40,6 +43,7 @@ func (l *planActionLedger) begin(run domain.RunID) {
 		l.runs = map[domain.RunID][]domain.PlanAction{}
 	}
 	l.runs[run] = nil
+	delete(l.denials, run)
 }
 
 // record appends a to run's record; a run not begun records nothing.
@@ -50,6 +54,27 @@ func (l *planActionLedger) record(run domain.RunID, a domain.PlanAction) {
 		return
 	}
 	l.runs[run] = append(l.runs[run], a)
+}
+
+// recordDenial appends a refused read to run's denials; a run not begun records
+// nothing.
+func (l *planActionLedger) recordDenial(run domain.RunID, a domain.PlanAction) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, open := l.runs[run]; !open {
+		return
+	}
+	if l.denials == nil {
+		l.denials = map[domain.RunID][]domain.PlanAction{}
+	}
+	l.denials[run] = append(l.denials[run], a)
+}
+
+// deniedReads returns a copy of run's refused reads.
+func (l *planActionLedger) deniedReads(run domain.RunID) []domain.PlanAction {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]domain.PlanAction(nil), l.denials[run]...)
 }
 
 // snapshot returns a copy of run's record.
@@ -110,6 +135,7 @@ func (l *planActionLedger) end(run domain.RunID) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.runs, run)
+	delete(l.denials, run)
 }
 
 // recordPlanAction records one ExecuteTool outcome against the plan run its lease
@@ -126,9 +152,21 @@ func (s *Server) recordPlanAction(ctx context.Context, lease domain.LeaseID, req
 	}
 	toolKnown, effecting := s.sideEffectingTool(req.ToolName)
 	if !effecting {
+		// ADR-0145 D5.3: a refused READ is the kernel's record that access was
+		// refused, which is what coverage needs to accept not_permitted for an item
+		// (T-20261108-coverage-cannot-accept-not-permitted-for-a). It is not an
+		// action (nothing changed), so it is kept apart from the action ledger.
+		if resp.Denied && toolKnown {
+			s.planActions.recordDenial(b.RunID, domain.PlanAction{Step: b.StepIndex, Generation: b.PlanGeneration,
+				Agent: req.AgentID, Tool: req.ToolName, Args: redactedArgs(string(req.ArgsJSON)),
+				Status: domain.PlanActionRefused, Detail: resp.DenyReason, ApprovalState: resp.ApprovalState})
+		}
 		return
 	}
-	a := domain.PlanAction{Step: b.StepIndex, Agent: req.AgentID, Tool: req.ToolName, Args: redactedArgs(string(req.ArgsJSON))}
+	a := domain.PlanAction{Step: b.StepIndex, Generation: b.PlanGeneration, Agent: req.AgentID, Tool: req.ToolName, Args: redactedArgs(string(req.ArgsJSON))}
+	if s.ToolExecutor != nil && s.ToolExecutor.Guards != nil {
+		a.Target = s.ToolExecutor.Guards.Targets.Key(req.ToolName, req.ArgsJSON)
+	}
 	switch {
 	case resp.Denied:
 		if !toolKnown {
@@ -140,7 +178,15 @@ func (s *Server) recordPlanAction(ctx context.Context, lease domain.LeaseID, req
 	default:
 		a.Status = domain.PlanActionDone
 		result := resp.ResultJSON
-		if len(result) == 0 && resp.ResultCID != "" && s.ContentStore != nil {
+		if len(result) == 0 && domain.IsLedgerID(resp.ResultCID) && s.ledgerOn() {
+			// ADR-0145 D1: offloaded as a ledger entry; read back by the kernel for
+			// its own action record, acting for the conversation owner (§2.4 bypass
+			// with the owner fence kept).
+			rctx := domain.WithScope(ctx, runLedgerScope(domain.ConversationOwnerFromContext(ctx)))
+			if e, err := s.Ledger.Reader.Get(rctx, resp.ResultCID); err == nil && e != nil {
+				result = e.Body
+			}
+		} else if len(result) == 0 && resp.ResultCID != "" && s.ContentStore != nil {
 			// The result was offloaded to the content store; its ids are still wanted.
 			if node, err := s.ContentStore.Get(ctx, domain.CID(resp.ResultCID)); err == nil && node != nil {
 				result = node.Data

@@ -300,6 +300,124 @@ type ToolExecutor struct {
 	// after the per-agent ceilings and before the Unrestricted bypass and the
 	// skill overlay, so neither can widen a child past its toolset. nil ⇒ none.
 	LeaseCeiling LeaseToolCeiling
+	// Ledger is the ADR-0145 D1 run ledger's writer: every result of a call that
+	// ran (read or write, success or handler error) is recorded here after the
+	// post_tool hooks, so the ledger holds what the agent was actually given.
+	// When set it also REPLACES the content-store offload of large results: a
+	// result over InlineThreshold is returned as its ledger id (ResultCID "led_…",
+	// readable through ledger_get and GetContextNode) instead of a plan-scoped
+	// content-store cid. nil ⇒ the legacy path (execution.ledger.enabled off).
+	Ledger LedgerWriter
+	// KernelTools are the tools the kernel serves in process (domain.KernelTool:
+	// ledger_get / ledger_find). They resolve before the registry, need no grant
+	// (they read only what the caller's predicate admits), and are never recorded
+	// to the ledger themselves. nil ⇒ none.
+	KernelTools []KernelTool
+
+	// ADR-0145 D9 executor guards (T-20261108-adr-0145-phase-2-requirement-checklist-with),
+	// each nil/false ⇒ off (the legacy behaviour). The D9 per-step effect menu was
+	// removed by ADR-0145 D14: there is no per-step tool permission.
+	//
+	// ArgValidator validates and coerces arguments against the tool's schema
+	// before authorization (execution.tools.validate_args); an invalid call
+	// returns an Error the model can correct, and never runs.
+	ArgValidator ToolArgValidator
+	// Idempotency stores side-effecting results by IdempotencyKey(run, step,
+	// tool, args) (execution.tools.idempotent_writes): a retry gets the stored
+	// result instead of running the write again.
+	Idempotency *IdempotencyCache
+	// ReturnLedgerRef returns every recorded result's ledger id in ResultCID even
+	// when the result is small enough to travel inline (ResultJSON is kept), so a
+	// worker can cite the entry a value came from in its answer envelope (ADR-0145
+	// D6). Set with execution.plan.checklist_enabled; the SDK reads a response with
+	// both fields as an inline result plus its reference.
+	ReturnLedgerRef bool
+	// Guards are the ADR-0145 D14 request-tied guards (execution.tools.request_guards):
+	// the checklist's constraints by tool class, the per-request write-target
+	// record, the repair-turn write guard, approval with a notice for a write no
+	// open write/document item asked for, and the per-step record of refused calls.
+	// nil ⇒ none.
+	Guards *RequestGuards
+}
+
+// kernelTool returns the kernel tool named name, or nil.
+func (e *ToolExecutor) kernelTool(name string) KernelTool {
+	for _, kt := range e.KernelTools {
+		if kt.Spec().Name == name {
+			return kt
+		}
+	}
+	return nil
+}
+
+// KernelToolSpecs returns the menu entries of the kernel tools (ListTools appends
+// them to every agent's menu).
+func (e *ToolExecutor) KernelToolSpecs() []SystemTool {
+	if e == nil {
+		return nil
+	}
+	out := make([]SystemTool, 0, len(e.KernelTools))
+	for _, kt := range e.KernelTools {
+		out = append(out, kt.Spec())
+	}
+	return out
+}
+
+// runKernelTool serves a kernel tool for a named caller, under the caller's own
+// read predicate (resolved from the decision point exactly as GetArtifact resolves
+// it, and carried on ctx for the enforced reader, AGENTS.md §2.4).
+func (e *ToolExecutor) runKernelTool(ctx context.Context, req ToolCallRequest, kt KernelTool, argHash string) ToolCallResponse {
+	if req.AgentID == "" && !req.System {
+		return denied("anonymous principal", argHash)
+	}
+	a := e.Authz
+	if a == nil {
+		a = AllowAllAuthorizer{}
+	}
+	principal := AgentPrincipal(req.AgentID)
+	if req.System {
+		principal = SystemPrincipal
+	}
+	eff, dec := a.ReadFilter(ctx, principal, SurfaceRef{Kind: SurfaceAgent})
+	if eff == nil {
+		return denied(dec.Explain(), argHash)
+	}
+	result, err := kt.Call(WithScope(ctx, eff), KernelToolCall{AgentID: req.AgentID, ArgsJSON: req.ArgsJSON})
+	if err != nil {
+		return ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error())}
+	}
+	return ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result)}
+}
+
+// recordToLedger writes one call's result to the run ledger (ADR-0145 D1).
+// Best-effort for the CALL: a failed write never fails the tool call, it is
+// logged and the caller gets the result inline. Returns the entry id, "" when
+// nothing was recorded.
+func (e *ToolExecutor) recordToLedger(ctx context.Context, req ToolCallRequest, tool SystemTool, result []byte) string {
+	if e.Ledger == nil || req.System {
+		// An operator ScopeSystem execution is not part of any turn; it is audited
+		// by the operator command handler instead.
+		return ""
+	}
+	ct := "text/plain"
+	if json.Valid(result) {
+		ct = "application/json"
+	}
+	ent, err := e.Ledger.Record(ctx, LedgerRecord{
+		Kind:               LedgerToolResult,
+		Provenance:         LedgerProvenanceFromContext(ctx),
+		ToolName:           req.ToolName,
+		ArgsJSON:           req.ArgsJSON,
+		Writer:             AgentPrincipal(req.AgentID),
+		ClassificationHint: tool.AuthzTags(),
+		ContentType:        ct,
+		Body:               result,
+	})
+	if err != nil {
+		slog.Warn("ADR-0145: tool result not recorded to the ledger", "tool", req.ToolName, "agent", req.AgentID, "err", err)
+		return ""
+	}
+	return ent.ID
 }
 
 // WithinLeaseCeiling reports whether tool is inside the D12 ceiling bound to
@@ -402,6 +520,32 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// namespaces cannot answer for the same name: the registry refuses local:
 	// registrations at its chokepoint, and every contributed name carries the
 	// prefix.
+	// ADR-0145: a kernel-served tool (ledger_get, ledger_find) resolves first and
+	// runs in process under the caller's read predicate. Kernel tool names are
+	// reserved: a registry tool of the same name is never reached.
+	if kt := e.kernelTool(req.ToolName); kt != nil {
+		return e.runKernelTool(ctx, req, kt, argHash)
+	}
+
+	// ADR-0145 D14.5: an identical call (tool + canonical arguments) this step had
+	// refused already is answered from the record, without running the checks, an
+	// approval or the tool again; every new refusal is recorded.
+	if e.Guards != nil && e.Guards.Refusals != nil && !req.System {
+		scope := RefusalScope(ctx, req.SessionTokenID)
+		origTool, origArgs := req.ToolName, append([]byte(nil), req.ArgsJSON...)
+		if prev, ok := e.Guards.Refusals.Lookup(scope, origTool, origArgs); ok {
+			slog.Info("ADR-0145 D14: repeated refused call answered from the step's refusal record",
+				"tool", origTool, "agent", req.AgentID, "reason", prev.DenyReason)
+			prev.DenyReason = strings.TrimSuffix(prev.DenyReason, RepeatedRefusalNote) + RepeatedRefusalNote
+			return prev
+		}
+		defer func() {
+			if out.Denied && refusalIsFinal(out.ApprovalState) {
+				e.Guards.Refusals.Record(scope, origTool, origArgs, out)
+			}
+		}()
+	}
+
 	var tool SystemTool
 	var ok bool
 	var contrib *contributedResolution
@@ -423,10 +567,52 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		}
 	}
 
+	// ADR-0145 D9: arguments are validated against the tool's schema, and coerced
+	// where unambiguous (a JSON array sent as a string), before anything else sees
+	// them; an invalid call is an error the model can correct, and never runs.
+	if e.ArgValidator != nil && len(tool.Schema) > 0 {
+		fixed, verr := e.ArgValidator.ValidateArgs(req.ToolName, tool.Schema, req.ArgsJSON)
+		if verr != nil {
+			return ToolCallResponse{Error: verr.Error(), ArgHash: argHash, ResultHash: hashString(verr.Error())}
+		}
+		if string(fixed) != string(req.ArgsJSON) {
+			req.ArgsJSON = fixed
+			argHash = hashBytes(fixed)
+		}
+	}
+	// ADR-0145 D9: a side-effecting call made by a plan step has an idempotency
+	// key; a retry of the same call returns the stored result.
+	if e.Idempotency != nil && tool.SideEffecting() && !req.System {
+		if sc, ok := StepCallFrom(ctx); ok {
+			stored, found, finish := e.Idempotency.Begin(ctx, IdempotencyKey(sc.RunID, sc.StepIndex, req.ToolName, req.ArgsJSON))
+			if found {
+				slog.Info("ADR-0145 D9: duplicate side-effecting call answered from its stored result",
+					"tool", req.ToolName, "run", sc.RunID, "step", sc.StepIndex)
+				return stored
+			}
+			defer func() { finish(out, !out.Denied && out.Error == "") }()
+		}
+	}
+
 	// Grant → CID hydration → resource policy → scope → effects.
 	grant, reason, authorized := e.authorize(ctx, &req, tool)
 	if !authorized {
 		return denied(reason, argHash)
+	}
+
+	// ADR-0145 D14: the request-tied guards (constraints, the write-target record,
+	// the repair-turn write guard). unrequested is a write no open write/document
+	// item asked for: it goes to approval with a notice below.
+	unrequested := false
+	if !req.System {
+		g := e.requestGuards(ctx, req, tool, argHash)
+		if g.stop {
+			return g.resp
+		}
+		unrequested = g.unrequested
+		if g.finish != nil {
+			defer func() { g.finish(out) }()
+		}
 	}
 
 	// The policy decision: allow, or ask for a dangerous tool. A2.2: an operator
@@ -434,7 +620,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// operator command handler audits the call and emits a dangerous-tool feed
 	// event so the privileged action stays visible.
 	verdict := HookAllow
-	if tool.Dangerous && !req.System {
+	if (tool.Dangerous || unrequested) && !req.System {
 		verdict = HookAsk
 	}
 
@@ -486,6 +672,9 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		approver = "operator:system"
 	} else if verdict == HookAsk {
 		if e.Approval == nil {
+			if unrequested {
+				return denied("approval required but unavailable: "+UnrequestedWriteNotice(req.ToolName), argHash)
+			}
 			return denied("approval required but unavailable", argHash)
 		}
 		// ADR-0142 D11: the request names who the call is for (kernel-held facts
@@ -500,6 +689,11 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		if histScope != "" {
 			histRef = e.History.Begin(histScope, req.ToolName, req.ArgsJSON, ActionAwaitingApproval)
 			notice = RenderDuplicateNotice(e.History.Matches(histScope, req.ToolName, req.ArgsJSON, histRef))
+		}
+		if unrequested {
+			// ADR-0145 D14: the same notice channel as the duplicate notice (the
+			// approval item's duplicate_notice field), so every surface shows it.
+			notice = joinNotices(UnrequestedWriteNotice(req.ToolName), notice)
 		}
 		dec, err := e.Approval.Request(ctx, ApprovalRequest{
 			AgentID: req.AgentID, ToolName: req.ToolName, ArgsPreview: preview(req.ArgsJSON, 200),
@@ -615,6 +809,11 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 				Detail:    "machine " + strconv.Quote(contrib.machine) + ": " + err.Error(),
 			})
 		}
+		// ADR-0145 D1: a call that ran and failed is a result too (D5 needs the
+		// error to judge a "not found" honestly).
+		if errJSON, merr := json.Marshal(map[string]string{"error": err.Error()}); merr == nil {
+			e.recordToLedger(ctx, req, tool, errJSON)
+		}
 		return ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error()), ApproverID: approver}
 	}
 	if priced {
@@ -659,7 +858,22 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	}
 
 	resp := ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result), ApproverID: approver}
-	// Offload large results to CAS.
+	// ADR-0145 D1: with the ledger on, every result is recorded, and a large one
+	// travels as its ledger id instead of a plan-scoped content-store cid (one
+	// pathway: the content store holds no tool results then). A result the ledger
+	// could not record stays inline — never lost to the agent.
+	if e.Ledger != nil {
+		id := e.recordToLedger(ctx, req, tool, result)
+		switch {
+		case id != "" && e.InlineThreshold > 0 && len(result) > e.InlineThreshold:
+			resp.ResultCID = id
+			resp.ResultJSON = nil
+		case id != "" && e.ReturnLedgerRef:
+			resp.ResultCID = id // inline result plus its reference (ADR-0145 D6)
+		}
+		return resp
+	}
+	// Legacy path (ledger off): offload large results to CAS.
 	if e.ContentStore != nil && e.InlineThreshold > 0 && len(result) > e.InlineThreshold {
 		if cid, serr := e.ContentStore.Put(ctx, result, "tool_result", nil, preview(result, 500)); serr == nil {
 			resp.ResultCID = string(cid)
@@ -722,6 +936,18 @@ func (e *ToolExecutor) persistArtifacts(ctx context.Context, req ToolCallRequest
 					Tags:      tags,
 				}); rerr != nil {
 					slog.Warn("tool artifact promote: metadata record failed", "tool", req.ToolName, "path", r.Path, "err", rerr)
+				}
+				// ADR-0145 D1: the file is an entry of the run's ledger too (kind
+				// artifact). Content-addressed, so the vault holds its bytes once.
+				if e.Ledger != nil && !req.System {
+					pathArg, _ := json.Marshal(map[string]string{"path": r.Path})
+					if _, lerr := e.Ledger.Record(ctx, LedgerRecord{
+						Kind: LedgerArtifact, Provenance: LedgerProvenanceFromContext(ctx),
+						ToolName: req.ToolName, ArgsJSON: pathArg, Writer: AgentPrincipal(req.AgentID),
+						ContentType: contentTypeFor(r.Path), Body: node.Data,
+					}); lerr != nil {
+						slog.Warn("ADR-0145: tool artifact not recorded to the ledger", "tool", req.ToolName, "path", r.Path, "err", lerr)
+					}
 				}
 			} else {
 				slog.Warn("tool artifact promote: vault store failed", "tool", req.ToolName, "path", r.Path, "err", serr)
@@ -1496,6 +1722,16 @@ func (e *ToolExecutor) effectDecision(ctx context.Context, req ToolCallRequest, 
 		Effects:   tool.Effects,
 		Session:   SessionID(req.SessionTokenID),
 	})
+}
+
+// ScopeAllows is scopeAllows for the ADR-0145 D12 composer: whether the principal,
+// under the person on ctx, may use a tool's data stores at all. Advisory at
+// composition time; Execute still authorizes every call.
+func (e *ToolExecutor) ScopeAllows(ctx context.Context, agentID string, tool SystemTool) bool {
+	if e == nil {
+		return false
+	}
+	return e.scopeAllows(ctx, agentID, tool)
 }
 
 // scopeAllows applies the data-store regime (ADR-0039 D8 Regime 1): a tool that

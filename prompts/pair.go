@@ -68,3 +68,30 @@ func (p Pair) Message(values map[string]string) (string, error) {
 	}
 	return r.Text, nil
 }
+
+// LoadPairVersions is LoadPair pinned to one version of each prompt, for a caller
+// that must keep sending a version it was measured on after a newer one is added
+// (the legacy arm of a flag-gated prompt change).
+func LoadPairVersions(systemID string, systemVersion int, inputID string, inputVersion int) (Pair, error) {
+	sys, err := GetVersion(systemID, systemVersion)
+	if err != nil {
+		return Pair{}, err
+	}
+	in, err := GetVersion(inputID, inputVersion)
+	if err != nil {
+		return Pair{}, err
+	}
+	if len(sys.Inputs) != 0 {
+		return Pair{}, fmt.Errorf("%w: %s is a system block and must have no slots, has %v", ErrInvalid, systemID, sys.Inputs)
+	}
+	return Pair{System: sys, Input: in}, nil
+}
+
+// MustPairVersions is LoadPairVersions for package-level prompts.
+func MustPairVersions(systemID string, systemVersion int, inputID string, inputVersion int) Pair {
+	p, err := LoadPairVersions(systemID, systemVersion, inputID, inputVersion)
+	if err != nil {
+		panic(fmt.Sprintf("prompts: %s v%d + %s v%d: %v", systemID, systemVersion, inputID, inputVersion, err))
+	}
+	return p
+}

@@ -105,7 +105,7 @@ func (h *RequireApproval) Run(_ context.Context, ev domain.HookEvent) (domain.Ho
 // At post_model it redacts the reply text, the native tool lane's deliverable
 // (the configured final-answer call's answer argument, HookEvent.FinalAnswer) and
 // every guarded control-verb argument (HookEvent.GuardedArgs: yield_subgoal's
-// intent, spawn_subagent's objective, …), which the kernel writes back into the
+// intent, delegate_to_planner's task, …), which the kernel writes back into the
 // calls. Other tool calls' arguments are not its business here: their execution
 // passes the ToolExecutor's pre_tool hooks. A guarded argument the kernel cannot
 // read is refused by the chain before this runs.
@@ -161,7 +161,7 @@ func (h *RedactOutput) Run(_ context.Context, ev domain.HookEvent) (domain.HookR
 			res.FinalAnswer = &answer
 		}
 		// Every guarded control-verb argument (yield_subgoal.intent,
-		// spawn_subagent.objective, …). The deliverable is in this list too; its
+		// delegate_to_planner.task, …). The deliverable is in this list too; its
 		// rewrite above is the same value, so writing it twice is idempotent.
 		for _, g := range ev.GuardedArgs {
 			if g.Unreadable == "" && h.pattern.MatchString(g.Value) {

@@ -141,6 +141,16 @@ type DAGExecutor struct {
 	// (execution.plan.dependency_results_max_chars; the server resolves <= 0 to the
 	// config default). 0 here means unbounded — tests and harnesses only.
 	DependencyResultsMaxChars int
+	// EffectVocabulary decides which steps the step cache may serve or store
+	// (step_cache_guard.go, ADR-0145 D9): only thought steps and steps whose
+	// declared effects are all read-only. nil ⇒ no action step is cacheable.
+	EffectVocabulary *domain.StepEffectVocabulary
+	// StepCacheDefaultTTL is the TTL of a cacheable step no policy names
+	// (execution.plan.step_cache_default_ttl_minutes). <= 0 ⇒ one hour.
+	StepCacheDefaultTTL time.Duration
+	// RunTracer records each step's output as an invoke_agent span (ADR-0145 D10,
+	// step_trace.go). nil ⇒ off (execution.trace.enabled).
+	RunTracer domain.RunTracer
 	// ADR-0022 Phase 3: circuit-breaker flag.
 	// true  → Handoff.WorkingMemory populated from the step's DependsOn outputs; Handoff.Context empty.
 	// false → filterSnapshotForStep into Handoff.Context (Phase 0 behavior).
@@ -183,6 +193,31 @@ type DAGExecutor struct {
 	// discovery layer surfaces everything (the OSS default); GetArtifact remains
 	// the authoritative gate either way.
 	Authz domain.Authorizer
+
+	// Ledger is the ADR-0145 D1 run ledger's writer (ledger_steps.go): every step
+	// output is recorded as a step_output entry and step_N_cid holds its id. nil ⇒
+	// the legacy content-store path. Set together with LedgerReader, and with
+	// ContentStore nil (one pathway: step results are no longer content-store scratch).
+	Ledger domain.LedgerWriter
+	// LedgerReader is the ENFORCED ledger reader dependants' upstream results are
+	// read from, under LedgerReadScope (the kernel acting for the run's owner; nil ⇒
+	// a plain bypass, which keeps no owner fence open).
+	LedgerReader    domain.LedgerReader
+	LedgerReadScope *domain.TagPredicate
+
+	// Requirements is the ADR-0145 D5/D6 state of the request
+	// (envelope_steps.go, execution.plan.checklist_enabled): steps that answer
+	// checklist items are told which, their envelopes are validated against the
+	// ledger with one repair turn, and the accepted results drive Coverage. nil ⇒
+	// the legacy prose path. Requires Ledger and LedgerReader.
+	Requirements *StepRequirements
+	// planMu/currentPlan expose the plan being run (it changes on fan-out and
+	// replan) to the envelope check's dependency walk.
+	planMu      sync.Mutex
+	currentPlan *domain.ExecutionPlan
+	// generation counts the plans swapped in by applyReplannedPlan (under planMu);
+	// see planGeneration.
+	generation int
 
 	// SessionCloser marks a session finished when its plan completes.
 	//
@@ -243,6 +278,7 @@ type stepResult struct {
 	budgetOverrun     bool
 	fallbackModelUsed bool
 	snapshot          map[string]string // masterContext clone at dispatch time (ADR-0015)
+	cached            bool              // served from the step cache (ADR-0026); read by the run trace
 }
 
 // executeStep runs a single plan step synchronously. Callers wrap it in a
@@ -259,6 +295,9 @@ func (d *DAGExecutor) executeStep(
 	planID string,
 ) stepResult {
 	sizeBefore := contextByteSize(snapshot)
+	// The step's plan generation rides its ctx to the lease binding (server), so
+	// its tool results are recorded under the generation's ledger run id.
+	ctx = domain.WithPlanGeneration(ctx, d.planGeneration())
 
 	slog.Info("🚀 Dispatching Step", "index", stepIndex)
 
@@ -292,18 +331,25 @@ func (d *DAGExecutor) executeStep(
 
 	// ADR-0026: step-level cache lookup. On hit, skip stepFn entirely.
 	var cacheKey string
-	if d.StepCache != nil {
+	// ADR-0145 D6: a step that answers checklist items is never served from the
+	// cache — its envelope must cite THIS run's tool results.
+	answersItems := d.Requirements != nil && len(plan.Steps[stepIndex].Answers) > 0
+	if d.StepCache != nil && !answersItems {
 		// Keyed on the FULL upstream results (deps.results), not the snapshot: in
 		// Phase 3 the snapshot carries no step_N_result keys, so a dependent step's
 		// key used to ignore its inputs and replay another plan's answer for the same
 		// subject and query (T-20261105-a-planner-thought-step-that-depends-on-two).
-		cacheKey = dayScopedCacheKey(stepCacheKey(plan.Subject, planID, dispatched, deps.results), today)
-		if cached, ok, getErr := d.StepCache.Get(ctx, cacheKey); getErr != nil {
+		// ADR-0145 D9: the key also carries whose result it is (session, principal,
+		// scope), and only read-only steps get one; "" ⇒ neither served nor stored.
+		cacheKey = d.guardedStepCacheKey(ctx, plan, planID, stepIndex, dispatched, deps.results, today)
+		if cacheKey == "" {
+			// not cacheable: fall through to live execution
+		} else if cached, ok, getErr := d.StepCache.Get(ctx, cacheKey); getErr != nil {
 			slog.Warn("StepCache.Get failed, falling through to live execution", "step", stepIndex, "err", getErr)
 		} else if ok && cached != nil {
 			cached.BudgetLease = nil // stale session tokens must not be restored from cache
 			slog.Info("⚡ Step served from cache", "index", stepIndex)
-			return stepResult{index: stepIndex, resp: cached}
+			return stepResult{index: stepIndex, resp: cached, cached: true}
 		}
 	}
 
@@ -330,6 +376,16 @@ func (d *DAGExecutor) executeStep(
 	} else {
 		delete(snapshot, domain.HandoffKeyStepDependencies)
 	}
+	// ADR-0145 D6.3: a fan-out child receives its whole item object. Kernel-
+	// authored like the keys above: stamped on a child, removed from every other step.
+	if item := plan.Steps[stepIndex].FanOutItemJSON; item != "" {
+		snapshot[domain.HandoffKeyFanOutItem] = item
+	} else {
+		delete(snapshot, domain.HandoffKeyFanOutItem)
+	}
+
+	// ADR-0145 D5/D6: the items this step answers and its bound inputs.
+	d.stampRequirementKeys(plan, stepIndex, snapshot)
 
 	stepHandoff := &domain.Handoff{
 		Payload:       &domain.Payload{Data: []byte(dispatched.Query)},
@@ -353,6 +409,9 @@ func (d *DAGExecutor) executeStep(
 	if resp == nil {
 		return stepResult{index: stepIndex, resp: nil, err: nil}
 	}
+	// ADR-0145 D6: validate the answer envelope (one repair turn) and apply it to
+	// the request's coverage. Legacy path: unchanged.
+	resp = d.envelopeStep(ctx, plan, stepIndex, stepHandoff, stepFn, resp, deps.refs)
 
 	// The step lease's provider usage (ADR-0131 D2), consumed BEFORE the growth
 	// measurement so kernel bookkeeping keys never count as context the step
@@ -371,6 +430,10 @@ func (d *DAGExecutor) executeStep(
 	// the handoff context (thoughtFn does); it must not merge into the plan context.
 	delete(resp.Context, domain.HandoffKeyStepDependencies)
 	delete(resp.Context, domain.HandoffKeyCurrentDate) // kernel-stamped input, likewise
+	delete(resp.Context, domain.HandoffKeyFanOutItem)  // likewise (ADR-0145 D6.3)
+	delete(resp.Context, domain.HandoffKeyAnswerItems) // likewise (ADR-0145 D6)
+	delete(resp.Context, domain.HandoffKeyStepInputs)
+	delete(resp.Context, domain.HandoffKeyEnvelopeViolations)
 	sizeAfter := contextByteSize(resp.Context)
 	growthBytes := sizeAfter - sizeBefore
 	if growthBytes < 0 {
@@ -476,7 +539,7 @@ func (d *DAGExecutor) executeStep(
 	// ADR-0026: cache the successful result for future steps with identical inputs.
 	// resp is non-nil here: a nil response returned early above.
 	if d.StepCache != nil && cacheKey != "" {
-		if ttl := resolveCacheTTL(plan.Steps[stepIndex], d.StepCachePolicies); ttl > 0 {
+		if ttl := resolveCacheTTL(plan.Steps[stepIndex], d.StepCachePolicies, d.StepCacheDefaultTTL); ttl > 0 {
 			if putErr := d.StepCache.Put(ctx, cacheKey, resp, ttl); putErr != nil {
 				slog.Warn("StepCache.Put failed", "step", stepIndex, "err", putErr)
 			}
@@ -581,6 +644,16 @@ func buildSnippet(data []byte, snippetChars int) string {
 // inFlight == 0), so master is read without the context lock.
 func (d *DAGExecutor) applyReplannedPlan(newPlan *domain.ExecutionPlan, plan **domain.ExecutionPlan, n *int, alreadyDispatched map[int]bool, completed map[int]bool, topoOrder *[]int,
 	master map[string]string, prior *priorPlanResults, fail *stepFailure) error {
+	d.setCurrentPlan(newPlan)
+	// A new plan generation: its steps record to the ledger under their own run id.
+	d.planMu.Lock()
+	d.generation++
+	d.planMu.Unlock()
+	if d.Requirements != nil {
+		// A replanned plan's step indices start again: per-step evidence and
+		// values of the swapped-out plan no longer name its steps (coverage stays).
+		d.Requirements.ResetStage()
+	}
 	order, err := TopologicalSort(newPlan.Steps)
 	if err != nil {
 		return err
@@ -613,6 +686,7 @@ func (d *DAGExecutor) applyExpandedPlan(expanded *domain.ExecutionPlan, plan **d
 		return err
 	}
 	*plan = expanded
+	d.setCurrentPlan(expanded)
 	*n = len(expanded.Steps)
 	*topoOrder = order
 	// An expanded node is inert and done (its children carry the work). A DEMOTED one
@@ -835,6 +909,7 @@ func (d *DAGExecutor) ExecuteFrom(
 	stepFn StepFunc,
 	startFromStepIndex int,
 ) (finalCtx map[string]string, retErr error) {
+	d.setCurrentPlan(plan)
 	n := len(plan.Steps)
 	if n == 0 {
 		return cloneMap(initialContext), nil
@@ -1072,7 +1147,8 @@ func (d *DAGExecutor) ExecuteFrom(
 			// Phase 0 fallback (use_global_workspace=false or WorkspaceStage=nil): filterSnapshotForStep.
 			mu.Lock()
 			contextSnapshot := filterSnapshotForStep(masterContext, plan.Steps[i])
-			deps := buildStepDependencies(masterContext, plan, i, d.DependencyResultsMaxChars, prior)
+			// ADR-0145 D1: with the ledger on, upstream content is read from the ledger.
+			deps := buildStepDependenciesFrom(masterContext, plan, i, d.DependencyResultsMaxChars, prior, d.ledgerResolver(cancelCtx))
 			mu.Unlock()
 
 			var workingMemory []domain.ContextRef
@@ -1159,7 +1235,7 @@ func (d *DAGExecutor) ExecuteFrom(
 						stepCtx = domain.WithDedicatedInstance(stepCtx)
 					}
 				}
-				res := d.executeStep(stepCtx, stepPlan, stepIdx,
+				res := d.executeStepTraced(stepCtx, stepPlan, stepIdx,
 					stepContextSnapshot, stepWorkingMemory, deps, stepFn, planID)
 				if fanOutChild {
 					<-fanOutSem // free the slot before reporting, so the next child can start
@@ -1393,10 +1469,19 @@ coordinate:
 			continue // do not merge, do not dispatch successors
 		}
 
+		// ADR-0145 D1: the step-output choke point, written before the merge and
+		// outside the lock (it is I/O).
+		mu.Lock()
+		inputRefs := stepInputRefs(plan, r.index, masterContext)
+		mu.Unlock()
+		ledgerID := d.recordStepOutput(cancelCtx, plan, r, inputRefs)
 		mu.Lock()
 		cid := mergeStepResult(cancelCtx, masterContext, r, d.ContentStore, d.ContextRefSnippetChars)
 		if cid != "" {
 			planCIDs = append(planCIDs, cid)
+		}
+		if ledgerID != "" {
+			masterContext[fmt.Sprintf("step_%d_cid", r.index)] = ledgerID
 		}
 		mu.Unlock()
 
@@ -1474,7 +1559,7 @@ coordinate:
 		// holds JSON with no recognisable item list (its lines made 26 read children for
 		// 3 customers, T-20261107-read-only-fan-out-over-an-unrecognised-json).
 		if firstErr == nil {
-			srcOut := masterContext[fmt.Sprintf("step_%d_result", r.index)]
+			srcOut := fanOutSourceOutput(masterContext[fmt.Sprintf("step_%d_result", r.index)])
 			for _, fanIdx := range domain.PendingFanOuts(plan, r.index) {
 				if completed[fanIdx] {
 					continue // already expanded (an inert node keeps its FanOutOver tag)
@@ -1493,12 +1578,14 @@ coordinate:
 					}
 					break
 				}
+				firstChild := n
 				if err := d.applyExpandedPlan(expanded, &plan, &n, completed, &topoOrder, fanIdx); err != nil {
 					slog.Warn("DAGExecutor: fan-out expansion produced an invalid plan", "err", err)
 					firstErr = err
 					failedStepIdx = fanIdx
 					break
 				}
+				d.expectFanOutMembers(plan, firstChild) // ADR-0145 D5.6
 				switch {
 				case how == domain.FanOutDemotedUntemplated:
 					slog.Warn("DAGExecutor: fan-out step has no item placeholder; running it ONCE over the whole set instead of once per item",
@@ -1620,20 +1707,27 @@ coordinate:
 		if errors.As(abortErr, &pe) && pe.Report == "" {
 			pe.Report = buildPlanReport(plan, masterContext, completed)
 		}
+		if pe != nil && pe.Context != nil {
+			// ADR-0145 D8: every step of the final plan, for the structured result.
+			pe.Context[PlanStepsKey] = encodeStepRefs(planStepRefs(plan, masterContext))
+		}
 		return nil, abortErr
 	}
 
 	if firstErr != nil {
-		return nil, &PartialPlanError{
+		pe := &PartialPlanError{
 			FailedStep:  failedStepIdx,
 			LastError:   firstErr,
 			Context:     cloneMap(masterContext),
 			ReplanCount: d.replanCount,
 			Report:      buildPlanReport(plan, masterContext, completed),
 		}
+		pe.Context[PlanStepsKey] = encodeStepRefs(planStepRefs(plan, masterContext))
+		return nil, pe
 	}
 
 	masterContext[finalResultKey] = buildPlanReport(plan, masterContext, completed)
+	masterContext[PlanStepsKey] = encodeStepRefs(planStepRefs(plan, masterContext))
 	return masterContext, nil
 }
 
@@ -1867,4 +1961,11 @@ func boundRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
+}
+
+// setCurrentPlan records the plan being run (ADR-0145 D6's dependency walk).
+func (d *DAGExecutor) setCurrentPlan(p *domain.ExecutionPlan) {
+	d.planMu.Lock()
+	d.currentPlan = p
+	d.planMu.Unlock()
 }

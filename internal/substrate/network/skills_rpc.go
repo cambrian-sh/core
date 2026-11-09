@@ -109,7 +109,17 @@ func (s *Server) ListSkills(ctx context.Context, _ *pb.ListSkillsRequest) (*pb.L
 	if s.SkillAccess != nil {
 		set, bound = s.SkillAccess.Effective(ctx, agentID)
 	}
+	// ADR-0145 D12: a composed worker's skill index is its composition. A skill
+	// outside it reads as denied, is never served and never opens an access
+	// request: the model may narrow what the kernel composed, never widen it.
+	compIn, composedBound := s.composedSkillAccess(ctx, agentID)
 	accessOf := func(name string) string {
+		if composedBound {
+			if compIn(name) {
+				return domain.SkillAccessProfile
+			}
+			return SkillAccessComposedOut
+		}
 		if !bound {
 			return ""
 		}
@@ -134,7 +144,10 @@ func (s *Server) ListSkills(ctx context.Context, _ *pb.ListSkillsRequest) (*pb.L
 				continue
 			}
 			acc, detail := accessOf(n), ""
-			if !skillInSet(acc) && full {
+			if composedBound && !skillInSet(acc) {
+				detail = "outside the skills the kernel composed for this step"
+			}
+			if !skillInSet(acc) && full && !composedBound {
 				// Outside the effective set: ask the operator. Only a Tier-2 load
 				// asks; a Tier-1 lookup just reports the skill as requestable.
 				out := s.SkillAccess.Request(ctx, access.RequestInput{
@@ -176,6 +189,9 @@ func (s *Server) ListSkills(ctx context.Context, _ *pb.ListSkillsRequest) (*pb.L
 			for _, n := range ranked {
 				if sk, ok := s.SkillRegistry.Get(n); ok {
 					acc := accessOf(n)
+					if composedBound && !skillInSet(acc) {
+						continue // discovery does not reach past a composition
+					}
 					skills = append(skills, servedSkill{sk: sk, access: acc, body: full && skillInSet(acc)})
 				}
 			}

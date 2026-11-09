@@ -181,6 +181,18 @@
       "static_hash": "05014a641b9b1ed502d33ae7b30d963d329eaf95a3833cc46fd66369a3f95c5e"
     },
     {
+      "id": "chat_agent",
+      "version": 5,
+      "tier": "stable",
+      "inputs": [
+        "policy",
+        "work_systems"
+      ],
+      "description": "The chat front desk's stable system text: its role, its output rule, when to answer directly and when to delegate, the work systems the planner's agents can use, its answering rules for each recall posture, the conversation's policy, and (ADR-0145 phase 3, each behind its own execution.chat key) the grounded-reply, delegation, ledger-tool, turn-index and ask-back rules.",
+      "has_schema": false,
+      "static_hash": "29aac8df50c88e1692cb0e70ed7a556bd97bf682b83bef2c5d9195c4c27fd63a"
+    },
+    {
       "id": "chat_agent_turn",
       "version": 1,
       "tier": "volatile",
@@ -266,6 +278,29 @@
       "static_hash": "f0c60a058da255107b4f2bc708d81c9cfd07e32c74ab18bbfacf198cab0db5ac"
     },
     {
+      "id": "chat_agent_turn",
+      "version": 7,
+      "tier": "volatile",
+      "inputs": [
+        "transcript",
+        "memories",
+        "message",
+        "planner_result",
+        "language",
+        "task_description",
+        "summary",
+        "turn_index",
+        "pending",
+        "evidence",
+        "questions",
+        "draft",
+        "problems"
+      ],
+      "description": "The chat front desk's per-turn task text: the earlier conversation, the recalled memory and the latest message as tagged data, the reply instruction last, the retry notes, the reply-language line, the reply-now note, the delegation-scope text, and (ADR-0145 phase 3) the rolling summary, the turn index, a pending request, the evidence block of a grounded reply, the ask-back note and the reply-revision note of the enforced reply check.",
+      "has_schema": false,
+      "static_hash": "4d8b835ffdd8282fa0d21cbf6e15f6e00681b7e8ccb7bd9503a037e112feacf8"
+    },
+    {
       "id": "clarifier",
       "version": 1,
       "tier": "stable",
@@ -297,6 +332,36 @@
       "description": "The user message of one clarification call: the classification vocabulary and the operator's goal, as tagged data.",
       "has_schema": false,
       "static_hash": "712ba9e5a9616d22321e7fcc8ad65f2c2ea023b852cee0025bd34af55d49e7d1"
+    },
+    {
+      "id": "composed_worker",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "The stable system text of a worker the kernel composes for one plan step: its role and the rules every composed worker follows, including the decomposition rule (do the encapsulated job of the brief; never decide a judgement from part of a set).",
+      "has_schema": false,
+      "static_hash": "6a45103416c43ed4b052b12b19a509cc3324781c62c5842d359e7102cdf83151"
+    },
+    {
+      "id": "conversation_summary",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Condense the older part of a conversation into a short running summary that keeps every fact, figure, identifier, decision and open question, so the chat front desk can follow the conversation after those messages leave its token-budgeted transcript.",
+      "has_schema": false,
+      "static_hash": "4b8609bb8e9168a8a45aedbe17be73055ad46fde637597dd9af3c2055b8ea0b5"
+    },
+    {
+      "id": "conversation_summary_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "previous",
+        "messages"
+      ],
+      "description": "The user message of one rolling-summary call: the previous summary and the conversation messages to fold into it, as tagged data.",
+      "has_schema": false,
+      "static_hash": "d55d4251fb8979dc4e231dbaae17c26177fe7c5ed87d76488c8810cf82a453d2"
     },
     {
       "id": "current_date",
@@ -475,6 +540,42 @@
       "static_hash": "8d7d3847d92a849025ee2e8329237d4182b53b673933fd519762f6018a32c295"
     },
     {
+      "id": "planner_cap",
+      "version": 7,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Turn a user request into a dependency-ordered execution plan whose steps declare capability tags, effects, the checklist items they answer and their bindings to earlier steps.",
+      "has_schema": true,
+      "static_hash": "9bef372578629e8ff7b65d4c1f95620e7b303f3650c0fd2e727419452dc9fb13"
+    },
+    {
+      "id": "planner_cap",
+      "version": 8,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Plan a user request one stage at a time: return the next small batch of steps (with capability tags, effects, the checklist items they answer and their bindings), a question for the person, ledger reads to look before deciding, or nothing more.",
+      "has_schema": true,
+      "static_hash": "a8bca1c5a5afeb326a93886bb6a718cd7845ec6d963110eb8b3d614a2f0f2d75"
+    },
+    {
+      "id": "planner_cap",
+      "version": 9,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Plan a user request one stage at a time: return the next small batch of steps (with capability tags, effects, the checklist items they answer and their bindings), a question for the person, ledger reads to look before deciding, or nothing more.",
+      "has_schema": true,
+      "static_hash": "33d7b0806ce33d8644f9e983bdd709b2e76d60bce251dbd10da25b37b18a2fde"
+    },
+    {
+      "id": "planner_cap",
+      "version": 10,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Turn a user request into a dependency-ordered execution plan whose steps declare capability tags, effects, the checklist items they answer and their bindings to earlier steps.",
+      "has_schema": true,
+      "static_hash": "34e015c0dc6ad7d86295d6512e123203670829fd13cd018c99af58f5ec8e0b0f"
+    },
+    {
       "id": "planner_input",
       "version": 1,
       "tier": "volatile",
@@ -502,6 +603,40 @@
       "description": "The user message of one planning call: the capability clusters, the host, today's date, remembered context and the request, as tagged data.",
       "has_schema": false,
       "static_hash": "57b330540ceb909db2f91b537947d5e68a7ecb265a462b27f2da64b3adccc8d2"
+    },
+    {
+      "id": "planner_input",
+      "version": 3,
+      "tier": "volatile",
+      "inputs": [
+        "capability_clusters",
+        "host",
+        "today",
+        "documents",
+        "requirements",
+        "request"
+      ],
+      "description": "The user message of one planning call under the requirement checklist: the capability clusters, the host, today's date, remembered context, the checklist and the request, as tagged data.",
+      "has_schema": false,
+      "static_hash": "5db5a972c7b894cab19bff4e61d60d80a05c3503cedb52e8a59acdd952b73156"
+    },
+    {
+      "id": "planner_input",
+      "version": 4,
+      "tier": "volatile",
+      "inputs": [
+        "capability_clusters",
+        "host",
+        "today",
+        "documents",
+        "requirements",
+        "stage",
+        "ledger_reads",
+        "request"
+      ],
+      "description": "The user message of one staged planning call: the capability clusters, the host, today's date, remembered context, the checklist with item statuses, the stage (its number, whether the person can be asked, the ledger index and the earlier stages' results), the ledger reads asked for and the request, as tagged data.",
+      "has_schema": false,
+      "static_hash": "241278808c4bfaa6bf831043612a0094b95ac5ec8e824d3f5a46c778ee23d956"
     },
     {
       "id": "replan",
@@ -612,6 +747,28 @@
       "description": "The user message of one replanning call: the capability vocabulary, today's date, the partial results, the budget marker and the failure, as tagged data.",
       "has_schema": false,
       "static_hash": "78ce941414f962b1a462fd19d3741a6037381fa9635239c53a4129ff495419e5"
+    },
+    {
+      "id": "requirement_checklist",
+      "version": 1,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Split a delegated request into a checklist of requirement items (answers, figures, documents, writes, constraints), each anchored by a verbatim quote from the user's own message.",
+      "has_schema": true,
+      "static_hash": "99ba4ca2812aac01869c190b744437c989bb623cdb79261eb06a5808f3715220"
+    },
+    {
+      "id": "requirement_checklist_input",
+      "version": 1,
+      "tier": "volatile",
+      "inputs": [
+        "effects",
+        "repair",
+        "request"
+      ],
+      "description": "The user message of one checklist derivation: the effect vocabulary, any repair notes, and the person's request, as tagged data.",
+      "has_schema": false,
+      "static_hash": "d06459d69b4625dd525f8ffe8a2aa53ceb462a1e2fbd355723f1fb10162c08bb"
     },
     {
       "id": "retrieval_answer_subq",

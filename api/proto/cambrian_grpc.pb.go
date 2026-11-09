@@ -123,6 +123,13 @@ type OrchestratorClient interface {
 	WatchApprovals(ctx context.Context, in *WatchApprovalsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ApprovalRequest], error)
 	// Operator-plane: submit an approve/deny decision for a pending request.
 	SubmitApprovalDecision(ctx context.Context, in *ApprovalDecisionRequest, opts ...grpc.CallOption) (*ApprovalDecisionResponse, error)
+	// DEPRECATED 2026-11-09 (ADR-0145 D14): the kernel no longer serves
+	// SpawnSubagent and answers UNIMPLEMENTED, which a client already treats as
+	// "this deployment has no such surface". A worker that needs more work done
+	// hands it to the planner through Execute, as the chat agent delegates. The RPC
+	// and its messages are kept so the contract stays wire-compatible; removal is
+	// tracked as a ticket. Original description:
+	//
 	// ADR-0139 D12: spawn one in-agent subagent and wait for its result (unary:
 	// the parent awaits). The child is a SEPARATE kernel dispatch, so the
 	// ToolExecutor governs every child tool call and child spend counts against
@@ -578,6 +585,13 @@ type OrchestratorServer interface {
 	WatchApprovals(*WatchApprovalsRequest, grpc.ServerStreamingServer[ApprovalRequest]) error
 	// Operator-plane: submit an approve/deny decision for a pending request.
 	SubmitApprovalDecision(context.Context, *ApprovalDecisionRequest) (*ApprovalDecisionResponse, error)
+	// DEPRECATED 2026-11-09 (ADR-0145 D14): the kernel no longer serves
+	// SpawnSubagent and answers UNIMPLEMENTED, which a client already treats as
+	// "this deployment has no such surface". A worker that needs more work done
+	// hands it to the planner through Execute, as the chat agent delegates. The RPC
+	// and its messages are kept so the contract stays wire-compatible; removal is
+	// tracked as a ticket. Original description:
+	//
 	// ADR-0139 D12: spawn one in-agent subagent and wait for its result (unary:
 	// the parent awaits). The child is a SEPARATE kernel dispatch, so the
 	// ToolExecutor governs every child tool call and child spend counts against
