@@ -66,10 +66,28 @@ type fakeStore struct {
 	processed map[int64]bool
 	insertErr error
 	nextID    int64
+
+	// The retry/hold/dead state migration 0039 adds, kept the way the Pg store
+	// keeps it so consumer tests exercise the same contract. clock is the
+	// store's "now()" (zero = wall clock); tests advance it.
+	clock    time.Time
+	attempts map[int64]int
+	due      map[int64]time.Time
+	held     map[int64]string
+	dead     map[int64]string // last error
+	reads    int              // PendingOutbox calls
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{rows: map[string]domain.Evidence{}, processed: map[int64]bool{}}
+	return &fakeStore{rows: map[string]domain.Evidence{}, processed: map[int64]bool{},
+		attempts: map[int64]int{}, due: map[int64]time.Time{}, held: map[int64]string{}, dead: map[int64]string{}}
+}
+
+func (f *fakeStore) now() time.Time {
+	if f.clock.IsZero() {
+		return time.Now()
+	}
+	return f.clock
 }
 
 func tripleKey(ev domain.Evidence) string {
@@ -119,13 +137,69 @@ func (f *fakeStore) LatestBySourceKey(_ context.Context, ns, sourceID, sourceKey
 }
 
 func (f *fakeStore) PendingOutbox(_ context.Context, limit int) ([]domain.EvidenceOutboxItem, error) {
+	f.reads++
 	var out []domain.EvidenceOutboxItem
 	for _, it := range f.outbox {
-		if !f.processed[it.ID] {
-			out = append(out, it)
+		if f.processed[it.ID] {
+			continue
 		}
+		if _, dead := f.dead[it.ID]; dead {
+			continue
+		}
+		if due, ok := f.due[it.ID]; ok && due.After(f.now()) {
+			continue
+		}
+		it.Attempts = f.attempts[it.ID]
+		out = append(out, it)
 		if len(out) == limit {
 			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) RecordOutboxFailure(_ context.Context, id int64, attempts int, lastErr string, retryAfter time.Duration, dead bool) error {
+	if f.processed[id] {
+		return nil
+	}
+	f.attempts[id] = attempts
+	delete(f.held, id)
+	if dead {
+		f.dead[id] = lastErr
+		delete(f.due, id)
+		return nil
+	}
+	f.due[id] = f.now().Add(retryAfter)
+	return nil
+}
+
+func (f *fakeStore) HoldOutbox(_ context.Context, id int64, holdKey, _ string, recheckAfter time.Duration) error {
+	if f.processed[id] {
+		return nil
+	}
+	f.held[id] = holdKey
+	f.due[id] = f.now().Add(recheckAfter)
+	return nil
+}
+
+func (f *fakeStore) ReleaseHeldOutbox(_ context.Context, holdKey string) (int, error) {
+	n := 0
+	for id, k := range f.held {
+		if k == holdKey && !f.processed[id] {
+			delete(f.held, id)
+			delete(f.due, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakeStore) DeadOutbox(_ context.Context, _ string, _ int) ([]domain.DeadEvidenceOutboxItem, error) {
+	var out []domain.DeadEvidenceOutboxItem
+	for _, it := range f.outbox {
+		if lastErr, ok := f.dead[it.ID]; ok && !f.processed[it.ID] {
+			it.Attempts = f.attempts[it.ID]
+			out = append(out, domain.DeadEvidenceOutboxItem{EvidenceOutboxItem: it, LastError: lastErr})
 		}
 	}
 	return out, nil

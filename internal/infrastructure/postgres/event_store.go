@@ -268,59 +268,127 @@ func (s *PgEventStore) History(ctx context.Context, namespace, entityID, predica
 }
 
 // EventsForEntity: every event the entity participated in, roles hydrated.
+// It is EventsForEntities with one id, so the two never disagree.
 func (s *PgEventStore) EventsForEntity(ctx context.Context, namespace, entityID string, from, to time.Time) ([]domain.Event, error) {
+	byEntity, err := s.EventsForEntities(ctx, namespace, []string{entityID}, from, to)
+	if err != nil {
+		return nil, err
+	}
+	return byEntity[entityID], nil
+}
+
+// EventsForEntities is EventsForEntity over a set of entities in two round
+// trips whatever the set's size: one statement for the events (each entity's
+// own [from, to) range, oldest first, retired rows excluded — ADR-0147 D6 via
+// notRetired) and one for every returned event's roles. The query plane's
+// traverse reads a whole frontier through it (T-20261112-traverse-still-reads-
+// events-once-per-frontier); before it, a hop cost one statement per frontier
+// entity plus one per event.
+//
+// An event several requested entities took part in is returned under each of
+// them, sharing one Roles slice — callers must not mutate it.
+func (s *PgEventStore) EventsForEntities(ctx context.Context, namespace string, entityIDs []string, from, to time.Time) (map[string][]domain.Event, error) {
 	if namespace == "" {
 		namespace = "default"
 	}
+	out := map[string][]domain.Event{}
+	if len(entityIDs) == 0 {
+		return out, nil
+	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT e.id, e.namespace_id, e.event_type, e.occurred_at, e.evidence_id, e.source_ref, e.time_basis
-		FROM events e
-		WHERE e.namespace_id=$1 AND e.occurred_at >= $2 AND e.occurred_at < $3
-		  AND EXISTS (SELECT 1 FROM event_roles r WHERE r.event_id = e.id AND r.entity_id = $4)`+notRetired("e")+`
-		ORDER BY e.occurred_at, e.id`,
-		namespace, from.UTC(), to.UTC(), entityID)
+		SELECT r.entity_id, `+eventColumnsOn("e")+`
+		FROM (SELECT DISTINCT event_id, entity_id FROM event_roles WHERE entity_id = ANY($4::text[])) r
+		JOIN events e ON e.id = r.event_id
+		WHERE e.namespace_id=$1 AND e.occurred_at >= $2 AND e.occurred_at < $3`+notRetired("e")+`
+		ORDER BY r.entity_id, e.occurred_at, e.id`,
+		namespace, from.UTC(), to.UTC(), entityIDs)
+	if err != nil {
+		return nil, err
+	}
+	type keyed struct {
+		entity string
+		ev     domain.Event
+	}
+	var all []keyed
+	var ids []string
+	seen := map[string]bool{}
+	for rows.Next() {
+		var k keyed
+		ev, err := scanTypedEvent(rows, &k.entity)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		k.ev = ev
+		all = append(all, k)
+		if id := string(ev.ID); !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	roles, err := eventRoles(ctx, s.pool, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range all {
+		k.ev.Roles = roles[string(k.ev.ID)]
+		out[k.entity] = append(out[k.entity], k.ev)
+	}
+	return out, nil
+}
+
+// eventColumnsOn is the event row as scanTypedEvent reads it, over the events table
+// aliased alias. Shared with the query plane's fenced events read, so the two
+// never scan different columns.
+func eventColumnsOn(alias string) string {
+	return alias + ".id, " + alias + ".namespace_id, " + alias + ".event_type, " + alias + ".occurred_at, " +
+		alias + ".evidence_id, " + alias + ".source_ref, " + alias + ".time_basis"
+}
+
+// scanTypedEvent scans eventColumnsOn, after any leading columns the caller selected
+// first (lead), into an Event without roles.
+func scanTypedEvent(rows pgx.Rows, lead ...any) (domain.Event, error) {
+	var ev domain.Event
+	var id string
+	var evidenceID *string
+	dest := append(lead, &id, &ev.NamespaceID, &ev.Type, &ev.OccurredAt, &evidenceID, &ev.SourceRef, &ev.TimeBasis)
+	if err := rows.Scan(dest...); err != nil {
+		return domain.Event{}, err
+	}
+	ev.ID = domain.EventID(id)
+	if evidenceID != nil {
+		ev.EvidenceID = domain.EvidenceID(*evidenceID)
+	}
+	return ev, nil
+}
+
+// eventRoles loads the roles of a set of events in ONE statement, each event's
+// roles ordered by role then entity — the order EventsForEntity always returned.
+func eventRoles(ctx context.Context, q pgxQuerier, eventIDs []string) (map[string][]domain.EventRole, error) {
+	out := map[string][]domain.EventRole{}
+	if len(eventIDs) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx,
+		`SELECT event_id, role, entity_id FROM event_roles WHERE event_id = ANY($1::text[])
+		ORDER BY event_id, role, entity_id`, eventIDs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.Event
 	for rows.Next() {
-		var ev domain.Event
 		var id string
-		var evidenceID *string
-		if err := rows.Scan(&id, &ev.NamespaceID, &ev.Type, &ev.OccurredAt, &evidenceID, &ev.SourceRef, &ev.TimeBasis); err != nil {
+		var r domain.EventRole
+		if err := rows.Scan(&id, &r.Role, &r.EntityID); err != nil {
 			return nil, err
 		}
-		ev.ID = domain.EventID(id)
-		if evidenceID != nil {
-			ev.EvidenceID = domain.EvidenceID(*evidenceID)
-		}
-		out = append(out, ev)
+		out[id] = append(out[id], r)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for i := range out {
-		rrows, err := s.pool.Query(ctx,
-			`SELECT role, entity_id FROM event_roles WHERE event_id=$1 ORDER BY role, entity_id`,
-			string(out[i].ID))
-		if err != nil {
-			return nil, err
-		}
-		for rrows.Next() {
-			var r domain.EventRole
-			if err := rrows.Scan(&r.Role, &r.EntityID); err != nil {
-				rrows.Close()
-				return nil, err
-			}
-			out[i].Roles = append(out[i].Roles, r)
-		}
-		rrows.Close()
-		if err := rrows.Err(); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // RetireRows records that the rows written under sourceRefs no longer count

@@ -66,3 +66,34 @@ func TestKnowledgeQuery_GuaranteesNamed(t *testing.T) {
 		}
 	}
 }
+
+// Policy and Actor select resolution rows (ADR-0111, owner amendment
+// 2026-11-12): honoured by current/as_of/contradictions, refused everywhere
+// else — and "*" is a row family, not an actor.
+func TestValidate_BeliefSelectorsAreRefusedWhereTheyCannotApply(t *testing.T) {
+	now := time.Now()
+	for name, q := range map[string]KnowledgeQuery{
+		"point actor":     {Kind: QueryPoint, EntityID: "e", Predicate: "p", Actor: "a"},
+		"history policy":  {Kind: QueryHistory, EntityID: "e", Predicate: "p", From: now, To: now, Policy: "latest_assertion"},
+		"aggregate actor": {Kind: QueryAggregate, EntityID: "e", Predicate: "p", Aggregate: "count", Actor: "a"},
+		"entity policy":   {Kind: QueryEntity, EntityID: "e", Policy: "x"},
+		"why actor":       {Kind: QueryWhy, EntityID: "e", Actor: "a"},
+		"current star":    {Kind: QueryCurrent, ItemKind: "k", Actor: ResolutionActorAll},
+	} {
+		if err := q.Validate(); !errors.Is(err, ErrCannotExpress) {
+			t.Errorf("%s: Validate = %v, want ErrCannotExpress", name, err)
+		}
+	}
+	for name, q := range map[string]KnowledgeQuery{
+		"current actor+policy":  {Kind: QueryCurrent, ItemKind: "k", Actor: "a", Policy: "latest_assertion"},
+		"as_of actor":           {Kind: QueryAsOf, ItemKind: "k", AsOf: now, Actor: "a"},
+		"contradictions policy": {Kind: QueryContradictions, ItemKind: "k", Policy: "designated_actor"},
+	} {
+		if err := q.Validate(); err != nil {
+			t.Errorf("%s: Validate = %v, want nil", name, err)
+		}
+	}
+	if got := (KnowledgeQuery{}).PolicyOrDefault(); got != ResolutionPolicyLatestAssertion {
+		t.Errorf("PolicyOrDefault() = %q", got)
+	}
+}

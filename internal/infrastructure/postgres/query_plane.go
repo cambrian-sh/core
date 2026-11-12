@@ -31,7 +31,7 @@ import (
 // someone decides.
 type PgQueryPlane struct {
 	pool      *pgxpool.Pool
-	events    domain.EventStore
+	events    walkEventStore
 	knowledge domain.KnowledgeStore
 	evidence  domain.EvidenceStore
 	// The identity plane (five-planes step 2; FIVE-PLANES-BUILD.md). All three
@@ -57,9 +57,26 @@ type PgQueryPlane struct {
 type walkLinkStore interface {
 	domain.LinkStore
 	LinksForRefs(ctx context.Context, namespace string, refs []string, opts domain.LinkQuery) (map[string][]domain.Link, error)
+	// CandidatesForRefs is the review inbox (Candidates' membership and order)
+	// restricted to the candidates touching each ref, Offset/Limit per ref — how
+	// the entity card reads one subject's candidates without reading the inbox.
+	CandidatesForRefs(ctx context.Context, namespace string, refs []string, offset, limit int) (map[string][]domain.Link, error)
 }
 
 var _ walkLinkStore = (*PgLinkStore)(nil)
+
+// walkEventStore is the event port plus the set-based read traverse needs: a
+// whole frontier's events in one round trip (roles in a second), each entity's
+// range exactly as EventsForEntity reads it. The walkLinkStore pattern: a
+// consumer-side composition of the domain port (AGENTS §3.1), because only this
+// plane has a frontier. PgEventStore.EventsForEntity is EventsForEntities with
+// one id, so the two never disagree.
+type walkEventStore interface {
+	domain.EventStore
+	EventsForEntities(ctx context.Context, namespace string, entityIDs []string, from, to time.Time) (map[string][]domain.Event, error)
+}
+
+var _ walkEventStore = (*PgEventStore)(nil)
 
 // NewPgQueryPlane composes the plane from the stores it reads through.
 //
@@ -67,7 +84,7 @@ var _ walkLinkStore = (*PgLinkStore)(nil)
 // rather than optional for the reason scope is: every construction site is made
 // to decide, and the one deployment that forgets shows up at compile time rather
 // than as an entity op that quietly returns nothing.
-func NewPgQueryPlane(pool *pgxpool.Pool, events domain.EventStore,
+func NewPgQueryPlane(pool *pgxpool.Pool, events walkEventStore,
 	knowledge domain.KnowledgeStore, evidence domain.EvidenceStore,
 	links walkLinkStore, entities domain.EntityStore,
 	relations *domain.RelationRegistry) *PgQueryPlane {
@@ -301,34 +318,6 @@ func obsRow(ob *domain.Observation) domain.QueryRow {
 	return row
 }
 
-// filterObservations keeps the observations whose evidence classification
-// passes the scope, resolving provenance in one batch. Filtering runs BEFORE
-// any limit so authorized rows fill the window (no scope-induced starvation
-// of the result set on top of the denial itself).
-func (p *PgQueryPlane) filterObservations(ctx context.Context, scope *domain.TagPredicate, obs []domain.Observation) ([]domain.Observation, error) {
-	if scope.Unfiltered() {
-		return obs, nil
-	}
-	ids := make([]string, 0, len(obs))
-	for i := range obs {
-		ids = append(ids, string(obs[i].EvidenceID))
-	}
-	tags, err := p.evidenceTags(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	kept := obs[:0:0]
-	for i := range obs {
-		t, resolvable := tags[string(obs[i].EvidenceID)]
-		// AllowsRow, not Allows: a substrate row carries parties, and testing it
-		// with the party-blind form would deny every party-scoped row (ADR-0121).
-		if resolvable && scope.AllowsRow(t.tags, t.parties) {
-			kept = append(kept, obs[i])
-		}
-	}
-	return kept, nil
-}
-
 // point — ENFORCED in SQL: the answer is the latest observation the caller may
 // READ, not the latest observation filtered afterwards.
 //
@@ -362,24 +351,35 @@ func (p *PgQueryPlane) point(ctx context.Context, q domain.KnowledgeQuery, scope
 	return []domain.QueryRow{obsRow(ob)}, nil
 }
 
-// history — ENFORCED via each observation's evidence classification.
+// history — ENFORCED in SQL via each observation's evidence classification
+// (evidenceScopeSQL, point's rendering), and the LIMIT applies AFTER the fence:
+// the page is the first `limit` rows the caller may read, oldest first, and
+// the range is never loaded whole only to be cut in Go
+// (T-20261112-substrate-query-shapes-apply-limit-before-the). Retired rows
+// (ADR-0147) are excluded as in EventStore.History.
 func (p *PgQueryPlane) history(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate, limit int) ([]domain.QueryRow, error) {
-	obs, err := p.events.History(ctx, defaultNamespace, q.EntityID, q.Predicate, q.From, q.To)
+	args := []any{defaultNamespace, q.EntityID, q.Predicate, q.From.UTC(), q.To.UTC()}
+	scopeCond, extra := evidenceScopeSQL(scope, len(args))
+	args = append(args, extra...)
+	args = append(args, limit)
+	sqlRows, err := p.pool.Query(ctx, `
+		SELECT `+observationColumns+` FROM observations
+		WHERE namespace_id=$1 AND entity_id=$2 AND predicate=$3
+		  AND occurred_at >= $4 AND occurred_at < $5`+scopeCond+notRetired("observations")+`
+		ORDER BY occurred_at, id LIMIT $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
 		return nil, err
 	}
-	obs, err = p.filterObservations(ctx, scope, obs)
-	if err != nil {
-		return nil, err
-	}
-	rows := make([]domain.QueryRow, 0, min(len(obs), limit))
-	for i := range obs {
-		if len(rows) == limit {
-			break
+	defer sqlRows.Close()
+	rows := []domain.QueryRow{}
+	for sqlRows.Next() {
+		ob, err := scanObservation(sqlRows)
+		if err != nil {
+			return nil, err
 		}
-		rows = append(rows, obsRow(&obs[i]))
+		rows = append(rows, obsRow(ob))
 	}
-	return rows, nil
+	return rows, sqlRows.Err()
 }
 
 func itemValues(it *domain.KnowledgeItem) map[string]any {
@@ -406,19 +406,46 @@ func itemValues(it *domain.KnowledgeItem) map[string]any {
 // version history — the one §14 row that is exact AND complete, because it is
 // a question about our own records rather than the world.
 //
-// ENFORCED via the backing knowledge item's classification: a resolution row
-// is emitted only when its item resolves AND passes the scope (fail closed on
-// a failed item fetch for non-bypass scopes).
+// ENFORCED in SQL via the backing knowledge item's classification (sqlArgs.item
+// → textArrayScopeSQL, the TagPredicate.Allows mirror the catalog uses; owner
+// fence under Bypass too), and the LIMIT applies AFTER the fence, so a narrow
+// caller's page is the first `limit` rows it may read rather than whatever was
+// left of a page cut first (T-20261112-query-plane-as-of-applies-sql-limit-
+// before-the). A row whose item does not resolve fails closed for every
+// filtered scope. Items and their values load in one batch, and a failed read
+// FAILS the query — it used to drop the row, which made "exact and complete"
+// false on any transient error.
+//
+// POLICY AND ACTOR (owner decision 2026-11-12, ADR-0111 amendment): as_of reads
+// the rows of ONE policy, defaulting exactly as current does
+// (KnowledgeQuery.PolicyOrDefault), so as_of(now) answers what current answers.
+// It used to read every policy, which for an entity-scoped kind mixed the '*'
+// cross-actor winner with each actor's own latest in one answer. Actor narrows to
+// that actor's own rows; an actor on a cross-actor policy is refused
+// (refuseActorOnCrossActorPolicy).
 func (p *PgQueryPlane) asOf(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate, limit int) ([]domain.QueryRow, error) {
+	policy := q.PolicyOrDefault()
+	if err := p.refuseActorOnCrossActorPolicy(ctx, q, policy); err != nil {
+		return nil, err
+	}
+	a := &sqlArgs{}
+	where := `r.namespace_id=` + a.add(defaultNamespace) + ` AND r.kind=` + a.add(q.ItemKind) +
+		` AND r.policy=` + a.add(policy)
+	at := a.add(q.AsOf.UTC())
+	where += ` AND r.system_from <= ` + at + ` AND (r.system_to IS NULL OR r.system_to > ` + at + `)
+		  AND r.item_id IS NOT NULL`
+	if q.EntityID != "" {
+		where += ` AND r.entity_id = ` + a.add(q.EntityID)
+	}
+	if q.Actor != "" {
+		where += ` AND r.actor = ` + a.add(q.Actor)
+	}
+	where += a.item(scope, "ki")
 	sqlRows, err := p.pool.Query(ctx, `
 		SELECT r.entity_id, r.actor, r.policy, r.item_id, r.reason_code, r.system_from
-		FROM resolutions r
-		WHERE r.namespace_id=$1 AND r.kind=$2
-		  AND r.system_from <= $3 AND (r.system_to IS NULL OR r.system_to > $3)
-		  AND r.item_id IS NOT NULL
-		  AND ($4 = '' OR r.entity_id = $4)
-		ORDER BY r.entity_id, r.actor LIMIT $5`,
-		defaultNamespace, q.ItemKind, q.AsOf.UTC(), q.EntityID, limit)
+		FROM resolutions r LEFT JOIN knowledge_items ki ON ki.id = r.item_id
+		WHERE `+where+`
+		ORDER BY r.entity_id, r.actor, r.id LIMIT `+a.add(limit), a.args...)
 	if err != nil {
 		return nil, err
 	}
@@ -428,33 +455,45 @@ func (p *PgQueryPlane) asOf(ctx context.Context, q domain.KnowledgeQuery, scope 
 		sysFrom                               time.Time
 	}
 	var scanned []resRow
+	var ids []string
 	for sqlRows.Next() {
 		var r resRow
 		if err := sqlRows.Scan(&r.entity, &r.actor, &r.policy, &r.itemID, &r.reason, &r.sysFrom); err != nil {
 			return nil, err
 		}
 		scanned = append(scanned, r)
+		ids = append(ids, r.itemID)
 	}
 	if err := sqlRows.Err(); err != nil {
 		return nil, err
 	}
+	sqlRows.Close()
+	items := map[string]*domain.KnowledgeItem{}
+	if len(ids) > 0 {
+		loaded, err := loadItems(ctx, p.pool, `WHERE ki.id = ANY($1)`, ids)
+		if err != nil {
+			return nil, fmt.Errorf("as_of: load items: %w", err)
+		}
+		for i := range loaded {
+			items[string(loaded[i].ID)] = &loaded[i]
+		}
+	}
 	var out []domain.QueryRow
 	for _, r := range scanned {
-		it, err := p.knowledge.GetItem(ctx, domain.KnowledgeItemID(r.itemID))
-		if err != nil || it == nil {
+		it := items[r.itemID]
+		if it == nil {
 			if scope.Unfiltered() {
 				// Maintenance keeps the pre-0118 shape: the resolution row without
 				// its values, rather than silently narrowing a maintenance read.
 				// A plain Bypass no longer does: an item it cannot classify may
-				// be another principal's owner-scoped row (owner fence).
+				// be another principal's owner-scoped row (owner fence) — the SQL
+				// fence already required the item for every filtered scope, so
+				// only an item erased between the two reads lands here.
 				out = append(out, domain.QueryRow{
 					"entity_id": r.entity, "actor": r.actor, "policy": r.policy,
 					"reason_code": r.reason, "system_from": r.sysFrom, "item_id": r.itemID,
 				})
 			}
-			continue
-		}
-		if !scope.Allows(it.Classification) { // Allows applies the owner fence under Bypass too
 			continue
 		}
 		out = append(out, domain.QueryRow{
@@ -466,11 +505,40 @@ func (p *PgQueryPlane) asOf(ctx context.Context, q domain.KnowledgeQuery, scope 
 	return out, nil
 }
 
+// refuseActorOnCrossActorPolicy refuses an Actor on a policy whose resolution
+// rows for this kind are cross-actor ('*', an entity-scoped kind's winner). Those
+// rows are derived from EVERY actor's claims, so "this actor's own claims,
+// resolved under that policy" is not something the store holds; answering with
+// the actor's latest_assertion rows, or with nothing, would each be a different
+// question answered silently (ADR-0111, ADR-0110 D2 "cannot express safely").
+// Decided from the rows themselves, so it needs no kind registry and holds for a
+// kind declared by deployment data.
+func (p *PgQueryPlane) refuseActorOnCrossActorPolicy(ctx context.Context, q domain.KnowledgeQuery, policy string) error {
+	if q.Actor == "" {
+		return nil
+	}
+	var crossActor bool
+	if err := p.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM resolutions
+			WHERE namespace_id=$1 AND kind=$2 AND policy=$3 AND actor=$4)`,
+		defaultNamespace, q.ItemKind, policy, domain.ResolutionActorAll).Scan(&crossActor); err != nil {
+		return fmt.Errorf("%s: policy rows: %w", q.Kind, err)
+	}
+	if crossActor {
+		return fmt.Errorf("%s: actor %q with policy %q: kind %q resolves that policy ACROSS actors, "+
+			"so one actor's own claims under it are not stored — leave policy empty for the actor's "+
+			"latest, or drop actor for the cross-actor winner: %w",
+			q.Kind, q.Actor, policy, q.ItemKind, domain.ErrCannotExpress)
+	}
+	return nil
+}
+
 // current — ENFORCED via each resolution's backing item classification.
+// Policy defaults to latest_assertion; Actor keeps that actor's own rows only.
 func (p *PgQueryPlane) current(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate, limit int) ([]domain.QueryRow, error) {
-	policy := q.Policy
-	if policy == "" {
-		policy = domain.ResolutionPolicyLatestAssertion
+	policy := q.PolicyOrDefault()
+	if err := p.refuseActorOnCrossActorPolicy(ctx, q, policy); err != nil {
+		return nil, err
 	}
 	res, err := p.knowledge.CurrentResolutions(ctx, defaultNamespace, q.ItemKind, policy)
 	if err != nil {
@@ -482,6 +550,9 @@ func (p *PgQueryPlane) current(ctx context.Context, q domain.KnowledgeQuery, sco
 			break
 		}
 		if q.EntityID != "" && r.EntityID != q.EntityID {
+			continue
+		}
+		if q.Actor != "" && r.Actor != q.Actor {
 			continue
 		}
 		if r.Item == nil || !scope.Allows(r.Item.Classification) { // owner fence holds under Bypass
@@ -501,10 +572,15 @@ func (p *PgQueryPlane) current(ctx context.Context, q domain.KnowledgeQuery, sco
 // ENFORCED via each side's backing item classification, BEFORE grouping: a
 // contradiction row must not leak one side's value because the other side was
 // readable.
+//
+// Actor keeps only the disagreements that actor is part of (it holds one of the
+// sides); the other sides are still every actor's, because a disagreement with
+// one side removed is not a disagreement. Actor on a cross-actor policy is
+// refused, as on current.
 func (p *PgQueryPlane) contradictions(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate, limit int) ([]domain.QueryRow, error) {
-	policy := q.Policy
-	if policy == "" {
-		policy = domain.ResolutionPolicyLatestAssertion
+	policy := q.PolicyOrDefault()
+	if err := p.refuseActorOnCrossActorPolicy(ctx, q, policy); err != nil {
+		return nil, err
 	}
 	res, err := p.knowledge.CurrentResolutions(ctx, defaultNamespace, q.ItemKind, policy)
 	if err != nil {
@@ -545,6 +621,9 @@ func (p *PgQueryPlane) contradictions(ctx context.Context, q domain.KnowledgeQue
 				views[s.actor] = s.value
 			}
 			if len(distinct) < 2 {
+				continue
+			}
+			if _, involved := views[q.Actor]; q.Actor != "" && !involved {
 				continue
 			}
 			if len(out) == limit {
@@ -710,21 +789,52 @@ func (p *PgQueryPlane) filterEvents(ctx context.Context, scope *domain.TagPredic
 
 func eventEvidence(ev domain.Event) []string { return []string{string(ev.EvidenceID)} }
 
-// eventsFor — ENFORCED via each event's evidence classification.
+// eventsFor — ENFORCED in SQL via each event's evidence classification
+// (evidenceScopeSQLOn, the rendering point/aggregate use), with the LIMIT AFTER
+// the fence: the page is the first `limit` events the caller may read, oldest
+// first, and the range is never loaded whole only to be cut in Go
+// (T-20261112-substrate-query-shapes-apply-limit-before-the). The event
+// selection is EventsForEntity's — same range, same order, retired rows
+// excluded (notRetired, ADR-0147) — and the page's roles load in one statement.
 func (p *PgQueryPlane) eventsFor(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate, limit int) ([]domain.QueryRow, error) {
-	evs, err := p.events.EventsForEntity(ctx, defaultNamespace, q.EntityID, q.From, q.To)
+	args := []any{defaultNamespace, q.From.UTC(), q.To.UTC(), q.EntityID}
+	// The events are aliased ev, not e: evidenceScopeSQLOn's EXISTS names the
+	// evidence table e and would shadow an events alias of that name.
+	scopeCond, extra := evidenceScopeSQLOn(scope, "ev.evidence_id", len(args))
+	args = append(args, extra...)
+	args = append(args, limit)
+	sqlRows, err := p.pool.Query(ctx, `
+		SELECT `+eventColumnsOn("ev")+`
+		FROM events ev
+		WHERE ev.namespace_id=$1 AND ev.occurred_at >= $2 AND ev.occurred_at < $3
+		  AND EXISTS (SELECT 1 FROM event_roles r WHERE r.event_id = ev.id AND r.entity_id = $4)`+
+		notRetired("ev")+scopeCond+`
+		ORDER BY ev.occurred_at, ev.id LIMIT $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
 		return nil, err
 	}
-	evs, err = p.filterEvents(ctx, scope, evs)
+	var evs []domain.Event
+	var ids []string
+	for sqlRows.Next() {
+		ev, err := scanTypedEvent(sqlRows)
+		if err != nil {
+			sqlRows.Close()
+			return nil, err
+		}
+		evs = append(evs, ev)
+		ids = append(ids, string(ev.ID))
+	}
+	sqlRows.Close()
+	if err := sqlRows.Err(); err != nil {
+		return nil, err
+	}
+	rolesBy, err := eventRoles(ctx, p.pool, ids)
 	if err != nil {
 		return nil, err
 	}
 	var out []domain.QueryRow
 	for _, ev := range evs {
-		if len(out) == limit {
-			break
-		}
+		ev.Roles = rolesBy[string(ev.ID)]
 		roles := map[string]string{}
 		for _, r := range ev.Roles {
 			roles[r.Role] = r.EntityID
@@ -749,31 +859,42 @@ func (p *PgQueryPlane) traverse(ctx context.Context, q domain.KnowledgeQuery, sc
 	frontier := []string{q.EntityID}
 	var out []domain.QueryRow
 	for hop := 1; hop <= q.Hops && len(frontier) > 0; hop++ {
-		var next []string
+		// ONE events read and ONE guard batch per hop for the whole frontier
+		// (T-20261112-traverse-still-reads-events-once-per-frontier), walked in
+		// frontier order, each entity's events oldest first — the order the
+		// per-entity reads produced, so the answer is unchanged. Every event is
+		// still judged on its own evidence by the walk's one node guard.
+		byEntity, err := p.events.EventsForEntities(ctx, defaultNamespace, frontier, q.From, q.To)
+		if err != nil {
+			return nil, err
+		}
+		var batch []keyedNode[domain.Event]
 		for _, entity := range frontier {
-			evs, err := p.events.EventsForEntity(ctx, defaultNamespace, entity, q.From, q.To)
-			if err != nil {
-				return nil, err
+			for _, ev := range byEntity[entity] {
+				batch = append(batch, keyedNode[domain.Event]{key: entity, node: ev})
 			}
-			evs, err = p.filterEvents(ctx, scope, evs)
-			if err != nil {
-				return nil, err
-			}
-			for _, ev := range evs {
-				for _, r := range ev.Roles {
-					if visited[r.EntityID] {
-						continue
-					}
-					visited[r.EntityID] = true
-					if len(out) == limit {
-						return out, nil
-					}
-					out = append(out, domain.QueryRow{
-						"from": entity, "to": r.EntityID, "role": r.Role,
-						"via_event": string(ev.ID), "event_type": ev.Type, "hop": hop,
-					})
-					next = append(next, r.EntityID)
+		}
+		kept, err := guardNodes(ctx, p, scope, batch,
+			func(x keyedNode[domain.Event]) []string { return eventEvidence(x.node) })
+		if err != nil {
+			return nil, err
+		}
+		var next []string
+		for _, x := range kept {
+			ev := x.node
+			for _, r := range ev.Roles {
+				if visited[r.EntityID] {
+					continue
 				}
+				visited[r.EntityID] = true
+				if len(out) == limit {
+					return out, nil
+				}
+				out = append(out, domain.QueryRow{
+					"from": x.key, "to": r.EntityID, "role": r.Role,
+					"via_event": string(ev.ID), "event_type": ev.Type, "hop": hop,
+				})
+				next = append(next, r.EntityID)
 			}
 		}
 		frontier = next
@@ -997,8 +1118,8 @@ func (p *PgQueryPlane) mayKnowEntityExists(ctx context.Context, scope *domain.Ta
 }
 
 // filterLinks keeps the links whose evidence classification passes the scope,
-// resolving provenance in one batch — the filterEvents/filterObservations shape
-// applied to link rows.
+// resolving provenance in one batch — the filterEvents shape applied to link
+// rows.
 //
 // Fail closed on unresolvable evidence, as everywhere else on this plane — for
 // a plain Bypass (the operator plane, ScopeSystem) too, which still owes the
@@ -1176,62 +1297,68 @@ func (p *PgQueryPlane) entityOp(ctx context.Context, q domain.KnowledgeQuery,
 		}
 		out = append(out, row)
 	}
+	// Each lane is ONE read for every ref, guarded and paged until each ref has
+	// `limit` links the caller may read (pageVisible — filter before limit,
+	// T-20261112-substrate-query-shapes-apply-limit-before-the): a page the
+	// store cut before the scope was known let a caller's hidden links crowd its
+	// readable ones off the card. The first page is exactly the read this shape
+	// always made, so a caller whose scope hides nothing reads nothing more.
+	outBy, err := pageVisible(ctx, p, scope, refs, limit,
+		func(keys []string, offset, n int) (map[string][]domain.Link, error) {
+			return p.links.LinksForRefs(ctx, defaultNamespace, keys, domain.LinkQuery{
+				State: domain.LinkStateConfirmed, Limit: n, Offset: offset,
+			})
+		}, linkEvidence)
+	if err != nil {
+		return nil, err
+	}
+	// What CITES this handle (D-W5-6). A read without IncludeIncoming answers
+	// only what the ref itself asserted, and an entity is almost never the
+	// asserter of its own citations: `referenced_by` runs from the citing
+	// record TO the entity, so the card of the most-cited handle in a corpus
+	// was the emptiest one on the plane.
+	//
+	// LINEAGE ONLY, and that is the discipline of this read. Incoming IDENTITY
+	// is already reported as closure membership; incoming RELATION is somebody
+	// else's assertion about their own record ("my parent is you") and reads
+	// correctly only on their card, where a reader can see whose claim it is.
+	// Citation is the one direction where the interesting end is the one being
+	// pointed at.
+	inBy, err := pageVisible(ctx, p, scope, refs, limit,
+		func(keys []string, offset, n int) (map[string][]domain.Link, error) {
+			return p.links.LinksForRefs(ctx, defaultNamespace, keys, domain.LinkQuery{
+				Family: domain.LinkFamilyLineage, State: domain.LinkStateConfirmed,
+				IncludeIncoming: true, Limit: n, Offset: offset,
+			})
+		}, linkEvidence)
+	if err != nil {
+		return nil, err
+	}
 	for _, ref := range refs {
-		links, err := p.links.LinksFor(ctx, defaultNamespace, ref, domain.LinkQuery{
-			State: domain.LinkStateConfirmed, Limit: limit,
-		})
-		if err != nil {
-			return nil, err
-		}
-		links, err = p.filterLinks(ctx, scope, links)
-		if err != nil {
-			return nil, err
-		}
-		for _, l := range links {
+		for _, l := range outBy[ref] {
 			emit(l, ref, false)
 		}
-		// What CITES this handle (D-W5-6). LinksFor without IncludeIncoming
-		// answers only what the ref itself asserted, and an entity is almost
-		// never the asserter of its own citations: `referenced_by` runs from
-		// the citing record TO the entity, so the card of the most-cited
-		// handle in a corpus was the emptiest one on the plane.
-		//
-		// LINEAGE ONLY, and that is the discipline of this read. Incoming
-		// IDENTITY is already reported as closure membership; incoming
-		// RELATION is somebody else's assertion about their own record ("my
-		// parent is you") and reads correctly only on their card, where a
-		// reader can see whose claim it is. Citation is the one direction
-		// where the interesting end is the one being pointed at.
-		incoming, err := p.links.LinksFor(ctx, defaultNamespace, ref, domain.LinkQuery{
-			Family: domain.LinkFamilyLineage, State: domain.LinkStateConfirmed,
-			IncludeIncoming: true, Limit: limit,
-		})
-		if err != nil {
-			return nil, err
-		}
-		incoming, err = p.filterLinks(ctx, scope, incoming)
-		if err != nil {
-			return nil, err
-		}
-		for _, l := range incoming {
+		for _, l := range inBy[ref] {
 			emit(l, ref, l.ToRef == ref)
 		}
 	}
 
 	if scope.Bypass {
-		cands, err := p.links.Candidates(ctx, defaultNamespace, limit)
+		// The subject's slice of the review inbox, filtered to the subject IN SQL
+		// before the limit and paged past owner-fenced rows by pageVisible — so a
+		// subject's candidates are never lost behind other subjects'
+		// higher-confidence ones (they were, when this read the whole inbox to
+		// `limit` and filtered here). Same membership and order as the inbox
+		// (PgLinkStore openCandidate / candidateOrder): a confirmed candidate is
+		// answered and does not come back.
+		cands, err := pageVisible(ctx, p, scope, []string{subjectRef}, limit,
+			func(keys []string, offset, n int) (map[string][]domain.Link, error) {
+				return p.links.CandidatesForRefs(ctx, defaultNamespace, keys, offset, n)
+			}, linkEvidence)
 		if err != nil {
 			return nil, err
 		}
-		if cands, err = p.filterLinks(ctx, scope, cands); err != nil {
-			return nil, err
-		}
-		for _, l := range cands {
-			// Candidates is the whole inbox; this shape answers about ONE handle,
-			// so the endpoints decide membership rather than a second store method.
-			if l.FromRef != subjectRef && l.ToRef != subjectRef {
-				continue
-			}
+		for _, l := range cands[subjectRef] {
 			out = append(out, linkRow(l, "candidate"))
 		}
 	}
@@ -1948,8 +2075,9 @@ func (p *PgQueryPlane) readableEventRefs(ctx context.Context, scope *domain.TagP
 
 // guardNodes keeps the nodes the scope may read, resolving every node's
 // evidence in one batch (evidenceTags) and judging each with AllowsRow — the
-// same test point/history/events apply, owner fence and party scoping included
-// (ADR-0121), never a second rendering of the policy (AGENTS §2.5).
+// same test point/history/events apply in SQL (evidenceRowConds is CheckRow's
+// mirror), owner fence and party scoping included (ADR-0121), never a second
+// rendering of the policy (AGENTS §2.5).
 //
 // A node names the evidence it stands on, and is admitted only if it names at
 // least one and the scope may read EVERY one (a hop between two events is a

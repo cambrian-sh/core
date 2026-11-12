@@ -71,6 +71,10 @@ func (f *inboxLinkStore) Candidates(context.Context, string, int) ([]domain.Link
 	return nil, nil
 }
 
+func (f *inboxLinkStore) CandidatesForRefs(context.Context, string, []string, int, int) (map[string][]domain.Link, error) {
+	return nil, nil
+}
+
 func (f *inboxLinkStore) RetractByProducer(context.Context, string, string, string) (int, error) {
 	panic("the entity shape must not revoke")
 }

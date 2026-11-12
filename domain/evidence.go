@@ -2,6 +2,8 @@ package domain
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 )
 
@@ -97,6 +99,68 @@ type EvidenceOutboxItem struct {
 	NamespaceID string
 	EvidenceID  EvidenceID
 	CreatedAt   time.Time
+	// Attempts is how many times processing this item has FAILED (not counting
+	// not-ready holds, which are not failures). The consumer gives an item
+	// EvidenceOutboxMaxAttempts tries, with jittered exponential backoff between
+	// them, then parks it dead (ADR-0105 D3 amendment, owner 2026-11-12).
+	Attempts int
+}
+
+// DeadEvidenceOutboxItem is an outbox item that exhausted its attempts: parked,
+// never retried automatically, and listed so a person can see it (Ingress
+// Studio's ListDeliveryFailures). The evidence and its bytes are untouched — the
+// archive still holds what arrived (ADR-0105 D2).
+type DeadEvidenceOutboxItem struct {
+	EvidenceOutboxItem
+	SourceID  string
+	LastError string
+	DeadAt    time.Time
+}
+
+// The evidence outbox's retry policy (ADR-0105 D3 / ADR-0108 D3 amendment, owner
+// decision 2026-11-12): the pipeline runtime's own numbers
+// (the premium pipeline runtime's DefaultRetryPolicy) so an item is retried
+// the same way on either ingest path — 5 attempts, full-jitter exponential backoff
+// from 500 ms capped at 5 min, then a terminal dead state with the last error.
+// Mirrored, not shared: premium's policy is unreachable from core. Change one,
+// change both.
+const (
+	EvidenceOutboxMaxAttempts = 5
+	EvidenceOutboxBaseDelay   = 500 * time.Millisecond
+	EvidenceOutboxMaxDelay    = 5 * time.Minute
+	// EvidenceOutboxHoldRecheck is how long a NOT-READY item stays out of the
+	// pending read when nothing releases it. Its release is the normal way back
+	// (ReleaseHeldOutbox, e.g. on an ingress resume); this is the safety net for
+	// a release that raced the hold or never came (a paused ingress that was
+	// retired or re-mapped instead of resumed). Re-checking costs no attempt.
+	EvidenceOutboxHoldRecheck = 30 * time.Minute
+)
+
+// ErrEvidenceNotReady is the sentinel a transformer's error wraps when an item
+// cannot be processed NOW by design — e.g. its ingress is paused ("paused means
+// paused", ADR-0112) — as opposed to failing. The consumer HOLDS such an item:
+// it leaves the pending read, consumes no attempt, and comes back when
+// ReleaseHeldOutbox names its hold key. Return one with EvidenceNotReady.
+var ErrEvidenceNotReady = errors.New("evidence not ready for transformation")
+
+// NotReadyError carries the hold key a not-ready item is parked under: the
+// handle the transformer's owner later releases (an ingress's evidence source id).
+type NotReadyError struct {
+	HoldKey string
+	Reason  string
+}
+
+func (e *NotReadyError) Error() string {
+	return fmt.Sprintf("not ready (hold %q): %s", e.HoldKey, e.Reason)
+}
+
+// Is makes errors.Is(err, ErrEvidenceNotReady) true for any NotReadyError.
+func (e *NotReadyError) Is(target error) bool { return target == ErrEvidenceNotReady }
+
+// EvidenceNotReady builds the typed not-ready signal. holdKey must be non-empty:
+// an item held under no key could only ever come back by the safety recheck.
+func EvidenceNotReady(holdKey, reason string) error {
+	return &NotReadyError{HoldKey: holdKey, Reason: reason}
 }
 
 // EvidenceStore persists evidence rows and their outbox items.
@@ -127,9 +191,31 @@ type EvidenceStore interface {
 	// with no order, so "latest" is ingest order.
 	LatestBySourceKey(ctx context.Context, namespace, sourceID, sourceKey string) (*Evidence, error)
 
-	// PendingOutbox lists unconsumed outbox items, oldest first, up to limit.
-	// Listing does not claim: consumption is only the MarkProcessed transition.
+	// PendingOutbox lists the outbox items that are DUE, oldest first, up to
+	// limit: not processed, not dead, and past their next-attempt time (a
+	// failed item waits out its backoff; a held, not-ready item waits for its
+	// release or its recheck time). Listing does not claim: consumption is only
+	// the MarkProcessed transition.
 	PendingOutbox(ctx context.Context, limit int) ([]EvidenceOutboxItem, error)
+
+	// RecordOutboxFailure records one FAILED attempt: attempts becomes
+	// `attempts`, last_error is kept, and the item is either due again after
+	// retryAfter or, when dead, parked terminally. A no-op on an item already
+	// processed (another consumer finished it).
+	RecordOutboxFailure(ctx context.Context, outboxID int64, attempts int, lastErr string, retryAfter time.Duration, dead bool) error
+
+	// HoldOutbox parks a NOT-READY item under holdKey until ReleaseHeldOutbox
+	// names that key or recheckAfter passes. Attempts are not touched: not
+	// ready is not a failure.
+	HoldOutbox(ctx context.Context, outboxID int64, holdKey, reason string, recheckAfter time.Duration) error
+
+	// ReleaseHeldOutbox makes every unprocessed item held under holdKey due
+	// now, and returns how many it released.
+	ReleaseHeldOutbox(ctx context.Context, holdKey string) (int, error)
+
+	// DeadOutbox lists dead (exhausted, unprocessed) items whose evidence came
+	// from sourceID ("" = every source), most recently dead first, up to limit.
+	DeadOutbox(ctx context.Context, sourceID string, limit int) ([]DeadEvidenceOutboxItem, error)
 
 	// MarkProcessed performs the exactly-once-logical outbox transition.
 	// It returns true when THIS call performed the transition and false when

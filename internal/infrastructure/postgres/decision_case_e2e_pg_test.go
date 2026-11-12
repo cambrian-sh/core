@@ -149,19 +149,28 @@ func TestPg_DecisionCaseAsData_EndToEnd(t *testing.T) {
 		t.Fatalf("after approving the decision: %v", got)
 	}
 	// The committed row is asserted by the approver, not the proposing agent.
-	asOf, err := plane.Query(ctx, domain.KnowledgeQuery{Kind: domain.QueryAsOf, ItemKind: "casetest_e2e_decision",
-		EntityID: "decision/pricing", AsOf: time.Now().Add(time.Minute)}, &domain.TagPredicate{Bypass: true})
+	// Two questions, two reads (owner decision 2026-11-12, ADR-0111): the
+	// committed answer is the cross-actor row under the kind's policy; the agent's
+	// own word is its per-actor row (Actor, default policy). as_of no longer
+	// returns both families mixed in one answer.
+	at := time.Now().Add(time.Minute)
+	committedRows, err := plane.Query(ctx, domain.KnowledgeQuery{Kind: domain.QueryAsOf, ItemKind: "casetest_e2e_decision",
+		EntityID: "decision/pricing", AsOf: at, Policy: domain.ResolutionPolicyDesignatedActor}, &domain.TagPredicate{Bypass: true})
 	if err != nil {
 		t.Fatal(err)
 	}
+	agentRows, err := plane.Query(ctx, domain.KnowledgeQuery{Kind: domain.QueryAsOf, ItemKind: "casetest_e2e_decision",
+		EntityID: "decision/pricing", AsOf: at, Actor: "agent:assistant"}, &domain.TagPredicate{Bypass: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asOf := domain.QueryResult{Rows: append(append([]domain.QueryRow{}, committedRows.Rows...), agentRows.Rows...)}
 	var sawCommitted, sawAgent bool
-	for _, r := range asOf.Rows {
-		switch r["policy"] {
-		case domain.ResolutionPolicyDesignatedActor:
-			sawCommitted = r["asserted_by"] == "user:alice"
-		case domain.ResolutionPolicyLatestAssertion:
-			sawAgent = sawAgent || r["actor"] == "agent:assistant"
-		}
+	for _, r := range committedRows.Rows {
+		sawCommitted = r["policy"] == domain.ResolutionPolicyDesignatedActor && r["asserted_by"] == "user:alice"
+	}
+	for _, r := range agentRows.Rows {
+		sawAgent = sawAgent || (r["actor"] == "agent:assistant" && r["policy"] == domain.ResolutionPolicyLatestAssertion)
 	}
 	if !sawCommitted || !sawAgent {
 		t.Fatalf("want the committed row by user:alice and the agent's own row: %+v", asOf.Rows)

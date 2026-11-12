@@ -183,15 +183,31 @@ func (s *PgEvidenceStore) LatestBySourceKey(ctx context.Context, namespace, sour
 	return s.Get(ctx, domain.EvidenceID(id))
 }
 
-// PendingOutbox lists unconsumed items, oldest first. Listing never claims.
+// PendingOutbox lists the DUE items, oldest first (migration 0039). Listing
+// never claims.
+//
+// Two branches, each off its own partial index, merged by created_at: rows that
+// are not held (fresh, or retrying once their backoff has passed — filtered in
+// created_at order, so a short backoff tail is all that is skipped) and held
+// rows whose safety recheck has come due. A held backlog therefore costs the
+// read nothing until it is released or rechecked: it is not in the first index
+// at all (T-20261112-evidence-outbox-is-head-of-line-blocked-the).
 func (s *PgEvidenceStore) PendingOutbox(ctx context.Context, limit int) ([]domain.EvidenceOutboxItem, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, namespace_id, evidence_id, created_at
-		FROM evidence_outbox
-		WHERE processed_at IS NULL
+		SELECT id, namespace_id, evidence_id, created_at, attempts FROM (
+			(SELECT id, namespace_id, evidence_id, created_at, attempts FROM evidence_outbox
+			 WHERE processed_at IS NULL AND dead_at IS NULL AND held_key = ''
+			   AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+			 ORDER BY created_at, id LIMIT $1)
+			UNION ALL
+			(SELECT id, namespace_id, evidence_id, created_at, attempts FROM evidence_outbox
+			 WHERE processed_at IS NULL AND dead_at IS NULL AND held_key <> ''
+			   AND next_attempt_at <= now()
+			 ORDER BY next_attempt_at LIMIT $1)
+		) due
 		ORDER BY created_at, id
 		LIMIT $1`, limit)
 	if err != nil {
@@ -202,7 +218,90 @@ func (s *PgEvidenceStore) PendingOutbox(ctx context.Context, limit int) ([]domai
 	for rows.Next() {
 		var it domain.EvidenceOutboxItem
 		var evID string
-		if err := rows.Scan(&it.ID, &it.NamespaceID, &evID, &it.CreatedAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.NamespaceID, &evID, &it.CreatedAt, &it.Attempts); err != nil {
+			return nil, err
+		}
+		it.EvidenceID = domain.EvidenceID(evID)
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// RecordOutboxFailure writes one failed attempt. The next-attempt time is
+// computed by the DATABASE clock (now() + retryAfter), the same clock the
+// pending read compares against, so host/DB clock skew cannot make a backoff
+// longer or shorter. A failure clears any hold: the item failed, it is not
+// waiting on a release.
+func (s *PgEvidenceStore) RecordOutboxFailure(ctx context.Context, outboxID int64, attempts int, lastErr string, retryAfter time.Duration, dead bool) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE evidence_outbox SET
+			attempts = $2, last_error = $3, held_key = '',
+			next_attempt_at = CASE WHEN $5 THEN NULL ELSE now() + make_interval(secs => $4) END,
+			dead_at = CASE WHEN $5 THEN now() ELSE NULL END
+		WHERE id = $1 AND processed_at IS NULL`,
+		outboxID, attempts, lastErr, retryAfter.Seconds(), dead)
+	if err != nil {
+		return fmt.Errorf("evidence outbox: record failure: %w", err)
+	}
+	return nil
+}
+
+// HoldOutbox parks a not-ready item: out of the pending read until released
+// or rechecked, attempts untouched.
+func (s *PgEvidenceStore) HoldOutbox(ctx context.Context, outboxID int64, holdKey, reason string, recheckAfter time.Duration) error {
+	if holdKey == "" {
+		return fmt.Errorf("evidence outbox: hold: a hold key is required")
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE evidence_outbox SET
+			held_key = $2, last_error = $3,
+			next_attempt_at = now() + make_interval(secs => $4)
+		WHERE id = $1 AND processed_at IS NULL AND dead_at IS NULL`,
+		outboxID, holdKey, reason, recheckAfter.Seconds())
+	if err != nil {
+		return fmt.Errorf("evidence outbox: hold: %w", err)
+	}
+	return nil
+}
+
+// ReleaseHeldOutbox makes every unprocessed item held under holdKey due now.
+func (s *PgEvidenceStore) ReleaseHeldOutbox(ctx context.Context, holdKey string) (int, error) {
+	if holdKey == "" {
+		return 0, nil
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE evidence_outbox SET held_key = '', next_attempt_at = NULL
+		WHERE held_key = $1 AND processed_at IS NULL AND dead_at IS NULL`, holdKey)
+	if err != nil {
+		return 0, fmt.Errorf("evidence outbox: release %q: %w", holdKey, err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// DeadOutbox lists dead items, most recently dead first, optionally for one
+// evidence source.
+func (s *PgEvidenceStore) DeadOutbox(ctx context.Context, sourceID string, limit int) ([]domain.DeadEvidenceOutboxItem, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT o.id, o.namespace_id, o.evidence_id, o.created_at, o.attempts,
+		       e.source_id, o.last_error, o.dead_at
+		FROM evidence_outbox o JOIN evidence e ON e.id = o.evidence_id
+		WHERE o.processed_at IS NULL AND o.dead_at IS NOT NULL
+		  AND ($1 = '' OR e.source_id = $1)
+		ORDER BY o.dead_at DESC, o.id DESC
+		LIMIT $2`, sourceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("evidence outbox: dead: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.DeadEvidenceOutboxItem
+	for rows.Next() {
+		var it domain.DeadEvidenceOutboxItem
+		var evID string
+		if err := rows.Scan(&it.ID, &it.NamespaceID, &evID, &it.CreatedAt, &it.Attempts,
+			&it.SourceID, &it.LastError, &it.DeadAt); err != nil {
 			return nil, err
 		}
 		it.EvidenceID = domain.EvidenceID(evID)

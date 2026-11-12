@@ -89,6 +89,10 @@ func (f *fakeLinkStore) Candidates(context.Context, string, int) ([]domain.Link,
 	panic("closure must not read candidates")
 }
 
+func (f *fakeLinkStore) CandidatesForRefs(context.Context, string, []string, int, int) (map[string][]domain.Link, error) {
+	panic("closure must not read candidates")
+}
+
 func (f *fakeLinkStore) RetractByProducer(context.Context, string, string, string) (int, error) {
 	panic("closure must not revoke")
 }

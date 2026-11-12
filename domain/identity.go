@@ -270,8 +270,9 @@ type LinkStore interface {
 	// LinksFor returns the assertions touching a typed ref, subject to opts.
 	LinksFor(ctx context.Context, namespace, ref string, opts LinkQuery) ([]Link, error)
 
-	// Candidates is the review inbox: unretracted candidates, highest confidence
-	// first.
+	// Candidates is the review inbox: unretracted candidates that no person has
+	// confirmed yet (a confirmation appends a row; the candidate is never edited,
+	// ADR-0128 D4), highest confidence first, oldest first among equals, then id.
 	Candidates(ctx context.Context, namespace string, limit int) ([]Link, error)
 
 	// RetractByProducer revokes every unretracted row a producer wrote and returns

@@ -1,0 +1,277 @@
+## maintenance / point m1 temp
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-2h0m0s predicate=temp value_number=5 value_type=number
+## maintenance / history m1 temp
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:secret occurred_at=T-6h0m0s predicate=temp value_number=1 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:secret occurred_at=T-5h0m0s predicate=temp value_number=2 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-4h0m0s predicate=temp value_number=3 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:alice occurred_at=T-3h0m0s predicate=temp value_number=4 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-2h0m0s predicate=temp value_number=5 value_type=number
+## maintenance / history m1 temp limit=2
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:secret occurred_at=T-6h0m0s predicate=temp value_number=1 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:secret occurred_at=T-5h0m0s predicate=temp value_number=2 value_type=number
+## maintenance / aggregate m1 count
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+aggregate=count entity_id=shapeq/m1 predicate=temp value=5
+## maintenance / aggregate m1 avg
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+aggregate=avg entity_id=shapeq/m1 predicate=temp value=3
+## maintenance / events c1
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+event_id=E:e1 event_type=shapeq_e1 evidence_id=EV:secret occurred_at=T-6h0m0s roles={customer=shapeq/c1,order=shapeq/o1,}
+event_id=E:e2 event_type=shapeq_e2 evidence_id=EV:secret occurred_at=T-5h0m0s roles={customer=shapeq/c1,order=shapeq/o2,}
+event_id=E:e3 event_type=shapeq_e3 evidence_id=EV:pub occurred_at=T-4h0m0s roles={agent=shapeq/a1,customer=shapeq/c1,order=shapeq/o3,}
+event_id=E:e4 event_type=shapeq_e4 evidence_id=EV:alice occurred_at=T-3h0m0s roles={customer=shapeq/c1,order=shapeq/o4,}
+event_id=E:e5 event_type=shapeq_e5 evidence_id=EV:pub occurred_at=T-2h0m0s roles={customer=shapeq/c1,shipment=shapeq/s1,}
+## maintenance / events c1 limit=2
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+event_id=E:e1 event_type=shapeq_e1 evidence_id=EV:secret occurred_at=T-6h0m0s roles={customer=shapeq/c1,order=shapeq/o1,}
+event_id=E:e2 event_type=shapeq_e2 evidence_id=EV:secret occurred_at=T-5h0m0s roles={customer=shapeq/c1,order=shapeq/o2,}
+## maintenance / traverse c1 hops=3
+closure_size=0 guarantee="exact over stored edges; entity links epistemically uncertain"
+event_type=shapeq_e1 from=shapeq/c1 hop=1 role=order to=shapeq/o1 via_event=E:e1
+event_type=shapeq_e2 from=shapeq/c1 hop=1 role=order to=shapeq/o2 via_event=E:e2
+event_type=shapeq_e3 from=shapeq/c1 hop=1 role=agent to=shapeq/a1 via_event=E:e3
+event_type=shapeq_e3 from=shapeq/c1 hop=1 role=order to=shapeq/o3 via_event=E:e3
+event_type=shapeq_e4 from=shapeq/c1 hop=1 role=order to=shapeq/o4 via_event=E:e4
+event_type=shapeq_e5 from=shapeq/c1 hop=1 role=shipment to=shapeq/s1 via_event=E:e5
+event_type=shapeq_e7 from=shapeq/o3 hop=2 role=shipment to=shapeq/s3 via_event=E:e7
+## maintenance / as_of kind
+closure_size=0 guarantee="exact and complete — a question about our own records"
+actor=a@x asserted_at=T1m0s asserted_by=a@x entity_id=shapeq/k0 item_id=I:k0a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:s0a]
+actor=b@x asserted_at=T2m0s asserted_by=b@x entity_id=shapeq/k0 item_id=I:k0b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:s0b]
+actor=a@x asserted_at=T3m0s asserted_by=a@x entity_id=shapeq/k1 item_id=I:k1a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:open]
+actor=b@x asserted_at=T4m0s asserted_by=b@x entity_id=shapeq/k1 item_id=I:k1b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:closed]
+actor=a@x asserted_at=T5m0s asserted_by=a@x entity_id=shapeq/k2 item_id=I:k2a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:x]
+actor=b@x asserted_at=T6m0s asserted_by=b@x entity_id=shapeq/k2 item_id=I:k2b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:y]
+actor=a@x asserted_at=T7m0s asserted_by=a@x entity_id=shapeq/k3 item_id=I:k3a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:z]
+actor=b@x asserted_at=T8m0s asserted_by=b@x entity_id=shapeq/k3 item_id=I:k3b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:w]
+## maintenance / as_of kind limit=2
+closure_size=0 guarantee="exact and complete — a question about our own records"
+actor=a@x asserted_at=T1m0s asserted_by=a@x entity_id=shapeq/k0 item_id=I:k0a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:s0a]
+actor=b@x asserted_at=T2m0s asserted_by=b@x entity_id=shapeq/k0 item_id=I:k0b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:s0b]
+## maintenance / as_of kind k1
+closure_size=0 guarantee="exact and complete — a question about our own records"
+actor=a@x asserted_at=T3m0s asserted_by=a@x entity_id=shapeq/k1 item_id=I:k1a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:open]
+actor=b@x asserted_at=T4m0s asserted_by=b@x entity_id=shapeq/k1 item_id=I:k1b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:closed]
+## maintenance / current kind
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+actor=a@x entity_id=shapeq/k0 policy=latest_assertion reason_code=latest_assertion values=map[status:s0a]
+actor=b@x entity_id=shapeq/k0 policy=latest_assertion reason_code=latest_assertion values=map[status:s0b]
+actor=a@x entity_id=shapeq/k1 policy=latest_assertion reason_code=latest_assertion values=map[status:open]
+actor=b@x entity_id=shapeq/k1 policy=latest_assertion reason_code=latest_assertion values=map[status:closed]
+actor=a@x entity_id=shapeq/k2 policy=latest_assertion reason_code=latest_assertion values=map[status:x]
+actor=b@x entity_id=shapeq/k2 policy=latest_assertion reason_code=latest_assertion values=map[status:y]
+actor=a@x entity_id=shapeq/k3 policy=latest_assertion reason_code=latest_assertion values=map[status:z]
+actor=b@x entity_id=shapeq/k3 policy=latest_assertion reason_code=latest_assertion values=map[status:w]
+## maintenance / contradictions kind
+closure_size=0 guarantee="deterministic over stored interpretations; extraction uncertainty applies"
+actors=map[a@x:open b@x:closed] entity_id=shapeq/k1 predicate=status
+actors=map[a@x:s0a b@x:s0b] entity_id=shapeq/k0 predicate=status
+actors=map[a@x:x b@x:y] entity_id=shapeq/k2 predicate=status
+actors=map[a@x:z b@x:w] entity_id=shapeq/k3 predicate=status
+## maintenance / entity c1
+closure_size=0 guarantee="exact over stored links; identity as asserted, see links"
+created_at=(set) entity_id=shapeq/c1 entity_kind=shapeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+asserted_at=T4m0s asserted_by=test confidence=1 evidence_id=EV:secret family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-sec2 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-sec2 state=confirmed to_ref=event:E:e2
+asserted_at=T3m0s asserted_by=test confidence=1 evidence_id=EV:secret family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-sec1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-sec1 state=confirmed to_ref=event:E:e1
+asserted_at=T2m0s asserted_by=test confidence=1 evidence_id=EV:pub family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-pub2 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-pub2 state=confirmed to_ref=event:E:e5
+asserted_at=T1m0s asserted_by=test confidence=1 evidence_id=EV:pub family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-pub1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-pub1 state=confirmed to_ref=event:E:e3
+asserted_at=T8m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:secret family=lineage from_ref=event:E:e2 link_id=shapeq-in-sec2 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-sec2 state=confirmed to_ref=entity:shapeq/c1
+asserted_at=T7m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:secret family=lineage from_ref=event:E:e1 link_id=shapeq-in-sec1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-sec1 state=confirmed to_ref=entity:shapeq/c1
+asserted_at=T6m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:alice family=lineage from_ref=event:E:e4 link_id=shapeq-in-ali1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-ali1 state=confirmed to_ref=entity:shapeq/c1
+asserted_at=T5m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:pub family=lineage from_ref=event:E:e3 link_id=shapeq-in-pub1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-pub1 state=confirmed to_ref=entity:shapeq/c1
+## maintenance / entity c1 limit=3
+closure_size=0 guarantee="exact over stored links; identity as asserted, see links"
+created_at=(set) entity_id=shapeq/c1 entity_kind=shapeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+asserted_at=T4m0s asserted_by=test confidence=1 evidence_id=EV:secret family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-sec2 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-sec2 state=confirmed to_ref=event:E:e2
+asserted_at=T3m0s asserted_by=test confidence=1 evidence_id=EV:secret family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-sec1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-sec1 state=confirmed to_ref=event:E:e1
+## system / point m1 temp
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-2h0m0s predicate=temp value_number=5 value_type=number
+## system / history m1 temp
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:secret occurred_at=T-6h0m0s predicate=temp value_number=1 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:secret occurred_at=T-5h0m0s predicate=temp value_number=2 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-4h0m0s predicate=temp value_number=3 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-2h0m0s predicate=temp value_number=5 value_type=number
+## system / aggregate m1 count
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+aggregate=count entity_id=shapeq/m1 predicate=temp value=4
+## system / aggregate m1 avg
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+aggregate=avg entity_id=shapeq/m1 predicate=temp value=2.75
+## system / events c1
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+event_id=E:e1 event_type=shapeq_e1 evidence_id=EV:secret occurred_at=T-6h0m0s roles={customer=shapeq/c1,order=shapeq/o1,}
+event_id=E:e2 event_type=shapeq_e2 evidence_id=EV:secret occurred_at=T-5h0m0s roles={customer=shapeq/c1,order=shapeq/o2,}
+event_id=E:e3 event_type=shapeq_e3 evidence_id=EV:pub occurred_at=T-4h0m0s roles={agent=shapeq/a1,customer=shapeq/c1,order=shapeq/o3,}
+event_id=E:e5 event_type=shapeq_e5 evidence_id=EV:pub occurred_at=T-2h0m0s roles={customer=shapeq/c1,shipment=shapeq/s1,}
+## system / traverse c1 hops=3
+closure_size=0 guarantee="exact over stored edges; entity links epistemically uncertain"
+event_type=shapeq_e1 from=shapeq/c1 hop=1 role=order to=shapeq/o1 via_event=E:e1
+event_type=shapeq_e2 from=shapeq/c1 hop=1 role=order to=shapeq/o2 via_event=E:e2
+event_type=shapeq_e3 from=shapeq/c1 hop=1 role=agent to=shapeq/a1 via_event=E:e3
+event_type=shapeq_e3 from=shapeq/c1 hop=1 role=order to=shapeq/o3 via_event=E:e3
+event_type=shapeq_e5 from=shapeq/c1 hop=1 role=shipment to=shapeq/s1 via_event=E:e5
+event_type=shapeq_e7 from=shapeq/o3 hop=2 role=shipment to=shapeq/s3 via_event=E:e7
+## system / as_of kind
+closure_size=0 guarantee="exact and complete — a question about our own records"
+actor=a@x asserted_at=T1m0s asserted_by=a@x entity_id=shapeq/k0 item_id=I:k0a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:s0a]
+actor=b@x asserted_at=T2m0s asserted_by=b@x entity_id=shapeq/k0 item_id=I:k0b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:s0b]
+actor=a@x asserted_at=T3m0s asserted_by=a@x entity_id=shapeq/k1 item_id=I:k1a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:open]
+actor=b@x asserted_at=T4m0s asserted_by=b@x entity_id=shapeq/k1 item_id=I:k1b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:closed]
+actor=a@x asserted_at=T5m0s asserted_by=a@x entity_id=shapeq/k2 item_id=I:k2a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:x]
+actor=b@x asserted_at=T6m0s asserted_by=b@x entity_id=shapeq/k2 item_id=I:k2b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:y]
+actor=b@x asserted_at=T8m0s asserted_by=b@x entity_id=shapeq/k3 item_id=I:k3b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:w]
+## system / as_of kind k1
+closure_size=0 guarantee="exact and complete — a question about our own records"
+actor=a@x asserted_at=T3m0s asserted_by=a@x entity_id=shapeq/k1 item_id=I:k1a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:open]
+actor=b@x asserted_at=T4m0s asserted_by=b@x entity_id=shapeq/k1 item_id=I:k1b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:closed]
+## system / current kind
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+actor=a@x entity_id=shapeq/k0 policy=latest_assertion reason_code=latest_assertion values=map[status:s0a]
+actor=b@x entity_id=shapeq/k0 policy=latest_assertion reason_code=latest_assertion values=map[status:s0b]
+actor=a@x entity_id=shapeq/k1 policy=latest_assertion reason_code=latest_assertion values=map[status:open]
+actor=b@x entity_id=shapeq/k1 policy=latest_assertion reason_code=latest_assertion values=map[status:closed]
+actor=a@x entity_id=shapeq/k2 policy=latest_assertion reason_code=latest_assertion values=map[status:x]
+actor=b@x entity_id=shapeq/k2 policy=latest_assertion reason_code=latest_assertion values=map[status:y]
+actor=b@x entity_id=shapeq/k3 policy=latest_assertion reason_code=latest_assertion values=map[status:w]
+## system / contradictions kind
+closure_size=0 guarantee="deterministic over stored interpretations; extraction uncertainty applies"
+actors=map[a@x:open b@x:closed] entity_id=shapeq/k1 predicate=status
+actors=map[a@x:s0a b@x:s0b] entity_id=shapeq/k0 predicate=status
+actors=map[a@x:x b@x:y] entity_id=shapeq/k2 predicate=status
+## system / entity c1
+closure_size=0 guarantee="exact over stored links; identity as asserted, see links"
+created_at=(set) entity_id=shapeq/c1 entity_kind=shapeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+asserted_at=T4m0s asserted_by=test confidence=1 evidence_id=EV:secret family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-sec2 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-sec2 state=confirmed to_ref=event:E:e2
+asserted_at=T3m0s asserted_by=test confidence=1 evidence_id=EV:secret family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-sec1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-sec1 state=confirmed to_ref=event:E:e1
+asserted_at=T2m0s asserted_by=test confidence=1 evidence_id=EV:pub family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-pub2 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-pub2 state=confirmed to_ref=event:E:e5
+asserted_at=T1m0s asserted_by=test confidence=1 evidence_id=EV:pub family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-pub1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-pub1 state=confirmed to_ref=event:E:e3
+asserted_at=T8m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:secret family=lineage from_ref=event:E:e2 link_id=shapeq-in-sec2 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-sec2 state=confirmed to_ref=entity:shapeq/c1
+asserted_at=T7m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:secret family=lineage from_ref=event:E:e1 link_id=shapeq-in-sec1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-sec1 state=confirmed to_ref=entity:shapeq/c1
+asserted_at=T5m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:pub family=lineage from_ref=event:E:e3 link_id=shapeq-in-pub1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-pub1 state=confirmed to_ref=entity:shapeq/c1
+## alice / point m1 temp
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-2h0m0s predicate=temp value_number=5 value_type=number
+## alice / history m1 temp
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:secret occurred_at=T-6h0m0s predicate=temp value_number=1 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:secret occurred_at=T-5h0m0s predicate=temp value_number=2 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-4h0m0s predicate=temp value_number=3 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:alice occurred_at=T-3h0m0s predicate=temp value_number=4 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-2h0m0s predicate=temp value_number=5 value_type=number
+## alice / aggregate m1 count
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+aggregate=count entity_id=shapeq/m1 predicate=temp value=5
+## alice / aggregate m1 avg
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+aggregate=avg entity_id=shapeq/m1 predicate=temp value=3
+## alice / events c1
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+event_id=E:e1 event_type=shapeq_e1 evidence_id=EV:secret occurred_at=T-6h0m0s roles={customer=shapeq/c1,order=shapeq/o1,}
+event_id=E:e2 event_type=shapeq_e2 evidence_id=EV:secret occurred_at=T-5h0m0s roles={customer=shapeq/c1,order=shapeq/o2,}
+event_id=E:e3 event_type=shapeq_e3 evidence_id=EV:pub occurred_at=T-4h0m0s roles={agent=shapeq/a1,customer=shapeq/c1,order=shapeq/o3,}
+event_id=E:e4 event_type=shapeq_e4 evidence_id=EV:alice occurred_at=T-3h0m0s roles={customer=shapeq/c1,order=shapeq/o4,}
+event_id=E:e5 event_type=shapeq_e5 evidence_id=EV:pub occurred_at=T-2h0m0s roles={customer=shapeq/c1,shipment=shapeq/s1,}
+## alice / traverse c1 hops=3
+closure_size=0 guarantee="exact over stored edges; entity links epistemically uncertain"
+event_type=shapeq_e1 from=shapeq/c1 hop=1 role=order to=shapeq/o1 via_event=E:e1
+event_type=shapeq_e2 from=shapeq/c1 hop=1 role=order to=shapeq/o2 via_event=E:e2
+event_type=shapeq_e3 from=shapeq/c1 hop=1 role=agent to=shapeq/a1 via_event=E:e3
+event_type=shapeq_e3 from=shapeq/c1 hop=1 role=order to=shapeq/o3 via_event=E:e3
+event_type=shapeq_e4 from=shapeq/c1 hop=1 role=order to=shapeq/o4 via_event=E:e4
+event_type=shapeq_e5 from=shapeq/c1 hop=1 role=shipment to=shapeq/s1 via_event=E:e5
+event_type=shapeq_e7 from=shapeq/o3 hop=2 role=shipment to=shapeq/s3 via_event=E:e7
+## alice / as_of kind
+closure_size=0 guarantee="exact and complete — a question about our own records"
+actor=a@x asserted_at=T1m0s asserted_by=a@x entity_id=shapeq/k0 item_id=I:k0a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:s0a]
+actor=b@x asserted_at=T2m0s asserted_by=b@x entity_id=shapeq/k0 item_id=I:k0b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:s0b]
+actor=a@x asserted_at=T3m0s asserted_by=a@x entity_id=shapeq/k1 item_id=I:k1a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:open]
+actor=b@x asserted_at=T4m0s asserted_by=b@x entity_id=shapeq/k1 item_id=I:k1b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:closed]
+actor=a@x asserted_at=T5m0s asserted_by=a@x entity_id=shapeq/k2 item_id=I:k2a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:x]
+actor=b@x asserted_at=T6m0s asserted_by=b@x entity_id=shapeq/k2 item_id=I:k2b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:y]
+actor=a@x asserted_at=T7m0s asserted_by=a@x entity_id=shapeq/k3 item_id=I:k3a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:z]
+actor=b@x asserted_at=T8m0s asserted_by=b@x entity_id=shapeq/k3 item_id=I:k3b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:w]
+## alice / as_of kind k1
+closure_size=0 guarantee="exact and complete — a question about our own records"
+actor=a@x asserted_at=T3m0s asserted_by=a@x entity_id=shapeq/k1 item_id=I:k1a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:open]
+actor=b@x asserted_at=T4m0s asserted_by=b@x entity_id=shapeq/k1 item_id=I:k1b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:closed]
+## alice / current kind
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+actor=a@x entity_id=shapeq/k0 policy=latest_assertion reason_code=latest_assertion values=map[status:s0a]
+actor=b@x entity_id=shapeq/k0 policy=latest_assertion reason_code=latest_assertion values=map[status:s0b]
+actor=a@x entity_id=shapeq/k1 policy=latest_assertion reason_code=latest_assertion values=map[status:open]
+actor=b@x entity_id=shapeq/k1 policy=latest_assertion reason_code=latest_assertion values=map[status:closed]
+actor=a@x entity_id=shapeq/k2 policy=latest_assertion reason_code=latest_assertion values=map[status:x]
+actor=b@x entity_id=shapeq/k2 policy=latest_assertion reason_code=latest_assertion values=map[status:y]
+actor=a@x entity_id=shapeq/k3 policy=latest_assertion reason_code=latest_assertion values=map[status:z]
+actor=b@x entity_id=shapeq/k3 policy=latest_assertion reason_code=latest_assertion values=map[status:w]
+## alice / contradictions kind
+closure_size=0 guarantee="deterministic over stored interpretations; extraction uncertainty applies"
+actors=map[a@x:open b@x:closed] entity_id=shapeq/k1 predicate=status
+actors=map[a@x:s0a b@x:s0b] entity_id=shapeq/k0 predicate=status
+actors=map[a@x:x b@x:y] entity_id=shapeq/k2 predicate=status
+actors=map[a@x:z b@x:w] entity_id=shapeq/k3 predicate=status
+## alice / entity c1
+closure_size=0 guarantee="exact over stored links; identity as asserted, see links"
+created_at=(set) entity_id=shapeq/c1 entity_kind=shapeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+asserted_at=T4m0s asserted_by=test confidence=1 evidence_id=EV:secret family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-sec2 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-sec2 state=confirmed to_ref=event:E:e2
+asserted_at=T3m0s asserted_by=test confidence=1 evidence_id=EV:secret family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-sec1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-sec1 state=confirmed to_ref=event:E:e1
+asserted_at=T2m0s asserted_by=test confidence=1 evidence_id=EV:pub family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-pub2 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-pub2 state=confirmed to_ref=event:E:e5
+asserted_at=T1m0s asserted_by=test confidence=1 evidence_id=EV:pub family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-pub1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-pub1 state=confirmed to_ref=event:E:e3
+asserted_at=T8m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:secret family=lineage from_ref=event:E:e2 link_id=shapeq-in-sec2 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-sec2 state=confirmed to_ref=entity:shapeq/c1
+asserted_at=T7m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:secret family=lineage from_ref=event:E:e1 link_id=shapeq-in-sec1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-sec1 state=confirmed to_ref=entity:shapeq/c1
+asserted_at=T6m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:alice family=lineage from_ref=event:E:e4 link_id=shapeq-in-ali1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-ali1 state=confirmed to_ref=entity:shapeq/c1
+asserted_at=T5m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:pub family=lineage from_ref=event:E:e3 link_id=shapeq-in-pub1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-pub1 state=confirmed to_ref=entity:shapeq/c1
+## mail-not-secret / point m1 temp
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-2h0m0s predicate=temp value_number=5 value_type=number
+## mail-not-secret / history m1 temp
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-4h0m0s predicate=temp value_number=3 value_type=number
+confidence=1 entity_id=shapeq/m1 evidence_id=EV:pub occurred_at=T-2h0m0s predicate=temp value_number=5 value_type=number
+## mail-not-secret / aggregate m1 count
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+aggregate=count entity_id=shapeq/m1 predicate=temp value=2
+## mail-not-secret / aggregate m1 avg
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+aggregate=avg entity_id=shapeq/m1 predicate=temp value=4
+## mail-not-secret / events c1
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+event_id=E:e3 event_type=shapeq_e3 evidence_id=EV:pub occurred_at=T-4h0m0s roles={agent=shapeq/a1,customer=shapeq/c1,order=shapeq/o3,}
+event_id=E:e5 event_type=shapeq_e5 evidence_id=EV:pub occurred_at=T-2h0m0s roles={customer=shapeq/c1,shipment=shapeq/s1,}
+## mail-not-secret / traverse c1 hops=3
+closure_size=0 guarantee="exact over stored edges; entity links epistemically uncertain"
+event_type=shapeq_e3 from=shapeq/c1 hop=1 role=agent to=shapeq/a1 via_event=E:e3
+event_type=shapeq_e3 from=shapeq/c1 hop=1 role=order to=shapeq/o3 via_event=E:e3
+event_type=shapeq_e5 from=shapeq/c1 hop=1 role=shipment to=shapeq/s1 via_event=E:e5
+event_type=shapeq_e7 from=shapeq/o3 hop=2 role=shipment to=shapeq/s3 via_event=E:e7
+## mail-not-secret / as_of kind
+closure_size=0 guarantee="exact and complete — a question about our own records"
+actor=a@x asserted_at=T3m0s asserted_by=a@x entity_id=shapeq/k1 item_id=I:k1a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:open]
+actor=b@x asserted_at=T4m0s asserted_by=b@x entity_id=shapeq/k1 item_id=I:k1b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:closed]
+actor=b@x asserted_at=T6m0s asserted_by=b@x entity_id=shapeq/k2 item_id=I:k2b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:y]
+actor=b@x asserted_at=T8m0s asserted_by=b@x entity_id=shapeq/k3 item_id=I:k3b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:w]
+## mail-not-secret / as_of kind k1
+closure_size=0 guarantee="exact and complete — a question about our own records"
+actor=a@x asserted_at=T3m0s asserted_by=a@x entity_id=shapeq/k1 item_id=I:k1a policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:open]
+actor=b@x asserted_at=T4m0s asserted_by=b@x entity_id=shapeq/k1 item_id=I:k1b policy=latest_assertion reason_code=latest_assertion system_from=(set) values=map[status:closed]
+## mail-not-secret / current kind
+closure_size=0 guarantee="exact over stored data; identity and coverage epistemically uncertain"
+actor=a@x entity_id=shapeq/k1 policy=latest_assertion reason_code=latest_assertion values=map[status:open]
+actor=b@x entity_id=shapeq/k1 policy=latest_assertion reason_code=latest_assertion values=map[status:closed]
+actor=b@x entity_id=shapeq/k2 policy=latest_assertion reason_code=latest_assertion values=map[status:y]
+actor=b@x entity_id=shapeq/k3 policy=latest_assertion reason_code=latest_assertion values=map[status:w]
+## mail-not-secret / contradictions kind
+closure_size=0 guarantee="deterministic over stored interpretations; extraction uncertainty applies"
+actors=map[a@x:open b@x:closed] entity_id=shapeq/k1 predicate=status
+## mail-not-secret / entity c1
+closure_size=0 guarantee="exact over stored links; identity as asserted, see links"
+created_at=(set) entity_id=shapeq/c1 entity_kind=shapeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+asserted_at=T2m0s asserted_by=test confidence=1 evidence_id=EV:pub family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-pub2 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-pub2 state=confirmed to_ref=event:E:e5
+asserted_at=T1m0s asserted_by=test confidence=1 evidence_id=EV:pub family=lineage from_ref=entity:shapeq/c1 link_id=shapeq-out-pub1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-out-pub1 state=confirmed to_ref=event:E:e3
+asserted_at=T5m0s asserted_by=test confidence=1 direction=incoming evidence_id=EV:pub family=lineage from_ref=event:E:e3 link_id=shapeq-in-pub1 mechanism=reference producer=shapeq@1 relation=shapeq_cites row=link source_ref=shapeq-in-pub1 state=confirmed to_ref=entity:shapeq/c1

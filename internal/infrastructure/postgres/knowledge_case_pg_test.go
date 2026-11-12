@@ -300,8 +300,11 @@ func TestPg_CaseExtensions_AsOfAcrossASupersession(t *testing.T) {
 
 	committedAt := func(at time.Time) []string {
 		t.Helper()
+		// The committed answer is the kind's cross-actor (designated_actor) row,
+		// asked for by policy: as_of no longer mixes it with each actor's own
+		// latest_assertion row (owner decision 2026-11-12, ADR-0111).
 		res, err := plane.Query(ctx, domain.KnowledgeQuery{Kind: domain.QueryAsOf, ItemKind: "casetest_decision",
-			EntityID: "d1", AsOf: at}, &domain.TagPredicate{Bypass: true})
+			EntityID: "d1", AsOf: at, Policy: domain.ResolutionPolicyDesignatedActor}, &domain.TagPredicate{Bypass: true})
 		if err != nil {
 			t.Fatal(err)
 		}

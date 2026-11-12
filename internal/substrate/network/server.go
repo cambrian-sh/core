@@ -518,12 +518,24 @@ func (s *Server) planningOutOfTime(in *pb.Handoff, phase string, cause error, se
 func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Handoff, execErr error) {
 	rawInput := string(in.Payload.Data)
 
-	// ADR-0050 D1: benchmark React-baseline arm. Skips Router classification,
-	// Planner, Dispatcher, and DAGExecutor — the input goes
-	// verbatim to one configured agent through the same CallAgent seam a
-	// winning bidder would use (same priming, grants, scope, telemetry).
-	if s.ExecCfg.Routing.BypassSelection {
-		return s.executeBypassAuction(ctx, in, rawInput)
+	// ADR-0050 D1: the single-agent mode (execution.routing.bypass_selection). It
+	// skips Router classification, Planner and DAGExecutor — the input goes
+	// verbatim to one configured agent through the same CallAgent seam a plan
+	// step uses — but NOT the caller's identity: the session, its conversation
+	// link and the ordering chat turn's lifetime are set up below exactly as for
+	// a plan, and the request leaves through executeBypassAuction once they are
+	// (T-20261112-baseline-arm-run-the-use-case-journeys-through: run before them,
+	// approvals named no beneficiary and the step did not know whom it acted for).
+	bypass := s.ExecCfg.Routing.BypassSelection
+	if bypass {
+		// There is no planner in this mode, so a worker's delegate_to_planner
+		// (a plan-step lease calling Execute, ADR-0145 D14) has nothing to hand
+		// work to; served, it would dispatch to the same single agent again,
+		// unbounded. Refused like a delegation past the depth limit.
+		if b, known := s.resolveBindingFromHandoff(ctx, in.GetMetadata()); known && b.RunID != "" && b.StepIndex >= 0 {
+			return nil, status.Error(codes.FailedPrecondition,
+				"worker delegation refused: execution.routing.bypass_selection runs every request on one agent and has no planner to hand work to; finish with what you have and report what is missing")
+		}
 	}
 
 	// An operator-authored plan (contract 0074) is a plan by construction, so
@@ -545,7 +557,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 	// into the session once it exists, or into the kernel no-session bucket when
 	// the turn never gets one (CHAT, clarification, errors).
 	var callerSession domain.SessionID
-	if s.Router != nil && authoredPlanJSON == "" && s.SpendMeter != nil {
+	if s.Router != nil && authoredPlanJSON == "" && !bypass && s.SpendMeter != nil {
 		callerSession = s.liveCallerSession(ctx)
 	}
 	routeCtx := ctx
@@ -561,7 +573,8 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 
 	// ADR-0031: Route through InputRouter when configured.
 	// The Router classifies raw input before any enrichment (mood, LTM, etc.).
-	if s.Router != nil && authoredPlanJSON == "" {
+	// Not in the single-agent mode (ADR-0050 D1): the one agent answers everything.
+	if s.Router != nil && authoredPlanJSON == "" && !bypass {
 		routerInput := domain.RouterInput{
 			Body:       rawInput,
 			SourceType: "grpc",
@@ -731,6 +744,12 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 				run.End()
 			}()
 		}
+	}
+
+	// ADR-0050 D1: the single-agent mode leaves here, with the session, its
+	// conversation link and the ordering turn's registration in place.
+	if bypass {
+		return s.executeBypassAuction(ctx, in, rawInput, sessionID, delegated, reserve)
 	}
 
 	// ADR-0025: FetchContext retired from planning path.
@@ -1693,15 +1712,25 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 // executeBypassAuction is the ADR-0050 D1 React-baseline path: the user's
 // input is dispatched verbatim to execution.single_agent_id, skipping
 // planner/auction/DAG. Everything downstream of agent selection is identical
-// to a won auction step (CallAgent seam: priming, grants, scope, telemetry).
+// to a plan step (CallAgent seam: priming, grants, scope, telemetry), and so is
+// the identity the step runs under: Execute calls this only after it opened the
+// session (linked to the ordering conversation) and registered the ordering
+// chat turn (delegated), so the lease is bound like a step lease (session, run,
+// step 0, agent) — which is what gives a tool approval its beneficiary and the
+// run its principal — the step is told whom it acts for, and the run is under
+// the same plan ceiling and turn liveness as a plan (plan_watchdog.go).
 // The "/plan " slash-prefix is stripped for parity with the auction arm,
 // where the InputRouter consumes it as a Layer-1 command, not task content.
-func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawInput string) (*pb.Handoff, error) {
+func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawInput string,
+	sessionID domain.SessionID, delegated *DelegatedRun, reserve callerReserve) (*pb.Handoff, error) {
 	agentID := s.ExecCfg.Routing.SingleAgentID
 	if agentID == "" {
 		return nil, status.Error(codes.FailedPrecondition,
 			"bypass_auction: execution.single_agent_id is required")
 	}
+	// The run id: the lease's run (RunActivity liveness, the worker-delegation
+	// refusal in Execute) and the turn registry's name for this work.
+	runID := domain.RunID(newPlanID())
 	userInput := strings.TrimSpace(rawInput)
 	if rest, ok := strings.CutPrefix(userInput, "/plan "); ok {
 		userInput = strings.TrimSpace(rest)
@@ -1717,6 +1746,10 @@ func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawIn
 	handoff.Context["task_id"] = "task-0"
 	handoff.Context["_step_index"] = "0"
 	handoff.Context["original_prompt"] = userInput
+	// Kernel-authored, as on every plan step: whom this run acts for (the run
+	// principal); a caller's metadata copied above cannot assert it.
+	actingForID, actingForName := s.actingForRun(ctx, sessionID, runID)
+	domain.StampActingFor(handoff.Context, actingForID, actingForName)
 
 	// Mirror stepFn's session-token acquisition so cognitive agents can call
 	// GenerateViaModelStream on the bypass arm exactly as on the dispatch arm.
@@ -1729,13 +1762,20 @@ func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawIn
 		// may not do.
 		sa := domain.StepAllocation{}
 		tokenID, _ := s.LLMGateway.Acquire(ctx, sa, StepLeaseTokenLimit, StepLeaseDuration)
-		// The bypass arm runs outside a task session, so the binding carries only the
-		// agent. Registering it still matters: a KNOWN-but-unbound lease is how the
-		// transport tells "an agent sent its lease" from "the operator sent a session
-		// ID", and answers the former with no session rather than with the lease ID.
+		// Bound like a plan step's lease: the session (and through it the ordering
+		// conversation and its owner: approval beneficiary, run principal), the run
+		// and the agent (ADR-0139 D8 ownership).
 		if r := s.leaseResolver(); r != nil {
-			r.BindLease(tokenID, domain.LeaseBinding{StepIndex: 0, AgentID: agentID})
+			r.BindLease(tokenID, domain.LeaseBinding{
+				SessionID:       sessionID,
+				RunID:           runID,
+				StepIndex:       0,
+				AgentID:         agentID,
+				DelegationDepth: domain.DelegationDepthFrom(ctx),
+			})
 		}
+		// Revoked with the ordering chat turn (turn_delegation.go).
+		delegated.AddLease(tokenID)
 		handoff.Context["_session_token_id"] = string(tokenID)
 		defer func() {
 			// ADR-0046 D6 ephemerality, same as the dispatch path: Complete runs the
@@ -1744,8 +1784,23 @@ func (s *Server) executeBypassAuction(ctx context.Context, in *pb.Handoff, rawIn
 		}()
 	}
 
-	slog.Info("⚡ BYPASS AUCTION (ADR-0050 D1)", "agent", agentID)
-	resp, err := s.Dispatcher.CallAgent(ctx, agentID, handoff, "")
+	// The same progress-aware ceiling and turn liveness as a plan: idle for
+	// plan_idle_timeout_ms or past plan_max_duration_ms ends it, and the ordering
+	// chat turn's stall watchdog sees the agent's model and tool calls on its lease.
+	act := newPlanActivity()
+	maxDuration, idleTimeout := planLimits(s.ExecCfg.Plan)
+	probe := s.planLivenessProbe(ctx, act, runID, sessionID)
+	reservedCtx, stopCallerReserve := reserve.bound(ctx, errPlanCallerDeadline(reserve.reserve))
+	defer stopCallerReserve()
+	callCtx, stopCeiling := startPlanCeiling(reservedCtx, maxDuration, idleTimeout, probe)
+	defer stopCeiling()
+	delegated.Attach(runID, probe)
+	act.touch()
+	defer act.touch()
+
+	slog.Info("⚡ BYPASS AUCTION (ADR-0050 D1)", "agent", agentID, "run", runID, "session", sessionID,
+		"acting_for", actingForID)
+	resp, err := s.Dispatcher.CallAgent(callCtx, agentID, handoff, "")
 	if err != nil {
 		return nil, fmt.Errorf("bypass_auction: agent %q: %w", agentID, err)
 	}

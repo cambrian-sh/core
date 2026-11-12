@@ -334,8 +334,33 @@ func (s *PgLinkStore) LinksForRefs(ctx context.Context, namespace string, refs [
 	return out, rows.Err()
 }
 
-// Candidates is the review inbox: unretracted proposals, highest confidence first — the
-// order idx_links_review exists to serve.
+// openCandidate is THE definition of "in the review inbox", over a links row
+// aliased l: an unretracted candidate that no person has confirmed yet. Both inbox
+// reads (Candidates, CandidatesForRefs) render it, so the whole inbox and one
+// entity's slice of it never disagree on membership.
+//
+// The NOT EXISTS is how an append-only store answers "already decided":
+// ConfirmLink leaves the candidate untouched and appends a human row whose
+// source_ref is confirmationSourceRef(candidate id) (ADR-0128 D4), so membership is
+// decided by the presence of that row, never by editing the candidate. Any
+// confirmation row counts, retracted or not: retracting a confirmation is a second
+// human decision about the same proposal, not a request to review it again (and
+// re-confirming would only replay the standing row). Literal 'candidate' and
+// 'human' (not bound parameters) so the planner can match the partial indexes
+// idx_links_review / idx_links_candidate_* / idx_links_confirmations (0038).
+const openCandidate = `l.state = 'candidate' AND l.retracted_at IS NULL
+	AND NOT EXISTS (SELECT 1 FROM links c
+		WHERE c.namespace_id = l.namespace_id AND c.mechanism = 'human'
+		  AND c.source_ref = 'confirm:' || l.id)`
+
+// candidateOrder is the review inbox's order (owner decision 2026-11-12, ADR-0128
+// §3): most likely first, and among equals the one that has waited longest
+// (asserted_at ASC) — the order the operator console sorts to (ui
+// LinkReviewConsole orderCandidates). id makes it total. idx_links_review serves it.
+const candidateOrder = `l.confidence DESC, l.asserted_at ASC, l.id`
+
+// Candidates is the review inbox: open candidates (openCandidate) in
+// candidateOrder.
 func (s *PgLinkStore) Candidates(ctx context.Context, namespace string, limit int) ([]domain.Link, error) {
 	if namespace == "" {
 		namespace = "default"
@@ -344,15 +369,54 @@ func (s *PgLinkStore) Candidates(ctx context.Context, namespace string, limit in
 		limit = defaultIdentityLimit
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT `+linkColumns+` FROM links
-		WHERE namespace_id=$1 AND state=$2 AND retracted_at IS NULL
-		ORDER BY confidence DESC, recorded_at DESC, id
-		LIMIT $3`,
-		namespace, domain.LinkStateCandidate, limit)
+		SELECT `+linkColumns+` FROM links l
+		WHERE l.namespace_id=$1 AND `+openCandidate+`
+		ORDER BY `+candidateOrder+`
+		LIMIT $2`,
+		namespace, limit)
 	if err != nil {
 		return nil, err
 	}
 	return collectLinks(rows)
+}
+
+// CandidatesForRefs is the review inbox restricted to the candidates touching each
+// ref (either endpoint), in the inbox's own order, with Offset and Limit applied
+// PER REF — the LinksForRefs shape. The subject filter is in SQL, before the
+// limit: reading the whole inbox to a page and keeping the subject's rows lost a
+// subject's candidates behind every higher-confidence candidate elsewhere
+// (T-20261112-entity-op-s-candidates-read-cuts-the-whole).
+func (s *PgLinkStore) CandidatesForRefs(ctx context.Context, namespace string, refs []string, offset, limit int) (map[string][]domain.Link, error) {
+	if namespace == "" {
+		namespace = "default"
+	}
+	out := map[string][]domain.Link{}
+	if len(refs) == 0 {
+		return out, nil
+	}
+	if limit <= 0 {
+		limit = defaultIdentityLimit
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT f.ref, x.* FROM (SELECT DISTINCT unnest($2::text[]) AS ref) f
+		CROSS JOIN LATERAL (SELECT `+linkColumns+` FROM links l
+			WHERE l.namespace_id=$1 AND (l.from_ref=f.ref OR l.to_ref=f.ref) AND `+openCandidate+`
+			ORDER BY `+candidateOrder+` OFFSET $3 LIMIT $4) x
+		ORDER BY f.ref, x.confidence DESC, x.asserted_at ASC, x.id`,
+		namespace, refs, max(offset, 0), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ref string
+		l, err := scanLink(rows, &ref)
+		if err != nil {
+			return nil, err
+		}
+		out[ref] = append(out[ref], l)
+	}
+	return out, rows.Err()
 }
 
 func collectLinks(rows pgx.Rows) ([]domain.Link, error) {

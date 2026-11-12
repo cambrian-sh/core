@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -51,22 +52,27 @@ func TestConsumer_DeliversBytesAndCompletesItem(t *testing.T) {
 	}
 }
 
-// Gate (at-least-once): a transformer error leaves the item pending, and the
-// next drain retries it.
+// Gate (at-least-once): a transformer error leaves the item unprocessed with
+// one attempt recorded and due again after its backoff, and the retry after
+// recovery completes it.
 func TestConsumer_ErrorLeavesItemPendingForRetry(t *testing.T) {
+	exactJitter(t)
 	tr := &fakeTransformer{name: "t", err: errors.New("injected")}
 	c, _, store := consumerFixture(t, tr)
+	store.clock = time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
 	c.drainOnce(context.Background())
 
-	pending, _ := store.PendingOutbox(context.Background(), 10)
-	if len(pending) != 1 {
-		t.Fatal("failed item must stay pending")
+	if store.processed[1] || store.attempts[1] != 1 {
+		t.Fatalf("failed item: processed=%v attempts=%d, want unprocessed with 1 attempt", store.processed[1], store.attempts[1])
 	}
+	if pending, _ := store.PendingOutbox(context.Background(), 10); len(pending) != 0 {
+		t.Fatal("a failed item must wait out its backoff, not be due again at once")
+	}
+	store.clock = store.clock.Add(domain.EvidenceOutboxBaseDelay)
 	tr.err = nil
 	tr.handled = true
 	c.drainOnce(context.Background())
-	pending, _ = store.PendingOutbox(context.Background(), 10)
-	if len(pending) != 0 {
+	if pending, _ := store.PendingOutbox(context.Background(), 10); len(pending) != 0 || !store.processed[1] {
 		t.Fatal("retry after recovery did not complete the item")
 	}
 	if len(tr.seen) != 2 {
@@ -106,21 +112,23 @@ func TestConsumer_DrainUntilIdleClearsABacklogDeeperThanOneBatch(t *testing.T) {
 	}
 }
 
-// The progress guard: when every fetched item fails, the drain returns to the
-// ticker instead of hot-looping on the same stuck head of the queue.
+// The progress guard: a failing item leaves the due set (backoff), so the
+// drain returns to the ticker instead of hot-looping on it within one wake-up.
 func TestConsumer_DrainUntilIdleYieldsWhenNothingCompletes(t *testing.T) {
+	exactJitter(t)
 	tr := &fakeTransformer{name: "t", err: errors.New("stuck")}
 	c, _, store := consumerFixture(t, tr)
+	store.clock = time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
 	c.batch = 1 // the failing item alone fills the batch
 
 	c.drainUntilIdle(context.Background()) // must return, not spin
 
-	pending, _ := store.PendingOutbox(context.Background(), 10)
-	if len(pending) != 1 {
-		t.Fatal("the stuck item must remain pending for the next tick")
+	if store.processed[1] || store.attempts[1] != 1 {
+		t.Fatalf("the stuck item must stay unprocessed with one attempt: processed=%v attempts=%d",
+			store.processed[1], store.attempts[1])
 	}
 	if len(tr.seen) != 1 {
-		t.Fatalf("a no-progress pass must not retry within the same wake-up; saw %d deliveries", len(tr.seen))
+		t.Fatalf("a failing pass must not retry within the same wake-up; saw %d deliveries", len(tr.seen))
 	}
 }
 

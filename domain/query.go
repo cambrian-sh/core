@@ -77,10 +77,27 @@ const (
 
 // KnowledgeQuery is the closed AST. One struct, one Validate, no dialects.
 type KnowledgeQuery struct {
-	Kind       string
-	EntityID   string
-	Predicate  string
-	ItemKind   string
+	Kind      string
+	EntityID  string
+	Predicate string
+	ItemKind  string
+	// Policy and Actor are the belief shapes' read selectors (current, as_of,
+	// contradictions; ADR-0111 D1 as amended by the owner 2026-11-12). Every other
+	// shape REFUSES them (Validate): a selector that is accepted and ignored makes
+	// a wide answer look like the narrow one that was asked for.
+	//
+	// Policy names which resolution rows answer (ADR-0110 D3); empty means
+	// latest_assertion on all three shapes, so as_of(now) and current agree. For an
+	// entity-scoped kind (ResolutionScopeEntity) the cross-actor winner lives under
+	// the kind's declared policy, and each actor's own latest under latest_assertion
+	// — the two families are never mixed in one answer.
+	//
+	// Actor narrows to that actor's OWN claims before resolution: its per-actor
+	// resolution rows (its latest word) on current and as_of; on contradictions,
+	// only the disagreements it is part of. Actor together with a policy whose rows
+	// are cross-actor ('*') cannot be expressed from stored resolutions and is
+	// refused (ErrCannotExpress); so is Actor "*", which is a row family, not an
+	// actor.
 	Policy     string
 	Actor      string
 	AsOf       time.Time
@@ -154,6 +171,26 @@ func (q KnowledgeQuery) SupportsAliasExpansion() bool {
 		return true
 	}
 	return false
+}
+
+// SupportsBeliefSelectors reports whether the kind reads resolution rows, and so
+// honours Policy and Actor (current, as_of, contradictions).
+func (q KnowledgeQuery) SupportsBeliefSelectors() bool {
+	switch q.Kind {
+	case QueryCurrent, QueryAsOf, QueryContradictions:
+		return true
+	}
+	return false
+}
+
+// PolicyOrDefault is the resolution policy a belief shape reads: Policy, or
+// latest_assertion when unset — the same default on current, as_of and
+// contradictions.
+func (q KnowledgeQuery) PolicyOrDefault() string {
+	if q.Policy == "" {
+		return ResolutionPolicyLatestAssertion
+	}
+	return q.Policy
 }
 
 // QueryRow is one result row. Keys are shape-specific and documented by the
@@ -318,6 +355,14 @@ func (q KnowledgeQuery) Validate() error {
 	if q.ExpandAliases && !q.SupportsAliasExpansion() {
 		return cannot("expand_aliases is not expressible for kind %q — it widens an entity SUBJECT, "+
 			"and this shape has none", q.Kind)
+	}
+	if (q.Policy != "" || q.Actor != "") && !q.SupportsBeliefSelectors() {
+		return cannot("policy and actor select resolution rows, which only current, as_of and "+
+			"contradictions read — not expressible for kind %q", q.Kind)
+	}
+	if q.Actor == ResolutionActorAll {
+		return cannot("actor %q names the cross-actor resolution rows, not an actor — "+
+			"leave actor empty and set the kind's policy to read them", ResolutionActorAll)
 	}
 	if q.Kind != QueryWhy && (q.IncludeCorrelation || q.CorrelationWindow != 0 || len(q.CorrelationRoles) > 0) {
 		return cannot("include_correlation, correlation_window and correlation_roles are expressible "+
