@@ -1,6 +1,10 @@
 package domain
 
-import "strings"
+import (
+	"context"
+	"log/slog"
+	"strings"
+)
 
 // The owner fence (ADR-0141 position 3; T-20261106-owner-scope-tag-owner-principal-from-personal).
 //
@@ -46,6 +50,46 @@ func OwnerTag(principalID string) string {
 
 // IsOwnerTag reports whether tag is in the reserved owner namespace.
 func IsOwnerTag(tag string) bool { return strings.HasPrefix(tag, OwnerTagPrefix) }
+
+// DropCallerOwnerTags returns tags without any owner-namespace tag, logging what
+// it dropped (ADR-0146 D5: only the kernel puts owner:<id> on a row).
+//
+// It is applied at every boundary where a CALLER-controlled tag list becomes a
+// write's classification hint — the agent plane's IngestMemory, UploadArtifact
+// and ProposeKnowledge, the operator plane's ingest, a tool's declared tags on
+// the rows its results become, the substrate lane's IngestEvent and a reactive
+// signal's declared classification. Under the own-rows rule an owner tag no
+// longer only narrows a row: it also waives that owner's positive read terms for
+// it, so a forged one would put the forger's content past someone else's floor.
+// The write still succeeds; the owner the kernel resolved for the work (the
+// conversation owner, from the lease) is stamped after classification by
+// StampPrivateOwner, which this does not touch. source names the boundary in the
+// log line. Never mutates tags; returns tags itself when nothing is dropped.
+func DropCallerOwnerTags(ctx context.Context, source string, tags []string) []string {
+	n := 0
+	for _, t := range tags {
+		if IsOwnerTag(t) {
+			n++
+		}
+	}
+	if n == 0 {
+		return tags
+	}
+	out := make([]string, 0, len(tags)-n)
+	dropped := make([]string, 0, n)
+	for _, t := range tags {
+		if IsOwnerTag(t) {
+			dropped = append(dropped, t)
+			continue
+		}
+		out = append(out, t)
+	}
+	slog.WarnContext(ctx, "authz: caller-supplied owner tag dropped (owner tags are kernel-stamped, ADR-0146 D5)",
+		slog.String("event", "authz_owner_tag_dropped"),
+		slog.String("source", source),
+		slog.Any("dropped", dropped))
+	return out
+}
 
 // OwnersOf returns the principal ids a tag set is owner-scoped to, in order.
 // A derived row (a fact, an assessment) carries its sources' owner tags, so this

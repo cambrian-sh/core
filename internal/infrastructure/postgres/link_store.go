@@ -261,22 +261,40 @@ func (s *PgLinkStore) RetractByProducer(ctx context.Context, namespace, producer
 // landed in — it is not a statement about direction), and an asymmetric verb's inbound
 // rows appear only when the caller asked for the backward walk.
 func (s *PgLinkStore) LinksFor(ctx context.Context, namespace, ref string, opts domain.LinkQuery) ([]domain.Link, error) {
+	byRef, err := s.LinksForRefs(ctx, namespace, []string{ref}, opts)
+	if err != nil {
+		return nil, err
+	}
+	return byRef[ref], nil
+}
+
+// LinksForRefs is LinksFor over a set of refs in ONE statement: each ref runs
+// the very query LinksFor always ran (same WHERE, same order, Limit and Offset
+// per ref) as a LATERAL subquery, so a walk reads a whole frontier in one round
+// trip instead of one per node. LinksFor is this with one ref — there is one
+// rendering of "the links touching a ref", not two.
+func (s *PgLinkStore) LinksForRefs(ctx context.Context, namespace string, refs []string, opts domain.LinkQuery) (map[string][]domain.Link, error) {
 	if namespace == "" {
 		namespace = "default"
+	}
+	out := map[string][]domain.Link{}
+	if len(refs) == 0 {
+		return out, nil
 	}
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = defaultIdentityLimit
 	}
+	offset := max(opts.Offset, 0)
 	// The symmetric-verbs parameter exists only when its clause does: a bound
 	// parameter the SQL text never references is a protocol error on a real
 	// server ("could not determine data type of parameter $3"), which the
 	// DB-less tests could not see. Caught by the live-PG Wave-2 gate.
-	args := []any{namespace, ref}
-	where := `namespace_id=$1 AND (from_ref=$2 OR to_ref=$2)`
+	args := []any{namespace, refs}
+	where := `namespace_id=$1 AND (from_ref=f.ref OR to_ref=f.ref)`
 	if !opts.IncludeIncoming {
 		args = append(args, s.reg.SymmetricVerbs())
-		where = `namespace_id=$1 AND (from_ref=$2 OR (to_ref=$2 AND relation = ANY($3::text[])))`
+		where = `namespace_id=$1 AND (from_ref=f.ref OR (to_ref=f.ref AND relation = ANY($3::text[])))`
 	}
 	add := func(clause string, v any) {
 		args = append(args, v)
@@ -294,14 +312,26 @@ func (s *PgLinkStore) LinksFor(ctx context.Context, namespace, ref string, opts 
 	if !opts.IncludeRetracted {
 		where += ` AND retracted_at IS NULL`
 	}
-	args = append(args, limit)
+	args = append(args, offset, limit)
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+linkColumns+` FROM links WHERE `+where+
-			` ORDER BY asserted_at DESC, id LIMIT $`+strconv.Itoa(len(args)), args...)
+		`SELECT f.ref, l.* FROM (SELECT DISTINCT unnest($2::text[]) AS ref) f
+		CROSS JOIN LATERAL (SELECT `+linkColumns+` FROM links WHERE `+where+
+			` ORDER BY asserted_at DESC, id OFFSET $`+strconv.Itoa(len(args)-1)+
+			` LIMIT $`+strconv.Itoa(len(args))+`) l
+		ORDER BY f.ref, l.asserted_at DESC, l.id`, args...)
 	if err != nil {
 		return nil, err
 	}
-	return collectLinks(rows)
+	defer rows.Close()
+	for rows.Next() {
+		var ref string
+		l, err := scanLink(rows, &ref)
+		if err != nil {
+			return nil, err
+		}
+		out[ref] = append(out[ref], l)
+	}
+	return out, rows.Err()
 }
 
 // Candidates is the review inbox: unretracted proposals, highest confidence first — the
@@ -338,13 +368,16 @@ func collectLinks(rows pgx.Rows) ([]domain.Link, error) {
 	return out, rows.Err()
 }
 
-func scanLink(row pgx.Row) (domain.Link, error) {
+// scanLink scans linkColumns, after any leading columns the query selected
+// first (LinksForRefs selects the ref each row was found for).
+func scanLink(row pgx.Row, leading ...any) (domain.Link, error) {
 	var l domain.Link
 	var evidenceID *string
-	if err := row.Scan(&l.ID, &l.NamespaceID, &l.Family, &l.FromRef, &l.ToRef, &l.Relation,
+	dest := append(leading, &l.ID, &l.NamespaceID, &l.Family, &l.FromRef, &l.ToRef, &l.Relation,
 		&l.State, &l.Mechanism, &l.Producer, &l.Confidence, &evidenceID, &l.AssertedBy,
 		&l.AssertedAt, &l.RecordedAt, &l.ValidFrom, &l.ValidTo, &l.RetractedAt,
-		&l.SourceRef); err != nil {
+		&l.SourceRef)
+	if err := row.Scan(dest...); err != nil {
 		return domain.Link{}, err
 	}
 	if evidenceID != nil {

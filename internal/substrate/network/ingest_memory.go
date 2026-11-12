@@ -120,8 +120,10 @@ func (s *Server) IngestMemory(ctx context.Context, req *pb.IngestMemoryRequest) 
 			Author:      callerAgentID(ctx),
 			AuthorLabel: meta.author,
 			ThreadID:    req.GetSessionId(),
-			Tags:        append([]string(nil), req.GetTags()...),
-			Importance:  float64(req.GetImportance()),
+			// ADR-0146 D5: owner tags are kernel-stamped (withConversationOwner above),
+			// never taken from the request.
+			Tags:       append([]string(nil), domain.DropCallerOwnerTags(ctx, "IngestMemory.tags", req.GetTags())...),
+			Importance: float64(req.GetImportance()),
 		}
 		doc.ApplyEventTime(et)
 		// Stamp the authenticated principal, exactly as the Remember path below does.

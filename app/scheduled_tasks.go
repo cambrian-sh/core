@@ -74,23 +74,48 @@ type ownedTurnRunner struct {
 	mu    sync.RWMutex
 	store domain.ConversationStore
 	turns *corechat.TurnService
+	// directory answers whether the owner is a known, ACTIVE principal (a
+	// suspended or deprovisioned person is not known). Read at every run, never
+	// cached: a schedule outliving its owner must run nothing (ADR-0146 test 9).
+	directory func() domain.PrincipalDirectory
 }
 
-func (r *ownedTurnRunner) bind(store domain.ConversationStore, turns *corechat.TurnService) {
+func (r *ownedTurnRunner) bind(store domain.ConversationStore, turns *corechat.TurnService,
+	directory func() domain.PrincipalDirectory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.store, r.turns = store, turns
+	r.store, r.turns, r.directory = store, turns, directory
 }
+
+// errOwnerNotKnown is RunOwnedTurn's refusal for an owner the principal directory
+// does not know (deleted, suspended, deprovisioned) or that could not be checked.
+var errOwnerNotKnown = errors.New("owned turn: the owner is not a known, active principal; nothing runs")
 
 func (r *ownedTurnRunner) run(ctx context.Context, t domain.OwnedTurn) (domain.Message, error) {
 	r.mu.RLock()
-	store, turns := r.store, r.turns
+	store, turns, directory := r.store, r.turns, r.directory
 	r.mu.RUnlock()
 	if store == nil || turns == nil {
 		return domain.Message{}, errNoChatLane
 	}
 	if t.OwnerID == "" || t.ConversationID == "" {
 		return domain.Message{}, errors.New("owned turn: owner and conversation are required")
+	}
+	// Fail closed on the owner (ADR-0146 test 9): a turn runs AS its owner, with
+	// the owner's read predicate re-resolved on every read, so an owner the
+	// deployment no longer knows must not get a run at all — the same check
+	// act-for applies, and the same answer when no directory is installed.
+	var dir domain.PrincipalDirectory
+	if directory != nil {
+		dir = directory()
+	}
+	if dir == nil {
+		return domain.Message{}, errOwnerNotKnown
+	}
+	if known, err := dir.KnownPrincipal(ctx, t.OwnerID); err != nil || !known {
+		slog.WarnContext(ctx, "owned turn refused: owner not a known, active principal",
+			"owner", t.OwnerID, "conversation", t.ConversationID, "err", err)
+		return domain.Message{}, errOwnerNotKnown
 	}
 	ops := &conversationOps{store: store, turns: turns}
 	if _, err := ops.Open(ctx, t.ConversationID, t.OwnerID, t.Title,

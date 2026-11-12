@@ -92,7 +92,9 @@ func (s *Service) matchUpload(ctx context.Context, req *pb.ListDocumentsOpReques
 	}
 	actor, _, _ := PrincipalFromContext(ctx)
 	rec, err := s.uploads.MatchUpload(ctx, IngestRequest{
-		Filename: req.GetUploadName(), Tags: req.GetUploadTags(), Author: actor,
+		// ADR-0146 D5: the same owner-tag drop as the ingest below, so the upload key
+		// matches what that ingest stored.
+		Filename: req.GetUploadName(), Tags: domain.DropCallerOwnerTags(ctx, "ListDocuments.upload_tags", req.GetUploadTags()), Author: actor,
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "match upload: %v", err)
@@ -222,8 +224,9 @@ func (s *Service) IngestMemory(ctx context.Context, req *pb.IngestMemoryOpReques
 	outcome := &domain.IngestOutcome{}
 	ctx = domain.WithIngestOutcome(ctx, outcome)
 	docID, err := s.ingestor.Ingest(ctx, IngestRequest{
-		Text:        req.GetText(),
-		Tags:        req.GetTags(),
+		Text: req.GetText(),
+		// ADR-0146 D5: owner tags are kernel-stamped, never taken from the request.
+		Tags:        domain.DropCallerOwnerTags(ctx, "IngestMemoryOp.tags", req.GetTags()),
 		Importance:  req.GetImportance(),
 		Source:      req.GetSource(),
 		SessionID:   req.GetSessionId(),

@@ -21,6 +21,9 @@ type Event struct {
 	// idempotency key.
 	SourceRef string
 	Roles     []EventRole
+	// TimeBasis says which clock OccurredAt came from (ADR-0147 D8):
+	// TimeBasisEvent, TimeBasisReceived, or "" when the writer did not say.
+	TimeBasis string
 }
 
 // EventID identifies one event.
@@ -48,7 +51,29 @@ type Observation struct {
 	Confidence float64
 	EvidenceID EvidenceID
 	SourceRef  string
+	// TimeBasis says which clock OccurredAt came from (ADR-0147 D8):
+	// TimeBasisEvent, TimeBasisReceived, or "" when the writer did not say.
+	TimeBasis string
 }
+
+// Time bases (ADR-0147 D8). Which clock a typed row's occurred_at is.
+const (
+	// TimeBasisEvent: the source's own event or change time, declared by the
+	// writer's mapping.
+	TimeBasisEvent = "event"
+	// TimeBasisReceived: our receipt time, because the source's mapping
+	// declared no event time. Only live deliveries may carry it; a history fill
+	// without an event time is refused before anything is written.
+	TimeBasisReceived = "received"
+)
+
+// Retirement reasons (ADR-0147 D6, D11). Why a typed row stopped counting.
+const (
+	// RetireSuperseded: a mapping repair produced a newer revision of the row.
+	RetireSuperseded = "superseded"
+	// RetireSourceDeleted: the source record the row came from was deleted.
+	RetireSourceDeleted = "source_deleted"
+)
 
 // EventStore persists events and observations and answers the two question
 // shapes this phase gates on (memo §14):
@@ -81,6 +106,20 @@ type EventStore interface {
 	// EventsForEntity returns events in which the entity held ANY role within
 	// [from, to), oldest first, roles hydrated — the traversal §7B exists for.
 	EventsForEntity(ctx context.Context, namespace, entityID string, from, to time.Time) ([]Event, error)
+
+	// RetireRows records that the typed rows written under sourceRefs no longer
+	// count (ADR-0147 D6): every read above, and the query plane, skip them.
+	// A record beside the rows, never a delete or an edit of them — the rows
+	// stay stored. Idempotent: an already-retired ref keeps its first record.
+	// reason is RetireSuperseded or RetireSourceDeleted; retiredBy names what
+	// retired them ("mapping_revision:3", a tombstone evidence id). Returns how
+	// many refs this call newly retired.
+	RetireRows(ctx context.Context, namespace string, sourceRefs []string, reason, retiredBy string) (int, error)
+
+	// ReinstateRows lifts a retirement, for a repair rolled back to the
+	// mapping revision that wrote the rows. Refs that are not retired are
+	// ignored. Returns how many refs this call reinstated.
+	ReinstateRows(ctx context.Context, namespace string, sourceRefs []string) (int, error)
 }
 
 // EvidenceTransformer is the transformation stage's add-many seam (ADR-0108

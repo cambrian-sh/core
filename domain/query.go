@@ -98,6 +98,50 @@ type KnowledgeQuery struct {
 	// parties, so a confirmed link can add rows a caller may read — it can never
 	// add rows a caller may not. See the executor's SCOPE RULE comment.
 	ExpandAliases bool
+
+	// IncludeCorrelation asks `why` for RELATED rows as well as stored lineage
+	// (ADR-0148 D1/D2): earlier events that share a participant with an event
+	// the walk stands on, within CorrelationWindow, hub-damped and ranked. Off by
+	// default, because co-occurrence is not cause and a mixed list reads as a
+	// causal chain. Refused on every other kind, and CorrelationWindow /
+	// CorrelationRoles are refused without it — a field that is accepted and
+	// ignored makes a narrow answer look like the one that was asked for.
+	IncludeCorrelation bool
+	// CorrelationWindow bounds how far back a related event may lie from the
+	// event it is related to. 0 = CorrelationDefaultWindow; refused above
+	// CorrelationMaxWindow.
+	CorrelationWindow time.Duration
+	// CorrelationRoles, when non-empty, admits a shared participant only if its
+	// role in BOTH events is listed (ADR-0148 §3.4). Roles are deployment data;
+	// the kernel names none.
+	CorrelationRoles []string
+}
+
+// The related-rows parameters of `why` (ADR-0148, accepted by the owner
+// 2026-11-12). Each is the value the ADR's §3 recommended and justified.
+const (
+	// CorrelationDefaultWindow is how close two occurrences must be to be
+	// related: the 72 h the correlation producer already uses for the same
+	// judgement (ADR-0128 §6), so the stored and read-time lanes agree on what
+	// "together" means.
+	CorrelationDefaultWindow = 72 * time.Hour
+	// CorrelationMaxWindow is refused above, never clamped: a year-long window
+	// on a busy participant is the quadratic read the window exists to remove.
+	CorrelationMaxWindow = 30 * 24 * time.Hour
+	// CorrelationHubThreshold: a participant in more caller-visible events than
+	// this inside the window is a hub — not followed, reported as a flagged row.
+	CorrelationHubThreshold = 64
+	// CorrelationMaxPerEvent caps the related rows one event contributes (the
+	// producer's maxCorrelationsPerEvent: the nearest few carry the signal).
+	CorrelationMaxPerEvent = 8
+)
+
+// CorrelationWindowOrDefault is the window a why query actually uses.
+func (q KnowledgeQuery) CorrelationWindowOrDefault() time.Duration {
+	if q.CorrelationWindow <= 0 {
+		return CorrelationDefaultWindow
+	}
+	return q.CorrelationWindow
 }
 
 // SupportsAliasExpansion reports whether a kind is entity-scoped, i.e. whether
@@ -257,6 +301,14 @@ func (q KnowledgeQuery) Validate() error {
 		if q.Hops < 0 || q.Hops > MaxTraverseHops {
 			return cannot("hops %d outside [0, %d] — an unbounded lineage walk is not expressible", q.Hops, MaxTraverseHops)
 		}
+		if !q.IncludeCorrelation && (q.CorrelationWindow != 0 || len(q.CorrelationRoles) > 0) {
+			return cannot("correlation_window and correlation_roles shape the related rows, " +
+				"which only include_correlation asks for")
+		}
+		if q.CorrelationWindow < 0 || q.CorrelationWindow > CorrelationMaxWindow {
+			return cannot("correlation window %s outside (0, %s] — refused rather than clamped",
+				q.CorrelationWindow, CorrelationMaxWindow)
+		}
 	default:
 		return cannot("unknown query kind %q", q.Kind)
 	}
@@ -266,6 +318,10 @@ func (q KnowledgeQuery) Validate() error {
 	if q.ExpandAliases && !q.SupportsAliasExpansion() {
 		return cannot("expand_aliases is not expressible for kind %q — it widens an entity SUBJECT, "+
 			"and this shape has none", q.Kind)
+	}
+	if q.Kind != QueryWhy && (q.IncludeCorrelation || q.CorrelationWindow != 0 || len(q.CorrelationRoles) > 0) {
+		return cannot("include_correlation, correlation_window and correlation_roles are expressible "+
+			"only for why, not for kind %q", q.Kind)
 	}
 	return nil
 }
@@ -285,10 +341,13 @@ func (q KnowledgeQuery) Guarantee() string {
 		// assertions exist and says nothing about whether the equivalence holds.
 		return "exact over stored links; identity as asserted, see links"
 	case QueryWhy:
-		// The second clause is load-bearing. A correlation hop says two things
+		// The second clause is load-bearing. A related row says two things
 		// co-occurred and share a participant; read as causation it is exactly
-		// the mistake the mechanism vocabulary exists to prevent.
-		return "each hop labelled by mechanism; correlation hops are not causal"
+		// the mistake the mechanism vocabulary exists to prevent (ADR-0148 D3).
+		if q.IncludeCorrelation {
+			return "stored lineage hops are asserted; related rows share a participant and are not causal"
+		}
+		return "stored lineage only, each hop labelled by mechanism; related events are not causal and need include_correlation"
 	default:
 		return "exact over stored data; identity and coverage epistemically uncertain"
 	}

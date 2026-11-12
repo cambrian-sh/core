@@ -38,7 +38,60 @@ func TestNewPgVectorAdapter_ProtectedDBWithPendingMigrations_RefusesBeforeAnyWri
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	t.Cleanup(admin.Close) // after the restore below (cleanups run last-in, first-out)
+	// Leave the database as this test found it. The reset below drops the whole
+	// schema and the boot under test migrates it at 4 dims; left that way, every
+	// adapter test that runs after this file (activation, time, search filter,
+	// the memory store package) meets a 4-dim chunks table and the destructive-
+	// recreate guard refuses it (T-20261112-core-postgres-package-pg-tests-fail-on-a-fresh).
+	// So: remember the embedding dimension the database was migrated at, and in
+	// cleanup reset again and re-migrate at that dimension.
+	var origDim int
+	var vecType *string
+	if err := admin.QueryRow(ctx, `SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a
+		WHERE a.attrelid = to_regclass('public.chunks') AND a.attname = 'embedding'`).Scan(&vecType); err == nil && vecType != nil {
+		if m := regexp.MustCompile(`^vector\((\d+)\)$`).FindStringSubmatch(*vecType); m != nil {
+			origDim, _ = strconv.Atoi(m[1]) // the regexp admits digits only
+		}
+	}
+	// The same reset the test itself performs: extensions first (CASCADE), then
+	// the schema. Dropping the schema while an extension's objects still hang off
+	// it fails with "cache lookup failed for function".
+	resetSchema := func(pool *pgxpool.Pool) []string {
+		var stmts []string
+		if rows, err := pool.Query(ctx, `SELECT extname FROM pg_extension WHERE extname <> 'plpgsql'`); err == nil {
+			for rows.Next() {
+				var ext string
+				if rows.Scan(&ext) == nil {
+					stmts = append(stmts, `DROP EXTENSION IF EXISTS "`+ext+`" CASCADE`)
+				}
+			}
+			rows.Close()
+		}
+		return append(stmts, `DROP SCHEMA IF EXISTS public CASCADE`, `CREATE SCHEMA public`, `CREATE EXTENSION IF NOT EXISTS vector`)
+	}
+	t.Cleanup(func() {
+		// A FRESH pool: the test's own connections cached type and function ids
+		// of the schema the reset dropped, and reuse fails with "cache lookup failed".
+		fresh, err := pgxpool.NewWithConfig(ctx, pc.Copy())
+		if err != nil {
+			t.Errorf("restore pool: %v", err)
+			return
+		}
+		defer fresh.Close()
+		for _, s := range resetSchema(fresh) {
+			if _, err := fresh.Exec(ctx, s); err != nil {
+				t.Errorf("restore (%s): %v", s, err)
+				return
+			}
+		}
+		if origDim > 0 {
+			if err := migrate.Boot(ctx, fresh, origDim, migrate.Policy{Mode: migrate.ModeAuto}); err != nil {
+				t.Errorf("restore: re-migrate at %d dims: %v", origDim, err)
+			}
+		}
+	})
+
 	// A database with no Cambrian schema: every migration is pending.
 	rows, err := admin.Query(ctx, `SELECT extname FROM pg_extension WHERE extname <> 'plpgsql'`)
 	if err != nil {

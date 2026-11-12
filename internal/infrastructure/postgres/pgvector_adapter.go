@@ -889,6 +889,14 @@ func scopeExpressions(eff *domain.TagPredicate) []goqu.Expression {
 // read against `documents` was written and deleted during ADR-0104 D6.2 for exactly
 // this reason. Read documents through the enforcing store's post-fetch filter,
 // which reads tags from the domain object rather than from a column.
+//
+// # The own-rows rule (ADR-0146)
+//
+// When the predicate carries a valid own-rows term (TagPredicate.OwnRowTerm), the
+// result is ONE expression, `main OR (own_row AND ownrows)`: own_row is "the tags
+// contain owner:<the reader's single owner>" and ownrows is this same rendering
+// of the own-rows predicate, whose owner fence (held = that one owner) supplies
+// "and no other owner tag". It is TagPredicate.Check's disjunction, term for term.
 func scopeExpressionsOn(eff *domain.TagPredicate, alias string) []goqu.Expression {
 	if eff == nil || eff.Unfiltered() {
 		return nil
@@ -897,16 +905,33 @@ func scopeExpressionsOn(eff *domain.TagPredicate, alias string) []goqu.Expressio
 	if alias != "" {
 		col = alias + ".metadata"
 	}
+	main := scopeTermsJSONB(eff, col)
+	own := eff.OwnRowTerm()
+	if own == nil {
+		return main
+	}
+	ownRow := append([]goqu.Expression{
+		goqu.L(col+" @> ?::jsonb", jsonbTagContains(domain.OwnerTag(eff.Owners[0]))),
+	}, scopeTermsJSONB(own, col)...)
+	return []goqu.Expression{goqu.Or(goqu.And(main...), goqu.And(ownRow...))}
+}
+
+// jsonbTagContains is the containment document for one tag under metadata.tags.
+func jsonbTagContains(tag string) string {
+	b, _ := json.Marshal(map[string][]string{"tags": {tag}})
+	return string(b)
+}
+
+// scopeTermsJSONB renders one predicate's own terms (never its OwnRows) as ANDed
+// expressions over col. eff is non-nil and not Unfiltered.
+func scopeTermsJSONB(eff *domain.TagPredicate, col string) []goqu.Expression {
 	// The owner fence (domain/owner_scope.go) — on EVERY predicate, Bypass
 	// included; only ScopeMaintenance (Unfiltered, above) skips it.
 	exprs := []goqu.Expression{ownerFenceJSONB(col, eff)}
 	if eff.Bypass {
 		return exprs
 	}
-	contains := func(tag string) string {
-		b, _ := json.Marshal(map[string][]string{"tags": {tag}})
-		return string(b)
-	}
+	contains := jsonbTagContains
 	// Required: a doc must carry ALL → one AND containment term per tag.
 	for _, r := range eff.RequiredTags {
 		exprs = append(exprs, goqu.L(col+" @> ?::jsonb", contains(r)))

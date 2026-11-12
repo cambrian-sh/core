@@ -76,6 +76,9 @@ func (s *Server) ProposeKnowledge(ctx context.Context, req *pb.ProposeKnowledgeR
 		if err != nil {
 			return &pb.ProposeKnowledgeResponse{Accepted: false, Detail: err.Error()}, nil
 		}
+		// ADR-0146 D5: owner tags are kernel-stamped (the D12 mark above), never
+		// taken from the proposal.
+		prop.Classification = domain.DropCallerOwnerTags(ctx, "ProposeKnowledge.classification", prop.Classification)
 		res, err := s.Knowledge.Propose(ctx, by, forPerson, prop, req.GetRequestCommit(), req.GetReason())
 		if refusal(err) {
 			return &pb.ProposeKnowledgeResponse{Accepted: false, Detail: err.Error(), CandidateId: string(res.CandidateID)}, nil

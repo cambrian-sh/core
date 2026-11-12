@@ -51,6 +51,10 @@ func (f *inboxLinkStore) LinksFor(_ context.Context, _, ref string, opts domain.
 	return out, nil
 }
 
+func (f *inboxLinkStore) LinksForRefs(ctx context.Context, ns string, refs []string, opts domain.LinkQuery) (map[string][]domain.Link, error) {
+	return fakeLinksForRefs(ctx, ns, refs, opts, f.LinksFor)
+}
+
 func (f *inboxLinkStore) PutLink(context.Context, domain.Link) (bool, error) {
 	panic("the entity shape must not write")
 }
@@ -234,14 +238,14 @@ func TestPg_WhyFromEntityRef_ComputesSharedObjectHops(t *testing.T) {
 	}
 
 	res, err := plane.Query(ctx,
-		domain.KnowledgeQuery{Kind: domain.QueryWhy, EntityID: domain.EntityRef(k5SharedEntity)},
+		domain.KnowledgeQuery{Kind: domain.QueryWhy, IncludeCorrelation: true, EntityID: domain.EntityRef(k5SharedEntity)},
 		&domain.TagPredicate{Bypass: true})
 	if err != nil {
 		t.Fatalf("why(entity): %v", err)
 	}
 	var hops int
 	for _, row := range res.Rows {
-		if row["row"] != "hop" {
+		if row["row"] != "related" {
 			continue
 		}
 		hops++
@@ -295,13 +299,13 @@ func TestPg_WhyFromEntityRef_HopsRespectBothEndsScope(t *testing.T) {
 		t.Fatalf("record forbidden event: %v", err)
 	}
 
-	q := domain.KnowledgeQuery{Kind: domain.QueryWhy, EntityID: domain.EntityRef(k5SharedEntity)}
+	q := domain.KnowledgeQuery{Kind: domain.QueryWhy, IncludeCorrelation: true, EntityID: domain.EntityRef(k5SharedEntity)}
 	scoped, err := plane.Query(ctx, q, &domain.TagPredicate{RequiredTags: []string{"k5-open"}})
 	if err != nil {
 		t.Fatalf("scoped why: %v", err)
 	}
 	for _, row := range scoped.Rows {
-		if row["row"] == "hop" {
+		if row["row"] == "related" {
 			t.Fatalf("a co-occurrence hop exposed an event the caller cannot read: %v", row)
 		}
 	}
@@ -312,7 +316,7 @@ func TestPg_WhyFromEntityRef_HopsRespectBothEndsScope(t *testing.T) {
 	}
 	var hops int
 	for _, row := range all.Rows {
-		if row["row"] == "hop" {
+		if row["row"] == "related" {
 			hops++
 		}
 	}

@@ -160,6 +160,29 @@ func (s *PgEvidenceStore) Get(ctx context.Context, id domain.EvidenceID) (*domai
 	return &ev, nil
 }
 
+// LatestBySourceKey returns the newest evidence row for one source artifact, or
+// nil when the source never sent that key (ADR-0147 D7). Newest is INGEST
+// order: source_revision is a content digest and orders nothing.
+// idx_evidence_source (namespace_id, source_id, source_key) serves the lookup.
+func (s *PgEvidenceStore) LatestBySourceKey(ctx context.Context, namespace, sourceID, sourceKey string) (*domain.Evidence, error) {
+	if namespace == "" {
+		namespace = "default"
+	}
+	var id string
+	err := s.pool.QueryRow(ctx, `
+		SELECT id FROM evidence
+		WHERE namespace_id = $1 AND source_id = $2 AND source_key = $3
+		ORDER BY ingested_at DESC, id DESC LIMIT 1`,
+		namespace, sourceID, sourceKey).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("evidence latest by source key: %w", err)
+	}
+	return s.Get(ctx, domain.EvidenceID(id))
+}
+
 // PendingOutbox lists unconsumed items, oldest first. Listing never claims.
 func (s *PgEvidenceStore) PendingOutbox(ctx context.Context, limit int) ([]domain.EvidenceOutboxItem, error) {
 	if limit <= 0 {

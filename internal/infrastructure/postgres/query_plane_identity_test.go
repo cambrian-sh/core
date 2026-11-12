@@ -43,6 +43,36 @@ func (f *fakeLinkStore) LinksFor(_ context.Context, _, ref string, opts domain.L
 	return out, nil
 }
 
+// LinksForRefs is the frontier read the walks use: LinksFor per ref, with the
+// store's Offset/Limit applied per ref so a paging walk sees what a real store
+// would show it (a fake that ignored Offset would hand the same page back).
+func (f *fakeLinkStore) LinksForRefs(ctx context.Context, ns string, refs []string, opts domain.LinkQuery) (map[string][]domain.Link, error) {
+	return fakeLinksForRefs(ctx, ns, refs, opts, f.LinksFor)
+}
+
+func fakeLinksForRefs(ctx context.Context, ns string, refs []string, opts domain.LinkQuery,
+	one func(context.Context, string, string, domain.LinkQuery) ([]domain.Link, error)) (map[string][]domain.Link, error) {
+	out := map[string][]domain.Link{}
+	for _, ref := range refs {
+		if _, done := out[ref]; done {
+			continue
+		}
+		ls, err := one(ctx, ns, ref, opts)
+		if err != nil {
+			return nil, err
+		}
+		if opts.Offset >= len(ls) {
+			continue
+		}
+		ls = ls[opts.Offset:]
+		if opts.Limit > 0 && len(ls) > opts.Limit {
+			ls = ls[:opts.Limit]
+		}
+		out[ref] = ls
+	}
+	return out, nil
+}
+
 func (f *fakeLinkStore) PutLink(context.Context, domain.Link) (bool, error) {
 	panic("closure must not write")
 }
@@ -86,7 +116,7 @@ func chain(verb string, n int) *fakeLinkStore {
 	return f
 }
 
-func closurePlane(t *testing.T, links domain.LinkStore, specs []domain.RelationSpec) *PgQueryPlane {
+func closurePlane(t *testing.T, links walkLinkStore, specs []domain.RelationSpec) *PgQueryPlane {
 	t.Helper()
 	reg, err := domain.NewRelationRegistry(specs)
 	if err != nil {

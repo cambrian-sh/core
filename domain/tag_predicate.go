@@ -149,7 +149,92 @@ type TagPredicate struct {
 	// ignoring it fails closed. Not projectable to a TagSet (ToTagSet drops it,
 	// which narrows).
 	LedgerRuns *LedgerRunGrant `json:"ledger_runs,omitempty"`
+
+	// OwnRows is the predicate for rows whose owner tags are exactly
+	// {owner:Owners[0]} — the reader's OWN rows (ADR-0146, the own-rows rule).
+	// Set only by the decision point: for an agent reading for a conversation
+	// owner O it is the agent's whole predicate intersected with O's RESTRICTIVE
+	// terms only (O's ForbiddenTags incl. ADR-0091 closure, party scoping — never
+	// O's RequiredTags / AnyOfClauses); for a person reading directly it is their
+	// predicate without its positive terms. nil = no exemption.
+	//
+	// It is a COMPLETE second predicate, never a set of terms to subtract from
+	// this one: the main predicate is always at least as narrow as OwnRows, so an
+	// enforcement point that does not know this field applies the main predicate
+	// and fails closed. A row is admitted when the main predicate admits it OR it
+	// is an own row (OwnRowTerm) that OwnRows admits — the Go form (Check,
+	// CheckRow) and every SQL mirror compute exactly that disjunction.
+	//
+	// The kernel never builds or widens it; it applies it as data, and only
+	// through OwnRowTerm, which refuses a malformed one (Bypass, AllOwners,
+	// LedgerRuns, a nested OwnRows, or Owners different from this predicate's
+	// single owner) by returning nil — the main predicate alone, fail closed.
+	// Not projectable to a TagSet (ToTagSet / TagSetFromPredicate drop it, which
+	// narrows).
+	OwnRows *TagPredicate `json:"own_rows,omitempty"`
 }
+
+// OwnRowTerm returns the own-rows predicate (ADR-0146) when it may be applied,
+// nil otherwise. It is the ONE gate every enforcement point — Check, CheckRow
+// and the SQL mirrors — goes through, so the fail-closed conditions (D4) live in
+// one place:
+//
+//   - a nil, Bypass or AllOwners outer predicate has no own-rows term (Bypass
+//     already admits everything but the fence; nothing may widen maintenance);
+//   - the outer predicate must act for exactly ONE owner, non-empty;
+//   - the inner predicate must not be Bypass, AllOwners, carry LedgerRuns or a
+//     nested OwnRows, and its Owners must be exactly the outer's single owner.
+func (p *TagPredicate) OwnRowTerm() *TagPredicate {
+	if p == nil || p.Bypass || p.AllOwners || p.OwnRows == nil {
+		return nil
+	}
+	if len(p.Owners) != 1 || p.Owners[0] == "" {
+		return nil
+	}
+	o := p.OwnRows
+	if o.Bypass || o.AllOwners || o.LedgerRuns != nil || o.OwnRows != nil {
+		return nil
+	}
+	if len(o.Owners) != 1 || o.Owners[0] != p.Owners[0] {
+		return nil
+	}
+	return o
+}
+
+// IsOwnRow reports whether a row carrying tags is one of this reader's own rows
+// under ADR-0146: it carries owner:<Owners[0]> and NO other owner-namespace tag.
+// A row with no owner tag is never an own row; mixed owners never are. False
+// whenever OwnRowTerm is nil.
+func (p *TagPredicate) IsOwnRow(tags []string) bool {
+	if p.OwnRowTerm() == nil {
+		return false
+	}
+	mine := OwnerTag(p.Owners[0])
+	own := false
+	for _, t := range tags {
+		if !IsOwnerTag(t) {
+			continue
+		}
+		if t != mine {
+			return false
+		}
+		own = true
+	}
+	return own
+}
+
+// ownRowsFor is the own-rows predicate a row carrying tags may additionally be
+// admitted by, nil when the row is not an own row or there is no valid term.
+func (p *TagPredicate) ownRowsFor(tags []string) *TagPredicate {
+	if !p.IsOwnRow(tags) {
+		return nil
+	}
+	return p.OwnRowTerm()
+}
+
+// ownRowDetail marks an allow the own-rows rule produced, so an explanation
+// can say why a row the main predicate refuses was admitted.
+const ownRowDetail = "own row (ADR-0146)"
 
 // LedgerRunGrant names the runs a staged planner owns. Roots are root run ids
 // (RootRunID): an entry is granted when RootRunID(entry.RunID) is one of them, so
@@ -219,7 +304,26 @@ func (p *TagPredicate) Allows(tags []string) bool {
 // Check is Allows plus the reason it failed, so a denial can be explained without
 // re-deriving it. The returned AccessDecision carries only Reason and Detail — the
 // caller stamps principal, surface, and resource.
+//
+// A row the main terms refuse is admitted when it is the reader's own row
+// (IsOwnRow) and the own-rows predicate (OwnRows, ADR-0146) admits it; the
+// refusal returned otherwise is the main predicate's.
 func (p *TagPredicate) Check(tags []string) (AccessDecision, bool) {
+	dec, ok := p.checkMain(tags)
+	if ok {
+		return dec, ok
+	}
+	if own := p.ownRowsFor(tags); own != nil {
+		if odec, ook := own.checkMain(tags); ook {
+			odec.Detail = ownRowDetail
+			return odec, true
+		}
+	}
+	return dec, false
+}
+
+// checkMain is Check over this predicate's own terms only, never OwnRows.
+func (p *TagPredicate) checkMain(tags []string) (AccessDecision, bool) {
 	if p == nil {
 		return AccessDecision{Reason: ReasonNoPrincipal, Detail: "no effective predicate (fail-closed)"}, false
 	}
@@ -289,11 +393,29 @@ func (p *TagPredicate) AllowsRow(tags, parties []string) bool {
 // rows have parties; the other three securable kinds do not, and giving them a
 // parameter they must pass as nil is an invitation to pass nil from a call site
 // that DID have parties available. Two names, and the wrong one fails closed.
+//
+// The own-rows rule (ADR-0146) applies exactly as in Check: the main terms, or —
+// for the reader's own row — the own-rows predicate, each with its party test.
 func (p *TagPredicate) CheckRow(tags, parties []string) (AccessDecision, bool) {
+	dec, ok := p.checkRowMain(tags, parties)
+	if ok {
+		return dec, ok
+	}
+	if own := p.ownRowsFor(tags); own != nil {
+		if odec, ook := own.checkRowMain(tags, parties); ook {
+			odec.Detail = ownRowDetail
+			return odec, true
+		}
+	}
+	return dec, false
+}
+
+// checkRowMain is CheckRow over this predicate's own terms only, never OwnRows.
+func (p *TagPredicate) checkRowMain(tags, parties []string) (AccessDecision, bool) {
 	// The tag terms first and unchanged, so a row denied by a label is denied for
 	// that reason rather than for a relationship — the explanation an operator
 	// gets should name the first thing that is actually wrong.
-	dec, ok := p.Check(tags)
+	dec, ok := p.checkMain(tags)
 	if p == nil || p.Bypass {
 		return dec, ok
 	}

@@ -165,10 +165,12 @@ func (c pgCatalog) Overview(ctx context.Context) (domain.SubstrateOverview, erro
 			return `SELECT count(*) FROM evidence ev WHERE TRUE` + a.evidenceRow(scope, "ev")
 		}},
 		{&out.EventCount, func(a *sqlArgs) string {
-			return `SELECT count(*) FROM events WHERE TRUE` + a.viaEvidence(scope, "events.evidence_id")
+			return `SELECT count(*) FROM events WHERE TRUE` + a.viaEvidence(scope, "events.evidence_id") +
+				notRetired("events")
 		}},
 		{&out.ObservationCount, func(a *sqlArgs) string {
-			return `SELECT count(*) FROM observations WHERE TRUE` + a.viaEvidence(scope, "observations.evidence_id")
+			return `SELECT count(*) FROM observations WHERE TRUE` + a.viaEvidence(scope, "observations.evidence_id") +
+				notRetired("observations")
 		}},
 		{&out.KnowledgeItemCount, func(a *sqlArgs) string {
 			return `SELECT count(*) FROM knowledge_items ki WHERE TRUE` + a.item(scope, "ki")
@@ -179,7 +181,7 @@ func (c pgCatalog) Overview(ctx context.Context) (domain.SubstrateOverview, erro
 		}},
 		{&out.EntityCount, func(a *sqlArgs) string {
 			return `SELECT count(DISTINCT entity_id) FROM observations WHERE TRUE` +
-				a.viaEvidence(scope, "observations.evidence_id")
+				a.viaEvidence(scope, "observations.evidence_id") + notRetired("observations")
 		}},
 		{&out.ActorCount, func(a *sqlArgs) string {
 			return `SELECT count(DISTINCT r.actor) FROM resolutions r
@@ -202,8 +204,10 @@ func (c pgCatalog) Overview(ctx context.Context) (domain.SubstrateOverview, erro
 	}
 
 	a := &sqlArgs{}
-	obsCond := a.viaEvidence(scope, "observations.evidence_id")
-	evCond := a.viaEvidence(scope, "events.evidence_id")
+	// Retired rows (ADR-0147 D6) are left out of every count and window here:
+	// a superseded mapping revision must not double what the overview reports.
+	obsCond := a.viaEvidence(scope, "observations.evidence_id") + notRetired("observations")
+	evCond := a.viaEvidence(scope, "events.evidence_id") + notRetired("events")
 	var earliest, latest *time.Time
 	if err := pool.QueryRow(ctx, `
 		SELECT min(occurred_at), max(occurred_at) FROM (
@@ -291,7 +295,7 @@ func (c pgCatalog) Entities(ctx context.Context, f domain.EntityFilter) ([]domai
 		parts = append(parts, `SELECT er.entity_id, max(ev.occurred_at) AS last_seen
 			FROM events ev JOIN event_roles er ON er.event_id = ev.id
 			WHERE ev.event_type = `+a.add(f.EventType)+idFilter("er.entity_id")+
-			a.viaEvidence(scope, "ev.evidence_id")+`
+			a.viaEvidence(scope, "ev.evidence_id")+notRetired("ev")+`
 			GROUP BY er.entity_id`)
 	} else {
 		pred := ""
@@ -300,7 +304,7 @@ func (c pgCatalog) Entities(ctx context.Context, f domain.EntityFilter) ([]domai
 		}
 		parts = append(parts, `SELECT o.entity_id, max(o.occurred_at) AS last_seen
 			FROM observations o WHERE TRUE`+pred+idFilter("o.entity_id")+
-			a.viaEvidence(scope, "o.evidence_id")+`
+			a.viaEvidence(scope, "o.evidence_id")+notRetired("o")+`
 			GROUP BY o.entity_id`)
 		if f.IncludeResolutions && f.Predicate == "" {
 			parts = append(parts, `SELECT r.entity_id, max(r.system_from) AS last_seen
@@ -342,7 +346,7 @@ func (c pgCatalog) Entities(ctx context.Context, f domain.EntityFilter) ([]domai
 	prow, err := c.plane.pool.Query(ctx, `
 		SELECT o.entity_id, count(*), array_agg(DISTINCT o.predicate)
 		FROM observations o WHERE o.entity_id = ANY(`+a.add(ids)+`)`+
-		a.viaEvidence(scope, "o.evidence_id")+`
+		a.viaEvidence(scope, "o.evidence_id")+notRetired("o")+`
 		GROUP BY o.entity_id`, a.args...)
 	if err != nil {
 		return nil, fmt.Errorf("substrate catalog: entity predicates: %w", err)
@@ -400,7 +404,7 @@ func (c pgCatalog) distinctNames(ctx context.Context, what string, build func(a 
 func (c pgCatalog) Predicates(ctx context.Context, limit int) ([]string, error) {
 	return c.distinctNames(ctx, "predicates", func(a *sqlArgs) string {
 		return `SELECT DISTINCT o.predicate FROM observations o WHERE TRUE` +
-			a.viaEvidence(c.scope, "o.evidence_id")
+			a.viaEvidence(c.scope, "o.evidence_id") + notRetired("o")
 	}, limit)
 }
 
@@ -408,7 +412,7 @@ func (c pgCatalog) Predicates(ctx context.Context, limit int) ([]string, error) 
 func (c pgCatalog) EventTypes(ctx context.Context, limit int) ([]string, error) {
 	return c.distinctNames(ctx, "event types", func(a *sqlArgs) string {
 		return `SELECT DISTINCT ev.event_type FROM events ev WHERE ev.event_type <> ''` +
-			a.viaEvidence(c.scope, "ev.evidence_id")
+			a.viaEvidence(c.scope, "ev.evidence_id") + notRetired("ev")
 	}, limit)
 }
 

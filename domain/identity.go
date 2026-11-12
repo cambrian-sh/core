@@ -196,6 +196,12 @@ type LinkQuery struct {
 	IncludeIncoming bool
 	// Limit caps the result; 0 = the store's default cap.
 	Limit int
+	// Offset skips that many rows of the store's order first (per ref when a
+	// store reads several refs at once). It exists for the query plane's walk
+	// shapes, which page a ref's links until enough of them pass the caller's
+	// scope (filter before limit) instead of judging a page the store cut
+	// before the scope was known.
+	Offset int
 }
 
 // EntityStore mints and reads entity handles (migration 0016). Minting is idempotent

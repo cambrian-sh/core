@@ -186,7 +186,11 @@ func (a *Agent) recordActionRecord(ctx context.Context, rec domain.ToolOutputRec
 		// The tool's domain tags ride as the write chokepoint's narrowing hint, so
 		// the action record is classified like the artifact write already is
 		// instead of landing untagged.
-		doc.Metadata["tags"] = rec.ClassificationTags
+		//
+		// ADR-0146 D5: a tool's declared owner tag fences the TOOL; it is never an
+		// owner the kernel derived for the row, so it does not ride the hint (the
+		// conversation owner is stamped by the write chokepoint).
+		doc.Metadata["tags"] = domain.DropCallerOwnerTags(ctx, "tool classification tags (action record)", rec.ClassificationTags)
 	}
 	if sid != "" {
 		// Metadata is an untyped, JSON-serialized edge: store the plain string, or

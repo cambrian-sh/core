@@ -14,6 +14,11 @@ func ClassifyArtifactWrite(ctx context.Context, a domain.Authorizer, principal d
 	if a == nil {
 		a = domain.AllowAllAuthorizer{}
 	}
+	// ADR-0146 D5: every hint reaching this function is a caller's (the
+	// UploadArtifact request) or a tool's declared tags (the ledger recorder) —
+	// never an owner the kernel derived — so an owner tag in it is dropped; the
+	// conversation owner is stamped below.
+	hint = domain.DropCallerOwnerTags(ctx, "artifact/ledger classification hint", hint)
 	final, dec := a.ClassifyWrite(ctx, principal, hint)
 	if !dec.Allowed {
 		return nil, ErrWriteDenied

@@ -1,0 +1,97 @@
+## maintenance / traverse c1 hops=2
+closure_size=0 guarantee="exact over stored edges; entity links epistemically uncertain"
+event_type=order_placed from=walkeq/c1 hop=1 role=order to=walkeq/o1 via_event=E:order1
+event_type=complaint from=walkeq/c1 hop=1 role=shipment to=walkeq/s1 via_event=E:complaint1
+## maintenance / traverse c1 hops=3 limit=4
+closure_size=0 guarantee="exact over stored edges; entity links epistemically uncertain"
+event_type=order_placed from=walkeq/c1 hop=1 role=order to=walkeq/o1 via_event=E:order1
+event_type=complaint from=walkeq/c1 hop=1 role=shipment to=walkeq/s1 via_event=E:complaint1
+## maintenance / entity c1
+closure_size=0 guarantee="exact over stored links; identity as asserted, see links"
+created_at=(set) entity_id=walkeq/c1 entity_kind=walkeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+entity_id=walkeq/crm1 evidence_id=EV:pub hop=1 justified=true link_id=walkeq-a1 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/c1
+entity_id=walkeq/crm2 evidence_id=EV:alice hop=2 justified=true link_id=walkeq-a2 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/crm1
+asserted_at=T7m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a1 mechanism=declared producer=walkeq@1 relation=same_as row=link source_ref=walkeq-walkeq-a1 state=confirmed to_ref=entity:walkeq/crm1
+asserted_at=T9m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a3 mechanism=scored producer=walkeq@1 relation=same_as row=candidate source_ref=walkeq-walkeq-a3 state=candidate to_ref=entity:walkeq/cand
+## maintenance / entity c1 expand
+closure_size=2 guarantee="exact over stored links; identity as asserted, see links; across 2 confirmed aliases"
+created_at=(set) entity_id=walkeq/c1 entity_kind=walkeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+entity_id=walkeq/crm1 evidence_id=EV:pub hop=1 justified=true link_id=walkeq-a1 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/c1
+entity_id=walkeq/crm2 evidence_id=EV:alice hop=2 justified=true link_id=walkeq-a2 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/crm1
+asserted_at=T7m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a1 mechanism=declared producer=walkeq@1 relation=same_as row=link source_ref=walkeq-walkeq-a1 state=confirmed to_ref=entity:walkeq/crm1
+asserted_at=T8m0s asserted_by=test confidence=1 evidence_id=EV:alice family=identity from_ref=entity:walkeq/crm1 link_id=walkeq-a2 mechanism=declared producer=walkeq@1 relation=same_as row=link source_ref=walkeq-walkeq-a2 state=confirmed to_ref=entity:walkeq/crm2 via_ref=entity:walkeq/crm1
+asserted_at=T9m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a3 mechanism=scored producer=walkeq@1 relation=same_as row=candidate source_ref=walkeq-walkeq-a3 state=candidate to_ref=entity:walkeq/cand
+## maintenance / events c1 expand
+closure_size=2 guarantee="exact over stored data; identity and coverage epistemically uncertain; across 2 confirmed aliases"
+event_id=E:order1 event_type=order_placed evidence_id=EV:pub occurred_at=T-6h0m0s roles={customer=walkeq/c1,order=walkeq/o1,}
+event_id=E:invoice1 event_type=invoice_issued evidence_id=EV:secret occurred_at=T-4h0m0s roles={customer=walkeq/c1,order=walkeq/o1,}
+event_id=E:note1 event_type=alice_note evidence_id=EV:alice occurred_at=T-3h0m0s roles={customer=walkeq/c1,}
+event_id=E:complaint1 event_type=complaint evidence_id=EV:pub occurred_at=T-1h0m0s roles={customer=walkeq/c1,shipment=walkeq/s1,}
+event_id=E:order2 event_type=order_placed evidence_id=EV:pub occurred_at=T-2h0m0s roles={customer=walkeq/crm1,order=walkeq/o2,} via_ref=entity:walkeq/crm1
+## system / traverse c1 hops=2
+closure_size=0 guarantee="exact over stored edges; entity links epistemically uncertain"
+event_type=order_placed from=walkeq/c1 hop=1 role=order to=walkeq/o1 via_event=E:order1
+event_type=complaint from=walkeq/c1 hop=1 role=shipment to=walkeq/s1 via_event=E:complaint1
+## system / entity c1
+closure_size=0 guarantee="exact over stored links; identity as asserted, see links"
+created_at=(set) entity_id=walkeq/c1 entity_kind=walkeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+entity_id=walkeq/crm1 evidence_id=EV:pub hop=1 justified=true link_id=walkeq-a1 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/c1
+asserted_at=T7m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a1 mechanism=declared producer=walkeq@1 relation=same_as row=link source_ref=walkeq-walkeq-a1 state=confirmed to_ref=entity:walkeq/crm1
+asserted_at=T9m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a3 mechanism=scored producer=walkeq@1 relation=same_as row=candidate source_ref=walkeq-walkeq-a3 state=candidate to_ref=entity:walkeq/cand
+## system / entity c1 expand
+closure_size=1 guarantee="exact over stored links; identity as asserted, see links; across 1 confirmed aliases"
+created_at=(set) entity_id=walkeq/c1 entity_kind=walkeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+entity_id=walkeq/crm1 evidence_id=EV:pub hop=1 justified=true link_id=walkeq-a1 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/c1
+asserted_at=T7m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a1 mechanism=declared producer=walkeq@1 relation=same_as row=link source_ref=walkeq-walkeq-a1 state=confirmed to_ref=entity:walkeq/crm1
+asserted_at=T9m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a3 mechanism=scored producer=walkeq@1 relation=same_as row=candidate source_ref=walkeq-walkeq-a3 state=candidate to_ref=entity:walkeq/cand
+## system / events c1 expand
+closure_size=1 guarantee="exact over stored data; identity and coverage epistemically uncertain; across 1 confirmed aliases"
+event_id=E:order1 event_type=order_placed evidence_id=EV:pub occurred_at=T-6h0m0s roles={customer=walkeq/c1,order=walkeq/o1,}
+event_id=E:invoice1 event_type=invoice_issued evidence_id=EV:secret occurred_at=T-4h0m0s roles={customer=walkeq/c1,order=walkeq/o1,}
+event_id=E:complaint1 event_type=complaint evidence_id=EV:pub occurred_at=T-1h0m0s roles={customer=walkeq/c1,shipment=walkeq/s1,}
+event_id=E:order2 event_type=order_placed evidence_id=EV:pub occurred_at=T-2h0m0s roles={customer=walkeq/crm1,order=walkeq/o2,} via_ref=entity:walkeq/crm1
+## alice / traverse c1 hops=2
+closure_size=0 guarantee="exact over stored edges; entity links epistemically uncertain"
+event_type=order_placed from=walkeq/c1 hop=1 role=order to=walkeq/o1 via_event=E:order1
+event_type=complaint from=walkeq/c1 hop=1 role=shipment to=walkeq/s1 via_event=E:complaint1
+## alice / entity c1
+closure_size=0 guarantee="exact over stored links; identity as asserted, see links"
+created_at=(set) entity_id=walkeq/c1 entity_kind=walkeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+entity_id=walkeq/crm1 evidence_id=EV:pub hop=1 justified=true link_id=walkeq-a1 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/c1
+entity_id=walkeq/crm2 evidence_id=EV:alice hop=2 justified=true link_id=walkeq-a2 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/crm1
+asserted_at=T7m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a1 mechanism=declared producer=walkeq@1 relation=same_as row=link source_ref=walkeq-walkeq-a1 state=confirmed to_ref=entity:walkeq/crm1
+asserted_at=T9m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a3 mechanism=scored producer=walkeq@1 relation=same_as row=candidate source_ref=walkeq-walkeq-a3 state=candidate to_ref=entity:walkeq/cand
+## alice / entity c1 expand
+closure_size=2 guarantee="exact over stored links; identity as asserted, see links; across 2 confirmed aliases"
+created_at=(set) entity_id=walkeq/c1 entity_kind=walkeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+entity_id=walkeq/crm1 evidence_id=EV:pub hop=1 justified=true link_id=walkeq-a1 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/c1
+entity_id=walkeq/crm2 evidence_id=EV:alice hop=2 justified=true link_id=walkeq-a2 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/crm1
+asserted_at=T7m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a1 mechanism=declared producer=walkeq@1 relation=same_as row=link source_ref=walkeq-walkeq-a1 state=confirmed to_ref=entity:walkeq/crm1
+asserted_at=T8m0s asserted_by=test confidence=1 evidence_id=EV:alice family=identity from_ref=entity:walkeq/crm1 link_id=walkeq-a2 mechanism=declared producer=walkeq@1 relation=same_as row=link source_ref=walkeq-walkeq-a2 state=confirmed to_ref=entity:walkeq/crm2 via_ref=entity:walkeq/crm1
+asserted_at=T9m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a3 mechanism=scored producer=walkeq@1 relation=same_as row=candidate source_ref=walkeq-walkeq-a3 state=candidate to_ref=entity:walkeq/cand
+## alice / events c1 expand
+closure_size=2 guarantee="exact over stored data; identity and coverage epistemically uncertain; across 2 confirmed aliases"
+event_id=E:order1 event_type=order_placed evidence_id=EV:pub occurred_at=T-6h0m0s roles={customer=walkeq/c1,order=walkeq/o1,}
+event_id=E:invoice1 event_type=invoice_issued evidence_id=EV:secret occurred_at=T-4h0m0s roles={customer=walkeq/c1,order=walkeq/o1,}
+event_id=E:note1 event_type=alice_note evidence_id=EV:alice occurred_at=T-3h0m0s roles={customer=walkeq/c1,}
+event_id=E:complaint1 event_type=complaint evidence_id=EV:pub occurred_at=T-1h0m0s roles={customer=walkeq/c1,shipment=walkeq/s1,}
+event_id=E:order2 event_type=order_placed evidence_id=EV:pub occurred_at=T-2h0m0s roles={customer=walkeq/crm1,order=walkeq/o2,} via_ref=entity:walkeq/crm1
+## mail-not-secret / traverse c1 hops=2
+closure_size=0 guarantee="exact over stored edges; entity links epistemically uncertain"
+event_type=order_placed from=walkeq/c1 hop=1 role=order to=walkeq/o1 via_event=E:order1
+event_type=complaint from=walkeq/c1 hop=1 role=shipment to=walkeq/s1 via_event=E:complaint1
+## mail-not-secret / entity c1
+closure_size=0 guarantee="exact over stored links; identity as asserted, see links"
+created_at=(set) entity_id=walkeq/c1 entity_kind=walkeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+entity_id=walkeq/crm1 evidence_id=EV:pub hop=1 justified=true link_id=walkeq-a1 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/c1
+asserted_at=T7m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a1 mechanism=declared producer=walkeq@1 relation=same_as row=link source_ref=walkeq-walkeq-a1 state=confirmed to_ref=entity:walkeq/crm1
+## mail-not-secret / entity c1 expand
+closure_size=1 guarantee="exact over stored links; identity as asserted, see links; across 1 confirmed aliases"
+created_at=(set) entity_id=walkeq/c1 entity_kind=walkeq first_seen_evidence=EV:pub minted=true namespace_id=default row=entity
+entity_id=walkeq/crm1 evidence_id=EV:pub hop=1 justified=true link_id=walkeq-a1 mechanism=declared relation=same_as row=alias via_ref=entity:walkeq/c1
+asserted_at=T7m0s asserted_by=test confidence=1 evidence_id=EV:pub family=identity from_ref=entity:walkeq/c1 link_id=walkeq-a1 mechanism=declared producer=walkeq@1 relation=same_as row=link source_ref=walkeq-walkeq-a1 state=confirmed to_ref=entity:walkeq/crm1
+## mail-not-secret / events c1 expand
+closure_size=1 guarantee="exact over stored data; identity and coverage epistemically uncertain; across 1 confirmed aliases"
+event_id=E:order1 event_type=order_placed evidence_id=EV:pub occurred_at=T-6h0m0s roles={customer=walkeq/c1,order=walkeq/o1,}
+event_id=E:complaint1 event_type=complaint evidence_id=EV:pub occurred_at=T-1h0m0s roles={customer=walkeq/c1,shipment=walkeq/s1,}
+event_id=E:order2 event_type=order_placed evidence_id=EV:pub occurred_at=T-2h0m0s roles={customer=walkeq/crm1,order=walkeq/o2,} via_ref=entity:walkeq/crm1

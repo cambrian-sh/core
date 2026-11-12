@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -91,7 +92,7 @@ func TestOwnedTurn_RunsInTheOwnersConversation(t *testing.T) {
 	if _, err := r.run(context.Background(), domain.OwnedTurn{ConversationID: "c", OwnerID: "lena", Text: "x"}); err == nil {
 		t.Fatal("no chat lane: want an error, not a silent no-op")
 	}
-	r.bind(store, corechat.NewTurnService(store, echoPool{}, nil))
+	r.bind(store, corechat.NewTurnService(store, echoPool{}, nil), knownOnly("lena", "dana"))
 
 	msg, err := r.run(context.Background(), domain.OwnedTurn{
 		ConversationID: "sched:sched-1", OwnerID: "lena", Title: "weekly", Text: "summarise", ClientID: "fire-1",
@@ -115,6 +116,60 @@ func TestOwnedTurn_RunsInTheOwnersConversation(t *testing.T) {
 	// Someone else's conversation is refused, never written into.
 	if _, err := r.run(context.Background(), domain.OwnedTurn{ConversationID: "sched:sched-1", OwnerID: "dana", Text: "x"}); err == nil {
 		t.Fatal("a turn for dana in lena's conversation must be refused")
+	}
+}
+
+// knownOnly is a principal directory that knows exactly ids.
+func knownOnly(ids ...string) func() domain.PrincipalDirectory {
+	return func() domain.PrincipalDirectory {
+		return dirFn(func(id string) (bool, error) {
+			for _, x := range ids {
+				if x == id {
+					return true, nil
+				}
+			}
+			return false, nil
+		})
+	}
+}
+
+type dirFn func(string) (bool, error)
+
+func (f dirFn) KnownPrincipal(_ context.Context, id string) (bool, error) { return f(id) }
+
+// ADR-0146 acceptance test 9: a firing for an owner the deployment no longer
+// knows (deleted, suspended, deprovisioned — the directory answers false), for
+// an owner the directory could not check, or on a kernel with no directory at
+// all, runs NOTHING: no conversation is opened and no turn is sent.
+func TestOwnedTurn_UnknownOwnerRunsNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dir  func() domain.PrincipalDirectory
+	}{
+		{"owner unknown (deleted or deprovisioned)", knownOnly("someone-else")},
+		{"directory error", func() domain.PrincipalDirectory {
+			return dirFn(func(string) (bool, error) { return true, errors.New("directory down") })
+		}},
+		{"no directory installed", func() domain.PrincipalDirectory { return nil }},
+		{"no directory accessor", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newConvMem()
+			r := &ownedTurnRunner{}
+			r.bind(store, corechat.NewTurnService(store, echoPool{}, nil), tc.dir)
+			_, err := r.run(context.Background(), domain.OwnedTurn{
+				ConversationID: "sched:sched-gone", OwnerID: "lena", Text: "summarise", ClientID: "fire-1",
+			})
+			if !errors.Is(err, errOwnerNotKnown) {
+				t.Fatalf("want errOwnerNotKnown, got %v", err)
+			}
+			if _, ok := store.convs["sched:sched-gone"]; ok {
+				t.Fatal("a conversation was opened for an owner the deployment does not know")
+			}
+			if len(store.msgs["sched:sched-gone"]) != 0 {
+				t.Fatal("a turn ran for an owner the deployment does not know")
+			}
+		})
 	}
 }
 

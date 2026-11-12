@@ -89,6 +89,14 @@ func (f *fakeEvents) EventsForEntity(context.Context, string, string, time.Time,
 	return nil, nil
 }
 
+func (f *fakeEvents) RetireRows(context.Context, string, []string, string, string) (int, error) {
+	return 0, nil
+}
+
+func (f *fakeEvents) ReinstateRows(context.Context, string, []string) (int, error) {
+	return 0, nil
+}
+
 func (f *fakeEvents) events() []domain.Event {
 	f.mu.Lock()
 	defer f.mu.Unlock()

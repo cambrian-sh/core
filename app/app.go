@@ -812,7 +812,26 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0106: the substrate store, ONE instance shared by the kernel fact path (wrapped
 	// in the enforcing writer/reader inside NewMemoryStack) and the plugin seam
 	// (KernelServices.Knowledge, below).
-	knowledgeStore := postgres.NewPgKnowledgeStore(vec.Pool(), kindReg)
+	// Five-planes step 2: the link verb registry, on the same terms. A duplicate
+	// verb or a redeclared seed is a boot refusal rather than two producers
+	// disagreeing at write time about whether a verb is symmetric.
+	//
+	// Two declarers, folded here and validated once (D-W5-1). A PLUGIN declares
+	// the verbs it emits by name; the CONFIG declares the verbs a deployment's
+	// own sources carry, which no plugin could know. Config goes last so a
+	// collision between the two names the operator's entry as the duplicate —
+	// the one they can edit — rather than the plugin's.
+	relSpecs := append(append([]domain.RelationSpec(nil), opts.RelationSpecs...), cfg.RelationSpecs()...)
+	relReg, rerr := domain.NewRelationRegistry(relSpecs)
+	if rerr != nil {
+		return nil, fmt.Errorf("link relation registry (five-planes step 2; deployment verbs are declared "+
+			"in the kernel config's \"relations\" section, e.g. configs/config.json): %w", rerr)
+	}
+	// ADR-0147 D15: the substrate's stores and its one query plane, composed
+	// through app.NewSubstrate — the same function premium's end-to-end tests
+	// build them with, so there is one construction path.
+	substrate := NewSubstrate(vec.Pool(), kindReg, relReg)
+	knowledgeStore := substrate.Knowledge
 	factsSubstrate := kernel.FactSubstrate{
 		Store:         knowledgeStore,
 		Reader:        postgres.NewPgFactItemReader(knowledgeStore, "default", cfg.Embedder.Model, cfg.Embedder.Dimensions),
@@ -1344,41 +1363,25 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// The kind registry (kindReg) and the substrate store (knowledgeStore) are built
 	// above NewMemoryStack (ADR-0136 A1.6).
 	//
-	// Five-planes step 2: the link verb registry, on the same terms. A duplicate
-	// verb or a redeclared seed is a boot refusal rather than two producers
-	// disagreeing at write time about whether a verb is symmetric.
-	//
-	// Two declarers, folded here and validated once (D-W5-1). A PLUGIN declares
-	// the verbs it emits by name; the CONFIG declares the verbs a deployment's
-	// own sources carry, which no plugin could know. Config goes last so a
-	// collision between the two names the operator's entry as the duplicate —
-	// the one they can edit — rather than the plugin's.
-	relSpecs := append(append([]domain.RelationSpec(nil), opts.RelationSpecs...), cfg.RelationSpecs()...)
-	relReg, rerr := domain.NewRelationRegistry(relSpecs)
-	if rerr != nil {
-		return nil, fmt.Errorf("link relation registry (five-planes step 2; deployment verbs are declared "+
-			"in the kernel config's \"relations\" section, e.g. configs/config.json): %w", rerr)
-	}
+	// The link verb registry (relReg) is built above too, with the substrate.
 
 	var evIngestor *evidence.Ingestor
-	evStore := postgres.NewPgEvidenceStore(vec.Pool())
-	eventStore := postgres.NewPgEventStore(vec.Pool(), kindReg)
-	// The identity plane (five-planes steps 1+2, migration 0016). Built here beside
-	// the other substrate stores so every lane that mints an entity or asserts a
-	// link goes through the one chokepoint that enforces the plane's refusals.
-	entityStore := postgres.NewPgEntityStore(vec.Pool())
-	linkStore := postgres.NewPgLinkStore(vec.Pool(), relReg)
-	// ADR-0111/ADR-0118: the closed query AST over all the substrate stores —
-	// built ONCE here, so the plugin query seam, the names-and-counts catalog
-	// seam and the operator review inbox all read through the same fenced plane.
-	// Five-planes step 2: the plane also reads the identity plane, so `entity` /
-	// `why` / expand_aliases answer over the same stores the producers write to,
-	// and closure verbs come from the registry rather than a name in the executor.
-	queryPlane := postgres.NewPgQueryPlane(vec.Pool(), eventStore, knowledgeStore, evStore,
-		linkStore, entityStore, relReg)
+	// The substrate's stores (app.NewSubstrate, above). The identity plane
+	// (five-planes steps 1+2, migration 0016) sits beside the others so every lane
+	// that mints an entity or asserts a link goes through the one chokepoint that
+	// enforces the plane's refusals. ADR-0111/ADR-0118: the closed query AST over
+	// all of them is built ONCE, so the plugin query seam, the names-and-counts
+	// catalog seam and the operator review inbox all read through the same fenced
+	// plane; it reads the identity plane too, so `entity` / `why` / expand_aliases
+	// answer over the stores the producers write to.
+	evStore := substrate.Evidence
+	eventStore := substrate.Events
+	entityStore := substrate.Entities
+	linkStore := substrate.Links
+	queryPlane := substrate.Query
 	if cfg.Execution.Ingestion.EvidenceCaptureEnabled {
 		var everr error
-		evIngestor, everr = evidence.NewIngestor(storeHandle.ContentStore, evStore)
+		evIngestor, everr = substrate.Ingestor(storeHandle.ContentStore)
 		if everr != nil {
 			return nil, fmt.Errorf("evidence capture (ADR-0105): %w", everr)
 		}
@@ -1666,7 +1669,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		})
 		chatTurns = corechat.NewTurnService(conversations, pool, kernelSvc.AcquireLLMToken)
 		// A scheduled task's firing runs its turn here, as its owner.
-		ownedTurns.bind(conversations, chatTurns)
+		ownedTurns.bind(conversations, chatTurns, func() domain.PrincipalDirectory {
+			return principalDirectoryOrRegistry(principalDirectory.get(), idStores.registry)
+		})
 		// ADR-0084 D2: stamp each turn's conversation onto its lease, so work the turn
 		// delegates to the planner opens a session linked back to the exchange that
 		// ordered it — resolved server-side, never named by the agent.
@@ -1964,8 +1969,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// captured AND at least one transformer registered — a consumer with no
 	// consumers, or one whose archive is never written, is the unwired trap.
 	if evIngestor != nil && len(opts.EvidenceTransformers) > 0 {
-		consumer, cerr := evidence.NewConsumer(evStore, storeHandle.ContentStore,
-			opts.EvidenceTransformers, slog.Default())
+		consumer, cerr := substrate.Consumer(storeHandle.ContentStore, opts.EvidenceTransformers)
 		if cerr != nil {
 			return nil, fmt.Errorf("evidence consumer (ADR-0108): %w", cerr)
 		}
@@ -2495,6 +2499,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// consistent with the rest of the OSS posture.
 	operatorEffects := operator.CommandEffectsFuncs{
 		TagMemoryFn: func(ctx context.Context, docID, tag string, add bool) error {
+			// ADR-0146 D5: owner tags are kernel-stamped. Adding one would forge
+			// "written for <id>" (which the own-rows rule trusts); removing one would
+			// lift a person's owner fence. RetagDocument already preserves them on the
+			// document path; the memory-row path below would not, so refuse here.
+			if domain.IsOwnerTag(tag) {
+				return fmt.Errorf("tag_memory: %q is an owner tag; owner tags are stamped by the kernel and cannot be added or removed", tag)
+			}
 			if opts.PolicyAdmin != nil && !opts.PolicyAdmin.ValidateTag(tag) {
 				return fmt.Errorf("tag %q is not in the controlled vocabulary", tag)
 			}

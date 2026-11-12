@@ -120,6 +120,13 @@ type EvidenceStore interface {
 	// Get returns the evidence row, or an error when absent.
 	Get(ctx context.Context, id EvidenceID) (*Evidence, error)
 
+	// LatestBySourceKey returns the most recently ingested evidence row for one
+	// source artifact — (namespace, source_id, source_key) — or nil when the
+	// source never sent that key. It is how a writer finds the row a new
+	// revision revises (ADR-0105 D4, ADR-0147 D7): source_revision is a digest
+	// with no order, so "latest" is ingest order.
+	LatestBySourceKey(ctx context.Context, namespace, sourceID, sourceKey string) (*Evidence, error)
+
 	// PendingOutbox lists unconsumed outbox items, oldest first, up to limit.
 	// Listing does not claim: consumption is only the MarkProcessed transition.
 	PendingOutbox(ctx context.Context, limit int) ([]EvidenceOutboxItem, error)

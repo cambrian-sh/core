@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -41,10 +43,23 @@ type PgQueryPlane struct {
 	// never names one: the Zero-Hardcode Rule applies to vocabulary as hard here
 	// as it does to routing, and a hard-coded "same_as" would make the registry
 	// decorative.
-	links     domain.LinkStore
+	links     walkLinkStore
 	entities  domain.EntityStore
 	relations *domain.RelationRegistry
 }
+
+// walkLinkStore is the link port plus the set-based read the graph walks need
+// (why, the identity closure): a whole frontier's links in one round trip, Limit
+// and Offset applied per ref. Kept here, as a consumer-side composition of the
+// domain port (AGENTS §3.1), rather than on domain.LinkStore: it is how THIS
+// plane reads, and no other LinkStore consumer has a frontier.
+// PgLinkStore.LinksFor is LinksForRefs with one ref, so the two never disagree.
+type walkLinkStore interface {
+	domain.LinkStore
+	LinksForRefs(ctx context.Context, namespace string, refs []string, opts domain.LinkQuery) (map[string][]domain.Link, error)
+}
+
+var _ walkLinkStore = (*PgLinkStore)(nil)
 
 // NewPgQueryPlane composes the plane from the stores it reads through.
 //
@@ -54,7 +69,7 @@ type PgQueryPlane struct {
 // than as an entity op that quietly returns nothing.
 func NewPgQueryPlane(pool *pgxpool.Pool, events domain.EventStore,
 	knowledge domain.KnowledgeStore, evidence domain.EvidenceStore,
-	links domain.LinkStore, entities domain.EntityStore,
+	links walkLinkStore, entities domain.EntityStore,
 	relations *domain.RelationRegistry) *PgQueryPlane {
 	return &PgQueryPlane{
 		pool: pool, events: events, knowledge: knowledge, evidence: evidence,
@@ -278,6 +293,11 @@ func obsRow(ob *domain.Observation) domain.QueryRow {
 	if ob.Location != "" {
 		row["location"] = ob.Location
 	}
+	// Which clock occurred_at is (ADR-0147 D8). Only when the writer said: an
+	// absent key means "not recorded", which is every row written before 0037.
+	if ob.TimeBasis != "" {
+		row["time_basis"] = ob.TimeBasis
+	}
 	return row
 }
 
@@ -331,7 +351,7 @@ func (p *PgQueryPlane) point(ctx context.Context, q domain.KnowledgeQuery, scope
 	args = append(args, extra...)
 	ob, err := scanObservation(p.pool.QueryRow(ctx, `
 		SELECT `+observationColumns+` FROM observations
-		WHERE namespace_id=$1 AND entity_id=$2 AND predicate=$3`+scopeCond+`
+		WHERE namespace_id=$1 AND entity_id=$2 AND predicate=$3`+scopeCond+notRetired("observations")+`
 		ORDER BY occurred_at DESC, id DESC LIMIT 1`, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -563,23 +583,48 @@ func evidenceScopeSQLOn(scope *domain.TagPredicate, refCol string, startIdx int)
 // evidenceRowConds renders the scope as " AND …" conditions over an evidence
 // row aliased `alias` — the body of evidenceScopeSQLOn, also used directly when
 // the evidence table itself is the one being read. "" for ScopeMaintenance.
+//
+// It is TagPredicate.CheckRow's mirror (the row carries parties). With a valid
+// own-rows term (ADR-0146, TagPredicate.OwnRowTerm) the conditions become
+// " AND ((main) OR (own_row AND ownrows))": own_row is "the classification contains
+// owner:<the reader's single owner>"; ownrows is this rendering of the own-rows
+// predicate, whose fence (held = that owner) adds "and no other owner tag".
 func evidenceRowConds(scope *domain.TagPredicate, alias string, startIdx int) (string, []any) {
 	if scope.Unfiltered() {
 		return "", nil
 	}
-	conds := ""
+	conds, args, n := evidenceRowTerms(scope, alias, startIdx)
+	own := scope.OwnRowTerm()
+	if own == nil {
+		return " AND " + strings.Join(conds, " AND "), args
+	}
+	n++
+	ownRow := fmt.Sprintf(alias+".classification @> ARRAY[$%d::text]", n)
+	args = append(args, domain.OwnerTag(scope.Owners[0]))
+	oconds, oargs, _ := evidenceRowTerms(own, alias, n)
+	args = append(args, oargs...)
+	return " AND ((" + strings.Join(conds, " AND ") + ") OR (" + ownRow + " AND " +
+		strings.Join(oconds, " AND ") + "))", args
+}
+
+// evidenceRowTerms renders one predicate's own terms (never its OwnRows) as
+// conditions to AND over the evidence row `alias`, numbering args from
+// $startIdx+1; it returns the last index used. Never empty: the owner fence is
+// always first.
+func evidenceRowTerms(scope *domain.TagPredicate, alias string, startIdx int) ([]string, []any, int) {
+	var conds []string
 	var args []any
 	n := startIdx
 	add := func(cond string, val any) {
 		n++
-		conds += fmt.Sprintf(" AND "+cond, n)
+		conds = append(conds, fmt.Sprintf(cond, n))
 		args = append(args, val)
 	}
 	// The owner fence (domain/owner_scope.go): every predicate but
 	// ScopeMaintenance, Bypass included.
 	add(ownerFenceTextArray(alias+".classification"), scope.HeldOwnerTags())
 	if scope.Bypass {
-		return conds, args
+		return conds, args, n
 	}
 	col := alias + ".classification"
 	if len(scope.RequiredTags) > 0 {
@@ -606,11 +651,11 @@ func evidenceRowConds(scope *domain.TagPredicate, alias string, startIdx int) (s
 	// it is why "party to nothing" and "we could not resolve you" agree here.
 	if len(scope.PartyScopedTags) > 0 {
 		n += 2
-		conds += fmt.Sprintf(
-			" AND (NOT ("+col+" && $%d) OR "+alias+".parties && $%d)", n-1, n)
+		conds = append(conds, fmt.Sprintf(
+			"(NOT ("+col+" && $%d) OR "+alias+".parties && $%d)", n-1, n))
 		args = append(args, scope.PartyScopedTags, identityArg(scope.PartyIdentities))
 	}
-	return conds, args
+	return conds, args, n
 }
 
 // aggregate — ENFORCED in SQL: summed rows cannot be post-filtered, so under a
@@ -643,7 +688,7 @@ func (p *PgQueryPlane) aggregate(ctx context.Context, q domain.KnowledgeQuery, s
 	err := p.pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT %s::float8 FROM observations
 		WHERE namespace_id=$1 AND entity_id=$2 AND predicate=$3
-		  AND occurred_at >= $4 AND occurred_at < $5%s`, fns[q.Aggregate], scopeCond),
+		  AND occurred_at >= $4 AND occurred_at < $5%s%s`, fns[q.Aggregate], scopeCond, notRetired("observations")),
 		args...).Scan(&value)
 	if err != nil {
 		return nil, err
@@ -658,28 +703,12 @@ func (p *PgQueryPlane) aggregate(ctx context.Context, q domain.KnowledgeQuery, s
 // filterEvents keeps events whose evidence classification passes the scope,
 // resolving provenance in one batch (fail closed on unresolvable evidence).
 func (p *PgQueryPlane) filterEvents(ctx context.Context, scope *domain.TagPredicate, evs []domain.Event) ([]domain.Event, error) {
-	if scope.Unfiltered() {
-		return evs, nil
-	}
-	ids := make([]string, 0, len(evs))
-	for i := range evs {
-		ids = append(ids, string(evs[i].EvidenceID))
-	}
-	tags, err := p.evidenceTags(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	kept := evs[:0:0]
-	for i := range evs {
-		t, resolvable := tags[string(evs[i].EvidenceID)]
-		// AllowsRow: an event reaches scope through its evidence, which carries
-		// parties as well as tags (ADR-0121).
-		if resolvable && scope.AllowsRow(t.tags, t.parties) {
-			kept = append(kept, evs[i])
-		}
-	}
-	return kept, nil
+	// AllowsRow (inside guardNodes): an event reaches scope through its
+	// evidence, which carries parties as well as tags (ADR-0121).
+	return guardNodes(ctx, p, scope, evs, eventEvidence)
 }
+
+func eventEvidence(ev domain.Event) []string { return []string{string(ev.EvidenceID)} }
 
 // eventsFor — ENFORCED via each event's evidence classification.
 func (p *PgQueryPlane) eventsFor(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate, limit int) ([]domain.QueryRow, error) {
@@ -872,18 +901,24 @@ func (p *PgQueryPlane) identityClosure(ctx context.Context, entityID string, dep
 	seen := map[string]bool{seed: true}
 	frontier := []string{seed}
 	for hop := 1; hop <= depth && len(frontier) > 0; hop++ {
+		// One read for the whole frontier, guarded and paged until each ref has
+		// the store's default page of READABLE links (filter before limit): a
+		// page cut before the scope was applied would let a caller's hidden
+		// links crowd its readable aliases out of the closure.
+		linksBy, err := pageVisible(ctx, p, scope, frontier, defaultIdentityLimit,
+			func(keys []string, offset, n int) (map[string][]domain.Link, error) {
+				return p.links.LinksForRefs(ctx, defaultNamespace, keys, domain.LinkQuery{
+					Family: domain.LinkFamilyIdentity,
+					State:  domain.LinkStateConfirmed,
+					Limit:  n, Offset: offset,
+				})
+			}, linkEvidence)
+		if err != nil {
+			return closureResult{}, err
+		}
 		var next []string
 		for _, ref := range frontier {
-			links, err := p.links.LinksFor(ctx, defaultNamespace, ref, domain.LinkQuery{
-				Family: domain.LinkFamilyIdentity,
-				State:  domain.LinkStateConfirmed,
-			})
-			if err != nil {
-				return closureResult{}, err
-			}
-			if links, err = p.filterLinks(ctx, scope, links); err != nil {
-				return closureResult{}, err
-			}
+			links := linksBy[ref]
 			perMechanism := map[string]int{}
 			for _, l := range links {
 				if walkable[l.Relation] {
@@ -956,12 +991,9 @@ func (p *PgQueryPlane) mayKnowEntityExists(ctx context.Context, scope *domain.Ta
 	if firstSeen == "" {
 		return false, nil
 	}
-	tags, err := p.evidenceTags(ctx, []string{firstSeen})
-	if err != nil {
-		return false, err
-	}
-	t, resolvable := tags[firstSeen]
-	return resolvable && scope.AllowsRow(t.tags, t.parties), nil
+	kept, err := guardNodes(ctx, p, scope, []string{firstSeen},
+		func(id string) []string { return []string{id} })
+	return len(kept) == 1, err
 }
 
 // filterLinks keeps the links whose evidence classification passes the scope,
@@ -978,26 +1010,10 @@ func (p *PgQueryPlane) mayKnowEntityExists(ctx context.Context, scope *domain.Ta
 // ConfirmLink row inherits its candidate's evidence, so a confirmed candidate
 // stays visible to whoever could read the candidate.)
 func (p *PgQueryPlane) filterLinks(ctx context.Context, scope *domain.TagPredicate, links []domain.Link) ([]domain.Link, error) {
-	if scope.Unfiltered() {
-		return links, nil
-	}
-	ids := make([]string, 0, len(links))
-	for i := range links {
-		ids = append(ids, string(links[i].EvidenceID))
-	}
-	tags, err := p.evidenceTags(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	kept := links[:0:0]
-	for i := range links {
-		t, resolvable := tags[string(links[i].EvidenceID)]
-		if resolvable && scope.AllowsRow(t.tags, t.parties) {
-			kept = append(kept, links[i])
-		}
-	}
-	return kept, nil
+	return guardNodes(ctx, p, scope, links, linkEvidence)
 }
+
+func linkEvidence(l domain.Link) []string { return []string{string(l.EvidenceID)} }
 
 // linkRow renders one assertion for the wire. `row` discriminates the shapes an
 // `entity` answer mixes, so a consumer never has to guess from key presence.
@@ -1266,101 +1282,123 @@ func (p *PgQueryPlane) why(ctx context.Context, q domain.KnowledgeQuery,
 	}
 	root := whyRef(q.EntityID)
 	seen := map[string]bool{root: true}
-	// Co-occurrence hops anchored on an ENTITY are deduplicated by the PAIR
-	// rather than by the target: one entity binds many events to each other,
-	// and a target-keyed check would emit the first pair and swallow every
-	// other relationship the same entity holds together.
+	// Related rows anchored on an ENTITY are deduplicated by the PAIR rather
+	// than by the target: one entity binds many events to each other, and a
+	// target-keyed check would emit the first pair and swallow every other
+	// relationship the same entity holds together.
 	seenPair := map[string]bool{}
+	seenHub := map[string]bool{}
 	frontier := []string{root}
 	var out []domain.QueryRow
+	cp := correlationParamsFor(q)
+	rootExpanded := false
 
 	state := domain.LinkStateConfirmed
 	if scope.Bypass {
 		state = ""
 	}
 	for hop := 1; hop <= depth && len(frontier) > 0; hop++ {
-		var next []string
+		// The walk STANDS on every frontier ref before it expands it, and
+		// standing on an event is reading it: its lineage and its related rows
+		// (which carry its own role) are claims about that event. So each event
+		// ref is decided on its OWN evidence first — the root as much as one
+		// reached through a readable link at hop >= 2 — and one the caller may
+		// not read (or that ADR-0147 retired) is not expanded at all. A hidden
+		// event therefore answers exactly as an absent id does (ADR-0128 D12).
+		readable, err := p.readableEventRefs(ctx, scope, frontier)
+		if err != nil {
+			return nil, err
+		}
+		var expand, eventRefs, entityRefs []string
 		for _, ref := range frontier {
-			if p.links != nil {
-				links, err := p.links.LinksFor(ctx, defaultNamespace, ref, domain.LinkQuery{
-					Family: domain.LinkFamilyLineage, State: state,
-					IncludeIncoming: true, Limit: limit,
-				})
-				if err != nil {
-					return nil, err
-				}
-				links, err = p.filterLinks(ctx, scope, links)
-				if err != nil {
-					return nil, err
-				}
-				for _, l := range links {
-					other := l.ToRef
-					if other == ref {
-						other = l.FromRef
-					}
-					if other == ref || seen[other] {
-						continue
-					}
-					seen[other] = true
-					if len(out) >= limit {
-						return out, nil
-					}
-					row := linkRow(l, "hop")
-					row["hop"] = hop
-					row["stored"] = true
-					out = append(out, row)
-					next = append(next, other)
-				}
-			}
-			// Shared-object hops hold between OCCURRENCES: two events that name
-			// the same entity in a role. Both lanes below emit the SAME row
-			// shape and the same mechanism label; they differ only in which end
-			// of the relationship the walk is standing on.
 			switch {
 			case strings.HasPrefix(ref, domain.RefPrefixEvent):
-				hops, err := p.sharedObjectHops(ctx, scope, ref, limit)
-				if err != nil {
-					return nil, err
+				if readable != nil && !readable[ref] {
+					continue
 				}
-				for _, h := range hops {
-					if seen[h.ref] {
+				eventRefs = append(eventRefs, ref)
+			case strings.HasPrefix(ref, domain.RefPrefixEntity):
+				entityRefs = append(entityRefs, ref)
+			}
+			expand = append(expand, ref)
+		}
+		if hop == 1 && len(expand) == 1 {
+			rootExpanded = true
+		}
+		// ONE read per lane per hop for the whole frontier, each node guarded
+		// (guardNodes) and paged until every ref has `limit` rows the caller may
+		// read (filter before limit). Rows are emitted in frontier order, stored
+		// links before related rows.
+		var linksBy map[string][]domain.Link
+		if p.links != nil {
+			linksBy, err = pageVisible(ctx, p, scope, expand, limit,
+				func(keys []string, offset, n int) (map[string][]domain.Link, error) {
+					return p.links.LinksForRefs(ctx, defaultNamespace, keys, domain.LinkQuery{
+						Family: domain.LinkFamilyLineage, State: state,
+						IncludeIncoming: true, Limit: n, Offset: offset,
+					})
+				}, linkEvidence)
+			if err != nil {
+				return nil, err
+			}
+		}
+		// ADR-0148 D1/D2: related rows only when the caller asked for them.
+		var relBy, pairBy map[string][]relatedRow
+		var hubsBy map[string][]hubFlag
+		if q.IncludeCorrelation {
+			if relBy, hubsBy, err = p.relatedFromEvents(ctx, scope, eventRefs, cp); err != nil {
+				return nil, err
+			}
+			pairHubs := map[string][]hubFlag{}
+			if pairBy, pairHubs, err = p.relatedFromEntities(ctx, scope, entityRefs, cp, limit); err != nil {
+				return nil, err
+			}
+			for k, v := range pairHubs {
+				if hubsBy == nil {
+					hubsBy = map[string][]hubFlag{}
+				}
+				hubsBy[k] = append(hubsBy[k], v...)
+			}
+		}
+
+		var next []string
+		for _, ref := range expand {
+			for _, l := range linksBy[ref] {
+				other := l.ToRef
+				if other == ref {
+					other = l.FromRef
+				}
+				if other == ref || seen[other] {
+					continue
+				}
+				seen[other] = true
+				if len(out) >= limit {
+					return out, nil
+				}
+				row := linkRow(l, "hop")
+				row["hop"] = hop
+				row["stored"] = true
+				out = append(out, row)
+				next = append(next, other)
+			}
+			switch {
+			case strings.HasPrefix(ref, domain.RefPrefixEvent):
+				for _, h := range relBy[ref] {
+					if seen[h.toRef] {
 						continue
 					}
-					seen[h.ref] = true
+					seen[h.toRef] = true
 					if len(out) >= limit {
 						return out, nil
 					}
-					out = append(out, domain.QueryRow{
-						"row": "hop", "from_ref": ref, "to_ref": h.ref,
-						// The verb is the honest description of what
-						// co-occurrence establishes: order plus overlap,
-						// never cause.
-						"relation":  domain.RelationPrecededAndSharesEntities,
-						"mechanism": domain.LinkMechanismSharedObject,
-						"state":     "", "stored": false,
-						"evidence_id": h.evidence, "event_type": h.eventType,
-						"occurred_at": h.occurredAt, "shared_entity_id": h.sharedEntity,
-						"shared_role": h.sharedRole, "hop": hop,
-					})
-					next = append(next, h.ref)
+					out = append(out, h.row(hop))
+					next = append(next, h.toRef)
 				}
 			case strings.HasPrefix(ref, domain.RefPrefixEntity):
-				// why(entity:X) used to reach this lane only by luck — it
-				// needed a STORED lineage link to walk it onto an event first,
-				// and an entity whose whole trace is participation has none.
-				// So "why is this shipment the way it is" answered nothing,
-				// while the same question asked of one of its events answered
-				// fully (D-W5-6).
-				//
-				// The hops run between the EVENTS, not out of the entity: the
-				// entity is what they SHARE, and a hop "entity → event" would
-				// claim a handle preceded an occurrence, which is not a thing
-				// that happened. X rides along as shared_entity_id.
-				pairs, err := p.entitySharedObjectHops(ctx, scope, ref, limit)
-				if err != nil {
-					return nil, err
-				}
-				for _, h := range pairs {
+				// why(entity:X) with include_correlation: the pairs of events X
+				// took part in (D-W5-6). The rows run between the EVENTS; X is
+				// what they share and rides along as shared_entity_id.
+				for _, h := range pairBy[ref] {
 					key := h.fromRef + "\x00" + h.toRef
 					if seenPair[key] {
 						continue
@@ -1369,18 +1407,9 @@ func (p *PgQueryPlane) why(ctx context.Context, q domain.KnowledgeQuery,
 					if len(out) >= limit {
 						return out, nil
 					}
-					out = append(out, domain.QueryRow{
-						"row": "hop", "from_ref": h.fromRef, "to_ref": h.toRef,
-						"relation":  domain.RelationPrecededAndSharesEntities,
-						"mechanism": domain.LinkMechanismSharedObject,
-						"state":     "", "stored": false,
-						"evidence_id": h.evidence, "event_type": h.eventType,
-						"occurred_at": h.occurredAt, "shared_entity_id": h.sharedEntity,
-						"shared_role": h.sharedRole, "hop": hop,
-					})
-					// BOTH ends enter the walk. The pair was produced by
-					// standing on the entity, so neither event has had its own
-					// lineage or its own co-occurrences looked at yet.
+					out = append(out, h.row(hop))
+					// BOTH ends enter the walk: neither event has had its own
+					// lineage or related rows looked at yet.
 					for _, end := range []string{h.fromRef, h.toRef} {
 						if !seen[end] {
 							seen[end] = true
@@ -1389,192 +1418,639 @@ func (p *PgQueryPlane) why(ctx context.Context, q domain.KnowledgeQuery,
 					}
 				}
 			}
+			// D5: a participant over the hub threshold was not followed; say
+			// so once, where a reader can see why an obvious relation is absent.
+			for _, hb := range hubsBy[ref] {
+				if seenHub[hb.entity] {
+					continue
+				}
+				seenHub[hb.entity] = true
+				if len(out) >= limit {
+					return out, nil
+				}
+				out = append(out, domain.QueryRow{
+					"row": "flagged", "ref": domain.EntityRef(hb.entity), "via_ref": ref,
+					"guard": "why_hub_participant", "limit": domain.CorrelationHubThreshold,
+					"events": hb.events,
+				})
+			}
 		}
 		frontier = next
+	}
+	if len(out) == 0 && !q.IncludeCorrelation && rootExpanded {
+		return p.whyHint(ctx, scope, root, cp, limit)
 	}
 	return out, nil
 }
 
-// sharedPair is one live, unstored hop between two occurrences, anchored on the
-// ENTITY they share rather than on either of them (D-W5-6). Both endpoints are
-// named because neither is the ref the walk was standing on.
-type sharedPair struct {
-	fromRef string
-	toRef   string
-	// fromEvidence and evidence are the two events' own bases. BOTH are
-	// checked against the caller's scope: unlike the event-anchored lane,
-	// where the near end is the row the caller asked about and has already
-	// been decided, here the caller asked about an entity and neither event
-	// has been through a scope check.
-	fromEvidence string
-	evidence     string
-	eventType    string
-	occurredAt   time.Time
-	sharedEntity string
-	sharedRole   string
-}
-
-// entitySharedObjectHops pairs the occurrences that name one entity in a role.
+// whyHint is ADR-0148's answer to an empty flag-off walk: if the root has
+// related events the caller could see with include_correlation, say how many
+// rather than answer with silence (owner decision 2026-11-12). It is computed by
+// the very lane the flag would run, at hop 1, so N is exactly the number of
+// related rows (event root) or distinct related events (entity root) the caller
+// would get — every one of them caller-visible, fenced on its own evidence. The
+// root has already passed readableEventRefs, so a hidden root never reaches
+// here and still answers as an absent id.
 //
-// The event-anchored lane asks "what came before THIS event"; this one asks
-// "what did this entity hold together", and answers with the pairs themselves —
-// so an entity that appears in an order, a shipment and an invoice yields the
-// three co-occurrences a reader would draw, instead of nothing at all because
-// no producer ever stored a link between them.
-//
-// The strict (occurred_at, id) ordering in the WHERE clause is what makes a
-// pair appear ONCE and in the honest direction: without the id tiebreak two
-// events stamped the same microsecond would each be reported as preceding the
-// other, which is not an ordering, it is two contradictory claims.
-//
-// ENFORCED on both events' own evidence, fail closed.
-func (p *PgQueryPlane) entitySharedObjectHops(ctx context.Context, scope *domain.TagPredicate,
-	entityRef string, limit int) ([]sharedPair, error) {
-	id, ok := strings.CutPrefix(entityRef, domain.RefPrefixEntity)
-	if !ok || id == "" {
-		return nil, nil
-	}
-	sqlRows, err := p.pool.Query(ctx, `
-		SELECT DISTINCT e1.id, e2.id, e2.event_type, e2.occurred_at,
-		       e1.evidence_id, e2.evidence_id, r1.role
-		FROM event_roles r1
-		JOIN events e1 ON e1.id = r1.event_id
-		JOIN event_roles r2 ON r2.entity_id = r1.entity_id AND r2.event_id <> r1.event_id
-		JOIN events e2 ON e2.id = r2.event_id AND e2.namespace_id = e1.namespace_id
-		WHERE r1.entity_id = $1 AND e1.namespace_id = $2
-		  AND (e2.occurred_at < e1.occurred_at
-		       OR (e2.occurred_at = e1.occurred_at AND e2.id < e1.id))
-		ORDER BY e2.occurred_at DESC, e1.id, e2.id
-		LIMIT $3`, id, defaultNamespace, limit)
-	if err != nil {
-		return nil, err
-	}
-	var found []sharedPair
-	for sqlRows.Next() {
-		var h sharedPair
-		var fromID, toID string
-		var fromEv, toEv *string
-		if err := sqlRows.Scan(&fromID, &toID, &h.eventType, &h.occurredAt,
-			&fromEv, &toEv, &h.sharedRole); err != nil {
-			sqlRows.Close()
+// Wire shape: one row {row:"hint", hint:"related_available", related_count:N,
+// flag:"include_correlation", text:"no stored lineage; N related events
+// available with include_correlation"}. A row rather than a new response field:
+// the rows are the contract's extensible part (ADR-0148 §4), and a client that
+// does not know the shape still renders it as a row.
+func (p *PgQueryPlane) whyHint(ctx context.Context, scope *domain.TagPredicate,
+	root string, cp correlationParams, limit int) ([]domain.QueryRow, error) {
+	n := 0
+	switch {
+	case strings.HasPrefix(root, domain.RefPrefixEvent):
+		rel, _, err := p.relatedFromEvents(ctx, scope, []string{root}, cp)
+		if err != nil {
 			return nil, err
 		}
-		h.fromRef = domain.RefPrefixEvent + fromID
-		h.toRef = domain.RefPrefixEvent + toID
+		n = len(rel[root])
+	case strings.HasPrefix(root, domain.RefPrefixEntity):
+		pairs, _, err := p.relatedFromEntities(ctx, scope, []string{root}, cp, limit)
+		if err != nil {
+			return nil, err
+		}
+		distinct := map[string]bool{}
+		for _, h := range pairs[root] {
+			distinct[h.fromRef], distinct[h.toRef] = true, true
+		}
+		n = len(distinct)
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	return []domain.QueryRow{{
+		"row": "hint", "hint": "related_available", "related_count": n,
+		"flag": "include_correlation",
+		"text": fmt.Sprintf("no stored lineage; %d related events available with include_correlation", n),
+	}}, nil
+}
+
+// ─── Related rows (ADR-0148): windowed, hub-damped, ranked co-occurrence ─────
+//
+// A related row says two occurrences share a participant and happened close
+// together. It is computed at read time from event_roles, never stored, and it
+// is NOT a cause: `why` returns it only under include_correlation, labelled
+// row:"related" with a score, apart from the stored lineage hops.
+//
+// Parameters (accepted by the owner 2026-11-12, ADR-0148 §3):
+//   - window W: the related event lies in [anchor - W, anchor] (default 72 h);
+//   - hub damping: a shared participant x weighs w(x) = 1/ln(e + df(x)), where
+//     df(x) counts the CALLER-VISIBLE, non-retired events x takes part in within
+//     the window; x with df > CorrelationHubThreshold is not followed and is
+//     reported as a flagged row;
+//   - score = Σ_x w(x) · exp(-Δt/τ), τ = W/3, ordered score DESC, then
+//     occurred_at DESC, then id;
+//   - at most CorrelationMaxPerEvent related rows per anchoring event;
+//   - roles, when given, must match the participant's role in BOTH events.
+//
+// FENCE. df is a COUNT, and a count over rows the caller cannot read would
+// leak them (ADR-0128 D12), so df and the candidate set are fenced in SQL with
+// evidenceScopeSQLOn — the one SQL rendering of the row test, the aggregate
+// shape's precedent ("summed rows cannot be post-filtered"). Every emitted row
+// then still passes guardNodes on its own events' evidence, the walk's one node
+// guard. Retired rows (ADR-0147) are skipped everywhere a row is counted.
+
+// relatedRow is one related (computed, unstored) row between two occurrences.
+type relatedRow struct {
+	fromRef, toRef         string
+	fromEvidence, evidence string
+	eventType              string
+	occurredAt             time.Time
+	sharedEntity           string
+	sharedRole             string
+	score                  float64
+}
+
+func (h relatedRow) row(hop int) domain.QueryRow {
+	return domain.QueryRow{
+		"row": "related", "from_ref": h.fromRef, "to_ref": h.toRef,
+		// The verb is the honest description of what co-occurrence
+		// establishes: order plus overlap, never cause.
+		"relation":  domain.RelationPrecededAndSharesEntities,
+		"mechanism": domain.LinkMechanismSharedObject,
+		"state":     "", "stored": false,
+		"evidence_id": h.evidence, "event_type": h.eventType,
+		"occurred_at": h.occurredAt, "shared_entity_id": h.sharedEntity,
+		"shared_role": h.sharedRole, "hop": hop,
+		"score": math.Round(h.score*1000) / 1000,
+	}
+}
+
+// hubFlag is a shared participant the lane refused to follow.
+type hubFlag struct {
+	entity string
+	events int
+}
+
+type correlationParams struct {
+	window time.Duration
+	roles  []string
+}
+
+func correlationParamsFor(q domain.KnowledgeQuery) correlationParams {
+	roles := q.CorrelationRoles
+	if roles == nil {
+		roles = []string{} // bound as '{}', never NULL: cardinality(NULL) is NULL
+	}
+	return correlationParams{window: q.CorrelationWindowOrDefault(), roles: roles}
+}
+
+// hubWeight is w(x) = 1/ln(e + df).
+func hubWeight(df int) float64 { return 1 / math.Log(math.E+float64(df)) }
+
+// recencyDecay is exp(-Δt/τ) with τ = window/3.
+func recencyDecay(dt, window time.Duration) float64 {
+	tau := window.Seconds() / 3
+	if tau <= 0 || dt <= 0 {
+		return 1
+	}
+	return math.Exp(-dt.Seconds() / tau)
+}
+
+// relatedFromEvents finds, for each anchoring event of a frontier (already
+// decided readable by why's gate) in one statement, the earlier events that
+// share a participant with it inside the window, scored and capped.
+func (p *PgQueryPlane) relatedFromEvents(ctx context.Context, scope *domain.TagPredicate,
+	eventRefs []string, cp correlationParams) (map[string][]relatedRow, map[string][]hubFlag, error) {
+	var ids []string
+	for _, ref := range eventRefs {
+		if id, ok := strings.CutPrefix(ref, domain.RefPrefixEvent); ok && id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	args := []any{ids, defaultNamespace, cp.window.Seconds(), cp.roles, domain.CorrelationHubThreshold}
+	// The counted events are aliased oe, not e: evidenceScopeSQLOn's EXISTS
+	// names the evidence table e, and would shadow an events alias of that name.
+	dfFence, dfArgs := evidenceScopeSQLOn(scope, "oe.evidence_id", len(args))
+	args = append(args, dfArgs...)
+	candFence, candArgs := evidenceScopeSQLOn(scope, "e2.evidence_id", len(args))
+	args = append(args, candArgs...)
+	rows, err := p.pool.Query(ctx, `
+		WITH a AS (
+			SELECT e1.id AS aid, e1.occurred_at AS at1, e1.evidence_id AS aev,
+			       r1.entity_id AS x, r1.role AS role1
+			FROM events e1 JOIN event_roles r1 ON r1.event_id = e1.id
+			WHERE e1.id = ANY($1) AND e1.namespace_id = $2`+notRetired("e1")+`
+			  AND (cardinality($4::text[]) = 0 OR r1.role = ANY($4::text[]))
+		), d AS (
+			SELECT a.aid, a.x, count(DISTINCT oe.id) AS df
+			FROM (SELECT DISTINCT aid, at1, x FROM a) a
+			JOIN event_roles r ON r.entity_id = a.x
+			JOIN events oe ON oe.id = r.event_id AND oe.namespace_id = $2
+			 AND oe.occurred_at >= a.at1 - make_interval(secs => $3::float8)
+			 AND oe.occurred_at <= a.at1`+notRetired("oe")+dfFence+`
+			GROUP BY a.aid, a.x
+		)
+		SELECT a.aid, a.at1, a.aev, a.x, a.role1, d.df,
+		       c.id, c.event_type, c.occurred_at, c.evidence_id
+		FROM a JOIN d ON d.aid = a.aid AND d.x = a.x
+		LEFT JOIN LATERAL (
+			SELECT DISTINCT e2.id, e2.event_type, e2.occurred_at, e2.evidence_id
+			FROM event_roles r2
+			JOIN events e2 ON e2.id = r2.event_id AND e2.namespace_id = $2
+			WHERE d.df <= $5 AND r2.entity_id = a.x AND r2.event_id <> a.aid
+			  AND (cardinality($4::text[]) = 0 OR r2.role = ANY($4::text[]))
+			  AND e2.occurred_at >= a.at1 - make_interval(secs => $3::float8)
+			  AND e2.occurred_at <= a.at1`+notRetired("e2")+candFence+`
+		) c ON true
+		ORDER BY a.aid, a.x, a.role1, c.id`, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	type shared struct {
+		df   int
+		role string
+	}
+	type cand struct {
+		anchor, anchorEv string
+		at1              time.Time
+		id, typ, ev      string
+		at               time.Time
+		xs               map[string]shared
+	}
+	cands := map[string]*cand{} // anchor \x00 e2
+	var order []string
+	hubs := map[string][]hubFlag{}
+	hubSeen := map[string]bool{}
+	for rows.Next() {
+		var aid, x, role1 string
+		var aev, cid, ctyp, cev *string
+		var at1 time.Time
+		var cat *time.Time
+		var df int
+		if err := rows.Scan(&aid, &at1, &aev, &x, &role1, &df, &cid, &ctyp, &cat, &cev); err != nil {
+			return nil, nil, err
+		}
+		anchor := domain.RefPrefixEvent + aid
+		if df > domain.CorrelationHubThreshold {
+			if !hubSeen[anchor+"\x00"+x] {
+				hubSeen[anchor+"\x00"+x] = true
+				hubs[anchor] = append(hubs[anchor], hubFlag{entity: x, events: df})
+			}
+			continue
+		}
+		if cid == nil {
+			continue
+		}
+		key := anchor + "\x00" + *cid
+		c := cands[key]
+		if c == nil {
+			c = &cand{anchor: anchor, at1: at1, id: *cid, at: *cat, xs: map[string]shared{}}
+			if aev != nil {
+				c.anchorEv = *aev
+			}
+			if ctyp != nil {
+				c.typ = *ctyp
+			}
+			if cev != nil {
+				c.ev = *cev
+			}
+			cands[key] = c
+			order = append(order, key)
+		}
+		if s, ok := c.xs[x]; !ok || role1 < s.role {
+			c.xs[x] = shared{df: df, role: role1}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	var all []relatedRow
+	for _, key := range order {
+		c := cands[key]
+		decay := recencyDecay(c.at1.Sub(c.at), cp.window)
+		var score float64
+		best, bestW := "", -1.0
+		for x, s := range c.xs {
+			w := hubWeight(s.df)
+			score += w * decay
+			if w > bestW || (w == bestW && x < best) {
+				best, bestW = x, w
+			}
+		}
+		all = append(all, relatedRow{
+			fromRef: c.anchor, toRef: domain.RefPrefixEvent + c.id,
+			fromEvidence: c.anchorEv, evidence: c.ev, eventType: c.typ, occurredAt: c.at,
+			sharedEntity: best, sharedRole: c.xs[best].role, score: score,
+		})
+	}
+	// The near end was decided by why's gate; the far end is decided here, on
+	// its own evidence, by the walk's one node guard.
+	kept, err := guardNodes(ctx, p, scope, all, func(h relatedRow) []string { return []string{h.evidence} })
+	if err != nil {
+		return nil, nil, err
+	}
+	return capRelated(kept, func(h relatedRow) string { return h.fromRef },
+		domain.CorrelationMaxPerEvent), hubs, nil
+}
+
+// relatedFromEntities pairs, for each entity of a frontier in one statement,
+// the occurrences the entity took part in that lie within the window of each
+// other (D-W5-6, bounded by ADR-0148). The later event is the anchor: it keeps
+// at most CorrelationMaxPerEvent partners, and each entity keeps at most
+// `limit` pairs, best score first.
+func (p *PgQueryPlane) relatedFromEntities(ctx context.Context, scope *domain.TagPredicate,
+	entityRefs []string, cp correlationParams, limit int) (map[string][]relatedRow, map[string][]hubFlag, error) {
+	var ids []string
+	for _, ref := range entityRefs {
+		if id, ok := strings.CutPrefix(ref, domain.RefPrefixEntity); ok && id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	args := []any{ids, defaultNamespace, cp.window.Seconds(), cp.roles,
+		domain.CorrelationHubThreshold, domain.CorrelationMaxPerEvent, limit}
+	fence, fenceArgs := evidenceScopeSQLOn(scope, "oe.evidence_id", len(args)) // oe: see relatedFromEvents
+	args = append(args, fenceArgs...)
+	// df for a pair's anchor is the windowed count of the entity's visible
+	// events up to that anchor: a RANGE window over occurred_at.
+	rows, err := p.pool.Query(ctx, `
+		WITH ev AS (
+			SELECT r.entity_id AS x, oe.id, oe.event_type, oe.occurred_at, oe.evidence_id,
+			       array_agg(DISTINCT r.role ORDER BY r.role) AS roles
+			FROM event_roles r
+			JOIN events oe ON oe.id = r.event_id AND oe.namespace_id = $2
+			WHERE r.entity_id = ANY($1)`+notRetired("oe")+fence+`
+			GROUP BY r.entity_id, oe.id, oe.event_type, oe.occurred_at, oe.evidence_id
+		), w AS (
+			SELECT ev.*, count(*) OVER (PARTITION BY x ORDER BY occurred_at
+			       RANGE BETWEEN make_interval(secs => $3::float8) PRECEDING AND CURRENT ROW) AS df
+			FROM ev
+		), hubs AS (
+			SELECT x, max(df) AS df FROM w GROUP BY x HAVING max(df) > $5
+		), pairs AS (
+			SELECT w1.x, w1.id AS from_id, w1.evidence_id AS from_ev, w1.occurred_at AS at1,
+			       w1.df, w1.roles AS roles1, c.id AS to_id, c.event_type, c.occurred_at,
+			       c.evidence_id AS to_ev
+			FROM w w1
+			JOIN LATERAL (
+				SELECT w2.id, w2.event_type, w2.occurred_at, w2.evidence_id FROM w w2
+				WHERE w2.x = w1.x
+				  AND (w2.occurred_at < w1.occurred_at
+				       OR (w2.occurred_at = w1.occurred_at AND w2.id < w1.id))
+				  AND w2.occurred_at >= w1.occurred_at - make_interval(secs => $3::float8)
+				  AND (cardinality($4::text[]) = 0 OR w2.roles && $4::text[])
+				ORDER BY w2.occurred_at DESC, w2.id DESC
+				LIMIT $6) c ON true
+			WHERE w1.df <= $5 AND (cardinality($4::text[]) = 0 OR w1.roles && $4::text[])
+		), ranked AS (
+			SELECT pairs.*, (1.0 / ln(exp(1.0) + df)) *
+			       exp(-extract(epoch FROM (at1 - occurred_at)) / ($3::float8 / 3.0)) AS score
+			FROM pairs
+		), top AS (
+			SELECT ranked.*, row_number() OVER (PARTITION BY x
+			       ORDER BY score DESC, occurred_at DESC, from_id, to_id) AS rn
+			FROM ranked
+		)
+		SELECT 'pair', x, from_id, from_ev, to_id, event_type, occurred_at, to_ev,
+		       roles1, score::float8, df::int
+		FROM top WHERE rn <= $7
+		UNION ALL
+		SELECT 'hub', x, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, df::int FROM hubs
+		ORDER BY 1, 2, 10 DESC NULLS LAST, 7 DESC NULLS LAST, 3, 5`, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	out := map[string][]relatedRow{}
+	hubs := map[string][]hubFlag{}
+	var all []relatedRow
+	for rows.Next() {
+		var kind, x string
+		var fromID, fromEv, toID, typ, toEv *string
+		var at *time.Time
+		var roles []string
+		var score *float64
+		var df int
+		if err := rows.Scan(&kind, &x, &fromID, &fromEv, &toID, &typ, &at, &toEv, &roles, &score, &df); err != nil {
+			return nil, nil, err
+		}
+		ref := domain.RefPrefixEntity + x
+		if kind == "hub" {
+			hubs[ref] = append(hubs[ref], hubFlag{entity: x, events: df})
+			continue
+		}
+		h := relatedRow{
+			fromRef: domain.RefPrefixEvent + *fromID, toRef: domain.RefPrefixEvent + *toID,
+			occurredAt: *at, sharedEntity: x, sharedRole: firstRole(roles, cp.roles), score: *score,
+		}
 		if fromEv != nil {
 			h.fromEvidence = *fromEv
 		}
 		if toEv != nil {
 			h.evidence = *toEv
 		}
-		h.sharedEntity = id
-		found = append(found, h)
+		if typ != nil {
+			h.eventType = *typ
+		}
+		all = append(all, h)
 	}
-	sqlRows.Close()
-	if err := sqlRows.Err(); err != nil {
-		return nil, err
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
 	}
-	if scope.Unfiltered() || len(found) == 0 {
-		return found, nil
-	}
-	ids := make([]string, 0, len(found)*2)
-	for _, h := range found {
-		ids = append(ids, h.fromEvidence, h.evidence)
-	}
-	tags, err := p.evidenceTags(ctx, ids)
+	// A pair is a claim about BOTH events, so a caller who may not read one of
+	// them may not be told the other stands next to it.
+	kept, err := guardNodes(ctx, p, scope, all, func(h relatedRow) []string {
+		return []string{h.fromEvidence, h.evidence}
+	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	allows := func(evidenceID string) bool {
-		t, resolvable := tags[evidenceID]
-		return resolvable && scope.AllowsRow(t.tags, t.parties)
+	for _, h := range kept {
+		ref := domain.EntityRef(h.sharedEntity)
+		out[ref] = append(out[ref], h)
 	}
-	kept := found[:0:0]
-	for _, h := range found {
-		// A hop is a claim about BOTH events, so a caller who may not read one
-		// of them may not be told the other stands next to it.
-		if allows(h.fromEvidence) && allows(h.evidence) {
-			kept = append(kept, h)
+	return out, hubs, nil
+}
+
+// firstRole is the role a row reports for the shared participant: the first,
+// in order, that the role filter admits (any role when there is no filter).
+func firstRole(roles, filter []string) string {
+	for _, r := range roles {
+		if len(filter) == 0 {
+			return r
+		}
+		for _, f := range filter {
+			if r == f {
+				return r
+			}
 		}
 	}
-	return kept, nil
+	return ""
 }
 
-// sharedHop is one live, unstored hop between two occurrences.
-type sharedHop struct {
-	ref          string
-	evidence     string
-	eventType    string
-	occurredAt   time.Time
-	sharedEntity string
-	sharedRole   string
+// capRelated orders related rows by score DESC, occurred_at DESC, target id,
+// per anchor, and keeps at most `per` for each anchor.
+func capRelated(rows []relatedRow, anchorOf func(relatedRow) string, per int) map[string][]relatedRow {
+	byAnchor := map[string][]relatedRow{}
+	for _, h := range rows {
+		byAnchor[anchorOf(h)] = append(byAnchor[anchorOf(h)], h)
+	}
+	for k, hs := range byAnchor {
+		sort.SliceStable(hs, func(i, j int) bool {
+			if hs[i].score != hs[j].score {
+				return hs[i].score > hs[j].score
+			}
+			if !hs[i].occurredAt.Equal(hs[j].occurredAt) {
+				return hs[i].occurredAt.After(hs[j].occurredAt)
+			}
+			return hs[i].toRef < hs[j].toRef
+		})
+		if len(hs) > per {
+			hs = hs[:per]
+		}
+		byAnchor[k] = hs
+	}
+	return byAnchor
 }
 
-// sharedObjectHops finds earlier events sharing a role participant with this one.
+// readableEventRefs decides which event: refs in refs the caller may stand on,
+// each on that event's OWN evidence, through filterEvents — the same
+// evidenceTags/AllowsRow test (owner fence included) every other event read
+// applies, not a second rendering of the policy. Fail closed: an event that does
+// not exist, has no evidence, or whose evidence does not resolve is unreadable,
+// which is what makes a hidden event indistinguishable from an absent id.
 //
-// Computed rather than stored on purpose: the relation is a JOIN over rows that
-// already exist, and materialising it would mean a producer writing O(n²) links
-// that say nothing the rows did not already say. The `occurred_at <=` term is
-// what makes it a BACKWARD walk — `why` asks what came before, and a hop forward
-// in time explains nothing.
-//
-// ENFORCED on the neighbouring event's own evidence, fail closed.
-func (p *PgQueryPlane) sharedObjectHops(ctx context.Context, scope *domain.TagPredicate,
-	eventRef string, limit int) ([]sharedHop, error) {
-	id, ok := strings.CutPrefix(eventRef, domain.RefPrefixEvent)
-	if !ok || id == "" {
+// A nil map means "no filtering" (ScopeMaintenance, the one Unfiltered
+// predicate), mirroring filterEvents' own short-circuit; non-event refs are
+// never in the map and the caller does not consult it for them.
+func (p *PgQueryPlane) readableEventRefs(ctx context.Context, scope *domain.TagPredicate,
+	refs []string) (map[string]bool, error) {
+	if scope.Unfiltered() {
 		return nil, nil
 	}
-	sqlRows, err := p.pool.Query(ctx, `
-		SELECT DISTINCT e2.id, e2.event_type, e2.occurred_at, e2.evidence_id,
-		       r1.entity_id, r1.role
-		FROM events e1
-		JOIN event_roles r1 ON r1.event_id = e1.id
-		JOIN event_roles r2 ON r2.entity_id = r1.entity_id AND r2.event_id <> e1.id
-		JOIN events e2 ON e2.id = r2.event_id AND e2.namespace_id = e1.namespace_id
-		WHERE e1.id = $1 AND e1.namespace_id = $2 AND e2.occurred_at <= e1.occurred_at
-		ORDER BY e2.occurred_at DESC, e2.id
-		LIMIT $3`, id, defaultNamespace, limit)
+	readable := map[string]bool{}
+	var ids []string
+	for _, ref := range refs {
+		if id, ok := strings.CutPrefix(ref, domain.RefPrefixEvent); ok && id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return readable, nil
+	}
+	rows, err := p.pool.Query(ctx,
+		// Retired rows (ADR-0147) do not count: a retired event is not stood on.
+		`SELECT id, evidence_id FROM events WHERE id = ANY($1) AND namespace_id = $2`+notRetired("events"),
+		ids, defaultNamespace)
 	if err != nil {
 		return nil, err
 	}
-	var found []sharedHop
-	for sqlRows.Next() {
-		var h sharedHop
-		var otherID string
+	var evs []domain.Event
+	for rows.Next() {
+		var id string
 		var evID *string
-		if err := sqlRows.Scan(&otherID, &h.eventType, &h.occurredAt, &evID,
-			&h.sharedEntity, &h.sharedRole); err != nil {
-			sqlRows.Close()
+		if err := rows.Scan(&id, &evID); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		h.ref = domain.RefPrefixEvent + otherID
+		ev := domain.Event{ID: domain.EventID(id)}
 		if evID != nil {
-			h.evidence = *evID
+			ev.EvidenceID = domain.EvidenceID(*evID)
 		}
-		found = append(found, h)
+		evs = append(evs, ev)
 	}
-	sqlRows.Close()
-	if err := sqlRows.Err(); err != nil {
+	rows.Close()
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if scope.Unfiltered() || len(found) == 0 {
-		return found, nil
+	kept, err := p.filterEvents(ctx, scope, evs)
+	if err != nil {
+		return nil, err
 	}
-	ids := make([]string, 0, len(found))
-	for _, h := range found {
-		ids = append(ids, h.evidence)
+	for _, ev := range kept {
+		readable[domain.RefPrefixEvent+string(ev.ID)] = true
+	}
+	return readable, nil
+}
+
+// ─── The node guard: one scope decision for every graph walk ─────────────────
+//
+// why, traverse and the identity closure each used to fence their nodes with a
+// hand-rolled copy of the same evidenceTags/AllowsRow loop, and the copies
+// drifted: one lane checked only the far end of a hop, so why(event:<hidden>)
+// was an existence oracle (T-20261112-query-plane-why-never-fences-the-root-
+// event-or). guardNodes is now the only loop. Every node a walk emits or stands
+// on — a link, an event, a co-occurrence hop, an entity's minting evidence —
+// passes through it, directly or through filterLinks/filterEvents, which are
+// one-line wrappers over it.
+
+// guardNodes keeps the nodes the scope may read, resolving every node's
+// evidence in one batch (evidenceTags) and judging each with AllowsRow — the
+// same test point/history/events apply, owner fence and party scoping included
+// (ADR-0121), never a second rendering of the policy (AGENTS §2.5).
+//
+// A node names the evidence it stands on, and is admitted only if it names at
+// least one and the scope may read EVERY one (a hop between two events is a
+// claim about both). Fail closed: an empty or unresolvable evidence id hides
+// the node, for a plain Bypass too — only ScopeMaintenance (Unfiltered) admits
+// everything, as everywhere else on this plane. Order is preserved.
+func guardNodes[T any](ctx context.Context, p *PgQueryPlane, scope *domain.TagPredicate,
+	nodes []T, evidenceOf func(T) []string) ([]T, error) {
+	if scope.Unfiltered() || len(nodes) == 0 {
+		return nodes, nil
+	}
+	ids := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		ids = append(ids, evidenceOf(n)...)
 	}
 	tags, err := p.evidenceTags(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	kept := found[:0:0]
-	for _, h := range found {
-		t, resolvable := tags[h.evidence]
-		if resolvable && scope.AllowsRow(t.tags, t.parties) {
-			kept = append(kept, h)
+	kept := nodes[:0:0]
+	for _, n := range nodes {
+		ev := evidenceOf(n)
+		ok := len(ev) > 0
+		for _, id := range ev {
+			t, resolvable := tags[id]
+			if !resolvable || !scope.AllowsRow(t.tags, t.parties) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			kept = append(kept, n)
 		}
 	}
 	return kept, nil
+}
+
+// walkMaxPages bounds filter-before-limit paging in the walk shapes: a lane
+// reads at most this many pages of `want` rows per key before it settles for
+// what it has. The first page is exactly the read the walk always made, so a
+// caller whose scope hides nothing never reads a second one; the bound only
+// caps how far a narrow caller's lane digs past rows it may not see.
+const walkMaxPages = 8
+
+// keyedNode is one node of a frontier read, remembered with the key it was read
+// for so a whole page can be guarded in one batch.
+type keyedNode[T any] struct {
+	key  string
+	node T
+}
+
+// pageVisible is filter-before-limit for one lane of a walk: for every key it
+// reads pages of `want` rows (fetch: one statement for all keys still short),
+// guards them (guardNodes), and keeps going for a key until it holds `want`
+// nodes the caller may read, its rows run out (a short page), or walkMaxPages
+// pages were read. Without it a page the store cut BEFORE the scope was known
+// gave a narrow caller a short or empty answer while visible rows existed.
+func pageVisible[T any](ctx context.Context, p *PgQueryPlane, scope *domain.TagPredicate,
+	keys []string, want int,
+	fetch func(keys []string, offset, n int) (map[string][]T, error),
+	evidenceOf func(T) []string) (map[string][]T, error) {
+	out := map[string][]T{}
+	if want <= 0 {
+		return out, nil
+	}
+	seen := map[string]bool{}
+	var pending []string
+	for _, k := range keys {
+		if !seen[k] {
+			seen[k] = true
+			pending = append(pending, k)
+		}
+	}
+	for page := 0; page < walkMaxPages && len(pending) > 0; page++ {
+		raw, err := fetch(pending, page*want, want)
+		if err != nil {
+			return nil, err
+		}
+		var batch []keyedNode[T]
+		for _, k := range pending {
+			for _, n := range raw[k] {
+				batch = append(batch, keyedNode[T]{key: k, node: n})
+			}
+		}
+		kept, err := guardNodes(ctx, p, scope, batch,
+			func(x keyedNode[T]) []string { return evidenceOf(x.node) })
+		if err != nil {
+			return nil, err
+		}
+		for _, x := range kept {
+			if len(out[x.key]) < want {
+				out[x.key] = append(out[x.key], x.node)
+			}
+		}
+		var still []string
+		for _, k := range pending {
+			if len(raw[k]) >= want && len(out[k]) < want {
+				still = append(still, k)
+			}
+		}
+		pending = still
+	}
+	return out, nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/pgvector/pgvector-go"
@@ -188,21 +189,45 @@ func itemScopeSQL(scope *domain.TagPredicate, alias string, startIdx int) (strin
 // textArrayScopeSQL is itemScopeSQL over any native TEXT[] tag column. The owner
 // fence (domain/owner_scope.go) applies to every predicate, Bypass included; only
 // ScopeMaintenance adds nothing.
+//
+// With a valid own-rows term (ADR-0146, TagPredicate.OwnRowTerm) the conditions
+// become " AND ((main) OR (own_row AND ownrows))": own_row is "the column contains
+// owner:<the reader's single owner>", and ownrows is this rendering of the own-rows
+// predicate, whose fence (held = that owner) adds "and no other owner tag" — the
+// SQL form of TagPredicate.Check's disjunction.
 func textArrayScopeSQL(scope *domain.TagPredicate, col string, startIdx int) (string, []any) {
 	if scope == nil || scope.Unfiltered() {
 		return "", nil
 	}
-	conds := ""
+	conds, args, n := textArrayTerms(scope, col, startIdx)
+	own := scope.OwnRowTerm()
+	if own == nil {
+		return " AND " + strings.Join(conds, " AND "), args
+	}
+	n++
+	ownRow := fmt.Sprintf(col+" @> ARRAY[$%d::text]", n)
+	args = append(args, domain.OwnerTag(scope.Owners[0]))
+	oconds, oargs, _ := textArrayTerms(own, col, n)
+	args = append(args, oargs...)
+	return " AND ((" + strings.Join(conds, " AND ") + ") OR (" + ownRow + " AND " +
+		strings.Join(oconds, " AND ") + "))", args
+}
+
+// textArrayTerms renders one predicate's own terms (never its OwnRows) as
+// conditions to AND, numbering args from $startIdx+1; it returns the last index
+// used. Never empty: the owner fence is always the first condition.
+func textArrayTerms(scope *domain.TagPredicate, col string, startIdx int) ([]string, []any, int) {
+	var conds []string
 	var args []any
 	n := startIdx
 	add := func(cond string, val []string) {
 		n++
-		conds += fmt.Sprintf(" AND "+cond, n)
+		conds = append(conds, fmt.Sprintf(cond, n))
 		args = append(args, val)
 	}
 	add(ownerFenceTextArray(col), scope.HeldOwnerTags())
 	if scope.Bypass {
-		return conds, args
+		return conds, args, n
 	}
 	if len(scope.RequiredTags) > 0 {
 		add(col+" @> $%d::text[]", scope.RequiredTags)
@@ -218,7 +243,7 @@ func textArrayScopeSQL(scope *domain.TagPredicate, col string, startIdx int) (st
 	if len(scope.PartyScopedTags) > 0 {
 		add("NOT ("+col+" && $%d::text[])", scope.PartyScopedTags)
 	}
-	return conds, args
+	return conds, args, n
 }
 
 // ownerFenceTextArray is the TEXT[] mirror of the owner fence: no element in the

@@ -106,6 +106,18 @@ func (f *fakeStore) Get(_ context.Context, id domain.EvidenceID) (*domain.Eviden
 	return nil, errors.New("not found")
 }
 
+func (f *fakeStore) LatestBySourceKey(_ context.Context, ns, sourceID, sourceKey string) (*domain.Evidence, error) {
+	var best *domain.Evidence
+	for _, ev := range f.rows {
+		if ev.NamespaceID == ns && ev.SourceID == sourceID && ev.SourceKey == sourceKey &&
+			(best == nil || ev.IngestedAt.After(best.IngestedAt)) {
+			cp := ev
+			best = &cp
+		}
+	}
+	return best, nil
+}
+
 func (f *fakeStore) PendingOutbox(_ context.Context, limit int) ([]domain.EvidenceOutboxItem, error) {
 	var out []domain.EvidenceOutboxItem
 	for _, it := range f.outbox {
