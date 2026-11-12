@@ -310,6 +310,52 @@ func (s *PgEvidenceStore) DeadOutbox(ctx context.Context, sourceID string, limit
 	return out, rows.Err()
 }
 
+// ReplayDeadOutbox makes a source's dead items pending again (see the port).
+// The CTE locks the dead rows and the UPDATE returns their values from BEFORE
+// the reset, so the caller can say exactly what it replayed (attempts, last
+// error, dead time) — the audit's "how many" and "which". The `dead_at IS NOT
+// NULL` guard is the idempotence: a second replay, or a racing one, finds
+// nothing left to reset. held_key is cleared too, so the row lands in the
+// ready index (idx_evidence_outbox_ready) in its original created_at order.
+func (s *PgEvidenceStore) ReplayDeadOutbox(ctx context.Context, sourceID string, evidenceID domain.EvidenceID) ([]domain.DeadEvidenceOutboxItem, error) {
+	if sourceID == "" {
+		return nil, fmt.Errorf("evidence outbox: replay dead: a source id is required")
+	}
+	rows, err := s.pool.Query(ctx, `
+		WITH d AS (
+			SELECT o.id, o.attempts, o.last_error, o.dead_at, e.source_id
+			FROM evidence_outbox o JOIN evidence e ON e.id = o.evidence_id
+			WHERE o.processed_at IS NULL AND o.dead_at IS NOT NULL
+			  AND e.source_id = $1 AND ($2 = '' OR o.evidence_id = $2)
+			FOR UPDATE OF o
+		)
+		UPDATE evidence_outbox o SET
+			attempts = 0, last_error = '', held_key = '', next_attempt_at = NULL, dead_at = NULL
+		FROM d
+		WHERE o.id = d.id
+		RETURNING o.id, o.namespace_id, o.evidence_id, o.created_at, d.attempts, d.source_id, d.last_error, d.dead_at`,
+		sourceID, string(evidenceID))
+	if err != nil {
+		return nil, fmt.Errorf("evidence outbox: replay dead %q: %w", sourceID, err)
+	}
+	defer rows.Close()
+	var out []domain.DeadEvidenceOutboxItem
+	for rows.Next() {
+		var it domain.DeadEvidenceOutboxItem
+		var evID string
+		if err := rows.Scan(&it.ID, &it.NamespaceID, &evID, &it.CreatedAt, &it.Attempts,
+			&it.SourceID, &it.LastError, &it.DeadAt); err != nil {
+			return nil, fmt.Errorf("evidence outbox: replay dead %q: %w", sourceID, err)
+		}
+		it.EvidenceID = domain.EvidenceID(evID)
+		out = append(out, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("evidence outbox: replay dead %q: %w", sourceID, err)
+	}
+	return out, nil
+}
+
 // MarkProcessed is the exactly-once-logical transition (ADR-0105 D3): the
 // conditional UPDATE's row count is the truth, so of N racing consumers
 // exactly one observes true.

@@ -272,3 +272,79 @@ func TestPgOutbox_UnreleasedHoldIsRechecked(t *testing.T) {
 		t.Fatalf("rechecked item: %+v", r)
 	}
 }
+
+// Replay (owner decision 2026-11-13,
+// T-20261113-dead-evidence-outbox-items-have-no-replay-path): a dead item whose
+// cause was fixed is reset to pending and the ORDINARY consumer processes it;
+// replaying again, or replaying an item that is not dead, changes nothing; an
+// evidence id is only honoured inside the named source.
+func TestPgOutbox_ReplayDeadRunsTheNormalConsumerAgain(t *testing.T) {
+	f := newPgOutbox(t)
+	f.put(t, "flaky", "rd-1")
+	f.put(t, "flaky", "rd-2")
+	f.put(t, "good", "rd-ok")
+	for range domain.EvidenceOutboxMaxAttempts {
+		evidence.DrainUntilIdle(f.consumer, f.ctx)
+		f.makeDue(t, "rd-1")
+		f.makeDue(t, "rd-2")
+	}
+	for _, k := range []string{"rd-1", "rd-2"} {
+		if r := f.row(t, k); !r.dead {
+			t.Fatalf("%s did not die: %+v", k, r)
+		}
+	}
+	evID := func(key string) domain.EvidenceID {
+		var id string
+		if err := f.pool.QueryRow(f.ctx, `SELECT id FROM evidence WHERE source_id LIKE 'outboxpg:%' AND source_key = $1`, key).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return domain.EvidenceID(id)
+	}
+
+	if _, err := f.store.ReplayDeadOutbox(f.ctx, "", ""); err == nil {
+		t.Fatal("a replay with no source was accepted")
+	}
+	// Another source's name with this evidence id: nothing.
+	if got, err := f.store.ReplayDeadOutbox(f.ctx, pgOutboxSource+"good", evID("rd-1")); err != nil || len(got) != 0 {
+		t.Fatalf("cross-source replay = %+v, %v; want nothing", got, err)
+	}
+	// A processed item: a no-op, not an error.
+	if got, err := f.store.ReplayDeadOutbox(f.ctx, pgOutboxSource+"good", evID("rd-ok")); err != nil || len(got) != 0 {
+		t.Fatalf("replay of a processed item = %+v, %v; want nothing", got, err)
+	}
+
+	// One delivery.
+	f.tr.healed = true
+	got, err := f.store.ReplayDeadOutbox(f.ctx, pgOutboxSource+"flaky", evID("rd-1"))
+	if err != nil || len(got) != 1 || got[0].EvidenceID != evID("rd-1") ||
+		got[0].Attempts != domain.EvidenceOutboxMaxAttempts || got[0].LastError != "briefly down" || got[0].DeadAt.IsZero() {
+		t.Fatalf("replay rd-1 = %+v, %v; want the one item as it was when dead", got, err)
+	}
+	if r := f.row(t, "rd-1"); r.dead || r.processed || r.attempts != 0 || r.lastErr != "" || r.held != "" || r.dueIn != 0 {
+		t.Fatalf("rd-1 after replay = %+v, want pending, due now, attempts cleared", r)
+	}
+	if r := f.row(t, "rd-2"); !r.dead {
+		t.Fatalf("a single-delivery replay touched rd-2: %+v", r)
+	}
+	// Idempotent: the same replay again finds nothing.
+	if again, err := f.store.ReplayDeadOutbox(f.ctx, pgOutboxSource+"flaky", evID("rd-1")); err != nil || len(again) != 0 {
+		t.Fatalf("second replay = %+v, %v; want a no-op", again, err)
+	}
+	evidence.DrainUntilIdle(f.consumer, f.ctx)
+	if r := f.row(t, "rd-1"); !r.processed || r.dead {
+		t.Fatalf("replayed rd-1 was not processed by the consumer: %+v", r)
+	}
+
+	// The whole source.
+	got, err = f.store.ReplayDeadOutbox(f.ctx, pgOutboxSource+"flaky", "")
+	if err != nil || len(got) != 1 || got[0].EvidenceID != evID("rd-2") {
+		t.Fatalf("source replay = %+v, %v; want rd-2 only (rd-1 is processed)", got, err)
+	}
+	evidence.DrainUntilIdle(f.consumer, f.ctx)
+	if r := f.row(t, "rd-2"); !r.processed {
+		t.Fatalf("replayed rd-2 was not processed: %+v", r)
+	}
+	if dead, _ := f.store.DeadOutbox(f.ctx, pgOutboxSource+"flaky", 10); len(dead) != 0 {
+		t.Fatalf("DeadOutbox after replay = %+v", dead)
+	}
+}

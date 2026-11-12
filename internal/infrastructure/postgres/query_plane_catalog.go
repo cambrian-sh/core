@@ -192,8 +192,20 @@ func (c pgCatalog) Overview(ctx context.Context) (domain.SubstrateOverview, erro
 		// so the bare count is "everything ever". Fenced through the evidence
 		// row, like everything else — a backlog figure that counted someone's
 		// private deliveries would be a hidden count.
+		//
+		// Pending excludes DEAD items (migration 0039): pending is work that will
+		// still happen — due, backing off, or held by a paused ingress — and a dead
+		// item never drains by itself, so counting it made "pending > 0" mean
+		// "wait" for something no wait would fix. Dead items are their own figure
+		// (owner decision 2026-11-13,
+		// T-20261113-substrate-overview-has-no-separate-dead-letter); the two
+		// partition the unprocessed rows, so pending + dead is the old number.
 		{&out.OutboxPending, func(a *sqlArgs) string {
-			return `SELECT count(*) FROM evidence_outbox o WHERE o.processed_at IS NULL` +
+			return `SELECT count(*) FROM evidence_outbox o WHERE o.processed_at IS NULL AND o.dead_at IS NULL` +
+				a.viaEvidence(scope, "o.evidence_id")
+		}},
+		{&out.OutboxDead, func(a *sqlArgs) string {
+			return `SELECT count(*) FROM evidence_outbox o WHERE o.processed_at IS NULL AND o.dead_at IS NOT NULL` +
 				a.viaEvidence(scope, "o.evidence_id")
 		}},
 	}

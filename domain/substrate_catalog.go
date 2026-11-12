@@ -75,7 +75,13 @@ type SubstrateOverview struct {
 	EvidenceCount, EventCount, ObservationCount int64
 	KnowledgeItemCount, LiveResolutionCount     int64
 	EntityCount, ActorCount, OutboxPending      int64
-	Earliest, Latest                            time.Time // zero when nothing is readable
+	// OutboxDead counts outbox items parked dead after their last attempt
+	// (migration 0039): unprocessed, never retried automatically. OutboxPending
+	// does NOT include them — pending is the work that will still happen (due,
+	// backing off, or held) — so the two never double-count (owner decision
+	// 2026-11-13, T-20261113-substrate-overview-has-no-separate-dead-letter).
+	OutboxDead                                  int64
+	Earliest, Latest                           time.Time // zero when nothing is readable
 	Sources                                     []CatalogSource
 	Kinds                                       []CatalogKindCount
 }

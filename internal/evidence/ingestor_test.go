@@ -205,6 +205,29 @@ func (f *fakeStore) DeadOutbox(_ context.Context, _ string, _ int) ([]domain.Dea
 	return out, nil
 }
 
+// ReplayDeadOutbox mirrors the Pg store's reset. The fake keeps no source per
+// outbox item, so sourceID only has to be non-empty here; the source scoping is
+// proven against Postgres (consumer_outbox_pg_test.go).
+func (f *fakeStore) ReplayDeadOutbox(_ context.Context, sourceID string, evidenceID domain.EvidenceID) ([]domain.DeadEvidenceOutboxItem, error) {
+	if sourceID == "" {
+		return nil, errors.New("a source id is required")
+	}
+	var out []domain.DeadEvidenceOutboxItem
+	for _, it := range f.outbox {
+		lastErr, ok := f.dead[it.ID]
+		if !ok || f.processed[it.ID] || (evidenceID != "" && it.EvidenceID != evidenceID) {
+			continue
+		}
+		it.Attempts = f.attempts[it.ID]
+		out = append(out, domain.DeadEvidenceOutboxItem{EvidenceOutboxItem: it, SourceID: sourceID, LastError: lastErr})
+		delete(f.dead, it.ID)
+		delete(f.held, it.ID)
+		delete(f.due, it.ID)
+		f.attempts[it.ID] = 0
+	}
+	return out, nil
+}
+
 func (f *fakeStore) MarkProcessed(_ context.Context, id int64) (bool, error) {
 	if f.processed[id] {
 		return false, nil

@@ -217,6 +217,19 @@ type EvidenceStore interface {
 	// from sourceID ("" = every source), most recently dead first, up to limit.
 	DeadOutbox(ctx context.Context, sourceID string, limit int) ([]DeadEvidenceOutboxItem, error)
 
+	// ReplayDeadOutbox makes the dead items whose evidence came from sourceID
+	// pending again — attempts 0, last error and hold cleared, due now — so the
+	// ordinary consumer re-runs them (owner decision 2026-11-13,
+	// T-20261113-dead-evidence-outbox-items-have-no-replay-path: no second
+	// processing path). evidenceID narrows it to that one delivery's item
+	// ("" = every dead item of the source). sourceID is required: a replay is
+	// always scoped to one source, and an evidence id from another source
+	// matches nothing. Returns the items it replayed as they were when dead
+	// (attempts, last error, dead time); an item that is not dead (pending,
+	// held, processed, or already replayed) is left alone, so replaying twice
+	// is a no-op the second time.
+	ReplayDeadOutbox(ctx context.Context, sourceID string, evidenceID EvidenceID) ([]DeadEvidenceOutboxItem, error)
+
 	// MarkProcessed performs the exactly-once-logical outbox transition.
 	// It returns true when THIS call performed the transition and false when
 	// the item was already processed — the caller that sees false must treat
