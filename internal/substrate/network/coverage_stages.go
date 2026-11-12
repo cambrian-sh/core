@@ -39,6 +39,9 @@ type requestRequirements struct {
 	checklist *domain.RequirementChecklist
 	coverage  *requirements.Coverage
 	exec      *executer.StepRequirements
+	// earlier are the finished stages' completed steps under their e<K> labels
+	// (addEarlier), in order.
+	earlier []domain.EarlierResult
 }
 
 // checklistOn reports whether the D5 pipeline runs (flag, deriver and ledger).
@@ -82,9 +85,11 @@ func (s *Server) planChecked(ctx context.Context, planner Planner, userInput str
 		sources = append(sources, checklist.Request)
 	}
 	var settled []string
+	var earlier []domain.EarlierResult
 	if st := domain.CoverageStageFrom(ctx); st != nil {
 		sources = append(sources, st.Earlier)
 		settled = st.Settled
+		earlier = st.EarlierResults
 	}
 	// ADR-0145 D11: a staged plan is ONE stage — it answers open items only, at
 	// least one — and the dates it may copy include what the ledger index and the
@@ -101,7 +106,7 @@ func (s *Server) planChecked(ctx context.Context, planner Planner, userInput str
 			return nil, err
 		}
 		vs := planvalidate.Validate(planvalidate.Input{Plan: plan, Checklist: checklist, Vocabulary: vocab, DateSources: sources,
-			Staged: sp != nil, Settled: settled, Written: s.writtenTargets(ctx, planRunID(ctx))})
+			Staged: sp != nil, Settled: settled, Earlier: earlier, Written: s.writtenTargets(ctx, planRunID(ctx))})
 		if len(vs) == 0 {
 			return plan, nil
 		}
@@ -185,7 +190,11 @@ func coverageText(r *requestRequirements) string {
 			if v.Member != "" {
 				member = " for " + v.Member
 			}
-			fmt.Fprintf(&b, "\n    %s%s = %s [%s, evidence %s]", v.Name, member, v.Text(), v.Type, v.EvidenceRef)
+			refused := ""
+			if v.Refused {
+				refused = ", not accepted"
+			}
+			fmt.Fprintf(&b, "\n    %s%s = %s [%s, evidence %s%s]", v.Name, member, v.Text(), v.Type, v.EvidenceRef, refused)
 		}
 		b.WriteByte('\n')
 	}
@@ -257,20 +266,38 @@ func (s *Server) stepActionsOf(run *domain.RunID) func(generation, step int) exe
 	}
 }
 
-// earlierStagesIndex is the compact view of earlier stages a coverage stage's
-// planner sees in <documents>: each step's ledger reference and preview
-// (references, not data; the workers read the entries by id).
-func earlierStagesIndex(stage int, refs []domain.ExecuteStepRef) string {
-	if len(refs) == 0 {
+// addEarlier labels a finished stage's completed steps e<K> (K continuing across
+// the request's stages) and returns the new entries. The labels are the one way a
+// later stage's plan binds an earlier result in inputs (domain.InputRef; the
+// validator accepts exactly these, the executor resolves them;
+// T-20261112-staged-planner-binds-earlier-stage-results-with).
+func (r *requestRequirements) addEarlier(stage int, refs []domain.ExecuteStepRef) []domain.EarlierResult {
+	var out []domain.EarlierResult
+	for _, ref := range refs {
+		if ref.Status != domain.ExecuteStepCompleted {
+			continue
+		}
+		e := domain.EarlierResult{Label: domain.EarlierLabel(len(r.earlier) + 1), Stage: stage, Step: ref.Step,
+			Query: ref.Query, Ref: ref.Ref, Preview: ref.Preview}
+		r.earlier = append(r.earlier, e)
+		out = append(out, e)
+	}
+	return out
+}
+
+// earlierStagesIndex is the compact view of one earlier stage a coverage stage's
+// planner sees: each completed step under its e<K> label (what inputs bind), with
+// its ledger reference and preview (references, not data; the workers read the
+// entries by id).
+func earlierStagesIndex(stage int, es []domain.EarlierResult) string {
+	if len(es) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Results of stage %d (read an entry with ledger_get):\n", stage)
-	for _, r := range refs {
-		if r.Status != domain.ExecuteStepCompleted {
-			continue
-		}
-		fmt.Fprintf(&b, "- step %d %q -> %s: %s\n", r.Step, r.Query, r.Ref, r.Preview)
+	fmt.Fprintf(&b, "Results of stage %d (bind one in inputs by its label, e.g. %q or %q; workers read the entry with ledger_get):\n",
+		stage, es[0].Label, es[0].Label+".<name>")
+	for _, e := range es {
+		fmt.Fprintf(&b, "- %s = stage %d step %d %q -> %s: %s\n", e.Label, e.Stage, e.Step, e.Query, e.Ref, e.Preview)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -325,6 +352,10 @@ type stageLoop struct {
 	stepFn      executer.StepFunc
 	// staged is the staged planner's state (nil ⇒ the phase-2 coverage stages).
 	staged *stagedRun
+	// stopped is the first stage's error when it stopped part-way (nil otherwise):
+	// a failure that needs re-planning reaches the next stage's planner
+	// (stageReplan, step_recovery.go).
+	stopped error
 }
 
 // stageOutcome is what the loop produced.
@@ -347,11 +378,14 @@ func (s *Server) runStages(l stageLoop, masterCtx map[string]string) stageOutcom
 	reqs := l.reqs
 	out := stageOutcome{reports: []string{masterCtx[finalResultKey]}}
 	lastRefs := executer.PlanStepRefsFrom(masterCtx)
+	lastEarlier := reqs.addEarlier(1, lastRefs)
 	if l.staged != nil {
 		l.staged.stageRuns[0] = l.executionID
 		l.staged.prov.RunID = string(l.executionID)
-		l.staged.earlier = append(l.staged.earlier, earlierStagesIndex(1, lastRefs))
+		l.staged.earlier = append(l.staged.earlier, earlierStagesIndex(1, lastEarlier))
 	}
+	replan := stageReplan(l.stopped, 1)
+	replans := 0
 	for {
 		stageActions := s.planActions.snapshot(*l.stepRun)
 		out.actions = append(out.actions, stageActions...)
@@ -359,6 +393,12 @@ func (s *Server) runStages(l stageLoop, masterCtx map[string]string) stageOutcom
 		progress := reqs.coverage.EndStage()
 		if reqs.coverage.Settled() {
 			break
+		}
+		if !progress && replan != "" && replans < s.ExecCfg.Plan.MaxReplanAttempts {
+			// A stage that changed nothing because a step needs re-planning is not a
+			// stall: the planner re-plans that step (bounded by the replan ladder).
+			replans++
+			progress = true
 		}
 		if !progress {
 			reqs.coverage.CloseGaps("stalled: the last stage changed no item")
@@ -369,12 +409,23 @@ func (s *Server) runStages(l stageLoop, masterCtx map[string]string) stageOutcom
 			break
 		}
 		stage := reqs.coverage.NextStage(reqs.coverage.Stages() + 1)
-		stage.Earlier = earlierStagesIndex(stage.Number-1, lastRefs)
+		stage.Earlier = earlierStagesIndex(stage.Number-1, lastEarlier)
+		stage.EarlierResults = append([]domain.EarlierResult(nil), reqs.earlier...)
+		if replan != "" {
+			stage.Earlier = strings.TrimSpace(stage.Earlier + "\n" + replan)
+		}
 		var next *domain.ExecutionPlan
 		var perr error
 		planner := newPlanCallBudget(s.planCallLimit()).planner(s.Planner)
 		if l.staged != nil {
+			if replan != "" {
+				// For this planner call only: the failure belongs to the stage just run.
+				l.staged.earlier = append(l.staged.earlier, replan)
+			}
 			next, perr = s.planStage(l.planCtx, planner, l.userInput, reqs, l.staged, stage.Number, stage)
+			if replan != "" {
+				l.staged.earlier = l.staged.earlier[:len(l.staged.earlier)-1]
+			}
 			var q *errStageQuestion
 			switch {
 			case errors.As(perr, &q):
@@ -405,9 +456,13 @@ func (s *Server) runStages(l stageLoop, masterCtx map[string]string) stageOutcom
 		sprov := domain.LedgerProvenanceFromContext(l.ctx)
 		sprov.RunID = string(*l.stepRun)
 		stageCtx := domain.WithLedgerProvenance(l.planCtx, sprov)
+		// The finished stage's accepted values move under their e<K> labels before
+		// the new stage's step indices restart.
+		reqs.exec.ArchiveStage(lastEarlier)
 		reqs.exec.ResetStage()
 		slog.Info("ADR-0145 D5.5: coverage stage", "stage", stage.Number, "open", len(stage.Open), "steps", len(next.Steps), "staged", l.staged != nil)
 		stageMaster, serr := l.newExecutor(*l.stepRun).ExecuteFrom(stageCtx, next, l.initialCtx, l.stepFn, 0)
+		replan = stageReplan(serr, stage.Number)
 		if serr != nil {
 			m, ok := stageStoppedPartway(serr)
 			if !ok {
@@ -430,8 +485,9 @@ func (s *Server) runStages(l stageLoop, masterCtx map[string]string) stageOutcom
 		// step_N_* keys stay in its context (indices restart per stage).
 		lastRefs = executer.PlanStepRefsFrom(stageMaster)
 		mergeStageStepRefs(masterCtx, lastRefs, stage.Number)
+		lastEarlier = reqs.addEarlier(stage.Number, lastRefs)
 		if l.staged != nil {
-			l.staged.earlier = append(l.staged.earlier, earlierStagesIndex(stage.Number, lastRefs))
+			l.staged.earlier = append(l.staged.earlier, earlierStagesIndex(stage.Number, lastEarlier))
 		}
 	}
 	if *l.stepRun != l.executionID {

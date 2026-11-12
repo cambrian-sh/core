@@ -228,6 +228,24 @@ def prompts_dir() -> Path:
     raise RuntimeError("worker_agent --composed: cannot find the kernel prompt library; set CAMBRIAN_PROMPTS_DIR")
 
 
+#: The composed runtime's per-step tool-call budget, set by the kernel from
+#: execution.workers.max_tool_rounds (internal/kernel/trace_env.go workersEnv).
+COMPOSED_MAX_TOOL_ROUNDS_ENV = "CAMBRIAN_COMPOSED_MAX_TOOL_ROUNDS"
+
+
+def composed_max_tool_rounds() -> Optional[int]:
+    """The configured budget, or None (the SDK default) when unset or not a positive int."""
+    raw = os.environ.get(COMPOSED_MAX_TOOL_ROUNDS_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+    except ValueError:
+        _log.warning("composed_max_tool_rounds_invalid", extra={"value": raw})
+        return None
+    return n if n > 0 else None
+
+
 class ComposedWorkerAgent(PlannerDelegation, CognitiveAgent):
     """The ADR-0145 D12 runtime: one ReAct loop, composed per step by the kernel."""
 
@@ -235,6 +253,11 @@ class ComposedWorkerAgent(PlannerDelegation, CognitiveAgent):
     seed_tools_full = True
     allow_memory_note_writes = True
     allow_skill_proposals = True
+    #: A plan-step runtime: a step that needs a tool its composition lacks ends as
+    #: capability_missing and is re-planned with a worker composed for the need (a
+    #: sub-goal would run under this same composition).
+    #: T-20261112-yield-sub-goal-on-a-composed-lease-runs-under.
+    allow_capability_missing = True
 
     def __init__(self, agent_id: str = COMPOSED_AGENT_ID, prompts: Optional[Path] = None) -> None:
         super().__init__(agent_id, description="Composed worker runtime (ADR-0145 D12).")
@@ -253,6 +276,13 @@ class ComposedWorkerAgent(PlannerDelegation, CognitiveAgent):
         if value is not None and not isinstance(value, ComposedScopedSubstrate):
             value = ComposedScopedSubstrate(value)
         self._substrate = value
+
+    def think(self, task, *, max_memory_queries=None, max_tool_rounds=None):
+        # execution.workers.max_tool_rounds, set by the kernel in the agent's
+        # environment; unset ⇒ the SDK default (T-20261109-per-step-deadline-step-timeout-floor-ms-180-s).
+        if max_tool_rounds is None:
+            max_tool_rounds = composed_max_tool_rounds()
+        return super().think(task, max_memory_queries=max_memory_queries, max_tool_rounds=max_tool_rounds)
 
     def run(self, task):
         comp = composition_from_task(task)

@@ -147,7 +147,7 @@ func TestPriorPlanResults_BoundedAndListed(t *testing.T) {
 		"step_1_result": "tiny", "step_2_result": "",
 	}
 	p.capture(master, plan, map[int]bool{0: true, 1: true, 2: true}, &stepFailure{index: 3, err: errors.New("boom failed")})
-	sd := p.forRootStep(0, 1000)
+	sd := p.forRootStep(0, domain.DependencyFit{BudgetBytes: 1000})
 	deps, err := domain.DecodeStepDependencies(sd.manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestPriorPlanResults_BoundedAndListed(t *testing.T) {
 	if len(deps) != 4 {
 		t.Fatalf("want 4 (a step that never ran is not listed), got %+v", deps)
 	}
-	if !deps[0].Shortened || deps[0].CID != "cid0" || deps[0].Bytes != 5000 || len(deps[0].Content) >= 1000 {
+	if !deps[0].Shortened || deps[0].CID != "cid0" || deps[0].Bytes != 5000 || len(deps[0].Content)+len(deps[0].Tail) >= 1000 {
 		t.Errorf("big = %+v", deps[0])
 	}
 	if deps[1].Content != "tiny" || deps[1].Shortened {

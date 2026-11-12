@@ -468,6 +468,30 @@ type leaseCall struct {
 	meter      *llm.SpendMeter
 	prompt     string // the request text, for admission and the len/4 estimate
 	models     StepModels
+	// traceAttrs name who the call is for (lease, agent, plan step) on the run
+	// trace's model-call spans (ADR-0145 D10), which the Provider records without
+	// knowing the lease (domain.WithTraceAttributes).
+	traceAttrs map[string]any
+}
+
+// leaseTraceAttrs are a lease's identity as run-trace attributes, so the kernel's
+// "chat" span of an agent-plane call joins the agent's own spans (same names as
+// network/run_trace.go and the SDK's run_trace.py).
+func leaseTraceAttrs(lease domain.LeaseID, b domain.LeaseBinding) map[string]any {
+	attrs := map[string]any{"cambrian.lease.id": string(lease)}
+	if b.AgentID != "" {
+		attrs[domain.GenAIAgentName] = b.AgentID
+	}
+	if b.RunID != "" {
+		attrs["cambrian.run.id"] = string(b.RunID)
+	}
+	if b.StepIndex >= 0 && b.RunID != "" {
+		attrs["cambrian.step.index"] = b.StepIndex
+	}
+	if b.ConversationID != "" {
+		attrs[domain.GenAIConversationID] = b.ConversationID
+	}
+	return attrs
 }
 
 // beginLeaseCall runs the guards every managed call shares — lease lookup, the
@@ -478,6 +502,10 @@ func (g *SubstrateLLMGateway) beginLeaseCall(ctx context.Context, sessionID doma
 	ss, ok := g.sessions[sessionID]
 	def := g.defaultModelID
 	models := g.models
+	var binding domain.LeaseBinding
+	if ok {
+		binding = ss.Binding // read under the lock: BindLeaseAgent moves AgentID
+	}
 	g.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", sessionID)
@@ -494,7 +522,8 @@ func (g *SubstrateLLMGateway) beginLeaseCall(ctx context.Context, sessionID doma
 		return nil, fmt.Errorf("llm gateway: no model source wired (SetStepModels)")
 	}
 	lc := &leaseCall{ss: ss, candidates: candidates, sid: leaseSession(ctx, ss),
-		meter: g.meter.Load(), prompt: llm.RequestText(req), models: models}
+		meter: g.meter.Load(), prompt: llm.RequestText(req), models: models,
+		traceAttrs: leaseTraceAttrs(sessionID, binding)}
 	// ADR-0131 D3: the session ceiling is checked before any model is touched.
 	if err := admitLease(lc.meter, ss, lc.sid, lc.prompt); err != nil {
 		return nil, err
@@ -678,6 +707,7 @@ func (g *SubstrateLLMGateway) StreamChunks(ctx context.Context, sessionID domain
 		return err
 	}
 	defer g.trackCall(sessionID)()
+	ctx = domain.WithTraceAttributes(ctx, lc.traceAttrs)
 
 	// The stream is cancelled when this call returns. A Pass-1 cut stops reading
 	// early, and the Provider's layers (its concurrency slot, the breaker record)
@@ -817,6 +847,7 @@ func (g *SubstrateLLMGateway) GenerateWithToolsObserved(ctx context.Context, ses
 		return domain.GenerateResponse{}, err
 	}
 	defer g.trackCall(sessionID)()
+	ctx = domain.WithTraceAttributes(ctx, lc.traceAttrs)
 
 	var resp domain.GenerateResponse
 	var modelID string

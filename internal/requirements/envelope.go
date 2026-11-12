@@ -9,6 +9,7 @@ package requirements
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"unicode"
@@ -47,7 +48,7 @@ func ValidateEnvelope(env *domain.AnswerEnvelope, items []domain.RequirementItem
 	var out []domain.ItemResult
 	var vs []domain.EnvelopeViolation
 	seen := map[string]bool{}
-	for _, r := range env.ItemResults {
+	for ri, r := range env.ItemResults {
 		if !want[r.Item] {
 			vs = append(vs, domain.EnvelopeViolation{Item: r.Item, Rule: domain.ViolationUnknownItem,
 				Detail: fmt.Sprintf("item %q is not one this step answers (%s)", r.Item, joinIDs(items))})
@@ -60,10 +61,18 @@ func ValidateEnvelope(env *domain.AnswerEnvelope, items []domain.RequirementItem
 		}
 		kept := r
 		kept.Values = nil
-		for _, v := range r.Values {
+		for vi, v := range r.Values {
+			if nv, ok := domain.NormaliseListValue(v); ok {
+				// T-20261112-d6-rejects-a-list-value-sent-as-a-json-array: the one
+				// documented coercion; counted in the log because it is a schema
+				// smell (the worker's value field has no JSON type).
+				slog.Info("ADR-0145 D6: list value normalised from a JSON-array string",
+					"coerced", "list_from_json_string", "item", r.Item, "value", v.Name)
+				v = nv
+			}
 			v, why := resolveRecordIDs(v, ev)
 			if why == nil {
-				why = checkValue(v, ev)
+				why = checkValue(v, ev, fmt.Sprintf("item_results[%d].values[%d].value", ri, vi))
 			}
 			if why != nil {
 				why.Item = r.Item
@@ -80,7 +89,7 @@ func ValidateEnvelope(env *domain.AnswerEnvelope, items []domain.RequirementItem
 				Detail: fmt.Sprintf("no item_results entry for %s (%s)", it.ID, it.Text)})
 		}
 	}
-	for _, ref := range env.EvidenceRefs {
+	for _, ref := range expandJoinedRefs(env.EvidenceRefs, ev) {
 		if _, ok := ev.Entries[ref]; ok {
 			continue
 		}
@@ -108,6 +117,7 @@ func ValidateEnvelope(env *domain.AnswerEnvelope, items []domain.RequirementItem
 // Zero or several matching entries keep the item open with a violation that lists
 // the ledger ids the step may cite.
 func resolveRecordIDs(v domain.EnvelopeValue, ev Evidence) (domain.EnvelopeValue, *domain.EnvelopeViolation) {
+	v = splitJoinedRef(v, ev)
 	if ref := strings.TrimSpace(v.EvidenceRef); ref != "" && !domain.IsLedgerID(ref) {
 		id, n := ev.entryContaining(ref)
 		if n != 1 {
@@ -141,6 +151,56 @@ func resolveRecordIDs(v domain.EnvelopeValue, ev Evidence) (domain.EnvelopeValue
 	}
 	return v, &domain.EnvelopeViolation{Value: v.Name, Rule: domain.ViolationBadType,
 		Detail: fmt.Sprintf("a ref must be a ledger id (led_…); %q is not one and no entry of this step contains it: give a record identifier as type id citing the entry it appears in; %s", text, ev.available())}
+}
+
+// joinedRefs splits an evidence_ref that names several ledger ids in one string
+// ("led_a, led_b") into them, when every part is an entry of the step's evidence;
+// else nil. A list read from four files cites four entries, and one string field
+// was all the envelope offered: p05#3's correct four-receipt answer was rejected as
+// foreign_evidence for it, and the repair turn rebuilt the list wrongly
+// (T-20261109-plan-identifies-4-october-receipts-but-the-move).
+func joinedRefs(ref string, ev Evidence) []string {
+	parts := strings.FieldsFunc(ref, func(r rune) bool { return r == ',' || r == ';' || unicode.IsSpace(r) })
+	if len(parts) < 2 {
+		return nil
+	}
+	for _, p := range parts {
+		if _, ok := ev.Entries[p]; !ok {
+			return nil
+		}
+	}
+	return parts
+}
+
+// splitJoinedRef is the deterministic repair of a value citing several entries in
+// one evidence_ref: it cites the first of them whose body holds the value (the first
+// one for a type that is not deep-checked: list, text, bool).
+func splitJoinedRef(v domain.EnvelopeValue, ev Evidence) domain.EnvelopeValue {
+	parts := joinedRefs(strings.TrimSpace(v.EvidenceRef), ev)
+	if parts == nil {
+		return v
+	}
+	v.EvidenceRef = parts[0]
+	for _, p := range parts {
+		if e := ev.Entries[p]; e.Truncated || domain.EvidenceContains(v, e.Body) {
+			v.EvidenceRef = p
+			break
+		}
+	}
+	return v
+}
+
+// expandJoinedRefs is evidence_refs with every joined entry split (joinedRefs).
+func expandJoinedRefs(refs []string, ev Evidence) []string {
+	var out []string
+	for _, r := range refs {
+		if parts := joinedRefs(strings.TrimSpace(r), ev); parts != nil {
+			out = append(out, parts...)
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 func asID(v domain.EnvelopeValue, needle, entry string) domain.EnvelopeValue {
@@ -239,9 +299,11 @@ func (ev Evidence) available() string {
 	return "the ledger ids this step may cite: " + strings.Join(parts, ", ")
 }
 
-func checkValue(v domain.EnvelopeValue, ev Evidence) *domain.EnvelopeViolation {
+// checkValue checks one value; path is its place in the envelope
+// (item_results[i].values[j].value), named in a type violation.
+func checkValue(v domain.EnvelopeValue, ev Evidence, path string) *domain.EnvelopeViolation {
 	if why := domain.CheckValueType(v); why != "" {
-		return &domain.EnvelopeViolation{Value: v.Name, Rule: domain.ViolationBadType, Detail: why}
+		return &domain.EnvelopeViolation{Value: v.Name, Rule: domain.ViolationBadType, Detail: badTypeFeedback(path, v, why)}
 	}
 	if strings.TrimSpace(v.EvidenceRef) == "" {
 		return &domain.EnvelopeViolation{Value: v.Name, Rule: domain.ViolationNoEvidence,
@@ -269,4 +331,82 @@ func joinIDs(items []domain.RequirementItem) string {
 		ids = append(ids, it.ID)
 	}
 	return strings.Join(ids, ", ")
+}
+
+// maxFeedbackValue bounds the received value quoted back in a type violation.
+const maxFeedbackValue = 160
+
+// badTypeFeedback words a type violation for the repair turn the way the
+// re-asking libraries do (instructor; research note 2026-11-12 §5): the field's
+// path and name, the expected type, the value received (truncated), and a literal
+// corrected example of that field built from what was sent — specific enough
+// that a small model can copy it instead of repeating the same shape.
+func badTypeFeedback(path string, v domain.EnvelopeValue, why string) string {
+	got := strings.TrimSpace(string(v.Value))
+	if r := []rune(got); len(r) > maxFeedbackValue {
+		got = string(r[:maxFeedbackValue]) + "…"
+	}
+	if got == "" {
+		got = "nothing"
+	}
+	msg := fmt.Sprintf("%s (%q, type %s): %s. You sent: %s.", path, v.Name, v.Type, why, got)
+	if ex := correctedExample(v); ex != "" {
+		msg += ` Send it as: "value": ` + ex
+	}
+	return msg
+}
+
+// correctedExample is the value v should have had, as literal JSON, built from
+// what was sent where that is unambiguous (a comma- or line-separated text for a
+// list, the number inside a text for a number), else a generic example of the
+// type. "" for an unknown type (the violation lists the types).
+func correctedExample(v domain.EnvelopeValue) string {
+	var parsed any
+	_ = json.Unmarshal(v.Value, &parsed) // invalid JSON: parsed stays nil, the generic example is used
+	text, isText := parsed.(string)
+	text = strings.TrimSpace(text)
+	enc := func(x any) string {
+		b, err := json.Marshal(x)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
+	switch v.Type {
+	case domain.ValueList:
+		switch {
+		case isText && text != "":
+			var parts []string
+			for _, p := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == ';' || r == ',' }) {
+				if p = strings.TrimSpace(p); p != "" {
+					parts = append(parts, p)
+				}
+			}
+			return enc(parts)
+		case parsed != nil:
+			return enc([]any{parsed})
+		}
+		return `["first item", "second item"]`
+	case domain.ValueNumber, domain.ValueMoney:
+		if isText {
+			if f, ok := domain.ParseAmount(text); ok {
+				return enc(f)
+			}
+		}
+		return "1250.5"
+	case domain.ValueDate:
+		return `"2026-01-31"`
+	case domain.ValueBool:
+		return "true"
+	case domain.ValueObject:
+		return `{"field": "value"}`
+	case domain.ValueString, domain.ValueCitation, domain.ValueID:
+		if parsed != nil && !isText {
+			return enc(strings.TrimSpace(string(v.Value)))
+		}
+		return `"the text as the evidence states it"`
+	case domain.ValueRef:
+		return `"led_…" (a ledger id from this step's evidence)`
+	}
+	return ""
 }

@@ -149,7 +149,7 @@ func TestBuildStepDependencies_UnavailableAndBounded(t *testing.T) {
 		{Query: "big"}, {Query: "lost"}, {Query: "use", DependsOn: []int{0, 1}},
 	}}
 	master := map[string]string{"step_0_result": strings.Repeat("x", 5000), "step_0_cid": "cid0"}
-	sd := buildStepDependencies(master, plan, 2, 1000, nil)
+	sd := buildStepDependencies(master, plan, 2, domain.DependencyFit{BudgetBytes: 1000}, nil)
 	deps, err := domain.DecodeStepDependencies(sd.manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -157,9 +157,9 @@ func TestBuildStepDependencies_UnavailableAndBounded(t *testing.T) {
 	if deps[1].Status != domain.StepDependencyUnavailable {
 		t.Errorf("dep 1 = %+v", deps[1])
 	}
-	if !deps[0].Shortened || len(deps[0].Content) != 1000 || deps[0].Bytes != 5000 || deps[0].CID != "cid0" {
-		t.Errorf("dep 0 not bounded to cid + preview: shortened=%v len=%d bytes=%d cid=%q",
-			deps[0].Shortened, len(deps[0].Content), deps[0].Bytes, deps[0].CID)
+	if !deps[0].Shortened || len(deps[0].Content)+len(deps[0].Tail) != 1000 || deps[0].Tail == "" || deps[0].Bytes != 5000 || deps[0].CID != "cid0" {
+		t.Errorf("dep 0 not bounded to beginning + end + cid: shortened=%v head=%d tail=%d bytes=%d cid=%q",
+			deps[0].Shortened, len(deps[0].Content), len(deps[0].Tail), deps[0].Bytes, deps[0].CID)
 	}
 	// The cache inputs are the FULL results, not the bounded preview.
 	if len(sd.results["step_0_result"]) < 5000 {
@@ -191,5 +191,22 @@ func TestStepCache_DependentKeyedOnUpstreamResults(t *testing.T) {
 	}
 	if a, b := keysFor("upstream A"), keysFor("upstream B"); a == "" || a == b {
 		t.Fatalf("dependent step keyed the same for different upstream results (%q)", a)
+	}
+}
+
+// T-20261112-summarise-a-document-step-gets-only-the-first: with the budget sized
+// from the receiving worker (execution.content defaults: half of a 32000-token
+// prompt budget), p12's 37,444-byte report reaches the summarising step whole.
+func TestBuildStepDependencies_DeliversWholeUnderReceiverBudget(t *testing.T) {
+	report := strings.Repeat("r", 37444-len("Leipzig")) + "Leipzig"
+	plan := &domain.ExecutionPlan{Steps: []domain.Step{{Query: "extract"}, {Query: "summarise", DependsOn: []int{0}}}}
+	master := map[string]string{"step_0_result": report, "step_0_cid": "led_report"}
+	fit := domain.DependencyFit{BudgetBytes: 16000 * 4, PageBytes: 16000} // config.ContentConfig{} defaults
+	deps, err := domain.DecodeStepDependencies(buildStepDependencies(master, plan, 1, fit, nil).manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deps[0].Shortened || len(deps[0].Content) != 37444 || !strings.HasSuffix(deps[0].Content, "Leipzig") {
+		t.Fatalf("the report was shortened: shortened=%v len=%d", deps[0].Shortened, len(deps[0].Content))
 	}
 }

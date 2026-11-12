@@ -56,7 +56,7 @@ Legend:
 | Web fetch | `fetch` | PyPI `mcp-server-fetch==2026.11.4` (2026-11-04), MIT, MCP steering group (official reference) | uvx | none | `fetch` R+E | Y | not verified | `fetch` |
 | Web search, keyless | `web-search` | PyPI `duckduckgo-mcp-server==0.7.0` (2026-09-04), MIT, Nick Clyde (community) | uvx | none | R+E per tool; FC otherwise | Y | not verified | `search`, `fetch_content` |
 | Filesystem | `filesystem` | npm `@modelcontextprotocol/server-filesystem@1.0.0` (2026-10-11), official. The latest is 2.2.0 (2026-11-04), which needs node>=24 | npx (node 22+) | none; roots are given as args | reads R; write/edit/append/create/move/copy D; FC | Y | not verified | `read_text_file`, `read_file` (deprecated alias), `read_media_file`, `read_multiple_files`, `list_directory`, `list_directory_with_sizes`, `directory_tree`, `search_files`, `get_file_info`, `list_allowed_directories`, `write_file`, `edit_file`, `append_file`\*, `create_directory`, `move_file`, `copy_file`\* |
-| Code sandbox | `code-sandbox` | PyPI `llm-sandbox[mcp-docker]==0.3.46` (2026-10-16), MIT, Duy Huynh (vndee, community, 1.1k stars, active) | uv + **Docker** | none; `SANDBOX_*` hardening variables | `execute_code` D (read+write+egress); language info R; FC | Y | not verified | `execute_code` (captures plots as images), `get_supported_languages`, `get_language_details` |
+| Code sandbox | `code-sandbox` | PyPI `llm-sandbox[mcp-docker]==0.3.46` (2026-10-16), MIT, Duy Huynh (vndee, community, 1.1k stars, active), launched through Cambrian's `tools/code_sandbox/server.py` | uv + **Docker** + the image `cambrian/code-sandbox:py311-1` (`make sandbox-image`) | none; `SANDBOX_IMAGE` and `SANDBOX_*` hardening variables | `execute_code` D (read+write+egress, `staged_inputs`); language info R; FC | Y | not verified | `execute_code` (captures plots as images; `inputs` staged per run, see below), `get_supported_languages`, `get_language_details` |
 | Shell | `shell` | PyPI `mcp-shell-server==1.1.14` (2026-10-19), MIT, tumf (community) | uvx (Python 3.11+) | none; `ALLOW_COMMANDS` | `shell_execute` D (read+write+egress) | Y | not verified | `shell_execute` |
 | Git | `git` | PyPI `mcp-server-git==2026.11.4` (2026-11-04), MIT, official | uvx | none; `--repository` | history/diff R; add/commit/reset/branch/checkout/merge D; FC | Y | not verified | `git_status`, `git_diff_unstaged`, `git_diff_staged`, `git_diff`, `git_log`, `git_show`, `git_branch`, `git_remote`, `git_add`, `git_commit`, `git_reset`, `git_create_branch`, `git_checkout`, `git_merge` |
 | SQLite | `sqlite` | npm `@toolbox-sdk/server@1.15.0` (2026-10-23), Apache-2.0, Google (googleapis/mcp-toolbox) | npx | `SQLITE_DATABASE` (a path, not a secret) | `list_tables` R; `execute_sql` D | Y | not verified | `list_tables`, `execute_sql` |
@@ -261,14 +261,39 @@ low_privilege]; notes: …`, and a refusal shows in the health `last_error`
 start re-downloads; `code-sandbox` needs the Docker engine pipe, which a low-integrity process
 likely cannot open (give it `trust_tier: vetted` by operator decision, or run it elsewhere).
 - **`code-sandbox` is the only entry with real isolation**, and only as configured:
-  - Code runs in a fresh Docker container.
-  - Harden it by setting these in the kernel environment:
+  - Code runs in a fresh Docker container. The catalog and `mcp.json.example` launch
+    llm-sandbox through Cambrian's `tools/code_sandbox/server.py`, run from the kernel's
+    directory (`uv run --directory ${CAMBRIAN_KERNEL_DIR} … python tools/code_sandbox/server.py`;
+    `${CAMBRIAN_KERNEL_DIR}` is filled by the kernel, never by a setting).
+  - Hardening (the catalog's field defaults; `mcp.json.example` sets them as `env_values`):
     `BACKEND=docker`, `SANDBOX_NETWORK_MODE=none`, `SANDBOX_READ_ONLY=true`,
     `SANDBOX_CAP_DROP=ALL`, `SANDBOX_SECURITY_OPT=no-new-privileges:true`,
-    `SANDBOX_MEMORY=2g`, `SANDBOX_CPU_COUNT=1`.
-  - With `SANDBOX_NETWORK_MODE=none`, on-demand `pip install` of pandas, numpy or matplotlib
-    fails. Use an image with them pre-installed, or accept network access and keep egress
-    declared.
+    `SANDBOX_MEMORY=2g`, `SANDBOX_CPU_COUNT=1`. Upstream alone cannot run under
+    `SANDBOX_READ_ONLY=true` (it copies the code into a read-only root: every call failed);
+    the wrapper gives each call its own writable `/sandbox` and `/tmp`, deleted afterwards.
+  - **Image** (owner decision 2026-11-10): `SANDBOX_IMAGE=cambrian/code-sandbox:py311-1`, built on
+    the Docker host by `make sandbox-image` (`tools/code_sandbox/image/Dockerfile`: llm-sandbox's
+    Python 3.11 image pinned by digest, plus pandas 2.2.3, numpy 2.2.6, matplotlib 3.10.3,
+    openpyxl 3.1.5; the script proves the imports with no network). Nothing is installed at run
+    time: a requested library the image does not list is refused, and a missing image is an
+    error naming the build command, never a pull or a pip install.
+  - **The person's files, per run** (owner decision 2026-11-10, option C,
+    `decisions/code-sandbox-files-per-run-mount.md`). `execute_code` takes `inputs`: ledger ids
+    (`led_…`) or paths the person's file tools show. Its catalog policy says
+    `"staged_inputs": true`, so the kernel (`execution.tools.staged_inputs`, default on) reads
+    each input under the caller's access — a ledger id through the enforced ledger reader, a
+    path through `mcp:filesystem/read_text_file` (`read_media_file` for spreadsheets, images,
+    PDF, archives) run as the caller — and writes exactly those files into a fresh temporary
+    folder. One unreadable input refuses the whole call. The folder's host path reaches the
+    server only in the request's `_meta`; the server mounts it read-only at `/inputs` (Python
+    starts there; `INPUTS` maps each input to its path) and a writable `/outputs`, for that one
+    container. Every file left in `/outputs` becomes an artifact ledger entry derived from the
+    inputs (the result names the ids), and the folder is deleted. The server refuses `inputs`
+    that did not come with the kernel's folder. The staging root must be visible to the server
+    process: true for a stdio server on the kernel host, NOT for one on the `docker` runner.
+  - `SANDBOX_MOUNTS` (`<host dir>=><container dir>;…`, read-only on every call) remains for tests
+    and local development only: on a shared sandbox it would show one person's files to
+    everyone's runs.
   - Plots come back as images (base64 PNG content).
   - `execute_code` stays dangerous with write+egress until a live run proves the hardening took.
   - Windows-native backends (`windows-mxc`, `wsl2-bubblewrap`) exist in the llm-sandbox
@@ -576,6 +601,18 @@ Keyed integrations (GitHub, Google, Microsoft 365, Slack, Brave/Tavily/Exa, Post
 - added: `web-search`, `code-sandbox`, `time`, `markitdown`.
 
 **Code sandbox hardening** (SANDBOX_NETWORK_MODE=none, SANDBOX_READ_ONLY=true, SANDBOX_CAP_DROP=ALL, no-new-privileges, memory/CPU caps) is now a per-server `env_values` setting; installing `code-sandbox` from the console applies those values by default. With the network off, the sandbox image must already contain pandas, numpy and matplotlib.
+
+**The person's files in the code sandbox.** Upstream llm-sandbox runs each call in a fresh container
+whose working directory is `/sandbox`; no host file is visible and the server has no mount setting,
+so code cannot open a file the filesystem tool shows (`FileNotFoundError: 'Finance/bank-export.csv'`,
+personal use-case run 2026-11-09). `tools/code_sandbox/server.py` is the same server plus
+`SANDBOX_MOUNTS` (`<host dir>=><container dir>;...`): each directory is bind-mounted READ-ONLY and
+Python code starts in the first one, so relative paths resolve as in the filesystem server. Launch it
+in place of `-m llm_sandbox.mcp_server.server` (same `uv run --with llm-sandbox[mcp-docker]==0.3.46`)
+and give `SANDBOX_MOUNTS` (an `env_values` entry) the SAME root as the person's filesystem server, so
+the sandbox reads nothing the filesystem tool could not. Unset, it is the upstream server. The
+use-case suite renders it this way; the catalog and `mcp.json.example` still launch upstream until
+per-person roots for catalog installs are decided (ticket T-20261110-code-sandbox-cannot-see-the-person-s-files-in).
 
 ### Windows terminal: Desktop Commander (added 2026-11-05)
 

@@ -2,9 +2,12 @@ package requirements
 
 import (
 	"fmt"
+	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -17,12 +20,15 @@ import (
 // finish in parallel).
 //
 // Per type (D5.3):
-//   - answer: satisfied by at least one validated value;
-//   - figure: by a validated number, money amount or date (the validator already
-//     refused one that cites model text);
+//   - answer: satisfied by at least one validated value of a type the item
+//     expects (RequirementItem.Expects; none declared: any type);
+//   - figure: the same, with a number, money amount or date when it declares no
+//     expects (the validator already refused a figure value that cites model text);
 //   - document: by a value citing an artifact entry, or a done side-effecting call
 //     of the step (the draft or file exists in the action ledger);
-//   - write: by a done side-effecting call of the step;
+//   - write: by a done side-effecting call of the step to one of the item's
+//     declared targets (targetActions; none declared: any done write of the step);
+//     another tool succeeding never does;
 //   - constraint: never satisfied; a done or attempted call whose effects the
 //     constraint forbids fails it (ObserveActions).
 //
@@ -85,6 +91,10 @@ type ItemValue struct {
 	domain.EnvelopeValue
 	Step   int    `json:"step"`
 	Member string `json:"member,omitempty"`
+	// Refused is set while the judge has not accepted a result carrying the value
+	// (a type the item does not expect, a refused claim). It is kept for the
+	// report but is not progress (EndStage).
+	Refused bool `json:"refused,omitempty"`
 }
 
 // NewCoverage starts every item of c open.
@@ -125,6 +135,10 @@ type StepObservation struct {
 	// draft itself: the step output is recorded in the run ledger by the executor,
 	// so a document is finished inside Cambrian (ADR-0145 D14.6).
 	AnswerText string
+	// SetMembers are the fan-out members the step consumed (the FanOutItem of each
+	// fan-out child it depends on). A write item answered by one ordinary step over
+	// that set needs a done write per member (coverMembersByWrites).
+	SetMembers []string
 }
 
 // ExpectMembers ties an item to a set: one accepted result per member is required.
@@ -176,16 +190,24 @@ func (c *Coverage) ObserveStep(o StepObservation) {
 }
 
 func (c *Coverage) applyResult(st *ItemState, o StepObservation, r domain.ItemResult, violations []string) {
-	// Values first: they count as evidence (progress) whatever the claim, and a
-	// disagreement with an earlier value is a conflict.
+	// Values first: they are kept with their evidence whatever the claim, and a
+	// disagreement with an earlier accepted value is a conflict. A value counts as
+	// progress (fingerprint) only once the judge accepted the result it came with:
+	// a worker re-sending a refused value under a new name each stage is a stall,
+	// not progress (T-20261112-checklist-types-the-source-page-for-each: p03 ran to
+	// stage 7 re-reporting the same refused URLs).
+	var added []int
 	for _, v := range r.Values {
 		if prev, ok := st.conflictWith(v, o); ok {
 			st.Conflict = fmt.Sprintf("%s is %q (step %d) and %q (step %d)", v.Name, prev.Text(), prev.Step, v.Text(), o.Step)
 			continue
 		}
-		if !st.hasValue(v, o) {
-			st.Values = append(st.Values, ItemValue{EnvelopeValue: v, Step: o.Step, Member: o.Member})
+		i := st.valueIndex(v, o)
+		if i < 0 {
+			st.Values = append(st.Values, ItemValue{EnvelopeValue: v, Step: o.Step, Member: o.Member, Refused: true})
+			i = len(st.Values) - 1
 		}
+		added = append(added, i)
 		st.Evidence = appendUniqueStr(st.Evidence, v.EvidenceRef)
 	}
 	if st.Conflict != "" {
@@ -197,6 +219,11 @@ func (c *Coverage) applyResult(st *ItemState, o StepObservation, r domain.ItemRe
 		st.observeTargets(o)
 	}
 	accepted, status, reason := c.judge(st, o, r)
+	if accepted {
+		for _, i := range added {
+			st.Values[i].Refused = false
+		}
+	}
 	if len(violations) > 0 && !accepted {
 		reason = strings.TrimSpace(reason + " (" + strings.Join(violations, "; ") + ")")
 	}
@@ -205,6 +232,9 @@ func (c *Coverage) applyResult(st *ItemState, o StepObservation, r domain.ItemRe
 			st.Reason = reason
 		}
 		return
+	}
+	if st.Item.Type == domain.RequirementWrite && o.Member == "" {
+		st.coverMembersByWrites(o)
 	}
 	if len(st.Members) > 0 || o.Member != "" {
 		if o.Member != "" {
@@ -236,33 +266,47 @@ func (c *Coverage) judge(st *ItemState, o StepObservation, r domain.ItemResult) 
 	// ADR-0145 D14: a write or document item that has an executed write is
 	// satisfied whatever the worker claimed, and a refused target alongside it is
 	// kept per target (st.Targets), never turning the item not_permitted.
+	// The write must be one to the item's own target
+	// (T-20261112-coverage-settles-a-write-item-on-any-done): another tool's
+	// success (a create_directory beside a failed write_file) never settles it.
 	if (st.Item.Type == domain.RequirementWrite || st.Item.Type == domain.RequirementDocument) && r.Status != domain.RequirementSatisfied {
-		if a, ok := doneAction(o.Actions); ok {
+		if a, ok := doneAction(st.targetActions(o)); ok {
 			return true, domain.RequirementSatisfied, "executed by " + a.Tool + st.refusedTargetsNote()
 		}
 	}
 	switch r.Status {
 	case domain.RequirementSatisfied:
 		switch st.Item.Type {
-		case domain.RequirementAnswer:
-			if len(r.Values) > 0 {
-				return true, domain.RequirementSatisfied, ""
-			}
-			return false, "", "satisfied was claimed with no value backed by evidence"
-		case domain.RequirementFigure:
+		case domain.RequirementAnswer, domain.RequirementFigure:
+			// The item's expected value types (requirement_checklist v3 expects;
+			// T-20261112-checklist-types-the-source-page-for-each): "the source page"
+			// is answered by a citation, never by a figure. A figure item that
+			// declares none keeps the figure types. Whether a figure VALUE came from
+			// a tool result or a calculation is checked per value by the envelope
+			// validator (D6), whatever the item expects.
+			exp := itemExpects(st.Item)
 			for _, v := range r.Values {
-				if domain.FigureValueType(v.Type) {
+				if domain.ExpectsValueType(exp, v.Type) {
 					return true, domain.RequirementSatisfied, ""
 				}
 			}
-			return false, "", "no number, money amount or date from a tool result or calculation"
+			if len(r.Values) == 0 {
+				if st.Item.Type == domain.RequirementFigure && len(st.Item.Expects) == 0 {
+					return false, "", "no number, money amount or date from a tool result or calculation"
+				}
+				return false, "", "satisfied was claimed with no value backed by evidence"
+			}
+			if st.Item.Type == domain.RequirementFigure && len(st.Item.Expects) == 0 {
+				return false, "", "no number, money amount or date from a tool result or calculation (the values sent were " + valueTypesText(r.Values) + ")"
+			}
+			return false, "", "no value of the type the item expects (" + strings.Join(exp, ", ") + "); the values sent were " + valueTypesText(r.Values)
 		case domain.RequirementDocument:
 			for _, v := range r.Values {
 				if o.EvidenceKinds[v.EvidenceRef] == domain.LedgerArtifact {
 					return true, domain.RequirementSatisfied, ""
 				}
 			}
-			if a, ok := doneAction(o.Actions); ok {
+			if a, ok := doneAction(st.targetActions(o)); ok {
 				return true, domain.RequirementSatisfied, "drafted by " + a.Tool + st.refusedTargetsNote()
 			}
 			// ADR-0145 D14.6: the draft is the step's own answer, kept in the run
@@ -272,13 +316,14 @@ func (c *Coverage) judge(st *ItemState, o StepObservation, r domain.ItemResult) 
 			}
 			return false, "", "no draft: return the full text of the document as the answer"
 		case domain.RequirementWrite:
-			if a, ok := doneAction(o.Actions); ok {
+			acts := st.targetActions(o)
+			if a, ok := doneAction(acts); ok {
 				return true, domain.RequirementSatisfied, "executed by " + a.Tool + st.refusedTargetsNote()
 			}
-			if a, ok := refusedAction(o.Actions); ok {
+			if a, ok := refusedAction(acts); ok {
 				return true, domain.RequirementNotPermitted, "refused: " + firstNonEmpty(a.Detail, string(a.ApprovalState), a.Tool)
 			}
-			return false, "", "no executed write in the action ledger"
+			return false, "", st.noWriteReason(o, acts)
 		}
 	case domain.RequirementNotFound:
 		switch {
@@ -307,6 +352,31 @@ func (c *Coverage) judge(st *ItemState, o StepObservation, r domain.ItemResult) 
 		return false, "", firstNonEmpty(r.Reason, "the worker reported failure")
 	}
 	return false, "", firstNonEmpty(r.Reason, "no accepted result")
+}
+
+// figureTypes are what a figure item that declares no expects takes.
+var figureTypes = []string{domain.ValueNumber, domain.ValueMoney, domain.ValueDate}
+
+// itemExpects is the value types an answer or figure item takes: its declared
+// expects, else any type for an answer and the figure types for a figure.
+func itemExpects(it domain.RequirementItem) []string {
+	if len(it.Expects) > 0 {
+		return it.Expects
+	}
+	if it.Type == domain.RequirementFigure {
+		return figureTypes
+	}
+	return nil
+}
+
+// valueTypesText names the values a result sent with their types ("total
+// (string)").
+func valueTypesText(vs []domain.EnvelopeValue) string {
+	var parts []string
+	for _, v := range vs {
+		parts = append(parts, v.Name+" ("+v.Type+")")
+	}
+	return strings.Join(parts, ", ")
 }
 
 // ObserveActions checks the constraints against the plan's side-effecting calls
@@ -464,7 +534,17 @@ func (c *Coverage) fingerprint() string {
 			covered = append(covered, m)
 		}
 		sort.Strings(covered)
-		fmt.Fprintf(&b, "%s=%s|%d|%d|%s|%s;", st.Item.ID, st.Status, len(st.Values), len(st.Evidence),
+		// Only accepted values and their evidence are progress; a refused value
+		// changes nothing the judge decided.
+		var values int
+		var evidence []string
+		for _, v := range st.Values {
+			if !v.Refused {
+				values++
+				evidence = appendUniqueStr(evidence, v.EvidenceRef)
+			}
+		}
+		fmt.Fprintf(&b, "%s=%s|%d|%d|%s|%s;", st.Item.ID, st.Status, values, len(evidence),
 			strings.Join(covered, ","), st.Conflict)
 	}
 	return b.String()
@@ -503,6 +583,205 @@ func (st *ItemState) observeTargets(o StepObservation) {
 	}
 }
 
+// targetActions are the step's side-effecting calls that can carry out the write
+// or document item st: the per-target effect record (kind = write, target, status)
+// matched against the targets the item DECLARES (ADR-0145 D5.3/D14;
+// requirement_checklist v3, T-20261112-write-target-coverage-reads-title-pdf-from-a).
+// Every action in the plan action ledger is already write-class: the ledger
+// records only calls whose tool the effect classification marks as changing the
+// world (SystemTool.SideEffecting, network/plan_actions.go). What is checked here
+// is WHICH target was written, so a done create_directory never settles "save the
+// CSV at …/pricing.csv" while every write_file to that path failed.
+//
+// The item's targets come from the deriver (RequirementItem.Targets), validated
+// in code at derivation: an exact value is verbatim in the request, a glob
+// compiles. When the item declares any, only the calls whose target matches one
+// of them count. When it declares none (the target is unknown: "save it in the
+// archive"), every write-class call of the step counts. The item's text is never
+// parsed for targets: free text mixes literal names with templates and examples
+// ("in the form \"YYYY-MM-DD Title.pdf\"" once made title.pdf the target), and
+// code cannot tell them apart. The worker's claim never decides; only the
+// kernel's record of the call does.
+func (st *ItemState) targetActions(o StepObservation) []domain.PlanAction {
+	if len(st.Item.Targets) == 0 {
+		return o.Actions
+	}
+	var named []domain.PlanAction
+	for _, a := range o.Actions {
+		if actionMatches(a, st.Item.Targets) {
+			named = append(named, a)
+		}
+	}
+	return named
+}
+
+// noWriteReason says why a write item is still open, for the next stage's planner:
+// the item's declared targets, and what the step's calls did and wrote instead, so
+// a mismatch between the declared target and the written one is visible.
+func (st *ItemState) noWriteReason(o StepObservation, acts []domain.PlanAction) string {
+	declared := targetsText(st.Item.Targets)
+	if len(acts) == 0 {
+		if len(o.Actions) > 0 && declared != "" {
+			var others []string
+			for _, a := range o.Actions {
+				s := a.Tool + " " + a.Status
+				if v := domain.TargetValue(a.Target); v != "" {
+					s += " (wrote " + v + ")"
+				}
+				others = append(others, s)
+			}
+			return fmt.Sprintf("no executed write to %s in the action ledger (the step's other calls did not match it: %s)",
+				declared, strings.Join(others, "; "))
+		}
+		return "no executed write in the action ledger"
+	}
+	last := acts[len(acts)-1]
+	what := "the write"
+	if declared != "" {
+		what = "the write to " + declared
+	}
+	return fmt.Sprintf("%s did not execute: %s %s (%s); it must be done again", what, last.Tool, last.Status,
+		firstNonEmpty(last.Detail, "no detail"))
+}
+
+// targetsText renders declared targets for a reason ("C:/out/pricing.csv",
+// "Receipts/????-??-?? *.pdf (pattern)").
+func targetsText(ts []domain.ItemTarget) string {
+	var parts []string
+	for _, t := range ts {
+		s := t.Value
+		if t.Match == domain.TargetMatchGlob {
+			s += " (pattern)"
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
+}
+
+var targetEmailRe = regexp.MustCompile(`[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+
+// normTarget normalises a target value or pattern for comparison: lower case,
+// whitespace folded (the write record folds it too), Windows separators as
+// forward slashes, no trailing separator.
+func normTarget(s string) string {
+	s = strings.ToLower(strings.Join(strings.Fields(strings.ReplaceAll(s, `\`, "/")), " "))
+	if len(s) > 1 {
+		s = strings.TrimRight(s, "/")
+	}
+	return s
+}
+
+// actionMatches reports whether a call reached one of the declared targets: its
+// write-record target (domain.WriteTargets.Key; a move/rename/copy records its
+// destination), else, for a tool no rule names a target for, any of its argument
+// values.
+func actionMatches(a domain.PlanAction, targets []domain.ItemTarget) bool {
+	if a.Target != "" {
+		return valueMatches(domain.TargetValue(a.Target), targets)
+	}
+	for _, v := range a.Args {
+		if valueMatches(v, targets) {
+			return true
+		}
+	}
+	return false
+}
+
+// valueMatches reports whether a target value (one value, or a list joined by
+// commas as the write record keeps one) matches a declared target.
+func valueMatches(value string, targets []domain.ItemTarget) bool {
+	values := []string{value}
+	if strings.Contains(value, ",") {
+		values = append(values, strings.Split(value, ",")...)
+	}
+	for _, raw := range values {
+		v := normTarget(raw)
+		if v == "" {
+			continue
+		}
+		for _, t := range targets {
+			if targetMatches(t, v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// targetMatches reports whether a normalised value v matches declared target t.
+//   - exact: the same value; the same address (recipient); for a file or folder
+//     also the same path written relative or absolute (one ends with the other at
+//     a separator); a folder is also matched by anything written inside it.
+//   - glob: path.Match of the pattern against the value, or against the value's
+//     last segments when the pattern is a relative path ("Receipts/*.pdf" matches
+//     "c:/users/demo/documents/receipts/x.pdf"); for a folder, also against the
+//     folder the value is in.
+func targetMatches(t domain.ItemTarget, v string) bool {
+	p := normTarget(t.Value)
+	if p == "" {
+		return false
+	}
+	if t.Match == domain.TargetMatchGlob {
+		cands := []string{v}
+		if t.Kind == domain.TargetKindFolder {
+			cands = append(cands, path.Dir(v))
+		}
+		for _, c := range cands {
+			if globMatches(p, c) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case v == p:
+		return true
+	case t.Kind == domain.TargetKindRecipient || targetEmailRe.MatchString(p):
+		addr := targetEmailRe.FindString(v)
+		return addr != "" && addr == targetEmailRe.FindString(p)
+	case t.Kind == domain.TargetKindRecord:
+		return false
+	}
+	if pathSuffix(v, p) || pathSuffix(p, v) {
+		return true
+	}
+	if t.Kind == domain.TargetKindFolder {
+		// Something written inside the folder: its parent path ends with the folder.
+		for d := path.Dir(v); d != "." && d != "/"; {
+			if d == p || pathSuffix(d, p) {
+				return true
+			}
+			nd := path.Dir(d)
+			if nd == d {
+				break
+			}
+			d = nd
+		}
+	}
+	return false
+}
+
+// pathSuffix reports whether long ends with short at a path separator.
+func pathSuffix(long, short string) bool {
+	short = strings.TrimPrefix(short, "/")
+	return short != "" && strings.HasSuffix(long, "/"+short)
+}
+
+// globMatches matches pattern against v, or against v's last segments when the
+// pattern has fewer segments than v (a relative pattern).
+func globMatches(pattern, v string) bool {
+	if ok, err := path.Match(pattern, v); err == nil && ok {
+		return true
+	}
+	ps := strings.Split(pattern, "/")
+	vs := strings.Split(v, "/")
+	if len(ps) >= len(vs) {
+		return false
+	}
+	ok, err := path.Match(pattern, strings.Join(vs[len(vs)-len(ps):], "/"))
+	return err == nil && ok
+}
+
 // refusedTargetsNote names the targets that were not written, for the reason of
 // an item satisfied by its other targets.
 func (st *ItemState) refusedTargetsNote() string {
@@ -518,6 +797,86 @@ func (st *ItemState) refusedTargetsNote() string {
 	return " (not written: " + strings.Join(parts, "; ") + ")"
 }
 
+// coverMembersByWrites is D5.6 for a write done by ONE ordinary step over a set
+// (T-20261109-plan-identifies-4-october-receipts-but-the-move: a step moved 3 of the
+// 4 receipts its fan-out inputs named, and one done move_file settled the item, so
+// the reply said they were all moved). When a done write of the step names a member
+// of the set it consumed (an identifier of the member in the call's arguments), the
+// writes are per member: the whole set becomes the item's members and each member
+// is covered only by a done write naming it, so a member with no write keeps the
+// item open. A write naming no member (one folder created for all of them) is not
+// per member and leaves the item as before. Members of earlier stages are covered
+// by later writes too.
+func (st *ItemState) coverMembersByWrites(o StepObservation) {
+	var args []string
+	for _, a := range o.Actions {
+		if a.Status != domain.PlanActionDone {
+			continue
+		}
+		for _, v := range a.Args {
+			args = append(args, strings.ToLower(v))
+		}
+	}
+	if len(args) == 0 {
+		return
+	}
+	named := func(member string) bool {
+		for _, tok := range memberTokens(member) {
+			for _, a := range args {
+				if strings.Contains(a, tok) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	perMember := false
+	for _, m := range o.SetMembers {
+		if named(m) {
+			perMember = true
+			break
+		}
+	}
+	if perMember {
+		for _, m := range o.SetMembers {
+			if m != "" && !containsStr(st.Members, m) {
+				st.Members = append(st.Members, m)
+			}
+		}
+	}
+	for _, m := range st.Members {
+		if !st.Covered[m] && named(m) {
+			if st.Covered == nil {
+				st.Covered = map[string]bool{}
+			}
+			st.Covered[m] = true
+		}
+	}
+}
+
+// memberTokens are the identifiers a fan-out member names: tokens with a letter and
+// a digit, dot or underscore ("scan_0041.pdf", "MSG-000082", "INV-7"), lowercased.
+// A member with none (plain words) is named by its whole text.
+func memberTokens(member string) []string {
+	var out []string
+	for _, f := range strings.FieldsFunc(member, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(",;()\"'[]{}/\\", r)
+	}) {
+		f = strings.ToLower(strings.TrimRight(f, ".:"))
+		if len(f) < 4 || !strings.ContainsAny(f, "abcdefghijklmnopqrstuvwxyz") ||
+			!strings.ContainsAny(f, "0123456789._") {
+			continue
+		}
+		out = append(out, f)
+	}
+	if len(out) == 0 {
+		if t := strings.ToLower(strings.TrimSpace(member)); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func (st *ItemState) missing() []string {
 	var out []string
 	for _, m := range st.Members {
@@ -530,22 +889,25 @@ func (st *ItemState) missing() []string {
 
 // conflictWith finds an accepted value of the same name for the same member,
 // from another step, that disagrees with v.
+// A refused value contests nothing: it was never accepted.
 func (st *ItemState) conflictWith(v domain.EnvelopeValue, o StepObservation) (ItemValue, bool) {
 	for _, p := range st.Values {
-		if p.Name == v.Name && p.Member == o.Member && p.Step != o.Step && !sameValue(p.EnvelopeValue, v) {
+		if !p.Refused && p.Name == v.Name && p.Member == o.Member && p.Step != o.Step && !sameValue(p.EnvelopeValue, v) {
 			return p, true
 		}
 	}
 	return ItemValue{}, false
 }
 
-func (st *ItemState) hasValue(v domain.EnvelopeValue, o StepObservation) bool {
-	for _, p := range st.Values {
+// valueIndex is the index of the stored value equal to v (same name, member and
+// value), or -1.
+func (st *ItemState) valueIndex(v domain.EnvelopeValue, o StepObservation) int {
+	for i, p := range st.Values {
 		if p.Name == v.Name && p.Member == o.Member && sameValue(p.EnvelopeValue, v) {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
 // sameValue compares two values by meaning where the type allows: numbers by

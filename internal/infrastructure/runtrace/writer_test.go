@@ -102,3 +102,45 @@ func TestWriter_ConcurrentSpansAreWholeLines(t *testing.T) {
 		t.Fatalf("lines = %d, want 20", n)
 	}
 }
+
+// A start event is written (and flushed) at once with the caller's span id,
+// "cambrian.phase": "start" and end time 0; its finished span shares the id.
+// Attributes on ctx (domain.WithTraceAttributes) land on both, a span's own win.
+func TestWriter_StartEventPairsAndFlushes(t *testing.T) {
+	w, err := Open(t.TempDir(), "k", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	ctx := domain.WithTraceAttributes(t.Context(), map[string]any{"cambrian.lease.id": "lease-1", "x": "ctx"})
+	id, start := domain.StartTraceSpan(ctx, w, domain.TraceSpan{Name: "chat m", Kind: "CLIENT",
+		Attributes: map[string]any{"x": "own", domain.GenAIInputMessages: []map[string]any{domain.GenAITextMessage("user", "hi")}}})
+	// Not closed: a follower must already see the line.
+	spans := readSpans(t, w.Path())
+	if len(spans) != 1 {
+		t.Fatalf("start event not flushed: %d lines", len(spans))
+	}
+	a := spans[0]["attributes"].(map[string]any)
+	if spans[0]["span_id"] != id || a[domain.TraceAttrPhase] != "start" || spans[0]["end_time_unix_nano"].(float64) != 0 {
+		t.Errorf("start event: %v", spans[0])
+	}
+	if a["cambrian.lease.id"] != "lease-1" || a["x"] != "own" {
+		t.Errorf("ctx attrs: %v", a)
+	}
+	w.Span(ctx, domain.TraceSpan{Name: "chat m", Start: start, End: start.Add(time.Second), SpanID: id})
+	spans = readSpans(t, w.Path())
+	end := spans[1]
+	ea := end["attributes"].(map[string]any)
+	if end["span_id"] != id || ea[domain.TraceAttrPhase] != nil || end["start_time_unix_nano"] != spans[0]["start_time_unix_nano"] {
+		t.Errorf("end span: %v", end)
+	}
+}
+
+// With tracing off no tracer is wired; StartTraceSpan on a nil tracer writes
+// nothing and still returns an id and start time.
+func TestStartTraceSpan_NilTracer(t *testing.T) {
+	id, start := domain.StartTraceSpan(t.Context(), nil, domain.TraceSpan{Name: "x"})
+	if id == "" || start.IsZero() {
+		t.Errorf("id %q start %v", id, start)
+	}
+}

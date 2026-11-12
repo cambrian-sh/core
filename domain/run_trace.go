@@ -2,6 +2,8 @@ package domain
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"time"
 )
 
@@ -21,7 +23,17 @@ type RunTracer interface {
 	Span(ctx context.Context, s TraceSpan)
 }
 
-// TraceSpan is one finished span.
+// TraceSpan is one finished span, or the start event of one (Phase ==
+// TracePhaseStart).
+//
+// Start events exist so a follower of the trace sees what is running NOW
+// (T-20261109-live-run-viewer-watch-model-calls-prompts-tool): a call that
+// records only when it ends is invisible while it runs, and a slow model call or
+// tool call is exactly the one an operator wants to watch. The pair shares SpanID;
+// the start event carries the request (what the call was sent) and
+// "cambrian.phase": "start", the finished span is written exactly as before and
+// completes the pair. A reader that wants finished spans only skips the events
+// whose phase is "start".
 type TraceSpan struct {
 	// Name is "{gen_ai.operation.name} {target}", e.g. "chat claude-haiku-4-5",
 	// "execute_tool mcp:fs/read_file", "invoke_agent worker-1".
@@ -34,6 +46,69 @@ type TraceSpan struct {
 	Attributes map[string]any
 	// Error is the failure message; "" is an OK span.
 	Error string
+	// SpanID joins a start event to its finished span. "" lets the tracer mint one
+	// (a span with no start event). Use NewTraceSpanID for a pair.
+	SpanID string
+	// Phase is TracePhaseStart for the start event of a call; "" for the finished
+	// span.
+	Phase string
+}
+
+// TracePhaseStart marks a span's start event; TraceAttrPhase is the attribute it
+// is written under.
+const (
+	TracePhaseStart = "start"
+	TraceAttrPhase  = "cambrian.phase"
+)
+
+// NewTraceSpanID mints an OTel span id (8 random bytes, 16 hex chars).
+func NewTraceSpanID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b) // crypto/rand.Read does not fail on supported platforms
+	return hex.EncodeToString(b)
+}
+
+// StartTraceSpan writes the start event of s on t (when t is non-nil) and returns
+// the span id the finished span must carry. s.Start is set to now when zero; the
+// returned time is the start the finished span should report.
+func StartTraceSpan(ctx context.Context, t RunTracer, s TraceSpan) (string, time.Time) {
+	id := NewTraceSpanID()
+	if s.Start.IsZero() {
+		s.Start = time.Now()
+	}
+	if t != nil {
+		s.SpanID, s.Phase = id, TracePhaseStart
+		t.Span(ctx, s)
+	}
+	return id, s.Start
+}
+
+type traceAttrsKey struct{}
+
+// WithTraceAttributes returns ctx carrying attributes every span recorded under it
+// gets (a span's own attribute of the same name wins). Used by a caller that knows
+// who a call is for (the lease, the agent, the plan step) when the layer that
+// records the span does not, e.g. the agent-plane gateway around a model call.
+// Merges with attributes already on ctx.
+func WithTraceAttributes(ctx context.Context, attrs map[string]any) context.Context {
+	if len(attrs) == 0 {
+		return ctx
+	}
+	merged := make(map[string]any, len(attrs))
+	for k, v := range TraceAttributesFromContext(ctx) {
+		merged[k] = v
+	}
+	for k, v := range attrs {
+		merged[k] = v
+	}
+	return context.WithValue(ctx, traceAttrsKey{}, merged)
+}
+
+// TraceAttributesFromContext returns the attributes WithTraceAttributes put on
+// ctx (nil when none). Callers must not mutate the map.
+func TraceAttributesFromContext(ctx context.Context) map[string]any {
+	m, _ := ctx.Value(traceAttrsKey{}).(map[string]any)
+	return m
 }
 
 // GenAI semantic-convention attribute names and operation values.

@@ -60,6 +60,10 @@ type stagedRun struct {
 	round        int
 	// stageRuns are the run ids every stage's entries are recorded under.
 	stageRuns []domain.RunID
+	// planRun is the run id the first stage was planned under (its checklist and
+	// any question are recorded there); runStages later moves stageRuns[0] to the
+	// execution id, so it is kept here for the run-scope grant.
+	planRun domain.RunID
 	// earlier accumulates the stages' step-result indexes.
 	earlier []string
 	// pendingRef is the ledger id of the InputRequired this request answers
@@ -69,7 +73,7 @@ type stagedRun struct {
 
 func (s *Server) newStagedRun(ctx context.Context, meta map[string]string, run domain.RunID, sid domain.SessionID) *stagedRun {
 	prov := s.runProvenance(ctx, meta, run, sid)
-	r := &stagedRun{prov: prov, conversation: prov.TurnID != "", round: askBackRound(meta), stageRuns: []domain.RunID{run}}
+	r := &stagedRun{prov: prov, conversation: prov.TurnID != "", round: askBackRound(meta), stageRuns: []domain.RunID{run}, planRun: run}
 	if ref := strings.TrimSpace(meta[domain.HandoffKeyAskBackPendingRef]); domain.IsLedgerID(ref) {
 		r.pendingRef = ref
 		if note := s.pendingQuestionsNote(ctx, r); note != "" {
@@ -87,7 +91,7 @@ func (s *Server) pendingQuestionsNote(ctx context.Context, r *stagedRun) string 
 	if !s.ledgerOn() {
 		return ""
 	}
-	eff := s.plannerReadScope(ctx, r.prov.Owner)
+	eff := s.plannerReadScope(ctx, r)
 	if eff == nil {
 		return ""
 	}
@@ -128,16 +132,59 @@ func (s *Server) stagePlanning(ctx context.Context, r *stagedRun, number int) *d
 
 // plannerReadScope is the predicate the planner reads the ledger under: the
 // caller's own (the agent that called Execute, resolved by the decision point
-// exactly as GetContextNode resolves it), or — for a caller with no agent identity
-// (an operator or transport call) — the run's own read scope, the kernel acting
-// for the run's owner (the explicit §2.4 bypass with the owner fence, the scope
-// the DAG executor reads its run under). nil ⇒ refused.
-func (s *Server) plannerReadScope(ctx context.Context, owner string) *domain.TagPredicate {
+// exactly as GetContextNode resolves it) plus the run-scope grant for the runs
+// this Execute owns, or — for a caller with no agent identity (an operator or
+// transport call) — the run's own read scope, the kernel acting for the run's
+// owner (the explicit §2.4 bypass with the owner fence, the scope the DAG
+// executor reads its run under). nil ⇒ refused.
+//
+// The grant (T-20261112-staged-planner-s-ledger-reads-return-found): a chat agent
+// delegates with its lease in the handoff (_session_token_id), not the gRPC
+// header, so Execute's ctx carries no conversation owner and the caller's
+// predicate holds no owner (ReadFilter: an agent acting for nobody reads no
+// owner:<id> row). Under private_by_default every entry the run's workers and
+// steps wrote is stamped owner:<conversation owner>, so the owner fence hid the
+// planner's own run from it. The grant admits exactly the entries of this
+// Execute's runs (every stage and plan generation; RootRunID), under the run's
+// kernel scope; nothing else of the workers' principals and nothing of another
+// owner. It is applied only by authz.EnforcingLedger. No run id ⇒ no grant
+// (the caller's predicate alone, fail closed). It travels on ctx (domain.WithScope)
+// — the ledger reader's only scope channel; ledger reads take no SearchOptions.
+func (s *Server) plannerReadScope(ctx context.Context, r *stagedRun) *domain.TagPredicate {
 	if callerAgentID(ctx) == "" {
-		return runLedgerScope(owner)
+		return runLedgerScope(r.prov.Owner)
 	}
 	eff, _ := s.authorizer().ReadFilter(ctx, artifactPrincipal(ctx), artifactSurface)
-	return eff
+	if eff == nil {
+		return nil // the decision point refused the caller: no grant rescues it
+	}
+	roots := r.runRoots()
+	if len(roots) == 0 {
+		return eff
+	}
+	granted := *eff // a copy: the decision point's predicate is never mutated
+	granted.LedgerRuns = &domain.LedgerRunGrant{Roots: roots, Owner: r.prov.Owner}
+	return &granted
+}
+
+// runRoots are the root run ids of the runs this Execute owns: the run its first
+// stage was planned under and every stage run (RootRunID strips the "-s<n>" /
+// "-g<n>" suffixes). Empty ids are dropped.
+func (r *stagedRun) runRoots() []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(run string) {
+		if root := domain.RootRunID(run); root != "" && !seen[root] {
+			seen[root] = true
+			out = append(out, root)
+		}
+	}
+	add(string(r.planRun))
+	add(r.prov.RunID)
+	for _, run := range r.stageRuns {
+		add(string(run))
+	}
+	return out
 }
 
 // plannerLedgerLookup serves the planner's reads with the ledger kernel tools
@@ -155,7 +202,7 @@ func (s *Server) plannerLedgerLookup(r *stagedRun) domain.LedgerLookupFunc {
 		if kt == nil || (l.Tool != "ledger_get" && l.Tool != "ledger_find") {
 			return fmt.Sprintf("refused: %q is not a ledger read", l.Tool)
 		}
-		eff := s.plannerReadScope(ctx, r.prov.Owner)
+		eff := s.plannerReadScope(ctx, r)
 		if eff == nil {
 			return "refused: no read access to the ledger"
 		}
@@ -176,7 +223,7 @@ const ledgerIndexPreview = 160
 // (every stage, and earlier delegations of the same turn), else every stage run's.
 // One line per entry, oldest first, at most limit lines.
 func (s *Server) ledgerIndex(ctx context.Context, r *stagedRun, limit int) string {
-	eff := s.plannerReadScope(ctx, r.prov.Owner)
+	eff := s.plannerReadScope(ctx, r)
 	if eff == nil {
 		return ""
 	}

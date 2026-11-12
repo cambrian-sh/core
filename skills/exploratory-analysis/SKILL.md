@@ -1,7 +1,7 @@
 ---
 name: exploratory-analysis
 description: Explore a dataset in the code sandbox, from loading and profiling to cleaning, statistics and caveated findings. Use for CSV, Excel, JSON, Parquet or SQLite data when the task asks what the data shows, for trends, distributions, outliers, comparisons or data quality.
-version: 1.0.0
+version: 1.1.0
 trust: builtin
 scope: []
 tools:
@@ -27,11 +27,15 @@ are the three most notable patterns.
 
 ## 2. Load the data
 
-- **Files.** Locate the file (`list_directory`, `get_file_info`). The sandbox is
-  an isolated container and may not see host files. If it cannot, read the file
-  with `read_text_file` and pass the content into the code; for a file too large
-  to pass inline, say so and analyse a stated sample rather than pretending to
-  have the whole file.
+- **Files.** Locate the file (`list_directory`, `get_file_info`), then name it in
+  `execute_code`'s `inputs`: its path as the file tools show it, or the ledger id
+  (`led_…`) of an earlier result. The kernel reads each input with your access and
+  mounts it read-only in `/inputs` for that run only; Python starts there, so open
+  it by its file name (`pd.read_csv("bank-export.csv")`), or through the `INPUTS`
+  dict, which maps each input as you wrote it to its path. Never retype or paste
+  file contents into the code. If an input is refused, report that instead of
+  analysing something else. Write any file you produce to `/outputs`; the kernel
+  records it and returns its ledger id to cite.
 - **SQLite.** List tables with `list_tables`, then read with `SELECT` queries in
   `execute_sql`. Only read: never run `INSERT`, `UPDATE`, `DELETE`, `DROP` or
   `ALTER` unless the task explicitly asks you to change the database.

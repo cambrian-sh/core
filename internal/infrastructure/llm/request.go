@@ -220,6 +220,10 @@ type ProviderError struct {
 	Status   int
 	Message  string
 	Err      error
+	// Overflow marks a refusal because the prompt does not fit the model's context
+	// window (isContextOverflowRefusal); errors.Is(err, domain.ErrContextOverflow)
+	// then holds.
+	Overflow bool
 }
 
 func (e *ProviderError) Error() string {
@@ -227,6 +231,12 @@ func (e *ProviderError) Error() string {
 }
 
 func (e *ProviderError) Unwrap() error { return e.Err }
+
+// Is makes a context-window refusal match domain.ErrContextOverflow while the
+// error keeps its provider, status and message.
+func (e *ProviderError) Is(target error) bool {
+	return e.Overflow && target == domain.ErrContextOverflow
+}
 
 // wrapProviderError turns an SDK error into a ProviderError when it carries an HTTP
 // status; anything else (transport failure, cancellation) is returned wrapped with
@@ -241,17 +251,102 @@ func wrapProviderError(provider string, err error) error {
 	}
 	var ae *anthropic.Error
 	if errors.As(err, &ae) {
-		return &ProviderError{Provider: provider, Status: ae.StatusCode, Message: msgOr(ae.RawJSON(), err), Err: err}
+		return providerError(provider, ae.StatusCode, msgOr(ae.RawJSON(), err), err)
 	}
 	var oe *openai.Error
 	if errors.As(err, &oe) {
-		return &ProviderError{Provider: provider, Status: oe.StatusCode, Message: msgOr(oe.RawJSON(), err), Err: err}
+		return providerError(provider, oe.StatusCode, msgOr(oe.RawJSON(), err), err)
 	}
 	var ge genai.APIError
 	if errors.As(err, &ge) {
-		return &ProviderError{Provider: provider, Status: ge.Code, Message: msgOr(ge.Message, err), Err: err}
+		return providerError(provider, ge.Code, msgOr(ge.Message, err), err)
+	}
+	// No HTTP status: a transport failure, a cancellation — or an error the
+	// provider (or a proxy in front of it) sent MID-STREAM after a 200, which the
+	// SDKs surface as a plain error. The claudebox proxy refuses an over-long
+	// prompt exactly that way ("received error while streaming: {"message":"Prompt
+	// is too long ...","type":"server_error"}"), so the message text is the only
+	// signal there is; it is the fallback, never the first test.
+	if isContextOverflowText(err.Error()) {
+		return fmt.Errorf("%s: %w: %w", provider, domain.ErrContextOverflow, err)
 	}
 	return fmt.Errorf("%s: %w", provider, err)
+}
+
+func providerError(provider string, status int, msg string, err error) *ProviderError {
+	return &ProviderError{Provider: provider, Status: status, Message: msg, Err: err,
+		Overflow: isContextOverflowRefusal(status, msg)}
+}
+
+// contextOverflowCodes are the structured error type/code values providers use for
+// a prompt over the context window (OpenAI and compatible servers:
+// context_length_exceeded). Exact values only: a per-field length limit is a
+// different refusal.
+var contextOverflowCodes = []string{"context_length_exceeded", "context_window_exceeded", "prompt_too_long"}
+
+// contextOverflowPhrases are the message texts of the same refusal where no
+// structured code exists: Anthropic's 400 invalid_request_error "prompt is too
+// long: N tokens > M maximum", OpenAI's "maximum context length is N tokens",
+// Gemini's "input token count (N) exceeds the maximum number of tokens allowed",
+// and the claudebox proxy's streamed "Prompt is too long". Matched lowercased and
+// deliberately specific: "too long" alone also matches a too-long tool name.
+var contextOverflowPhrases = []string{
+	"prompt is too long",
+	"maximum context length",
+	"context length exceeded",
+	"exceeds the context window",
+	"exceeds the maximum number of tokens",
+	"input is too long for requested model",
+}
+
+// isContextOverflowRefusal classifies an HTTP refusal: the structured error
+// type/code first, then — only for a 400/413 request error — the provider's message.
+func isContextOverflowRefusal(status int, msg string) bool {
+	if code := providerErrorCode(msg); code != "" {
+		for _, c := range contextOverflowCodes {
+			if code == c {
+				return true
+			}
+		}
+	}
+	if status == http.StatusBadRequest || status == http.StatusRequestEntityTooLarge {
+		return isContextOverflowText(msg)
+	}
+	return false
+}
+
+// isContextOverflowText is the message-text fallback.
+func isContextOverflowText(msg string) bool {
+	m := strings.ToLower(msg)
+	for _, p := range contextOverflowPhrases {
+		if strings.Contains(m, p) {
+			return true
+		}
+	}
+	for _, c := range contextOverflowCodes {
+		if strings.Contains(m, c) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerErrorCode reads error.code (or error.type) from a provider's JSON error
+// envelope ({"error":{"type":...,"code":...}}), "" when the body is not one.
+func providerErrorCode(body string) string {
+	var env struct {
+		Error struct {
+			Type string `json:"type"`
+			Code any    `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(body)), &env) != nil {
+		return ""
+	}
+	if s, ok := env.Error.Code.(string); ok && s != "" {
+		return strings.ToLower(s)
+	}
+	return strings.ToLower(env.Error.Type)
 }
 
 func msgOr(body string, err error) string {
@@ -273,12 +368,14 @@ const (
 // classifyForFallback implements ADR-0139 D1: switch provider on 429, 5xx, 401/403
 // (after one credential refresh) and on transport failures; never on a refusal (that
 // is a successful response with StopRefusal, not an error), a schema failure, an
-// unsupported field, a 400-class request error, or the caller's own cancellation.
+// unsupported field, a prompt over the context window (domain.ErrContextOverflow —
+// even when a proxy streams it as a server_error, the next model would be sent the
+// same prompt), a 400-class request error, or the caller's own cancellation.
 func classifyForFallback(ctx context.Context, err error) fallbackClass {
 	if err == nil || ctx.Err() != nil {
 		return noFallback
 	}
-	if errors.Is(err, domain.ErrSchemaValidation) || errors.Is(err, domain.ErrUnsupported) ||
+	if errors.Is(err, domain.ErrSchemaValidation) || errors.Is(err, domain.ErrUnsupported) || errors.Is(err, domain.ErrContextOverflow) ||
 		errors.Is(err, ErrSpendCeiling) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return noFallback
 	}
@@ -415,7 +512,7 @@ func shimGenerateStream(ctx context.Context, rg domain.RequestGenerator, prompt 
 // chunk.
 func streamFinal(ch chan<- domain.StreamChunk, resp *domain.GenerateResponse, err error) {
 	if err != nil {
-		ch <- domain.StreamChunk{IsFinal: true, Text: fmt.Sprintf("stream_error: %v", err)}
+		ch <- domain.StreamChunk{IsFinal: true, Text: fmt.Sprintf("stream_error: %v", err), Err: err}
 		return
 	}
 	ch <- usageChunk(resp)

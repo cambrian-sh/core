@@ -519,3 +519,68 @@ func TestValidateEnvelope_RecordIDsResolveToTheOneEntryThatHoldsThem(t *testing.
 		}
 	}
 }
+
+// T-20261109-plan-identifies-4-october-receipts-but-the-move (p05#3): a list read
+// from four files cited the four ledger entries joined in one evidence_ref; it was
+// rejected as foreign_evidence and the repair rebuilt the list wrongly. A joined ref
+// whose parts are all the step's entries is split; a joined ref naming an unknown
+// entry is still refused.
+func TestValidateEnvelope_AJoinedEvidenceRefOfTheStepsEntriesIsSplit(t *testing.T) {
+	ev := Evidence{Entries: map[string]domain.LedgerEntry{
+		"led_a": {ID: "led_a", Kind: domain.LedgerToolResult, Body: []byte(`{"path":"Downloads/receipt(2).pdf","modified":"2026-10-12"}`)},
+		"led_b": {ID: "led_b", Kind: domain.LedgerToolResult, Body: []byte(`{"path":"Downloads/scan_0041.pdf","modified":"2026-10-03"}`)},
+	}}
+	its := []domain.RequirementItem{{ID: "R1", Type: domain.RequirementAnswer}}
+	list, _ := json.Marshal([]string{"receipt(2).pdf", "scan_0041.pdf"})
+	env := &domain.AnswerEnvelope{AnswerText: "two receipts", EvidenceRefs: []string{"led_a, led_b"},
+		ItemResults: []domain.ItemResult{{Item: "R1", Status: domain.RequirementSatisfied, Values: []domain.EnvelopeValue{
+			{Name: "files", Type: domain.ValueList, Value: list, EvidenceRef: "led_a, led_b"},
+			val("date", domain.ValueDate, "2026-10-03", "led_a,led_b"),
+		}}}}
+	got, vs := ValidateEnvelope(env, its, ev)
+	if len(vs) != 0 || len(got) != 1 || len(got[0].Values) != 2 {
+		t.Fatalf("joined refs of the step's own entries were refused: %+v %+v", got, vs)
+	}
+	if got[0].Values[0].EvidenceRef != "led_a" || got[0].Values[1].EvidenceRef != "led_b" {
+		t.Fatalf("each value cites one entry (the date the one that holds it): %+v", got[0].Values)
+	}
+	env.ItemResults[0].Values = []domain.EnvelopeValue{{Name: "files", Type: domain.ValueList, Value: list, EvidenceRef: "led_a, led_zzz"}}
+	if _, vs := ValidateEnvelope(env, its, ev); len(vs) == 0 {
+		t.Fatal("a joined ref naming an entry the step does not hold must stay refused")
+	}
+}
+
+// T-20261109-plan-identifies-4-october-receipts-but-the-move (p05#3): one ordinary
+// step moved 3 of the 4 receipts its fan-out inputs named and one done move_file
+// settled the write item, so the reply said they were all moved. Writes that name
+// members of the consumed set are per member: the item stays open naming the member
+// with no write, and a later write covers it. A write naming no member (one folder
+// for all) leaves the item as before.
+func TestCoverage_AWriteOverASetNeedsOneDoneWritePerMember(t *testing.T) {
+	c := NewCoverage(domain.RequirementChecklist{Items: []domain.RequirementItem{
+		{ID: "R3", Type: domain.RequirementWrite, Text: "create the folder"},
+		{ID: "R4", Type: domain.RequirementWrite, Text: "move them"}}})
+	set := []string{"receipt(2).pdf - 2026-10-12", "scan_0041.pdf - October 2026 (2026-10-03, Northwind Office Supplies Invoice)",
+		"scan_0057.pdf", "download.pdf"}
+	move := func(step int, src string) domain.PlanAction {
+		return domain.PlanAction{Step: step, Tool: "mcp:filesystem/move_file", Status: domain.PlanActionDone,
+			Args: map[string]string{"source": "C:/home/Downloads/" + src, "destination": "C:/home/Receipts/2026-10/x-" + src}}
+	}
+	c.ObserveStep(StepObservation{Step: 2, SetMembers: set, Actions: []domain.PlanAction{{Step: 2,
+		Tool: "mcp:filesystem/create_directory", Status: domain.PlanActionDone, Args: map[string]string{"path": "C:/home/Receipts/2026-10"}}},
+		Results: []domain.ItemResult{{Item: "R3", Status: domain.RequirementSatisfied}}})
+	if s, why := status(c, "R3"); s != domain.RequirementSatisfied {
+		t.Fatalf("one folder for the whole set is not a per-member write: %s %q", s, why)
+	}
+	c.ObserveStep(StepObservation{Step: 3, SetMembers: set,
+		Actions: []domain.PlanAction{move(3, "receipt(2).pdf"), move(3, "scan_0057.pdf"), move(3, "download.pdf")},
+		Results: []domain.ItemResult{{Item: "R4", Status: domain.RequirementSatisfied}}})
+	if s, why := status(c, "R4"); s != domain.RequirementOpen || !strings.Contains(why, "scan_0041.pdf") || strings.Contains(why, "scan_0057") {
+		t.Fatalf("3 of 4 moved must keep the item open naming the 4th: %s %q", s, why)
+	}
+	c.ObserveStep(StepObservation{Step: 0, Actions: []domain.PlanAction{move(0, "scan_0041.pdf")},
+		Results: []domain.ItemResult{{Item: "R4", Status: domain.RequirementSatisfied}}})
+	if s, why := status(c, "R4"); s != domain.RequirementSatisfied {
+		t.Fatalf("the later move of the missing member covers it: %s %q", s, why)
+	}
+}

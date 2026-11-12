@@ -16,14 +16,14 @@ type fakeComposer struct {
 }
 
 func (f *fakeComposer) Compose(_ context.Context, _ *domain.DispatchTask, w domain.ScoredCandidate,
-	_ []domain.ScoredCandidate, in *domain.Handoff) (domain.ScoredCandidate, domain.WorkerComposition, bool) {
+	_ []domain.ScoredCandidate, in *domain.Handoff) (domain.ScoredCandidate, domain.WorkerComposition, bool, error) {
 	f.calls++
 	if !f.ok || w.Agent.Profile == "" {
-		return domain.ScoredCandidate{}, domain.WorkerComposition{}, false
+		return domain.ScoredCandidate{}, domain.WorkerComposition{}, false, nil
 	}
 	in.Context[domain.HandoffKeyComposition] = "{}"
 	return domain.ScoredCandidate{Agent: domain.AgentDefinition{ID: "composed_worker", SourceHash: "rt"}, Score: w.Score},
-		domain.WorkerComposition{Runtime: "composed_worker"}, true
+		domain.WorkerComposition{Runtime: "composed_worker"}, true, nil
 }
 
 func profiled(id string, score float64) domain.ScoredCandidate {

@@ -45,6 +45,9 @@ help:
 	@echo "    make corpus            Generate 1000-record synthetic corpus       <1s"
 	@echo "    make export            Export real bbolt events to JSONL           ~2s"
 	@echo ""
+	@echo "  IMAGES (Docker required)"
+	@echo "    make sandbox-image     Code sandbox image (pandas/numpy/matplotlib/openpyxl, offline)  ~2m"
+	@echo ""
 	@echo "  PIPELINES"
 	@echo "    make per-pr            Full per-PR pipeline (no Docker)            ~2m"
 	@echo "    make nightly           Nightly pipeline (dedicated runner)         ~15m"
@@ -427,3 +430,10 @@ migrate:
 
 migrate-status:
 	go run ./cmd/orchestrator migrate status
+
+# Code sandbox image (owner decision 2026-11-10, decisions/code-sandbox-files-per-run-mount.md):
+# llm-sandbox's Python image plus pinned data libraries, verified importable with no network.
+# The catalog's SANDBOX_IMAGE default; tools/code_sandbox/server.py never pulls it.
+SANDBOX_IMAGE ?= cambrian/code-sandbox:py311-1
+sandbox-image:
+	bash scripts/build-sandbox-image.sh $(SANDBOX_IMAGE)

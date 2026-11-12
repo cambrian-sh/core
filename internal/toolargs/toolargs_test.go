@@ -49,3 +49,24 @@ func TestValidateArgs_RefusesWhatCannotBeFixedWithAnActionableError(t *testing.T
 		t.Fatalf("got %s %v", got, err)
 	}
 }
+
+// p06#3 (personal run 2026-11-09): llm-sandbox's execute_code declares libraries as
+// list[str] | None, i.e. anyOf array/null; the worker sent "[\"pandas\", \"matplotlib\"]"
+// and the call was refused "/libraries: got string, want array". anyOf/oneOf branches
+// are coerced too.
+func TestValidateArgs_CoercesIntoAnAnyOfBranch(t *testing.T) {
+	const execCode = `{"type":"object","required":["code"],"properties":{
+ "code":{"type":"string"},
+ "libraries":{"anyOf":[{"type":"array","items":{"type":"string"}},{"type":"null"}],"default":null},
+ "timeout":{"default":30,"type":"integer"}}}`
+	for in, want := range map[string]string{
+		`{"code":"x","libraries":"[\"pandas\", \"matplotlib\"]"}`: `{"code":"x","libraries":["pandas","matplotlib"]}`,
+		`{"code":"x","libraries":null}`:                           `{"code":"x","libraries":null}`,
+		`{"code":"x","libraries":["pandas"]}`:                     `{"code":"x","libraries":["pandas"]}`,
+	} {
+		got, err := Validator{}.ValidateArgs("execute_code", []byte(execCode), []byte(in))
+		if err != nil || string(got) != want {
+			t.Errorf("%s: got %s err %v, want %s", in, got, err, want)
+		}
+	}
+}

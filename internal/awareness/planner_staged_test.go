@@ -50,7 +50,7 @@ func TestStagedPlanner_PinsAndStagePrompt(t *testing.T) {
 	if plannerChecklistPrompts.System.Version != 10 || plannerChecklistPrompts.Input.Version != 3 {
 		t.Fatal("the checklist arm must stay pinned to v10 + v3 while the staged flag is off")
 	}
-	if plannerStagedPrompts.System.Version != 9 || plannerStagedPrompts.Input.Version != 4 {
+	if plannerStagedPrompts.System.Version != 11 || plannerStagedPrompts.Input.Version != 4 {
 		t.Fatalf("staged arm = v%d + v%d", plannerStagedPrompts.System.Version, plannerStagedPrompts.Input.Version)
 	}
 	gen := &scriptedGenerator{replies: []string{stagedStageReply}}

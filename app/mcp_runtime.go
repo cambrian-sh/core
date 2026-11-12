@@ -57,6 +57,7 @@ func mcpToolPolicyFromConfig(tc config.MCPToolConfig) mcp.ToolPolicy {
 		DataWriteKinds:     tc.DataWriteKinds,
 		ClassificationTags: tc.ClassificationTags,
 		Effects:            tc.Effects,
+		StagedInputs:       tc.StagedInputs,
 	}
 }
 

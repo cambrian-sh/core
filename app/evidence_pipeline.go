@@ -40,9 +40,14 @@ func wireEvidencePipeline(cfg config.ExecutionConfig, server *subnetwork.Server,
 		terms = nil
 	}
 	te := server.ToolExecutor
+	// The write-target rules identify every side-effecting call's target in the
+	// plan action ledger, which coverage matches write items against
+	// (T-20261112-coverage-settles-a-write-item-on-any-done); the request guards,
+	// when on, use the same rule set.
+	te.WriteTargets = cfg.Tools.WriteTargets.Domain()
 	if cfg.Tools.RequestGuards {
 		te.Guards = &domain.RequestGuards{
-			Targets:  cfg.Tools.WriteTargets.Domain(),
+			Targets:  te.WriteTargets,
 			Writes:   domain.NewWriteRecord(idempotencyTTL),
 			Refusals: domain.NewRefusalRecord(0),
 		}

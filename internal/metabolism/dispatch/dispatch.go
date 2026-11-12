@@ -75,9 +75,13 @@ const (
 
 // WorkerComposer composes the worker a step runs on (ADR-0145 D12,
 // internal/metabolism/compose). ok=false leaves the step to the selected winner.
+//
+// A non-nil error refuses the dispatch: a yielded sub-goal whose capability hint
+// the parent step's composition does not cover (domain.CapabilityMissingError) is
+// not handed to a worker with the same tools.
 type WorkerComposer interface {
 	Compose(ctx context.Context, task *domain.DispatchTask, winner domain.ScoredCandidate,
-		scored []domain.ScoredCandidate, in *domain.Handoff) (domain.ScoredCandidate, domain.WorkerComposition, bool)
+		scored []domain.ScoredCandidate, in *domain.Handoff) (domain.ScoredCandidate, domain.WorkerComposition, bool, error)
 }
 
 // Dispatcher selects and invokes the executor for one step. It satisfies
@@ -125,7 +129,39 @@ type Dispatcher struct {
 	// when the delegation returns). nil ⇒ plain per-step deadlines
 	// (T-20261109-a-plan-step-is-re-dispatched-to-a-legacy-agent).
 	Delegations *domain.ActiveDelegations
+
+	// StepFailures is the tool executor's per-step record of identical failed
+	// calls (execution.tools.repeated_failure_stop). A step it stopped is not
+	// dispatched again on its lease, and a worker returning from a stopped step
+	// ends the step with the domain.StepStuckError, whatever it answered. nil ⇒ off.
+	StepFailures *domain.StepFailures
 }
+
+// outcomeError turns what a worker returned into the step's error when the step
+// did not end in an answer: the step was stopped for a repeated identical tool
+// failure (domain.StepStuckError), or the worker reported that it lacks a
+// capability the step needs (domain.CapabilityMissingError). Both are class
+// needs_replan: the re-planner re-plans the step, and the kernel composes the new
+// step's worker from the principal's grants
+// (T-20261112-yield-sub-goal-on-a-composed-lease-runs-under, owner 2026-11-12).
+func (d *Dispatcher) outcomeError(taskID string, in, resp *domain.Handoff) error {
+	if stuck := d.StepFailures.Stuck(leaseOf(in)); stuck != nil {
+		return stuck
+	}
+	if cm := domain.CapabilityMissingFromHandoff(taskID, resp); cm != nil {
+		if in != nil && in.Context != nil {
+			cm.Composition = in.Context[handoffCompositionIDKey]
+		}
+		slog.Info("dispatch: worker reported a missing capability; the step goes to the re-planner",
+			"task", taskID, "needed", cm.Needed, "outside_step", cm.OutsideStep)
+		return cm
+	}
+	return nil
+}
+
+// handoffCompositionIDKey is compose.HandoffKeyCompositionID (the composition id
+// the composer stamps on the step's handoff).
+const handoffCompositionIDKey = "_composition_id"
 
 // ErrStepDelegating refuses to dispatch a step whose worker is still waiting on
 // its own delegation: the step is in progress, and handing its lease to another
@@ -186,6 +222,12 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 			boots = int32(d.Boots.BootCount() - bootsBefore)
 		}
 		return ms, boots
+	}
+
+	// A step stopped for a repeated identical tool failure runs nothing more on its
+	// lease: not a heal retry, not a yielded sub-goal.
+	if stuck := d.StepFailures.Stuck(leaseOf(in)); stuck != nil {
+		return nil, stuck
 	}
 
 	scored, err := d.Gatekeeper.FindCandidates(ctx, task)
@@ -255,7 +297,18 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 	composed := false
 	compositionID := ""
 	if d.Composer != nil && in != nil && in.Context != nil && in.Context["_step_index"] != "" {
-		if rt, comp, ok := d.Composer.Compose(ctx, task, winner, scored, in); ok {
+		rt, comp, ok, cerr := d.Composer.Compose(ctx, task, winner, scored, in)
+		if cerr != nil {
+			d.emit(domain.SelectionEventPayload{
+				TaskID:   task.ID,
+				TaskDesc: task.Description,
+				Status:   "failed",
+				ErrorMsg: cerr.Error(),
+				Funnel:   task.Funnel,
+			})
+			return nil, cerr
+		}
+		if ok {
 			slog.Debug("dispatch: step composed", "task", task.ID, "selected", winner.Agent.ID, "runtime", rt.Agent.ID)
 			winner, reason, composed, compositionID = rt, ReasonComposed, true, comp.ID()
 		}
@@ -391,6 +444,11 @@ func (d *Dispatcher) Execute(ctx context.Context, task *domain.DispatchTask, in 
 			callMs = 1
 		}
 		resp.Context[domain.HandoffKeyWinnerLatencyMs] = strconv.FormatInt(callMs, 10)
+	}
+
+	if oerr := d.outcomeError(task.ID, in, resp); oerr != nil {
+		in.Context["_winning_agent_id"] = winner.Agent.ID
+		return &domain.DispatchResult{Confidence: winner.Score, RunnerUps: runnerUps}, oerr
 	}
 
 	return &domain.DispatchResult{
@@ -657,5 +715,18 @@ func (d *Dispatcher) selectModelCandidates(ctx context.Context, winnerAgentID st
 // The handoff's lease is bound to agentID first, exactly as Execute does for its winner.
 func (d *Dispatcher) CallAgent(ctx context.Context, agentID string, handoff *domain.Handoff, excludeInstanceID string) (*domain.Handoff, error) {
 	d.bindLease(agentID, handoff)
-	return d.Caller.CallAgent(ctx, agentID, handoff, excludeInstanceID)
+	resp, err := d.Caller.CallAgent(ctx, agentID, handoff, excludeInstanceID)
+	if err != nil {
+		return resp, err
+	}
+	// The same outcome check as Execute: a resumed worker (yield) or a runner-up
+	// may end the step stopped or with a missing capability.
+	taskID := ""
+	if handoff != nil && handoff.Context != nil {
+		taskID = handoff.Context["task_id"]
+	}
+	if oerr := d.outcomeError(taskID, handoff, resp); oerr != nil {
+		return nil, oerr
+	}
+	return resp, nil
 }

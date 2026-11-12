@@ -13,7 +13,8 @@ import (
 // the Provider — the organs through Acquire (planner, thought steps, router, …) and
 // the agent-plane gateway through StreamOn/GenerateOn (chat and worker agents) —
 // is recorded as a "chat {model}" span with its full request (system
-// instructions, messages, tools offered) and response. Installed by decorate
+// instructions, messages, tools offered) and response, preceded by a start event
+// carrying the request when the call begins (so a follower sees it while it runs). Installed by decorate
 // right outside the health layer when execution.trace.enabled wired a tracer
 // (SetRunTracer); absent otherwise, so the default path is unchanged.
 //
@@ -33,7 +34,9 @@ func (p *Provider) SetRunTracer(t domain.RunTracer) {
 	p.runTracer = t
 }
 
-func (g *runTraceGenerator) span(ctx context.Context, start time.Time, req domain.GenerateRequest, resp domain.GenerateResponse, err error) {
+// requestAttrs are what the model was sent: written on the start event when the
+// call begins and again on the finished span.
+func (g *runTraceGenerator) requestAttrs(req domain.GenerateRequest) map[string]any {
 	attrs := map[string]any{
 		domain.GenAIOperationName: domain.GenAIOpChat,
 		domain.GenAIRequestModel:  g.id,
@@ -64,8 +67,24 @@ func (g *runTraceGenerator) span(ctx context.Context, start time.Time, req domai
 	}
 	if req.ResponseSchema != nil {
 		attrs["cambrian.request.response_schema"] = string(req.ResponseSchema.Schema)
+		if req.ResponseSchema.Name != "" {
+			attrs["cambrian.request.response_schema_name"] = req.ResponseSchema.Name
+		}
 	}
-	s := domain.TraceSpan{Name: "chat " + g.id, Kind: "CLIENT", Start: start, End: time.Now(), Attributes: attrs}
+	return attrs
+}
+
+// begin writes the call's start event (the request, "cambrian.phase": "start")
+// so a follower of the trace sees the call while it runs, and returns the span id
+// and start time the finished span carries.
+func (g *runTraceGenerator) begin(ctx context.Context, req domain.GenerateRequest) (string, time.Time) {
+	return domain.StartTraceSpan(ctx, g.tracer, domain.TraceSpan{Name: "chat " + g.id, Kind: "CLIENT",
+		Attributes: g.requestAttrs(req)})
+}
+
+func (g *runTraceGenerator) span(ctx context.Context, id string, start time.Time, req domain.GenerateRequest, resp domain.GenerateResponse, err error) {
+	attrs := g.requestAttrs(req)
+	s := domain.TraceSpan{Name: "chat " + g.id, Kind: "CLIENT", Start: start, End: time.Now(), Attributes: attrs, SpanID: id}
 	if err != nil {
 		s.Error = err.Error()
 	} else {
@@ -95,9 +114,10 @@ func (g *runTraceGenerator) span(ctx context.Context, start time.Time, req domai
 }
 
 func (g *runTraceGenerator) Generate(ctx context.Context, prompt string) (string, error) {
-	start := time.Now()
+	req := domain.UserPrompt(prompt)
+	id, start := g.begin(ctx, req)
 	out, err := g.inner.Generate(ctx, prompt)
-	g.span(ctx, start, domain.UserPrompt(prompt), domain.GenerateResponse{Text: out}, err)
+	g.span(ctx, id, start, req, domain.GenerateResponse{Text: out}, err)
 	return out, err
 }
 
@@ -111,9 +131,10 @@ func (g *runTraceGenerator) GenerateWithTools(ctx context.Context, messages []do
 	if !ok {
 		return domain.ModelTurn{}, fmt.Errorf("llm provider: run-traced %T does not implement native tool-calling", g.inner)
 	}
-	start := time.Now()
+	req := domain.GenerateRequest{Messages: messages, Tools: tools}
+	id, start := g.begin(ctx, req)
 	out, err := tg.GenerateWithTools(ctx, messages, tools)
-	g.span(ctx, start, domain.GenerateRequest{Messages: messages, Tools: tools},
+	g.span(ctx, id, start, req,
 		domain.GenerateResponse{Text: out.Text, ToolCalls: out.ToolCalls, StopReason: out.StopReason}, err)
 	return out, err
 }
@@ -123,13 +144,14 @@ func (g *runTraceGenerator) GenerateStream(ctx context.Context, prompt string) (
 	if !ok {
 		return nil, fmt.Errorf("llm provider: run-traced %T does not implement streaming", g.inner)
 	}
-	start := time.Now()
+	req := domain.UserPrompt(prompt)
+	id, start := g.begin(ctx, req)
 	in, err := sg.GenerateStream(ctx, prompt)
 	if err != nil {
-		g.span(ctx, start, domain.UserPrompt(prompt), domain.GenerateResponse{}, err)
+		g.span(ctx, id, start, req, domain.GenerateResponse{}, err)
 		return nil, err
 	}
-	return g.relay(ctx, start, domain.UserPrompt(prompt), in), nil
+	return g.relay(ctx, id, start, req, in), nil
 }
 
 func (g *runTraceGenerator) GenerateRequest(ctx context.Context, req domain.GenerateRequest) (domain.GenerateResponse, error) {
@@ -137,9 +159,9 @@ func (g *runTraceGenerator) GenerateRequest(ctx context.Context, req domain.Gene
 	if !ok {
 		return domain.GenerateResponse{}, fmt.Errorf("llm provider: run-traced %T does not implement GenerateRequest", g.inner)
 	}
-	start := time.Now()
+	id, start := g.begin(ctx, req)
 	out, err := rg.GenerateRequest(ctx, req)
-	g.span(ctx, start, req, out, err)
+	g.span(ctx, id, start, req, out, err)
 	return out, err
 }
 
@@ -148,18 +170,18 @@ func (g *runTraceGenerator) StreamRequest(ctx context.Context, req domain.Genera
 	if !ok {
 		return nil, fmt.Errorf("llm provider: run-traced %T does not implement StreamRequest", g.inner)
 	}
-	start := time.Now()
+	id, start := g.begin(ctx, req)
 	in, err := rg.StreamRequest(ctx, req)
 	if err != nil {
-		g.span(ctx, start, req, domain.GenerateResponse{}, err)
+		g.span(ctx, id, start, req, domain.GenerateResponse{}, err)
 		return nil, err
 	}
-	return g.relay(ctx, start, req, in), nil
+	return g.relay(ctx, id, start, req, in), nil
 }
 
 // relay forwards a stream unchanged and records one span when it ends: the final
 // chunk's Response when the client sent one, else the concatenated text deltas.
-func (g *runTraceGenerator) relay(ctx context.Context, start time.Time, req domain.GenerateRequest, in <-chan domain.StreamChunk) <-chan domain.StreamChunk {
+func (g *runTraceGenerator) relay(ctx context.Context, id string, start time.Time, req domain.GenerateRequest, in <-chan domain.StreamChunk) <-chan domain.StreamChunk {
 	out := make(chan domain.StreamChunk, 64)
 	go func() {
 		defer close(out)
@@ -184,7 +206,7 @@ func (g *runTraceGenerator) relay(ctx context.Context, start time.Time, req doma
 			}
 		}
 		// A stream carries no error field: a failed stream shows as an empty output.
-		g.span(context.WithoutCancel(ctx), start, req, resp, nil)
+		g.span(context.WithoutCancel(ctx), id, start, req, resp, nil)
 	}()
 	return out
 }

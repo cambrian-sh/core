@@ -90,6 +90,9 @@ type ToolPolicy struct {
 	// without them the effects are inferred from the fields above, as for any
 	// tool. An effect outside the closed set makes the registry refuse the tool.
 	Effects []string
+	// StagedInputs marks an execution tool whose `inputs` argument the kernel
+	// stages into a per-run read-only folder (domain.SystemTool.StagedInputs).
+	StagedInputs bool
 }
 
 // UnlistedToolPolicy is the policy for a discovered tool the operator has said
@@ -132,6 +135,7 @@ func policyListed(toolName string, policy map[string]ToolPolicy, def *ToolPolicy
 func applyPolicy(st *domain.SystemTool, p ToolPolicy, defaultTags []string) {
 	st.Dangerous = p.Dangerous
 	st.DataWriteKinds = p.DataWriteKinds
+	st.StagedInputs = p.StagedInputs
 	st.ClassificationTags = defaultTags
 	if len(p.ClassificationTags) > 0 {
 		// A per-tool list REPLACES the server default rather than adding to it, so
@@ -352,6 +356,14 @@ func expandArgs(args []string, values map[string]string) []string {
 	out := make([]string, 0, len(args))
 	for _, a := range args {
 		if name, ok := Placeholder(a); ok {
+			if v, kernel := KernelLaunchValue(name); kernel {
+				// A kernel-provided value: no setting can supply or override it
+				// (env_values refuses CAMBRIAN_* names).
+				if v != "" {
+					out = append(out, v)
+				}
+				continue
+			}
 			if v := values[name]; v != "" {
 				out = append(out, v)
 			}

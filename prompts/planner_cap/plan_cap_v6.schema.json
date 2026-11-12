@@ -1,0 +1,194 @@
+{
+  "title": "StagedPlanReply",
+  "description": "One staged planner reply (ADR-0145 D11): the next stage's steps, ledger reads, questions for the person, or nothing more. Decoded by internal/awareness/planner.go under execution.plan.staged_planner.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reasoning",
+    "outcome",
+    "subject",
+    "cache_policy",
+    "steps"
+  ],
+  "properties": {
+    "reasoning": {
+      "type": "string",
+      "description": "A few sentences on the approach; logged, never executed."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "stage",
+        "read",
+        "input_required",
+        "nothing_more"
+      ],
+      "description": "stage: steps hold the next stage; read: ledger_reads; input_required: questions; nothing_more: no further step can help the open items."
+    },
+    "subject": {
+      "type": "string"
+    },
+    "cache_policy": {
+      "type": "string",
+      "description": "codegen, cognitive, tool, research or default."
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query",
+          "depends_on",
+          "required_capabilities",
+          "required_effects",
+          "answers"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The complete natural-language instruction for this step."
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Zero-based indices of the steps that must finish first."
+          },
+          "required_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Capability tags from <capability_clusters>; empty when none is needed."
+          },
+          "required_effects": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Effects from the effect vocabulary in <capability_clusters> that the step performs; empty for a thought step or a step that only reasons and answers. The runtime adds the configured vocabulary as an enum on items when it sends this schema."
+          },
+          "checkpoint_after": {
+            "type": "boolean"
+          },
+          "fan_out_over": {
+            "type": "integer",
+            "description": "Index of the earlier step whose output is the set to expand over."
+          },
+          "fan_out_var": {
+            "type": "string",
+            "description": "Placeholder name used in the query; default item."
+          },
+          "preferred_agent": {
+            "type": "string",
+            "description": "An agent ID, only when the request names one."
+          },
+          "agent_pin": {
+            "type": "string",
+            "enum": [
+              "soft",
+              "hard"
+            ]
+          },
+          "answers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of the requirements items this step produces results for."
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "References: s<N> (step N of this plan, also in depends_on) or e<K> (an earlier stage's result as labelled in <stage>), optionally .<name>, optionally ending in [*]."
+          },
+          "for_each": {
+            "type": "string",
+            "description": "The set binding an item is answered once per member of, e.g. s0.overdue."
+          }
+        }
+      },
+      "description": "The stage's steps; empty unless outcome is stage."
+    },
+    "ledger_reads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tool",
+          "arguments"
+        ],
+        "properties": {
+          "tool": {
+            "type": "string",
+            "enum": [
+              "ledger_get",
+              "ledger_find"
+            ]
+          },
+          "arguments": {
+            "type": "object",
+            "description": "The tool's arguments, as a worker would pass them."
+          }
+        }
+      },
+      "description": "Reads to serve before planning, when outcome is read."
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "question",
+          "kind"
+        ],
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "In English."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "missing_parameter",
+              "ambiguity",
+              "conflict",
+              "decision"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of the requirements items it blocks."
+          },
+          "quote": {
+            "type": "string",
+            "description": "The words of the request it is about, verbatim."
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "description": "Questions for the person, when outcome is input_required."
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "What you assumed instead of asking, when the person cannot be asked."
+    }
+  }
+}

@@ -97,10 +97,16 @@ func (s *Server) runProvenance(ctx context.Context, meta map[string]string, run 
 	return p
 }
 
-// readLedgerNode serves a led_… id through GetContextNode (the SDK's resolve_cid
-// and assemble_context read references there), via the ENFORCED reader under the
-// caller's own predicate — the same resolution GetArtifact uses. Forbidden and
-// absent both answer as an unknown cid.
+// readLedgerNode serves a led_… id through GetContextNode, via the ENFORCED reader
+// under the caller's own predicate — the same resolution GetArtifact uses.
+// Forbidden and absent both answer as an unknown cid.
+//
+// It returns the whole body, so it is NOT a model-facing read: the SDK's
+// resolve_cid reads a led_… id through ledger_get (paged, searchable, one page per
+// answer) since 2026-11-12, because re-opening a 300k-char result whole here
+// overflowed a worker's context window
+// (T-20261112-worker-resolve-cid-inline-has-no-size-cap-a). Its remaining reader is
+// the SDK's assemble_context, which applies its own token budget to what it fetches.
 func (s *Server) readLedgerNode(ctx context.Context, id string) *pb.ContextNodeResponse {
 	principal := artifactPrincipal(ctx)
 	eff, _ := s.authorizer().ReadFilter(ctx, principal, artifactSurface)

@@ -139,6 +139,11 @@ type StreamChunk struct {
 	// on such a chunk. The complete calls still arrive on the final chunk's
 	// Response; a consumer that ignores ToolCall loses nothing.
 	ToolCall *ToolCallDelta
+	// Err is the typed error behind a final "stream_error: …" chunk (the Text
+	// convention is unchanged for consumers that read only Text). It lets the
+	// fallback policy and the breaker tell a request fault (ErrContextOverflow)
+	// from an endpoint failure after a stream crossed a channel.
+	Err error
 }
 
 // ToolCallDelta is one streamed fragment of a model's tool call. Index identifies

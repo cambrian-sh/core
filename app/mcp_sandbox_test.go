@@ -1,6 +1,9 @@
 package app
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -74,5 +77,43 @@ func TestAnchorSandboxPaths(t *testing.T) {
 	}
 	if len(cfg.MCP.Sandbox.HidePaths) != 2 {
 		t.Fatalf("hide_paths default: %v", cfg.MCP.Sandbox.HidePaths)
+	}
+}
+
+// T-20261109-configs-mcp-json-example-reference-servers: every reference server in
+// configs/mcp.json.example names its catalog entry, so the ADR-0139 D8 sandbox takes
+// the catalog's tier and sandbox declaration (egress for the network readers) instead
+// of the default third-party tier with no network, which Windows native cannot enforce
+// and therefore refused ("sandbox refused to start \"fetch\" at tier third-party").
+func TestMCPExampleServersResolveThroughTheCatalog(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "configs", "mcp.json.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		MCP struct {
+			Servers []config.MCPServerConfig `json:"servers"`
+		} `json:"mcp"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := integrations.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := sandboxPolicyFromConfig(config.MCPSandboxConfig{}, cat)
+	if len(doc.MCP.Servers) == 0 {
+		t.Fatal("no servers parsed from the example")
+	}
+	for _, s := range doc.MCP.Servers {
+		spec := p.Resolve(s.ID, s.TrustTier, s.CatalogID, false, serverSandboxSpec(s.Sandbox))
+		if spec.TierSource != "catalog:"+s.ID {
+			t.Errorf("%s: tier from %q (catalog_id %q), want the catalog entry", s.ID, spec.TierSource, s.CatalogID)
+		}
+	}
+	fetch := p.Resolve("fetch", "", "fetch", false, sandbox.ServerSpec{})
+	if fetch.Server.Network != "egress" || fetch.Tier == sandbox.TierThirdParty {
+		t.Errorf("fetch resolves to %s with network %q", fetch.Tier, fetch.Server.Network)
 	}
 }

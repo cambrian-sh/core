@@ -102,10 +102,12 @@ func NewMetabolismStack(
 	// ADR-0145 D10: agents trace their own model and tool calls into the kernel's
 	// run-trace directory (sdk cambrian_agent_sdk/run_trace.py).
 	envExtras = append(envExtras, traceEnv(cfg.Execution.Trace)...)
-	// ADR-0145 D3: the SDK's evidence re-prompt (sdk react.py, EVIDENCE_REPROMPT_ENV).
-	if cfg.Execution.Workers.EvidenceReprompt {
-		envExtras = append(envExtras, "CAMBRIAN_EVIDENCE_REPROMPT=1")
-	}
+	// ADR-0145 D3: the SDK's evidence re-prompt (sdk react.py, EVIDENCE_REPROMPT_ENV),
+	// and the composed runtime's per-step tool-call budget (execution.workers.max_tool_rounds).
+	envExtras = append(envExtras, workersEnv(cfg.Execution.Workers)...)
+	// execution.content: the SDK's tool-output cap, preview, resolve window and
+	// prompt budget, so agent and kernel size content by one policy.
+	envExtras = append(envExtras, contentEnv(cfg.Execution.Content)...)
 	if len(envExtras) > 0 {
 		manager.SetEnvExtras(envExtras)
 	}

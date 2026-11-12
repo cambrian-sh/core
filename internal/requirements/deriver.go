@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path"
 	"sort"
 	"strings"
 
@@ -49,11 +50,19 @@ type Deriver struct {
 }
 
 type modelItem struct {
-	Type    string   `json:"type"`
-	Text    string   `json:"text"`
-	Quote   string   `json:"quote"`
-	Forbids []string `json:"forbids"`
-	Does    []string `json:"does"`
+	Type    string        `json:"type"`
+	Text    string        `json:"text"`
+	Quote   string        `json:"quote"`
+	Forbids []string      `json:"forbids"`
+	Does    []string      `json:"does"`
+	Targets []modelTarget `json:"targets"`
+	Expects []string      `json:"expects"`
+}
+
+type modelTarget struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+	Match string `json:"match"`
 }
 
 type modelChecklist struct {
@@ -132,9 +141,82 @@ func (d *Deriver) anchor(request string, items []modelItem) (good []domain.Requi
 			// refuses them on the step that carries the write out.
 			it.Does = d.vocabulary(m.Does)
 		}
+		if t == domain.RequirementWrite || t == domain.RequirementDocument {
+			it.Targets = anchorTargets(request, it.Text, m.Targets)
+		}
+		if t == domain.RequirementAnswer || t == domain.RequirementFigure {
+			it.Expects = expectsVocabulary(m.Expects)
+		}
 		good = append(good, it)
 	}
 	return good, bad
+}
+
+// anchorTargets keeps the declared targets code can stand behind
+// (T-20261112-write-target-coverage-reads-title-pdf-from-a): a known kind; an
+// exact value that is verbatim in the request (the same rule as the quote: a name
+// the person did not write is the model's guess, and coverage would hold the write
+// to it); a glob that compiles and has a wildcard (a glob with none is an exact
+// value and is held to the request like one). Anything else is dropped and
+// logged: the item then has no declared target for that entry, and coverage falls
+// back to its other targets, or to any done write of the step when none is left.
+func anchorTargets(request, item string, ts []modelTarget) []domain.ItemTarget {
+	var out []domain.ItemTarget
+	for _, m := range ts {
+		t := domain.ItemTarget{Kind: strings.ToLower(strings.TrimSpace(m.Kind)), Value: strings.TrimSpace(m.Value),
+			Match: strings.ToLower(strings.TrimSpace(m.Match))}
+		if t.Match == "" {
+			t.Match = domain.TargetMatchExact
+		}
+		why := ""
+		switch {
+		case t.Value == "":
+			why = "empty value"
+		case t.Kind != domain.TargetKindFile && t.Kind != domain.TargetKindFolder &&
+			t.Kind != domain.TargetKindRecipient && t.Kind != domain.TargetKindRecord:
+			why = "unknown kind"
+		case t.Match == domain.TargetMatchGlob && !strings.ContainsAny(t.Value, "*?["):
+			// No wildcard: it names one thing, so it must be the person's own words.
+			t.Match = domain.TargetMatchExact
+			if !domain.QuoteAnchored(request, t.Value) {
+				why = "a pattern with no wildcard whose value is not verbatim in the request"
+			}
+		case t.Match == domain.TargetMatchGlob:
+			if _, err := path.Match(normTarget(t.Value), ""); err != nil {
+				why = "the pattern does not compile: " + err.Error()
+			}
+		case t.Match == domain.TargetMatchExact:
+			if !domain.QuoteAnchored(request, t.Value) {
+				why = "the value is not verbatim in the request"
+			}
+		default:
+			why = "unknown match mode"
+		}
+		if why != "" {
+			slog.Info("ADR-0145 D5: checklist item target dropped", "item", item, "kind", m.Kind, "value", m.Value,
+				"match", m.Match, "why", why)
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// expectsVocabulary keeps the expects terms of the envelope's value vocabulary
+// (domain.ValueTypes) and any, normalised and unique; any absorbs the rest.
+// Unknown terms are dropped; nothing left means the item's default (itemExpects).
+func expectsVocabulary(terms []string) []string {
+	var out []string
+	for _, e := range terms {
+		n := strings.ToLower(strings.TrimSpace(e))
+		if n == domain.ExpectAny {
+			return []string{domain.ExpectAny}
+		}
+		if containsStr(domain.ValueTypes, n) && !containsStr(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // vocabulary keeps the terms of the constraint vocabulary (normalised, unique,

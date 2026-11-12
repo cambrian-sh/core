@@ -88,6 +88,15 @@ func wireComposedWorkers(cfg config.ExecutionConfig, server *subnetwork.Server, 
 	} else {
 		slog.Error("ADR-0145 D12: composed workers are on but the run ledger is not wired; compositions are NOT recorded")
 	}
+	// find_tools may report tools outside a step's composition, never load them
+	// (T-20261112-yield-sub-goal-on-a-composed-lease-runs-under): the bound is every
+	// registered profession's allowlist, so the registry must list agents.
+	if fleet, ok := agents.(compose.AgentLister); ok {
+		c.Fleet = fleet
+		server.ToolsOutsideStep = c.OutsideStep
+	} else {
+		slog.Warn("ADR-0145 D12: the agent registry cannot list agents; find_tools reports no tools outside a step")
+	}
 	d.Composer = c
 	slog.Info("ADR-0145 D12: composed workers ON", "runtime", w.RuntimeID(), "max_skills", w.SkillCap(),
 		"ledger", c.Ledger != nil)

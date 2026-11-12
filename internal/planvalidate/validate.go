@@ -6,8 +6,10 @@
 // plan by itself.
 //
 // Rule groups (D7):
-//   - structure: a DAG, dependencies in range, every input binding names a step
-//     the step depends on, a fan-out names an earlier step and is templated (it
+//   - structure: a DAG, dependencies in range, every input reference
+//     (domain.InputRef: s<N> or e<K>) names a step the step depends on or an
+//     earlier stage's result (Input.Earlier) — a rejected one is answered with
+//     the valid references and the closest — a fan-out names an earlier step and is templated (it
 //     binds to a list), for_each names a dependency or the fan-out source and the
 //     step fans out over it (coverage per member is per fan-out child);
 //   - coverage (with a checklist): every answers id is a checklist item and every
@@ -87,6 +89,9 @@ type Input struct {
 	// plan is the whole work and every item needs a producing step.
 	Staged  bool
 	Settled []string
+	// Earlier are the earlier stages' results a step may bind as e<K>
+	// (domain.InputRef); nil on the first stage and outside the coverage stages.
+	Earlier []domain.EarlierResult
 }
 
 // Validate returns every violation (nil for a valid plan).
@@ -115,14 +120,18 @@ func Validate(in Input) []Violation {
 			}
 		}
 		for _, b := range st.Inputs {
-			src, _, _, ok := domain.ParseBinding(b)
+			ref, ok := domain.ParseInputRef(b)
 			switch {
 			case !ok:
-				add(i, RuleBinding, "input %q is not a binding (s<N>, s<N>.<name>, optionally ending in [*])", b)
-			case src < 0 || src >= n || src == i:
-				add(i, RuleBinding, "input %q names step %d, which is not another step of the plan", b, src)
-			case !containsInt(st.DependsOn, src) && !fanSource(st, src):
-				add(i, RuleBinding, "input %q binds step %d, which is not in depends_on", b, src)
+				add(i, RuleBinding, "input %q is not a reference%s", b, refHelp(b, i, n, in.Earlier))
+			case ref.Earlier && earlierByLabel(in.Earlier, ref.Source()) == nil:
+				add(i, RuleBinding, "input %q names %s, which is not an earlier result of this request%s", b, ref.Source(), refHelp(b, i, n, in.Earlier))
+			case ref.Earlier:
+				// An earlier stage's result has finished: it is bound, never a dependency.
+			case ref.N < 0 || ref.N >= n || ref.N == i:
+				add(i, RuleBinding, "input %q names step %d, which is not another step of this plan%s", b, ref.N, refHelp(b, i, n, in.Earlier))
+			case !containsInt(st.DependsOn, ref.N) && !fanSource(st, ref.N):
+				add(i, RuleBinding, "input %q binds step %d, which is not in depends_on: add %d to depends_on", b, ref.N, ref.N)
 			}
 		}
 		if st.FanOutOver != nil {
@@ -283,6 +292,104 @@ func dates(p *domain.ExecutionPlan, sources []string) []Violation {
 }
 
 func fanSource(st domain.Step, src int) bool { return st.FanOutOver != nil && *st.FanOutOver == src }
+
+func earlierByLabel(es []domain.EarlierResult, label string) *domain.EarlierResult {
+	for i := range es {
+		if es[i].Label == label {
+			return &es[i]
+		}
+	}
+	return nil
+}
+
+// refHelp is the repair half of a rejected input reference
+// (T-20261112-staged-planner-binds-earlier-stage-results-with; research note
+// 2026-11-12 §7): the grammar, every reference valid for step i of an n-step plan,
+// and the closest valid one. The closest is a suggestion for the planner's next
+// attempt; the plan is never rewritten with it.
+func refHelp(bad string, i, n int, earlier []domain.EarlierResult) string {
+	var own []string
+	for k := 0; k < n; k++ {
+		if k != i {
+			own = append(own, fmt.Sprintf("s%d", k))
+		}
+	}
+	var b strings.Builder
+	b.WriteString(". A reference is s<N> (step N of this plan, also in depends_on) or e<K> (an earlier stage's result as labelled in <stage>), optionally followed by .<name> and [*]. Valid here: ")
+	switch {
+	case len(own) == 0 && len(earlier) == 0:
+		b.WriteString("none (this plan has no other step and no earlier stage ran)")
+	default:
+		var all []string
+		all = append(all, own...)
+		for _, e := range earlier {
+			all = append(all, fmt.Sprintf("%s (stage %d step %d)", e.Label, e.Stage, e.Step))
+		}
+		b.WriteString(strings.Join(all, ", "))
+	}
+	if c := closestRef(bad, own, earlier); c != "" {
+		fmt.Fprintf(&b, ". Closest: %s", c)
+	}
+	return b.String()
+}
+
+var refNumberRe = regexp.MustCompile(`\d+`)
+
+// closestRef suggests the valid reference a rejected one most likely meant: the
+// earlier result whose ledger id it names; the earlier result of the stage and
+// step its two numbers name ("s1.step_3", "stage1.s3" -> stage 1 step 3); else the
+// valid source at the smallest edit distance from its source part. "" when there
+// is no valid reference.
+func closestRef(bad string, own []string, earlier []domain.EarlierResult) string {
+	t := strings.ToLower(strings.TrimSpace(bad))
+	for _, e := range earlier {
+		if e.Ref != "" && strings.Contains(t, strings.ToLower(e.Ref)) {
+			return e.Label
+		}
+	}
+	if nums := refNumberRe.FindAllString(t, -1); len(nums) == 2 {
+		st, _ := strconv.Atoi(nums[0])
+		sp, _ := strconv.Atoi(nums[1])
+		for _, e := range earlier {
+			if e.Stage == st && e.Step == sp {
+				return e.Label
+			}
+		}
+	}
+	src, _, _ := strings.Cut(strings.TrimSuffix(t, "[*]"), ".")
+	best, bestD := "", -1
+	cands := append([]string(nil), own...)
+	for _, e := range earlier {
+		cands = append(cands, e.Label)
+	}
+	for _, c := range cands {
+		if d := editDistance(src, c); bestD < 0 || d < bestD {
+			best, bestD = c, d
+		}
+	}
+	return best
+}
+
+func editDistance(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur := make([]int, len(rb)+1)
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(rb)]
+}
 
 func containsInt(xs []int, x int) bool {
 	for _, v := range xs {

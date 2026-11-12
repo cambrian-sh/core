@@ -25,8 +25,8 @@ type LedgerConfig struct {
 	MaxEntryBytes int `json:"max_entry_bytes,omitempty"`
 	// PreviewChars bounds an entry's preview. 0 ⇒ 300.
 	PreviewChars int `json:"preview_chars,omitempty"`
-	// PageBytes is the page size ledger_get serves a text body in. 0 ⇒ 16000.
-	PageBytes int `json:"page_bytes,omitempty"`
+	// ledger_get's page size is execution.content.page_bytes (content.go); an
+	// explicit execution.ledger.page_bytes is migrated there on load.
 	// SweepIntervalMinutes is how often expired entries are purged. 0 ⇒ 60.
 	SweepIntervalMinutes int `json:"sweep_interval_minutes,omitempty"`
 }
@@ -55,14 +55,6 @@ func (c LedgerConfig) Preview() int {
 	return 300
 }
 
-// Page is PageBytes with its default applied.
-func (c LedgerConfig) Page() int {
-	if c.PageBytes > 0 {
-		return c.PageBytes
-	}
-	return 16000
-}
-
 // SweepInterval is SweepIntervalMinutes as a duration, with its default applied.
 func (c LedgerConfig) SweepInterval() time.Duration {
 	if c.SweepIntervalMinutes > 0 {
@@ -81,7 +73,6 @@ func (c LedgerConfig) validate() []string {
 		{"retention_hours", c.RetentionHours},
 		{"max_entry_bytes", c.MaxEntryBytes},
 		{"preview_chars", c.PreviewChars},
-		{"page_bytes", c.PageBytes},
 		{"sweep_interval_minutes", c.SweepIntervalMinutes},
 	} {
 		if f.v < 0 {

@@ -1,12 +1,13 @@
 {
   "_comment": "Keyless core MCP server set (owner directive decisions/agent-stack-v2-mcp-tools-and-profiles.md: tools come only from MCP servers). Copy to mcp.json (gitignored) and edit paths. Catalog, prerequisites (node 22+/npx, uv/uvx, Docker for the sandbox), trust notes and keyed integrations: configs/MCP.md and configs/mcp.integrations.json.example. Every version is PINNED and was checked on its registry 2026-11-05; the live MCP handshake has NOT been verified yet (pending owner approval, ticket T-20261105-curate-verify-and-pin-the-mcp-server-set). Tools are named mcp:<id>/<tool>; skills grant them by that name (skills/file-report uses mcp:filesystem/*).",
-  "_comment_policy": "ADR-0139 D8 / ADR-0086: a tool with no `tools` entry and no `default_tool_policy` FAILS CLOSED (dangerous = approval required, effects read+write+egress). Servers that can write, send or execute list their read tools explicitly and carry NO default, so a tool added by a later server version arrives dangerous. Network reads declare `egress` but are not dangerous: no approval prompt, but the egress effect is visible to grants, profile allowlists and the egress auditor. `env` is a PASSTHROUGH list of variable NAMES the stdio child may inherit from the kernel environment (values are set in the kernel's environment, never here); CAMBRIAN_* and LANGFUSE_* never pass. WARNING: an empty `{\"mcp\": {}}` silently wipes any `mcp` block in config.json (Koanf merges per-key) - do not create mcp.json if you do not use MCP. On Windows, `npx`/`uvx`/`uv` resolve through PATHEXT; use forward slashes or escaped backslashes in paths.",
+  "_comment_policy": "ADR-0139 D8 / ADR-0086: a tool with no `tools` entry and no `default_tool_policy` FAILS CLOSED (dangerous = approval required, effects read+write+egress). Servers that can write, send or execute list their read tools explicitly and carry NO default, so a tool added by a later server version arrives dangerous. Network reads declare `egress` but are not dangerous: no approval prompt, but the egress effect is visible to grants, profile allowlists and the egress auditor. `env` is a PASSTHROUGH list of variable NAMES the stdio child may inherit from the kernel environment (values are set in the kernel's environment, never here); CAMBRIAN_* and LANGFUSE_* never pass. WARNING: an empty `{\"mcp\": {}}` silently wipes any `mcp` block in config.json (Koanf merges per-key) - do not create mcp.json if you do not use MCP. On Windows, `npx`/`uvx`/`uv` resolve through PATHEXT; use forward slashes or escaped backslashes in paths. Each server carries `catalog_id`: the D8 sandbox takes its tier and sandbox declaration (egress) from that catalog entry; without it a server falls to the default third-party tier with no network, which Windows cannot enforce, and is refused (app/mcp_sandbox_test.go).",
   "mcp": {
     "default_session_budget": 0,
     "call_timeout_ms": 60000,
     "servers": [
       {
         "id": "fetch",
+        "catalog_id": "fetch",
         "_note": "Official reference server (modelcontextprotocol/servers, MIT). Fetches a URL and returns Markdown. Network read: egress, no approval. It can reach localhost/intranet URLs - see MCP.md trust notes.",
         "transport": "stdio",
         "endpoint": "uvx",
@@ -29,6 +30,7 @@
       },
       {
         "id": "web-search",
+        "catalog_id": "web-search",
         "_note": "Keyless DuckDuckGo search (nickclyde/duckduckgo-mcp-server, MIT, community). Rate-limited by DuckDuckGo; for production use a keyed provider (brave-search/tavily/exa) or self-hosted SearXNG from mcp.integrations.json.example.",
         "transport": "stdio",
         "endpoint": "uvx",
@@ -59,6 +61,7 @@
       },
       {
         "id": "filesystem",
+        "catalog_id": "filesystem",
         "_note": "Official reference server. ONLY the directories given as args are reachable - replace ./workspace with the absolute roots you want to expose. Pinned to 1.0.0 because 2.x declares node>=24 (2.2.0 is current). Write tools are dangerous.",
         "transport": "stdio",
         "endpoint": "npx",
@@ -187,17 +190,19 @@
       },
       {
         "id": "code-sandbox",
-        "_note": "Sandboxed code execution for data analysis (vndee/llm-sandbox, MIT). Runs Python (and JS, R, Go, ...) in a throwaway Docker container; captures matplotlib plots as images; installs pandas/numpy on demand. Needs Docker running. HARDEN via the kernel environment: BACKEND=docker SANDBOX_NETWORK_MODE=none SANDBOX_READ_ONLY=true SANDBOX_CAP_DROP=ALL SANDBOX_SECURITY_OPT=no-new-privileges:true SANDBOX_MEMORY=2g SANDBOX_CPU_COUNT=1 (with network none, on-demand pip installs fail: pre-bake an image). execute_code is dangerous with write+egress until those settings are proven to take.",
+        "catalog_id": "code-sandbox",
+        "_note": "Sandboxed code execution for data analysis: vndee/llm-sandbox (MIT) wrapped by tools/code_sandbox/server.py, launched from the kernel's directory (${CAMBRIAN_KERNEL_DIR}, kernel-provided). Hardened by env_values (network none, read-only root, no capabilities, no-new-privileges, 2g, 1 CPU) on the pre-built image SANDBOX_IMAGE (pandas, numpy, matplotlib, openpyxl; `make sandbox-image`). execute_code's `inputs` (ledger ids / the person's paths) are read by the kernel under the person's access and mounted read-only at /inputs for that run only; /outputs files come back as ledger entries. Needs Docker. SANDBOX_MOUNTS (a fixed read-only mount) is for tests and local development only.",
         "transport": "stdio",
         "endpoint": "uv",
         "args": [
           "run",
           "--no-project",
+          "--directory",
+          "${CAMBRIAN_KERNEL_DIR}",
           "--with",
           "llm-sandbox[mcp-docker]==0.3.46",
           "python",
-          "-m",
-          "llm_sandbox.mcp_server.server"
+          "tools/code_sandbox/server.py"
         ],
         "auth": {
           "type": "none"
@@ -210,7 +215,8 @@
           "SANDBOX_CAP_DROP",
           "SANDBOX_SECURITY_OPT",
           "SANDBOX_MEMORY",
-          "SANDBOX_CPU_COUNT"
+          "SANDBOX_CPU_COUNT",
+          "SANDBOX_IMAGE"
         ],
         "tools": [
           {
@@ -220,7 +226,8 @@
               "read",
               "write",
               "egress"
-            ]
+            ],
+            "staged_inputs": true
           },
           {
             "name": "get_supported_languages",
@@ -236,10 +243,20 @@
               "read"
             ]
           }
-        ]
+        ],
+        "env_values": {
+          "SANDBOX_IMAGE": "cambrian/code-sandbox:py311-1",
+          "SANDBOX_NETWORK_MODE": "none",
+          "SANDBOX_READ_ONLY": "true",
+          "SANDBOX_CAP_DROP": "ALL",
+          "SANDBOX_SECURITY_OPT": "no-new-privileges:true",
+          "SANDBOX_MEMORY": "2g",
+          "SANDBOX_CPU_COUNT": "1"
+        }
       },
       {
         "id": "shell",
+        "catalog_id": "shell",
         "_note": "Replacement for the dead @cfdude/super-shell-mcp (npm 404). tumf/mcp-shell-server (MIT): runs ONLY executables named in ALLOW_COMMANDS (set it in the kernel environment, e.g. ALLOW_COMMANDS=git,ls,cat). It is NOT a sandbox: an allowed program runs with the kernel user's files, network and credentials. Always dangerous. Windows execution is unverified (developed for POSIX shells). VERIFIED 2026-11-05: does NOT run on Windows (imports the Unix-only `pwd` module); use it only on Linux/macOS deployments.",
         "transport": "stdio",
         "endpoint": "uvx",
@@ -267,6 +284,7 @@
       },
       {
         "id": "git",
+        "catalog_id": "git",
         "_note": "Official reference server. --repository scopes it to one repo; replace the path. History and diff reads are safe; anything that changes the index, HEAD or branches is dangerous. It has no push tool.",
         "transport": "stdio",
         "endpoint": "uvx",
@@ -381,6 +399,7 @@
       },
       {
         "id": "sqlite",
+        "catalog_id": "sqlite",
         "_note": "Google MCP Toolbox for Databases (googleapis/mcp-toolbox, Apache-2.0), prebuilt sqlite toolset. The reference mcp-server-sqlite is archived. SQLITE_DATABASE (kernel env) names the database file. execute_sql takes raw SQL and can write: dangerous. Point it at a copy or open a read-only file when you only need analysis.",
         "transport": "stdio",
         "endpoint": "npx",
@@ -416,6 +435,7 @@
       },
       {
         "id": "time",
+        "catalog_id": "time",
         "_note": "Official reference server: current time and timezone conversion. Pure read.",
         "transport": "stdio",
         "endpoint": "uvx",
@@ -433,6 +453,7 @@
       },
       {
         "id": "calculator",
+        "catalog_id": "calculator",
         "_note": "Exact arithmetic (githejie/mcp-server-calculator, MIT, community, ~160 stars). One tool, calculate(expression): an AST walker over numbers, + - * / // % ** and the math module (pi, e, sqrt, log, ...); no eval, no I/O, no network. Pure read. Caveat: a huge power (9**9**9) is not capped and can spin the server until call_timeout_ms. PyPI 0.2.1 (2026-08-08) checked on the registry 2026-11-05; live handshake NOT verified yet.",
         "transport": "stdio",
         "endpoint": "uvx",
@@ -454,6 +475,7 @@
       },
       {
         "id": "pdf-reader",
+        "catalog_id": "pdf-reader",
         "_note": "@sylphx/pdf-reader-mcp (now the SylphxAI/anymd project, MIT): PDF/DOCX/PPTX/XLSX/HTML to Markdown, outline, search, page render/OCR. A `source` may be a URL, so reads carry egress. Unlisted tools fail closed.",
         "transport": "stdio",
         "endpoint": "npx",
@@ -501,6 +523,7 @@
       },
       {
         "id": "markitdown",
+        "catalog_id": "markitdown",
         "_note": "Microsoft MarkItDown MCP (microsoft/markitdown, MIT; package is pre-release 0.0.1a8): converts docx/xlsx/pptx/pdf/html/csv/images to Markdown. The uri may be http(s), file: or data:, so reads carry egress. Upstream says local, trusted use only. Needs --prerelease=allow: a transitive dependency (azure-ai-contentunderstanding) is only published as a pre-release. Handshake verified 2026-11-05 (tool: convert_to_markdown).",
         "transport": "stdio",
         "endpoint": "uvx",
@@ -524,6 +547,7 @@
       },
       {
         "id": "sequential-thinking",
+        "catalog_id": "sequential-thinking",
         "_note": "Official reference server: a scratchpad for step-by-step reasoning. No I/O. Pinned to 1.0.0 because 2.x declares node>=24.",
         "transport": "stdio",
         "endpoint": "npx",
@@ -542,6 +566,7 @@
       },
       {
         "id": "terminal",
+        "catalog_id": "terminal",
         "_note": "Desktop Commander (@wonderwhy-er/desktop-commander, MIT): Windows/macOS/Linux terminal (PowerShell/cmd/bash sessions, REPLs), file ops, search, process management. Handshake verified on Windows 2026-11-05 (25 tools). NOT a sandbox: its allowedDirectories restricts only its file tools, never terminal commands, and its blockedCommands list is bypassable (upstream README). Every write/exec tool is dangerous (approval required). NEVER grant set_config_value to an agent (it can widen its own allowedDirectories/blockedCommands) nor give_feedback_to_desktop_commander. Telemetry is ON by default upstream: set \"telemetryEnabled\": false in ~/.claude-server-commander/config.json (done on the owner's host 2026-11-05). For isolation run its Docker image (ADR-0139 D8).",
         "transport": "stdio",
         "endpoint": "npx",

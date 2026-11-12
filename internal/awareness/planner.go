@@ -47,8 +47,9 @@ var (
 	// plannerStagedPrompts is the staged arm (execution.plan.staged_planner,
 	// ADR-0145 D11): one call per stage, replying the next stage, ledger reads, a
 	// question for the person or nothing more. With the flag off the checklist arm
-	// stays on v10 + v3, byte for byte.
-	plannerStagedPrompts = prompts.MustPairVersions("planner_cap", 9, "planner_input", 4)
+	// stays on v10 + v3, byte for byte. v11: one input reference grammar, s<N> | e<K>
+	// (T-20261112-staged-planner-binds-earlier-stage-results-with).
+	plannerStagedPrompts = prompts.MustPairVersions("planner_cap", 11, "planner_input", 4)
 
 	// plannerPromptHash / plannerPromptHashCap are written to
 	// ExecutionPlan.PlannerPromptVersion and forwarded to PlanEvent. The two arms

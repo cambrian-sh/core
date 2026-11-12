@@ -91,6 +91,58 @@ type RequirementItem struct {
 	// held to a constraint over the classes the item itself needs (every write
 	// item needs the write class; Does adds the rest). Only on a write item.
 	Does []string `json:"does,omitempty"`
+	// Targets are what a write or document item must reach, as the deriver
+	// declared them (requirement_checklist v3; T-20261112-write-target-coverage-
+	// reads-title-pdf-from-a). Code keeps an exact value only when it is verbatim in
+	// the request and a glob only when it compiles (internal/requirements anchor).
+	// Coverage settles the item only by a done write whose target matches one of
+	// them; empty means the target is unknown and any done write of the step counts.
+	Targets []ItemTarget `json:"targets,omitempty"`
+	// Expects are the envelope value types (ValueTypes, or ExpectAny) a value must
+	// have to answer an answer or figure item (requirement_checklist v3;
+	// T-20261112-checklist-types-the-source-page-for-each): "the source page" expects
+	// a citation or string, "the total" a money amount. Empty: an answer takes any
+	// value, a figure a number, money amount or date (FigureValueType).
+	Expects []string `json:"expects,omitempty"`
+}
+
+// ExpectAny is the Expects term that accepts a value of any type.
+const ExpectAny = "any"
+
+// Item target kinds and match modes (RequirementItem.Targets).
+const (
+	TargetKindFile      = "file"
+	TargetKindFolder    = "folder"
+	TargetKindRecipient = "recipient"
+	TargetKindRecord    = "record"
+
+	TargetMatchExact = "exact"
+	TargetMatchGlob  = "glob"
+)
+
+// ItemTarget is one target a write or document item declares: a file, folder,
+// recipient or record, named exactly (Value is verbatim in the request) or by a
+// glob pattern (a template such as "YYYY-MM-DD Title.pdf" becomes
+// "????-??-?? *.pdf"; path.Match syntax over forward slashes).
+type ItemTarget struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+	Match string `json:"match"`
+}
+
+// ExpectsValueType reports whether a value of type t answers an item expecting
+// expects: any type when expects is empty or holds ExpectAny, otherwise one of
+// the listed types.
+func ExpectsValueType(expects []string, t string) bool {
+	if len(expects) == 0 {
+		return true
+	}
+	for _, e := range expects {
+		if e == ExpectAny || e == t {
+			return true
+		}
+	}
+	return false
 }
 
 // RequirementChecklistVersion is the shape version of RequirementChecklist.
@@ -312,6 +364,39 @@ func ParseAnswerEnvelope(body []byte) (*AnswerEnvelope, bool) {
 	return &env, true
 }
 
+// NormaliseListValue is the one string-to-structure coercion of the envelope
+// (T-20261112-d6-rejects-a-list-value-sent-as-a-json-array): a value whose
+// declared type is list and which arrives as a JSON string holding a JSON array
+// ("[\"a\",\"b\"]" — the worker tool's value field has no JSON type, and small
+// models encode a list as text) becomes that array, and ok reports the change so
+// the caller records it. Nothing else is parsed: a string under any other type,
+// or a list string that is not a JSON array, is left as it came (CheckValueType
+// then refuses it), so a text value that merely looks like JSON is never turned
+// into a structure. Numbers and money already accept "a string holding one".
+func NormaliseListValue(v EnvelopeValue) (EnvelopeValue, bool) {
+	if v.Type != ValueList {
+		return v, false
+	}
+	var s string
+	if json.Unmarshal(v.Value, &s) != nil {
+		return v, false
+	}
+	t := strings.TrimSpace(s)
+	if !strings.HasPrefix(t, "[") {
+		return v, false
+	}
+	var arr []any
+	if json.Unmarshal([]byte(t), &arr) != nil {
+		return v, false
+	}
+	b, err := json.Marshal(arr)
+	if err != nil {
+		return v, false
+	}
+	v.Value = b
+	return v, true
+}
+
 // CheckValueType reports why v.Value does not fit v.Type ("" when it fits).
 func CheckValueType(v EnvelopeValue) string {
 	raw := strings.TrimSpace(string(v.Value))
@@ -512,10 +597,76 @@ const (
 // StepInputValue is one resolved input binding handed to a step
 // (HandoffKeyStepInputs).
 type StepInputValue struct {
-	Binding string          `json:"binding"`
-	Step    int             `json:"step"`
-	Ref     string          `json:"ref,omitempty"`
-	Values  []EnvelopeValue `json:"values,omitempty"`
+	Binding string `json:"binding"`
+	Step    int    `json:"step"`
+	// Stage is the coverage stage of an earlier-stage result (an e<K> reference);
+	// 0 for a step of the step's own plan.
+	Stage  int             `json:"stage,omitempty"`
+	Ref    string          `json:"ref,omitempty"`
+	Values []EnvelopeValue `json:"values,omitempty"`
+}
+
+// EarlierResult is one completed step of an earlier coverage stage of the same
+// request, under the label a later stage's plan binds it by ("e3"; ADR-0145 D11,
+// T-20261112-staged-planner-binds-earlier-stage-results-with). Labels are assigned
+// once by the server, in order (stage, then step), and never reused in a request:
+// they are the stage-independent names of results whose step indices restart in
+// every stage.
+type EarlierResult struct {
+	Label   string `json:"label"`
+	Stage   int    `json:"stage"`
+	Step    int    `json:"step"`
+	Query   string `json:"query,omitempty"`
+	Ref     string `json:"ref,omitempty"`
+	Preview string `json:"preview,omitempty"`
+}
+
+// EarlierLabel is the reference label of the k-th earlier result (k from 1).
+func EarlierLabel(k int) string { return "e" + strconv.Itoa(k) }
+
+// InputRef is one parsed input reference. The reference grammar is ONE grammar,
+// resolved by code (as LLMCompiler's $1 and ReWOO's #E1 are):
+//
+//	<source>[.<name>][[*]]   source: s<N> | e<K>
+//
+// s<N> is step N of the plan being validated or run (it must also be in
+// depends_on); e<K> is the earlier-stage result labelled e<K> in the planner's
+// <stage> block (EarlierResult), already finished, so it is not a dependency.
+// <name> selects the values the source returned under that name; [*] marks a list.
+// Nothing else is a reference: a ledger id, "s1.step_3" or "stage1.s3" is refused
+// with the valid references listed, never interpreted.
+type InputRef struct {
+	// Earlier is true for an e<K> source.
+	Earlier bool
+	// N is the step index (s<N>) or the label number (e<K>).
+	N    int
+	Name string
+	List bool
+}
+
+// Source is the reference's source label ("s2", "e3").
+func (r InputRef) Source() string {
+	if r.Earlier {
+		return EarlierLabel(r.N)
+	}
+	return "s" + strconv.Itoa(r.N)
+}
+
+// ParseInputRef parses an input reference (InputRef's grammar).
+func ParseInputRef(b string) (InputRef, bool) {
+	t := strings.TrimSpace(b)
+	if len(t) >= 2 && (t[0] == 'e' || t[0] == 'E') {
+		n, name, list, ok := ParseBinding("s" + t[1:])
+		if !ok || n < 1 {
+			return InputRef{}, false
+		}
+		return InputRef{Earlier: true, N: n, Name: name, List: list}, true
+	}
+	n, name, list, ok := ParseBinding(t)
+	if !ok {
+		return InputRef{}, false
+	}
+	return InputRef{N: n, Name: name, List: list}, true
 }
 
 // ParseBinding splits "s3.overdue[*]" into (3, "overdue", true). ok is false for
@@ -555,6 +706,10 @@ type CoverageStage struct {
 	// Earlier is the rendered index of earlier stages' step results (ledger refs
 	// and previews), shown in <documents>.
 	Earlier string `json:"-"`
+	// EarlierResults are every earlier stage's completed steps under their e<K>
+	// labels: the earlier results this stage's plan may bind in inputs (the D7
+	// validator accepts exactly these).
+	EarlierResults []EarlierResult `json:"-"`
 }
 
 // OpenItem is one still-open item on a coverage stage.

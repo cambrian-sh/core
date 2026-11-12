@@ -21,7 +21,21 @@ func (m *memTracer) Span(_ context.Context, s domain.TraceSpan) {
 	m.spans = append(m.spans, s)
 }
 
+// all returns the finished spans (start events skipped).
 func (m *memTracer) all() []domain.TraceSpan {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.TraceSpan
+	for _, s := range m.spans {
+		if s.Phase == "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// raw returns every recorded span and start event in order.
+func (m *memTracer) raw() []domain.TraceSpan {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]domain.TraceSpan(nil), m.spans...)
@@ -116,4 +130,70 @@ func TestProvider_RunTracerWrapsAcquire(t *testing.T) {
 	if got := tr.all()[0].Attributes["cambrian.purpose"]; got != string(domain.PurposePlanner) {
 		t.Errorf("purpose = %v", got)
 	}
+}
+
+// T-20261109-live-run-viewer: a model call writes a start event with the request
+// BEFORE the model answers, and the finished span carries the same span id.
+func TestRunTrace_StartEventBeforeCall(t *testing.T) {
+	t.Parallel()
+	tr := &memTracer{}
+	var atCall []domain.TraceSpan
+	inner := &hookRG{onCall: func() { atCall = tr.raw() }}
+	g := &runTraceGenerator{inner: inner, tracer: tr, id: "gen-1", purpose: "planner"}
+	req := domain.GenerateRequest{
+		System:         []domain.SystemBlock{{Text: "be exact"}},
+		Messages:       []domain.ModelMessage{domain.UserMessage("find INV-7")},
+		Tools:          []domain.ToolDefinition{{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}},
+		ResponseSchema: &domain.ResponseSchema{Name: "checklist_system", Schema: []byte(`{}`)},
+	}
+	if _, err := g.GenerateRequest(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(atCall) != 1 || atCall[0].Phase != domain.TracePhaseStart {
+		t.Fatalf("while the model ran the trace held %d events, want the start event: %+v", len(atCall), atCall)
+	}
+	st := atCall[0]
+	if st.Name != "chat gen-1" || st.SpanID == "" || st.Attributes["cambrian.purpose"] != "planner" ||
+		st.Attributes["cambrian.request.response_schema_name"] != "checklist_system" {
+		t.Errorf("start event: %s %q %v", st.Name, st.SpanID, st.Attributes)
+	}
+	if _, ok := st.Attributes[domain.GenAISystemInstructions]; !ok {
+		t.Error("start event must carry the system instructions")
+	}
+	if _, ok := st.Attributes[domain.GenAIOutputMessages]; ok {
+		t.Error("start event must carry no output")
+	}
+	all := tr.raw()
+	if len(all) != 2 || all[1].SpanID != st.SpanID || all[1].Phase != "" {
+		t.Errorf("end span must complete the pair: %+v", all)
+	}
+}
+
+// A stream's start event is written when the stream opens, its end when it ends.
+func TestRunTrace_StreamStartEvent(t *testing.T) {
+	t.Parallel()
+	tr := &memTracer{}
+	g := &runTraceGenerator{inner: &scriptedRG{}, tracer: tr, id: "gen-1", purpose: "agent"}
+	ch, err := g.StreamRequest(context.Background(), domain.UserPrompt("go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := tr.raw(); len(r) != 1 || r[0].Phase != domain.TracePhaseStart {
+		t.Fatalf("after open: %+v", r)
+	}
+	drain(t, ch)
+	if r := tr.raw(); len(r) != 2 || r[0].SpanID != r[1].SpanID {
+		t.Errorf("after end: %+v", r)
+	}
+}
+
+// hookRG is a RequestGenerator that runs onCall while "the model" answers.
+type hookRG struct {
+	scriptedRG
+	onCall func()
+}
+
+func (h *hookRG) GenerateRequest(ctx context.Context, req domain.GenerateRequest) (domain.GenerateResponse, error) {
+	h.onCall()
+	return h.scriptedRG.GenerateRequest(ctx, req)
 }

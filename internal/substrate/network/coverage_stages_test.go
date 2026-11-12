@@ -68,11 +68,20 @@ type envelopeDispatcher struct {
 	writer domain.LedgerWriter
 	answer func(ctx context.Context, query string, record func(tool, body string) string) []byte
 	calls  []string
+	// stepInputs are the resolved input references each call was handed
+	// (HandoffKeyStepInputs), by query.
+	stepInputs map[string]string
 }
 
 func (d *envelopeDispatcher) Execute(ctx context.Context, task *domain.DispatchTask, h *domain.Handoff) (*domain.DispatchResult, error) {
 	d.mu.Lock()
 	d.calls = append(d.calls, task.Description)
+	if in := h.Context[domain.HandoffKeyStepInputs]; in != "" {
+		if d.stepInputs == nil {
+			d.stepInputs = map[string]string{}
+		}
+		d.stepInputs[task.Description] = in
+	}
 	d.mu.Unlock()
 	record := func(tool, body string) string {
 		p := domain.LedgerProvenanceFromContext(ctx)

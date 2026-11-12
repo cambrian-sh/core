@@ -361,6 +361,9 @@ func Validate(e Entry) []string {
 	}
 	for _, a := range s.Args {
 		if name, ok := mcp.Placeholder(a); ok {
+			if mcp.IsKernelPlaceholder(name) {
+				continue // the kernel fills it (mcp.KernelLaunchValue); no field may
+			}
 			f, declared := names[name]
 			if !declared || f.Secret || f.Kind != KindEnv {
 				add("arg %q must name a non-secret env field", a)

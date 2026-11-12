@@ -136,6 +136,47 @@ type TagPredicate struct {
 	// operator plane) or an unscoped deployment. It must never be produced by
 	// combining two predicates — the kernel does not combine predicates at all.
 	Bypass bool `json:"bypass,omitempty"`
+
+	// LedgerRuns is the run-scope grant (ADR-0145 D11;
+	// T-20261112-staged-planner-s-ledger-reads-return-found): the ledger entries
+	// of the runs named here are readable under the run's own kernel scope (the
+	// owner fence for the run's owner only — the scope the DAG executor reads the
+	// same run under, runLedgerScope), in ADDITION to what the rest of this
+	// predicate admits. It is a kernel-held fact, set only by the kernel for the
+	// staged planner of the Execute that owns those runs — never by a decision
+	// point, a header or a payload — and applied ONLY by authz.EnforcingLedger.
+	// Every other read path ignores it, and since it can only add ledger rows,
+	// ignoring it fails closed. Not projectable to a TagSet (ToTagSet drops it,
+	// which narrows).
+	LedgerRuns *LedgerRunGrant `json:"ledger_runs,omitempty"`
+}
+
+// LedgerRunGrant names the runs a staged planner owns. Roots are root run ids
+// (RootRunID): an entry is granted when RootRunID(entry.RunID) is one of them, so
+// every coverage stage ("-s<n>") and plan generation ("-g<n>") of the planner's
+// own Execute is covered and no other Execute's run is. A nested delegated run
+// (a worker's own Execute) has its own root and is NOT covered: its result
+// reaches the parent run as the delegating step's output, recorded under the
+// parent's run id. Owner is the run's conversation owner, the only owner:<id>
+// rows the grant can admit ("" admits none). An empty grant grants nothing.
+type LedgerRunGrant struct {
+	Roots []string `json:"roots,omitempty"`
+	Owner string   `json:"owner,omitempty"`
+}
+
+// Covers reports whether runID belongs to one of the granted runs. A nil grant,
+// an empty run id or an empty root covers nothing (fail closed).
+func (g *LedgerRunGrant) Covers(runID string) bool {
+	if g == nil || runID == "" {
+		return false
+	}
+	root := RootRunID(runID)
+	for _, r := range g.Roots {
+		if r != "" && r == root {
+			return true
+		}
+	}
+	return false
 }
 
 // ScopeSystem is the explicit, greppable sentinel that bypasses tag filtering for

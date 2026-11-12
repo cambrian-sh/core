@@ -1,7 +1,7 @@
 ---
 name: chart-report
 description: Produce charts from data in the code sandbox and a written report that references each chart and states what it shows. Use when a task asks for charts, plots, graphs, visual summaries or a report with figures built from tabular data.
-version: 1.0.0
+version: 1.1.0
 trust: builtin
 scope: []
 tools:
@@ -30,9 +30,11 @@ Three to six charts is usually enough. Do not chart what one sentence can say.
 
 ## 2. Prepare the data
 
-Load and clean the data in the sandbox with `execute_code` (Python, pandas). If
-the data is a file the sandbox cannot see, read it with `read_text_file` and
-pass it into the code. Compute the exact numbers each chart plots and print them,
+Load and clean the data in the sandbox with `execute_code` (Python, pandas). Name
+each data file in `execute_code`'s `inputs` (its path, or the `led_…` id of an
+earlier result): it is mounted read-only in `/inputs` for that run, Python starts
+there, and `INPUTS` maps each input to its path. Never paste file contents into the
+code. Save any chart or table file you want kept to `/outputs`. Compute the exact numbers each chart plots and print them,
 because the report will quote them. If the data needs real profiling first, do
 that before charting.
 

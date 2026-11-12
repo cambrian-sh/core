@@ -1,0 +1,43 @@
+{
+  "title": "RequirementChecklist",
+  "description": "The derived checklist. Decoded by internal/requirements/deriver.go; ids and statuses are assigned by code, and targets and expects are checked there.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "text", "quote"],
+        "properties": {
+          "type": {"type": "string", "enum": ["answer", "figure", "document", "write", "constraint"]},
+          "text": {"type": "string", "description": "What the item requires, in English, one short sentence."},
+          "quote": {"type": "string", "description": "The verbatim span of the request the item comes from."},
+          "forbids": {"type": "array", "items": {"type": "string"}, "description": "Constraint only: the effects it rules out."},
+          "does": {"type": "array", "items": {"type": "string"}, "description": "Write only: the effects the write itself is (send for a send), from the same list."},
+          "expects": {
+            "type": "array",
+            "description": "Answer and figure only: the value types that answer the item; [\"any\"] when unsure.",
+            "items": {"type": "string", "enum": ["string", "number", "money", "date", "id", "ref", "citation", "bool", "list", "object", "any"]}
+          },
+          "targets": {
+            "type": "array",
+            "description": "Write and document only: what the change must reach. exact: a value copied from the request; glob: a pattern (* and ?, / between folders) for names the request describes by a format or example.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "value", "match"],
+              "properties": {
+                "kind": {"type": "string", "enum": ["file", "folder", "recipient", "record"]},
+                "value": {"type": "string"},
+                "match": {"type": "string", "enum": ["exact", "glob"]}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

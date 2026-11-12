@@ -26,8 +26,11 @@ import (
 // ActionHistory is the conversation-scoped record the approval path consults. The
 // ToolExecutor — the one reference monitor, which sees the final arguments and the
 // approval id — records every side-effecting call of a conversation (pending while
-// it waits for approval, approved while it runs, then done or failed; a refused
-// call is dropped: it never ran). Before it raises an approval it matches the call
+// it waits for approval, approved while it runs, then done; a refused call is
+// dropped: it never ran, and so is a call that FAILED — owner decision 2026-11-10,
+// T-20261109-duplicate-notice-fires-on-the-retry-of-a-write: the notice counts
+// only successful earlier writes, so the corrected retry of a write the system
+// rejected is not flagged). Before it raises an approval it matches the call
 // against that record DETERMINISTICALLY (no model) and attaches what it found to
 // the approval item as a notice for the approver. It annotates, never refuses: a
 // legitimate repeat (the same reminder sent again) must stay approvable.
@@ -42,7 +45,6 @@ const (
 	ActionApproved         = "approved, running"
 	ActionRunning          = "running"
 	ActionDone             = "done"
-	ActionFailed           = "failed (it may or may not have taken effect)"
 )
 
 // Bounds that keep the history's memory finite. They are capacity, not policy:
@@ -131,19 +133,21 @@ func (h *ActionHistory) Approved(ref ActionRef, approvalID string) {
 	h.update(ref, func(r *ActionRecord) { r.State, r.ApprovalID = ActionApproved, approvalID })
 }
 
-// Finish records the outcome of a dispatched call: done (with the ids the result
-// names) or failed.
-func (h *ActionHistory) Finish(ref ActionRef, failed bool, ids []string) {
+// Finish records a dispatched call that succeeded: done, with the ids its result
+// names. A call that failed is not finished but dropped (Drop): only a successful
+// earlier write counts as one a later call may duplicate (owner decision
+// 2026-11-10, T-20261109-duplicate-notice-fires-on-the-retry-of-a-write). The
+// incident it fixes: a calendar_create_event refused with not_found ("No user
+// Fenella Oakhurst in the directory") stayed in the history as "failed (it may or
+// may not have taken effect)", so the corrected retry was flagged and denied.
+func (h *ActionHistory) Finish(ref ActionRef, ids []string) {
 	h.update(ref, func(r *ActionRecord) {
 		r.State = ActionDone
-		if failed {
-			r.State = ActionFailed
-		}
 		r.IDs = append([]string(nil), ids...)
 	})
 }
 
-// Drop removes ref: the call was refused and never ran.
+// Drop removes ref: the call was refused and never ran, or it ran and failed.
 func (h *ActionHistory) Drop(ref ActionRef) {
 	if h == nil || ref.IsZero() {
 		return

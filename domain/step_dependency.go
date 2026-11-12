@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"unicode/utf8"
+	"strings"
 )
 
 // StepDependency is one upstream result delivered to a dependent plan step: the
@@ -34,11 +34,25 @@ type StepDependency struct {
 	CID string `json:"cid,omitempty"`
 	// Bytes is the size of the full result.
 	Bytes int `json:"bytes"`
-	// Content is the result, whole unless Shortened.
+	// Content is the result, whole unless Shortened; then its BEGINNING.
 	Content string `json:"content,omitempty"`
-	// Shortened marks Content as a preview (its first len(Content) bytes) of a result
-	// larger than its share of the budget; the rest is resolvable by CID.
+	// Shortened marks a result larger than its share of the budget: Content is its
+	// beginning and Tail its end, OmittedFrom..OmittedTo the byte range left out,
+	// Outline its headings with their pages, and Read the exact call that returns
+	// the omitted pages (FitStepDependencies). The whole is readable by CID.
 	Shortened bool `json:"shortened,omitempty"`
+	// Tail is the END of a shortened result.
+	Tail string `json:"tail,omitempty"`
+	// OmittedFrom and OmittedTo are the byte offsets of the part of a shortened
+	// result that is not shown.
+	OmittedFrom int `json:"omitted_from,omitempty"`
+	OmittedTo   int `json:"omitted_to,omitempty"`
+	// PageBytes is the page size Outline and Read are numbered in.
+	PageBytes int `json:"page_bytes,omitempty"`
+	// Outline is the headings of the whole result with the page each is on.
+	Outline []DependencyHeading `json:"outline,omitempty"`
+	// Read is the exact call that returns the omitted pages.
+	Read string `json:"read,omitempty"`
 	// PriorPlan is 0 for a step of the running plan. N >= 1 marks a result carried
 	// forward from the N-th plan a replan swapped out of this run (InjectCorrection,
 	// hot-swap, error replan): Step then indexes THAT plan, not the current one, and
@@ -91,15 +105,50 @@ func DecodeStepDependencies(s string) ([]StepDependency, error) {
 	return deps, nil
 }
 
-// FitStepDependencies bounds the inlined Content of deps to budget bytes in total.
+// DependencyFit is how a dependent step's upstream results are bounded
+// (execution.content): BudgetBytes in total across the step's dependencies (<= 0 ⇒
+// unbounded), and PageBytes, the ledger_get page size the outline and the read hint
+// of a shortened result are numbered in (<= 0 ⇒ 16000).
+type DependencyFit struct {
+	BudgetBytes int
+	PageBytes   int
+}
+
+// DependencyHeading is one heading of a shortened result's outline, with the
+// ledger_get page it is on.
+type DependencyHeading struct {
+	Heading string `json:"heading"`
+	Page    int    `json:"page"`
+}
+
+// Outline bounds: a shortened result's outline names at most this many headings,
+// each cut to dependencyHeadingMax bytes, and takes at most a fifth of the result's
+// share (an outline that crowds out the text it indexes defeats itself).
+const (
+	dependencyOutlineMax = 40
+	dependencyHeadingMax = 100
+)
+
+// FitStepDependencies bounds the inlined content of deps to fit.BudgetBytes in total
+// (owner decision 2026-11-12, T-20261112-summarise-a-document-step-gets-only-the-first).
+//
 // Every dependency keeps a fair share: the budget is split evenly, a result smaller
 // than its share gives the rest back to the others (water-filling), and only results
-// larger than the final share are cut — on a rune boundary — and marked Shortened, so
-// nothing is truncated silently. deps is modified in place and returned. budget <= 0
-// leaves deps whole.
-func FitStepDependencies(deps []StepDependency, budget int) []StepDependency {
+// larger than the final share are shortened. A shortened result is NOT a head-only
+// cut — that silently biased p12's summary to the start of the report and dropped its
+// end-of-report finding. It keeps its BEGINNING (Content) and its END (Tail), each
+// cut on a rune boundary, the byte range left out (OmittedFrom..OmittedTo), the
+// outline of the whole result (its markdown headings with the ledger_get page each
+// is on) and Read, the exact call that returns the omitted pages. deps is modified
+// in place and returned. fit.BudgetBytes <= 0 leaves deps whole.
+func FitStepDependencies(deps []StepDependency, fit DependencyFit) []StepDependency {
+	budget := fit.BudgetBytes
 	if budget <= 0 || len(deps) == 0 {
 		return deps
+	}
+	page := fit.PageBytes
+	if page <= 0 {
+		page = 16000
 	}
 	total := 0
 	sizes := make([]int, len(deps))
@@ -122,16 +171,65 @@ func FitStepDependencies(deps []StepDependency, budget int) []StepDependency {
 		share = n
 	}
 	for i := range deps {
-		c := deps[i].Content
-		if len(c) <= share {
-			continue
+		if len(deps[i].Content) > share {
+			shortenDependency(&deps[i], share, page)
 		}
-		cut := share
-		for cut > 0 && !utf8.RuneStart(c[cut]) {
-			cut--
-		}
-		deps[i].Content = c[:cut]
-		deps[i].Shortened = true
 	}
 	return deps
+}
+
+// shortenDependency keeps the beginning and the end of d's content within share
+// bytes, with the outline of the whole and the read hint for what is left out.
+func shortenDependency(d *StepDependency, share, page int) {
+	full := d.Content
+	starts := TextPageStarts(full, page)
+	outline := dependencyOutline(full, starts, share/5)
+	cost := 0
+	for _, h := range outline {
+		cost += len(h.Heading) + 8
+	}
+	avail := max(share-cost, 0)
+	head := RunePrefix(full, avail-avail/2)
+	tail := RuneSuffix(full, avail/2)
+	d.Content, d.Tail = head, tail
+	d.Shortened = true
+	d.OmittedFrom, d.OmittedTo = len(head), len(full)-len(tail)
+	d.PageBytes = page
+	d.Outline = outline
+	if d.CID != "" && d.OmittedTo > d.OmittedFrom {
+		a := PageOfOffset(starts, d.OmittedFrom)
+		b := PageOfOffset(starts, d.OmittedTo-1)
+		verb, arg := "resolve_cid", "cid"
+		if IsLedgerID(d.CID) {
+			verb, arg = "ledger_get", "id"
+		}
+		if a == b {
+			d.Read = fmt.Sprintf("%s %s='%s' page=%d", verb, arg, d.CID, a)
+		} else {
+			d.Read = fmt.Sprintf("%s %s='%s' page=%d (then page=%d … page=%d)", verb, arg, d.CID, a, a+1, b)
+		}
+	}
+}
+
+// dependencyOutline is the markdown (ATX) headings of text with the page each
+// starts on, bounded to dependencyOutlineMax entries and maxBytes in total.
+func dependencyOutline(text string, starts []int, maxBytes int) []DependencyHeading {
+	var out []DependencyHeading
+	used, off := 0, 0
+	for _, line := range strings.SplitAfter(text, "\n") {
+		at := off
+		off += len(line)
+		t := strings.TrimSpace(line)
+		level := len(t) - len(strings.TrimLeft(t, "#"))
+		if level == 0 || level > 6 || len(t) == level || t[level] != ' ' {
+			continue
+		}
+		h := RunePrefix(t, dependencyHeadingMax)
+		if len(out) >= dependencyOutlineMax || used+len(h)+8 > maxBytes {
+			break
+		}
+		used += len(h) + 8
+		out = append(out, DependencyHeading{Heading: h, Page: PageOfOffset(starts, at)})
+	}
+	return out
 }

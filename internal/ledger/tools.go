@@ -22,7 +22,7 @@ const (
 )
 
 // Tools returns the two ledger tools over the ENFORCED reader. pageBytes bounds
-// one page of a text body (execution.ledger.page_bytes; <= 0 ⇒ 16000).
+// one page of a text body (execution.content.page_bytes; <= 0 ⇒ 16000).
 func Tools(reader domain.LedgerReader, pageBytes int) []domain.KernelTool {
 	if pageBytes <= 0 {
 		pageBytes = 16000
@@ -40,13 +40,15 @@ func (getTool) Spec() domain.SystemTool {
 		Name: ToolGet,
 		Description: "Read a ledger entry (a tool result or step output recorded by the kernel this conversation) " +
 			"by its id (led_...). Optional: path selects part of a JSON body (a.b[0].c or /a/b/0); rows " +
-			"selects a slice of a JSON list (\"10:20\"); page reads a long text body page by page (1-based). " +
-			"Use the exact figures, ids and dates it returns.",
+			"selects a slice of a JSON list (\"10:20\"); page reads a long body page by page (1-based); " +
+			"find searches one entry for a text and returns the matching snippets with their pages. " +
+			"Every page says how much there is and the next call. Use the exact figures, ids and dates it returns.",
 		Schema: []byte(`{"type":"object","properties":{` +
 			`"id":{"type":"string","description":"ledger entry id, led_..."},` +
 			`"path":{"type":"string","description":"part of a JSON body: a.b[0].c or /a/b/0"},` +
 			`"rows":{"type":"string","description":"slice of a JSON list, start:end (end exclusive)"},` +
-			`"page":{"type":"integer","minimum":1,"description":"page of a long body, 1-based"}},` +
+			`"page":{"type":"integer","minimum":1,"description":"page of a long body, 1-based"},` +
+			`"find":{"type":"string","description":"text to search for inside this entry (case-insensitive)"}},` +
 			`"required":["id"],"additionalProperties":false}`),
 		Effects: []domain.ToolEffect{domain.EffectRead},
 	}
@@ -57,7 +59,16 @@ type getArgs struct {
 	Path string `json:"path"`
 	Rows string `json:"rows"`
 	Page int    `json:"page"`
+	Find string `json:"find"`
 }
+
+// findMaxMatches / findSnippetBytes bound one find answer: it is a pointer into
+// the entry (page + snippet), not a second copy of it. Past the cap the model is
+// told to refine the text (SWE-agent's capped search, cited in the ticket).
+const (
+	findMaxMatches   = 20
+	findSnippetBytes = 240
+)
 
 func (t getTool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, error) {
 	var a getArgs
@@ -110,7 +121,7 @@ func (t getTool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, 
 			out["total_rows"] = total
 		}
 		b, _ := json.Marshal(value)
-		if len(b) <= t.page && a.Page <= 1 {
+		if len(b) <= t.page && a.Page <= 1 && a.Find == "" {
 			out["value"] = json.RawMessage(b)
 			return json.Marshal(out)
 		}
@@ -121,14 +132,82 @@ func (t getTool) Call(ctx context.Context, call domain.KernelToolCall) ([]byte, 
 		}
 		text = string(e.Body)
 	}
-	page, pages := pageOf(text, t.page, a.Page)
-	if a.Page > pages && pages > 0 {
+	starts := domain.TextPageStarts(text, t.page)
+	pages := len(starts)
+	out["pages"] = pages
+	out["total_chars"] = len(text)
+	if q := strings.TrimSpace(a.Find); q != "" {
+		findIn(out, e.ID, text, q, starts)
+		return json.Marshal(out)
+	}
+	p := max(a.Page, 1)
+	if p > pages && pages > 0 {
 		return nil, fmt.Errorf("ledger_get: page %d of %d", a.Page, pages)
 	}
-	out["text"] = page
-	out["page"] = max(a.Page, 1)
-	out["pages"] = pages
+	if pages == 0 {
+		out["text"], out["page"] = "", 1
+		return json.Marshal(out)
+	}
+	from, to := starts[p-1], len(text)
+	if p < pages {
+		to = starts[p]
+	}
+	out["text"] = text[from:to]
+	out["page"] = p
+	out["note"] = PageNote(e.ID, len(text), from, to, p, pages)
 	return json.Marshal(out)
+}
+
+// PageNote is the line every paged answer carries (owner decision 2026-11-12):
+// how much there is, which part this is, and the exact next call — a truncation the
+// model is told about, with directions (Anthropic, "Writing tools for agents").
+func PageNote(id string, total, from, to, page, pages int) string {
+	n := fmt.Sprintf("%d chars total, showing %d–%d (page %d of %d)", total, from+1, to, page, pages)
+	if page < pages {
+		n += fmt.Sprintf("; next: ledger_get id='%s' page=%d", id, page+1)
+	}
+	return n + fmt.Sprintf("; search: ledger_get id='%s' find='<text>'", id)
+}
+
+// findIn fills a find answer: every case-insensitive occurrence of q in text, as a
+// snippet with its page (capped at findMaxMatches).
+func findIn(out map[string]any, id, text, q string, starts []int) {
+	type match struct {
+		Page    int    `json:"page"`
+		Offset  int    `json:"offset"`
+		Snippet string `json:"snippet"`
+	}
+	lower, lq := strings.ToLower(text), strings.ToLower(q)
+	var matches []match
+	count := 0
+	for at := 0; ; {
+		i := strings.Index(lower[at:], lq)
+		if i < 0 {
+			break
+		}
+		off := at + i
+		count++
+		if len(matches) < findMaxMatches {
+			from := max(off-findSnippetBytes/2, 0)
+			for from > 0 && !utf8.RuneStart(text[from]) {
+				from--
+			}
+			snippet := domain.RunePrefix(text[from:], findSnippetBytes)
+			matches = append(matches, match{Page: domain.PageOfOffset(starts, off), Offset: off, Snippet: snippet})
+		}
+		at = off + max(len(lq), 1)
+		if at >= len(lower) {
+			break
+		}
+	}
+	out["find"] = q
+	out["match_count"] = count
+	out["matches"] = matches
+	note := fmt.Sprintf("%d match(es) for %q in %d chars (%d pages); read a page: ledger_get id='%s' page=<n>", count, q, len(text), len(starts), id)
+	if count > findMaxMatches {
+		note += fmt.Sprintf("; showing the first %d — refine the text to narrow it", findMaxMatches)
+	}
+	out["note"] = note
 }
 
 type findTool struct{ reader domain.LedgerReader }
@@ -323,31 +402,4 @@ func selectRows(v any, rows string) (any, int, error) {
 	start = min(max(start, 0), n)
 	end = min(max(end, start), n)
 	return arr[start:end], n, nil
-}
-
-// pageOf returns page (1-based) of text in pages of at most size bytes, cut at
-// rune boundaries, and the page count.
-func pageOf(text string, size, page int) (string, int) {
-	if page < 1 {
-		page = 1
-	}
-	var pages []string
-	for len(text) > 0 {
-		cut := min(size, len(text))
-		for cut < len(text) && cut > 0 && !utf8.RuneStart(text[cut]) {
-			cut--
-		}
-		if cut == 0 {
-			cut = min(size, len(text))
-		}
-		pages = append(pages, text[:cut])
-		text = text[cut:]
-	}
-	if len(pages) == 0 {
-		return "", 0
-	}
-	if page > len(pages) {
-		return "", len(pages)
-	}
-	return pages[page-1], len(pages)
 }

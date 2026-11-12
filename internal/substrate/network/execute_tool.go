@@ -9,6 +9,9 @@ import (
 	"github.com/cambrian-sh/core/domain"
 
 	"encoding/json"
+	"log/slog"
+
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -167,7 +170,8 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 		ctx = domain.WithStepCall(ctx, sc)
 	}
 
-	toolStart := time.Now() // ADR-0145 D10: the execute_tool span's start (run_trace.go)
+	// ADR-0145 D10: the execute_tool span's start event and start time (run_trace.go).
+	traceID, toolStart := s.traceToolCallStart(ctx, agentID, sessionToken, req)
 	var resp domain.ToolCallResponse
 	if why, ok := s.unroutableBound(ctx, sessionToken, req.GetToolName()); !ok {
 		// A running plan's earlier calls of this tool were all unroutable: refuse
@@ -184,7 +188,7 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 		})
 	}
 
-	s.traceToolCall(ctx, toolStart, agentID, sessionToken, req, resp)
+	s.traceToolCall(ctx, traceID, toolStart, agentID, sessionToken, req, resp)
 	// The plan's result reports every side-effecting call its steps made, so the
 	// caller never re-orders a write that already happened (plan_actions.go).
 	s.recordPlanAction(ctx, sessionToken, domain.ToolCallRequest{
@@ -196,7 +200,7 @@ func (s *Server) ExecuteTool(ctx context.Context, req *pb.ExecuteToolRequest) (*
 		Denied: resp.Denied, Err: firstNonEmpty(resp.Error, resp.DenyReason),
 	})
 	return &pb.ExecuteToolResponse{
-		ResultJson: string(resp.ResultJSON),
+		ResultJson: wireResultJSON(resp),
 		ResultCid:  resp.ResultCID,
 		Denied:     resp.Denied,
 		DenyReason: resp.DenyReason,
@@ -267,6 +271,7 @@ func (s *Server) ListTools(ctx context.Context, _ *pb.ListToolsRequest) (*pb.Lis
 	// Tier-2 (full description + full schema) only when x-tool-full is set (the
 	// describe_tool path). One render function (domain.ToolDisclosure) keeps the
 	// served short form identical to the embedded one.
+	s.reportToolsOutsideStep(ctx, agentID)
 	full := toolFullFromMetadata(ctx)
 	out := make([]*pb.ToolDescriptor, 0, len(tools))
 	for _, t := range tools {
@@ -279,6 +284,48 @@ func (s *Server) ListTools(ctx context.Context, _ *pb.ListToolsRequest) (*pb.Lis
 		})
 	}
 	return &pb.ListToolsResponse{Tools: out}, nil
+}
+
+// ToolOutsideStepHeader is the ListTools response header naming the tools that
+// match a composed worker's find_tools query and exist within the person's access
+// but are not in its step (comma-separated, ranked). They are NOT in the response
+// body: the worker cannot load or call them. It reports them in its
+// capability_missing outcome (domain.HandoffKeyCapabilityTool), so the re-planner
+// can give a re-planned step a worker that has one
+// (T-20261112-yield-sub-goal-on-a-composed-lease-runs-under, owner 2026-11-12).
+// A header, like the request's x-tool-* parameters, so the proto is unchanged and
+// a client that does not read it is unaffected.
+const ToolOutsideStepHeader = "x-tool-outside-step"
+
+// reportToolsOutsideStep sets ToolOutsideStepHeader on a find_tools query (a
+// ranked ListTools with x-tool-query) made under a composed step lease. Ranked by
+// the same retriever and k as the menu; nothing when no retriever, no match over
+// its relevance floor, or the caller is not on a composed lease.
+func (s *Server) reportToolsOutsideStep(ctx context.Context, agentID string) {
+	query := toolQueryFromMetadata(ctx)
+	if s.ToolsOutsideStep == nil || query == "" || len(toolNamesFromMetadata(ctx)) > 0 ||
+		s.ToolExecutor == nil || s.ToolExecutor.Retriever == nil {
+		return
+	}
+	comp, composed, _ := s.composedFor(ctx, agentID)
+	if !composed {
+		return
+	}
+	outside := s.ToolsOutsideStep(ctx, comp)
+	if len(outside) == 0 {
+		return
+	}
+	names := make([]string, len(outside))
+	for i, t := range outside {
+		names[i] = t.Name
+	}
+	ranked, err := s.ToolExecutor.Retriever.Rank(ctx, query, names, toolKFromMetadata(ctx))
+	if err != nil || len(ranked) == 0 {
+		return
+	}
+	if err := grpc.SetHeader(ctx, metadata.Pairs(ToolOutsideStepHeader, strings.Join(ranked, ","))); err != nil {
+		slog.Debug("ListTools: outside-step header not set", "err", err)
+	}
 }
 
 // WatchApprovals streams pending dangerous-tool approval requests to a subscribed
@@ -464,4 +511,18 @@ func appendKernelTools(tools, kernel []domain.SystemTool, named []string) []doma
 		tools = append(tools, k)
 	}
 	return tools
+}
+
+// wireResultJSON is result_json as the agent receives it: the result, or — for a
+// result that travels as its reference — its summary ({"_offloaded": {ref, size,
+// content type, shape, preview, pages, read}}) beside result_cid, so the model is
+// never handed a bare id it can only re-open whole (owner decision 2026-11-12,
+// T-20261112-worker-resolve-cid-inline-has-no-size-cap-a). No proto change: an SDK
+// that predates the summary reads both fields as "an inline result plus its
+// reference", which still shows the preview and the read call.
+func wireResultJSON(resp domain.ToolCallResponse) string {
+	if len(resp.ResultJSON) == 0 && resp.Offloaded != nil {
+		return string(resp.Offloaded.JSON())
+	}
+	return string(resp.ResultJSON)
 }

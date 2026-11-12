@@ -16,6 +16,8 @@ import (
 //   - an entry the predicate denies → absent (Get returns nil; Find omits it), so a
 //     reader cannot learn that out-of-reach material exists
 //   - the owner fence (ADR-0142)    → applies under Bypass too (TagPredicate.Allows)
+//   - a run-scope grant (TagPredicate.LedgerRuns, ADR-0145 D11) → the entries of
+//     the granted runs are tested under the run's kernel scope instead (ledgerReadable)
 //
 // The decorator is constructed only by kernel.NewLedgerStack with the store as a
 // required argument, never attached later (AGENTS.md §2.3), and it is the only
@@ -63,12 +65,37 @@ func (l *EnforcingLedger) Get(ctx context.Context, id string) (*domain.LedgerEnt
 	if err != nil || e == nil {
 		return nil, err
 	}
-	if !domain.LedgerEntryReadable(eff, *e) {
+	if !ledgerReadable(eff, *e) {
 		l.logger.DebugContext(ctx, "authz: filtered ledger read",
 			slog.String("event", "authz_filtered"), slog.String("op", "LedgerGet"))
 		return nil, nil
 	}
 	return e, nil
+}
+
+// ledgerReadable is the decorator's row test: the reader's predicate
+// (domain.LedgerEntryReadable), or — for an entry of a run the predicate's
+// run-scope grant names (TagPredicate.LedgerRuns, ADR-0145 D11) — the run's own
+// kernel scope: the explicit bypass with the owner fence for the run's owner
+// only, exactly runLedgerScope, the scope the DAG executor reads the same run
+// under. The grant is checked against the entry's kernel-recorded run id, never
+// anything the reader supplies; it admits nothing outside those runs, and
+// nothing owner-scoped to anyone but the run's owner (own tags AND every
+// SourceTags set — a derived entry stays as hard to read as its sources).
+func ledgerReadable(eff *domain.TagPredicate, e domain.LedgerEntry) bool {
+	if domain.LedgerEntryReadable(eff, e) {
+		return true
+	}
+	if eff == nil || !eff.LedgerRuns.Covers(e.RunID) {
+		return false
+	}
+	var runScope *domain.TagPredicate
+	if owner := eff.LedgerRuns.Owner; owner != "" {
+		runScope = domain.ScopeSystemFor(owner)
+	} else {
+		runScope = domain.ScopeSystemFor()
+	}
+	return domain.LedgerEntryReadable(runScope, e)
 }
 
 // ledgerFindOverfetch is how many candidates Find asks the store for per wanted
@@ -93,7 +120,7 @@ func (l *EnforcingLedger) Find(ctx context.Context, q domain.LedgerQuery) ([]dom
 	}
 	out := make([]domain.LedgerEntry, 0, len(rows))
 	for _, e := range rows {
-		if !domain.LedgerEntryReadable(eff, e) {
+		if !ledgerReadable(eff, e) {
 			continue
 		}
 		out = append(out, e)

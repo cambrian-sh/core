@@ -80,7 +80,7 @@ func RenderStageBlock(s *domain.StagePlanning) string {
 		b.WriteString("ledger reads: not available on this call\n")
 	}
 	if strings.TrimSpace(s.EarlierStages) != "" {
-		b.WriteString("\nEarlier stages (results by reference; workers read them with ledger_get):\n")
+		b.WriteString("\nEarlier stages' results (bind one in inputs by its e<K> label; workers read the entries with ledger_get):\n")
 		b.WriteString(strings.TrimSpace(s.EarlierStages))
 		b.WriteByte('\n')
 	}

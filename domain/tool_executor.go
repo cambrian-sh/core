@@ -178,7 +178,13 @@ type ToolCallRequest struct {
 // represents a crash: a denial, a handler error, and a success are all values.
 type ToolCallResponse struct {
 	ResultJSON []byte
-	ResultCID  string // set when the result was offloaded to the ContentStore
+	ResultCID  string // the result's reference: offloaded (ResultJSON nil), or inline plus its ledger id
+	// Offloaded summarises a result that travels as its reference (ResultJSON is
+	// nil then): size, content type, shape, preview and how to read it. It is what
+	// the AGENT is shown — ExecuteTool puts its JSON in result_json beside
+	// result_cid — while kernel consumers (the stager, the plan action ledger) keep
+	// reading ResultJSON == nil as "read the entry".
+	Offloaded  *OffloadSummary
 	Denied     bool
 	DenyReason string
 	Error      string
@@ -238,9 +244,17 @@ type ToolExecutor struct {
 	// Authz is the access-control decision point (ADR-0085). It gates the
 	// data-store regime (Regime 1) and, once effects are declared, the effect
 	// classes an invocation may exercise. nil ⇒ the OSS allow-all default.
-	Authz           Authorizer
-	ContentStore    ContentStore // nil ⇒ results returned inline
-	InlineThreshold int          // results larger than this go to the ContentStore
+	Authz        Authorizer
+	ContentStore ContentStore // nil ⇒ results returned inline
+	// InlineThreshold: a result larger than this travels as its reference plus an
+	// OffloadSummary (execution.content.inline_result_bytes). 0 ⇒ always inline.
+	InlineThreshold int
+	// PreviewChars bounds an offload summary's preview, and a result longer than
+	// it carries its ledger reference even inline (execution.content.preview_chars;
+	// 0 ⇒ 600). PageBytes is ledger_get's page, for the summary's page count
+	// (execution.content.page_bytes; 0 ⇒ one page).
+	PreviewChars int
+	PageBytes    int
 	// ADR-0043 budget regime: when both are set, a priced tool call is reserved
 	// against the session budget before dispatch and reconciled to actual after.
 	// nil ⇒ tool calls are unmetered (no behaviour change).
@@ -338,6 +352,57 @@ type ToolExecutor struct {
 	// open write/document item asked for, and the per-step record of refused calls.
 	// nil ⇒ none.
 	Guards *RequestGuards
+	// WriteTargets derives each side-effecting call's target from its arguments
+	// (execution.tools.write_targets). It is the per-target effect record the plan
+	// action ledger keeps for every write (PlanAction.Target), which coverage
+	// matches a write item's target against (ADR-0145 D5.3/D14,
+	// T-20261112-coverage-settles-a-write-item-on-any-done). Independent of Guards:
+	// the record is always kept; Guards.Targets is the same rule set when the
+	// request guards are on. nil ⇒ actions carry no target.
+	WriteTargets *WriteTargets
+	// Stager stages the inputs of a tool that declares StagedInputs (the code
+	// sandbox) into a per-run read-only folder, resolved under the caller's
+	// access (domain/staged_inputs.go; execution.tools.staged_inputs). nil ⇒ a
+	// staged tool called WITH inputs is refused (never run without them).
+	Stager ToolInputStager
+	// StepFailures counts each step lease's identical failed calls (tool, args,
+	// error) and stops the step at execution.tools.repeated_failure_stop
+	// (step_failures.go). nil ⇒ off.
+	StepFailures *StepFailures
+}
+
+// observeFailure counts a failed call (a tool error, or a final refusal) against
+// its step lease and adds the hint or the stop notice to what the worker is told.
+// A call that succeeded, or a refusal still waiting on a person, is not a failure.
+func (e *ToolExecutor) observeFailure(lease LeaseID, tool string, args []byte, out *ToolCallResponse) {
+	var errText string
+	switch {
+	case out.Error != "":
+		errText = out.Error
+	case out.Denied && refusalIsFinal(out.ApprovalState):
+		// The D14.5 refusal record answers a repeat with a note appended: the
+		// failure is the same one.
+		errText = strings.TrimSuffix(out.DenyReason, RepeatedRefusalNote)
+	default:
+		return
+	}
+	count, stuck := e.StepFailures.Observe(lease, tool, args, errText)
+	var note string
+	switch {
+	case stuck:
+		note = fmt.Sprintf(RepeatedFailureStop, count)
+		slog.Warn("step stopped: identical tool failure repeated (execution.tools.repeated_failure_stop)",
+			"tool", tool, "count", count, "lease", lease, "err", errText)
+	case count >= 2 && count == e.StepFailures.Threshold()-1:
+		note = fmt.Sprintf(RepeatedFailureHint, count)
+	default:
+		return
+	}
+	if out.Error != "" {
+		out.Error += note
+	} else {
+		out.DenyReason += note
+	}
 }
 
 // kernelTool returns the kernel tool named name, or nil.
@@ -367,8 +432,23 @@ func (e *ToolExecutor) KernelToolSpecs() []SystemTool {
 // read predicate (resolved from the decision point exactly as GetArtifact resolves
 // it, and carried on ctx for the enforced reader, AGENTS.md §2.4).
 func (e *ToolExecutor) runKernelTool(ctx context.Context, req ToolCallRequest, kt KernelTool, argHash string) ToolCallResponse {
+	eff, reason := e.callerReadScope(ctx, req)
+	if eff == nil {
+		return denied(reason, argHash)
+	}
+	result, err := kt.Call(WithScope(ctx, eff), KernelToolCall{AgentID: req.AgentID, ArgsJSON: req.ArgsJSON})
+	if err != nil {
+		return ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error())}
+	}
+	return ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result)}
+}
+
+// callerReadScope resolves the caller's own read predicate from the decision
+// point, exactly as GetArtifact resolves it (AGENTS.md §2.4). nil with the reason
+// when the caller may read nothing (an anonymous principal, a refused filter).
+func (e *ToolExecutor) callerReadScope(ctx context.Context, req ToolCallRequest) (*TagPredicate, string) {
 	if req.AgentID == "" && !req.System {
-		return denied("anonymous principal", argHash)
+		return nil, "anonymous principal"
 	}
 	a := e.Authz
 	if a == nil {
@@ -380,20 +460,18 @@ func (e *ToolExecutor) runKernelTool(ctx context.Context, req ToolCallRequest, k
 	}
 	eff, dec := a.ReadFilter(ctx, principal, SurfaceRef{Kind: SurfaceAgent})
 	if eff == nil {
-		return denied(dec.Explain(), argHash)
+		return nil, dec.Explain()
 	}
-	result, err := kt.Call(WithScope(ctx, eff), KernelToolCall{AgentID: req.AgentID, ArgsJSON: req.ArgsJSON})
-	if err != nil {
-		return ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error())}
-	}
-	return ToolCallResponse{ResultJSON: result, ArgHash: argHash, ResultHash: hashBytes(result)}
+	return eff, ""
 }
 
 // recordToLedger writes one call's result to the run ledger (ADR-0145 D1).
 // Best-effort for the CALL: a failed write never fails the tool call, it is
 // logged and the caller gets the result inline. Returns the entry id, "" when
 // nothing was recorded.
-func (e *ToolExecutor) recordToLedger(ctx context.Context, req ToolCallRequest, tool SystemTool, result []byte) string {
+// derivedFrom names the ledger entries the call's result was computed from (a
+// staged call's inputs), so the entry is never easier to read than they are.
+func (e *ToolExecutor) recordToLedger(ctx context.Context, req ToolCallRequest, tool SystemTool, result []byte, derivedFrom []string) string {
 	if e.Ledger == nil || req.System {
 		// An operator ScopeSystem execution is not part of any turn; it is audited
 		// by the operator command handler instead.
@@ -410,6 +488,7 @@ func (e *ToolExecutor) recordToLedger(ctx context.Context, req ToolCallRequest, 
 		ArgsJSON:           req.ArgsJSON,
 		Writer:             AgentPrincipal(req.AgentID),
 		ClassificationHint: tool.AuthzTags(),
+		DerivedFrom:        derivedFrom,
 		ContentType:        ct,
 		Body:               result,
 	})
@@ -510,6 +589,21 @@ func (e *ToolExecutor) hydrateCIDArgs(ctx context.Context, argsJSON []byte) []by
 
 func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out ToolCallResponse) {
 	argHash := hashBytes(req.ArgsJSON)
+
+	// Repeated identical failure (step_failures.go): a stopped step runs nothing
+	// more; every failure of this call is counted per step lease, the one before
+	// the threshold carries a hint and the one at it stops the step. Only a plan
+	// step's call (the server resolved its lease to a run step: StepCallFrom) — a
+	// chat turn's lease is not a step the re-planner can re-plan.
+	if _, isStep := StepCallFrom(ctx); isStep && e.StepFailures != nil && !req.System && req.SessionTokenID != "" {
+		lease := req.SessionTokenID
+		if stuck := e.StepFailures.Stuck(lease); stuck != nil {
+			return ToolCallResponse{Denied: true, ArgHash: argHash,
+				DenyReason: stuck.Error() + fmt.Sprintf(RepeatedFailureStop, stuck.Count)}
+		}
+		origTool, origArgs := req.ToolName, append([]byte(nil), req.ArgsJSON...)
+		defer func() { e.observeFailure(lease, origTool, origArgs, &out) }()
+	}
 
 	// Tool resolution. A contributed local:<machine>/<tool> identity NEVER
 	// resolves from the kernel-global registry: it resolves per call from the
@@ -615,6 +709,27 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		}
 	}
 
+	// Staged inputs (option C, domain/staged_inputs.go): resolved under the
+	// caller's access AFTER every authorization above, so a call the kernel would
+	// refuse never reads anything; an input the caller cannot read refuses the
+	// call with nothing staged. The folder lives until this call returns.
+	var staged StagedCall
+	if tool.StagedInputs {
+		sc, resp, stop := e.stageInputs(ctx, req, tool, argHash)
+		if stop {
+			return resp
+		}
+		if sc != nil {
+			staged = sc
+			defer sc.Cleanup()
+		}
+	}
+	var stagedSources []string
+	var stagedMeta map[string]any
+	if staged != nil {
+		stagedSources, stagedMeta = staged.Sources(), staged.Meta()
+	}
+
 	// The policy decision: allow, or ask for a dangerous tool. A2.2: an operator
 	// ScopeSystem execution carries its own authority — no per-agent HITL gate. The
 	// operator command handler audits the call and emits a dangerous-tool feed
@@ -655,7 +770,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	//
 	// The conversation's action history (action_history.go): a side-effecting
 	// call is recorded from the moment it asks for approval (or, needing none, is
-	// dispatched) until it ends — done, failed, or dropped when it never ran — and
+	// dispatched) until it ends — done, or dropped when it never ran or failed — and
 	// an approval it raises carries a notice naming any earlier call of the
 	// conversation it may duplicate (T-20261107-approver-is-not-told-that-an-identical-side).
 	histScope := ""
@@ -773,7 +888,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		histRef = e.History.Begin(histScope, req.ToolName, req.ArgsJSON, ActionRunning)
 	}
 	dispatched = true
-	result, err := handler.Execute(ctx, ToolCall{ToolName: req.ToolName, ArgsJSON: req.ArgsJSON, Policy: grant.Policy})
+	result, err := handler.Execute(ctx, ToolCall{ToolName: req.ToolName, ArgsJSON: req.ArgsJSON, Policy: grant.Policy, Meta: stagedMeta})
 	if err != nil {
 		if priced {
 			// Failure-cost (D7): never-reached ⇒ 0; otherwise the per-server policy.
@@ -812,7 +927,7 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		// ADR-0145 D1: a call that ran and failed is a result too (D5 needs the
 		// error to judge a "not found" honestly).
 		if errJSON, merr := json.Marshal(map[string]string{"error": err.Error()}); merr == nil {
-			e.recordToLedger(ctx, req, tool, errJSON)
+			e.recordToLedger(ctx, req, tool, errJSON, stagedSources)
 		}
 		return ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error()), ApproverID: approver}
 	}
@@ -826,6 +941,19 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// into the GC'd ContentStore) into the durable artifact system + disk, BEFORE
 	// the result is (maybe) offloaded and ResultJSON nil'd below.
 	e.persistArtifacts(ctx, req, result)
+	// A staged call's output files become artifact ledger entries derived from
+	// its inputs; the result gains a note naming them (staged_inputs.go).
+	var stagedRecorded map[string]string
+	if staged != nil {
+		result, stagedRecorded = e.recordStagedOutputs(ctx, req, tool, staged, result)
+	}
+	// Binary blocks become ledger references at record time, so the ledger, memory,
+	// the hooks and the agent all see the same readable result. An operator System
+	// call is left as the tool returned it (it records nothing and is not a model's
+	// input) (T-20261112-worker-resolve-cid-inline-has-no-size-cap-a).
+	if !req.System {
+		result = e.referenceBinaryBlocks(ctx, req, tool, result, stagedRecorded, stagedSources)
+	}
 
 	// ADR-0139 D11 post_tool hooks: they may rewrite the output (may_rewrite; e.g.
 	// redaction) or withhold it (narrow to deny). The call already ran, so its
@@ -863,13 +991,19 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// pathway: the content store holds no tool results then). A result the ledger
 	// could not record stays inline — never lost to the agent.
 	if e.Ledger != nil {
-		id := e.recordToLedger(ctx, req, tool, result)
+		id := e.recordToLedger(ctx, req, tool, result, stagedSources)
 		switch {
 		case id != "" && e.InlineThreshold > 0 && len(result) > e.InlineThreshold:
 			resp.ResultCID = id
 			resp.ResultJSON = nil
-		case id != "" && e.ReturnLedgerRef:
-			resp.ResultCID = id // inline result plus its reference (ADR-0145 D6)
+			s := NewOffloadSummary(id, req.ToolName, result, e.previewChars(), e.PageBytes)
+			resp.Offloaded = &s
+		case id != "" && (e.ReturnLedgerRef || ledgerRefWanted(ctx) || len(result) > e.previewChars()):
+			// Inline result plus its reference (ADR-0145 D6): a worker can cite
+			// it, and — for anything longer than a preview — hand it on unchanged
+			// with answer_ref instead of re-typing it
+			// (T-20261112-summarise-a-document-step-gets-only-the-first).
+			resp.ResultCID = id
 		}
 		return resp
 	}
@@ -878,9 +1012,20 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		if cid, serr := e.ContentStore.Put(ctx, result, "tool_result", nil, preview(result, 500)); serr == nil {
 			resp.ResultCID = string(cid)
 			resp.ResultJSON = nil
+			s := NewOffloadSummary(string(cid), req.ToolName, result, e.previewChars(), e.PageBytes)
+			s.Read = fmt.Sprintf("resolve_cid cid='%s' page=1..%d; search inside it: resolve_cid cid='%s' find='<text>'", cid, max(s.Pages, 1), cid)
+			resp.Offloaded = &s
 		}
 	}
 	return resp
+}
+
+// previewChars is PreviewChars with its default (execution.content.preview_chars).
+func (e *ToolExecutor) previewChars() int {
+	if e.PreviewChars > 0 {
+		return e.PreviewChars
+	}
+	return 600
 }
 
 // artifactRef mirrors the "_artifacts" entries the ProcessHandler injects: the
@@ -1623,6 +1768,8 @@ func (e *ToolExecutor) EndRun(session string) {
 		return
 	}
 	e.Overlay.Clear(session)
+	// The step's repeated-failure record goes with its lease.
+	e.StepFailures.End(LeaseID(session))
 }
 
 // ConferSkillGrants activates a loaded system skill's tool grants run-scoped
@@ -1821,19 +1968,21 @@ func preview(b []byte, n int) string {
 	return strings.ToValidUTF8(string(b[:cut]), "")
 }
 
-// finishHistory closes a call's ActionHistory entry when Execute returns: a call
-// that was never dispatched is dropped (it touched nothing); a dispatched one is
-// done — with the identifiers its result names — or failed.
+// finishHistory closes a call's ActionHistory entry when Execute returns, from the
+// call's final outcome (it runs deferred, after the handler's result is known): a
+// call that was never dispatched is dropped (it touched nothing); a dispatched one
+// that FAILED — the handler's error (an MCP isError result arrives as one), or a
+// result that reports an error or a refusal in-band (actionStatus) — is dropped
+// too: only a successful write counts as one a later call may duplicate (owner
+// decision 2026-11-10, T-20261109-duplicate-notice-fires-on-the-retry-of-a-write).
+// A successful one is done, with the identifiers its result names. A post_tool
+// hook that withholds the output does not undo the call: it ran, so it is done.
 func (e *ToolExecutor) finishHistory(ctx context.Context, ref ActionRef, dispatched bool, out ToolCallResponse) {
 	if ref.IsZero() {
 		return
 	}
-	if !dispatched {
+	if !dispatched || out.Error != "" {
 		e.History.Drop(ref)
-		return
-	}
-	if out.Error != "" {
-		e.History.Finish(ref, true, nil)
 		return
 	}
 	result := out.ResultJSON
@@ -1842,5 +1991,9 @@ func (e *ToolExecutor) finishHistory(ctx context.Context, ref ActionRef, dispatc
 			result = node.Data
 		}
 	}
-	e.History.Finish(ref, false, PlanActionIDs(result))
+	if len(result) > 0 && actionStatus(result) != "ok" {
+		e.History.Drop(ref)
+		return
+	}
+	e.History.Finish(ref, PlanActionIDs(result))
 }

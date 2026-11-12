@@ -62,3 +62,37 @@ func TestRunTrace_StepSpans(t *testing.T) {
 		t.Errorf("failed step must carry its error: %+v", failed)
 	}
 }
+
+// A step's start event is written when it is dispatched — before its agent runs —
+// with the step as dispatched, and its finished span carries the same span id.
+func TestRunTrace_StepStartEventPrecedesSpan(t *testing.T) {
+	tr := &memRunTracer{}
+	ex := &DAGExecutor{RunTracer: tr, MaxReplanAttempts: 0}
+	plan := &domain.ExecutionPlan{Subject: "s", Steps: []domain.Step{{Query: "list invoices"}}}
+	var seenAtRun int
+	stepFn := func(_ context.Context, _ int, _ *domain.Handoff) (*domain.Handoff, error) {
+		tr.mu.Lock()
+		seenAtRun = len(tr.spans)
+		tr.mu.Unlock()
+		return &domain.Handoff{FromAgent: "worker-1", Payload: &domain.Payload{Data: []byte("ok")}}, nil
+	}
+	_, _ = ex.Execute(t.Context(), plan, nil, stepFn)
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if len(tr.spans) != 2 || seenAtRun != 1 {
+		t.Fatalf("spans = %d (seen while running: %d), want start then end", len(tr.spans), seenAtRun)
+	}
+	start, end := tr.spans[0], tr.spans[1]
+	if start.Phase != domain.TracePhaseStart || end.Phase != "" {
+		t.Errorf("phases: %q %q", start.Phase, end.Phase)
+	}
+	if start.SpanID == "" || start.SpanID != end.SpanID {
+		t.Errorf("span ids: %q %q", start.SpanID, end.SpanID)
+	}
+	if start.Name != "invoke_agent step" || start.Attributes["cambrian.step.query"] != "list invoices" {
+		t.Errorf("start event: %s %v", start.Name, start.Attributes)
+	}
+	if !start.Start.Equal(end.Start) {
+		t.Errorf("start times differ: %v %v", start.Start, end.Start)
+	}
+}

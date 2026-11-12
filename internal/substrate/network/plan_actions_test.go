@@ -9,6 +9,7 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/config"
 )
 
 // toolsByName answers each tool with a fixed result (or error).
@@ -129,5 +130,25 @@ func TestPartialPlanPayload_ReportsCompletedWorkAndLedger(t *testing.T) {
 	}
 	if planResultPayload("only text", nil) != "only text" {
 		t.Error("no actions ⇒ the report is returned unchanged")
+	}
+}
+
+// The per-target effect record is kept with the request guards OFF: every recorded
+// write carries its target, which coverage matches a write item against
+// (T-20261112-coverage-settles-a-write-item-on-any-done).
+func TestExecuteTool_RecordsWriteTargetsWithoutRequestGuards(t *testing.T) {
+	t.Parallel()
+	s, lease := planActionFixture(t)
+	wt := config.DefaultWriteTargets()
+	s.ToolExecutor.WriteTargets = wt.Domain()
+	if s.ToolExecutor.Guards != nil {
+		t.Fatal("fixture must run without request guards")
+	}
+	s.planActions.begin("run-1")
+	defer s.planActions.end("run-1")
+	callTool(t, s, lease, "mail_send", `{"to":"AP <ap@wychwood.example>"}`)
+	got := s.planActions.snapshot("run-1")
+	if len(got) != 1 || got[0].Target != "mail_send|to=ap@wychwood.example" {
+		t.Fatalf("actions = %+v", got)
 	}
 }

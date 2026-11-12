@@ -2067,7 +2067,7 @@
     {
       "id": "code-sandbox",
       "name": "Code sandbox (Docker)",
-      "description": "Run Python (and JS, R, Go) for data analysis in a throwaway Docker container; plots come back as images.",
+      "description": "Run Python (and JS, R, Go) for data analysis in a throwaway, offline Docker container; files are staged per run by the kernel; plots come back as images.",
       "category": "code",
       "publisher": "Duy Huynh / vndee (community)",
       "license": "MIT",
@@ -2084,11 +2084,12 @@
         "args": [
           "run",
           "--no-project",
+          "--directory",
+          "${CAMBRIAN_KERNEL_DIR}",
           "--with",
           "llm-sandbox[mcp-docker]==0.3.46",
           "python",
-          "-m",
-          "llm_sandbox.mcp_server.server"
+          "tools/code_sandbox/server.py"
         ],
         "auth": {
           "type": "none"
@@ -2109,7 +2110,8 @@
           "SANDBOX_CAP_DROP",
           "SANDBOX_SECURITY_OPT",
           "SANDBOX_MEMORY",
-          "SANDBOX_CPU_COUNT"
+          "SANDBOX_CPU_COUNT",
+          "SANDBOX_IMAGE"
         ],
         "tools": [
           {
@@ -2119,7 +2121,8 @@
               "read",
               "write",
               "egress"
-            ]
+            ],
+            "staged_inputs": true
           },
           {
             "name": "get_supported_languages",
@@ -2146,6 +2149,15 @@
           "kind": "env",
           "help": "docker (default), podman or kubernetes.",
           "default_value": "docker"
+        },
+        {
+          "name": "SANDBOX_IMAGE",
+          "label": "Sandbox image",
+          "secret": false,
+          "required": false,
+          "kind": "env",
+          "help": "The pre-built image Python runs in (pandas, numpy, matplotlib, openpyxl; no network). Build it on the Docker host with `make sandbox-image` in cambrian-core; a missing image is an error, never a download.",
+          "default_value": "cambrian/code-sandbox:py311-1"
         },
         {
           "name": "SANDBOX_NETWORK_MODE",
@@ -2210,7 +2222,7 @@
           "help": "Only if Docker is not on the default socket."
         }
       ],
-      "notes": "Sandboxed code execution for data analysis (vndee/llm-sandbox, MIT). Runs Python (and JS, R, Go, ...) in a throwaway Docker container; captures matplotlib plots as images; installs pandas/numpy on demand. Needs Docker running. HARDEN via the kernel environment: BACKEND=docker SANDBOX_NETWORK_MODE=none SANDBOX_READ_ONLY=true SANDBOX_CAP_DROP=ALL SANDBOX_SECURITY_OPT=no-new-privileges:true SANDBOX_MEMORY=2g SANDBOX_CPU_COUNT=1 (with network none, on-demand pip installs fail: pre-bake an image). execute_code is dangerous with write+egress until those settings are proven to take."
+      "notes": "Sandboxed code execution for data analysis: vndee/llm-sandbox (MIT) wrapped by Cambrian's tools/code_sandbox/server.py, launched from the kernel's directory. Every call runs in a fresh, hardened container (network none, read-only root, all capabilities dropped, no-new-privileges, memory and CPU caps: the field defaults) on the pre-built image SANDBOX_IMAGE (pandas, numpy, matplotlib, openpyxl; build it with `make sandbox-image`; nothing is installed at run time). execute_code takes `inputs` (ledger ids or the person's file paths): the kernel reads each under the person's access and mounts exactly those files read-only at /inputs for that run only; files written to /outputs come back as ledger entries (staged_inputs; decisions/code-sandbox-files-per-run-mount.md). Needs Docker running on the kernel host. execute_code stays dangerous with write+egress until a live run proves the hardening took."
     },
     {
       "id": "terminal",

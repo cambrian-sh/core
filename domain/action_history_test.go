@@ -105,7 +105,7 @@ func TestActionHistory_ScopeWindowAndStates(t *testing.T) {
 
 	ref := h.Begin("conversation:c1", "send_mail", args, ActionAwaitingApproval)
 	h.Approved(ref, "apr-1")
-	h.Finish(ref, false, []string{"message_id=m-1"})
+	h.Finish(ref, []string{"message_id=m-1"})
 
 	if got := h.Matches("conversation:c2", "send_mail", args, ActionRef{}); len(got) != 0 {
 		t.Fatalf("another conversation must not match: %+v", got)
@@ -153,7 +153,7 @@ func TestActionHistory_ScopeWindowAndStates(t *testing.T) {
 	if off != nil {
 		t.Fatal("window 0 must disable the history")
 	}
-	off.Finish(off.Begin("conversation:c1", "x", nil, ActionRunning), false, nil)
+	off.Finish(off.Begin("conversation:c1", "x", nil, ActionRunning), nil)
 	if off.Matches("conversation:c1", "x", nil, ActionRef{}) != nil {
 		t.Fatal("disabled history matched")
 	}
@@ -163,7 +163,7 @@ func TestActionHistory_Bounded(t *testing.T) {
 	t.Parallel()
 	h := NewActionHistory(time.Hour, nil)
 	for i := 0; i < actionHistoryPerScope+50; i++ {
-		h.Finish(h.Begin("conversation:c", "t", []byte(fmt.Sprintf(`{"n":%d}`, i)), ActionRunning), false, nil)
+		h.Finish(h.Begin("conversation:c", "t", []byte(fmt.Sprintf(`{"n":%d}`, i)), ActionRunning), nil)
 	}
 	h.mu.Lock()
 	n := len(h.scopes["conversation:c"])
@@ -327,12 +327,68 @@ func TestExecute_HistoryRecordsOnlyWritesThatRan(t *testing.T) {
 		t.Fatalf("a read-only call was recorded: %+v", got)
 	}
 
-	// A failed write is recorded as failed, so the approver knows it may have landed.
+	// A failed write is dropped: only successful writes count (owner decision
+	// 2026-11-10, T-20261109-duplicate-notice-fires-on-the-retry-of-a-write).
 	h.err = fmt.Errorf("upstream 502")
 	e.Execute(ctx, ToolCallRequest{AgentID: "a", ToolName: "post_note", ArgsJSON: []byte(`{"path":"x.md","content":"q"}`)})
-	got = e.History.Matches(ActionHistoryScope("conv-1", ""), "post_note", []byte(`{"path":"x.md","content":"q"}`), ActionRef{})
-	if len(got) != 1 || got[0].Prior.State != ActionFailed {
-		t.Fatalf("failed write history = %+v", got)
+	if got := e.History.Matches(ActionHistoryScope("conv-1", ""), "post_note", []byte(`{"path":"x.md","content":"q"}`), ActionRef{}); len(got) != 0 {
+		t.Fatalf("a failed write must not be kept: %+v", got)
+	}
+	// So is one whose result reports an error or a refusal in-band.
+	h.err = nil
+	for _, res := range []string{`{"error":"not_found"}`, `{"denied":"policy"}`} {
+		h.result = []byte(res)
+		e.Execute(ctx, ToolCallRequest{AgentID: "a", ToolName: "post_note", ArgsJSON: []byte(`{"path":"y.md","content":"r"}`)})
+		if got := e.History.Matches(ActionHistoryScope("conv-1", ""), "post_note", []byte(`{"path":"y.md","content":"r"}`), ActionRef{}); len(got) != 0 {
+			t.Fatalf("result %s must not be kept: %+v", res, got)
+		}
+	}
+}
+
+// T-20261109-duplicate-notice-fires-on-the-retry-of-a-write, the personal run
+// incident (p07-calendar-free-slot #1): the first calendar_create_event named the
+// attendees by name and the system answered not_found (an MCP isError result,
+// which the MCP handler returns as the call's error); the corrected retry with the
+// attendee ids must reach the approver WITHOUT a duplicate notice. A write that
+// succeeded and is then repeated identically is still flagged.
+func TestExecute_RetryAfterFailedWriteIsNotFlagged(t *testing.T) {
+	t.Parallel()
+	appr := &recordingApproval{approve: true}
+	h := &fakeHandler{err: fmt.Errorf(`mcp tool "calendar_create_event" reported an error: {"error":"not_found","message":"No user Fenella Oakhurst in the directory."}`)}
+	reg := NewInMemoryToolRegistry()
+	const tool = "mcp:vantis-emp-001/calendar_create_event"
+	reg.Register(SystemTool{Name: tool, Dangerous: true, Effects: []ToolEffect{EffectWrite}})
+	e := newExec(reg, grantStore("composed_worker", ToolGrant{Tool: tool}), h)
+	e.Approval = appr
+	e.History = NewActionHistory(24*time.Hour, nil)
+	ctx := WithConversationID(context.Background(), "conv-p07")
+	call := func(attendees string) ToolCallResponse {
+		return e.Execute(ctx, ToolCallRequest{AgentID: "composed_worker", ToolName: tool, ArgsJSON: []byte(
+			`{"title":"Sync on Q4 priorities","start":"2026-11-10T10:30:00Z","end":"2026-11-10T11:00:00Z",` +
+				`"attendees":[` + attendees + `],"description":"Sync on Q4 priorities"}`)})
+	}
+
+	if r := call(`"Fenella Oakhurst","Tobin Lanthorne"`); r.Error == "" {
+		t.Fatalf("first call should fail: %+v", r)
+	}
+	h.err, h.result = nil, []byte(`{"event_id":"EV-1"}`)
+	if r := call(`"EMP-006","EMP-011"`); r.Error != "" || r.Denied {
+		t.Fatalf("corrected retry: %+v", r)
+	}
+	if r := call(`"EMP-006","EMP-011"`); r.Error != "" || r.Denied {
+		t.Fatalf("identical repeat: %+v", r)
+	}
+	n := appr.notices()
+	if len(n) != 3 {
+		t.Fatalf("approvals = %d, want 3", len(n))
+	}
+	if n[1] != "" {
+		t.Fatalf("the corrected retry of a failed write was flagged: %q", n[1])
+	}
+	for _, want := range []string{"Possible duplicate of " + tool, "approval apr-2", "done at", "event_id=EV-1"} {
+		if !strings.Contains(n[2], want) {
+			t.Errorf("repeat of a successful write: notice %q lacks %q", n[2], want)
+		}
 	}
 }
 

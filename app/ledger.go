@@ -26,7 +26,7 @@ const ledgerTurnEndTimeout = 5 * time.Second
 // step-output choke point and dependants' reads, GetContextNode for led_… ids,
 // the structured Execute result) and the chat lane's turn end (scratch cleanup).
 // Returns the sweeper for the kernel to start and stop, nil when the ledger is off.
-func wireLedger(ctx context.Context, cfg config.LedgerConfig, pool *pgxpool.Pool, artifactVault *vault.ArtifactVault,
+func wireLedger(ctx context.Context, cfg config.LedgerConfig, content config.ContentConfig, pool *pgxpool.Pool, artifactVault *vault.ArtifactVault,
 	artifacts subnetwork.ArtifactMetaStore, authorizer domain.Authorizer, privateByDefault bool,
 	server *subnetwork.Server, delegations *subnetwork.TurnDelegations) *ledger.Sweeper {
 	deps := kernel.LedgerStackDeps{
@@ -44,7 +44,7 @@ func wireLedger(ctx context.Context, cfg config.LedgerConfig, pool *pgxpool.Pool
 			return err != nil || a != nil
 		}
 	}
-	st := kernel.NewLedgerStack(ctx, cfg, deps)
+	st := kernel.NewLedgerStack(ctx, cfg, content, deps)
 	if st == nil {
 		return nil
 	}

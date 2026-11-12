@@ -42,6 +42,16 @@ func UnsupportedField(field, why string) error {
 // the endpoint, so it never triggers provider fallback (ADR-0139 D1).
 var ErrSchemaValidation = errors.New("llm: response failed its schema")
 
+// ErrContextOverflow is returned when the provider refused a request because the
+// prompt does not fit the model's context window ("prompt is too long",
+// context_length_exceeded). Like ErrSchemaValidation it is a property of the
+// REQUEST, not of the endpoint: it never triggers provider fallback and never
+// counts against a model's health (ADR-0139 D1). The same request is refused again,
+// so a step that failed with it is deterministic (never retried unchanged); the
+// gateway answers it as codes.OutOfRange
+// (T-20261112-worker-resolve-cid-inline-has-no-size-cap-a).
+var ErrContextOverflow = errors.New("llm: prompt exceeds the model's context window")
+
 // Request field names, as they appear in GenerateResponse.Ignored and in
 // ErrUnsupported messages. Stable strings: traces and tests match on them.
 const (

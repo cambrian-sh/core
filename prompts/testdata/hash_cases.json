@@ -355,6 +355,15 @@
       "static_hash": "6a45103416c43ed4b052b12b19a509cc3324781c62c5842d359e7102cdf83151"
     },
     {
+      "id": "composed_worker",
+      "version": 2,
+      "tier": "stable",
+      "inputs": [],
+      "description": "The stable system text of a worker the kernel composes for one plan step: its role and the rules every composed worker follows, including the decomposition rule (do the encapsulated job of the brief; never decide a judgement from part of a set).",
+      "has_schema": false,
+      "static_hash": "01c6904039269b75cc5f4b934abca9a5595abb3628ad3b5f245d3a64e77fb8a3"
+    },
+    {
       "id": "conversation_summary",
       "version": 1,
       "tier": "stable",
@@ -588,6 +597,15 @@
       "static_hash": "34e015c0dc6ad7d86295d6512e123203670829fd13cd018c99af58f5ec8e0b0f"
     },
     {
+      "id": "planner_cap",
+      "version": 11,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Plan a user request one stage at a time: return the next small batch of steps (with capability tags, effects, the checklist items they answer and their references to this stage's steps and earlier stages' results), a question for the person, ledger reads to look before deciding, or nothing more.",
+      "has_schema": true,
+      "static_hash": "255375e9ecdfdfccde1b05e0375e108e3cf698b1762e848089d83cce50167f07"
+    },
+    {
       "id": "planner_input",
       "version": 1,
       "tier": "volatile",
@@ -777,6 +795,15 @@
       "description": "Split a delegated request into a checklist of requirement items (answers, figures, documents, writes, constraints), each anchored by a verbatim quote from the user's own message.",
       "has_schema": true,
       "static_hash": "241e05e25b1b93b100cd2ca542dc19851148cd5643903a49e73abb633a91ec55"
+    },
+    {
+      "id": "requirement_checklist",
+      "version": 3,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Split a delegated request into a checklist of requirement items (answers, figures, documents, writes, constraints), each anchored by a verbatim quote from the user's own message, with the targets each write must reach and the value types each answer expects.",
+      "has_schema": true,
+      "static_hash": "2c2eb246064e0f7e37627c4733a79b880c636c5e16298eeb631d70000b2cf46a"
     },
     {
       "id": "requirement_checklist_input",

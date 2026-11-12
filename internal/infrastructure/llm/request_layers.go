@@ -490,6 +490,7 @@ func consumeObservedStream(ctx context.Context, rg domain.RequestGenerator, req 
 	}
 	var final *domain.GenerateResponse
 	var streamErr string
+	var typedErr error
 	saw := false
 	for c := range ch {
 		if c.Response != nil {
@@ -497,6 +498,7 @@ func consumeObservedStream(ctx context.Context, rg domain.RequestGenerator, req 
 		}
 		if c.IsFinal && c.Response == nil {
 			streamErr = c.Text
+			typedErr = c.Err
 			continue
 		}
 		if c.Text == "" && c.ToolCall == nil {
@@ -509,6 +511,11 @@ func consumeObservedStream(ctx context.Context, rg domain.RequestGenerator, req 
 		return domain.GenerateResponse{}, saw, err
 	}
 	if final == nil {
+		if typedErr != nil {
+			// Keep the identity (domain.ErrContextOverflow must not become a
+			// generic stream failure the fallback policy reads as an outage).
+			return domain.GenerateResponse{}, saw, typedErr
+		}
 		if streamErr == "" {
 			streamErr = "stream ended without a final response"
 		}

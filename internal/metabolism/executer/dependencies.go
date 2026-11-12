@@ -31,15 +31,15 @@ type stepDeps struct {
 // (T-20261105-a-planner-thought-step-that-depends-on-two). Each dependency carries
 // its index, objective (the upstream query), status and content; an empty or
 // unrecorded result is listed with that status rather than omitted. Content is
-// bounded to budget bytes across the set (domain.FitStepDependencies); a shortened
-// result keeps its content-store cid so the receiver can resolve the rest.
+// bounded to fit across the set (domain.FitStepDependencies): a shortened result
+// keeps its beginning, its end, its outline and the exact read call for the rest.
 //
 // A step with no in-plan DependsOn receives the PRIOR-PLAN results instead, when a
 // replan has swapped a plan out of this run (prior; see priorPlanResults): an injected
 // "summarise what you found" step, or any root step of a replanned plan, is otherwise
 // blind to everything the run already did.
-func buildStepDependencies(master map[string]string, plan *domain.ExecutionPlan, stepIdx, budget int, prior *priorPlanResults) stepDeps {
-	return buildStepDependenciesFrom(master, plan, stepIdx, budget, prior, nil)
+func buildStepDependencies(master map[string]string, plan *domain.ExecutionPlan, stepIdx int, fit domain.DependencyFit, prior *priorPlanResults) stepDeps {
+	return buildStepDependenciesFrom(master, plan, stepIdx, fit, prior, nil)
 }
 
 // dependencyResolver reads a completed upstream step's result by its reference
@@ -52,10 +52,10 @@ type dependencyResolver func(ref string) (string, error)
 // completed dependency read through resolve when it is non-nil. A dependency the
 // resolver cannot read is listed as unavailable with the reason, never silently
 // replaced by the in-memory string.
-func buildStepDependenciesFrom(master map[string]string, plan *domain.ExecutionPlan, stepIdx, budget int, prior *priorPlanResults, resolve dependencyResolver) stepDeps {
+func buildStepDependenciesFrom(master map[string]string, plan *domain.ExecutionPlan, stepIdx int, fit domain.DependencyFit, prior *priorPlanResults, resolve dependencyResolver) stepDeps {
 	step := plan.Steps[stepIdx]
 	if len(step.DependsOn) == 0 {
-		return prior.forRootStep(stepIdx, budget)
+		return prior.forRootStep(stepIdx, fit)
 	}
 	deps := make([]domain.StepDependency, 0, len(step.DependsOn))
 	results := make(map[string]string, len(step.DependsOn))
@@ -96,7 +96,7 @@ func buildStepDependenciesFrom(master map[string]string, plan *domain.ExecutionP
 		results[key] = dep.Status + "\x00" + res
 		deps = append(deps, dep)
 	}
-	deps = domain.FitStepDependencies(deps, budget)
+	deps = domain.FitStepDependencies(deps, fit)
 	manifest, err := domain.EncodeStepDependencies(deps)
 	if err != nil {
 		// A []StepDependency of strings and ints always marshals; logged, not
@@ -177,10 +177,10 @@ func (p *priorPlanResults) capture(master map[string]string, plan *domain.Execut
 }
 
 // forRootStep is the manifest for a step with no in-plan dependency: every prior-plan
-// outcome, oldest plan first, bounded to budget (domain.FitStepDependencies: the
-// largest results go to preview + cid first, each marked shortened). Empty when no
+// outcome, oldest plan first, bounded to fit (domain.FitStepDependencies: the
+// largest results are shortened first, each to beginning + end + outline). Empty when no
 // plan has been swapped out.
-func (p *priorPlanResults) forRootStep(stepIdx, budget int) stepDeps {
+func (p *priorPlanResults) forRootStep(stepIdx int, fit domain.DependencyFit) stepDeps {
 	if p == nil || len(p.deps) == 0 {
 		return stepDeps{}
 	}
@@ -190,7 +190,7 @@ func (p *priorPlanResults) forRootStep(stepIdx, budget int) stepDeps {
 		// Full content, not the bounded preview: the step cache must key on it.
 		results[fmt.Sprintf("prior_%d_step_%d", d.PriorPlan, d.Step)] = d.Status + "\x00" + d.Content + "\x00" + d.Error
 	}
-	deps = domain.FitStepDependencies(deps, budget)
+	deps = domain.FitStepDependencies(deps, fit)
 	manifest, err := domain.EncodeStepDependencies(deps)
 	if err != nil {
 		slog.Error("prior plan results not encoded; the step runs without them", "step", stepIdx, "err", err)

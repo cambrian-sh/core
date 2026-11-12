@@ -368,3 +368,60 @@ def test_delegate_to_planner_never_reports_a_refusal_or_partial_run_as_success()
     partial.partial = True
     out = _delegating_agent(_ExecKernel(result=partial)).tools.call("delegate_to_planner", task="x")
     assert out["error"].startswith("the delegated work did not finish")
+
+
+def test_composed_tool_budget_comes_from_the_kernel_env(monkeypatch):
+    """T-20261109-per-step-deadline-step-timeout-floor-ms-180-s: execution.workers.max_tool_rounds
+    reaches the composed runtime as CAMBRIAN_COMPOSED_MAX_TOOL_ROUNDS; unset ⇒ the SDK default."""
+    seen = {}
+
+    def fake_think(self, task, *, max_memory_queries=None, max_tool_rounds=None):
+        seen["rounds"] = max_tool_rounds
+
+    monkeypatch.setattr(wa.CognitiveAgent, "think", fake_think)
+    agent = wa.ComposedWorkerAgent()
+    monkeypatch.delenv(wa.COMPOSED_MAX_TOOL_ROUNDS_ENV, raising=False)
+    agent.think(object())
+    assert seen["rounds"] is None
+    monkeypatch.setenv(wa.COMPOSED_MAX_TOOL_ROUNDS_ENV, "500")
+    agent.think(object())
+    assert seen["rounds"] == 500
+    monkeypatch.setenv(wa.COMPOSED_MAX_TOOL_ROUNDS_ENV, "lots")
+    agent.think(object())
+    assert seen["rounds"] is None
+
+
+# ── T-20261112-yield-sub-goal-on-a-composed-lease-runs-under ────────────────
+
+class _OutsideKernel(_ComposedKernel):
+    """find_tools under the composed lease: nothing in the step matches, one tool
+    exists outside it (the kernel's x-tool-outside-step header)."""
+
+    def __init__(self, script):
+        super().__init__(script)
+        self.find_queries = []
+
+    def find_tools(self, query, k=0, full=False, session_token_id=""):
+        self.find_queries.append((query, session_token_id))
+        return [], ["mcp:shell/shell_execute"]
+
+
+def test_composed_runtime_reports_a_missing_capability_instead_of_yielding():
+    agent = wa.build_agent(["worker_agent.py", "--composed"])
+    assert agent.allow_capability_missing is True
+    assert any("report_capability_missing" in c for c in agent.constraints)
+    kernel = _OutsideKernel([_call("find_tools", {"need": "run a PowerShell command"}),
+                             _call("report_capability_missing",
+                                   {"needed": "run a PowerShell command"})])
+    agent.substrate = kernel
+    res = agent.run(_composed_task())
+    assert res.type == "capability_missing"
+    assert res.context["_capability_missing"] == "true"
+    assert res.context["_capability_needed"] == "run a PowerShell command"
+    assert res.context["_capability_tool"] == "mcp:shell/shell_execute"
+    # find_tools carried the query and the step's lease; the verb was on the menu and
+    # the outside tool never was.
+    assert kernel.find_queries == [("run a PowerShell command", "lease-7")]
+    assert "report_capability_missing" in kernel.tools_sent[0]
+    assert all(_san("mcp:shell/shell_execute") not in names for names in kernel.tools_sent)
+    assert kernel.executed == []

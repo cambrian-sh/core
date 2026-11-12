@@ -48,7 +48,7 @@ type LedgerStackDeps struct {
 // table exists. It returns nil (the legacy content-store path) when the flag is
 // off, and nil with an ERROR log when the flag is on but the ledger cannot be
 // built — the operator asked for it, so its absence must be loud.
-func NewLedgerStack(ctx context.Context, cfg config.LedgerConfig, deps LedgerStackDeps) *LedgerStack {
+func NewLedgerStack(ctx context.Context, cfg config.LedgerConfig, content config.ContentConfig, deps LedgerStackDeps) *LedgerStack {
 	if !cfg.Enabled {
 		return nil
 	}
@@ -71,7 +71,7 @@ func NewLedgerStack(ctx context.Context, cfg config.LedgerConfig, deps LedgerSta
 			PrivateByDefault: deps.PrivateByDefault,
 		}),
 		Reader:  reader,
-		Tools:   ledger.Tools(reader, cfg.Page()),
+		Tools:   ledger.Tools(reader, content.Page()), // execution.content.page_bytes
 		Sweeper: ledger.NewSweeper(raw, cfg.SweepInterval()),
 	}
 	slog.Info("ADR-0145: run ledger enabled", "retention", cfg.Retention(), "max_entry_bytes", cfg.EntryCap())

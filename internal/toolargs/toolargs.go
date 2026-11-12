@@ -150,6 +150,20 @@ func types(sch map[string]any) []string {
 	return nil
 }
 
+// alternatives are the schema's anyOf/oneOf branches.
+func alternatives(sch map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, k := range []string{"anyOf", "oneOf"} {
+		list, _ := sch[k].([]any)
+		for _, x := range list {
+			if m, ok := x.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+	}
+	return out
+}
+
 func wants(sch map[string]any, t string) bool {
 	for _, x := range types(sch) {
 		if x == t {
@@ -167,6 +181,24 @@ func coerce(v any, sch map[string]any) (any, bool) {
 	}
 	ts := types(sch)
 	if len(ts) == 0 {
+		// anyOf/oneOf (an optional parameter: Python's `list[str] | None` is
+		// {"anyOf":[{"type":"array",...},{"type":"null"}]}): a value one branch
+		// already accepts is descended into that branch; otherwise the FIRST branch
+		// a coercion fits is taken. The p06#3 sandbox calls sent libraries as
+		// "[\"pandas\"]" and were refused because only a top-level type was coerced.
+		if branches := alternatives(sch); len(branches) > 0 {
+			for _, b := range branches {
+				if bt := types(b); len(bt) > 0 && matches(v, bt) {
+					return coerce(v, b)
+				}
+			}
+			for _, b := range branches {
+				if c, ok := coerce(v, b); ok && matches(c, types(b)) {
+					return c, true
+				}
+			}
+			return v, false
+		}
 		// No type: still descend into declared properties of an object.
 		if m, ok := v.(map[string]any); ok {
 			return coerceObject(m, sch)

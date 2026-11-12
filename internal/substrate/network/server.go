@@ -22,6 +22,7 @@ import (
 	"github.com/cambrian-sh/core/internal/memorynotes"
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/executer"
+	"github.com/cambrian-sh/core/internal/metabolism/yield"
 	"github.com/cambrian-sh/core/internal/scheduledtask"
 	"github.com/cambrian-sh/core/internal/stepoutput"
 	"github.com/cambrian-sh/core/internal/substrate/operator"
@@ -334,6 +335,11 @@ type Server struct {
 	// workers are off. That agent holds nothing of its own: without a composed
 	// lease it gets no tool, no menu and no skill (composed_workers.go).
 	ComposedRuntimeID string
+	// ToolsOutsideStep lists the tools a composition could hold for the act-for
+	// person but this composition does not (compose.Composer.OutsideStep): what a
+	// composed worker's find_tools may report, never load (ListTools'
+	// x-tool-outside-step response header). nil = nothing is reported.
+	ToolsOutsideStep func(ctx context.Context, comp domain.WorkerComposition) []domain.SystemTool
 	// WorkerDelegations tracks the step leases whose worker is waiting on its own
 	// delegation to the planner (ADR-0145 D14), shared with the dispatcher so such
 	// a step is neither timed out nor re-dispatched while it waits
@@ -1112,7 +1118,9 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 		// Retry/heal only: workspace rollback between attempts (ADR-0005 D2b/D3)
 		// was removed by owner decision 2026-10-31 — see harness.SelfHealer.
 		healer := &harness.SelfHealer{StepIndex: i}
-		resp, err := healer.Wrap(innerFn)(stepCtx, handoff)
+		// The step's yield sub-goal budget lives on the step, so every attempt the
+		// healer makes draws on it (T-20261112-self-healer-retries-a-step-whose-yield-chain).
+		resp, err := healer.Wrap(innerFn)(yield.WithStepBudget(stepCtx), handoff)
 		if err != nil {
 			var healErr *harness.HealingExhaustedError
 			if errors.As(err, &healErr) {
@@ -1125,8 +1133,11 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 					// Experiential memory removed: no negative-edge (failure) write-back.
 				}
 
-				// Inter-step fallback: try runner-up candidates when winner fails.
-				if s.ExecCfg.Plan.FallbackEnabled && len(runnerUps) > 0 {
+				// Inter-step fallback: try runner-up candidates when winner fails. A
+				// failure that needs re-planning (a missing capability, a repeated
+				// identical tool failure) goes straight to the re-planner: the step as
+				// planned is what is wrong, not which agent ran it (owner 2026-11-12).
+				if s.ExecCfg.Plan.FallbackEnabled && len(runnerUps) > 0 && healErr.Class != domain.StepFailureNeedsReplan {
 					if fbResp, ok := s.runFallback(stepCtx, i, handoff, runnerUps, winningAgentID, healErr); ok {
 						resp = fbResp
 						err = nil
@@ -1224,8 +1235,9 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 			UseGlobalWorkspace:     s.ExecCfg.Workspace.UseGlobalWorkspace,
 			ContextRefSnippetChars: s.ExecCfg.Plan.ContextRefSnippetChars,
 			// The one bound on upstream results handed to a dependent step (agent or
-			// thought), domain.StepDependency; <= 0 reads as the config default.
-			DependencyResultsMaxChars: dependencyResultsMaxChars(s.ExecCfg.Plan.DependencyResultsMaxChars),
+			// thought), domain.StepDependency: sized from the receiving worker's prompt
+			// budget (execution.content).
+			DependencyFit: dependencyFit(s.ExecCfg.Content),
 			// A thought step is an in-kernel model call on no step lease: in flight
 			// for the plan idle watchdog while it runs.
 			ThoughtFn: inFlightStepFunc(planAct, executer.StepFunc(s.thoughtFn(plan))),
@@ -1309,10 +1321,11 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 	// stage result like any other: what it settled stands and the coverage stages
 	// below plan the rest (staged_planner.go stageStoppedPartway). A plan ceiling
 	// and an effect-check refusal keep their own endings.
+	var firstStageStopped error
 	if reqs != nil && err != nil && ceilingCause == nil {
 		if m, ok := stageStoppedPartway(err); ok {
 			slog.Info("ADR-0145 D5.5: the first stage stopped part-way; its results stand", "run", executionID, "err", err)
-			masterCtx, err = m, nil
+			masterCtx, firstStageStopped, err = m, err, nil
 		}
 	}
 
@@ -1386,7 +1399,8 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 	if reqs != nil {
 		out := s.runStages(stageLoop{reqs: reqs, executionID: executionID, stepRun: &stepRun, ctx: ctx, planCtx: planCtx,
 			userInput: userInput, initialCtx: initialCtx, newExecutor: newExecutor,
-			stepFn: activityStepFunc(planAct, executer.StepFunc(stepFn)), staged: staged}, masterCtx)
+			stepFn: activityStepFunc(planAct, executer.StepFunc(stepFn)), staged: staged,
+			stopped: firstStageStopped}, masterCtx)
 		allActions, askBack = out.actions, out.askBack
 		masterCtx[finalResultKey] = strings.Join(out.reports, "\n\n") + "\n\n" + coverageText(reqs)
 	}

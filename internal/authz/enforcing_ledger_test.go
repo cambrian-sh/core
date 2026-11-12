@@ -124,3 +124,64 @@ func TestEnforcingLedger_ForbiddenTagAndLimit(t *testing.T) {
 		t.Fatalf("rows = %+v, want alice and open", rows)
 	}
 }
+
+// ADR-0145 D11 run-scope grant (T-20261112-staged-planner-s-ledger-reads-return-found):
+// a predicate carrying LedgerRuns admits the entries of the named runs (every
+// stage and plan generation) under the run's kernel scope — the owner fence for
+// the run's owner only — and nothing else, by id or by query.
+func TestEnforcingLedger_RunGrant(t *testing.T) {
+	alice := domain.OwnerTag("alice")
+	l := NewEnforcingLedger(&memLedger{rows: []domain.LedgerEntry{
+		{ID: "led_own", RunID: "aa11", Tags: []string{"worker:out", alice}},
+		{ID: "led_own_s2", RunID: "aa11-s2", Tags: []string{"worker:out", alice}},
+		{ID: "led_own_gen", RunID: "aa11-s2-g1", Tags: []string{alice}},
+		{ID: "led_other_run", RunID: "bb22", Tags: []string{"worker:out", alice}},
+		{ID: "led_bob_in_run", RunID: "aa11", Tags: []string{domain.OwnerTag("bob")}},
+		{ID: "led_bob_source", RunID: "aa11", Tags: []string{alice}, SourceTags: [][]string{{domain.OwnerTag("bob")}}},
+		{ID: "led_no_run", Tags: []string{alice}},
+	}}, nil)
+	// A policy-shaped caller (not a bypass): it admits only "chat:*" material and
+	// acts for nobody (no Owners), as a chat agent delegating without a header lease.
+	caller := domain.TagPredicate{AnyOfClauses: [][]string{{"chat:general"}}}
+	granted := caller
+	granted.LedgerRuns = &domain.LedgerRunGrant{Roots: []string{"aa11"}, Owner: "alice"}
+	ctx := domain.WithScope(context.Background(), &granted)
+
+	for _, id := range []string{"led_own", "led_own_s2", "led_own_gen"} {
+		if e, err := l.Get(ctx, id); err != nil || e == nil {
+			t.Errorf("granted run entry %s not readable: %v", id, err)
+		}
+	}
+	for _, id := range []string{"led_other_run", "led_bob_in_run", "led_bob_source", "led_no_run"} {
+		if e, err := l.Get(ctx, id); err != nil || e != nil {
+			t.Errorf("%s readable under the grant: %+v %v", id, e, err)
+		}
+	}
+	rows, err := l.Find(ctx, domain.LedgerQuery{TurnID: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, e := range rows {
+		got[e.ID] = true
+	}
+	if len(got) != 3 || !got["led_own"] || !got["led_own_s2"] || !got["led_own_gen"] {
+		t.Errorf("Find under the grant = %v, want exactly the three own-run entries", got)
+	}
+	// Without the grant the same caller reads none of them (the bug).
+	if e, _ := l.Get(domain.WithScope(context.Background(), &caller), "led_own"); e != nil {
+		t.Error("the caller predicate alone read an owner-private run entry")
+	}
+	// An empty grant (no roots, or a root of "") grants nothing.
+	empty := caller
+	empty.LedgerRuns = &domain.LedgerRunGrant{Roots: []string{""}, Owner: "alice"}
+	if e, _ := l.Get(domain.WithScope(context.Background(), &empty), "led_no_run"); e != nil {
+		t.Error("an empty root granted an entry with no run")
+	}
+	// A grant with no owner admits no owner-scoped row, even in the granted run.
+	noOwner := caller
+	noOwner.LedgerRuns = &domain.LedgerRunGrant{Roots: []string{"aa11"}}
+	if e, _ := l.Get(domain.WithScope(context.Background(), &noOwner), "led_own"); e != nil {
+		t.Error("an ownerless grant read an owner-private entry")
+	}
+}

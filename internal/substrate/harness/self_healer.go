@@ -36,6 +36,10 @@ type HealingExhaustedError struct {
 	// max duration 30m0s (execution.plan.plan_max_duration_ms)"); nil while it is
 	// alive.
 	Cause error
+	// Class is the failure's step-recovery class (ClassifyStepFailure). A
+	// deterministic or needs_replan failure ends the healing at once; the caller
+	// sends a needs_replan one straight to the re-planner (no runner-up fallback).
+	Class domain.StepFailureClass
 }
 
 func (e *HealingExhaustedError) Error() string {
@@ -47,6 +51,14 @@ func (e *HealingExhaustedError) Error() string {
 			msg += " (" + e.Cause.Error() + ")"
 		}
 		return msg
+	}
+	switch e.Class {
+	case domain.StepFailureNeedsReplan:
+		return fmt.Sprintf("self-healer: step %d needs re-planning (not retried) after %d attempt(s): %v",
+			e.StepIndex, e.AttemptCount, e.LastError)
+	case domain.StepFailureDeterministic:
+		return fmt.Sprintf("self-healer: step %d failed deterministically (not retried) after %d attempt(s): %v",
+			e.StepIndex, e.AttemptCount, e.LastError)
 	}
 	if e.LoopDetected {
 		return fmt.Sprintf(
@@ -85,8 +97,52 @@ func (sh *SelfHealer) maxAttempts() int {
 	return 3
 }
 
+// ClassifyStepFailure is the step-recovery class of a step failure (owner decision
+// 2026-11-12, T-20261112-self-healer-retries-a-step-whose-yield-chain; research note
+// 2026-11-12-agent-harness-recovery-practices §2):
+//
+//   - the class the error itself carries (domain.ClassOfStepError): yield limits
+//     and repeated intent are deterministic, a missing capability and a repeated
+//     identical tool failure need re-planning, a dispatch refusal is
+//     deterministic, a context deadline is transient;
+//   - else the transport's view: Unavailable, ResourceExhausted (rate limit or
+//     overload), Aborted and DeadlineExceeded are transient; InvalidArgument,
+//     OutOfRange (a prompt over the context window, domain.ErrContextOverflow),
+//     FailedPrecondition, PermissionDenied, Unauthenticated, NotFound and
+//     Unimplemented are deterministic (validation and refusals: the same request
+//     is refused again);
+//   - an agent that reports _error_type "system" is transient;
+//   - anything else is unclassified.
+func ClassifyStepFailure(err error, code codes.Code, agentErrorType string) domain.StepFailureClass {
+	if c := domain.ClassOfStepError(err); c != domain.StepFailureUnclassified {
+		return c
+	}
+	// A prompt over the model's context window is the same prompt on the next
+	// attempt: in process it is the sentinel, over the wire codes.OutOfRange
+	// (gatewayStatus; the SDK's TraitServicer answers a worker that died of it
+	// with OUT_OF_RANGE). p06 re-ran a 12-round step into the same overflow
+	// (T-20261112-worker-resolve-cid-inline-has-no-size-cap-a).
+	if errors.Is(err, domain.ErrContextOverflow) {
+		return domain.StepFailureDeterministic
+	}
+	switch code {
+	case codes.Unavailable, codes.ResourceExhausted, codes.Aborted, codes.DeadlineExceeded:
+		return domain.StepFailureTransient
+	case codes.InvalidArgument, codes.OutOfRange, codes.FailedPrecondition, codes.PermissionDenied,
+		codes.Unauthenticated, codes.NotFound, codes.Unimplemented:
+		return domain.StepFailureDeterministic
+	}
+	if agentErrorType == "system" {
+		return domain.StepFailureTransient
+	}
+	return domain.StepFailureUnclassified
+}
+
 // Wrap returns a new StepFunc that retries inner up to MaxAttempts times,
-// injecting healing context on LogicErrors and detecting retry loops.
+// injecting healing context on LogicErrors and detecting retry loops. Only a
+// transient or unclassified failure is retried (ClassifyStepFailure): a
+// deterministic one and one that needs re-planning end the healing at once,
+// with the class on the HealingExhaustedError.
 func (sh *SelfHealer) Wrap(inner StepFunc) StepFunc {
 	return func(ctx context.Context, handoff *domain.Handoff) (*domain.Handoff, error) {
 		max := sh.maxAttempts()
@@ -132,23 +188,29 @@ func (sh *SelfHealer) Wrap(inner StepFunc) StepFunc {
 				}
 			}
 
-			// A deterministic dispatch refusal (the effect check found no agent whose
-			// tools can do the step) is the same answer on every attempt: stop now so
-			// the plan replans with the reason, instead of re-asking the gatekeeper.
-			if domain.IsDispatchRefusal(err) {
+			// A deterministic failure (a dispatch refusal, a yield budget or depth
+			// limit, a repeated intent, a refused or invalid request) is the same
+			// answer on every attempt, and one that needs re-planning (a missing
+			// capability, a repeated identical tool failure) cannot be fixed by the
+			// same worker: stop now so the plan replans with the reason, instead of
+			// running the step again.
+			fc := ClassifyStepFailure(err, st.Code(), agentErrorType)
+			if fc == domain.StepFailureDeterministic || fc == domain.StepFailureNeedsReplan {
 				return nil, &HealingExhaustedError{
 					AttemptCount: attempt + 1,
 					StepIndex:    sh.StepIndex,
 					LastError:    err,
+					Class:        fc,
 				}
 			}
 
 			timedOut := isTimeout(err, st.Code())
 
 			// Loop detection: only possible after the first attempt, and never for
-			// a timeout — repeated timeouts look identical (same error, no output)
-			// without the agent having repeated anything.
-			if !timedOut && hasPrev && Detect(prevAttempt, currAttempt) {
+			// a timeout or another transient failure — repeated timeouts or an
+			// unavailable agent look identical (same error, no output) without the
+			// agent having repeated anything.
+			if !timedOut && fc != domain.StepFailureTransient && hasPrev && Detect(prevAttempt, currAttempt) {
 				return nil, &HealingExhaustedError{
 					LoopDetected: true,
 					AttemptCount: attempt + 1,
@@ -160,8 +222,9 @@ func (sh *SelfHealer) Wrap(inner StepFunc) StepFunc {
 			// Classify the fault.
 			class := Classify(err, st.Code(), agentErrorType)
 
-			// Mutate handoff context based on fault class.
-			if class == LogicError {
+			// Mutate handoff context based on fault class. A transient failure is
+			// retried with the same input: nothing about it is the agent's to fix.
+			if class == LogicError && fc != domain.StepFailureTransient {
 				if handoff.Context == nil {
 					handoff.Context = make(map[string]string)
 				}
@@ -178,6 +241,7 @@ func (sh *SelfHealer) Wrap(inner StepFunc) StepFunc {
 		return nil, &HealingExhaustedError{
 			LoopDetected: false,
 			TimedOut:     isTimeout(lastErr, st.Code()),
+			Class:        ClassifyStepFailure(lastErr, st.Code(), ""),
 			AttemptCount: max,
 			StepIndex:    sh.StepIndex,
 			LastError:    lastErr,

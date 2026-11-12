@@ -224,6 +224,11 @@ func (g *Gatekeeper) FindCandidates(ctx context.Context, task *domain.DispatchTa
 		}
 		resolution := domain.ResolveCapabilities(task.RequiredCapabilities, vocabulary,
 			g.ExecCfg.Capability.CapabilityAliases, agentSets)
+		// Diagnostic output on the caller's task (like Funnel / EffectCheck): the
+		// composer reads it to tell whether a yielded sub-goal's hint is a
+		// capability its parent's composition covers.
+		res := resolution
+		task.CapabilityResolution = &res
 
 		if !resolution.Satisfiable() {
 			// Loud, diagnosable failure naming the gap and the live vocabulary,

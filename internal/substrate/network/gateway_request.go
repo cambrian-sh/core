@@ -139,6 +139,9 @@ func usageProto(u domain.GenerateUsage) *pb.GenerateUsage {
 //   - InvalidArgument: a field the request marked strict cannot be honoured
 //     (domain.ErrUnsupported) — retrying the same request cannot succeed;
 //   - Aborted: the reply failed its response_schema after the one repair;
+//   - OutOfRange: the prompt does not fit the model's context window
+//     (domain.ErrContextOverflow) — the same request is refused again, so the
+//     SDK must shrink it, and a step failing with it is never retried unchanged;
 //   - ResourceExhausted: the CONWIP gate is full, or the session spend ceiling;
 //   - Unavailable: no candidate model is available (breaker open, none configured);
 //   - NotFound: the lease does not exist (or has expired).
@@ -157,6 +160,8 @@ func gatewayStatus(err error) error {
 		return status.Error(codes.InvalidArgument, msg)
 	case errors.Is(err, domain.ErrSchemaValidation):
 		return status.Error(codes.Aborted, msg)
+	case errors.Is(err, domain.ErrContextOverflow):
+		return status.Error(codes.OutOfRange, msg)
 	case errors.Is(err, llm.ErrSpendCeiling):
 		return status.Error(codes.ResourceExhausted, msg)
 	case errors.Is(err, llm.ErrNoHealthyModel), strings.HasPrefix(msg, "no model allocated"):

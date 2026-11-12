@@ -41,6 +41,14 @@ type WorkersConfig struct {
 	// seeded) is re-prompted toward delegation or the next tool, not toward
 	// final_answer. Default false.
 	EvidenceReprompt bool `json:"evidence_reprompt,omitempty"`
+	// MaxToolRounds is the composed runtime's tool-call budget per step (the SDK
+	// ReAct loop's max_tool_rounds), handed to it as CAMBRIAN_COMPOSED_MAX_TOOL_ROUNDS.
+	// It was the SDK's built-in 12, which cut a progressing sandbox analysis
+	// ("Tool budget exhausted after 12 calls", personal run 2026-11-09 p06#3,
+	// T-20261109-per-step-deadline-step-timeout-floor-ms-180-s). Under
+	// decisions/no-turn-budgets-for-now-terminate-on-progress.md run configurations
+	// set it very high; it stays as a runaway backstop. 0 ⇒ the runtime's default (12).
+	MaxToolRounds int `json:"max_tool_rounds,omitempty"`
 }
 
 // RuntimeID is RuntimeAgentID with its default applied.
@@ -68,6 +76,9 @@ func (c WorkersConfig) validate(ledgerOn bool) []string {
 	var errs []string
 	if c.MaxSkills < 0 {
 		errs = append(errs, fmt.Sprintf("execution.workers.max_skills must be >= 0 (got %d)", c.MaxSkills))
+	}
+	if c.MaxToolRounds < 0 {
+		errs = append(errs, fmt.Sprintf("execution.workers.max_tool_rounds must be >= 0 (got %d; 0 = the runtime default)", c.MaxToolRounds))
 	}
 	if c.RuntimeAgentID != "" && !agentIDPattern.MatchString(c.RuntimeAgentID) {
 		errs = append(errs, fmt.Sprintf("execution.workers.runtime_agent_id %q must match %s", c.RuntimeAgentID, agentIDPattern))

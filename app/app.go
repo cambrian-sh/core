@@ -2230,13 +2230,17 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 			// per-call tempdir teardown; CIDs surface in the result "_artifacts".
 			ContentStore: storeHandle.ContentStore,
 		},
-		Approval:        toolApprovalCtrl,
-		EgressAuditor:   mcpAuditor, // ADR-0043: nil ⇒ no egress auditing
-		Budget:          mcpBudget,  // ADR-0043: nil ⇒ MCP calls unmetered
-		Pricing:         mcpPricing, // ADR-0043: nil ⇒ MCP calls unmetered
-		Authz:           authorizer, // ADR-0085: data-store regime + (Phase 2) effect classes
-		ContentStore:    storeHandle.ContentStore,
-		InlineThreshold: 65536,
+		Approval:      toolApprovalCtrl,
+		EgressAuditor: mcpAuditor, // ADR-0043: nil ⇒ no egress auditing
+		Budget:        mcpBudget,  // ADR-0043: nil ⇒ MCP calls unmetered
+		Pricing:       mcpPricing, // ADR-0043: nil ⇒ MCP calls unmetered
+		Authz:         authorizer, // ADR-0085: data-store regime + (Phase 2) effect classes
+		ContentStore:  storeHandle.ContentStore,
+		// ADR-0145 / owner decision 2026-11-12: every content size is
+		// execution.content (was a hardcoded 65536).
+		InlineThreshold: cfg.Execution.Content.Inline(),
+		PreviewChars:    cfg.Execution.Content.Preview(),
+		PageBytes:       cfg.Execution.Content.Page(),
 		Unrestricted:    cfg.Execution.Tools.ToolsUnrestricted, // dev/trusted bypass: all agents, all tools
 		Overlay:         domain.NewRunGrantOverlay(),           // ADR-0046 D6: skill-conferred run-scoped grants
 		// Agent stack v2: each profile agent's tool allowlist is a hard ceiling,
@@ -2272,7 +2276,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0145 D1: the run ledger (execution.ledger, off by default): every tool
 	// result and step output recorded, scope-enforced, read by reference. Threaded
 	// to the executor, the server and the turn end here; nil sweeper when off.
-	ledgerSweeper := wireLedger(ctx, cfg.Execution.Ledger, vec.Pool(), artifactVault, reg, authorizer,
+	ledgerSweeper := wireLedger(ctx, cfg.Execution.Ledger, cfg.Execution.Content, vec.Pool(), artifactVault, reg, authorizer,
 		cfg.Privacy.PrivateByDefaultOn(), cambrianServer, turnDelegations)
 	// Effect-checked dispatch (T-20261106-kernel-does-not-check-that-a-declared): an
 	// agent's effects are derived from the tools the executor would let it call
@@ -2290,6 +2294,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0145 D4: calculation tools (execution.tools.calc_tools, default off),
 	// after the ledger so they read and record through it.
 	wireCalcTools(cfg, cambrianServer, cambrianServer.Calendar)
+	wireStagedInputs(cfg.Execution.Tools.StagedInputs, cambrianServer)
 	// The chat front desk is told which work systems the planner's agents can reach,
 	// from the planner's own live tool menu (the one wireEffectCheck just set), so a
 	// work-system ask is delegated instead of answered "I have no tool for that"
@@ -2462,6 +2467,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	}
 	// ADR-0145 D12: plan steps on workers the kernel composes (execution.workers.composed,
 	// default off), after the ledger, the effect vocabulary and skill access are wired.
+	wireStepRecovery(cfg.Execution, cambrianServer, meta.Dispatcher)
 	wireComposedWorkers(cfg.Execution, cambrianServer, meta.Dispatcher, reg)
 	skillLifecycle, skillCurator := wireSkillLifecycle(ctx, cfg.Execution.Skills, vec.Pool(), skillReg, skillIndexer, discoveredSkills, proposerGrants)
 	if skillLifecycle != nil {

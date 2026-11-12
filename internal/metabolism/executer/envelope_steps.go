@@ -42,6 +42,109 @@ type StepRequirements struct {
 	evidence map[int][]string
 	// values are the accepted values per step, for input bindings.
 	values map[int][]domain.EnvelopeValue
+	// repeated are the violations (item|rule|value) that a repair turn was told
+	// about and that came back unchanged. Kept for the whole request (every
+	// coverage stage): such a violation is never repaired again.
+	repeated map[string]bool
+	// earlier are the finished stages' results under their e<K> labels
+	// (ArchiveStage): what a later stage's e<K> input resolves to.
+	earlier map[string]archivedResult
+}
+
+// archivedResult is an earlier stage's step as an e<K> input resolves it.
+type archivedResult struct {
+	domain.EarlierResult
+	values   []domain.EnvelopeValue
+	evidence []string
+}
+
+// ArchiveStage keeps the finished stage's accepted values and evidence under the
+// e<K> labels the server gave its completed steps (es: that stage's entries,
+// whose Step indices are this stage's). Call it before ResetStage; a later
+// stage's e<K> input then resolves to the step's ledger reference and its values
+// (T-20261112-staged-planner-binds-earlier-stage-results-with).
+func (r *StepRequirements) ArchiveStage(es []domain.EarlierResult) {
+	if r == nil || len(es) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.earlier == nil {
+		r.earlier = map[string]archivedResult{}
+	}
+	for _, e := range es {
+		r.earlier[e.Label] = archivedResult{EarlierResult: e,
+			values:   append([]domain.EnvelopeValue(nil), r.values[e.Step]...),
+			evidence: append([]string(nil), r.evidence[e.Step]...)}
+	}
+}
+
+// earlierInputEvidence are the ledger ids a step's e<K> inputs make citable: each
+// earlier step's output and the entries its accepted values cited (D6: a step may
+// cite its inputs and what they cited).
+func (r *StepRequirements) earlierInputEvidence(st domain.Step) []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, b := range st.Inputs {
+		ref, ok := domain.ParseInputRef(b)
+		if !ok || !ref.Earlier {
+			continue
+		}
+		if a, ok := r.earlier[ref.Source()]; ok {
+			out = appendUnique(out, a.Ref)
+			for _, id := range a.evidence {
+				out = appendUnique(out, id)
+			}
+		}
+	}
+	return out
+}
+
+func violationKey(v domain.EnvelopeViolation) string {
+	return v.Item + "|" + v.Rule + "|" + v.Value
+}
+
+// unrepaired are the violations no earlier repair turn of this request already
+// failed to fix (all of vs when r is nil).
+func (r *StepRequirements) unrepaired(vs []domain.EnvelopeViolation) []domain.EnvelopeViolation {
+	if r == nil || len(vs) == 0 {
+		return vs
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []domain.EnvelopeViolation
+	for _, v := range vs {
+		if !r.repeated[violationKey(v)] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// noteRepaired records the violations a repair turn was told about (asked) that
+// are still there after it (after).
+func (r *StepRequirements) noteRepaired(asked, after []domain.EnvelopeViolation) {
+	if r == nil {
+		return
+	}
+	still := map[string]bool{}
+	for _, v := range after {
+		still[violationKey(v)] = true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.repeated == nil {
+		r.repeated = map[string]bool{}
+	}
+	for _, v := range asked {
+		if k := violationKey(v); still[k] {
+			r.repeated[k] = true
+		}
+	}
 }
 
 // StepRecords are the kernel's records of one step's tool calls.
@@ -105,8 +208,11 @@ func (d *DAGExecutor) stampRequirementKeys(plan *domain.ExecutionPlan, stepIndex
 	}
 }
 
-// resolveInputs resolves a step's bindings: the bound step's ledger reference and,
-// for s<N>.<name>, the accepted values step N returned under that name.
+// resolveInputs resolves a step's input references (domain.InputRef): for s<N>,
+// the bound step's ledger reference and, for s<N>.<name>, the accepted values step
+// N returned under that name; for e<K>, the same of the earlier stage's step the
+// label names (ArchiveStage). A reference that resolves to nothing is skipped (the
+// D7 validator refuses it before the plan runs).
 func (r *StepRequirements) resolveInputs(st domain.Step, snapshot map[string]string) []domain.StepInputValue {
 	if len(st.Inputs) == 0 {
 		return nil
@@ -115,13 +221,25 @@ func (r *StepRequirements) resolveInputs(st domain.Step, snapshot map[string]str
 	defer r.mu.Unlock()
 	var out []domain.StepInputValue
 	for _, b := range st.Inputs {
-		n, name, _, ok := domain.ParseBinding(b)
+		ref, ok := domain.ParseInputRef(b)
 		if !ok {
 			continue
 		}
-		iv := domain.StepInputValue{Binding: b, Step: n, Ref: snapshot[fmt.Sprintf("step_%d_cid", n)]}
-		for _, v := range r.values[n] {
-			if name == "" || v.Name == name {
+		var iv domain.StepInputValue
+		var values []domain.EnvelopeValue
+		if ref.Earlier {
+			a, ok := r.earlier[ref.Source()]
+			if !ok {
+				continue
+			}
+			iv = domain.StepInputValue{Binding: b, Step: a.Step, Stage: a.Stage, Ref: a.Ref}
+			values = a.values
+		} else {
+			iv = domain.StepInputValue{Binding: b, Step: ref.N, Ref: snapshot[fmt.Sprintf("step_%d_cid", ref.N)]}
+			values = r.values[ref.N]
+		}
+		for _, v := range values {
+			if ref.Name == "" || v.Name == ref.Name {
 				iv.Values = append(iv.Values, v)
 			}
 		}
@@ -143,14 +261,26 @@ func (d *DAGExecutor) envelopeStep(ctx context.Context, plan *domain.ExecutionPl
 	if len(items) == 0 {
 		return resp
 	}
+	// An e<K> input's entries are the step's inputs too (an earlier stage's output).
+	inputs = append(append([]string(nil), inputs...), d.Requirements.earlierInputEvidence(st)...)
 	results, violations, obs := d.checkEnvelope(ctx, stepIndex, items, resp, inputs)
-	if len(violations) > 0 {
+	// A violation that already survived a repair turn in this request is not
+	// repaired again (research note 2026-11-12 §5: a repeated error is
+	// deterministic; asking the same way twice gets the same answer). Only the
+	// violations not yet repaired are named in the repair turn; when there are
+	// none, the turn is skipped and the items stay open with the reason.
+	toRepair := d.Requirements.unrepaired(violations)
+	if len(violations) > 0 && len(toRepair) == 0 {
+		slog.Info("ADR-0145 D6: step envelope rejected with violations that survived an earlier repair turn; no repair turn",
+			"step", stepIndex, "violations", violations)
+	}
+	if len(toRepair) > 0 {
 		// The ONE repair turn (D6.2): the same step again, told exactly what was
 		// wrong. Its tool calls land on the same run and step, so evidence it
 		// gathers now counts.
-		slog.Info("ADR-0145 D6: step envelope rejected; one repair turn", "step", stepIndex, "violations", len(violations))
+		slog.Info("ADR-0145 D6: step envelope rejected; one repair turn", "step", stepIndex, "violations", len(toRepair))
 		repair := cloneMap(stepHandoff.Context)
-		if b, err := json.Marshal(violations); err == nil {
+		if b, err := json.Marshal(toRepair); err == nil {
 			repair[domain.HandoffKeyEnvelopeViolations] = string(b)
 		}
 		// ADR-0145 D14: the repair sees what the step already did (tool results by
@@ -165,6 +295,7 @@ func (d *DAGExecutor) envelopeStep(ctx context.Context, plan *domain.ExecutionPl
 		if r2, err := stepFn(domain.WithRepairTurn(domain.WithPlanStep(ctx, st)), stepIndex, h); err == nil && r2 != nil {
 			resp = r2
 			results, violations, obs = d.checkEnvelope(ctx, stepIndex, items, resp, inputs)
+			d.Requirements.noteRepaired(toRepair, violations)
 		} else if err != nil {
 			slog.Warn("ADR-0145 D6: repair turn failed; the step's items stay open", "step", stepIndex, "err", err)
 		}
@@ -172,6 +303,7 @@ func (d *DAGExecutor) envelopeStep(ctx context.Context, plan *domain.ExecutionPl
 	obs.Results = results
 	obs.Violations = violations
 	obs.Member = st.FanOutItem
+	obs.SetMembers = fanOutDependencyMembers(plan, st)
 	if d.Requirements.StepActions != nil {
 		rec := d.Requirements.StepActions(d.planGeneration(), stepIndex)
 		obs.Actions, obs.Denials = rec.Actions, rec.Denials
@@ -455,6 +587,22 @@ func (d *DAGExecutor) expectFanOutMembers(plan *domain.ExecutionPlan, firstChild
 	for id, ms := range members {
 		d.Requirements.Coverage.ExpectMembers(id, ms)
 	}
+}
+
+// fanOutDependencyMembers are the fan-out members an ordinary step consumes: the
+// FanOutItem of each fan-out child it depends on. Coverage requires a done write per
+// member when the step's writes are per member (requirements.coverMembersByWrites).
+func fanOutDependencyMembers(plan *domain.ExecutionPlan, st domain.Step) []string {
+	if st.FanOutItem != "" {
+		return nil
+	}
+	var out []string
+	for _, dep := range st.DependsOn {
+		if dep >= 0 && dep < len(plan.Steps) {
+			out = appendUnique(out, plan.Steps[dep].FanOutItem)
+		}
+	}
+	return out
 }
 
 // fanOutSourceOutput is the text a fan-out expands over. A source that answered

@@ -136,11 +136,12 @@ type DAGExecutor struct {
 	StepCache              domain.StepCache         // ADR-0026: may be nil; nil disables step-level memoization
 	StepCachePolicies      map[string]int           // ADR-0026: operator TTL overrides; nil = use heuristic defaults
 	ContextRefSnippetChars int                      // ADR-0022: snippet length; 0 defaults to 500
-	// DependencyResultsMaxChars bounds the upstream results inlined into a dependent
-	// step's domain.StepDependency list, in bytes across its dependencies
-	// (execution.plan.dependency_results_max_chars; the server resolves <= 0 to the
-	// config default). 0 here means unbounded — tests and harnesses only.
-	DependencyResultsMaxChars int
+	// DependencyFit bounds the upstream results inlined into a dependent step's
+	// domain.StepDependency list: a byte budget across its dependencies sized from
+	// the receiving worker's prompt budget, and the page size a shortened result's
+	// outline is numbered in (execution.content; the server resolves it). A zero
+	// budget means unbounded — tests and harnesses only.
+	DependencyFit domain.DependencyFit
 	// EffectVocabulary decides which steps the step cache may serve or store
 	// (step_cache_guard.go, ADR-0145 D9): only thought steps and steps whose
 	// declared effects are all read-only. nil ⇒ no action step is cacheable.
@@ -408,6 +409,13 @@ func (d *DAGExecutor) executeStep(
 	}
 	if resp == nil {
 		return stepResult{index: stepIndex, resp: nil, err: nil}
+	}
+	// A worker that answered with a reference to one of its own tool results
+	// (answer_ref) gets that result's text as its output, before anything reads it
+	// (T-20261112-summarise-a-document-step-gets-only-the-first).
+	resp, stepErr = d.applyAnswerRef(ctx, stepIndex, resp)
+	if stepErr != nil {
+		return stepResult{index: stepIndex, err: stepErr}
 	}
 	// ADR-0145 D6: validate the answer envelope (one repair turn) and apply it to
 	// the request's coverage. Legacy path: unchanged.
@@ -1148,7 +1156,7 @@ func (d *DAGExecutor) ExecuteFrom(
 			mu.Lock()
 			contextSnapshot := filterSnapshotForStep(masterContext, plan.Steps[i])
 			// ADR-0145 D1: with the ledger on, upstream content is read from the ledger.
-			deps := buildStepDependenciesFrom(masterContext, plan, i, d.DependencyResultsMaxChars, prior, d.ledgerResolver(cancelCtx))
+			deps := buildStepDependenciesFrom(masterContext, plan, i, d.DependencyFit, prior, d.ledgerResolver(cancelCtx))
 			mu.Unlock()
 
 			var workingMemory []domain.ContextRef
@@ -1323,10 +1331,13 @@ coordinate:
 				// if not, create it" was rejected as a repeat of "Write the exact line
 				// 'alpha record' to …".
 				failedQuery := ""
+				var failedStep domain.Step
 				if failedStepIdx >= 0 && failedStepIdx < len(plan.Steps) {
-					failedQuery = plan.Steps[failedStepIdx].Query
+					failedStep = plan.Steps[failedStepIdx]
+					failedQuery = failedStep.Query
 				}
-				if len(newPlan.Steps) > 0 && failedQuery != "" && newPlan.Steps[0].Query == failedQuery {
+				if len(newPlan.Steps) > 0 && failedQuery != "" && newPlan.Steps[0].Query == failedQuery &&
+					!reroutedForCapability(firstErr, failedStep, newPlan.Steps[0]) {
 					slog.Warn("Replan dry-run: new plan repeats same faulty step query",
 						"step", newPlan.Steps[0].Query)
 					// The rejection BECOMES the plan's error, exactly as the returned
@@ -1968,4 +1979,38 @@ func (d *DAGExecutor) setCurrentPlan(p *domain.ExecutionPlan) {
 	d.planMu.Lock()
 	d.currentPlan = p
 	d.planMu.Unlock()
+}
+
+// reroutedForCapability reports a replan that keeps the failed step's words but
+// changes what it requires, after the step failed for a missing capability. That
+// is the re-plan the capability_missing outcome asks for ("re-plan that step";
+// the kernel composes the new worker from the changed requirements,
+// T-20261112-yield-sub-goal-on-a-composed-lease-runs-under), not a restatement of
+// the step that failed, so the loop guard lets it through. Any other failure, or
+// an unchanged requirement set, is still refused.
+func reroutedForCapability(err error, failed, next domain.Step) bool {
+	var cm *domain.CapabilityMissingError
+	if !errors.As(err, &cm) {
+		return false
+	}
+	return !sameSet(failed.RequiredCapabilities, next.RequiredCapabilities) ||
+		!sameSet(failed.RequiredEffects, next.RequiredEffects)
+}
+
+// sameSet compares two string lists as sets, normalised as capabilities are.
+func sameSet(a, b []string) bool {
+	as, bs := domain.NormalizeCapabilities(a), domain.NormalizeCapabilities(b)
+	if len(as) != len(bs) {
+		return false
+	}
+	in := make(map[string]bool, len(as))
+	for _, x := range as {
+		in[x] = true
+	}
+	for _, x := range bs {
+		if !in[x] {
+			return false
+		}
+	}
+	return true
 }

@@ -101,6 +101,25 @@ var deprecatedExecutionKey = map[string]map[string]string{
 	"plan": {"plan_timeout_ms": "plan_max_duration_ms"},
 }
 
+// relocatedExecutionKey is a key that MOVED to another v2 block, unchanged in
+// meaning and unit: "block.leaf" of the old place → "block.leaf" of the new one. It
+// is carried exactly like a deprecatedExecutionKey (a value already set at the new
+// place in the same layer wins), for files, the durable store and CAMBRIAN_*
+// variables alike.
+//
+// The content-size limits were gathered into execution.content on 2026-11-12
+// (owner decision, T-20261112-worker-resolve-cid-inline-has-no-size-cap-a):
+//   - ledger.page_bytes → content.page_bytes (ledger_get's page, now also
+//     resolve_cid's window and the dependency outline's page numbers);
+//   - plan.dependency_results_max_chars → content.dependency_max_bytes. The old key
+//     WAS the whole budget (bytes, despite its name); the budget is now a token
+//     budget sized from the receiving worker, and an operator's explicit value
+//     stays what it always was — a byte ceiling on it.
+var relocatedExecutionKey = map[string]string{
+	"ledger.page_bytes":                 "content.page_bytes",
+	"plan.dependency_results_max_chars": "content.dependency_max_bytes",
+}
+
 // deprecationLogged makes each deprecated key's INFO line appear once per process,
 // not once per layer per (re)load.
 var deprecationLogged sync.Map
@@ -120,7 +139,23 @@ func logDeprecatedKey(block, oldKey, newKey, origin string, overridden bool) {
 		slog.String("ticket", "T-20261105-owner-decision-needed-120-s-plan-timeout-ms"))
 }
 
-// renameDeprecatedExecutionKeys carries each deprecatedExecutionKey in a v2
+func logRelocatedKey(from, to, origin string, overridden bool) {
+	if _, seen := deprecationLogged.LoadOrStore(from, true); seen {
+		return
+	}
+	msg := "config: moved key loaded at its new place"
+	if overridden {
+		msg = "config: moved key ignored; its new place is set in the same layer"
+	}
+	slog.Info(msg,
+		slog.String("old", "execution."+from),
+		slog.String("new", "execution."+to),
+		slog.String("origin", origin),
+		slog.String("ticket", "T-20261112-worker-resolve-cid-inline-has-no-size-cap-a"))
+}
+
+// renameDeprecatedExecutionKeys carries each relocatedExecutionKey and each
+// deprecatedExecutionKey in a v2
 // `execution` block to its successor, in place, and returns the deprecated keys it
 // touched ("plan.plan_timeout_ms"), sorted.
 // It runs AFTER migrateExecutionBlock, so a v1 flat plan_timeout_ms has already
@@ -131,6 +166,33 @@ func renameDeprecatedExecutionKeys(doc map[string]any, origin string) []string {
 		return nil
 	}
 	var renamed []string
+	for from, to := range relocatedExecutionKey {
+		fromBlock, fromLeaf, _ := strings.Cut(from, ".")
+		toBlock, toLeaf, _ := strings.Cut(to, ".")
+		src, ok := exec[fromBlock].(map[string]any)
+		if !ok {
+			continue
+		}
+		val, present := src[fromLeaf]
+		if !present {
+			continue
+		}
+		dst, ok := exec[toBlock].(map[string]any)
+		if !ok {
+			if _, taken := exec[toBlock]; taken {
+				continue // the new block is a scalar: leave the layer to the decoder's error
+			}
+			dst = map[string]any{}
+			exec[toBlock] = dst
+		}
+		_, overridden := dst[toLeaf]
+		if !overridden {
+			dst[toLeaf] = val
+		}
+		delete(src, fromLeaf)
+		logRelocatedKey(from, to, origin, overridden)
+		renamed = append(renamed, from)
+	}
 	for block, renames := range deprecatedExecutionKey {
 		dst, ok := exec[block].(map[string]any)
 		if !ok {
@@ -167,6 +229,16 @@ func deprecatedEnvKey(path string, lookupEnv func(string) (string, bool)) string
 	block, leaf, ok := strings.Cut(rest, ".")
 	if !ok {
 		return path
+	}
+	if to, moved := relocatedExecutionKey[block+"."+leaf]; moved {
+		toBlock, toLeaf, _ := strings.Cut(to, ".")
+		newVar := "CAMBRIAN_EXECUTION__" + strings.ToUpper(toBlock) + "__" + strings.ToUpper(toLeaf)
+		if _, set := lookupEnv(newVar); set {
+			logRelocatedKey(block+"."+leaf, to, "environment", true)
+			return path
+		}
+		logRelocatedKey(block+"."+leaf, to, "environment", false)
+		return "execution." + to
 	}
 	newKey, ok := deprecatedExecutionKey[block][leaf]
 	if !ok {

@@ -28,10 +28,10 @@ package yield
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -50,25 +50,78 @@ const (
 	ResultType = "yield_subgoal"
 )
 
-// Sentinel errors. Exhausting a bound FAILS the step (SelfHealer → runner-up
-// fallback → replan) rather than resuming the parent with nothing: ADR-0100 D10
-// #4 — "exhaustion resolves to replan".
+// Sentinel errors. Exhausting a bound FAILS the step (runner-up fallback → replan)
+// rather than resuming the parent with nothing: ADR-0100 D10 #4 — "exhaustion
+// resolves to replan". Each is DETERMINISTIC (domain.StepFailureDeterministic):
+// the same step, composition and inputs reach the same bound again, so the
+// self-healer never retries it (T-20261112-self-healer-retries-a-step-whose-yield-chain,
+// owner 2026-11-12). They stay comparable with errors.Is.
 var (
 	// ErrMaxDepth: a sub-goal's executor yielded again past the chain-depth bound.
-	ErrMaxDepth = errors.New("yield: max sub-goal chain depth exceeded")
-	// ErrMaxSubgoals: one top-level call yielded more sub-goals than its budget.
-	ErrMaxSubgoals = errors.New("yield: sub-goal budget for this call exhausted")
+	ErrMaxDepth = domain.NewDeterministicError("yield: max sub-goal chain depth exceeded")
+	// ErrMaxSubgoals: one step yielded more sub-goals than its budget.
+	ErrMaxSubgoals = domain.NewDeterministicError("yield: sub-goal budget for this step exhausted")
 	// ErrRepeatedIntent: a sub-goal repeats an intent already open on its own
 	// chain — the livelock signature (an agent delegating its own task back to
 	// the pool, or re-delegating after the resume told it not to).
-	ErrRepeatedIntent = errors.New("yield: sub-goal repeats an intent already on its chain")
+	ErrRepeatedIntent = domain.NewDeterministicError("yield: sub-goal repeats an intent already on its chain")
 	// ErrInvalidSubgoal: the yield carried no intent (the SDK refuses to build
 	// one, so this is a non-SDK agent or a corrupted handoff).
-	ErrInvalidSubgoal = errors.New("yield: sub-goal has no intent")
+	ErrInvalidSubgoal = domain.NewDeterministicError("yield: sub-goal has no intent")
 	// ErrUnknownYielder: the yielding response names no agent, so there is
 	// nobody to resume.
-	ErrUnknownYielder = errors.New("yield: yielding response has no from_agent to resume")
+	ErrUnknownYielder = domain.NewDeterministicError("yield: yielding response has no from_agent to resume")
 )
+
+// stepBudgetKey carries a step's StepBudget on its ctx.
+type stepBudgetKey struct{}
+
+// StepBudget is one plan step's sub-goal budget. It lives on the STEP, not on one
+// Resolver.Execute call: the self-healer re-runs Execute on the same step ctx, and
+// a budget per call made yield_max_subgoals a per-ATTEMPT allowance (3 attempts x
+// 8 sub-goals; T-20261112-self-healer-retries-a-step-whose-yield-chain, owner
+// 2026-11-12: "budgets live on the step so a retry inherits them"). The depth and
+// repeated-intent bounds are per chain: an attempt that reaches either fails
+// deterministically and is never retried, so no later attempt can reset them.
+type StepBudget struct {
+	mu       sync.Mutex
+	subgoals int
+}
+
+// WithStepBudget gives the plan step about to run on ctx a fresh sub-goal budget.
+// The server calls it once per step, before the self-healer, so every attempt of
+// the step draws on the same budget. A nested plan's steps get their own.
+func WithStepBudget(ctx context.Context) context.Context {
+	return context.WithValue(ctx, stepBudgetKey{}, &StepBudget{})
+}
+
+// StepBudgetFrom is the step's budget, or a fresh one for a call that is not a
+// plan step (a bypass call, a plugin): its budget is the call.
+func StepBudgetFrom(ctx context.Context) *StepBudget {
+	if b, ok := ctx.Value(stepBudgetKey{}).(*StepBudget); ok && b != nil {
+		return b
+	}
+	return &StepBudget{}
+}
+
+// take spends one sub-goal: the new count, or ok=false with the count so far once
+// max is reached.
+func (b *StepBudget) take(max int) (n int, ok bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.subgoals >= max {
+		return b.subgoals, false
+	}
+	b.subgoals++
+	return b.subgoals, true
+}
+
+// Used is how many sub-goals the step has dispatched.
+func (b *StepBudget) Used() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.subgoals
+}
 
 // Limits bounds a yield tree so no agent behaviour can make it recurse forever.
 // Both come from config (execution.routing.yield_max_depth /
@@ -79,10 +132,11 @@ type Limits struct {
 	// yield (loudly — the step fails with ErrMaxDepth instead of yielding an
 	// empty answer).
 	MaxDepth int
-	// MaxSubgoals caps the total sub-goals dispatched under one top-level
-	// Execute/CallAgent, across the whole tree and across resume rounds. It is
-	// the fan-out bound: an agent that yields, is resumed, and yields again is
-	// counted every time.
+	// MaxSubgoals caps the total sub-goals dispatched for one plan step (its
+	// StepBudget, across the self-healer's attempts) — or for one top-level
+	// Execute/CallAgent that is not a plan step — across the whole tree and across
+	// resume rounds. It is the fan-out bound: an agent that yields, is resumed, and
+	// yields again is counted every time.
 	MaxSubgoals int
 }
 
@@ -128,7 +182,7 @@ func (r *Resolver) Execute(ctx context.Context, task *domain.DispatchTask, in *d
 	if err != nil || res == nil || !IsYield(res.Handoff) {
 		return res, err
 	}
-	run := &run{r: r}
+	run := &run{r: r, budget: StepBudgetFrom(ctx)}
 	final, rErr := run.resolve(ctx, task, in, res.Handoff, 0, nil)
 	if rErr != nil {
 		// Mirror Dispatcher.Execute's call-failure shape so the server's fallback
@@ -155,14 +209,14 @@ func (r *Resolver) CallAgent(ctx context.Context, agentID string, handoff *domai
 	if resp.FromAgent == "" {
 		resp.FromAgent = agentID // we know exactly who we called
 	}
-	run := &run{r: r}
+	run := &run{r: r, budget: StepBudgetFrom(ctx)}
 	return run.resolve(ctx, nil, handoff, resp, 0, nil)
 }
 
-// run is the per-top-level-call state: the shared sub-goal budget.
+// run is the per-top-level-call state; its sub-goal budget is the step's.
 type run struct {
-	r        *Resolver
-	subgoals int
+	r      *Resolver
+	budget *StepBudget
 }
 
 // resolve runs the yield loop for one agent that has yielded (`first`) on
@@ -187,23 +241,23 @@ func (u *run) resolve(ctx context.Context, task *domain.DispatchTask, in, first 
 		if depth >= u.r.limits.MaxDepth {
 			return nil, fmt.Errorf("agent %q at depth %d yielding %q: %w", agentID, depth, intent, ErrMaxDepth)
 		}
-		if u.subgoals >= u.r.limits.MaxSubgoals {
-			return nil, fmt.Errorf("agent %q yielding %q after %d sub-goals: %w", agentID, intent, u.subgoals, ErrMaxSubgoals)
-		}
 		norm := normalizeIntent(intent)
 		for _, open := range chain {
 			if open == norm {
 				return nil, fmt.Errorf("agent %q yielding %q: %w", agentID, intent, ErrRepeatedIntent)
 			}
 		}
-		u.subgoals++
+		n, ok := u.budget.take(u.r.limits.MaxSubgoals)
+		if !ok {
+			return nil, fmt.Errorf("agent %q yielding %q after %d sub-goals: %w", agentID, intent, n, ErrMaxSubgoals)
+		}
 		hint := strings.TrimSpace(resp.Context[KeyCapabilityHint])
 		cont := resp.Context[KeyContinuationState]
 
-		subTask := subDispatchTask(task, in, intent, hint, u.subgoals)
+		subTask := subDispatchTask(task, in, intent, hint, n)
 		slog.Info("yield: dispatching sub-goal (ADR-0041 D5 / ADR-0100 D10)",
 			"parent_agent", agentID, "intent", intent, "capability_hint", hint,
-			"depth", depth+1, "subgoal", u.subgoals, "task", subTask.ID)
+			"depth", depth+1, "subgoal", n, "task", subTask.ID)
 
 		// Bind + call through the dispatch function: the same eligibility gate,
 		// D5 resolution ladder and merit ranking a plan step gets.
@@ -213,7 +267,13 @@ func (u *run) resolve(ctx context.Context, task *domain.DispatchTask, in, first 
 			// Worded for the replanner (replan_cap v3): a yielded action the agent did
 			// not perform itself — typically for lack of a tool — that no other agent
 			// could take either is the under-declaration signal, and the replan adds
-			// the action's effect to the step's required_effects.
+			// the action's effect to the step's required_effects. On a composed lease
+			// the sub-goal runs under the parent's composition, so dispatch never
+			// fails for a missing tool by itself: the composer refuses a sub-goal whose
+			// capability hint that composition does not cover, and a worker reports
+			// capability_missing — both arrive here as a domain.CapabilityMissingError
+			// (class needs_replan), kept in the chain by %w
+			// (T-20261112-yield-sub-goal-on-a-composed-lease-runs-under).
 			return nil, fmt.Errorf("yield: agent %q did not perform %q itself (it yielded it, e.g. for lack of a tool) and dispatching it failed: %w", agentID, intent, err)
 		}
 		if subRes == nil || subRes.Handoff == nil {
@@ -274,6 +334,7 @@ func subDispatchTask(parent *domain.DispatchTask, in *domain.Handoff, intent, hi
 	t := &domain.DispatchTask{
 		ID:          fmt.Sprintf("%s/yield-%d", parentID, n),
 		Description: intent,
+		Subgoal:     true,
 	}
 	if parent != nil {
 		t.Context = parent.Context

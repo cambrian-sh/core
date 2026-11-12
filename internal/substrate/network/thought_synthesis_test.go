@@ -115,18 +115,24 @@ func TestThoughtFn_SendsSystemAndTaggedMessage(t *testing.T) {
 	}
 }
 
-// A shortened result says so and names the cid the rest resolves from.
-func TestThoughtFn_ShortenedResultCarriesCID(t *testing.T) {
+// A shortened result shows its beginning AND its end, says plainly which bytes are
+// not shown, and lists the outline (T-20261112-summarise-a-document-step-gets-only-the-first).
+func TestThoughtFn_ShortenedResultShowsHeadTailAndOutline(t *testing.T) {
 	gen := &thoughtCapture{}
 	s := &Server{Planner: &mockPlanner{}, ThoughtLLM: gen}
 	h := thoughtHandoff(t, []domain.StepDependency{
-		{Step: 0, Objective: "o", Status: domain.StepDependencyCompleted, Content: "head", Bytes: 9000, CID: "cid-abc", Shortened: true},
+		{Step: 0, Objective: "o", Status: domain.StepDependencyCompleted, Content: "head", Tail: "tail end", Bytes: 9000,
+			OmittedFrom: 4, OmittedTo: 8992, CID: "led_abc", Shortened: true,
+			Outline: []domain.DependencyHeading{{Heading: "## Findings", Page: 1}}},
 	})
 	if _, err := s.thoughtFn(thoughtPlan())(t.Context(), 0, h); err != nil {
 		t.Fatal(err)
 	}
-	if msg := gen.reqs[0].Messages[0].Content; !strings.Contains(msg, "[shortened: 4 of 9000 characters shown; full result cid cid-abc]") {
-		t.Fatalf("shortened marker missing:\n%s", msg)
+	msg := gen.reqs[0].Messages[0].Content
+	for _, want := range []string{"head\n[… bytes 4–8992 of 9000 are not shown here …]\ntail end", "<outline>\n## Findings (page 1)\n</outline>"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("missing %q in:\n%s", want, msg)
+		}
 	}
 }
 
@@ -184,10 +190,10 @@ func TestThoughtStep_E42_MergeSeesBothUpstreamResults(t *testing.T) {
 			cfg := config.ExecutionConfig{}
 			s := &Server{Planner: &mockPlanner{}, ThoughtLLM: gen, ExecCfg: cfg}
 			ex := &executer.DAGExecutor{
-				UseGlobalWorkspace:        gw,
-				WorkspaceStage:            nopWorkspaceStage{},
-				DependencyResultsMaxChars: dependencyResultsMaxChars(cfg.Plan.DependencyResultsMaxChars),
-				ThoughtFn:                 s.thoughtFn(plan),
+				UseGlobalWorkspace: gw,
+				WorkspaceStage:     nopWorkspaceStage{},
+				DependencyFit:      dependencyFit(cfg.Content),
+				ThoughtFn:          s.thoughtFn(plan),
 			}
 			agent := func(_ context.Context, i int, _ *domain.Handoff) (*domain.Handoff, error) {
 				out := map[int]string{0: "ORCHID-4471", 1: "CANYON-9026"}[i]

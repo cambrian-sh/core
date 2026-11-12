@@ -146,15 +146,11 @@ type PlanConfig struct {
 	PlanDriftDays          int     `json:"plan_drift_days"`
 	ContextRefSnippetChars int     `json:"context_ref_snippet_chars"` // default 500
 
-	// DependencyResultsMaxChars caps the upstream results a dependent plan step is
-	// handed inline (domain.StepDependency, the executor's buildStepDependencies), in
-	// bytes across all of its dependencies, for an agent step and an in-kernel thought
-	// step alike: when they are larger, each is shortened to a fair share, marked as
-	// shortened and keeps its content-store cid so the receiver can resolve the rest.
-	// Default 24000 (about 6k tokens); <= 0 reads as the default. Replaces
-	// thought_results_max_chars (2026-11-05, which bounded only the thought step's
-	// request; T-20261105-a-planner-thought-step-that-depends-on-two).
-	DependencyResultsMaxChars int `json:"dependency_results_max_chars,omitempty"`
+	// The upstream-results budget of a dependent step (formerly
+	// dependency_results_max_chars, a fixed 24000-byte head-only cut) is
+	// execution.content: a token budget sized from the receiving worker's prompt
+	// budget (content.go). An explicit dependency_results_max_chars is migrated to
+	// content.dependency_max_bytes on load (relocatedExecutionKey).
 
 	// BudgetExhaustionAlarmRate is the threshold above which PLAN_BUDGET_INSUFFICIENT
 	// signal is emitted. Default: 0.05 (5%). ADR-0018.
@@ -1379,9 +1375,6 @@ const DefaultPlanMaxDurationMs = 1800000
 // time to unwind the cancelled steps and send the partial report back.
 const DefaultCallerDeadlineReserveMs = 5000
 
-// DefaultDependencyResultsMaxChars is the default of plan.dependency_results_max_chars.
-const DefaultDependencyResultsMaxChars = 24000
-
 // KgTripletsLLMFormat values.
 const (
 	KgTripletsFormatCompletion = "completion"
@@ -1454,6 +1447,17 @@ type ToolsConfig struct {
 	// day); 0 disables the history and the notice.
 	DuplicateNoticeWindowMinutes int `json:"duplicate_notice_window_minutes"`
 
+	// RepeatedFailureStop stops a plan step whose worker made the same tool call
+	// (tool and arguments) and got the same error this many times: the failure one
+	// short of it carries a hint, the one at it stops the step, every later call on
+	// the step's lease is refused, and the step's error goes to the re-planner
+	// (domain.StepFailures; owner decision 2026-11-12 on
+	// T-20261112-yield-sub-goal-on-a-composed-lease-runs-under — "2-3 identical
+	// (tool, args, error) failures"; OpenHands' stuck detector uses 3). Counted per
+	// step lease, so heal retries, yielded sub-goals and resumes share it. Default
+	// 3; 0 or 1 disables it.
+	RepeatedFailureStop int `json:"repeated_failure_stop"`
+
 	// ToolRetrievalFloor (ADR-0044) is the minimum cosine similarity for a tool to
 	// be served by semantic retrieval. Below it, "no tool fits" ⇒ an empty menu
 	// (grounding safeguard). 0 ⇒ no floor (any top-k is returned). Tunable.
@@ -1480,7 +1484,10 @@ type ToolsConfig struct {
 	// Default false.
 	RequestGuards bool `json:"request_guards,omitempty"`
 	// WriteTargets says how a side-effecting call's target is read from its
-	// arguments (D14 per-target write record). nil: DefaultWriteTargets.
+	// arguments (D14 per-target write record). Read whether or not RequestGuards
+	// is on: the plan action ledger records every write's target with it, and
+	// coverage settles a write item only by a done write to the item's target
+	// (T-20261112-coverage-settles-a-write-item-on-any-done). nil: DefaultWriteTargets.
 	WriteTargets *WriteTargetsConfig `json:"write_targets,omitempty"`
 	// ConstraintClasses maps each term a checklist constraint may forbid to the
 	// ADR-0086 tool classes it rules out (D14: forbids: send ⇒ every egress tool).
@@ -1507,6 +1514,51 @@ type ToolsConfig struct {
 	// result is recorded as a computed ledger entry with its inputs, so a figure
 	// can cite it. Default false.
 	CalcTools bool `json:"calc_tools,omitempty"`
+	// StagedInputs is how an execution tool (a tool whose MCP policy says
+	// staged_inputs, e.g. the code sandbox) sees a person's files: per call, in a
+	// temporary read-only folder of exactly the inputs the call named, each read
+	// under the caller's access (owner decision 2026-11-10, option C).
+	StagedInputs StagedInputsConfig `json:"staged_inputs"`
+}
+
+// StagedInputsConfig is execution.tools.staged_inputs (internal/stagedinputs).
+// Every size/count uses 0 ⇒ the documented default.
+type StagedInputsConfig struct {
+	// Enabled wires the stager (default true). Off, a staged tool called WITH
+	// inputs is refused; without inputs it runs as before.
+	Enabled bool `json:"enabled"`
+	// Root is the directory per-run folders are created in. "" ⇒
+	// <os temp dir>/cambrian-staged. The tool server must see the same path (a
+	// stdio server on the kernel host does; a docker-runner server does not).
+	Root string `json:"root,omitempty"`
+	// Argument is the inputs argument's name. "" ⇒ "inputs".
+	Argument string `json:"argument,omitempty"`
+	// MaxFiles caps the inputs of one call. 0 ⇒ 20.
+	MaxFiles int `json:"max_files,omitempty"`
+	// MaxTotalBytes caps the staged bytes of one call. 0 ⇒ 64 MiB.
+	MaxTotalBytes int64 `json:"max_total_bytes,omitempty"`
+	// MaxOutputFiles / MaxOutputBytes cap the output files the kernel collects
+	// from one call (files beyond them are named as not kept). 0 ⇒ 20 / 32 MiB
+	// per file.
+	MaxOutputFiles int   `json:"max_output_files,omitempty"`
+	MaxOutputBytes int64 `json:"max_output_bytes,omitempty"`
+	// PathReader is the tool (and its path argument) a path input is read
+	// through, as the caller: grant, scope and ledger apply as to any call.
+	// Default mcp:filesystem/read_text_file, argument "path".
+	PathReader *StagedPathReaderConfig `json:"path_reader,omitempty"`
+	// BinaryPathReader reads a path whose extension is in BinaryExtensions
+	// (its result's base64 blocks are decoded). Default
+	// mcp:filesystem/read_media_file, argument "path".
+	BinaryPathReader *StagedPathReaderConfig `json:"binary_path_reader,omitempty"`
+	// BinaryExtensions are read with BinaryPathReader. nil ⇒ the defaults
+	// (spreadsheets, archives, images, PDF, parquet).
+	BinaryExtensions []string `json:"binary_extensions,omitempty"`
+}
+
+// StagedPathReaderConfig names a file-reading tool and its path argument.
+type StagedPathReaderConfig struct {
+	Tool     string `json:"tool"`
+	Argument string `json:"argument,omitempty"`
 }
 
 // WriteTargetsConfig is execution.tools.write_targets (ADR-0145 D14): rules
@@ -1527,12 +1579,20 @@ type WriteTargetRuleConfig struct {
 // DefaultWriteTargets is the shipped rule set: messages are identified by their
 // recipients; everything else by the record it acts on (a case, request, ticket,
 // account, draft or file). Containers (a project, a folder, a channel list) are
-// not targets: two different issues in one project are two writes.
+// not targets: two different issues in one project are two writes. A move, rename
+// or copy is identified by where it puts the thing — its destination
+// (mcp:filesystem/move_file {source, destination}) — never by its source, so a
+// checklist item's declared target (a folder or a file-name pattern) is matched
+// against what the call produced (T-20261112-write-target-coverage-reads-title-
+// pdf-from-a; before, move_file had no target and any argument, the source too,
+// was matched).
 func DefaultWriteTargets() WriteTargetsConfig {
 	return WriteTargetsConfig{
 		Rules: []WriteTargetRuleConfig{
 			{Tools: []string{"*mail*", "*email*", "*message*", "*reply*", "*sms*", "*notify*"},
 				Keys: []string{"to", "recipient", "recipients", "email", "emails", "address", "phone", "phone_number", "chat_id", "user_id"}},
+			{Tools: []string{"*move*", "*rename*", "*copy*"},
+				Keys: []string{"destination", "dest", "destination_path", "new_path", "target_path", "to_path", "new_name"}},
 		},
 		DefaultKeys: []string{"ref", "reference", "reference_id", "case_id", "case_ref", "case_number", "request_id",
 			"request_ref", "record_id", "record_ref", "ticket_id", "issue_key", "issue_id", "order_id", "invoice_id",
@@ -1931,6 +1991,12 @@ type ExecutionConfig struct {
 	// one runtime, skills and bounded tools) and the D3 SDK evidence re-prompt
 	// (workers.go). Default off.
 	Workers WorkersConfig `json:"workers"`
+
+	// Content is every limit on how much content travels into a model's prompt:
+	// the inline threshold of a tool result, preview and page sizes, the worker's
+	// tool-output cap and prompt budget (served to agents), and the step-dependency
+	// budget (content.go; T-20261112-worker-resolve-cid-inline-has-no-size-cap-a).
+	Content ContentConfig `json:"content"`
 }
 
 // Hook kinds accepted in execution.hooks.entries[].kind (ADR-0139 D11).
@@ -2919,7 +2985,13 @@ type MCPToolConfig struct {
 	// Effects declare the tool's effect classes (ADR-0086 closed set: read,
 	// write, egress, spend, admin). Declared effects win over inference.
 	Effects []string `json:"effects,omitempty"`
-	Pricing struct {
+	// StagedInputs marks an execution tool (the code sandbox's execute_code)
+	// whose `inputs` argument the kernel stages: each ledger id or path is read
+	// under the caller's access and written into a per-run folder the server
+	// mounts read-only for that call only (execution.tools.staged_inputs;
+	// decisions/code-sandbox-files-per-run-mount.md).
+	StagedInputs bool `json:"staged_inputs,omitempty"`
+	Pricing      struct {
 		Kind            string  `json:"kind"`                         // "flat" | "per_unit" | "token"
 		UnitCost        float64 `json:"unit_cost"`                    // $ per unit / per call
 		MaxUnitsPerCall int     `json:"max_units_per_call,omitempty"` // reservation cap
@@ -2977,7 +3049,6 @@ func DefaultConfig() *Config {
 				MaxPartialContextBytes:      51200,
 				PlanDriftDays:               7,
 				ContextRefSnippetChars:      500,
-				DependencyResultsMaxChars:   DefaultDependencyResultsMaxChars,
 				BudgetExhaustionAlarmRate:   0.05,
 				MinStepEnergy:               256,
 				MaxStepEnergy:               32768,
@@ -3210,6 +3281,11 @@ func DefaultConfig() *Config {
 				// T-20261107-chat-agent-re-delegates-after-a-deterministic (part 2).
 				MaxUnroutableApprovalsPerRun: 3,
 				DuplicateNoticeWindowMinutes: 1440,
+				RepeatedFailureStop:          3,
+				// Option C (owner 2026-11-10): on by default. It acts only on a
+				// tool whose policy declares staged_inputs, reads only what the
+				// caller could read, and deletes each folder after its call.
+				StagedInputs: StagedInputsConfig{Enabled: true},
 			},
 			Supervision: SupervisionConfig{
 				ProfileAggregatorIntervalSeconds: 300,
@@ -3861,6 +3937,9 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	if c.Tools.DuplicateNoticeWindowMinutes < 0 {
 		errs = append(errs, "duplicate_notice_window_minutes must be >= 0 (0 disables the duplicate notice)")
 	}
+	if c.Tools.RepeatedFailureStop < 0 {
+		errs = append(errs, "repeated_failure_stop must be >= 0 (0 or 1 disables it)")
+	}
 	if c.Plan.CallerDeadlineReserveMs < 0 {
 		errs = append(errs, "caller_deadline_reserve_ms must be >= 0 (0 disables it)")
 	}
@@ -4027,6 +4106,7 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	errs = append(errs, c.Skills.validate()...)
 	errs = append(errs, c.Schedules.validate()...)
 	errs = append(errs, c.Ledger.validate()...)
+	errs = append(errs, c.Content.validate()...)
 	errs = append(errs, c.Chat.validateGrounding(c.Ledger.Enabled)...)
 	errs = append(errs, c.Workers.validate(c.Ledger.Enabled)...)
 	if c.Plan.ChecklistEnabled && !c.Ledger.Enabled {

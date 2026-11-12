@@ -110,7 +110,7 @@ func TestCompose_StepGetsExactlyTheAllowedToolsAndSelectedSkills(t *testing.T) {
 	in := stepHandoff("lease-1")
 	ctx := domain.WithLedgerProvenance(context.Background(), domain.LedgerProvenance{RunID: "run-1", StepIndex: -1})
 
-	rt, comp, ok := c.Compose(ctx, task, scored[0], scored, in)
+	rt, comp, ok, _ := c.Compose(ctx, task, scored[0], scored, in)
 	if !ok || rt.Agent.ID != "composed_worker" {
 		t.Fatalf("not composed onto the runtime: ok=%v rt=%v", ok, rt.Agent.ID)
 	}
@@ -160,7 +160,7 @@ func TestCompose_WriteStepGetsItsWriteTool(t *testing.T) {
 	task := &domain.DispatchTask{ID: "t", Description: "save the report", RequiredCapabilities: []string{"file_write"},
 		RequiredEffects: []string{"write"}}
 	w := domain.ScoredCandidate{Agent: profileAgent("assistant")}
-	_, comp, ok := c.Compose(context.Background(), task, w, []domain.ScoredCandidate{w}, stepHandoff("lease-w"))
+	_, comp, ok, _ := c.Compose(context.Background(), task, w, []domain.ScoredCandidate{w}, stepHandoff("lease-w"))
 	if want := []string{"mcp:fs/read_file", "mcp:fs/write_file"}; !ok || !reflect.DeepEqual(comp.Tools, want) {
 		t.Fatalf("tools = %v (ok=%v), want %v", comp.Tools, ok, want)
 	}
@@ -170,7 +170,7 @@ func TestCompose_NoCapabilities_UsesTheWinnerProfessionOnly(t *testing.T) {
 	c, _ := fixture(t)
 	task := &domain.DispatchTask{ID: "t", Description: "x"}
 	scored := []domain.ScoredCandidate{{Agent: profileAgent("researcher")}, {Agent: profileAgent("assistant")}}
-	_, comp, ok := c.Compose(context.Background(), task, scored[0], scored, stepHandoff("lease-n"))
+	_, comp, ok, _ := c.Compose(context.Background(), task, scored[0], scored, stepHandoff("lease-n"))
 	if !ok || !reflect.DeepEqual(comp.Professions, []string{"researcher"}) {
 		t.Fatalf("composition = %+v", comp)
 	}
@@ -180,7 +180,7 @@ func TestCompose_CodeOrServiceAgentIsNotComposed(t *testing.T) {
 	c, led := fixture(t)
 	w := domain.ScoredCandidate{Agent: domain.AgentDefinition{ID: "docling_agent"}} // no profile
 	in := stepHandoff("lease-b")
-	if _, _, ok := c.Compose(context.Background(), &domain.DispatchTask{ID: "t"}, w, []domain.ScoredCandidate{w}, in); ok {
+	if _, _, ok, _ := c.Compose(context.Background(), &domain.DispatchTask{ID: "t"}, w, []domain.ScoredCandidate{w}, in); ok {
 		t.Fatal("a code/service agent was composed")
 	}
 	if _, bound := c.Leases.For("lease-b"); bound || len(led.recs) != 0 || in.Context[domain.HandoffKeyComposition] != "" {
@@ -191,11 +191,11 @@ func TestCompose_CodeOrServiceAgentIsNotComposed(t *testing.T) {
 func TestCompose_RefusesWithoutALeaseOrRuntime(t *testing.T) {
 	c, _ := fixture(t)
 	w := domain.ScoredCandidate{Agent: profileAgent("researcher")}
-	if _, _, ok := c.Compose(context.Background(), &domain.DispatchTask{ID: "t"}, w, nil, &domain.Handoff{Context: map[string]string{}}); ok {
+	if _, _, ok, _ := c.Compose(context.Background(), &domain.DispatchTask{ID: "t"}, w, nil, &domain.Handoff{Context: map[string]string{}}); ok {
 		t.Fatal("composed without a lease to bind to")
 	}
 	c.RuntimeID = "missing"
-	if _, _, ok := c.Compose(context.Background(), &domain.DispatchTask{ID: "t"}, w, nil, stepHandoff("lease-r")); ok {
+	if _, _, ok, _ := c.Compose(context.Background(), &domain.DispatchTask{ID: "t"}, w, nil, stepHandoff("lease-r")); ok {
 		t.Fatal("composed onto an unregistered runtime")
 	}
 }
@@ -204,7 +204,7 @@ func TestCompose_DoesNotRecomposeALeaseThatAlreadyCarriesOne(t *testing.T) {
 	c, led := fixture(t)
 	w := domain.ScoredCandidate{Agent: profileAgent("researcher")}
 	task := &domain.DispatchTask{ID: "t", Description: "x"}
-	if _, _, ok := c.Compose(context.Background(), task, w, nil, stepHandoff("lease-y")); !ok {
+	if _, _, ok, _ := c.Compose(context.Background(), task, w, nil, stepHandoff("lease-y")); !ok {
 		t.Fatal("first composition failed")
 	}
 	// A second dispatch on the same lease (a heal retry, a yield sub-goal) runs on
@@ -212,7 +212,7 @@ func TestCompose_DoesNotRecomposeALeaseThatAlreadyCarriesOne(t *testing.T) {
 	// selected profile agent (T-20261109-a-plan-step-is-re-dispatched-to-a-legacy-agent).
 	a := domain.ScoredCandidate{Agent: profileAgent("assistant")}
 	in := stepHandoff("lease-y")
-	rt, comp, ok := c.Compose(context.Background(), task, a, nil, in)
+	rt, comp, ok, _ := c.Compose(context.Background(), task, a, nil, in)
 	if !ok || rt.Agent.ID != c.RuntimeID {
 		t.Fatalf("a re-dispatch on a composed lease left the runtime: ok=%v agent=%q", ok, rt.Agent.ID)
 	}
@@ -229,9 +229,9 @@ func TestCompose_SkillCapAndDeterministicID(t *testing.T) {
 	c.MaxSkills = 1
 	task := &domain.DispatchTask{ID: "t", Description: "x", RequiredCapabilities: []string{"research"}}
 	scored := []domain.ScoredCandidate{{Agent: profileAgent("researcher")}, {Agent: profileAgent("analyst")}}
-	_, a, _ := c.Compose(context.Background(), task, scored[0], scored, stepHandoff("l1"))
+	_, a, _, _ := c.Compose(context.Background(), task, scored[0], scored, stepHandoff("l1"))
 	// Same step, candidates in another order, another lease: same composition.
-	_, b, _ := c.Compose(context.Background(), task, scored[1], []domain.ScoredCandidate{scored[1], scored[0]}, stepHandoff("l2"))
+	_, b, _, _ := c.Compose(context.Background(), task, scored[1], []domain.ScoredCandidate{scored[1], scored[0]}, stepHandoff("l2"))
 	if len(a.Skills) != 1 || a.Skills[0] != "exploratory-analysis" {
 		t.Fatalf("cap not applied in name order: %v", a.Skills)
 	}

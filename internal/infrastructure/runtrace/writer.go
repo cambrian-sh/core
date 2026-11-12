@@ -79,15 +79,26 @@ type record struct {
 	SchemaFamily string         `json:"schema"`
 }
 
-// Span appends one span. Never fails the caller: an error is logged once and
-// tracing stops for this writer.
+// Span appends one span — or, with s.Phase == domain.TracePhaseStart, the start
+// event of one: same span id as the finished span that follows, the request
+// attributes, "cambrian.phase": "start" and end_time_unix_nano 0. Every line is
+// flushed as it is written, so a follower of the file sees a call the moment it
+// starts. Never fails the caller: an error is logged once and tracing stops for
+// this writer.
 func (w *Writer) Span(ctx context.Context, s domain.TraceSpan) {
 	if w == nil {
 		return
 	}
-	attrs := make(map[string]any, len(s.Attributes)+6)
+	ctxAttrs := domain.TraceAttributesFromContext(ctx)
+	attrs := make(map[string]any, len(s.Attributes)+len(ctxAttrs)+7)
+	for k, v := range ctxAttrs {
+		attrs[k] = v
+	}
 	for k, v := range s.Attributes {
 		attrs[k] = v
+	}
+	if s.Phase != "" {
+		attrs[domain.TraceAttrPhase] = s.Phase
 	}
 	session, _ := domain.SessionIDFromContext(ctx)
 	if session != "" {
@@ -120,6 +131,14 @@ func (w *Writer) Span(ctx context.Context, s domain.TraceSpan) {
 	if start.IsZero() {
 		start = end
 	}
+	var endNs int64
+	if s.Phase != domain.TracePhaseStart {
+		endNs = end.UnixNano() // a start event has no end yet: 0
+	}
+	spanID := s.SpanID
+	if spanID == "" {
+		spanID = randomHex(8)
+	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -147,11 +166,11 @@ func (w *Writer) Span(ctx context.Context, s domain.TraceSpan) {
 	}
 	rec := record{
 		TraceID:     traceID(session),
-		SpanID:      randomHex(8),
+		SpanID:      spanID,
 		Name:        s.Name,
 		Kind:        kind,
 		StartUnixNs: start.UnixNano(),
-		EndUnixNs:   end.UnixNano(),
+		EndUnixNs:   endNs,
 		Attributes:  bound(attrs, w.maxChars).(map[string]any),
 		Status:      status,
 		Resource:    map[string]any{"service.name": w.service},

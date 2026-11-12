@@ -90,8 +90,9 @@ func newHealthGenerator(id string, inner domain.Generator, breaker *CircuitBreak
 
 func (h *healthGenerator) Generate(ctx context.Context, prompt string) (string, error) {
 	out, err := h.inner.Generate(ctx, prompt)
-	ok := err == nil && strings.TrimSpace(out) != ""
-	h.breaker.Record(h.id, ok)
+	if !isRequestFault(err) {
+		h.breaker.Record(h.id, err == nil && strings.TrimSpace(out) != "")
+	}
 	return out, err
 }
 
@@ -123,8 +124,9 @@ func (h *healthGenerator) GenerateWithTools(
 	out, err := tg.GenerateWithTools(ctx, messages, tools)
 	// Same health signal as Generate: a turn that produced neither text nor a tool
 	// call is a failed call, even without an error.
-	ok = err == nil && (strings.TrimSpace(out.Text) != "" || len(out.ToolCalls) > 0)
-	h.breaker.Record(h.id, ok)
+	if !isRequestFault(err) {
+		h.breaker.Record(h.id, err == nil && (strings.TrimSpace(out.Text) != "" || len(out.ToolCalls) > 0))
+	}
 	return out, err
 }
 
@@ -180,7 +182,7 @@ func (h *healthGenerator) GenerateRequest(ctx context.Context, req domain.Genera
 		return domain.GenerateResponse{}, fmt.Errorf("llm provider: health-wrapped %T does not implement GenerateRequest", h.inner)
 	}
 	out, err := rg.GenerateRequest(ctx, req)
-	if !errors.Is(err, domain.ErrUnsupported) {
+	if !isRequestFault(err) {
 		h.breaker.Record(h.id, err == nil && (strings.TrimSpace(out.Text) != "" || len(out.ToolCalls) > 0))
 	}
 	return out, err
@@ -194,7 +196,7 @@ func (h *healthGenerator) StreamRequest(ctx context.Context, req domain.Generate
 	}
 	in, err := rg.StreamRequest(ctx, req)
 	if err != nil {
-		if !errors.Is(err, domain.ErrUnsupported) {
+		if !isRequestFault(err) {
 			h.breaker.Record(h.id, false)
 		}
 		return nil, err
@@ -202,14 +204,18 @@ func (h *healthGenerator) StreamRequest(ctx context.Context, req domain.Generate
 	out := make(chan domain.StreamChunk, 64)
 	go func() {
 		defer close(out)
-		var hadContent bool
+		var hadContent, fault bool
 		for c := range in {
-			if c.Text != "" || (c.Response != nil && len(c.Response.ToolCalls) > 0) {
+			if c.Err != nil {
+				fault = isRequestFault(c.Err)
+			} else if c.Text != "" || (c.Response != nil && len(c.Response.ToolCalls) > 0) {
 				hadContent = true
 			}
 			out <- c
 		}
-		h.breaker.Record(h.id, hadContent)
+		if !fault {
+			h.breaker.Record(h.id, hadContent)
+		}
 	}()
 	return out, nil
 }
@@ -230,4 +236,13 @@ func capabilitiesOf(v any) domain.Capabilities {
 		return rg.Capabilities()
 	}
 	return domain.Capabilities{}
+}
+
+// isRequestFault reports a failure that is the REQUEST's, not the endpoint's: a
+// field the model cannot honour (domain.ErrUnsupported) or a prompt over its context
+// window (domain.ErrContextOverflow). Neither is a health event — recording it would
+// open the breaker on a healthy model because one caller sent too much
+// (T-20261112-worker-resolve-cid-inline-has-no-size-cap-a).
+func isRequestFault(err error) bool {
+	return errors.Is(err, domain.ErrUnsupported) || errors.Is(err, domain.ErrContextOverflow)
 }

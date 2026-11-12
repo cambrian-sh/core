@@ -22,6 +22,12 @@ func TestWorkersConfig_DefaultsAndValidation(t *testing.T) {
 	if errs := (WorkersConfig{RuntimeAgentID: "Bad Id", MaxSkills: -1}).validate(true); len(errs) != 2 {
 		t.Fatalf("bad id and negative cap: %v", errs)
 	}
+	if errs := (WorkersConfig{MaxToolRounds: -1}).validate(true); len(errs) != 1 || !strings.Contains(errs[0], "max_tool_rounds") {
+		t.Fatalf("negative tool budget: %v", errs)
+	}
+	if DefaultConfig().Execution.Workers.MaxToolRounds != 0 {
+		t.Fatal("DefaultConfig must leave the composed runtime's default tool budget")
+	}
 	if DefaultConfig().Execution.Workers.Composed {
 		t.Fatal("DefaultConfig turns composed workers on")
 	}

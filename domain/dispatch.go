@@ -119,4 +119,15 @@ type DispatchTask struct {
 	// candidate funnel travels with the auction result. Nil when routing tracing
 	// is disabled.
 	Funnel *GatekeeperFunnel `json:"-"`
+
+	// Subgoal marks a yielded sub-goal (internal/metabolism/yield): dispatched on
+	// its parent step's lease, so on a composed lease it would run under the
+	// parent's composition. The composer refuses one whose capability hint that
+	// composition does not cover (CapabilityMissingError) instead of handing it to
+	// a worker with the same tools (T-20261112-yield-sub-goal-on-a-composed-lease-runs-under).
+	Subgoal bool `json:"-"`
+	// CapabilityResolution is a diagnostic OUTPUT written by
+	// Gatekeeper.FindCandidates when it resolved RequiredCapabilities against the
+	// live vocabulary (ADR-0100 D5); nil when it ran no resolution.
+	CapabilityResolution *CapabilityResolution `json:"-"`
 }

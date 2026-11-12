@@ -318,3 +318,119 @@ func TestEnvelope_RepairTurnIsHandedTheStepsEarlierReads(t *testing.T) {
 		t.Fatalf("R1 = %+v", st)
 	}
 }
+
+// T-20261109-plan-identifies-4-october-receipts-but-the-move: an ordinary step that
+// consumes fan-out children hands their members to coverage (SetMembers), so a write
+// over the set needs one done write per member.
+func TestFanOutDependencyMembers(t *testing.T) {
+	plan := &domain.ExecutionPlan{Steps: []domain.Step{
+		{}, {FanOutItem: "a.pdf"}, {FanOutItem: "b.pdf"}, {DependsOn: []int{0, 1, 2, 9}}, {FanOutItem: "c.pdf", DependsOn: []int{1}},
+	}}
+	if got := fanOutDependencyMembers(plan, plan.Steps[3]); len(got) != 2 || got[0] != "a.pdf" || got[1] != "b.pdf" {
+		t.Fatalf("members = %v", got)
+	}
+	if got := fanOutDependencyMembers(plan, plan.Steps[4]); got != nil {
+		t.Fatalf("a fan-out child is its own member, not a set consumer: %v", got)
+	}
+}
+
+// T-20261112-d6-rejects-a-list-value-sent-as-a-json-array: a violation that came
+// back unchanged after a repair turn is not repaired again in the request (a later
+// coverage stage's step with the same violation gets no repair turn); a different
+// violation still gets one.
+func TestEnvelope_NoSecondIdenticalRepairTurn(t *testing.T) {
+	led := newRunLedger()
+	cl := &domain.RequirementChecklist{Items: []domain.RequirementItem{{ID: "R1", Type: domain.RequirementFigure, Text: "the total"}}}
+	cov := requirements.NewCoverage(*cl)
+	reqs := NewStepRequirements(cl, cov, nil)
+	d := &DAGExecutor{Ledger: led, LedgerReader: led, CurrentRunID: "run-1", Requirements: reqs}
+	calls := 0
+	name := "total"
+	stepFn := func(_ context.Context, i int, h *domain.Handoff) (*domain.Handoff, error) {
+		calls++
+		ref := led.addToolResult("run-1", 0, "ar_total", `{"total": 1330.5}`)
+		return &domain.Handoff{Payload: &domain.Payload{Data: envelope(t, "1400",
+			domain.ItemResult{Item: "R1", Status: domain.RequirementSatisfied, Values: []domain.EnvelopeValue{
+				value(name, domain.ValueMoney, "1400.00", ref)}})}}, nil
+	}
+	plan := func() *domain.ExecutionPlan {
+		return &domain.ExecutionPlan{Steps: []domain.Step{{Query: "total", Answers: []string{"R1"}, RequiredEffects: []string{"read"}}}}
+	}
+	if _, err := d.Execute(context.Background(), plan(), nil, stepFn); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("stage 1: want the step and one repair turn, got %d calls", calls)
+	}
+	reqs.ResetStage()
+	calls = 0
+	if _, err := d.Execute(context.Background(), plan(), nil, stepFn); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("stage 2: the same violation survived a repair; want no repair turn, got %d calls", calls)
+	}
+	if st := stateOf(cov, "R1"); st.Status != domain.RequirementOpen || !strings.Contains(st.Reason, "does not appear") {
+		t.Fatalf("R1 must stay open with the reason: %+v", st)
+	}
+	// A different violation (another value) is repaired as usual.
+	reqs.ResetStage()
+	calls, name = 0, "grand_total"
+	if _, err := d.Execute(context.Background(), plan(), nil, stepFn); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("a new violation must get its repair turn, got %d calls", calls)
+	}
+}
+
+// T-20261112-staged-planner-binds-earlier-stage-results-with: an e<K> input of a
+// later stage resolves, in code, to the earlier stage's step output and the values
+// it returned under the bound name, and that output is citable evidence.
+func TestEnvelope_EarlierStageReferenceResolvesToItsOutputAndValues(t *testing.T) {
+	led := newRunLedger()
+	cl := &domain.RequirementChecklist{Items: []domain.RequirementItem{
+		{ID: "R1", Type: domain.RequirementAnswer, Text: "the suppliers"},
+		{ID: "R2", Type: domain.RequirementAnswer, Text: "the cheapest supplier"},
+	}}
+	cov := requirements.NewCoverage(*cl)
+	reqs := NewStepRequirements(cl, cov, nil)
+	d := &DAGExecutor{Ledger: led, LedgerReader: led, CurrentRunID: "run-1", Requirements: reqs}
+	var src string
+	stage1 := func(_ context.Context, i int, h *domain.Handoff) (*domain.Handoff, error) {
+		src = led.addToolResult("run-1", 0, "suppliers_list", `{"suppliers":["Acme","Borealis"]}`)
+		return &domain.Handoff{Payload: &domain.Payload{Data: envelope(t, "Acme, Borealis",
+			domain.ItemResult{Item: "R1", Status: domain.RequirementSatisfied, Values: []domain.EnvelopeValue{
+				value("supplier", domain.ValueString, "Acme", src), value("supplier", domain.ValueString, "Borealis", src)}})}}, nil
+	}
+	if _, err := d.Execute(context.Background(), &domain.ExecutionPlan{Steps: []domain.Step{
+		{Query: "list suppliers", Answers: []string{"R1"}}}}, nil, stage1); err != nil {
+		t.Fatal(err)
+	}
+	// The server labels stage 1's step 0 e1 (with its output's ledger ref) and
+	// archives it before the next stage's indices restart.
+	reqs.ArchiveStage([]domain.EarlierResult{{Label: "e1", Stage: 1, Step: 0, Ref: "led_stage1_out"}})
+	reqs.ResetStage()
+	d.CurrentRunID = "run-1-s2" // the next stage records under its own run id
+	var got string
+	stage2 := func(_ context.Context, i int, h *domain.Handoff) (*domain.Handoff, error) {
+		got = h.Context[domain.HandoffKeyStepInputs]
+		return &domain.Handoff{Payload: &domain.Payload{Data: envelope(t, "Acme",
+			domain.ItemResult{Item: "R2", Status: domain.RequirementSatisfied, Values: []domain.EnvelopeValue{
+				value("cheapest", domain.ValueString, "Acme", src)}})}}, nil
+	}
+	if _, err := d.Execute(context.Background(), &domain.ExecutionPlan{Steps: []domain.Step{
+		{Query: "pick the cheapest", Answers: []string{"R2"}, Inputs: []string{"e1.supplier[*]"}}}}, nil, stage2); err != nil {
+		t.Fatal(err)
+	}
+	var in []domain.StepInputValue
+	if err := json.Unmarshal([]byte(got), &in); err != nil || len(in) != 1 {
+		t.Fatalf("step inputs = %q (%v)", got, err)
+	}
+	if in[0].Binding != "e1.supplier[*]" || in[0].Stage != 1 || in[0].Step != 0 || in[0].Ref != "led_stage1_out" || len(in[0].Values) != 2 {
+		t.Fatalf("e1 resolved to %+v", in[0])
+	}
+	if st := stateOf(cov, "R2"); st.Status != domain.RequirementSatisfied {
+		t.Fatalf("the earlier stage's evidence must be citable through the e1 input: %+v", st)
+	}
+}

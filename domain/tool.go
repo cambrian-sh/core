@@ -56,6 +56,12 @@ type SystemTool struct {
 	// not evidence of what the tool does, so effect-checked dispatch derives nothing
 	// from such a tool (domain/step_effects.go).
 	EffectsDefaulted bool
+
+	// StagedInputs marks an execution tool (the code sandbox's execute_code) whose
+	// `inputs` argument the kernel resolves under the caller's access and stages
+	// into a per-run read-only folder for that one call (operator policy
+	// staged_inputs; domain/staged_inputs.go). False for every other tool.
+	StagedInputs bool
 }
 
 // ToolGrant authorizes one agent to call one tool, bounded by a resource policy
@@ -89,6 +95,10 @@ type ToolCall struct {
 	ToolName string
 	ArgsJSON []byte
 	Policy   ToolResourcePolicy // passed for in-handler confinement (backstop, not the gate)
+	// Meta is request metadata only the executor sets (the staged-inputs folders,
+	// domain/staged_inputs.go); the MCP handler sends it as the request's _meta.
+	// Never built from model-written arguments. nil ⇒ none.
+	Meta map[string]any
 }
 
 // ToolHandler executes an already-authorized tool call. The real implementation

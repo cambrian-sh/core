@@ -16,7 +16,7 @@ import (
 // stable system block (cached), and thought_synthesis_input, the user message carrying
 // the goal, the task and the results as tagged data. The results are the executor's
 // domain.StepDependency manifest (handoff metadata domain.HandoffKeyStepDependencies):
-// in DependsOn order, already bounded by execution.plan.dependency_results_max_chars,
+// in DependsOn order, already bounded by execution.content (dependencyFit),
 // each with its step index, objective, status and content — the same structure an SDK
 // agent step receives, so a dependent step sees the same upstream results whichever
 // executor runs it (T-20261105-a-planner-thought-step-that-depends-on-two).
@@ -27,20 +27,18 @@ const (
 )
 
 // thoughtDataTags are the data regions of thought_synthesis_input.
-var thoughtDataTags = []string{"goal", "today", "task", "results", "result", "objective", "content", "error"}
+var thoughtDataTags = []string{"goal", "today", "task", "results", "result", "objective", "content", "outline", "error"}
 
 // thoughtNoResults fills the results region of a thought step that depends on no
 // earlier step, so the model is told there is nothing upstream rather than shown an
 // empty region it could read as "the results went missing".
 const thoughtNoResults = "(none: this step depends on no earlier step)"
 
-// dependencyResultsMaxChars resolves execution.plan.dependency_results_max_chars:
-// <= 0 reads as the config default.
-func dependencyResultsMaxChars(v int) int {
-	if v <= 0 {
-		return config.DefaultDependencyResultsMaxChars
-	}
-	return v
+// dependencyFit resolves the step-dependency bound from execution.content: a
+// token budget sized from the receiving worker's prompt budget, as bytes, capped by
+// dependency_max_bytes when set, with ledger_get's page size for the outline.
+func dependencyFit(c config.ContentConfig) domain.DependencyFit {
+	return domain.DependencyFit{BudgetBytes: c.DependencyBudgetBytes(), PageBytes: c.Page()}
 }
 
 // thoughtGenerator is the generator a thought step is served by: ThoughtLLM (the
@@ -94,12 +92,17 @@ func renderThoughtResults(deps []domain.StepDependency) string {
 		case d.Status != domain.StepDependencyCompleted:
 			// Nothing to show; the status says why.
 		case d.Shortened:
-			ref := "no content id, the rest cannot be retrieved"
-			if d.CID != "" {
-				ref = "full result cid " + d.CID
+			// The thought step has no tools, so the omitted middle cannot be read:
+			// it is told plainly what it is NOT seeing (beginning, end, outline).
+			fmt.Fprintf(&rb, "<content>\n%s\n[… bytes %d–%d of %d are not shown here …]\n%s\n</content>\n",
+				esc(d.Content), d.OmittedFrom, d.OmittedTo, d.Bytes, esc(d.Tail))
+			if len(d.Outline) > 0 {
+				rb.WriteString("<outline>\n")
+				for _, h := range d.Outline {
+					fmt.Fprintf(&rb, "%s (page %d)\n", esc(h.Heading), h.Page)
+				}
+				rb.WriteString("</outline>\n")
 			}
-			fmt.Fprintf(&rb, "<content>\n%s\n[shortened: %d of %d characters shown; %s]\n</content>\n",
-				esc(d.Content), len(d.Content), d.Bytes, ref)
 		default:
 			fmt.Fprintf(&rb, "<content>\n%s\n</content>\n", esc(d.Content))
 		}

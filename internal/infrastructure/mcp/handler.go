@@ -84,7 +84,13 @@ func (h *Handler) Execute(ctx context.Context, call domain.ToolCall) ([]byte, er
 		ctx, cancel = context.WithTimeout(ctx, h.CallTimeout)
 		defer cancel()
 	}
-	res, err := sess.CallTool(ctx, &mcpsdk.CallToolParams{Name: toolName, Arguments: args})
+	params := &mcpsdk.CallToolParams{Name: toolName, Arguments: args}
+	if len(call.Meta) > 0 {
+		// Executor-set metadata only (domain.ToolCall.Meta: the staged-inputs
+		// folders); model-written arguments never reach _meta.
+		params.Meta = mcpsdk.Meta(call.Meta)
+	}
+	res, err := sess.CallTool(ctx, params)
 	// A transport failure retires a per-principal session (its process or
 	// connection is suspect); a tool-level error (res.IsError) does not.
 	release(err != nil && ctx.Err() == nil)
