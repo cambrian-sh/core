@@ -13,6 +13,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 )
 
 // The differential guard against Go/SQL drift in the access predicate
@@ -127,13 +128,15 @@ func TestPg_FenceDifferential(t *testing.T) {
 		`CREATE TEMP TABLE fence_ref (id text PRIMARY KEY, evidence_id text NOT NULL)`,
 		`CREATE TEMP TABLE fence_items (id text PRIMARY KEY, classification text[] NOT NULL)`,
 		`CREATE TEMP TABLE fence_docs (id text PRIMARY KEY, metadata jsonb NOT NULL)`,
+		// ADR-0149 P4: an object table property's companions; tags may be NULL.
+		`CREATE TEMP TABLE fence_objects (id text PRIMARY KEY, p__tags text[], p__parties text[])`,
 	} {
 		if _, err := conn.Exec(ctx, ddl); err != nil {
 			t.Fatalf("%s: %v", ddl, err)
 		}
 	}
 	defer func() {
-		_, _ = conn.Exec(ctx, `DROP TABLE IF EXISTS pg_temp.evidence, pg_temp.fence_ref, pg_temp.fence_items, pg_temp.fence_docs`) // best-effort: the session ends with the test anyway
+		_, _ = conn.Exec(ctx, `DROP TABLE IF EXISTS pg_temp.evidence, pg_temp.fence_ref, pg_temp.fence_items, pg_temp.fence_docs, pg_temp.fence_objects`) // best-effort: the session ends with the test anyway
 	}()
 
 	query := func(q string, args []any) ([]string, error) {
@@ -155,10 +158,11 @@ func TestPg_FenceDifferential(t *testing.T) {
 	}
 
 	rapid.Check(t, func(rt *rapid.T) {
-		if _, err := conn.Exec(ctx, `TRUNCATE pg_temp.evidence, pg_temp.fence_ref, pg_temp.fence_items, pg_temp.fence_docs`); err != nil {
+		if _, err := conn.Exec(ctx, `TRUNCATE pg_temp.evidence, pg_temp.fence_ref, pg_temp.fence_items, pg_temp.fence_docs, pg_temp.fence_objects`); err != nil {
 			rt.Fatalf("truncate: %v", err)
 		}
 		var rows []fenceRow
+		objectNull := map[string]bool{}
 		for i, n := 0, rapid.IntRange(1, 10).Draw(rt, "rows"); i < n; i++ {
 			r := fenceRow{
 				id:      fmt.Sprintf("r%d", i),
@@ -175,6 +179,7 @@ func TestPg_FenceDifferential(t *testing.T) {
 				{`INSERT INTO fence_ref VALUES ($1,$1)`, []any{r.id}},
 				{`INSERT INTO fence_items VALUES ($1,$2)`, []any{r.id, tags}},
 				{`INSERT INTO fence_docs VALUES ($1,$2)`, []any{r.id, map[string]any{"tags": tags}}},
+				{`INSERT INTO fence_objects VALUES ($1,$2,$3)`, objectRowArgs(rt, r, objectNull)},
 			} {
 				if _, err := conn.Exec(ctx, q.sql, q.args...); err != nil {
 					rt.Fatalf("seed %s: %v", r.id, err)
@@ -182,6 +187,32 @@ func TestPg_FenceDifferential(t *testing.T) {
 			}
 		}
 		p := drawPredicate(rt, "pred", 0)
+
+		// ADR-0149 P4: the object-property shape is CheckRow's mirror over the
+		// companions, and a NULL tags column is visible only to ScopeMaintenance.
+		{
+			body, fargs := sqlfence.ObjectProperty("p__tags", "p__parties").Expr(p, 0)
+			q := `SELECT id FROM fence_objects WHERE ` + body
+			got, err := query(q, fargs)
+			if err != nil {
+				rt.Fatalf("object property: %v\n%s", err, q)
+			}
+			want := []string{}
+			for _, row := range rows {
+				ok := p.Unfiltered()
+				if !ok && !objectNull[row.id] {
+					_, ok = p.CheckRow(row.tags, row.parties)
+				}
+				if ok {
+					want = append(want, row.id)
+				}
+			}
+			sort.Strings(want)
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				rt.Fatalf("Go/SQL divergence on object property\npredicate: %+v\nrows: %+v nulls: %v\nSQL admits: %v\nGo admits:  %v\nsql: %s\nargs: %#v",
+					*p, rows, objectNull, got, want, q, fargs)
+			}
+		}
 
 		for _, r := range fenceRenderers() {
 			var q string
@@ -225,4 +256,14 @@ func TestPg_FenceDifferential(t *testing.T) {
 			}
 		}
 	})
+}
+
+// objectRowArgs seeds one fence_objects row for r: its tags and parties, or —
+// drawn — NULL tags (a value with no classification), recorded in null.
+func objectRowArgs(t *rapid.T, r fenceRow, null map[string]bool) []any {
+	if rapid.Bool().Draw(t, r.id+":null-tags") {
+		null[r.id] = true
+		return []any{r.id, nil, nil}
+	}
+	return []any{r.id, nonNil(r.tags), nonNil(r.parties)}
 }

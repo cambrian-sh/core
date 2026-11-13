@@ -10,6 +10,7 @@ import (
 	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/evidence"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
+	"github.com/cambrian-sh/core/internal/objects"
 	"github.com/cambrian-sh/core/internal/ontology"
 )
 
@@ -33,6 +34,15 @@ type Substrate struct {
 	Entities  *postgres.PgEntityStore
 	Links     *postgres.PgLinkStore
 	Query     *postgres.PgQueryPlane
+	// Objects reads the per-kind object tables (ADR-0149 D6 ListObjects, D7
+	// GetObject); plugins reach it only through ObjectsSeam.
+	Objects *objects.Reader
+}
+
+// ObjectsSeam is the plugin seam over s.Objects (KernelServices.Objects): it
+// runs as a principal whose predicate authorizer resolves.
+func (s *Substrate) ObjectsSeam(authorizer domain.Authorizer) domain.Objects {
+	return authz.ScopedObjects(authorizer, s.Objects, slog.Default())
 }
 
 // NewSubstrate composes the substrate over pool. kinds yields the knowledge kind
@@ -49,6 +59,7 @@ func NewSubstrate(pool *pgxpool.Pool, kinds domain.KindSource, relations domain.
 		Links:     postgres.NewPgLinkStore(pool, relations),
 	}
 	s.Query = postgres.NewPgQueryPlane(pool, s.Events, s.Knowledge, s.Evidence, s.Links, s.Entities, relations)
+	s.Objects = objects.NewReader(pool, kinds, relations)
 	return s
 }
 

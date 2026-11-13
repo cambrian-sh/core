@@ -59,6 +59,11 @@ mappings=(
     # against. Regenerate on the Go side with:
     #   go test ./internal/memory/ -run TestChunkerGolden -update-golden
     "$core/internal/memory/testdata/chunker_golden.json|$root/cambrian-benchmarks/src/cambrian_bench/suites/chunking/testdata/chunker_golden.json"
+    # Same pattern for the objects planner (ADR-0149 P4): the harness times the
+    # SQL core renders through a Python port of internal/objects/plan.go, held to
+    # it by tests/test_p4plan_parity.py against this golden. Regenerate with:
+    #   go test ./internal/objects/ -run TestPlan_Golden -update-plans
+    "$core/internal/objects/testdata/plan.golden|$root/cambrian-benchmarks/src/cambrian_bench/objstate/testdata/plan.golden"
 )
 
 drift=0

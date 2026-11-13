@@ -167,6 +167,13 @@ type StandingQuery struct {
 	Scope string
 	// IncludeInactive also returns revoked and expired grants.
 	IncludeInactive bool
+	// At is the instant "expired" is judged at; zero means the store's now.
+	// AddressedHub always sets it from its own clock, so the list agrees with
+	// the pre-approval check (which uses that clock) instead of the store's wall
+	// clock — they disagreed under an injected clock, and
+	// TestHub_OneTimeVsStandingRevokeAndExpiry failed once real time passed the
+	// grant's expiry.
+	At time.Time
 }
 
 // ErrApprovalNotFound: no approval with that id.
@@ -320,7 +327,10 @@ func (m *MemoryApprovalStore) GetStanding(_ context.Context, id string) (Standin
 func (m *MemoryApprovalStore) ListStanding(_ context.Context, q StandingQuery) ([]StandingApproval, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := time.Now()
+	now := q.At
+	if now.IsZero() {
+		now = time.Now()
+	}
 	var out []StandingApproval
 	for _, s := range m.standing {
 		if q.Scope != "" && s.Scope != q.Scope {

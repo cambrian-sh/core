@@ -570,6 +570,14 @@ type KernelServices struct {
 	// is configured.
 	OntologyDrafts domain.OntologyDraftReader
 
+	// Objects is the read side of the per-kind object tables (ADR-0149 D6, D7):
+	// ListObjects (the closed objects query: filters, typed links, sort, keyset
+	// paging, groups and metrics) and GetObject (one object page), run AS a
+	// principal — the predicate resolves inside the kernel exactly as for
+	// QueryKnowledge, and access is per property. nil when no Postgres is
+	// configured.
+	Objects domain.Objects
+
 	// EvidenceStore READS preserved evidence rows.
 	//
 	// The write half and the content fetch were both exposed; the row itself was

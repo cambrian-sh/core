@@ -283,10 +283,16 @@ func (s *PgApprovalStore) GetStanding(ctx context.Context, id string) (domain.St
 
 // ListStanding lists standing approvals.
 func (s *PgApprovalStore) ListStanding(ctx context.Context, q domain.StandingQuery) ([]domain.StandingApproval, error) {
+	// $3: the instant expiry is judged at (domain.StandingQuery.At); NULL = now().
+	var at *time.Time
+	if !q.At.IsZero() {
+		t := q.At.UTC()
+		at = &t
+	}
 	rows, err := s.pool.Query(ctx, `SELECT `+standingCols+` FROM standing_approvals
 		WHERE ($1 = '' OR scope = $1)
-		  AND ($2 OR (revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())))
-		ORDER BY id`, q.Scope, q.IncludeInactive)
+		  AND ($2 OR (revoked_at IS NULL AND (expires_at IS NULL OR expires_at > COALESCE($3::timestamptz, now()))))
+		ORDER BY id`, q.Scope, q.IncludeInactive, at)
 	if err != nil {
 		return nil, fmt.Errorf("approvals: list standing: %w", err)
 	}

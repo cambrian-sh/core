@@ -63,6 +63,13 @@ type Shape struct {
 	// nil on purpose: the fail-closed decision belongs to the chokepoint
 	// (EnforcingVectorStore), which refuses the read before it reaches SQL.
 	nilPanics bool
+	// present: a NULL tag column means the row has NO classification to judge it
+	// by — an object table property value that came from an observation without
+	// evidence, or no value at all — and every filtered reader is denied it, the
+	// way EvidenceExists denies a row whose evidence does not exist. Without it a
+	// NULL column would pass a predicate with no tag terms (owner fence only:
+	// unnest(NULL) is empty). ScopeMaintenance still sees it (no fence at all).
+	present bool
 }
 
 // Evidence is the evidence table's shape: TEXT[] alias.classification plus the
@@ -92,6 +99,33 @@ func JSONBTags(alias string) Shape {
 		col = alias + ".metadata"
 	}
 	return Shape{col: col, jsonb: true}
+}
+
+// ObjectProperty is one property of an object table (ADR-0149 D3,
+// internal/objects): its TEXT[] tags companion and its parties companion, the
+// classification and parties of the row the property's current value came
+// from. The fence applies PER PROPERTY: it is CheckRow's row-aware mirror, as
+// for the evidence plane, and a NULL tags column (no classification) is denied
+// to every filtered reader (present). A nil predicate panics, as on the evidence
+// plane — the objects reader refuses nil with ErrQueryScopeMissing first.
+//
+// Rendered per fact over native TEXT[] columns, never as jsonb containment: the
+// ADR-0149 P2 benchmark showed GIN containment over tags misleading the planner
+// by ~3,700x on narrow lists.
+func ObjectProperty(tagsCol, partiesCol string) Shape {
+	return Shape{col: tagsCol, parties: partiesCol, nilPanics: true, present: true}
+}
+
+// Expr renders the fence as one boolean SQL expression with $n placeholders
+// numbered from startIdx+1, and its args: "TRUE" and nil when there is no fence.
+// For a reader that needs the fence as a value (a CASE WHEN, an OR of fences)
+// rather than as a WHERE suffix.
+func (s Shape) Expr(scope *domain.TagPredicate, startIdx int) (string, []any) {
+	body, args := dollar(s.fence(scope), startIdx)
+	if body == "" {
+		return "TRUE", nil
+	}
+	return "(" + body + ")", args
 }
 
 // Where renders the fence as an " AND …" suffix with $n placeholders numbered
@@ -151,15 +185,19 @@ func (s Shape) fence(scope *domain.TagPredicate) []expr {
 	if scope.Unfiltered() {
 		return nil
 	}
+	var present []expr
+	if s.present {
+		present = []expr{leaf(s.col + " IS NOT NULL")}
+	}
 	main := s.terms(scope)
 	own := scope.OwnRowTerm()
 	if own == nil {
-		return main
+		return append(present, main...)
 	}
 	// own_row: the row carries owner:<the reader's single owner>; the own-rows
 	// predicate's owner fence (held = that owner) supplies "and no other owner tag".
 	ownRow := append([]expr{s.containsOne(domain.OwnerTag(scope.Owners[0]))}, s.terms(own)...)
-	return []expr{or(and(main...), and(ownRow...))}
+	return append(present, or(and(main...), and(ownRow...)))
 }
 
 // terms renders one predicate's own terms (never its OwnRows). Never empty: the

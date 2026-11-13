@@ -15,7 +15,9 @@
 //     transaction of every write that changes "current"; Rebuild recomputes a
 //     whole table through the same function, so rebuild equals incremental.
 //
-// Reading the tables (ListObjects, GetObject) is ADR-0149 P4.
+// Reading the tables is ADR-0149 P4: Reader.List (the objects query, D6) and
+// Reader.Get (GetObject, D7) — validate.go, plan.go, token.go (pure), exec.go
+// and get.go (I/O).
 package objects
 
 import (
@@ -110,6 +112,44 @@ func pick(cs []Candidate, authority []string) (Property, bool) {
 	if len(cs) == 0 {
 		return Property{}, false
 	}
+	best := BestBySource(cs, authority)
+	sources := make([]string, 0, len(best))
+	for s := range best {
+		sources = append(sources, s)
+	}
+	sort.Strings(sources)
+	better := betterUnder(authority)
+	var win Candidate
+	for i, s := range sources {
+		if c := best[s]; i == 0 || better(c, win) {
+			win = c
+		}
+	}
+	p := Property{Candidate: win}
+	for _, s := range sources {
+		if s != win.Source && !SameValue(best[s].Value, win.Value) {
+			p.Conflict = true
+		}
+	}
+	return p, true
+}
+
+// BestBySource is each source's best candidate among cs (one property's
+// candidates) under authority — the per-source values a conflict is judged
+// between. GetObject shows the other sources' ones as alternatives.
+func BestBySource(cs []Candidate, authority []string) map[string]Candidate {
+	better := betterUnder(authority)
+	out := map[string]Candidate{}
+	for _, c := range cs {
+		if cur, ok := out[c.Source]; !ok || better(c, cur) {
+			out[c.Source] = c
+		}
+	}
+	return out
+}
+
+// betterUnder orders candidates by (authority rank, event time, id).
+func betterUnder(authority []string) func(a, b Candidate) bool {
 	rank := func(c Candidate) int {
 		for i, s := range authority {
 			if s == c.Source {
@@ -118,7 +158,7 @@ func pick(cs []Candidate, authority []string) (Property, bool) {
 		}
 		return len(authority)
 	}
-	better := func(a, b Candidate) bool {
+	return func(a, b Candidate) bool {
 		if ra, rb := rank(a), rank(b); ra != rb {
 			return ra < rb
 		}
@@ -127,30 +167,6 @@ func pick(cs []Candidate, authority []string) (Property, bool) {
 		}
 		return a.ID > b.ID
 	}
-	bestBySource := map[string]Candidate{}
-	for _, c := range cs {
-		if cur, ok := bestBySource[c.Source]; !ok || better(c, cur) {
-			bestBySource[c.Source] = c
-		}
-	}
-	sources := make([]string, 0, len(bestBySource))
-	for s := range bestBySource {
-		sources = append(sources, s)
-	}
-	sort.Strings(sources)
-	var win Candidate
-	for i, s := range sources {
-		if c := bestBySource[s]; i == 0 || better(c, win) {
-			win = c
-		}
-	}
-	p := Property{Candidate: win}
-	for _, s := range sources {
-		if s != win.Source && !SameValue(bestBySource[s].Value, win.Value) {
-			p.Conflict = true
-		}
-	}
-	return p, true
 }
 
 // SameValue reports whether two typed values are equal (the predicate name is

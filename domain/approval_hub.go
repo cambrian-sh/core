@@ -853,8 +853,12 @@ func (h *AddressedHub) RevokeStanding(ctx context.Context, id string, by Approve
 	return s, nil
 }
 
-// ListStanding lists standing approvals.
+// ListStanding lists standing approvals. Expiry is judged on the hub's clock,
+// the same one Request uses to decide whether a grant still pre-approves.
 func (h *AddressedHub) ListStanding(ctx context.Context, q StandingQuery) ([]StandingApproval, error) {
+	if q.At.IsZero() {
+		q.At = h.now()
+	}
 	return h.store.ListStanding(ctx, q)
 }
 
