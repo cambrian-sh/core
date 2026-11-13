@@ -1,6 +1,6 @@
 {
   "_comment": "Keyless core MCP server set (owner directive decisions/agent-stack-v2-mcp-tools-and-profiles.md: tools come only from MCP servers). Copy to mcp.json (gitignored) and edit paths. Catalog, prerequisites (node 22+/npx, uv/uvx, Docker for the sandbox), trust notes and keyed integrations: configs/MCP.md and configs/mcp.integrations.json.example. Every version is PINNED and was checked on its registry 2026-11-05; the live MCP handshake has NOT been verified yet (pending owner approval, ticket T-20261105-curate-verify-and-pin-the-mcp-server-set). Tools are named mcp:<id>/<tool>; skills grant them by that name (skills/file-report uses mcp:filesystem/*).",
-  "_comment_policy": "ADR-0139 D8 / ADR-0086: a tool with no `tools` entry and no `default_tool_policy` FAILS CLOSED (dangerous = approval required, effects read+write+egress). Servers that can write, send or execute list their read tools explicitly and carry NO default, so a tool added by a later server version arrives dangerous. Network reads declare `egress` but are not dangerous: no approval prompt, but the egress effect is visible to grants, profile allowlists and the egress auditor. `env` is a PASSTHROUGH list of variable NAMES the stdio child may inherit from the kernel environment (values are set in the kernel's environment, never here); CAMBRIAN_* and LANGFUSE_* never pass. WARNING: an empty `{\"mcp\": {}}` silently wipes any `mcp` block in config.json (Koanf merges per-key) - do not create mcp.json if you do not use MCP. On Windows, `npx`/`uvx`/`uv` resolve through PATHEXT; use forward slashes or escaped backslashes in paths. Each server carries `catalog_id`: the D8 sandbox takes its tier and sandbox declaration (egress) from that catalog entry; without it a server falls to the default third-party tier with no network, which Windows cannot enforce, and is refused (app/mcp_sandbox_test.go).",
+  "_comment_policy": "ADR-0139 D8 / ADR-0086: a tool with no `tools` entry and no `default_tool_policy` FAILS CLOSED (dangerous = approval required, effects read+write+egress). Servers that can write, send or execute list their read tools explicitly and carry NO default, so a tool added by a later server version arrives dangerous. Network reads declare `egress` but are not dangerous: no approval prompt, but the egress effect is visible to grants, profile allowlists and the egress auditor. ADR-0150 D9: a tool that only READS the web with no state change there (GET fetch, web search) declares `egress_read` instead, which is what lets it run inside a run_subtasks subtask (ceiling read + egress_read); plain `egress` means egress_read + egress_send, and inferred egress counts as send, so every other egress tool stays out of subtasks. `env` is a PASSTHROUGH list of variable NAMES the stdio child may inherit from the kernel environment (values are set in the kernel's environment, never here); CAMBRIAN_* and LANGFUSE_* never pass. WARNING: an empty `{\"mcp\": {}}` silently wipes any `mcp` block in config.json (Koanf merges per-key) - do not create mcp.json if you do not use MCP. On Windows, `npx`/`uvx`/`uv` resolve through PATHEXT; use forward slashes or escaped backslashes in paths. Each server carries `catalog_id`: the D8 sandbox takes its tier and sandbox declaration (egress) from that catalog entry; without it a server falls to the default third-party tier with no network, which Windows cannot enforce, and is refused (app/mcp_sandbox_test.go).",
   "mcp": {
     "default_session_budget": 0,
     "call_timeout_ms": 60000,
@@ -8,7 +8,7 @@
       {
         "id": "fetch",
         "catalog_id": "fetch",
-        "_note": "Official reference server (modelcontextprotocol/servers, MIT). Fetches a URL and returns Markdown. Network read: egress, no approval. It can reach localhost/intranet URLs - see MCP.md trust notes.",
+        "_note": "Official reference server (modelcontextprotocol/servers, MIT). Fetches a URL (HTTP GET) and returns Markdown. Network read: egress_read (ADR-0150 D9), no approval. It can reach localhost/intranet URLs - see MCP.md trust notes.",
         "transport": "stdio",
         "endpoint": "uvx",
         "args": [
@@ -23,7 +23,7 @@
             "dangerous": false,
             "effects": [
               "read",
-              "egress"
+              "egress_read"
             ]
           }
         ]
@@ -46,7 +46,7 @@
             "dangerous": false,
             "effects": [
               "read",
-              "egress"
+              "egress_read"
             ]
           },
           {
@@ -54,7 +54,7 @@
             "dangerous": false,
             "effects": [
               "read",
-              "egress"
+              "egress_read"
             ]
           }
         ]

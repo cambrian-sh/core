@@ -205,6 +205,18 @@
       "static_hash": "bb950a4897ce8bf70b9ea203598af05544a759d145d5b09a388767dac6d154ef"
     },
     {
+      "id": "chat_agent",
+      "version": 7,
+      "tier": "stable",
+      "inputs": [
+        "policy",
+        "work_systems"
+      ],
+      "description": "The chat front desk's stable system text: its role, its output rule, when to answer directly and when to delegate, the work systems the planner's agents can use, its answering rules for each recall posture, the conversation's policy, and (ADR-0145 phase 3, each behind its own execution.chat key) the grounded-reply, delegation, ledger-tool, turn-index and ask-back rules.",
+      "has_schema": false,
+      "static_hash": "3282b3ddd9ac3aaebec00c5c8ae0aba5ed7d96871f5a9ab5509c027425673ba4"
+    },
+    {
       "id": "chat_agent_turn",
       "version": 1,
       "tier": "volatile",
@@ -371,6 +383,15 @@
       "description": "Condense the older part of a conversation into a short running summary that keeps every fact, figure, identifier, decision and open question, so the chat front desk can follow the conversation after those messages leave its token-budgeted transcript.",
       "has_schema": false,
       "static_hash": "4b8609bb8e9168a8a45aedbe17be73055ad46fde637597dd9af3c2055b8ea0b5"
+    },
+    {
+      "id": "conversation_summary",
+      "version": 2,
+      "tier": "stable",
+      "inputs": [],
+      "description": "Fold the older part of a conversation into a structured running summary (goal, constraints and preferences, progress, decisions, open items, critical values with ledger refs) that keeps every fact, figure, identifier and open question, so the conversation agent can follow the conversation after those messages leave its token-budgeted transcript.",
+      "has_schema": false,
+      "static_hash": "f0d1d0123947119cd5c20efd8530c790a704f47991bd2d4c8dbe15320d9c70c7"
     },
     {
       "id": "conversation_summary_input",

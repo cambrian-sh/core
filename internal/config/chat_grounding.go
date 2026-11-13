@@ -60,8 +60,8 @@ func (c ChatConfig) validateGrounding(ledgerOn bool) []string {
 	default:
 		errs = append(errs, "execution.chat.reply_check must be off, observe or enforce")
 	}
-	if c.TranscriptBudgetTokens < 0 || c.TurnIndexTurns < 0 || c.ReplyCheckMinInteger < 0 || c.ReplyCheckMaxEntries < 0 {
-		errs = append(errs, "execution.chat.transcript_budget_tokens, turn_index_turns, reply_check_min_integer and reply_check_max_entries must be >= 0")
+	if c.TranscriptBudgetTokens < 0 || c.TurnIndexTurns < 0 || c.ReplyCheckMinInteger < 0 || c.ReplyCheckMaxEntries < 0 || c.KeepUserMessagesTokens < 0 {
+		errs = append(errs, "execution.chat.transcript_budget_tokens, turn_index_turns, reply_check_min_integer, reply_check_max_entries and keep_user_messages_tokens must be >= 0")
 	}
 	if c.NeedsLedger() && !ledgerOn {
 		errs = append(errs, "execution.chat.{turn_index, grounded_reply, reply_check, ledger_tools, ask_back} require execution.ledger.enabled: the turn's evidence and state live in the run ledger")

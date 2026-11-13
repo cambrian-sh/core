@@ -20,5 +20,7 @@ func contentEnv(c config.ContentConfig) []string {
 		fmt.Sprintf("CAMBRIAN_CONTEXT_TOOL_OUTPUT_PREVIEW_CHARS=%d", c.Preview()),
 		fmt.Sprintf("CAMBRIAN_CONTEXT_RESOLVE_PAGE_CHARS=%d", c.Page()),
 		fmt.Sprintf("CAMBRIAN_CONTEXT_BUDGET_TOKENS=%d", c.WorkerPromptBudget()),
+		// ADR-0150 D7: the age trigger (0 = off).
+		fmt.Sprintf("CAMBRIAN_CONTEXT_KEEP_RECENT_TOOL_RESULTS=%d", c.KeepRecentToolResults),
 	}
 }

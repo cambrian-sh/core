@@ -508,16 +508,11 @@ type RoutingConfig struct {
 	// Default: 2000.
 	ProposalTimeoutMs int `json:"proposal_timeout_ms"`
 
-	// BypassSelection (ADR-0050 D1) short-circuits Server.Execute past the
-	// planner/auction/DAG path and dispatches the user's input verbatim to
-	// SingleAgentID — the within-substrate no-orchestration control arm the
-	// benchmark harness uses for routing A/Bs (ROUTE-01 baselines). Default
-	// OFF; production behavior is unchanged when false.
-	BypassSelection bool `json:"bypass_selection,omitempty"`
-
-	// SingleAgentID is the agent the bypass path dispatches to. Required when
-	// BypassSelection is true; Execute fails loud when it is empty or unknown.
-	SingleAgentID string `json:"single_agent_id,omitempty"`
+	// MOVED 2026-11-13 to execution.lane (ADR-0150 D10): `bypass_selection` (the
+	// ADR-0050 D1 single-agent control arm, now the default lane:
+	// lane.default single_agent) and `single_agent_id` (lane.single_agent.agent_id).
+	// A layer that still sets them loads at the new place (execution_migrate.go
+	// laneMigration).
 
 	// ADR-0057 (three-tier config): ReactiveEngine tuning is PREMIUM config and lives
 	// in the premium repo's own config, fed in via the app.Options reactive hook.
@@ -1714,8 +1709,10 @@ type ChatConfig struct {
 	// TranscriptBudgetTokens bounds the verbatim transcript a turn carries by
 	// estimated tokens (D2.1) instead of the fixed 40-message window; when older
 	// messages fall outside it, a summary call condenses them (D2.3, kept in the
-	// ledger). 0 = the legacy 40-message window, no summary.
-	TranscriptBudgetTokens int `json:"transcript_budget_tokens,omitempty"`
+	// ledger). 0 = the legacy 40-message window, no summary. Default 64000 (owner
+	// 2026-11-13, ADR-0150 D3: cross-turn compaction on). No omitempty: an
+	// explicit 0 must survive a marshal of the effective config.
+	TranscriptBudgetTokens int `json:"transcript_budget_tokens"`
 	// TurnIndex records an index entry per delegated turn (run ids, checklist and
 	// statuses, key values by name with ledger refs, actions with their ids) and
 	// shows the chat agent a compact index of recent turns (D2.2).
@@ -1744,6 +1741,12 @@ type ChatConfig struct {
 	// AskBack saves a delegated request's "input required" questions with the turn
 	// and resumes from them on the next message (D5a, conversation path only).
 	AskBack bool `json:"ask_back,omitempty"`
+	// KeepUserMessagesTokens (ADR-0150 D3, single-agent lane): when older messages
+	// leave the transcript budget, the person's own messages among them are still
+	// carried verbatim, newest first, up to this many estimated tokens (Codex keeps
+	// them up to 20k); everything else is in the structured summary. Read only with
+	// transcript_budget_tokens > 0. Default 20000; 0 keeps none.
+	KeepUserMessagesTokens int `json:"keep_user_messages_tokens"`
 }
 
 // AgentsConfig — Agent process runtime: resource caps, env passthrough and daemon restart policy.
@@ -1997,6 +2000,10 @@ type ExecutionConfig struct {
 	// tool-output cap and prompt budget (served to agents), and the step-dependency
 	// budget (content.go; T-20261112-worker-resolve-cid-inline-has-no-size-cap-a).
 	Content ContentConfig `json:"content"`
+
+	// Lane is ADR-0150: how a request is executed (the single-agent default lane
+	// and its kernel-run subtasks; lane.go).
+	Lane LaneConfig `json:"lane"`
 }
 
 // Hook kinds accepted in execution.hooks.entries[].kind (ADR-0139 D11).
@@ -3319,6 +3326,10 @@ func DefaultConfig() *Config {
 				ChatTurnTimeoutSeconds:  240,
 				ChatStallTimeoutSeconds: 90,
 				ChatDefaultLanguage:     "en",
+				// ADR-0150 D3: the person's own messages kept verbatim (Codex).
+				KeepUserMessagesTokens: 20000,
+				// ADR-0150 D3 cross-turn compaction on (owner 2026-11-13).
+				TranscriptBudgetTokens: 64000,
 			},
 			Pipelines: PipelinesConfig{
 				DrainerEnabled: true, // owner default 2026-08-11
@@ -3355,6 +3366,18 @@ func DefaultConfig() *Config {
 			},
 			// ADR-0139 D13: proposals on (inert until approved), curator off.
 			Skills: DefaultSkillsConfig(),
+			// ADR-0145 D1 run ledger and D12 composed workers on (owner 2026-11-13,
+			// ADR-0150): the default lane's agent and its run_subtasks workers are the
+			// composed runtime, which records into the ledger. Other ledger tunables
+			// keep their zero-value defaults (ledger.go).
+			Ledger:  LedgerConfig{Enabled: true},
+			Workers: WorkersConfig{Composed: true},
+			// ADR-0150 D10 (owner 2026-11-13): the single-agent lane is the default.
+			Lane: LaneConfig{
+				Default:     LaneSingleAgent,
+				SingleAgent: SingleAgentLaneConfig{MaxToolRounds: 500, MaxWallSeconds: 3600},
+				Stuck:       LaneStuckConfig{SameResultRepeats: 4},
+			},
 		},
 		Telemetry: TelemetryConfig{
 			TraceSamplingRate:            1.0,
@@ -3632,9 +3655,16 @@ func loadMerged(path string, store Store) (*Config, Provenance, error) {
 		t.noteEnvKey(s, orig)
 		return s
 	}
-	_ = k.Load(env.Provider("CAMBRIAN_", ".", envMap), nil)
+	// ADR-0150 D10: the two execution.routing single-agent variables load as
+	// execution.lane keys, one of them with a new value (laneEnvKey), so the
+	// provider maps values too.
+	envMapValue := func(key, value string) (string, any) {
+		path := envMap(key)
+		return laneEnvKey(path, value, os.LookupEnv)
+	}
+	_ = k.Load(env.ProviderWithValue("CAMBRIAN_", ".", envMapValue), nil)
 	envScratch := koanf.New(".")
-	_ = envScratch.Load(env.Provider("CAMBRIAN_", ".", envMap), nil)
+	_ = envScratch.Load(env.ProviderWithValue("CAMBRIAN_", ".", envMapValue), nil)
 	t.claimEnv(envScratch)
 
 	var cfg Config
@@ -4109,6 +4139,7 @@ func (c *ExecutionConfig) Validate() *ConfigError {
 	errs = append(errs, c.Content.validate()...)
 	errs = append(errs, c.Chat.validateGrounding(c.Ledger.Enabled)...)
 	errs = append(errs, c.Workers.validate(c.Ledger.Enabled)...)
+	errs = append(errs, c.Lane.validate()...)
 	if c.Plan.ChecklistEnabled && !c.Ledger.Enabled {
 		errs = append(errs, "execution.plan.checklist_enabled requires execution.ledger.enabled: item evidence is read from the run ledger")
 	}

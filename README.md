@@ -1,6 +1,6 @@
 # Cambrian Core
 
-**A governed runtime for AI agents.** Cambrian Core is the kernel that plans work with an LLM, dispatches each step to the agent best able to do it, gives agents a shared long-term memory with fail-closed access control, and keeps a human operator in the loop. All of it is metered, auditable and configured by data, not code.
+**A governed runtime for AI agents.** Cambrian Core is the kernel that runs agents on a person's behalf: it gives an agent that person's tools and a shared long-term memory with fail-closed access control, lets it fan work out to parallel read-only subtasks, records what it relied on, and keeps a human in the loop for anything consequential. All of it is metered, auditable and configured by data, not code.
 
 > **Status: pre-1.0 alpha (`v0.6.x`).** The gRPC/proto surface and the config schema are held stable. The Go package API is not. Expect breaking changes between minor versions.
 
@@ -11,34 +11,42 @@
 Cambrian is an orchestration kernel written in Go. Agents are not linked into it. They are separate processes, written in any language and usually Python through the [Agent SDK](https://github.com/cambrian-sh/agent-sdk-python), that the kernel spawns, authenticates and talks to over gRPC. The kernel owns everything between "a request arrived" and "an answer went back":
 
 ```
- client / operator ──► Router ──► Planner (LLM) ──► ExecutionPlan (DAG)
-                                                        │
-                        ┌───────────────────────────────┘
-                        ▼
-              Gatekeeper → Dispatcher ──► agent process (gRPC agent plane)
-                        │                        │
-                        │                        ├─ memory_query / recall  ──► Memory (pgvector + KG)
-                        │                        └─ tool_call              ──► tools / MCP servers
-                        ▼
-              Verifier · Operator approval · Spend ledger · Event log
+ person / client ──► conversation (OpenConversation / SendTurn) or Execute
+                          │
+                          ▼  execution.lane.default
+        ┌─────────────────┴──────────────────────────────┐
+        │ single_agent (default, ADR-0150)               │ planner (research, behind config, ADR-0145)
+        ▼                                                ▼
+  one agent holding the person's tools          Router → Planner (LLM) → ExecutionPlan (DAG)
+        │  └─ run_subtasks ─► parallel read-only        → Gatekeeper → Dispatcher → agent per step
+        │     child agents (depth 1)                    → coverage · verifier
+        ▼                                                ▼
+  agent process (gRPC agent plane) ─┬─ memory_query / recall ──► Memory (pgvector + KG)
+                                    └─ tool_call            ──► kernel tools · MCP servers
+                          │
+                          ▼
+              Approvals · Spend ledger · Run ledger · Event log
 ```
 
 ## What it aims for
 
-- **Routing by reasoning, not by code.** Which agent handles a task is decided in the LLM planning layer. Go code never hardcodes it with `if`/`switch` (the *Zero-Hardcode Rule*). Agents declare capabilities, and the Gatekeeper and Dispatcher pick one by capability and then rank on merit, with no auction, no extra LLM call, and only the winner booted.
+- **One agent by default, fan-out when it helps.** A request runs in the single-agent lane: one agent holds the person's tools and answers itself, and can split read-only work into parallel subtasks the kernel runs on child leases (`run_subtasks`). The multi-agent planner lane — an LLM planner, a DAG of steps, and capability-typed dispatch (Gatekeeper eligibility, then merit ranking; no auction) — is kept behind `execution.lane.default: planner` for research.
+- **Policy is data, not code.** Policy, routing tables and thresholds live in layered config, never in a Go branch on an agent, tool or customer (the *Zero-Hardcode Rule*).
 - **Memory that is shared but governed.** One long-term memory serves every agent: hybrid dense and lexical retrieval, a knowledge-graph layer, structure-aware ingestion and event time. Every read and write passes through one composition point that enforces access scope and fails closed. An agent sees only what its grants allow.
 - **The operator stays in charge.** Plans can require operator approval. A dedicated operator plane (gRPC `OperatorConsole`) drives the [operator console UI](https://github.com/cambrian-sh/ui) and exposes configuration, approvals, agents, memory and the live event feed.
 - **Every LLM call is accounted for.** One spend ledger meters all calls with provider-reported usage, attributes them to a session, and can enforce a per-session token ceiling.
 - **Configuration is data.** Thresholds, routing tables and policies live in layered config, and operators can change many of them at runtime without a restart.
-- **Open core.** This module contains no proprietary code. Commercial features plug in from a separate module through one seam (`app.Options`), and CI checks that the boundary holds.
+- **Source-available core, commercial plugins.** This module is source-available under the Elastic License 2.0 (not an OSI open-source licence) and contains no proprietary code. Commercial features plug in from a separate module through one seam (`app.Options`), and CI checks that the boundary holds.
 
 ## Key concepts
 
 | Concept | Meaning |
 |---------|---------|
-| **Substrate** | The gRPC server, sessions and event log: the kernel's network-facing body. |
-| **Awareness / Planner** | The LLM layer that turns a request into an `ExecutionPlan`, a DAG of steps. |
-| **Metabolism** | Agent lifecycle and dispatch: AgentManager, Gatekeeper, Dispatcher, DAG executor. |
+| **Execution lane** | How a request runs: `single_agent` (default) or `planner` (`execution.lane.default`, ADR-0150). |
+| **Knowledge substrate** | Evidence (original bytes, stored before any semantic step), ontology kinds, object tables and the query plane (ADR-0105–0111, 0147, 0149). |
+| **`internal/substrate`** | Legacy package name for the gRPC server, sessions and event log — the kernel's network layer, not the knowledge substrate. |
+| **Awareness / Planner** | Planner lane only: the LLM layer that turns a request into an `ExecutionPlan`, a DAG of steps. |
+| **Metabolism** | Agent lifecycle (AgentManager) and, in the planner lane, dispatch: Gatekeeper, Dispatcher, DAG executor. |
 | **Agent plane** | The authenticated gRPC contract between kernel and agents (`api/proto/cambrian.proto`). |
 | **Operator plane** | The gRPC contract for humans and the UI (`api/proto/operator.proto`). |
 | **Memory stack** | Long-term memory: Postgres + pgvector, chunking and ingestion, KG²RAG retrieval, all behind enforcing stores. |

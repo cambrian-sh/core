@@ -100,7 +100,7 @@ func newSubstrateLeakFixture(t *testing.T) *slFixture {
 	links := NewPgLinkStore(pool, reg)
 	return &slFixture{
 		pool: pool, events: events, links: links, ctx: ctx,
-		plane: NewPgQueryPlane(pool, events, NewPgKnowledgeStore(pool, nil), nil, links, NewPgEntityStore(pool), reg),
+		plane: NewPgQueryPlane(pool, events, NewPgKnowledgeStore(pool, nil), nil, links, NewPgEntityStore(pool, nil), reg),
 		// Truncated: Postgres keeps microseconds, and a snapshot compares times.
 		now: time.Now().UTC().Truncate(time.Second),
 	}

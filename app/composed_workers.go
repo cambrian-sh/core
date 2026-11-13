@@ -98,6 +98,9 @@ func wireComposedWorkers(cfg config.ExecutionConfig, server *subnetwork.Server, 
 		slog.Warn("ADR-0145 D12: the agent registry cannot list agents; find_tools reports no tools outside a step")
 	}
 	d.Composer = c
+	// ADR-0150 D1: the single-agent lane composes a whole request on the same
+	// runtime when execution.lane.single_agent.agent_id is empty.
+	server.RequestComposer = c
 	slog.Info("ADR-0145 D12: composed workers ON", "runtime", w.RuntimeID(), "max_skills", w.SkillCap(),
 		"ledger", c.Ledger != nil)
 }

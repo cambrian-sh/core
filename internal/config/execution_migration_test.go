@@ -248,6 +248,13 @@ var retiredExecutionFields = map[string]string{
 	"cold_start_penalty_multiplier": "Interview deleted 2026-11-05: the penalty applied to provisional PROFILES, " +
 		"whose only writer was the interview's A2A path.",
 
+	// MOVED, not dropped (ADR-0150 D10, 2026-11-13): an explicit value loads as
+	// execution.lane.single_agent.agent_id (execution_migrate.go laneMigration). The
+	// leaf name changed, so the by-leaf comparison cannot follow it;
+	// TestLoadConfig_LegacyRoutingKeysMigrateToLane holds the move.
+	"single_agent_id": "Moved 2026-11-13 to execution.lane.single_agent.agent_id (ADR-0150 D10); " +
+		"an explicit value loads there.",
+
 	// REPLACED, not dropped: an explicit plan_timeout_ms still loads, as
 	// plan_max_duration_ms (deprecatedExecutionKey in execution_migrate.go).
 	"plan_timeout_ms": "Superseded 2026-11-05 by the progress-aware plan ceiling (owner decision, " +

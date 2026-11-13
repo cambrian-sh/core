@@ -164,3 +164,82 @@ func (t SystemTool) AuthzTags() []string {
 	out = append(out, t.DataWriteKinds...)
 	return out
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-0150 D9: the egress split.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// EffectCovers reports whether a grant or deny of `granted` covers the requested
+// effect: the same class, or plain egress covering egress_read and egress_send
+// (a policy that names plain egress keeps its meaning after the split).
+func EffectCovers(granted, requested ToolEffect) bool {
+	if granted == requested {
+		return true
+	}
+	return granted == EffectEgress && (requested == EffectEgressRead || requested == EffectEgressSend)
+}
+
+// ExpandEffects returns effects with plain egress replaced by egress_read and
+// egress_send (a tool that declares plain egress needs both), de-duplicated, in
+// risk order. Every other class is unchanged.
+func ExpandEffects(effects []ToolEffect) []ToolEffect {
+	set := map[ToolEffect]bool{}
+	for _, e := range effects {
+		if e == EffectEgress {
+			set[EffectEgressRead] = true
+			set[EffectEgressSend] = true
+			continue
+		}
+		set[e] = true
+	}
+	out := make([]ToolEffect, 0, len(set))
+	for _, e := range AllToolEffects {
+		if set[e] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// CeilingEffects is what a tool's call exercises for an effect CEILING check (the
+// ADR-0150 D2 subtask ceiling): the expanded effects, except that egress which
+// was only INFERRED (url_args) counts as egress_send alone — a read-the-web
+// claim must be declared, never inferred (fail closed until the manifest says
+// otherwise).
+func CeilingEffects(t SystemTool) []ToolEffect {
+	if !t.EffectsInferred {
+		return ExpandEffects(t.Effects)
+	}
+	in := make([]ToolEffect, 0, len(t.Effects))
+	for _, e := range t.Effects {
+		if e == EffectEgress || e == EffectEgressRead {
+			e = EffectEgressSend
+		}
+		in = append(in, e)
+	}
+	return ExpandEffects(in)
+}
+
+// EffectsBeyond returns the effects of t (CeilingEffects) that no class in
+// allowed covers; empty when the tool is inside the ceiling. A tool with no
+// effects at all is outside every ceiling (it bypassed registration).
+func EffectsBeyond(t SystemTool, allowed []ToolEffect) []ToolEffect {
+	effects := CeilingEffects(t)
+	if len(effects) == 0 {
+		return []ToolEffect{EffectAdmin}
+	}
+	var out []ToolEffect
+	for _, e := range effects {
+		covered := false
+		for _, a := range allowed {
+			if EffectCovers(a, e) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, e)
+		}
+	}
+	return out
+}

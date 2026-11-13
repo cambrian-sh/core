@@ -53,6 +53,11 @@ type ApprovalRequest struct {
 	// from a payload; informational: it never changes routing or the decision
 	// (T-20261107-approver-is-not-told-that-an-identical-side).
 	DuplicateNotice string
+	// Subtask is the label of the ADR-0150 subtask that raised the request, ""
+	// for the main agent's own calls. Kernel-derived from the child lease; the
+	// person sees it through DuplicateNotice (SubtaskApprovalNotice), so no
+	// approval surface needs a new field.
+	Subtask string
 }
 
 // ApprovalDecision is the hub's answer to one request.

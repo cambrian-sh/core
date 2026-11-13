@@ -406,7 +406,8 @@ func (p *PgVectorAdapter) Close() {
 func (p *PgVectorAdapter) ensureSchema(ctx context.Context) error {
 	// REDEMPTION: uses p.dim instead of a hardcoded dimension.
 
-	// ADR-0021: Detect dimension mismatch (e.g. switching from 1536 to 768).
+	// Detect dimension mismatch (e.g. switching from 1536 to 768). Dimension rules:
+	// ADR-0107 (per-model coexistence) and card.core.db-migrations.
 	// pgvector does not support ALTER COLUMN on VECTOR types; the only migration
 	// path is destructive recreation.
 	//

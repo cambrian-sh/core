@@ -3,6 +3,7 @@ package objects
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"sort"
@@ -96,7 +97,131 @@ func applyEntity(ctx context.Context, tx pgx.Tx, kinds domain.KindSource, ns, en
 	if len(cands) == 0 {
 		return deleteRow(ctx, tx, spec.Kind, ns, entity)
 	}
-	return upsertRow(ctx, tx, spec, reg.Version(), ns, entity, Current(spec, cands))
+	st := Current(spec, cands)
+	classes, err := rowClasses(ctx, tx, spec, ns, entity, st)
+	if err != nil {
+		return fmt.Errorf("objects: fence classes of %s: %w", entity, err)
+	}
+	return upsertRow(ctx, tx, spec, reg.Version(), ns, entity, st, classes)
+}
+
+// classPair is one canonical (tags, parties) pair of the class dictionary
+// (object_fence_classes, migration 0043).
+type classPair struct {
+	Tags    []string `json:"tags"`
+	Parties []string `json:"parties"`
+}
+
+// canonical sorts and de-duplicates both sides; absent parties are '{}'. The
+// fence reads a pair only through set operations, so this changes no decision
+// and makes one pair one dictionary row.
+func canonical(tags, parties []string) classPair {
+	set := func(xs []string) []string {
+		out := make([]string, 0, len(xs))
+		seen := map[string]bool{}
+		for _, x := range xs {
+			if !seen[x] {
+				seen[x] = true
+				out = append(out, x)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	return classPair{Tags: set(tags), Parties: set(parties)}
+}
+
+// rowClasses is the row's vis_classes (ADR-0149 D6, the existence rule of
+// ADR-0128 D12 interned): the dictionary ids of the pairs that can make the
+// object exist for a caller —
+//   - every declared property's current value's (tags, parties), exactly the
+//     companions upsertRow writes; a value with no classification (Tags nil, a
+//     NULL tags column) is never a class, as it is visible to no filtered caller;
+//   - the (classification, parties) of the evidence that minted the entity, read
+//     with the existence rule's own join (entities.first_seen_evidence). That row
+//     is written by the entity mint, which calls the maintainer when it creates
+//     one (PgEntityStore.EnsureEntity), and neither it nor the evidence row is
+//     ever updated, so the class cannot go stale.
+//
+// The object exists for a reader exactly when one of these pairs passes the
+// fence: the per-property fence is sqlfence.ObjectProperty, the dictionary's is
+// sqlfence.FenceClass (the same shape), and the evidence fence differs from it
+// only by the present term, which a NOT NULL classification always passes.
+func rowClasses(ctx context.Context, tx pgx.Tx, spec domain.KindSpec, ns, entity string, st State) ([]int32, error) {
+	var pairs []classPair
+	seen := map[string]bool{}
+	add := func(tags, parties []string) {
+		c := canonical(tags, parties)
+		raw, _ := json.Marshal(c) // two string slices always marshal
+		if key := string(raw); !seen[key] {
+			seen[key] = true
+			pairs = append(pairs, c)
+		}
+	}
+	for p := range spec.Predicates {
+		if v, ok := st.Props[p]; ok && v.Tags != nil {
+			add(v.Tags, v.Parties)
+		}
+	}
+	var tags, parties []string
+	err := tx.QueryRow(ctx, `SELECT e.classification, e.parties FROM entities en JOIN evidence e ON e.id = en.first_seen_evidence
+		WHERE en.id = $1 AND en.namespace_id = $2`, entity, ns).Scan(&tags, &parties)
+	switch {
+	case err == nil:
+		add(tags, parties)
+	case !errors.Is(err, pgx.ErrNoRows):
+		return nil, err
+	}
+	return internClasses(ctx, tx, pairs)
+}
+
+// internClasses returns the dictionary ids of pairs (canonical, distinct),
+// sorted, inserting the pairs the dictionary lacks. The dictionary is
+// append-only and unique on the pair, so a pair has one id forever and a retry
+// reuses it. A pair another transaction inserted after this statement's
+// snapshot is skipped by ON CONFLICT and not yet visible to the same statement;
+// the next attempt (a new READ COMMITTED snapshot, taken after ON CONFLICT
+// waited for that transaction) sees it.
+//
+// Waiting on another writer's uncommitted pair is the one new lock wait on the
+// write path. Two transactions that each hold a NEW pair the other needs can
+// deadlock; Postgres aborts one, and its history write fails and is retried
+// like any transient failure. That needs two concurrent writers both minting
+// new classification combinations, which is rare once a deployment's classes
+// exist; pairs inside one statement are inserted in sorted order.
+func internClasses(ctx context.Context, tx pgx.Tx, pairs []classPair) ([]int32, error) {
+	if len(pairs) == 0 {
+		return []int32{}, nil
+	}
+	doc, err := json.Marshal(pairs)
+	if err != nil {
+		return nil, err
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		rows, err := tx.Query(ctx, `
+			WITH want AS (SELECT x.tags, x.parties FROM jsonb_to_recordset($1::jsonb) AS x(tags text[], parties text[])),
+			ins AS (
+				INSERT INTO object_fence_classes (tags, parties)
+				SELECT w.tags, w.parties FROM want w
+				WHERE NOT EXISTS (SELECT 1 FROM object_fence_classes c WHERE c.tags = w.tags AND c.parties = w.parties)
+				ORDER BY w.tags, w.parties
+				ON CONFLICT (tags, parties) DO NOTHING
+				RETURNING id)
+			SELECT id FROM ins
+			UNION SELECT c.id FROM object_fence_classes c JOIN want w ON c.tags = w.tags AND c.parties = w.parties`, string(doc))
+		if err != nil {
+			return nil, err
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[int32])
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == len(pairs) {
+			sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+			return ids, nil
+		}
+	}
+	return nil, fmt.Errorf("objects: %d fence classes did not resolve to ids", len(pairs))
 }
 
 // readCandidates reads what history offers for one object: per (predicate,
@@ -258,7 +383,7 @@ func jsonValue(v domain.StatementValue) any {
 // upsertRow writes one object's row. It names only the columns spec declares
 // (a column another namespace's declaration added stays NULL for this row)
 // and writes nothing when the row is unchanged.
-func upsertRow(ctx context.Context, tx pgx.Tx, spec domain.KindSpec, declVersion int64, ns, entity string, st State) error {
+func upsertRow(ctx context.Context, tx pgx.Tx, spec domain.KindSpec, declVersion int64, ns, entity string, st State, classes []int32) error {
 	prov := map[string]provenance{}
 	for p, v := range st.Props {
 		prov[p] = provOf(v)
@@ -281,8 +406,8 @@ func upsertRow(ctx context.Context, tx pgx.Tx, spec domain.KindSpec, declVersion
 	if declVersion > 0 {
 		dv = &declVersion
 	}
-	cols := []string{colNamespace, colEntity, colExtra, colProv, colDeclVersion}
-	args := []any{ns, entity, extraJSON, provJSON, dv}
+	cols := []string{colNamespace, colEntity, colExtra, colProv, colDeclVersion, colVisClasses}
+	args := []any{ns, entity, extraJSON, provJSON, dv, classes}
 	preds := make([]string, 0, len(spec.Predicates))
 	for p := range spec.Predicates {
 		preds = append(preds, p)

@@ -87,7 +87,7 @@ func newWalkEqFixture(t *testing.T) *weFixture {
 	links := NewPgLinkStore(pool, reg)
 	f := &weFixture{
 		pool: pool, ctx: ctx,
-		plane: NewPgQueryPlane(pool, events, NewPgKnowledgeStore(pool, nil), nil, links, NewPgEntityStore(pool), reg),
+		plane: NewPgQueryPlane(pool, events, NewPgKnowledgeStore(pool, nil), nil, links, NewPgEntityStore(pool, nil), reg),
 		// A fixed base: the golden renders times as offsets from it.
 		base:  time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC),
 		names: map[string]string{}, ev: map[string]string{},
@@ -134,7 +134,7 @@ func newWalkEqFixture(t *testing.T) *weFixture {
 	event("complaint1", pub, "complaint", 1, "customer", "walkeq/c1", "shipment", "walkeq/s1")
 
 	for _, id := range []string{"walkeq/c1", "walkeq/o1", "walkeq/o2", "walkeq/s1", "walkeq/crm1", "walkeq/crm2"} {
-		if _, err := NewPgEntityStore(pool).EnsureEntity(ctx, domain.Entity{
+		if _, err := NewPgEntityStore(pool, nil).EnsureEntity(ctx, domain.Entity{
 			NamespaceID: "default", ID: id, FirstSeenEvidence: pub,
 		}); err != nil {
 			t.Fatalf("entity %s: %v", id, err)

@@ -16,12 +16,16 @@ func TestContentEnv_ServesTheSDKLimits(t *testing.T) {
 		"CAMBRIAN_CONTEXT_TOOL_OUTPUT_PREVIEW_CHARS=600",
 		"CAMBRIAN_CONTEXT_RESOLVE_PAGE_CHARS=16000",
 		"CAMBRIAN_CONTEXT_BUDGET_TOKENS=32000",
+		"CAMBRIAN_CONTEXT_KEEP_RECENT_TOOL_RESULTS=0",
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("missing %s in %v", want, got)
 		}
 	}
-	got = contentEnv(config.ContentConfig{PageBytes: 8000, WorkerPromptBudgetTokens: 64000})
+	got = contentEnv(config.ContentConfig{PageBytes: 8000, WorkerPromptBudgetTokens: 64000, KeepRecentToolResults: 6})
+	if !slices.Contains(got, "CAMBRIAN_CONTEXT_KEEP_RECENT_TOOL_RESULTS=6") {
+		t.Errorf("keep_recent_tool_results not served: %v", got)
+	}
 	if !slices.Contains(got, "CAMBRIAN_CONTEXT_RESOLVE_PAGE_CHARS=8000") || !slices.Contains(got, "CAMBRIAN_CONTEXT_BUDGET_TOKENS=64000") {
 		t.Errorf("configured values not served: %v", got)
 	}

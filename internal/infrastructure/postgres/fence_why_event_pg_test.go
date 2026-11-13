@@ -95,7 +95,7 @@ func newWhyFenceFixture(t *testing.T) *wfFixture {
 	links := NewPgLinkStore(pool, reg)
 	f := &wfFixture{
 		pool: pool, evidence: NewPgEvidenceStore(pool), events: events, links: links, ctx: ctx,
-		plane: NewPgQueryPlane(pool, events, NewPgKnowledgeStore(pool, nil), nil, links, NewPgEntityStore(pool), reg),
+		plane: NewPgQueryPlane(pool, events, NewPgKnowledgeStore(pool, nil), nil, links, NewPgEntityStore(pool, nil), reg),
 		now:   time.Now().UTC().Truncate(time.Second),
 	}
 	f.seed(t)

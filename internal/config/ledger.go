@@ -10,12 +10,15 @@ import (
 // ToolExecutor and the server's DAG executor); zero values take the documented
 // defaults through the methods below, so an existing tuning.json needs no new keys.
 type LedgerConfig struct {
-	// Enabled turns the ledger on. Default false. On: every tool result and step
+	// Enabled turns the ledger on. Default true (owner 2026-11-13, ADR-0150: the
+	// composed runtime, run_subtasks and the chat transcript summary record into
+	// it; the tables come from the embedded migrations 0034-0036/0044). On: every tool result and step
 	// output is recorded, dependants read step results from the ledger, large tool
 	// results are returned as ledger references, ledger_get/ledger_find are offered
 	// to every agent, and the content store no longer holds step or tool results
 	// (only worker scratch offloads). Off: the legacy plan-scoped content-store path.
-	Enabled bool `json:"enabled,omitempty"`
+	// No omitempty: an explicit false must survive a marshal of the effective config.
+	Enabled bool `json:"enabled"`
 	// RetentionHours is how long an entry lives (the conversation's lifetime, as
 	// configured). 0 ⇒ 720 (30 days). Scratch entries go at turn end regardless.
 	RetentionHours int `json:"retention_hours,omitempty"`

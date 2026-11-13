@@ -59,6 +59,12 @@ type ContentConfig struct {
 	// execution.plan.dependency_results_max_chars (the old fixed budget, also
 	// bytes) is migrated here on load, so an operator's stated cap still holds.
 	DependencyMaxBytes int `json:"dependency_max_bytes,omitempty"`
+	// KeepRecentToolResults is the ADR-0150 D7 age trigger of the SDK context
+	// engine: a tool result older than this many tool rounds becomes its
+	// placeholder (naming its ledger id when it has one) even when the prompt is
+	// under budget. 0 = off (only the budget trigger clears). Served as
+	// CAMBRIAN_CONTEXT_KEEP_RECENT_TOOL_RESULTS.
+	KeepRecentToolResults int `json:"keep_recent_tool_results,omitempty"`
 }
 
 // CharsPerToken is the estimate the kernel and the SDK both use to turn a token
@@ -121,6 +127,7 @@ func (c ContentConfig) validate() []string {
 		{"tool_output_max_chars", c.ToolOutputMaxChars},
 		{"worker_prompt_budget_tokens", c.WorkerPromptBudgetTokens},
 		{"dependency_max_bytes", c.DependencyMaxBytes},
+		{"keep_recent_tool_results", c.KeepRecentToolResults},
 	} {
 		if f.v < 0 {
 			errs = append(errs, fmt.Sprintf("execution.content.%s must be >= 0 (got %d)", f.name, f.v))

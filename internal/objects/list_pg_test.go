@@ -88,7 +88,7 @@ func newLPEnv(t *testing.T, ns string) *lpEnv {
 	}
 	e := &env{t: t, ctx: ctx, pool: pool, ns: ns, onto: o,
 		events: postgres.NewPgEventStore(pool, o), know: postgres.NewPgKnowledgeStore(pool, o)}
-	return &lpEnv{env: e, links: postgres.NewPgLinkStore(pool, o), entities: postgres.NewPgEntityStore(pool),
+	return &lpEnv{env: e, links: postgres.NewPgLinkStore(pool, o), entities: postgres.NewPgEntityStore(pool, o),
 		reader: objects.NewReader(pool, o, o)}
 }
 

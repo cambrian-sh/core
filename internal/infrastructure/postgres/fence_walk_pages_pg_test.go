@@ -101,7 +101,7 @@ func newWalkPageFixture(t *testing.T) *wpFixture {
 		base:   time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
 		narrow: &domain.TagPredicate{RequiredTags: []string{"mail"}, ForbiddenTags: []string{"k-secret"}},
 	}
-	f.plane = NewPgQueryPlane(pool, f.events, nil, nil, f.links, NewPgEntityStore(pool), reg)
+	f.plane = NewPgQueryPlane(pool, f.events, nil, nil, f.links, NewPgEntityStore(pool, nil), reg)
 	f.pub = f.evidence(t, "pub", []string{"mail"})
 	f.sec = f.evidence(t, "secret", []string{"mail", "k-secret"})
 	return f

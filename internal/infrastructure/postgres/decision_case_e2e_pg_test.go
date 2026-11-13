@@ -75,7 +75,7 @@ func TestPg_DecisionCaseAsData_EndToEnd(t *testing.T) {
 	store := postgres.NewPgKnowledgeStore(pool, reg)
 	rel, _ := domain.NewRelationRegistry(nil)
 	plane := postgres.NewPgQueryPlane(pool, postgres.NewPgEventStore(pool, reg), store, nil,
-		postgres.NewPgLinkStore(pool, rel), postgres.NewPgEntityStore(pool), rel)
+		postgres.NewPgLinkStore(pool, rel), postgres.NewPgEntityStore(pool, nil), rel)
 
 	// The deployment's approvals config says who commits a decision (data, not Go):
 	// the decision's class routes to the self rule — the person the agent works for.

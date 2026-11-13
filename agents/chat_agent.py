@@ -96,6 +96,40 @@ _KEY_REVISION_EVIDENCE = "reply_evidence"
 _KEY_PENDING_REQUEST = "pending_request"  # D5a: the pending request's own words, verbatim
 _LEDGER_TOOLS = ("ledger_get", "ledger_find")
 
+# ── ADR-0150: the single-agent lane (the merged conversation agent) ──────────
+# The kernel runs the turn in the single-agent lane (execution.lane.default
+# single_agent, the default) when the turn context carries _lane=single_agent
+# (internal/chat buildHandoff). The agent the person talks to is then the worker:
+# it holds the person's permitted tools from the kernel menu (every call through
+# ExecuteTool with the turn's lease), has no delegate_to_planner (the kernel refuses
+# it in this lane), ends the turn on its answer, and runs under the lane's D4
+# stopping rule (the SDK reads the caps from the same context keys).
+_KEY_LANE = "_lane"
+_LANE_SINGLE_AGENT = "single_agent"
+_DELEGATION_TOOLS = ("delegate_to_planner",)
+
+
+def _single_agent_lane(task) -> bool:
+    return (task.context.get(_KEY_LANE) or "") == _LANE_SINGLE_AGENT
+
+
+def _lane_limits_for_turn(task, time_left, reply_reserve_s: float):
+    """The lane's D4 limits for this turn, with the wall cap brought inside the turn
+    deadline: at (time left - the reply reserve) the loop makes its one summary call,
+    so the person gets the partial answer before the kernel's turn timeout."""
+    try:
+        from cambrian_agent_sdk.stopping import LaneLimits
+    except ImportError:  # an SDK without the stopping rule
+        return None
+    lim = LaneLimits.from_task(task)
+    if lim is None:
+        return None
+    if time_left is not None:
+        cap = max(1, int(time_left - reply_reserve_s))
+        if lim.max_wall_seconds <= 0 or cap < lim.max_wall_seconds:
+            lim.max_wall_seconds = cap
+    return lim
+
 
 def _flag(task, key: str) -> bool:
     v = task.metadata.get(key) or task.context.get(key) or ""
@@ -202,31 +236,6 @@ def render_questions(ir) -> str:
             line += f" (about: \"{q['quote']}\")"
         out.append(line)
     return "\n".join(out)
-
-
-class _MenuView:
-    """The agent's @tool registry with some tools hidden for a turn (the ledger tools are
-    offered only when the kernel sends ledger_tools, execution.chat.ledger_tools)."""
-
-    def __init__(self, inner, hidden):
-        self._inner, self._hidden = inner, frozenset(hidden)
-
-    def names(self):
-        return [n for n in self._inner.names() if n not in self._hidden]
-
-    def __contains__(self, name):
-        return name not in self._hidden and name in self._inner
-
-    def schema(self, name):
-        return self._inner.schema(name)
-
-    def specs(self):
-        return [s for s in self._inner.specs() if s.name not in self._hidden]
-
-    def call(self, name, **kwargs):
-        if name in self._hidden:
-            return {"error": f"unknown tool '{name}'", "tool": name}
-        return self._inner.call(name, **kwargs)
 
 
 def _neutralise(value: str) -> str:
@@ -936,7 +945,8 @@ class ChatAgent(CognitiveAgent):
         work_systems = self._meta(task, "work_systems").strip()
         user_msg = (task.text or "").strip()
 
-        role = self.role
+        lane = _single_agent_lane(task)
+        role = _SYSTEM["role-single-agent"].render() if lane else self.role
         # The MCP systems the planner's agents can call, rendered by the kernel from the
         # planner's live tool menu (internal/chat buildHandoff "work_systems"). The front
         # desk's own skills menu has no entry for them, so without this list it answered
@@ -947,18 +957,22 @@ class ChatAgent(CognitiveAgent):
         if policy:
             role += "\n\n" + _SYSTEM["policy"].render({"policy": _neutralise(policy)})
         posture = "answer-memory" if recall else "answer-tools-only"
-        constraints = list(self.constraints) + _SYSTEM[posture].render().splitlines()
+        base = (tuple(_SYSTEM["rules-single-agent"].render().splitlines()) if lane
+                else self.constraints)
+        constraints = list(base) + _SYSTEM[posture].render().splitlines()
         summary = self._meta(task, _KEY_SUMMARY).strip()
         turn_index = self._meta(task, _KEY_TURN_INDEX).strip()
         pending = self._meta(task, _KEY_PENDING).strip()
         # ADR-0145 phase 3 rules (chat_agent v5), each only when the kernel turned its key
         # on, so with every key off the system text is chat_agent v4's.
         for section, on in (
-            ("rules-grounded", _flag(task, _KEY_GROUNDED)),
-            ("rules-delegation", _flag(task, _KEY_DELEGATION_RULE)),
+            # The planner-lane rules that speak of delegation are not the merged
+            # agent's (ADR-0150 D3): it has no delegate_to_planner.
+            ("rules-grounded", _flag(task, _KEY_GROUNDED) and not lane),
+            ("rules-delegation", _flag(task, _KEY_DELEGATION_RULE) and not lane),
             ("rules-ledger-tools", _flag(task, _KEY_LEDGER_TOOLS)),
-            ("rules-turn-index", bool(turn_index)),
-            ("rules-ask-back", bool(pending) or _flag(task, _KEY_ASK_BACK)),
+            ("rules-turn-index", bool(turn_index) and not lane),
+            ("rules-ask-back", (bool(pending) or _flag(task, _KEY_ASK_BACK)) and not lane),
         ):
             if on:
                 constraints += _SYSTEM[section].render().splitlines()
@@ -1016,6 +1030,7 @@ class ChatAgent(CognitiveAgent):
         # The conversation's language, detected by the kernel (internal/chat buildHandoff).
         fallback = _safe_fallback(self._meta(task, "language"))
         ledger_tools = _flag(task, _KEY_LEDGER_TOOLS)
+        lane = _single_agent_lane(task)
 
         def _think(force_delegate: bool, report_result: str = ""):
             role, constraints, turn_text, max_mem = self.compose(
@@ -1040,6 +1055,32 @@ class ChatAgent(CognitiveAgent):
             # kernel coordinator a directly-dispatched chat worker doesn't have; the front desk
             # delegates WHOLE work instead.
             kwargs = {}
+            if lane:
+                # ADR-0150 D3/D4: the merged agent holds the person's tools (the kernel
+                # menu under the turn's lease, find_tools to discover more), never
+                # delegates, and runs under the lane's stopping rule. Asking the person
+                # is its reply, so no typed ask_person verb in a chat turn (D5).
+                kwargs.update(lane_limits=_lane_limits_for_turn(
+                    task, self._time_left(), self.reply_reserve_s), allow_ask_person=False)
+                if _RUN_THINK_D3:
+                    kwargs["delegation_tool"] = ""
+                    kwargs["turn_evidence"] = bool(self._seed_cache)
+                return run_think(
+                    self, turn,
+                    role=role,
+                    output_schema=self.output_schema,
+                    constraints=constraints,
+                    result_type=None,
+                    seed_recall=False,
+                    seed_system_tools=True,
+                    allow_find_tools=True,
+                    allow_yield_subgoal=False,
+                    max_memory_queries=max_mem,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    cache_ttl=self.cache_ttl,
+                    **kwargs,
+                )
             if _RUN_THINK_D3:
                 # ADR-0145 D3: the SDK's structural re-prompt (evidence_reprompt) points a reply
                 # with no evidence behind it at delegate_to_planner; the turn's evidence seeded
@@ -1082,12 +1123,22 @@ class ChatAgent(CognitiveAgent):
         self._asked_back = ""
         # The ledger tools are on the menu only when the kernel offers them this turn.
         from cambrian_agent_sdk.tools import ToolRegistry
-        full_menu = ToolRegistry(self)
-        self._tools = full_menu if ledger_tools else _MenuView(full_menu, _LEDGER_TOOLS)
+        # ADR-0150 D3.2: in the lane the tool list is the person's whole permitted menu,
+        # fixed for the session (not a per-message top-k), so the provider's prompt
+        # cache holds; tools a turn may not use are refused by the kernel, not removed.
+        self.seed_tools_full = lane
+        hidden = () if ledger_tools else _LEDGER_TOOLS
+        if lane:
+            # ADR-0150 D3: no front desk hand-off in the single-agent lane.
+            hidden = tuple(hidden) + _DELEGATION_TOOLS
+        self._tools = ToolRegistry(self, hidden=hidden)
         remaining_ms = getattr(task, "deadline_remaining_ms", 0) or 0
         self._turn_deadline = _now() + remaining_ms / 1000.0 if remaining_ms > 0 else 0.0
         substrate = self.substrate
-        if self._turn_deadline:
+        if self._turn_deadline and not lane:
+            # In the single-agent lane the loop's own wall cap (inside the turn
+            # deadline, _lane_limits_for_turn) ends the run with its summary call;
+            # the guard would cut that summary call itself.
             self.substrate = _DeadlineGuardedSubstrate(substrate, self)
         revision = self._meta(task, _KEY_REVISION).strip()
         try:
@@ -1113,7 +1164,8 @@ class ChatAgent(CognitiveAgent):
             # Retired (not run) under the SDK's structural D3 re-prompt (CAMBRIAN_EVIDENCE_REPROMPT):
             # the loop itself then turns a no-tool, no-evidence draft toward delegate_to_planner,
             # in any language. Deleted when that flag defaults on.
-            if (not self._delegated and not _evidence_reprompt_on() and _ACTION_PROMISE.search(raw or "")
+            if (not _single_agent_lane(task) and not self._delegated and not _evidence_reprompt_on()
+                    and _ACTION_PROMISE.search(raw or "")
                     and self._has_time_for(self.reply_reserve_s + self.min_delegation_s)):
                 _log.warning("chat_agent: reply promised delegation but no tool call fired; forcing retry")
                 result = _think(True)

@@ -45,8 +45,12 @@ func (r *Reader) List(ctx context.Context, scope *domain.TagPredicate, q domain.
 	}
 	out := domain.ObjectsResult{Kind: c.Spec.Kind, DeclVersion: c.DeclVersion}
 	if c.Group {
-		sql, args := planGroup(c, scope)
 		err = r.read(ctx, func(tx pgx.Tx) error {
+			vis, err := visibleClasses(ctx, tx, c, scope)
+			if err != nil {
+				return err
+			}
+			sql, args := planGroup(c, scope, vis)
 			out.Groups, out.Truncated, err = scanGroups(ctx, tx, c, sql, args)
 			return err
 		})
@@ -56,8 +60,12 @@ func (r *Reader) List(ctx context.Context, scope *domain.TagPredicate, q domain.
 	if err != nil {
 		return domain.ObjectsResult{}, err
 	}
-	sql, args := planList(c, scope, cur)
 	err = r.read(ctx, func(tx pgx.Tx) error {
+		vis, err := visibleClasses(ctx, tx, c, scope)
+		if err != nil {
+			return err
+		}
+		sql, args := planList(c, scope, cur, vis)
 		rows, err := tx.Query(ctx, sql, args...)
 		if err != nil {
 			return err
@@ -88,10 +96,55 @@ func (r *Reader) List(ctx context.Context, scope *domain.TagPredicate, q domain.
 	return out, err
 }
 
+// visibleClasses computes the caller's visible fence classes V (planVisible)
+// when the request needs the existence rule; nil otherwise.
+func visibleClasses(ctx context.Context, tx pgx.Tx, c checked, scope *domain.TagPredicate) ([]int32, error) {
+	if !needsExistence(c, scope) {
+		return nil, nil
+	}
+	sql, args := planVisible(scope)
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	vis, err := pgx.CollectRows(rows, pgx.RowTo[int32])
+	if err != nil {
+		return nil, err
+	}
+	if vis == nil {
+		vis = []int32{} // binds '{}' (no class visible), never NULL
+	}
+	return vis, nil
+}
+
 // read runs fn in a read-only transaction under the statement timeout.
+//
+// REPEATABLE READ: a request may run two statements (the visible classes, then
+// the query), and both must see one snapshot, so a row rewritten between them
+// is judged by the classes of the same moment. A read-only transaction never
+// fails serialization.
+//
+// jit = off: the planner's cost estimate for a fenced statement is inflated by
+// the fence's correlated SubPlans and crosses the JIT thresholds, and JIT
+// compile time then dominated (3.3 s of 5.8 s for an unfiltered group at 10^5,
+// investigations/2026-11-13-unfiltered-listobjects-existence-cost.md). The
+// statements here are short, bounded and index-driven: compilation never pays
+// back.
+//
+// plan_cache_mode = force_custom_plan: the existence rule binds the caller's
+// visible classes as an array, and Postgres hashes `x = ANY(array)` only when
+// the array is a constant at planning time — a custom plan. pgx prepares and
+// caches statements, and after five executions Postgres may switch to a
+// generic plan in which the array is a parameter and every row scans it
+// linearly: at 10^5 orders an unfiltered group took 588 ms instead of 229 with
+// 49 visible classes and 15.3 s instead of 264 ms with 20,049
+// (T-20261113-unfiltered-listobjects-group-list-under-a).
 func (r *Reader) read(ctx context.Context, fn func(pgx.Tx) error) error {
-	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL statement_timeout = %d", StatementTimeout.Milliseconds())); err != nil {
+	opts := pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
+	err := pgx.BeginTxFunc(ctx, r.pool, opts, func(tx pgx.Tx) error {
+		// One round trip: Exec with no arguments uses the simple protocol.
+		if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL statement_timeout = %d; SET LOCAL jit = off; "+
+			"SET LOCAL plan_cache_mode = force_custom_plan", StatementTimeout.Milliseconds())); err != nil {
 			return err
 		}
 		return fn(tx)

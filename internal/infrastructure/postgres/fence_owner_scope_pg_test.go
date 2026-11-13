@@ -313,7 +313,7 @@ func TestPg_OwnerFence_QueryPlane(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := NewPgEventStore(pool, nil)
-	plane := NewPgQueryPlane(pool, events, nil, nil, NewPgLinkStore(pool, reg), NewPgEntityStore(pool), reg)
+	plane := NewPgQueryPlane(pool, events, nil, nil, NewPgLinkStore(pool, reg), NewPgEntityStore(pool, nil), reg)
 	now := time.Now().UTC()
 	for id, tags := range map[string][]string{
 		"a": {"mail", "owner:alice"}, "b": {"mail", "owner:bob"}, "pub": {"mail"},

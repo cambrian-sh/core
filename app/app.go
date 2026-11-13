@@ -2343,6 +2343,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ADR-0145 phase 3, the chat side (execution.chat grounding keys, default off):
 	// after the ledger, which holds the turn state and the reply check's evidence.
 	wireChatGrounding(cfg.Execution.Chat, chatTurns, cambrianServer, turnDelegations, plannerGen, runTracer)
+	// ADR-0150 D3: the merged conversation agent in the single-agent lane.
+	wireChatLane(cfg.Execution, chatTurns, cambrianServer)
 	cambrianServer.ApprovalHub = toolApproval
 	// Principal-owned recurring tasks: approval-gated through this same hub
 	// (kind "schedule"), stored by the premium schedule store a plugin registered
@@ -2504,6 +2506,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// default off), after the ledger, the effect vocabulary and skill access are wired.
 	wireStepRecovery(cfg.Execution, cambrianServer, meta.Dispatcher)
 	wireComposedWorkers(cfg.Execution, cambrianServer, meta.Dispatcher, reg)
+	// ADR-0150 D2: run_subtasks for the single-agent lane's agent (after the ledger
+	// and the composed runtime it runs subtask workers on).
+	wireSubtasks(cfg.Execution, cambrianServer)
 	skillLifecycle, skillCurator := wireSkillLifecycle(ctx, cfg.Execution.Skills, vec.Pool(), skillReg, skillIndexer, discoveredSkills, proposerGrants)
 	if skillLifecycle != nil {
 		cambrianServer.SkillLifecycle = skillLifecycle // typed-nil guard: only a built service

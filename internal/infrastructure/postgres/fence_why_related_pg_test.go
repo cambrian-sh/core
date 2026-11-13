@@ -79,7 +79,7 @@ func newRelFixture(t *testing.T) *relFixture {
 	events := NewPgEventStore(pool, nil)
 	f := &relFixture{
 		pool: pool, ctx: ctx, t0: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC), ev: map[string]string{},
-		plane:  NewPgQueryPlane(pool, events, nil, nil, NewPgLinkStore(pool, reg), NewPgEntityStore(pool), reg),
+		plane:  NewPgQueryPlane(pool, events, nil, nil, NewPgLinkStore(pool, reg), NewPgEntityStore(pool, nil), reg),
 		narrow: &domain.TagPredicate{RequiredTags: []string{"mail"}, ForbiddenTags: []string{"k-secret"}},
 	}
 	evs := NewPgEvidenceStore(pool)

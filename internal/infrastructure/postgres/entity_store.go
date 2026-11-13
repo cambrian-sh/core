@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/objects"
 )
 
 // PgEntityStore is the Postgres adapter for domain.EntityStore (five-planes step 1;
@@ -21,12 +22,19 @@ import (
 // producers into dropping rows they could not verify, which is how the identity plane
 // would end up sparser than the data.
 type PgEntityStore struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	kinds domain.KindSource
 }
 
-// NewPgEntityStore wraps an existing pool.
-func NewPgEntityStore(pool *pgxpool.Pool) *PgEntityStore {
-	return &PgEntityStore{pool: pool}
+// NewPgEntityStore wraps an existing pool. kinds is the live ontology or a fixed
+// *domain.KindRegistry (nil means no declared kinds): a mint of an object of a
+// table kind recomputes its object row (ADR-0149 D8), because the evidence
+// that minted an entity is one of the fence classes the row carries.
+func NewPgEntityStore(pool *pgxpool.Pool, kinds domain.KindSource) *PgEntityStore {
+	if kinds == nil {
+		kinds = (*domain.KindRegistry)(nil)
+	}
+	return &PgEntityStore{pool: pool, kinds: kinds}
 }
 
 var _ domain.EntityStore = (*PgEntityStore)(nil)
@@ -60,15 +68,31 @@ func (s *PgEntityStore) EnsureEntity(ctx context.Context, e domain.Entity) (bool
 		v := string(e.FirstSeenEvidence)
 		firstSeen = &v
 	}
-	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO entities (id, namespace_id, kind, first_seen_evidence)
-		VALUES ($1,$2,$3,$4)
-		ON CONFLICT (id) DO NOTHING`,
-		e.ID, ns, kind, firstSeen)
+	// The mint is one of the object maintainer's write paths (ADR-0149 D8): the
+	// object row's vis_classes carries the class of the evidence that minted the
+	// entity, and producers mint AFTER they write the observations (the ingress
+	// studio writes typed rows, then its link batch), so a row already exists
+	// whose classes this insert changes. Recompute it in the same transaction.
+	// Only a created row matters: first_seen_evidence is never updated.
+	created := false
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO entities (id, namespace_id, kind, first_seen_evidence)
+			VALUES ($1,$2,$3,$4)
+			ON CONFLICT (id) DO NOTHING`,
+			e.ID, ns, kind, firstSeen)
+		if err != nil {
+			return err
+		}
+		if created = tag.RowsAffected() == 1; !created {
+			return nil
+		}
+		return objects.ApplyStateTx(ctx, tx, s.kinds, ns, e.ID)
+	})
 	if err != nil {
 		return false, err
 	}
-	return tag.RowsAffected() == 1, nil
+	return created, nil
 }
 
 // GetEntity returns the handle; ok=false when it was never minted — an answer, not an

@@ -27,7 +27,7 @@
         "args": ["-y", "@brave/brave-search-mcp-server@2.1.4"],
         "auth": {"type": "none"},
         "env": ["BRAVE_API_KEY"],
-        "default_tool_policy": {"effects": ["read", "egress"]}
+        "default_tool_policy": {"effects": ["read", "egress_read"]}
       },
       {
         "id": "tavily",
@@ -37,7 +37,7 @@
         "args": ["-y", "tavily-mcp@0.2.22"],
         "auth": {"type": "none"},
         "env": ["TAVILY_API_KEY"],
-        "default_tool_policy": {"effects": ["read", "egress"]}
+        "default_tool_policy": {"effects": ["read", "egress_read"]}
       },
       {
         "id": "exa",
@@ -47,7 +47,7 @@
         "args": ["-y", "exa-mcp-server@3.4.3"],
         "auth": {"type": "none"},
         "env": ["EXA_API_KEY"],
-        "default_tool_policy": {"effects": ["read", "egress"]}
+        "default_tool_policy": {"effects": ["read", "egress_read"]}
       },
       {
         "id": "searxng",
@@ -58,8 +58,8 @@
         "auth": {"type": "none"},
         "env": ["SEARXNG_URL"],
         "tools": [
-          {"name": "searxng_web_search", "dangerous": false, "effects": ["read", "egress"]},
-          {"name": "web_url_read",       "dangerous": false, "effects": ["read", "egress"]}
+          {"name": "searxng_web_search", "dangerous": false, "effects": ["read", "egress_read"]},
+          {"name": "web_url_read",       "dangerous": false, "effects": ["read", "egress_read"]}
         ]
       },
       {

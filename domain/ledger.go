@@ -44,10 +44,11 @@ const (
 )
 
 // ValidLedgerKind reports whether k is one of the ledger kinds (the five of D1,
-// plus LedgerComposition, the D12 worker composition record, worker_composition.go).
+// plus LedgerComposition, the D12 worker composition record, worker_composition.go,
+// and LedgerSubtask, the ADR-0150 D2 subtask record, subtasks.go).
 func ValidLedgerKind(k LedgerKind) bool {
 	switch k {
-	case LedgerToolResult, LedgerStepOutput, LedgerComputed, LedgerArtifact, LedgerScratch, LedgerComposition:
+	case LedgerToolResult, LedgerStepOutput, LedgerComputed, LedgerArtifact, LedgerScratch, LedgerComposition, LedgerSubtask:
 		return true
 	}
 	return false

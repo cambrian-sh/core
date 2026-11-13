@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"pgregory.net/rapid"
 
@@ -78,6 +79,7 @@ func newEnv(t *testing.T, ns string, tables []string, seed ...domain.KindSpec) *
 			`DELETE FROM observations WHERE namespace_id = $1`,
 			`DELETE FROM resolutions WHERE namespace_id = $1`,
 			`DELETE FROM knowledge_items WHERE namespace_id = $1`,
+			`DELETE FROM entities WHERE namespace_id = $1`,
 			`DELETE FROM evidence WHERE namespace_id = $1`,
 		} {
 			_, _ = pool.Exec(bg, q, ns)
@@ -116,6 +118,109 @@ func (e *env) evidence(id, source string, tags ...string) domain.EvidenceID {
 		e.t.Fatal(err)
 	}
 	return domain.EvidenceID(id)
+}
+
+// evidenceP writes an evidence row with parties (tags and parties as given,
+// duplicates and order included: the maintainer canonicalises).
+func (e *env) evidenceP(id, source string, tags, parties []string) domain.EvidenceID {
+	e.t.Helper()
+	if _, err := e.pool.Exec(e.ctx, `INSERT INTO evidence (id, namespace_id, source_id, source_key, content_hash, classification, parties)
+		VALUES ($1,$2,$3,$1,'sha256:test',$4,$5) ON CONFLICT DO NOTHING`, id, e.ns, source, nonNilS(tags), nonNilS(parties)); err != nil {
+		e.t.Fatal(err)
+	}
+	return domain.EvidenceID(id)
+}
+
+// pairKey is the test's own canonical rendering of a fence class: both sides
+// sorted and de-duplicated, absent parties empty.
+func pairKey(tags, parties []string) string {
+	set := func(xs []string) string {
+		m := map[string]bool{}
+		for _, x := range xs {
+			m[x] = true
+		}
+		out := make([]string, 0, len(m))
+		for x := range m {
+			out = append(out, x)
+		}
+		sort.Strings(out)
+		return "[" + strings.Join(out, ",") + "]"
+	}
+	return set(tags) + "|" + set(parties)
+}
+
+// expectedClasses is a row's vis_classes as the rule defines it, from an
+// independently computed state and the entity's minted evidence (nil = none):
+// every declared property's classified value's pair, and the minted pair.
+func expectedClasses(spec domain.KindSpec, st objects.State, minted *[2][]string) []string {
+	m := map[string]bool{}
+	for p := range spec.Predicates {
+		if v, ok := st.Props[p]; ok && v.Tags != nil {
+			m[pairKey(v.Tags, v.Parties)] = true
+		}
+	}
+	if minted != nil {
+		m[pairKey(minted[0], minted[1])] = true
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// classesOf decodes one row's vis_classes through the dictionary, sorted. It
+// fails the test when the array is NULL, unsorted or repeats an id, or when a
+// dictionary pair is not stored canonically.
+func (e *env) classesOf(t interface {
+	Helper()
+	Fatalf(string, ...any)
+}, kind, entity string) []string {
+	t.Helper()
+	var ids []int32
+	if err := e.pool.QueryRow(e.ctx, `SELECT vis_classes FROM `+objects.TableName(kind)+` WHERE namespace_id = $1 AND entity_id = $2`,
+		e.ns, entity).Scan(&ids); err != nil {
+		t.Fatalf("vis_classes of %s: %v", entity, err)
+	}
+	if ids == nil {
+		t.Fatalf("%s: vis_classes is NULL", entity)
+	}
+	var out []string
+	for i, id := range ids {
+		if i > 0 && ids[i-1] >= id {
+			t.Fatalf("%s: vis_classes %v is not sorted and distinct", entity, ids)
+		}
+		var tags, parties []string
+		if err := e.pool.QueryRow(e.ctx, `SELECT tags, parties FROM object_fence_classes WHERE id = $1`, id).Scan(&tags, &parties); err != nil {
+			t.Fatalf("%s: class %d: %v", entity, id, err)
+		}
+		k := pairKey(tags, parties)
+		if k != "["+strings.Join(tags, ",")+"]|["+strings.Join(parties, ",")+"]" {
+			t.Fatalf("class %d is not canonical: %v %v", id, tags, parties)
+		}
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	if out == nil {
+		out = []string{}
+	}
+	return out
+}
+
+// mintedPair is the (classification, parties) of the evidence that minted
+// entity, read independently; nil when it was not minted with evidence.
+func (e *env) mintedPair(t interface{ Fatalf(string, ...any) }, entity string) *[2][]string {
+	var tags, parties []string
+	err := e.pool.QueryRow(e.ctx, `SELECT ev.classification, ev.parties FROM entities en, evidence ev
+		WHERE en.id = $1 AND en.namespace_id = $2 AND ev.id = en.first_seen_evidence`, entity, e.ns).Scan(&tags, &parties)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		t.Fatalf("minted %s: %v", entity, err)
+	}
+	return &[2][]string{tags, parties}
 }
 
 var base = time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)
@@ -424,7 +529,8 @@ func bruteForce(t *rapid.T, e *env, spec domain.KindSpec) map[string]objects.Sta
 	t.Helper()
 	cands := map[string][]objects.Candidate{}
 	rs, err := e.pool.Query(e.ctx, `
-		SELECT o.id, o.entity_id, o.predicate, o.value_type, o.value_text, o.value_number, o.occurred_at, COALESCE(e.source_id,'')
+		SELECT o.id, o.entity_id, o.predicate, o.value_type, o.value_text, o.value_number, o.occurred_at, COALESCE(e.source_id,''),
+		       e.classification, e.parties
 		FROM observations o LEFT JOIN evidence e ON e.id = o.evidence_id
 		WHERE o.namespace_id = $1 AND NOT EXISTS (SELECT 1 FROM typed_row_retirements r
 		  WHERE r.namespace_id = o.namespace_id AND r.source_ref = o.source_ref AND r.reinstated_at IS NULL)`, e.ns)
@@ -437,8 +543,11 @@ func bruteForce(t *rapid.T, e *env, spec domain.KindSpec) map[string]objects.Sta
 		var entity string
 		var tx *string
 		var nm *float64
-		if err := rs.Scan(&id, &entity, &c.Predicate, &c.Value.Type, &tx, &nm, &c.At, &c.Source); err != nil {
+		if err := rs.Scan(&id, &entity, &c.Predicate, &c.Value.Type, &tx, &nm, &c.At, &c.Source, &c.Tags, &c.Parties); err != nil {
 			t.Fatal(err)
+		}
+		if c.Tags != nil && c.Parties == nil {
+			c.Parties = []string{}
 		}
 		if tx != nil {
 			c.Value.Text = *tx
@@ -457,7 +566,8 @@ func bruteForce(t *rapid.T, e *env, spec domain.KindSpec) map[string]objects.Sta
 	for _, r := range items {
 		for _, v := range r.Item.Values {
 			cands[r.EntityID] = append(cands[r.EntityID], objects.Candidate{Predicate: v.Predicate, Value: v,
-				At: r.Item.AssertedAt, Source: r.Item.AssertedBy, ID: "i" + string(r.Item.ID)})
+				At: r.Item.AssertedAt, Source: r.Item.AssertedBy, ID: "i" + string(r.Item.ID),
+				Tags: nonNilS(r.Item.Classification), Parties: []string{}})
 		}
 	}
 	out := map[string]objects.State{}
@@ -481,13 +591,19 @@ func TestPg_RebuildEqualsIncrementalAndTableEqualsHistory(t *testing.T) {
 	e.evidence("p3diff-erp", "erp", "ops")
 	e.evidence("p3diff-crm", "crm", "sales")
 	e.evidence("p3diff-none", "", "ops")
+	// Unsorted, repeated tags and parties: the classes are canonical pairs.
+	e.evidenceP("p3diff-deal", "deal", []string{"sales", "deal:x", "sales"}, []string{"p2", "p1", "p2"})
+	e.evidenceP("p3diff-deal2", "deal", []string{"deal:x", "sales"}, []string{"p1", "p2"})
+	mint := postgres.NewPgEntityStore(e.pool, e.onto)
+	evs := []string{"p3diff-erp", "p3diff-crm", "p3diff-none", "p3diff-deal", "p3diff-deal2"}
 	entities := []string{"p3order/A", "p3order/B", "p3order/C"}
 	round := 0
 	rapid.Check(t, func(rt *rapid.T) {
 		round++
 		// A clean slate per round, then a random history through the real stores.
 		for _, q := range []string{`DELETE FROM typed_row_retirements WHERE namespace_id = $1`, `DELETE FROM observations WHERE namespace_id = $1`,
-			`DELETE FROM resolutions WHERE namespace_id = $1`, `DELETE FROM knowledge_items WHERE namespace_id = $1`} {
+			`DELETE FROM resolutions WHERE namespace_id = $1`, `DELETE FROM knowledge_items WHERE namespace_id = $1`,
+			`DELETE FROM entities WHERE namespace_id = $1`} {
 			if _, err := e.pool.Exec(e.ctx, q, e.ns); err != nil {
 				rt.Fatal(err)
 			}
@@ -501,7 +617,7 @@ func TestPg_RebuildEqualsIncrementalAndTableEqualsHistory(t *testing.T) {
 			entity := rapid.SampledFrom(entities).Draw(rt, "entity")
 			at := time.Duration(rapid.IntRange(0, 5).Draw(rt, "at")) * time.Minute
 			ref := fmt.Sprintf("r%d-%d", round, i)
-			switch rapid.IntRange(0, 4).Draw(rt, "op") {
+			switch rapid.IntRange(0, 6).Draw(rt, "op") {
 			case 0, 1: // observation
 				pred := rapid.SampledFrom([]string{"status", "total", "colour"}).Draw(rt, "pred")
 				var v domain.StatementValue
@@ -510,7 +626,7 @@ func TestPg_RebuildEqualsIncrementalAndTableEqualsHistory(t *testing.T) {
 				} else {
 					v = txt(rapid.SampledFrom([]string{"open", "shipped"}).Draw(rt, "s"))
 				}
-				ev := domain.EvidenceID(rapid.SampledFrom([]string{"p3diff-erp", "p3diff-crm", "p3diff-none"}).Draw(rt, "ev"))
+				ev := domain.EvidenceID(rapid.SampledFrom(append(append([]string{}, evs...), "")).Draw(rt, "ev"))
 				if err := e.observe(entity, pred, v, at, ev, ref); err != nil {
 					rt.Fatal(err)
 				}
@@ -535,6 +651,15 @@ func TestPg_RebuildEqualsIncrementalAndTableEqualsHistory(t *testing.T) {
 					if _, err := e.events.ReinstateRows(e.ctx, e.ns, []string{r}); err != nil {
 						rt.Fatal(err)
 					}
+				}
+			case 5: // mint the entity, often AFTER its row exists (the ingress order)
+				ev := rapid.SampledFrom(append(append([]string{}, evs...), "")).Draw(rt, "mev")
+				if _, err := mint.EnsureEntity(e.ctx, domain.Entity{ID: entity, NamespaceID: e.ns, FirstSeenEvidence: domain.EvidenceID(ev)}); err != nil {
+					rt.Fatal(err)
+				}
+			case 6: // erase the entity's items
+				if _, err := e.know.EraseItems(e.ctx, e.ns, "p3order", domain.KnowledgeErasure{Entities: []string{entity}}); err != nil {
+					rt.Fatal(err)
 				}
 			}
 		}
@@ -562,6 +687,11 @@ func TestPg_RebuildEqualsIncrementalAndTableEqualsHistory(t *testing.T) {
 				if got[col] != valueOf(p.Value) || prov(got, pred)["id"] != p.ID || prov(got, pred)["conflict"] != p.Conflict {
 					rt.Fatalf("%s.%s: table %v %v, history %+v", entity, pred, got[col], prov(got, pred), p)
 				}
+			}
+			// vis_classes: exactly the classified properties' pairs and the
+			// minted evidence's, canonical, through the dictionary.
+			if gotC, wantC := e.classesOf(rt, "p3order", entity), expectedClasses(spec, st, e.mintedPair(rt, entity)); strings.Join(gotC, " ") != strings.Join(wantC, " ") {
+				rt.Fatalf("%s vis_classes: table %v, history %v", entity, gotC, wantC)
 			}
 			extra, _ := got["extra"].(map[string]any)
 			var gotX, wantX []string
@@ -592,4 +722,146 @@ func TestPg_RebuildEqualsIncrementalAndTableEqualsHistory(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Every write path keeps vis_classes exact (ADR-0149 D6/D8;
+// T-20261113-unfiltered-listobjects-group-list-under-a): observation, item,
+// retirement and reinstatement, erasure, fact reset, and the entity mint —
+// including a mint that lands AFTER the object row exists, the order the
+// ingress studio writes in (typed rows, then its link batch with the mints).
+func TestPg_VisClassesFollowEveryWritePath(t *testing.T) {
+	spec := p3order()
+	// memory_fact under the default resolution policy: ResetFacts selects by the
+	// kind name only, and the test registers no valid-time authority.
+	fact := domain.MemoryFactKindSpec()
+	fact.Policy = ""
+	fact.Predicates["status"] = domain.ValueSpec{Type: "text"} // the object vocabulary it speaks here
+	e := newEnv(t, "p3test-vis", []string{"p3order"}, spec, fact)
+	ops := e.evidence("p3vis-ops", "erp", "ops")
+	deal := e.evidenceP("p3vis-deal", "crm", []string{"sales", "deal:x", "sales"}, []string{"p2", "p1", "p1"})
+	minted := e.evidenceP("p3vis-mint", "studio", []string{"region:south"}, nil)
+	mint := postgres.NewPgEntityStore(e.pool, e.onto)
+	const o = "p3order/O-1"
+	check := func(step string, want ...string) {
+		t.Helper()
+		sort.Strings(want)
+		if got := e.classesOf(t, "p3order", o); strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Fatalf("%s: vis_classes %v, want %v", step, got, want)
+		}
+	}
+	opsC, dealC := pairKey([]string{"ops"}, nil), pairKey([]string{"deal:x", "sales"}, []string{"p1", "p2"})
+
+	e.mustObserve(o, "status", txt("open"), 0, ops, "vis:1")
+	check("observation", opsC)
+	e.mustObserve(o, "total", num(10), 0, deal, "vis:2")
+	check("a second property with another, unsorted pair", opsC, dealC)
+	e.mustObserve(o, "total", num(20), time.Hour, "", "vis:3")
+	check("a value with no classification is no class", opsC)
+
+	st := txt("cancelled")
+	st.Predicate = "status"
+	if err := e.assert("p3order", o, "user:alice", 2*time.Hour, "alice:1", st); err != nil { // classified {ops}
+		t.Fatal(err)
+	}
+	check("an item takes the status (its classification is ops too)", opsC)
+	if _, _, err := e.know.PutItem(e.ctx, domain.KnowledgeItem{NamespaceID: e.ns, Kind: "p3order", EntityID: o,
+		AssertedBy: "user:bob", AssertedAt: base.Add(3 * time.Hour), SourceRef: "bob:1",
+		Values: []domain.StatementValue{st}, Classification: []string{"finance", "ops"}}); err != nil {
+		t.Fatal(err)
+	}
+	check("a newer item with another classification", pairKey([]string{"finance", "ops"}, nil))
+
+	if _, err := e.events.RetireRows(e.ctx, e.ns, []string{"vis:3"}, domain.RetireSuperseded, "t"); err != nil {
+		t.Fatal(err)
+	}
+	check("retiring the unclassified total brings the deal pair back", pairKey([]string{"finance", "ops"}, nil), dealC)
+	if _, err := e.events.ReinstateRows(e.ctx, e.ns, []string{"vis:3"}); err != nil {
+		t.Fatal(err)
+	}
+	check("reinstated", pairKey([]string{"finance", "ops"}, nil))
+
+	if _, err := e.know.EraseItems(e.ctx, e.ns, "p3order", domain.KnowledgeErasure{Entities: []string{o}}); err != nil {
+		t.Fatal(err)
+	}
+	check("erasing the items returns the status to the observation", opsC)
+
+	// A memory fact about the object (another kind, the object's vocabulary),
+	// then a fact reset that deletes it: the reset recomputes the row.
+	fs := txt("held")
+	fs.Predicate = "status"
+	if _, _, err := e.know.PutItem(e.ctx, domain.KnowledgeItem{NamespaceID: e.ns, Kind: domain.KindMemoryFact, EntityID: o,
+		AssertedBy: "p3vis-reset", AssertedAt: base.Add(4 * time.Hour), SourceRef: "fact:1",
+		Values: []domain.StatementValue{fs}, Classification: []string{"memory"}}); err != nil {
+		t.Fatal(err)
+	}
+	check("a memory fact takes the status", pairKey([]string{"memory"}, nil))
+	if _, err := e.know.ResetFacts(e.ctx, domain.FactResetFilter{Principal: "p3vis-reset"}); err != nil {
+		t.Fatal(err)
+	}
+	check("fact reset", opsC)
+
+	// The mint lands after the row: its evidence becomes a class, in the mint's
+	// own transaction. A second mint of the same id changes nothing.
+	if created, err := mint.EnsureEntity(e.ctx, domain.Entity{ID: o, NamespaceID: e.ns, FirstSeenEvidence: minted}); err != nil || !created {
+		t.Fatalf("mint: %v %v", created, err)
+	}
+	mintC := pairKey([]string{"region:south"}, nil)
+	check("mint after the row", opsC, mintC)
+	if created, err := mint.EnsureEntity(e.ctx, domain.Entity{ID: o, NamespaceID: e.ns, FirstSeenEvidence: ops}); err != nil || created {
+		t.Fatalf("re-mint: %v %v", created, err)
+	}
+	check("a re-mint is a no-op", opsC, mintC)
+
+	// A mint before any history: no row yet; the first write carries the class.
+	const o2 = "p3order/O-2"
+	if _, err := mint.EnsureEntity(e.ctx, domain.Entity{ID: o2, NamespaceID: e.ns, FirstSeenEvidence: deal}); err != nil {
+		t.Fatal(err)
+	}
+	if e.row("p3order", o2) != nil {
+		t.Fatal("a mint alone makes no object row")
+	}
+	e.mustObserve(o2, "status", txt("open"), 0, "", "vis:4")
+	if got := e.classesOf(t, "p3order", o2); strings.Join(got, " ") != dealC {
+		t.Fatalf("mint before the row: %v", got)
+	}
+
+	// Rebuild recomputes the same classes (rebuild == incremental).
+	before := e.rows("p3order")
+	if _, err := e.pool.Exec(e.ctx, `DELETE FROM objects_p3order WHERE namespace_id = $1`, e.ns); err != nil {
+		t.Fatal(err)
+	}
+	tbl := objects.PlanTables([]*domain.OntologySnapshot{e.onto.Current(e.ns)})[0]
+	if _, err := objects.Rebuild(e.ctx, e.pool, e.onto, tbl); err != nil {
+		t.Fatal(err)
+	}
+	if after := e.rows("p3order"); !reflect.DeepEqual(after, before) {
+		t.Fatalf("rebuild != incremental:\n%v\n%v", after, before)
+	}
+}
+
+// The dictionary is append-only and one row per canonical pair: interning the
+// same pair from many concurrent writers yields one id.
+func TestPg_FenceClassesInternOncePerPair(t *testing.T) {
+	e := newEnv(t, "p3test-intern", []string{"p3order"}, p3order())
+	ev := e.evidenceP("p3intern-ev", "erp", []string{"zz:intern", "aa:intern", "zz:intern"}, []string{"q"})
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		go func(i int) {
+			errs <- e.observe(fmt.Sprintf("p3order/I-%d", i), "status", txt("open"), 0, ev, fmt.Sprintf("intern:%d", i))
+		}(i)
+	}
+	for i := 0; i < 8; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := e.pool.QueryRow(e.ctx, `SELECT count(*) FROM object_fence_classes WHERE tags = '{aa:intern,zz:intern}' AND parties = '{q}'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("one dictionary row per pair: %d %v", n, err)
+	}
+	for i := 0; i < 8; i++ {
+		if got := e.classesOf(t, "p3order", fmt.Sprintf("p3order/I-%d", i)); len(got) != 1 || got[0] != pairKey([]string{"aa:intern", "zz:intern"}, []string{"q"}) {
+			t.Fatalf("I-%d: %v", i, got)
+		}
+	}
 }

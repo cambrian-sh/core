@@ -663,7 +663,7 @@ func checkEffects(effects []string) string {
 
 func mutating(effects []string) bool {
 	for _, e := range effects {
-		if e != string(domain.EffectRead) && e != string(domain.EffectEgress) {
+		if e != string(domain.EffectRead) && e != string(domain.EffectEgress) && e != string(domain.EffectEgressRead) {
 			return true
 		}
 	}

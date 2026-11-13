@@ -59,7 +59,7 @@ func (failingItems) GetItem(context.Context, domain.KnowledgeItemID) (*domain.Kn
 
 func TestPg_NonWalkShapes_AsOfDoesNotDropRowsOnItemReadErrors(t *testing.T) {
 	f := newShapeEqFixture(t)
-	plane := NewPgQueryPlane(f.pool, f.events, failingItems{f.knowledge}, nil, f.links, NewPgEntityStore(f.pool), f.reg)
+	plane := NewPgQueryPlane(f.pool, f.events, failingItems{f.knowledge}, nil, f.links, NewPgEntityStore(f.pool, nil), f.reg)
 	res, err := plane.Query(f.ctx, domain.KnowledgeQuery{Kind: domain.QueryAsOf, ItemKind: seKind, AsOf: f.asOf}, f.narrow)
 	if err != nil {
 		t.Fatalf("as_of: %v", err)
@@ -135,7 +135,7 @@ func TestPg_NonWalkShapes_NarrowScopeGetsFullPages_EntityLinks(t *testing.T) {
 	}
 	// An entity cited only from outside: its whole card is the incoming lane.
 	c2 := domain.EntityRef("shapeq/c2")
-	if _, err := NewPgEntityStore(f.pool).EnsureEntity(f.ctx, domain.Entity{
+	if _, err := NewPgEntityStore(f.pool, nil).EnsureEntity(f.ctx, domain.Entity{
 		NamespaceID: "default", ID: "shapeq/c2", FirstSeenEvidence: f.pub,
 	}); err != nil {
 		t.Fatalf("entity: %v", err)

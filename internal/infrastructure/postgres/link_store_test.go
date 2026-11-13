@@ -53,7 +53,7 @@ func newIdentityStores(t *testing.T) (*PgEntityStore, *PgLinkStore, *pgxpool.Poo
 	if err != nil {
 		t.Fatalf("relation registry: %v", err)
 	}
-	return NewPgEntityStore(pool), NewPgLinkStore(pool, reg), pool, ctx
+	return NewPgEntityStore(pool, nil), NewPgLinkStore(pool, reg), pool, ctx
 }
 
 // seedEvidence inserts the minimum evidence row a link's FK will accept. Links REFERENCE

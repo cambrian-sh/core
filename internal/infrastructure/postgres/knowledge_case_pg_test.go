@@ -58,7 +58,7 @@ func newCaseStores(t *testing.T, specs ...domain.KindSpec) (*PgKnowledgeStore, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	plane := NewPgQueryPlane(pool, evs, ks, nil, NewPgLinkStore(pool, rel), NewPgEntityStore(pool), rel)
+	plane := NewPgQueryPlane(pool, evs, ks, nil, NewPgLinkStore(pool, rel), NewPgEntityStore(pool, nil), rel)
 	return ks, evs, plane, pool, ctx
 }
 

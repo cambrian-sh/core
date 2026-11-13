@@ -17,6 +17,10 @@ import (
 var (
 	// A row write naming an objects_ table, in any Go source.
 	objectTableWrite = regexp.MustCompile(`(?is)\b(insert\s+into|update|delete\s+from|truncate(\s+table)?|copy)\s+(only\s+)?(\\?")?(public\.)?(\\?")?objects_`)
+	// A row write naming the fence class dictionary (migration 0043): the
+	// maintainer interns pairs; nothing else may add, change or remove one (an
+	// id must name one pair forever, or a row's vis_classes would change meaning).
+	classDictWrite = regexp.MustCompile(`(?is)\b(insert\s+into|update|delete\s+from|truncate(\s+table)?|copy)\s+(only\s+)?(\\?")?(public\.)?(\\?")?object_fence_classes\b`)
 	// Any row-writing statement keyword (this package builds table names
 	// dynamically, so inside it any such keyword outside state.go is suspect).
 	rowWriteKeyword = regexp.MustCompile(`(?i)\b(INSERT\s+INTO|DELETE\s+FROM|UPDATE\s+\S+\s+SET|TRUNCATE)\b`)
@@ -73,6 +77,9 @@ func TestArchitecture_OnlyTheMaintainerWritesObjectTables(t *testing.T) {
 			if m := objectTableWrite.Find(src); m != nil {
 				t.Errorf("%s writes an object table (%q): only internal/objects/state.go may (ADR-0149 D3)", f, m)
 			}
+			if m := classDictWrite.Find(src); m != nil {
+				t.Errorf("%s writes the fence class dictionary (%q): only internal/objects/state.go may (ADR-0149 D6)", f, m)
+			}
 			if filepath.Dir(f) == pkg {
 				if m := rowWriteKeyword.Find(src); m != nil {
 					t.Errorf("%s issues a row write (%q): in internal/objects only the maintainer (state.go) writes rows", f, m)
@@ -98,6 +105,27 @@ func TestArchitecture_DetectorCatchesAWriter(t *testing.T) {
 	}
 	if objectTableWrite.MatchString("SELECT * FROM objects_order") {
 		t.Error("a read is not a write")
+	}
+	for _, bad := range []string{
+		"INSERT INTO object_fence_classes (tags, parties) VALUES ('{}','{}')",
+		"update object_fence_classes set tags = '{}'",
+		"DELETE FROM object_fence_classes",
+		"TRUNCATE object_fence_classes",
+	} {
+		if !classDictWrite.MatchString(bad) {
+			t.Errorf("detector misses %q", bad)
+		}
+	}
+	if classDictWrite.MatchString("SELECT c.id FROM object_fence_classes c") {
+		t.Error("a read of the dictionary is not a write")
+	}
+	// The maintainer itself does write it: the check is not vacuous.
+	src, err := os.ReadFile("state.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !classDictWrite.Match(src) {
+		t.Error("state.go no longer interns classes: the detector would pass vacuously")
 	}
 }
 

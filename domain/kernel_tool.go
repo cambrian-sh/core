@@ -18,9 +18,19 @@ type KernelTool interface {
 	Call(ctx context.Context, call KernelToolCall) ([]byte, error)
 }
 
+// KernelToolOffer is implemented by a kernel tool that is not on every menu: it
+// is listed only for the leases OfferedTo admits (ToolExecutor.KernelToolSpecsFor).
+// The tool still refuses a call from any other lease itself.
+type KernelToolOffer interface {
+	OfferedTo(lease LeaseID) bool
+}
+
 // KernelToolCall is one invocation of a kernel tool. The principal comes from the
 // authenticated caller, never from the arguments.
 type KernelToolCall struct {
 	AgentID  string
 	ArgsJSON []byte
+	// SessionTokenID is the caller's lease (kernel-resolved, as on every tool
+	// call). run_subtasks (ADR-0150) needs it to find the parent's run and depth.
+	SessionTokenID LeaseID
 }

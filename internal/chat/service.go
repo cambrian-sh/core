@@ -159,6 +159,13 @@ type TurnService struct {
 	// zero value is the pre-phase-3 turn path.
 	Grounding Grounding
 	g         groundingDeps
+
+	// Lane is the ADR-0150 single-agent lane of the chat path (lane.go); the
+	// zero value is the planner lane's front desk.
+	Lane LaneTurn
+	// composeTurn binds the person's permitted tools to a single-agent turn's
+	// lease (lane.go). nil ⇒ the chat agent's own grants.
+	composeTurn TurnComposer
 }
 
 // SetDelegationEnder wires the end of a turn to the end of the work it delegated.
@@ -525,6 +532,14 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 				}
 				s.leases.BindLease(domain.LeaseID(tok), b)
 			}
+			// ADR-0150 D3: the merged agent holds the person's permitted tools,
+			// bound to this turn's lease.
+			if s.Lane.SingleAgent && s.composeTurn != nil {
+				if cerr := s.composeTurn(turnCtx, domain.LeaseID(tok), req.Text); cerr != nil {
+					slog.Warn("chat: single-agent turn not composed; the agent runs on its own grants",
+						"conversation", req.ConversationID, "err", cerr)
+				}
+			}
 		}
 	}
 
@@ -686,7 +701,13 @@ func (s *TurnService) buildHandoff(ctx context.Context, conv *domain.Conversatio
 	// a customer-facing conversation: the summary names the deployment's internal
 	// systems, which an external end user is not told about; such a turn can still
 	// delegate, it is only not shown the list.
-	if s.workSystems != nil && conv.Profile != domain.ProfileCustomer {
+	// ADR-0150 D3/D4: in the single-agent lane the agent holds the tools itself
+	// (no work-systems list of what a planner could do) and runs under the lane's
+	// stopping rule.
+	if s.Lane.SingleAgent {
+		s.Lane.Limits.Stamp(handoffCtx)
+	}
+	if s.workSystems != nil && conv.Profile != domain.ProfileCustomer && !s.Lane.SingleAgent {
 		if ws := strings.TrimSpace(s.workSystems(ctx)); ws != "" {
 			md["work_systems"] = ws
 		}

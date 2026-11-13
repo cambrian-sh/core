@@ -34,7 +34,20 @@ const (
 	colProv        = "prov"
 	colDeclVersion = "decl_version"
 	colUpdatedAt   = "updated_at"
+	// colVisClasses is the row's fence classes (ADR-0149 D6; migration 0043):
+	// the object_fence_classes ids of its declared properties' (tags, parties)
+	// pairs and of the evidence that minted the entity, sorted. The existence
+	// rule (ADR-0128 D12) reads it instead of evaluating every property's fence
+	// per row (T-20261113-unfiltered-listobjects-group-list-under-a).
+	colVisClasses = "vis_classes"
 )
+
+// rowFormat versions what the maintainer writes into a row beyond the
+// declarations. It is part of Table.Hash, so a change to it marks every table
+// stale and the next Generate rebuilds them: format 2 added vis_classes, which
+// rows written before it lack (NULL: such a row exists for no filtered caller
+// until it is rebuilt — closed, never open).
+const rowFormat = "row-format:2"
 
 // TableName is the object table of kind.
 func TableName(kind string) string { return "objects_" + kind }
@@ -129,6 +142,8 @@ func PlanTables(snaps []*domain.OntologySnapshot) []Table {
 			t.Columns = append(t.Columns, Column{Name: n, SQLType: a.columns[n]})
 		}
 		h := sha256.New()
+		h.Write([]byte(rowFormat))
+		h.Write([]byte{0})
 		for _, s := range sortedKeys(a.specs) {
 			h.Write([]byte(s))
 			h.Write([]byte{0})
@@ -173,7 +188,9 @@ func (t Table) DDL() []string {
 	%s bigint,
 	%s timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (%s, %s))`, tbl,
-		colNamespace, colEntity, colExtra, colProv, colDeclVersion, colUpdatedAt, colNamespace, colEntity)}
+		colNamespace, colEntity, colExtra, colProv, colDeclVersion, colUpdatedAt, colNamespace, colEntity),
+		// Added, not created: tables generated before row format 2 get it too.
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s integer[]`, tbl, colVisClasses)}
 	for _, c := range t.Columns {
 		out = append(out, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s`, tbl, ident(c.Name), c.SQLType))
 	}

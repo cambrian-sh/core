@@ -116,6 +116,19 @@ func ObjectProperty(tagsCol, partiesCol string) Shape {
 	return Shape{col: tagsCol, parties: partiesCol, nilPanics: true, present: true}
 }
 
+// FenceClass is one row of the object tables' class dictionary
+// (object_fence_classes: a canonical (tags, parties) pair, ADR-0149 D6,
+// T-20261113-unfiltered-listobjects-group-list-under-a). It is ObjectProperty
+// itself, on purpose: the fence a property value passes depends on its
+// companions' pair alone, and only through set operations (@>, &&, unnest-any),
+// so the set of dictionary ids whose pair passes this shape is exactly the set
+// of pairs a property carrying them would pass. The objects reader computes that
+// set once per request instead of evaluating every property of every row
+// (TestPg_FenceDifferential holds the two equal). A nil predicate panics.
+func FenceClass(alias string) Shape {
+	return ObjectProperty(alias+".tags", alias+".parties")
+}
+
 // Expr renders the fence as one boolean SQL expression with $n placeholders
 // numbered from startIdx+1, and its args: "TRUE" and nil when there is no fence.
 // For a reader that needs the fence as a value (a CASE WHEN, an OR of fences)

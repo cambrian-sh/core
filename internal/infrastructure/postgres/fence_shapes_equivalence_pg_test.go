@@ -110,7 +110,7 @@ func newShapeEqFixture(t *testing.T) *seFixture {
 		reg:       reg,
 		narrow:    &domain.TagPredicate{RequiredTags: []string{"mail"}, ForbiddenTags: []string{"k-secret"}},
 	}
-	f.plane = NewPgQueryPlane(pool, f.events, f.knowledge, NewPgEvidenceStore(pool), f.links, NewPgEntityStore(pool), reg)
+	f.plane = NewPgQueryPlane(pool, f.events, f.knowledge, NewPgEvidenceStore(pool), f.links, NewPgEntityStore(pool, nil), reg)
 
 	evs := NewPgEvidenceStore(pool)
 	evidence := func(name string, tags []string) domain.EvidenceID {
@@ -177,7 +177,7 @@ func newShapeEqFixture(t *testing.T) *seFixture {
 	}
 
 	for _, id := range []string{"shapeq/c1", "shapeq/o1", "shapeq/o3"} {
-		if _, err := NewPgEntityStore(pool).EnsureEntity(ctx, domain.Entity{
+		if _, err := NewPgEntityStore(pool, nil).EnsureEntity(ctx, domain.Entity{
 			NamespaceID: "default", ID: id, FirstSeenEvidence: f.pub,
 		}); err != nil {
 			t.Fatalf("entity %s: %v", id, err)

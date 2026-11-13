@@ -179,14 +179,26 @@ type ToolEffect string
 const (
 	EffectRead   ToolEffect = "read"   // observes state, no mutation
 	EffectWrite  ToolEffect = "write"  // mutates internal state
-	EffectEgress ToolEffect = "egress" // transmits data outside the deployment
+	EffectEgress ToolEffect = "egress" // transmits data outside the deployment (= egress_read + egress_send)
 	EffectSpend  ToolEffect = "spend"  // incurs cost or moves money
 	EffectAdmin  ToolEffect = "admin"  // alters the system's own configuration
+
+	// ADR-0150 D9 splits egress (owner Q3, 2026-11-13: subtasks may read the web,
+	// never send). Plain EffectEgress stays in the set and means BOTH: a tool that
+	// declares it needs both, and a grant or deny of it covers both (EffectCovers),
+	// so every existing manifest and policy keeps its meaning.
+	//
+	// EffectEgressRead reads from outside the deployment with no state change
+	// there: web search, a GET fetch.
+	EffectEgressRead ToolEffect = "egress_read"
+	// EffectEgressSend transmits to a person or changes state outside: messages,
+	// email, webhooks, POST/PUT/DELETE and other state-changing calls.
+	EffectEgressSend ToolEffect = "egress_send"
 )
 
 // AllToolEffects is the complete closed set, in escalating-risk order. Used for
 // registration validation and for operator vocabulary listings.
-var AllToolEffects = []ToolEffect{EffectRead, EffectWrite, EffectEgress, EffectSpend, EffectAdmin}
+var AllToolEffects = []ToolEffect{EffectRead, EffectEgressRead, EffectWrite, EffectEgress, EffectEgressSend, EffectSpend, EffectAdmin}
 
 // ValidToolEffect reports whether e is a member of the closed set.
 func ValidToolEffect(e ToolEffect) bool {

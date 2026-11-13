@@ -425,3 +425,48 @@ def test_composed_runtime_reports_a_missing_capability_instead_of_yielding():
     assert "report_capability_missing" in kernel.tools_sent[0]
     assert all(_san("mcp:shell/shell_execute") not in names for names in kernel.tools_sent)
     assert kernel.executed == []
+
+
+class _Task:
+    def __init__(self, context):
+        self.context = context
+
+
+def test_dispatch_cap_from_the_kernel_wins_for_a_subtask_worker(monkeypatch):
+    """ADR-0150 D4: a run_subtasks worker gets execution.lane.subtasks.worker_max_tool_rounds
+    stamped on its dispatch (_lane_max_tool_rounds); absent or invalid, the env cap applies."""
+    assert wa.dispatch_max_tool_rounds(_Task({"_lane_max_tool_rounds": "200"})) == 200
+    for bad in ({}, {"_lane_max_tool_rounds": ""}, {"_lane_max_tool_rounds": "x"}, {"_lane_max_tool_rounds": "0"}):
+        assert wa.dispatch_max_tool_rounds(_Task(bad)) is None
+    assert wa.dispatch_max_tool_rounds(object()) is None
+
+
+# ── T-20261113-composed-runtime-still-offers-delegate-to (ADR-0150 D1/D2) ────
+
+
+@pytest.mark.parametrize("extra,offered", [
+    ({}, True),                                   # the planner lane keeps it
+    ({"_lane": "single_agent"}, False),           # the single-agent lane's agent
+    ({"_subtask": "sub-1"}, False),               # a run_subtasks worker
+])
+def test_composed_runtime_offers_delegate_to_planner_only_in_the_planner_lane(extra, offered):
+    agent = wa.build_agent(["worker_agent.py", "--composed"])
+    kernel = _ComposedKernel([("done", [])])
+    agent.substrate = kernel
+    task = _composed_task()
+    task.context.update(extra)
+    assert agent.run(task).text == "done"
+    assert ("delegate_to_planner" in kernel.tools_sent[0]) is offered
+    # The local menu matches what the model saw: a hidden tool is an unknown tool.
+    assert ("delegate_to_planner" in agent.tools) is offered
+    if not offered:
+        assert agent.tools.call("delegate_to_planner", task="x")["error"].startswith("unknown tool")
+
+
+def test_profile_worker_hides_delegate_to_planner_in_the_single_agent_lane():
+    # A pinned profile agent (execution.lane.single_agent.agent_id) binds the same way.
+    agent = wa.WorkerAgent(load_profile(wa.profiles_dir() / "assistant.yaml"))
+    agent._bind_step(AgentTask(text="x", session_token_id="l", context={"_lane": "single_agent"}))
+    assert "delegate_to_planner" not in agent.tools
+    agent._bind_step(AgentTask(text="x", session_token_id="l", context={}))
+    assert "delegate_to_planner" in agent.tools

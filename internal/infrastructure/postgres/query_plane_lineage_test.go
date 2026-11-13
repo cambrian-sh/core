@@ -201,7 +201,7 @@ func newLineagePlane(t *testing.T) (*PgQueryPlane, *pgxpool.Pool, context.Contex
 	}
 	events := NewPgEventStore(pool, nil)
 	plane := NewPgQueryPlane(pool, events, nil, nil,
-		NewPgLinkStore(pool, reg), NewPgEntityStore(pool), reg)
+		NewPgLinkStore(pool, reg), NewPgEntityStore(pool, nil), reg)
 	return plane, pool, ctx
 }
 

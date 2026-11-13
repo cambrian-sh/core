@@ -17,7 +17,10 @@ const DefaultComposedMaxSkills = 8
 // the composition root (app/composed_workers.go, internal/kernel/metabolism_stack.go);
 // zero values take the documented defaults, so an existing tuning.json needs no keys.
 type WorkersConfig struct {
-	// Composed turns on composed dispatch. Default false. On: a plan step whose
+	// Composed turns on composed dispatch. Default true (owner 2026-11-13, ADR-0150:
+	// the single-agent lane's default agent and every run_subtasks worker are the
+	// composed runtime, so without it the default lane has no tools —
+	// T-20261113-default-single-agent-lane-has-no-tools-out-of). On: a plan step whose
 	// eligible executors (the gatekeeper's capability and effect check) include
 	// declarative profile agents is run by ONE runtime agent (agents/worker_agent.py
 	// --composed) that the kernel composes for the step: the professions' skills,
@@ -27,8 +30,9 @@ type WorkersConfig struct {
 	// widen it) and recorded in the run ledger. A step whose selected executor is a
 	// code or service agent (no profile) is dispatched to that agent as before.
 	// Off: the winner's pre-built agent runs the step (the legacy path). Requires
-	// execution.ledger.enabled.
-	Composed bool `json:"composed,omitempty"`
+	// execution.ledger.enabled. No omitempty: an explicit false must survive a
+	// marshal of the effective config, or the true default would come back.
+	Composed bool `json:"composed"`
 	// RuntimeAgentID is the id the composed runtime is registered and dispatched
 	// under. "" ⇒ DefaultComposedRuntimeAgentID.
 	RuntimeAgentID string `json:"runtime_agent_id,omitempty"`

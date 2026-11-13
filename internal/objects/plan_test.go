@@ -211,9 +211,17 @@ func goldenScopes() []struct {
 	}
 }
 
+// goldenVis stands for the caller's visible fence classes (planVisible's
+// result) in the golden: a constant, as the reader binds it.
+var goldenVis = []int32{3, 5, 8}
+
 func TestPlan_Golden(t *testing.T) {
 	kinds, rels := planKinds(t)
 	var b strings.Builder
+	for _, s := range goldenScopes() {
+		sql, args := planVisible(s.p)
+		fmt.Fprintf(&b, "== visible %s\n%s\n-- args: %s\n\n", s.name, sql, renderArgs(args))
+	}
 	for _, r := range goldenRequests() {
 		c, err := validate(r.q, kinds, rels)
 		if err != nil {
@@ -222,10 +230,14 @@ func TestPlan_Golden(t *testing.T) {
 		for _, s := range goldenScopes() {
 			var sql string
 			var args []any
+			var vis []int32
+			if needsExistence(c, s.p) {
+				vis = goldenVis
+			}
 			if c.Group {
-				sql, args = planGroup(c, s.p)
+				sql, args = planGroup(c, s.p, vis)
 			} else {
-				sql, args = planList(c, s.p, nil)
+				sql, args = planList(c, s.p, nil, vis)
 			}
 			fmt.Fprintf(&b, "== %s %s\n%s\n-- args: %s\n\n", r.name, s.name, sql, renderArgs(args))
 		}
@@ -263,6 +275,12 @@ func renderArgs(args []any) string {
 			var s []string
 			for _, x := range v {
 				s = append(s, fmt.Sprintf("%q", x))
+			}
+			out[i] = "[" + strings.Join(s, ",") + "]"
+		case []int32:
+			var s []string
+			for _, x := range v {
+				s = append(s, fmt.Sprint(x))
 			}
 			out[i] = "[" + strings.Join(s, ",") + "]"
 		case string:
@@ -329,7 +347,7 @@ func drawScope(t *rapid.T) *domain.TagPredicate {
 
 func TestPlan_Properties(t *testing.T) {
 	kinds, rels := planKinds(t)
-	allowed := map[string]bool{"objects_order": true, "objects_customer": true, "objects_group": true}
+	allowed := map[string]bool{"objects_order": true, "objects_customer": true, "objects_group": true, colVisClasses: true}
 	for _, k := range []string{"order", "customer", "group"} {
 		spec, _ := kinds.Spec(k)
 		for p, v := range spec.Predicates {
@@ -348,8 +366,12 @@ func TestPlan_Properties(t *testing.T) {
 		}
 		var sql string
 		var args []any
+		var vis []int32
+		if needsExistence(c, scope) {
+			vis = []int32{1}
+		}
 		if c.Group {
-			sql, args = planGroup(c, scope)
+			sql, args = planGroup(c, scope, vis)
 		} else {
 			cur := &cursor{ID: "order/x", Keys: make([]any, len(c.OrderBy))}
 			for i, o := range c.OrderBy {
@@ -358,7 +380,7 @@ func TestPlan_Properties(t *testing.T) {
 				}
 				cur.Keys[i] = map[string]any{"text": "k", "entity": "e/1", "number": 1.5, "date": time.Unix(0, 0).UTC()}[o.Prop.Type]
 			}
-			sql, args = planList(c, scope, cur)
+			sql, args = planList(c, scope, cur, vis)
 		}
 		// Every validated request compiles: placeholders are exactly $1..$len(args).
 		max := 0
@@ -385,6 +407,10 @@ func TestPlan_Properties(t *testing.T) {
 				if !strings.Contains(sql, m[1]+`."`+m[2]+`__tags" IS NOT NULL`) {
 					rt.Fatalf("%s.%s read with no fence\n%s", m[1], m[2], sql)
 				}
+			}
+			// The existence rule is present exactly when needed, as the class test.
+			if hasEx := strings.Contains(sql, `unnest(o."vis_classes")`); hasEx != needsExistence(c, scope) {
+				rt.Fatalf("existence rule present=%v, needed=%v\n%s", hasEx, needsExistence(c, scope), sql)
 			}
 			if len(c.Links) > 0 && !regexp.MustCompile(`FROM evidence e\s+WHERE e\.id = l0_0\.evidence_id`).MatchString(sql) {
 				rt.Fatalf("link without its evidence fence\n%s", sql)

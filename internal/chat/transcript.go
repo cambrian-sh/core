@@ -66,9 +66,22 @@ func (s *TurnService) loadBudgetedHistory(ctx context.Context, conv *domain.Conv
 			all = append(all, m)
 		}
 	}
-	overflow, window := budgetWindow(all, s.Grounding.TranscriptBudgetTokens)
+	var overflow, window []domain.Message
+	if s.Lane.SingleAgent {
+		// ADR-0150 D3: older long replies cleared first (no LLM); only what still
+		// does not fit is summarised.
+		overflow, window = compactLane(all, s.Grounding.TranscriptBudgetTokens)
+	} else {
+		overflow, window = budgetWindow(all, s.Grounding.TranscriptBudgetTokens)
+	}
 	if len(overflow) > 0 && s.ledgerOn() {
 		prev = s.foldSummary(ctx, conv, turnID, prev, overflow)
+	}
+	if s.Lane.SingleAgent && prev.ThroughSeq > 0 {
+		// The person's own words survive the summary verbatim, up to the cap.
+		if kept := s.keptUserMessages(ctx, conv, prev.ThroughSeq, s.Lane.KeepUserMessagesTokens); len(kept) > 0 {
+			window = append(kept, window...)
+		}
 	}
 	return window, prev.Text, nil
 }

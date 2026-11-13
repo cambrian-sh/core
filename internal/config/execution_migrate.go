@@ -147,11 +147,15 @@ func logRelocatedKey(from, to, origin string, overridden bool) {
 	if overridden {
 		msg = "config: moved key ignored; its new place is set in the same layer"
 	}
+	ticket := "T-20261112-worker-resolve-cid-inline-has-no-size-cap-a"
+	if strings.HasPrefix(from, "routing.") {
+		ticket = "T-20261113-adr-0150-slice-1-single-agent-default-lane" // ADR-0150 D10
+	}
 	slog.Info(msg,
 		slog.String("old", "execution."+from),
 		slog.String("new", "execution."+to),
 		slog.String("origin", origin),
-		slog.String("ticket", "T-20261112-worker-resolve-cid-inline-has-no-size-cap-a"))
+		slog.String("ticket", ticket))
 }
 
 // renameDeprecatedExecutionKeys carries each relocatedExecutionKey and each
@@ -216,6 +220,117 @@ func renameDeprecatedExecutionKeys(doc map[string]any, origin string) []string {
 	return renamed
 }
 
+// laneMigration carries the ADR-0050 D1 single-agent keys of
+// execution.routing into execution.lane (ADR-0150 D10), in place, and returns
+// the old keys it touched ("routing.bypass_selection"), sorted. It runs after
+// migrateExecutionBlock, so a v1 flat key is already in `routing`.
+//
+//   - routing.bypass_selection: true loads as lane.default: single_agent; false
+//     is dropped (it only ever meant "not the control arm", and the planner lane
+//     is no longer the default — owner decision 2026-11-13). A lane.default set
+//     in the same layer wins.
+//   - routing.single_agent_id loads as lane.single_agent.agent_id, unless that
+//     is set in the same layer.
+func laneMigration(doc map[string]any, origin string) []string {
+	exec, ok := doc["execution"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	routing, ok := exec["routing"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	var touched []string
+	laneBlock := func() map[string]any {
+		lane, ok := exec["lane"].(map[string]any)
+		if !ok {
+			if _, taken := exec["lane"]; taken {
+				return nil // a scalar: leave the layer to the decoder's error
+			}
+			lane = map[string]any{}
+			exec["lane"] = lane
+		}
+		return lane
+	}
+	if v, present := routing["bypass_selection"]; present {
+		delete(routing, "bypass_selection")
+		touched = append(touched, "routing.bypass_selection")
+		if truthy(v) {
+			if lane := laneBlock(); lane != nil {
+				_, overridden := lane["default"]
+				if !overridden {
+					lane["default"] = LaneSingleAgent
+				}
+				logRelocatedKey("routing.bypass_selection", "lane.default", origin, overridden)
+			}
+		} else {
+			logRelocatedKey("routing.bypass_selection", "lane.default", origin, true)
+		}
+	}
+	if v, present := routing["single_agent_id"]; present {
+		delete(routing, "single_agent_id")
+		touched = append(touched, "routing.single_agent_id")
+		if lane := laneBlock(); lane != nil {
+			sa, ok := lane["single_agent"].(map[string]any)
+			if !ok {
+				sa = map[string]any{}
+				lane["single_agent"] = sa
+			}
+			_, overridden := sa["agent_id"]
+			if !overridden {
+				sa["agent_id"] = v
+			}
+			logRelocatedKey("routing.single_agent_id", "lane.single_agent.agent_id", origin, overridden)
+		}
+	}
+	sort.Strings(touched)
+	return touched
+}
+
+// truthy reads a JSON or environment boolean the way the struct decoder's
+// weak typing does ("true", "1", true).
+func truthy(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "true", "1", "t", "yes":
+			return true
+		}
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	}
+	return false
+}
+
+// laneEnvKey is laneMigration for one environment variable: the config path it
+// loads as and its value, or ("", nil) when it is dropped.
+// CAMBRIAN_EXECUTION__ROUTING__BYPASS_SELECTION=true loads as lane.default
+// single_agent and CAMBRIAN_EXECUTION__ROUTING__SINGLE_AGENT_ID as
+// lane.single_agent.agent_id, unless the new variable is set too (it wins).
+func laneEnvKey(path, value string, lookupEnv func(string) (string, bool)) (string, any) {
+	switch path {
+	case "execution.routing.bypass_selection":
+		if _, set := lookupEnv("CAMBRIAN_EXECUTION__LANE__DEFAULT"); set || !truthy(value) {
+			logRelocatedKey("routing.bypass_selection", "lane.default", "environment", true)
+			return "", nil
+		}
+		logRelocatedKey("routing.bypass_selection", "lane.default", "environment", false)
+		return "execution.lane.default", LaneSingleAgent
+	case "execution.routing.single_agent_id":
+		if _, set := lookupEnv("CAMBRIAN_EXECUTION__LANE__SINGLE_AGENT__AGENT_ID"); set {
+			logRelocatedKey("routing.single_agent_id", "lane.single_agent.agent_id", "environment", true)
+			return "", nil
+		}
+		logRelocatedKey("routing.single_agent_id", "lane.single_agent.agent_id", "environment", false)
+		return "execution.lane.single_agent.agent_id", value
+	}
+	return path, value
+}
+
 // deprecatedEnvKey maps an environment-derived config path naming a deprecated
 // key to the path it now loads as, or returns it unchanged. lookupEnv reports
 // whether a variable is set, so a deployment that sets both the old and the new
@@ -271,6 +386,7 @@ func migrateJSON(b []byte, origin string) []byte {
 	}
 	moved := migrateConfigMap(doc)
 	renamed := renameDeprecatedExecutionKeys(doc, origin)
+	renamed = append(renamed, laneMigration(doc, origin)...)
 	if len(moved) == 0 && len(renamed) == 0 {
 		return b
 	}
@@ -319,6 +435,7 @@ func MigrateFileInPlace(path string) ([]string, error) {
 	// Deprecated keys are carried to their successors too: an explicit migrate
 	// should leave a file that loads without a deprecation notice.
 	moved = append(moved, renameDeprecatedExecutionKeys(doc, path)...)
+	moved = append(moved, laneMigration(doc, path)...)
 	if len(moved) == 0 {
 		return nil, nil
 	}

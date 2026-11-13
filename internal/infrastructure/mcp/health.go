@@ -244,7 +244,7 @@ func harmless(t ToolReport) bool {
 		return false
 	}
 	for _, e := range t.Effects {
-		if e != string(domain.EffectRead) && e != string(domain.EffectEgress) {
+		if e != string(domain.EffectRead) && e != string(domain.EffectEgress) && e != string(domain.EffectEgressRead) {
 			return false
 		}
 	}

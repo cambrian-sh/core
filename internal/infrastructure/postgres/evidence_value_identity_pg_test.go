@@ -78,7 +78,7 @@ func newValueIdentityFixture(t *testing.T) *viFixture {
 	return &viFixture{
 		pool: pool, events: events, evidence: ev, ctx: ctx,
 		plane: NewPgQueryPlane(pool, events, NewPgKnowledgeStore(pool, nil), ev,
-			NewPgLinkStore(pool, reg), NewPgEntityStore(pool), reg),
+			NewPgLinkStore(pool, reg), NewPgEntityStore(pool, nil), reg),
 		at: time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC),
 	}
 }

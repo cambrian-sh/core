@@ -369,6 +369,13 @@ type ToolExecutor struct {
 	// error) and stops the step at execution.tools.repeated_failure_stop
 	// (step_failures.go). nil ⇒ off.
 	StepFailures *StepFailures
+	// Subtasks is the ADR-0150 registry of subtask parents and child leases
+	// (domain/subtasks.go). On a child lease the executor enforces the lease's
+	// EFFECT ceiling itself — independent of Authz, which is AllowAllAuthorizer in
+	// OSS — keys every side-effecting call deterministically (a resumed subtask
+	// never repeats a write), labels an approval with the subtask, and records
+	// what the worker did (evidence, read-the-web). nil ⇒ no subtasks.
+	Subtasks *Subtasks
 }
 
 // observeFailure counts a failed call (a tool error, or a final refusal) against
@@ -428,6 +435,24 @@ func (e *ToolExecutor) KernelToolSpecs() []SystemTool {
 	return out
 }
 
+// KernelToolSpecsFor is KernelToolSpecs for the holder of lease: a kernel tool
+// that implements KernelToolOffer is listed only when it is offered to that lease
+// (run_subtasks: the single-agent lane's agent below max depth, ADR-0150 D2/D6).
+// Hiding is only the menu; the tool refuses an unoffered caller itself.
+func (e *ToolExecutor) KernelToolSpecsFor(lease LeaseID) []SystemTool {
+	if e == nil {
+		return nil
+	}
+	out := make([]SystemTool, 0, len(e.KernelTools))
+	for _, kt := range e.KernelTools {
+		if o, ok := kt.(KernelToolOffer); ok && !o.OfferedTo(lease) {
+			continue
+		}
+		out = append(out, kt.Spec())
+	}
+	return out
+}
+
 // runKernelTool serves a kernel tool for a named caller, under the caller's own
 // read predicate (resolved from the decision point exactly as GetArtifact resolves
 // it, and carried on ctx for the enforced reader, AGENTS.md §2.4).
@@ -436,7 +461,7 @@ func (e *ToolExecutor) runKernelTool(ctx context.Context, req ToolCallRequest, k
 	if eff == nil {
 		return denied(reason, argHash)
 	}
-	result, err := kt.Call(WithScope(ctx, eff), KernelToolCall{AgentID: req.AgentID, ArgsJSON: req.ArgsJSON})
+	result, err := kt.Call(WithScope(ctx, eff), KernelToolCall{AgentID: req.AgentID, ArgsJSON: req.ArgsJSON, SessionTokenID: req.SessionTokenID})
 	if err != nil {
 		return ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error())}
 	}
@@ -674,9 +699,35 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 			argHash = hashBytes(fixed)
 		}
 	}
+	// ADR-0150 D2: a call on a subtask's child lease must stay inside the lease's
+	// effect ceiling (default read + egress_read). Checked here, by the kernel,
+	// before any grant, approval or dispatch, whatever the authorizer would say:
+	// the ADR-0086 effect gate asks the authorizer, which allows everything in OSS.
+	subtaskLease := !req.System && e.Subtasks.IsChild(req.SessionTokenID)
+	if subtaskLease {
+		if why := e.Subtasks.EffectRefusal(req.SessionTokenID, tool); why != "" {
+			slog.Info("ADR-0150 D2: call outside the subtask effect ceiling refused",
+				"tool", req.ToolName, "agent", req.AgentID, "lease", req.SessionTokenID)
+			return denied(why, argHash)
+		}
+	}
+	// ADR-0150 D2/D5: every side-effecting call inside a subtask carries a
+	// deterministic key (subtask id + tool + canonical args + occurrence), so a
+	// resumed subtask answers a call that already ran from its stored result.
+	if subtaskLease && tool.SideEffecting() {
+		if key, ok := e.Subtasks.CallKey(req.SessionTokenID, req.ToolName, req.ArgsJSON); ok {
+			stored, found, finish := e.Subtasks.Idempotency().Begin(ctx, key)
+			if found {
+				slog.Info("ADR-0150 D5: resumed subtask's side-effecting call answered from its stored result",
+					"tool", req.ToolName, "lease", req.SessionTokenID)
+				return stored
+			}
+			defer func() { finish(out, !out.Denied && out.Error == "") }()
+		}
+	}
 	// ADR-0145 D9: a side-effecting call made by a plan step has an idempotency
 	// key; a retry of the same call returns the stored result.
-	if e.Idempotency != nil && tool.SideEffecting() && !req.System {
+	if e.Idempotency != nil && tool.SideEffecting() && !req.System && !subtaskLease {
 		if sc, ok := StepCallFrom(ctx); ok {
 			stored, found, finish := e.Idempotency.Begin(ctx, IdempotencyKey(sc.RunID, sc.StepIndex, req.ToolName, req.ArgsJSON))
 			if found {
@@ -810,11 +861,20 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 			// approval item's duplicate_notice field), so every surface shows it.
 			notice = joinNotices(UnrequestedWriteNotice(req.ToolName), notice)
 		}
+		// ADR-0150 D5.1: an approval raised inside a subtask reaches the person
+		// labelled with the subtask; only this call (so only that subtask) waits.
+		subtaskLabel := ""
+		if subtaskLease {
+			if b, ok := e.Subtasks.Binding(req.SessionTokenID); ok {
+				subtaskLabel = b.Label
+				notice = joinNotices(SubtaskApprovalNotice(b.Label), notice)
+			}
+		}
 		dec, err := e.Approval.Request(ctx, ApprovalRequest{
 			AgentID: req.AgentID, ToolName: req.ToolName, ArgsPreview: preview(req.ArgsJSON, 200),
 			Object: objectOfArgs(req.ArgsJSON), Beneficiary: beneficiary, Args: req.ArgsJSON,
 			ConversationID: ConversationIDFromContext(ctx), SessionID: string(sid),
-			DuplicateNotice: notice,
+			DuplicateNotice: notice, Subtask: subtaskLabel,
 		})
 		if err != nil || !dec.Approved {
 			reason := ApprovalDenyReason(dec, err)
@@ -888,6 +948,9 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		histRef = e.History.Begin(histScope, req.ToolName, req.ArgsJSON, ActionRunning)
 	}
 	dispatched = true
+	if subtaskLease {
+		e.Subtasks.ObserveCall(req.SessionTokenID, tool)
+	}
 	result, err := handler.Execute(ctx, ToolCall{ToolName: req.ToolName, ArgsJSON: req.ArgsJSON, Policy: grant.Policy, Meta: stagedMeta})
 	if err != nil {
 		if priced {
@@ -927,7 +990,10 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 		// ADR-0145 D1: a call that ran and failed is a result too (D5 needs the
 		// error to judge a "not found" honestly).
 		if errJSON, merr := json.Marshal(map[string]string{"error": err.Error()}); merr == nil {
-			e.recordToLedger(ctx, req, tool, errJSON, stagedSources)
+			id := e.recordToLedger(ctx, req, tool, errJSON, stagedSources)
+			if subtaskLease {
+				e.Subtasks.AddEvidence(req.SessionTokenID, id)
+			}
 		}
 		return ToolCallResponse{Error: err.Error(), ArgHash: argHash, ResultHash: hashString(err.Error()), ApproverID: approver}
 	}
@@ -992,6 +1058,9 @@ func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out To
 	// could not record stays inline — never lost to the agent.
 	if e.Ledger != nil {
 		id := e.recordToLedger(ctx, req, tool, result, stagedSources)
+		if subtaskLease {
+			e.Subtasks.AddEvidence(req.SessionTokenID, id)
+		}
 		switch {
 		case id != "" && e.InlineThreshold > 0 && len(result) > e.InlineThreshold:
 			resp.ResultCID = id

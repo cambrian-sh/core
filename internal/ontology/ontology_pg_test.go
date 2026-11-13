@@ -329,7 +329,7 @@ func TestPg_TypedLinks_RefuseNewViolationsAndReportOldOnes(t *testing.T) {
 		t.Fatal(err)
 	}
 	links := postgres.NewPgLinkStore(pool, o)
-	entities := postgres.NewPgEntityStore(pool)
+	entities := postgres.NewPgEntityStore(pool, o)
 	evidence := func(id string, tags []string) domain.EvidenceID {
 		if _, err := pool.Exec(ctx, `INSERT INTO evidence (id, namespace_id, source_id, source_key, content_hash, classification)
 			VALUES ($1,$2,'test',$1,'sha256:test',$3)`, id, ns, tags); err != nil {

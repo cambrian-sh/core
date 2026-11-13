@@ -271,8 +271,11 @@ var classMeaning = map[domain.ToolEffect]string{
 	domain.EffectRead:   "reading or looking up anything",
 	domain.EffectWrite:  "changing data in a system (create, update, draft, delete, move)",
 	domain.EffectEgress: "anything that leaves the organisation (sending mail or messages, posting, publishing)",
-	domain.EffectSpend:  "spending money (payments, purchases)",
-	domain.EffectAdmin:  "changing permissions or configuration",
+	// ADR-0150 D9: the egress split.
+	domain.EffectEgressRead: "reading from outside the organisation without changing anything there (web search, fetching a page)",
+	domain.EffectEgressSend: "sending to a person or changing something outside the organisation (mail, messages, webhooks, posting)",
+	domain.EffectSpend:      "spending money (payments, purchases)",
+	domain.EffectAdmin:      "changing permissions or configuration",
 }
 
 // effectsBlock lists the constraint terms (sorted) with what each rules out.

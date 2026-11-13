@@ -749,8 +749,9 @@ def test_the_language_reaches_the_final_reply_call(clock):
 
 def test_chat_agent_v4_rules_set_the_reply_language_and_the_redaction_wording():
     # v5 (ADR-0145 phase 3) only added sections, rendered behind their keys; v6
-    # (T-20261109-chat-agent-answers-a-published-rule) only changed rules-grounded.
-    assert ca._LIBRARY.get("chat_agent").version == 6
+    # (T-20261109-chat-agent-answers-a-published-rule) only changed rules-grounded; v7
+    # (ADR-0150) only added the single-agent lane's sections.
+    assert ca._LIBRARY.get("chat_agent").version == 7
     stub = _Stub([_answer("Hi!")])
     _agent(stub).run(_task("hi"))
     system = stub.stream_reqs[0].system[0].text

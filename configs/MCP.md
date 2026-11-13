@@ -43,6 +43,12 @@ Legend:
   - **R**: `effects: [read]`, not dangerous.
   - **R+E**: `[read, egress]`, not dangerous. There is no approval prompt, but egress is
     visible to grants and to the egress auditor.
+  - **R+ER**: `[read, egress_read]`, not dangerous: a tool that only READS the web with no
+    state change there (HTTP GET fetch, web search; ADR-0150 D9, owner 2026-11-13). Like
+    R+E for grants and the auditor (a grant of plain `egress` covers it), and it is what
+    lets the tool run inside a `run_subtasks` subtask (ceiling `read` + `egress_read`).
+    Plain `egress` means `egress_read` + `egress_send`, and egress that is only inferred
+    counts as send, so every other egress tool stays out of subtasks.
   - **D**: dangerous, so operator approval is required.
   - **FC**: fail-closed. There is no default policy, so every unlisted tool is D with
     read+write+egress.
@@ -53,8 +59,8 @@ Legend:
 
 | Category | id | Package / version | Runtime | Credentials | Policy | Reg. | HS | Tools (per docs) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Web fetch | `fetch` | PyPI `mcp-server-fetch==2026.11.4` (2026-11-04), MIT, MCP steering group (official reference) | uvx | none | `fetch` R+E | Y | not verified | `fetch` |
-| Web search, keyless | `web-search` | PyPI `duckduckgo-mcp-server==0.7.0` (2026-09-04), MIT, Nick Clyde (community) | uvx | none | R+E per tool; FC otherwise | Y | not verified | `search`, `fetch_content` |
+| Web fetch | `fetch` | PyPI `mcp-server-fetch==2026.11.4` (2026-11-04), MIT, MCP steering group (official reference) | uvx | none | `fetch` R+ER | Y | not verified | `fetch` |
+| Web search, keyless | `web-search` | PyPI `duckduckgo-mcp-server==0.7.0` (2026-09-04), MIT, Nick Clyde (community) | uvx | none | R+ER per tool; FC otherwise | Y | not verified | `search`, `fetch_content` |
 | Filesystem | `filesystem` | npm `@modelcontextprotocol/server-filesystem@1.0.0` (2026-10-11), official. The latest is 2.2.0 (2026-11-04), which needs node>=24 | npx (node 22+) | none; roots are given as args | reads R; write/edit/append/create/move/copy D; FC | Y | not verified | `read_text_file`, `read_file` (deprecated alias), `read_media_file`, `read_multiple_files`, `list_directory`, `list_directory_with_sizes`, `directory_tree`, `search_files`, `get_file_info`, `list_allowed_directories`, `write_file`, `edit_file`, `append_file`\*, `create_directory`, `move_file`, `copy_file`\* |
 | Code sandbox | `code-sandbox` | PyPI `llm-sandbox[mcp-docker]==0.3.46` (2026-10-16), MIT, Duy Huynh (vndee, community, 1.1k stars, active), launched through Cambrian's `tools/code_sandbox/server.py` | uv + **Docker** + the image `cambrian/code-sandbox:py311-1` (`make sandbox-image`) | none; `SANDBOX_IMAGE` and `SANDBOX_*` hardening variables | `execute_code` D (read+write+egress, `staged_inputs`); language info R; FC | Y | not verified | `execute_code` (captures plots as images; `inputs` staged per run, see below), `get_supported_languages`, `get_language_details` |
 | Shell | `shell` | PyPI `mcp-shell-server==1.1.14` (2026-10-19), MIT, tumf (community) | uvx (Python 3.11+) | none; `ALLOW_COMMANDS` | `shell_execute` D (read+write+egress) | Y | not verified | `shell_execute` |
@@ -75,10 +81,10 @@ pinned version does not advertise it, the policy entry is harmless.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | GitHub, read | `github` | remote `https://api.githubcopilot.com/mcp/readonly`, official (github/github-mcp-server v2.1.0, 2026-11-03, MIT) | http | `GITHUB_MCP_PAT` (bearer) | R+E (read-only endpoint) | Y | not verified | repos, issues, pull requests, actions, code security, … (read tools of the default toolset) |
 | GitHub, write | `github-write` | remote `https://api.githubcopilot.com/mcp/` | http | `GITHUB_MCP_PAT` | FC | Y | not verified | default toolset, including create/update tools |
-| Web search, keyed | `brave-search` | npm `@brave/brave-search-mcp-server@2.1.4` (2026-09-17), MIT, Brave (official) | npx | `BRAVE_API_KEY` | R+E | Y | not verified | web, local, image, video, news, summarizer search |
-| Web search, keyed | `tavily` | npm `tavily-mcp@0.2.22` (2026-08-05), MIT, Tavily (official) | npx | `TAVILY_API_KEY` | R+E | Y | not verified | search, extract, crawl, map |
-| Web search, keyed | `exa` | npm `exa-mcp-server@3.4.3` (2026-11-03), MIT, Exa (official) | npx | `EXA_API_KEY` | R+E | Y | not verified | web search, code context, crawling, … |
-| Web search, self-hosted | `searxng` | npm `mcp-searxng@2.10.0` (2026-11-03), MIT, ihor-sokoliuk (community) | npx (node 22+) | `SEARXNG_URL` (not a secret) | R+E per tool; FC | Y | not verified | `searxng_web_search`, `web_url_read` |
+| Web search, keyed | `brave-search` | npm `@brave/brave-search-mcp-server@2.1.4` (2026-09-17), MIT, Brave (official) | npx | `BRAVE_API_KEY` | R+ER | Y | not verified | web, local, image, video, news, summarizer search |
+| Web search, keyed | `tavily` | npm `tavily-mcp@0.2.22` (2026-08-05), MIT, Tavily (official) | npx | `TAVILY_API_KEY` | R+ER | Y | not verified | search, extract, crawl, map |
+| Web search, keyed | `exa` | npm `exa-mcp-server@3.4.3` (2026-11-03), MIT, Exa (official) | npx | `EXA_API_KEY` | R+ER | Y | not verified | web search, code context, crawling, … |
+| Web search, self-hosted | `searxng` | npm `mcp-searxng@2.10.0` (2026-11-03), MIT, ihor-sokoliuk (community) | npx (node 22+) | `SEARXNG_URL` (not a secret) | R+ER per tool; FC | Y | not verified | `searxng_web_search`, `web_url_read` |
 | Google Workspace, one shared account | `google-workspace` | PyPI `workspace-mcp==2.3.0` (2026-10-30), MIT, Taylor Wilsdon (community) | uvx | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `USER_GOOGLE_EMAIL`, plus a browser consent | R+E with `--read-only` | Y | not verified | Gmail, Drive and Calendar search/read (core tier) |
 | Google Workspace, per person (read) | `google-workspace-personal` | PyPI `workspace-mcp==2.3.0`, same server, as an operator-run loopback HTTP sidecar in external-OAuth mode | http `127.0.0.1:8000/mcp` | per user: the person's Google token as `Authorization: Bearer` (ADR-0140/0141) | R+E; write-named tools D | Y | not verified | Gmail, Drive, Calendar read incl. `query_freebusy` (`--read-only`, extended tier) |
 | Google Workspace, per person (write) | `google-workspace-personal-write` | same, second sidecar | http `127.0.0.1:8001/mcp` | per user, separate grant with send scopes | FC; reads R+E; `send_gmail_message`, `draft_gmail_message`, `manage_event` D | Y | not verified | Gmail send/draft, Calendar create/update/delete |

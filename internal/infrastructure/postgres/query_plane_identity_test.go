@@ -318,7 +318,7 @@ func newScopePlane(t *testing.T) (*PgQueryPlane, *pgxpool.Pool, context.Context)
 	}
 	events := NewPgEventStore(pool, nil)
 	plane := NewPgQueryPlane(pool, events, nil, nil,
-		NewPgLinkStore(pool, reg), NewPgEntityStore(pool), reg)
+		NewPgLinkStore(pool, reg), NewPgEntityStore(pool, nil), reg)
 	return plane, pool, ctx
 }
 
@@ -464,7 +464,7 @@ func TestPg_EntityOp_ExistenceIsWithheldFromUnentitledCallers(t *testing.T) {
 	plane, pool, ctx := newScopePlane(t)
 	secretEv := seedClassifiedEvidence(t, ctx, pool, "k2scope-ev-secret", []string{"k2-secret"})
 
-	entities := NewPgEntityStore(pool)
+	entities := NewPgEntityStore(pool, nil)
 	if _, err := entities.EnsureEntity(ctx, domain.Entity{
 		ID: k2ScopeEntityA, NamespaceID: "default", FirstSeenEvidence: secretEv,
 	}); err != nil {
@@ -507,7 +507,7 @@ func TestPg_EntityOp_AReachableRowStillDisclosesTheHandle(t *testing.T) {
 	secretEv := seedClassifiedEvidence(t, ctx, pool, "k2scope-ev-secret", []string{"k2-secret"})
 	openEv := seedClassifiedEvidence(t, ctx, pool, "k2scope-ev-open", []string{"k2-open"})
 
-	entities := NewPgEntityStore(pool)
+	entities := NewPgEntityStore(pool, nil)
 	if _, err := entities.EnsureEntity(ctx, domain.Entity{
 		ID: k2ScopeEntityA, NamespaceID: "default", FirstSeenEvidence: secretEv,
 	}); err != nil {

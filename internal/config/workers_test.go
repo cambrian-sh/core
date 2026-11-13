@@ -28,7 +28,35 @@ func TestWorkersConfig_DefaultsAndValidation(t *testing.T) {
 	if DefaultConfig().Execution.Workers.MaxToolRounds != 0 {
 		t.Fatal("DefaultConfig must leave the composed runtime's default tool budget")
 	}
-	if DefaultConfig().Execution.Workers.Composed {
-		t.Fatal("DefaultConfig turns composed workers on")
+	// ADR-0150 (owner 2026-11-13): DefaultConfig ships composed workers AND the
+	// ledger they require on, and the pair validates.
+	def := DefaultConfig().Execution
+	if !def.Workers.Composed || !def.Ledger.Enabled {
+		t.Fatalf("DefaultConfig: composed=%v ledger=%v, want both on", def.Workers.Composed, def.Ledger.Enabled)
+	}
+	if errs := def.Workers.validate(def.Ledger.Enabled); len(errs) != 0 {
+		t.Fatalf("default workers block: %v", errs)
+	}
+}
+
+// TestADR0150Defaults_LoadAndOptOut pins the owner's 2026-11-13 defaults through
+// the full layered load (not just the struct), and that an operator's explicit
+// false / 0 in a file still turns each one off — the defaults are true / non-zero,
+// so a dropped "false" would silently re-enable them.
+func TestADR0150Defaults_LoadAndOptOut(t *testing.T) {
+	cfg, _ := loadFrom(t, baseBundle(t), nil)
+	e := cfg.Execution
+	if !e.Workers.Composed || !e.Ledger.Enabled || e.Chat.TranscriptBudgetTokens != 64000 {
+		t.Fatalf("defaults: composed=%v ledger=%v transcript_budget_tokens=%d, want true/true/64000",
+			e.Workers.Composed, e.Ledger.Enabled, e.Chat.TranscriptBudgetTokens)
+	}
+
+	off := baseBundle(t)
+	writeCfg(t, off, "tuning.json", `{"schema_version":2,"execution":{"workers":{"composed":false},"ledger":{"enabled":false},"chat":{"transcript_budget_tokens":0}}}`)
+	cfg, _ = loadFrom(t, off, nil)
+	e = cfg.Execution
+	if e.Workers.Composed || e.Ledger.Enabled || e.Chat.TranscriptBudgetTokens != 0 {
+		t.Fatalf("explicit opt-out: composed=%v ledger=%v transcript_budget_tokens=%d, want false/false/0",
+			e.Workers.Composed, e.Ledger.Enabled, e.Chat.TranscriptBudgetTokens)
 	}
 }

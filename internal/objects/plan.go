@@ -28,7 +28,13 @@ import (
 //     CASE WHEN visible(P) THEN P END;
 //   - an object is listed only when the caller may know it exists (ADR-0128
 //     D12): it may read the evidence that minted the entity, or it can see at
-//     least one of its property values.
+//     least one of its property values. Rendered over interned fence classes:
+//     the row's vis_classes (the pairs of its properties and of its minted
+//     evidence, kept by the maintainer) meets the caller's visible classes V,
+//     computed once per request by planVisible through the same fence
+//     (sqlfence.FenceClass) and bound as a constant — evaluating one fence per
+//     distinct pair instead of one per property per row
+//     (T-20261113-unfiltered-listobjects-group-list-under-a).
 // When a filter on P already guarantees visible(P) AND P IS NOT NULL, P's
 // sort/group/metric expression is the bare column: same value, and the btree
 // on (namespace_id, P) stays usable for order.
@@ -44,6 +50,9 @@ type cursor struct {
 type sqlb struct {
 	args  []any
 	scope *domain.TagPredicate
+	// vis is the caller's visible fence classes (planVisible's result), read by
+	// the existence rule; unused when needsExistence is false.
+	vis []int32
 }
 
 func (b *sqlb) arg(v any) string {
@@ -213,26 +222,41 @@ func (b *sqlb) where(c checked) string {
 	return strings.Join(parts, " AND ")
 }
 
+// needsExistence: the request needs the existence rule (ADR-0128 D12) — the
+// caller is filtered and no non-is_null condition already proves a visible
+// value. Only then is the caller's visible class set computed.
+func needsExistence(c checked, scope *domain.TagPredicate) bool {
+	return !scope.Unfiltered() && len(filtered(c)) == 0
+}
+
+// planVisible renders the caller's visible fence classes V: the ids of the
+// dictionary pairs that pass the caller's fence, through sqlfence.FenceClass —
+// the same shape as a property's fence, so a pair is in V exactly when a
+// property (or the minted evidence) carrying it is visible. Run once per
+// request, in the request's read transaction, only when needsExistence.
+func planVisible(scope *domain.TagPredicate) (string, []any) {
+	body, args := sqlfence.FenceClass("c").Expr(scope, 0)
+	return "SELECT c.id FROM object_fence_classes c WHERE " + body, args
+}
+
 // existence is ADR-0128 D12 on the root alias: the caller may read the evidence
-// that minted the entity, or sees at least one property value. "" when nothing
+// that minted the entity, or sees at least one property value — i.e. one of the
+// row's fence classes is in V (see the access rule above). "" when nothing
 // needs proving: ScopeMaintenance sees everything, and a non-is_null condition
 // already proves a visible value.
 func (b *sqlb) existence(c checked) string {
-	if b.scope.Unfiltered() || len(filtered(c)) > 0 {
+	if !needsExistence(c, b.scope) {
 		return ""
 	}
-	ors := []string{"EXISTS (SELECT 1 FROM entities en WHERE en.id = o.entity_id AND en.namespace_id = o.namespace_id" +
-		b.evidenceVisible("en.first_seen_evidence") + ")"}
-	for _, p := range c.Props {
-		ors = append(ors, b.visible("o", p))
-	}
-	return "(" + strings.Join(ors, " OR ") + ")"
+	return "EXISTS (SELECT 1 FROM unnest(o." + ident(colVisClasses) + ") AS vc(id) WHERE vc.id = ANY(" + b.arg(b.vis) + "::integer[]))"
 }
 
 // planList renders a list request: the page plus one row (to know whether a
 // next page exists). Columns: entity_id, one per sort key, one per field.
-func planList(c checked, scope *domain.TagPredicate, cur *cursor) (string, []any) {
-	b := &sqlb{scope: scope}
+//
+// vis is planVisible's result (nil when needsExistence is false).
+func planList(c checked, scope *domain.TagPredicate, cur *cursor, vis []int32) (string, []any) {
+	b := &sqlb{scope: scope, vis: vis}
 	proven := filtered(c)
 	keys := make([]string, len(c.OrderBy))
 	for i, o := range c.OrderBy {
@@ -299,8 +323,9 @@ func (b *sqlb) after(c checked, keys []string, cur *cursor) string {
 
 // planGroup renders a group request: one row per bucket (keys then metrics),
 // ordered by the keys, at most ObjectsMaxGroups+1 (to report truncation).
-func planGroup(c checked, scope *domain.TagPredicate) (string, []any) {
-	b := &sqlb{scope: scope}
+// vis as for planList.
+func planGroup(c checked, scope *domain.TagPredicate, vis []int32) (string, []any) {
+	b := &sqlb{scope: scope, vis: vis}
 	proven := filtered(c)
 	var cols, pos []string
 	for i, g := range c.GroupBy {

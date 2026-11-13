@@ -55,7 +55,7 @@ func NewSubstrate(pool *pgxpool.Pool, kinds domain.KindSource, relations domain.
 		Evidence:  postgres.NewPgEvidenceStore(pool),
 		Events:    postgres.NewPgEventStore(pool, kinds),
 		Knowledge: postgres.NewPgKnowledgeStore(pool, kinds),
-		Entities:  postgres.NewPgEntityStore(pool),
+		Entities:  postgres.NewPgEntityStore(pool, kinds),
 		Links:     postgres.NewPgLinkStore(pool, relations),
 	}
 	s.Query = postgres.NewPgQueryPlane(pool, s.Events, s.Knowledge, s.Evidence, s.Links, s.Entities, relations)

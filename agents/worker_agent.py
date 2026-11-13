@@ -126,6 +126,20 @@ def resolve_agent_id(profile: Profile, argv: Optional[Sequence[str]] = None) -> 
             or profile.name)
 
 
+#: The tools that hand work to the planner, hidden where there is none.
+_NO_PLANNER_TOOLS = ("delegate_to_planner",)
+
+
+def no_planner(task) -> bool:
+    """True when the kernel ran this task outside the planner lane: the
+    single-agent lane's agent or a run_subtasks worker (ADR-0150 D1/D2)."""
+    from cambrian_agent_sdk.stopping import is_single_agent_lane, is_subtask
+    ctx = getattr(task, "context", None) or {}
+    if not isinstance(ctx, dict):
+        ctx = dict(ctx)
+    return is_single_agent_lane(ctx) or is_subtask(ctx)
+
+
 class PlannerDelegation:
     """ADR-0145 D14: the worker's way to hand extra work to the planner.
 
@@ -137,6 +151,15 @@ class PlannerDelegation:
 
     def _bind_step(self, task) -> None:
         self._step_lease = getattr(task, "session_token_id", "") or ""
+        # ADR-0150: in the single-agent lane (``_lane=single_agent``) and in a
+        # run_subtasks worker (``_subtask``) there is no planner — the kernel refuses
+        # the delegation (singleAgentDelegationRefusal, Execute's child-lease check),
+        # so the tool is left off this run's menu instead of costing the model a
+        # round (T-20261113-composed-runtime-still-offers-delegate-to). The planner
+        # lane keeps it.
+        from cambrian_agent_sdk.tools import ToolRegistry
+        hidden = _NO_PLANNER_TOOLS if no_planner(task) else ()
+        self._tools = ToolRegistry(self, hidden=hidden)
 
     @tool
     def delegate_to_planner(self, task: str):
@@ -246,6 +269,23 @@ def composed_max_tool_rounds() -> Optional[int]:
     return n if n > 0 else None
 
 
+#: The per-dispatch tool-round cap key (cambrian-core domain.HandoffKeyLaneMaxToolRounds).
+DISPATCH_MAX_TOOL_ROUNDS_KEY = "_lane_max_tool_rounds"
+
+
+def dispatch_max_tool_rounds(task) -> Optional[int]:
+    """The cap the kernel stamped on this dispatch, or None when absent or invalid."""
+    ctx = getattr(task, "context", None) or {}
+    raw = str(ctx.get(DISPATCH_MAX_TOOL_ROUNDS_KEY, "") if isinstance(ctx, dict) else "").strip()
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
 class ComposedWorkerAgent(PlannerDelegation, CognitiveAgent):
     """The ADR-0145 D12 runtime: one ReAct loop, composed per step by the kernel."""
 
@@ -278,10 +318,12 @@ class ComposedWorkerAgent(PlannerDelegation, CognitiveAgent):
         self._substrate = value
 
     def think(self, task, *, max_memory_queries=None, max_tool_rounds=None):
+        # A per-dispatch cap the kernel stamped (ADR-0150 D4: a run_subtasks
+        # worker's execution.lane.subtasks.worker_max_tool_rounds) wins; else
         # execution.workers.max_tool_rounds, set by the kernel in the agent's
         # environment; unset ⇒ the SDK default (T-20261109-per-step-deadline-step-timeout-floor-ms-180-s).
         if max_tool_rounds is None:
-            max_tool_rounds = composed_max_tool_rounds()
+            max_tool_rounds = dispatch_max_tool_rounds(task) or composed_max_tool_rounds()
         return super().think(task, max_memory_queries=max_memory_queries, max_tool_rounds=max_tool_rounds)
 
     def run(self, task):
