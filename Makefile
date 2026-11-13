@@ -181,22 +181,19 @@ chaos-real:
 # "setup failed" on a missing pattern and the target had been red — which nothing
 # noticed, because no CI ran it.
 #
-# If you retire a worker package, delete its line. If you add one, add it here
-# together with its leak_test.go.
+# It happened a third time (2026-11-13): `internal/metabolism/interview` was removed
+# while still listed, and the hand list had meanwhile MISSED five packages that do
+# carry a goleak TestMain (ledger, metabolism/registration, sandbox, skill/lifecycle,
+# stepoutput), so their leak tests never ran. The list is therefore no longer kept
+# by hand: it is derived on every run from the files themselves. Adding a worker
+# package's leak_test.go (with goleak.VerifyTestMain) is all it takes to cover it;
+# retiring the package removes it. `/...` per package, as the hand list had.
+LEAK_PKGS = $(shell grep -rl --include='*_test.go' 'goleak.VerifyTestMain' ./internal ./app ./domain ./cmd 2>/dev/null | xargs -n1 dirname | sort -u | sed 's|$$|/...|')
+
 leak:
-	# Exactly the packages that carry a goleak TestMain. Regenerate the list with:
-	#   grep -rl goleak.VerifyTestMain --include=*_test.go . | xargs -n1 dirname | sort
-	go test ./internal/agentpool/... -v
-	go test ./internal/chat/... -v
-	go test ./internal/infrastructure/mcp/... -v
-	go test ./internal/memory/... -v
-	go test ./internal/metabolism/executer/... -v
-	go test ./internal/metabolism/interview/... -v
-	go test ./internal/ontology/... -v
-	go test ./internal/substrate/operator/... -v
-	go test ./internal/supervision/aggregator/... -v
-	go test ./internal/supervision/circadian/... -v
-	go test ./internal/supervision/verify/... -v
+	@test -n "$(strip $(LEAK_PKGS))" || { echo "no goleak.VerifyTestMain packages found — refusing to pass an empty leak gate"; exit 1; }
+	@echo "leak packages: $(LEAK_PKGS)"
+	go test -v $(LEAK_PKGS)
 
 # Full-kernel goroutine leak test (requires chaos tag)
 #
