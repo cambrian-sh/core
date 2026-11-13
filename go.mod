@@ -42,6 +42,12 @@ require (
 )
 
 require (
+	github.com/felixge/httpsnoop v1.0.4 // indirect
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0 // indirect
+	google.golang.org/api v0.287.1 // indirect
+)
+
+require (
 	github.com/googleapis/gax-go/v2 v2.23.0 // indirect
 	pgregory.net/rapid v1.2.0
 )
@@ -57,7 +63,6 @@ require (
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
@@ -83,11 +88,10 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/wasilibs/go-re2 v1.3.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.55.0
 	golang.org/x/oauth2 v0.36.0 // indirect
 	google.golang.org/genai v1.77.0
 )
