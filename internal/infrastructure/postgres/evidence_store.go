@@ -50,9 +50,16 @@ func (s *PgEvidenceStore) Insert(ctx context.Context, ev domain.Evidence) (domai
 	if id == "" {
 		id = domain.EvidenceID("ev_" + uuid.NewString())
 	}
-	ingested := ev.IngestedAt
-	if ingested.IsZero() {
-		ingested = time.Now().UTC()
+	// ingested_at is the DATABASE's clock (now(), via COALESCE below) unless the
+	// caller supplies one, so every "ingested before X" comparison against another
+	// database-stamped time (a backfill's started_at, ADR-0147 D14) reads one clock.
+	// The host clock used to stamp it, and host/database skew could skip a real
+	// deletion or tombstone a key that arrived live during a fill
+	// (T-20261113-a-reconciling-fill-is-reported-caught-up-before; owner option (a)).
+	var ingested *time.Time
+	if !ev.IngestedAt.IsZero() {
+		at := ev.IngestedAt
+		ingested = &at
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -87,7 +94,7 @@ func (s *PgEvidenceStore) Insert(ctx context.Context, ev domain.Evidence) (domai
 		INSERT INTO evidence (id, namespace_id, source_id, source_key, source_revision,
 			source_time, ingested_at, content_hash, content_bytes, classification,
 			parties, cursor, trace_id, revises_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::timestamptz, now()),$8,$9,$10,$11,$12,$13,$14)
 		ON CONFLICT ON CONSTRAINT evidence_source_revision_unique DO NOTHING
 		RETURNING id`,
 		string(id), ns, ev.SourceID, ev.SourceKey, ev.SourceRevision,

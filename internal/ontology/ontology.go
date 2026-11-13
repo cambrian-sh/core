@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/objects"
 )
 
 // DefaultNamespace is where a change or a lookup that names no namespace goes
@@ -88,8 +89,44 @@ func Load(ctx context.Context, pool *pgxpool.Pool, seed domain.OntologyDoc, auth
 	if err != nil {
 		return nil, err
 	}
+	// The object tables (ADR-0149 D3) follow the declarations: generated before
+	// the snapshot is installed, so no write can reach a table that does not
+	// exist yet, then rebuilt from history where their declarations changed.
+	var stale []objects.Table
+	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey); err != nil {
+			return err
+		}
+		stale, err = objects.Generate(ctx, tx, st.snapshots())
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ontology declarations: %w", err)
+	}
 	o.cur.Store(st)
+	if err := o.rebuild(ctx, stale); err != nil {
+		return nil, fmt.Errorf("ontology declarations: %w", err)
+	}
 	return o, nil
+}
+
+// snapshots lists the base and every namespace snapshot of a generation.
+func (st *state) snapshots() []*domain.OntologySnapshot {
+	out := []*domain.OntologySnapshot{st.base}
+	for _, s := range st.ns {
+		out = append(out, s)
+	}
+	return out
+}
+
+// rebuild recomputes each stale object table from history (objects.Rebuild).
+func (o *Ontology) rebuild(ctx context.Context, stale []objects.Table) error {
+	for _, t := range stale {
+		if _, err := objects.Rebuild(ctx, o.pool, o, t); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // row is one persisted version.
@@ -317,24 +354,41 @@ func (o *Ontology) apply(ctx context.Context, namespace string, change domain.On
 	if err != nil {
 		return res, err // validated above; unreachable
 	}
+	// The object tables' DDL commits with the change (ADR-0149 D3), before the
+	// new snapshot is installed, so a write validated against it always finds
+	// its table.
+	stale, err := objects.Generate(ctx, tx, o.cur.Load().with(ns, snap).snapshots())
+	if err != nil {
+		return res, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return res, err
 	}
 	o.swap(ns, snap)
 	res.Version, res.Applied = version, true
+	if err := o.rebuild(ctx, stale); err != nil {
+		// The change is applied; the rows of a stale table are rebuilt on the
+		// next boot (its recorded fingerprint still differs).
+		return res, fmt.Errorf("ontology change applied as version %d, but rebuilding the object tables failed "+
+			"(retried at the next boot): %w", version, err)
+	}
 	return res, nil
 }
 
 // swap installs snap as namespace's snapshot: the one mutation of in-memory
 // state, a copy-on-write of the map behind one atomic store.
 func (o *Ontology) swap(ns string, snap *domain.OntologySnapshot) {
-	old := o.cur.Load()
-	next := &state{base: old.base, ns: make(map[string]*domain.OntologySnapshot, len(old.ns)+1)}
-	for k, v := range old.ns {
+	o.cur.Store(o.cur.Load().with(ns, snap))
+}
+
+// with is a copy of st with namespace ns's snapshot replaced by snap.
+func (st *state) with(ns string, snap *domain.OntologySnapshot) *state {
+	next := &state{base: st.base, ns: make(map[string]*domain.OntologySnapshot, len(st.ns)+1)}
+	for k, v := range st.ns {
 		next.ns[k] = v
 	}
 	next.ns[ns] = snap
-	o.cur.Store(next)
+	return next
 }
 
 func describe(changes []domain.OntologyChange, class domain.OntologyChangeClass) string {

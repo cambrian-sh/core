@@ -2,6 +2,7 @@ package domain
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -101,4 +102,32 @@ func ParseOntologyChange(raw string) (OntologyDoc, error) {
 		return doc, errors.New("change_json declares no kinds and no relations")
 	}
 	return doc, nil
+}
+
+// OntologyDraftView is everything an approver reads before answering an
+// ontology_change approval (T-20261113-approvers-of-an-ontology-change-see-only-a-200):
+// the approval itself carries only a bounded preview.
+type OntologyDraftView struct {
+	// Draft is the draft as recorded: the full change (New), its classification
+	// against BaseVersion, the proposer, the reason and its state.
+	Draft OntologyDraft
+	// CurrentVersion is the namespace's declarations version now. Current holds
+	// the spec declared NOW under every kind and relation name the change names
+	// (a name absent from it is new) — the "old" side of each spec the change
+	// replaces. When CurrentVersion differs from Draft.BaseVersion the
+	// declarations moved since the draft.
+	CurrentVersion int64
+	Current        OntologyDoc
+	// DryRun is the change classified against the current declarations by the
+	// same body an approval runs, with its still-as-drafted check; set only while
+	// the draft is pending. DryRunRefusal says why approving now would apply
+	// nothing ("" = it would apply as drafted).
+	DryRun        *OntologyApplyResult
+	DryRunRefusal string
+}
+
+// OntologyDraftReader reads one draft for an approver. found=false is an
+// answer (no such draft), not an error.
+type OntologyDraftReader interface {
+	InspectDraft(ctx context.Context, id string) (view OntologyDraftView, found bool, err error)
 }

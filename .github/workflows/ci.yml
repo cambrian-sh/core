@@ -182,6 +182,40 @@ jobs:
       # which .gitignore keeps out of the OSS repo (ADR-0057; decisions/no-benchmark-in-oss).
       # A clean checkout cannot have them, so the step could only ever fail.
 
+  # Tell premium that a new core landed on main, so premium's bump-core workflow
+  # moves premium's go.mod pin to this commit and opens (or updates) one PR there
+  # (decision premium-core-pin-moves-by-bot-pr). Before this, the pin moved only
+  # when someone remembered `GOWORK=off go get`, and it rotted: on 2026-11-13 a
+  # standalone premium build failed against it and nothing had noticed, because
+  # every build path uses go.work.
+  #
+  # Only after `verify`: a core commit that fails its own gate is not one premium
+  # should be asked to adopt. Not after `proto-sync`, which is expected to be red
+  # between pushing core and pushing its consumers.
+  #
+  # PREMIUM_BOT_TOKEN: fine-grained, cambrian-sh/premium Contents read/write (the
+  # repository_dispatch call needs write). Fails loudly when absent, for the same
+  # reason as proto-sync's token: a bump that silently never happens is the bug
+  # this job exists to remove.
+  notify-premium:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch core-pushed to cambrian-sh/premium
+        env:
+          GH_TOKEN: ${{ secrets.PREMIUM_BOT_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "PREMIUM_BOT_TOKEN is not set, so premium's core pin will not be bumped."
+            echo "Create a fine-grained token (cambrian-sh/premium: Contents read/write) and add it as this repository's secret."
+            exit 1
+          fi
+          gh api repos/cambrian-sh/premium/dispatches \
+            -f event_type=core-pushed \
+            -f "client_payload[sha]=${GITHUB_SHA}"
+          echo "Asked premium to bump its core pin to ${GITHUB_SHA}."
+
   # Vendored-contract drift. operator.proto is copied into ui/ (and the premium and
   # benchmark trees carry their own vendored copies; cli/ no longer exists), and there
   # was nothing checking that the copies kept up: core gained the entire

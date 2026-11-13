@@ -37,6 +37,9 @@ func (s *Server) ProposeOntologyChange(ctx context.Context, req *pb.ProposeOntol
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireProposalVerb(ctx, by, req.GetLeaseId(), domain.VerbProposeOntologyChange); err != nil {
+		return nil, err
+	}
 	change, err := domain.ParseOntologyChange(req.GetChangeJson())
 	if err != nil {
 		return &pb.ProposeOntologyChangeResponse{Accepted: false, Detail: err.Error()}, nil

@@ -8,6 +8,7 @@ import (
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
+	"github.com/cambrian-sh/core/internal/objects"
 )
 
 // DefaultViolationsLimit caps a report that names no limit; MaxViolationsLimit
@@ -29,7 +30,12 @@ const (
 //   - CONFIRMED, unretracted links (candidates are proposals, ADR-0128): an
 //     endpoint of the wrong entity kind, and overlapping links of a
 //     cardinality-one verb;
-//   - entities of a required verb's from_kind holding no such link.
+//   - entities of a required verb's from_kind holding no such link;
+//   - values about an object of a declared kind (its entity id stem is the
+//     kind's prefix) whose type is not the property's declared type: the latest
+//     such non-retired observation per entity and predicate, and current-winner
+//     items carrying one. They stay in history and are not projected into the
+//     object table (ADR-0149 D3).
 //
 // Every read is fenced by scope through the one fence renderer (internal/authz/
 // sqlfence): items by their own classification, links by their own evidence (the
@@ -63,6 +69,9 @@ func (o *Ontology) Violations(ctx context.Context, scope *domain.TagPredicate, n
 		for _, p := range preds {
 			v := k.Predicates[p]
 			subject := "kind " + k.Kind + "." + p
+			if prefix := k.ObjectPrefix(); prefix != "" {
+				r.typeMismatch(subject, prefix, p, v.Type)
+			}
 			if v.Required {
 				r.items(domain.ViolationRequired, subject, k.Kind, p, `
 					AND NOT EXISTS (SELECT 1 FROM statement_values sv WHERE sv.item_id = ki.id AND sv.predicate = $3)`,
@@ -212,4 +221,32 @@ func (r *report) requiredLink(subject, verb, fromKind string) {
 		  AND NOT EXISTS (SELECT 1 FROM links l
 		                  WHERE `+confirmed+` AND l.from_ref = $4 || en.id`+fl+`)`, args,
 		func(string) string { return fmt.Sprintf("holds no confirmed %q link", verb) })
+}
+
+// typeMismatch reports values about objects of prefix whose predicate is
+// declared with another type: the latest mismatched non-retired observation per
+// (entity, predicate), fenced by its evidence, and current-winner items fenced
+// by their classification ($1 namespace, $2 prefix, $3 predicate, $4 type).
+func (r *report) typeMismatch(subject, prefix, predicate, valueType string) {
+	detail := func(found string) string {
+		return fmt.Sprintf("a %s value, declared %s (kept in history, not projected)", found, valueType)
+	}
+	args := []any{r.ns, prefix, predicate, valueType}
+	fence, fargs := sqlfence.EvidenceExists(r.scope, "o.evidence_id", len(args))
+	args = append(args, fargs...)
+	r.query(domain.ViolationType, subject, `
+		SELECT entity_id, value_type FROM (
+			SELECT DISTINCT ON (o.entity_id) o.entity_id, o.value_type FROM observations o
+			WHERE o.namespace_id = $1 AND split_part(o.entity_id, '/', 1) = $2 AND o.predicate = $3
+			  AND o.value_type <> $4`+fence+objects.NotRetired("o")+`
+			ORDER BY o.entity_id, o.occurred_at DESC, o.id DESC) mismatched`, args, detail)
+
+	args = []any{r.ns, prefix, predicate, valueType}
+	fence, fargs = sqlfence.TextArray("ki.classification").Where(r.scope, len(args))
+	args = append(args, fargs...)
+	r.query(domain.ViolationType, subject, `
+		SELECT DISTINCT ki.id, sv.value_type FROM resolutions res
+		JOIN knowledge_items ki ON ki.id = res.item_id
+		JOIN statement_values sv ON sv.item_id = ki.id AND sv.predicate = $3 AND sv.value_type <> $4
+		WHERE res.namespace_id = $1 AND res.system_to IS NULL AND split_part(res.entity_id, '/', 1) = $2`+fence, args, detail)
 }

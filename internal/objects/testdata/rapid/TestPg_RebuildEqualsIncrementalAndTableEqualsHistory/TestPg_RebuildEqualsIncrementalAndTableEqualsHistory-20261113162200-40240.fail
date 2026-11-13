@@ -1,0 +1,593 @@
+# 2026/11/13 16:22:00.620430 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ops: 30
+# 2026/11/13 16:22:00.620430 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/A"
+# 2026/11/13 16:22:00.620430 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 3
+# 2026/11/13 16:22:00.620430 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 2
+# 2026/11/13 16:22:00.620430 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw is: "open"
+# 2026/11/13 16:22:00.620430 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw who: "user:alice"
+# 2026/11/13 16:22:00.628358 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/C"
+# 2026/11/13 16:22:00.628358 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 3
+# 2026/11/13 16:22:00.628358 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 1
+# 2026/11/13 16:22:00.628358 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "total"
+# 2026/11/13 16:22:00.628358 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw n: 3
+# 2026/11/13 16:22:00.628358 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-crm"
+# 2026/11/13 16:22:00.630993 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/C"
+# 2026/11/13 16:22:00.630993 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 1
+# 2026/11/13 16:22:00.630993 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 4
+# 2026/11/13 16:22:00.630993 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw reinstate: "r3-1"
+# 2026/11/13 16:22:00.632594 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.632594 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 2
+# 2026/11/13 16:22:00.632594 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 2
+# 2026/11/13 16:22:00.632594 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw is: "open"
+# 2026/11/13 16:22:00.632594 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw who: "agent:x"
+# 2026/11/13 16:22:00.637826 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/C"
+# 2026/11/13 16:22:00.637826 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 2
+# 2026/11/13 16:22:00.637826 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 0
+# 2026/11/13 16:22:00.637826 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "total"
+# 2026/11/13 16:22:00.637826 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw n: 3
+# 2026/11/13 16:22:00.637826 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-crm"
+# 2026/11/13 16:22:00.640615 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/C"
+# 2026/11/13 16:22:00.641178 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 2
+# 2026/11/13 16:22:00.641178 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 2
+# 2026/11/13 16:22:00.641178 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw is: "open"
+# 2026/11/13 16:22:00.641178 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw who: "user:alice"
+# 2026/11/13 16:22:00.648050 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.648050 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 4
+# 2026/11/13 16:22:00.648050 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 3
+# 2026/11/13 16:22:00.648050 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw retire: "r3-1"
+# 2026/11/13 16:22:00.652757 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.652757 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 0
+# 2026/11/13 16:22:00.652757 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 1
+# 2026/11/13 16:22:00.652757 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "total"
+# 2026/11/13 16:22:00.652757 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw n: 1
+# 2026/11/13 16:22:00.652757 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-erp"
+# 2026/11/13 16:22:00.654825 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/C"
+# 2026/11/13 16:22:00.654825 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 2
+# 2026/11/13 16:22:00.654825 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 4
+# 2026/11/13 16:22:00.654825 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw reinstate: "r3-1"
+# 2026/11/13 16:22:00.660133 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/C"
+# 2026/11/13 16:22:00.660133 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 4
+# 2026/11/13 16:22:00.660133 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 3
+# 2026/11/13 16:22:00.660133 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw retire: "r3-1"
+# 2026/11/13 16:22:00.664856 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.664856 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 0
+# 2026/11/13 16:22:00.664856 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 2
+# 2026/11/13 16:22:00.664856 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw is: "cancelled"
+# 2026/11/13 16:22:00.664856 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw who: "agent:x"
+# 2026/11/13 16:22:00.670700 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/A"
+# 2026/11/13 16:22:00.670700 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 0
+# 2026/11/13 16:22:00.670700 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 3
+# 2026/11/13 16:22:00.670700 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw retire: "r3-4"
+# 2026/11/13 16:22:00.676979 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.676979 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 1
+# 2026/11/13 16:22:00.676979 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 3
+# 2026/11/13 16:22:00.676979 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw retire: "r3-1"
+# 2026/11/13 16:22:00.679587 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/A"
+# 2026/11/13 16:22:00.679587 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 0
+# 2026/11/13 16:22:00.679587 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 1
+# 2026/11/13 16:22:00.679587 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "total"
+# 2026/11/13 16:22:00.679587 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw n: 1
+# 2026/11/13 16:22:00.679587 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-erp"
+# 2026/11/13 16:22:00.682201 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.682201 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 5
+# 2026/11/13 16:22:00.682201 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 1
+# 2026/11/13 16:22:00.682201 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "total"
+# 2026/11/13 16:22:00.682201 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw n: 3
+# 2026/11/13 16:22:00.682201 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-crm"
+# 2026/11/13 16:22:00.684813 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.684813 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 3
+# 2026/11/13 16:22:00.684813 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 0
+# 2026/11/13 16:22:00.684813 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "status"
+# 2026/11/13 16:22:00.684813 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw s: "open"
+# 2026/11/13 16:22:00.684813 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-erp"
+# 2026/11/13 16:22:00.687545 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.687545 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 1
+# 2026/11/13 16:22:00.687545 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 0
+# 2026/11/13 16:22:00.687545 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "status"
+# 2026/11/13 16:22:00.687545 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw s: "open"
+# 2026/11/13 16:22:00.687545 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-none"
+# 2026/11/13 16:22:00.689699 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.689699 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 1
+# 2026/11/13 16:22:00.689699 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 1
+# 2026/11/13 16:22:00.689699 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "colour"
+# 2026/11/13 16:22:00.689699 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw s: "open"
+# 2026/11/13 16:22:00.689699 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-none"
+# 2026/11/13 16:22:00.692829 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/C"
+# 2026/11/13 16:22:00.692829 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 1
+# 2026/11/13 16:22:00.692829 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 1
+# 2026/11/13 16:22:00.692829 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "total"
+# 2026/11/13 16:22:00.692829 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw n: 1
+# 2026/11/13 16:22:00.692829 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-crm"
+# 2026/11/13 16:22:00.695443 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/C"
+# 2026/11/13 16:22:00.695443 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 0
+# 2026/11/13 16:22:00.695443 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 0
+# 2026/11/13 16:22:00.695443 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "colour"
+# 2026/11/13 16:22:00.695443 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw s: "open"
+# 2026/11/13 16:22:00.695443 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-erp"
+# 2026/11/13 16:22:00.697527 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.697527 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 1
+# 2026/11/13 16:22:00.697527 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 2
+# 2026/11/13 16:22:00.697527 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw is: "cancelled"
+# 2026/11/13 16:22:00.697527 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw who: "user:alice"
+# 2026/11/13 16:22:00.703858 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/A"
+# 2026/11/13 16:22:00.703858 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 1
+# 2026/11/13 16:22:00.703858 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 0
+# 2026/11/13 16:22:00.703858 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "colour"
+# 2026/11/13 16:22:00.703858 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw s: "shipped"
+# 2026/11/13 16:22:00.703858 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-none"
+# 2026/11/13 16:22:00.706485 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/A"
+# 2026/11/13 16:22:00.706485 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 0
+# 2026/11/13 16:22:00.706485 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 0
+# 2026/11/13 16:22:00.706485 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "colour"
+# 2026/11/13 16:22:00.706485 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw s: "open"
+# 2026/11/13 16:22:00.706485 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-crm"
+# 2026/11/13 16:22:00.708568 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/C"
+# 2026/11/13 16:22:00.708568 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 4
+# 2026/11/13 16:22:00.708568 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 0
+# 2026/11/13 16:22:00.708568 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "status"
+# 2026/11/13 16:22:00.708568 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw s: "shipped"
+# 2026/11/13 16:22:00.708568 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-crm"
+# 2026/11/13 16:22:00.710647 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/A"
+# 2026/11/13 16:22:00.710647 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 0
+# 2026/11/13 16:22:00.710647 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 0
+# 2026/11/13 16:22:00.710647 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "colour"
+# 2026/11/13 16:22:00.710647 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw s: "shipped"
+# 2026/11/13 16:22:00.710647 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-erp"
+# 2026/11/13 16:22:00.712722 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.712722 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 1
+# 2026/11/13 16:22:00.712722 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 0
+# 2026/11/13 16:22:00.712722 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "total"
+# 2026/11/13 16:22:00.712722 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw n: 3
+# 2026/11/13 16:22:00.712722 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-erp"
+# 2026/11/13 16:22:00.714811 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:22:00.714811 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 4
+# 2026/11/13 16:22:00.714811 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 2
+# 2026/11/13 16:22:00.714811 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw is: "cancelled"
+# 2026/11/13 16:22:00.714811 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw who: "user:alice"
+# 2026/11/13 16:22:00.722725 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/A"
+# 2026/11/13 16:22:00.722725 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 3
+# 2026/11/13 16:22:00.722725 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 4
+# 2026/11/13 16:22:00.722725 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw reinstate: "r3-4"
+# 2026/11/13 16:22:00.726944 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/C"
+# 2026/11/13 16:22:00.726944 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 5
+# 2026/11/13 16:22:00.726944 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 0
+# 2026/11/13 16:22:00.726944 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "status"
+# 2026/11/13 16:22:00.726944 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw s: "shipped"
+# 2026/11/13 16:22:00.726944 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-crm"
+# 2026/11/13 16:22:00.729038 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/C"
+# 2026/11/13 16:22:00.729038 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 2
+# 2026/11/13 16:22:00.729038 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 1
+# 2026/11/13 16:22:00.729038 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "colour"
+# 2026/11/13 16:22:00.729038 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw s: "shipped"
+# 2026/11/13 16:22:00.729038 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-erp"
+# 2026/11/13 16:22:00.736576 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] p3order/A.total: table <nil> map[], history {Candidate:{Predicate:total Value:{Predicate: Type:number Date:0001-01-01 00:00:00 +0000 UTC Number:1 Text: EntityRef:} At:2026-11-13 11:00:00 +0300 +03 Source:erp ID:o00000000000000001101 Tags:[] Parties:[] EvidenceID:} Conflict:false}
+# 
+v0.4.8#9657354751398593934
+0x1c321715837255
+0x1f3bad8041f71f
+0xffffffffffffffff
+0x1001b81240ac28
+0x0
+0x19f7807ca649c4
+0x4ee533277703b
+0x3
+0x149931b33e7a0f
+0xf1325998554b2
+0x2
+0x11bd890d8f2e05
+0x0
+0xe2b7268f8bb88
+0x0
+0x1fc772600532de
+0xffffffffffffffff
+0x12bc22327c3f91
+0x154b7184ea6ad0
+0x7
+0x7
+0x3
+0x18e53a3ef43b64
+0x11d443ebefd6a5
+0x1
+0xc3d3800eb8e5a
+0x1
+0xeabd516b96c4a
+0x15dc1ff4ffe20b
+0x2
+0x2d84f74d9bf05
+0x1
+0x128a103a9f2fa9
+0x2
+0x15212a4dc790cf
+0x23716de5822bd
+0x1
+0x126adc619516be
+0x1f9c49b8626834
+0xffffffffffffffff
+0x1695e953b9ffbd
+0x0
+0x178badf3adacd2
+0x1
+0xa51debf40b3c8
+0x155e4a8fc2ba2c
+0x2
+0x156b1700e75cb0
+0x14053fc112335c
+0x2
+0xcc03fe0c0ce8a
+0x0
+0x16b5b13746d2b1
+0x1
+0x1a02e548f6e4fd
+0x2
+0x102a8c86bdd143
+0x39c0382e93af4
+0x2
+0x1045876bad5b6
+0xd82de966f48ca
+0x0
+0x31897d3afe964
+0x1
+0xb9f9779cf5114
+0x1056510cd5cc42
+0x2
+0x93c05ce347c6b
+0x1
+0x14393e36e08589
+0x2
+0xdc48fa9309019
+0x1b5a6b38531823
+0x7
+0x2
+0xee9ba62a5fef3
+0x1d0a5fd8fc89d2
+0x6
+0x5
+0x6
+0x2
+0x3c229e2916da6
+0x0
+0x1729ec28ef7b3a
+0x0
+0x10377eb8b0ba98
+0x3
+0x1
+0x3677212ca50e7
+0x10778882dc3b6d
+0x4
+0xcbdb78eef86e
+0xa25bc20d97119
+0x3
+0x153578e26a1c05
+0x0
+0xbd17bef79403b
+0x1
+0x6254b62572f52
+0x313af96f1cacc
+0x0
+0x4aa5ee4a45353
+0x1e15143c648cd3
+0x1
+0x55cecfc34c1ab
+0x1
+0x5b2fb9a9a1a3f
+0xc3a8193801547
+0x0
+0x6b2436fb7b961
+0x0
+0x151f17da138180
+0x2
+0x1d69f1e92f5b1c
+0x15db4a5481659c
+0x7
+0x2
+0x1a817f224fb29a
+0x15bcc60d23116e
+0x4
+0x1caea273baa361
+0x0
+0xbfaae7ec96d9e
+0x2
+0x4be47146b10c9
+0x17802ca2238068
+0x7
+0x4
+0x17458c04c4a09e
+0x11313acced02eb
+0x3
+0x65eb16367a98e
+0x0
+0x3be5f3f6084b
+0x1
+0x1a08df01a50171
+0x1598772fb4455d
+0x0
+0x175088dbd5bad2
+0x163f543e749221
+0x5
+0x5
+0x2
+0xe7f40fa25576d
+0x1
+0x260392b1f0385
+0x1
+0x1725dbe288b901
+0x0
+0x930f9183276e
+0xe4e900ced7491
+0x7
+0x6
+0x0
+0x7d94c4b61953e
+0x1c97025a97b0f2
+0x3
+0x2c359530ef239
+0x1
+0xf547cce4389de
+0x1
+0xc403e038ed8b1
+0x280275b14e8a1
+0x1
+0x66959a324e47c
+0x17a31d97d82916
+0x3
+0xa1d219c1f3331
+0x0
+0x8c781085fdb15
+0x0
+0x1a1a1bdb940b69
+0x310af16598231
+0x0
+0xb0755a26fb1f6
+0xeef087ba85548
+0x7
+0x1
+0x4d589973ccafa
+0x1
+0x136e3974bf3ec
+0x199cd729d29435
+0x0
+0x192d783a5e7020
+0x3
+0x0
+0xc223b8fd1c462
+0x3
+0x1
+0x14a4ac09913929
+0x1e6daf518669b0
+0x6
+0x5
+0x567f12669d6fd
+0x4c0c73588c89b
+0x1
+0x8cda1855cd95b
+0x1
+0x1493d3c5b5dcd0
+0x16d2fbd74a5a9f
+0x2
+0x1e378d712c4b2f
+0x3
+0x1
+0x1a248c6cee3353
+0x1
+0x1eeab7f4895eab
+0xc5476e1a924f1
+0x3
+0x1834746793f9a
+0x1e6cdafbcdd9b5
+0x0
+0xeaa960e9e17dd
+0x0
+0xfa0a596067afe
+0x0
+0x1dac4ad2fd9fe1
+0x0
+0x14a4e1671b515
+0x1
+0x1136bb27a2443b
+0x8f4145c7b37d5
+0x7
+0x1
+0xc770a73a74707
+0x19aec05bc52a90
+0x0
+0x5bafbd1e410f9
+0x0
+0x1528349c85cea3
+0x0
+0x149b37bcb35902
+0x3
+0x2
+0x8c30a13de2d5c
+0x1
+0x6326e94dd6797
+0xa2a100d20c05a
+0x1
+0x10850e43a12390
+0x5e39095a896b9
+0x1
+0x18f276b32568fb
+0x2
+0xe1f7866ef7a35
+0x0
+0x3e2fdd38d4083
+0x3
+0x2
+0x1d7d4f4187e841
+0x2
+0xf14bcdd4e599c
+0x1d94035042832c
+0x1
+0x129fdea788dc00
+0x2709d9d32a789
+0x1
+0x193e7e8196cc95
+0x3
+0x1
+0x387244cb8cc1
+0x15feb37338f11d
+0x3
+0x0
+0xb07061b7b9e56
+0x1
+0x1e5481247c6ddc
+0x2
+0x1e5e2053b1d219
+0x2347f99db364
+0x0
+0x612478f255bc1
+0x102f29fe212697
+0x0
+0x16f24330c162ea
+0x2
+0x10f8b894b3f77a
+0x0
+0x1501e8a02945e6
+0x0
+0x215e68ecb27c1
+0x1
+0x599f06ba4088
+0x1dd255fede3f3
+0x1
+0xdd67a599888ad
+0xfbbd96f2ed347
+0x2
+0x766f68b15b612
+0x1
+0x779f2d3c73436
+0x0
+0xe548f4d0ff652
+0x0
+0x1217495a1a1106
+0x440f806585144
+0x1
+0x69f0e75c1ac6c
+0xcf7e5b8ef6d2d
+0x0
+0xb5228c55bf136
+0x2
+0x1b160ba4d64d20
+0x1
+0x9705801fd5fcf
+0x3
+0x3
+0x2
+0x119af760128b9d
+0x0
+0xc77bfbc2f83da
+0x1a624d21575fa4
+0x0
+0x703ab31ca9a06
+0x10cb069096ee22
+0x0
+0x1efa3f4235a8df
+0x3
+0x2
+0x1c913dde10f4b3
+0x0
+0x67bd7ef6d7d36
+0x1
+0x1d6ad3a01844b4
+0x2
+0x1ff42a16c7c7bf
+0x1cc6e52b316f38
+0x4
+0x37a880c9c93d6
+0x10dbcc686f1402
+0x7
+0x6
+0x0
+0x1b521fa8b01fea
+0x3
+0x3
+0x0
+0x120767533b8dfe
+0x1
+0x58c0ba10a4baa
+0x1
+0x1c2a29eef5b116
+0x0
+0x245f405bed42b
+0xcd3d79b27aad
+0x0
+0x1e7b0ddd1aa1a9
+0x41f2dba96861b
+0x0
+0xcd516fdd1d912
+0x2
+0x17ec7cb097b970
+0x1
+0x1b11e3d269073b
+0x0
+0xe2af9f3c48bc6
+0x1
+0x394d08a468196
+0x7704a75c42fce
+0x1
+0x18ddd9b391e2dc
+0x587936364bc34
+0x0
+0xfd4b507e2623a
+0x1
+0x112e847c777a1b
+0x16dc958247fc7d
+0x2
+0x11d5c4c29c29d0
+0x0
+0xc25270abe1616
+0x1
+0xf8e560603e352
+0xf31fb5fb37cc2
+0x4
+0xdf82e7ad83148
+0x11fc3dfbd5b692
+0x2
+0x17e0b1a76b6a8a
+0x1
+0x2fa53ad7c4809
+0x0
+0xabd55218d5c70
+0x0
+0xde29e8a63e493
+0x1a41bbb38c949b
+0x6
+0x3
+0x1eaf6d7de888f4
+0x1bc62dda799849
+0x6
+0x4
+0x1b958c49790478
+0x1
+0x1fd62f9a7f6914
+0xffffffffffffffff
+0xfbbdcbc5e0eab
+0x1e471280d3afa5
+0x6
+0x5
+0x1d289ca2828595
+0x177f2b5917b732
+0x7
+0x0
+0xe2077e5daf04f
+0x3
+0x0
+0x1868b323d1c6c7
+0x1
+0x933f9fdf227b7
+0x1
+0x5080759e00e00
+0x2
+0x119a54308a4029
+0x6230abbdfba41
+0x2
+0x160a2c3c945d92
+0x19dbac5277d4cf
+0x6
+0x6
+0x6
+0x7
+0x1
+0x1a42834b8b784a
+0x2
+0x1da7dc838c9a3b
+0x1
+0x1076e057a4ff40
+0x0

@@ -11,7 +11,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
@@ -68,6 +70,11 @@ func TestPg_E2E_AgentDraftApprovedByAPersonReachesTheNextWrite(t *testing.T) {
 	}
 	s, gw := newLeaseServer(t)
 	s.OntologyDrafts = drafts
+	// Restricted tool grants (the default, tools_unrestricted=false): the agent
+	// may draft only once an operator grants it the verb
+	// (T-20261113-agent-proposal-rpcs-proposeknowledge).
+	grants := domain.NewInMemoryGrantsStore()
+	s.ToolExecutor = &domain.ToolExecutor{Grants: grants}
 	s.RunPrincipal = func(_ context.Context, b domain.LeaseBinding) string {
 		return strings.TrimPrefix(b.ConversationID, "conv-of-")
 	}
@@ -82,8 +89,17 @@ func TestPg_E2E_AgentDraftApprovedByAPersonReachesTheNextWrite(t *testing.T) {
 		t.Fatalf("a status outside the enum must be refused before the change: %v", err)
 	}
 
-	// The agent drafts with its lease.
+	// The agent drafts with its lease — refused until it holds the verb's grant.
 	lease := bindNotesLease(t, gw, domain.LeaseBinding{RunID: "r", AgentID: "planner", ConversationID: "conv-of-alice"})
+	if _, err := s.ProposeOntologyChange(agentPlaneCtx("planner"), &pb.ProposeOntologyChangeRequest{LeaseId: string(lease), Namespace: ns,
+		ChangeJson: `{"kinds":[{"kind":"order","predicates":{"status":{"type":"text","enum":["open","shipped","lost"]},"total":{"type":"number"}}}]}`}); status.Code(err) != codes.PermissionDenied ||
+		!strings.Contains(err.Error(), domain.VerbProposeOntologyChange) {
+		t.Fatalf("an agent without the grant must be refused: %v", err)
+	}
+	if n := len(mustList(t, hub)); n != 0 {
+		t.Fatalf("a refused draft raised %d approvals", n)
+	}
+	grants.Set("planner", []domain.ToolGrant{{Tool: domain.VerbProposeOntologyChange}})
 	resp, err := s.ProposeOntologyChange(agentPlaneCtx("planner"), &pb.ProposeOntologyChangeRequest{LeaseId: string(lease), Namespace: ns,
 		ChangeJson: `{"kinds":[{"kind":"order","predicates":{"status":{"type":"text","enum":["open","shipped","lost"]},"total":{"type":"number"}}}]}`,
 		Reason:     "orders get lost in transit"})
@@ -96,6 +112,17 @@ func TestPg_E2E_AgentDraftApprovedByAPersonReachesTheNextWrite(t *testing.T) {
 	if err != nil || ap.Kind != domain.ApprovalKindOntologyChange || ap.Object != resp.GetDraftId() || ap.AgentID != "planner" ||
 		ap.Beneficiary != domain.UserPrincipal("alice") || ap.RuleSummary() != "operator" {
 		t.Fatalf("approval: %+v %v", ap, err)
+	}
+	// The approver reads the full draft by the approval's object (the seam the
+	// substrate plugin serves as GetOntologyDraft): the whole change, its class
+	// against the base version, the proposer, the old spec and a clean dry run
+	// (T-20261113-approvers-of-an-ontology-change-see-only-a-200).
+	view, found, err := drafts.InspectDraft(ctx, ap.Object)
+	if err != nil || !found || view.Draft.Proposer != "agent:planner" || view.Draft.Reason != "orders get lost in transit" ||
+		view.Draft.BaseVersion != 1 || view.Draft.Class != domain.ChangeAdditive || len(view.Draft.Change.Kinds) != 1 ||
+		len(view.Draft.Change.Kinds[0].Predicates["status"].Enum) != 3 || len(view.Current.Kinds) != 1 ||
+		len(view.Current.Kinds[0].Predicates["status"].Enum) != 2 || view.DryRun == nil || view.DryRunRefusal != "" {
+		t.Fatalf("approver's view: %+v found=%v %v", view, found, err)
 	}
 	// The operator plane's own authentication: the bearer token resolves the person.
 	auth := operator.UnaryAuthInterceptor(tokenAuth{"tok-alice": {Principal: domain.UserPrincipal("alice"), Roles: []string{"member"}},

@@ -210,6 +210,25 @@ func classifyKind(old, nw KindSpec, add addChange) {
 	if !reflect.DeepEqual(kindShell(old), kindShell(nw)) {
 		add(ChangeBreaking, subject, "resolution, lifecycle, event-type or commit-class fields changed")
 	}
+	// The object-type fields (ADR-0149 D3). The prefix decides which entities
+	// ARE this kind's objects, so moving it re-interprets existing data. A table
+	// is a derived view: adding one loses nothing, dropping one removes what
+	// readers query. Open admits more than strict.
+	if old.ObjectPrefix() != nw.ObjectPrefix() {
+		add(ChangeBreaking, subject, "id prefix %q -> %q", old.ObjectPrefix(), nw.ObjectPrefix())
+	}
+	switch {
+	case !old.Table && nw.Table:
+		add(ChangeAdditive, subject, "object table added")
+	case old.Table && !nw.Table:
+		add(ChangeBreaking, subject, "object table removed")
+	}
+	switch {
+	case !old.Open && nw.Open:
+		add(ChangeAdditive, subject, "strict -> open")
+	case old.Open && !nw.Open:
+		add(ChangeTightening, subject, "open -> strict")
+	}
 	for p := range old.Predicates {
 		if _, ok := nw.Predicates[p]; !ok {
 			add(ChangeBreaking, subject+"."+p, "predicate removed")
@@ -230,6 +249,17 @@ func classifyKind(old, nw KindSpec, add addChange) {
 			add(ChangeBreaking, ps, "value type %s -> %s", ov.Type, nv.Type)
 			continue
 		}
+		// The authority decides which value is CURRENT (ADR-0149 D4), so
+		// changing it changes what existing data means (owner sub-rule, P3).
+		if !slices.Equal(ov.Authority, nv.Authority) {
+			add(ChangeBreaking, ps, "authority %v -> %v", ov.Authority, nv.Authority)
+		}
+		switch {
+		case !ov.Indexed && nv.Indexed:
+			add(ChangeAdditive, ps, "index hint added")
+		case ov.Indexed && !nv.Indexed:
+			add(ChangeAdditive, ps, "index hint removed")
+		}
 		switch {
 		case !ov.Required && nv.Required:
 			add(ChangeTightening, ps, "now required")
@@ -242,10 +272,12 @@ func classifyKind(old, nw KindSpec, add addChange) {
 	}
 }
 
-// kindShell is a spec without its predicates and with the default policy
-// spelled out, so only the resolution-shaping fields are compared.
+// kindShell is a spec without its predicates and object-type fields (each
+// classified on its own) and with the default policy spelled out, so only the
+// resolution-shaping fields are compared.
 func kindShell(s KindSpec) KindSpec {
 	s.Predicates = nil
+	s.IDPrefix, s.Open, s.Table = "", false, false
 	if s.Policy == "" {
 		s.Policy = ResolutionPolicyLatestAssertion
 	}
@@ -361,6 +393,7 @@ const (
 	ViolationToKind       = "to_kind"       // a confirmed link's to endpoint is the wrong kind
 	ViolationCardinality  = "cardinality"   // overlapping confirmed links of a single-valued verb
 	ViolationRequiredLink = "required_link" // an entity lacks a required confirmed link
+	ViolationType         = "type"          // a current value about an object does not have its property's declared type
 )
 
 // OntologyViolation is one existing row that the CURRENT declarations would

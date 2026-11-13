@@ -1,0 +1,288 @@
+# 2026/11/13 16:23:35.832048 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw auth: []string{"agent:x"}
+# 2026/11/13 16:23:35.832048 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw noauth: false
+# 2026/11/13 16:23:35.832048 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw open: false
+# 2026/11/13 16:23:35.832048 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw n: 16
+# 2026/11/13 16:23:35.832048 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832048 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832048 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832048 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832048 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832048 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832048 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: "agent:x"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw pred: "status"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw type: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw text: "open"
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw at: 0
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] [rapid] draw src: ""
+# 2026/11/13 16:23:35.832566 [TestCurrent_Property_WinnerIsTheBestAndConflictIsExact] status: {Predicate:status Value:{Predicate:status Type:text Date:0001-01-01 00:00:00 +0000 UTC Number:0 Text:open EntityRef:} At:2026-11-13 09:00:00 +0000 UTC Source:agent:x ID:o014 Tags:[] Parties:[] EvidenceID:} beats the winner {Candidate:{Predicate:status Value:{Predicate:status Type:text Date:0001-01-01 00:00:00 +0000 UTC Number:0 Text:open EntityRef:} At:2026-11-13 09:00:00 +0000 UTC Source: ID:o015 Tags:[] Parties:[] EvidenceID:} Conflict:false}
+# 
+v0.4.8#3169535382578348628
+0x5555555555555
+0x38e38e38e38e4
+0x3
+0x0
+0x0
+0x0
+0x0
+0xc05c654ab866b
+0x10
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1f2b5a0e61c3a6
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

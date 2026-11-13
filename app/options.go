@@ -561,6 +561,15 @@ type KernelServices struct {
 	// Operator-only, audited RPC. nil when no Postgres is configured.
 	Ontology domain.Ontology
 
+	// OntologyDrafts reads an agent-drafted ontology change in full for the
+	// person deciding its ontology_change approval (ADR-0149 D2;
+	// T-20261113-approvers-of-an-ontology-change-see-only-a-200): the change, its
+	// classification, base version, proposer, the current spec under each name
+	// it names, and a dry run against the current declarations. Read-only; the
+	// substrate plugin serves it as an Operator-only RPC. nil when no Postgres
+	// is configured.
+	OntologyDrafts domain.OntologyDraftReader
+
 	// EvidenceStore READS preserved evidence rows.
 	//
 	// The write half and the content fetch were both exposed; the row itself was

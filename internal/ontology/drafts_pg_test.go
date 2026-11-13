@@ -314,3 +314,54 @@ func TestPg_Drafts_ConcurrentApprovalsAreDeterministic(t *testing.T) {
 		t.Fatalf("three declarations written (one of the conflicting pair + two independent), got %v", got)
 	}
 }
+
+// The approver's full view over real Postgres: the draft row read back whole —
+// every spec of the change, its classification against the base version, the
+// proposer and reason — with the current spec under each name and a dry run
+// that writes nothing (T-20261113-approvers-of-an-ontology-change-see-only-a-200).
+func TestPg_Drafts_InspectDraftReturnsTheFullChange(t *testing.T) {
+	r, ctx := newPgDraftRig(t)
+	const ns = "drafts-inspect"
+	cleanNamespace(t, r.pool, ns)
+	change := domain.OntologyDoc{
+		Kinds: []domain.KindSpec{{Kind: "order", Predicates: map[string]domain.ValueSpec{
+			"status": {Type: "text", Enum: []string{"open", "shipped", "lost"}}, "total": {Type: "number"},
+			"discount": {Type: "number", Min: ptrF(0)}}}},
+		Relations: []domain.RelationSpec{{Name: "ships_to", Family: domain.LinkFamilyRelation}},
+	}
+	res, err := r.d.Propose(ctx, agentP, aliceP, DraftProposal{Namespace: ns, Change: change, Reason: "billing needs discounts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := r.o.Current(ns).Version
+	v, found, err := r.d.InspectDraft(ctx, res.Draft.ID)
+	if err != nil || !found {
+		t.Fatalf("inspect: %v %v", found, err)
+	}
+	d := v.Draft
+	if d.Proposer != "agent:planner" || d.Reason != "billing needs discounts" || d.BaseVersion != base ||
+		d.Class != domain.ChangeAdditive || d.State != domain.OntologyDraftPending || d.ApprovalID != res.Draft.ApprovalID {
+		t.Fatalf("draft: %+v", d)
+	}
+	if len(d.Change.Kinds) != 1 || d.Change.Kinds[0].Predicates["discount"].Min == nil ||
+		len(d.Change.Relations) != 1 || d.Change.Relations[0].Name != "ships_to" {
+		t.Fatalf("the full change did not survive the row: %+v", d.Change)
+	}
+	if len(d.Changes) != 2 {
+		t.Fatalf("classification: %+v", d.Changes)
+	}
+	if v.CurrentVersion != base || len(v.Current.Kinds) != 1 || len(v.Current.Kinds[0].Predicates) != 2 || len(v.Current.Relations) != 0 {
+		t.Fatalf("old side: v%d %+v", v.CurrentVersion, v.Current)
+	}
+	if v.DryRun == nil || v.DryRunRefusal != "" || v.DryRun.Class != domain.ChangeAdditive || v.DryRun.Applied {
+		t.Fatalf("dry run: %+v %q", v.DryRun, v.DryRunRefusal)
+	}
+	if got := r.declRows(t, ctx, ns); len(got) != 0 {
+		t.Fatalf("inspecting wrote a declaration: %v", got)
+	}
+	if _, found, err := r.d.InspectDraft(ctx, "od_missing"); found || err != nil {
+		t.Fatalf("missing: %v %v", found, err)
+	}
+}
+
+func ptrF(f float64) *float64 { return &f }

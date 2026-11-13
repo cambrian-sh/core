@@ -15,3 +15,16 @@ func TestOntologyRPCs_OperatorOnlyApply(t *testing.T) {
 		}
 	}
 }
+
+// The full agent draft is read by the person deciding its ontology_change
+// approval — an Operator — so it is Operator-only even though it is named like
+// a read (T-20261113-approvers-of-an-ontology-change-see-only-a-200).
+func TestOntologyRPCs_GetOntologyDraftIsOperatorOnly(t *testing.T) {
+	if !isOperatorOnly("/cambrian.premium.substrate.SubstrateLane/GetOntologyDraft") {
+		t.Fatal("GetOntologyDraft must be Operator-only")
+	}
+	// Matched on the full method: an OperatorConsole read of the same name is not.
+	if isOperatorOnly(operatorMethodPrefix + "GetOntologyDraft") {
+		t.Fatal("the exception must not leak to another service's method of the same name")
+	}
+}

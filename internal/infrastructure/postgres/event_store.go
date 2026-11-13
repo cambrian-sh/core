@@ -8,9 +8,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/objects"
 )
 
 // PgEventStore is the Postgres adapter for domain.EventStore (ADR-0108).
@@ -21,10 +23,9 @@ type PgEventStore struct {
 	kinds domain.KindSource
 }
 
-// ObservationKind is the reserved registry kind observations validate under
-// (ADR-0110 D2): observations carry a predicate but no item kind, so their
-// value constraints are declared once, under this name.
-const ObservationKind = "observation"
+// ObservationKind is the reserved registry kind observations about an entity of
+// no declared kind validate under (ADR-0110 D2; domain.ObservationKind).
+const ObservationKind = domain.ObservationKind
 
 // NewPgEventStore wraps an existing pool. kinds is the live ontology or a fixed
 // *domain.KindRegistry; nil means no declared kinds.
@@ -117,13 +118,22 @@ func (s *PgEventStore) RecordObservation(ctx context.Context, ob domain.Observat
 	if err := checkTimeBasis(ob.TimeBasis); err != nil {
 		return false, fmt.Errorf("observation record: %w", err)
 	}
-	// ADR-0110 D2, under the reserved "observation" kind — per-PREDICATE
-	// opt-in: a declared predicate is constrained, an undeclared one passes,
-	// so declaring temperature_c cannot break an unrelated stream (monotonic
-	// adoption at observation granularity).
+	// An observation about an object of a declared kind (its entity's id stem
+	// is the kind's prefix) validates against that kind (ADR-0149 D3): strict
+	// refuses an undeclared predicate, open keeps it. Any other observation
+	// validates under the reserved "observation" kind (ADR-0110 D2) —
+	// per-PREDICATE opt-in: a declared predicate is constrained, an undeclared
+	// one passes, so declaring temperature_c cannot break an unrelated stream
+	// (monotonic adoption at observation granularity).
 	ns := orDefaultNamespace(ob.NamespaceID)
 	reg := s.kinds.KindsFor(ns)
-	if spec, ok := reg.Spec(ObservationKind); ok {
+	if obj, ok := reg.ObjectKind(ob.EntityID); ok {
+		v := ob.Value
+		v.Predicate = ob.Predicate
+		if err := reg.ValidateValues(obj.Kind, []domain.StatementValue{v}); err != nil {
+			return false, fmt.Errorf("observation about a %q object: %w", obj.Kind, err)
+		}
+	} else if spec, ok := reg.Spec(ObservationKind); ok {
 		if _, declared := spec.Predicates[ob.Predicate]; declared {
 			v := ob.Value
 			v.Predicate = ob.Predicate
@@ -145,7 +155,14 @@ func (s *PgEventStore) RecordObservation(ctx context.Context, ob domain.Observat
 		e := string(ob.EvidenceID)
 		evidenceID = &e
 	}
-	tag, err := s.pool.Exec(ctx, `
+	// One transaction: the history row and the object row it may change commit
+	// together (ADR-0149 D3).
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO observations (namespace_id, entity_id, predicate, value_type,
 			value_date, value_number, value_text, value_entity_id,
 			location, occurred_at, confidence, evidence_id, source_ref, time_basis, decl_version)
@@ -158,7 +175,16 @@ func (s *PgEventStore) RecordObservation(ctx context.Context, ob domain.Observat
 	if err != nil {
 		return false, err
 	}
-	return tag.RowsAffected() == 1, nil
+	inserted := tag.RowsAffected() == 1
+	if inserted {
+		if err := objects.ApplyStateTx(ctx, tx, s.kinds, ns, ob.EntityID); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return inserted, nil
 }
 
 const observationColumns = `namespace_id, entity_id, predicate, value_type,
@@ -169,11 +195,7 @@ const observationColumns = `namespace_id, entity_id, predicate, value_type,
 // (ADR-0147 D6): the row's source_ref has no live retirement. alias is the
 // table alias, or the table name when the query has none. A row with an empty
 // source_ref can never be retired, so it always passes.
-func notRetired(alias string) string {
-	return ` AND NOT EXISTS (SELECT 1 FROM typed_row_retirements rt
-		WHERE rt.namespace_id = ` + alias + `.namespace_id AND rt.source_ref = ` + alias + `.source_ref
-		  AND rt.reinstated_at IS NULL)`
-}
+func notRetired(alias string) string { return objects.NotRetired(alias) }
 
 // checkTimeBasis refuses a time basis the domain does not name, so a typo in a
 // writer cannot mint a third clock nobody reads.
@@ -388,18 +410,48 @@ func (s *PgEventStore) RetireRows(ctx context.Context, namespace string, sourceR
 		return 0, nil
 	}
 	namespace = orDefaultNamespace(namespace)
-	tag, err := s.pool.Exec(ctx, `
+	var n int
+	err := s.retirementTx(ctx, namespace, refs, func(tx pgx.Tx) (pgconn.CommandTag, error) {
+		return tx.Exec(ctx, `
 		INSERT INTO typed_row_retirements (namespace_id, source_ref, reason, retired_by)
 		SELECT $1, ref, $3, $4 FROM unnest($2::text[]) AS ref
 		ON CONFLICT (namespace_id, source_ref) DO UPDATE SET
 			reason = EXCLUDED.reason, retired_by = EXCLUDED.retired_by,
 			retired_at = now(), reinstated_at = NULL
 		WHERE typed_row_retirements.reinstated_at IS NOT NULL`,
-		namespace, refs, reason, retiredBy)
+			namespace, refs, reason, retiredBy)
+	}, &n)
 	if err != nil {
 		return 0, fmt.Errorf("retire rows: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	return n, nil
+}
+
+// retirementTx runs one retirement statement and, in the same transaction,
+// re-derives the object rows of the entities whose observations the refs name
+// (ADR-0149 D3): a retired observation no longer counts toward "current".
+func (s *PgEventStore) retirementTx(ctx context.Context, namespace string, refs []string,
+	stmt func(pgx.Tx) (pgconn.CommandTag, error), affected *int) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		tag, err := stmt(tx)
+		if err != nil {
+			return err
+		}
+		*affected = int(tag.RowsAffected())
+		if *affected == 0 {
+			return nil
+		}
+		rows, err := tx.Query(ctx, `SELECT DISTINCT entity_id FROM observations
+			WHERE namespace_id = $1 AND source_ref = ANY($2::text[])`, namespace, refs)
+		if err != nil {
+			return err
+		}
+		entities, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
+		return objects.ApplyStateTx(ctx, tx, s.kinds, namespace, entities...)
+	})
 }
 
 // ReinstateRows lifts the live retirement of each ref, keeping the record that
@@ -410,12 +462,15 @@ func (s *PgEventStore) ReinstateRows(ctx context.Context, namespace string, sour
 		return 0, nil
 	}
 	namespace = orDefaultNamespace(namespace)
-	tag, err := s.pool.Exec(ctx, `
+	var n int
+	err := s.retirementTx(ctx, namespace, refs, func(tx pgx.Tx) (pgconn.CommandTag, error) {
+		return tx.Exec(ctx, `
 		UPDATE typed_row_retirements SET reinstated_at = now()
 		WHERE namespace_id = $1 AND source_ref = ANY($2::text[]) AND reinstated_at IS NULL`,
-		namespace, refs)
+			namespace, refs)
+	}, &n)
 	if err != nil {
 		return 0, fmt.Errorf("reinstate rows: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	return n, nil
 }

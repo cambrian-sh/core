@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/objects"
 )
 
 // PgKnowledgeStore is the Postgres adapter for domain.KnowledgeStore
@@ -279,7 +280,20 @@ func policyFor(reg *domain.KindRegistry, kind string) (string, domain.Resolution
 // each speaker's current word, so `current` and `contradictions` still show what
 // everyone said. NewKindRegistry refuses entity scope for latest_assertion and for
 // input-taking authorities, so the two families never share a policy.
+//
+// Every re-derivation is followed, in the same transaction, by the object row
+// of the entity (ADR-0149 D3): a resolution is one of the inputs of an
+// object's current state, so this is the one hook every knowledge write path
+// that can change "current" passes through (PutItem, PutAssessment,
+// RederivePredicate, EraseItemsTx).
 func (s *PgKnowledgeStore) rederive(ctx context.Context, tx pgx.Tx, ns, kind, entity, actor string) error {
+	if err := s.rederiveResolution(ctx, tx, ns, kind, entity, actor); err != nil {
+		return err
+	}
+	return objects.ApplyStateTx(ctx, tx, s.kinds, orDefaultNamespace(ns), entity)
+}
+
+func (s *PgKnowledgeStore) rederiveResolution(ctx context.Context, tx pgx.Tx, ns, kind, entity, actor string) error {
 	reg := s.registry(ns)
 	policy, authority, err := policyFor(reg, kind)
 	if err != nil {

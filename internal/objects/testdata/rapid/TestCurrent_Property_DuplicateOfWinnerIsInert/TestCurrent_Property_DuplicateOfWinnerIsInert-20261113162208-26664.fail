@@ -1,0 +1,30 @@
+# 2026/11/13 16:22:08.002471 [TestCurrent_Property_DuplicateOfWinnerIsInert] [rapid] draw auth: []string{}
+# 2026/11/13 16:22:08.002471 [TestCurrent_Property_DuplicateOfWinnerIsInert] [rapid] draw noauth: false
+# 2026/11/13 16:22:08.002471 [TestCurrent_Property_DuplicateOfWinnerIsInert] [rapid] draw open: false
+# 2026/11/13 16:22:08.002471 [TestCurrent_Property_DuplicateOfWinnerIsInert] [rapid] draw n: 1
+# 2026/11/13 16:22:08.002471 [TestCurrent_Property_DuplicateOfWinnerIsInert] [rapid] draw pred: "status"
+# 2026/11/13 16:22:08.002471 [TestCurrent_Property_DuplicateOfWinnerIsInert] [rapid] draw type: 0
+# 2026/11/13 16:22:08.002471 [TestCurrent_Property_DuplicateOfWinnerIsInert] [rapid] draw text: "open"
+# 2026/11/13 16:22:08.002471 [TestCurrent_Property_DuplicateOfWinnerIsInert] [rapid] draw at: 0
+# 2026/11/13 16:22:08.002471 [TestCurrent_Property_DuplicateOfWinnerIsInert] [rapid] draw src: ""
+# 2026/11/13 16:22:08.002471 [TestCurrent_Property_DuplicateOfWinnerIsInert] an inert duplicate changed the winner: {Candidate:{Predicate:status Value:{Predicate:status Type:text Date:0001-01-01 00:00:00 +0000 UTC Number:0 Text:open EntityRef:} At:2026-11-13 09:00:00 +0000 UTC Source: ID:o000 Tags:[] Parties:[] EvidenceID:} Conflict:false} -> {Candidate:{Predicate:status Value:{Predicate:status Type:text Date:0001-01-01 00:00:00 +0000 UTC Number:0 Text:open EntityRef:} At:2026-11-13 09:00:00 +0000 UTC Source: ID:a Tags:[] Parties:[] EvidenceID:} Conflict:false}
+# 
+v0.4.8#7184116794680937159
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

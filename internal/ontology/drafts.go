@@ -43,6 +43,7 @@ type DraftHub interface {
 
 // draftApplier is the slice of *Ontology drafts use.
 type draftApplier interface {
+	Current(namespace string) *domain.OntologySnapshot
 	Apply(ctx context.Context, namespace string, change domain.OntologyDoc, author string, dryRun bool) (domain.OntologyApplyResult, error)
 	apply(ctx context.Context, namespace string, change domain.OntologyDoc, author string, dryRun bool, check applyCheck) (domain.OntologyApplyResult, error)
 }
@@ -384,6 +385,57 @@ func (d *Drafts) record(ctx context.Context, dr domain.OntologyDraft, state doma
 	}); err != nil {
 		d.logger.Warn("ontology draft: audit not written", "draft", dr.ID, "state", string(state), "err", err)
 	}
+}
+
+var _ domain.OntologyDraftReader = (*Drafts)(nil)
+
+// InspectDraft returns the full draft for an approver: the change and its
+// classification as recorded, the current spec under every name the change
+// names (the "old" side), and — while the draft is pending — a dry run against
+// the current declarations through the SAME body and still-as-drafted check the
+// approval handler runs, so what the approver reads is what approving would do.
+// The dry run writes nothing and records nothing.
+func (d *Drafts) InspectDraft(ctx context.Context, id string) (domain.OntologyDraftView, bool, error) {
+	dr, found, err := d.store.getDraft(ctx, id)
+	if err != nil || !found {
+		return domain.OntologyDraftView{}, found, err
+	}
+	cur := d.onto.Current(dr.Namespace)
+	view := domain.OntologyDraftView{Draft: dr, CurrentVersion: cur.Version, Current: namedIn(cur.Doc, dr.Change)}
+	if dr.State == domain.OntologyDraftPending {
+		res, aerr := d.onto.apply(ctx, dr.Namespace, dr.Change, "dry-run:"+dr.Proposer, true, stillAsDrafted(dr))
+		view.DryRun = &res
+		switch {
+		case aerr != nil:
+			view.DryRunRefusal = aerr.Error()
+		case len(res.Changes) == 0:
+			view.DryRunRefusal = "nothing left to apply: the current declarations already say this"
+		}
+	}
+	return view, true, nil
+}
+
+// namedIn is the part of doc declared under the kind and relation names change
+// names, in change's order.
+func namedIn(doc, change domain.OntologyDoc) domain.OntologyDoc {
+	var out domain.OntologyDoc
+	for _, k := range change.Kinds {
+		for _, c := range doc.Kinds {
+			if c.Kind == k.Kind {
+				out.Kinds = append(out.Kinds, c)
+				break
+			}
+		}
+	}
+	for _, r := range change.Relations {
+		for _, c := range doc.Relations {
+			if c.Name == r.Name {
+				out.Relations = append(out.Relations, c)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // draftPreview is the bounded line an approver sees: the namespace, the class

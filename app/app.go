@@ -1569,6 +1569,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// violations report AS a principal (scope resolved here, never chosen
 		// by the plugin).
 		Ontology: ontologies.Seam,
+		// The approver's full view of an agent draft (the approval carries only
+		// a bounded preview).
+		OntologyDrafts: ontologyDrafts,
 		// ADR-0111/ADR-0118: the closed query AST over all of the above, scoped.
 		// The seam takes a principal, never a predicate; the RESOLVED authorizer
 		// decides scope (same reasoning as the Documents seam above).

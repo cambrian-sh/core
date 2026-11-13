@@ -39,6 +39,9 @@ func (s *Server) ProposeKnowledge(ctx context.Context, req *pb.ProposeKnowledgeR
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireProposalVerb(ctx, by, req.GetLeaseId(), domain.VerbProposeKnowledge); err != nil {
+		return nil, err
+	}
 	agentID := by.ID
 	// What the agent writes for a conversation's owner is that owner's (ADR-0142 D12).
 	if s.ConversationOwner != nil {
@@ -125,6 +128,26 @@ func (s *Server) leaseProposer(ctx context.Context, leaseID string) (domain.Leas
 		}
 	}
 	return b, domain.AgentPrincipal(agentID), forPerson, nil
+}
+
+// requireProposalVerb refuses an agent the kernel has not allowed to use a
+// proposal verb (owner decision 2026-11-13, option A;
+// T-20261113-agent-proposal-rpcs-proposeknowledge): the per-agent tool-grant
+// check under the verb's name (domain.ToolExecutor.AgentVerbAllowed). The SDK's
+// allow_*_proposals flag only offers the verb to the model; this is the
+// enforcement. Fails closed when the kernel has no tool executor.
+func (s *Server) requireProposalVerb(ctx context.Context, by domain.PrincipalRef, leaseID, verb string) error {
+	lease := leaseID
+	if lease == "" {
+		lease = mdValue(ctx, leaseHeader)
+	}
+	if s.ToolExecutor.AgentVerbAllowed(ctx, by.ID, verb, lease) {
+		return nil
+	}
+	slog.Info("agent proposal refused: no grant", "event", "proposal_verb_refused", "agent", by.ID, "verb", verb)
+	return status.Errorf(codes.PermissionDenied,
+		"agent %q may not call %s: it needs an operator grant of %q (OperatorConsole/SetToolGrant) or a profile `tools:` entry naming it (or a kernel running tools_unrestricted)",
+		by.ID, verb, verb)
 }
 
 // refusal reports whether err is a permanent, nameable refusal the model should see.

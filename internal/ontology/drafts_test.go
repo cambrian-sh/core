@@ -162,6 +162,12 @@ func newFakeApplier(t *testing.T) *fakeApplier {
 	return &fakeApplier{o: memOntology(t), version: 1}
 }
 
+func (f *fakeApplier) Current(ns string) *domain.OntologySnapshot {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.o.Current(ns)
+}
+
 func (f *fakeApplier) Apply(ctx context.Context, ns string, change domain.OntologyDoc, author string, dryRun bool) (domain.OntologyApplyResult, error) {
 	return f.apply(ctx, ns, change, author, dryRun, nil)
 }
@@ -478,4 +484,67 @@ func TestDrafts_StartStopIsClean(t *testing.T) {
 	r.d.Stop()
 	r.d.Stop() // idempotent
 	newDraftRig(t).d.Stop()
+}
+
+// The approver's full view (T-20261113-approvers-of-an-ontology-change-see-only-a-200):
+// the whole change, its classification against the base version, the proposer
+// and reason, the CURRENT spec under every name the change names (the "old"
+// side), and a dry run through the approval's own body and check.
+func TestDrafts_InspectDraftShowsTheWholeChangeOldVsNewAndTheDryRun(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	r := newDraftRig(t)
+	// Tightens kind order (modifies an existing spec) and adds relation ships_to.
+	change := domain.OntologyDoc{
+		Kinds: []domain.KindSpec{{Kind: "order", Predicates: map[string]domain.ValueSpec{
+			"status": {Type: "text", Enum: []string{"open", "shipped"}}, "total": {Type: "number"}}}},
+		Relations: []domain.RelationSpec{{Name: "ships_to", Family: domain.LinkFamilyRelation}},
+	}
+	res, err := r.d.Propose(ctx, agentP, aliceP, DraftProposal{Namespace: "ns1", Change: change, Reason: "lost is not a status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, found, err := r.d.InspectDraft(ctx, res.Draft.ID)
+	if err != nil || !found {
+		t.Fatalf("inspect: %v %v", found, err)
+	}
+	if v.Draft.ID != res.Draft.ID || v.Draft.Proposer != "agent:planner" || v.Draft.Reason != "lost is not a status" ||
+		v.Draft.BaseVersion != 1 || v.Draft.Class != domain.ChangeTightening || len(v.Draft.Changes) != 2 ||
+		len(v.Draft.Change.Kinds) != 1 || len(v.Draft.Change.Relations) != 1 {
+		t.Fatalf("draft: %+v", v.Draft)
+	}
+	// Old side: the current order spec (with "lost"); ships_to is new, so absent.
+	if v.CurrentVersion != 1 || len(v.Current.Kinds) != 1 || v.Current.Kinds[0].Kind != "order" ||
+		len(v.Current.Kinds[0].Predicates["status"].Enum) != 3 || len(v.Current.Relations) != 0 {
+		t.Fatalf("current: v%d %+v", v.CurrentVersion, v.Current)
+	}
+	if v.DryRun == nil || v.DryRunRefusal != "" || v.DryRun.Class != domain.ChangeTightening || v.DryRun.Applied {
+		t.Fatalf("dry run: %+v %q", v.DryRun, v.DryRunRefusal)
+	}
+	if len(r.onto.authors) != 0 {
+		t.Fatal("inspecting must apply nothing")
+	}
+
+	// The namespace moves so the draft would be superseded: the dry run says so,
+	// with the reason the approval handler would give.
+	if _, err := r.onto.Apply(ctx, "ns1", change, "user:op", false); err != nil {
+		t.Fatal(err)
+	}
+	v, _, _ = r.d.InspectDraft(ctx, res.Draft.ID)
+	if v.CurrentVersion != 2 || !strings.Contains(v.DryRunRefusal, "moved from version 1 to 2") {
+		t.Fatalf("moved: v%d %q", v.CurrentVersion, v.DryRunRefusal)
+	}
+
+	// A decided draft carries its state and no dry run; an unknown id is not found.
+	r.hub.resolve(t, res.Draft.ApprovalID, domain.ApprovalDenied, "bob")
+	if err := r.d.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	v, _, _ = r.d.InspectDraft(ctx, res.Draft.ID)
+	if v.Draft.State != domain.OntologyDraftRejected || v.DryRun != nil {
+		t.Fatalf("decided: %+v %+v", v.Draft, v.DryRun)
+	}
+	if _, found, err := r.d.InspectDraft(ctx, "od_nope"); found || err != nil {
+		t.Fatalf("unknown id: %v %v", found, err)
+	}
 }

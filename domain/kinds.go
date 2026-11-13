@@ -34,13 +34,45 @@ type ValueSpec struct {
 	// required value if it was written before the rule — which the ontology's
 	// violations report lists instead of rejecting retroactively.
 	Required bool `json:"required,omitempty"`
+	// Indexed asks for a btree index on this property's column in the kind's
+	// object table (ADR-0149 D3: a property declared filterable or sortable).
+	// An index hint: it changes no validation and no resolution, and is ignored
+	// for a kind without a table.
+	Indexed bool `json:"indexed,omitempty"`
+	// Authority is this property's source priority (ADR-0149 D4, "ERP wins for
+	// status"): an ordered list of source ids — an observation's evidence
+	// source_id, an item's asserted_by. When set, a value from a listed source
+	// beats any unlisted one and an earlier-listed source beats a later one;
+	// within one rank the latest by event time wins. Empty = latest by event
+	// time across every source. It decides only an object's CURRENT value
+	// (internal/objects), never what may be written.
+	Authority []string `json:"authority,omitempty"`
 }
 
-// KindSpec declares one knowledge kind's shape: which predicates it may carry,
-// with what constraints, resolved under which policy. Specs are DATA — the
-// kernel never learns what a predicate means, only what shape it must have.
+// KindSpec declares one kind's shape: which predicates it may carry, with what
+// constraints, resolved under which policy. Specs are DATA — the kernel never
+// learns what a predicate means, only what shape it must have.
+//
+// A kind IS an object type (ADR-0149 D3, owner 2026-11-13): an entity whose id
+// stem (EntityKindFromID) equals the kind's prefix (ObjectPrefix) is an object
+// of that kind, and observations and items about it validate against the kind.
+// The zero values of the three object fields keep a declaration behaving
+// exactly as before they existed: IDPrefix defaults to the kind name, Open to
+// strict, Table to no table.
 type KindSpec struct {
 	Kind string `json:"kind"`
+	// IDPrefix is the entity id stem of this kind's objects ("order" for
+	// "order/O-1"); "" = the kind name. Unique within one namespace's
+	// declarations: the registry refuses two kinds with one prefix.
+	IDPrefix string `json:"id_prefix,omitempty"`
+	// Open keeps undeclared predicates instead of refusing them: they are
+	// stored in history and land in the object table's extra jsonb. false =
+	// strict, ADR-0110 D2's refusal of an undeclared predicate.
+	Open bool `json:"open,omitempty"`
+	// Table asks for a generated objects_<kind> table holding one current-state
+	// row per object (ADR-0149 D3, internal/objects). A table kind's name and
+	// predicate names must be plain SQL identifiers (validateObjectFlags).
+	Table bool `json:"table,omitempty"`
 	// Policy names the ResolutionAuthority deriving this kind's belief.
 	// Empty = ResolutionPolicyLatestAssertion.
 	Policy string `json:"policy,omitempty"`
@@ -229,6 +261,8 @@ type KindRegistry struct {
 	authorities map[string]ResolutionAuthority
 	// eventTypes indexes declared event types (KindSpec.EventTypes).
 	eventTypes map[string]EventTypeSpec
+	// prefixes maps an entity id stem to the kind whose objects carry it.
+	prefixes map[string]string
 	// version is the ontology declarations version this registry was built
 	// from (ADR-0149 D2); 0 for a registry built directly (a maintenance tool,
 	// a test), which writes record as "no declared version".
@@ -279,6 +313,7 @@ func NewKindRegistry(specs []KindSpec, authorities []ResolutionAuthority) (*Kind
 	kinds := make(map[string]KindSpec, len(specs))
 	eventTypes := map[string]EventTypeSpec{}
 	eventOwner := map[string]string{}
+	prefixes := map[string]string{}
 	for _, s := range specs {
 		if s.Kind == "" || len(s.Predicates) == 0 {
 			return nil, fmt.Errorf("kind registry: a spec needs a kind and at least one predicate")
@@ -308,6 +343,16 @@ func NewKindRegistry(specs []KindSpec, authorities []ResolutionAuthority) (*Kind
 		if err := validateCaseExtensions(s, a); err != nil {
 			return nil, err
 		}
+		if err := validateObjectFlags(s); err != nil {
+			return nil, err
+		}
+		if prefix := s.ObjectPrefix(); prefix != "" {
+			if prev, dup := prefixes[prefix]; dup {
+				return nil, fmt.Errorf("kind registry: kinds %q and %q both declare id prefix %q "+
+					"(an entity id stem names one kind)", prev, s.Kind, prefix)
+			}
+			prefixes[prefix] = s.Kind
+		}
 		for _, et := range s.EventTypes {
 			if et.Type == "" {
 				return nil, fmt.Errorf("kind registry: kind %q declares an event type with no name", s.Kind)
@@ -328,7 +373,96 @@ func NewKindRegistry(specs []KindSpec, authorities []ResolutionAuthority) (*Kind
 		}
 		kinds[s.Kind] = s
 	}
-	return &KindRegistry{kinds: kinds, authorities: auth, eventTypes: eventTypes}, nil
+	return &KindRegistry{kinds: kinds, authorities: auth, eventTypes: eventTypes, prefixes: prefixes}, nil
+}
+
+// ObservationKind is the reserved kind an observation about an entity of no
+// declared kind validates under (ADR-0110 D2): per predicate, a declared
+// predicate is constrained and an undeclared one passes. It is that fallback
+// path, not an object type, so it has no id prefix.
+const ObservationKind = "observation"
+
+// ObjectPrefix is the entity id stem of this kind's objects: IDPrefix, or the
+// kind name when none is declared; "" for the reserved ObservationKind.
+func (s KindSpec) ObjectPrefix() string {
+	if s.Kind == ObservationKind {
+		return ""
+	}
+	if s.IDPrefix != "" {
+		return s.IDPrefix
+	}
+	return s.Kind
+}
+
+// A table kind's name and predicate names become SQL identifiers
+// (objects_<kind>, <predicate>__<type>): lowercase snake case, no double
+// underscore (the column-suffix separator), short enough that Postgres never
+// truncates them (63 bytes).
+const (
+	identifierRule      = "lowercase letters, digits and single underscores, starting with a letter"
+	maxTableKindLen     = 50
+	maxTablePropertyLen = 50
+)
+
+func plainIdentifier(s string, maxLen int) bool {
+	if s == "" || len(s) > maxLen || s[0] < 'a' || s[0] > 'z' ||
+		strings.Contains(s, "__") || strings.HasSuffix(s, "_") {
+		return false
+	}
+	for _, c := range s {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// validateObjectFlags checks the object-type fields of one spec (ADR-0149 D3).
+func validateObjectFlags(s KindSpec) error {
+	if strings.Contains(s.IDPrefix, "/") {
+		return fmt.Errorf("kind registry: kind %q: id_prefix %q may not contain a slash (it is an entity id stem)", s.Kind, s.IDPrefix)
+	}
+	if s.Kind == ObservationKind && (s.IDPrefix != "" || s.Table) {
+		return fmt.Errorf("kind registry: kind %q is the reserved fallback for observations; it takes no id_prefix and no table", s.Kind)
+	}
+	for p, v := range s.Predicates {
+		for _, src := range v.Authority {
+			if strings.TrimSpace(src) == "" {
+				return fmt.Errorf("kind registry: %s/%s: an authority entry is empty", s.Kind, p)
+			}
+		}
+	}
+	if !s.Table {
+		return nil
+	}
+	if !plainIdentifier(s.Kind, maxTableKindLen) {
+		return fmt.Errorf("kind registry: kind %q declares a table, so its name must be %s, at most %d characters",
+			s.Kind, identifierRule, maxTableKindLen)
+	}
+	for p := range s.Predicates {
+		if !plainIdentifier(p, maxTablePropertyLen) {
+			return fmt.Errorf("kind registry: kind %q declares a table, so predicate %q must be %s, at most %d characters",
+				s.Kind, p, identifierRule, maxTablePropertyLen)
+		}
+	}
+	return nil
+}
+
+// ObjectKind returns the kind whose objects carry entityID's id stem; false
+// when the id has no stem or no kind declares it.
+func (r *KindRegistry) ObjectKind(entityID string) (KindSpec, bool) {
+	if r == nil {
+		return KindSpec{}, false
+	}
+	stem, ok := EntityKindFromID(entityID)
+	if !ok {
+		return KindSpec{}, false
+	}
+	kind, ok := r.prefixes[stem]
+	if !ok {
+		return KindSpec{}, false
+	}
+	return r.kinds[kind], true
 }
 
 // validateCaseExtensions checks the optional case-modelling fields of one spec
@@ -561,6 +695,9 @@ func (r *KindRegistry) ValidateValues(kind string, values []StatementValue) erro
 	}
 	for _, v := range values {
 		vs, declared := spec.Predicates[v.Predicate]
+		if !declared && spec.Open {
+			continue // an open kind keeps undeclared predicates (ADR-0149 D3)
+		}
 		if !declared {
 			return fmt.Errorf("kind %q does not declare predicate %q (declared: %s) — cannot express safely: %w",
 				kind, v.Predicate, strings.Join(declaredPredicates(spec), ", "), ErrKindRefused)
@@ -587,9 +724,19 @@ func (r *KindRegistry) ValidateValues(kind string, values []StatementValue) erro
 // ValidateItem checks a knowledge item against its kind's declaration: its
 // values (ValidateValues) and, unless it is a negation, that it carries every
 // Required predicate. A nil registry or an undeclared kind passes (ADR-0110 D2).
+//
+// An item ABOUT an object of another declared kind (its entity's id stem is
+// that kind's prefix, ObjectKind) also has its values checked against that
+// kind (ADR-0149 D3): every value about an object speaks the object's property
+// vocabulary. Required predicates bind only the item's own kind.
 func (r *KindRegistry) ValidateItem(item KnowledgeItem) error {
 	if err := r.ValidateValues(item.Kind, item.Values); err != nil {
 		return err
+	}
+	if obj, ok := r.ObjectKind(item.EntityID); ok && obj.Kind != item.Kind {
+		if err := r.ValidateValues(obj.Kind, item.Values); err != nil {
+			return fmt.Errorf("item about a %q object: %w", obj.Kind, err)
+		}
 	}
 	spec, ok := r.Spec(item.Kind)
 	if !ok || item.Negation {

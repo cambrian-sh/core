@@ -278,7 +278,15 @@ var operatorOnlyFullMethods = map[string]bool{
 	// reconcile account's health are operator business.
 	orgDirectoryService + "ListScimConnections": true,
 	orgDirectoryService + "GetReconcileStatus":  true,
+	// ADR-0149 D2: the full agent-drafted ontology change, for the person
+	// deciding its ontology_change approval — an Operator's decision, so an
+	// Operator's read (T-20261113-approvers-of-an-ontology-change-see-only-a-200).
+	substrateLaneService + "GetOntologyDraft": true,
 }
+
+// Premium substrate plane (ADR-0108), matched on the FULL method like the
+// accounts plane above.
+const substrateLaneService = "/cambrian.premium.substrate.SubstrateLane/"
 
 func isOperatorOnly(fullMethod string) bool {
 	name := fullMethod

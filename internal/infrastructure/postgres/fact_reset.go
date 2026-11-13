@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/objects"
 )
 
 var _ domain.FactResetter = (*PgKnowledgeStore)(nil)
@@ -144,6 +145,22 @@ func (s *PgKnowledgeStore) ResetFacts(ctx context.Context, f domain.FactResetFil
 			return rep, fmt.Errorf("fact reset: delete items: %w", err)
 		}
 		rep.Items = int(tag.RowsAffected())
+		// The deleted resolutions were inputs of their entities' object rows
+		// (ADR-0149 D3); recompute those rows in this transaction.
+		byNS := map[string][]string{}
+		for i := range keyNS {
+			byNS[keyNS[i]] = append(byNS[keyNS[i]], keyEntity[i])
+		}
+		nss := make([]string, 0, len(byNS))
+		for ns := range byNS {
+			nss = append(nss, ns)
+		}
+		sort.Strings(nss)
+		for _, ns := range nss {
+			if err := objects.ApplyStateTx(ctx, tx, s.kinds, ns, byNS[ns]...); err != nil {
+				return rep, fmt.Errorf("fact reset: object rows: %w", err)
+			}
+		}
 	}
 
 	// 4. The extraction markers of the selected writers' documents.

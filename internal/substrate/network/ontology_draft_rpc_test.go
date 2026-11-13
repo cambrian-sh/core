@@ -38,6 +38,8 @@ func draftServer(t *testing.T) (*Server, *SubstrateLLMGateway, *fakeDrafter) {
 	s, gw := newLeaseServer(t)
 	fd := &fakeDrafter{}
 	s.OntologyDrafts = fd
+	// The verb gate is exercised in proposal_verb_test.go; these tests run unrestricted.
+	s.ToolExecutor = &domain.ToolExecutor{Unrestricted: true, Grants: domain.NewInMemoryGrantsStore()}
 	s.RunPrincipal = func(_ context.Context, b domain.LeaseBinding) string {
 		return strings.TrimPrefix(b.ConversationID, "conv-of-")
 	}

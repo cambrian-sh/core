@@ -1,0 +1,76 @@
+# 2026/11/13 16:24:25.960705 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ops: 4
+# 2026/11/13 16:24:25.960705 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/A"
+# 2026/11/13 16:24:25.960705 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 0
+# 2026/11/13 16:24:25.960705 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 2
+# 2026/11/13 16:24:25.960705 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw is: "open"
+# 2026/11/13 16:24:25.960705 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw who: "user:alice"
+# 2026/11/13 16:24:25.970854 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/B"
+# 2026/11/13 16:24:25.970854 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 0
+# 2026/11/13 16:24:25.970854 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 0
+# 2026/11/13 16:24:25.970854 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw pred: "total"
+# 2026/11/13 16:24:25.970854 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw n: 1
+# 2026/11/13 16:24:25.970854 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw ev: "p3diff-erp"
+# 2026/11/13 16:24:25.975038 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/A"
+# 2026/11/13 16:24:25.975038 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 0
+# 2026/11/13 16:24:25.975038 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 2
+# 2026/11/13 16:24:25.975038 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw is: "open"
+# 2026/11/13 16:24:25.975038 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw who: "user:alice"
+# 2026/11/13 16:24:25.984095 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw entity: "p3order/A"
+# 2026/11/13 16:24:25.984095 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw at: 0
+# 2026/11/13 16:24:25.984095 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw op: 3
+# 2026/11/13 16:24:25.984095 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] [rapid] draw retire: "r971-1"
+# 2026/11/13 16:24:25.991483 [TestPg_RebuildEqualsIncrementalAndTableEqualsHistory] objects: table 2 rows, history 1
+# 
+v0.4.8#17989489153935644704
+0x0
+0x38e38e38e38e4
+0x3
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x3
+0x1b8cd6ddf5dc49
+0x0
