@@ -496,9 +496,14 @@ func (p *TagPredicate) Unsatisfiable() (bool, string) {
 		sort.Strings(conflicts)
 		return true, fmt.Sprintf("Required∩Forbidden={%s}", strings.Join(conflicts, ","))
 	}
-	for _, clause := range p.AnyOfClauses {
+	for i, clause := range p.AnyOfClauses {
+		// An EMPTY clause is an empty OR-set: nothing can satisfy it, so Check denies
+		// every row and every SQL rendering renders it FALSE (owner decision
+		// 2026-11-13, T-20261113-sql-fence-mirrors-skip-an-empty-any-of-clause). No
+		// decision point should ever emit one, so the reason says so: the caller's
+		// unsatisfiable-predicate log line then names it as an upstream bug.
 		if len(clause) == 0 {
-			continue
+			return true, fmt.Sprintf("AnyOf clause #%d is empty (a resolver emitted an empty OR-set — likely an upstream bug)", i)
 		}
 		allDenied := true
 		for _, a := range clause {

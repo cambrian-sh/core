@@ -192,6 +192,7 @@ leak:
 	go test ./internal/memory/... -v
 	go test ./internal/metabolism/executer/... -v
 	go test ./internal/metabolism/interview/... -v
+	go test ./internal/ontology/... -v
 	go test ./internal/substrate/operator/... -v
 	go test ./internal/supervision/aggregator/... -v
 	go test ./internal/supervision/circadian/... -v

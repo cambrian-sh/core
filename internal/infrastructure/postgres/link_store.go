@@ -29,14 +29,18 @@ import (
 // state/retracted_at (ADR-0093 D6). Confirmation appends; retraction stamps. What the
 // machine proposed and what the human decided stay two separate, readable assertions.
 type PgLinkStore struct {
-	pool *pgxpool.Pool
-	reg  *domain.RelationRegistry
+	pool      *pgxpool.Pool
+	relations domain.RelationSource
 }
 
-// NewPgLinkStore wraps an existing pool. reg may be nil, in which case only the built-in
-// seed verbs are declared (domain.RelationRegistry's nil behaviour).
-func NewPgLinkStore(pool *pgxpool.Pool, reg *domain.RelationRegistry) *PgLinkStore {
-	return &PgLinkStore{pool: pool, reg: reg}
+// NewPgLinkStore wraps an existing pool. relations is the live ontology or a fixed
+// *domain.RelationRegistry; nil means only the built-in seed verbs are declared
+// (domain.RelationRegistry's nil behaviour).
+func NewPgLinkStore(pool *pgxpool.Pool, relations domain.RelationSource) *PgLinkStore {
+	if relations == nil {
+		relations = (*domain.RelationRegistry)(nil)
+	}
+	return &PgLinkStore{pool: pool, relations: relations}
 }
 
 var _ domain.LinkStore = (*PgLinkStore)(nil)
@@ -61,16 +65,15 @@ const linkColumns = `id, namespace_id, family, from_ref, to_ref, relation, state
 // decided: an unstated state is a candidate (the conservative half), an unstated family
 // is the one the verb's declaration already names, an unstated confidence is 1.0.
 func (s *PgLinkStore) PutLink(ctx context.Context, l domain.Link) (bool, error) {
-	if l.NamespaceID == "" {
-		l.NamespaceID = "default"
-	}
+	l.NamespaceID = orDefaultNamespace(l.NamespaceID)
+	reg := s.relations.RelationsFor(l.NamespaceID)
 	if l.State == "" {
 		l.State = domain.LinkStateCandidate
 	}
 	if l.Family == "" {
 		// The verb already declares its family; making a producer repeat it is one
 		// more place for the two to disagree.
-		if spec, ok := s.reg.Spec(l.Relation); ok {
+		if spec, ok := reg.Spec(l.Relation); ok {
 			l.Family = spec.Family
 		}
 	}
@@ -80,7 +83,7 @@ func (s *PgLinkStore) PutLink(ctx context.Context, l domain.Link) (bool, error) 
 	if l.AssertedAt.IsZero() {
 		l.AssertedAt = time.Now().UTC()
 	}
-	if err := s.reg.ValidateLink(l); err != nil {
+	if err := reg.ValidateLink(l); err != nil {
 		return false, err
 	}
 	// AFTER validation, because canonical ordering must not be able to turn an
@@ -90,19 +93,87 @@ func (s *PgLinkStore) PutLink(ctx context.Context, l domain.Link) (bool, error) 
 		l.ID = "lnk_" + uuid.NewString()
 	}
 
-	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO links (id, namespace_id, family, from_ref, to_ref, relation, state,
-			mechanism, producer, confidence, evidence_id, asserted_by, asserted_at,
-			valid_from, valid_to, source_ref)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-		ON CONFLICT ON CONSTRAINT links_dedup DO NOTHING`,
-		l.ID, l.NamespaceID, l.Family, l.FromRef, l.ToRef, l.Relation, l.State,
-		l.Mechanism, l.Producer, l.Confidence, nullableEvidence(l.EvidenceID), l.AssertedBy,
-		l.AssertedAt.UTC(), utcOrNil(l.ValidFrom), utcOrNil(l.ValidTo), l.SourceRef)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+	if err := checkSingleValued(ctx, tx, reg, l); err != nil {
+		return false, err
+	}
+	created, err := insertLink(ctx, tx, l, reg.Version())
 	if err != nil {
 		return false, fmt.Errorf("link put: %w", err)
 	}
+	return created, tx.Commit(ctx)
+}
+
+// insertLink appends one assertion, idempotent on links_dedup; created=false on a
+// replay. declVersion is the declarations version it was validated against.
+func insertLink(ctx context.Context, tx pgx.Tx, l domain.Link, declVersion int64) (bool, error) {
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO links (id, namespace_id, family, from_ref, to_ref, relation, state,
+			mechanism, producer, confidence, evidence_id, asserted_by, asserted_at,
+			valid_from, valid_to, source_ref, decl_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+		ON CONFLICT ON CONSTRAINT links_dedup DO NOTHING`,
+		l.ID, l.NamespaceID, l.Family, l.FromRef, l.ToRef, l.Relation, l.State,
+		l.Mechanism, l.Producer, l.Confidence, nullableEvidence(l.EvidenceID), l.AssertedBy,
+		l.AssertedAt.UTC(), utcOrNil(l.ValidFrom), utcOrNil(l.ValidTo), l.SourceRef,
+		declVersionOrNil(declVersion))
+	if err != nil {
+		return false, err
+	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// checkSingleValued enforces Cardinality "one" (ADR-0149 D5) on a CONFIRMED link:
+// its from endpoint may hold no other confirmed, unretracted link of the verb to a
+// different target whose validity window overlaps this one's. A reassignment that
+// bounds the old link (valid_to) before the new one starts is therefore allowed,
+// which keeps "who owned this in March" answerable. Candidates are not checked —
+// they are proposals awaiting review (ADR-0128). The advisory lock serialises two
+// writers of the same (verb, from) so both cannot pass the check.
+func checkSingleValued(ctx context.Context, tx pgx.Tx, reg *domain.RelationRegistry, l domain.Link) error {
+	spec, _ := reg.Spec(l.Relation)
+	if l.State != domain.LinkStateConfirmed || !spec.SingleValued() {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`,
+		resolutionLockKey(l.NamespaceID, "links|"+l.Relation, l.FromRef, "")); err != nil {
+		return err
+	}
+	var otherID, otherTo string
+	err := tx.QueryRow(ctx, `
+		SELECT id, to_ref FROM links
+		WHERE namespace_id=$1 AND relation=$2 AND from_ref=$3 AND to_ref<>$4
+		  AND state='confirmed' AND retracted_at IS NULL
+		  AND `+LinkValidityOverlaps("", "$5", "$6")+`
+		ORDER BY recorded_at, id LIMIT 1`,
+		l.NamespaceID, l.Relation, l.FromRef, l.ToRef, utcOrNil(l.ValidFrom), utcOrNil(l.ValidTo),
+	).Scan(&otherID, &otherTo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("link cardinality check: %w", err)
+	}
+	return fmt.Errorf("link relation %q has cardinality one: %s already holds confirmed link %s to %s "+
+		"over an overlapping validity window (retract it, or bound its valid_to, first): %w",
+		l.Relation, l.FromRef, otherID, otherTo, domain.ErrLinkRefused)
+}
+
+// LinkValidityOverlaps renders "a links row's validity window overlaps [from,
+// to)": alias qualifies the row ("" = unqualified), from/to are SQL expressions,
+// and a NULL bound is unbounded. The cardinality check and the ontology
+// violations report share it, so a refused write and the report can never
+// disagree about what overlapping means.
+func LinkValidityOverlaps(alias, from, to string) string {
+	if alias != "" {
+		alias += "."
+	}
+	return `tstzrange(COALESCE(` + alias + `valid_from,'-infinity'), COALESCE(` + alias + `valid_to,'infinity'))
+		   && tstzrange(COALESCE(` + from + `::timestamptz,'-infinity'), COALESCE(` + to + `::timestamptz,'infinity'))`
 }
 
 // ConfirmLink writes a NEW human-mechanism row and leaves the confirmed one untouched.
@@ -116,9 +187,7 @@ func (s *PgLinkStore) PutLink(ctx context.Context, l domain.Link) (bool, error) 
 // not inventing a new one, and a confirmation with no basis would be the admissibility
 // rule defeated by a click.
 func (s *PgLinkStore) ConfirmLink(ctx context.Context, namespace, linkID, actor string) (domain.Link, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	if actor == "" {
 		return domain.Link{}, fmt.Errorf("link confirm: an actor is required: %w", domain.ErrLinkRefused)
 	}
@@ -156,24 +225,19 @@ func (s *PgLinkStore) ConfirmLink(ctx context.Context, namespace, linkID, actor 
 		ValidTo:     src.ValidTo,
 		SourceRef:   confirmationSourceRef(linkID),
 	}
-	if err := s.reg.ValidateLink(confirmed); err != nil {
+	reg := s.relations.RelationsFor(namespace)
+	if err := reg.ValidateLink(confirmed); err != nil {
+		return domain.Link{}, err
+	}
+	if err := checkSingleValued(ctx, tx, reg, confirmed); err != nil {
 		return domain.Link{}, err
 	}
 
-	tag, err := tx.Exec(ctx, `
-		INSERT INTO links (id, namespace_id, family, from_ref, to_ref, relation, state,
-			mechanism, producer, confidence, evidence_id, asserted_by, asserted_at,
-			valid_from, valid_to, source_ref)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'',$9,$10,$11,$12,$13,$14,$15)
-		ON CONFLICT ON CONSTRAINT links_dedup DO NOTHING`,
-		confirmed.ID, confirmed.NamespaceID, confirmed.Family, confirmed.FromRef, confirmed.ToRef,
-		confirmed.Relation, confirmed.State, confirmed.Mechanism, confirmed.Confidence,
-		nullableEvidence(confirmed.EvidenceID), confirmed.AssertedBy, confirmed.AssertedAt,
-		utcOrNil(confirmed.ValidFrom), utcOrNil(confirmed.ValidTo), confirmed.SourceRef)
+	created, err := insertLink(ctx, tx, confirmed, reg.Version())
 	if err != nil {
 		return domain.Link{}, fmt.Errorf("link confirm: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if !created {
 		// Already confirmed: return the standing confirmation rather than an error.
 		// A second click on a review card is a repeat, not a fault.
 		confirmed, err = scanLink(tx.QueryRow(ctx, `
@@ -201,9 +265,7 @@ func (s *PgLinkStore) ConfirmLink(ctx context.Context, namespace, linkID, actor 
 func (s *PgLinkStore) RetractLink(ctx context.Context, namespace, linkID, actor, reason string) error {
 	_ = actor  // recorded by the caller's audit lane; see the doc comment
 	_ = reason // ditto — a link row never gains a column
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE links SET state=$3, retracted_at=now()
 		WHERE namespace_id=$1 AND id=$2 AND retracted_at IS NULL`,
@@ -235,9 +297,7 @@ func (s *PgLinkStore) RetractLink(ctx context.Context, namespace, linkID, actor,
 // permanent one.
 func (s *PgLinkStore) RetractByProducer(ctx context.Context, namespace, producer, actor string) (int, error) {
 	_ = actor // as in RetractLink: audited by the caller, never stamped on the row
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	if producer == "" {
 		// An empty producer is the DEFAULT of the column, so this would revoke every
 		// hand-written and declared link in the namespace. Refuse loudly.
@@ -274,9 +334,7 @@ func (s *PgLinkStore) LinksFor(ctx context.Context, namespace, ref string, opts 
 // trip instead of one per node. LinksFor is this with one ref — there is one
 // rendering of "the links touching a ref", not two.
 func (s *PgLinkStore) LinksForRefs(ctx context.Context, namespace string, refs []string, opts domain.LinkQuery) (map[string][]domain.Link, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	out := map[string][]domain.Link{}
 	if len(refs) == 0 {
 		return out, nil
@@ -293,7 +351,7 @@ func (s *PgLinkStore) LinksForRefs(ctx context.Context, namespace string, refs [
 	args := []any{namespace, refs}
 	where := `namespace_id=$1 AND (from_ref=f.ref OR to_ref=f.ref)`
 	if !opts.IncludeIncoming {
-		args = append(args, s.reg.SymmetricVerbs())
+		args = append(args, s.relations.RelationsFor(namespace).SymmetricVerbs())
 		where = `namespace_id=$1 AND (from_ref=f.ref OR (to_ref=f.ref AND relation = ANY($3::text[])))`
 	}
 	add := func(clause string, v any) {
@@ -362,9 +420,7 @@ const candidateOrder = `l.confidence DESC, l.asserted_at ASC, l.id`
 // Candidates is the review inbox: open candidates (openCandidate) in
 // candidateOrder.
 func (s *PgLinkStore) Candidates(ctx context.Context, namespace string, limit int) ([]domain.Link, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	if limit <= 0 {
 		limit = defaultIdentityLimit
 	}
@@ -387,9 +443,7 @@ func (s *PgLinkStore) Candidates(ctx context.Context, namespace string, limit in
 // subject's candidates behind every higher-confidence candidate elsewhere
 // (T-20261112-entity-op-s-candidates-read-cuts-the-whole).
 func (s *PgLinkStore) CandidatesForRefs(ctx context.Context, namespace string, refs []string, offset, limit int) (map[string][]domain.Link, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	out := map[string][]domain.Link{}
 	if len(refs) == 0 {
 		return out, nil

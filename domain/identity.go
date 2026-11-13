@@ -285,19 +285,55 @@ type LinkStore interface {
 // symmetric and closes over identity, never what "same as" MEANS.
 type RelationSpec struct {
 	// Name is the verb ("subsidiary_of").
-	Name string
+	Name string `json:"name"`
 	// Family is identity | relation | lineage — the family every link using this verb
 	// must carry.
-	Family string
+	Family string `json:"family"`
 	// Symmetric makes the verb hold in both directions; read paths return such links
 	// for either endpoint.
-	Symmetric bool
+	Symmetric bool `json:"symmetric,omitempty"`
 	// Closure is "identity" | "rollup" | "": whether an entity-scoped read may expand
 	// through this verb, and how. Empty = never expand.
-	Closure string
-	// MaxPerEntity bounds the fan-out; 0 = unlimited. Exceeding it FLAGS the entity —
-	// the cap is never raised silently to fit the data.
-	MaxPerEntity int
+	Closure string `json:"closure,omitempty"`
+
+	// The typed-link fields (ADR-0149 D5). All optional; a verb that sets none of
+	// them validates exactly as before they existed. They bind CONFIRMED links
+	// only — a candidate is a proposal awaiting review under the ADR-0128 trust
+	// ceilings, and refusing it for its shape would hide what the producer
+	// proposed. A symmetric or identity-family verb has no direction, so the
+	// registry refuses these fields on one.
+
+	// FromKind / ToKind name the ENTITY kind (the id's prefix stem,
+	// EntityKindFromID — not a knowledge kind) each endpoint must be. Empty = any
+	// ref, entity or not.
+	FromKind string `json:"from_kind,omitempty"`
+	ToKind   string `json:"to_kind,omitempty"`
+	// Cardinality is "one" | "many" ("" = many): with "one", a from endpoint holds
+	// at most one confirmed, unretracted link of this verb whose validity overlaps
+	// another's. It replaced MaxPerEntity, which was declared and never enforced.
+	Cardinality string `json:"cardinality,omitempty"`
+	// Required: every entity of FromKind should hold one confirmed link of this
+	// verb. Absence has no write to refuse, so it is REPORTED (the ontology's
+	// violations report), never enforced. Needs FromKind.
+	Required bool `json:"required,omitempty"`
+	// Inverse names the verb read from the other end ("customer_of" for
+	// "has_customer"); a label for read surfaces, never a second stored link.
+	Inverse string `json:"inverse,omitempty"`
+}
+
+// Relation cardinalities (RelationSpec.Cardinality).
+const (
+	CardinalityOne  = "one"
+	CardinalityMany = "many"
+)
+
+// SingleValued reports whether the verb allows at most one overlapping
+// confirmed link per from endpoint.
+func (s RelationSpec) SingleValued() bool { return s.Cardinality == CardinalityOne }
+
+// typed reports whether the spec sets any directional typed-link field.
+func (s RelationSpec) typed() bool {
+	return s.FromKind != "" || s.ToKind != "" || s.Cardinality == CardinalityOne || s.Required
 }
 
 // Built-in seed verbs. Registered at boot exactly as ResolutionPolicyLatestAssertion is:
@@ -338,6 +374,26 @@ func builtinRelationSpecs() map[string]RelationSpec {
 // mid-flight can disagree with itself between two writes of one batch.
 type RelationRegistry struct {
 	relations map[string]RelationSpec
+	// version: see KindRegistry.version.
+	version int64
+}
+
+// RelationSource yields the relation registry in force for a namespace — the
+// KindSource counterpart (ADR-0149 D2).
+type RelationSource interface {
+	RelationsFor(namespace string) *RelationRegistry
+}
+
+// RelationsFor implements RelationSource: a registry is its own fixed source.
+func (r *RelationRegistry) RelationsFor(string) *RelationRegistry { return r }
+
+// Version is the declarations version this registry was built from (0 = built
+// directly).
+func (r *RelationRegistry) Version() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.version
 }
 
 // NewRelationRegistry builds the registry over the built-in seeds. Refuses at STARTUP —
@@ -368,12 +424,53 @@ func NewRelationRegistry(specs []RelationSpec) (*RelationRegistry, error) {
 			return nil, fmt.Errorf("relation registry: verb %q declares unknown closure %q (want %s|%s or empty)",
 				s.Name, s.Closure, ClosureIdentity, ClosureRollup)
 		}
-		if s.MaxPerEntity < 0 {
-			return nil, fmt.Errorf("relation registry: verb %q declares a negative MaxPerEntity", s.Name)
+		if err := validateTypedLink(s); err != nil {
+			return nil, err
 		}
 		rel[s.Name] = s
 	}
+	inverses := map[string]string{}
+	for _, s := range rel {
+		if s.Inverse == "" {
+			continue
+		}
+		if _, clash := rel[s.Inverse]; clash {
+			return nil, fmt.Errorf("relation registry: verb %q names inverse %q, which is itself a declared verb", s.Name, s.Inverse)
+		}
+		if other, dup := inverses[s.Inverse]; dup {
+			return nil, fmt.Errorf("relation registry: inverse %q is named by both %q and %q", s.Inverse, other, s.Name)
+		}
+		inverses[s.Inverse] = s.Name
+	}
 	return &RelationRegistry{relations: rel}, nil
+}
+
+// validateTypedLink checks one spec's typed-link fields at construction.
+func validateTypedLink(s RelationSpec) error {
+	switch s.Cardinality {
+	case "", CardinalityOne, CardinalityMany:
+	default:
+		return fmt.Errorf("relation registry: verb %q declares unknown cardinality %q (want %s|%s or empty)",
+			s.Name, s.Cardinality, CardinalityOne, CardinalityMany)
+	}
+	if s.typed() && (s.Symmetric || s.Family == LinkFamilyIdentity) {
+		return fmt.Errorf("relation registry: verb %q is symmetric or identity-family, so it has no direction "+
+			"for from_kind, to_kind, cardinality one or required", s.Name)
+	}
+	if s.Required && s.FromKind == "" {
+		return fmt.Errorf("relation registry: verb %q is required but names no from_kind to require it of", s.Name)
+	}
+	for _, k := range []string{s.FromKind, s.ToKind} {
+		if k != "" {
+			if err := ValidateEntityKind(k); err != nil {
+				return fmt.Errorf("relation registry: verb %q: %w", s.Name, err)
+			}
+		}
+	}
+	if s.Inverse != "" && s.Inverse == s.Name {
+		return fmt.Errorf("relation registry: verb %q cannot be its own inverse", s.Name)
+	}
+	return nil
 }
 
 // Spec returns the declaration for a verb. A nil registry still knows the built-in
@@ -462,7 +559,44 @@ func (r *RelationRegistry) ValidateLink(l Link) error {
 	if l.FromRef == "" || l.ToRef == "" || l.AssertedBy == "" {
 		return fmt.Errorf("a link needs from_ref, to_ref and asserted_by: %w", ErrLinkRefused)
 	}
+	if l.State == LinkStateConfirmed {
+		if err := checkEndpointKind(spec, "from", spec.FromKind, l.FromRef); err != nil {
+			return err
+		}
+		if err := checkEndpointKind(spec, "to", spec.ToKind, l.ToRef); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// checkEndpointKind refuses a confirmed link whose endpoint is not an entity of
+// the declared kind (ADR-0149 D5). want "" = any ref.
+func checkEndpointKind(spec RelationSpec, end, want, ref string) error {
+	if want == "" {
+		return nil
+	}
+	got := RefEntityKind(ref)
+	if got == want {
+		return nil
+	}
+	is := "not an entity ref"
+	if got != "" {
+		is = fmt.Sprintf("a %q entity", got)
+	}
+	return fmt.Errorf("link relation %q requires its %s endpoint to be a %q entity; %q is %s: %w",
+		spec.Name, end, want, ref, is, ErrLinkRefused)
+}
+
+// RefEntityKind returns the entity kind a typed ref names ("entity:customer/C-1"
+// → "customer"), or "" when the ref is not a well-formed entity ref.
+func RefEntityKind(ref string) string {
+	id, ok := strings.CutPrefix(ref, RefPrefixEntity)
+	if !ok {
+		return ""
+	}
+	k, _ := EntityKindFromID(id)
+	return k
 }
 
 // CanonicalizeLink orders the endpoints of an IDENTITY link so from_ref < to_ref, and

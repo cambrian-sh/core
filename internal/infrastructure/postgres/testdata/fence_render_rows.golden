@@ -1,0 +1,128 @@
+## nil
+- evidence exists (query plane: observations/events/outbox): PANIC
+- evidence row (alias e): PANIC
+- item (alias ki, TEXT[] classification): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,empty-owner,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged
+- text array (catalog: any TEXT[] column): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,empty-owner,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged
+- jsonb metadata (unqualified): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,empty-owner,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged
+- jsonb metadata (alias c): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,empty-owner,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged
+
+## maintenance
+- evidence exists (query plane: observations/events/outbox): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,empty-owner,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- evidence row (alias e): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,empty-owner,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- item (alias ki, TEXT[] classification): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,empty-owner,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- text array (catalog: any TEXT[] column): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,empty-owner,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (unqualified): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,empty-owner,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (alias c): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,empty-owner,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+
+## bypass (system)
+- evidence exists (query plane: observations/events/outbox): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- evidence row (alias e): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- item (alias ki, TEXT[] classification): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- text array (catalog: any TEXT[] column): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (unqualified): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (alias c): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+
+## bypass, owner alice
+- evidence exists (query plane: observations/events/outbox): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- evidence row (alias e): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- item (alias ki, TEXT[] classification): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- text array (catalog: any TEXT[] column): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (unqualified): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (alias c): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+
+## empty
+- evidence exists (query plane: observations/events/outbox): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- evidence row (alias e): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- item (alias ki, TEXT[] classification): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- text array (catalog: any TEXT[] column): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (unqualified): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (alias c): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+
+## owner alice
+- evidence exists (query plane: observations/events/outbox): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- evidence row (alias e): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- item (alias ki, TEXT[] classification): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- text array (catalog: any TEXT[] column): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (unqualified): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (alias c): a,a-sales,alice,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+
+## owners alice+bob
+- evidence exists (query plane: observations/events/outbox): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- evidence row (alias e): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- item (alias ki, TEXT[] classification): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- text array (catalog: any TEXT[] column): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (unqualified): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (alias c): a,a-sales,alice,alice-bob,alice-deal-party,alice-hr,alice-sales,alice-t1,alice-t1-deal-party,b,bob,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+
+## required sales+eu
+- evidence exists (query plane: observations/events/outbox): sales-eu  [= Go]
+- evidence row (alias e): sales-eu  [= Go]
+- item (alias ki, TEXT[] classification): sales-eu  [= Go]
+- text array (catalog: any TEXT[] column): sales-eu  [= Go]
+- jsonb metadata (unqualified): sales-eu  [= Go]
+- jsonb metadata (alias c): sales-eu  [= Go]
+
+## forbidden confidential+hr
+- evidence exists (query plane: observations/events/outbox): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,public,sales,sales-eu,t1-sales,untagged  [= Go]
+- evidence row (alias e): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,public,sales,sales-eu,t1-sales,untagged  [= Go]
+- item (alias ki, TEXT[] classification): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,public,sales,sales-eu,t1-sales,untagged  [= Go]
+- text array (catalog: any TEXT[] column): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,public,sales,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (unqualified): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,public,sales,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (alias c): a,a-sales,b,deal-no-parties,deal-other-party,deal-party,deal-sales-a-party,public,sales,sales-eu,t1-sales,untagged  [= Go]
+
+## any-of [a b] [] [sales]
+- evidence exists (query plane: observations/events/outbox):   [= Go]
+- evidence row (alias e):   [= Go]
+- item (alias ki, TEXT[] classification):   [= Go]
+- text array (catalog: any TEXT[] column):   [= Go]
+- jsonb metadata (unqualified):   [= Go]
+- jsonb metadata (alias c):   [= Go]
+
+## party deal:acme, identity customer:acme
+- evidence exists (query plane: observations/events/outbox): a,a-sales,b,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- evidence row (alias e): a,a-sales,b,deal-party,deal-sales-a-party,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- item (alias ki, TEXT[] classification): a,a-sales,b,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- text array (catalog: any TEXT[] column): a,a-sales,b,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (unqualified): a,a-sales,b,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (alias c): a,a-sales,b,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+
+## party deal:acme, no identities
+- evidence exists (query plane: observations/events/outbox): a,a-sales,b,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- evidence row (alias e): a,a-sales,b,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- item (alias ki, TEXT[] classification): a,a-sales,b,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- text array (catalog: any TEXT[] column): a,a-sales,b,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (unqualified): a,a-sales,b,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+- jsonb metadata (alias c): a,a-sales,b,hr,public,sales,sales-confidential,sales-eu,t1-sales,untagged  [= Go]
+
+## combined
+- evidence exists (query plane: observations/events/outbox): a-sales,deal-sales-a-party  [= Go]
+- evidence row (alias e): a-sales,deal-sales-a-party  [= Go]
+- item (alias ki, TEXT[] classification): a-sales  [= Go]
+- text array (catalog: any TEXT[] column): a-sales  [= Go]
+- jsonb metadata (unqualified): a-sales  [= Go]
+- jsonb metadata (alias c): a-sales  [= Go]
+
+## own-rows
+- evidence exists (query plane: observations/events/outbox): a-sales,alice,alice-deal-party,alice-sales,alice-t1,alice-t1-deal-party,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+- evidence row (alias e): a-sales,alice,alice-deal-party,alice-sales,alice-t1,alice-t1-deal-party,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+- item (alias ki, TEXT[] classification): a-sales,alice,alice-deal-party,alice-sales,alice-t1,alice-t1-deal-party,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+- text array (catalog: any TEXT[] column): a-sales,alice,alice-deal-party,alice-sales,alice-t1,alice-t1-deal-party,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+- jsonb metadata (unqualified): a-sales,alice,alice-deal-party,alice-sales,alice-t1,alice-t1-deal-party,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+- jsonb metadata (alias c): a-sales,alice,alice-deal-party,alice-sales,alice-t1,alice-t1-deal-party,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+
+## own-rows, required + parties
+- evidence exists (query plane: observations/events/outbox): alice-t1,alice-t1-deal-party  [= Go]
+- evidence row (alias e): alice-t1,alice-t1-deal-party  [= Go]
+- item (alias ki, TEXT[] classification): alice-t1  [= Go]
+- text array (catalog: any TEXT[] column): alice-t1  [= Go]
+- jsonb metadata (unqualified): alice-t1  [= Go]
+- jsonb metadata (alias c): alice-t1  [= Go]
+
+## own-rows malformed (other owner)
+- evidence exists (query plane: observations/events/outbox): a-sales,alice-sales,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+- evidence row (alias e): a-sales,alice-sales,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+- item (alias ki, TEXT[] classification): a-sales,alice-sales,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+- text array (catalog: any TEXT[] column): a-sales,alice-sales,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+- jsonb metadata (unqualified): a-sales,alice-sales,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+- jsonb metadata (alias c): a-sales,alice-sales,deal-sales-a-party,sales,sales-confidential,sales-eu,t1-sales  [= Go]
+

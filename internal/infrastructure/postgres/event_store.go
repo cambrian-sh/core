@@ -17,8 +17,8 @@ import (
 // Tables come from migration 0014; no DDL here. Every read is exact over
 // stored rows — no vectors, no ranking, no model anywhere in this file.
 type PgEventStore struct {
-	pool *pgxpool.Pool
-	reg  *domain.KindRegistry
+	pool  *pgxpool.Pool
+	kinds domain.KindSource
 }
 
 // ObservationKind is the reserved registry kind observations validate under
@@ -26,9 +26,13 @@ type PgEventStore struct {
 // value constraints are declared once, under this name.
 const ObservationKind = "observation"
 
-// NewPgEventStore wraps an existing pool. reg may be nil (no declared kinds).
-func NewPgEventStore(pool *pgxpool.Pool, reg *domain.KindRegistry) *PgEventStore {
-	return &PgEventStore{pool: pool, reg: reg}
+// NewPgEventStore wraps an existing pool. kinds is the live ontology or a fixed
+// *domain.KindRegistry; nil means no declared kinds.
+func NewPgEventStore(pool *pgxpool.Pool, kinds domain.KindSource) *PgEventStore {
+	if kinds == nil {
+		kinds = (*domain.KindRegistry)(nil)
+	}
+	return &PgEventStore{pool: pool, kinds: kinds}
 }
 
 var _ domain.EventStore = (*PgEventStore)(nil)
@@ -45,12 +49,10 @@ func (s *PgEventStore) RecordEvent(ctx context.Context, ev domain.Event) (domain
 	// A DECLARED event type (KindSpec.EventTypes) must carry its declared roles;
 	// an undeclared type passes (ADR-0110 D2 monotonic adoption). The refusal
 	// names the constraint and wraps domain.ErrKindRefused.
-	if err := s.reg.ValidateEvent(ev); err != nil {
+	ns := orDefaultNamespace(ev.NamespaceID)
+	reg := s.kinds.KindsFor(ns)
+	if err := reg.ValidateEvent(ev); err != nil {
 		return "", false, err
-	}
-	ns := ev.NamespaceID
-	if ns == "" {
-		ns = "default"
 	}
 	id := ev.ID
 	if id == "" {
@@ -70,11 +72,12 @@ func (s *PgEventStore) RecordEvent(ctx context.Context, ev domain.Event) (domain
 
 	var gotID string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO events (id, namespace_id, event_type, occurred_at, evidence_id, source_ref, time_basis)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		INSERT INTO events (id, namespace_id, event_type, occurred_at, evidence_id, source_ref, time_basis, decl_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		ON CONFLICT (namespace_id, source_ref) WHERE source_ref <> '' DO NOTHING
 		RETURNING id`,
 		string(id), ns, ev.Type, ev.OccurredAt.UTC(), evidenceID, ev.SourceRef, ev.TimeBasis,
+		declVersionOrNil(reg.Version()),
 	).Scan(&gotID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := tx.QueryRow(ctx,
@@ -118,36 +121,19 @@ func (s *PgEventStore) RecordObservation(ctx context.Context, ob domain.Observat
 	// opt-in: a declared predicate is constrained, an undeclared one passes,
 	// so declaring temperature_c cannot break an unrelated stream (monotonic
 	// adoption at observation granularity).
-	if spec, ok := s.reg.Spec(ObservationKind); ok {
+	ns := orDefaultNamespace(ob.NamespaceID)
+	reg := s.kinds.KindsFor(ns)
+	if spec, ok := reg.Spec(ObservationKind); ok {
 		if _, declared := spec.Predicates[ob.Predicate]; declared {
 			v := ob.Value
 			v.Predicate = ob.Predicate
-			if err := s.reg.ValidateValues(ObservationKind, []domain.StatementValue{v}); err != nil {
+			if err := reg.ValidateValues(ObservationKind, []domain.StatementValue{v}); err != nil {
 				return false, err
 			}
 		}
 	}
-	ns := ob.NamespaceID
-	if ns == "" {
-		ns = "default"
-	}
-	var date *time.Time
-	var num *float64
-	var text, ent *string
-	switch ob.Value.Type {
-	case "date":
-		d := ob.Value.Date.UTC()
-		date = &d
-	case "number":
-		n := ob.Value.Number
-		num = &n
-	case "text":
-		t := ob.Value.Text
-		text = &t
-	case "entity":
-		e := ob.Value.EntityRef
-		ent = &e
-	default:
+	date, num, text, ent, ok := typedValueColumns(ob.Value)
+	if !ok {
 		return false, fmt.Errorf("observation record: unknown value type %q", ob.Value.Type)
 	}
 	conf := ob.Confidence
@@ -162,12 +148,13 @@ func (s *PgEventStore) RecordObservation(ctx context.Context, ob domain.Observat
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO observations (namespace_id, entity_id, predicate, value_type,
 			value_date, value_number, value_text, value_entity_id,
-			location, occurred_at, confidence, evidence_id, source_ref, time_basis)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			location, occurred_at, confidence, evidence_id, source_ref, time_basis, decl_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		ON CONFLICT (namespace_id, source_ref, occurred_at) WHERE source_ref <> '' DO NOTHING`,
 		ns, ob.EntityID, ob.Predicate, ob.Value.Type,
 		date, num, text, ent,
-		ob.Location, ob.OccurredAt.UTC(), conf, evidenceID, ob.SourceRef, ob.TimeBasis)
+		ob.Location, ob.OccurredAt.UTC(), conf, evidenceID, ob.SourceRef, ob.TimeBasis,
+		declVersionOrNil(reg.Version()))
 	if err != nil {
 		return false, err
 	}
@@ -227,9 +214,7 @@ func scanObservation(row pgx.Row) (*domain.Observation, error) {
 // PointLookup: the exact latest STORED observation; nil when none — an answer,
 // not an error.
 func (s *PgEventStore) PointLookup(ctx context.Context, namespace, entityID, predicate string) (*domain.Observation, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	ob, err := scanObservation(s.pool.QueryRow(ctx, `
 		SELECT `+observationColumns+` FROM observations
 		WHERE namespace_id=$1 AND entity_id=$2 AND predicate=$3`+notRetired("observations")+`
@@ -243,9 +228,7 @@ func (s *PgEventStore) PointLookup(ctx context.Context, namespace, entityID, pre
 
 // History: exact range scan, oldest first.
 func (s *PgEventStore) History(ctx context.Context, namespace, entityID, predicate string, from, to time.Time) ([]domain.Observation, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+observationColumns+` FROM observations
 		WHERE namespace_id=$1 AND entity_id=$2 AND predicate=$3
@@ -288,9 +271,7 @@ func (s *PgEventStore) EventsForEntity(ctx context.Context, namespace, entityID 
 // An event several requested entities took part in is returned under each of
 // them, sharing one Roles slice — callers must not mutate it.
 func (s *PgEventStore) EventsForEntities(ctx context.Context, namespace string, entityIDs []string, from, to time.Time) (map[string][]domain.Event, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	out := map[string][]domain.Event{}
 	if len(entityIDs) == 0 {
 		return out, nil
@@ -406,9 +387,7 @@ func (s *PgEventStore) RetireRows(ctx context.Context, namespace string, sourceR
 	if len(refs) == 0 {
 		return 0, nil
 	}
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO typed_row_retirements (namespace_id, source_ref, reason, retired_by)
 		SELECT $1, ref, $3, $4 FROM unnest($2::text[]) AS ref
@@ -430,9 +409,7 @@ func (s *PgEventStore) ReinstateRows(ctx context.Context, namespace string, sour
 	if len(refs) == 0 {
 		return 0, nil
 	}
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE typed_row_retirements SET reinstated_at = now()
 		WHERE namespace_id = $1 AND source_ref = ANY($2::text[]) AND reinstated_at IS NULL`,

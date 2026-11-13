@@ -242,7 +242,7 @@ func (s *EnforcingVectorStore) Search(ctx context.Context, vector []float32, opt
 	}
 
 	// Explicit, greppable bypass for kernel-internal reads and unscoped OSS. The
-	// store still applies the owner fence from opts.Scope (scopeExpressions); only
+	// store still applies the owner fence from opts.Scope (sqlfence.JSONBTags); only
 	// ScopeMaintenance reads other principals' owner-scoped rows.
 	if eff.Bypass {
 		opts.Scope = eff

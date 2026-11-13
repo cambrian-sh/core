@@ -54,9 +54,7 @@ func (s *PgEntityStore) EnsureEntity(ctx context.Context, e domain.Entity) (bool
 		return false, err
 	}
 	ns := e.NamespaceID
-	if ns == "" {
-		ns = "default"
-	}
+	ns = orDefaultNamespace(ns)
 	var firstSeen *string
 	if e.FirstSeenEvidence != "" {
 		v := string(e.FirstSeenEvidence)
@@ -76,9 +74,7 @@ func (s *PgEntityStore) EnsureEntity(ctx context.Context, e domain.Entity) (bool
 // GetEntity returns the handle; ok=false when it was never minted — an answer, not an
 // error.
 func (s *PgEntityStore) GetEntity(ctx context.Context, namespace, id string) (domain.Entity, bool, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	e, err := scanEntity(s.pool.QueryRow(ctx,
 		`SELECT `+entityColumns+` FROM entities WHERE namespace_id=$1 AND id=$2`,
 		namespace, id))
@@ -93,9 +89,7 @@ func (s *PgEntityStore) GetEntity(ctx context.Context, namespace, id string) (do
 
 // ListEntitiesByKind returns minted handles of one kind, newest first.
 func (s *PgEntityStore) ListEntitiesByKind(ctx context.Context, namespace, kind string, limit int) ([]domain.Entity, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	if limit <= 0 {
 		limit = defaultIdentityLimit
 	}
@@ -138,9 +132,7 @@ func (s *PgEntityStore) ListEntitiesByKind(ctx context.Context, namespace, kind 
 // entities a deployment has actually met. The limit caps the work either way. If entity
 // counts ever make this hot, the fix is that index — not a looser match.
 func (s *PgEntityStore) ResolveEntityByLocal(ctx context.Context, namespace, local string, limit int) ([]domain.Entity, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	if local == "" {
 		// Not an error: "nothing is called nothing" is the honest answer, and a
 		// producer asking about an empty token gets zero hits and records the

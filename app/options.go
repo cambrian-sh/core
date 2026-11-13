@@ -548,11 +548,18 @@ type KernelServices struct {
 	// the operator is still there. Nothing else should consult it; validation
 	// belongs behind PutLink, where no producer can skip it.
 	//
-	// nil when this kernel has no identity plane. A nil *RelationRegistry is
-	// still ANSWERABLE (it knows the seeds), so a consumer that means "the
-	// registry was never wired" must compare the pointer rather than trusting
-	// an empty answer.
-	Relations *domain.RelationRegistry
+	// It is the LIVE vocabulary (ADR-0149 D2): ask it per use with the
+	// namespace at hand (RelationsFor), never cache the registry it returns.
+	// nil when this kernel has no identity plane.
+	Relations domain.RelationSource
+
+	// Ontology is the live declarations surface (ADR-0149 D2): a namespace's
+	// current kinds and relations with their version, Apply (classified;
+	// breaking refused; tightening reported, not retro-rejected), and the
+	// violations report run AS a principal. Who may Apply is the caller's
+	// decision to enforce — the substrate plugin exposes it only as an
+	// Operator-only, audited RPC. nil when no Postgres is configured.
+	Ontology domain.Ontology
 
 	// EvidenceStore READS preserved evidence rows.
 	//

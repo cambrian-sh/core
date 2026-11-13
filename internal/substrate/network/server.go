@@ -259,6 +259,11 @@ type Server struct {
 	// Unimplemented.
 	Knowledge KnowledgeProposer
 
+	// OntologyDrafts is the ontology draft bridge behind ProposeOntologyChange
+	// (ontology_draft_rpc.go; ontology.Drafts). nil ⇒ the RPC answers
+	// Unimplemented.
+	OntologyDrafts OntologyDraftProposer
+
 	// ConversationOwner resolves a lease binding to the owner of the conversation
 	// it was issued under (on the lease, or on its task session); "" when the work
 	// is not for a conversation. withCallerSession and QueryMemory stamp it on ctx

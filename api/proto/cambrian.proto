@@ -220,6 +220,57 @@ service Orchestrator {
   // resolves by designated_actor accept proposals. A refusal is an OK response with
   // accepted=false and a detail; UNIMPLEMENTED when the kernel has no knowledge bridge.
   rpc ProposeKnowledge(ProposeKnowledgeRequest) returns (ProposeKnowledgeResponse);
+
+  // Ontology drafts (ADR-0149 D2; T-20261113-agent-drafted-ontology-changes-have-no-approval;
+  // additive within contract 0101). An agent DRAFTS a change to a namespace's kind and
+  // relation declarations; it can never apply one. The kernel classifies the draft with
+  // the operator apply's own classifier (a breaking, invalid or empty change is refused
+  // at once, with the reason), records it append-only as drafted by the calling agent
+  // (resolved from the lease, never a request field), and raises an ontology_change
+  // approval routed by the approval policy. When a person approves, the kernel applies
+  // the change AS THAT PERSON; if the namespace moved since the draft and the change no
+  // longer classifies the same, nothing is applied and the draft is superseded. A
+  // refusal is an OK response with accepted=false and a detail; UNIMPLEMENTED when the
+  // kernel has no ontology drafts (no Postgres).
+  rpc ProposeOntologyChange(ProposeOntologyChangeRequest) returns (ProposeOntologyChangeResponse);
+}
+
+message ProposeOntologyChangeRequest {
+  string lease_id = 1; // the step's lease (else x-lease-id)
+  // The namespace whose declarations change ("" = "default").
+  string namespace = 2;
+  // The change: {"kinds":[KindSpec…],"relations":[RelationSpec…]} — each spec added,
+  // or replacing the namespace's spec of the same name. Unknown fields are refused.
+  string change_json = 3;
+  // Why; shown to the approver.
+  string reason = 4;
+  // Optional idempotency key; a retry with the same key and content is a replay.
+  // A draft that was already decided is drafted anew only under a new key.
+  string client_ref = 5;
+}
+
+// One classified difference the draft makes.
+message OntologyDraftChange {
+  string class = 1;   // additive | tightening
+  string subject = 2; // "kind order.status", "relation placed_by"
+  string detail = 3;
+}
+
+message ProposeOntologyChangeResponse {
+  bool accepted = 1;
+  // Why it was refused, when accepted=false.
+  string detail = 2;
+  string draft_id = 3;
+  // false when this exact draft was already recorded (a replay).
+  bool created = 4;
+  // The declarations version the draft was classified against, and the class.
+  int64 base_version = 5;
+  string class = 6;
+  repeated OntologyDraftChange changes = 7;
+  // The draft's state: pending | applied | rejected | expired | superseded.
+  string state = 8;
+  string approval_id = 9;
+  string approval_state = 10;
 }
 
 // One typed predicate value of a proposed knowledge item. Exactly one value field is

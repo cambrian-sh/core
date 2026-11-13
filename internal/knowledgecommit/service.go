@@ -93,7 +93,7 @@ type Result struct {
 // Service is the bridge. Construct with New.
 type Service struct {
 	store  domain.KnowledgeStore
-	reg    *domain.KindRegistry
+	kinds  domain.KindSource
 	authz  domain.Authorizer
 	hub    Hub
 	links  LinkWriter
@@ -105,8 +105,8 @@ type Service struct {
 // RAW kernel knowledge store: the bridge IS the kernel path that stamps actors, so it
 // must not sit behind the plugin-seam guard it exists to satisfy. links may be nil
 // (ProposeLink then refuses). A nil authorizer is the OSS allow-all default.
-func New(store domain.KnowledgeStore, reg *domain.KindRegistry, a domain.Authorizer, hub Hub, links LinkWriter, logger *slog.Logger) (*Service, error) {
-	if store == nil || reg == nil || hub == nil {
+func New(store domain.KnowledgeStore, kinds domain.KindSource, a domain.Authorizer, hub Hub, links LinkWriter, logger *slog.Logger) (*Service, error) {
+	if store == nil || kinds == nil || hub == nil {
 		return nil, errors.New("knowledgecommit.New: store, kind registry and approval hub are required")
 	}
 	if a == nil {
@@ -115,14 +115,14 @@ func New(store domain.KnowledgeStore, reg *domain.KindRegistry, a domain.Authori
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s := &Service{store: store, reg: reg, authz: a, hub: hub, links: links, now: time.Now, logger: logger}
+	s := &Service{store: store, kinds: kinds, authz: a, hub: hub, links: links, now: time.Now, logger: logger}
 	hub.HandleKind(domain.ApprovalKindKnowledgeCommit, s.Apply)
 	return s, nil
 }
 
 // designatedSpec returns the spec of a kind that accepts proposals.
-func (s *Service) designatedSpec(kind string) (domain.KindSpec, error) {
-	spec, ok := s.reg.Spec(kind)
+func (s *Service) designatedSpec(namespace, kind string) (domain.KindSpec, error) {
+	spec, ok := s.kinds.KindsFor(namespace).Spec(kind)
 	if !ok || spec.Policy != domain.ResolutionPolicyDesignatedActor || spec.Designated == nil {
 		return domain.KindSpec{}, fmt.Errorf("%w: kind %q is not resolved by %s, so a proposal could not stay below a committed value",
 			ErrNotProposable, kind, domain.ResolutionPolicyDesignatedActor)
@@ -139,7 +139,7 @@ func (s *Service) Propose(ctx context.Context, by, forPerson domain.PrincipalRef
 	if p.Kind == "" || p.EntityID == "" || (len(p.Values) == 0 && !p.Negation) {
 		return Result{}, fmt.Errorf("%w: kind, entity_id and at least one value are required", ErrNotProposable)
 	}
-	spec, err := s.designatedSpec(p.Kind)
+	spec, err := s.designatedSpec(p.NamespaceID, p.Kind)
 	if err != nil {
 		return Result{}, err
 	}
@@ -191,7 +191,7 @@ func (s *Service) RequestCommit(ctx context.Context, by, forPerson domain.Princi
 	if err != nil {
 		return domain.ApprovalItem{}, err
 	}
-	spec, err := s.designatedSpec(it.Kind)
+	spec, err := s.designatedSpec(it.NamespaceID, it.Kind)
 	if err != nil {
 		return domain.ApprovalItem{}, err
 	}
@@ -246,7 +246,7 @@ func (s *Service) Apply(ctx context.Context, it domain.ApprovalItem) error {
 	if err != nil {
 		return fmt.Errorf("knowledge commit %s: candidate %s: %w", it.ID, it.Object, err)
 	}
-	spec, err := s.designatedSpec(cand.Kind)
+	spec, err := s.designatedSpec(cand.NamespaceID, cand.Kind)
 	if err != nil {
 		return fmt.Errorf("knowledge commit %s: %w", it.ID, err)
 	}

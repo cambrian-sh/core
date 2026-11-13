@@ -41,8 +41,20 @@ type RelationConfig struct {
 	// expand through this verb. Empty = never expand, which is the answer for
 	// every verb that is not an equivalence.
 	Closure string `json:"closure,omitempty"`
-	// MaxPerEntity bounds the fan-out; 0 = unlimited.
-	MaxPerEntity int `json:"max_per_entity,omitempty"`
+	// FromKind / ToKind name the entity kind each endpoint of a confirmed link
+	// must be (ADR-0149 D5). Empty = any.
+	FromKind string `json:"from_kind,omitempty"`
+	ToKind   string `json:"to_kind,omitempty"`
+	// Cardinality is "one" | "many" ("" = many). It replaced max_per_entity,
+	// which was parsed and never enforced; a config still carrying that key
+	// loads (the decoder tolerates unknown keys) and the key does nothing, as
+	// it never did.
+	Cardinality string `json:"cardinality,omitempty"`
+	// Required: every entity of FromKind should hold one confirmed link of
+	// this verb — reported, never enforced.
+	Required bool `json:"required,omitempty"`
+	// Inverse names the verb read from the other end.
+	Inverse string `json:"inverse,omitempty"`
 }
 
 // RelationSpecs renders the configured verbs for Options.RelationSpecs.
@@ -59,11 +71,15 @@ func (c *Config) RelationSpecs() []domain.RelationSpec {
 	out := make([]domain.RelationSpec, 0, len(c.Relations))
 	for _, r := range c.Relations {
 		out = append(out, domain.RelationSpec{
-			Name:         strings.TrimSpace(r.Name),
-			Family:       strings.TrimSpace(r.Family),
-			Symmetric:    r.Symmetric,
-			Closure:      strings.TrimSpace(r.Closure),
-			MaxPerEntity: r.MaxPerEntity,
+			Name:        strings.TrimSpace(r.Name),
+			Family:      strings.TrimSpace(r.Family),
+			Symmetric:   r.Symmetric,
+			Closure:     strings.TrimSpace(r.Closure),
+			FromKind:    strings.TrimSpace(r.FromKind),
+			ToKind:      strings.TrimSpace(r.ToKind),
+			Cardinality: strings.TrimSpace(r.Cardinality),
+			Required:    r.Required,
+			Inverse:     strings.TrimSpace(r.Inverse),
 		})
 	}
 	return out

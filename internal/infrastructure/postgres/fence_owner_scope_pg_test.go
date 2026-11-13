@@ -244,7 +244,7 @@ func TestPg_OwnerFence_EveryChunkLane(t *testing.T) {
 	}
 }
 
-// Facts / knowledge items: the TEXT[] mirror (itemScopeSQL) on search, by-id,
+// Facts / knowledge items: the TEXT[] mirror (sqlfence.TextArray) on search, by-id,
 // the chain and the similar-fact read.
 func TestPg_OwnerFence_FactItems(t *testing.T) {
 	ks, r, ctx := newFactSubstrate(t)
@@ -305,7 +305,7 @@ func TestPg_OwnerFence_FactItems(t *testing.T) {
 }
 
 // The substrate query plane: evidence-backed observations, both the row-filter
-// path (point) and the in-SQL path (aggregate, evidenceScopeSQL).
+// path (point) and the in-SQL path (aggregate, sqlfence.EvidenceExists).
 func TestPg_OwnerFence_QueryPlane(t *testing.T) {
 	pool, ctx := newOwnerFencePool(t)
 	reg, err := domain.NewRelationRegistry(nil)

@@ -18,30 +18,36 @@ var ErrKindRefused = errors.New("refused by kind declaration")
 // type is domain-agnostic, the spec carries the constraint).
 type ValueSpec struct {
 	// Type: "date" | "number" | "text" | "entity".
-	Type string
+	Type string `json:"type"`
 	// Min/Max bound a number value inclusively. nil = unbounded on that side;
 	// ignored for non-number types.
-	Min *float64
-	Max *float64
+	Min *float64 `json:"min,omitempty"`
+	Max *float64 `json:"max,omitempty"`
 	// Enum, when non-empty, is the closed set of values a TEXT predicate may
 	// take (case lifecycle states, a category). A value outside it is refused
 	// naming the allowed set. Only valid on "text" — the registry refuses an enum
 	// on any other type at boot.
 	Enum []string `json:"enum,omitempty"`
+	// Required makes every non-negation item of the kind carry a value for this
+	// predicate (ADR-0149 D2). It binds the WRITTEN item: an item is the whole
+	// assertion its resolution may pick, so a current belief can only lack a
+	// required value if it was written before the rule — which the ontology's
+	// violations report lists instead of rejecting retroactively.
+	Required bool `json:"required,omitempty"`
 }
 
 // KindSpec declares one knowledge kind's shape: which predicates it may carry,
 // with what constraints, resolved under which policy. Specs are DATA — the
 // kernel never learns what a predicate means, only what shape it must have.
 type KindSpec struct {
-	Kind string
+	Kind string `json:"kind"`
 	// Policy names the ResolutionAuthority deriving this kind's belief.
 	// Empty = ResolutionPolicyLatestAssertion.
-	Policy string
+	Policy string `json:"policy,omitempty"`
 	// Predicates is the allowlist. An item of a DECLARED kind carrying an
 	// undeclared predicate is refused — "cannot express safely", never a
 	// silent drop (a dropped value is invisible data loss).
-	Predicates map[string]ValueSpec
+	Predicates map[string]ValueSpec `json:"predicates"`
 
 	// The fields below are the case-modelling extensions
 	// (T-20261107-knowledge-substrate-extensions-for-case). Every one is optional
@@ -223,6 +229,31 @@ type KindRegistry struct {
 	authorities map[string]ResolutionAuthority
 	// eventTypes indexes declared event types (KindSpec.EventTypes).
 	eventTypes map[string]EventTypeSpec
+	// version is the ontology declarations version this registry was built
+	// from (ADR-0149 D2); 0 for a registry built directly (a maintenance tool,
+	// a test), which writes record as "no declared version".
+	version int64
+}
+
+// KindSource yields the kind registry in force for a namespace (ADR-0149 D2).
+// The live ontology (internal/ontology) answers with the namespace's current
+// immutable snapshot; a *KindRegistry answers with itself, so a fixed registry
+// is a KindSource that never changes. Either way the registry is the one
+// validator — the source only says WHICH immutable registry is current.
+type KindSource interface {
+	KindsFor(namespace string) *KindRegistry
+}
+
+// KindsFor implements KindSource: a registry is its own fixed source.
+func (r *KindRegistry) KindsFor(string) *KindRegistry { return r }
+
+// Version is the declarations version this registry was built from; 0 when it
+// was built directly rather than from an ontology snapshot.
+func (r *KindRegistry) Version() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.version
 }
 
 // NewKindRegistry builds the registry. Refuses duplicate kind declarations
@@ -548,6 +579,26 @@ func (r *KindRegistry) ValidateValues(kind string, values []StatementValue) erro
 			if vs.Max != nil && v.Number > *vs.Max {
 				return fmt.Errorf("kind %q predicate %q: %g above the declared maximum %g: %w", kind, v.Predicate, v.Number, *vs.Max, ErrKindRefused)
 			}
+		}
+	}
+	return nil
+}
+
+// ValidateItem checks a knowledge item against its kind's declaration: its
+// values (ValidateValues) and, unless it is a negation, that it carries every
+// Required predicate. A nil registry or an undeclared kind passes (ADR-0110 D2).
+func (r *KindRegistry) ValidateItem(item KnowledgeItem) error {
+	if err := r.ValidateValues(item.Kind, item.Values); err != nil {
+		return err
+	}
+	spec, ok := r.Spec(item.Kind)
+	if !ok || item.Negation {
+		return nil
+	}
+	for _, p := range declaredPredicates(spec) {
+		if spec.Predicates[p].Required && !hasValue(item.Values, p) {
+			return fmt.Errorf("kind %q requires predicate %q, which the item does not carry: %w",
+				item.Kind, p, ErrKindRefused)
 		}
 	}
 	return nil

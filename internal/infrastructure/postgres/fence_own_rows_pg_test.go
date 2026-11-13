@@ -11,12 +11,13 @@ import (
 
 	"github.com/cambrian-sh/core/domain"
 	"github.com/cambrian-sh/core/internal/authz"
+	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 )
 
 // ADR-0146 acceptance test 7: the own-rows rule's Go form (TagPredicate.Check /
-// CheckRow) and every SQL mirror — scopeExpressionsOn (jsonb, chunks and the other
-// metadata tables), itemScopeSQL / textArrayScopeSQL (knowledge items, the fact
-// reader, the catalog) and evidenceRowConds (evidence, the query plane, the
+// CheckRow) and every SQL mirror — sqlfence.JSONBTags (jsonb, chunks and the other
+// metadata tables), sqlfence.TextArray (knowledge items, the fact
+// reader, the catalog) and sqlfence.Evidence (evidence, the query plane, the
 // catalog) — admit EXACTLY the same rows, over one matrix of predicates × rows,
 // against a real migrated Postgres (PG_TEST_DSN, as in CI). The SQL mirrors
 // are exercised by the database, not by asserting rendered strings.
@@ -180,7 +181,7 @@ func TestPg_OwnRows_GoSQLParity(t *testing.T) {
 	for pname, pred := range orPredicates() {
 		t.Run(pname, func(t *testing.T) {
 			// jsonb mirror (chunks): Check, no parties.
-			exprs := append([]goqu.Expression{goqu.L("id LIKE ?", chunkPrefix+"%")}, scopeExpressionsOn(pred, "")...)
+			exprs := append([]goqu.Expression{goqu.L("id LIKE ?", chunkPrefix+"%")}, sqlfence.JSONBTags("").Goqu(pred)...)
 			q, args, err := dialect.From(TableChunks).Select("id").Where(exprs...).Prepared(true).ToSQL()
 			if err != nil {
 				t.Fatal(err)
@@ -190,22 +191,22 @@ func TestPg_OwnRows_GoSQLParity(t *testing.T) {
 				t.Fatalf("chunks query: %v\n%s", err, q)
 			}
 			if got, want := orCollect(t, res, chunkPrefix), orWant(pred, rows, false); !ofEqual(got, want) {
-				t.Errorf("scopeExpressionsOn ≠ Check:\n got  %v\n want %v", got, want)
+				t.Errorf("sqlfence.JSONBTags ≠ Check:\n got  %v\n want %v", got, want)
 			}
 
 			// TEXT[] mirror over evidence with parties: CheckRow.
-			conds, cargs := evidenceRowConds(pred, "e", 1)
+			conds, cargs := sqlfence.Evidence("e").Where(pred, 1)
 			res, err = pool.Query(ctx, `SELECT e.id FROM evidence e WHERE e.id LIKE $1`+conds,
 				append([]any{evPrefix + "%"}, cargs...)...)
 			if err != nil {
 				t.Fatalf("evidence query: %v\n%s", err, conds)
 			}
 			if got, want := orCollect(t, res, evPrefix), orWant(pred, rows, true); !ofEqual(got, want) {
-				t.Errorf("evidenceRowConds ≠ CheckRow:\n got  %v\n want %v", got, want)
+				t.Errorf("sqlfence.Evidence ≠ CheckRow:\n got  %v\n want %v", got, want)
 			}
 
 			// TEXT[] mirror over knowledge items (no parties column): Check.
-			iconds, iargs := itemScopeSQL(pred, "k", 1)
+			iconds, iargs := sqlfence.TextArray("k.classification").Where(pred, 1)
 			res, err = ks.pool.Query(fctx, `SELECT k.id FROM knowledge_items k WHERE k.namespace_id = $1`+iconds,
 				append([]any{a1NS}, iargs...)...)
 			if err != nil {
@@ -222,7 +223,7 @@ func TestPg_OwnRows_GoSQLParity(t *testing.T) {
 				got = []string{}
 			}
 			if want := orWant(pred, rows, false); !ofEqual(got, want) {
-				t.Errorf("itemScopeSQL ≠ Check:\n got  %v\n want %v", got, want)
+				t.Errorf("sqlfence.TextArray ≠ Check:\n got  %v\n want %v", got, want)
 			}
 		})
 	}

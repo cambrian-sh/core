@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 )
 
 // The SQL mirror must agree with domain.SessionIsolation.Allows, which is the
@@ -60,7 +61,7 @@ func TestIsolationExpressions_AliasQualifiesTheColumn(t *testing.T) {
 // became unauditable.
 func TestIsolationIsNotATagPredicate(t *testing.T) {
 	t.Parallel()
-	tags := render(t, scopeExpressionsOn(&domain.TagPredicate{RequiredTags: []string{"sales"}}, ""))
+	tags := render(t, sqlfence.JSONBTags("").Goqu(&domain.TagPredicate{RequiredTags: []string{"sales"}}))
 	if strings.Contains(tags, "session_id") {
 		t.Fatalf("the tag predicate is matching on session_id: %s", tags)
 	}

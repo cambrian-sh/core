@@ -25,16 +25,29 @@ import (
 // (knowledge_assessment_store.go). Kinds under latest_assertion derive exactly as before.
 type PgKnowledgeStore struct {
 	pool *pgxpool.Pool
-	// reg validates declared kinds and resolves policies to authorities
-	// (ADR-0110). A constructor argument, not a setter: a store that can gain
-	// a registry mid-flight can disagree with itself between two writes.
-	reg *domain.KindRegistry
+	// kinds yields the kind registry in force for a namespace (ADR-0110; live
+	// since ADR-0149 D2). A constructor argument, not a setter: a store that can
+	// gain a source mid-flight can disagree with itself between two writes. A
+	// write takes ONE registry from it and validates against that.
+	kinds domain.KindSource
 }
 
-// NewPgKnowledgeStore wraps an existing pool. reg may be nil (no declared
-// kinds; every policy resolves to latest_assertion).
-func NewPgKnowledgeStore(pool *pgxpool.Pool, reg *domain.KindRegistry) *PgKnowledgeStore {
-	return &PgKnowledgeStore{pool: pool, reg: reg}
+// NewPgKnowledgeStore wraps an existing pool. kinds is the live ontology or a
+// fixed *domain.KindRegistry; nil means no declared kinds (every policy
+// resolves to latest_assertion).
+func NewPgKnowledgeStore(pool *pgxpool.Pool, kinds domain.KindSource) *PgKnowledgeStore {
+	if kinds == nil {
+		kinds = (*domain.KindRegistry)(nil)
+	}
+	return &PgKnowledgeStore{pool: pool, kinds: kinds}
+}
+
+// registry returns the kind registry in force for ns. The fields resolution
+// reads (policy, resolution scope, the authority set) can only change through a
+// BREAKING declarations change, which is refused (ADR-0149 D2), so two reads of
+// it inside one write agree even across a live swap.
+func (s *PgKnowledgeStore) registry(ns string) *domain.KindRegistry {
+	return s.kinds.KindsFor(orDefaultNamespace(ns))
 }
 
 var _ domain.KnowledgeStore = (*PgKnowledgeStore)(nil)
@@ -69,10 +82,11 @@ func (s *PgKnowledgeStore) PutItem(ctx context.Context, item domain.KnowledgeIte
 	// ADR-0110 D2: a DECLARED kind's values must fit its declaration; the
 	// refusal names the constraint and carries domain.ErrKindRefused so async
 	// callers can tell permanent from transient.
-	if err := s.reg.ValidateValues(item.Kind, item.Values); err != nil {
+	reg := s.registry(item.NamespaceID)
+	if err := reg.ValidateItem(item); err != nil {
 		return "", false, err
 	}
-	entityScoped := s.reg.EntityScoped(item.Kind)
+	entityScoped := reg.EntityScoped(item.Kind)
 	if entityScoped && item.AssertedBy == domain.ResolutionActorAll {
 		// "*" is the entity row's actor column; an actor of that name would be
 		// indistinguishable from the cross-actor belief.
@@ -80,9 +94,7 @@ func (s *PgKnowledgeStore) PutItem(ctx context.Context, item domain.KnowledgeIte
 			item.Kind, domain.ResolutionActorAll, domain.ErrKindRefused)
 	}
 	ns := item.NamespaceID
-	if ns == "" {
-		ns = "default"
-	}
+	ns = orDefaultNamespace(ns)
 	id := item.ID
 	if id == "" {
 		id = domain.KnowledgeItemID("ki_" + uuid.NewString())
@@ -116,8 +128,8 @@ func (s *PgKnowledgeStore) PutItem(ctx context.Context, item domain.KnowledgeIte
 	// between the check and the write. Read before the insert, checked only for a
 	// NEW item: a replay changes nothing, whatever the state has become since.
 	var current *domain.KnowledgeItem
-	if s.reg.HasLifecycle(item.Kind) {
-		policy, _, perr := s.policyFor(item.Kind)
+	if reg.HasLifecycle(item.Kind) {
+		policy, _, perr := policyFor(reg, item.Kind)
 		if perr != nil {
 			return "", false, perr
 		}
@@ -127,7 +139,7 @@ func (s *PgKnowledgeStore) PutItem(ctx context.Context, item domain.KnowledgeIte
 		}
 	}
 
-	gotID, inserted, err := insertItemTx(ctx, tx, ns, id, item)
+	gotID, inserted, err := insertItemTx(ctx, tx, ns, id, item, reg.Version())
 	if err != nil {
 		return "", false, err
 	}
@@ -139,7 +151,7 @@ func (s *PgKnowledgeStore) PutItem(ctx context.Context, item domain.KnowledgeIte
 		}
 		return domain.KnowledgeItemID(gotID), false, nil
 	}
-	if err := s.reg.ValidateTransition(item.Kind, current, item); err != nil {
+	if err := reg.ValidateTransition(item.Kind, current, item); err != nil {
 		return "", false, err // the deferred rollback discards the insert
 	}
 	if err := s.rederive(ctx, tx, ns, item.Kind, item.EntityID, item.AssertedBy); err != nil {
@@ -179,8 +191,9 @@ func currentResolvedItem(ctx context.Context, tx pgx.Tx, ns, kind, entity, actor
 }
 
 // insertItemTx inserts one item and its values on tx. inserted=false (and the existing
-// id) when (namespace, kind, entity, source_ref) already exists.
-func insertItemTx(ctx context.Context, tx pgx.Tx, ns string, id domain.KnowledgeItemID, item domain.KnowledgeItem) (string, bool, error) {
+// id) when (namespace, kind, entity, source_ref) already exists. declVersion is
+// the declarations version the item was validated against (0 = none, stored NULL).
+func insertItemTx(ctx context.Context, tx pgx.Tx, ns string, id domain.KnowledgeItemID, item domain.KnowledgeItem, declVersion int64) (string, bool, error) {
 	var evidenceID *string
 	if item.EvidenceID != "" {
 		e := string(item.EvidenceID)
@@ -194,14 +207,14 @@ func insertItemTx(ctx context.Context, tx pgx.Tx, ns string, id domain.Knowledge
 	err := tx.QueryRow(ctx, `
 		INSERT INTO knowledge_items (id, namespace_id, kind, evidence_id, entity_id,
 			asserted_by, asserted_at, source_ref, negation, classification,
-			valid_from, valid_to, schema_version)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1)
+			valid_from, valid_to, schema_version, decl_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1,$13)
 		ON CONFLICT (namespace_id, kind, entity_id, source_ref) WHERE source_ref <> ''
 		DO NOTHING
 		RETURNING id`,
 		string(id), ns, item.Kind, evidenceID, item.EntityID,
 		item.AssertedBy, item.AssertedAt.UTC(), item.SourceRef, item.Negation, tags,
-		nullTime(item.ValidFrom), nullTime(item.ValidTo),
+		nullTime(item.ValidFrom), nullTime(item.ValidTo), declVersionOrNil(declVersion),
 	).Scan(&gotID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := tx.QueryRow(ctx, `
@@ -225,23 +238,8 @@ func insertItemTx(ctx context.Context, tx pgx.Tx, ns string, id domain.Knowledge
 }
 
 func insertValue(ctx context.Context, tx pgx.Tx, itemID string, v domain.StatementValue) error {
-	var date *time.Time
-	var num *float64
-	var text, ent *string
-	switch v.Type {
-	case "date":
-		d := v.Date.UTC()
-		date = &d
-	case "number":
-		n := v.Number
-		num = &n
-	case "text":
-		s := v.Text
-		text = &s
-	case "entity":
-		e := v.EntityRef
-		ent = &e
-	default:
+	date, num, text, ent, ok := typedValueColumns(v)
+	if !ok {
 		return fmt.Errorf("statement value %q: unknown type %q", v.Predicate, v.Type)
 	}
 	_, err := tx.Exec(ctx, `
@@ -252,13 +250,13 @@ func insertValue(ctx context.Context, tx pgx.Tx, itemID string, v domain.Stateme
 	return err
 }
 
-// policyFor returns the policy and authority of a kind.
-func (s *PgKnowledgeStore) policyFor(kind string) (string, domain.ResolutionAuthority, error) {
+// policyFor returns the policy and authority of a kind under reg.
+func policyFor(reg *domain.KindRegistry, kind string) (string, domain.ResolutionAuthority, error) {
 	policy := domain.ResolutionPolicyLatestAssertion
-	if spec, ok := s.reg.Spec(kind); ok {
+	if spec, ok := reg.Spec(kind); ok {
 		policy = spec.Policy
 	}
-	authority, ok := s.reg.Authority(policy)
+	authority, ok := reg.Authority(policy)
 	if !ok {
 		// NewKindRegistry refuses undeclared policies at boot, so this is a
 		// wiring bug, not a data condition — refuse rather than silently
@@ -282,11 +280,12 @@ func (s *PgKnowledgeStore) policyFor(kind string) (string, domain.ResolutionAuth
 // everyone said. NewKindRegistry refuses entity scope for latest_assertion and for
 // input-taking authorities, so the two families never share a policy.
 func (s *PgKnowledgeStore) rederive(ctx context.Context, tx pgx.Tx, ns, kind, entity, actor string) error {
-	policy, authority, err := s.policyFor(kind)
+	reg := s.registry(ns)
+	policy, authority, err := policyFor(reg, kind)
 	if err != nil {
 		return err
 	}
-	spec, _ := s.reg.Spec(kind)
+	spec, _ := reg.Spec(kind)
 	allActors := false
 	if spec.ResolutionScope == domain.ResolutionScopeEntity {
 		if actor == domain.ResolutionActorAll {
@@ -439,9 +438,7 @@ func (s *PgKnowledgeStore) GetItem(ctx context.Context, id domain.KnowledgeItemI
 // CurrentResolutions lists current beliefs for a kind under a policy, hydrated
 // with winning items. Negated keys (item_id NULL) are omitted.
 func (s *PgKnowledgeStore) CurrentResolutions(ctx context.Context, namespace, kind, policy string) ([]domain.Resolution, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	rows, err := s.pool.Query(ctx, `
 		SELECT r.entity_id, r.actor, r.item_id, r.reason_code, r.system_from
 		FROM resolutions r
@@ -620,9 +617,7 @@ func (s *PgKnowledgeStore) EraseItemsTx(ctx context.Context, tx pgx.Tx, namespac
 	if sel.IsEmpty() {
 		return 0, nil // an empty selector matches nothing, by contract
 	}
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	entities := sel.Entities
 	if entities == nil {
 		entities = []string{}
@@ -655,7 +650,8 @@ func (s *PgKnowledgeStore) EraseItemsTx(ctx context.Context, tx pgx.Tx, namespac
 	}
 	var ids []string
 	keys := map[resolutionKey]bool{}
-	entityScoped := s.reg.EntityScoped(kind)
+	reg := s.registry(namespace)
+	entityScoped := reg.EntityScoped(kind)
 	for _, v := range victims {
 		ids = append(ids, string(v.ID))
 		keys[resolutionKey{v.EntityID, v.AssertedBy}] = true
@@ -702,7 +698,7 @@ func (s *PgKnowledgeStore) EraseItemsTx(ctx context.Context, tx pgx.Tx, namespac
 	// surviving item an erased one had closed receives a content-free sentinel at the
 	// closing instant. Other kinds erase exactly as before.
 	var sentinels []domain.KnowledgeItem
-	if _, authority, err := s.policyFor(kind); err == nil {
+	if _, authority, err := policyFor(reg, kind); err == nil {
 		sa, okS := authority.(domain.SentinelOnEraseAuthority)
 		ia, okI := authority.(domain.InputResolutionAuthority)
 		if okS && okI {
@@ -753,7 +749,7 @@ func (s *PgKnowledgeStore) EraseItemsTx(ctx context.Context, tx pgx.Tx, namespac
 		return 0, err
 	}
 	for _, sent := range sentinels {
-		if _, _, err := insertItemTx(ctx, tx, namespace, sent.ID, sent); err != nil {
+		if _, _, err := insertItemTx(ctx, tx, namespace, sent.ID, sent, reg.Version()); err != nil {
 			return 0, fmt.Errorf("knowledge erase: sentinel: %w", err)
 		}
 	}

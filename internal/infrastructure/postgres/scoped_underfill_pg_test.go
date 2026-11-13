@@ -17,6 +17,7 @@ import (
 	pgxvector "github.com/pgvector/pgvector-go/pgx"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 )
 
 // Scoped-recall underfill measurement (ADR-0134 P2,
@@ -194,7 +195,7 @@ func TestPgScopedUnderfill_Measure(t *testing.T) {
 		ds := dialect.From(TableChunks).Select("id").
 			Where(goqu.L("embedding IS NOT NULL")).
 			Order(goqu.L("embedding <=> ?", pgvector.NewVector(randUnit(rng, centroids[0], 0.6))).Asc()).Limit(ufTopK * 20)
-		for _, e := range scopeExpressions(pc.scope) {
+		for _, e := range sqlfence.JSONBTags("").Goqu(pc.scope) {
 			ds = ds.Where(e)
 		}
 		for _, e := range eventWindowExpressions(pc.since, pc.before, "") {

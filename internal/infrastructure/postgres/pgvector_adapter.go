@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 	"github.com/cambrian-sh/core/internal/config"
 	"github.com/cambrian-sh/core/internal/memory"
 	"github.com/cambrian-sh/core/internal/migrate"
@@ -851,147 +852,6 @@ func (p *PgVectorAdapter) Search(ctx context.Context, vector []float32, opts dom
 	return result, nil
 }
 
-// scopeExpressions builds the parameterized jsonb-containment predicates for a
-// resolved access predicate (ADR-0034 D12 / ADR-0085), served by the existing
-// idx_doc_metadata GIN (jsonb_path_ops) index. Tags live under metadata.tags as a
-// JSON array. This is the SQL mirror of domain.TagPredicate.Allows, and the two
-// must agree — the in-memory form is authoritative.
-//
-// A nil predicate yields NO predicate here on purpose: the fail-closed decision
-// belongs to the chokepoint (internal/authz), which refuses the read before it
-// ever reaches SQL. Duplicating it here would put the same security decision in
-// two places, and the SQL copy is the one nobody reads.
-func scopeExpressions(eff *domain.TagPredicate) []goqu.Expression {
-	return scopeExpressionsOn(eff, "")
-}
-
-// scopeExpressionsOn is scopeExpressions with an optional table qualifier, for
-// queries that JOIN and would otherwise leave `metadata` ambiguous. An empty
-// alias reproduces the unqualified form exactly.
-//
-// # It only binds on tables that carry tags in `metadata`
-//
-// This filters `metadata @> '{"tags":[...]}'`. Every table it is used against —
-// chunks, tools, skills, agent_profiles, sections — stores tags there. The
-// `documents` table does NOT: after the schema migration it carries tags in a
-// first-class `tags` column, and 0 of its 1281 rows have tags in metadata
-// (measured 2026-08-01).
-//
-// Applied to `documents` these predicates would therefore bind on nothing, and the
-// failure is ASYMMETRIC in the dangerous direction:
-//
-//   - RequiredTags  → `metadata @> …` matches nothing  → returns no rows (closed)
-//   - ForbiddenTags → `NOT (matches nothing)` is TRUE  → returns every row (OPEN)
-//
-// A scope forbidding `confidential` would filter nothing at all. Nothing routes a
-// scoped query there today (`tableFor` never returns TableDocuments, and
-// TestScopePredicateNeverTargetsDocuments pins that), and a hand-written scoped
-// read against `documents` was written and deleted during ADR-0104 D6.2 for exactly
-// this reason. Read documents through the enforcing store's post-fetch filter,
-// which reads tags from the domain object rather than from a column.
-//
-// # The own-rows rule (ADR-0146)
-//
-// When the predicate carries a valid own-rows term (TagPredicate.OwnRowTerm), the
-// result is ONE expression, `main OR (own_row AND ownrows)`: own_row is "the tags
-// contain owner:<the reader's single owner>" and ownrows is this same rendering
-// of the own-rows predicate, whose owner fence (held = that one owner) supplies
-// "and no other owner tag". It is TagPredicate.Check's disjunction, term for term.
-func scopeExpressionsOn(eff *domain.TagPredicate, alias string) []goqu.Expression {
-	if eff == nil || eff.Unfiltered() {
-		return nil
-	}
-	col := "metadata"
-	if alias != "" {
-		col = alias + ".metadata"
-	}
-	main := scopeTermsJSONB(eff, col)
-	own := eff.OwnRowTerm()
-	if own == nil {
-		return main
-	}
-	ownRow := append([]goqu.Expression{
-		goqu.L(col+" @> ?::jsonb", jsonbTagContains(domain.OwnerTag(eff.Owners[0]))),
-	}, scopeTermsJSONB(own, col)...)
-	return []goqu.Expression{goqu.Or(goqu.And(main...), goqu.And(ownRow...))}
-}
-
-// jsonbTagContains is the containment document for one tag under metadata.tags.
-func jsonbTagContains(tag string) string {
-	b, _ := json.Marshal(map[string][]string{"tags": {tag}})
-	return string(b)
-}
-
-// scopeTermsJSONB renders one predicate's own terms (never its OwnRows) as ANDed
-// expressions over col. eff is non-nil and not Unfiltered.
-func scopeTermsJSONB(eff *domain.TagPredicate, col string) []goqu.Expression {
-	// The owner fence (domain/owner_scope.go) — on EVERY predicate, Bypass
-	// included; only ScopeMaintenance (Unfiltered, above) skips it.
-	exprs := []goqu.Expression{ownerFenceJSONB(col, eff)}
-	if eff.Bypass {
-		return exprs
-	}
-	contains := jsonbTagContains
-	// Required: a doc must carry ALL → one AND containment term per tag.
-	for _, r := range eff.RequiredTags {
-		exprs = append(exprs, goqu.L(col+" @> ?::jsonb", contains(r)))
-	}
-	// AnyOfClauses (CNF): each clause is an OR of containment; clauses are ANDed.
-	for _, clause := range eff.AnyOfClauses {
-		if len(clause) == 0 {
-			continue
-		}
-		ors := make([]goqu.Expression, 0, len(clause))
-		for _, a := range clause {
-			ors = append(ors, goqu.L(col+" @> ?::jsonb", contains(a)))
-		}
-		exprs = append(exprs, goqu.Or(ors...))
-	}
-	// Forbidden: a doc must NOT carry ANY → NOT(a OR b) == (NOT a) AND (NOT b).
-	for _, f := range eff.ForbiddenTags {
-		exprs = append(exprs, goqu.L("NOT ("+col+" @> ?::jsonb)", contains(f)))
-	}
-	// Party-scoped (ADR-0121): on THIS plane, identical to forbidden. Chunks (and
-	// every other table this binds on) carry no parties column, and the
-	// authoritative in-memory form — TagPredicate.Check, NOT CheckRow — denies any
-	// party-less resource that carries a party-scoped tag ("a thing nobody can be
-	// a party to is not one of the rows you are a party to"). Until this term was
-	// added, dense/lexical/entity chunk reads returned rows the authoritative
-	// predicate refuses — the unguarded half of the mirror-divergence class that
-	// TestScopePredicateNeverTargetsDocuments pins for the documents table. The
-	// substrate plane (query_plane.go evidenceScopeSQL) keeps its row-aware
-	// parties disjunct; that is CheckRow's mirror, not this one.
-	for _, t := range eff.PartyScopedTags {
-		exprs = append(exprs, goqu.L("NOT ("+col+" @> ?::jsonb)", contains(t)))
-	}
-	return exprs
-}
-
-// ownerFenceJSONB is the SQL mirror of the owner fence in TagPredicate.Check
-// for tables that carry tags in jsonb `metadata.tags`: no tag in the reserved
-// owner namespace other than the reader's own.
-//
-// The jsonpath text is built from CONSTANTS and positional variable names only;
-// every reader-derived value (the held owner tags) travels in the vars object,
-// so nothing a principal id contains can change the path. It is bound as a
-// parameter rather than inlined because jsonpath's filter syntax uses '?',
-// which goqu would read as a placeholder.
-//
-// A row with no tags, or no owner tag, matches nothing in the path and passes.
-func ownerFenceJSONB(col string, eff *domain.TagPredicate) goqu.Expression {
-	held := eff.HeldOwnerTags()
-	cond := `@ starts with "` + domain.OwnerTagPrefix + `"`
-	vars := make(map[string]string, len(held))
-	for i, t := range held {
-		name := fmt.Sprintf("o%d", i)
-		cond += " && @ != $" + name
-		vars[name] = t
-	}
-	b, _ := json.Marshal(vars)
-	return goqu.L("NOT jsonb_path_exists("+col+", ?::jsonpath, ?::jsonb)",
-		"lax $.tags[*] ? ("+cond+")", string(b))
-}
-
 // isolationExpressions builds the SQL mirror of domain.SessionIsolation.Allows
 // (BRAIN-01).
 //
@@ -1001,7 +861,7 @@ func ownerFenceJSONB(col string, eff *domain.TagPredicate) goqu.Expression {
 // NOT expressed as a tag: a session id is an identity, and coining session:<uuid>
 // per conversation is what ADR-0099 forbids.
 //
-// A nil predicate yields NO predicate here, exactly as scopeExpressions does: the
+// A nil predicate yields NO predicate here, exactly as sqlfence.JSONBTags does: the
 // fail-closed decision belongs to the chokepoint, and the SQL copy is the one
 // nobody reads.
 func isolationExpressions(iso *domain.SessionIsolation, alias string) []goqu.Expression {
@@ -1175,7 +1035,7 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 	// nil, for kernel/system call sites on the raw adapter) adds no predicate. The
 	// authz.EnforcingVectorStore decorator (ADR-0085) is the fail-closed gate;
 	// this is the SQL-building mirror of domain.TagPredicate.Allows.
-	for _, expr := range scopeExpressions(opts.Scope) {
+	for _, expr := range sqlfence.JSONBTags("").Goqu(opts.Scope) {
 		ds = ds.Where(expr)
 	}
 	// BRAIN-01: and the session boundary, as its own predicate over its own field.
@@ -1244,7 +1104,7 @@ func (p *PgVectorAdapter) fetchCandidates(ctx context.Context, vector []float32,
 // The query is OR-of-lexemes (plainto's AND is too strict for QA — a chunk that
 // answers "what books has X read" may not contain the word "books"). plainto_tsquery
 // keeps it injection-safe; the text is a bound parameter. Scope + doc-type are the
-// SAME predicates as the vector search (scopeExpressions), so this is not a scope hole.
+// SAME predicates as the vector search (sqlfence.JSONBTags), so this is not a scope hole.
 // Results are ordered best-lexical-first. RRF fusion uses the ORDER; the raw
 // ts_rank_cd value (Score) is carried as SearchResult.LexicalRaw and read only by the
 // calibrated Stage A (ADR-0136 D1, execution.retrieval.stage_a_calibrated).
@@ -1263,7 +1123,7 @@ func (p *PgVectorAdapter) LexicalSearch(ctx context.Context, queryText string, o
 	if opts.DocumentType != "" {
 		ds = ds.Where(goqu.Ex{"document_type": opts.DocumentType})
 	}
-	for _, expr := range scopeExpressions(opts.Scope) {
+	for _, expr := range sqlfence.JSONBTags("").Goqu(opts.Scope) {
 		ds = ds.Where(expr)
 	}
 	for _, expr := range isolationExpressions(opts.Isolation, "") {
@@ -1717,7 +1577,7 @@ func (p *PgVectorAdapter) ForChunks(ctx context.Context, chunkIDs []string) (map
 // Unlike fetchCandidates, NOTHING upstream refuses this read — it is reached directly
 // from kgExpand, not through the authz chokepoint — so a nil predicate FAILS CLOSED here
 // rather than yielding "no filter". That is a deliberate departure from
-// scopeExpressions' nil convention, which is safe only behind the chokepoint.
+// sqlfence.JSONBTags' nil convention, which is safe only behind the chokepoint.
 func (p *PgVectorAdapter) ChunksMentioningEntity(ctx context.Context, entity string, limit int, scope *domain.TagPredicate) ([]string, error) {
 	if entity == "" {
 		return nil, nil
@@ -1736,7 +1596,7 @@ func (p *PgVectorAdapter) ChunksMentioningEntity(ctx context.Context, entity str
 			"ct.h": e,
 			"ct.t": e,
 		})
-	for _, expr := range scopeExpressionsOn(scope, "c") {
+	for _, expr := range sqlfence.JSONBTags("c").Goqu(scope) {
 		ds = ds.Where(expr)
 	}
 	// BRAIN-01: this is a by-entity read with no opts to carry a predicate, so the
@@ -1816,7 +1676,7 @@ func (p *PgVectorAdapter) ChunksMentioningEntityRanked(ctx context.Context, enti
 		ds = ds.Where(goqu.L("c.embedding IS NOT NULL")).
 			Order(goqu.L("MIN(c.embedding <=> ?)", vec).Asc())
 	}
-	for _, expr := range scopeExpressionsOn(scope, "c") {
+	for _, expr := range sqlfence.JSONBTags("c").Goqu(scope) {
 		ds = ds.Where(expr)
 	}
 	if iso, ok := domain.IsolationFromContext(ctx); ok {
@@ -1899,7 +1759,7 @@ func (p *PgVectorAdapter) ChunksForEntities(ctx context.Context, entities []stri
 			// triplets. A row where BOTH endpoints matched counts its head only —
 			// a deliberate undercount that keeps the expression simple.
 			goqu.L("COUNT(DISTINCT CASE WHEN ct.h IN ? THEN ct.h ELSE ct.t END)", norm).As("matches"))
-	for _, expr := range scopeExpressionsOn(scope, "c") {
+	for _, expr := range sqlfence.JSONBTags("c").Goqu(scope) {
 		inner = inner.Where(expr)
 	}
 	if iso, ok := domain.IsolationFromContext(ctx); ok {

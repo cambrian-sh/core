@@ -26,18 +26,30 @@ func QueryKnowledgeFunc(authorizer domain.Authorizer, plane domain.QueryPlane, l
 		authorizer = domain.AllowAllAuthorizer{}
 	}
 	return func(ctx context.Context, principal domain.PrincipalRef, q domain.KnowledgeQuery) (domain.QueryResult, error) {
-		surface := domain.SurfaceFromContext(ctx)
-		pred, dec := authorizer.ReadFilter(ctx, principal, surface)
-		if pred == nil {
-			if log != nil {
-				log.Warn("knowledge query denied: no read predicate",
-					"principal", principal.ID, "principal_kind", string(principal.Kind),
-					"surface", string(surface.Kind), "reason", string(dec.Reason))
-			}
-			return domain.QueryResult{}, fmt.Errorf("%w: %s", domain.ErrQueryDenied, dec.Reason)
+		pred, err := readScope(ctx, authorizer, principal, log, "knowledge query")
+		if err != nil {
+			return domain.QueryResult{}, err
 		}
 		return plane.Query(ctx, q, pred)
 	}
+}
+
+// readScope resolves principal's read predicate from the effective Authorizer and
+// the transport surface on the context. No predicate fails CLOSED with
+// domain.ErrQueryDenied — the one refusal every principal-taking seam here gives,
+// so a caller cannot use one seam to learn what another withholds.
+func readScope(ctx context.Context, authorizer domain.Authorizer, principal domain.PrincipalRef, log *slog.Logger, what string) (*domain.TagPredicate, error) {
+	surface := domain.SurfaceFromContext(ctx)
+	pred, dec := authorizer.ReadFilter(ctx, principal, surface)
+	if pred == nil {
+		if log != nil {
+			log.Warn(what+" denied: no read predicate",
+				"principal", principal.ID, "principal_kind", string(principal.Kind),
+				"surface", string(surface.Kind), "reason", string(dec.Reason))
+		}
+		return nil, fmt.Errorf("%w: %s", domain.ErrQueryDenied, dec.Reason)
+	}
+	return pred, nil
 }
 
 // CatalogSource is what KnowledgeCatalogFunc binds: the query plane's
@@ -57,16 +69,44 @@ func KnowledgeCatalogFunc(authorizer domain.Authorizer, src CatalogSource, log *
 		authorizer = domain.AllowAllAuthorizer{}
 	}
 	return func(ctx context.Context, principal domain.PrincipalRef) (domain.SubstrateCatalog, error) {
-		surface := domain.SurfaceFromContext(ctx)
-		pred, dec := authorizer.ReadFilter(ctx, principal, surface)
-		if pred == nil {
-			if log != nil {
-				log.Warn("knowledge catalog denied: no read predicate",
-					"principal", principal.ID, "principal_kind", string(principal.Kind),
-					"surface", string(surface.Kind), "reason", string(dec.Reason))
-			}
-			return nil, fmt.Errorf("%w: %s", domain.ErrQueryDenied, dec.Reason)
+		pred, err := readScope(ctx, authorizer, principal, log, "knowledge catalog")
+		if err != nil {
+			return nil, err
 		}
 		return src.Catalog(pred), nil
 	}
+}
+
+// OntologyStore is the live ontology as the kernel holds it (internal/ontology):
+// its violations report takes a predicate, which no plugin may choose.
+type OntologyStore interface {
+	Current(namespace string) *domain.OntologySnapshot
+	Apply(ctx context.Context, namespace string, change domain.OntologyDoc, author string, dryRun bool) (domain.OntologyApplyResult, error)
+	Violations(ctx context.Context, scope *domain.TagPredicate, namespace string, limit int) ([]domain.OntologyViolation, bool, error)
+}
+
+// ScopedOntology is the plugin seam over the live ontology (ADR-0149 D2): the
+// violations report runs AS a principal, its predicate resolved here exactly as
+// the query and catalog seams resolve theirs. Reads of the declarations and
+// Apply pass through — who may apply is the operator plane's decision (an
+// Operator-only RPC, audited), and declarations carry no rows.
+func ScopedOntology(authorizer domain.Authorizer, o OntologyStore, log *slog.Logger) domain.Ontology {
+	if authorizer == nil {
+		authorizer = domain.AllowAllAuthorizer{}
+	}
+	return scopedOntology{OntologyStore: o, authorizer: authorizer, log: log}
+}
+
+type scopedOntology struct {
+	OntologyStore
+	authorizer domain.Authorizer
+	log        *slog.Logger
+}
+
+func (s scopedOntology) Violations(ctx context.Context, principal domain.PrincipalRef, namespace string, limit int) ([]domain.OntologyViolation, bool, error) {
+	pred, err := readScope(ctx, s.authorizer, principal, s.log, "ontology violations")
+	if err != nil {
+		return nil, false, err
+	}
+	return s.OntologyStore.Violations(ctx, pred, namespace, limit)
 }

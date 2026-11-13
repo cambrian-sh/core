@@ -1,13 +1,16 @@
 package app
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 	"github.com/cambrian-sh/core/internal/evidence"
 	"github.com/cambrian-sh/core/internal/infrastructure/postgres"
+	"github.com/cambrian-sh/core/internal/ontology"
 )
 
 // Substrate is the knowledge substrate's store set over one Postgres pool:
@@ -32,10 +35,12 @@ type Substrate struct {
 	Query     *postgres.PgQueryPlane
 }
 
-// NewSubstrate composes the substrate over pool. kinds is the knowledge kind
-// registry (ADR-0110) and relations the link-verb registry (five-planes step 2);
-// both are validated by their own constructors before they get here.
-func NewSubstrate(pool *pgxpool.Pool, kinds *domain.KindRegistry, relations *domain.RelationRegistry) *Substrate {
+// NewSubstrate composes the substrate over pool. kinds yields the knowledge kind
+// registry (ADR-0110) and relations the link-verb registry (five-planes step 2)
+// for a namespace: the kernel passes its live ontology (ADR-0149 D2), a test or a
+// tool may pass fixed registries. Either way they were validated by their own
+// constructors before they get here.
+func NewSubstrate(pool *pgxpool.Pool, kinds domain.KindSource, relations domain.RelationSource) *Substrate {
 	s := &Substrate{
 		Evidence:  postgres.NewPgEvidenceStore(pool),
 		Events:    postgres.NewPgEventStore(pool, kinds),
@@ -45,6 +50,28 @@ func NewSubstrate(pool *pgxpool.Pool, kinds *domain.KindRegistry, relations *dom
 	}
 	s.Query = postgres.NewPgQueryPlane(pool, s.Events, s.Knowledge, s.Evidence, s.Links, s.Entities, relations)
 	return s
+}
+
+// Ontology is the live ontology declarations as the kernel composes them
+// (ADR-0149 D2): Live is what the substrate stores take (NewSubstrate's kinds and
+// relations), Seam is what plugins get (KernelServices.Ontology), with the
+// violations report scoped by the authorizer.
+type Ontology struct {
+	Live *ontology.Ontology
+	Seam domain.Ontology
+}
+
+// LoadOntology seeds and loads the live declarations over pool: seed is what code
+// and config declare at boot, authorities the resolution policies kinds may name.
+// The single construction path, used by bootstrapKernel and by premium's
+// end-to-end tests alike (the NewSubstrate rule).
+func LoadOntology(ctx context.Context, pool *pgxpool.Pool, seed domain.OntologyDoc,
+	authorities []domain.ResolutionAuthority, authorizer domain.Authorizer) (Ontology, error) {
+	live, err := ontology.Load(ctx, pool, seed, authorities)
+	if err != nil {
+		return Ontology{}, err
+	}
+	return Ontology{Live: live, Seam: authz.ScopedOntology(authorizer, live, slog.Default())}, nil
 }
 
 // Ingestor composes evidence capture over this substrate (ADR-0105): the bytes

@@ -1,0 +1,321 @@
+## nil
+- evidence exists (query plane: observations/events/outbox)
+  PANIC
+- evidence row (alias e)
+  PANIC
+- item (alias ki, TEXT[] classification)
+  sql:  ""
+  args: []interface {}(nil)
+- text array (catalog: any TEXT[] column)
+  sql:  ""
+  args: []interface {}(nil)
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs"
+  args: []interface {}{}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c"
+  args: []interface {}{}
+
+## maintenance
+- evidence exists (query plane: observations/events/outbox)
+  sql:  ""
+  args: []interface {}(nil)
+- evidence row (alias e)
+  sql:  ""
+  args: []interface {}(nil)
+- item (alias ki, TEXT[] classification)
+  sql:  ""
+  args: []interface {}(nil)
+- text array (catalog: any TEXT[] column)
+  sql:  ""
+  args: []interface {}(nil)
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs"
+  args: []interface {}{}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c"
+  args: []interface {}{}
+
+## bypass (system)
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])))"
+  args: []interface {}{[]string{}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}"}
+
+## bypass, owner alice
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])))"
+  args: []interface {}{[]string{"owner:alice"}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{"owner:alice"}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{"owner:alice"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{"owner:alice"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}"}
+
+## empty
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])))"
+  args: []interface {}{[]string{}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}"}
+
+## owner alice
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])))"
+  args: []interface {}{[]string{"owner:alice"}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{"owner:alice"}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{"owner:alice"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{"owner:alice"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}"}
+
+## owners alice+bob
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])))"
+  args: []interface {}{[]string{"owner:alice", "owner:bob"}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{"owner:alice", "owner:bob"}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{"owner:alice", "owner:bob"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []interface {}{[]string{"owner:alice", "owner:bob"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0 && @ != $o1)", "{\"o0\":\"owner:alice\",\"o1\":\"owner:bob\"}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0 && @ != $o1)", "{\"o0\":\"owner:alice\",\"o1\":\"owner:bob\"}"}
+
+## required sales+eu
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification @> $4)"
+  args: []interface {}{[]string{}, []string{"sales", "eu"}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification @> $4"
+  args: []interface {}{[]string{}, []string{"sales", "eu"}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND ki.classification @> $4::text[]"
+  args: []interface {}{[]string{}, []string{"sales", "eu"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND x.classification @> $4::text[]"
+  args: []interface {}{[]string{}, []string{"sales", "eu"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE (NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb) AND metadata @> $3::jsonb AND metadata @> $4::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}", "{\"tags\":[\"sales\"]}", "{\"tags\":[\"eu\"]}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE (NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb) AND c.metadata @> $3::jsonb AND c.metadata @> $4::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}", "{\"tags\":[\"sales\"]}", "{\"tags\":[\"eu\"]}"}
+
+## forbidden confidential+hr
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (e.classification && $4))"
+  args: []interface {}{[]string{}, []string{"confidential", "hr"}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (e.classification && $4)"
+  args: []interface {}{[]string{}, []string{"confidential", "hr"}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (ki.classification && $4::text[])"
+  args: []interface {}{[]string{}, []string{"confidential", "hr"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (x.classification && $4::text[])"
+  args: []interface {}{[]string{}, []string{"confidential", "hr"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE (NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb) AND NOT (metadata @> $3::jsonb) AND NOT (metadata @> $4::jsonb))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}", "{\"tags\":[\"confidential\"]}", "{\"tags\":[\"hr\"]}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE (NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb) AND NOT (c.metadata @> $3::jsonb) AND NOT (c.metadata @> $4::jsonb))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}", "{\"tags\":[\"confidential\"]}", "{\"tags\":[\"hr\"]}"}
+
+## any-of [a b] [] [sales]
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification && $4 AND FALSE AND e.classification && $5)"
+  args: []interface {}{[]string{}, []string{"a", "b"}, []string{"sales"}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification && $4 AND FALSE AND e.classification && $5"
+  args: []interface {}{[]string{}, []string{"a", "b"}, []string{"sales"}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND ki.classification && $4::text[] AND FALSE AND ki.classification && $5::text[]"
+  args: []interface {}{[]string{}, []string{"a", "b"}, []string{"sales"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND x.classification && $4::text[] AND FALSE AND x.classification && $5::text[]"
+  args: []interface {}{[]string{}, []string{"a", "b"}, []string{"sales"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE (NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb) AND (metadata @> $3::jsonb OR metadata @> $4::jsonb) AND FALSE AND metadata @> $5::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}", "{\"tags\":[\"a\"]}", "{\"tags\":[\"b\"]}", "{\"tags\":[\"sales\"]}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE (NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb) AND (c.metadata @> $3::jsonb OR c.metadata @> $4::jsonb) AND FALSE AND c.metadata @> $5::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}", "{\"tags\":[\"a\"]}", "{\"tags\":[\"b\"]}", "{\"tags\":[\"sales\"]}"}
+
+## party deal:acme, identity customer:acme
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (NOT (e.classification && $4) OR e.parties && $5))"
+  args: []interface {}{[]string{}, []string{"deal:acme"}, []string{"customer:acme"}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (NOT (e.classification && $4) OR e.parties && $5)"
+  args: []interface {}{[]string{}, []string{"deal:acme"}, []string{"customer:acme"}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (ki.classification && $4::text[])"
+  args: []interface {}{[]string{}, []string{"deal:acme"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (x.classification && $4::text[])"
+  args: []interface {}{[]string{}, []string{"deal:acme"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE (NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb) AND NOT (metadata @> $3::jsonb))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}", "{\"tags\":[\"deal:acme\"]}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE (NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb) AND NOT (c.metadata @> $3::jsonb))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}", "{\"tags\":[\"deal:acme\"]}"}
+
+## party deal:acme, no identities
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (NOT (e.classification && $4) OR e.parties && $5))"
+  args: []interface {}{[]string{}, []string{"deal:acme"}, []string{}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND (NOT (e.classification && $4) OR e.parties && $5)"
+  args: []interface {}{[]string{}, []string{"deal:acme"}, []string{}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (ki.classification && $4::text[])"
+  args: []interface {}{[]string{}, []string{"deal:acme"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (x.classification && $4::text[])"
+  args: []interface {}{[]string{}, []string{"deal:acme"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE (NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb) AND NOT (metadata @> $3::jsonb))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}", "{\"tags\":[\"deal:acme\"]}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE (NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb) AND NOT (c.metadata @> $3::jsonb))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\")", "{}", "{\"tags\":[\"deal:acme\"]}"}
+
+## combined
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification @> $4 AND NOT (e.classification && $5) AND e.classification && $6 AND (NOT (e.classification && $7) OR e.parties && $8))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"sales"}, []string{"confidential"}, []string{"a", "b"}, []string{"deal:acme"}, []string{"customer:acme"}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification @> $4 AND NOT (e.classification && $5) AND e.classification && $6 AND (NOT (e.classification && $7) OR e.parties && $8)"
+  args: []interface {}{[]string{"owner:alice"}, []string{"sales"}, []string{"confidential"}, []string{"a", "b"}, []string{"deal:acme"}, []string{"customer:acme"}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND ki.classification @> $4::text[] AND NOT (ki.classification && $5::text[]) AND ki.classification && $6::text[] AND NOT (ki.classification && $7::text[])"
+  args: []interface {}{[]string{"owner:alice"}, []string{"sales"}, []string{"confidential"}, []string{"a", "b"}, []string{"deal:acme"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND x.classification @> $4::text[] AND NOT (x.classification && $5::text[]) AND x.classification && $6::text[] AND NOT (x.classification && $7::text[])"
+  args: []interface {}{[]string{"owner:alice"}, []string{"sales"}, []string{"confidential"}, []string{"a", "b"}, []string{"deal:acme"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE (NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb) AND metadata @> $3::jsonb AND (metadata @> $4::jsonb OR metadata @> $5::jsonb) AND NOT (metadata @> $6::jsonb) AND NOT (metadata @> $7::jsonb))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"sales\"]}", "{\"tags\":[\"a\"]}", "{\"tags\":[\"b\"]}", "{\"tags\":[\"confidential\"]}", "{\"tags\":[\"deal:acme\"]}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE (NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb) AND c.metadata @> $3::jsonb AND (c.metadata @> $4::jsonb OR c.metadata @> $5::jsonb) AND NOT (c.metadata @> $6::jsonb) AND NOT (c.metadata @> $7::jsonb))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"sales\"]}", "{\"tags\":[\"a\"]}", "{\"tags\":[\"b\"]}", "{\"tags\":[\"confidential\"]}", "{\"tags\":[\"deal:acme\"]}"}
+
+## own-rows
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND ((NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (e.classification && $4) AND e.classification && $5) OR (e.classification @> ARRAY[$6::text] AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($7::text[])) AND NOT (e.classification && $8))))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"hr"}, []string{"sales"}, "owner:alice", []string{"owner:alice"}, []string{"hr"}}
+- evidence row (alias e)
+  sql:  " AND ((NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (e.classification && $4) AND e.classification && $5) OR (e.classification @> ARRAY[$6::text] AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($7::text[])) AND NOT (e.classification && $8)))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"hr"}, []string{"sales"}, "owner:alice", []string{"owner:alice"}, []string{"hr"}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND ((NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (ki.classification && $4::text[]) AND ki.classification && $5::text[]) OR (ki.classification @> ARRAY[$6::text] AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($7::text[])) AND NOT (ki.classification && $8::text[])))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"hr"}, []string{"sales"}, "owner:alice", []string{"owner:alice"}, []string{"hr"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND ((NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND NOT (x.classification && $4::text[]) AND x.classification && $5::text[]) OR (x.classification @> ARRAY[$6::text] AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($7::text[])) AND NOT (x.classification && $8::text[])))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"hr"}, []string{"sales"}, "owner:alice", []string{"owner:alice"}, []string{"hr"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE ((NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb) AND metadata @> $3::jsonb AND NOT (metadata @> $4::jsonb)) OR (metadata @> $5::jsonb AND NOT jsonb_path_exists(metadata, $6::jsonpath, $7::jsonb) AND NOT (metadata @> $8::jsonb)))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"sales\"]}", "{\"tags\":[\"hr\"]}", "{\"tags\":[\"owner:alice\"]}", "lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"hr\"]}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE ((NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb) AND c.metadata @> $3::jsonb AND NOT (c.metadata @> $4::jsonb)) OR (c.metadata @> $5::jsonb AND NOT jsonb_path_exists(c.metadata, $6::jsonpath, $7::jsonb) AND NOT (c.metadata @> $8::jsonb)))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"sales\"]}", "{\"tags\":[\"hr\"]}", "{\"tags\":[\"owner:alice\"]}", "lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"hr\"]}"}
+
+## own-rows, required + parties
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND ((NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification @> $4 AND e.classification && $5 AND e.classification && $6 AND (NOT (e.classification && $7) OR e.parties && $8)) OR (e.classification @> ARRAY[$9::text] AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($10::text[])) AND e.classification @> $11 AND (NOT (e.classification && $12) OR e.parties && $13))))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"t1"}, []string{"a"}, []string{"sales"}, []string{"deal:acme"}, []string{"customer:acme"}, "owner:alice", []string{"owner:alice"}, []string{"t1"}, []string{"deal:acme"}, []string{"customer:acme"}}
+- evidence row (alias e)
+  sql:  " AND ((NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification @> $4 AND e.classification && $5 AND e.classification && $6 AND (NOT (e.classification && $7) OR e.parties && $8)) OR (e.classification @> ARRAY[$9::text] AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($10::text[])) AND e.classification @> $11 AND (NOT (e.classification && $12) OR e.parties && $13)))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"t1"}, []string{"a"}, []string{"sales"}, []string{"deal:acme"}, []string{"customer:acme"}, "owner:alice", []string{"owner:alice"}, []string{"t1"}, []string{"deal:acme"}, []string{"customer:acme"}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND ((NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND ki.classification @> $4::text[] AND ki.classification && $5::text[] AND ki.classification && $6::text[] AND NOT (ki.classification && $7::text[])) OR (ki.classification @> ARRAY[$8::text] AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($9::text[])) AND ki.classification @> $10::text[] AND NOT (ki.classification && $11::text[])))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"t1"}, []string{"a"}, []string{"sales"}, []string{"deal:acme"}, "owner:alice", []string{"owner:alice"}, []string{"t1"}, []string{"deal:acme"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND ((NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND x.classification @> $4::text[] AND x.classification && $5::text[] AND x.classification && $6::text[] AND NOT (x.classification && $7::text[])) OR (x.classification @> ARRAY[$8::text] AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($9::text[])) AND x.classification @> $10::text[] AND NOT (x.classification && $11::text[])))"
+  args: []interface {}{[]string{"owner:alice"}, []string{"t1"}, []string{"a"}, []string{"sales"}, []string{"deal:acme"}, "owner:alice", []string{"owner:alice"}, []string{"t1"}, []string{"deal:acme"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE ((NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb) AND metadata @> $3::jsonb AND metadata @> $4::jsonb AND metadata @> $5::jsonb AND NOT (metadata @> $6::jsonb)) OR (metadata @> $7::jsonb AND NOT jsonb_path_exists(metadata, $8::jsonpath, $9::jsonb) AND metadata @> $10::jsonb AND NOT (metadata @> $11::jsonb)))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"t1\"]}", "{\"tags\":[\"a\"]}", "{\"tags\":[\"sales\"]}", "{\"tags\":[\"deal:acme\"]}", "{\"tags\":[\"owner:alice\"]}", "lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"t1\"]}", "{\"tags\":[\"deal:acme\"]}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE ((NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb) AND c.metadata @> $3::jsonb AND c.metadata @> $4::jsonb AND c.metadata @> $5::jsonb AND NOT (c.metadata @> $6::jsonb)) OR (c.metadata @> $7::jsonb AND NOT jsonb_path_exists(c.metadata, $8::jsonpath, $9::jsonb) AND c.metadata @> $10::jsonb AND NOT (c.metadata @> $11::jsonb)))"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"t1\"]}", "{\"tags\":[\"a\"]}", "{\"tags\":[\"sales\"]}", "{\"tags\":[\"deal:acme\"]}", "{\"tags\":[\"owner:alice\"]}", "lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"t1\"]}", "{\"tags\":[\"deal:acme\"]}"}
+
+## own-rows malformed (other owner)
+- evidence exists (query plane: observations/events/outbox)
+  sql:  " AND EXISTS (SELECT 1 FROM evidence e\n\t\tWHERE e.id = r.evidence_id AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification && $4)"
+  args: []interface {}{[]string{"owner:alice"}, []string{"sales"}}
+- evidence row (alias e)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(e.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND e.classification && $4"
+  args: []interface {}{[]string{"owner:alice"}, []string{"sales"}}
+- item (alias ki, TEXT[] classification)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(ki.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND ki.classification && $4::text[]"
+  args: []interface {}{[]string{"owner:alice"}, []string{"sales"}}
+- text array (catalog: any TEXT[] column)
+  sql:  " AND NOT EXISTS (SELECT 1 FROM unnest(x.classification) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[])) AND x.classification && $4::text[]"
+  args: []interface {}{[]string{"owner:alice"}, []string{"sales"}}
+- jsonb metadata (unqualified)
+  sql:  "SELECT id FROM fence_docs WHERE (NOT jsonb_path_exists(metadata, $1::jsonpath, $2::jsonb) AND metadata @> $3::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"sales\"]}"}
+- jsonb metadata (alias c)
+  sql:  "SELECT id FROM fence_docs c WHERE (NOT jsonb_path_exists(c.metadata, $1::jsonpath, $2::jsonb) AND c.metadata @> $3::jsonb)"
+  args: []interface {}{"lax $.tags[*] ? (@ starts with \"owner:\" && @ != $o0)", "{\"o0\":\"owner:alice\"}", "{\"tags\":[\"sales\"]}"}
+
+## document list owner fence
+  sql:  "NOT EXISTS (SELECT 1 FROM unnest(d.tags) AS owner_tag(t) WHERE starts_with(owner_tag.t, 'owner:') AND owner_tag.t <> ALL($3::text[]))"
+  args: []string{"owner:alice"}

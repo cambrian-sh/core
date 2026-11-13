@@ -104,6 +104,12 @@ func TestTagPredicate_Unsatisfiable(t *testing.T) {
 		{"disjoint sets are satisfiable",
 			&TagPredicate{RequiredTags: []string{"order_db"}, ForbiddenTags: []string{"internal_only"}}, false},
 		{"empty predicate is satisfiable", &TagPredicate{}, false},
+		// T-20261113-sql-fence-mirrors-skip-an-empty-any-of-clause: an empty
+		// clause is an empty OR-set — Check denies every row, so it is unsatisfiable.
+		{"an empty anyOf clause is unsatisfiable",
+			&TagPredicate{AnyOfClauses: [][]string{{"a"}, {}}}, true},
+		{"an empty anyOf clause under bypass is not consulted",
+			&TagPredicate{Bypass: true, AnyOfClauses: [][]string{{}}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

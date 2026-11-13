@@ -74,9 +74,47 @@ func TestNewRelationRegistry_BootRefusals(t *testing.T) {
 			want:  "unknown closure",
 		},
 		{
-			name:  "negative cap",
-			specs: []RelationSpec{{Name: "subsidiary_of", Family: LinkFamilyRelation, MaxPerEntity: -1}},
-			want:  "negative MaxPerEntity",
+			name:  "unknown cardinality",
+			specs: []RelationSpec{{Name: "subsidiary_of", Family: LinkFamilyRelation, Cardinality: "few"}},
+			want:  "unknown cardinality",
+		},
+		{
+			name:  "typed symmetric verb",
+			specs: []RelationSpec{{Name: "twin_of", Family: LinkFamilyRelation, Symmetric: true, FromKind: "order"}},
+			want:  "has no direction",
+		},
+		{
+			name:  "typed identity verb",
+			specs: []RelationSpec{{Name: "alias_of", Family: LinkFamilyIdentity, Cardinality: CardinalityOne}},
+			want:  "has no direction",
+		},
+		{
+			name:  "required with no from kind",
+			specs: []RelationSpec{{Name: "placed_by", Family: LinkFamilyRelation, Required: true}},
+			want:  "names no from_kind",
+		},
+		{
+			name:  "malformed from kind",
+			specs: []RelationSpec{{Name: "placed_by", Family: LinkFamilyRelation, FromKind: "Order"}},
+			want:  "not lowercase snake_case",
+		},
+		{
+			name:  "inverse names a verb",
+			specs: []RelationSpec{{Name: "placed_by", Family: LinkFamilyRelation, Inverse: "same_as"}},
+			want:  "itself a declared verb",
+		},
+		{
+			name:  "own inverse",
+			specs: []RelationSpec{{Name: "placed_by", Family: LinkFamilyRelation, Inverse: "placed_by"}},
+			want:  "its own inverse",
+		},
+		{
+			name: "inverse twice",
+			specs: []RelationSpec{
+				{Name: "placed_by", Family: LinkFamilyRelation, Inverse: "placed"},
+				{Name: "made_by", Family: LinkFamilyRelation, Inverse: "placed"},
+			},
+			want: "is named by both",
 		},
 	}
 	for _, tc := range cases {
@@ -338,4 +376,58 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// ADR-0149 D5: typed links bind CONFIRMED links only, and a refusal names the
+// verb, the endpoint, what was declared and what was found.
+func TestRelationRegistry_TypedLinks(t *testing.T) {
+	t.Parallel()
+	reg, err := NewRelationRegistry([]RelationSpec{{Name: "placed_by", Family: LinkFamilyRelation,
+		FromKind: "order", ToKind: "customer", Cardinality: CardinalityOne, Inverse: "placed"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := func(state, mech, from, to string) Link {
+		return Link{Relation: "placed_by", Family: LinkFamilyRelation, State: state, Mechanism: mech,
+			FromRef: from, ToRef: to, AssertedBy: "x", EvidenceID: "ev1"}
+	}
+	for _, tc := range []struct {
+		name string
+		l    Link
+		want string // "" = admitted
+	}{
+		{"confirmed, right kinds", link(LinkStateConfirmed, LinkMechanismRecord, "entity:order/1", "entity:customer/9"), ""},
+		{"confirmed, wrong from kind", link(LinkStateConfirmed, LinkMechanismRecord, "entity:invoice/1", "entity:customer/9"),
+			`requires its from endpoint to be a "order" entity; "entity:invoice/1" is a "invoice" entity`},
+		{"confirmed, wrong to kind", link(LinkStateConfirmed, LinkMechanismRecord, "entity:order/1", "entity:supplier/9"),
+			`requires its to endpoint to be a "customer" entity`},
+		{"confirmed, not an entity", link(LinkStateConfirmed, LinkMechanismRecord, "event:e1", "entity:customer/9"),
+			`"event:e1" is not an entity ref`},
+		{"confirmed, entity with no local part", link(LinkStateConfirmed, LinkMechanismRecord, "entity:order/", "entity:customer/9"),
+			"not an entity ref"},
+		{"candidate, wrong kinds pass", link(LinkStateCandidate, LinkMechanismScored, "entity:invoice/1", "event:e1"), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := reg.ValidateLink(tc.l)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("admitted link refused: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrLinkRefused) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want a refusal containing %q", err, tc.want)
+			}
+		})
+	}
+	spec, _ := reg.Spec("placed_by")
+	if !spec.SingleValued() || spec.Inverse != "placed" {
+		t.Fatalf("spec = %+v", spec)
+	}
+	if (RelationSpec{}).SingleValued() || (RelationSpec{Cardinality: CardinalityMany}).SingleValued() {
+		t.Fatal(`"" and "many" are not single-valued`)
+	}
+	if RefEntityKind("entity:customer/C-1") != "customer" || RefEntityKind("customer/C-1") != "" || RefEntityKind("entity:x") != "" {
+		t.Fatal("RefEntityKind")
+	}
 }

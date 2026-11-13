@@ -30,15 +30,18 @@ var ErrForgedAssertion = errors.New("authz: only the kernel may write a designat
 // through unchanged — read fencing is not this guard's job.
 type DesignatedActorGuard struct {
 	inner domain.KnowledgeStore
-	reg   *domain.KindRegistry
+	kinds domain.KindSource
 }
 
 var _ domain.KnowledgeStore = (*DesignatedActorGuard)(nil)
 
-// NewDesignatedActorGuard wraps inner. A nil registry declares no kinds, so the
-// guard passes everything through.
-func NewDesignatedActorGuard(inner domain.KnowledgeStore, reg *domain.KindRegistry) *DesignatedActorGuard {
-	return &DesignatedActorGuard{inner: inner, reg: reg}
+// NewDesignatedActorGuard wraps inner. kinds is the live ontology or a fixed
+// registry; nil declares no kinds, so the guard passes everything through.
+func NewDesignatedActorGuard(inner domain.KnowledgeStore, kinds domain.KindSource) *DesignatedActorGuard {
+	if kinds == nil {
+		kinds = (*domain.KindRegistry)(nil)
+	}
+	return &DesignatedActorGuard{inner: inner, kinds: kinds}
 }
 
 // CheckPluginWrite reports why item may not be written through the plugin seam, or nil.
@@ -63,7 +66,7 @@ func CheckPluginWrite(reg *domain.KindRegistry, item domain.KnowledgeItem) error
 
 // PutItem — refused for a forged designated assertion.
 func (g *DesignatedActorGuard) PutItem(ctx context.Context, item domain.KnowledgeItem) (domain.KnowledgeItemID, bool, error) {
-	if err := CheckPluginWrite(g.reg, item); err != nil {
+	if err := CheckPluginWrite(g.kinds.KindsFor(item.NamespaceID), item); err != nil {
 		return "", false, err
 	}
 	return g.inner.PutItem(ctx, item)

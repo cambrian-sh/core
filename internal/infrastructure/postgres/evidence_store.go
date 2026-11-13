@@ -45,9 +45,7 @@ func (s *PgEvidenceStore) Insert(ctx context.Context, ev domain.Evidence) (domai
 		return "", false, fmt.Errorf("evidence insert: content_hash is required")
 	}
 	ns := ev.NamespaceID
-	if ns == "" {
-		ns = "default"
-	}
+	ns = orDefaultNamespace(ns)
 	id := ev.ID
 	if id == "" {
 		id = domain.EvidenceID("ev_" + uuid.NewString())
@@ -165,9 +163,7 @@ func (s *PgEvidenceStore) Get(ctx context.Context, id domain.EvidenceID) (*domai
 // order: source_revision is a content digest and orders nothing.
 // idx_evidence_source (namespace_id, source_id, source_key) serves the lookup.
 func (s *PgEvidenceStore) LatestBySourceKey(ctx context.Context, namespace, sourceID, sourceKey string) (*domain.Evidence, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	var id string
 	err := s.pool.QueryRow(ctx, `
 		SELECT id FROM evidence

@@ -35,31 +35,11 @@ func (s *Server) ProposeKnowledge(ctx context.Context, req *pb.ProposeKnowledgeR
 	if s.Knowledge == nil {
 		return nil, status.Error(codes.Unimplemented, "knowledge proposals are not enabled on this kernel")
 	}
-	lease := domain.LeaseID(req.GetLeaseId())
-	if lease == "" {
-		lease = domain.LeaseID(mdValue(ctx, leaseHeader))
+	b, by, forPerson, err := s.leaseProposer(ctx, req.GetLeaseId())
+	if err != nil {
+		return nil, err
 	}
-	if lease == "" {
-		return nil, status.Error(codes.PermissionDenied, "a lease is required")
-	}
-	b, ok := s.resolveLeaseFor(ctx, lease)
-	if !ok {
-		return nil, status.Error(codes.PermissionDenied, "lease is missing, foreign or expired")
-	}
-	agentID := b.AgentID
-	if agentID == "" {
-		agentID, _ = callerAgentIdentity(ctx)
-	}
-	if agentID == "" {
-		return nil, status.Error(codes.PermissionDenied, "no agent identity is bound to this lease")
-	}
-	by := domain.AgentPrincipal(agentID)
-	var forPerson domain.PrincipalRef
-	if s.RunPrincipal != nil {
-		if id := s.RunPrincipal(ctx, b); id != "" {
-			forPerson = domain.UserPrincipal(id)
-		}
-	}
+	agentID := by.ID
 	// What the agent writes for a conversation's owner is that owner's (ADR-0142 D12).
 	if s.ConversationOwner != nil {
 		if owner := s.ConversationOwner(ctx, b); owner != "" {
@@ -111,6 +91,40 @@ func (s *Server) ProposeKnowledge(ctx context.Context, req *pb.ProposeKnowledgeR
 		return &pb.ProposeKnowledgeResponse{Accepted: true, Created: created}, nil
 	}
 	return nil, status.Error(codes.InvalidArgument, "a proposal (item or link) is required")
+}
+
+// leaseProposer resolves who an agent-plane proposal is from and for: the agent
+// the presented lease (else x-lease-id) is bound to, and the lease's run
+// principal — kernel-held facts, never request fields (INV-5). Shared by every
+// proposal RPC (ProposeKnowledge, ProposeOntologyChange) so they cannot disagree
+// on who is asking.
+func (s *Server) leaseProposer(ctx context.Context, leaseID string) (domain.LeaseBinding, domain.PrincipalRef, domain.PrincipalRef, error) {
+	var none domain.PrincipalRef
+	lease := domain.LeaseID(leaseID)
+	if lease == "" {
+		lease = domain.LeaseID(mdValue(ctx, leaseHeader))
+	}
+	if lease == "" {
+		return domain.LeaseBinding{}, none, none, status.Error(codes.PermissionDenied, "a lease is required")
+	}
+	b, ok := s.resolveLeaseFor(ctx, lease)
+	if !ok {
+		return b, none, none, status.Error(codes.PermissionDenied, "lease is missing, foreign or expired")
+	}
+	agentID := b.AgentID
+	if agentID == "" {
+		agentID, _ = callerAgentIdentity(ctx)
+	}
+	if agentID == "" {
+		return b, none, none, status.Error(codes.PermissionDenied, "no agent identity is bound to this lease")
+	}
+	var forPerson domain.PrincipalRef
+	if s.RunPrincipal != nil {
+		if id := s.RunPrincipal(ctx, b); id != "" {
+			forPerson = domain.UserPrincipal(id)
+		}
+	}
+	return b, domain.AgentPrincipal(agentID), forPerson, nil
 }
 
 // refusal reports whether err is a permanent, nameable refusal the model should see.

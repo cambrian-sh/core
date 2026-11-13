@@ -7,6 +7,7 @@ import (
 	"github.com/doug-martin/goqu/v9"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 )
 
 // render builds the WHERE clause the expressions produce, so the assertions read
@@ -37,7 +38,7 @@ func TestScopeExpressionsOn_QualifiesMetadataColumn(t *testing.T) {
 		AnyOfClauses:  [][]string{{"a", "b"}},
 	}
 
-	got := render(t, scopeExpressionsOn(eff, "c"))
+	got := render(t, sqlfence.JSONBTags("c").Goqu(eff))
 	if strings.Contains(got, `"metadata"`) || strings.Contains(got, " metadata ") {
 		t.Errorf("found an UNQUALIFIED metadata reference in a joined query:\n%s", got)
 	}
@@ -52,21 +53,17 @@ func TestScopeExpressionsOn_QualifiesMetadataColumn(t *testing.T) {
 	}
 }
 
-// TestScopeExpressionsOn_EmptyAliasMatchesLegacy: the existing single-table callers
-// (fetchCandidates and its lexical twin) go through scopeExpressions, which delegates
-// with an empty alias. That path must be byte-identical to what it produced before the
-// qualifier was introduced — unqualified `metadata`, so the GIN index still applies.
+// TestScopeExpressionsOn_EmptyAliasMatchesLegacy: the single-table callers
+// (fetchCandidates and its lexical twin) render with an empty alias, which must stay
+// the unqualified `metadata` it was before the qualifier was introduced, so the GIN
+// index still applies. (The exact text is pinned by testdata/fence_render_sql.golden.)
 func TestScopeExpressionsOn_EmptyAliasMatchesLegacy(t *testing.T) {
 	t.Parallel()
 	eff := &domain.TagPredicate{RequiredTags: []string{"crm"}}
 
-	viaWrapper := render(t, scopeExpressions(eff))
-	viaEmpty := render(t, scopeExpressionsOn(eff, ""))
-	if viaWrapper != viaEmpty {
-		t.Errorf("scopeExpressions must equal scopeExpressionsOn(_, \"\"):\n%s\n%s", viaWrapper, viaEmpty)
-	}
-	if !strings.Contains(viaWrapper, "metadata @>") || strings.Contains(viaWrapper, "c.metadata @>") {
-		t.Errorf("empty alias must stay unqualified:\n%s", viaWrapper)
+	got := render(t, sqlfence.JSONBTags("").Goqu(eff))
+	if !strings.Contains(got, "metadata @>") || strings.Contains(got, "c.metadata @>") {
+		t.Errorf("empty alias must stay unqualified:\n%s", got)
 	}
 }
 
@@ -77,13 +74,13 @@ func TestScopeExpressionsOn_EmptyAliasMatchesLegacy(t *testing.T) {
 // (domain/owner_scope.go), which Bypass does not waive.
 func TestScopeExpressionsOn_NilAndBypass(t *testing.T) {
 	t.Parallel()
-	if got := scopeExpressionsOn(nil, "c"); got != nil {
+	if got := sqlfence.JSONBTags("c").Goqu(nil); got != nil {
 		t.Errorf("nil predicate: expected no expressions, got %d", len(got))
 	}
-	if got := scopeExpressionsOn(domain.ScopeMaintenance, "c"); got != nil {
+	if got := sqlfence.JSONBTags("c").Goqu(domain.ScopeMaintenance); got != nil {
 		t.Errorf("maintenance predicate: expected no expressions, got %d", len(got))
 	}
-	got := scopeExpressionsOn(&domain.TagPredicate{Bypass: true}, "c")
+	got := sqlfence.JSONBTags("c").Goqu(&domain.TagPredicate{Bypass: true})
 	if len(got) != 1 {
 		t.Fatalf("bypass predicate: expected only the owner fence, got %d", len(got))
 	}
@@ -106,7 +103,7 @@ func TestScopeExpressionsOn_PartyScopedDeniedLikeForbidden(t *testing.T) {
 		PartyIdentities: []string{"customer:acme"}, // identities are irrelevant on this plane
 	}
 
-	got := render(t, scopeExpressionsOn(eff, "c"))
+	got := render(t, sqlfence.JSONBTags("c").Goqu(eff))
 	for _, tag := range eff.PartyScopedTags {
 		want := `NOT (c.metadata @> '{"tags":["` + tag + `"]}'`
 		if !strings.Contains(got, want) {

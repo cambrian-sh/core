@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"hash/fnv"
 	"sort"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/pgvector/pgvector-go"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 )
 
 // ADR-0136 Amendment A1 — the substrate-generic tables of migration 0022 on
@@ -69,7 +69,7 @@ func (s *PgKnowledgeStore) deriveKeysHiding(ctx context.Context, q pgxQuerier, i
 			entities = append(entities, k.entity)
 		}
 	}
-	scopeSQL, scopeArgs := itemScopeSQL(scope, "ki", 3)
+	scopeSQL, scopeArgs := sqlfence.TextArray("ki.classification").Where(scope, 3)
 	items, err := loadItems(ctx, q, `WHERE ki.namespace_id = $1 AND ki.kind = $2 AND ki.entity_id = ANY($3)`+scopeSQL,
 		append([]any{ns, kind, entities}, scopeArgs...)...)
 	if err != nil {
@@ -116,7 +116,7 @@ func (s *PgKnowledgeStore) deriveKeysHiding(ctx context.Context, q pgxQuerier, i
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
-		rs, rargs := itemScopeSQL(scope, "ki", 2)
+		rs, rargs := sqlfence.TextArray("ki.classification").Where(scope, 2)
 		rel, err := loadItems(ctx, q, `WHERE ki.kind = $1 AND ki.id = ANY($2)`+rs, append([]any{kind, ids}, rargs...)...)
 		if err != nil {
 			return nil, fmt.Errorf("derive: related items: %w", err)
@@ -173,87 +173,6 @@ func (s *PgKnowledgeStore) deriveKeysHiding(ctx context.Context, q pgxQuerier, i
 		out[k] = derivedKey{items: its, inputs: in, outcome: ia.ResolveWith(its, in)}
 	}
 	return out, nil
-}
-
-// itemScopeSQL renders a TagPredicate against an item alias's native TEXT[]
-// classification (ADR-0118 D2 operators): required ⊆ (@>), forbidden disjoint
-// (NOT &&), each any-of clause overlapping (&&). Items carry no parties column, so a
-// party-scoped tag denies exactly as on the chunk mirror (scopeExpressionsOn): a thing
-// nobody can be a party to is not a row you are a party to. nil or Bypass adds nothing
-// — the fail-closed decision belongs to the enforcing decorator. Args are numbered from
-// $startIdx+1.
-func itemScopeSQL(scope *domain.TagPredicate, alias string, startIdx int) (string, []any) {
-	return textArrayScopeSQL(scope, alias+".classification", startIdx)
-}
-
-// textArrayScopeSQL is itemScopeSQL over any native TEXT[] tag column. The owner
-// fence (domain/owner_scope.go) applies to every predicate, Bypass included; only
-// ScopeMaintenance adds nothing.
-//
-// With a valid own-rows term (ADR-0146, TagPredicate.OwnRowTerm) the conditions
-// become " AND ((main) OR (own_row AND ownrows))": own_row is "the column contains
-// owner:<the reader's single owner>", and ownrows is this rendering of the own-rows
-// predicate, whose fence (held = that owner) adds "and no other owner tag" — the
-// SQL form of TagPredicate.Check's disjunction.
-func textArrayScopeSQL(scope *domain.TagPredicate, col string, startIdx int) (string, []any) {
-	if scope == nil || scope.Unfiltered() {
-		return "", nil
-	}
-	conds, args, n := textArrayTerms(scope, col, startIdx)
-	own := scope.OwnRowTerm()
-	if own == nil {
-		return " AND " + strings.Join(conds, " AND "), args
-	}
-	n++
-	ownRow := fmt.Sprintf(col+" @> ARRAY[$%d::text]", n)
-	args = append(args, domain.OwnerTag(scope.Owners[0]))
-	oconds, oargs, _ := textArrayTerms(own, col, n)
-	args = append(args, oargs...)
-	return " AND ((" + strings.Join(conds, " AND ") + ") OR (" + ownRow + " AND " +
-		strings.Join(oconds, " AND ") + "))", args
-}
-
-// textArrayTerms renders one predicate's own terms (never its OwnRows) as
-// conditions to AND, numbering args from $startIdx+1; it returns the last index
-// used. Never empty: the owner fence is always the first condition.
-func textArrayTerms(scope *domain.TagPredicate, col string, startIdx int) ([]string, []any, int) {
-	var conds []string
-	var args []any
-	n := startIdx
-	add := func(cond string, val []string) {
-		n++
-		conds = append(conds, fmt.Sprintf(cond, n))
-		args = append(args, val)
-	}
-	add(ownerFenceTextArray(col), scope.HeldOwnerTags())
-	if scope.Bypass {
-		return conds, args, n
-	}
-	if len(scope.RequiredTags) > 0 {
-		add(col+" @> $%d::text[]", scope.RequiredTags)
-	}
-	if len(scope.ForbiddenTags) > 0 {
-		add("NOT ("+col+" && $%d::text[])", scope.ForbiddenTags)
-	}
-	for _, clause := range scope.AnyOfClauses {
-		if len(clause) > 0 {
-			add(col+" && $%d::text[]", clause)
-		}
-	}
-	if len(scope.PartyScopedTags) > 0 {
-		add("NOT ("+col+" && $%d::text[])", scope.PartyScopedTags)
-	}
-	return conds, args, n
-}
-
-// ownerFenceTextArray is the TEXT[] mirror of the owner fence: no element in the
-// owner namespace outside the bound held-tags array. The held array is never
-// NULL (HeldOwnerTags returns '{}' when empty) — `t <> ALL(NULL)` is NULL, which
-// would make the NOT EXISTS admit every owner row. The prefix is a constant.
-// One %d placeholder, for the held tags.
-func ownerFenceTextArray(col string) string {
-	return "NOT EXISTS (SELECT 1 FROM unnest(" + col + ") AS owner_tag(t) WHERE starts_with(owner_tag.t, '" +
-		domain.OwnerTagPrefix + "') AND owner_tag.t <> ALL($%d::text[]))"
 }
 
 const assessmentColumns = `id, namespace_id, kind, authority, authority_version, prompt_hash,
@@ -347,9 +266,7 @@ func (s *PgKnowledgeStore) PutAssessment(ctx context.Context, a domain.Assessmen
 		return false, fmt.Errorf("assessment put: id, kind, authority and inputs are required")
 	}
 	ns := a.NamespaceID
-	if ns == "" {
-		ns = "default"
-	}
+	ns = orDefaultNamespace(ns)
 	inputs := make([]string, 0, len(a.InputItemIDs))
 	for _, id := range a.InputItemIDs {
 		inputs = append(inputs, string(id))
@@ -467,18 +384,14 @@ func profileLockKey(ns, kind, predicate string) int64 {
 
 // PredicateProfile implements domain.PredicateProfileStore.
 func (s *PgKnowledgeStore) PredicateProfile(ctx context.Context, namespace, kind, predicate string) (domain.PredicateProfile, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	p, _, err := currentProfile(ctx, s.pool, namespace, kind, predicate)
 	return p, err
 }
 
 // VoteProfile implements domain.PredicateProfileStore.
 func (s *PgKnowledgeStore) VoteProfile(ctx context.Context, namespace, kind, predicate string, v domain.ProfileVote, minVotes int) (bool, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -506,9 +419,7 @@ func (s *PgKnowledgeStore) VoteProfile(ctx context.Context, namespace, kind, pre
 // whose predicate left the config reverts to learned, keeping its votes. An override
 // row (the future operator RPC) is never touched.
 func (s *PgKnowledgeStore) SeedDeclaredProfiles(ctx context.Context, namespace, kind string, declared map[string]string, minVotes int, setBy string) ([]string, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -578,9 +489,7 @@ func (s *PgKnowledgeStore) SeedDeclaredProfiles(ctx context.Context, namespace, 
 // changed profile triggers (A1.4 "Effect"). One transaction per key, so a large
 // predicate never holds one long lock set.
 func (s *PgKnowledgeStore) RederivePredicate(ctx context.Context, namespace, kind, predicate string, limit int) (int, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	q := `SELECT DISTINCT entity_id, asserted_by FROM knowledge_items
 		WHERE namespace_id = $1 AND kind = $2 AND split_part(entity_id, '/', 3) = $3
 		ORDER BY entity_id, asserted_by`
@@ -658,9 +567,7 @@ func (s *PgKnowledgeStore) PutItemEmbeddings(ctx context.Context, embs []domain.
 // ExtractionMarker returns the marker of this content, or nil (ADR-0136 A2.4: version
 // and coverage ride along; a legacy row reads version "" and 0 of 0 passages).
 func (s *PgKnowledgeStore) ExtractionMarker(ctx context.Context, namespace, extractor, documentID, contentHash string) (*domain.ExtractionMarker, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	m := domain.ExtractionMarker{NamespaceID: namespace, Extractor: extractor, DocumentID: documentID, ContentHash: contentHash}
 	var covered, total *int
 	err := s.pool.QueryRow(ctx, `SELECT items, extractor_version, passages_covered, passages_total FROM knowledge_extractions
@@ -685,9 +592,7 @@ func (s *PgKnowledgeStore) ExtractionMarker(ctx context.Context, namespace, extr
 // same content replaces the row's version, coverage and item count.
 func (s *PgKnowledgeStore) MarkExtracted(ctx context.Context, m domain.ExtractionMarker) error {
 	ns := m.NamespaceID
-	if ns == "" {
-		ns = "default"
-	}
+	ns = orDefaultNamespace(ns)
 	_, err := s.pool.Exec(ctx, `INSERT INTO knowledge_extractions
 			(namespace_id, extractor, document_id, content_hash, items, extractor_version, passages_covered, passages_total)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -713,9 +618,7 @@ func idStrings(ids []domain.KnowledgeItemID) []string {
 // (knowledge_extraction_windows, migration 0025).
 func (s *PgKnowledgeStore) PutExtractionWindow(ctx context.Context, w domain.ExtractionWindow) error {
 	ns := w.NamespaceID
-	if ns == "" {
-		ns = "default"
-	}
+	ns = orDefaultNamespace(ns)
 	_, err := s.pool.Exec(ctx, `INSERT INTO knowledge_extraction_windows
 			(namespace_id, extractor, document_id, content_hash, extractor_version, passage_start, passage_end, item_ids, new_item_ids)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -730,9 +633,7 @@ func (s *PgKnowledgeStore) PutExtractionWindow(ctx context.Context, w domain.Ext
 // ExtractionWindows returns one document content's journal rows under one version, by
 // passage start.
 func (s *PgKnowledgeStore) ExtractionWindows(ctx context.Context, namespace, extractor, documentID, contentHash, version string) ([]domain.ExtractionWindow, error) {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	rows, err := s.pool.Query(ctx, `SELECT passage_start, passage_end, item_ids, new_item_ids FROM knowledge_extraction_windows
 		WHERE namespace_id = $1 AND extractor = $2 AND document_id = $3 AND content_hash = $4 AND extractor_version = $5
 		ORDER BY passage_start`, namespace, extractor, documentID, contentHash, version)
@@ -761,9 +662,7 @@ func (s *PgKnowledgeStore) ExtractionWindows(ctx context.Context, namespace, ext
 
 // DeleteExtractionWindows removes one document content's journal rows (every version).
 func (s *PgKnowledgeStore) DeleteExtractionWindows(ctx context.Context, namespace, extractor, documentID, contentHash string) error {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	_, err := s.pool.Exec(ctx, `DELETE FROM knowledge_extraction_windows
 		WHERE namespace_id = $1 AND extractor = $2 AND document_id = $3 AND content_hash = $4`,
 		namespace, extractor, documentID, contentHash)

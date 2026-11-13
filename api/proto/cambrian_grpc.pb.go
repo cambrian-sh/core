@@ -47,6 +47,7 @@ const (
 	Orchestrator_ListScheduledTasks_FullMethodName     = "/cambrian.Orchestrator/ListScheduledTasks"
 	Orchestrator_ManageScheduledTask_FullMethodName    = "/cambrian.Orchestrator/ManageScheduledTask"
 	Orchestrator_ProposeKnowledge_FullMethodName       = "/cambrian.Orchestrator/ProposeKnowledge"
+	Orchestrator_ProposeOntologyChange_FullMethodName  = "/cambrian.Orchestrator/ProposeOntologyChange"
 )
 
 // OrchestratorClient is the client API for Orchestrator service.
@@ -194,6 +195,18 @@ type OrchestratorClient interface {
 	// resolves by designated_actor accept proposals. A refusal is an OK response with
 	// accepted=false and a detail; UNIMPLEMENTED when the kernel has no knowledge bridge.
 	ProposeKnowledge(ctx context.Context, in *ProposeKnowledgeRequest, opts ...grpc.CallOption) (*ProposeKnowledgeResponse, error)
+	// Ontology drafts (ADR-0149 D2; T-20261113-agent-drafted-ontology-changes-have-no-approval;
+	// additive within contract 0101). An agent DRAFTS a change to a namespace's kind and
+	// relation declarations; it can never apply one. The kernel classifies the draft with
+	// the operator apply's own classifier (a breaking, invalid or empty change is refused
+	// at once, with the reason), records it append-only as drafted by the calling agent
+	// (resolved from the lease, never a request field), and raises an ontology_change
+	// approval routed by the approval policy. When a person approves, the kernel applies
+	// the change AS THAT PERSON; if the namespace moved since the draft and the change no
+	// longer classifies the same, nothing is applied and the draft is superseded. A
+	// refusal is an OK response with accepted=false and a detail; UNIMPLEMENTED when the
+	// kernel has no ontology drafts (no Postgres).
+	ProposeOntologyChange(ctx context.Context, in *ProposeOntologyChangeRequest, opts ...grpc.CallOption) (*ProposeOntologyChangeResponse, error)
 }
 
 type orchestratorClient struct {
@@ -511,6 +524,16 @@ func (c *orchestratorClient) ProposeKnowledge(ctx context.Context, in *ProposeKn
 	return out, nil
 }
 
+func (c *orchestratorClient) ProposeOntologyChange(ctx context.Context, in *ProposeOntologyChangeRequest, opts ...grpc.CallOption) (*ProposeOntologyChangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProposeOntologyChangeResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_ProposeOntologyChange_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OrchestratorServer is the server API for Orchestrator service.
 // All implementations must embed UnimplementedOrchestratorServer
 // for forward compatibility.
@@ -656,6 +679,18 @@ type OrchestratorServer interface {
 	// resolves by designated_actor accept proposals. A refusal is an OK response with
 	// accepted=false and a detail; UNIMPLEMENTED when the kernel has no knowledge bridge.
 	ProposeKnowledge(context.Context, *ProposeKnowledgeRequest) (*ProposeKnowledgeResponse, error)
+	// Ontology drafts (ADR-0149 D2; T-20261113-agent-drafted-ontology-changes-have-no-approval;
+	// additive within contract 0101). An agent DRAFTS a change to a namespace's kind and
+	// relation declarations; it can never apply one. The kernel classifies the draft with
+	// the operator apply's own classifier (a breaking, invalid or empty change is refused
+	// at once, with the reason), records it append-only as drafted by the calling agent
+	// (resolved from the lease, never a request field), and raises an ontology_change
+	// approval routed by the approval policy. When a person approves, the kernel applies
+	// the change AS THAT PERSON; if the namespace moved since the draft and the change no
+	// longer classifies the same, nothing is applied and the draft is superseded. A
+	// refusal is an OK response with accepted=false and a detail; UNIMPLEMENTED when the
+	// kernel has no ontology drafts (no Postgres).
+	ProposeOntologyChange(context.Context, *ProposeOntologyChangeRequest) (*ProposeOntologyChangeResponse, error)
 	mustEmbedUnimplementedOrchestratorServer()
 }
 
@@ -749,6 +784,9 @@ func (UnimplementedOrchestratorServer) ManageScheduledTask(context.Context, *Man
 }
 func (UnimplementedOrchestratorServer) ProposeKnowledge(context.Context, *ProposeKnowledgeRequest) (*ProposeKnowledgeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ProposeKnowledge not implemented")
+}
+func (UnimplementedOrchestratorServer) ProposeOntologyChange(context.Context, *ProposeOntologyChangeRequest) (*ProposeOntologyChangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProposeOntologyChange not implemented")
 }
 func (UnimplementedOrchestratorServer) mustEmbedUnimplementedOrchestratorServer() {}
 func (UnimplementedOrchestratorServer) testEmbeddedByValue()                      {}
@@ -1228,6 +1266,24 @@ func _Orchestrator_ProposeKnowledge_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Orchestrator_ProposeOntologyChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProposeOntologyChangeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).ProposeOntologyChange(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_ProposeOntologyChange_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).ProposeOntologyChange(ctx, req.(*ProposeOntologyChangeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Orchestrator_ServiceDesc is the grpc.ServiceDesc for Orchestrator service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1326,6 +1382,10 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ProposeKnowledge",
 			Handler:    _Orchestrator_ProposeKnowledge_Handler,
+		},
+		{
+			MethodName: "ProposeOntologyChange",
+			Handler:    _Orchestrator_ProposeOntologyChange_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

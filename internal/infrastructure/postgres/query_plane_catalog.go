@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 )
 
 // The substrate's names-and-counts surface (domain.SubstrateCatalog) and the
@@ -23,15 +24,15 @@ import (
 // no predicate at all, and the operator review inbox listed every candidate. Each
 // of those returned names derived from someone's owner:X evidence. The fix is not
 // a second copy of the fence in premium (AGENTS.md §2.5): it is these reads, here,
-// built on the same evidenceScopeSQLOn / textArrayScopeSQL renderings the
+// built on the same sqlfence.EvidenceExists / sqlfence.TextArray renderings the
 // aggregate shape and the item stores already use.
 //
 // How each table reaches scope — the same as the AST shapes:
-//   - evidence:              its own classification + parties (evidenceRowConds)
+//   - evidence:              its own classification + parties (sqlfence.Evidence)
 //   - observations, events,
-//     evidence_outbox:       through evidence_id (evidenceScopeSQLOn)
+//     evidence_outbox:       through evidence_id (sqlfence.EvidenceExists)
 //   - event_roles:           through its event
-//   - knowledge_items:       its own classification (textArrayScopeSQL)
+//   - knowledge_items:       its own classification (sqlfence.TextArray)
 //   - resolutions:           through the item it resolves to; a resolution with
 //     no item (a negation) has nothing to judge and is dropped
 //     for every scope but ScopeMaintenance (fail closed)
@@ -87,14 +88,14 @@ func (a *sqlArgs) add(v any) string {
 
 // viaEvidence fences a row that references evidence through refCol.
 func (a *sqlArgs) viaEvidence(scope *domain.TagPredicate, refCol string) string {
-	cond, extra := evidenceScopeSQLOn(scope, refCol, len(a.args))
+	cond, extra := sqlfence.EvidenceExists(scope, refCol, len(a.args))
 	a.args = append(a.args, extra...)
 	return cond
 }
 
 // evidenceRow fences the evidence table itself, aliased alias.
 func (a *sqlArgs) evidenceRow(scope *domain.TagPredicate, alias string) string {
-	cond, extra := evidenceRowConds(scope, alias, len(a.args))
+	cond, extra := sqlfence.Evidence(alias).Where(scope, len(a.args))
 	a.args = append(a.args, extra...)
 	return cond
 }
@@ -105,7 +106,7 @@ func (a *sqlArgs) item(scope *domain.TagPredicate, alias string) string {
 	if scope.Unfiltered() {
 		return ""
 	}
-	cond, extra := textArrayScopeSQL(scope, alias+".classification", len(a.args))
+	cond, extra := sqlfence.TextArray(alias+".classification").Where(scope, len(a.args))
 	a.args = append(a.args, extra...)
 	return " AND " + alias + ".id IS NOT NULL" + cond
 }

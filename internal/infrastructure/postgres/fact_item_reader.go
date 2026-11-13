@@ -8,6 +8,7 @@ import (
 	"github.com/pgvector/pgvector-go"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 )
 
 // PgFactItemReader is the substrate-backed read side of the ADR-0136 fact layer (A1.5):
@@ -38,9 +39,7 @@ var _ domain.FactItemReader = (*PgFactItemReader)(nil)
 // (migrate.ItemEmbeddingIndexName — named, not imported: the adapter must not depend on
 // the runner) the search is served by.
 func NewPgFactItemReader(store *PgKnowledgeStore, namespace, modelID string, dim int) *PgFactItemReader {
-	if namespace == "" {
-		namespace = "default"
-	}
+	namespace = orDefaultNamespace(namespace)
 	return &PgFactItemReader{store: store, namespace: namespace, modelID: modelID, dim: dim}
 }
 
@@ -50,7 +49,7 @@ func NewPgFactItemReader(store *PgKnowledgeStore, namespace, modelID string, dim
 func (r *PgFactItemReader) vecExpr() string { return fmt.Sprintf("e.embedding::vector(%d)", r.dim) }
 
 func (r *PgFactItemReader) authority() (domain.InputResolutionAuthority, error) {
-	_, a, err := r.store.policyFor(domain.KindMemoryFact)
+	_, a, err := policyFor(r.store.registry(r.namespace), domain.KindMemoryFact)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +78,7 @@ func (r *PgFactItemReader) SearchFacts(ctx context.Context, vec []float32, opts 
 	if len(opts.SourceDocumentIDs) > 0 {
 		q, args = r.scopedSearchSQL(vec, k, opts)
 	} else {
-		scopeSQL, scopeArgs := itemScopeSQL(opts.Scope, "ki", 5)
+		scopeSQL, scopeArgs := sqlfence.TextArray("ki.classification").Where(opts.Scope, 5)
 		q = fmt.Sprintf(`SELECT ki.id, 1 - (%[1]s <=> $1::vector(%[2]d)) AS score
 		FROM knowledge_item_embeddings e
 		JOIN knowledge_items ki ON ki.id = e.item_id
@@ -173,7 +172,7 @@ func (r *PgFactItemReader) SearchFacts(ctx context.Context, vec []float32, opts 
 // `WHERE predicate = 'source_document'` is implied. The ORDER BY is on the score, not on
 // the `<=>` operator, so the planner cannot pick the approximate index. Ties break on the item id, so the result is deterministic.
 func (r *PgFactItemReader) scopedSearchSQL(vec []float32, k int, opts domain.FactSearchOptions) (string, []any) {
-	scopeSQL, scopeArgs := itemScopeSQL(opts.Scope, "ki", 6)
+	scopeSQL, scopeArgs := sqlfence.TextArray("ki.classification").Where(opts.Scope, 6)
 	q := fmt.Sprintf(`SELECT ki.id, 1 - (%[1]s <=> $1::vector(%[2]d)) AS score
 		FROM statement_values sv
 		JOIN knowledge_items ki ON ki.id = sv.item_id
@@ -309,7 +308,7 @@ func (r *PgFactItemReader) SimilarFactsHiding(ctx context.Context, f domain.Fact
 		hide[id] = true
 	}
 	// k is an int, rendered as a literal so the scope placeholders can follow $7.
-	scopeSQL, scopeArgs := itemScopeSQL(scope, "ki", 7)
+	scopeSQL, scopeArgs := sqlfence.TextArray("ki.classification").Where(scope, 7)
 	q := fmt.Sprintf(`SELECT ki.id FROM knowledge_items ki
 		JOIN statement_values sv ON sv.item_id = ki.id AND sv.predicate = '%[4]s' AND sv.value_type = 'entity'
 		JOIN knowledge_item_embeddings e ON e.item_id = ki.id AND e.dims = %[2]d AND e.model_id = $2
@@ -375,7 +374,7 @@ func (r *PgFactItemReader) FactsByID(ctx context.Context, ids []domain.Knowledge
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	scopeSQL, scopeArgs := itemScopeSQL(scope, "ki", 3)
+	scopeSQL, scopeArgs := sqlfence.TextArray("ki.classification").Where(scope, 3)
 	items, err := loadItems(ctx, r.store.pool, `WHERE ki.id = ANY($1) AND ki.kind = $2 AND ki.namespace_id = $3`+scopeSQL,
 		append([]any{idStrings(ids), domain.KindMemoryFact, r.namespace}, scopeArgs...)...)
 	if err != nil {

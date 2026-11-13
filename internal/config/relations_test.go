@@ -55,7 +55,8 @@ func TestRelations_AbsentSectionDeclaresNothing(t *testing.T) {
 // without a Go change, carrying every field a RelationSpec has.
 func TestRelations_ConfiguredVerbsReachTheRegistry(t *testing.T) {
 	cfg, err := config.LoadConfig(writeRelationsConfig(t, `[
-		{"name":"subsidiary_of","family":"relation","max_per_entity":4},
+		{"name":"subsidiary_of","family":"relation","max_per_entity":4,
+		 "from_kind":"company","to_kind":"company","cardinality":"one","required":true,"inverse":"parent_of"},
 		{"name":"duplicate_of","family":"identity","symmetric":true,"closure":"identity"},
 		{"name":"  fulfilled_by  ","family":" lineage "}
 	]`))
@@ -68,7 +69,8 @@ func TestRelations_ConfiguredVerbsReachTheRegistry(t *testing.T) {
 	}
 	// Order is preserved so a boot refusal can name the entry an operator wrote.
 	if specs[0].Name != "subsidiary_of" || specs[0].Family != domain.LinkFamilyRelation ||
-		specs[0].MaxPerEntity != 4 || specs[0].Symmetric || specs[0].Closure != "" {
+		specs[0].Symmetric || specs[0].Closure != "" || specs[0].FromKind != "company" ||
+		specs[0].ToKind != "company" || !specs[0].SingleValued() || !specs[0].Required || specs[0].Inverse != "parent_of" {
 		t.Fatalf("relations[0] did not round-trip: %+v", specs[0])
 	}
 	if specs[1].Name != "duplicate_of" || !specs[1].Symmetric || specs[1].Closure != domain.ClosureIdentity {
@@ -87,8 +89,10 @@ func TestRelations_ConfiguredVerbsReachTheRegistry(t *testing.T) {
 	if !ok {
 		t.Fatal("a configured verb is not declared in the registry it was folded into")
 	}
-	if spec.MaxPerEntity != 4 {
-		t.Errorf("MaxPerEntity did not survive the fold: %+v", spec)
+	// max_per_entity was deleted (ADR-0149 D5); a config that still carries it
+	// loads, and the typed-link fields beside it survive the fold.
+	if spec.Cardinality != domain.CardinalityOne || spec.FromKind != "company" || spec.Inverse != "parent_of" {
+		t.Errorf("typed-link fields did not survive the fold: %+v", spec)
 	}
 	// A configured identity verb is what the closure walks — the read path asks
 	// the registry, never a name.
@@ -110,7 +114,7 @@ func TestRelations_MalformedEntriesRefuseAtRegistryBuild(t *testing.T) {
 		{"no name", `[{"name":"","family":"relation"}]`, "must name its verb"},
 		{"unknown family", `[{"name":"owns","family":"ownership"}]`, "unknown family"},
 		{"unknown closure", `[{"name":"owns","family":"relation","closure":"transitive"}]`, "unknown closure"},
-		{"negative cap", `[{"name":"owns","family":"relation","max_per_entity":-1}]`, "negative MaxPerEntity"},
+		{"unknown cardinality", `[{"name":"owns","family":"relation","cardinality":"some"}]`, "unknown cardinality"},
 		{"redeclared seed", `[{"name":"same_as","family":"identity"}]`, "built in and cannot be redeclared"},
 		{"declared twice", `[{"name":"owns","family":"relation"},{"name":"owns","family":"relation"}]`, "declared twice"},
 	} {

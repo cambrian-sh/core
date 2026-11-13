@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 )
 
 // The scope pushdown filters `metadata @> '{"tags":[...]}'`, and the `documents`
@@ -42,7 +43,7 @@ func TestScopePredicateNeverTargetsDocuments(t *testing.T) {
 // The asymmetry itself, so the reasoning above is not just a comment.
 func TestScopeExpressions_ForbiddenIsANegation(t *testing.T) {
 	t.Parallel()
-	exprs := scopeExpressions(&domain.TagPredicate{ForbiddenTags: []string{"confidential"}})
+	exprs := sqlfence.JSONBTags("").Goqu(&domain.TagPredicate{ForbiddenTags: []string{"confidential"}})
 	// The owner fence (always first, domain/owner_scope.go) plus the forbid.
 	if len(exprs) != 2 {
 		t.Fatalf("expected the owner fence and one forbid, got %d", len(exprs))

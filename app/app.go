@@ -45,6 +45,7 @@ import (
 	"github.com/cambrian-sh/core/internal/metabolism/agentmgr"
 	"github.com/cambrian-sh/core/internal/metabolism/backfill"
 	"github.com/cambrian-sh/core/internal/metabolism/routescorer"
+	"github.com/cambrian-sh/core/internal/ontology"
 	"github.com/cambrian-sh/core/internal/ratelimit"
 	ossreactive "github.com/cambrian-sh/core/internal/reactive"
 	"github.com/cambrian-sh/core/internal/sandbox"
@@ -803,10 +804,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ones (plugins were composed at the top of bootstrapKernel), so the OSS binary
 	// carries them with no premium import (ADR-0057). A plugin that also declares
 	// memory_fact fails boot here (duplicate kind).
-	kindReg, kerr := domain.NewKindRegistry(
-		append(append([]domain.KindSpec(nil), opts.KnowledgeKinds...), domain.MemoryFactKindSpec()),
-		append(append([]domain.ResolutionAuthority(nil), opts.ResolutionAuthorities...), domain.ValidTimeSupersessionAuthority{}))
-	if kerr != nil {
+	kindSpecs := append(append([]domain.KindSpec(nil), opts.KnowledgeKinds...), domain.MemoryFactKindSpec())
+	authorities := append(append([]domain.ResolutionAuthority(nil), opts.ResolutionAuthorities...), domain.ValidTimeSupersessionAuthority{})
+	if _, kerr := domain.NewKindRegistry(kindSpecs, authorities); kerr != nil {
 		return nil, fmt.Errorf("knowledge kind registry (ADR-0110): %w", kerr)
 	}
 	// ADR-0106: the substrate store, ONE instance shared by the kernel fact path (wrapped
@@ -822,15 +822,24 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// collision between the two names the operator's entry as the duplicate —
 	// the one they can edit — rather than the plugin's.
 	relSpecs := append(append([]domain.RelationSpec(nil), opts.RelationSpecs...), cfg.RelationSpecs()...)
-	relReg, rerr := domain.NewRelationRegistry(relSpecs)
-	if rerr != nil {
+	if _, rerr := domain.NewRelationRegistry(relSpecs); rerr != nil {
 		return nil, fmt.Errorf("link relation registry (five-planes step 2; deployment verbs are declared "+
 			"in the kernel config's \"relations\" section, e.g. configs/config.json): %w", rerr)
 	}
+	// ADR-0149 D2: the two declarers above are the BOOT declarations (the base,
+	// version 1 on a fresh database); the live ontology seeds them into
+	// ontology_declarations and replays every namespace's applied changes over
+	// them. From here on the stores ask it for a namespace's current registries
+	// per write, so an operator's change takes effect without a restart.
+	ontologies, oerr := LoadOntology(ctx, vec.Pool(), domain.OntologyDoc{Kinds: kindSpecs, Relations: relSpecs}, authorities, authorizer)
+	if oerr != nil {
+		return nil, fmt.Errorf("ontology declarations (ADR-0149): %w", oerr)
+	}
+	onto := ontologies.Live
 	// ADR-0147 D15: the substrate's stores and its one query plane, composed
 	// through app.NewSubstrate — the same function premium's end-to-end tests
 	// build them with, so there is one construction path.
-	substrate := NewSubstrate(vec.Pool(), kindReg, relReg)
+	substrate := NewSubstrate(vec.Pool(), onto, onto)
 	knowledgeStore := substrate.Knowledge
 	factsSubstrate := kernel.FactSubstrate{
 		Store:         knowledgeStore,
@@ -1360,10 +1369,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// ingestor and one store. Construction is fail-loud: with the flag on, a
 	// kernel that cannot preserve evidence must not boot into silently-not-
 	// preserving it.
-	// The kind registry (kindReg) and the substrate store (knowledgeStore) are built
-	// above NewMemoryStack (ADR-0136 A1.6).
-	//
-	// The link verb registry (relReg) is built above too, with the substrate.
+	// The live ontology (onto: the kind and link-verb registries per namespace,
+	// ADR-0149 D2) and the substrate store (knowledgeStore) are built above
+	// NewMemoryStack (ADR-0136 A1.6).
 
 	var evIngestor *evidence.Ingestor
 	// The substrate's stores (app.NewSubstrate, above). The identity plane
@@ -1407,10 +1415,21 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// authenticated (its knowledge_commit handler is registered here, at boot, so an
 	// item approved after a restart still commits). Served on the agent plane as
 	// Orchestrator/ProposeKnowledge (cambrianServer.Knowledge below).
-	knowledgeBridge, kbErr := knowledgecommit.New(knowledgeStore, kindReg, authorizer, toolApproval, linkStore, slog.Default())
+	knowledgeBridge, kbErr := knowledgecommit.New(knowledgeStore, onto, authorizer, toolApproval, linkStore, slog.Default())
 	if kbErr != nil {
 		return nil, fmt.Errorf("knowledge commit bridge: %w", kbErr)
 	}
+	// ADR-0149 D2: agents draft ontology changes; a person approves. The drafts
+	// bridge registers the ontology_change handler here, at boot (an item approved
+	// after a restart still applies — as its approver), audits every transition
+	// through the operator audit seam, and records denials and expiries on a
+	// reconcile loop. Served on the agent plane as Orchestrator/ProposeOntologyChange
+	// (cambrianServer.OntologyDrafts below).
+	ontologyDrafts, odErr := ontology.NewDrafts(vec.Pool(), onto, toolApproval, credSeams.recordAudit, slog.Default())
+	if odErr != nil {
+		return nil, fmt.Errorf("ontology drafts: %w", odErr)
+	}
+	lifecycles = append(lifecycles, Lifecycle{Name: "ontology-drafts", Start: ontologyDrafts.Start, Stop: ontologyDrafts.Stop})
 
 	kernelSvc := KernelServices{
 		Principals: idStores.registry,
@@ -1497,7 +1516,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// designated principal's word or carry the kernel's commit marker, so for a kind
 		// resolved by designated_actor the knowledge_commit handler is the only writer
 		// of its committed value (T-20261107-knowledge-substrate-extensions-for-case).
-		Knowledge: authz.NewReservedKindGuard(authz.NewDesignatedActorGuard(knowledgeStore, kindReg), domain.KindMemoryFact),
+		Knowledge: authz.NewReservedKindGuard(authz.NewDesignatedActorGuard(knowledgeStore, onto), domain.KindMemoryFact),
 		// ADR-0108 D2: the typed event/observation boundary — exact reads over
 		// stored rows, nothing embedded.
 		// Withdrawing an entry organ (ADR-0090). Resolved at CALL time through the
@@ -1545,7 +1564,11 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		// OPERATOR (the ingress studio's mapping confirm) can refuse an
 		// undeclared one where a human is present, instead of leaving the
 		// store to refuse every delivery later with nobody watching.
-		Relations: relReg,
+		Relations: onto,
+		// ADR-0149 D2: the live declarations — read, propose/apply, and the
+		// violations report AS a principal (scope resolved here, never chosen
+		// by the plugin).
+		Ontology: ontologies.Seam,
 		// ADR-0111/ADR-0118: the closed query AST over all of the above, scoped.
 		// The seam takes a principal, never a predicate; the RESOLVED authorizer
 		// decides scope (same reasoning as the Documents seam above).
@@ -1776,6 +1799,8 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	cambrianServer.RunTracer = runTracer // ADR-0145 D10: step outputs + kernel tool calls
 	// Orchestrator/ProposeKnowledge: candidates and commit requests (knowledgeBridge above).
 	cambrianServer.Knowledge = knowledgeBridge
+	// Orchestrator/ProposeOntologyChange: agent drafts (ontologyDrafts above).
+	cambrianServer.OntologyDrafts = ontologyDrafts
 	// ADR-0139 amendment 2026-11-06: the live step-output stream (step_output_wiring.go).
 	// Built here, unconditionally, so the MCP endpoint below can subscribe to it; the
 	// operator feed attaches its sink when services start.

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz/sqlfence"
 	"github.com/cambrian-sh/core/internal/memory"
 )
 
@@ -47,7 +48,8 @@ func (p *PgVectorAdapter) ListDocuments(ctx context.Context, f memory.DocumentFi
 	// The owner fence, unconditionally (domain/owner_scope.go): a listing returns
 	// titles and labels, and a personal mailbox's subject lines are content.
 	held := (&domain.TagPredicate{Owners: f.Owners}).HeldOwnerTags()
-	filters = append(filters, strings.Replace(ownerFenceTextArray("d.tags"), "$%d", placeholder(held), 1))
+	args = append(args, held)
+	filters = append(filters, sqlfence.OwnerFence("d.tags", len(args)))
 	if f.UnlabelledOnly {
 		filters = append(filters, "cardinality(d.tags) = 0")
 	}
