@@ -324,15 +324,15 @@ func (c *concurrencyGenerator) Generate(ctx context.Context, prompt string) (str
 	return c.inner.Generate(ctx, prompt)
 }
 
+// NativeToolsEnabled forwards the inner generator's capability report (see
+// healthGenerator.NativeToolsEnabled).
+func (c *concurrencyGenerator) NativeToolsEnabled() bool {
+	return domain.SupportsToolCalling(c.inner)
+}
+
 // GenerateWithTools forwards native tool-calling while holding a concurrency slot,
 // mirroring Generate. See healthGenerator.GenerateWithTools on why forwarding is
 // mandatory rather than optional.
-// NativeToolsEnabled forwards the inner generator's capability report.
-func (c *concurrencyGenerator) NativeToolsEnabled() bool {
-	r, ok := c.inner.(domain.ToolCallingReporter)
-	return !ok || r.NativeToolsEnabled()
-}
-
 func (c *concurrencyGenerator) GenerateWithTools(
 	ctx context.Context, messages []domain.ModelMessage, tools []domain.ToolDefinition,
 ) (domain.ModelTurn, error) {

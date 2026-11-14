@@ -94,3 +94,22 @@ func TestHooksConfig_AcceptsTheThoughtPurpose(t *testing.T) {
 		t.Fatalf("purposes [agent_step, thought] refused: %v", errs)
 	}
 }
+
+// Follow-up of T-20261113-four-declared-hook-points-pre-compact-post: a hook naming a
+// declared-but-unfired point is refused with the reason, not as an "unknown point";
+// a genuinely unknown name keeps the old message.
+func TestHooksConfig_UnfiredPointSaysWhy(t *testing.T) {
+	t.Parallel()
+	cmd := func(point string) HooksConfig {
+		return HooksConfig{Entries: []HookConfig{{Name: "c", Kind: HookKindCommand, Command: []string{"x"}, Points: []string{point}}}}
+	}
+	for _, p := range domain.UnfiredHookPoints {
+		got := strings.Join(cmd(string(p)).validate(), "; ")
+		if !strings.Contains(got, "declared but not fired yet") || strings.Contains(got, "unknown point") {
+			t.Errorf("%s: errs = %q", p, got)
+		}
+	}
+	if got := strings.Join(cmd("no_such_point").validate(), "; "); !strings.Contains(got, `unknown point "no_such_point"`) {
+		t.Errorf("unknown point: errs = %q", got)
+	}
+}

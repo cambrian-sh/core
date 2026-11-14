@@ -12,6 +12,8 @@ import (
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/ingress"
+	ossreactive "github.com/cambrian-sh/core/internal/reactive"
 	supwatcher "github.com/cambrian-sh/core/internal/supervision/watcher"
 )
 
@@ -117,5 +119,74 @@ func TestSignalStream_RejectedTokenIsNotPlanned(t *testing.T) {
 	_ = s.SignalStream(stream)
 	if got := atomic.LoadInt32(&planner.calls); got != 0 {
 		t.Fatalf("planner calls = %d, want 0 for a rejected signal", got)
+	}
+}
+
+// recordingIngress admits only the one registered ingress agent and records the
+// sender every Accept saw.
+type recordingIngress struct {
+	registered string
+	senders    []domain.PrincipalRef
+	admitted   int
+}
+
+func (r *recordingIngress) Accept(_ context.Context, m ingress.InboundMessage) error {
+	r.senders = append(r.senders, m.Sender)
+	if m.Sender.ID != r.registered {
+		return ingress.ErrNotAnIngress
+	}
+	r.admitted++
+	return nil
+}
+
+// A credentialed agent must not be able to speak as a registered ingress by
+// naming it in the handoff's FromAgent: the sender is the principal the
+// agent-plane interceptor authenticated for the stream
+// (T-20261113-ingress-admission-trusts-the-handoff-s, ADR-0090 D2 / INV-5).
+func TestSignalStream_IngressSenderIsTheAuthenticatedPrincipalNotFromAgent(t *testing.T) {
+	t.Parallel()
+	in := &recordingIngress{registered: "telegram-bot"}
+	s := &Server{IngressInbound: in, SignalReceiver: &ossreactive.NoOpSignalReceiver{}}
+
+	// mallory holds a valid credential of its own and claims to be the ingress.
+	ctx := domain.WithPrincipal(t.Context(), domain.AgentPrincipal("mallory"))
+	stream := &fakeSignalStream{ctx: ctx, in: []*pb.Handoff{{
+		Id: "sig-1", FromAgent: "telegram-bot",
+		Payload: &pb.Object{Data: []byte(`{"external_id":"tg:42","text":"pay invoice 7"}`)},
+	}}}
+	_ = s.SignalStream(stream)
+	if in.admitted != 0 {
+		t.Fatalf("a handoff naming another agent was admitted as that ingress")
+	}
+	if len(in.senders) != 1 || in.senders[0] != domain.AgentPrincipal("mallory") {
+		t.Fatalf("ingress sender = %+v, want the authenticated principal mallory", in.senders)
+	}
+
+	// The real ingress, authenticated as itself, is still admitted.
+	ctx = domain.WithPrincipal(t.Context(), domain.AgentPrincipal("telegram-bot"))
+	stream = &fakeSignalStream{ctx: ctx, in: []*pb.Handoff{{
+		Id: "sig-2", FromAgent: "telegram-bot",
+		Payload: &pb.Object{Data: []byte(`{"external_id":"tg:42","text":"hello"}`)},
+	}}}
+	_ = s.SignalStream(stream)
+	if in.admitted != 1 {
+		t.Fatalf("the authenticated ingress was not admitted (admitted=%d)", in.admitted)
+	}
+}
+
+// Under the ADR-0130 D2 loopback waiver a stream may carry no principal; then
+// (and only then) FromAgent names the sender, exactly as the waiver already lets
+// any local caller assert any agent id.
+func TestSignalStream_IngressSenderFallsBackToFromAgentOnlyWithoutAPrincipal(t *testing.T) {
+	t.Parallel()
+	in := &recordingIngress{registered: "telegram-bot"}
+	s := &Server{IngressInbound: in, SignalReceiver: &ossreactive.NoOpSignalReceiver{}}
+	stream := &fakeSignalStream{ctx: t.Context(), in: []*pb.Handoff{{
+		Id: "sig-1", FromAgent: "telegram-bot",
+		Payload: &pb.Object{Data: []byte(`{"external_id":"tg:42","text":"hello"}`)},
+	}}}
+	_ = s.SignalStream(stream)
+	if in.admitted != 1 {
+		t.Fatalf("waived anonymous ingress stream was not admitted (senders=%+v)", in.senders)
 	}
 }

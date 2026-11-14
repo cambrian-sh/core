@@ -245,17 +245,28 @@ func (h *ActionHistory) evict() {
 }
 
 // SideEffecting reports whether a call of t can change the world: a dangerous
-// tool, or one declaring an effect other than read/egress (write, spend, admin).
-// Egress alone is a fetch, not an action anyone could repeat by mistake. The one
-// classification both the plan ledger (network/plan_actions.go) and the action
-// history use.
+// tool, or one declaring write, spend, admin or egress_send. The one
+// classification the plan ledger (network/plan_actions.go), the action history,
+// the ADR-0145 D9 idempotency cache and the request guards use.
+//
+// egress_send (ADR-0150 D9) is by definition a send — a message, an email, a
+// webhook, a state-changing remote call — so a repeat is exactly the duplicate
+// these mechanisms exist to catch, dangerous or not.
+//
+// egress_read is a fetch and does not count. Plain (legacy) egress does not count
+// either: the shipped catalog declares [read, egress] on ~27 non-dangerous pure
+// reads (mail search, calendar listing, channel history), and counting it would
+// put a duplicate notice and a ledger entry on every repeated read. Every shipped
+// tool that sends over plain egress is dangerous or also declares write, so it is
+// already covered above. Whether plain egress should count is open
+// (T-20261113-systemtool-sideeffecting-ignores-egress-a-non).
 func (t SystemTool) SideEffecting() bool {
 	if t.Dangerous {
 		return true
 	}
 	for _, e := range t.Effects {
 		switch e {
-		case EffectWrite, EffectSpend, EffectAdmin:
+		case EffectWrite, EffectSpend, EffectAdmin, EffectEgressSend:
 			return true
 		}
 	}

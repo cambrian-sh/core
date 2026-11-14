@@ -2,6 +2,8 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"math"
@@ -465,9 +467,8 @@ func (a *Agent) IngestNegativeEdge(ctx context.Context, errorMsg, lastOutput, ag
 // trusted to if it did (ADR-0035: an agent never authors its own classification).
 func (a *Agent) ingestNegativeEdgeForPlan(ctx context.Context, errorMsg, lastOutput, agentID, planID, experienceID string) error {
 	text := fmt.Sprintf("FAILURE: %s\nLAST OUTPUT: %s", errorMsg, lastOutput)
-	docID := fmt.Sprintf("neg-edge-%d", time.Now().UnixNano())
 	doc := &domain.Document{
-		ID:                 docID,
+		ID:                 negativeEdgeID(planID, agentID, text),
 		DocumentType:       domain.DocTypeNegativeEdge,
 		Text:               text,
 		ActivationStrength: 0.1,
@@ -485,6 +486,20 @@ func (a *Agent) ingestNegativeEdgeForPlan(ctx context.Context, errorMsg, lastOut
 		doc.Metadata["plan_id"] = planID
 	}
 	return a.Manager.Save(ctx, doc)
+}
+
+// negativeEdgeID derives a failure record's id from its natural key — the plan it
+// belongs to (empty for an unparented report), the reporting agent and the rendered
+// record text — never from a clock (AGENTS.md §2.6). A retried RecordPlanOutcome or a
+// re-delivered failure report therefore upserts the same row instead of writing a
+// duplicate that the WorkspaceStage negatives lane would then read twice
+// (T-20261113-memory-agent-mints-clock-derived-ids-for). Two DIFFERENT failures of one
+// plan render different text and keep two rows. The "neg-edge-" prefix of the old
+// clock-derived ids is kept; nothing parses the suffix, and rows already stored under
+// the old ids are left as they are.
+func negativeEdgeID(planID, agentID, text string) string {
+	h := sha256.Sum256([]byte(planID + "\x00" + agentID + "\x00" + text))
+	return "neg-edge-" + hex.EncodeToString(h[:16])
 }
 
 // PoisonMemory marks a specific memory as "Poisoned" and adds a correction.

@@ -451,7 +451,7 @@ func (h *AddressedHub) raise(ctx context.Context, req ApprovalRequest, async boo
 			}
 			h.logger.Info("approvals: pre-approved by standing approval", "event", "approval_standing_used",
 				"approval", it.ID, "standing", s.ID, "class", it.ActionClass, "resource", it.Resource, "scope", it.Scope)
-			h.publishResolved(it)
+			h.publishResolved(ctx, it)
 			if async {
 				h.runHandler(ctx, it)
 			}
@@ -546,7 +546,7 @@ func (h *AddressedHub) failClosed(ctx context.Context, it ApprovalItem, state Ap
 	}
 	h.logger.Warn("approvals: request failed closed", "event", "approval_fail_closed",
 		"approval", it.ID, "state", string(state), "class", it.ActionClass, "detail", detail)
-	h.publishResolved(it)
+	h.publishResolved(ctx, it)
 	return it, decisionOf(it), true, nil
 }
 
@@ -679,7 +679,7 @@ func (h *AddressedHub) finish(ctx context.Context, it ApprovalItem) {
 		default:
 		}
 	}
-	h.publishResolved(it)
+	h.publishResolved(ctx, it)
 }
 
 // ── answering ───────────────────────────────────────────────────────────────
@@ -731,7 +731,7 @@ func (h *AddressedHub) Answer(ctx context.Context, id string, ans ApprovalAnswer
 			h.answerMu.Unlock()
 			return it, fmt.Errorf("%w: %s is never self-approvable, so its standing approval needs a non-self approver", ErrStandingNotAllowed, it.ActionClass)
 		}
-		standing = h.standingFor(it, ans)
+		standing = h.standingFor(ctx, it, ans)
 	}
 	it.State = ApprovalDenied
 	if ans.Approved {
@@ -782,13 +782,23 @@ func (h *AddressedHub) runHandler(ctx context.Context, it ApprovalItem) {
 	if err := fn(context.WithoutCancel(ctx), it); err != nil {
 		h.logger.Warn("approvals: approved item's effect failed", "approval", it.ID, "kind", it.Kind, "err", err)
 		it.Detail = "approved, but applying it failed: " + err.Error()
-		_ = h.store.PutApproval(context.WithoutCancel(ctx), it)
+		// The Detail is the operator's only sign that the approved effect did
+		// not apply; losing it silently would leave the item reading "approved"
+		// (AGENTS.md §3.2), so a failed write is logged with the item id.
+		if perr := h.store.PutApproval(context.WithoutCancel(ctx), it); perr != nil {
+			h.logger.Warn("approvals: failed-effect detail not recorded", "event", "approval_detail_lost",
+				"approval", it.ID, "kind", it.Kind, "err", perr)
+		}
 	}
 }
 
-func (h *AddressedHub) standingFor(it ApprovalItem, ans ApprovalAnswer) *StandingApproval {
+func (h *AddressedHub) standingFor(ctx context.Context, it ApprovalItem, ans ApprovalAnswer) *StandingApproval {
 	now := h.now()
-	route, _ := h.Policy().Route(context.Background(), it)
+	// The answerer's ctx (AGENTS.md §2.7): a policy that decorates the base
+	// (premium hierarchy) sees the request's values and deadline. A routing
+	// error leaves the zero route, i.e. no policy cap beyond the answer's TTL —
+	// the same outcome as before; Raise already routed this item successfully.
+	route, _ := h.Policy().Route(ctx, it)
 	ttl := ans.StandingTTL
 	if route.StandingMaxTTL > 0 && (ttl <= 0 || ttl > route.StandingMaxTTL) {
 		ttl = route.StandingMaxTTL
@@ -1089,7 +1099,7 @@ func (h *AddressedHub) publishRaised(ctx context.Context, it ApprovalItem) {
 	}
 }
 
-func (h *AddressedHub) publishResolved(it ApprovalItem) {
+func (h *AddressedHub) publishResolved(ctx context.Context, it ApprovalItem) {
 	h.mu.Lock()
 	bus := h.bus
 	h.mu.Unlock()
@@ -1104,7 +1114,9 @@ func (h *AddressedHub) publishResolved(it ApprovalItem) {
 			Detail:         it.Detail,
 		})
 	}
-	ctx := context.Background()
+	// Delivery to subscribers must not stop because the resolving request was
+	// cancelled, but it keeps that request's values (AGENTS.md §2.7).
+	ctx = context.WithoutCancel(ctx)
 	for _, s := range h.snapshotSubs() {
 		if !s.spec.Resolutions || !kindWanted(s.spec, it.Kind) {
 			continue

@@ -266,15 +266,6 @@ func (l *LocalAccounts) Resolve(ctx context.Context, token string) (domain.Ident
 	return id, nil
 }
 
-// Owns reports whether token is a live session this backend issued (the chain
-// uses it to route Revoke).
-func (l *LocalAccounts) Owns(token string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	_, ok := l.sessions[token]
-	return ok
-}
-
 // Revoke implements domain.Authenticator.
 func (l *LocalAccounts) Revoke(_ context.Context, token string) error {
 	l.mu.Lock()

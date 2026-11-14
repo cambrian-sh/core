@@ -2,6 +2,8 @@ package network
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,17 +38,52 @@ import (
 	"google.golang.org/grpc"
 )
 
+// maxInFlightNeuralTraces bounds the trace writes running at once. A trace write
+// is best-effort and happens on the hot path of every agent model call; one
+// unbounded goroutine per call turned a slow store into unbounded goroutine
+// growth (AGENTS.md §3.3). Past the bound a trace is dropped with a WARN.
+const maxInFlightNeuralTraces = 64
+
+// neuralTraceSlots is the semaphore behind maxInFlightNeuralTraces.
+var neuralTraceSlots = make(chan struct{}, maxInFlightNeuralTraces)
+
+// neuralTraceDocID is the trace row's id, derived from its natural key (the
+// lease, or the run/step/heal attempt) plus a hash of its content — never from a
+// clock or a random source (AGENTS.md §2.6). The content hash keeps two different
+// exchanges under one lease from overwriting each other (the id used to be
+// `trace-<lease>`, so only a lease's last model call survived); a retried write
+// of the same trace lands on the same row instead of duplicating it.
+func neuralTraceDocID(traceID, trace string) string {
+	sum := sha256.Sum256([]byte(trace))
+	return fmt.Sprintf("trace-%s-%s", traceID, hex.EncodeToString(sum[:8]))
+}
+
 // storeNeuralTrace persists an agent thought trace asynchronously to the vector
 // store. No-op when vs is nil or trace is empty.
+//
+// OPEN (T-20261113-agent-neural-traces-full-prompt-response-are, owner decision):
+// whether traces are MEMORY — then they belong on MemoryStack.WriteStore with the
+// classification of the context that fed the prompt — or TELEMETRY — then they
+// belong in the run ledger / trace sink and this function goes. Until that is
+// decided the row is written through the store the kernel hands the server
+// (internal/kernel/provider.go), unclassified.
 func storeNeuralTrace(ctx context.Context, vs domain.VectorStore, trace, traceID, planID string, stepIndex, healAttempt int, agentID string) {
 	if vs == nil || trace == "" {
 		return
 	}
+	select {
+	case neuralTraceSlots <- struct{}{}:
+	default:
+		slog.Warn("neural trace dropped: too many trace writes in flight",
+			"limit", maxInFlightNeuralTraces, "trace_id", traceID, "step", stepIndex)
+		return
+	}
 	go func() {
+		defer func() { <-neuralTraceSlots }()
 		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		doc := &domain.Document{
-			ID:           fmt.Sprintf("trace-%s", traceID),
+			ID:           neuralTraceDocID(traceID, trace),
 			DocumentType: domain.DocTypeNeuralTrace,
 			Text:         trace,
 			Metadata: map[string]interface{}{
@@ -409,7 +446,7 @@ func NewServer(
 	memorySearcher domain.MemorySearcher,
 	hippocampus domain.ProceduralMemory,
 	enqVerification executer.EnqueueVerification,
-	auctioneer domain.StepDispatcher,
+	dispatcher domain.StepDispatcher,
 	watcher *supwatcher.Watcher,
 	sessionMgr *session.SessionManager,
 	workspaceStage domain.WorkspaceStage,
@@ -420,7 +457,7 @@ func NewServer(
 	s := &Server{
 		Planner:             planner,
 		Manager:             manager,
-		Dispatcher:          auctioneer,
+		Dispatcher:          dispatcher,
 		MemoryAgent:         memoryAgent,
 		ExecCfg:             execCfg,
 		VectorStore:         vectorStore,
@@ -997,7 +1034,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 
 		// ADR-0131 D3: once the session is at its spend ceiling no further step is
 		// dispatched — the agent would only meet the same refusal at its first
-		// generate, after an auction and a seed recall it cannot use.
+		// generate, after dispatch and a seed recall it cannot use.
 		if err := s.SpendMeter.AdmitSession(sessionID, string(domain.PurposeAgentStep), 0); err != nil {
 			return nil, err
 		}
@@ -1101,7 +1138,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 		// Barrier, which since ADR-0049 D3 only logs.
 		healingOccurred := false
 
-		// runnerUps and winningAgentID are captured from the auction so that the
+		// runnerUps and winningAgentID are captured from dispatch so that the
 		// fallback loop can use runner-ups when SelfHealer exhausts.
 		var runnerUps []domain.ScoredCandidate
 		winningAgentID := ""
@@ -1110,7 +1147,7 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 			if h.Context["_heal_attempt"] != "" {
 				healingOccurred = true
 			}
-			auctionTask := &domain.DispatchTask{
+			dispatchTask := &domain.DispatchTask{
 				ID:          fmt.Sprintf("task-%d", i),
 				Description: step.Query,
 				Context:     fmt.Sprintf("Subject: %s", plan.Subject),
@@ -1119,27 +1156,26 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 				// ceiling). A hardcoded `now + 20 s` here was read by nothing
 				// (T-20261105-slow-model-reliability-hardcoded-20-s).
 			}
-			// ROUTE-03: thread the step's declared capabilities into the
-			// auction ONLY under the capability_contract arm, so the control
+			// ROUTE-03: thread the step's declared capabilities into
+			// dispatch ONLY under the capability_contract arm, so the control
 			// arm leaves RequiredCapabilities empty (byte-identical L1).
 			if s.ExecCfg.Routing.CapabilityContract {
-				auctionTask.RequiredCapabilities = step.RequiredCapabilities
+				dispatchTask.RequiredCapabilities = step.RequiredCapabilities
 			}
 			// Agent pin: carried unconditionally (the flag is read at the gate, so
 			// one place decides whether a pin is honoured). Empty PreferredAgent is
 			// the overwhelmingly common case and changes nothing downstream.
-			auctionTask.PreferredAgent = step.PreferredAgent
-			auctionTask.AgentPin = step.AgentPin
+			dispatchTask.PreferredAgent = step.PreferredAgent
+			dispatchTask.AgentPin = step.AgentPin
 			// Effect-checked dispatch: carried unconditionally (it is a fail-closed
 			// eligibility gate, not an A/B arm). nil stays nil — "declared nothing"
 			// (a legacy plan, logged unverified) differs from an empty "needs none".
-			auctionTask.RequiredEffects = step.RequiredEffects
+			dispatchTask.RequiredEffects = step.RequiredEffects
 			// ADR-0100 D4: carry the step's budget + verification flag so dispatch
-			// can pick its per-step policy. The auction ignores both, so this is
-			// inert on that arm.
-			auctionTask.MaxEnergy = step.MaxEnergy
-			auctionTask.CheckpointAfter = step.CheckpointAfter
-			result, err := s.Dispatcher.Execute(ctx, auctionTask, h)
+			// can pick its per-step policy.
+			dispatchTask.MaxEnergy = step.MaxEnergy
+			dispatchTask.CheckpointAfter = step.CheckpointAfter
+			result, err := s.Dispatcher.Execute(ctx, dispatchTask, h)
 			if err != nil {
 				if result != nil {
 					runnerUps = result.RunnerUps
@@ -1197,12 +1233,16 @@ func (s *Server) Execute(ctx context.Context, in *pb.Handoff) (execOut *pb.Hando
 					healAttempt = n
 				}
 			}
-			storeNeuralTrace(ctx, s.VectorStore, trace, newPlanID(), string(executionID), i, healAttempt, resp.FromAgent)
+			// Natural key of this step's trace (AGENTS.md §2.6): the run, the step and
+			// the heal attempt. It was newPlanID() — random, so a retried write
+			// duplicated the row.
+			traceKey := fmt.Sprintf("%s:%d:%d", executionID, i, healAttempt)
+			storeNeuralTrace(ctx, s.VectorStore, trace, traceKey, string(executionID), i, healAttempt, resp.FromAgent)
 		}
 
 		// Confidence tracking
 		confMu.Lock()
-		winConf := 0.0 // default to 0.0 (unknown) until auction completes
+		winConf := 0.0 // default to 0.0 (unknown) until dispatch reports one
 		if cStr := handoff.Context["_winning_confidence"]; cStr != "" {
 			if c, err := strconv.ParseFloat(cStr, 64); err == nil {
 				winConf = c
@@ -1665,9 +1705,9 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 		// ADR-0090: a signal from a registered ingress is a conversational turn, not a
 		// trigger. It is routed to the chat lane and this iteration ends — the planner
 		// never sees it, which is ADR-0080 D4 enforced for external traffic.
-		if s.IngressInbound != nil && dHandoff.FromAgent != "" {
+		if sender := ingressSender(ctx, dHandoff); s.IngressInbound != nil && sender.ID != "" {
 			msg := ingressFields(dHandoff)
-			msg.Sender = domain.AgentPrincipal(dHandoff.FromAgent)
+			msg.Sender = sender
 			err := s.IngressInbound.Accept(ctx, msg)
 			if err == nil {
 				continue
@@ -1677,7 +1717,7 @@ func (s *Server) SignalStream(stream grpc.BidiStreamingServer[pb.Handoff, pb.Sym
 				// unopenable conversation. Dropping it silently would make a namespace
 				// misconfiguration look like the bot simply not answering.
 				slog.Warn("ADR-0090: inbound ingress message refused",
-					"ingress", dHandoff.FromAgent, "err", err)
+					"ingress", sender.ID, "err", err)
 				continue
 			}
 			// ErrNotAnIngress: an ordinary agent signal, so fall through untouched.
@@ -1964,6 +2004,39 @@ func (l *looseString) UnmarshalJSON(b []byte) error {
 	// round a 64-bit user id into a different person's.
 	*l = looseString(strings.TrimSpace(string(b)))
 	return nil
+}
+
+// ingressSender is WHO sent an ingress signal: the principal the agent-plane
+// interceptor authenticated for this stream (ADR-0130 D1), never the handoff's
+// FromAgent. FromAgent is a field of the received message, so trusting it let
+// any credentialed agent name a registered ingress (a Telegram daemon) and have
+// its message admitted — and run — as a person bound to that ingress
+// (ADR-0090 D2 / INV-5; T-20261113-ingress-admission-trusts-the-handoff-s).
+//
+// FromAgent is consulted only when the stream carries NO principal. That
+// happens only under the ADR-0130 D2 loopback waiver with no x-agent-id header
+// (a strict plane refuses such a stream before it gets here), where any local
+// caller may already assert any agent id — so the fallback grants nothing the
+// waiver does not. A FromAgent that disagrees with an authenticated principal
+// is logged and ignored: the authenticated agent is the sender.
+func ingressSender(ctx context.Context, h *domain.Handoff) domain.PrincipalRef {
+	p := domain.PrincipalFromContext(ctx)
+	if p.ID == "" {
+		if h == nil || h.FromAgent == "" {
+			return domain.PrincipalRef{}
+		}
+		return domain.AgentPrincipal(h.FromAgent)
+	}
+	if p.Kind != domain.PrincipalAgent {
+		// SignalStream is an agent-plane method; any other principal kind here is
+		// not an agent and cannot be an ingress daemon.
+		return domain.PrincipalRef{}
+	}
+	if h != nil && h.FromAgent != "" && h.FromAgent != p.ID {
+		slog.Warn("ADR-0090: signal names a sender other than the authenticated agent; using the authenticated agent",
+			"authenticated", p.ID, "from_agent", h.FromAgent)
+	}
+	return p
 }
 
 // ingressFields pulls the sender and the text out of an ingress signal.

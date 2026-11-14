@@ -414,9 +414,12 @@ func (s *setupState) stepMigrate(ctx context.Context) {
 	// On success RunMigrate prints "migrations applied ✓" completing the line.
 }
 
-// stepOperator seeds the operator-console login (ADR-0047 D13). The kernel's
-// only credential source is CAMBRIAN_OPERATOR_USER/PASSWORD at boot — with
-// neither set, no login can ever succeed — so setup writes them into
+// stepOperator seeds the operator-console login (ADR-0047 D13). On a fresh
+// install the first login is the env bootstrap operator,
+// CAMBRIAN_OPERATOR_USER/PASSWORD, which the kernel re-asserts as an ADR-0142
+// local account on every boot (buildAuthenticator); further persons are local
+// accounts or an OIDC issuer, which a fresh install has neither of — so with the
+// pair unset no login can succeed. Setup therefore writes them into
 // <prefix>/.env, which app.Run loads from the resolved base dir before
 // anything reads env. Secure-by-default is preserved: there is NO fixed
 // default password — a non-interactive run generates a random one and prints

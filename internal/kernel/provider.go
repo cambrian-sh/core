@@ -40,12 +40,18 @@ func ProvideServer(
 		meta.Manager,
 		mem.Agent,
 		cfg,
+		// VecDB (raw tier 0, AGENTS.md §2.2): the server's only use of this store is
+		// writing agent neural traces (network.storeNeuralTrace). NO ADR permits it:
+		// whether traces are memory (→ mem.WriteStore, classified like their
+		// context) or telemetry (→ the run ledger / trace sink, store removed) is an
+		// open owner decision on T-20261113-agent-neural-traces-full-prompt-response-are.
+		// Do not add any other use of this store to the server.
 		mem.VecDB,
 		mem.QueryService,
 		mem.Hippocampus,
 		meta.EnqueueVerification(),
-		// ADR-0100: the DAG executor selects through meta.Selector (dispatch by
-		// default, auction under bid_round). Privileged organs keep calling
+		// ADR-0100: the DAG executor selects through meta.Selector (the
+		// capability-typed Dispatcher; the auction is deleted). Privileged organs keep calling
 		// meta.AgentTransport directly — they bypass selection by construction.
 		meta.Selector,
 		watcher,

@@ -83,7 +83,7 @@ func TestSharedCredentials_RoutedThroughTheOrgAccountProvider(t *testing.T) {
 	t.Cleanup(func() { mcp.SetSecretResolver(nil); mcp.SetOrgCredentials(nil) })
 
 	// OSS first: the store, as before.
-	if err := writeSharedMCPCredential(store, "gh", mcp.TokenSecretName("gh"), "store-token"); err != nil {
+	if err := writeSharedMCPCredential(context.Background(), store, "gh", mcp.TokenSecretName("gh"), "store-token"); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _ := sharedMCPCredentialStatus(store, "gh", mcp.TokenSecretName("gh")); !ok {
@@ -123,7 +123,7 @@ func TestSharedCredentials_RoutedThroughTheOrgAccountProvider(t *testing.T) {
 	}
 
 	// A legacy write now rotates the account; the store entry is not touched.
-	if err := writeSharedMCPCredential(store, "gh", mcp.TokenSecretName("gh"), "account-token"); err != nil {
+	if err := writeSharedMCPCredential(context.Background(), store, "gh", mcp.TokenSecretName("gh"), "account-token"); err != nil {
 		t.Fatal(err)
 	}
 	if fake.slots["gh/token"] != "account-token" {
@@ -133,14 +133,14 @@ func TestSharedCredentials_RoutedThroughTheOrgAccountProvider(t *testing.T) {
 		t.Fatalf("the legacy copy is left for rollback, got %q", v)
 	}
 	// The env slot writer.
-	if err := writeSharedMCPCredential(store, "gh", mcp.EnvSecretName("gh", "GH_PAT"), "pat"); err != nil {
+	if err := writeSharedMCPCredential(context.Background(), store, "gh", mcp.EnvSecretName("gh", "GH_PAT"), "pat"); err != nil {
 		t.Fatal(err)
 	}
 	if fake.slots["gh/env:GH_PAT"] != "pat" {
 		t.Fatalf("env slot: %v", fake.slots)
 	}
 	// Clear unbinds AND drops the legacy copy.
-	if err := clearSharedMCPCredential(store, "gh", mcp.TokenSecretName("gh")); err != nil {
+	if err := clearSharedMCPCredential(context.Background(), store, "gh", mcp.TokenSecretName("gh")); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := fake.slots["gh/token"]; ok {
@@ -162,4 +162,40 @@ func attachNamedSecretStoreForTest(t *testing.T, store *storage.BoltConfigStore)
 		namedSecretSrc, namedSecretAdm = prevSrc, prevAdm
 		namedSecretMu.Unlock()
 	})
+}
+
+type sharedCredCtxKey struct{}
+
+// ctxRecordingOrgAccounts records the sharedCredCtxKey value each org write sees.
+type ctxRecordingOrgAccounts struct {
+	fakeOrgAccounts
+	seen []any
+}
+
+func (f *ctxRecordingOrgAccounts) SetOrgCredential(ctx context.Context, r domain.CredentialRequest, v, by string) error {
+	f.seen = append(f.seen, ctx.Value(sharedCredCtxKey{}))
+	return f.fakeOrgAccounts.SetOrgCredential(ctx, r, v, by)
+}
+
+func (f *ctxRecordingOrgAccounts) ClearOrgCredential(ctx context.Context, r domain.CredentialRequest, by string) (bool, error) {
+	f.seen = append(f.seen, ctx.Value(sharedCredCtxKey{}))
+	return f.fakeOrgAccounts.ClearOrgCredential(ctx, r, by)
+}
+
+// ENG-1175: the shared-credential writes run under the operator RPC's ctx, not
+// context.Background(), so the provider sees its deadline and values.
+func TestSharedCredentials_WritesCarryTheCallerContext(t *testing.T) {
+	fake := &ctxRecordingOrgAccounts{fakeOrgAccounts: fakeOrgAccounts{slots: map[string]string{}}}
+	mcp.SetOrgCredentials(fake)
+	t.Cleanup(func() { mcp.SetOrgCredentials(nil) })
+	ctx := context.WithValue(context.Background(), sharedCredCtxKey{}, "rpc")
+	if err := writeSharedMCPCredential(ctx, nil, "gh", mcp.TokenSecretName("gh"), "tok"); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearSharedMCPCredential(ctx, nil, "gh", mcp.TokenSecretName("gh")); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.seen) != 2 || fake.seen[0] != "rpc" || fake.seen[1] != "rpc" {
+		t.Fatalf("provider saw ctx values %v, want the RPC's on both writes", fake.seen)
+	}
 }

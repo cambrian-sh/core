@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"math"
 	"path/filepath"
 	"testing"
@@ -725,7 +726,7 @@ func TestRemoveMCPServer_DropsTheEntryAndDetachesLive(t *testing.T) {
 // never erroring, while the operator believes the integration is configured.
 func TestSetMCPServerToken_RejectsAnUnknownServer(t *testing.T) {
 	src := mcpSource(t, nil)
-	out, err := src.SetMCPServerToken("ghost", "tok")
+	out, err := src.SetMCPServerToken(context.Background(), "ghost", "tok")
 	if err != nil {
 		t.Fatalf("SetMCPServerToken: %v", err)
 	}
@@ -741,7 +742,7 @@ func TestSetMCPServerToken_StoresAndBounces(t *testing.T) {
 	bounced := ""
 	src.bounceMCPServer = func(id string) bool { bounced = id; return true }
 
-	out, err := src.SetMCPServerToken("files", "tok-1234")
+	out, err := src.SetMCPServerToken(context.Background(), "files", "tok-1234")
 	if err != nil {
 		t.Fatalf("SetMCPServerToken: %v", err)
 	}
@@ -760,7 +761,7 @@ func TestSetMCPServerToken_ShadowedByTheDeclaredEnvVar(t *testing.T) {
 	src := mcpSource(t, nil)
 	t.Setenv("FILES_TOKEN", "old-token-from-env")
 
-	out, err := src.SetMCPServerToken("files", "new-token")
+	out, err := src.SetMCPServerToken(context.Background(), "files", "new-token")
 	if err != nil {
 		t.Fatalf("SetMCPServerToken: %v", err)
 	}

@@ -93,7 +93,11 @@ type PlanConfig struct {
 	// production. Default false.
 	PlanPreviewOnly bool `json:"plan_preview_only"`
 
-	// MaxRecursionDepth is the global limit for nested sub-auctions (Recursive Bidding).
+	// MaxRecursionDepth is INERT: no code reads it (inert_keys.go). It limited nested
+	// sub-auctions (recursive bidding), which ADR-0100 retired with the auction; the
+	// key still loads so existing files keep working, and the kernel warns when one
+	// sets it. Nested delegation depth today is execution.lane.subtasks (ADR-0150 D6).
+	// Wiring or retiring it is open: T-20261113-execution-plan-max-recursion-depth-is-validated.
 	// Default: 3.
 	MaxRecursionDepth int `json:"max_recursion_depth"`
 
@@ -417,7 +421,11 @@ type VerificationConfig struct {
 	CrossVerifyRate float64 `json:"cross_verify_rate"`
 }
 
-// RoutingConfig — How a step reaches an agent: auction vs deterministic route, bidding, merit, calibration and the EFE selector.
+// RoutingConfig — How a step reaches an agent on the planner lane: dispatch
+// (capability contract, agent pinning, exploration, dispatch_* and yield_*),
+// per-capability merit and the learned scorer. The auction, bidding, bid calibration
+// and the EFE selector it once also configured were removed (ADR-0100); their keys
+// are retired or inert (inert_keys.go).
 //
 // Split out of the former 198-field flat ExecutionConfig (config schema v2).
 // Field names, types and json tags are unchanged; only the nesting is new, so
@@ -504,8 +512,11 @@ type RoutingConfig struct {
 	// Empty ⇒ no model wired (the arm stays inert even if the flag is on).
 	LearnedScorerModelPath string `json:"learned_scorer_model_path,omitempty"`
 
-	// ProposalTimeoutMs is the per-agent RPC timeout (ms) when calling RequestProposal.
-	// Default: 2000.
+	// ProposalTimeoutMs is INERT: no code reads it (inert_keys.go). It was the
+	// per-agent timeout of the auction's RequestProposal bid round, removed by
+	// ADR-0100 (its last kernel caller, the interview, was deleted 2026-11-05). The key
+	// still loads and the kernel warns when one sets it; retiring it is open:
+	// T-20261105-execution-routing-proposal-timeout-ms-is-parsed. Default: 2000.
 	ProposalTimeoutMs int `json:"proposal_timeout_ms"`
 
 	// MOVED 2026-11-13 to execution.lane (ADR-0150 D10): `bypass_selection` (the
@@ -1905,7 +1916,8 @@ type ExecutionConfig struct {
 	// Verifier pool sizing, trust-score weighting and cross-verification sampling.
 	Verification VerificationConfig `json:"verification"`
 
-	// How a step reaches an agent: auction vs deterministic route, bidding, merit, calibration and the EFE selector.
+	// How a step reaches an agent on the planner lane: dispatch, merit and the learned
+	// scorer (see RoutingConfig).
 	Routing RoutingConfig `json:"routing"`
 
 	// Capability vocabulary and resolution.
@@ -2037,14 +2049,28 @@ type HooksConfig struct {
 	GuardedArguments []GuardedArgumentConfig `json:"guarded_arguments,omitempty"`
 }
 
+// isUnfiredHookPoint reports whether p is a declared hook point that fires nowhere
+// yet (domain.UnfiredHookPoints), so the load error can say why it is refused.
+func isUnfiredHookPoint(p string) bool {
+	for _, q := range domain.UnfiredHookPoints {
+		if domain.HookPoint(p) == q {
+			return true
+		}
+	}
+	return false
+}
+
 // HookConfig is one declared hook.
 type HookConfig struct {
 	// Name is unique across all hooks (config and plugin); it is logged on every call.
 	Name string `json:"name"`
 	// Kind: deny_args_regex | require_approval | redact_output | command.
 	Kind string `json:"kind"`
-	// Points the hook attaches to (pre_tool, post_tool, pre_model, post_model,
-	// pre_compact, post_compact, run_start, run_end).
+	// Points the hook attaches to: pre_tool, post_tool, pre_model, post_model
+	// (domain.AllHookPoints, the points that fire). pre_compact, post_compact,
+	// run_start and run_end are declared but fire nowhere yet
+	// (domain.UnfiredHookPoints), so a hook naming one is refused at load rather
+	// than loading and never running (T-20261113-four-declared-hook-points-pre-compact-post).
 	// Empty ⇒ the kind's natural point: deny_args_regex and require_approval →
 	// pre_tool, redact_output → post_tool. A command hook must name its points.
 	Points []string `json:"points,omitempty"`
@@ -2165,7 +2191,12 @@ func (h HooksConfig) validate() []string {
 		seen[e.Name] = true
 		for _, p := range e.Points {
 			if !domain.HookPoint(p).Valid() {
-				errs = append(errs, fmt.Sprintf("%s.points: unknown point %q", at, p))
+				if isUnfiredHookPoint(p) {
+					errs = append(errs, fmt.Sprintf(
+						"%s.points: point %q is declared but not fired yet; a hook on it would never run", at, p))
+				} else {
+					errs = append(errs, fmt.Sprintf("%s.points: unknown point %q", at, p))
+				}
 			}
 		}
 		switch e.OnFailure {
@@ -2527,6 +2558,10 @@ type Config struct {
 	// models — today its timezone, the calendar "today" is computed in. See
 	// organisation.go.
 	Organisation OrganisationConfig `json:"organisation,omitempty"`
+	// Runtime is process-level diagnostics and limits (Go soft memory limit, an
+	// opt-in loopback pprof listener, a periodic memory log line). All off by
+	// default. See runtime.go.
+	Runtime RuntimeConfig `json:"runtime"`
 }
 
 // MCPEndpointConfig configures the inbound Cambrian MCP endpoint (ADR-0126 D3),
@@ -3438,34 +3473,6 @@ func DefaultConfig() *Config {
 	return cfg
 }
 
-// LoadConfig reads configuration from a 12-layer pipeline (lowest → highest
-// priority) and returns the merged *Config. Layer 11 is the ADR-0101 embedded
-// store, which is where durable operator writes land; it was added after this
-// comment first said 11, so the count is stated here to match the numbered
-// layers below rather than the history. All secondary paths
-// (tuning.json, tuning.local.json, config.local.json, embedder.json,
-// embedder.local.json, providers.json, providers.local.json, mcp.json) are
-// derived relative to the directory containing the primary `path` argument —
-// NOT relative to the process CWD — so tests can use t.TempDir() paths
-// cleanly and the layering is independent of where the process was launched
-// from.
-//
-// Pipeline:
-//  1. Go defaults (DefaultConfig(), full hyperparameter set)
-//  2. configs/tuning.json (committed, curated power-user starter — 13 fields)
-//  3. configs/tuning.local.json (gitignored, per-machine tuning override)
-//  4. configs/config.json (the `path` argument, user-facing infrastructure)
-//  5. configs/config.local.json (gitignored, per-machine infra override)
-//  6. configs/embedder.json (gitignored, embedder model config)
-//  7. configs/embedder.local.json (gitignored, per-machine embedder override)
-//  8. configs/providers.json (gitignored, LLM provider list)
-//  9. configs/providers.local.json (gitignored, per-machine LLM provider override)
-//
-// 10. configs/mcp.json (gitignored, MCP server definitions; absent ⇒ no MCP)
-// 11. CAMBRIAN_* env vars (highest priority, full override of any field)
-//
-// ADR-0024 (amended). The CAMBRIAN_* env-var convention (`__` separator,
-// ToLower) is unchanged and now also applies to fields in every layer.
 // ResolveBaseDir returns the directory the kernel should resolve its config bundle
 // (configs/ + .env) against, so boot works regardless of the process working
 // directory. This matters because a benchmark supervisor (or systemd, or an IDE)
@@ -3500,6 +3507,37 @@ func ResolveBaseDir() string {
 	return "."
 }
 
+// LoadConfig reads configuration from a 12-layer pipeline (lowest → highest
+// priority) and returns the merged *Config. Layer 11 is the ADR-0101 embedded
+// store, which is where durable operator writes land; it was added after this
+// comment first said 11, so the count is stated here to match the numbered
+// layers below rather than the history. All secondary paths
+// (tuning.json, tuning.local.json, config.local.json, embedder.json,
+// embedder.local.json, providers.json, providers.local.json, mcp.json) are
+// derived relative to the directory containing the primary `path` argument —
+// NOT relative to the process CWD — so tests can use t.TempDir() paths
+// cleanly and the layering is independent of where the process was launched
+// from.
+//
+// Pipeline:
+//  1. Go defaults (DefaultConfig(), full hyperparameter set)
+//  2. configs/tuning.json (committed, curated power-user starter — deliberately
+//     empty since 2026-08-11, see its _comment)
+//  3. configs/tuning.local.json (gitignored, per-machine tuning override)
+//  4. configs/config.json (the `path` argument, user-facing infrastructure)
+//  5. configs/config.local.json (gitignored, per-machine infra override)
+//  6. configs/embedder.json (gitignored, embedder model config)
+//  7. configs/embedder.local.json (gitignored, per-machine embedder override)
+//  8. configs/providers.json (gitignored, LLM provider list)
+//  9. configs/providers.local.json (gitignored, per-machine LLM provider override)
+//
+// 10. configs/mcp.json (gitignored, MCP server definitions; absent ⇒ no MCP)
+// 11. the ADR-0101 embedded config store (durable operator writes; LoadConfig
+// passes no store, LoadConfigWithStore does)
+// 12. CAMBRIAN_* env vars (highest priority, full override of any field)
+//
+// ADR-0024 (amended). The CAMBRIAN_* env-var convention (`__` separator,
+// ToLower) is unchanged and now also applies to fields in every layer.
 func LoadConfig(path string) (*Config, error) {
 	cfg, _, err := LoadConfigWithStore(path, nil)
 	return cfg, err
@@ -3518,10 +3556,15 @@ func LoadConfig(path string) (*Config, error) {
 // that re-applied precedence separately could, and a provenance report that
 // disagrees with the running config is worse than none.
 func LoadConfigWithStore(path string, store Store) (*Config, Provenance, error) {
-	cfg, prov, err := loadMerged(path, store)
+	cfg, prov, unused, err := loadMergedReport(path, store)
 	if err != nil {
 		return nil, nil, err
 	}
+	// Unknown, misspelled or retired keys keep loading (never an error), but are
+	// named once at load so an operator learns the setting has no effect.
+	warnUnknownConfigKeys(unknownConfigKeys(unused, prov))
+	// Declared-but-unread keys (inert_keys.go) are named when a layer sets them.
+	warnInertConfigKeys(prov)
 	// Validation runs ONCE, here: after every layer (defaults, files, store, env)
 	// has merged and after the per-layer v1→v2 migration, so each rule judges the
 	// value the kernel will actually run with. Every block's checks — required
@@ -3542,6 +3585,14 @@ func LoadConfigWithStore(path string, store Store) (*Config, Provenance, error) 
 // LoadConfigWithStore validates its result; ValidateOverride uses it to judge a
 // pending runtime write against the same merge.
 func loadMerged(path string, store Store) (*Config, Provenance, error) {
+	cfg, prov, _, err := loadMergedReport(path, store)
+	return cfg, prov, err
+}
+
+// loadMergedReport is loadMerged that also returns the keys the decode left
+// unconsumed (mapstructure Metadata.Unused), for the unknown-key warning that
+// LoadConfigWithStore logs (unknown_keys.go).
+func loadMergedReport(path string, store Store) (*Config, Provenance, []string, error) {
 	// All secondary paths are derived from the directory of the primary `path`
 	// (FileLayers), not from the process CWD. This keeps the layering
 	// deterministic across invocation contexts (tests, systemd, dev shells).
@@ -3553,10 +3604,10 @@ func loadMerged(path string, store Store) (*Config, Provenance, error) {
 	// tags on every field continue to drive the merge.
 	defaultBytes, err := stdjson.Marshal(DefaultConfig())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := k.Load(rawbytes.Provider(defaultBytes), kjson.Parser()); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	t.claim(scratchBytes(defaultBytes), SourceDefault)
 
@@ -3668,6 +3719,9 @@ func loadMerged(path string, store Store) (*Config, Provenance, error) {
 	t.claimEnv(envScratch)
 
 	var cfg Config
+	// Metadata collects the keys no field consumed; they are reported, never
+	// rejected (unknown_keys.go).
+	var md mapstructure.Metadata
 	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{
 		Tag: "json",
 		DecoderConfig: &mapstructure.DecoderConfig{
@@ -3676,9 +3730,10 @@ func loadMerged(path string, store Store) (*Config, Provenance, error) {
 			WeaklyTypedInput: true,
 			TagName:          "json",
 			Result:           &cfg,
+			Metadata:         &md,
 		},
 	}); err != nil {
-		return nil, nil, &ConfigError{Field: "unmarshal", Message: err.Error()}
+		return nil, nil, nil, &ConfigError{Field: "unmarshal", Message: err.Error()}
 	}
 
 	// ADR-0101 D9: stored generators merge by id over the file layers' list. An
@@ -3707,7 +3762,7 @@ func loadMerged(path string, store Store) (*Config, Provenance, error) {
 		}
 	}
 
-	return &cfg, t.prov, nil
+	return &cfg, t.prov, md.Unused, nil
 }
 
 // Validate runs every load-time rule over a fully merged Config and returns one
@@ -3735,6 +3790,7 @@ func (c *Config) validationErrors() []string {
 		errs = append(errs, splitConfigError(aerr)...)
 	}
 	errs = append(errs, c.Organisation.validationErrors()...)
+	errs = append(errs, c.Runtime.validationErrors()...)
 	return errs
 }
 

@@ -96,6 +96,16 @@ func (h *healthGenerator) Generate(ctx context.Context, prompt string) (string, 
 	return out, err
 }
 
+// NativeToolsEnabled forwards the inner generator's capability report. Forwarding
+// GenerateWithTools without this would make the wrapper claim tool support on behalf
+// of an inner that has it disabled — over-reporting is as wrong as under-reporting,
+// just in the other direction. domain.SupportsToolCalling also answers false for an
+// inner with no GenerateWithTools at all, which a bare reporter assertion would read
+// as capable (T-20261105-core-health-and-spend-meter-decorators-report).
+func (h *healthGenerator) NativeToolsEnabled() bool {
+	return domain.SupportsToolCalling(h.inner)
+}
+
 // GenerateWithTools forwards native tool-calling through the health wrapper and
 // records the outcome on the breaker, exactly as Generate does.
 //
@@ -104,15 +114,6 @@ func (h *healthGenerator) Generate(ctx context.Context, prompt string) (string, 
 // log. That is the same silent-wiring shape as the EFE task rebuild dropping
 // RequiredCapabilities and base.think() shadowing the tool-round default; both cost a
 // day. Hence a forwarding test per decorator. ADR-0097 D1.
-// NativeToolsEnabled forwards the inner generator's capability report. Forwarding
-// GenerateWithTools without this would make the wrapper claim tool support on behalf
-// of an inner that has it disabled — over-reporting is as wrong as under-reporting,
-// just in the other direction.
-func (h *healthGenerator) NativeToolsEnabled() bool {
-	r, ok := h.inner.(domain.ToolCallingReporter)
-	return !ok || r.NativeToolsEnabled()
-}
-
 func (h *healthGenerator) GenerateWithTools(
 	ctx context.Context, messages []domain.ModelMessage, tools []domain.ToolDefinition,
 ) (domain.ModelTurn, error) {

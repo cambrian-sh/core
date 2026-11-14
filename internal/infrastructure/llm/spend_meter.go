@@ -500,10 +500,10 @@ func (g *meteredGenerator) Generate(ctx context.Context, prompt string) (string,
 	return out, nil
 }
 
-// NativeToolsEnabled forwards the inner generator's capability report.
+// NativeToolsEnabled forwards the inner generator's capability report (see
+// healthGenerator.NativeToolsEnabled).
 func (g *meteredGenerator) NativeToolsEnabled() bool {
-	r, ok := g.inner.(domain.ToolCallingReporter)
-	return !ok || r.NativeToolsEnabled()
+	return domain.SupportsToolCalling(g.inner)
 }
 
 func (g *meteredGenerator) GenerateWithTools(

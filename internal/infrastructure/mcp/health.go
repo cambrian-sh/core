@@ -176,9 +176,9 @@ func (c *Connector) TestServer(ctx context.Context, s ServerConfig, probeTool st
 		rep.UsedLive = true
 		// The live session's secrets are not at hand; resolve them the same way
 		// a connect would, purely for redaction.
-		_, secrets = s.explicitEnv()
+		_, secrets = s.explicitEnv(ctx)
 		if s.AuthType != "" && s.AuthType != "none" {
-			secrets = appendSecret(secrets, tokenFor(s.ID, s.AuthTokenEnv))
+			secrets = appendSecret(secrets, tokenFor(ctx, s.ID, s.AuthTokenEnv))
 		}
 	} else {
 		tmp := newProbeConnector()

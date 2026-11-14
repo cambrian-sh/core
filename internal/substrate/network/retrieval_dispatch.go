@@ -21,7 +21,7 @@ const (
 
 // RetrievalDispatcher implements memory.Planner (AGENTIC_RETRIEVAL_SPEC §2.1) by
 // invoking the privileged retrieval_agent directly via the agent transport (no
-// auction), exactly like the scout dispatcher. The Go loop owns control; this is
+// dispatcher selection), exactly like the scout dispatcher. The Go loop owns control; this is
 // just dispatch + JSON parse.
 //
 // Like the Scout, the retrieval_agent is a CognitiveAgent that makes managed LLM
@@ -30,7 +30,7 @@ const (
 // the normal step path does, and without a token the agent's substrate.generate
 // fails "session not found".
 //
-// FAIL-OPEN: any failure (nil auctioneer, dispatch error, empty/bad response)
+// FAIL-OPEN: any failure (no transport wired, dispatch error, empty/bad response)
 // returns ("", nil) or ("", err); memory.QueryService.planQuery treats both as
 // "use the original query", so recall is never worse than the single pass.
 type RetrievalDispatcher struct {

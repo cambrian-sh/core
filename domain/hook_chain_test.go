@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -225,5 +226,27 @@ func TestNewHookChain_RejectsMisdeclaredHooks(t *testing.T) {
 	var nilChain *HookChain
 	if nilChain.Has(HookPreTool) || nilChain.Run(context.Background(), HookEvent{Point: HookPreTool}).Verdict != HookAllow {
 		t.Error("a nil chain must be an empty chain")
+	}
+}
+
+// T-20261113-four-declared-hook-points-pre-compact-post: a point with no call site
+// is refused at construction, so a safety hook on it fails the boot instead of
+// loading and never running. The points that fire stay valid.
+func TestNewHookChain_RefusesUnfiredPoints(t *testing.T) {
+	t.Parallel()
+	ok := answer(HookResult{})
+	for _, p := range UnfiredHookPoints {
+		if p.Valid() {
+			t.Errorf("%s: Valid() = true for a point that fires nowhere", p)
+		}
+		_, err := NewHookChain([]Hook{funcHook{HookSpec{Name: "audit", Points: []HookPoint{p}}, ok}}, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "not fired yet") {
+			t.Errorf("%s: err = %v, want a not-fired-yet refusal", p, err)
+		}
+	}
+	for _, p := range []HookPoint{HookPreTool, HookPostTool, HookPreModel, HookPostModel} {
+		if !p.Valid() {
+			t.Errorf("%s: a fired point must stay valid", p)
+		}
 	}
 }

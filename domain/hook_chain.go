@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"time"
 )
@@ -57,6 +58,9 @@ func NewHookChain(hooks []Hook, observer HookObserver, log *slog.Logger) (*HookC
 		}
 		for _, p := range s.Points {
 			if !p.Valid() {
+				if slices.Contains(UnfiredHookPoints, p) {
+					return nil, fmt.Errorf("hook %q: point %q is declared but not fired yet; a hook on it would never run", s.Name, p)
+				}
 				return nil, fmt.Errorf("hook %q: unknown point %q", s.Name, p)
 			}
 		}

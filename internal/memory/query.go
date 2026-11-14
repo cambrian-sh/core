@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/cambrian-sh/core/domain"
+	"github.com/cambrian-sh/core/internal/authz"
 )
 
 // Spreader expands a seed result set associatively over the memory graph (ADR-0017
@@ -1714,9 +1715,12 @@ func (q *QueryService) injectQueryEntitySeeds(ctx context.Context, results []dom
 // Search embeds query, searches the vector store (memory docs only), and filters by ACL.
 // callerID is the agent requesting access; documents owned by other agents are excluded.
 func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]domain.SearchResult, error) {
-	// AGENTIC_RETRIEVAL_SPEC: the fact lane runs the agentic loop (plan → retrieve
-	// → decide_continue → iterate) when enabled; otherwise the single pass. Only
-	// the fact lane loops — action and procedure recall stay single-pass.
+	// AGENTIC_RETRIEVAL_SPEC: the mnemonic_fact lane (the DocTypeMnemonicFact recall
+	// lane of ADR-0049 D4 — NOT the ADR-0136 "fact lane" over memory_fact items,
+	// injectFactHits, which runs inside every pass when facts.lane_enabled) runs the
+	// agentic loop (plan → retrieve → decide_continue → iterate) when enabled;
+	// otherwise the single pass. Only the mnemonic_fact lane loops — action and
+	// procedure recall stay single-pass.
 	var (
 		results []domain.SearchResult
 		err     error
@@ -1730,7 +1734,8 @@ func (q *QueryService) Search(ctx context.Context, query, callerID string) ([]do
 		return results, err
 	}
 	// ADR-0118 D5: consult the substrate for the modelled part of the query,
-	// fact lane only, after final assembly. Fails open; never displaces.
+	// mnemonic_fact lane only (independent of facts.lane_enabled), after final
+	// assembly. Fails open; never displaces.
 	return q.appendSubstrateCitations(ctx, query, callerID, results), nil
 }
 
@@ -2237,7 +2242,7 @@ func (q *QueryService) searchByType(ctx context.Context, query, callerID, docTyp
 	if spread && q.spreader != nil && len(filtered) > 0 {
 		filtered = keepInWindow(q.spreadAndRank(ctx, filtered, sid), window)
 	}
-	// ADR-0049 D10: Hebbian reinforcement of the fact lane's co-retrieved set — async,
+	// ADR-0049 D10: Hebbian reinforcement of the mnemonic_fact lane's co-retrieved set — async,
 	// off the read path so recall latency is untouched. Off for the action lane.
 	//
 	// Bounded, not one goroutine per recall (AGENTS.md §3.3): hebInflight is a
@@ -2447,16 +2452,13 @@ func (q *QueryService) spreadAndRank(ctx context.Context, seeds []domain.SearchR
 	// not wired (or the recall missed any doc with entity neighbors), the
 	// reachability map is empty and the term is a no-op.
 	if q.entityIdx != nil && q.assocWeight > 0 && len(out) > 0 {
-		queryVec, _ := seeds[0].Document.Embedding.Vector, struct{}{} // placeholder, overwritten below
-		_ = queryVec
-		// Recover the query vector from the first seed's neighbor graph: the
-		// seeds came in with their original cosine in Document.Metadata
-		// (no — cosine is in SearchResult.Score, not on the doc). The query
-		// vector isn't preserved on the seeds, so we re-embed is too
-		// expensive and the alternative is to re-embed the first seed's
-		// TEXT. We use the seed's text as a proxy: for the working set the
-		// proxy vector is within ~0.05 cosine of the original, which is
-		// well within the β-scaled term's noise floor.
+		// The query vector is not carried on the seeds, and re-embedding the query
+		// here would cost an extra embedder call per recall, so reachability is
+		// computed from the top seed's STORED chunk embedding as a proxy for the
+		// query vector (ComputeReachabilityFromSeedText; despite its name it reads
+		// seeds[0].Document.Embedding, not the text): for the working set the proxy
+		// is within ~0.05 cosine of the original, well inside the β-scaled term's
+		// noise floor.
 		// TODO(entity-routing): pass queryVec through the BFS so reachability uses
 		// the original query embedding, not the seed-text proxy. The
 		// current proxy is correct-enough for β=0.2.
@@ -2668,25 +2670,13 @@ func (q *QueryService) readFilter(ctx context.Context, callerID string) (*domain
 	return a.ReadFilter(ctx, domain.AgentPrincipal(callerID), domain.SurfaceFromContext(ctx))
 }
 
-// docTags extracts a document's classification tags from its metadata, handling
-// both the []string and (JSON round-tripped) []interface{} encodings.
+// docTags extracts a document's classification tags from its metadata. It
+// delegates to authz.DocTags, the decoder the read/write chokepoints check, so
+// retrieval code and enforcement can never disagree about a row's tags (one
+// decoding, AGENTS.md §2.5 / §4.3); this wrapper only adapts the metadata-map
+// call shape the memory lanes use.
 func docTags(meta map[string]interface{}) []string {
-	if meta == nil {
-		return nil
-	}
-	switch v := meta["tags"].(type) {
-	case []string:
-		return v
-	case []interface{}:
-		out := make([]string, 0, len(v))
-		for _, x := range v {
-			if s, ok := x.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
-	}
-	return nil
+	return authz.DocTags(&domain.Document{Metadata: meta})
 }
 
 // isExperientialDoc reports whether a row is EXPERIENCE (something the system observed

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/cambrian-sh/core/domain"
 )
@@ -53,11 +54,21 @@ func OrgCredentials() domain.CredentialSource {
 	return orgCreds
 }
 
-// orgCredential asks the provider for one shared slot. "" when none is bound
-// (or the account was revoked — the server then connects without it and its
-// health shows why).
-func orgCredential(src domain.CredentialSource, serverID, slot string) string {
-	c, err := src.Credential(context.Background(), domain.CredentialRequest{
+// orgCredentialTimeout bounds one ask of the org-credential provider. The
+// provider may refresh an OAuth token over the network, so the bound is
+// generous; without one a hung provider stalled a server connect (and the boot
+// ConnectAll) forever (AGENTS.md §2.7,
+// T-20261113-mcp-credential-source-and-secret-resolver-are).
+const orgCredentialTimeout = 30 * time.Second
+
+// orgCredential asks the provider for one shared slot, under the caller's
+// context (its values and cancellation) bounded by orgCredentialTimeout. ""
+// when none is bound (or the account was revoked, or the ask timed out — the
+// server then connects without it and its health shows why).
+func orgCredential(ctx context.Context, src domain.CredentialSource, serverID, slot string) string {
+	ctx, cancel := context.WithTimeout(ctx, orgCredentialTimeout)
+	defer cancel()
+	c, err := src.Credential(ctx, domain.CredentialRequest{
 		ServerID: serverID, Purpose: domain.CredentialPurposeMCP, Slot: slot,
 	})
 	if err != nil {
@@ -89,7 +100,7 @@ func TokenSecretName(serverID string) string {
 // environment variable when set (a deployment wins), then the org account
 // bound to the server when an account provider is installed (ADR-0141), else
 // the encrypted store (the OSS default).
-func tokenFor(serverID, envVar string) string {
+func tokenFor(ctx context.Context, serverID, envVar string) string {
 	secretsMu.RLock()
 	r, org := secrets, orgCreds
 	secretsMu.RUnlock()
@@ -101,7 +112,7 @@ func tokenFor(serverID, envVar string) string {
 				return v
 			}
 		}
-		return orgCredential(org, serverID, domain.SlotToken)
+		return orgCredential(ctx, org, serverID, domain.SlotToken)
 	}
 	if r != nil && serverID != "" {
 		// Resolve already applies env-then-store, so a set variable still wins.
@@ -128,7 +139,7 @@ func EnvSecretName(serverID, envName string) string {
 // when the server passes that name through), then the org account bound to
 // (server, env:<name>) when an account provider is installed (ADR-0141), else
 // the encrypted store.
-func envSecretFor(serverID, name, envVar string) string {
+func envSecretFor(ctx context.Context, serverID, name, envVar string) string {
 	secretsMu.RLock()
 	r, org := secrets, orgCreds
 	secretsMu.RUnlock()
@@ -138,7 +149,7 @@ func envSecretFor(serverID, name, envVar string) string {
 				return v
 			}
 		}
-		return orgCredential(org, serverID, domain.SlotEnvPrefix+name)
+		return orgCredential(ctx, org, serverID, domain.SlotEnvPrefix+name)
 	}
 	if r != nil && serverID != "" {
 		return r.Resolve(EnvSecretName(serverID, name), envVar)

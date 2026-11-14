@@ -275,6 +275,11 @@ func (m *AgentManager) ListRunningDaemons() []DaemonInstance {
 // leaves exactly the orphans this exists to prevent, so every daemon gets its
 // turn regardless of what the previous one did.
 func (m *AgentManager) StopAllDaemons() {
+	// Cancel pending auto-restarts and wait for any restart already booting, so
+	// no daemon is respawned after shutdown began and one that just came up is
+	// in the list stopped below (T-20261113-daemon-auto-restart-a-failed-respawn-leaves-the).
+	m.restarts.shutdown()
+
 	m.daemons.mu.Lock()
 	streams := make([]string, 0, len(m.daemons.byStream))
 	for streamID := range m.daemons.byStream {

@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -184,5 +185,59 @@ func TestStoreNeuralTrace_NoSessionLeavesTheKeyAbsent(t *testing.T) {
 	doc := waitForDoc(t, vs.saved)
 	if v, present := doc.Metadata[domain.MetaSessionID]; present {
 		t.Fatalf("session_id present as %#v with no session on the context", v)
+	}
+}
+
+// Two different exchanges under ONE lease must not overwrite each other: the id
+// used to be `trace-<lease>`, so only a lease's last model call survived. The
+// same trace written twice (a retry) must land on the same row (AGENTS.md §2.6;
+// T-20261113-agent-neural-traces-full-prompt-response-are).
+func TestNeuralTraceDocID_DeterministicAndDistinctPerExchange(t *testing.T) {
+	t.Parallel()
+	a := neuralTraceDocID("lease-1", "PROMPT:\nq1\n\nRESPONSE:\na1")
+	b := neuralTraceDocID("lease-1", "PROMPT:\nq2\n\nRESPONSE:\na2")
+	if a == b {
+		t.Fatalf("two exchanges under one lease share id %q", a)
+	}
+	if again := neuralTraceDocID("lease-1", "PROMPT:\nq1\n\nRESPONSE:\na1"); again != a {
+		t.Fatalf("same trace gave ids %q and %q; a retry would duplicate the row", a, again)
+	}
+}
+
+// blockingVS holds every Save until released, to fill the in-flight bound.
+type blockingVS struct {
+	capturingVS
+	release chan struct{}
+	started chan struct{}
+}
+
+func (b *blockingVS) Save(ctx context.Context, doc *domain.Document) error {
+	b.started <- struct{}{}
+	<-b.release
+	return nil
+}
+
+// A slow store must not turn into unbounded goroutine growth (AGENTS.md §3.3):
+// past maxInFlightNeuralTraces, a trace write is dropped rather than queued on a
+// new goroutine. Not parallel: it fills the package-wide bound.
+func TestStoreNeuralTrace_BoundsInFlightWrites(t *testing.T) {
+	vs := &blockingVS{release: make(chan struct{}), started: make(chan struct{}, maxInFlightNeuralTraces+8)}
+	defer close(vs.release)
+	for i := 0; i < maxInFlightNeuralTraces+8; i++ {
+		storeNeuralTrace(context.Background(), vs, fmt.Sprintf("t%d", i), "lease", "", 0, 0, "a")
+	}
+	// Every admitted write reaches Save; give stragglers a moment, then count.
+	deadline := time.After(2 * time.Second)
+	for n := 0; n < maxInFlightNeuralTraces; n++ {
+		select {
+		case <-vs.started:
+		case <-deadline:
+			t.Fatalf("only %d writes started, want %d", n, maxInFlightNeuralTraces)
+		}
+	}
+	select {
+	case <-vs.started:
+		t.Fatal("a write beyond the in-flight bound was started")
+	case <-time.After(100 * time.Millisecond):
 	}
 }

@@ -207,6 +207,14 @@ func (s *PgLinkStore) ConfirmLink(ctx context.Context, namespace, linkID, actor 
 	if err != nil {
 		return domain.Link{}, err
 	}
+	// A retracted link is withdrawn — by its producer's revocation (RetractByProducer)
+	// or by a person — and a review card that still shows it is stale. Confirming it
+	// would turn a withdrawn proposal into a human-confirmed fact
+	// (T-20261112-substrate-read-path-leaks-and-gaps-evidence, item 2).
+	if src.RetractedAt != nil || src.State == domain.LinkStateRetracted {
+		return domain.Link{}, fmt.Errorf("link confirm: link %q in namespace %q was retracted: %w",
+			linkID, namespace, domain.ErrLinkRefused)
+	}
 
 	confirmed := domain.Link{
 		ID:          "lnk_" + uuid.NewString(),
@@ -248,6 +256,14 @@ func (s *PgLinkStore) ConfirmLink(ctx context.Context, namespace, linkID, actor 
 			confirmed.Relation, confirmed.Mechanism, confirmed.SourceRef))
 		if err != nil {
 			return domain.Link{}, fmt.Errorf("link confirm replay lookup: %w", err)
+		}
+		// The standing confirmation was itself retracted. Returning it as a success
+		// would let the caller audit "confirmed" for a link that is not, and the
+		// confirmation's natural key (source_ref) admits no second row, so the honest
+		// answer is a refusal (same ticket, item 2).
+		if confirmed.RetractedAt != nil || confirmed.State == domain.LinkStateRetracted {
+			return domain.Link{}, fmt.Errorf("link confirm: the confirmation of link %q in namespace %q was retracted and is not reinstated: %w",
+				linkID, namespace, domain.ErrLinkRefused)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

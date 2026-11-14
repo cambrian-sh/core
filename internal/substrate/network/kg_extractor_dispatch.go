@@ -12,7 +12,7 @@ import (
 
 // KgExtractorDispatcher implements domain.TripletExtractor by invoking the
 // privileged, NO-LLM kg_extractor system agent directly via the agent transport
-// (no auction) — the ADR-0051 system-organ class (ADR-0053 D2 revised).
+// (no dispatcher selection) — the ADR-0051 system-organ class (ADR-0053 D2 revised).
 //
 // The kernel hands the agent a batch of chunk texts as a Handoff and gets the
 // per-chunk (h, r, t) triplets back as a Handoff. The tiered extraction loop

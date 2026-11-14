@@ -284,7 +284,7 @@ func (c *Connector) connect(ctx context.Context, s ServerConfig) (*mcpsdk.Client
 	var secrets []string
 	switch s.Transport {
 	case "http": // Streamable HTTP (2025-03-26 spec) — single endpoint, POST + optional SSE
-		hc, tok := s.httpClient()
+		hc, tok := s.httpClient(ctx)
 		secrets = appendSecret(secrets, tok)
 		transport = &mcpsdk.StreamableClientTransport{
 			Endpoint:   s.Endpoint,
@@ -296,11 +296,11 @@ func (c *Connector) connect(ctx context.Context, s ServerConfig) (*mcpsdk.Client
 			DisableStandaloneSSE: true,
 		}
 	case "sse": // legacy HTTP+SSE (2024-11-05 spec) — e.g. self-hosted Firecrawl's /sse
-		hc, tok := s.httpClient()
+		hc, tok := s.httpClient(ctx)
 		secrets = appendSecret(secrets, tok)
 		transport = &mcpsdk.SSEClientTransport{Endpoint: s.Endpoint, HTTPClient: hc}
 	case "stdio":
-		explicit, injected := s.explicitEnv()
+		explicit, injected := s.explicitEnv(ctx)
 		secrets = append(secrets, injected...)
 		// ADR-0139 D8: deny-by-default environment, never the kernel's own, and
 		// the trust tier's process containment (sandbox.go).
@@ -320,7 +320,7 @@ func (c *Connector) connect(ctx context.Context, s ServerConfig) (*mcpsdk.Client
 // env_values plus each secret_env name resolved through the store (with the D5
 // env-first precedence when the name is also passed through). It returns the
 // secret values separately, for redaction.
-func (s ServerConfig) explicitEnv() (map[string]string, []string) {
+func (s ServerConfig) explicitEnv(ctx context.Context) (map[string]string, []string) {
 	if len(s.EnvValues) == 0 && len(s.SecretEnv) == 0 {
 		return nil, nil
 	}
@@ -338,7 +338,7 @@ func (s ServerConfig) explicitEnv() (map[string]string, []string) {
 		if passthrough[procenv.Key(name)] {
 			envVar = name
 		}
-		if v := envSecretFor(s.ID, name, envVar); v != "" {
+		if v := envSecretFor(ctx, s.ID, name, envVar); v != "" {
 			out[name] = v
 			secrets = append(secrets, v)
 		}
@@ -393,11 +393,11 @@ func appendSecret(list []string, v string) []string {
 // static credential when configured (ADR-0043 D9). The token resolves through
 // tokenFor (env first, then the ADR-0101 store), so a token saved from the
 // console is picked up on the next (re)connect without a restart.
-func (s ServerConfig) httpClient() (*http.Client, string) {
+func (s ServerConfig) httpClient(ctx context.Context) (*http.Client, string) {
 	c := &http.Client{}
 	var tok string
 	if s.AuthType != "" && s.AuthType != "none" {
-		tok = tokenFor(s.ID, s.AuthTokenEnv)
+		tok = tokenFor(ctx, s.ID, s.AuthTokenEnv)
 		c.Transport = &authRoundTripper{
 			base:     http.DefaultTransport,
 			authType: s.AuthType,

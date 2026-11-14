@@ -243,7 +243,7 @@ func (m *integrationManager) effective(id string) (config.MCPServerConfig, bool)
 	return config.MCPServerConfig{}, false
 }
 
-func (m *integrationManager) Install(_ context.Context, req *pb.InstallIntegrationOpRequest) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
+func (m *integrationManager) Install(ctx context.Context, req *pb.InstallIntegrationOpRequest) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
 	id := req.GetId()
 	if id == "" {
 		id = req.GetCatalogId()
@@ -348,7 +348,7 @@ func (m *integrationManager) Install(_ context.Context, req *pb.InstallIntegrati
 			continue
 		}
 		storeName, _ := m.secretLocation(id, entry, secretByName[name])
-		if err := writeSharedMCPCredential(m.writer.store, id, storeName, v); err != nil {
+		if err := writeSharedMCPCredential(ctx, m.writer.store, id, storeName, v); err != nil {
 			return rejected(key, "could not write to the credential store: "+err.Error()), nil, nil
 		}
 	}
@@ -399,7 +399,7 @@ func (m *integrationManager) Update(_ context.Context, req *pb.UpdateIntegration
 	return out, m.after(out, id), nil
 }
 
-func (m *integrationManager) SetSecret(_ context.Context, id, name, value string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
+func (m *integrationManager) SetSecret(ctx context.Context, id, name, value string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
 	cur, ok := m.effective(id)
 	if !ok {
 		return m.notEditable(id, config.MCPServerOverrideKey(id)), nil, nil
@@ -409,11 +409,11 @@ func (m *integrationManager) SetSecret(_ context.Context, id, name, value string
 		return rejected(mcp.EnvSecretName(id, name), fmt.Sprintf("%q is not a secret field of integration %q", name, id)), nil, nil
 	}
 	storeName, envVar := m.secretLocation(id, cur, f)
-	out := m.writer.setMCPSecret(id, storeName, envVar, value)
+	out := m.writer.setMCPSecret(context.Background(), id, storeName, envVar, value)
 	return out, m.after(out, id), nil
 }
 
-func (m *integrationManager) ClearSecret(_ context.Context, id, name string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
+func (m *integrationManager) ClearSecret(ctx context.Context, id, name string) (operator.ConfigWriteOutcome, *pb.IntegrationOp, error) {
 	cur, ok := m.effective(id)
 	if !ok {
 		return m.notEditable(id, config.MCPServerOverrideKey(id)), nil, nil
@@ -424,7 +424,7 @@ func (m *integrationManager) ClearSecret(_ context.Context, id, name string) (op
 	}
 	storeName, _ := m.secretLocation(id, cur, f)
 	res := operator.ConfigWriteOutcome{Key: storeName}
-	if err := clearSharedMCPCredential(m.writer.store, id, storeName); err != nil {
+	if err := clearSharedMCPCredential(ctx, m.writer.store, id, storeName); err != nil {
 		return rejected(storeName, "could not write to the credential store: "+err.Error()), nil, nil
 	}
 	res.Set = true
@@ -460,7 +460,7 @@ func (m *integrationManager) SetEnabled(_ context.Context, id string, enabled bo
 	return out, m.after(out, id), nil
 }
 
-func (m *integrationManager) Remove(_ context.Context, id string, keepSecrets bool) (operator.ConfigWriteOutcome, error) {
+func (m *integrationManager) Remove(ctx context.Context, id string, keepSecrets bool) (operator.ConfigWriteOutcome, error) {
 	cur, ok := m.effective(id)
 	if !ok {
 		return m.notEditable(id, config.MCPServerOverrideKey(id)), nil
@@ -478,7 +478,7 @@ func (m *integrationManager) Remove(_ context.Context, id string, keepSecrets bo
 		return out, nil
 	}
 	for _, n := range secretNames {
-		if err := clearSharedMCPCredential(m.writer.store, id, n); err != nil {
+		if err := clearSharedMCPCredential(ctx, m.writer.store, id, n); err != nil {
 			out.Error = "removed, but a stored secret could not be cleared: " + err.Error()
 		}
 	}

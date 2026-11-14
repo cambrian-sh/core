@@ -1,7 +1,10 @@
 # Per-PR verification gate.
 #
 # This runs the same checks as `make per-pr`:
-#   proto-check proto-breaking test-race separability integration chaos bench-micro
+#   proto-check proto-breaking vet-tagged test-race separability integration chaos
+#
+# bench-micro is NOT part of per-pr: it needs the gitignored internal/benchmarks/
+# (ADR-0057) and is run by hand where that directory exists (see the note further down).
 #
 # They are invoked as individual steps rather than the single `per-pr` target so a
 # failure names the gate that failed in the GitHub UI instead of one opaque red X.
@@ -99,6 +102,11 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      # Build-tag-only files (//go:build chaos, //go:build integration) are invisible to
+      # the plain vet above; `make per-pr` vets them through vet-tagged, so CI must too.
+      - name: Vet (chaos and integration build tags)
+        run: make vet-tagged
 
       # ── per-pr gates ─────────────────────────────────────────────────────────
       - name: Gate — generated bindings match .proto sources

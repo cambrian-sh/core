@@ -29,8 +29,10 @@ func ClassifyArtifactWrite(ctx context.Context, a domain.Authorizer, principal d
 
 // FilterArtifacts returns only the artifacts a reader holding this predicate may
 // see, applying the same three-set/CNF test as the vector read path over the
-// artifact's Tags. A nil predicate is fail-closed (returns nothing); a bypass
-// predicate returns everything.
+// artifact's Tags. A nil predicate is fail-closed (returns nothing). A bypass
+// predicate returns everything EXCEPT another person's owner-scoped artifacts:
+// TagPredicate.Allows keeps the owner fence under Bypass (ADR-0142 D12,
+// domain/tag_predicate.go checkMain).
 func FilterArtifacts(eff *domain.TagPredicate, artifacts []domain.Artifact) []domain.Artifact {
 	if eff == nil {
 		return nil // fail-closed

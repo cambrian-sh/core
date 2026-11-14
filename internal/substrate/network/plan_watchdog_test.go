@@ -249,14 +249,18 @@ func requireCeilingTimeout(t *testing.T, resp *pb.Handoff, err error) string {
 func TestExecute_PlanThatKeepsMakingProgressOutlivesTheIdleWindow(t *testing.T) {
 	t.Parallel()
 	caller := callerFunc(func(ctx context.Context, agentID string, _ *domain.Handoff, _ string) (*domain.Handoff, error) {
-		select { // each step: ~2/3 of an idle window of work
+		// Each step: 1/3 of an idle window of work. It was 100 ms of a 150 ms window,
+		// which a loaded machine (the whole tree under `go test`, Windows) stretched
+		// past the window — "plan idle for 158ms, limit 150ms" (T-20261108-testexecute).
+		// 200 ms of slack per step keeps the assertion about progress, not timing.
+		select {
 		case <-time.After(100 * time.Millisecond):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 		return okHandoff(agentID), nil
 	})
-	s := watchdogServer(t, 5, config.PlanConfig{PlanIdleTimeoutMs: 150, PlanMaxDurationMs: 60000}, caller, nil)
+	s := watchdogServer(t, 10, config.PlanConfig{PlanIdleTimeoutMs: 300, PlanMaxDurationMs: 60000}, caller, nil)
 	start := time.Now()
 	resp, err := s.Execute(t.Context(), &pb.Handoff{Payload: &pb.Object{Data: []byte("go")}})
 	if err != nil {
@@ -265,7 +269,7 @@ func TestExecute_PlanThatKeepsMakingProgressOutlivesTheIdleWindow(t *testing.T) 
 	if resp.Metadata[PlanTimedOutKey] == "true" || resp.Metadata["_partial_plan"] == "true" {
 		t.Fatalf("plan was cut: %v", resp.Metadata)
 	}
-	if took := time.Since(start); took < 450*time.Millisecond {
+	if took := time.Since(start); took < 900*time.Millisecond {
 		t.Fatalf("plan took %s; the test needs it to outlive 3 idle windows", took)
 	}
 }

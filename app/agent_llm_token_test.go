@@ -44,3 +44,20 @@ func TestAcquireKernelLLMToken_BindsTheAgent(t *testing.T) {
 		t.Fatalf("nil gateway: tok=%q err=%v", tok, err)
 	}
 }
+
+// AGENTS.md §2.7 (follow-up of T-20261113-chat-turn-silently-runs-with-no-llm-lease-when):
+// the release closure runs after the turn, when the caller's ctx is usually already
+// cancelled; it must still complete the lease.
+func TestAcquireKernelLLMToken_ReleaseOutlivesTheCallerContext(t *testing.T) {
+	gw := subnetwork.NewLLMGateway(config.DefaultConfig().Execution)
+	ctx, cancel := context.WithCancel(context.Background())
+	tok, release, err := acquireKernelLLMToken(ctx, gw, "chat_session_agent", 1024, time.Minute)
+	if err != nil || tok == "" {
+		t.Fatalf("acquire: tok=%q err=%v", tok, err)
+	}
+	cancel()
+	release()
+	if _, ok := gw.ResolveLease(domain.LeaseID(tok)); ok {
+		t.Fatal("release after the caller's ctx is cancelled must still complete the lease")
+	}
+}

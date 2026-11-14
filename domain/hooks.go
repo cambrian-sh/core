@@ -42,11 +42,17 @@ import (
 // model-call purpose (HookSpec.Purposes, model points); a non-matching hook is
 // skipped. Tool points keep their per-hook tool filter (config `tools`).
 //
-// Declared now and fired by the work that owns the moment (each is a plain
-// HookChain.Run call at that site; nothing else is missing):
+// Declared but NOT fired yet, and therefore refused (Valid is false, so config
+// validation and NewHookChain reject a hook naming them):
 //
 //   - pre_compact / post_compact — ADR-0139 D3 (context engine compaction);
 //   - run_start / run_end — ADR-0139 C6/D7 (durable runs and the event log).
+//
+// Until 2026-11-13 they were accepted and silently never ran, so an operator's
+// run_start safety hook loaded without error and did nothing
+// (T-20261113-four-declared-hook-points-pre-compact-post). The work that owns
+// each moment adds its HookChain.Run call site and moves the point into
+// AllHookPoints in the same change (AGENTS.md §4.2: ship wired).
 //
 // subagent_start / subagent_end were removed with spawn_subagent (ADR-0145 D14).
 
@@ -69,13 +75,19 @@ const (
 	HookRunEnd      HookPoint = "run_end"
 )
 
-// AllHookPoints lists every declared point, in lifecycle order.
+// AllHookPoints lists every point a hook may attach to — the points that fire —
+// in lifecycle order.
 var AllHookPoints = []HookPoint{
 	HookPreTool, HookPostTool, HookPreModel, HookPostModel,
+}
+
+// UnfiredHookPoints are declared for future call sites but fire nowhere yet, so
+// they are not Valid: a hook naming one would load and never run.
+var UnfiredHookPoints = []HookPoint{
 	HookPreCompact, HookPostCompact, HookRunStart, HookRunEnd,
 }
 
-// Valid reports whether p is a declared hook point.
+// Valid reports whether p is a hook point a hook may attach to (one that fires).
 func (p HookPoint) Valid() bool {
 	for _, q := range AllHookPoints {
 		if p == q {

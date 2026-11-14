@@ -84,9 +84,13 @@ func (w *EnforcingStoreWriter) classify(ctx context.Context, doc *domain.Documen
 			slog.String("detail", dec.Detail))
 		return ErrWriteDenied
 	}
-	// A write that ends up with no classification at all is readable only by an
-	// unrestricted or bypass reader. That fails safe on confidentiality but is a
-	// silent visibility surprise for the author, so it is surfaced (INV-3). The
+	// A write that ends up with no classification at all is readable only by a
+	// reader whose predicate has no positive (required / any-of) terms: an
+	// unrestricted, bypass or forbidden-only reader. When StampPrivateOwner below
+	// adds owner:<id>, that owner also reads it through the own-rows rule
+	// (ADR-0146). A reader holding any positive term cannot see it. That fails
+	// safe on confidentiality but is a silent visibility surprise for the author,
+	// so it is surfaced (INV-3). The
 	// decision point emits the richer version of this warning — it is the only
 	// party that can tell a classification tag from a provenance stamp.
 	if len(final) == 0 {

@@ -541,3 +541,49 @@ func TestPgLinkStore_LinksForFiltersAndDirection(t *testing.T) {
 		t.Fatalf("the state filter leaked: %v (%d)", err, len(none))
 	}
 }
+
+// T-20261112-substrate-read-path-leaks-and-gaps-evidence item 2: a retracted candidate
+// cannot be confirmed from a stale review card, and a confirmation that was itself
+// retracted is not handed back as a fresh success on a repeat click.
+func TestPgLinkStore_ConfirmRefusesRetractedLinks(t *testing.T) {
+	_, links, pool, ctx := newIdentityStores(t)
+	ev := seedEvidence(t, ctx, pool, "ev-confirm-retracted")
+
+	if _, err := links.PutLink(ctx, candidate(ev)); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	pending, err := links.Candidates(ctx, identityNS, 10)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("Candidates: %v (%d rows)", err, len(pending))
+	}
+	cand := pending[0]
+
+	// 1. Confirm, retract the confirmation, click confirm again: refused.
+	confirmed, err := links.ConfirmLink(ctx, identityNS, cand.ID, "operator:ada")
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if err := links.RetractLink(ctx, identityNS, confirmed.ID, "operator:ada", "wrong"); err != nil {
+		t.Fatalf("retract confirmation: %v", err)
+	}
+	if _, err := links.ConfirmLink(ctx, identityNS, cand.ID, "operator:ada"); !errors.Is(err, domain.ErrLinkRefused) {
+		t.Fatalf("a retracted confirmation was returned as a success: err=%v", err)
+	}
+
+	// 2. Retract the candidate itself: confirming it is refused and writes nothing.
+	if err := links.RetractLink(ctx, identityNS, cand.ID, "operator:ada", "revoked"); err != nil {
+		t.Fatalf("retract candidate: %v", err)
+	}
+	if _, err := links.ConfirmLink(ctx, identityNS, cand.ID, "operator:bob"); !errors.Is(err, domain.ErrLinkRefused) {
+		t.Fatalf("a retracted candidate was confirmed: err=%v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM links WHERE namespace_id=$1 AND mechanism=$2`,
+		identityNS, domain.LinkMechanismHuman).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("%d human rows, want only the first (retracted) confirmation", n)
+	}
+}

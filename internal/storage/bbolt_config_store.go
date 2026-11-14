@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"go.etcd.io/bbolt"
+	bberrors "go.etcd.io/bbolt/errors"
 )
 
 // ADR-0101: config and secrets in an embedded store.
@@ -141,7 +142,7 @@ func OpenConfigStoreReadOnly(dbPath string, timeout time.Duration) (*BoltConfigS
 // IsConfigStoreLocked reports whether an open failed because another process —
 // almost always the running kernel — holds the store's file lock.
 func IsConfigStoreLocked(err error) bool {
-	return errors.Is(err, bbolt.ErrTimeout)
+	return errors.Is(err, bberrors.ErrTimeout)
 }
 
 // Close releases the underlying file.

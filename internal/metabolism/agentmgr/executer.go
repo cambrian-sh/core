@@ -16,6 +16,15 @@ import (
 	"github.com/cambrian-sh/core/domain"
 )
 
+// ExecuteA2A runs one handoff against a remote A2A agent (no local process). The
+// agent-plane Transport calls it for a RuntimeA2A agent: the Transport otherwise
+// dials a local instance, and booting an A2A agent fails ("desteklenmeyen
+// runtime"), so an A2A agent was reachable only through this package's 3-arg
+// CallAgent (T-20261113-agentmanager-callagent-kills-the-shared-jit).
+func (m *AgentManager) ExecuteA2A(ctx context.Context, def domain.AgentDefinition, handoff *domain.Handoff) (*domain.Handoff, error) {
+	return m.AgentConnector.a2aClient.Execute(ctx, def, handoff)
+}
+
 // CallAgent routes a handoff from the Substrate (Server) to the named agent.
 // Accepts and returns domain.Handoff; converts to/from proto at the gRPC boundary.
 func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff *domain.Handoff) (*domain.Handoff, error) {
@@ -26,7 +35,7 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 
 	// A2A BRANCH — no local workspace
 	if def.Runtime == domain.RuntimeA2A {
-		return m.AgentConnector.a2aClient.Execute(ctx, *def, handoff)
+		return m.ExecuteA2A(ctx, *def, handoff)
 	}
 
 	// 0. TRUTH LAYER: Pre-execution snapshot
@@ -34,8 +43,17 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 	preEnv := os.Environ()
 
 	// Boot or reuse: find an existing instance for this agent, or boot a new one.
+	//
+	// Only an instance THIS call booted is released when it returns. A running
+	// instance it merely reused may be the one the agent-plane Transport caches
+	// (internal/agentplane, GetOrBootInstance); killing it here tore down the
+	// Transport's live agent, so its next call failed Unavailable and re-booted
+	// (T-20261113-agentmanager-callagent-kills-the-shared-jit). Releasing a
+	// self-booted JIT instance keeps this path's one-shot lifecycle unchanged.
 	inst, found := m.InstanceManager.GetInstance(agentName)
+	bootedHere := false
 	if !found {
+		bootedHere = true
 		if err := m.InstanceManager.bootAgent(ctx, def); err != nil {
 			return nil, err
 		}
@@ -67,7 +85,9 @@ func (m *AgentManager) CallAgent(ctx context.Context, agentName string, handoff 
 
 	protoResp, errExec := m.executeHandoff(ctx, addr, domainToProtoHandoff(handoff))
 
-	defer m.ReleaseInstance(inst.ID)
+	if bootedHere {
+		defer m.ReleaseInstance(inst.ID)
+	}
 
 	if errExec != nil {
 		return nil, errExec

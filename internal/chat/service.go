@@ -507,7 +507,18 @@ func (s *TurnService) Turn(ctx context.Context, req TurnRequest) (_ domain.Messa
 		if ttl <= 0 {
 			ttl = DefaultTurnTimeout
 		}
-		if tok, release, terr := s.acquireToken(turnCtx, tokenLimit, ttl); terr == nil && tok != "" {
+		tok, release, terr := s.acquireToken(turnCtx, tokenLimit, ttl)
+		if terr != nil || tok == "" {
+			// AGENTS.md §3.2: never a silent fallback. The turn still runs (the
+			// behaviour callers rely on), but with NO lease: no conversation/run
+			// binding, no act-for actor, no ask-back state, so the agent's model
+			// calls or delegations may fail later with an unrelated-looking error.
+			// This line is what ties that failure back to its cause (an exhausted
+			// session/plan budget, a lease that could not be bound)
+			// (T-20261113-chat-turn-silently-runs-with-no-llm-lease-when).
+			slog.Warn("chat: turn runs WITHOUT an LLM lease; token acquisition failed",
+				"conversation", req.ConversationID, "err", terr, "empty_token", terr == nil && tok == "")
+		} else {
 			sessionToken = tok
 			defer release()
 			// Stamp the conversation and the ordering turn onto the lease. If the worker

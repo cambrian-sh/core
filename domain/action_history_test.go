@@ -527,3 +527,32 @@ func TestPreview_CutsOnRuneBoundary(t *testing.T) {
 		t.Fatalf("short input changed: %q", got)
 	}
 }
+
+// T-20261113-systemtool-sideeffecting-ignores-egress-a-non: egress_send is a send
+// (ADR-0150 D9) and counts as side-effecting even on a non-dangerous tool, so the
+// idempotency cache, the action history and the plan ledger see it. egress_read
+// and plain (legacy) egress on a non-dangerous tool do not — the shipped catalog
+// declares [read, egress] on pure reads.
+func TestSystemTool_SideEffecting(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		tool SystemTool
+		want bool
+	}{
+		{"read only", SystemTool{Effects: []ToolEffect{EffectRead}}, false},
+		{"egress_read", SystemTool{Effects: []ToolEffect{EffectRead, EffectEgressRead}}, false},
+		{"plain egress read (catalog shape)", SystemTool{Effects: []ToolEffect{EffectRead, EffectEgress}}, false},
+		{"egress_send, not dangerous", SystemTool{Effects: []ToolEffect{EffectEgressSend}}, true},
+		{"egress_read + egress_send", SystemTool{Effects: []ToolEffect{EffectEgressRead, EffectEgressSend}}, true},
+		{"write", SystemTool{Effects: []ToolEffect{EffectWrite}}, true},
+		{"spend", SystemTool{Effects: []ToolEffect{EffectSpend}}, true},
+		{"admin", SystemTool{Effects: []ToolEffect{EffectAdmin}}, true},
+		{"dangerous read", SystemTool{Dangerous: true, Effects: []ToolEffect{EffectRead}}, true},
+	}
+	for _, c := range cases {
+		if got := c.tool.SideEffecting(); got != c.want {
+			t.Errorf("%s: SideEffecting() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

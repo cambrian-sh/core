@@ -18,7 +18,9 @@ const (
 	// contract and still able to lose to a stronger candidate. An unknown name
 	// degrades to ordinary selection — a soft pin never strands a step.
 	PinSoft = "soft"
-	// PinHard binds the named agent directly, skipping auction and semantic gating.
+	// PinHard binds the named agent directly, skipping capability discovery and the
+	// semantic gate — but NOT the effect check: a hard-pinned agent whose tools cannot
+	// perform the step's required effects is refused (gatekeeper.FindCandidates).
 	// Reserved for an imperative user instruction ("use X to do Y"), where silently
 	// routing elsewhere would be a worse answer than failing. An unavailable name is
 	// an error, not a fallback.

@@ -792,6 +792,14 @@ func (p *PgQueryPlane) traverse(ctx context.Context, q domain.KnowledgeQuery, sc
 // unauthorized inspection returns zero rows, never the classification list.
 func (p *PgQueryPlane) evidenceRow(ctx context.Context, q domain.KnowledgeQuery, scope *domain.TagPredicate) ([]domain.QueryRow, error) {
 	ev, err := p.evidence.Get(ctx, domain.EvidenceID(q.EvidenceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		// An absent id answers exactly like a hidden one below — no rows — or the
+		// shape becomes an existence oracle: a scoped caller could tell "does not
+		// exist" (an error) from "exists but you may not see it" (empty), the
+		// distinction the entity ops are built to deny
+		// (T-20261112-substrate-read-path-leaks-and-gaps-evidence, item 1).
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -41,7 +41,7 @@ type rerankResponse struct {
 // silently flatten the ranking).
 func (d *RerankerDispatcher) Rerank(ctx context.Context, query string, documents []string) ([]float64, error) {
 	if d == nil || d.Caller == nil {
-		return nil, fmt.Errorf("reranker: no auctioneer wired")
+		return nil, fmt.Errorf("reranker: no agent transport wired")
 	}
 	if len(documents) == 0 {
 		return nil, nil

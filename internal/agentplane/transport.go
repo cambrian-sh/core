@@ -237,7 +237,16 @@ func (a *Transport) CallAgent(ctx context.Context, agentID string, handoff *doma
 	if err != nil {
 		return nil, err
 	}
-	if domain.DedicatedInstanceRequested(ctx) && agent.Runtime != domain.RuntimeA2A {
+	if agent.Runtime == domain.RuntimeA2A {
+		// A remote A2A agent has no local instance to boot or dial: the boot path
+		// has no a2a case and refused it, so an A2A agent was unreachable through
+		// the Transport (T-20261113-agentmanager-callagent-kills-the-shared-jit).
+		if ex, ok := a.Manager.(a2aExecutor); ok {
+			return ex.ExecuteA2A(ctx, *agent, handoff)
+		}
+		return nil, fmt.Errorf("agent %s: a2a runtime is not supported by this dialer", agent.ID)
+	}
+	if domain.DedicatedInstanceRequested(ctx) {
 		if booter, ok := a.Manager.(dedicatedBooter); ok {
 			return a.callDedicated(ctx, booter, *agent, handoff)
 		}
@@ -259,6 +268,12 @@ func (a *Transport) CallAgent(ctx context.Context, agentID string, handoff *doma
 		return nil, err
 	}
 	return protoToDomainHandoff(protoResp), nil
+}
+
+// a2aExecutor is the optional AgentDialer surface that serves a RuntimeA2A agent
+// (agentmgr.AgentManager implements it).
+type a2aExecutor interface {
+	ExecuteA2A(ctx context.Context, def domain.AgentDefinition, handoff *domain.Handoff) (*domain.Handoff, error)
 }
 
 // dedicatedBooter is the optional AgentDialer surface behind

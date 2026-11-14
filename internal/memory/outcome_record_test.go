@@ -336,3 +336,70 @@ func TestRecordPlanOutcome_NoEngagementStillWritesFailureRecordAndFeedsProcedure
 			routine.Confidence, got.Confidence)
 	}
 }
+
+// TestRecordPlanOutcome_RetriedFailureUpsertsOneRow is the AGENTS.md §2.6 regression
+// (T-20261113-memory-agent-mints-clock-derived-ids-for): the failure precedent's id was
+// "neg-edge-<UnixNano>", so a retried RecordPlanOutcome wrote a second row. The id is
+// now derived from the plan, the agent and the record text, so a retry carries the same
+// id (the store upserts it) while a different plan, or a different failure of the same
+// plan, still gets its own row.
+func TestRecordPlanOutcome_RetriedFailureUpsertsOneRow(t *testing.T) {
+	t.Parallel()
+	store := &multiCaptureStore{}
+	a := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 0.7, 5, 3)
+	a.RecordOutcomes = true
+	a.SurpriseFloor = 0.5
+	rec := domain.PlanRecord{PlanID: "p-retry", Goal: "migrate", Success: false, Surprise: 0.9,
+		FailureSummary: "step 1: boom"}
+	for i := 0; i < 2; i++ {
+		if err := a.RecordPlanOutcome(context.Background(), rec); err != nil {
+			t.Fatalf("RecordPlanOutcome #%d: %v", i, err)
+		}
+	}
+	other := rec
+	other.PlanID = "p-other"
+	_ = a.RecordPlanOutcome(context.Background(), other)
+	differentFailure := rec
+	differentFailure.FailureSummary = "step 3: a different failure"
+	_ = a.RecordPlanOutcome(context.Background(), differentFailure)
+
+	var ids []string
+	for _, d := range store.saved {
+		if d.DocumentType == domain.DocTypeNegativeEdge {
+			ids = append(ids, d.ID)
+		}
+	}
+	if len(ids) != 4 {
+		t.Fatalf("want 4 precedent writes, got %d: %v", len(ids), ids)
+	}
+	if ids[0] != ids[1] {
+		t.Errorf("a retried outcome must reuse its id (upsert), got %q then %q", ids[0], ids[1])
+	}
+	if ids[2] == ids[0] || ids[3] == ids[0] || ids[2] == ids[3] {
+		t.Errorf("distinct plans / failures must keep distinct ids, got %v", ids)
+	}
+	for _, id := range ids {
+		if !strings.HasPrefix(id, "neg-edge-") {
+			t.Errorf("id %q lost the neg-edge- prefix", id)
+		}
+	}
+}
+
+// The unparented port path (IngestNegativeEdge) is deterministic too.
+func TestIngestNegativeEdge_IDIsContentDerived(t *testing.T) {
+	t.Parallel()
+	store := &multiCaptureStore{}
+	a := NewAgent(NewMemoryManager(store, &recordingEmbedder{}), 0.7, 5, 3)
+	_ = a.IngestNegativeEdge(context.Background(), "tool crashed", "out", "agent-a")
+	_ = a.IngestNegativeEdge(context.Background(), "tool crashed", "out", "agent-a")
+	_ = a.IngestNegativeEdge(context.Background(), "tool crashed", "out", "agent-b")
+	if len(store.saved) != 3 {
+		t.Fatalf("want 3 writes, got %d", len(store.saved))
+	}
+	if store.saved[0].ID != store.saved[1].ID {
+		t.Errorf("same report twice must reuse its id, got %q / %q", store.saved[0].ID, store.saved[1].ID)
+	}
+	if store.saved[0].ID == store.saved[2].ID {
+		t.Errorf("a different reporting agent must get a different id")
+	}
+}

@@ -25,10 +25,10 @@ type MCPWriter interface {
 	// serving.
 	RemoveMCPServer(id string) (ConfigWriteOutcome, error)
 	// SetMCPServerToken stores the server's credential and bounces its
-	// connection so the new token is actually used.
-	SetMCPServerToken(id, token string) (ConfigWriteOutcome, error)
+	// connection so the new token is actually used. ctx is the RPC's.
+	SetMCPServerToken(ctx context.Context, id, token string) (ConfigWriteOutcome, error)
 	// ClearMCPServerToken removes the stored credential (and bounces).
-	ClearMCPServerToken(id string) error
+	ClearMCPServerToken(ctx context.Context, id string) error
 	// TestMCPServer dials the spec once, ephemeral, never touching a live
 	// session for the same id.
 	TestMCPServer(ctx context.Context, spec MCPServerSpec) MCPTestResult
@@ -156,7 +156,7 @@ func (s *Service) SetMCPServerToken(ctx context.Context, req *pb.SetMCPServerTok
 		"credential stored for mcp server "+req.GetServerId(),
 		func() error {
 			var applyErr error
-			outcome, applyErr = s.mcpWriter.SetMCPServerToken(req.GetServerId(), req.GetToken())
+			outcome, applyErr = s.mcpWriter.SetMCPServerToken(ctx, req.GetServerId(), req.GetToken())
 			return applyErr
 		})
 	if err != nil {
@@ -180,7 +180,7 @@ func (s *Service) ClearMCPServerToken(ctx context.Context, req *pb.ClearMCPServe
 	return s.runMutation(ctx, req.GetCommandId(), req.GetReason(),
 		"clear_mcp_server_token", "mcp_server", req.GetServerId(),
 		"credential cleared for mcp server "+req.GetServerId(),
-		func() error { return s.mcpWriter.ClearMCPServerToken(req.GetServerId()) })
+		func() error { return s.mcpWriter.ClearMCPServerToken(ctx, req.GetServerId()) })
 }
 
 // TestMCPServer dials the submitted spec once. A failed probe is a SUCCESSFUL

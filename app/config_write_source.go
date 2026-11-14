@@ -1047,7 +1047,7 @@ func (c configWriteSource) RemoveMCPServer(id string) (operator.ConfigWriteOutco
 
 // SetMCPServerToken stores a server credential and bounces the connection so
 // the new token is actually presented.
-func (c configWriteSource) SetMCPServerToken(id, token string) (operator.ConfigWriteOutcome, error) {
+func (c configWriteSource) SetMCPServerToken(ctx context.Context, id, token string) (operator.ConfigWriteOutcome, error) {
 	res := operator.ConfigWriteOutcome{Key: mcp.TokenSecretName(id)}
 	if c.store == nil {
 		return res, fmt.Errorf("no credential store is available")
@@ -1070,7 +1070,7 @@ func (c configWriteSource) SetMCPServerToken(id, token string) (operator.ConfigW
 		res.Error = fmt.Sprintf("no MCP server with id %q is configured", id)
 		return res, nil
 	}
-	return c.setMCPSecret(id, mcp.TokenSecretName(id), envVar, token), nil
+	return c.setMCPSecret(ctx, id, mcp.TokenSecretName(id), envVar, token), nil
 }
 
 // setMCPSecret stores one credential of one server — in the ADR-0101 store,
@@ -1078,9 +1078,9 @@ func (c configWriteSource) SetMCPServerToken(id, token string) (operator.ConfigW
 // (shared_credentials.go, ADR-0141) — and bounces that server (credentials are injected at CONNECT time; a healthy session would
 // otherwise keep the old one forever). envVar is the kernel variable that
 // outranks the store (D5), "" when none does.
-func (c configWriteSource) setMCPSecret(id, secretName, envVar, value string) operator.ConfigWriteOutcome {
+func (c configWriteSource) setMCPSecret(ctx context.Context, id, secretName, envVar, value string) operator.ConfigWriteOutcome {
 	res := operator.ConfigWriteOutcome{Key: secretName}
-	if err := writeSharedMCPCredential(c.store, id, secretName, value); err != nil {
+	if err := writeSharedMCPCredential(ctx, c.store, id, secretName, value); err != nil {
 		res.Effect = operator.EffectRejected
 		res.Error = "could not write to the credential store: " + err.Error()
 		return res
@@ -1101,11 +1101,11 @@ func (c configWriteSource) setMCPSecret(id, secretName, envVar, value string) op
 }
 
 // ClearMCPServerToken removes a stored credential and bounces the connection.
-func (c configWriteSource) ClearMCPServerToken(id string) error {
+func (c configWriteSource) ClearMCPServerToken(ctx context.Context, id string) error {
 	if c.store == nil {
 		return fmt.Errorf("no credential store is available")
 	}
-	if err := clearSharedMCPCredential(c.store, id, mcp.TokenSecretName(id)); err != nil {
+	if err := clearSharedMCPCredential(ctx, c.store, id, mcp.TokenSecretName(id)); err != nil {
 		return err
 	}
 	if c.bounceMCPServer != nil {

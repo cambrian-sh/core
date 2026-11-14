@@ -75,24 +75,92 @@ func (m *AgentManager) handleDaemonExit(inst *domain.Instance, streamID string, 
 	if m.RestartPolicy == nil {
 		return // no restart policy → pre-REACT-04 behavior (stays down)
 	}
+	m.scheduleRestart(inst.AgentID, streamID, params, "crash-loop")
+}
+
+// restartLifecycle owns the pending auto-restart goroutines (AGENTS.md §3.3: one
+// owner per background goroutine). StopAllDaemons closes it at kernel shutdown:
+// a pending restart is cancelled instead of respawning a daemon after shutdown
+// began (a stranded daemon holding e.g. a bot token is the failure class), and a
+// restart already mid-boot is waited for so the daemon it starts is stopped with
+// the rest. The zero value is ready to use.
+type restartLifecycle struct {
+	mu      sync.Mutex
+	stopped bool
+	stop    chan struct{}
+	wg      sync.WaitGroup
+}
+
+// begin registers one restart goroutine and returns the channel that cancels
+// it, or ok=false once shutdown has begun. Add happens under mu so it can never
+// race the Wait in shutdown.
+func (r *restartLifecycle) begin() (stop <-chan struct{}, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return nil, false
+	}
+	if r.stop == nil {
+		r.stop = make(chan struct{})
+	}
+	r.wg.Add(1)
+	return r.stop, true
+}
+
+// shutdown cancels every pending restart, refuses new ones, and waits for the
+// ones already booting to return. Idempotent.
+func (r *restartLifecycle) shutdown() {
+	r.mu.Lock()
+	if !r.stopped {
+		r.stopped = true
+		if r.stop != nil {
+			close(r.stop)
+		}
+	}
+	r.mu.Unlock()
+	r.wg.Wait()
+}
+
+// scheduleRestart registers one restart attempt with the RestartPolicy and, unless
+// the flap limit is reached, respawns the daemon after the backoff delay.
+//
+// A FAILED respawn (boot timeout, missing dependency, agent unregistered) is just
+// another attempt: it re-registers, so it backs off and, past the limit, lands in
+// the operator-visible quarantined state with a DaemonQuarantinedEvent (ADR-0070
+// D2). It used to log a WARN and return, leaving the stream "unavailable" forever
+// with no retry and nothing on the operator feed
+// (T-20261113-daemon-auto-restart-a-failed-respawn-leaves-the).
+func (m *AgentManager) scheduleRestart(agentID, streamID string, params map[string]any, reason string) {
 	delay, quarantine := m.RestartPolicy.Register(streamID)
 	if quarantine {
 		m.SetDaemonStatus(streamID, "quarantined")
-		slog.Warn("daemon quarantined (crash-loop) — auto-restart withdrawn",
-			"agent_id", inst.AgentID, "stream_id", streamID, "attempts", m.RestartPolicy.MaxAttempts)
+		slog.Warn("daemon quarantined — auto-restart withdrawn",
+			"agent_id", agentID, "stream_id", streamID, "reason", reason, "attempts", m.RestartPolicy.MaxAttempts)
 		m.publishEvent(domain.DaemonQuarantinedEvent{
-			AgentID: inst.AgentID, StreamID: streamID,
-			Reason: "crash-loop", Attempts: m.RestartPolicy.MaxAttempts,
+			AgentID: agentID, StreamID: streamID,
+			Reason: reason, Attempts: m.RestartPolicy.MaxAttempts,
 		})
 		return
 	}
+	stop, ok := m.restarts.begin()
+	if !ok {
+		slog.Info("daemon restart skipped: kernel is shutting down", "agent_id", agentID, "stream_id", streamID)
+		return
+	}
 
-	agentID := inst.AgentID
 	slog.Info("daemon scheduled for restart", "agent_id", agentID, "stream_id", streamID, "delay", delay)
 	go func() {
-		time.Sleep(delay)
+		defer m.restarts.wg.Done()
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-stop:
+			return
+		case <-timer.C:
+		}
 		if _, err := m.SpawnDaemon(agentID, streamID, params); err != nil {
-			slog.Warn("daemon auto-restart failed", "agent_id", agentID, "stream_id", streamID, "err", err)
+			slog.Warn("daemon auto-restart failed; retrying with backoff", "agent_id", agentID, "stream_id", streamID, "err", err)
+			m.scheduleRestart(agentID, streamID, params, "restart-failed")
 			return
 		}
 		m.SetDaemonStatus(streamID, "running")

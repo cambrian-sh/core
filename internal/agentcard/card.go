@@ -17,7 +17,7 @@
 // agent with these declarations", not "this agent passed a probe suite").
 //
 // Remote cards (agents other deployments publish) are verified against a
-// configured key set before registration (verify.go, RemoteFetcher).
+// configured key set before registration (sign.go Verify, remote.go RemoteFetcher).
 package agentcard
 
 import (

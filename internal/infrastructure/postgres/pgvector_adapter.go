@@ -1198,25 +1198,63 @@ func (p *PgVectorAdapter) GetByID(ctx context.Context, id string) (*domain.Docum
 // rather than locating the row first: a delete that silently matched nothing because
 // the caller guessed the wrong table is the failure mode worth spending a few cheap
 // statements to make impossible.
+//
+// It also removes the chunk's derived side data (deleteChunkSideDataTx), in the same
+// transaction as the row itself.
 func (p *PgVectorAdapter) Delete(ctx context.Context, id string) error {
-	for _, table := range idLookupTables {
-		sql, args, _ := dialect.Delete(table).Where(goqu.Ex{"id": id}).ToSQL()
-		if _, err := p.pool.Exec(ctx, sql, args...); err != nil {
-			return mapError("Delete", err)
-		}
-	}
-	return nil
+	return p.deleteIDs(ctx, "Delete", []string{id})
 }
 
+// DeleteBatch is Delete for many ids, in one transaction.
 func (p *PgVectorAdapter) DeleteBatch(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
+	return p.deleteIDs(ctx, "DeleteBatch", ids)
+}
+
+// chunkSideDataDeletes are the rows keyed by a chunk id that have no foreign key to
+// chunks, so deleting the chunk alone leaves them behind (chunk_triplets and
+// chunk_pagerank, 0001_baseline.sql; document_edges on either endpoint, 0001/0009).
+// chunk_embeddings needs no entry: it cascades from chunks (0013). The ADR-0138
+// document cascade (retireDocumentsTx) deletes the same three by chunk id; this list is
+// the by-id path's half of that rule, so a chunk removed one at a time — the nightly
+// loner decay (memory/worker.go) — no longer leaves KG triplets whose entities KG²RAG
+// can still traverse, a stale PageRank row, or dangling structure/Hebbian edges
+// (T-20261103-deleting-a-chunk-leaves-its-chunk-triplets-and).
+//
+// memory_fact items derived from the chunk are NOT erased here: their erasure belongs to
+// the knowledge store (EraseItemsTx), which this adapter does not hold. They keep
+// pointing at a chunk that no longer exists, so the fact lane's by-id source fetch drops
+// them; see the ticket for the follow-up.
+var chunkSideDataDeletes = []string{
+	`DELETE FROM chunk_triplets WHERE chunk_id = ANY($1)`,
+	`DELETE FROM chunk_pagerank WHERE chunk_id = ANY($1)`,
+	`DELETE FROM document_edges WHERE source_id = ANY($1) OR target_id = ANY($1)`,
+}
+
+// deleteIDs removes ids from every id-lookup table plus their chunk side data, in one
+// transaction, so a failure part-way leaves nothing half-deleted. For a tool, skill or
+// agent-profile id the side-data statements match nothing.
+func (p *PgVectorAdapter) deleteIDs(ctx context.Context, op string, ids []string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return mapError(op, err)
+	}
+	defer tx.Rollback(ctx)
+	for _, sql := range chunkSideDataDeletes {
+		if _, err := tx.Exec(ctx, sql, ids); err != nil {
+			return mapError(op, err)
+		}
+	}
 	for _, table := range idLookupTables {
 		sql, args, _ := dialect.Delete(table).Where(goqu.Ex{"id": ids}).ToSQL()
-		if _, err := p.pool.Exec(ctx, sql, args...); err != nil {
-			return mapError("DeleteBatch", err)
+		if _, err := tx.Exec(ctx, sql, args...); err != nil {
+			return mapError(op, err)
 		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return mapError(op, err)
 	}
 	return nil
 }

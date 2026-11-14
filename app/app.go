@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	pb "github.com/cambrian-sh/core/api/proto"
 	"github.com/cambrian-sh/core/domain"
@@ -65,10 +66,6 @@ import (
 	toolproc "github.com/cambrian-sh/core/internal/tool/proc"
 	"github.com/cambrian-sh/core/pkg/util"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -402,8 +399,9 @@ func (k *Kernel) Shutdown(ctx context.Context) {
 	slog.Info("✅ Kernel: Shutdown complete. System at rest.")
 }
 
-// Run is the composition root. It loads configuration from the 7-layer
-// pipeline (configs/config.json + tuning/mcp/local layers, see ADR-0024),
+// Run is the composition root. It loads configuration from the 12-layer
+// pipeline (defaults, the configs/ file layers, the ADR-0101 store and CAMBRIAN_*
+// env; see config.LoadConfig and ADR-0024),
 // wires every subsystem from opts + cfg, and starts the gRPC server.
 func Run(ctx context.Context, opts Options) error {
 	flag.Parse()
@@ -629,7 +627,16 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 
 	os.MkdirAll(cfg.Storage.DataDir, 0755)
 
-	// 0. Bootstrap OTel from config (before any stack construction).
+	// 0. Process-level runtime settings (config/runtime.go; all off by default):
+	// the Go soft memory limit is applied before any stack allocates, and a pprof
+	// listener requested on a non-loopback bind fails the boot here, before a
+	// port opens. Served later from startKernelServices.
+	applyMemoryLimit(cfg.Runtime, osGetenv)
+	if why := pprofRefusal(cfg); why != "" {
+		return nil, fmt.Errorf("runtime diagnostics: %s", why)
+	}
+
+	// Bootstrap OTel from config (before any stack construction).
 	tp, mp := initTelemetry(cfg)
 	tpShutdown := func(ctx context.Context) error {
 		if tp != nil {
@@ -1362,7 +1369,9 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// Execute path runs plans is constructed after this bundle; bound below.
 	// (planExec itself is declared above the Watcher, which also runs plans.)
 	// One reader, shared by the plugin seam and the operator RPC.
-	docReader := &kernelDocumentReader{store: authz.NewEnforcingVectorStore(vec, slog.Default())}
+	// mem.ReadStore is the stack's tier-1 fail-closed read chokepoint (AGENTS.md §2.1:
+	// NewMemoryStack is the only place it is built; T-20261113-enforcingvectorstore-is-constructed-outside).
+	docReader := &kernelDocumentReader{store: mem.ReadStore}
 
 	// ADR-0105/0108: the evidence foundation's pieces, built ONCE here so the
 	// plugin seam, the ingest chokepoint and the outbox consumer share one
@@ -1963,19 +1972,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 				slog.Warn("SYNC_INGEST_WAIT_FOR_FACTS: set but has NO EFFECT: no fact extractor (execution.facts.extract_enabled is off, or no knowledge substrate was composed)")
 			}
 		}
-		// ADR-0093: record the source-document entity on every ingest. Deliberately NOT
-		// behind the structure-graph flag below — a document exists whether or not its
-		// hierarchy was parsed, and it is the row that owns the classification tags, so
-		// gating it would leave tag ownership dependent on an unrelated feature switch.
-		// Wrapped, never handed the raw adapter. `documents.tags` is the authoritative
-		// classification every access decision reads, so it goes through the same write
-		// chokepoint as the vector store: the ingesting agent's tags are a request, the
-		// decision point returns the answer. Passing `vec` directly here — which is what
-		// this line originally did — exempted the one column that matters most from
-		// ADR-0085's "the check runs on every path".
-		mem.IngestionManager.SetDocumentStore(
-			memory.NewEnforcingDocumentStore(vec, authorizer, slog.Default()),
-		)
+		// ADR-0093: the source-document entity is recorded on every ingest through the
+		// ENFORCING document store, which NewMemoryStack now composes and hands to the
+		// IngestionManager itself (MemoryStack.DocumentStore; AGENTS.md §2.1/§2.3 —
+		// T-20261113-memory-tier-stores-are-composed-outside). It used to be attached
+		// here by a post-construction SetDocumentStore over the same vec and authorizer.
+		// Deliberately NOT behind the structure-graph flag below: `documents.tags` is the
+		// authoritative classification every access decision reads.
 		// ADR-0060: structure-aware ingestion — parse each document's real hierarchy
 		// via the docling_agent and persist a structure graph (sections + PART_OF/NEXT
 		// edges), stamping every chunk with its inherited section path. Opt-in.
@@ -2378,6 +2381,13 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// instead of the whole registry. Reuses the kernel embedder + pgvector store;
 	// the ToolExecutor depends only on the ToolRetriever port. Indexing is
 	// best-effort — a failure degrades retrieval to the full menu, never blocks boot.
+	//
+	// AGENTS.md §2.2: tier-0 vec, a kernel-authored artifact writer and reader. Tool
+	// index docs are written by the kernel from the tool registry (native + MCP
+	// manifests) at boot and carry no principal scope (ADR-0044 D3); ranking is
+	// restricted to the caller's GRANTED tools by the in-query ID filter
+	// (VectorToolRetriever.Rank), so no read-scope predicate applies to this index.
+	// The same vec is used by reconcileIndex and VectorToolRetriever just below.
 	toolIndexer := &domain.ToolIndexer{Store: vec, Embedder: embedder}
 	if err := toolIndexer.IndexAll(ctx, toolReg.All()); err != nil {
 		slog.Warn("ADR-0044: tool indexing failed (retrieval degraded to full menu)", "err", err)
@@ -2403,6 +2413,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		}
 		reconcileIndex(ctx, vec, toolIndexer, domain.DocTypeTool, toolKeepFunc(currentTools, configuredMCP))
 	}
+	// Tier-0 vec: see the AGENTS.md §2.2 note on toolIndexer above (ADR-0044 D3).
 	cambrianServer.ToolExecutor.Retriever = domain.VectorToolRetriever{
 		Store: vec, Embedder: embedder, Floor: cfg.Execution.Tools.ToolRetrievalFloor,
 	}
@@ -2423,6 +2434,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 		mem.QueryService.SetDecomposeEnabled(cfg.Execution.Retrieval.AgenticDecomposeEnabled)
 		mem.QueryService.SetSubQuestionConcurrency(cfg.Execution.Retrieval.AgenticSubQuestionConcurrency)
 		mem.QueryService.SetAdaptiveRoutesEnabled(cfg.Execution.Retrieval.AgenticAdaptiveRoutesEnabled) // ADR-0135
+		warnUndeclaredPlannerModel(cfg.Execution.Retrieval.AgenticPlannerModel, cfg.LLMProvider.Generators)
 		slog.Info("AGENTIC_RETRIEVAL_SPEC: agentic retrieval query-planner ENABLED (retrieval_agent)", "ircot", cfg.Execution.Retrieval.AgenticIrcotEnabled, "decompose", cfg.Execution.Retrieval.AgenticDecomposeEnabled, "subquestion_concurrency", cfg.Execution.Retrieval.AgenticSubQuestionConcurrency, "adaptive_routes", cfg.Execution.Retrieval.AgenticAdaptiveRoutesEnabled)
 	}
 
@@ -2482,7 +2494,7 @@ func bootstrapKernel(ctx context.Context, cfg *config.Config, lis net.Listener, 
 	// retrieves skills its effective scope permits (the same read path as memory).
 	cambrianServer.SkillRegistry = skillReg
 	cambrianServer.SkillRetriever = domain.VectorSkillRetriever{
-		Store:    authz.NewEnforcingVectorStore(vec, slog.Default()),
+		Store:    mem.ReadStore, // the stack's tier-1 read chokepoint (AGENTS.md §2.1)
 		Embedder: embedder,
 		Floor:    cfg.Execution.Tools.ToolRetrievalFloor,
 	}
@@ -2750,11 +2762,33 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n]) + "…[truncated]"
 }
 
+// llmExchangeEvent builds the ADR-0079 exchange event: prompt and completion
+// truncated to maxChars RUNES, and PromptChars/ResponseChars the untruncated
+// lengths in the SAME unit, so "count > maxChars" is exactly "this text was
+// truncated". They were byte counts (len), which for non-ASCII text (TR/EN market)
+// overstated the length and made untruncated text look truncated
+// (T-20261113 ENG-1317).
+func llmExchangeEvent(sessionID, agentID, modelID string, stepIndex int, prompt, completion string, maxChars int) domain.AgentLLMExchangeEvent {
+	return domain.AgentLLMExchangeEvent{
+		SessionID:     sessionID,
+		AgentID:       agentID,
+		StepIndex:     stepIndex,
+		Purpose:       "agent_llm",
+		ModelID:       modelID,
+		Prompt:        truncateRunes(prompt, maxChars),
+		Completion:    truncateRunes(completion, maxChars),
+		PromptChars:   utf8.RuneCountInString(prompt),
+		ResponseChars: utf8.RuneCountInString(completion),
+	}
+}
+
 func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 	// A. Domain stack background workers
 	g.Go(func() error { return k.Memory.Start(ctx) })
 	g.Go(func() error { return k.Metabolism.Start(ctx) })
 	g.Go(func() error { return k.Supervision.Start(ctx) })
+	// Opt-in pprof listener and memory log line (runtime block; off by default).
+	startRuntimeDiagnostics(g, ctx, k.Config)
 
 	// ADR-0139 D4: the agent card listener (server.a2a) and remote A2A agent
 	// registration (a2a.endpoints); both off by default. app/agentcard_endpoint.go.
@@ -2917,7 +2951,8 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 				// The operator binary-ingest lane (IngestMemory) carries raw file bytes;
 				// gRPC's 4 MiB default rejects any PDF above it server-side before docling
 				// ever runs, so the documented upload path is unusable for real documents.
-				// Raise both directions to 64 MiB (matches the UI client's tonic limits).
+				// Raise both directions to maxGRPCMessageBytes (512 MiB), which matches the
+				// UI client's tonic limit (ui/src-tauri/src/transport.rs MAX_MESSAGE_BYTES).
 				grpc.MaxRecvMsgSize(maxGRPCMessageBytes),
 				grpc.MaxSendMsgSize(maxGRPCMessageBytes),
 			)...)
@@ -2976,17 +3011,8 @@ func startKernelServices(g *errgroup.Group, ctx context.Context, k *Kernel) {
 		if k.Config.Execution.LLM.CaptureLLMExchanges {
 			const maxExchangeChars = 8192
 			k.Server.LLMExchangeSink = func(sessionID, agentID, modelID string, stepIndex int, prompt, completion string) {
-				operatorFeed.EmitEphemeral(domain.AgentLLMExchangeEvent{
-					SessionID:     sessionID,
-					AgentID:       agentID,
-					StepIndex:     stepIndex,
-					Purpose:       "agent_llm",
-					ModelID:       modelID,
-					Prompt:        truncateRunes(prompt, maxExchangeChars),
-					Completion:    truncateRunes(completion, maxExchangeChars),
-					PromptChars:   len(prompt),
-					ResponseChars: len(completion),
-				})
+				operatorFeed.EmitEphemeral(llmExchangeEvent(sessionID, agentID, modelID, stepIndex,
+					prompt, completion, maxExchangeChars))
 			}
 		}
 		operatorSvc := operator.NewService(operatorFeed)
@@ -4022,14 +4048,9 @@ func (s *mcpToolSink) RemoveServerTools(ctx context.Context, serverID string) {
 
 var _ mcp.ToolSink = (*mcpToolSink)(nil)
 
-// registerModelAgents persists each ModelConfig entry as a TraitModel AgentDefinition.
-// registerModelAgents persists each generator as a TraitModel AgentDefinition so
-// it participates in the auction. ADR-0042: sourced from llm_provider.generators,
-// agent ID = "llm:<id>" (id-keyed end to end; the server strips "llm:" to the
-// generator id when Acquiring an agent-step model).
-// registerPluginAgents discovers and upserts agent definitions from plugin AgentSources
+// registerAgentSources discovers and upserts agent definitions from plugin AgentSources
 // (ADR-0075). Parallel to registerModelAgents: each definition goes through the same
-// reg.SetAgent path as any other agent, so it participates in the auction/scope/merit
+// reg.SetAgent path as any other agent, so it participates in the scope/merit/dispatch
 // machinery normally. A System=true definition (from Registry.AddSystemAgent) is logged
 // as an explicit privilege grant — the grant is visible, not inferred.
 //
@@ -4141,6 +4162,10 @@ func previewProfileWithEvidence(p domain.AgentProfile) domain.AgentProfile {
 	return p
 }
 
+// registerModelAgents persists each generator as a TraitModel AgentDefinition so it is
+// an addressable agent in the registry (dispatch, scope, merit). ADR-0042: sourced from
+// llm_provider.generators, agent ID = "llm:<id>" (id-keyed end to end; the server strips
+// "llm:" to the generator id when Acquiring an agent-step model).
 func registerModelAgents(reg *kernel.AgentRepoDecorator, generators []config.GeneratorConfig) {
 	for _, g := range generators {
 		agentID := "llm:" + g.ID
@@ -4314,36 +4339,6 @@ func reconcileIndex(ctx context.Context, lister docTypeLister, remover docRemove
 		slog.Info("reconcileIndex: pruned orphaned index doc no longer in registry",
 			"doc_type", docType, "id", id)
 	}
-}
-
-func initTelemetry(cfg *config.Config) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider) {
-	if cfg.Telemetry.OTLPEndpoint == "" && cfg.Telemetry.PrometheusPort == 0 && !cfg.Telemetry.EnableStdoutExporter {
-		return nil, nil // ADR-0057 (D11): telemetry off by default — stay silent.
-	}
-	// ADR-0057 (D11): announce telemetry activation for transparency (only when enabled).
-	slog.Info("telemetry enabled — the runtime will export traces/metrics as configured",
-		"otlp_endpoint", cfg.Telemetry.OTLPEndpoint,
-		"prometheus_port", cfg.Telemetry.PrometheusPort,
-		"stdout_exporter", cfg.Telemetry.EnableStdoutExporter)
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithSampler(sdktrace.TraceIDRatioBased(cfg.Telemetry.TraceSamplingRate)),
-	)
-	otel.SetTracerProvider(tp)
-
-	var mpOpts []sdkmetric.Option
-	if cfg.Telemetry.EnableStdoutExporter {
-		stdoutExp, err := stdoutmetric.New(stdoutmetric.WithPrettyPrint())
-		if err != nil {
-			slog.Warn("telemetry: failed to create stdout metric exporter", "err", err)
-		} else {
-			mpOpts = append(mpOpts, sdkmetric.WithReader(
-				sdkmetric.NewPeriodicReader(stdoutExp, sdkmetric.WithInterval(10*time.Second)),
-			))
-		}
-	}
-	mp := sdkmetric.NewMeterProvider(mpOpts...)
-	otel.SetMeterProvider(mp)
-	return tp, mp
 }
 
 // stringSliceFromMeta coerces a document metadata value into a []string (tags
@@ -4881,7 +4876,11 @@ func acquireKernelLLMToken(ctx context.Context, gw *subnetwork.SubstrateLLMGatew
 	if err != nil {
 		return "", func() {}, err
 	}
-	release := func() { _, _ = gw.Complete(context.Background(), tok) }
+	// The release runs after the turn, often once ctx is cancelled, so it must outlive
+	// it — WithoutCancel keeps ctx's values (scope, session, trace) where a bare
+	// Background would drop them (AGENTS.md §2.7). The error is best-effort: an
+	// uncompleted lease expires on its TTL.
+	release := func() { _, _ = gw.Complete(context.WithoutCancel(ctx), tok) }
 	if agentID != "" && !gw.BindLeaseAgent(tok, agentID) {
 		release()
 		return "", func() {}, fmt.Errorf("acquire agent LLM token: lease could not be bound to agent %q", agentID)

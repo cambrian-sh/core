@@ -161,11 +161,18 @@ chaos:
 
 # ─── Real-Service Chaos (Docker Compose + toxiproxy) ─────────────────────────
 
+# Runs ONLY the TestChaosReal_* scenarios: the target used to run the whole network
+# package (60+ unit tests) under the chaos tag, which `make test-race` already covers.
+# The -list guard refuses a vacuous pass (cf. leak-integration).
+# KNOWN BROKEN (T-20261031-chaos-real-cannot-pass-and-injects-no-fault): the compose
+# file starts no kernel and the scenarios inject no fault yet, so this target fails
+# without a hand-started kernel on :50051 and proves nothing when it passes.
 chaos-real:
+	@go test -tags chaos ./internal/substrate/network/ -list 'TestChaosReal' | grep -q TestChaosReal_ || (echo "chaos-real: no TestChaosReal_* scenarios found" && exit 1)
 	@echo "--- Starting chaos infrastructure ---"
 	docker compose -f scripts/chaos-compose.yml up -d
 	@echo "--- Running real-service chaos scenarios ---"
-	go test -tags chaos ./internal/substrate/network/... -v -timeout 30m || \
+	go test -tags chaos ./internal/substrate/network/ -run 'TestChaosReal' -v -timeout 30m || \
 		(docker compose -f scripts/chaos-compose.yml down -v; exit 1)
 	@echo "--- Tearing down chaos infrastructure ---"
 	docker compose -f scripts/chaos-compose.yml down -v

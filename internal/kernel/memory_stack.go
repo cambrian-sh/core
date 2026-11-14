@@ -23,8 +23,12 @@ type MemoryStack struct {
 	// ReadStore is the fail-closed read chokepoint over VecDB. Every principal-facing
 	// read goes through it; the raw VecDB is reserved for kernel-internal components
 	// that need the concrete adapter (graph store, spreader, profile store).
-	ReadStore            domain.VectorStore
-	WriteStore           domain.VectorStore // ADR-0085: write classification over ReadStore
+	ReadStore  domain.VectorStore
+	WriteStore domain.VectorStore // ADR-0085: write classification over ReadStore
+	// DocumentStore is the ADR-0093 write chokepoint for the source-document row
+	// (memory.EnforcingDocumentStore over VecDB), already held by IngestionManager.
+	// nil when VecDB cannot store documents (a test fake).
+	DocumentStore        domain.DocumentStore
 	ProfileStore         memstore.ProfileStore
 	Agent                *memory.Agent
 	Hippocampus          *memory.Hippocampus
@@ -248,8 +252,9 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		if execCfg.Retrieval.RecallSpreadingEnabled {
 			queryService.EnableEntityRouting(entityIdx)
 		}
-		// ADR-0049 D10: Hebbian co-activation edge reinforcement on recall (flag-gated;
-		// default off — the constants are HITL-tuned against real traces).
+		// ADR-0049 D10: Hebbian co-activation edge reinforcement on recall (flag-gated by
+		// execution.retrieval.hebbian_enabled, which DefaultConfig turns ON; the constants
+		// are HITL-tuned against real traces).
 		if execCfg.Retrieval.HebbianEnabled {
 			queryService.EnableHebbian(gs,
 				execCfg.Retrieval.HebbianLearningRate, execCfg.Retrieval.HebbianMaxWeight, execCfg.Retrieval.HebbianCoActivationFloor,
@@ -260,6 +265,21 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 	// ADR-0028: ingestion pipeline. (Its SceneGenerator was deleted 2026-11-05 with
 	// scenes — decisions/scenes-cancelled.md.)
 	ingestionMgr := memory.NewIngestionManager(embed, memoryAgent, ingestionConfigFrom(execCfg.Ingestion), chunkerCfg)
+	// ADR-0093: the source-document row's write chokepoint. `documents.tags` is the
+	// authoritative classification every access decision reads, so it goes through the
+	// decision point exactly like the chunk writes above (ADR-0085). It is composed
+	// HERE, beside the tiers it mirrors, so the ingest path holds the enforcing store
+	// whenever the adapter can store documents — it used to be built in app/app.go and
+	// attached there, so its presence depended on a post-construction call outside the
+	// composition point being reached (AGENTS.md §2.1/§2.3,
+	// T-20261113-memory-tier-stores-are-composed-outside). The raw adapter is wrapped,
+	// never handed over. A vec that is not a document store (a test fake) leaves the
+	// pre-ADR-0093 behaviour: documents are not recorded.
+	var documentStore domain.DocumentStore
+	if ds, ok := vec.(domain.DocumentStore); ok {
+		documentStore = memory.NewEnforcingDocumentStore(ds, authorizer, slog.Default())
+		ingestionMgr.SetDocumentStore(documentStore)
+	}
 	// ADR-0138 D2-D4: the document lifecycle is composed HERE, with the manager, so no
 	// ingest path can run without it once a database is wired. Its writer check is
 	// computed inside the store's transaction (the writer of record against the
@@ -305,6 +325,7 @@ func NewMemoryStack(vec domain.VectorStore, gen domain.Generator, embed domain.E
 		VecDB:                vec,
 		ReadStore:            scopedRead,
 		WriteStore:           writeStore,
+		DocumentStore:        documentStore,
 		ProfileStore:         profileStore,
 		Agent:                memoryAgent,
 		Hippocampus:          hippocampus,

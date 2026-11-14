@@ -58,6 +58,12 @@ COPY cambrian-core/agents/ /app/agents/
 COPY cambrian-core/prompts/ /app/prompts/
 COPY cambrian-core/configs/ /app/configs/
 COPY cambrian-core/db/ /app/db/
+# System skills (ADR-0066 / ADR-0139): the kernel loads them from the WORKING-DIRECTORY
+# relative "skills" dir (app.go skilldiscovery.LoadRegistry("skills", …)), and WORKDIR
+# is /app — without this copy a containerised kernel has no system skills at all.
+# tools/ is not copied: it holds no files in the repo (tool manifests are user-supplied
+# and mounted), and LoadRegistry treats a missing dir as empty.
+COPY cambrian-core/skills/ /app/skills/
 
 # Optional model pre-fetch (HF reranker/docling weights baked into the image cache), so
 # a running container makes NO runtime model download. Off by default to keep the base

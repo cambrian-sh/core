@@ -49,6 +49,18 @@ func WithPrivateWrites(ctx context.Context, owner string) context.Context {
 	return context.WithValue(ctx, privateWriteCtxKey{}, owner)
 }
 
+// WithoutPrivateWrites returns ctx with any private-write marker cleared, so a
+// write classified under it is NOT owner-scoped by StampPrivateOwner. Use it
+// where a write is classified as a principal other than the conversation the
+// ctx came from (operator share-to-team asks "what may THIS person write?").
+// WithPrivateWrites(ctx, "") cannot do this: it leaves ctx unchanged.
+func WithoutPrivateWrites(ctx context.Context) context.Context {
+	if PrivateWriteOwnerFromContext(ctx) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, privateWriteCtxKey{}, "")
+}
+
 // PrivateWriteOwnerFromContext returns the owner writes under ctx are private
 // to, "" when unmarked.
 func PrivateWriteOwnerFromContext(ctx context.Context) string {

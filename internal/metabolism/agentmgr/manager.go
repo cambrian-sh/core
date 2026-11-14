@@ -2,6 +2,7 @@ package agentmgr
 
 import (
 	"context"
+	"log/slog"
 	"os/exec"
 
 	"github.com/cambrian-sh/core/domain"
@@ -31,6 +32,9 @@ type AgentManager struct {
 	// RestartPolicy drives auto-restart-with-backoff + flap quarantine on an unexpected
 	// daemon exit (REACT-04 / ADR-0070). nil ⇒ no auto-restart (pre-REACT-04 behavior).
 	RestartPolicy *DaemonRestartPolicy
+	// restarts owns the pending auto-restart goroutines; StopAllDaemons cancels
+	// and drains them (crash_detection.go, AGENTS.md §3.3).
+	restarts restartLifecycle
 	// DaemonBootHook, when non-nil, replaces the real bootDaemonAgent path in SpawnDaemon
 	// (returning an instance id + the launched process). It exists so the chaos/kill test
 	// can drive the real crash-watcher → restart loop with controllable OS processes.
@@ -48,7 +52,15 @@ func NewAgentManager(reg domain.AgentRegistry, pyPath string, substrateAddr stri
 	// SEC-01: let the InstanceManager honor each agent's declared memory_limit_mb
 	// over the global default at spawn time.
 	im.SetManifestResolver(func(agentID string) *domain.AgentManifest {
-		m, _ := reg.GetManifest(context.Background(), agentID)
+		m, err := reg.GetManifest(context.Background(), agentID)
+		if err != nil {
+			// AGENTS.md §3.2: the fallback (the global memory cap) is the documented
+			// default, but it must not be silent — a registry read error here means
+			// the agent's own memory_limit_mb is not being honoured.
+			slog.Warn("SEC-01: agent manifest unreadable; spawning with the global memory limit",
+				"agent_id", agentID, "err", err)
+			return nil
+		}
 		return m
 	})
 	return &AgentManager{

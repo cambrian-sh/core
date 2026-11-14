@@ -47,19 +47,21 @@ func mcpOrgRequest(serverID, secretName string) domain.CredentialRequest {
 	return domain.CredentialRequest{ServerID: serverID, Purpose: domain.CredentialPurposeMCP, Slot: mcpSlotOf(serverID, secretName)}
 }
 
-// writeSharedMCPCredential stores one shared credential of one server.
-func writeSharedMCPCredential(store *storage.BoltConfigStore, serverID, secretName, value string) error {
+// writeSharedMCPCredential stores one shared credential of one server. ctx is
+// the operator RPC's (AGENTS.md §2.7): the provider write inherits its
+// deadline, cancellation, principal and trace.
+func writeSharedMCPCredential(ctx context.Context, store *storage.BoltConfigStore, serverID, secretName, value string) error {
 	if w := orgCredentialWriter(); w != nil {
-		return w.SetOrgCredential(context.Background(), mcpOrgRequest(serverID, secretName), value, sharedCredActor)
+		return w.SetOrgCredential(ctx, mcpOrgRequest(serverID, secretName), value, sharedCredActor)
 	}
 	return store.SetSecret(secretName, value)
 }
 
 // clearSharedMCPCredential removes one shared credential of one server (with
 // accounts: unbinds the slot; the account is kept for its other consumers).
-func clearSharedMCPCredential(store *storage.BoltConfigStore, serverID, secretName string) error {
+func clearSharedMCPCredential(ctx context.Context, store *storage.BoltConfigStore, serverID, secretName string) error {
 	if w := orgCredentialWriter(); w != nil {
-		if _, err := w.ClearOrgCredential(context.Background(), mcpOrgRequest(serverID, secretName), sharedCredActor); err != nil {
+		if _, err := w.ClearOrgCredential(ctx, mcpOrgRequest(serverID, secretName), sharedCredActor); err != nil {
 			return err
 		}
 		// The pre-migration copy goes too: the provider's boot migration

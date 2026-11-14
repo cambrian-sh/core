@@ -67,11 +67,3 @@ func EstimateTokens(text string) int {
 	}
 	return tokens
 }
-
-// EstimateCostFromText returns an estimated cost for the given prompt and
-// response text using the provided per-1M pricing.
-func EstimateCostFromText(prompt, response string, inputCostPer1M, outputCostPer1M float64) float64 {
-	promptTokens := EstimateTokens(prompt)
-	responseTokens := EstimateTokens(response)
-	return CalculateCost(TokenUsage{PromptTokens: promptTokens, CompletionTokens: responseTokens, TotalTokens: promptTokens + responseTokens}, inputCostPer1M, outputCostPer1M)
-}

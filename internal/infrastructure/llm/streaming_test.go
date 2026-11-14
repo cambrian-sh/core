@@ -90,25 +90,3 @@ func TestReconcileTokens_BudgetOverrun(t *testing.T) {
 		t.Errorf("TotalTokens = %d, want > 100 for BudgetOverrun=true", result.TotalTokens)
 	}
 }
-
-func TestTokenizerInaccuracyCounter_InitialZero(t *testing.T) {
-	llm.ResetTokenizerInaccuracyCounter()
-	rate := llm.CheckTokenizerInaccuracy()
-	if rate != 0 {
-		t.Errorf("initial inaccuracy rate = %f, want 0", rate)
-	}
-}
-
-func TestTokenizerInaccuracyCounter_RecordAndCheck(t *testing.T) {
-	llm.ResetTokenizerInaccuracyCounter()
-
-	llm.RecordTokenCall(false) // 0: no overrun
-	llm.RecordTokenCall(false)
-	llm.RecordTokenCall(false)
-	llm.RecordTokenCall(true) // 1: overrun — 25%
-
-	rate := llm.CheckTokenizerInaccuracy()
-	if rate <= 0 || rate > 0.3 {
-		t.Errorf("inaccuracy rate = %f, want > 0 and <= 0.3 (1 out of 4)", rate)
-	}
-}

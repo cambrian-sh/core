@@ -344,8 +344,13 @@ func ParseJWKS(b []byte) (KeySet, error) {
 			if errX != nil || errY != nil || len(x) != 32 || len(y) != 32 {
 				return nil, fmt.Errorf("agentcard: JWKS key %d: bad P-256 coordinates", i)
 			}
-			pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}
-			if !pub.Curve.IsOnCurve(pub.X, pub.Y) { //nolint:staticcheck // validating untrusted input
+			// ParseUncompressedPublicKey (Go 1.25) validates the untrusted point
+			// itself (on the curve, not the identity), replacing the deprecated
+			// low-level elliptic.Curve.IsOnCurve check (staticcheck SA1019).
+			point := make([]byte, 0, 65)
+			point = append(append(append(point, 0x04), x...), y...)
+			pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), point)
+			if err != nil {
 				return nil, fmt.Errorf("agentcard: JWKS key %d: point not on P-256", i)
 			}
 			if k.Kid == "" {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"go.etcd.io/bbolt"
 
@@ -493,7 +494,7 @@ func jsAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string) bo
 	return DiscoveredAgent{
 		Agent: AgentRecord{
 			ID:              id,
-			Name:            strings.ReplaceAll(strings.Title(strings.ReplaceAll(id, "_", " ")), " Agent", " Agent"),
+			Name:            agentDisplayName(id),
 			Description:     description,
 			Runtime:         runtime,
 			ExecPath:        execPath,
@@ -596,7 +597,7 @@ func pythonAgentRecord(agentsDir, fullPath, id string, isSystemAgent func(string
 	return DiscoveredAgent{
 		Agent: AgentRecord{
 			ID:              id,
-			Name:            strings.ReplaceAll(strings.Title(strings.ReplaceAll(id, "_", " ")), " Agent", " Agent"),
+			Name:            agentDisplayName(id),
 			Description:     description,
 			Runtime:         "python",
 			ExecPath:        execPath,
@@ -1584,4 +1585,38 @@ func (b *BBoltAdapter) DeletePipeline(id string) error {
 		}
 		return bkt.Delete([]byte(id))
 	})
+}
+
+// agentDisplayName turns a discovered agent id into its display name:
+// "kg_extractor_agent" → "Kg Extractor Agent". It reproduces strings.Title exactly
+// (deprecated, SA1019) over the id with "_" read as a space, so every stored name is
+// unchanged: a letter is upper-cased when the rune before it is a separator in
+// strings.Title's sense (TestAgentDisplayName_MatchesStringsTitle pins the
+// equivalence). A previous `strings.ReplaceAll(…, " Agent", " Agent")` around it
+// replaced a string with itself and was dropped.
+func agentDisplayName(id string) string {
+	prev := ' '
+	return strings.Map(func(r rune) rune {
+		out := r
+		if titleSeparator(prev) {
+			out = unicode.ToTitle(r)
+		}
+		prev = r
+		return out
+	}, strings.ReplaceAll(id, "_", " "))
+}
+
+// titleSeparator is strings.Title's word-boundary rule (strings.isSeparator).
+func titleSeparator(r rune) bool {
+	if r <= 0x7F {
+		switch {
+		case '0' <= r && r <= '9', 'a' <= r && r <= 'z', 'A' <= r && r <= 'Z', r == '_':
+			return false
+		}
+		return true
+	}
+	if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		return false
+	}
+	return unicode.IsSpace(r)
 }

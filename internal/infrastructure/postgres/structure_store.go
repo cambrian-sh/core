@@ -10,15 +10,16 @@ import (
 )
 
 // Document-structure graph persistence (ADR-0060). The adapter implements
-// memory.StructureGraphStore: section nodes are stored as documents rows
-// (document_type=doc_section, no embedding — excluded from fact recall), leaf
-// chunks are stamped with their inherited section_path + ltree + parent section,
-// and structural edges (PART_OF / NEXT) land in document_edges. All idempotent.
+// memory.StructureGraphStore: section nodes are stored in their own table,
+// document_sections (TableSections; ADR-0093 moved them out of the vector table —
+// they carry no embedding and are never returned by recall), leaf chunks are
+// stamped with their inherited section_path + ltree + parent section, and
+// structural edges (PART_OF / NEXT) land in document_edges. All idempotent.
 
 // StructureGraphStore returns the adapter as a memory.StructureGraphStore.
 func (p *PgVectorAdapter) StructureGraphStore() memory.StructureGraphStore { return p }
 
-// SaveSections upserts section nodes into the documents table.
+// SaveSections upserts section nodes into document_sections (TableSections).
 func (p *PgVectorAdapter) SaveSections(ctx context.Context, sections []memory.SectionRow) error {
 	for _, s := range sections {
 		meta, _ := json.Marshal(map[string]any{
@@ -67,8 +68,12 @@ func (p *PgVectorAdapter) StampChunks(ctx context.Context, stamps []memory.Chunk
 	return nil
 }
 
-// SaveStructuralEdges inserts PART_OF / NEXT edges. source_id FKs documents(id),
-// so callers must persist section nodes (and chunks) before their edges.
+// SaveStructuralEdges inserts PART_OF / NEXT edges. document_edges has no foreign
+// key on either endpoint: an endpoint may be a chunk or a section, which live in two
+// tables, so migration 0009 dropped the source-side FK the way the baseline had
+// already dropped the target-side one. Referential integrity is therefore the
+// writer's job — callers persist section nodes (and chunks) before their edges, and
+// the document-retire cascade (document_lifecycle.go) deletes the edges explicitly.
 func (p *PgVectorAdapter) SaveStructuralEdges(ctx context.Context, edges []memory.StructuralEdge) error {
 	for _, e := range edges {
 		_, err := p.pool.Exec(ctx, `

@@ -62,3 +62,27 @@ func hasString(xs []string, x string) bool {
 	}
 	return false
 }
+
+// stampingAuthorizer stamps the private-write owner the way the premium decision
+// point does (ADR-0142 D12), so a leaked marker would show up in the result.
+type stampingAuthorizer struct{ domain.AllowAllAuthorizer }
+
+func (stampingAuthorizer) ClassifyWrite(ctx context.Context, p domain.PrincipalRef, hint []string) ([]string, domain.AccessDecision) {
+	return domain.StampPrivateOwner(ctx, hint), domain.AccessDecision{Allowed: true, Principal: p}
+}
+
+// ENG-1268: the share is classified as the PERSON, never under a private-write
+// marker the incoming ctx may carry. WithPrivateWrites(ctx, "") left the marker
+// in place, so a marked ctx re-fenced the published document to that owner.
+func TestMemorySharer_ClearsPrivateWriteMarker(t *testing.T) {
+	r := &fakeRetagger{tags: map[string][]string{"doc-1": {"owner:alice"}}}
+	s := &memorySharer{docs: r, authz: stampingAuthorizer{}}
+	ctx := domain.WithPrivateWrites(context.Background(), "alice")
+	got, err := s.ApplyShare(ctx, domain.UserPrincipal("alice"), "doc-1", []string{"team_kb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := domain.OwnersOf(got); len(o) != 0 {
+		t.Fatalf("published document still owner-fenced: %v", got)
+	}
+}

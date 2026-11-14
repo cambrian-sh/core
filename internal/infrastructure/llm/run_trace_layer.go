@@ -121,9 +121,10 @@ func (g *runTraceGenerator) Generate(ctx context.Context, prompt string) (string
 	return out, err
 }
 
+// NativeToolsEnabled forwards the inner generator's capability report (see
+// healthGenerator.NativeToolsEnabled).
 func (g *runTraceGenerator) NativeToolsEnabled() bool {
-	r, ok := g.inner.(domain.ToolCallingReporter)
-	return !ok || r.NativeToolsEnabled()
+	return domain.SupportsToolCalling(g.inner)
 }
 
 func (g *runTraceGenerator) GenerateWithTools(ctx context.Context, messages []domain.ModelMessage, tools []domain.ToolDefinition) (domain.ModelTurn, error) {

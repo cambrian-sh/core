@@ -567,7 +567,6 @@ func budgetAccountFor(req ToolCallRequest) string {
 	return "mcp:" + string(req.SessionTokenID)
 }
 
-// Execute authorizes and runs one tool call.
 // hydrateCIDArgs resolves pass-by-reference tool arguments (ADR-0048 #3). A value
 // shaped {"$cid":"<cid>"} is replaced with the full content stored at that CID, so an
 // agent can reference EXISTING content (a recalled fact, a prior step's offloaded
@@ -612,6 +611,11 @@ func (e *ToolExecutor) hydrateCIDArgs(ctx context.Context, argsJSON []byte) []by
 	return argsJSON
 }
 
+// Execute authorizes and runs one tool call — the single chokepoint every tool
+// call passes (ADR-0039). The steps run in order: resolve the tool, validate its
+// arguments, apply grants, scope, effect and resource policy, run pre_tool hooks
+// and the approval gate, call the handler, then post_tool hooks and the ledger
+// record. A call refused by any step before the handler never reaches it.
 func (e *ToolExecutor) Execute(ctx context.Context, req ToolCallRequest) (out ToolCallResponse) {
 	argHash := hashBytes(req.ArgsJSON)
 

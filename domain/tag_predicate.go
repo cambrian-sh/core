@@ -293,7 +293,9 @@ func (p *TagPredicate) Forbids(tag string) bool {
 // performance-optimized mirror of this logic, and in-memory / fake stores apply it
 // directly.
 //
-// A Bypass predicate allows everything. A NIL receiver allows NOTHING — that is
+// A Bypass predicate allows everything except another person's owner-scoped
+// row: the owner fence is the one term a bypass does not waive (checkMain).
+// A NIL receiver allows NOTHING — that is
 // the fail-closed backstop for a dropped predicate, not a policy choice: the
 // chokepoint refuses an unfiltered read before it ever gets here.
 func (p *TagPredicate) Allows(tags []string) bool {

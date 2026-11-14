@@ -345,9 +345,10 @@ func NewFaultyTaskEventWriter(inner taskEventWriter, cfg FaultConfig) *FaultyTas
 func (w *FaultyTaskEventWriter) Calls() int { return w.sched.count() }
 
 // WriteTaskEvent carries no context, so Delay is an unconditional stall — the
-// shape of a bbolt fsync on a saturated disk.
+// shape of a bbolt fsync on a saturated disk. context.Background() (never done) gives
+// exactly that stall through gate, without passing a nil Context (SA1012).
 func (w *FaultyTaskEventWriter) WriteTaskEvent(event domain.TaskEvent) error {
-	if err := gate(nil, w.cfg, &w.sched); err != nil {
+	if err := gate(context.Background(), w.cfg, &w.sched); err != nil {
 		return err
 	}
 	if w.inner != nil {

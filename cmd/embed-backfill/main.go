@@ -61,6 +61,19 @@ func run() error {
 	}
 
 	ctx := context.Background()
+	// Raw pgxpool, below even the tier-0 PgVectorAdapter (AGENTS.md §2.2
+	// "kernel-authored artifact writer"): this is an operator-run, one-off
+	// maintenance tool that rebuilds the ADR-0107 D4 chunk_embeddings projection
+	// (rows + the per-model partial HNSW index) from data already in the store.
+	// It serves no principal — there is no agent or operator scope to enforce, and
+	// it never changes chunk content or tags (it writes only a derived per-model
+	// vector keyed by an existing chunk id; -reembed reads chunk text to compute
+	// it, and the text never leaves the tool except to the operator-named embedder
+	// endpoint) — and it is not part of the kernel's
+	// object graph, so MemoryStack (§2.1) does not apply. The adapter has no
+	// bulk-projection or DDL method, which is why it is not used either.
+	// Recorded in AGENTS.md §6 open gap 1
+	// (T-20261113-cmd-embed-backfill-writes-chunk-embeddings).
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return err

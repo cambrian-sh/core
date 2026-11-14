@@ -302,6 +302,29 @@ func TestDecorators_DoNotOverReportDisabledInner(t *testing.T) {
 	}
 }
 
+// REGRESSION (T-20261105-core-health-and-spend-meter-decorators-report): every
+// decorator used to answer `!ok || r.NativeToolsEnabled()` on a reporter assertion, so
+// an inner implementing NEITHER GenerateWithTools NOR the reporter (a text-only
+// generator, a test fake, a future decorator) read as tool-capable through the wrapper,
+// and GenerateWithTools then failed at call time. Each decorator must report exactly
+// domain.SupportsToolCalling(inner), as traceBypass and schemaGenerator already do.
+func TestDecorators_DoNotOverReportTextOnlyInner(t *testing.T) {
+	t.Parallel()
+	inner := plainGen{} // Generate only: no GenerateWithTools, no reporter
+	decs := map[string]domain.Generator{
+		"healthGenerator":      newHealthGenerator("g1", inner, NewCircuitBreaker(3, time.Minute)),
+		"concurrencyGenerator": &concurrencyGenerator{inner: inner, sem: make(chan struct{}, 1)},
+		"meteredGenerator": &meteredGenerator{inner: inner,
+			meter: NewSpendMeter(0, SeedPriceLedger(nil), nil), purpose: "p", generatorID: "g1"},
+		"runTraceGenerator": &runTraceGenerator{inner: inner, tracer: &memTracer{}, id: "g1", purpose: "p"},
+	}
+	for name, d := range decs {
+		if domain.SupportsToolCalling(d) {
+			t.Errorf("%s reports tool support for a text-only inner", name)
+		}
+	}
+}
+
 // End-to-end through the config plumbing: GeneratorConfig → ModelConfig → client →
 // decorator chain → SupportsToolCalling.
 //

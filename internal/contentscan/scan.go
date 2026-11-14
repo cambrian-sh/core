@@ -1,6 +1,6 @@
 // Package contentscan is the kernel's deterministic scanner for text that will be
-// shown to a model as INSTRUCTIONS: agent-proposed skills (ADR-0139 D13), and
-// principal memory notes (ADR-0139 D14) when that lane adopts it. It is shared on
+// shown to a model as INSTRUCTIONS: agent-proposed skills (ADR-0139 D13) and
+// principal memory notes (ADR-0139 D14, app/memory_notes.go). It is shared on
 // purpose (AGENTS.md §4.3): one rule set, one verdict vocabulary, so the two
 // write paths cannot drift into two different ideas of "dangerous".
 //

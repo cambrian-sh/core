@@ -78,7 +78,7 @@ func (m *memorySharer) plan(ctx context.Context, person domain.PrincipalRef, doc
 		return "", nil, operator.ErrShareNotOwner
 	}
 	// Classified as the person, with no private-write marker: what may THEY write?
-	final, dec := m.authz.ClassifyWrite(domain.WithPrivateWrites(ctx, ""), person, target)
+	final, dec := m.authz.ClassifyWrite(domain.WithoutPrivateWrites(ctx), person, target)
 	if !dec.Allowed {
 		return "", nil, operator.ErrShareNotPermitted
 	}
